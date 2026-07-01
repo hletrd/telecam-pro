@@ -1,12 +1,13 @@
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
 }
 
 android {
     namespace = "com.hletrd.findx9tele"
-    compileSdk = 36
+    // Compile against the newest SDK (API 37) required by the latest AndroidX libraries.
+    // Runtime target stays Android 16 (API 36) — compileSdk and targetSdk are decoupled.
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.hletrd.findx9tele"

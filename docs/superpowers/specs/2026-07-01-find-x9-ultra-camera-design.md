@@ -30,17 +30,19 @@
 
 | 구성요소 | 버전 |
 |---|---|
-| AGP | 9.2.0 |
+| AGP | 9.2.0 (Kotlin **built-in** — `kotlin.android` 플러그인 미사용) |
 | Gradle | 9.6.1 (wrapper) |
-| Kotlin | 2.3.20 |
-| Compose Compiler plugin | 2.3.20 (`org.jetbrains.kotlin.plugin.compose`) |
+| Kotlin | 2.3.10 (AGP 9.2 내장) |
+| Compose Compiler plugin | 2.3.10 (`org.jetbrains.kotlin.plugin.compose`, 내장 Kotlin에 맞춤) |
 | Compose BOM | 2026.06.00 |
-| compileSdk / targetSdk / minSdk | 36 / 36 / 36 |
-| Build Tools | 36.0.0 |
+| compileSdk / targetSdk / minSdk | 37 / 36 / 36 |
+| Build Tools | 36.0.0 (+37.0.0 설치됨) |
 | JDK | 21 (aarch64 / Apple Silicon) |
 
 - Kotlin DSL(`build.gradle.kts`) + Version Catalog(`gradle/libs.versions.toml`).
-- Java/Kotlin toolchain 21. `jvmTarget = 21`.
+- Java/Kotlin toolchain 21. `kotlin { jvmToolchain(21) }`.
+- AGP 9부터 Kotlin이 내장되어 별도 `org.jetbrains.kotlin.android` 플러그인을 적용하면 안 됨.
+- compileSdk 37은 최신 AndroidX(lifecycle 2.11.0) 요구사항; targetSdk 36(Android 16)과 분리.
 - 개발기: ARM Mac. 앱은 기기에서 실행. 빌드는 Android Studio 또는 CLI(`./gradlew`).
 
 ## 4. 아키텍처
@@ -134,7 +136,7 @@ UI (Compose) — 프리뷰 + 프로 컨트롤 오버레이 + 설정
 2. 물리렌즈 + RAW + 10-bit 동시 스트림 조합의 하드웨어 제약 — 스트림 구성별 검증.
 3. 진짜 벤더 LOG 미재현 — GL Log 커브로 근사(정직하게 표기).
 4. HEIF 10-bit 인코딩 경로 — v1은 HEIF 8-bit(픽셀 회전) + DNG로 데이터 보존, 10-bit HEIF는 후속.
-5. 이 Mac에는 JDK/SDK/Gradle 미설치 → 로컬 컴파일 미검증. 툴체인 설치 후 빌드 검증 필요.
+5. ✅ 툴체인 설치(JDK 21 + SDK 36/37 + build-tools) 후 `assembleDebug`/`testDebugUnitTest` 통과 — 컴파일·단위테스트 검증 완료. 카메라 하드웨어 동작은 온디바이스 검증 남음.
 
 ## 11. 테스트 전략
 
