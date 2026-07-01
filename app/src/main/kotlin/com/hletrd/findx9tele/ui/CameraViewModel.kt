@@ -41,9 +41,26 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         }
     }
 
+    // Debounces engine.setControls() so rapid slider drags don't rebuild the repeating request per tick.
+    private var pendingControls: ManualControls? = null
+    private val applyControlsRunnable = Runnable {
+        pendingControls?.let { engine.setControls(it) }
+        pendingControls = null
+    }
+
+    private var countdownRunnable: Runnable? = null
+
+    private val levelTicker = object : Runnable {
+        override fun run() {
+            _state.update { it.copy(levelRoll = engine.currentRollDegrees()) }
+            mainHandler.postDelayed(this, 100)
+        }
+    }
+
     init {
         engine.onStatus = { msg -> _state.update { it.copy(statusMessage = msg) } }
         engine.onCapsReady = { caps -> _state.update { it.copy(caps = caps) } }
+        if (_state.value.level) mainHandler.post(levelTicker)
     }
 
     // ---- Preview surface ----
@@ -86,7 +103,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onJpegQuality(quality: Int) = updateControls { it.copy(jpegQuality = quality) }
 
     // ---- Modes ----
-    override fun onModeChange(mode: CaptureMode) = _state.update { it.copy(mode = mode) }
+    override fun onModeChange(mode: CaptureMode) {
+        cancelCountdown()
+        _state.update { it.copy(mode = mode) }
+    }
     override fun onTransfer(transfer: ColorTransfer) {
         engine.setTransfer(transfer)
         _state.update { it.copy(transfer = transfer) }
@@ -119,14 +139,22 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
     override fun onToggleHistogram(enabled: Boolean) = _state.update { it.copy(histogram = enabled) }
     override fun onGridType(type: GridType) = _state.update { it.copy(grid = type) }
-    override fun onToggleLevel(enabled: Boolean) = _state.update { it.copy(level = enabled) }
-    override fun onTogglePunchIn(enabled: Boolean) = _state.update { it.copy(punchIn = enabled) }
+    override fun onToggleLevel(enabled: Boolean) {
+        _state.update { it.copy(level = enabled) }
+        mainHandler.removeCallbacks(levelTicker)
+        if (enabled) mainHandler.post(levelTicker)
+    }
+    override fun onTogglePunchIn(enabled: Boolean) {
+        engine.setPunchIn(enabled)
+        _state.update { it.copy(punchIn = enabled) }
+    }
 
     // ---- Drive ----
     override fun onTimer(timer: ShutterTimer) = _state.update { it.copy(timer = timer) }
 
     // ---- Shutter ----
     override fun onCapturePhoto() {
+        if (_state.value.timerCountdownSec > 0) return // countdown already in progress; ignore re-tap
         val seconds = _state.value.timer.seconds
         if (seconds <= 0) engine.capturePhoto(_state.value.photoFormats) else startCountdown(seconds)
     }
@@ -138,6 +166,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 val cur = _state.value.timerCountdownSec
                 if (cur <= 1) {
                     _state.update { it.copy(timerCountdownSec = 0) }
+                    countdownRunnable = null
                     engine.capturePhoto(_state.value.photoFormats)
                 } else {
                     _state.update { it.copy(timerCountdownSec = cur - 1) }
@@ -145,10 +174,18 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 }
             }
         }
+        countdownRunnable = tick
         mainHandler.postDelayed(tick, 1000)
     }
 
+    private fun cancelCountdown() {
+        countdownRunnable?.let { mainHandler.removeCallbacks(it) }
+        countdownRunnable = null
+        if (_state.value.timerCountdownSec != 0) _state.update { it.copy(timerCountdownSec = 0) }
+    }
+
     override fun onToggleRecording() {
+        cancelCountdown()
         if (_state.value.isRecording) {
             engine.stopRecording()
             mainHandler.removeCallbacks(recordTicker)
@@ -167,9 +204,15 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     private inline fun updateControls(block: (ManualControls) -> ManualControls) {
         val updated = block(_state.value.controls)
-        engine.setControls(updated)
         _state.update { it.copy(controls = updated) }
+        pendingControls = updated
+        mainHandler.removeCallbacks(applyControlsRunnable)
+        mainHandler.postDelayed(applyControlsRunnable, 80)
     }
+
+    // ---- Lifecycle ----
+    fun onStart() = engine.resume()
+    fun onStop() = engine.pause()
 
     override fun onCleared() {
         mainHandler.removeCallbacksAndMessages(null)

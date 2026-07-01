@@ -109,7 +109,7 @@ fun CameraScreen(
         GridOverlay(type = state.grid, modifier = Modifier.fillMaxSize())
 
         if (state.level) {
-            LevelOverlay(modifier = Modifier.fillMaxSize())
+            LevelOverlay(rollDegrees = state.levelRoll, modifier = Modifier.fillMaxSize())
         }
 
         val cameraLabel = remember(state.caps) {
@@ -193,14 +193,22 @@ fun CameraScreen(
                 actions = actions,
             )
 
+            val onShutter = remember(state.mode) {
+                {
+                    if (state.mode == CaptureMode.PHOTO) {
+                        currentActions.value.onCapturePhoto()
+                    } else {
+                        currentActions.value.onToggleRecording()
+                    }
+                }
+            }
+
             BottomBar(
                 mode = state.mode,
                 isRecording = state.isRecording,
                 panelExpanded = panelExpanded,
                 onModeChange = actions::onModeChange,
-                onShutter = {
-                    if (state.mode == CaptureMode.PHOTO) actions.onCapturePhoto() else actions.onToggleRecording()
-                },
+                onShutter = onShutter,
                 onToggleSettings = { panelExpanded = !panelExpanded },
             )
         }
