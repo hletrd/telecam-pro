@@ -41,6 +41,10 @@ class CameraEngine(private val context: Context) {
     private var started = false
     private var previewSurface: Surface? = null
 
+    private val gyro = com.hletrd.findx9tele.stab.GyroEis(context)
+    private var teleconverterMode = true
+    private var eisEnabled = true
+
     var onStatus: ((String?) -> Unit)? = null
     var onCapsReady: ((CameraCaps) -> Unit)? = null
 
@@ -61,12 +65,27 @@ class CameraEngine(private val context: Context) {
         val tenBit = c.supportsHlg10()
         gl.start(tenBit) { input ->
             gl.setCameraPreviewSize(videoSize.width, videoSize.height)
-            gl.setRotationDegrees(c.sensorOrientation + 180)
+            gl.setEisProvider { gyro.currentCorrection() }
+            applyStabilization()
+            gyro.start()
+            VendorTagInspector.dumpAll(manager)
             openCamera(input)
         }
         gl.setPreviewOutput(surface, width, height)
         started = true
     }
+
+    /** Rotation (afocal 180° only in teleconverter mode) + gyro-EIS focal scaled to the effective FL. */
+    private fun applyStabilization() {
+        val c = caps ?: return
+        gl.setRotationDegrees(c.sensorOrientation + if (teleconverterMode) 180 else 0)
+        val mag = if (teleconverterMode) TELECONVERTER_MAGNIFICATION else 1f
+        gl.setEis(eisEnabled, c.nativeFocalInImageWidths * mag, EIS_CROP)
+    }
+
+    fun setTeleconverterMode(enabled: Boolean) { teleconverterMode = enabled; applyStabilization() }
+    fun setEisEnabled(enabled: Boolean) { eisEnabled = enabled; applyStabilization() }
+    fun setFalseColor(enabled: Boolean) = gl.setFalseColor(enabled)
 
     fun onPreviewSurfaceChanged(width: Int, height: Int) {
         val surface = previewSurface ?: return
@@ -116,7 +135,7 @@ class CameraEngine(private val context: Context) {
         val c = CameraCaps.read(manager, sel.logicalId, sel.physicalId)
         caps = c
         onCapsReady?.invoke(c)
-        gl.setRotationDegrees(c.sensorOrientation + 180)
+        applyStabilization()
         openCamera(input)
     }
 
@@ -186,6 +205,7 @@ class CameraEngine(private val context: Context) {
     fun release() {
         runCatching { recorder?.stop() }
         recorder = null
+        gyro.stop()
         controller?.close()
         controller = null
         gl.stop()
@@ -223,5 +243,8 @@ class CameraEngine(private val context: Context) {
 
     private companion object {
         const val FPS = 30
+        // 300mm / 70mm ≈ 4.286: the Explorer teleconverter's angular magnification.
+        const val TELECONVERTER_MAGNIFICATION = 300f / 70f
+        const val EIS_CROP = 0.10f
     }
 }

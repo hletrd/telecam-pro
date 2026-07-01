@@ -29,6 +29,7 @@ class FlipRenderer {
     private var uTransfer = 0
     private var uPeaking = 0
     private var uZebra = 0
+    private var uFalseColor = 0
     private var uTexel = 0
 
     private val quad: FloatBuffer = floatBuffer(
@@ -58,6 +59,7 @@ class FlipRenderer {
         uTransfer = GLES20.glGetUniformLocation(program, "uTransfer")
         uPeaking = GLES20.glGetUniformLocation(program, "uPeaking")
         uZebra = GLES20.glGetUniformLocation(program, "uZebra")
+        uFalseColor = GLES20.glGetUniformLocation(program, "uFalseColor")
         uTexel = GLES20.glGetUniformLocation(program, "uTexel")
 
         val ids = IntArray(1)
@@ -88,6 +90,11 @@ class FlipRenderer {
         transfer: ColorTransfer?,
         peaking: Boolean,
         zebra: Boolean,
+        falseColor: Boolean = false,
+        stabShiftX: Float = 0f,
+        stabShiftY: Float = 0f,
+        stabRollDeg: Float = 0f,
+        crop: Float = 0f,
     ) {
         GLES20.glViewport(0, 0, targetWidth, targetHeight)
         GLES20.glClearColor(0f, 0f, 0f, 1f)
@@ -106,10 +113,12 @@ class FlipRenderer {
         Matrix.setIdentityM(mvp, 0)
         Matrix.scaleM(mvp, 0, ex, ey, 1f)
 
-        // Rotate texcoords about their center, then apply the SurfaceTexture matrix.
+        // Texcoord transform about center: content rotation (afocal 180° + sensor) + EIS roll,
+        // crop-zoom for stabilization headroom, then EIS translation, then the SurfaceTexture matrix.
         Matrix.setIdentityM(rot, 0)
-        Matrix.translateM(rot, 0, 0.5f, 0.5f, 0f)
-        Matrix.rotateM(rot, 0, rotationDeg.toFloat(), 0f, 0f, 1f)
+        Matrix.translateM(rot, 0, 0.5f + stabShiftX, 0.5f + stabShiftY, 0f)
+        Matrix.rotateM(rot, 0, rotationDeg.toFloat() + stabRollDeg, 0f, 0f, 1f)
+        Matrix.scaleM(rot, 0, 1f - crop, 1f - crop, 1f)
         Matrix.translateM(rot, 0, -0.5f, -0.5f, 0f)
         Matrix.multiplyMM(texMatrix, 0, stMatrix, 0, rot, 0)
 
@@ -126,6 +135,7 @@ class FlipRenderer {
         )
         GLES20.glUniform1i(uPeaking, if (peaking) 1 else 0)
         GLES20.glUniform1i(uZebra, if (zebra) 1 else 0)
+        GLES20.glUniform1i(uFalseColor, if (falseColor) 1 else 0)
         GLES20.glUniform2f(uTexel, 1f / previewW, 1f / previewH)
 
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)

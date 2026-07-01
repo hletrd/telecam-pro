@@ -3,6 +3,7 @@ package com.hletrd.findx9tele.ui.overlays
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,36 +18,93 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.hletrd.findx9tele.camera.ColorTransfer
+import com.hletrd.findx9tele.camera.GridType
+import com.hletrd.findx9tele.camera.HistogramData
 import com.hletrd.findx9tele.camera.PhotoFormats
 import kotlin.math.abs
 
 /**
- * Rule-of-thirds composition grid. Purely decorative; visibility is gated by [CameraUiState.grid]
- * in the caller.
+ * Composition grid, drawn per [GridType]. Purely decorative; visibility/style is entirely driven
+ * by the [type] argument (NONE draws nothing).
  */
 @Composable
-fun GridOverlay(modifier: Modifier = Modifier) {
+fun GridOverlay(type: GridType, modifier: Modifier = Modifier) {
+    if (type == GridType.NONE) return
     val lineColor = Color.White.copy(alpha = 0.55f)
     Canvas(modifier = modifier.fillMaxSize()) {
         val strokeWidth = 1.dp.toPx()
-        val x1 = size.width / 3f
-        val x2 = 2f * size.width / 3f
-        val y1 = size.height / 3f
-        val y2 = 2f * size.height / 3f
-        drawLine(lineColor, Offset(x1, 0f), Offset(x1, size.height), strokeWidth)
-        drawLine(lineColor, Offset(x2, 0f), Offset(x2, size.height), strokeWidth)
-        drawLine(lineColor, Offset(0f, y1), Offset(size.width, y1), strokeWidth)
-        drawLine(lineColor, Offset(0f, y2), Offset(size.width, y2), strokeWidth)
+        when (type) {
+            GridType.THIRDS -> drawThirdsGrid(lineColor, strokeWidth)
+            GridType.GOLDEN -> drawGoldenGrid(lineColor, strokeWidth)
+            GridType.SQUARE -> drawSquareGrid(lineColor, strokeWidth)
+            GridType.CENTER -> drawCenterMark(lineColor, strokeWidth)
+            GridType.NONE -> Unit
+        }
     }
+}
+
+private fun DrawScope.drawThirdsGrid(color: Color, strokeWidth: Float) {
+    val x1 = size.width / 3f
+    val x2 = 2f * size.width / 3f
+    val y1 = size.height / 3f
+    val y2 = 2f * size.height / 3f
+    drawLine(color, Offset(x1, 0f), Offset(x1, size.height), strokeWidth)
+    drawLine(color, Offset(x2, 0f), Offset(x2, size.height), strokeWidth)
+    drawLine(color, Offset(0f, y1), Offset(size.width, y1), strokeWidth)
+    drawLine(color, Offset(0f, y2), Offset(size.width, y2), strokeWidth)
+}
+
+private fun DrawScope.drawGoldenGrid(color: Color, strokeWidth: Float) {
+    val phiInv = 0.618034f
+    val x1 = size.width * (1f - phiInv)
+    val x2 = size.width * phiInv
+    val y1 = size.height * (1f - phiInv)
+    val y2 = size.height * phiInv
+    drawLine(color, Offset(x1, 0f), Offset(x1, size.height), strokeWidth)
+    drawLine(color, Offset(x2, 0f), Offset(x2, size.height), strokeWidth)
+    drawLine(color, Offset(0f, y1), Offset(size.width, y1), strokeWidth)
+    drawLine(color, Offset(0f, y2), Offset(size.width, y2), strokeWidth)
+}
+
+private fun DrawScope.drawSquareGrid(color: Color, strokeWidth: Float) {
+    val cell = size.minDimension / 4f
+    if (cell <= 0f) return
+    var x = cell
+    while (x < size.width) {
+        drawLine(color, Offset(x, 0f), Offset(x, size.height), strokeWidth)
+        x += cell
+    }
+    var y = cell
+    while (y < size.height) {
+        drawLine(color, Offset(0f, y), Offset(size.width, y), strokeWidth)
+        y += cell
+    }
+}
+
+private fun DrawScope.drawCenterMark(color: Color, strokeWidth: Float) {
+    val cx = size.width / 2f
+    val cy = size.height / 2f
+    val armLength = size.minDimension * 0.05f
+    drawLine(color, Offset(cx - armLength, cy), Offset(cx + armLength, cy), strokeWidth)
+    drawLine(color, Offset(cx, cy - armLength), Offset(cx, cy + armLength), strokeWidth)
+    drawCircle(
+        color = color,
+        radius = size.minDimension * 0.08f,
+        center = Offset(cx, cy),
+        style = Stroke(width = strokeWidth),
+    )
 }
 
 /**
  * Horizon/level indicator. A static reference line marks true-horizontal; the [rollDegrees] line
- * rotates with device roll and turns green once within a small tolerance of level. Defaults to a
- * centered, always-level draw since no sensor is wired up yet.
+ * rotates with device roll and turns green once within a small tolerance of level.
  */
 @Composable
 fun LevelOverlay(rollDegrees: Float = 0f, modifier: Modifier = Modifier) {
@@ -73,7 +131,7 @@ fun LevelOverlay(rollDegrees: Float = 0f, modifier: Modifier = Modifier) {
     }
 }
 
-/** Red recording dot + elapsed mm:ss, shown while [CameraUiState.isRecording] is true. */
+/** Red recording dot + elapsed mm:ss, shown while [com.hletrd.findx9tele.camera.CameraUiState.isRecording] is true. */
 @Composable
 fun RecordingIndicator(elapsedMs: Long, modifier: Modifier = Modifier) {
     val totalSeconds = elapsedMs / 1000L
@@ -99,13 +157,18 @@ fun RecordingIndicator(elapsedMs: Long, modifier: Modifier = Modifier) {
     }
 }
 
-/** Top status strip: active camera id, focal length, enabled photo formats, and transfer function. */
+/**
+ * Top status strip: active camera id, 35mm-equivalent focal length (annotated when the afocal
+ * teleconverter is engaged), enabled photo formats, transfer function, and an EIS tag.
+ */
 @Composable
 fun StatusBar(
     cameraLabel: String,
-    focalMm: Float,
+    equivFocalMm: Float,
+    teleconverter: Boolean,
     transfer: ColorTransfer,
     photoFormats: PhotoFormats,
+    eis: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val formatLabel = buildString {
@@ -116,7 +179,11 @@ fun StatusBar(
         }
         if (isEmpty()) append("-")
     }
-    val focalLabel = if (focalMm > 0f) "%.0fmm".format(focalMm) else "--"
+    val focalLabel = when {
+        equivFocalMm <= 0f -> "--"
+        teleconverter -> "%.0fmm 텔레".format(equivFocalMm)
+        else -> "%.0fmm".format(equivFocalMm)
+    }
     Row(
         modifier = modifier
             .background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(8.dp))
@@ -128,5 +195,58 @@ fun StatusBar(
         Text(focalLabel, color = Color.White, style = MaterialTheme.typography.labelMedium)
         Text(formatLabel, color = Color.White, style = MaterialTheme.typography.labelMedium)
         Text(transfer.name, color = Color(0xFF4C9AFF), style = MaterialTheme.typography.labelMedium)
+        if (eis) {
+            Text("EIS", color = Color(0xFF4CD964), style = MaterialTheme.typography.labelMedium)
+        }
+    }
+}
+
+/**
+ * Luma + per-channel (R/G/B) 256-bin histogram curves. Draws an empty bordered frame when [data]
+ * is null (e.g. before the first frame has been analyzed).
+ */
+@Composable
+fun HistogramOverlay(data: HistogramData?, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .size(width = 150.dp, height = 84.dp)
+            .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(8.dp))
+            .padding(6.dp),
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            drawRect(color = Color.White.copy(alpha = 0.3f), style = Stroke(width = 1.dp.toPx()))
+            if (data != null) {
+                drawHistogramCurve(data.luma, Color.White.copy(alpha = 0.9f))
+                drawHistogramCurve(data.red, Color(0xFFFF5252).copy(alpha = 0.75f))
+                drawHistogramCurve(data.green, Color(0xFF4CD964).copy(alpha = 0.75f))
+                drawHistogramCurve(data.blue, Color(0xFF4C9AFF).copy(alpha = 0.75f))
+            }
+        }
+    }
+}
+
+private fun DrawScope.drawHistogramCurve(bins: IntArray, color: Color) {
+    if (bins.size < 2) return
+    val maxVal = (bins.maxOrNull() ?: 0).coerceAtLeast(1)
+    val stepX = size.width / (bins.size - 1)
+    val path = Path()
+    for (i in bins.indices) {
+        val x = i * stepX
+        val y = size.height - (bins[i].toFloat() / maxVal) * size.height
+        if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+    }
+    drawPath(path, color = color, style = Stroke(width = 1.2.dp.toPx()))
+}
+
+/** Big centered self-timer countdown number, shown while a shutter delay is counting down. */
+@Composable
+fun TimerCountdown(seconds: Int, modifier: Modifier = Modifier) {
+    if (seconds <= 0) return
+    Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Text(
+            text = seconds.toString(),
+            color = Color.White,
+            style = MaterialTheme.typography.displayLarge.copy(fontSize = 120.sp),
+        )
     }
 }

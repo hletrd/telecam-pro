@@ -41,7 +41,15 @@ class GlPipeline {
     private var transfer: ColorTransfer? = null
     private var peaking = false
     private var zebra = false
+    private var falseColor = false
     private var tenBit = false
+
+    // Gyro EIS: provider returns [yaw, pitch, roll] shake radians; eisFocal scales to the effective
+    // (teleconverter) focal length in image widths; eisCrop is the headroom (e.g. 0.10).
+    private var eisEnabled = false
+    private var eisFocal = 0f
+    private var eisCrop = 0f
+    private var eisProvider: (() -> FloatArray)? = null
 
     private var inited = false
     private val stMatrix = FloatArray(16)
@@ -94,6 +102,15 @@ class GlPipeline {
     fun setTransfer(t: ColorTransfer?) = post { transfer = t }
     fun setPeaking(enabled: Boolean) = post { peaking = enabled }
     fun setZebra(enabled: Boolean) = post { zebra = enabled }
+    fun setFalseColor(enabled: Boolean) = post { falseColor = enabled }
+
+    fun setEis(enabled: Boolean, focalInImageWidths: Float, crop: Float) = post {
+        eisEnabled = enabled
+        eisFocal = focalInImageWidths
+        eisCrop = crop
+    }
+
+    fun setEisProvider(provider: (() -> FloatArray)?) = post { eisProvider = provider }
 
     fun setEncoderOutput(surface: Surface?, width: Int, height: Int) = post {
         val core = egl ?: return@post
@@ -116,13 +133,28 @@ class GlPipeline {
         st.updateTexImage()
         st.getTransformMatrix(stMatrix)
 
+        var sx = 0f
+        var sy = 0f
+        var roll = 0f
+        var crop = 0f
+        if (eisEnabled) {
+            crop = eisCrop
+            val c = eisProvider?.invoke()
+            if (c != null && c.size >= 3) {
+                val half = eisCrop / 2f
+                sx = (c[0] * eisFocal).coerceIn(-half, half)
+                sy = (c[1] * eisFocal).coerceIn(-half, half)
+                roll = Math.toDegrees(c[2].toDouble()).toFloat().coerceIn(-6f, 6f)
+            }
+        }
+
         core.makeCurrent(previewEgl)
-        renderer.draw(stMatrix, previewW, previewH, transfer = null, peaking = peaking, zebra = zebra)
+        renderer.draw(stMatrix, previewW, previewH, null, peaking, zebra, falseColor, sx, sy, roll, crop)
         core.swapBuffers(previewEgl)
 
         if (encoderEgl != EGL14.EGL_NO_SURFACE) {
             core.makeCurrent(encoderEgl)
-            renderer.draw(stMatrix, encoderW, encoderH, transfer = transfer, peaking = false, zebra = false)
+            renderer.draw(stMatrix, encoderW, encoderH, transfer, false, false, false, sx, sy, roll, crop)
             core.setPresentationTime(encoderEgl, st.timestamp)
             core.swapBuffers(encoderEgl)
         }

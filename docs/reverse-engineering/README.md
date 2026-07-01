@@ -27,12 +27,14 @@ jadx -j 6 --no-res -d jadx-out OplusCamera.apk   # 디컴파일 (16,697 java)
 2. **텔레컨버터 모드는 수동 진입**(자동감지 아님). 컨버터 칩은 안전/인증 체크용으로 보임 → 우리 앱도 **수동 토글**.
 3. **손떨방은 Qualcomm EIS(`EISMode`, `eisrealtime.*`) + OPPO 벤더태그(`ois.control.mode`, `sois.custom.info`, `video.stabilization.mode`)** 로 제어. 유효초점(300mm)에 맞춘 OIS/EIS 프로파일 전환이 핵심.
 4. **줌/FOV 는 `custom.zoom.range`/`expert.zoom.range`/`fov.Angle` override** 로 3x→13x(300mm) 범위를 만듦.
-5. `gyroFromAP` 존재 → 순정도 **앱이 자이로를 EIS 에 주입**. 우리 gyro EIS 접근이 방향적으로 동일.
+5. `gyroFromAP` 태그는 HAL 디스크립터에만 있고 **순정앱은 참조 안 함**(자이로는 HAL 내부 처리). 우리는 클라이언트단 gyro EIS 로 직접 구현.
 
 ## 우리 앱 전략
 
-- **표준 Camera2 경로(확실)**: 70mm 렌즈 선택 + 우리 GL gyro EIS(유효초점 300mm 스케일) + HAL EIS off + OIS 토글. 벤더태그 없이도 동작.
-- **벤더태그 경로(잠재적, 검증필요)**: `ois.control.mode`/`sois.custom.info`/`video.stabilization.mode`/`custom.zoom.range` 등을 CaptureRequest 로 세팅해 **순정 수준 네이티브 손떨방**을 시도. 서드파티 쓰기 허용 여부는 온디바이스 검증(앱 내 `VendorTagInspector` + 실촬영).
+> **심층 디컴파일 결론(oplus-camera-explorer-analysis.md)**: 순정앱조차 OIS/EIS 벤더태그(`ois.control.mode`, `sois.custom.info`, `gyroFromAP` 등)를 **직접 세팅하지 않음**. 올바른 초점거리 손떨방은 **HAL 부작용** — (1) 페리스코프 물리렌즈를 Explorer operation/sensor 모드로 선택, (2) zoom ratio, (3) 세션 구성 시 넘기는 `explorer.chip.state`, (4) 일반 `super_stabilization` 요청 — 의 결과임. Explorer 전용 태그는 정적 벤더태그 디스크립터에도 없어(엔지니어링 태그만 존재) **서드파티 CaptureRequest 로는 사실상 못 씀(system/factory gated)**.
+
+- **표준 Camera2 + 자체 gyro EIS (채택)**: 70mm 렌즈 선택 + GL gyro EIS(유효초점 300mm 스케일) + HAL EIS off + OIS 토글. 벤더태그 불필요, 서드파티에서 확실히 동작 → **이게 우리 방식**.
+- **벤더태그 네이티브 경로 (비현실적)**: gated 로 보여 기대난망. 다만 앱 내 `VendorTagInspector` 로 어떤 태그가 서드파티에 노출되는지 온디바이스 확인은 해둘 가치 있음(`super_stabilization` 계열 값 세팅 시도 등).
 
 ## 남은 작업(재연결 필요)
 

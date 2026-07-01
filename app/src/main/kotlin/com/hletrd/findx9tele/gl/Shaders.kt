@@ -34,6 +34,7 @@ object Shaders {
         uniform int uTransfer;   // 0 = display (preview), 1 = HLG, 2 = LOG
         uniform int uPeaking;    // 0/1  (preview only)
         uniform int uZebra;      // 0/1  (preview only)
+        uniform int uFalseColor; // 0/1  (preview only) exposure false-color map
         uniform vec2 uTexel;     // 1/width, 1/height for neighbor sampling
         varying vec2 vTexCoord;
 
@@ -61,6 +62,18 @@ object Shaders {
                 color = hlg(color);
             } else if (uTransfer == 2) {
                 color = logc(color);
+            }
+
+            // False color: map exposure (luma) to IRE-style bands.
+            if (uFalseColor == 1) {
+                float L = luma(color);
+                if (L < 0.03) color = vec3(0.15, 0.0, 0.5);
+                else if (L < 0.10) color = vec3(0.0, 0.4, 0.85);
+                else if (L < 0.42) color = vec3(0.32, 0.32, 0.32);
+                else if (L < 0.52) color = vec3(0.0, 0.6, 0.1);
+                else if (L < 0.78) color = vec3(0.62, 0.62, 0.62);
+                else if (L < 0.93) color = vec3(0.95, 0.8, 0.0);
+                else color = vec3(1.0, 0.0, 0.0);
             }
 
             // Focus peaking: highlight strong local gradients.

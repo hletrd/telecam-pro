@@ -10,12 +10,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.FilterChip
@@ -38,17 +36,25 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.hletrd.findx9tele.camera.Antibanding
 import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.CaptureMode
+import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.ColorTransfer
+import com.hletrd.findx9tele.camera.FlashMode
+import com.hletrd.findx9tele.camera.FocusMode
+import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.PhotoFormats
-import com.hletrd.findx9tele.ui.controls.AfMfToggle
+import com.hletrd.findx9tele.camera.ProcessingLevel
+import com.hletrd.findx9tele.camera.ShutterTimer
 import com.hletrd.findx9tele.ui.controls.FocusSlider
 import com.hletrd.findx9tele.ui.controls.ProPanel
 import com.hletrd.findx9tele.ui.overlays.GridOverlay
+import com.hletrd.findx9tele.ui.overlays.HistogramOverlay
 import com.hletrd.findx9tele.ui.overlays.LevelOverlay
 import com.hletrd.findx9tele.ui.overlays.RecordingIndicator
 import com.hletrd.findx9tele.ui.overlays.StatusBar
+import com.hletrd.findx9tele.ui.overlays.TimerCountdown
 import com.hletrd.findx9tele.ui.theme.FindX9TeleTheme
 
 /**
@@ -100,9 +106,8 @@ fun CameraScreen(
             },
         )
 
-        if (state.grid) {
-            GridOverlay(modifier = Modifier.fillMaxSize())
-        }
+        GridOverlay(type = state.grid, modifier = Modifier.fillMaxSize())
+
         if (state.level) {
             LevelOverlay(modifier = Modifier.fillMaxSize())
         }
@@ -117,21 +122,33 @@ fun CameraScreen(
         }
         StatusBar(
             cameraLabel = cameraLabel,
-            focalMm = state.caps?.maxFocalMm ?: 0f,
+            equivFocalMm = state.caps?.equivalentFocalMm ?: 0f,
+            teleconverter = state.teleconverterMode,
             transfer = state.transfer,
             photoFormats = state.photoFormats,
+            eis = state.eisEnabled,
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .padding(12.dp),
         )
 
-        if (state.isRecording) {
-            RecordingIndicator(
-                elapsedMs = state.recordElapsedMs,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(12.dp),
-            )
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(12.dp),
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (state.isRecording) {
+                RecordingIndicator(elapsedMs = state.recordElapsedMs)
+            }
+            if (state.histogram) {
+                HistogramOverlay(data = state.histogramData)
+            }
+        }
+
+        if (state.timerCountdownSec > 0) {
+            TimerCountdown(seconds = state.timerCountdownSec, modifier = Modifier.fillMaxSize())
         }
 
         state.statusMessage?.let { message ->
@@ -164,29 +181,15 @@ fun CameraScreen(
                 FocusSlider(
                     focusDistanceDiopters = state.controls.focusDistanceDiopters,
                     minFocusDiopters = state.caps?.minFocusDistanceDiopters ?: 0f,
-                    autoFocus = state.controls.autoFocus,
+                    focusMode = state.controls.focusMode,
                     onFocusSlider = actions::onFocusSlider,
-                    modifier = Modifier.weight(1f),
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                AfMfToggle(
-                    autoFocus = state.controls.autoFocus,
-                    onToggleAutoFocus = actions::onToggleAutoFocus,
+                    modifier = Modifier.fillMaxWidth(),
                 )
             }
 
             ProPanel(
                 expanded = panelExpanded,
-                controls = state.controls,
-                caps = state.caps,
-                transfer = state.transfer,
-                photoFormats = state.photoFormats,
-                recordAudio = state.recordAudio,
-                focusPeaking = state.focusPeaking,
-                zebra = state.zebra,
-                grid = state.grid,
-                level = state.level,
-                punchIn = state.punchIn,
+                state = state,
                 actions = actions,
             )
 
@@ -292,25 +295,52 @@ private object PreviewCameraActions : CameraActions {
     override fun onPreviewSurfaceAvailable(surface: Surface, width: Int, height: Int) = Unit
     override fun onPreviewSurfaceChanged(width: Int, height: Int) = Unit
     override fun onPreviewSurfaceDestroyed() = Unit
+
+    override fun onFocusMode(mode: FocusMode) = Unit
     override fun onFocusSlider(slider: Float) = Unit
-    override fun onToggleAutoFocus(auto: Boolean) = Unit
+
     override fun onIso(iso: Int) = Unit
     override fun onShutterNs(ns: Long) = Unit
     override fun onExposureCompensation(ev: Int) = Unit
     override fun onToggleAutoExposure(auto: Boolean) = Unit
-    override fun onWbKelvin(kelvin: Int) = Unit
+    override fun onToggleAeLock(locked: Boolean) = Unit
+    override fun onAntibanding(mode: Antibanding) = Unit
+
     override fun onToggleAutoWb(auto: Boolean) = Unit
+    override fun onWbKelvin(kelvin: Int) = Unit
+    override fun onWbTint(tint: Int) = Unit
+    override fun onToggleAwbLock(locked: Boolean) = Unit
+
+    override fun onEdge(level: ProcessingLevel) = Unit
+    override fun onNoiseReduction(level: ProcessingLevel) = Unit
+    override fun onColorEffect(effect: ColorEffect) = Unit
+
+    override fun onFlash(mode: FlashMode) = Unit
+    override fun onToggleOis(enabled: Boolean) = Unit
+    override fun onZoomRatio(ratio: Float) = Unit
+    override fun onJpegQuality(quality: Int) = Unit
+
     override fun onModeChange(mode: CaptureMode) = Unit
     override fun onTransfer(transfer: ColorTransfer) = Unit
     override fun onSetPhotoFormats(formats: PhotoFormats) = Unit
     override fun onToggleRecordAudio(enabled: Boolean) = Unit
+    override fun onToggleTeleconverter(enabled: Boolean) = Unit
+
+    override fun onToggleEis(enabled: Boolean) = Unit
+
     override fun onTogglePeaking(enabled: Boolean) = Unit
     override fun onToggleZebra(enabled: Boolean) = Unit
-    override fun onToggleGrid(enabled: Boolean) = Unit
+    override fun onToggleFalseColor(enabled: Boolean) = Unit
+    override fun onToggleHistogram(enabled: Boolean) = Unit
+    override fun onGridType(type: GridType) = Unit
     override fun onToggleLevel(enabled: Boolean) = Unit
     override fun onTogglePunchIn(enabled: Boolean) = Unit
+
+    override fun onTimer(timer: ShutterTimer) = Unit
+
     override fun onCapturePhoto() = Unit
     override fun onToggleRecording() = Unit
+
     override fun onCameraOverride(id: String?) = Unit
 }
 
