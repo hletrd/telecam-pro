@@ -1,0 +1,27 @@
+# Gradle / Android
+.gradle/
+build/
+*/build/
+local.properties
+.cxx/
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+captures/
+.navigation/
+.externalNativeBuild/
+
+# Signing / secrets
+*.jks
+*.keystore
+keystore.properties
+
+# OS
+.DS_Store
+
+# Logs
+*.log
+
+# OMC
+.omc/
