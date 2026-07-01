@@ -27,6 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.hletrd.findx9tele.camera.Antibanding
+import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CameraCaps
 import com.hletrd.findx9tele.camera.CameraUiState
@@ -283,6 +284,13 @@ private fun driveModeLabel(mode: DriveMode): String = when (mode) {
     DriveMode.BURST -> "연사"
     DriveMode.AEB -> "AEB"
     DriveMode.TIMELAPSE -> "타임랩스"
+}
+
+private fun aspectRatioLabel(ratio: AspectRatio): String = when (ratio) {
+    AspectRatio.FULL -> "전체"
+    AspectRatio.W16_9 -> "16:9"
+    AspectRatio.W4_3 -> "4:3"
+    AspectRatio.W1_1 -> "1:1"
 }
 
 private fun videoCodecLabel(codec: VideoCodec): String = when (codec) {
@@ -621,7 +629,21 @@ private fun ModeSection(state: CameraUiState, actions: CameraActions, modifier: 
         )
         TransferSelector(transfer = state.transfer, onTransfer = actions::onTransfer)
         PhotoFormatToggles(formats = state.photoFormats, onSetPhotoFormats = actions::onSetPhotoFormats)
+        SegmentedSelector(
+            label = "화면비",
+            options = AspectRatio.entries,
+            selected = state.aspectRatio,
+            labelFor = ::aspectRatioLabel,
+            onSelect = actions::onAspectRatio,
+        )
         ToggleRow(label = "오디오 녹음", checked = state.recordAudio, onCheckedChange = actions::onToggleRecordAudio)
+        LabeledSlider(
+            label = "게인",
+            valueLabel = "%.1fx".format(state.audioGain),
+            value = state.audioGain,
+            onValueChange = actions::onAudioGain,
+            valueRange = 0f..2f,
+        )
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,

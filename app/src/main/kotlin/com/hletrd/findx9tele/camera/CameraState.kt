@@ -50,6 +50,9 @@ enum class VideoCodec { HEVC, AVC }
 /** Video bitrate level as bits-per-pixel-per-frame factor. */
 enum class BitrateLevel(val bpp: Float) { LOW(0.06f), MEDIUM(0.10f), HIGH(0.16f) }
 
+/** Capture aspect ratio. FULL = whole sensor; others crop. w/h = 0 means full. */
+enum class AspectRatio(val w: Int, val h: Int) { FULL(0, 0), W16_9(16, 9), W4_3(4, 3), W1_1(1, 1) }
+
 /** Photo output formats. Both can be enabled at once. */
 data class PhotoFormats(
     val heif: Boolean = true,
@@ -66,6 +69,9 @@ data class CameraUiState(
     val transfer: ColorTransfer = ColorTransfer.HLG,
     val photoFormats: PhotoFormats = PhotoFormats(),
     val recordAudio: Boolean = true,
+    val audioGain: Float = 1f, // 0..2 software gain applied to recorded PCM
+    val audioLevel: Float = 0f, // 0..1 live input level (RMS), for the meter
+    val aspectRatio: AspectRatio = AspectRatio.FULL,
     // Teleconverter mode: manual (not auto-detected). ON = afocal 180° flip + EIS scaled to 300mm.
     val teleconverterMode: Boolean = true,
     // Stabilization

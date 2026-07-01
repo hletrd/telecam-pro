@@ -8,6 +8,7 @@ import android.util.Size
 import android.view.Surface
 import androidx.lifecycle.AndroidViewModel
 import com.hletrd.findx9tele.camera.Antibanding
+import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CameraEngine
 import com.hletrd.findx9tele.camera.CameraUiState
@@ -71,6 +72,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.onStatus = { msg -> _state.update { it.copy(statusMessage = msg) } }
         engine.onCapsReady = { caps -> _state.update { it.copy(caps = caps) } }
         engine.onAnalysis = { h, w -> _state.update { it.copy(histogramData = h, waveformData = w) } }
+        engine.onAudioLevel = { lvl -> _state.update { it.copy(audioLevel = lvl) } }
         if (_state.value.level) mainHandler.post(levelTicker)
     }
 
@@ -140,7 +142,15 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         _state.update { it.copy(transfer = transfer) }
     }
     override fun onSetPhotoFormats(formats: PhotoFormats) = _state.update { it.copy(photoFormats = formats) }
+    override fun onAspectRatio(ratio: AspectRatio) {
+        engine.setAspectRatio(ratio)
+        _state.update { it.copy(aspectRatio = ratio) }
+    }
     override fun onToggleRecordAudio(enabled: Boolean) = _state.update { it.copy(recordAudio = enabled) }
+    override fun onAudioGain(gain: Float) {
+        engine.setAudioGain(gain)
+        _state.update { it.copy(audioGain = gain) }
+    }
     override fun onToggleTeleconverter(enabled: Boolean) {
         engine.setTeleconverterMode(enabled)
         _state.update { it.copy(teleconverterMode = enabled) }

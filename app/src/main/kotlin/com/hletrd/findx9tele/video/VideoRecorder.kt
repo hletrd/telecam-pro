@@ -16,7 +16,11 @@ import androidx.core.content.ContextCompat
 import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.storage.MediaStoreWriter
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import kotlin.concurrent.thread
+import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 /**
  * Records HEVC Main10 (Rec.2020, HLG/Log) video plus optional AAC audio into a MediaStore MP4.
@@ -48,9 +52,27 @@ class VideoRecorder(private val context: Context) {
     private var audioThread: Thread? = null
     private var audioRecord: AudioRecord? = null
 
+    // Software input gain applied to recorded PCM (1f = passthrough) and a throttled level-meter
+    // callback, both set by [start] and consumed on the audio-encode thread in [runAudio].
+    private var audioGain = 1f
+    private var onLevel: ((Float) -> Unit)? = null
+    private var lastLevelEmitNs = 0L
+
     /** Returns the encoder input Surface for the GL pipeline, or null on failure. */
-    fun start(uri: Uri, size: Size, fps: Int, bitRate: Int, transfer: ColorTransfer, codec: VideoCodec, recordAudio: Boolean): Surface? {
+    fun start(
+        uri: Uri,
+        size: Size,
+        fps: Int,
+        bitRate: Int,
+        transfer: ColorTransfer,
+        codec: VideoCodec,
+        recordAudio: Boolean,
+        audioGain: Float = 1f,
+        onLevel: ((Float) -> Unit)? = null,
+    ): Surface? {
         this.uri = uri
+        this.audioGain = audioGain
+        this.onLevel = onLevel
         val descriptor = MediaStoreWriter.openParcelFd(context, uri, "rw") ?: return null
         pfd = descriptor
 
@@ -197,6 +219,12 @@ class VideoRecorder(private val context: Context) {
                     val buf = codec.getInputBuffer(inIdx)
                     buf?.clear()
                     val read = if (running && buf != null) record.read(buf, buf.capacity()) else 0
+                    if (read > 0 && buf != null) {
+                        // Apply gain in place and emit a throttled level update before this PCM
+                        // buffer is queued to the AAC encoder below.
+                        val level = applyGainAndLevel(buf, read, audioGain)
+                        maybeEmitLevel(level)
+                    }
                     val ptsUs = 1_000_000L * totalSamples / ColorProfiles.AUDIO_SAMPLE_RATE
                     if (!running) {
                         codec.queueInputBuffer(inIdx, 0, 0, ptsUs, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
@@ -240,6 +268,39 @@ class VideoRecorder(private val context: Context) {
         }
     }
 
+    /**
+     * Applies [gain] to every 16-bit PCM sample in `buf[0, byteCount)` IN PLACE (clamped to the
+     * Short range so it can't wrap), then returns the post-gain RMS level normalized to 0..1.
+     * The short view shares [buf]'s backing memory, so writes here are visible to the caller
+     * before the buffer is queued to the encoder.
+     */
+    private fun applyGainAndLevel(buf: ByteBuffer, byteCount: Int, gain: Float): Float {
+        val samples = buf.duplicate().apply {
+            order(ByteOrder.LITTLE_ENDIAN)
+            position(0)
+            limit(byteCount)
+        }.asShortBuffer()
+        val count = samples.remaining()
+        if (count == 0) return 0f
+        var sumSquares = 0.0
+        for (i in 0 until count) {
+            val amplified = (samples[i] * gain).roundToInt()
+                .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                .toShort()
+            samples.put(i, amplified)
+            sumSquares += amplified.toDouble() * amplified.toDouble()
+        }
+        return (sqrt(sumSquares / count) / 32768.0).toFloat().coerceIn(0f, 1f)
+    }
+
+    /** Forwards [level] to [onLevel], throttled to roughly [LEVEL_THROTTLE_NS] between calls. */
+    private fun maybeEmitLevel(level: Float) {
+        val now = System.nanoTime()
+        if (now - lastLevelEmitNs < LEVEL_THROTTLE_NS) return
+        lastLevelEmitNs = now
+        onLevel?.invoke(level)
+    }
+
     private fun maybeStartMuxer() {
         if (!muxerStarted && videoTrack >= 0 && (expectedTracks == 1 || audioTrack >= 0)) {
             muxer?.start()
@@ -264,5 +325,7 @@ class VideoRecorder(private val context: Context) {
 
     private companion object {
         const val TIMEOUT_US = 10_000L
+        // ~10 Hz cap on onLevel callbacks so the UI meter isn't spammed once per PCM buffer.
+        const val LEVEL_THROTTLE_NS = 100_000_000L
     }
 }

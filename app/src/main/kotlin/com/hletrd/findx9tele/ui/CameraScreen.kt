@@ -39,6 +39,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.hletrd.findx9tele.camera.Antibanding
+import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.CaptureMode
@@ -58,6 +59,8 @@ import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.camera.WbMode
 import com.hletrd.findx9tele.ui.controls.FocusSlider
 import com.hletrd.findx9tele.ui.controls.ProPanel
+import com.hletrd.findx9tele.ui.overlays.AspectMask
+import com.hletrd.findx9tele.ui.overlays.AudioMeter
 import com.hletrd.findx9tele.ui.overlays.FocusReticle
 import com.hletrd.findx9tele.ui.overlays.GridOverlay
 import com.hletrd.findx9tele.ui.overlays.HistogramOverlay
@@ -127,6 +130,10 @@ fun CameraScreen(
 
         GridOverlay(type = state.grid, modifier = Modifier.fillMaxSize())
 
+        if (state.aspectRatio != AspectRatio.FULL) {
+            AspectMask(ratio = state.aspectRatio, modifier = Modifier.fillMaxSize())
+        }
+
         if (state.level) {
             LevelOverlay(rollDegrees = state.levelRoll, modifier = Modifier.fillMaxSize())
         }
@@ -164,6 +171,9 @@ fun CameraScreen(
         ) {
             if (state.isRecording) {
                 RecordingIndicator(elapsedMs = state.recordElapsedMs)
+            }
+            if (state.isRecording && state.recordAudio) {
+                AudioMeter(level = state.audioLevel)
             }
             if (state.histogram) {
                 HistogramOverlay(data = state.histogramData)
@@ -235,6 +245,7 @@ fun CameraScreen(
                 panelExpanded = panelExpanded,
                 onModeChange = actions::onModeChange,
                 onShutter = onShutter,
+                onSnapshot = actions::onCapturePhoto,
                 onToggleSettings = { panelExpanded = !panelExpanded },
             )
         }
@@ -249,6 +260,7 @@ private fun BottomBar(
     panelExpanded: Boolean,
     onModeChange: (CaptureMode) -> Unit,
     onShutter: () -> Unit,
+    onSnapshot: () -> Unit,
     onToggleSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -270,7 +282,12 @@ private fun BottomBar(
             )
         }
 
-        ShutterButton(mode = mode, isRecording = isRecording, onClick = onShutter)
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            ShutterButton(mode = mode, isRecording = isRecording, onClick = onShutter)
+            if (mode == CaptureMode.VIDEO && isRecording) {
+                SnapshotButton(onClick = onSnapshot)
+            }
+        }
 
         SettingsToggle(expanded = panelExpanded, onClick = onToggleSettings)
     }
@@ -302,6 +319,26 @@ private fun ShutterButton(
         } else {
             drawCircle(color = fillColor, radius = size.minDimension * 0.38f)
         }
+    }
+}
+
+/**
+ * Small circular snapshot button (a plain white dot), shown only while recording video so a still
+ * can be pulled mid-clip. Calls straight into [CameraActions.onCapturePhoto] — the JPEG/RAW
+ * readers stay attached to the session for the whole recording.
+ */
+@Composable
+private fun SnapshotButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(
+        modifier = modifier
+            .size(44.dp)
+            .clickable(onClick = onClick),
+    ) {
+        drawCircle(color = Color.White, radius = size.minDimension / 2f, style = Stroke(width = 2.dp.toPx()))
+        drawCircle(color = Color.White, radius = size.minDimension * 0.32f)
     }
 }
 
@@ -363,7 +400,9 @@ private object PreviewCameraActions : CameraActions {
     override fun onModeChange(mode: CaptureMode) = Unit
     override fun onTransfer(transfer: ColorTransfer) = Unit
     override fun onSetPhotoFormats(formats: PhotoFormats) = Unit
+    override fun onAspectRatio(ratio: AspectRatio) = Unit
     override fun onToggleRecordAudio(enabled: Boolean) = Unit
+    override fun onAudioGain(gain: Float) = Unit
     override fun onToggleTeleconverter(enabled: Boolean) = Unit
     override fun onVideoCodec(codec: VideoCodec) = Unit
     override fun onBitrateLevel(level: BitrateLevel) = Unit

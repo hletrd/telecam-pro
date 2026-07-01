@@ -62,11 +62,18 @@ class CameraEngine(private val context: Context) {
     @Volatile private var eisEnabled = true
     @Volatile private var eisCrop: Float = EisStrength.MEDIUM.crop
 
+    // Software recording-audio gain (1f = passthrough) and the still-photo aspect-ratio crop;
+    // read from the audio-encode / io-executor threads, so both are @Volatile.
+    @Volatile private var audioGain = 1f
+    @Volatile private var aspectRatio = AspectRatio.FULL
+
     var onStatus: ((String?) -> Unit)? = null
     var onCapsReady: ((CameraCaps) -> Unit)? = null
     // Viewfinder analysis (histogram/waveform) computed on the GL thread; delivered here so the
     // ViewModel can hoist it into UI state. Either arg is null when its analysis is disabled.
     var onAnalysis: ((HistogramData?, WaveformData?) -> Unit)? = null
+    // Live recording-audio level (0..1 RMS, post-gain), throttled by VideoRecorder to ~10 Hz.
+    var onAudioLevel: ((Float) -> Unit)? = null
 
     // ---- Preview surface lifecycle ----
 
@@ -202,6 +209,12 @@ class CameraEngine(private val context: Context) {
     fun setVideoCodec(c: VideoCodec) { videoCodec = c }
     fun setBitrateLevel(b: BitrateLevel) { bitrateLevel = b }
 
+    /** Software gain applied to recorded PCM audio (1f = passthrough); takes effect on the next [startRecording]. */
+    fun setAudioGain(g: Float) { audioGain = g }
+
+    /** Still-photo center-crop aspect ratio; applies to HEIF only (see [saveHeifAsync]). FULL = no crop. */
+    fun setAspectRatio(a: AspectRatio) { aspectRatio = a }
+
     /**
      * Selects the video capture resolution: updates [videoSize] and the GL camera-input size so the
      * encoder frame and preview aspect track the new size. NOTE: the live camera session keeps
@@ -325,16 +338,27 @@ class CameraEngine(private val context: Context) {
             override fun onError(t: Throwable) { onStatus?.invoke("촬영 실패: ${t.message}"); onDone?.invoke() }
         }
 
-    /** Decode → rotate 180° → write HEIF on [ioExecutor]. Publishes only on success; deletes on any failure. */
+    /**
+     * Decode → center-crop to [aspectRatio] (HEIF only; [saveDng]'s RAW output always stays
+     * full-frame) → rotate 180° → write HEIF, on [ioExecutor]. Publishes only on success; deletes
+     * on any failure.
+     */
     private fun saveHeifAsync(bytes: ByteArray) {
         var decoded: Bitmap? = null
+        var cropped: Bitmap? = null
         var rotated: Bitmap? = null
         var uri: android.net.Uri? = null
         try {
             val d = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             if (d == null) { onStatus?.invoke("HEIF 저장 실패: 디코딩 실패"); return }
             decoded = d
-            val r = rotate180(d)
+            val ar = aspectRatio
+            val base = if (ar != AspectRatio.FULL) {
+                val c = centerCrop(d, ar.w, ar.h)
+                cropped = c
+                c
+            } else d
+            val r = rotate180(base)
             rotated = r
             val u = MediaStoreWriter.createPendingImage(context, fileName("IMG", "heic"), "image/heic")
             if (u == null) { onStatus?.invoke("HEIF 저장 실패"); return }
@@ -353,13 +377,15 @@ class CameraEngine(private val context: Context) {
             onStatus?.invoke("HEIF 저장 실패: ${t.message}")
         } finally {
             val rr = rotated
+            val cc = cropped
             val dd = decoded
-            if (rr != null && rr !== dd) rr.recycle()
+            if (rr != null && rr !== cc && rr !== dd) rr.recycle()
+            if (cc != null && cc !== dd) cc.recycle()
             dd?.recycle()
         }
     }
 
-    /** Writes the RAW image as DNG synchronously. Publishes only on success; deletes then rethrows on failure. */
+    /** Writes the RAW image as DNG synchronously (always full-frame; no [aspectRatio] crop applied). Publishes only on success; deletes then rethrows on failure. */
     private fun saveDng(raw: Image, chars: CameraCharacteristics, result: TotalCaptureResult) {
         val uri = MediaStoreWriter.createPendingImage(context, fileName("IMG", "dng"), "image/x-adobe-dng")
             ?: throw IllegalStateException("MediaStore 항목 생성 실패")
@@ -388,7 +414,9 @@ class CameraEngine(private val context: Context) {
         // (Resolution changes made after this point stream the old size until the next record/open.)
         val glTransfer = if (codec == VideoCodec.AVC) null else transfer
         val rec = VideoRecorder(context)
-        val surface = rec.start(uri, size, fps, bitRateFor(size, fps), transfer, codec, recordAudio)
+        val surface = rec.start(
+            uri, size, fps, bitRateFor(size, fps), transfer, codec, recordAudio, audioGain,
+        ) { lvl -> onAudioLevel?.invoke(lvl) }
         if (surface == null) { onStatus?.invoke("녹화 시작 실패"); return false }
         gl.setTransfer(glTransfer)
         gl.setEncoderOutput(surface, size.width, size.height)
@@ -445,6 +473,21 @@ class CameraEngine(private val context: Context) {
     private fun rotate180(src: Bitmap): Bitmap {
         val m = Matrix().apply { postRotate(180f) }
         return Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
+    }
+
+    /** Returns the largest [ratioW]:[ratioH] rect centered within [src], cropped out of it. HEIF-only (see [saveHeifAsync]). */
+    private fun centerCrop(src: Bitmap, ratioW: Int, ratioH: Int): Bitmap {
+        val srcW = src.width
+        val srcH = src.height
+        val heightForFullWidth = srcW * ratioH / ratioW
+        val (cropW, cropH) = if (heightForFullWidth <= srcH) {
+            srcW to heightForFullWidth
+        } else {
+            (srcH * ratioW / ratioH) to srcH
+        }
+        val x = (srcW - cropW) / 2
+        val y = (srcH - cropH) / 2
+        return Bitmap.createBitmap(src, x, y, cropW, cropH)
     }
 
     private fun chooseVideoSize(sel: TeleSelection): Size {

@@ -3,6 +3,7 @@ package com.hletrd.findx9tele.ui
 import android.util.Size
 import android.view.Surface
 import com.hletrd.findx9tele.camera.Antibanding
+import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorEffect
@@ -70,7 +71,9 @@ interface CameraActions {
     fun onModeChange(mode: CaptureMode)
     fun onTransfer(transfer: ColorTransfer)
     fun onSetPhotoFormats(formats: PhotoFormats)
+    fun onAspectRatio(ratio: AspectRatio)
     fun onToggleRecordAudio(enabled: Boolean)
+    fun onAudioGain(gain: Float)
     fun onToggleTeleconverter(enabled: Boolean)
     fun onVideoCodec(codec: VideoCodec)
     fun onBitrateLevel(level: BitrateLevel)

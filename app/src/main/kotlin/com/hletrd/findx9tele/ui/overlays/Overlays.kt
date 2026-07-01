@@ -19,6 +19,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -26,6 +27,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.HistogramData
@@ -103,6 +105,35 @@ private fun DrawScope.drawCenterMark(color: Color, strokeWidth: Float) {
         center = Offset(cx, cy),
         style = Stroke(width = strokeWidth),
     )
+}
+
+/**
+ * Crop mask for non-[AspectRatio.FULL] capture ratios: dims the sensor area outside
+ * [ratio]'s w:h box with semi-opaque black bars (letterboxed top/bottom or pillarboxed
+ * left/right, whichever the view's own aspect requires) so the framed area is obvious in the
+ * viewfinder. Draws nothing for [AspectRatio.FULL].
+ */
+@Composable
+fun AspectMask(ratio: AspectRatio, modifier: Modifier = Modifier) {
+    if (ratio == AspectRatio.FULL) return
+    val barColor = Color.Black.copy(alpha = 0.5f)
+    Canvas(modifier = modifier.fillMaxSize()) {
+        val targetAspect = ratio.w.toFloat() / ratio.h.toFloat()
+        val viewAspect = size.width / size.height
+        if (viewAspect > targetAspect) {
+            // View is wider than the target box: bar off the left/right edges.
+            val frameWidth = size.height * targetAspect
+            val barWidth = (size.width - frameWidth) / 2f
+            drawRect(color = barColor, topLeft = Offset.Zero, size = Size(barWidth, size.height))
+            drawRect(color = barColor, topLeft = Offset(size.width - barWidth, 0f), size = Size(barWidth, size.height))
+        } else {
+            // View is taller than the target box: bar off the top/bottom edges.
+            val frameHeight = size.width / targetAspect
+            val barHeight = (size.height - frameHeight) / 2f
+            drawRect(color = barColor, topLeft = Offset.Zero, size = Size(size.width, barHeight))
+            drawRect(color = barColor, topLeft = Offset(0f, size.height - barHeight), size = Size(size.width, barHeight))
+        }
+    }
 }
 
 /**
@@ -186,6 +217,31 @@ fun RecordingIndicator(elapsedMs: Long, modifier: Modifier = Modifier) {
             style = MaterialTheme.typography.labelLarge,
             modifier = Modifier.padding(end = 10.dp, top = 4.dp, bottom = 4.dp),
         )
+    }
+}
+
+/**
+ * Thin horizontal audio input-level meter (0..1). Fill color shifts green -> yellow -> red as
+ * [level] approaches clipping, so it doubles as a basic peak warning while recording.
+ */
+@Composable
+fun AudioMeter(level: Float, modifier: Modifier = Modifier) {
+    val fill = level.coerceIn(0f, 1f)
+    val fillColor = when {
+        fill < 0.6f -> Color(0xFF4CD964)
+        fill < 0.85f -> Color(0xFFFFD60A)
+        else -> Color(0xFFFF3B30)
+    }
+    Box(
+        modifier = modifier
+            .size(width = 120.dp, height = 8.dp)
+            .background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(4.dp)),
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            if (fill > 0f) {
+                drawRect(color = fillColor, size = Size(size.width * fill, size.height))
+            }
+        }
     }
 }
 
