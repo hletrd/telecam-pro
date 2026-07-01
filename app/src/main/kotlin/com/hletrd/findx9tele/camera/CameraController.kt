@@ -58,6 +58,9 @@ class CameraController(context: Context) {
     private var configAttempt = 0
 
     @Volatile private var pending: Pending? = null
+    // Last AF-resolved focus distance, tracked from repeating-preview results so afLock can freeze
+    // the lens there (a manual LENS_FOCUS_DISTANCE hold) instead of an AF-mode "lock" call.
+    @Volatile private var lastFocusDistance: Float = 0f
 
     @SuppressLint("MissingPermission") // caller guarantees CAMERA permission before open()
     fun open(
@@ -176,8 +179,20 @@ class CameraController(context: Context) {
         val req = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
             addTarget(preview)
             applyManualControls(controls, caps)
+            // AF lock: freeze focus at the last AF-resolved distance instead of leaving AF running.
+            // Not applicable in MANUAL focus mode, where focus is already fixed by the user.
+            if (controls.afLock && controls.focusMode != FocusMode.MANUAL && caps.supportsManualFocus) {
+                set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+                set(CaptureRequest.LENS_FOCUS_DISTANCE, lastFocusDistance)
+            }
         }
-        s.setRepeatingRequest(req.build(), null, handler)
+        s.setRepeatingRequest(req.build(), object : CameraCaptureSession.CaptureCallback() {
+            override fun onCaptureCompleted(
+                session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult,
+            ) {
+                result.get(android.hardware.camera2.CaptureResult.LENS_FOCUS_DISTANCE)?.let { lastFocusDistance = it }
+            }
+        }, handler)
     }
 
     fun updateControls(controls: ManualControls) {

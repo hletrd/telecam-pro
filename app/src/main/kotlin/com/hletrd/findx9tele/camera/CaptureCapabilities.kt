@@ -45,11 +45,21 @@ data class CameraCaps(
     val effectModes: IntArray,
     val edgeModes: IntArray,
     val noiseReductionModes: IntArray,
+    val availableFpsRanges: Array<Range<Int>>,
 ) {
     val supportsManualFocus: Boolean get() = minFocusDistanceDiopters > 0f
     val maxFocalMm: Float get() = focalLengthsMm.maxOrNull() ?: 0f
     fun supportsHlg10(): Boolean = supportedDynamicRangeProfiles.contains(DynamicRangeProfiles.HLG10)
     fun hasEffect(mode: Int): Boolean = effectModes.contains(mode)
+
+    /** Distinct fixed frame rates the device advertises (upper bound of each fps range), sorted. */
+    val availableFps: List<Int>
+        get() = availableFpsRanges.map { it.upper }.distinct().sorted()
+
+    /** A supported target-fps range for [fps]: prefer a fixed [fps,fps] range, else one covering it. */
+    fun clampFpsRange(fps: Int): Range<Int>? =
+        availableFpsRanges.firstOrNull { it.lower == fps && it.upper == fps }
+            ?: availableFpsRanges.firstOrNull { fps in it.lower..it.upper }
 
     companion object {
         private const val FULL_FRAME_DIAGONAL_MM = 43.2666f
@@ -111,6 +121,7 @@ data class CameraCaps(
                 effectModes = chars.get(CameraCharacteristics.CONTROL_AVAILABLE_EFFECTS) ?: IntArray(0),
                 edgeModes = chars.get(CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES) ?: IntArray(0),
                 noiseReductionModes = chars.get(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES) ?: IntArray(0),
+                availableFpsRanges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: emptyArray(),
             )
         }
     }

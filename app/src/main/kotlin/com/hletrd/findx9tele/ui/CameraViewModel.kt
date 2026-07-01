@@ -12,12 +12,14 @@ import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.ColorTransfer
+import com.hletrd.findx9tele.camera.EisStrength
 import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.ManualControls
 import com.hletrd.findx9tele.camera.PhotoFormats
 import com.hletrd.findx9tele.camera.ProcessingLevel
+import com.hletrd.findx9tele.camera.ShutterMode
 import com.hletrd.findx9tele.camera.ShutterTimer
 import com.hletrd.findx9tele.focus.FocusMapping
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -76,6 +78,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         val d = FocusMapping.sliderToDiopters(slider, min)
         updateControls { it.copy(focusDistanceDiopters = d, focusMode = FocusMode.MANUAL) }
     }
+    override fun onAfLock(locked: Boolean) = updateControls { it.copy(afLock = locked) }
 
     // ---- Exposure ----
     override fun onIso(iso: Int) = updateControls { it.copy(iso = iso, autoExposure = false) }
@@ -84,6 +87,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onToggleAutoExposure(auto: Boolean) = updateControls { it.copy(autoExposure = auto) }
     override fun onToggleAeLock(locked: Boolean) = updateControls { it.copy(aeLock = locked) }
     override fun onAntibanding(mode: Antibanding) = updateControls { it.copy(antibanding = mode) }
+    override fun onFps(fps: Int) = updateControls { it.copy(fps = fps) }
+    override fun onShutterMode(mode: ShutterMode) = updateControls { it.copy(shutterMode = mode) }
+    override fun onShutterAngle(angle: Float) =
+        updateControls { it.copy(shutterAngle = angle, shutterMode = ShutterMode.ANGLE, autoExposure = false) }
 
     // ---- White balance ----
     override fun onToggleAutoWb(auto: Boolean) = updateControls { it.copy(autoWhiteBalance = auto) }
@@ -122,6 +129,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onToggleEis(enabled: Boolean) {
         engine.setEisEnabled(enabled)
         _state.update { it.copy(eisEnabled = enabled) }
+    }
+    override fun onEisStrength(strength: EisStrength) {
+        engine.setEisStrength(strength)
+        _state.update { it.copy(eisStrength = strength) }
     }
 
     // ---- Assists ----

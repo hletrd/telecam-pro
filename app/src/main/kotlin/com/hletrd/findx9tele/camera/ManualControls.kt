@@ -12,13 +12,17 @@ data class ManualControls(
     // Focus
     val focusMode: FocusMode = FocusMode.MANUAL,
     val focusDistanceDiopters: Float = 0f, // 0 = infinity
+    val afLock: Boolean = false,
     // Exposure
     val autoExposure: Boolean = false,
     val iso: Int = 400,
-    val exposureTimeNs: Long = 8_000_000L, // ~1/125 s
+    val exposureTimeNs: Long = 8_000_000L, // ~1/125 s (SPEED mode)
+    val shutterMode: ShutterMode = ShutterMode.SPEED,
+    val shutterAngle: Float = 180f, // cine ANGLE mode: exposure = (angle/360)/fps
     val exposureCompensation: Int = 0,
     val aeLock: Boolean = false,
     val antibanding: Antibanding = Antibanding.AUTO,
+    val fps: Int = 30,
     // White balance
     val autoWhiteBalance: Boolean = true,
     val wbKelvin: Int = 5200,
@@ -35,6 +39,14 @@ data class ManualControls(
     // Output
     val jpegQuality: Int = 95,
 )
+
+/** Effective exposure time (ns): derived from the cine angle in ANGLE mode, else the raw speed. */
+fun ManualControls.effectiveExposureNs(): Long =
+    if (shutterMode == ShutterMode.ANGLE && fps > 0) {
+        ((shutterAngle.coerceIn(1f, 360f) / 360.0) / fps * 1_000_000_000.0).toLong()
+    } else {
+        exposureTimeNs
+    }
 
 /**
  * Applies the parameters to a CaptureRequest, clamping to hardware ranges and honoring capability
@@ -82,8 +94,10 @@ private fun CaptureRequest.Builder.applyExposure(c: ManualControls, caps: Camera
         set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
         caps.isoRange?.let { set(CaptureRequest.SENSOR_SENSITIVITY, c.iso.coerceIn(it.lower, it.upper)) }
         caps.exposureTimeRange?.let {
-            set(CaptureRequest.SENSOR_EXPOSURE_TIME, c.exposureTimeNs.coerceIn(it.lower, it.upper))
+            set(CaptureRequest.SENSOR_EXPOSURE_TIME, c.effectiveExposureNs().coerceIn(it.lower, it.upper))
         }
+        // Honor the target fps in manual exposure via the frame duration.
+        if (c.fps > 0) set(CaptureRequest.SENSOR_FRAME_DURATION, 1_000_000_000L / c.fps)
     } else {
         set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
         set(CaptureRequest.CONTROL_AE_LOCK, c.aeLock)
@@ -92,6 +106,8 @@ private fun CaptureRequest.Builder.applyExposure(c: ManualControls, caps: Camera
             c.exposureCompensation.coerceIn(caps.evRange.lower, caps.evRange.upper),
         )
     }
+    // Target frame-rate range (honored by AE; hints the pipeline in manual too).
+    caps.clampFpsRange(c.fps)?.let { set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
     set(
         CaptureRequest.CONTROL_AE_ANTIBANDING_MODE,
         when (c.antibanding) {

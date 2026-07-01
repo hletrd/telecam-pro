@@ -30,13 +30,16 @@ import com.hletrd.findx9tele.camera.CameraCaps
 import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.ColorTransfer
+import com.hletrd.findx9tele.camera.EisStrength
 import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.ManualControls
 import com.hletrd.findx9tele.camera.PhotoFormats
 import com.hletrd.findx9tele.camera.ProcessingLevel
+import com.hletrd.findx9tele.camera.ShutterMode
 import com.hletrd.findx9tele.camera.ShutterTimer
+import com.hletrd.findx9tele.camera.effectiveExposureNs
 import com.hletrd.findx9tele.focus.FocusMapping
 import com.hletrd.findx9tele.ui.CameraActions
 import kotlin.math.exp
@@ -242,6 +245,17 @@ private fun shutterTimerLabel(timer: ShutterTimer): String = when (timer) {
     ShutterTimer.SEC10 -> "10초"
 }
 
+private fun shutterModeLabel(mode: ShutterMode): String = when (mode) {
+    ShutterMode.SPEED -> "속도"
+    ShutterMode.ANGLE -> "각도"
+}
+
+private fun eisStrengthLabel(strength: EisStrength): String = when (strength) {
+    EisStrength.LOW -> "약"
+    EisStrength.MEDIUM -> "중"
+    EisStrength.HIGH -> "강"
+}
+
 // ---------------------------------------------------------------------------
 // Exposure: ISO / Shutter / EV helpers
 // ---------------------------------------------------------------------------
@@ -333,6 +347,9 @@ private fun FocusSection(controls: ManualControls, actions: CameraActions, modif
             labelFor = ::focusModeLabel,
             onSelect = actions::onFocusMode,
         )
+        if (controls.focusMode != FocusMode.MANUAL) {
+            ToggleRow(label = "AF 잠금", checked = controls.afLock, onCheckedChange = actions::onAfLock)
+        }
     }
 }
 
@@ -364,17 +381,45 @@ private fun ExposureSection(
             enabled = !controls.autoExposure,
         )
 
-        val shutterRange = caps?.exposureTimeRange ?: Range(controls.exposureTimeNs, controls.exposureTimeNs)
-        val shutterSlider = remember(controls.exposureTimeNs, shutterRange) {
-            shutterNsToSlider(controls.exposureTimeNs, shutterRange)
+        SegmentedSelector(
+            label = "셔터 모드",
+            options = ShutterMode.entries,
+            selected = controls.shutterMode,
+            labelFor = ::shutterModeLabel,
+            onSelect = actions::onShutterMode,
+        )
+
+        if (controls.shutterMode == ShutterMode.ANGLE) {
+            LabeledSlider(
+                label = "셔터 각도",
+                valueLabel = "%.0f° (%s)".format(controls.shutterAngle, formatShutterSpeed(controls.effectiveExposureNs())),
+                value = controls.shutterAngle,
+                onValueChange = actions::onShutterAngle,
+                valueRange = 1f..360f,
+                enabled = !controls.autoExposure,
+            )
+        } else {
+            val shutterRange = caps?.exposureTimeRange ?: Range(controls.exposureTimeNs, controls.exposureTimeNs)
+            val shutterSlider = remember(controls.exposureTimeNs, shutterRange) {
+                shutterNsToSlider(controls.exposureTimeNs, shutterRange)
+            }
+            LabeledSlider(
+                label = "셔터",
+                valueLabel = formatShutterSpeed(controls.exposureTimeNs),
+                value = shutterSlider,
+                onValueChange = { actions.onShutterNs(sliderToShutterNs(it, shutterRange)) },
+                valueRange = 0f..1f,
+                enabled = !controls.autoExposure,
+            )
         }
-        LabeledSlider(
-            label = "셔터",
-            valueLabel = formatShutterSpeed(controls.exposureTimeNs),
-            value = shutterSlider,
-            onValueChange = { actions.onShutterNs(sliderToShutterNs(it, shutterRange)) },
-            valueRange = 0f..1f,
-            enabled = !controls.autoExposure,
+
+        val fpsOptions = caps?.availableFps?.takeIf { it.isNotEmpty() } ?: listOf(24, 30, 60)
+        SegmentedSelector(
+            label = "FPS",
+            options = fpsOptions,
+            selected = controls.fps,
+            labelFor = { it.toString() },
+            onSelect = actions::onFps,
         )
 
         val evRange = caps?.evRange ?: Range(0, 0)
@@ -511,6 +556,13 @@ private fun ModeSection(state: CameraUiState, actions: CameraActions, modifier: 
             onCheckedChange = actions::onToggleTeleconverter,
         )
         ToggleRow(label = "손떨림보정(EIS)", checked = state.eisEnabled, onCheckedChange = actions::onToggleEis)
+        SegmentedSelector(
+            label = "EIS 강도",
+            options = EisStrength.entries,
+            selected = state.eisStrength,
+            labelFor = ::eisStrengthLabel,
+            onSelect = actions::onEisStrength,
+        )
         TransferSelector(transfer = state.transfer, onTransfer = actions::onTransfer)
         PhotoFormatToggles(formats = state.photoFormats, onSetPhotoFormats = actions::onSetPhotoFormats)
         ToggleRow(label = "오디오 녹음", checked = state.recordAudio, onCheckedChange = actions::onToggleRecordAudio)

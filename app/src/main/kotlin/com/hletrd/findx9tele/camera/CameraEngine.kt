@@ -53,6 +53,7 @@ class CameraEngine(private val context: Context) {
     private val gyro = com.hletrd.findx9tele.stab.GyroEis(context)
     @Volatile private var teleconverterMode = true
     @Volatile private var eisEnabled = true
+    @Volatile private var eisCrop: Float = EisStrength.MEDIUM.crop
 
     var onStatus: ((String?) -> Unit)? = null
     var onCapsReady: ((CameraCaps) -> Unit)? = null
@@ -107,11 +108,12 @@ class CameraEngine(private val context: Context) {
         val c = caps ?: return
         gl.setRotationDegrees(c.sensorOrientation + if (teleconverterMode) 180 else 0)
         val mag = if (teleconverterMode) TELECONVERTER_MAGNIFICATION else 1f
-        gl.setEis(eisEnabled, c.nativeFocalInImageWidths * mag, EIS_CROP)
+        gl.setEis(eisEnabled, c.nativeFocalInImageWidths * mag, eisCrop)
     }
 
     fun setTeleconverterMode(enabled: Boolean) { teleconverterMode = enabled; applyStabilization() }
     fun setEisEnabled(enabled: Boolean) { eisEnabled = enabled; applyStabilization() }
+    fun setEisStrength(s: EisStrength) { eisCrop = s.crop; applyStabilization() }
     fun setFalseColor(enabled: Boolean) = gl.setFalseColor(enabled)
 
     fun onPreviewSurfaceChanged(width: Int, height: Int) {
@@ -259,8 +261,9 @@ class CameraEngine(private val context: Context) {
         if (recorder != null) return false
         val name = fileName("VID", "mp4")
         val uri = MediaStoreWriter.createPendingVideo(context, name, "video/mp4") ?: return false
+        val fps = controls.fps.takeIf { it > 0 } ?: FPS
         val rec = VideoRecorder(context)
-        val surface = rec.start(uri, videoSize, FPS, bitRateFor(videoSize), transfer, recordAudio)
+        val surface = rec.start(uri, videoSize, fps, bitRateFor(videoSize, fps), transfer, recordAudio)
         if (surface == null) { onStatus?.invoke("녹화 시작 실패"); return false }
         gl.setTransfer(transfer)
         gl.setEncoderOutput(surface, videoSize.width, videoSize.height)
@@ -331,8 +334,8 @@ class CameraEngine(private val context: Context) {
             ?: Size(1920, 1080)
     }
 
-    private fun bitRateFor(size: Size): Int =
-        (size.width.toLong() * size.height * FPS * 0.1).toInt().coerceIn(8_000_000, 120_000_000)
+    private fun bitRateFor(size: Size, fps: Int): Int =
+        (size.width.toLong() * size.height * fps * 0.1).toInt().coerceIn(8_000_000, 120_000_000)
 
     private fun fileName(prefix: String, ext: String): String {
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
@@ -343,6 +346,5 @@ class CameraEngine(private val context: Context) {
         const val FPS = 30
         // 300mm / 70mm ≈ 4.286: the Explorer teleconverter's angular magnification.
         const val TELECONVERTER_MAGNIFICATION = 300f / 70f
-        const val EIS_CROP = 0.10f
     }
 }

@@ -45,7 +45,9 @@ import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.PhotoFormats
+import com.hletrd.findx9tele.camera.EisStrength
 import com.hletrd.findx9tele.camera.ProcessingLevel
+import com.hletrd.findx9tele.camera.ShutterMode
 import com.hletrd.findx9tele.camera.ShutterTimer
 import com.hletrd.findx9tele.ui.controls.FocusSlider
 import com.hletrd.findx9tele.ui.controls.ProPanel
@@ -306,6 +308,7 @@ private object PreviewCameraActions : CameraActions {
 
     override fun onFocusMode(mode: FocusMode) = Unit
     override fun onFocusSlider(slider: Float) = Unit
+    override fun onAfLock(locked: Boolean) = Unit
 
     override fun onIso(iso: Int) = Unit
     override fun onShutterNs(ns: Long) = Unit
@@ -313,6 +316,9 @@ private object PreviewCameraActions : CameraActions {
     override fun onToggleAutoExposure(auto: Boolean) = Unit
     override fun onToggleAeLock(locked: Boolean) = Unit
     override fun onAntibanding(mode: Antibanding) = Unit
+    override fun onFps(fps: Int) = Unit
+    override fun onShutterMode(mode: ShutterMode) = Unit
+    override fun onShutterAngle(angle: Float) = Unit
 
     override fun onToggleAutoWb(auto: Boolean) = Unit
     override fun onWbKelvin(kelvin: Int) = Unit
@@ -335,6 +341,7 @@ private object PreviewCameraActions : CameraActions {
     override fun onToggleTeleconverter(enabled: Boolean) = Unit
 
     override fun onToggleEis(enabled: Boolean) = Unit
+    override fun onEisStrength(strength: EisStrength) = Unit
 
     override fun onTogglePeaking(enabled: Boolean) = Unit
     override fun onToggleZebra(enabled: Boolean) = Unit

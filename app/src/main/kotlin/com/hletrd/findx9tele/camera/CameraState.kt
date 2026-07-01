@@ -27,6 +27,12 @@ enum class GridType { NONE, THIRDS, GOLDEN, SQUARE, CENTER }
 /** Self-timer before the shutter fires. */
 enum class ShutterTimer(val seconds: Int) { OFF(0), SEC3(3), SEC10(10) }
 
+/** How shutter is expressed: absolute SPEED (exposure time) or cine ANGLE (relative to fps). */
+enum class ShutterMode { SPEED, ANGLE }
+
+/** Electronic stabilization crop strength (headroom). OFF handled by the EIS toggle. */
+enum class EisStrength(val crop: Float) { LOW(0.06f), MEDIUM(0.10f), HIGH(0.18f) }
+
 /** Photo output formats. Both can be enabled at once. */
 data class PhotoFormats(
     val heif: Boolean = true,
@@ -47,6 +53,7 @@ data class CameraUiState(
     val teleconverterMode: Boolean = true,
     // Stabilization
     val eisEnabled: Boolean = true,
+    val eisStrength: EisStrength = EisStrength.MEDIUM,
     // Viewfinder assists
     val focusPeaking: Boolean = false,
     val zebra: Boolean = false,

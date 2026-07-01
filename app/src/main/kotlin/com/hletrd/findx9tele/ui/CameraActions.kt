@@ -5,11 +5,13 @@ import com.hletrd.findx9tele.camera.Antibanding
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.ColorTransfer
+import com.hletrd.findx9tele.camera.EisStrength
 import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.PhotoFormats
 import com.hletrd.findx9tele.camera.ProcessingLevel
+import com.hletrd.findx9tele.camera.ShutterMode
 import com.hletrd.findx9tele.camera.ShutterTimer
 
 /**
@@ -26,6 +28,7 @@ interface CameraActions {
     // Focus
     fun onFocusMode(mode: FocusMode)
     fun onFocusSlider(slider: Float)
+    fun onAfLock(locked: Boolean)
 
     // Exposure
     fun onIso(iso: Int)
@@ -34,6 +37,9 @@ interface CameraActions {
     fun onToggleAutoExposure(auto: Boolean)
     fun onToggleAeLock(locked: Boolean)
     fun onAntibanding(mode: Antibanding)
+    fun onFps(fps: Int)
+    fun onShutterMode(mode: ShutterMode)
+    fun onShutterAngle(angle: Float)
 
     // White balance
     fun onToggleAutoWb(auto: Boolean)
@@ -61,6 +67,7 @@ interface CameraActions {
 
     // Stabilization
     fun onToggleEis(enabled: Boolean)
+    fun onEisStrength(strength: EisStrength)
 
     // Viewfinder assists
     fun onTogglePeaking(enabled: Boolean)
