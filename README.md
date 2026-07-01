@@ -1,6 +1,22 @@
-# Find X9 Ultra Tele Camera
+<div align="center">
 
-OPPO Find X9 Ultra 전용 프로 카메라앱. 3x 페리스코프 망원 렌즈 + afocal 텔레컨버터(300mm 상당) 촬영용.
+<img src="docs/assets/logo.svg" width="112" alt="Find X9 Ultra Tele Camera logo" />
+
+<h1>Find X9 Ultra Tele Camera</h1>
+
+<p><b>OPPO Find X9 Ultra 전용 프로 카메라앱</b><br/>
+3x 페리스코프 망원 + afocal 텔레컨버터(300mm) · 풀 수동제어 · afocal 180° 반전 · gyro EIS</p>
+
+<p>
+<img src="https://img.shields.io/badge/Android-16%20(API%2036)-3DDC84?logo=android&logoColor=white" alt="Android 16" />
+<img src="https://img.shields.io/badge/Kotlin-2.3-7F52FF?logo=kotlin&logoColor=white" alt="Kotlin" />
+<img src="https://img.shields.io/badge/Jetpack%20Compose-2026.06-4285F4?logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
+<img src="https://img.shields.io/badge/Camera2-Pro%20manual-FF7043" alt="Camera2" />
+<img src="https://img.shields.io/badge/Gradle-9.6.1-02303A?logo=gradle&logoColor=white" alt="Gradle" />
+<img src="https://img.shields.io/badge/Device-Find%20X9%20Ultra%20(PMA110)-000000" alt="Find X9 Ultra" />
+</p>
+
+</div>
 
 ## 특징
 

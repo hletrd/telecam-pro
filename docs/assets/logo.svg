@@ -1,0 +1,14 @@
+<svg width="160" height="160" viewBox="0 0 160 160" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Find X9 Ultra Tele Camera logo">
+  <rect x="4" y="4" width="152" height="152" rx="34" fill="#0B0B0D" stroke="#1E1E24" stroke-width="2"/>
+  <!-- outer lens ring -->
+  <circle cx="80" cy="70" r="34" fill="none" stroke="#E6E6EA" stroke-width="5"/>
+  <!-- inner aperture -->
+  <circle cx="80" cy="70" r="16" fill="#4C9AFF"/>
+  <circle cx="74" cy="64" r="5" fill="#Bcdcff" opacity="0.85"/>
+  <!-- periscope / tele barrel -->
+  <rect x="72" y="104" width="16" height="22" rx="3" fill="#E6E6EA"/>
+  <rect x="66" y="122" width="28" height="8" rx="4" fill="#4C9AFF"/>
+  <!-- 300mm tick marks -->
+  <rect x="40" y="66" width="10" height="4" rx="2" fill="#8A8A93"/>
+  <rect x="110" y="66" width="10" height="4" rx="2" fill="#8A8A93"/>
+</svg>
