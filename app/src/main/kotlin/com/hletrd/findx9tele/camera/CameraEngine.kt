@@ -33,6 +33,9 @@ class CameraEngine(private val context: Context) {
     // threads via these single-thread executors.
     private val setupExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
     private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    // Drives interval (timelapse) capture off the camera/UI threads.
+    private val timelapseScheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor()
+    @Volatile private var timelapseFuture: java.util.concurrent.ScheduledFuture<*>? = null
     @Volatile private var controller: CameraController? = null
     @Volatile private var recorder: VideoRecorder? = null
 
@@ -41,6 +44,10 @@ class CameraEngine(private val context: Context) {
     @Volatile private var selection: TeleSelection? = null
     @Volatile private var caps: CameraCaps? = null
     @Volatile private var videoSize = Size(1920, 1080)
+    @Volatile private var videoCodec: VideoCodec = VideoCodec.HEVC
+    @Volatile private var bitrateLevel: BitrateLevel = BitrateLevel.MEDIUM
+    @Volatile private var driveMode: DriveMode = DriveMode.SINGLE
+    @Volatile private var intervalSec: Int = 5
     @Volatile private var controls = ManualControls()
     @Volatile private var transfer = ColorTransfer.HLG
     @Volatile private var overrideId: String? = null
@@ -154,6 +161,27 @@ class CameraEngine(private val context: Context) {
     fun setPeaking(enabled: Boolean) = gl.setPeaking(enabled)
     fun setZebra(enabled: Boolean) = gl.setZebra(enabled)
 
+    // ---- Drive mode + video parameters ----
+
+    fun setDriveMode(m: DriveMode) {
+        driveMode = m
+        // Selecting any non-timelapse drive mode cancels an in-progress interval sequence.
+        if (m != DriveMode.TIMELAPSE) stopTimelapse()
+    }
+    fun setIntervalSec(s: Int) { intervalSec = s }
+    fun setVideoCodec(c: VideoCodec) { videoCodec = c }
+    fun setBitrateLevel(b: BitrateLevel) { bitrateLevel = b }
+
+    /**
+     * Selects the video capture resolution: updates [videoSize] and the GL camera-input size so the
+     * encoder frame and preview aspect track the new size. NOTE: the live camera session keeps
+     * streaming the old size; the change fully applies on the next camera (re)open or recording start.
+     */
+    fun setVideoResolution(s: Size) {
+        videoSize = s
+        gl.setCameraPreviewSize(s.width, s.height)
+    }
+
     fun setCameraOverride(id: String?) {
         overrideId = id
         if (!started) return
@@ -176,8 +204,69 @@ class CameraEngine(private val context: Context) {
 
     fun capturePhoto(formats: PhotoFormats) {
         val ctrl = controller ?: return
-        ctrl.capturePhoto(formats.heif, formats.dngRaw, object : CameraController.PhotoCallback {
-            // Runs on the camera thread; the Images are valid ONLY for the duration of this call.
+        when (driveMode) {
+            DriveMode.SINGLE -> ctrl.capturePhoto(formats.heif, formats.dngRaw, photoCallback(formats))
+            DriveMode.BURST -> captureBurst(ctrl, formats)
+            DriveMode.AEB -> captureAeb(ctrl, formats)
+            DriveMode.TIMELAPSE -> startTimelapse(formats)
+        }
+    }
+
+    /**
+     * BURST: [BURST_COUNT] stills, each started only after the previous completes. The controller
+     * tracks a single in-flight capture (one `pending` slot), so shots are chained rather than fired
+     * in a tight loop, which would clobber that slot while a capture is still resolving its images.
+     */
+    private fun captureBurst(ctrl: CameraController, formats: PhotoFormats) {
+        fun fire(shot: Int) {
+            if (shot >= BURST_COUNT) return
+            ctrl.capturePhoto(formats.heif, formats.dngRaw, photoCallback(formats) { fire(shot + 1) })
+        }
+        fire(0)
+    }
+
+    /**
+     * AEB: three stills at exposure-compensation -2 / 0 / +2 steps (clamped to the AE-comp range),
+     * applied by re-issuing the controls with a different [ManualControls.exposureCompensation] before
+     * each shot; the original controls are restored when the bracket finishes. Chained for the same
+     * single-`pending` reason as BURST.
+     */
+    private fun captureAeb(ctrl: CameraController, formats: PhotoFormats) {
+        val range = caps?.evRange
+        val steps = if (range != null) listOf(-2, 0, 2).map { it.coerceIn(range.lower, range.upper) }
+        else listOf(controls.exposureCompensation)
+        fun fire(i: Int) {
+            if (i >= steps.size) { ctrl.updateControls(controls); return }
+            ctrl.updateControls(controls.copy(exposureCompensation = steps[i]))
+            ctrl.capturePhoto(formats.heif, formats.dngRaw, photoCallback(formats) { fire(i + 1) })
+        }
+        fire(0)
+    }
+
+    /**
+     * TIMELAPSE: repeats a single capture every [intervalSec] seconds on [timelapseScheduler] until
+     * [stopTimelapse] (called on a drive-mode change away from TIMELAPSE, and in [release]).
+     */
+    private fun startTimelapse(formats: PhotoFormats) {
+        stopTimelapse()
+        val period = intervalSec.coerceAtLeast(1).toLong()
+        timelapseFuture = timelapseScheduler.scheduleWithFixedDelay({
+            controller?.capturePhoto(formats.heif, formats.dngRaw, photoCallback(formats))
+        }, 0, period, java.util.concurrent.TimeUnit.SECONDS)
+    }
+
+    fun stopTimelapse() {
+        timelapseFuture?.cancel(false)
+        timelapseFuture = null
+    }
+
+    /**
+     * Per-shot save callback (HEIF copied out then encoded async; DNG written synchronously while the
+     * raw Image is alive). Runs on the camera thread; Images are valid ONLY for this call. [onDone]
+     * chains the next shot in a BURST/AEB sequence (null for a single capture).
+     */
+    private fun photoCallback(formats: PhotoFormats, onDone: (() -> Unit)? = null) =
+        object : CameraController.PhotoCallback {
             override fun onPhoto(jpeg: Image?, raw: Image?, result: TotalCaptureResult, rawChars: CameraCharacteristics) {
                 if (formats.heif) {
                     if (jpeg != null) {
@@ -201,10 +290,10 @@ class CameraEngine(private val context: Context) {
                 }
                 if (!formats.heif && !formats.dngRaw) onStatus?.invoke("저장할 형식이 없습니다")
                 // HEIF success/failure is reported from inside saveHeifAsync (it runs later).
+                onDone?.invoke()
             }
-            override fun onError(t: Throwable) { onStatus?.invoke("촬영 실패: ${t.message}") }
-        })
-    }
+            override fun onError(t: Throwable) { onStatus?.invoke("촬영 실패: ${t.message}"); onDone?.invoke() }
+        }
 
     /** Decode → rotate 180° → write HEIF on [ioExecutor]. Publishes only on success; deletes on any failure. */
     private fun saveHeifAsync(bytes: ByteArray) {
@@ -261,12 +350,18 @@ class CameraEngine(private val context: Context) {
         if (recorder != null) return false
         val name = fileName("VID", "mp4")
         val uri = MediaStoreWriter.createPendingVideo(context, name, "video/mp4") ?: return false
+        val size = videoSize
         val fps = controls.fps.takeIf { it > 0 } ?: FPS
+        val codec = videoCodec
+        // AVC is 8-bit SDR only: force the GL color curve to SDR (no HLG/Log) for AVC recordings,
+        // and let VideoRecorder pick the 8-bit AVC format. HEVC keeps the 10-bit HLG/Log path.
+        // (Resolution changes made after this point stream the old size until the next record/open.)
+        val glTransfer = if (codec == VideoCodec.AVC) null else transfer
         val rec = VideoRecorder(context)
-        val surface = rec.start(uri, videoSize, fps, bitRateFor(videoSize, fps), transfer, recordAudio)
+        val surface = rec.start(uri, size, fps, bitRateFor(size, fps), transfer, codec, recordAudio)
         if (surface == null) { onStatus?.invoke("녹화 시작 실패"); return false }
-        gl.setTransfer(transfer)
-        gl.setEncoderOutput(surface, videoSize.width, videoSize.height)
+        gl.setTransfer(glTransfer)
+        gl.setEncoderOutput(surface, size.width, size.height)
         recorder = rec
         return true
     }
@@ -301,6 +396,7 @@ class CameraEngine(private val context: Context) {
     fun setPunchIn(enabled: Boolean) = gl.setPunchIn(enabled)
 
     fun release() {
+        stopTimelapse()
         runCatching { recorder?.stop() }
         recorder = null
         gyro.stop()
@@ -311,6 +407,7 @@ class CameraEngine(private val context: Context) {
         starting = false
         setupExecutor.shutdown()
         ioExecutor.shutdown()
+        timelapseScheduler.shutdown()
     }
 
     // ---- Helpers ----
@@ -334,8 +431,9 @@ class CameraEngine(private val context: Context) {
             ?: Size(1920, 1080)
     }
 
+    // bits/s = bits-per-pixel-per-frame (from the selected bitrate level) × pixels × fps.
     private fun bitRateFor(size: Size, fps: Int): Int =
-        (size.width.toLong() * size.height * fps * 0.1).toInt().coerceIn(8_000_000, 120_000_000)
+        (bitrateLevel.bpp.toDouble() * size.width * size.height * fps).toInt().coerceIn(8_000_000, 120_000_000)
 
     private fun fileName(prefix: String, ext: String): String {
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
@@ -344,6 +442,8 @@ class CameraEngine(private val context: Context) {
 
     private companion object {
         const val FPS = 30
+        // Number of frames fired for a single BURST drive-mode shutter press.
+        const val BURST_COUNT = 5
         // 300mm / 70mm ≈ 4.286: the Explorer teleconverter's angular magnification.
         const val TELECONVERTER_MAGNIFICATION = 300f / 70f
     }

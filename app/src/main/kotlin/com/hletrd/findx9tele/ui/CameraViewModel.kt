@@ -4,23 +4,29 @@ import android.app.Application
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Size
 import android.view.Surface
 import androidx.lifecycle.AndroidViewModel
 import com.hletrd.findx9tele.camera.Antibanding
+import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CameraEngine
 import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.ColorTransfer
+import com.hletrd.findx9tele.camera.DriveMode
 import com.hletrd.findx9tele.camera.EisStrength
 import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.ManualControls
+import com.hletrd.findx9tele.camera.MeteringMode
 import com.hletrd.findx9tele.camera.PhotoFormats
 import com.hletrd.findx9tele.camera.ProcessingLevel
 import com.hletrd.findx9tele.camera.ShutterMode
 import com.hletrd.findx9tele.camera.ShutterTimer
+import com.hletrd.findx9tele.camera.VideoCodec
+import com.hletrd.findx9tele.camera.WbMode
 import com.hletrd.findx9tele.focus.FocusMapping
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -93,10 +99,11 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         updateControls { it.copy(shutterAngle = angle, shutterMode = ShutterMode.ANGLE, autoExposure = false) }
 
     // ---- White balance ----
-    override fun onToggleAutoWb(auto: Boolean) = updateControls { it.copy(autoWhiteBalance = auto) }
-    override fun onWbKelvin(kelvin: Int) = updateControls { it.copy(wbKelvin = kelvin, autoWhiteBalance = false) }
-    override fun onWbTint(tint: Int) = updateControls { it.copy(wbTint = tint, autoWhiteBalance = false) }
+    override fun onWbMode(mode: WbMode) = updateControls { it.copy(wbMode = mode) }
+    override fun onWbKelvin(kelvin: Int) = updateControls { it.copy(wbKelvin = kelvin, wbMode = WbMode.MANUAL) }
+    override fun onWbTint(tint: Int) = updateControls { it.copy(wbTint = tint, wbMode = WbMode.MANUAL) }
     override fun onToggleAwbLock(locked: Boolean) = updateControls { it.copy(awbLock = locked) }
+    override fun onMeteringMode(mode: MeteringMode) = updateControls { it.copy(meteringMode = mode) }
 
     // ---- Processing ----
     override fun onEdge(level: ProcessingLevel) = updateControls { it.copy(edge = level) }
@@ -123,6 +130,18 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onToggleTeleconverter(enabled: Boolean) {
         engine.setTeleconverterMode(enabled)
         _state.update { it.copy(teleconverterMode = enabled) }
+    }
+    override fun onVideoCodec(codec: VideoCodec) {
+        engine.setVideoCodec(codec)
+        _state.update { it.copy(videoCodec = codec) }
+    }
+    override fun onBitrateLevel(level: BitrateLevel) {
+        engine.setBitrateLevel(level)
+        _state.update { it.copy(bitrateLevel = level) }
+    }
+    override fun onVideoResolution(size: Size) {
+        engine.setVideoResolution(size)
+        _state.update { it.copy(videoResolution = size) }
     }
 
     // ---- Stabilization ----
@@ -162,6 +181,14 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     // ---- Drive ----
     override fun onTimer(timer: ShutterTimer) = _state.update { it.copy(timer = timer) }
+    override fun onDriveMode(mode: DriveMode) {
+        engine.setDriveMode(mode)
+        _state.update { it.copy(driveMode = mode) }
+    }
+    override fun onIntervalSec(sec: Int) {
+        engine.setIntervalSec(sec)
+        _state.update { it.copy(intervalSec = sec) }
+    }
 
     // ---- Shutter ----
     override fun onCapturePhoto() {

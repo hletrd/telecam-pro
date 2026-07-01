@@ -2,6 +2,7 @@ package com.hletrd.findx9tele.ui.controls
 
 import android.util.Range
 import android.util.Rational
+import android.util.Size
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -26,19 +27,24 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.hletrd.findx9tele.camera.Antibanding
+import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CameraCaps
 import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.ColorTransfer
+import com.hletrd.findx9tele.camera.DriveMode
 import com.hletrd.findx9tele.camera.EisStrength
 import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.ManualControls
+import com.hletrd.findx9tele.camera.MeteringMode
 import com.hletrd.findx9tele.camera.PhotoFormats
 import com.hletrd.findx9tele.camera.ProcessingLevel
 import com.hletrd.findx9tele.camera.ShutterMode
 import com.hletrd.findx9tele.camera.ShutterTimer
+import com.hletrd.findx9tele.camera.VideoCodec
+import com.hletrd.findx9tele.camera.WbMode
 import com.hletrd.findx9tele.camera.effectiveExposureNs
 import com.hletrd.findx9tele.focus.FocusMapping
 import com.hletrd.findx9tele.ui.CameraActions
@@ -256,6 +262,49 @@ private fun eisStrengthLabel(strength: EisStrength): String = when (strength) {
     EisStrength.HIGH -> "강"
 }
 
+private fun wbModeLabel(mode: WbMode): String = when (mode) {
+    WbMode.AUTO -> "자동"
+    WbMode.INCANDESCENT -> "백열"
+    WbMode.FLUORESCENT -> "형광"
+    WbMode.DAYLIGHT -> "주광"
+    WbMode.CLOUDY -> "흐림"
+    WbMode.SHADE -> "그늘"
+    WbMode.MANUAL -> "수동"
+}
+
+private fun meteringModeLabel(mode: MeteringMode): String = when (mode) {
+    MeteringMode.MATRIX -> "평가"
+    MeteringMode.CENTER -> "중앙"
+    MeteringMode.SPOT -> "스팟"
+}
+
+private fun driveModeLabel(mode: DriveMode): String = when (mode) {
+    DriveMode.SINGLE -> "단일"
+    DriveMode.BURST -> "연사"
+    DriveMode.AEB -> "AEB"
+    DriveMode.TIMELAPSE -> "타임랩스"
+}
+
+private fun videoCodecLabel(codec: VideoCodec): String = when (codec) {
+    VideoCodec.HEVC -> "HEVC"
+    VideoCodec.AVC -> "H.264"
+}
+
+private fun bitrateLevelLabel(level: BitrateLevel): String = when (level) {
+    BitrateLevel.LOW -> "낮음"
+    BitrateLevel.MEDIUM -> "보통"
+    BitrateLevel.HIGH -> "높음"
+}
+
+/** "2160" -> "4K", "1080" -> "1080p", etc.; unrecognized heights fall back to "WxH". */
+private fun videoResolutionLabel(size: Size): String = when (size.height) {
+    4320 -> "8K"
+    2160 -> "4K"
+    1440 -> "1440p"
+    1080 -> "1080p"
+    else -> "${size.width}x${size.height}"
+}
+
 // ---------------------------------------------------------------------------
 // Exposure: ISO / Shutter / EV helpers
 // ---------------------------------------------------------------------------
@@ -445,6 +494,14 @@ private fun ExposureSection(
             labelFor = ::antibandingLabel,
             onSelect = actions::onAntibanding,
         )
+
+        SegmentedSelector(
+            label = "측광",
+            options = MeteringMode.entries,
+            selected = controls.meteringMode,
+            labelFor = ::meteringModeLabel,
+            onSelect = actions::onMeteringMode,
+        )
     }
 }
 
@@ -452,31 +509,30 @@ private fun ExposureSection(
 private fun WhiteBalanceSection(controls: ManualControls, actions: CameraActions, modifier: Modifier = Modifier) {
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         SectionHeader("화이트밸런스")
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("모드", color = Color.White, style = MaterialTheme.typography.labelMedium)
-            AutoManualToggle(auto = controls.autoWhiteBalance, onToggle = actions::onToggleAutoWb)
+        SegmentedSelector(
+            label = "모드",
+            options = WbMode.entries,
+            selected = controls.wbMode,
+            labelFor = ::wbModeLabel,
+            onSelect = actions::onWbMode,
+        )
+        if (controls.wbMode == WbMode.MANUAL) {
+            LabeledSlider(
+                label = "색온도",
+                valueLabel = "${controls.wbKelvin}K",
+                value = controls.wbKelvin.toFloat().coerceIn(2000f, 10000f),
+                onValueChange = { actions.onWbKelvin(it.roundToInt()) },
+                valueRange = 2000f..10000f,
+            )
+            LabeledSlider(
+                label = "틴트",
+                valueLabel = "%+d".format(controls.wbTint),
+                value = controls.wbTint.toFloat().coerceIn(-50f, 50f),
+                onValueChange = { actions.onWbTint(it.roundToInt()) },
+                valueRange = -50f..50f,
+            )
+            ToggleRow(label = "AWB 잠금", checked = controls.awbLock, onCheckedChange = actions::onToggleAwbLock)
         }
-        LabeledSlider(
-            label = "색온도",
-            valueLabel = "${controls.wbKelvin}K",
-            value = controls.wbKelvin.toFloat().coerceIn(2000f, 10000f),
-            onValueChange = { actions.onWbKelvin(it.roundToInt()) },
-            valueRange = 2000f..10000f,
-            enabled = !controls.autoWhiteBalance,
-        )
-        LabeledSlider(
-            label = "틴트",
-            valueLabel = "%+d".format(controls.wbTint),
-            value = controls.wbTint.toFloat().coerceIn(-50f, 50f),
-            onValueChange = { actions.onWbTint(it.roundToInt()) },
-            valueRange = -50f..50f,
-            enabled = !controls.autoWhiteBalance,
-        )
-        ToggleRow(label = "AWB 잠금", checked = controls.awbLock, onCheckedChange = actions::onToggleAwbLock)
     }
 }
 
@@ -609,11 +665,57 @@ private fun DriveSection(state: CameraUiState, actions: CameraActions, modifier:
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         SectionHeader("드라이브")
         SegmentedSelector(
+            label = "드라이브 모드",
+            options = DriveMode.entries,
+            selected = state.driveMode,
+            labelFor = ::driveModeLabel,
+            onSelect = actions::onDriveMode,
+        )
+        if (state.driveMode == DriveMode.TIMELAPSE) {
+            LabeledSlider(
+                label = "간격",
+                valueLabel = "${state.intervalSec}초 간격",
+                value = state.intervalSec.toFloat().coerceIn(1f, 30f),
+                onValueChange = { actions.onIntervalSec(it.roundToInt()) },
+                valueRange = 1f..30f,
+            )
+        }
+        SegmentedSelector(
             label = "셀프타이머",
             options = ShutterTimer.entries,
             selected = state.timer,
             labelFor = ::shutterTimerLabel,
             onSelect = actions::onTimer,
+        )
+    }
+}
+
+@Composable
+private fun VideoSection(state: CameraUiState, actions: CameraActions, modifier: Modifier = Modifier) {
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SectionHeader("동영상")
+        SegmentedSelector(
+            label = "코덱",
+            options = VideoCodec.entries,
+            selected = state.videoCodec,
+            labelFor = ::videoCodecLabel,
+            onSelect = actions::onVideoCodec,
+        )
+        val resolutionOptions = state.caps?.availableVideoSizes?.takeIf { it.isNotEmpty() }
+            ?: listOf(Size(3840, 2160), Size(1920, 1080))
+        SegmentedSelector(
+            label = "해상도",
+            options = resolutionOptions,
+            selected = state.videoResolution,
+            labelFor = ::videoResolutionLabel,
+            onSelect = actions::onVideoResolution,
+        )
+        SegmentedSelector(
+            label = "비트레이트",
+            options = BitrateLevel.entries,
+            selected = state.bitrateLevel,
+            labelFor = ::bitrateLevelLabel,
+            onSelect = actions::onBitrateLevel,
         )
     }
 }
@@ -652,6 +754,7 @@ fun ProPanel(
         ProcessingSection(controls = controls, actions = actions)
         OpticsOutputSection(controls = controls, caps = caps, actions = actions)
         ModeSection(state = state, actions = actions)
+        VideoSection(state = state, actions = actions)
         AssistsSection(state = state, actions = actions)
         DriveSection(state = state, actions = actions)
     }

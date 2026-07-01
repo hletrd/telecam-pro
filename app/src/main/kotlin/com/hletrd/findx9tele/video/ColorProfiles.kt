@@ -3,19 +3,24 @@ package com.hletrd.findx9tele.video
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
 import com.hletrd.findx9tele.camera.ColorTransfer
+import com.hletrd.findx9tele.camera.VideoCodec
 
 /**
- * Builds the encoder MediaFormats. Video is HEVC Main10 (10-bit) tagged Rec.2020.
+ * Builds the encoder MediaFormats.
  *
- * - HLG: tagged with the HLG transfer so HDR players render it directly.
- * - LOG: our GL pipeline bakes a flat log curve; there is no standard "log" transfer id, so the
- *        stream is tagged BT.2020 full-range with transfer left unspecified (grade manually).
+ * - HEVC: Main10 (10-bit) tagged Rec.2020.
+ *   - HLG: tagged with the HLG transfer so HDR players render it directly.
+ *   - LOG: our GL pipeline bakes a flat log curve; there is no standard "log" transfer id, so the
+ *          stream is tagged BT.2020 full-range with transfer left unspecified (grade manually).
  *
- * True 10-bit requires the EGL input surface to be 10-bit; if the device falls back to 8-bit the
- * stream is still Main10 but not genuinely 10-bit. Verify on hardware.
+ *   True 10-bit requires the EGL input surface to be 10-bit; if the device falls back to 8-bit the
+ *   stream is still Main10 but not genuinely 10-bit. Verify on hardware.
+ * - AVC: H.264 High profile, 8-bit SDR (BT.709). No HDR/log support; the engine forces SDR
+ *        transfer when AVC is selected.
  */
 object ColorProfiles {
     const val MIME_HEVC = MediaFormat.MIMETYPE_VIDEO_HEVC
+    const val MIME_AVC = MediaFormat.MIMETYPE_VIDEO_AVC
     const val MIME_AAC = MediaFormat.MIMETYPE_AUDIO_AAC
 
     const val AUDIO_SAMPLE_RATE = 48_000
@@ -40,6 +45,33 @@ object ColorProfiles {
                 }
             }
         }
+    }
+
+    /** Builds the video MediaFormat for the given encoder and color transfer. */
+    fun videoFormat(codec: VideoCodec, width: Int, height: Int, fps: Int, bitRate: Int, transfer: ColorTransfer): MediaFormat {
+        return when (codec) {
+            VideoCodec.HEVC -> hevcFormat(width, height, fps, bitRate, transfer)
+            VideoCodec.AVC -> avcFormat(width, height, fps, bitRate)
+        }
+    }
+
+    private fun avcFormat(width: Int, height: Int, fps: Int, bitRate: Int): MediaFormat {
+        return MediaFormat.createVideoFormat(MIME_AVC, width, height).apply {
+            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+            setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
+            setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+            setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileHigh)
+            setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
+            setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
+            setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
+        }
+    }
+
+    /** Returns the encoder MIME type for the given codec. */
+    fun mimeFor(codec: VideoCodec): String = when (codec) {
+        VideoCodec.HEVC -> MIME_HEVC
+        VideoCodec.AVC -> MIME_AVC
     }
 
     fun aacFormat(): MediaFormat {

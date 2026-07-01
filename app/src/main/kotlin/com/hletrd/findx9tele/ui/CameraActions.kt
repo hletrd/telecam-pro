@@ -1,18 +1,24 @@
 package com.hletrd.findx9tele.ui
 
+import android.util.Size
 import android.view.Surface
 import com.hletrd.findx9tele.camera.Antibanding
+import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.ColorTransfer
+import com.hletrd.findx9tele.camera.DriveMode
 import com.hletrd.findx9tele.camera.EisStrength
 import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
+import com.hletrd.findx9tele.camera.MeteringMode
 import com.hletrd.findx9tele.camera.PhotoFormats
 import com.hletrd.findx9tele.camera.ProcessingLevel
 import com.hletrd.findx9tele.camera.ShutterMode
 import com.hletrd.findx9tele.camera.ShutterTimer
+import com.hletrd.findx9tele.camera.VideoCodec
+import com.hletrd.findx9tele.camera.WbMode
 
 /**
  * Everything the stateless Compose UI can ask the engine to do. Implemented by CameraViewModel.
@@ -42,10 +48,11 @@ interface CameraActions {
     fun onShutterAngle(angle: Float)
 
     // White balance
-    fun onToggleAutoWb(auto: Boolean)
+    fun onWbMode(mode: WbMode)
     fun onWbKelvin(kelvin: Int)
     fun onWbTint(tint: Int)
     fun onToggleAwbLock(locked: Boolean)
+    fun onMeteringMode(mode: MeteringMode)
 
     // Processing
     fun onEdge(level: ProcessingLevel)
@@ -64,6 +71,9 @@ interface CameraActions {
     fun onSetPhotoFormats(formats: PhotoFormats)
     fun onToggleRecordAudio(enabled: Boolean)
     fun onToggleTeleconverter(enabled: Boolean)
+    fun onVideoCodec(codec: VideoCodec)
+    fun onBitrateLevel(level: BitrateLevel)
+    fun onVideoResolution(size: Size)
 
     // Stabilization
     fun onToggleEis(enabled: Boolean)
@@ -80,6 +90,8 @@ interface CameraActions {
 
     // Drive
     fun onTimer(timer: ShutterTimer)
+    fun onDriveMode(mode: DriveMode)
+    fun onIntervalSec(sec: Int)
 
     // Shutter
     fun onCapturePhoto()

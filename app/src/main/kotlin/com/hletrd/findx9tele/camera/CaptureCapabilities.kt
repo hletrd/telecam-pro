@@ -46,6 +46,8 @@ data class CameraCaps(
     val edgeModes: IntArray,
     val noiseReductionModes: IntArray,
     val availableFpsRanges: Array<Range<Int>>,
+    /** 16:9 SurfaceTexture output sizes (width <= 7680), largest-first; empty if none. */
+    val availableVideoSizes: List<Size>,
 ) {
     val supportsManualFocus: Boolean get() = minFocusDistanceDiopters > 0f
     val maxFocalMm: Float get() = focalLengthsMm.maxOrNull() ?: 0f
@@ -75,6 +77,11 @@ data class CameraCaps(
             val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             val rawSize = map?.getOutputSizes(ImageFormat.RAW_SENSOR)?.maxByOrNull { it.width.toLong() * it.height }
             val jpegSize = map?.getOutputSizes(ImageFormat.JPEG)?.maxByOrNull { it.width.toLong() * it.height }
+            // 16:9 preview/video sizes for the SurfaceTexture path (width <= 7680 = 8K), largest-first.
+            val videoSizes = (map?.getOutputSizes(android.graphics.SurfaceTexture::class.java) ?: emptyArray())
+                .filter { it.height * 16 == it.width * 9 && it.width <= 7680 }
+                .distinct()
+                .sortedByDescending { it.width.toLong() * it.height }
 
             val dynamicProfiles: Set<Long> =
                 chars.get(CameraCharacteristics.REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES)
@@ -122,6 +129,7 @@ data class CameraCaps(
                 edgeModes = chars.get(CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES) ?: IntArray(0),
                 noiseReductionModes = chars.get(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES) ?: IntArray(0),
                 availableFpsRanges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: emptyArray(),
+                availableVideoSizes = videoSizes,
             )
         }
     }

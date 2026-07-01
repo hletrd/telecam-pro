@@ -14,6 +14,7 @@ import android.util.Size
 import android.view.Surface
 import androidx.core.content.ContextCompat
 import com.hletrd.findx9tele.camera.ColorTransfer
+import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.storage.MediaStoreWriter
 import kotlin.concurrent.thread
 
@@ -48,7 +49,7 @@ class VideoRecorder(private val context: Context) {
     private var audioRecord: AudioRecord? = null
 
     /** Returns the encoder input Surface for the GL pipeline, or null on failure. */
-    fun start(uri: Uri, size: Size, fps: Int, bitRate: Int, transfer: ColorTransfer, recordAudio: Boolean): Surface? {
+    fun start(uri: Uri, size: Size, fps: Int, bitRate: Int, transfer: ColorTransfer, codec: VideoCodec, recordAudio: Boolean): Surface? {
         this.uri = uri
         val descriptor = MediaStoreWriter.openParcelFd(context, uri, "rw") ?: return null
         pfd = descriptor
@@ -56,8 +57,8 @@ class VideoRecorder(private val context: Context) {
         val videoOk = runCatching {
             muxer = MediaMuxer(descriptor.fileDescriptor, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
 
-            val vFmt = ColorProfiles.hevcFormat(size.width, size.height, fps, bitRate, transfer)
-            val vCodec = MediaCodec.createEncoderByType(ColorProfiles.MIME_HEVC)
+            val vFmt = ColorProfiles.videoFormat(codec, size.width, size.height, fps, bitRate, transfer)
+            val vCodec = MediaCodec.createEncoderByType(ColorProfiles.mimeFor(codec))
             vCodec.configure(vFmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             inputSurface = vCodec.createInputSurface()
             vCodec.start()

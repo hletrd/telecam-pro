@@ -1,5 +1,7 @@
 package com.hletrd.findx9tele.camera
 
+import android.util.Size
+
 /** Photo vs video capture mode. */
 enum class CaptureMode { PHOTO, VIDEO }
 
@@ -33,6 +35,21 @@ enum class ShutterMode { SPEED, ANGLE }
 /** Electronic stabilization crop strength (headroom). OFF handled by the EIS toggle. */
 enum class EisStrength(val crop: Float) { LOW(0.06f), MEDIUM(0.10f), HIGH(0.18f) }
 
+/** White balance: AUTO, a named preset (CONTROL_AWB_MODE_*), or MANUAL (Kelvin + tint). */
+enum class WbMode { AUTO, INCANDESCENT, FLUORESCENT, DAYLIGHT, CLOUDY, SHADE, MANUAL }
+
+/** Metering pattern for auto-exposure. SPOT/CENTER use an AE region; MATRIX uses the whole frame. */
+enum class MeteringMode { MATRIX, CENTER, SPOT }
+
+/** Shutter drive mode. */
+enum class DriveMode { SINGLE, BURST, AEB, TIMELAPSE }
+
+/** Video codec. HEVC supports 10-bit HLG/Log; AVC is 8-bit SDR only. */
+enum class VideoCodec { HEVC, AVC }
+
+/** Video bitrate level as bits-per-pixel-per-frame factor. */
+enum class BitrateLevel(val bpp: Float) { LOW(0.06f), MEDIUM(0.10f), HIGH(0.16f) }
+
 /** Photo output formats. Both can be enabled at once. */
 data class PhotoFormats(
     val heif: Boolean = true,
@@ -54,17 +71,26 @@ data class CameraUiState(
     // Stabilization
     val eisEnabled: Boolean = true,
     val eisStrength: EisStrength = EisStrength.MEDIUM,
+    // Video
+    val videoCodec: VideoCodec = VideoCodec.HEVC,
+    val bitrateLevel: BitrateLevel = BitrateLevel.MEDIUM,
+    val videoResolution: Size = Size(3840, 2160),
+    // Drive
+    val timer: ShutterTimer = ShutterTimer.OFF,
+    val driveMode: DriveMode = DriveMode.SINGLE,
+    val intervalSec: Int = 5,
     // Viewfinder assists
     val focusPeaking: Boolean = false,
     val zebra: Boolean = false,
     val falseColor: Boolean = false,
     val histogram: Boolean = false,
+    val waveform: Boolean = false,
     val grid: GridType = GridType.THIRDS,
     val level: Boolean = false,
     val levelRoll: Float = 0f,
     val punchIn: Boolean = false,
-    // Drive
-    val timer: ShutterTimer = ShutterTimer.OFF,
+    // Transient tap point (normalized 0..1 in view space) for the focus/meter reticle; null = none.
+    val tapPoint: Pair<Float, Float>? = null,
     // Runtime
     val isRecording: Boolean = false,
     val recordElapsedMs: Long = 0L,

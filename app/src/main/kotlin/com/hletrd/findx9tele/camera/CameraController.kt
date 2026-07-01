@@ -10,6 +10,7 @@ import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.DynamicRangeProfiles
+import android.hardware.camera2.params.MeteringRectangle
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
 import android.media.Image
@@ -179,6 +180,7 @@ class CameraController(context: Context) {
         val req = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
             addTarget(preview)
             applyManualControls(controls, caps)
+            applyMetering(this, controls)
             // AF lock: freeze focus at the last AF-resolved distance instead of leaving AF running.
             // Not applicable in MANUAL focus mode, where focus is already fixed by the user.
             if (controls.afLock && controls.focusMode != FocusMode.MANUAL && caps.supportsManualFocus) {
@@ -193,6 +195,32 @@ class CameraController(context: Context) {
                 result.get(android.hardware.camera2.CaptureResult.LENS_FOCUS_DISTANCE)?.let { lastFocusDistance = it }
             }
         }, handler)
+    }
+
+    /**
+     * Applies the metering pattern as AE (and, in an AF focus mode, AF) regions, sized to the
+     * RAW/producer sensor active array:
+     *   MATRIX → no region (default full-frame metering).
+     *   CENTER → one center rectangle covering 40% of the active array at METERING_WEIGHT_MAX.
+     *   SPOT   → one center rectangle covering 12%, at METERING_WEIGHT_MAX.
+     * No-op when the active array is unavailable, so it degrades to full-frame metering.
+     */
+    private fun applyMetering(builder: CaptureRequest.Builder, controls: ManualControls) {
+        val fraction = when (controls.meteringMode) {
+            MeteringMode.MATRIX -> return
+            MeteringMode.CENTER -> 0.40f
+            MeteringMode.SPOT -> 0.12f
+        }
+        val active = rawChars?.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
+        val rw = (active.width() * fraction).toInt().coerceAtLeast(1)
+        val rh = (active.height() * fraction).toInt().coerceAtLeast(1)
+        val cx = active.left + active.width() / 2
+        val cy = active.top + active.height() / 2
+        val region = MeteringRectangle(cx - rw / 2, cy - rh / 2, rw, rh, MeteringRectangle.METERING_WEIGHT_MAX)
+        val regions = arrayOf(region)
+        builder.set(CaptureRequest.CONTROL_AE_REGIONS, regions)
+        // AF regions are only meaningful when the AF engine is running (any non-MANUAL focus mode).
+        if (controls.focusMode != FocusMode.MANUAL) builder.set(CaptureRequest.CONTROL_AF_REGIONS, regions)
     }
 
     fun updateControls(controls: ManualControls) {
@@ -213,6 +241,7 @@ class CameraController(context: Context) {
             jpeg?.let { addTarget(it) }
             raw?.let { addTarget(it) }
             applyManualControls(controls, caps)
+            applyMetering(this, controls)
             // We rotate pixels ourselves (HEIF) / tag DNG orientation; keep JPEG upright.
             set(CaptureRequest.JPEG_ORIENTATION, 0)
         }

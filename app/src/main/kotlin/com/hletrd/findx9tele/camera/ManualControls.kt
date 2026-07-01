@@ -24,10 +24,12 @@ data class ManualControls(
     val antibanding: Antibanding = Antibanding.AUTO,
     val fps: Int = 30,
     // White balance
-    val autoWhiteBalance: Boolean = true,
+    val wbMode: WbMode = WbMode.AUTO,
     val wbKelvin: Int = 5200,
     val wbTint: Int = 0, // -50 (green) .. +50 (magenta)
     val awbLock: Boolean = false,
+    // Metering (SPOT/CENTER apply an AE region; region rect computed in CameraController)
+    val meteringMode: MeteringMode = MeteringMode.MATRIX,
     // Processing
     val edge: ProcessingLevel = ProcessingLevel.HIGH_QUALITY,
     val noiseReduction: ProcessingLevel = ProcessingLevel.HIGH_QUALITY,
@@ -120,17 +122,34 @@ private fun CaptureRequest.Builder.applyExposure(c: ManualControls, caps: Camera
 }
 
 private fun CaptureRequest.Builder.applyWhiteBalance(c: ManualControls, caps: CameraCaps) {
-    if (!c.autoWhiteBalance && caps.supportsManualPostProcessing) {
-        set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
-        // FAST (not TRANSFORM_MATRIX) honors COLOR_CORRECTION_GAINS without also requiring a
-        // COLOR_CORRECTION_TRANSFORM — which we never set, so TRANSFORM_MATRIX left color undefined.
-        set(CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_FAST)
-        set(CaptureRequest.COLOR_CORRECTION_GAINS, kelvinTintToRggbGains(c.wbKelvin, c.wbTint))
-    } else {
-        set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
-        set(CaptureRequest.CONTROL_AWB_LOCK, c.awbLock)
+    when (c.wbMode) {
+        WbMode.MANUAL -> if (caps.supportsManualPostProcessing) {
+            set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
+            // FAST (not TRANSFORM_MATRIX) honors COLOR_CORRECTION_GAINS without also requiring a
+            // COLOR_CORRECTION_TRANSFORM — which we never set, so TRANSFORM_MATRIX left color undefined.
+            set(CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_FAST)
+            set(CaptureRequest.COLOR_CORRECTION_GAINS, kelvinTintToRggbGains(c.wbKelvin, c.wbTint))
+        } else {
+            set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
+        }
+        WbMode.AUTO -> {
+            set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
+            set(CaptureRequest.CONTROL_AWB_LOCK, c.awbLock)
+        }
+        else -> set(CaptureRequest.CONTROL_AWB_MODE, c.wbMode.awbMetadata)
     }
 }
+
+/** Named WB preset -> CONTROL_AWB_MODE_*. AUTO/MANUAL handled separately in applyWhiteBalance. */
+private val WbMode.awbMetadata: Int
+    get() = when (this) {
+        WbMode.INCANDESCENT -> CameraMetadata.CONTROL_AWB_MODE_INCANDESCENT
+        WbMode.FLUORESCENT -> CameraMetadata.CONTROL_AWB_MODE_FLUORESCENT
+        WbMode.DAYLIGHT -> CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT
+        WbMode.CLOUDY -> CameraMetadata.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT
+        WbMode.SHADE -> CameraMetadata.CONTROL_AWB_MODE_SHADE
+        WbMode.AUTO, WbMode.MANUAL -> CameraMetadata.CONTROL_AWB_MODE_AUTO
+    }
 
 private fun CaptureRequest.Builder.applyProcessing(c: ManualControls, caps: CameraCaps) {
     if (caps.hasEffect(c.colorEffect.metadata)) {

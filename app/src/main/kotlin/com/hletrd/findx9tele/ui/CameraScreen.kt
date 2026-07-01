@@ -37,18 +37,23 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.hletrd.findx9tele.camera.Antibanding
+import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.ColorTransfer
+import com.hletrd.findx9tele.camera.DriveMode
 import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
+import com.hletrd.findx9tele.camera.MeteringMode
 import com.hletrd.findx9tele.camera.PhotoFormats
 import com.hletrd.findx9tele.camera.EisStrength
 import com.hletrd.findx9tele.camera.ProcessingLevel
 import com.hletrd.findx9tele.camera.ShutterMode
 import com.hletrd.findx9tele.camera.ShutterTimer
+import com.hletrd.findx9tele.camera.VideoCodec
+import com.hletrd.findx9tele.camera.WbMode
 import com.hletrd.findx9tele.ui.controls.FocusSlider
 import com.hletrd.findx9tele.ui.controls.ProPanel
 import com.hletrd.findx9tele.ui.overlays.GridOverlay
@@ -320,10 +325,11 @@ private object PreviewCameraActions : CameraActions {
     override fun onShutterMode(mode: ShutterMode) = Unit
     override fun onShutterAngle(angle: Float) = Unit
 
-    override fun onToggleAutoWb(auto: Boolean) = Unit
+    override fun onWbMode(mode: WbMode) = Unit
     override fun onWbKelvin(kelvin: Int) = Unit
     override fun onWbTint(tint: Int) = Unit
     override fun onToggleAwbLock(locked: Boolean) = Unit
+    override fun onMeteringMode(mode: MeteringMode) = Unit
 
     override fun onEdge(level: ProcessingLevel) = Unit
     override fun onNoiseReduction(level: ProcessingLevel) = Unit
@@ -339,6 +345,9 @@ private object PreviewCameraActions : CameraActions {
     override fun onSetPhotoFormats(formats: PhotoFormats) = Unit
     override fun onToggleRecordAudio(enabled: Boolean) = Unit
     override fun onToggleTeleconverter(enabled: Boolean) = Unit
+    override fun onVideoCodec(codec: VideoCodec) = Unit
+    override fun onBitrateLevel(level: BitrateLevel) = Unit
+    override fun onVideoResolution(size: android.util.Size) = Unit
 
     override fun onToggleEis(enabled: Boolean) = Unit
     override fun onEisStrength(strength: EisStrength) = Unit
@@ -352,6 +361,8 @@ private object PreviewCameraActions : CameraActions {
     override fun onTogglePunchIn(enabled: Boolean) = Unit
 
     override fun onTimer(timer: ShutterTimer) = Unit
+    override fun onDriveMode(mode: DriveMode) = Unit
+    override fun onIntervalSec(sec: Int) = Unit
 
     override fun onCapturePhoto() = Unit
     override fun onToggleRecording() = Unit
