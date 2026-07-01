@@ -16,6 +16,7 @@ import android.media.Image
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
+import android.util.Log
 import android.view.Surface
 import java.util.concurrent.Executor
 
@@ -54,6 +55,7 @@ class CameraController(context: Context) {
     private var controls = ManualControls()
     private var tenBitHlg = false
     private var rawChars: CameraCharacteristics? = null
+    private var configAttempt = 0
 
     @Volatile private var pending: Pending? = null
 
@@ -79,7 +81,8 @@ class CameraController(context: Context) {
         manager.openCamera(selection.logicalId, executor, object : CameraDevice.StateCallback() {
             override fun onOpened(camera: CameraDevice) {
                 device = camera
-                runCatching { configureSession(onReady) }.onFailure { onError.onError(it) }
+                configAttempt = 0
+                runCatching { configureSession(onReady, onError) }.onFailure { onError.onError(it) }
             }
             override fun onDisconnected(camera: CameraDevice) { close() }
             override fun onError(camera: CameraDevice, error: Int) {
@@ -89,19 +92,40 @@ class CameraController(context: Context) {
         })
     }
 
-    private fun configureSession(onReady: Ready) {
+    /**
+     * Builds the capture session, degrading via a fallback ladder when [onConfigureFailed] fires
+     * (HLG10 preview + JPEG + RAW is a demanding combo many HALs reject):
+     *   attempt 0 — full: preview (HLG10 if supported) + JPEG + RAW
+     *   attempt 1 — drop RAW
+     *   attempt 2 — also drop HLG10 (SDR preview)
+     *   attempt 3 — preview only (no JPEG, no RAW)
+     * Each [onConfigureFailed] advances [configAttempt] and reconfigures; once the ladder is
+     * exhausted the failure is surfaced through [onError].
+     */
+    private fun configureSession(onReady: Ready, onError: ErrorCb) {
         val camera = device ?: return
         val preview = glSurface ?: return
+
+        // Discard any readers built by a previous (failed) attempt before rebuilding.
+        runCatching { jpegReader?.close() }
+        runCatching { rawReader?.close() }
+        jpegReader = null
+        rawReader = null
+
+        val attempt = configAttempt
+        val useHlg = tenBitHlg && caps.supportsHlg10() && attempt < 2
+        val useJpeg = attempt < 3
+        val useRaw = attempt < 1 && caps.supportsRaw
 
         val configs = ArrayList<OutputConfiguration>()
 
         val previewCfg = OutputConfiguration(preview).apply {
             selection.physicalId?.let { setPhysicalCameraId(it) }
-            if (tenBitHlg && caps.supportsHlg10()) setDynamicRangeProfile(DynamicRangeProfiles.HLG10)
+            if (useHlg) setDynamicRangeProfile(DynamicRangeProfiles.HLG10)
         }
         configs.add(previewCfg)
 
-        caps.largestJpegSize?.let { size ->
+        if (useJpeg) caps.largestJpegSize?.let { size ->
             val reader = ImageReader.newInstance(size.width, size.height, ImageFormat.JPEG, 2)
             reader.setOnImageAvailableListener({ onImage(it, isRaw = false) }, handler)
             jpegReader = reader
@@ -110,7 +134,7 @@ class CameraController(context: Context) {
             })
         }
 
-        if (caps.supportsRaw) caps.rawSize?.let { size ->
+        if (useRaw) caps.rawSize?.let { size ->
             val reader = ImageReader.newInstance(size.width, size.height, ImageFormat.RAW_SENSOR, 2)
             reader.setOnImageAvailableListener({ onImage(it, isRaw = true) }, handler)
             rawReader = reader
@@ -124,11 +148,21 @@ class CameraController(context: Context) {
             object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(s: CameraCaptureSession) {
                     session = s
+                    Log.i(TAG, "Session configured (fallback=$attempt, hlg=$useHlg, jpeg=$useJpeg, raw=$useRaw)")
                     startPreview()
                     onReady.onReady()
                 }
                 override fun onConfigureFailed(s: CameraCaptureSession) {
-                    // Fallback path (e.g. 10-bit + RAW combo unsupported) is handled by the caller.
+                    // Advance the fallback ladder and retry; give up once it is exhausted.
+                    configAttempt = attempt + 1
+                    if (configAttempt > MAX_CONFIG_ATTEMPT) {
+                        Log.e(TAG, "Session configure failed; fallback ladder exhausted")
+                        onError.onError(IllegalStateException("session configure failed"))
+                    } else {
+                        Log.w(TAG, "Session configure failed at fallback $attempt; retrying at $configAttempt")
+                        runCatching { configureSession(onReady, onError) }
+                            .onFailure { onError.onError(it) }
+                    }
                 }
             },
         )
@@ -174,7 +208,17 @@ class CameraController(context: Context) {
                 pending?.let { it.result = result; tryComplete(it) }
             }
             override fun onCaptureFailed(session: CameraCaptureSession, request: CaptureRequest, failure: android.hardware.camera2.CaptureFailure) {
-                pending?.cb?.onError(IllegalStateException("Capture failed: ${failure.reason}"))
+                val p = pending
+                if (p != null) {
+                    // Close any already-acquired images so the ImageReader (maxImages=2) isn't
+                    // starved, and mark done so a late-arriving partial can't re-enter tryComplete.
+                    synchronized(p) {
+                        p.done = true
+                        runCatching { p.jpeg?.close() }
+                        runCatching { p.raw?.close() }
+                    }
+                    p.cb.onError(IllegalStateException("Capture failed: ${failure.reason}"))
+                }
                 pending = null
             }
         }, handler)
@@ -225,6 +269,9 @@ class CameraController(context: Context) {
             jpegReader = null
             rawReader = null
         }
+        // Quit AFTER posting cleanup so the queued teardown runs first, then the thread exits.
+        // (Previously the "camera" HandlerThread leaked once per controller / override switch.)
+        bg.quitSafely()
     }
 
     private class Pending(val wantJpeg: Boolean, val wantRaw: Boolean, val cb: PhotoCallback) {
@@ -232,5 +279,11 @@ class CameraController(context: Context) {
         var raw: Image? = null
         var result: TotalCaptureResult? = null
         var done = false
+    }
+
+    private companion object {
+        const val TAG = "CameraController"
+        // Highest fallback index (attempt 3 = preview-only). Beyond this the session can't be built.
+        const val MAX_CONFIG_ATTEMPT = 3
     }
 }

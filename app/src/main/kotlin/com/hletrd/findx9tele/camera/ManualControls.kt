@@ -46,7 +46,9 @@ fun CaptureRequest.Builder.applyManualControls(c: ManualControls, caps: CameraCa
     applyExposure(c, caps)
     applyWhiteBalance(c, caps)
     applyProcessing(c, caps)
-    applyFlash(c)
+    // Flash runs AFTER exposure: when AE is ON, the auto/always-flash variants set CONTROL_AE_MODE
+    // and must win over the AE mode that applyExposure set (see applyFlash).
+    applyFlash(c, caps)
     applyZoom(c, caps)
     set(CaptureRequest.JPEG_QUALITY, c.jpegQuality.coerceIn(1, 100).toByte())
 
@@ -104,7 +106,9 @@ private fun CaptureRequest.Builder.applyExposure(c: ManualControls, caps: Camera
 private fun CaptureRequest.Builder.applyWhiteBalance(c: ManualControls, caps: CameraCaps) {
     if (!c.autoWhiteBalance && caps.supportsManualPostProcessing) {
         set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
-        set(CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
+        // FAST (not TRANSFORM_MATRIX) honors COLOR_CORRECTION_GAINS without also requiring a
+        // COLOR_CORRECTION_TRANSFORM — which we never set, so TRANSFORM_MATRIX left color undefined.
+        set(CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_FAST)
         set(CaptureRequest.COLOR_CORRECTION_GAINS, kelvinTintToRggbGains(c.wbKelvin, c.wbTint))
     } else {
         set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
@@ -122,11 +126,36 @@ private fun CaptureRequest.Builder.applyProcessing(c: ManualControls, caps: Came
     }
 }
 
-private fun CaptureRequest.Builder.applyFlash(c: ManualControls) {
-    when (c.flash) {
-        FlashMode.TORCH -> set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_TORCH)
-        FlashMode.ON -> set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_SINGLE)
-        FlashMode.OFF, FlashMode.AUTO -> set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_OFF)
+/**
+ * Flash via AE modes. Interacts with [applyExposure], which owns CONTROL_AE_MODE:
+ *  - MANUAL exposure (`!autoExposure && supportsManualSensor`) → AE is OFF, so the AE-driven
+ *    auto/always-flash modes are unusable; only TORCH and OFF are honored (via FLASH_MODE).
+ *  - AE ON → set the flash AE-mode variant here (runs after applyExposure, so it wins):
+ *      OFF → AE_MODE_ON + FLASH_MODE_OFF, AUTO → AE_MODE_ON_AUTO_FLASH,
+ *      ON → AE_MODE_ON_ALWAYS_FLASH, TORCH → AE_MODE_ON + FLASH_MODE_TORCH.
+ */
+private fun CaptureRequest.Builder.applyFlash(c: ManualControls, caps: CameraCaps) {
+    val aeManual = !c.autoExposure && caps.supportsManualSensor
+    if (aeManual) {
+        when (c.flash) {
+            FlashMode.TORCH -> set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_TORCH)
+            else -> set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_OFF)
+        }
+    } else {
+        when (c.flash) {
+            FlashMode.OFF -> {
+                set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
+                set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_OFF)
+            }
+            FlashMode.AUTO ->
+                set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON_AUTO_FLASH)
+            FlashMode.ON ->
+                set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON_ALWAYS_FLASH)
+            FlashMode.TORCH -> {
+                set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
+                set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_TORCH)
+            }
+        }
     }
 }
 

@@ -54,6 +54,7 @@ data class CameraUiState(
     val histogram: Boolean = false,
     val grid: GridType = GridType.THIRDS,
     val level: Boolean = false,
+    val levelRoll: Float = 0f,
     val punchIn: Boolean = false,
     // Drive
     val timer: ShutterTimer = ShutterTimer.OFF,
