@@ -30,3 +30,11 @@ OPPO Find X9 Ultra 전용 프로 카메라앱. 3x 페리스코프 망원 렌즈 
 ```
 
 JDK 21 + Android SDK(API 36, build-tools 36.0.0) 필요. 설계 문서: [`docs/superpowers/specs/2026-07-01-find-x9-ultra-camera-design.md`](docs/superpowers/specs/2026-07-01-find-x9-ultra-camera-design.md)
+
+## 구현 상태
+
+초기 전체 스캐폴드 + 코어 구현 완료(Camera2 망원 선택·수동제어, GL 180° 반전 프리뷰/인코더, HEIF+DNG 사진, HEVC/Rec.2020/HLG·LOG 동영상, Compose 프로 UI). **아직 온디바이스 빌드/실행으로 검증되지 않았음** — 개발기에 JDK/SDK 미설치. 다음이 필요:
+
+- 툴체인 설치 후 `./gradlew assembleDebug`로 컴파일 검증 및 오류 수정.
+- 실제 Find X9 Ultra에서 망원 물리렌즈의 수동초점/RAW/10-bit 지원 확인 및 반전/초점/컬러 육안 검증.
+- 10-bit HDR EGL 경로, LOG 커브, 물리렌즈+RAW+10bit 스트림 조합은 하드웨어 검증/튜닝 필요(설계 문서 §10 참고).
