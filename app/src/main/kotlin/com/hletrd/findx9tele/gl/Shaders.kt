@@ -56,7 +56,8 @@ object Shaders {
         }
 
         void main() {
-            vec3 color = texture2D(uTexture, vTexCoord).rgb;
+            vec3 base = texture2D(uTexture, vTexCoord).rgb;
+            vec3 color = base;
 
             if (uTransfer == 1) {
                 color = hlg(color);
@@ -78,7 +79,7 @@ object Shaders {
 
             // Focus peaking: highlight strong local gradients.
             if (uPeaking == 1) {
-                float c  = luma(texture2D(uTexture, vTexCoord).rgb);
+                float c  = luma(base);
                 float rx = luma(texture2D(uTexture, vTexCoord + vec2(uTexel.x, 0.0)).rgb);
                 float ry = luma(texture2D(uTexture, vTexCoord + vec2(0.0, uTexel.y)).rgb);
                 float edge = abs(c - rx) + abs(c - ry);

@@ -25,11 +25,14 @@ class GlPipeline {
     private val renderer = FlipRenderer()
 
     private var surfaceTexture: SurfaceTexture? = null
+
+    @Volatile
     var inputSurface: Surface? = null
         private set
 
     private var previewEgl: EGLSurface = EGL14.EGL_NO_SURFACE
     private var encoderEgl: EGLSurface = EGL14.EGL_NO_SURFACE
+    private var previewSurface: Surface? = null
 
     private var previewW = 0
     private var previewH = 0
@@ -43,6 +46,7 @@ class GlPipeline {
     private var zebra = false
     private var falseColor = false
     private var tenBit = false
+    private var punchIn = false
 
     // Gyro EIS: provider returns [yaw, pitch, roll] shake radians; eisFocal scales to the effective
     // (teleconverter) focal length in image widths; eisCrop is the headroom (e.g. 0.10).
@@ -71,17 +75,35 @@ class GlPipeline {
                 core.releaseSurface(previewEgl)
                 previewEgl = EGL14.EGL_NO_SURFACE
             }
+            previewSurface = null
             return@post
+        }
+        // SurfaceView delivers surfaceCreated then surfaceChanged back-to-back on the same native
+        // window; if it's the same surface already bound at the same size, there is nothing to do —
+        // recreating the EGLSurface on a still-live native window throws EGL_BAD_ALLOC.
+        if (surface === previewSurface && previewEgl != EGL14.EGL_NO_SURFACE &&
+            width == previewW && height == previewH
+        ) {
+            previewW = width
+            previewH = height
+            return@post
+        }
+        if (previewEgl != EGL14.EGL_NO_SURFACE) {
+            core.releaseSurface(previewEgl)
+            previewEgl = EGL14.EGL_NO_SURFACE
         }
         previewW = width
         previewH = height
+        previewSurface = surface
         previewEgl = core.createWindowSurface(surface)
         core.makeCurrent(previewEgl)
         if (!inited) {
             val texId = renderer.init()
             val st = SurfaceTexture(texId)
             st.setDefaultBufferSize(cameraW, cameraH)
-            st.setOnFrameAvailableListener({ post { drawFrame() } }, handler)
+            // The listener already runs on the GL handler thread; call drawFrame() directly instead
+            // of re-posting a fresh Runnable every frame.
+            st.setOnFrameAvailableListener({ drawFrame() }, handler)
             surfaceTexture = st
             val input = Surface(st)
             inputSurface = input
@@ -112,6 +134,9 @@ class GlPipeline {
 
     fun setEisProvider(provider: (() -> FloatArray)?) = post { eisProvider = provider }
 
+    /** Preview-only center crop-zoom (focus punch-in); does not affect the recorded/encoder frame. */
+    fun setPunchIn(enabled: Boolean) = post { punchIn = enabled }
+
     fun setEncoderOutput(surface: Surface?, width: Int, height: Int) = post {
         val core = egl ?: return@post
         if (encoderEgl != EGL14.EGL_NO_SURFACE) {
@@ -139,6 +164,10 @@ class GlPipeline {
         var crop = 0f
         if (eisEnabled) {
             crop = eisCrop
+            // Note: the provider lambda (set via setEisProvider) returns a new FloatArray per call;
+            // its 3 values are copied into local floats immediately below and not retained here.
+            // Removing that allocation would require changing the provider contract, which is owned
+            // by the caller (CameraEngine/GyroEis), outside this file's scope.
             val c = eisProvider?.invoke()
             if (c != null && c.size >= 3) {
                 val half = eisCrop / 2f
@@ -148,8 +177,11 @@ class GlPipeline {
             }
         }
 
+        // Punch-in is preview-only: the encoder draw below always uses the original `crop`.
+        val previewCrop = if (punchIn) maxOf(crop, 0.6f) else crop
+
         core.makeCurrent(previewEgl)
-        renderer.draw(stMatrix, previewW, previewH, null, peaking, zebra, falseColor, sx, sy, roll, crop)
+        renderer.draw(stMatrix, previewW, previewH, null, peaking, zebra, falseColor, sx, sy, roll, previewCrop)
         core.swapBuffers(previewEgl)
 
         if (encoderEgl != EGL14.EGL_NO_SURFACE) {
