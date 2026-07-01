@@ -52,18 +52,45 @@ class VideoRecorder(private val context: Context) {
         this.uri = uri
         val descriptor = MediaStoreWriter.openParcelFd(context, uri, "rw") ?: return null
         pfd = descriptor
-        muxer = MediaMuxer(descriptor.fileDescriptor, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
 
-        val vFmt = ColorProfiles.hevcFormat(size.width, size.height, fps, bitRate, transfer)
-        val vCodec = MediaCodec.createEncoderByType(ColorProfiles.MIME_HEVC)
-        vCodec.configure(vFmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        inputSurface = vCodec.createInputSurface()
-        vCodec.start()
-        videoCodec = vCodec
+        val videoOk = runCatching {
+            muxer = MediaMuxer(descriptor.fileDescriptor, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+
+            val vFmt = ColorProfiles.hevcFormat(size.width, size.height, fps, bitRate, transfer)
+            val vCodec = MediaCodec.createEncoderByType(ColorProfiles.MIME_HEVC)
+            vCodec.configure(vFmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            inputSurface = vCodec.createInputSurface()
+            vCodec.start()
+            videoCodec = vCodec
+        }.isSuccess
+
+        if (!videoOk) {
+            // Video encoder/muxer setup failed; clean up whatever got created and bail out.
+            runCatching { videoCodec?.stop() }
+            runCatching { videoCodec?.release() }
+            runCatching { muxer?.release() }
+            runCatching { pfd?.close() }
+            videoCodec = null
+            muxer = null
+            pfd = null
+            inputSurface = null
+            return null
+        }
 
         val doAudio = recordAudio && hasRecordPermission()
         expectedTracks = if (doAudio) 2 else 1
-        if (doAudio) startAudio()
+        if (doAudio) {
+            runCatching { startAudio() }.onFailure {
+                // Audio setup failed after video was already configured; degrade to video-only
+                // instead of aborting the whole recording.
+                runCatching { audioRecord?.release() }
+                runCatching { audioCodec?.stop() }
+                runCatching { audioCodec?.release() }
+                audioRecord = null
+                audioCodec = null
+                expectedTracks = 1
+            }
+        }
 
         running = true
         videoThread = thread(name = "video-drain") { drainVideo() }
@@ -108,7 +135,10 @@ class VideoRecorder(private val context: Context) {
         while (true) {
             val idx = codec.dequeueOutputBuffer(info, TIMEOUT_US)
             when {
-                idx == MediaCodec.INFO_TRY_AGAIN_LATER -> if (!running) break
+                // Do not exit on !running here: the encoder may not have emitted its EOS buffer
+                // yet, and breaking early would truncate the tail. stop() bounds this loop via
+                // videoThread.join(timeout) after signalling EOS, so looping is safe.
+                idx == MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
                 idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> synchronized(muxerLock) {
                     videoTrack = muxer!!.addTrack(codec.outputFormat)
                     maybeStartMuxer()
@@ -116,11 +146,10 @@ class VideoRecorder(private val context: Context) {
                 idx >= 0 -> {
                     val buf = codec.getOutputBuffer(idx)
                     if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) info.size = 0
-                    if (info.size > 0 && buf != null) {
-                        awaitMuxerStart()
+                    if (info.size > 0 && buf != null && awaitMuxerStart()) {
                         buf.position(info.offset)
                         buf.limit(info.offset + info.size)
-                        synchronized(muxerLock) { muxer?.writeSampleData(videoTrack, buf, info) }
+                        synchronized(muxerLock) { runCatching { muxer?.writeSampleData(videoTrack, buf, info) } }
                     }
                     codec.releaseOutputBuffer(idx, false)
                     if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
@@ -180,7 +209,11 @@ class VideoRecorder(private val context: Context) {
                 }
             }
 
-            var outIdx = codec.dequeueOutputBuffer(info, 0)
+            // Non-EOS polling stays non-blocking (0) so the input-buffer loop above keeps
+            // feeding the encoder; once EOS was queued, block with a short timeout instead of
+            // busy-spinning while waiting for the final EOS-flagged output buffer.
+            val outTimeout = if (sentEos) TIMEOUT_US else 0L
+            var outIdx = codec.dequeueOutputBuffer(info, outTimeout)
             while (outIdx != MediaCodec.INFO_TRY_AGAIN_LATER) {
                 if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     synchronized(muxerLock) {
@@ -190,16 +223,15 @@ class VideoRecorder(private val context: Context) {
                 } else if (outIdx >= 0) {
                     val buf = codec.getOutputBuffer(outIdx)
                     if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) info.size = 0
-                    if (info.size > 0 && buf != null) {
-                        awaitMuxerStart()
+                    if (info.size > 0 && buf != null && awaitMuxerStart()) {
                         buf.position(info.offset)
                         buf.limit(info.offset + info.size)
-                        synchronized(muxerLock) { muxer?.writeSampleData(audioTrack, buf, info) }
+                        synchronized(muxerLock) { runCatching { muxer?.writeSampleData(audioTrack, buf, info) } }
                     }
                     codec.releaseOutputBuffer(outIdx, false)
                     if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) return
                 }
-                outIdx = codec.dequeueOutputBuffer(info, 0)
+                outIdx = codec.dequeueOutputBuffer(info, outTimeout)
             }
             if (sentEos && !running) {
                 // keep draining until EOS output seen (handled by return above)
@@ -214,8 +246,15 @@ class VideoRecorder(private val context: Context) {
         }
     }
 
-    private fun awaitMuxerStart() {
+    /**
+     * Blocks until the muxer has started, or [running] flips false while it is still waiting.
+     * Returns true if the muxer actually started (safe to write samples), false if it gave up
+     * because recording was stopped before all expected tracks were added (e.g. audio never
+     * emitted a format) — callers must skip the sample write in that case.
+     */
+    private fun awaitMuxerStart(): Boolean {
         while (running && !muxerStarted) Thread.sleep(2)
+        return muxerStarted
     }
 
     private fun hasRecordPermission(): Boolean =
