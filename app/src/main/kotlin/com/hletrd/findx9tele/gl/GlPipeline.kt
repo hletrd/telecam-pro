@@ -3,10 +3,16 @@ package com.hletrd.findx9tele.gl
 import android.graphics.SurfaceTexture
 import android.opengl.EGL14
 import android.opengl.EGLSurface
+import android.opengl.GLES20
 import android.os.Handler
 import android.os.HandlerThread
 import android.view.Surface
 import com.hletrd.findx9tele.camera.ColorTransfer
+import com.hletrd.findx9tele.camera.HistogramData
+import com.hletrd.findx9tele.camera.WaveformData
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.util.concurrent.Executors
 
 /**
  * Owns the GL render thread. The camera renders into [inputSurface] (an external SurfaceTexture);
@@ -54,6 +60,26 @@ class GlPipeline {
     private var eisFocal = 0f
     private var eisCrop = 0f
     private var eisProvider: (() -> FloatArray)? = null
+
+    // Real-time scope analysis (histogram + waveform) via GL readback. The glReadPixels call runs on
+    // the GL thread and is throttled; the per-pixel compute is dispatched to [analysisExecutor] so it
+    // never stalls rendering. Perf note: reading back at full preview resolution every ~12th frame is
+    // a tradeoff (GPU->CPU stall + copy) that should be profiled/tuned on device.
+    private var analysisHistogram = false
+    private var analysisWaveform = false
+    private var analysisCallback: ((HistogramData?, WaveformData?) -> Unit)? = null
+    private var analysisFrameCounter = 0
+    private var analysisBuffer: ByteBuffer? = null
+    private var analysisBytes: ByteArray? = null
+    private var analysisBufferW = 0
+    private var analysisBufferH = 0
+
+    // Guards single-in-flight analysis: only the GL thread sets it true (before dispatch), only the
+    // executor sets it false (when done). This lets [analysisBytes] be reused across readbacks without
+    // the GL thread overwriting a snapshot the executor is still reading.
+    @Volatile
+    private var analysisBusy = false
+    private val analysisExecutor = Executors.newSingleThreadExecutor()
 
     private var inited = false
     private val stMatrix = FloatArray(16)
@@ -137,6 +163,17 @@ class GlPipeline {
     /** Preview-only center crop-zoom (focus punch-in); does not affect the recorded/encoder frame. */
     fun setPunchIn(enabled: Boolean) = post { punchIn = enabled }
 
+    /** Toggle live histogram/waveform readback. Both off → readback is skipped entirely. */
+    fun setAnalysisEnabled(histogram: Boolean, waveform: Boolean) = post {
+        analysisHistogram = histogram
+        analysisWaveform = waveform
+    }
+
+    /** Sink for computed scopes; invoked on the [analysisExecutor] thread, not the GL thread. */
+    fun setAnalysisCallback(cb: ((HistogramData?, WaveformData?) -> Unit)?) = post {
+        analysisCallback = cb
+    }
+
     fun setEncoderOutput(surface: Surface?, width: Int, height: Int) = post {
         val core = egl ?: return@post
         if (encoderEgl != EGL14.EGL_NO_SURFACE) {
@@ -184,6 +221,15 @@ class GlPipeline {
         renderer.draw(stMatrix, previewW, previewH, null, peaking, zebra, falseColor, sx, sy, roll, previewCrop)
         core.swapBuffers(previewEgl)
 
+        // Additive scope analysis: throttled GL readback of the just-drawn preview, computed off-thread.
+        // Kept entirely defensive so it can never block or crash the preview/encoder draw below.
+        if ((analysisHistogram || analysisWaveform) && analysisCallback != null) {
+            if (++analysisFrameCounter >= 12) {
+                analysisFrameCounter = 0
+                runAnalysisReadback(core)
+            }
+        }
+
         if (encoderEgl != EGL14.EGL_NO_SURFACE) {
             core.makeCurrent(encoderEgl)
             renderer.draw(stMatrix, encoderW, encoderH, transfer, false, false, false, sx, sy, roll, crop)
@@ -192,7 +238,110 @@ class GlPipeline {
         }
     }
 
+    /**
+     * Reads back the current preview framebuffer and dispatches per-pixel scope computation to
+     * [analysisExecutor]. Runs on the GL thread; [analysisBusy] ensures only one readback is in flight
+     * so the reused [analysisBytes] snapshot is never overwritten while the executor reads it. Fully
+     * wrapped so any failure degrades to "no scopes this frame" rather than breaking rendering.
+     */
+    private fun runAnalysisReadback(core: EglCore) {
+        if (previewEgl == EGL14.EGL_NO_SURFACE || previewW <= 0 || previewH <= 0) return
+        if (analysisBusy) return
+        val cb = analysisCallback ?: return
+        val doHist = analysisHistogram
+        val doWave = analysisWaveform
+        if (!doHist && !doWave) return
+        try {
+            val w = previewW
+            val h = previewH
+            val size = w * h * 4
+            if (analysisBuffer == null || analysisBufferW != w || analysisBufferH != h) {
+                analysisBuffer = ByteBuffer.allocateDirect(size).order(ByteOrder.nativeOrder())
+                analysisBytes = ByteArray(size)
+                analysisBufferW = w
+                analysisBufferH = h
+            }
+            val buf = analysisBuffer ?: return
+            val bytes = analysisBytes ?: return
+            core.makeCurrent(previewEgl)
+            buf.rewind()
+            GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
+            buf.rewind()
+            buf.get(bytes, 0, size)
+            analysisBusy = true
+            analysisExecutor.execute {
+                try {
+                    val hist = if (doHist) computeHistogram(bytes, w, h) else null
+                    val wave = if (doWave) computeWaveform(bytes, w, h) else null
+                    cb.invoke(hist, wave)
+                } catch (_: Throwable) {
+                    // Analysis is best-effort; swallow so a bad frame never surfaces to the UI.
+                } finally {
+                    analysisBusy = false
+                }
+            }
+        } catch (_: Throwable) {
+            // Readback/dispatch failed (e.g. rejected after shutdown); reset the guard and move on.
+            analysisBusy = false
+        }
+    }
+
+    /** RGBA snapshot -> luma + per-channel 256-bin histograms, subsampled for speed (Rec.2020 luma). */
+    private fun computeHistogram(bytes: ByteArray, w: Int, h: Int): HistogramData {
+        val luma = IntArray(256)
+        val red = IntArray(256)
+        val green = IntArray(256)
+        val blue = IntArray(256)
+        val step = 6
+        var y = 0
+        while (y < h) {
+            val rowBase = y * w * 4
+            var x = 0
+            while (x < w) {
+                val i = rowBase + x * 4
+                val r = bytes[i].toInt() and 0xFF
+                val g = bytes[i + 1].toInt() and 0xFF
+                val b = bytes[i + 2].toInt() and 0xFF
+                val l = (0.2627f * r + 0.678f * g + 0.0593f * b).toInt().coerceIn(0, 255)
+                luma[l]++
+                red[r]++
+                green[g]++
+                blue[b]++
+                x += step
+            }
+            y += step
+        }
+        return HistogramData(luma, red, green, blue)
+    }
+
+    /** RGBA snapshot -> 128x64 luma waveform, subsampled; row 0 = brightest (top). */
+    private fun computeWaveform(bytes: ByteArray, w: Int, h: Int): WaveformData {
+        val columns = 128
+        val rows = 64
+        val bins = IntArray(columns * rows)
+        val step = 6
+        var y = 0
+        while (y < h) {
+            val rowBase = y * w * 4
+            var x = 0
+            while (x < w) {
+                val i = rowBase + x * 4
+                val r = bytes[i].toInt() and 0xFF
+                val g = bytes[i + 1].toInt() and 0xFF
+                val b = bytes[i + 2].toInt() and 0xFF
+                val l = (0.2627f * r + 0.678f * g + 0.0593f * b).toInt().coerceIn(0, 255)
+                val col = (x * columns / w).coerceIn(0, columns - 1)
+                val row = ((255 - l) * rows / 256).coerceIn(0, rows - 1)
+                bins[col * rows + row]++
+                x += step
+            }
+            y += step
+        }
+        return WaveformData(columns, rows, bins)
+    }
+
     fun stop() {
+        analysisExecutor.shutdown()
         val h = handler ?: return
         h.post {
             val core = egl

@@ -64,6 +64,9 @@ class CameraEngine(private val context: Context) {
 
     var onStatus: ((String?) -> Unit)? = null
     var onCapsReady: ((CameraCaps) -> Unit)? = null
+    // Viewfinder analysis (histogram/waveform) computed on the GL thread; delivered here so the
+    // ViewModel can hoist it into UI state. Either arg is null when its analysis is disabled.
+    var onAnalysis: ((HistogramData?, WaveformData?) -> Unit)? = null
 
     // ---- Preview surface lifecycle ----
 
@@ -94,6 +97,7 @@ class CameraEngine(private val context: Context) {
             gl.start(tenBit) { input ->
                 gl.setCameraPreviewSize(videoSize.width, videoSize.height)
                 gl.setEisProvider { gyro.currentCorrection() }
+                gl.setAnalysisCallback { h, w -> onAnalysis?.invoke(h, w) }
                 applyStabilization()
                 gyro.start()
                 maybeDumpVendorTags()
@@ -160,6 +164,32 @@ class CameraEngine(private val context: Context) {
     fun setTransfer(t: ColorTransfer) { transfer = t; gl.setTransfer(t) }
     fun setPeaking(enabled: Boolean) = gl.setPeaking(enabled)
     fun setZebra(enabled: Boolean) = gl.setZebra(enabled)
+
+    /** Enables/disables GL-thread histogram and/or waveform computation feeding [onAnalysis]. */
+    fun setAnalysis(histogram: Boolean, waveform: Boolean) = gl.setAnalysisEnabled(histogram, waveform)
+
+    /**
+     * Tap-to-focus/meter. Maps a VIEW-normalized tap [(nx,ny), origin top-left] to a
+     * SENSOR-normalized point by inverting the GL content rotation applied to the preview — the
+     * sensor orientation plus the teleconverter's afocal 180° (normalized to 0/90/180/270). The
+     * centered tap is rotated by -total degrees and re-centered, then forwarded to the controller.
+     *
+     * NOTE: this ignores the EIS/punch-in crop and offset, so the mapping is only APPROXIMATE and
+     * needs on-device calibration — the axis signs (and possibly a horizontal mirror) may need
+     * flipping once validated against the live preview.
+     */
+    fun setTapPoint(nx: Float, ny: Float) {
+        val c = caps ?: return
+        val total = ((c.sensorOrientation + if (teleconverterMode) 180 else 0) % 360 + 360) % 360
+        val px = nx - 0.5f
+        val py = ny - 0.5f
+        val rad = Math.toRadians(-total.toDouble())
+        val cos = Math.cos(rad).toFloat()
+        val sin = Math.sin(rad).toFloat()
+        val rx = px * cos - py * sin
+        val ry = px * sin + py * cos
+        controller?.setMeteringPoint((rx + 0.5f).coerceIn(0f, 1f), (ry + 0.5f).coerceIn(0f, 1f))
+    }
 
     // ---- Drive mode + video parameters ----
 

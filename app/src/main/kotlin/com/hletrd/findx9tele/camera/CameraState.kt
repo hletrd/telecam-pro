@@ -99,6 +99,7 @@ data class CameraUiState(
     val cameraOverrideId: String? = null,
     val statusMessage: String? = null,
     val histogramData: HistogramData? = null,
+    val waveformData: WaveformData? = null,
 )
 
 /** Downsampled luminance + per-channel histogram (256 bins) for the viewfinder overlay. */
@@ -107,4 +108,14 @@ data class HistogramData(
     val red: IntArray,
     val green: IntArray,
     val blue: IntArray,
+)
+
+/**
+ * Luma waveform: for each of [columns] screen columns, [rows] vertical luma buckets holding a count.
+ * `bins[col * rows + row]` — row 0 = brightest (top), row [rows-1] = darkest (bottom).
+ */
+data class WaveformData(
+    val columns: Int,
+    val rows: Int,
+    val bins: IntArray,
 )

@@ -62,6 +62,13 @@ class CameraController(context: Context) {
     // Last AF-resolved focus distance, tracked from repeating-preview results so afLock can freeze
     // the lens there (a manual LENS_FOCUS_DISTANCE hold) instead of an AF-mode "lock" call.
     @Volatile private var lastFocusDistance: Float = 0f
+    // Tap-to-focus/meter target in SENSOR-normalized coords (0..1); the engine applies the
+    // view→sensor rotation before setting it. When non-null it overrides the metering-mode regions
+    // with a spot centered here (AE, plus AF in a non-MANUAL focus mode); null restores the mode.
+    @Volatile private var meteringPoint: Pair<Float, Float>? = null
+    // Set alongside a fresh meteringPoint to request a single AF_TRIGGER_START on the next preview
+    // build so the AF engine re-converges on the tapped point; cleared once that one-shot fires.
+    @Volatile private var afTriggerPending = false
 
     @SuppressLint("MissingPermission") // caller guarantees CAMERA permission before open()
     fun open(
@@ -173,11 +180,18 @@ class CameraController(context: Context) {
         camera.createCaptureSession(sessionConfig)
     }
 
+    /**
+     * (Re)issues the repeating preview request. When [afTriggerPending] is set (a fresh tap-to-focus
+     * point) and AF is running (non-MANUAL focus), it first fires ONE triggered capture identical to
+     * the repeating request but carrying CONTROL_AF_TRIGGER_START, so the AF engine converges on the
+     * tapped region; the trigger is then cleared (IDLE) and the repeating request continues to hold
+     * that result. All calls guard nulls so a torn-down session is a no-op.
+     */
     private fun startPreview() {
         val camera = device ?: return
         val preview = glSurface ?: return
         val s = session ?: return
-        val req = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+        val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
             addTarget(preview)
             applyManualControls(controls, caps)
             applyMetering(this, controls)
@@ -188,36 +202,62 @@ class CameraController(context: Context) {
                 set(CaptureRequest.LENS_FOCUS_DISTANCE, lastFocusDistance)
             }
         }
-        s.setRepeatingRequest(req.build(), object : CameraCaptureSession.CaptureCallback() {
+        val callback = object : CameraCaptureSession.CaptureCallback() {
             override fun onCaptureCompleted(
                 session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult,
             ) {
                 result.get(android.hardware.camera2.CaptureResult.LENS_FOCUS_DISTANCE)?.let { lastFocusDistance = it }
             }
-        }, handler)
+        }
+        // Tap-to-focus one-shot: START the AF engine at the new point, then fall through to the
+        // repeating request with the trigger cleared so the converged focus is held.
+        if (afTriggerPending && controls.focusMode != FocusMode.MANUAL) {
+            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
+            runCatching { s.capture(builder.build(), callback, handler) }
+            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
+        }
+        afTriggerPending = false
+        s.setRepeatingRequest(builder.build(), callback, handler)
     }
 
     /**
-     * Applies the metering pattern as AE (and, in an AF focus mode, AF) regions, sized to the
-     * RAW/producer sensor active array:
+     * Applies the metering regions as AE (and, in an AF focus mode, AF) rectangles, sized to the
+     * RAW/producer sensor active array.
+     *
+     * A tap-to-meter [meteringPoint] (SENSOR-normalized) takes priority and OVERRIDES the mode: a
+     * ~10% spot centered on that point, clamped inside the active array. When no point is set the
+     * metering mode drives it:
      *   MATRIX → no region (default full-frame metering).
      *   CENTER → one center rectangle covering 40% of the active array at METERING_WEIGHT_MAX.
      *   SPOT   → one center rectangle covering 12%, at METERING_WEIGHT_MAX.
      * No-op when the active array is unavailable, so it degrades to full-frame metering.
      */
     private fun applyMetering(builder: CaptureRequest.Builder, controls: ManualControls) {
-        val fraction = when (controls.meteringMode) {
-            MeteringMode.MATRIX -> return
-            MeteringMode.CENTER -> 0.40f
-            MeteringMode.SPOT -> 0.12f
-        }
         val active = rawChars?.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
+
+        val point = meteringPoint
+        val (cx, cy, fraction) = if (point != null) {
+            // Tapped spot: center on the sensor-normalized point (~10% of the active array).
+            Triple(
+                active.left + (point.first * active.width()).toInt(),
+                active.top + (point.second * active.height()).toInt(),
+                0.10f,
+            )
+        } else {
+            val f = when (controls.meteringMode) {
+                MeteringMode.MATRIX -> return
+                MeteringMode.CENTER -> 0.40f
+                MeteringMode.SPOT -> 0.12f
+            }
+            Triple(active.left + active.width() / 2, active.top + active.height() / 2, f)
+        }
+
         val rw = (active.width() * fraction).toInt().coerceAtLeast(1)
         val rh = (active.height() * fraction).toInt().coerceAtLeast(1)
-        val cx = active.left + active.width() / 2
-        val cy = active.top + active.height() / 2
-        val region = MeteringRectangle(cx - rw / 2, cy - rh / 2, rw, rh, MeteringRectangle.METERING_WEIGHT_MAX)
-        val regions = arrayOf(region)
+        // Clamp so the rectangle stays fully inside the active array even near an edge.
+        val left = (cx - rw / 2).coerceIn(active.left, active.right - rw)
+        val top = (cy - rh / 2).coerceIn(active.top, active.bottom - rh)
+        val regions = arrayOf(MeteringRectangle(left, top, rw, rh, MeteringRectangle.METERING_WEIGHT_MAX))
         builder.set(CaptureRequest.CONTROL_AE_REGIONS, regions)
         // AF regions are only meaningful when the AF engine is running (any non-MANUAL focus mode).
         if (controls.focusMode != FocusMode.MANUAL) builder.set(CaptureRequest.CONTROL_AF_REGIONS, regions)
@@ -225,6 +265,23 @@ class CameraController(context: Context) {
 
     fun updateControls(controls: ManualControls) {
         this.controls = controls
+        handler.post { startPreview() }
+    }
+
+    /**
+     * Sets the tap-to-focus/meter target. [sx],[sy] are SENSOR-normalized (0..1); the caller has
+     * already applied the view→sensor rotation. Arms a one-shot AF trigger and rebuilds the preview
+     * so the new AE/AF spot region (and AF convergence) takes effect immediately.
+     */
+    fun setMeteringPoint(sx: Float, sy: Float) {
+        meteringPoint = sx.coerceIn(0f, 1f) to sy.coerceIn(0f, 1f)
+        afTriggerPending = true
+        handler.post { startPreview() }
+    }
+
+    /** Clears the tap target, restoring the metering-mode regions on the next preview build. */
+    fun clearMeteringPoint() {
+        meteringPoint = null
         handler.post { startPreview() }
     }
 

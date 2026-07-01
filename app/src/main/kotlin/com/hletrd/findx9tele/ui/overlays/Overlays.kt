@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -28,6 +30,7 @@ import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.HistogramData
 import com.hletrd.findx9tele.camera.PhotoFormats
+import com.hletrd.findx9tele.camera.WaveformData
 import kotlin.math.abs
 
 /**
@@ -128,6 +131,35 @@ fun LevelOverlay(rollDegrees: Float = 0f, modifier: Modifier = Modifier) {
             )
         }
         drawCircle(color = indicatorColor, radius = 4.dp.toPx(), center = Offset(size.width / 2f, cy))
+    }
+}
+
+/**
+ * Tap-to-focus reticle: a small yellow bracketed square centered at [point] (view-normalized
+ * 0..1 coordinates). Draws nothing while [point] is null (e.g. after the auto-hide timeout).
+ */
+@Composable
+fun FocusReticle(point: Pair<Float, Float>?, modifier: Modifier = Modifier) {
+    if (point == null) return
+    val color = Color(0xFFFFD60A)
+    Canvas(modifier = modifier) {
+        val cx = point.first * size.width
+        val cy = point.second * size.height
+        val half = 32.dp.toPx()
+        val corner = 10.dp.toPx()
+        val strokeWidth = 2.dp.toPx()
+        val left = cx - half
+        val right = cx + half
+        val top = cy - half
+        val bottom = cy + half
+        drawLine(color, Offset(left, top), Offset(left + corner, top), strokeWidth)
+        drawLine(color, Offset(left, top), Offset(left, top + corner), strokeWidth)
+        drawLine(color, Offset(right, top), Offset(right - corner, top), strokeWidth)
+        drawLine(color, Offset(right, top), Offset(right, top + corner), strokeWidth)
+        drawLine(color, Offset(left, bottom), Offset(left + corner, bottom), strokeWidth)
+        drawLine(color, Offset(left, bottom), Offset(left, bottom - corner), strokeWidth)
+        drawLine(color, Offset(right, bottom), Offset(right - corner, bottom), strokeWidth)
+        drawLine(color, Offset(right, bottom), Offset(right, bottom - corner), strokeWidth)
     }
 }
 
@@ -236,6 +268,46 @@ private fun DrawScope.drawHistogramCurve(bins: IntArray, color: Color) {
         if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
     }
     drawPath(path, color = color, style = Stroke(width = 1.2.dp.toPx()))
+}
+
+/**
+ * Luma waveform monitor: for each screen column, plots a vertical spread of points whose alpha is
+ * proportional to that bucket's bin intensity (normalized against the frame's brightest bucket).
+ * Draws an empty bordered frame when [data] is null (e.g. before the first frame has been analyzed).
+ */
+@Composable
+fun WaveformOverlay(data: WaveformData?, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth(0.3f)
+            .height(90.dp)
+            .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(8.dp))
+            .padding(6.dp),
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            drawRect(color = Color.White.copy(alpha = 0.3f), style = Stroke(width = 1.dp.toPx()))
+            if (data != null && data.columns > 0 && data.rows > 0) {
+                drawWaveform(data)
+            }
+        }
+    }
+}
+
+private fun DrawScope.drawWaveform(data: WaveformData) {
+    val maxVal = (data.bins.maxOrNull() ?: 0).coerceAtLeast(1)
+    val colWidth = size.width / data.columns
+    val rowHeight = size.height / data.rows
+    val color = Color(0xFF4CD964)
+    for (col in 0 until data.columns) {
+        val x = col * colWidth + colWidth / 2f
+        for (row in 0 until data.rows) {
+            val value = data.bins[col * data.rows + row]
+            if (value <= 0) continue
+            val alpha = (value.toFloat() / maxVal).coerceIn(0f, 1f)
+            val y = row * rowHeight + rowHeight / 2f
+            drawCircle(color = color.copy(alpha = alpha), radius = 1.2.dp.toPx(), center = Offset(x, y))
+        }
+    }
 }
 
 /** Big centered self-timer countdown number, shown while a shutter delay is counting down. */

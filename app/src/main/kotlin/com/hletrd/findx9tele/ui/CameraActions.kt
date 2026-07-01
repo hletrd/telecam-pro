@@ -35,6 +35,7 @@ interface CameraActions {
     fun onFocusMode(mode: FocusMode)
     fun onFocusSlider(slider: Float)
     fun onAfLock(locked: Boolean)
+    fun onTapFocus(nx: Float, ny: Float)
 
     // Exposure
     fun onIso(iso: Int)
@@ -84,6 +85,7 @@ interface CameraActions {
     fun onToggleZebra(enabled: Boolean)
     fun onToggleFalseColor(enabled: Boolean)
     fun onToggleHistogram(enabled: Boolean)
+    fun onToggleWaveform(enabled: Boolean)
     fun onGridType(type: GridType)
     fun onToggleLevel(enabled: Boolean)
     fun onTogglePunchIn(enabled: Boolean)

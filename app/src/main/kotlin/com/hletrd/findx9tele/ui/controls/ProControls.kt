@@ -648,6 +648,7 @@ private fun AssistsSection(state: CameraUiState, actions: CameraActions, modifie
         ToggleRow(label = "제브라", checked = state.zebra, onCheckedChange = actions::onToggleZebra)
         ToggleRow(label = "폴스컬러", checked = state.falseColor, onCheckedChange = actions::onToggleFalseColor)
         ToggleRow(label = "히스토그램", checked = state.histogram, onCheckedChange = actions::onToggleHistogram)
+        ToggleRow(label = "웨이브폼", checked = state.waveform, onCheckedChange = actions::onToggleWaveform)
         SegmentedSelector(
             label = "그리드",
             options = GridType.entries,

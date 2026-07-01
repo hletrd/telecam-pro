@@ -6,6 +6,7 @@ import android.view.SurfaceView
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,6 +34,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -56,12 +58,14 @@ import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.camera.WbMode
 import com.hletrd.findx9tele.ui.controls.FocusSlider
 import com.hletrd.findx9tele.ui.controls.ProPanel
+import com.hletrd.findx9tele.ui.overlays.FocusReticle
 import com.hletrd.findx9tele.ui.overlays.GridOverlay
 import com.hletrd.findx9tele.ui.overlays.HistogramOverlay
 import com.hletrd.findx9tele.ui.overlays.LevelOverlay
 import com.hletrd.findx9tele.ui.overlays.RecordingIndicator
 import com.hletrd.findx9tele.ui.overlays.StatusBar
 import com.hletrd.findx9tele.ui.overlays.TimerCountdown
+import com.hletrd.findx9tele.ui.overlays.WaveformOverlay
 import com.hletrd.findx9tele.ui.theme.FindX9TeleTheme
 
 /**
@@ -84,7 +88,15 @@ fun CameraScreen(
             .background(Color.Black),
     ) {
         AndroidView(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTapGestures { offset ->
+                        val w = size.width.toFloat()
+                        val h = size.height.toFloat()
+                        if (w > 0f && h > 0f) currentActions.value.onTapFocus(offset.x / w, offset.y / h)
+                    }
+                },
             factory = { context ->
                 val surfaceView = SurfaceView(context)
                 surfaceView.holder.addCallback(object : SurfaceHolder.Callback {
@@ -119,6 +131,10 @@ fun CameraScreen(
             LevelOverlay(rollDegrees = state.levelRoll, modifier = Modifier.fillMaxSize())
         }
 
+        if (state.tapPoint != null) {
+            FocusReticle(point = state.tapPoint, modifier = Modifier.fillMaxSize())
+        }
+
         val cameraLabel = remember(state.caps) {
             val caps = state.caps
             when {
@@ -151,6 +167,9 @@ fun CameraScreen(
             }
             if (state.histogram) {
                 HistogramOverlay(data = state.histogramData)
+            }
+            if (state.waveform) {
+                WaveformOverlay(data = state.waveformData)
             }
         }
 
@@ -314,6 +333,7 @@ private object PreviewCameraActions : CameraActions {
     override fun onFocusMode(mode: FocusMode) = Unit
     override fun onFocusSlider(slider: Float) = Unit
     override fun onAfLock(locked: Boolean) = Unit
+    override fun onTapFocus(nx: Float, ny: Float) = Unit
 
     override fun onIso(iso: Int) = Unit
     override fun onShutterNs(ns: Long) = Unit
@@ -356,6 +376,7 @@ private object PreviewCameraActions : CameraActions {
     override fun onToggleZebra(enabled: Boolean) = Unit
     override fun onToggleFalseColor(enabled: Boolean) = Unit
     override fun onToggleHistogram(enabled: Boolean) = Unit
+    override fun onToggleWaveform(enabled: Boolean) = Unit
     override fun onGridType(type: GridType) = Unit
     override fun onToggleLevel(enabled: Boolean) = Unit
     override fun onTogglePunchIn(enabled: Boolean) = Unit

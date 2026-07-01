@@ -58,6 +58,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     private var countdownRunnable: Runnable? = null
 
+    private var reticleHideRunnable: Runnable? = null
+
     private val levelTicker = object : Runnable {
         override fun run() {
             _state.update { it.copy(levelRoll = engine.currentRollDegrees()) }
@@ -68,6 +70,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     init {
         engine.onStatus = { msg -> _state.update { it.copy(statusMessage = msg) } }
         engine.onCapsReady = { caps -> _state.update { it.copy(caps = caps) } }
+        engine.onAnalysis = { h, w -> _state.update { it.copy(histogramData = h, waveformData = w) } }
         if (_state.value.level) mainHandler.post(levelTicker)
     }
 
@@ -85,6 +88,17 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         updateControls { it.copy(focusDistanceDiopters = d, focusMode = FocusMode.MANUAL) }
     }
     override fun onAfLock(locked: Boolean) = updateControls { it.copy(afLock = locked) }
+    override fun onTapFocus(nx: Float, ny: Float) {
+        engine.setTapPoint(nx, ny)
+        _state.update { it.copy(tapPoint = nx to ny) }
+        reticleHideRunnable?.let { mainHandler.removeCallbacks(it) }
+        val hide = Runnable {
+            _state.update { it.copy(tapPoint = null) }
+            reticleHideRunnable = null
+        }
+        reticleHideRunnable = hide
+        mainHandler.postDelayed(hide, 2000)
+    }
 
     // ---- Exposure ----
     override fun onIso(iso: Int) = updateControls { it.copy(iso = iso, autoExposure = false) }
@@ -167,7 +181,14 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setFalseColor(enabled)
         _state.update { it.copy(falseColor = enabled) }
     }
-    override fun onToggleHistogram(enabled: Boolean) = _state.update { it.copy(histogram = enabled) }
+    override fun onToggleHistogram(enabled: Boolean) {
+        engine.setAnalysis(enabled, _state.value.waveform)
+        _state.update { it.copy(histogram = enabled) }
+    }
+    override fun onToggleWaveform(enabled: Boolean) {
+        engine.setAnalysis(_state.value.histogram, enabled)
+        _state.update { it.copy(waveform = enabled) }
+    }
     override fun onGridType(type: GridType) = _state.update { it.copy(grid = type) }
     override fun onToggleLevel(enabled: Boolean) {
         _state.update { it.copy(level = enabled) }
