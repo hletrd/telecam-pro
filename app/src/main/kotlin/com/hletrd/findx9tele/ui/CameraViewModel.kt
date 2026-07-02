@@ -149,6 +149,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     // ---- Modes ----
     override fun onModeChange(mode: CaptureMode) {
         cancelCountdown()
+        // Leaving Video mode while recording would orphan the clip (the shutter's stop affordance is
+        // gone). Stop and save it first so the mode switch can't strand an in-progress recording.
+        if (_state.value.isRecording && mode != CaptureMode.VIDEO) onToggleRecording()
         _state.update { it.copy(mode = mode) }
     }
     override fun onTransfer(transfer: ColorTransfer) {
