@@ -303,7 +303,9 @@ class CameraEngine(private val context: Context) {
      */
     private fun captureAeb(ctrl: CameraController, formats: PhotoFormats) {
         val range = caps?.evRange
-        val steps = if (range != null) listOf(-2, 0, 2).map { it.coerceIn(range.lower, range.upper) }
+        // distinct() so a narrow EV range that clamps -2/0/+2 to the same value doesn't fire duplicate
+        // identical frames (a 1-shot "bracket").
+        val steps = if (range != null) listOf(-2, 0, 2).map { it.coerceIn(range.lower, range.upper) }.distinct()
         else listOf(controls.exposureCompensation)
         fun fire(i: Int) {
             if (i >= steps.size) { ctrl.updateControls(controls); return }
