@@ -572,9 +572,14 @@ class CameraEngine(private val context: Context) {
     private fun bitRateFor(size: Size, fps: Int): Int =
         (bitrateLevel.bpp.toDouble() * size.width * size.height * fps).toInt().coerceIn(8_000_000, 120_000_000)
 
+    // Monotonic per-session counter so rapid captures (BURST/AEB/timelapse) that land within the same
+    // second — or even millisecond — never collide on filename and overwrite/duplicate each other.
+    private val fileSeq = java.util.concurrent.atomic.AtomicInteger(0)
+
     private fun fileName(prefix: String, ext: String): String {
-        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        return "${prefix}_X9TELE_$stamp.$ext"
+        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
+        val seq = fileSeq.getAndIncrement() % 1000
+        return "%s_X9TELE_%s_%03d.%s".format(prefix, stamp, seq, ext)
     }
 
     private companion object {
