@@ -42,8 +42,9 @@ class SettingsStore(context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("camera_settings", Context.MODE_PRIVATE)
 
+    // Default ON: photographers expect their setup to survive an app restart out of the box.
     var rememberEnabled: Boolean
-        get() = prefs.getBoolean(K_REMEMBER, false)
+        get() = prefs.getBoolean(K_REMEMBER, true)
         set(value) { prefs.edit().putBoolean(K_REMEMBER, value).apply() }
 
     fun save(c: ManualControls, e: ExtraSettings) {

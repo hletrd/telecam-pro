@@ -35,9 +35,10 @@ data class ManualControls(
     val awbLock: Boolean = false,
     // Metering (SPOT/CENTER apply an AE region; region rect computed in CameraController)
     val meteringMode: MeteringMode = MeteringMode.MATRIX,
-    // Processing
-    val edge: ProcessingLevel = ProcessingLevel.HIGH_QUALITY,
-    val noiseReduction: ProcessingLevel = ProcessingLevel.HIGH_QUALITY,
+    // Processing — OFF by default: pros want a clean, un-sharpened, un-denoised signal to grade
+    // themselves (and it keeps the afocal-tele image honest). The user opts into edge/NR per shot.
+    val edge: ProcessingLevel = ProcessingLevel.OFF,
+    val noiseReduction: ProcessingLevel = ProcessingLevel.OFF,
     val colorEffect: ColorEffect = ColorEffect.NONE,
     // Optics
     val flash: FlashMode = FlashMode.OFF,

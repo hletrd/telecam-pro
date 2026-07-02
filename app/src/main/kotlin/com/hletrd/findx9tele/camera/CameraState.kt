@@ -97,8 +97,8 @@ data class CameraUiState(
     // Physical device orientation (0/90/180/270) from gravity; rotates overlays to stay upright.
     val deviceOrientation: Int = 0,
     val punchIn: Boolean = false,
-    // When true, pro settings are persisted across launches and restored on next start.
-    val rememberSettings: Boolean = false,
+    // When true, pro settings are persisted across launches and restored on next start (default on).
+    val rememberSettings: Boolean = true,
     // Transient tap point (normalized 0..1 in view space) for the focus/meter reticle; null = none.
     val tapPoint: Pair<Float, Float>? = null,
     // Runtime

@@ -214,11 +214,12 @@ fun CameraScreen(
             transfer = state.transfer,
             photoFormats = state.photoFormats,
             eis = state.eisEnabled,
+            // NOT rotated: it's a wide top-left row, so a 90° spin about its center swings it off
+            // screen. It stays fixed (readable in portrait); only the compact scopes counter-rotate.
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .statusBarsPadding()
-                .padding(start = 12.dp, top = 52.dp)
-                .rotate(overlayRotation),
+                .padding(start = 12.dp, top = 52.dp),
         )
 
         Column(
