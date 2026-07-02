@@ -63,6 +63,15 @@ data class CameraCaps(
         availableFpsRanges.firstOrNull { it.lower == fps && it.upper == fps }
             ?: availableFpsRanges.firstOrNull { fps in it.lower..it.upper }
 
+    /**
+     * For AUTO-exposure preview: the supported `[floor, maxFps]` range with the LOWEST floor, so AE
+     * can drop the frame rate in low light and expose longer (a brighter live view — the behavior a
+     * fixed `[maxFps,maxFps]` range prevents). Falls back to a covering/fixed range.
+     */
+    fun autoFpsRange(maxFps: Int): Range<Int>? =
+        availableFpsRanges.filter { it.upper == maxFps }.minByOrNull { it.lower }
+            ?: clampFpsRange(maxFps)
+
     companion object {
         private const val FULL_FRAME_DIAGONAL_MM = 43.2666f
 

@@ -121,8 +121,11 @@ private fun CaptureRequest.Builder.applyExposure(c: ManualControls, caps: Camera
             c.exposureCompensation.coerceIn(caps.evRange.lower, caps.evRange.upper),
         )
     }
-    // Target frame-rate range (honored by AE; hints the pipeline in manual too).
-    caps.clampFpsRange(c.fps)?.let { set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
+    // Target frame-rate range. In AUTO exposure use a low-floor range so AE can slow the preview in
+    // dim scenes for a brighter live view; in manual, pin the fps (exposure time is set directly).
+    val fpsRange = if (!c.autoExposure && caps.supportsManualSensor) caps.clampFpsRange(c.fps)
+    else caps.autoFpsRange(c.fps)
+    fpsRange?.let { set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
     set(
         CaptureRequest.CONTROL_AE_ANTIBANDING_MODE,
         when (c.antibanding) {

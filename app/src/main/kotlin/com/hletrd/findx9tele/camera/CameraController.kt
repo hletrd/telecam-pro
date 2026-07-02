@@ -8,6 +8,7 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.DynamicRangeProfiles
 import android.hardware.camera2.params.MeteringRectangle
@@ -73,6 +74,12 @@ class CameraController(context: Context) {
     // Set alongside a fresh meteringPoint to request a single AF_TRIGGER_START on the next preview
     // build so the AF engine re-converges on the tapped point; cleared once that one-shot fires.
     @Volatile private var afTriggerPending = false
+    // True after a tap-to-focus until the user changes focus mode: the repeating request then uses
+    // AF_MODE_AUTO (a one-shot region scan that LOCKS on convergence) instead of CONTINUOUS, so the
+    // focus actually holds on the tapped point rather than drifting back.
+    @Volatile private var touchAfActive = false
+    // Throttle counter for the 3A-state diagnostic log (AE/AF convergence on the standalone tele).
+    private var threeAFrame = 0
 
     @SuppressLint("MissingPermission") // caller guarantees CAMERA permission before open()
     fun open(
@@ -210,6 +217,12 @@ class CameraController(context: Context) {
                 addTarget(preview)
                 applyManualControls(controls, caps)
                 applyMetering(this, controls)
+                // Tap-to-focus: force AF_MODE_AUTO for a one-shot region scan that LOCKS on the tapped
+                // spot (CONTINUOUS + a bare trigger just holds the current, often-wrong, distance). The
+                // region is set by applyMetering above; the trigger below drives the scan.
+                if (touchAfActive && controls.focusMode != FocusMode.MANUAL) {
+                    set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
+                }
                 // AF lock: freeze focus at the last AF-resolved distance instead of leaving AF running.
                 // Not applicable in MANUAL focus mode, where focus is already fixed by the user.
                 if (controls.afLock && controls.focusMode != FocusMode.MANUAL && caps.supportsManualFocus) {
@@ -222,6 +235,16 @@ class CameraController(context: Context) {
                     session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult,
                 ) {
                     result.get(android.hardware.camera2.CaptureResult.LENS_FOCUS_DISTANCE)?.let { lastFocusDistance = it }
+                    // Diagnostic: log what 3A is actually doing (throttled ~1/sec) so we can tell
+                    // whether AE/AF are converging on the standalone tele or effectively inert.
+                    if (++threeAFrame % 30 == 0) {
+                        val ae = result.get(CaptureResult.CONTROL_AE_STATE)
+                        val af = result.get(CaptureResult.CONTROL_AF_STATE)
+                        val iso = result.get(CaptureResult.SENSOR_SENSITIVITY)
+                        val exp = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
+                        val afMode = result.get(CaptureResult.CONTROL_AF_MODE)
+                        Log.i(TAG, "3A: aeState=$ae afState=$af afMode=$afMode iso=$iso expNs=$exp lens=$lastFocusDistance")
+                    }
                 }
             }
             // Tap-to-focus one-shot: CANCEL any in-progress AF, then START a fresh scan on the new
@@ -285,6 +308,8 @@ class CameraController(context: Context) {
     }
 
     fun updateControls(controls: ManualControls) {
+        // An explicit focus-mode change ends the tap-to-focus AUTO hold and resumes the chosen mode.
+        if (controls.focusMode != this.controls.focusMode) touchAfActive = false
         this.controls = controls
         handler.post { startPreview() }
     }
@@ -297,6 +322,7 @@ class CameraController(context: Context) {
     fun setMeteringPoint(sx: Float, sy: Float) {
         meteringPoint = sx.coerceIn(0f, 1f) to sy.coerceIn(0f, 1f)
         afTriggerPending = true
+        touchAfActive = true // hold AF_MODE_AUTO on this spot until the focus mode changes
         handler.post { startPreview() }
     }
 
