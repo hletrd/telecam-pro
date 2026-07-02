@@ -69,7 +69,7 @@ class CameraEngine(private val context: Context) {
     // Software recording-audio gain (1f = passthrough) and the still-photo aspect-ratio crop;
     // read from the audio-encode / io-executor threads, so both are @Volatile.
     @Volatile private var audioGain = 1f
-    @Volatile private var aspectRatio = AspectRatio.FULL
+    @Volatile private var aspectRatio = AspectRatio.W4_3
 
     var onStatus: ((String?) -> Unit)? = null
     var onCapsReady: ((CameraCaps) -> Unit)? = null
@@ -390,7 +390,7 @@ class CameraEngine(private val context: Context) {
             if (d == null) { onStatus?.invoke("Failed to save HEIF: decode failed"); return }
             decoded = d
             val ar = aspectRatio
-            val base = if (ar != AspectRatio.FULL) {
+            val base = if (ar != AspectRatio.W4_3) { // W4_3 = full sensor, no crop needed
                 val c = centerCrop(d, ar.w, ar.h)
                 cropped = c
                 c

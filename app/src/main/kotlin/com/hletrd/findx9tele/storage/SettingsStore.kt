@@ -25,7 +25,7 @@ data class ExtraSettings(
     val teleconverter: Boolean = true,
     val eisEnabled: Boolean = true,
     val eisStrength: EisStrength = EisStrength.MEDIUM,
-    val aspectRatio: AspectRatio = AspectRatio.FULL,
+    val aspectRatio: AspectRatio = AspectRatio.W4_3,
     val grid: GridType = GridType.THIRDS,
     val videoCodec: VideoCodec = VideoCodec.HEVC,
     val bitrateLevel: BitrateLevel = BitrateLevel.MEDIUM,

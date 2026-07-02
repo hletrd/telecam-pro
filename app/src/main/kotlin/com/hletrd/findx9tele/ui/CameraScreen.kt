@@ -187,7 +187,7 @@ fun CameraScreen(
 
         GridOverlay(type = state.grid, modifier = Modifier.fillMaxSize())
 
-        if (state.aspectRatio != AspectRatio.FULL) {
+        if (state.aspectRatio != AspectRatio.W4_3) {
             AspectMask(ratio = state.aspectRatio, modifier = Modifier.fillMaxSize())
         }
 
@@ -380,10 +380,8 @@ private fun nextTimer(timer: ShutterTimer): ShutterTimer = when (timer) {
 }
 
 private fun nextAspect(ratio: AspectRatio): AspectRatio = when (ratio) {
-    AspectRatio.FULL -> AspectRatio.W16_9
+    AspectRatio.W4_3 -> AspectRatio.W16_9
     AspectRatio.W16_9 -> AspectRatio.W4_3
-    AspectRatio.W4_3 -> AspectRatio.W1_1
-    AspectRatio.W1_1 -> AspectRatio.FULL
 }
 
 /**
@@ -479,13 +477,6 @@ private fun AspectButton(ratio: AspectRatio, onClick: () -> Unit, modifier: Modi
             val color = CameraColors.TextPrimary
             val sw = 1.4.dp.toPx()
             when (ratio) {
-                AspectRatio.FULL -> drawFullscreenGlyph(color, sw)
-                AspectRatio.W1_1 -> drawRect(
-                    color,
-                    topLeft = Offset(size.width * 0.2f, size.height * 0.2f),
-                    size = Size(size.width * 0.6f, size.height * 0.6f),
-                    style = Stroke(width = sw),
-                )
                 AspectRatio.W4_3 -> drawRect(
                     color,
                     topLeft = Offset(size.width * 0.1f, size.height * 0.2f),
@@ -501,18 +492,6 @@ private fun AspectButton(ratio: AspectRatio, onClick: () -> Unit, modifier: Modi
             }
         }
     }
-}
-
-private fun DrawScope.drawFullscreenGlyph(color: Color, strokeWidth: Float) {
-    val len = size.minDimension * 0.3f
-    drawLine(color, Offset(0f, 0f), Offset(len, 0f), strokeWidth = strokeWidth)
-    drawLine(color, Offset(0f, 0f), Offset(0f, len), strokeWidth = strokeWidth)
-    drawLine(color, Offset(size.width, 0f), Offset(size.width - len, 0f), strokeWidth = strokeWidth)
-    drawLine(color, Offset(size.width, 0f), Offset(size.width, len), strokeWidth = strokeWidth)
-    drawLine(color, Offset(0f, size.height), Offset(len, size.height), strokeWidth = strokeWidth)
-    drawLine(color, Offset(0f, size.height), Offset(0f, size.height - len), strokeWidth = strokeWidth)
-    drawLine(color, Offset(size.width, size.height), Offset(size.width - len, size.height), strokeWidth = strokeWidth)
-    drawLine(color, Offset(size.width, size.height), Offset(size.width, size.height - len), strokeWidth = strokeWidth)
 }
 
 @Composable

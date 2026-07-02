@@ -328,10 +328,8 @@ internal fun driveModeLabel(mode: DriveMode): String = when (mode) {
 }
 
 internal fun aspectRatioLabel(ratio: AspectRatio): String = when (ratio) {
-    AspectRatio.FULL -> "Full"
     AspectRatio.W16_9 -> "16:9"
     AspectRatio.W4_3 -> "4:3"
-    AspectRatio.W1_1 -> "1:1"
 }
 
 internal fun videoCodecLabel(codec: VideoCodec): String = when (codec) {

@@ -115,7 +115,7 @@ private fun DrawScope.drawCenterMark(color: Color, strokeWidth: Float) {
  */
 @Composable
 fun AspectMask(ratio: AspectRatio, modifier: Modifier = Modifier) {
-    if (ratio == AspectRatio.FULL) return
+    if (ratio == AspectRatio.W4_3) return // full sensor = no crop mask
     val barColor = Color.Black.copy(alpha = 0.5f)
     Canvas(modifier = modifier.fillMaxSize()) {
         val targetAspect = ratio.w.toFloat() / ratio.h.toFloat()
