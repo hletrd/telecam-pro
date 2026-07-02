@@ -30,6 +30,8 @@ import com.hletrd.findx9tele.camera.ShutterTimer
 import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.camera.WbMode
 import com.hletrd.findx9tele.focus.FocusMapping
+import com.hletrd.findx9tele.storage.ExtraSettings
+import com.hletrd.findx9tele.storage.SettingsStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -39,6 +41,7 @@ import kotlinx.coroutines.flow.update
 class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     private val engine = CameraEngine(app)
+    private val settingsStore = SettingsStore(app)
     private val _state = MutableStateFlow(CameraUiState())
     val state: StateFlow<CameraUiState> = _state.asStateFlow()
 
@@ -85,8 +88,63 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.onVideoSizeChosen = { size -> _state.update { it.copy(videoResolution = size) } }
         engine.onAnalysis = { h, w -> _state.update { it.copy(histogramData = h, waveformData = w) } }
         engine.onAudioLevel = { lvl -> _state.update { it.copy(audioLevel = lvl) } }
+        restoreSettingsIfEnabled()
         if (_state.value.level) mainHandler.post(levelTicker)
         mainHandler.post(orientationTicker)
+    }
+
+    /** On launch, restore persisted pro settings (if the user enabled "Remember settings"). */
+    private fun restoreSettingsIfEnabled() {
+        if (!settingsStore.rememberEnabled) return
+        val loaded = settingsStore.load()
+        if (loaded == null) { _state.update { it.copy(rememberSettings = true) }; return }
+        val c = loaded.controls
+        val e = loaded.extras
+        // Push to the engine (safe pre-start: these set @Volatile fields read when the camera opens).
+        engine.setControls(c)
+        engine.setTransfer(e.transfer)
+        engine.setTeleconverterMode(e.teleconverter)
+        engine.setEisEnabled(e.eisEnabled)
+        engine.setEisStrength(e.eisStrength)
+        engine.setAspectRatio(e.aspectRatio)
+        engine.setVideoCodec(e.videoCodec)
+        engine.setBitrateLevel(e.bitrateLevel)
+        _state.update {
+            it.copy(
+                rememberSettings = true,
+                controls = c,
+                transfer = e.transfer,
+                photoFormats = PhotoFormats(e.heif, e.dngRaw),
+                mode = e.mode,
+                teleconverterMode = e.teleconverter,
+                eisEnabled = e.eisEnabled,
+                eisStrength = e.eisStrength,
+                aspectRatio = e.aspectRatio,
+                grid = e.grid,
+                videoCodec = e.videoCodec,
+                bitrateLevel = e.bitrateLevel,
+            )
+        }
+    }
+
+    private fun currentExtras(): ExtraSettings = _state.value.let { s ->
+        ExtraSettings(
+            transfer = s.transfer,
+            heif = s.photoFormats.heif,
+            dngRaw = s.photoFormats.dngRaw,
+            mode = s.mode,
+            teleconverter = s.teleconverterMode,
+            eisEnabled = s.eisEnabled,
+            eisStrength = s.eisStrength,
+            aspectRatio = s.aspectRatio,
+            grid = s.grid,
+            videoCodec = s.videoCodec,
+            bitrateLevel = s.bitrateLevel,
+        )
+    }
+
+    private fun saveSettingsIfEnabled() {
+        if (_state.value.rememberSettings) settingsStore.save(_state.value.controls, currentExtras())
     }
 
     // ---- Preview surface ----
@@ -288,6 +346,12 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         _state.update { it.copy(cameraOverrideId = id) }
     }
 
+    override fun onToggleRememberSettings(enabled: Boolean) {
+        settingsStore.rememberEnabled = enabled
+        _state.update { it.copy(rememberSettings = enabled) }
+        if (enabled) saveSettingsIfEnabled() // capture the current setup immediately
+    }
+
     private inline fun updateControls(block: (ManualControls) -> ManualControls) {
         val updated = block(_state.value.controls)
         _state.update { it.copy(controls = updated) }
@@ -305,6 +369,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             mainHandler.removeCallbacks(recordTicker)
             _state.update { it.copy(isRecording = false) }
         }
+        saveSettingsIfEnabled() // persist on background so the next launch restores them
         engine.pause()
     }
 

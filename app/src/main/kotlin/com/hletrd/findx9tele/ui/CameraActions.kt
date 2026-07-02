@@ -106,4 +106,5 @@ interface CameraActions {
 
     // Settings
     fun onCameraOverride(id: String?)
+    fun onToggleRememberSettings(enabled: Boolean)
 }

@@ -837,6 +837,7 @@ private object PreviewCameraActions : CameraActions {
     override fun onToggleRecording() = Unit
 
     override fun onCameraOverride(id: String?) = Unit
+    override fun onToggleRememberSettings(enabled: Boolean) = Unit
 }
 
 @Preview(showBackground = true)

@@ -565,6 +565,11 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
 @Composable
 private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
     TabTitle("Advanced")
+    ToggleRow(
+        label = "Remember Settings",
+        checked = state.rememberSettings,
+        onCheckedChange = actions::onToggleRememberSettings,
+    )
     LabelValueRow(
         label = "Camera Override",
         valueLabel = state.cameraOverrideId ?: "Default",
