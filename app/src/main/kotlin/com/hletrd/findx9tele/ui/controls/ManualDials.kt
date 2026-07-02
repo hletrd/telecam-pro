@@ -109,6 +109,9 @@ fun ManualDialCluster(
                         actions.onFocusMode(FocusMode.MANUAL)
                         openDial = type
                     }
+                    // EV compensation only applies in Auto exposure; in manual the chip is greyed —
+                    // don't open an inert, disabled ruler (designer UX-22).
+                    type == DialType.EV && !controls.autoExposure -> openDial = null
                     else -> openDial = if (openDial == type) null else type
                 }
             },
