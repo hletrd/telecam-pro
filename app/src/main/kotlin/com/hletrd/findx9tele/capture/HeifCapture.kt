@@ -1,5 +1,6 @@
 package com.hletrd.findx9tele.capture
 
+import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import androidx.heifwriter.HeifWriter
 import java.io.FileDescriptor
@@ -9,7 +10,15 @@ private const val STOP_TIMEOUT_MS = 10_000L
 /** Encodes a single bitmap to HEIF via androidx HeifWriter. */
 object HeifCapture {
 
-    /** [bitmap] is already oriented by the caller (e.g. rotated 180deg); no rotation is applied here. */
+    /**
+     * [bitmap] is already oriented by the caller (e.g. rotated 180deg); no rotation is applied here.
+     *
+     * `@SuppressLint("RestrictedApi")`: `HeifWriter` implements `AutoCloseable`, and `close()` is the
+     * intended way to release its encoder/handler thread. heifwriter 1.2.0-alpha01 annotates the
+     * inherited `WriterBase.close()` `@RestrictTo(LIBRARY_GROUP)`, so lint's `RestrictedApi` flags this
+     * call even though it is the only supported release path — a genuine alpha false-positive.
+     */
+    @SuppressLint("RestrictedApi")
     fun writeHeif(fd: FileDescriptor, bitmap: Bitmap, quality: Int = 95) {
         val writer = HeifWriter.Builder(fd, bitmap.width, bitmap.height, HeifWriter.INPUT_MODE_BITMAP)
             .setQuality(quality)
