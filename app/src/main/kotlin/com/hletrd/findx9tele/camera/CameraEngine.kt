@@ -90,7 +90,7 @@ class CameraEngine(private val context: Context) {
         setupExecutor.execute {
             val sel = CameraSelector2.select(manager, overrideId)
             if (sel == null) {
-                onStatus?.invoke("망원 카메라를 찾지 못했습니다")
+                onStatus?.invoke("Could not find the telephoto camera")
                 starting = false
                 return@execute
             }
@@ -100,7 +100,9 @@ class CameraEngine(private val context: Context) {
             onCapsReady?.invoke(c)
             videoSize = chooseVideoSize(sel)
 
-            val tenBit = c.supportsHlg10()
+            // HLG10 10-bit preview + full-res JPEG/RAW crashes this HAL (configureStreams Broken pipe -32);
+            // SDR preview session. 10-bit HDR preview deferred; video still tags HLG/Log in the encoder.
+            val tenBit = false
             gl.start(tenBit) { input ->
                 gl.setCameraPreviewSize(videoSize.width, videoSize.height)
                 gl.setEisProvider { gyro.currentCorrection() }
@@ -155,9 +157,9 @@ class CameraEngine(private val context: Context) {
             caps = c,
             glInputSurface = input,
             controls = controls,
-            tenBitHlg = c.supportsHlg10(),
+            tenBitHlg = false, // SDR session — HLG10+RAW+JPEG crashes the HAL
             onReady = { onStatus?.invoke(null) },
-            onError = { onStatus?.invoke("카메라 오류: ${it.message}") },
+            onError = { onStatus?.invoke("Camera error: ${it.message}") },
         )
     }
 
@@ -230,7 +232,7 @@ class CameraEngine(private val context: Context) {
         if (!started) return
         val input = gl.inputSurface ?: return // @Volatile in GlPipeline: safe cross-thread read
         controller?.close()
-        val sel = CameraSelector2.select(manager, id) ?: run { onStatus?.invoke("카메라 ID를 찾지 못했습니다"); return }
+        val sel = CameraSelector2.select(manager, id) ?: run { onStatus?.invoke("Could not find that camera ID"); return }
         selection = sel
         val c = CameraCaps.read(manager, sel.logicalId, sel.physicalId)
         caps = c
@@ -320,22 +322,22 @@ class CameraEngine(private val context: Context) {
                             ByteArray(buf.remaining()).also { buf.get(it) }
                         }.getOrNull()
                         if (bytes != null) ioExecutor.execute { saveHeifAsync(bytes) }
-                        else onStatus?.invoke("HEIF 저장 실패")
-                    } else onStatus?.invoke("HEIF 저장 실패: JPEG 없음")
+                        else onStatus?.invoke("Failed to save HEIF")
+                    } else onStatus?.invoke("Failed to save HEIF: no JPEG")
                 }
                 if (formats.dngRaw) {
                     if (raw != null) {
                         // DngCreator needs the live raw Image → must stay synchronous in this callback.
                         runCatching { saveDng(raw, rawChars, result) }
-                            .onSuccess { onStatus?.invoke("DNG 저장됨") }
-                            .onFailure { onStatus?.invoke("DNG 저장 실패: ${it.message}") }
-                    } else onStatus?.invoke("DNG 저장 실패: RAW 없음")
+                            .onSuccess { onStatus?.invoke("DNG saved") }
+                            .onFailure { onStatus?.invoke("Failed to save DNG: ${it.message}") }
+                    } else onStatus?.invoke("Failed to save DNG: no RAW")
                 }
-                if (!formats.heif && !formats.dngRaw) onStatus?.invoke("저장할 형식이 없습니다")
+                if (!formats.heif && !formats.dngRaw) onStatus?.invoke("No output format selected")
                 // HEIF success/failure is reported from inside saveHeifAsync (it runs later).
                 onDone?.invoke()
             }
-            override fun onError(t: Throwable) { onStatus?.invoke("촬영 실패: ${t.message}"); onDone?.invoke() }
+            override fun onError(t: Throwable) { onStatus?.invoke("Capture failed: ${t.message}"); onDone?.invoke() }
         }
 
     /**
@@ -350,7 +352,7 @@ class CameraEngine(private val context: Context) {
         var uri: android.net.Uri? = null
         try {
             val d = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-            if (d == null) { onStatus?.invoke("HEIF 저장 실패: 디코딩 실패"); return }
+            if (d == null) { onStatus?.invoke("Failed to save HEIF: decode failed"); return }
             decoded = d
             val ar = aspectRatio
             val base = if (ar != AspectRatio.FULL) {
@@ -361,20 +363,20 @@ class CameraEngine(private val context: Context) {
             val r = rotate180(base)
             rotated = r
             val u = MediaStoreWriter.createPendingImage(context, fileName("IMG", "heic"), "image/heic")
-            if (u == null) { onStatus?.invoke("HEIF 저장 실패"); return }
+            if (u == null) { onStatus?.invoke("Failed to save HEIF"); return }
             uri = u
             val wrote = MediaStoreWriter.openParcelFd(context, u, "rw")?.use { pfd ->
                 HeifCapture.writeHeif(pfd.fileDescriptor, r); true
             } ?: false
-            if (!wrote) { MediaStoreWriter.delete(context, u); onStatus?.invoke("HEIF 저장 실패"); return }
+            if (!wrote) { MediaStoreWriter.delete(context, u); onStatus?.invoke("Failed to save HEIF"); return }
             MediaStoreWriter.publish(context, u)
-            onStatus?.invoke("저장됨")
+            onStatus?.invoke("Saved")
         } catch (e: OutOfMemoryError) {
             uri?.let { MediaStoreWriter.delete(context, it) }
-            onStatus?.invoke("HEIF 저장 실패: 메모리 부족")
+            onStatus?.invoke("Failed to save HEIF: out of memory")
         } catch (t: Throwable) {
             uri?.let { MediaStoreWriter.delete(context, it) }
-            onStatus?.invoke("HEIF 저장 실패: ${t.message}")
+            onStatus?.invoke("Failed to save HEIF: ${t.message}")
         } finally {
             val rr = rotated
             val cc = cropped
@@ -388,10 +390,10 @@ class CameraEngine(private val context: Context) {
     /** Writes the RAW image as DNG synchronously (always full-frame; no [aspectRatio] crop applied). Publishes only on success; deletes then rethrows on failure. */
     private fun saveDng(raw: Image, chars: CameraCharacteristics, result: TotalCaptureResult) {
         val uri = MediaStoreWriter.createPendingImage(context, fileName("IMG", "dng"), "image/x-adobe-dng")
-            ?: throw IllegalStateException("MediaStore 항목 생성 실패")
+            ?: throw IllegalStateException("Failed to create MediaStore entry")
         try {
             val out = MediaStoreWriter.openOutputStream(context, uri)
-                ?: throw IllegalStateException("출력 스트림 열기 실패")
+                ?: throw IllegalStateException("Failed to open output stream")
             out.use { DngCapture.writeDng(it, raw, chars, result) }
             MediaStoreWriter.publish(context, uri)
         } catch (t: Throwable) {
@@ -417,7 +419,7 @@ class CameraEngine(private val context: Context) {
         val surface = rec.start(
             uri, size, fps, bitRateFor(size, fps), transfer, codec, recordAudio, audioGain,
         ) { lvl -> onAudioLevel?.invoke(lvl) }
-        if (surface == null) { onStatus?.invoke("녹화 시작 실패"); return false }
+        if (surface == null) { onStatus?.invoke("Failed to start recording"); return false }
         gl.setTransfer(glTransfer)
         gl.setEncoderOutput(surface, size.width, size.height)
         recorder = rec
@@ -429,7 +431,7 @@ class CameraEngine(private val context: Context) {
         gl.setEncoderOutput(null, 0, 0)
         rec.stop()
         recorder = null
-        onStatus?.invoke("동영상 저장됨")
+        onStatus?.invoke("Video saved")
     }
 
     /** Releases the camera + gyro for backgrounding without tearing down the GL pipeline or start state. */

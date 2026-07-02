@@ -39,29 +39,27 @@ object CameraSelector2 {
             }
         }
 
-        var best: TeleSelection? = null
+        val candidates = ArrayList<TeleSelection>()
         for (id in manager.cameraIdList) {
             val chars = runCatching { manager.getCameraCharacteristics(id) }.getOrNull() ?: continue
             if (chars.get(CameraCharacteristics.LENS_FACING) != CameraMetadata.LENS_FACING_BACK) continue
 
             val physicalIds = chars.physicalCameraIds
             if (physicalIds.isEmpty()) {
-                best = pickCloser(best, TeleSelection(id, null, equivFocalOf(manager, id)))
+                candidates.add(TeleSelection(id, null, equivFocalOf(manager, id)))
             } else {
-                for (pid in physicalIds) {
-                    best = pickCloser(best, TeleSelection(id, pid, equivFocalOf(manager, pid)))
-                }
+                for (pid in physicalIds) candidates.add(TeleSelection(id, pid, equivFocalOf(manager, pid)))
             }
         }
-        return best
-    }
-
-    private fun pickCloser(current: TeleSelection?, candidate: TeleSelection): TeleSelection {
-        if (candidate.equivFocalMm <= 0f) return current ?: candidate
-        if (current == null) return candidate
-        return if (abs(candidate.equivFocalMm - TARGET_EQUIV_MM) < abs(current.equivFocalMm - TARGET_EQUIV_MM)) {
-            candidate
-        } else current
+        // Closest 35mm-equiv to the target; on ties prefer a STANDALONE camera (physicalId == null)
+        // over one reached via logical-multicamera physical routing. On this device the tele is
+        // exposed both as physical "0:4" and as standalone id "4"; the routed path crashes the QTI
+        // HAL (ChiMulticameraBase configureStreams SIGSEGV), while opening the standalone id works
+        // and also permits RAW.
+        return candidates.filter { it.equivFocalMm > 0f }
+            .minWithOrNull(
+                compareBy({ abs(it.equivFocalMm - TARGET_EQUIV_MM) }, { if (it.physicalId == null) 0 else 1 }),
+            ) ?: candidates.firstOrNull()
     }
 
     private fun equivFocalOf(manager: CameraManager, id: String): Float {

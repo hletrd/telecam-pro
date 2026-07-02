@@ -126,7 +126,10 @@ class CameraController(context: Context) {
         val attempt = configAttempt
         val useHlg = tenBitHlg && caps.supportsHlg10() && attempt < 2
         val useJpeg = attempt < 3
-        val useRaw = attempt < 1 && caps.supportsRaw
+        // RAW routed to a physical sub-camera of a logical multicamera crashes this QTI HAL
+        // (configureStreams: 'DataSpace override not allowed for format 0x20' -> SIGSEGV in
+        // ChiMulticameraBase::Initialize). Only enable RAW for a standalone (non-routed) camera.
+        val useRaw = attempt < 1 && caps.supportsRaw && selection.physicalId == null
 
         val configs = ArrayList<OutputConfiguration>()
 
