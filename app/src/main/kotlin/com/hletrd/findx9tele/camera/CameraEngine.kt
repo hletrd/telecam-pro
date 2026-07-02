@@ -446,8 +446,11 @@ class CameraEngine(private val context: Context) {
         // (Resolution changes made after this point stream the old size until the next record/open.)
         val glTransfer = if (codec == VideoCodec.AVC) null else transfer
         val rec = VideoRecorder(context)
+        // Physical device orientation at record start → muxer rotation hint so a landscape-held clip
+        // plays upright (GL only bakes the afocal 180°; see VideoRecorder.start).
+        val orientationHint = gyro.currentDeviceOrientation()
         val surface = rec.start(
-            uri, size, fps, bitRateFor(size, fps), transfer, codec, recordAudio, audioGain,
+            uri, size, fps, bitRateFor(size, fps), transfer, codec, recordAudio, audioGain, orientationHint,
         ) { lvl -> onAudioLevel?.invoke(lvl) }
         if (surface == null) { onStatus?.invoke("Failed to start recording"); return false }
         gl.setTransfer(glTransfer)
@@ -458,10 +461,14 @@ class CameraEngine(private val context: Context) {
 
     fun stopRecording() {
         val rec = recorder ?: return
-        gl.setEncoderOutput(null, 0, 0)
-        rec.stop()
         recorder = null
-        onStatus?.invoke("Video saved")
+        gl.setEncoderOutput(null, 0, 0)
+        // rec.stop() joins the video/audio drain threads (up to several seconds); run it OFF the caller
+        // (main) thread to avoid an ANR. The file finalizes and the status fires from the io thread.
+        ioExecutor.execute {
+            runCatching { rec.stop() }
+            onStatus?.invoke("Video saved")
+        }
     }
 
     /** Releases the camera + gyro for backgrounding without tearing down the GL pipeline or start state. */
