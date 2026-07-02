@@ -188,19 +188,20 @@ Additionally, **device orientation** from gravity (GyroEis.currentDeviceOrientat
 **Preview (GL):**
 
 ```kotlin
-// CameraEngine.previewRotationDegrees()
-val base = -sensorOrientation + (if (teleconverterMode) 180 else 0)
-// Return (base % 360 + 360) % 360
-// Then pass to FlipRenderer.setRotationDegrees()
-// → Texture coordinates rotated by -base, so sampled image rotates +base (inverse)
-// Example: sensorOrientation=90, teleconverter ON
-//   base = -90 + 180 = 90°
-//   Texture coords rotate -90° (inverse), so image rotates +90°... wait, that's wrong.
-//   Actually, base = 90, so preview is 90° CW. The negation in the formula handles
-//   the texture-coordinate inversion.
+// CameraEngine.previewRotationDegrees() -> RotationMath.previewRotationDegrees(teleconverterMode)
+val rotation = if (teleconverterMode) 180 else 0   // afocal 180° flip only (no sensor term)
+// Then pass to FlipRenderer.setRotationDegrees(rotation)
+// Example: sensorOrientation=90, teleconverter ON -> preview rotation = 180°
 ```
 
-Subtlety: The sensor orientation is **negated** because GL rotates texture coordinates (sampling), which rotates the image the opposite way. The afocal 180° is **self-inverse** (180° is its own opposite), so ± cancel out and it contributes +180 to the base.
+Subtlety: the preview rotation carries **NO sensor term** — the camera SurfaceTexture transform
+(applied via `stMatrix` in `FlipRenderer.draw`) already rotates the sampled image by the sensor
+orientation, so the GL renderer only needs to add the afocal teleconverter's **180°** inversion on
+top (and nothing when the teleconverter is off). This differs from the capture path below, which
+rotates the raw-sensor pixels and therefore keeps `sensor + afocal + device`. Empirically calibrated
+on-device: `+sensorOrientation` (270°) read 90° CCW and `−sensorOrientation` (90°) read 90° CW, so
+the upright value is the afocal 180° alone. (`FlipRenderer` still needs the sensor orientation
+separately, but only to pick the displayed **aspect**, since a ~90° rotation swaps width/height.)
 
 **Captures (pixel rotation + device orientation):**
 
