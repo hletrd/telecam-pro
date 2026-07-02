@@ -1,12 +1,15 @@
 package com.hletrd.findx9tele.ui
 
 import android.graphics.SurfaceTexture
+import android.view.HapticFeedbackConstants
 import android.view.Surface
 import android.view.TextureView
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -27,6 +30,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -37,6 +41,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -113,11 +119,17 @@ fun CameraScreen(
     }
 
     // Counter-rotates the on-screen scopes/readouts so they stay upright as the phone turns, even
-    // though the activity is portrait-locked (like Pixel/Sony). Animated between the 4 orientations.
-    val overlayRotation by animateFloatAsState(
-        targetValue = -state.deviceOrientation.toFloat(),
-        label = "overlayRotation",
-    )
+    // though the activity is portrait-locked (like Pixel/Sony). We accumulate an UNWRAPPED target so
+    // the animation always takes the shortest ≤90° path (e.g. 270°→0° rotates +90°, not −270°).
+    var overlayRotationTarget by remember { mutableStateOf(-state.deviceOrientation.toFloat()) }
+    LaunchedEffect(state.deviceOrientation) {
+        val desired = -state.deviceOrientation.toFloat()
+        var delta = (desired - overlayRotationTarget) % 360f
+        if (delta > 180f) delta -= 360f
+        if (delta < -180f) delta += 360f
+        overlayRotationTarget += delta
+    }
+    val overlayRotation by animateFloatAsState(targetValue = overlayRotationTarget, label = "overlayRotation")
 
     Box(
         modifier = modifier
@@ -373,7 +385,11 @@ private fun nextAspect(ratio: AspectRatio): AspectRatio = when (ratio) {
     AspectRatio.W1_1 -> AspectRatio.FULL
 }
 
-/** Ghost circular translucent chrome button shared by every top-bar icon. */
+/**
+ * Ghost circular translucent chrome button shared by every top-bar icon. The tappable area is a
+ * 48 dp touch target (Material / WCAG 2.2 minimum) while the visible scrim stays a compact 36 dp, so
+ * one-handed / gloved use on this 3168 px panel mis-taps far less without bloating the chrome.
+ */
 @Composable
 private fun ChromeIconButton(
     onClick: () -> Unit,
@@ -382,13 +398,20 @@ private fun ChromeIconButton(
 ) {
     Box(
         modifier = modifier
-            .size(36.dp)
+            .size(48.dp)
             .clip(CircleShape)
-            .background(CameraColors.ChromeScrim.copy(alpha = 0.45f))
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
-        content = content,
-    )
+    ) {
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(CircleShape)
+                .background(CameraColors.ChromeScrim.copy(alpha = 0.45f)),
+            contentAlignment = Alignment.Center,
+            content = content,
+        )
+    }
 }
 
 @Composable
@@ -666,10 +689,20 @@ private fun ShutterButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // Tactile confirmation: a brief press-scale + a CONFIRM haptic so the shutter never fires "into
+    // the void" (designer UX-2). Full-screen flash / thumbnail fly-in are deferred.
+    val view = LocalView.current
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val shutterScale by animateFloatAsState(if (pressed) 0.9f else 1f, label = "shutterScale")
     Canvas(
         modifier = modifier
             .size(76.dp)
-            .clickable(onClick = onClick),
+            .scale(shutterScale)
+            .clickable(interactionSource = interaction, indication = null) {
+                view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                onClick()
+            },
     ) {
         drawCircle(color = Color.White, radius = size.minDimension / 2f, style = Stroke(width = 4.dp.toPx()))
         when {
@@ -695,13 +728,15 @@ private fun ShutterButton(
  */
 @Composable
 private fun SnapshotButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
-    Canvas(
-        modifier = modifier
-            .size(36.dp)
-            .clickable(onClick = onClick),
+    // 48 dp touch target, 36 dp visual dot.
+    Box(
+        modifier = modifier.size(48.dp).clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
     ) {
-        drawCircle(color = Color.White, radius = size.minDimension / 2f, style = Stroke(width = 2.dp.toPx()))
-        drawCircle(color = Color.White, radius = size.minDimension * 0.32f)
+        Canvas(modifier = Modifier.size(36.dp)) {
+            drawCircle(color = Color.White, radius = size.minDimension / 2f, style = Stroke(width = 2.dp.toPx()))
+            drawCircle(color = Color.White, radius = size.minDimension * 0.32f)
+        }
     }
 }
 
