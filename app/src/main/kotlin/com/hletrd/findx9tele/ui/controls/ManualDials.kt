@@ -1,6 +1,7 @@
 package com.hletrd.findx9tele.ui.controls
 
 import android.util.Range
+import android.view.HapticFeedbackConstants
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
@@ -38,6 +39,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -297,6 +299,7 @@ private fun ShutterRuler(controls: ManualControls, caps: CameraCaps?, actions: C
                 enabled = enabled,
                 totalUnits = (n - 1).coerceAtLeast(1),
                 majorEvery = stepMajorEvery(controls.exposureStep),
+                snap = true,
             )
         }
     }
@@ -376,6 +379,7 @@ private fun IsoRuler(controls: ManualControls, caps: CameraCaps?, onIso: (Int) -
             enabled = enabled,
             totalUnits = (n - 1).coerceAtLeast(1), // one tick per stop → snappy, short strip
             majorEvery = stepMajorEvery(controls.exposureStep),
+            snap = true,
         )
     }
 }
@@ -421,6 +425,7 @@ private fun EvRuler(controls: ManualControls, caps: CameraCaps?, onEv: (Int) -> 
             enabled = controls.autoExposure,
             totalUnits = (hi - lo).coerceAtLeast(1),
             majorEvery = majorEvery,
+            snap = true,
         )
     }
 }
@@ -453,13 +458,20 @@ fun RulerSlider(
     majorEvery: Int = 30,
     tickSpacing: Dp = 12.dp,
     accentColor: Color = CameraColors.ManualActive,
+    snap: Boolean = false,
 ) {
     val density = LocalDensity.current
+    val view = LocalView.current
     val pxPerUnit = remember(density, tickSpacing) { with(density) { tickSpacing.toPx() } }
     var isDragging by remember { mutableStateOf(false) }
-    var localUnit by remember { mutableFloatStateOf(fraction.coerceIn(0f, 1f) * totalUnits) }
+    // contUnit tracks the finger continuously; localUnit is what's drawn + reported. When [snap] is
+    // set it detents to whole units (each = one stop) with a haptic tick, so the bar physically
+    // clicks between stops instead of scrolling smoothly.
+    var contUnit by remember { mutableFloatStateOf(fraction.coerceIn(0f, 1f) * totalUnits) }
+    var localUnit by remember { mutableFloatStateOf(contUnit) }
     if (!isDragging) {
-        localUnit = fraction.coerceIn(0f, 1f) * totalUnits
+        contUnit = fraction.coerceIn(0f, 1f) * totalUnits
+        localUnit = if (snap) contUnit.roundToInt().toFloat() else contUnit
     }
     val minorColor = Color.White.copy(alpha = if (enabled) 0.28f else 0.12f)
     val majorColor = Color.White.copy(alpha = if (enabled) 0.85f else 0.3f)
@@ -471,7 +483,7 @@ fun RulerSlider(
             .height(56.dp)
             .background(Color.Black.copy(alpha = 0.35f), RoundedCornerShape(16.dp))
             .padding(horizontal = 4.dp)
-            .pointerInput(enabled, totalUnits, pxPerUnit) {
+            .pointerInput(enabled, totalUnits, pxPerUnit, snap) {
                 if (!enabled) return@pointerInput
                 detectHorizontalDragGestures(
                     onDragStart = { isDragging = true },
@@ -480,7 +492,10 @@ fun RulerSlider(
                 ) { change, dragAmount ->
                     change.consume()
                     // Content follows the finger: dragging left (negative dx) increases the value.
-                    localUnit = (localUnit - dragAmount / pxPerUnit).coerceIn(0f, totalUnits.toFloat())
+                    contUnit = (contUnit - dragAmount / pxPerUnit).coerceIn(0f, totalUnits.toFloat())
+                    val next = if (snap) contUnit.roundToInt().toFloat() else contUnit
+                    if (snap && next != localUnit) view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    localUnit = next
                     onFractionChange(localUnit / totalUnits)
                 }
             },
