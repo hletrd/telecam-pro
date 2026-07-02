@@ -307,11 +307,17 @@ class CameraController(context: Context) {
     }
 
     fun capturePhoto(wantJpeg: Boolean, wantRaw: Boolean, cb: PhotoCallback) = handler.post {
-        val camera = device ?: return@post
-        val s = session ?: return@post
+        // Always surface a result through the callback (even on the no-target/not-ready paths) so a
+        // BURST/AEB chain's onDone still fires and the user gets feedback instead of a silent no-op.
+        val camera = device ?: return@post cb.onError(IllegalStateException("Camera not ready"))
+        val s = session ?: return@post cb.onError(IllegalStateException("Camera session not ready"))
         val jpeg = jpegReader?.surface?.takeIf { wantJpeg }
         val raw = rawReader?.surface?.takeIf { wantRaw && caps.supportsRaw }
-        if (jpeg == null && raw == null) return@post
+        if (jpeg == null && raw == null) {
+            return@post cb.onError(
+                IllegalStateException("No capture target — enable HEIF or DNG (the session may have fallen back to preview-only)"),
+            )
+        }
 
         pending = Pending(jpeg != null, raw != null, cb)
 
