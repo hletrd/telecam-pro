@@ -73,4 +73,17 @@ HLG/Log color approximation; 10-bit HDR preview deferred; Kelvin→RGGB neutral-
 ---
 
 ## Progress log
-(updated during PROMPT 3 implementation)
+
+**2026-07-03 — all scheduled items implemented; gates green throughout.** Final gate:
+`:app:assembleDebug` ✅ · `:app:testDebugUnitTest` ✅ (26 tests: 12 focus + 7 RotationMath + 7 CameraSelector2) · `:app:lintDebug` ✅ **0 errors, 9 warnings** (down from 1 error + 18 warnings at cycle start).
+
+Completed this cycle (☑):
+- **H1** RestrictedApi suppression (gate unblocked) · **L3** EmptySuperCall · **L7** AEB distinct steps.
+- **A-BUG-1** capture callback on no-target path · **A-BUG-4** AudioRecord state guard · **H3** delete empty MP4 · **H2** muxer orientation hint (sign device-verify) · **A-TRACE-2a** record-stop off the main thread (ANR fix) · **M1** recording UI sync on background.
+- **RotationMath** extraction + 7 tests (**TEST-2/3/4**), **CameraSelector2.pickBest** extraction + 7 tests (**TEST-1**), **L2** ExifInterface→local constants.
+- **UX-2** shutter haptic+press-scale · **M5/UX-9** 48 dp touch targets (chrome/snapshot/close) · **M10/UX-25** shortest-path HUD rotation · **UX-22** no inert EV ruler in manual.
+- **M8** permission Settings deep-link + in-context rationale + onResume re-check · **L6** video-resolution UI sync · **L1** dep bumps (coreKtx/activity/compose-bom) · **DOC** ARCHITECTURE preview-rotation formula.
+
+Warnings remaining (9, best-effort): `OldTargetApi` (L4, deferred by policy), AGP 9.2.0→9.2.1 (`AndroidGradlePluginVersion`, left to avoid toolchain risk mid-cycle), `heifwriter -alpha01` and a few Compose/preview hints — all recorded/deferred, none error-level.
+
+Device-only, NOT verified on the synthetic-camera AVD (carry to device): H2 hint sign, tele/RAW/HLG capture, EIS, exposure/pixels. AVD-verified: builds, unit tests, lint clean, app launches + permission flow + Compose UI renders/navigates at 1440×3168.
