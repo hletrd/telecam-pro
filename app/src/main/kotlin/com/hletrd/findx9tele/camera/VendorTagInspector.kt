@@ -33,18 +33,7 @@ object VendorTagInspector {
         val header = if (parent == null) "Camera $id" else "Camera $id (physical of $parent)"
         Log.i(TAG, "== $header facing=$facing focalsMm=$focals sensorMm=$size ==")
 
-        chars.keys.forEach { key ->
-            val name = key.name
-            if (name.startsWith("com.oplus") || name.startsWith("org.quic") ||
-                name.startsWith("org.codeaurora") || name.startsWith("com.qti")
-            ) {
-                Log.i(TAG, "  vendorChar $name = ${valueString(runCatching { chars.get(key) }.getOrNull())}")
-            }
-        }
-        chars.availableCaptureRequestKeys.forEach { key ->
-            if (key.name.contains('.')) Log.i(TAG, "  reqKey ${key.name}")
-        }
-        chars.availableSessionKeys?.forEach { key -> Log.i(TAG, "  sessionKey ${key.name}") }
+        Log.i(TAG, "   physicalIds=${chars.physicalCameraIds}")
     }
 
     private fun valueString(value: Any?): String = when (value) {
