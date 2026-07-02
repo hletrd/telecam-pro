@@ -89,6 +89,7 @@ internal fun ProSheet(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
     initialTab: ProSheetTab = ProSheetTab.SHOOTING,
+    onTabChange: (ProSheetTab) -> Unit = {},
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
@@ -119,7 +120,7 @@ internal fun ProSheet(
             }
 
             Row(modifier = Modifier.fillMaxWidth().fillMaxHeight(0.82f)) {
-                TabRail(selected = selectedTab, onSelect = { selectedTab = it })
+                TabRail(selected = selectedTab, onSelect = { selectedTab = it; onTabChange(it) })
                 Box(modifier = Modifier.width(1.dp).fillMaxHeight().background(Color.White.copy(alpha = 0.08f)))
                 Column(
                     modifier = Modifier
