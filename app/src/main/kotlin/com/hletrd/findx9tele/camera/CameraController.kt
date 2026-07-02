@@ -224,9 +224,14 @@ class CameraController(context: Context) {
                     result.get(android.hardware.camera2.CaptureResult.LENS_FOCUS_DISTANCE)?.let { lastFocusDistance = it }
                 }
             }
-            // Tap-to-focus one-shot: START the AF engine at the new point, then fall through to the
-            // repeating request with the trigger cleared so the converged focus is held.
+            // Tap-to-focus one-shot: CANCEL any in-progress AF, then START a fresh scan on the new
+            // region, then fall through to the repeating request (trigger IDLE) so the converged
+            // focus is held. Cancel-then-start is more reliable than a bare START when the AF engine
+            // is mid-scan (common in CONTINUOUS mode).
             if (afTriggerPending && controls.focusMode != FocusMode.MANUAL) {
+                Log.i(TAG, "Touch AF: scanning region $meteringPoint")
+                builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_CANCEL)
+                runCatching { s.capture(builder.build(), callback, handler) }
                 builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
                 runCatching { s.capture(builder.build(), callback, handler) }
                 builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
