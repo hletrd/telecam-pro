@@ -375,13 +375,23 @@ internal fun sliderToShutterNs(slider: Float, range: android.util.Range<Long>): 
     return v.roundToLong().coerceIn(range.lower, range.upper)
 }
 
+// Conventional shutter-speed denominators, so an exact 2^k time (e.g. 1/128 s) displays as the
+// camera-standard value a photographer expects (1/125 s).
+private val NICE_SHUTTER_DENOM = intArrayOf(
+    1, 2, 3, 4, 5, 6, 8, 10, 13, 15, 20, 25, 30, 40, 50, 60, 80, 100, 125, 160, 200, 250, 320,
+    400, 500, 640, 800, 1000, 1250, 1600, 2000, 2500, 3200, 4000, 5000, 6400, 8000, 10000, 12800, 16000,
+)
+
 internal fun formatShutterSpeed(ns: Long): String {
     val seconds = ns / 1_000_000_000.0
-    return if (seconds >= 1.0) {
-        "%.1fs".format(seconds)
-    } else {
-        val denominator = (1.0 / seconds).roundToInt().coerceAtLeast(1)
-        "1/${denominator}s"
+    return when {
+        seconds >= 10.0 -> "%.0fs".format(seconds)
+        seconds >= 1.0 -> "%.1fs".format(seconds)
+        else -> {
+            val denom = 1.0 / seconds
+            val nice = NICE_SHUTTER_DENOM.minByOrNull { kotlin.math.abs(it - denom) } ?: denom.roundToInt().coerceAtLeast(1)
+            "1/${nice}s"
+        }
     }
 }
 

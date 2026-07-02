@@ -42,6 +42,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hletrd.findx9tele.camera.Antibanding
+import com.hletrd.findx9tele.camera.ExposureStep
 import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CameraUiState
@@ -370,6 +371,13 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         selected = controls.shutterMode,
         labelFor = ::shutterModeLabel,
         onSelect = actions::onShutterMode,
+    )
+    SegmentedSelector(
+        label = "Exposure Step",
+        options = ExposureStep.entries,
+        selected = controls.exposureStep,
+        labelFor = { "${it.label} EV" },
+        onSelect = actions::onExposureStep,
     )
     val isoRange = caps?.isoRange ?: Range(controls.iso, controls.iso)
     LabeledSlider(

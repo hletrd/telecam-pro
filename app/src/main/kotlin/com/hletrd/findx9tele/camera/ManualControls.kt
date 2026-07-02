@@ -26,6 +26,8 @@ data class ManualControls(
     val aeLock: Boolean = false,
     val antibanding: Antibanding = Antibanding.AUTO,
     val fps: Int = 30,
+    // Snap increment (in EV/stops) for the manual ISO and shutter dials.
+    val exposureStep: ExposureStep = ExposureStep.THIRD,
     // White balance
     val wbMode: WbMode = WbMode.AUTO,
     val wbKelvin: Int = 5200,
@@ -44,6 +46,13 @@ data class ManualControls(
     // Output
     val jpegQuality: Int = 95,
 )
+
+/** Snap increment for the manual ISO/shutter dials, in EV (stops). */
+enum class ExposureStep(val ev: Float, val label: String) {
+    THIRD(1f / 3f, "1/3"),
+    HALF(1f / 2f, "1/2"),
+    FULL(1f, "1"),
+}
 
 /** Effective exposure time (ns): derived from the cine angle in ANGLE mode, else the raw speed. */
 fun ManualControls.effectiveExposureNs(): Long =

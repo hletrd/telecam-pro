@@ -10,6 +10,7 @@ import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.DriveMode
 import com.hletrd.findx9tele.camera.EisStrength
+import com.hletrd.findx9tele.camera.ExposureStep
 import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
@@ -48,6 +49,7 @@ interface CameraActions {
     fun onFps(fps: Int)
     fun onShutterMode(mode: ShutterMode)
     fun onShutterAngle(angle: Float)
+    fun onExposureStep(step: ExposureStep)
 
     // White balance
     fun onWbMode(mode: WbMode)

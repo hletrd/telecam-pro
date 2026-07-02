@@ -17,6 +17,7 @@ import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.DriveMode
 import com.hletrd.findx9tele.camera.EisStrength
+import com.hletrd.findx9tele.camera.ExposureStep
 import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
@@ -113,6 +114,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onShutterMode(mode: ShutterMode) = updateControls { it.copy(shutterMode = mode) }
     override fun onShutterAngle(angle: Float) =
         updateControls { it.copy(shutterAngle = angle, shutterMode = ShutterMode.ANGLE, autoExposure = false) }
+    override fun onExposureStep(step: ExposureStep) = updateControls { it.copy(exposureStep = step) }
 
     // ---- White balance ----
     override fun onWbMode(mode: WbMode) = updateControls { it.copy(wbMode = mode) }

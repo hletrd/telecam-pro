@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.hletrd.findx9tele.camera.CameraCaps
 import com.hletrd.findx9tele.camera.CameraUiState
+import com.hletrd.findx9tele.camera.ExposureStep
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.ManualControls
 import com.hletrd.findx9tele.camera.ShutterMode
@@ -90,12 +91,25 @@ fun ManualDialCluster(
         DialChipRow(
             state = state,
             openDial = openDial,
+            onToggleAutoExposure = actions::onToggleAutoExposure,
             onSelect = { type ->
-                if (type == DialType.WB && controls.wbMode != WbMode.MANUAL) {
-                    openDial = null
-                    onRequestWhiteBalanceSheet()
-                } else {
-                    openDial = if (openDial == type) null else type
+                when {
+                    type == DialType.WB && controls.wbMode != WbMode.MANUAL -> {
+                        openDial = null
+                        onRequestWhiteBalanceSheet()
+                    }
+                    // Tapping a locked exposure dial (auto AE) switches to manual so it's adjustable —
+                    // otherwise the ruler is inert and there's no hint that manual mode is required.
+                    (type == DialType.ISO || type == DialType.SHUTTER) && controls.autoExposure -> {
+                        actions.onToggleAutoExposure(false)
+                        openDial = type
+                    }
+                    // Likewise for focus: default is continuous AF, so tapping Focus enters manual.
+                    type == DialType.FOCUS && controls.focusMode != FocusMode.MANUAL -> {
+                        actions.onFocusMode(FocusMode.MANUAL)
+                        openDial = type
+                    }
+                    else -> openDial = if (openDial == type) null else type
                 }
             },
         )
@@ -106,6 +120,7 @@ fun ManualDialCluster(
 private fun DialChipRow(
     state: CameraUiState,
     openDial: DialType?,
+    onToggleAutoExposure: (Boolean) -> Unit,
     onSelect: (DialType) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -121,19 +136,28 @@ private fun DialChipRow(
             .horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        // Exposure-mode toggle: the visible "hint" that ISO/Shutter need Manual. Highlighted when
+        // Manual is active. Tapping flips Auto ⇄ Manual for the whole exposure triangle.
+        DialChip(
+            label = "AE",
+            value = if (controls.autoExposure) "Auto" else "Manual",
+            active = !controls.autoExposure,
+            enabled = true,
+            onClick = { onToggleAutoExposure(!controls.autoExposure) },
+        )
         DialChip(
             label = "Focus",
-            value = formatFocusDistance(controls.focusDistanceDiopters),
+            value = formatFocusRelative(controls.focusDistanceDiopters, caps?.minFocusDistanceDiopters ?: 0f),
             active = openDial == DialType.FOCUS,
             enabled = controls.focusMode == FocusMode.MANUAL && (caps?.supportsManualFocus ?: false),
             onClick = { onSelect(DialType.FOCUS) },
         )
         DialChip(
             label = "Shutter",
-            value = if (controls.shutterMode == ShutterMode.ANGLE) {
-                "%.0f°".format(controls.shutterAngle)
-            } else {
-                formatShutterSpeed(controls.exposureTimeNs)
+            value = when {
+                controls.autoExposure -> "Auto"
+                controls.shutterMode == ShutterMode.ANGLE -> "%.0f°".format(controls.shutterAngle)
+                else -> formatShutterSpeed(controls.exposureTimeNs)
             },
             active = openDial == DialType.SHUTTER,
             enabled = !controls.autoExposure,
@@ -141,7 +165,7 @@ private fun DialChipRow(
         )
         DialChip(
             label = "ISO",
-            value = controls.iso.toString(),
+            value = if (controls.autoExposure) "Auto" else controls.iso.toString(),
             active = openDial == DialType.ISO,
             enabled = !controls.autoExposure,
             onClick = { onSelect(DialType.ISO) },
@@ -200,6 +224,16 @@ private fun DialChip(
 // ruler's normalized 0..1 travel and format the live readout above it.
 // ---------------------------------------------------------------------------
 
+/**
+ * Focus as a RELATIVE 0..100 scale (0 = ∞), not an absolute distance. The diopter→metres estimate
+ * is unreliable through the afocal converter, so a relative "∞ + N" reads truer than a fake "3.20 m".
+ */
+private fun formatFocusRelative(diopters: Float, minDiopters: Float): String {
+    if (minDiopters <= 0f) return "∞"
+    val f = FocusMapping.dioptersToSlider(diopters, minDiopters)
+    return if (f <= 0.005f) "∞" else "∞ + ${(f * 100).roundToInt()}"
+}
+
 @Composable
 private fun RulerReadout(value: String, modifier: Modifier = Modifier) {
     Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -218,8 +252,16 @@ private fun FocusRuler(controls: ManualControls, caps: CameraCaps?, onFocusSlide
     val enabled = controls.focusMode == FocusMode.MANUAL && minDiopters > 0f
     val fraction = FocusMapping.dioptersToSlider(controls.focusDistanceDiopters, minDiopters)
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        RulerReadout(formatFocusDistance(controls.focusDistanceDiopters))
-        RulerSlider(fraction = fraction, onFractionChange = onFocusSlider, enabled = enabled)
+        RulerReadout(formatFocusRelative(controls.focusDistanceDiopters, minDiopters))
+        // Relative 0..100 scale (0 = ∞); shorter travel than the default so fine focus near infinity
+        // — where the afocal converter lands — is reachable without a marathon drag.
+        RulerSlider(
+            fraction = fraction,
+            onFractionChange = onFocusSlider,
+            enabled = enabled,
+            totalUnits = 100,
+            majorEvery = 10,
+        )
     }
 }
 
@@ -238,13 +280,20 @@ private fun ShutterRuler(controls: ManualControls, caps: CameraCaps?, actions: C
         }
     } else {
         val range = caps?.exposureTimeRange ?: Range(controls.exposureTimeNs, controls.exposureTimeNs)
-        val fraction = shutterNsToSlider(controls.exposureTimeNs, range)
+        val stops = remember(range.lower, range.upper, controls.exposureStep) { shutterStops(range, controls.exposureStep.ev) }
+        val n = stops.size
+        val idx = remember(controls.exposureTimeNs, stops) {
+            stops.indices.minByOrNull { kotlin.math.abs(stops[it] - controls.exposureTimeNs) } ?: 0
+        }
+        val fraction = if (n <= 1) 0f else idx.toFloat() / (n - 1)
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
             RulerReadout(formatShutterSpeed(controls.exposureTimeNs))
             RulerSlider(
                 fraction = fraction,
-                onFractionChange = { f -> actions.onShutterNs(sliderToShutterNs(f, range)) },
+                onFractionChange = { f -> actions.onShutterNs(stops[(f * (n - 1)).roundToInt().coerceIn(0, n - 1)]) },
                 enabled = enabled,
+                totalUnits = (n - 1).coerceAtLeast(1),
+                majorEvery = stepMajorEvery(controls.exposureStep),
             )
         }
     }
@@ -258,24 +307,72 @@ private fun ManualControls.effectiveExposureNsForDisplay(): Long =
         exposureTimeNs
     }
 
+// ---- Stop snapping ---------------------------------------------------------------------------
+// ISO and shutter snap to values spaced by the selected EV increment (1/3, 1/2 or 1 stop), so a
+// camera user drags in familiar stops instead of a smooth continuum. Values are generated by EV from
+// an anchor and log-spaced; each ruler tick is one stop, keeping the strip short.
+
+private fun roundToSignificant(v: Double, sig: Int): Double {
+    if (v <= 0.0) return v
+    val digits = Math.ceil(Math.log10(v)).toInt()
+    val mag = Math.pow(10.0, (sig - digits).toDouble())
+    return Math.round(v * mag) / mag
+}
+
+/** ISO values [stepEv] EV apart across [range], anchored at 100, rounded to 2 significant figures so
+ *  they read as conventional stops (100, 125, 160, 200, …). Hardware bounds always included. */
+private fun isoStops(range: Range<Int>, stepEv: Float): IntArray {
+    if (range.lower >= range.upper || stepEv <= 0f) return intArrayOf(range.lower)
+    val set = sortedSetOf(range.lower, range.upper)
+    val ln2 = Math.log(2.0)
+    val kLo = Math.ceil(Math.log(range.lower / 100.0) / ln2 / stepEv).toInt()
+    val kHi = Math.floor(Math.log(range.upper / 100.0) / ln2 / stepEv).toInt()
+    for (k in kLo..kHi) {
+        val nice = roundToSignificant(100.0 * Math.pow(2.0, k * stepEv.toDouble()), 2).roundToInt()
+        if (nice > range.lower && nice < range.upper) set.add(nice)
+    }
+    return set.toIntArray()
+}
+
+/** Shutter times (ns) [stepEv] EV apart across [range], anchored at 1 s. Hardware bounds included. */
+private fun shutterStops(range: Range<Long>, stepEv: Float): LongArray {
+    if (range.lower >= range.upper || stepEv <= 0f) return longArrayOf(range.lower)
+    val set = sortedSetOf(range.lower, range.upper)
+    val ln2 = Math.log(2.0)
+    val anchor = 1_000_000_000.0
+    val kLo = Math.ceil(Math.log(range.lower / anchor) / ln2 / stepEv).toInt()
+    val kHi = Math.floor(Math.log(range.upper / anchor) / ln2 / stepEv).toInt()
+    for (k in kLo..kHi) {
+        val ns = Math.round(anchor * Math.pow(2.0, k * stepEv.toDouble()))
+        if (ns > range.lower && ns < range.upper) set.add(ns)
+    }
+    return set.toLongArray()
+}
+
+private fun stepMajorEvery(step: ExposureStep): Int = when (step) {
+    ExposureStep.THIRD -> 3
+    ExposureStep.HALF -> 2
+    ExposureStep.FULL -> 1
+}
+
 @Composable
 private fun IsoRuler(controls: ManualControls, caps: CameraCaps?, onIso: (Int) -> Unit) {
     val range = caps?.isoRange ?: Range(controls.iso, controls.iso)
     val enabled = !controls.autoExposure
-    val fraction = if (range.lower >= range.upper) {
-        0f
-    } else {
-        ((controls.iso - range.lower).toFloat() / (range.upper - range.lower).toFloat()).coerceIn(0f, 1f)
+    val stops = remember(range.lower, range.upper, controls.exposureStep) { isoStops(range, controls.exposureStep.ev) }
+    val n = stops.size
+    val idx = remember(controls.iso, stops) {
+        stops.indices.minByOrNull { kotlin.math.abs(stops[it] - controls.iso) } ?: 0
     }
+    val fraction = if (n <= 1) 0f else idx.toFloat() / (n - 1)
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         RulerReadout("ISO ${controls.iso}")
         RulerSlider(
             fraction = fraction,
-            onFractionChange = { f ->
-                val iso = (range.lower + f * (range.upper - range.lower)).roundToInt().coerceIn(range.lower, range.upper)
-                onIso(iso)
-            },
+            onFractionChange = { f -> onIso(stops[(f * (n - 1)).roundToInt().coerceIn(0, n - 1)]) },
             enabled = enabled,
+            totalUnits = (n - 1).coerceAtLeast(1), // one tick per stop → snappy, short strip
+            majorEvery = stepMajorEvery(controls.exposureStep),
         )
     }
 }
