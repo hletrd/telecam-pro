@@ -294,7 +294,15 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     // ---- Lifecycle ----
     fun onStart() = engine.resume()
-    fun onStop() = engine.pause()
+    fun onStop() {
+        // engine.pause() finalizes any in-flight recording; keep the UI in sync so we don't return
+        // to a phantom "recording" state with the timer still ticking.
+        if (_state.value.isRecording) {
+            mainHandler.removeCallbacks(recordTicker)
+            _state.update { it.copy(isRecording = false) }
+        }
+        engine.pause()
+    }
 
     override fun onCleared() {
         mainHandler.removeCallbacksAndMessages(null)
