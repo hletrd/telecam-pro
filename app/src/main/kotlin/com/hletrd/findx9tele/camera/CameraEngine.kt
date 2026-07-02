@@ -73,6 +73,9 @@ class CameraEngine(private val context: Context) {
 
     var onStatus: ((String?) -> Unit)? = null
     var onCapsReady: ((CameraCaps) -> Unit)? = null
+    // The auto-chosen video size for the selected lens (largest 16:9), so the UI's Video tab reflects
+    // what the engine will actually encode instead of drifting from a hardcoded default.
+    var onVideoSizeChosen: ((Size) -> Unit)? = null
     // Viewfinder analysis (histogram/waveform) computed on the GL thread; delivered here so the
     // ViewModel can hoist it into UI state. Either arg is null when its analysis is disabled.
     var onAnalysis: ((HistogramData?, WaveformData?) -> Unit)? = null
@@ -103,6 +106,7 @@ class CameraEngine(private val context: Context) {
             caps = c
             onCapsReady?.invoke(c)
             videoSize = chooseVideoSize(sel)
+            onVideoSizeChosen?.invoke(videoSize)
 
             // HLG10 10-bit preview + full-res JPEG/RAW crashes this HAL (configureStreams Broken pipe -32);
             // SDR preview session. 10-bit HDR preview deferred; video still tags HLG/Log in the encoder.
@@ -265,6 +269,7 @@ class CameraEngine(private val context: Context) {
         // The new lens can expose different output sizes; refresh videoSize + the GL camera size so
         // aspect (FlipRenderer "cover"), EIS focal scaling, and the encoder size match the new lens.
         videoSize = chooseVideoSize(sel)
+        onVideoSizeChosen?.invoke(videoSize)
         gl.setCameraPreviewSize(videoSize.width, videoSize.height)
         applyStabilization()
         openCamera(input)

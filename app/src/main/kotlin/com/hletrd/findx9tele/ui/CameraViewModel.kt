@@ -82,6 +82,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     init {
         engine.onStatus = { msg -> _state.update { it.copy(statusMessage = msg) } }
         engine.onCapsReady = { caps -> _state.update { it.copy(caps = caps) } }
+        engine.onVideoSizeChosen = { size -> _state.update { it.copy(videoResolution = size) } }
         engine.onAnalysis = { h, w -> _state.update { it.copy(histogramData = h, waveformData = w) } }
         engine.onAudioLevel = { lvl -> _state.update { it.copy(audioLevel = lvl) } }
         if (_state.value.level) mainHandler.post(levelTicker)
