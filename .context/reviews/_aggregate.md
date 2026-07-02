@@ -2,7 +2,13 @@
 
 **Scope:** Full inline review of all 29 Kotlin sources under `app/src/main/kotlin/**`, `app/src/test/**`, `AndroidManifest.xml`, `app/build.gradle.kts`, `gradle/libs.versions.toml`. Judged against the run goal: *perfect this as a professional camera app for photographers migrating from Sony (BIONZ XR2) and Google Pixel Camera — pro ergonomics, correct manual controls, discoverability, polish.*
 
-**Method note (AGENT FAILURES):** The planned multi-agent review fan-out (code-reviewer, perf-reviewer, security-reviewer, critic, verifier, test-engineer, tracer, architect, debugger, document-specialist, designer) was spawned but the nested background agent batch did not survive in this environment and wrote zero files. Per the orchestrator's adaptation, the review was performed **inline** by the cycle lead covering every specialist angle. Findings below are consolidated (no per-agent provenance files this cycle). The prior cycle's per-angle files (`architect.md`, `code-reviewer.md`, `perf-reviewer.md`, `security-reviewer.md`) are retained unchanged for history.
+**Method note:** The multi-agent review fan-out was spawned; a background-poll race made it *look* like the agents died, so an inline review was also done by the cycle lead (findings H1–L7 below). In fact **5 agents completed and wrote substantial provenance files** — fold their findings in (see "Agent findings" section). Provenance files present this cycle:
+- `perf-reviewer.md` (307 lines) — PERF-1..N
+- `debugger.md` (329 lines) — BUG-1..5 + L-1
+- `designer.md` (521 lines) — **UX-1..UX-30** (the run's pro-UX focus)
+- `test-engineer.md` (468 lines) — TEST-1..16 + a critical test-infra finding
+- `tracer.md` (638 lines) — TRACE-1..5c
+The read-only agents (code-reviewer, security-reviewer, architect, critic, verifier, document-specialist) did not surface return files this cycle; their angles are covered by the inline review + the above. Prior-cycle files (`architect.md`, `code-reviewer.md`, `security-reviewer.md`) retained for history.
 
 **Gate baseline (this cycle, measured):** `:app:assembleDebug` ✅ · `:app:testDebugUnitTest` ✅ · `:app:lintDebug` ❌ **1 error** + 18 warnings.
 - The lint **error** is the only thing making the gate red (see H1).
@@ -146,6 +152,55 @@ Sony and Pixel both persist shooting settings between sessions; a pro expects th
 - Manual WB Kelvin→RGGB is a Tanner-Helland approximation — verify neutral grey at 5200K. `[device-verify]`
 - R8/minify disabled for release (deferred, on-device verification required).
 - heifwriter `-alpha01` (per "always latest" policy; replace when stable).
+
+---
+
+## Agent findings (folded in from provenance files — net-new beyond H1–L7)
+
+Cross-agent agreement raises signal; IDs kept from source files.
+
+### Crash / ANR / correctness (High)
+- **A-TRACE-2a** [High/High] — **Record stop blocks the UI thread up to ~6 s → ANR.** `CameraViewModel.onToggleRecording` → `engine.stopRecording()` → `VideoRecorder.stop()` runs `videoThread.join(3000)` + `audioThread.join(3000)` synchronously on the main thread. **Fix:** move `rec.stop()` teardown off the main thread (e.g. `ioExecutor`), update `isRecording=false` immediately. *(tracer; also perf-adjacent)* — **SCHEDULED this cycle.**
+- **A-BUG-1** [High/High] — **Shutter silently does nothing and breaks BURST/AEB chains** when both HEIF+DNG are off or the session fell back to preview-only. `CameraController.capturePhoto` early-`return@post` without invoking the callback, so `onDone` never chains the next shot. **Fix:** call `cb.onError(...)` on the no-target path so the chain continues + a message shows. *(debugger)* — **SCHEDULED this cycle.**
+- **A-BUG-4** [Med-High/High] — **Unchecked `AudioRecord` state → crash on the audio thread.** `runAudio` calls `record.startRecording()` without checking `state == STATE_INITIALIZED`; an unusable mic throws uncaught. **Fix:** guard state; degrade to video-only. *(debugger)* — **SCHEDULED this cycle.**
+- **A-BUG-2 / A-PERF-2** [Med-High/High] — **`setCameraOverride` runs 6–12 camera-service IPCs + `CameraCaps.read` synchronously on the MAIN thread** (jank + uncaught-throw crash risk). **Fix:** run selection/caps read on `setupExecutor`, hop back for engine mutation. *(debugger + perf; cross-agent agreement)* — **DEFERRED** (needs care to keep the reopen ordering correct; exit: moved off-main + verified no reopen race).
+- **A-BUG-3 / A-TRACE-2b** [Med/Med] — **`VideoRecorder.stop()` may release `videoCodec`/`muxer` while a stalled drain thread still touches `muxer!!`** (join has a 3 s timeout, not a guarantee) → race/crash; also races the GL encoder draw. **Fix:** null-guard muxer access in drain loops; ensure `setEncoderOutput(null)` completes before release. *(debugger + tracer)* — **DEFERRED** (device-repro; exit: rapid start/stop stress on device).
+- **A-BUG-5** [Med/Med] — **Startup can bind the GL pipeline to a stale `Surface`** if the TextureView surface is recreated during the async `starting` window. *(debugger)* — **DEFERRED** (device-repro).
+- **A-TRACE-4** [High/High] — **Rapid shutter taps in SINGLE race the single `pending` slot** → dropped photo, misattributed image, or leaked `Image`. `CameraController` tracks one `pending`; a second `capturePhoto` overwrites it mid-resolve. **Fix:** reject a new capture while one is pending (or queue). *(tracer)* — **DEFERRED** (moderate; exit: guard `pending`-busy + device stress).
+- **A-TRACE-3a** [Med/High] — **Switching to PHOTO mode while recording orphans the recording** (shutter becomes photo; no stop affordance). `onModeChange` doesn't stop recording. *(tracer)* — **DEFERRED** (bundle with M1 follow-up).
+
+### Performance (High/Med)
+- **A-PERF-1** [High/High-mech] — **Full-preview-res `glReadPixels` (~18 MB at 1440×3168) + copy + GPU sync on the GL thread every 12th frame** for scopes; the per-pixel compute is subsampled but the *readback* is full-res. **Fix:** read back a small downscaled FBO (e.g. 256-wide) or a reduced region. *(perf)* `[device-profiling]` — **DEFERRED** (needs device profiling to size the win; exit: profiled + downscaled readback).
+- **A-PERF-3** [Med/High] — **Per-frame `FloatArray` allocation on the GL render thread** (EIS provider returns a new array each frame). **Fix:** reusable buffer via a fill-in-place provider contract. *(perf)* — **DEFERRED** (touches the provider contract across CameraEngine/GyroEis/GlPipeline; exit: contract updated + no per-frame alloc).
+
+### Pro-UX (designer — the run's explicit focus; 30 findings, top ones here)
+- **UX-1** [High] — No metered-manual exposure indicator (no M.M. scale / EV needle); histogram off by default. **DEFERRED** (needs metered-EV from `TotalCaptureResult` → state; device-verify). Highest-impact pro gap.
+- **UX-2** [High] — No capture confirmation (no shutter animation, flash, or haptic). **PARTIAL this cycle** (shutter press animation + haptic); full flash/thumbnail deferred.
+- **UX-3** [High] — HUD reports *requested* not *actual* capture config (fallback ladder silently drops RAW/HLG → status bar lies). **DEFERRED** (needs engine to surface achieved streams to state; exit: `activeFormats/fallbackLevel` on state + amber warning chip).
+- **UX-4** [High] — Settings gear unreachable one-handed on a 3168 px screen. **DEFERRED** (swipe-up / bottom-cluster gear; exit: reachable settings entry).
+- **UX-5 / M7** [High] — Dead gallery thumbnail; no shot review (critical for chimping focus at 300 mm). **DEFERRED** (exit: thumbnail opens last capture).
+- **UX-6 / M8** [High] — Permission dead-end on permanent denial; over-asks RECORD_AUDIO up front. **DEFERRED** to a permissions pass (exit: Settings deep-link + in-context audio request).
+- **UX-7** [High] — No loading/hard-error state; camera failure is a transient toast over live controls. **DEFERRED** (exit: `CameraStatus{Initializing,Ready,Error}` + Retry).
+- **UX-8** [High] — Zero accessibility semantics (no `contentDescription`/`role`); TalkBack gets nothing; fails Play pre-launch a11y. **DEFERRED** (exit: semantics on every custom control + `strings.xml`).
+- **UX-9 / M5** [High] — Touch targets 30–36 dp across chrome/dials/mode/close. **SCHEDULED this cycle** (bump chrome + snapshot + close to ≥44–48 dp; broader dial/mode work deferred).
+- **UX-10** [High] — `LensFlipButton` impersonates a camera-flip but is a 3rd duplicate of TELE. **DEFERRED** (repurpose as reachable settings/scopes/review entry).
+- **UX-16** [High] — Overlay colors hardcoded off-token; single-tone grid vanishes on bright scenes. **DEFERRED** (dual-tone HUD strokes + token unification).
+- **UX-21** [High] — Shutter jumps off-center when the snapshot button appears mid-recording. **DEFERRED** (fixed side-slot for snapshot).
+- **UX-22** [High] — Disabled dial chips are still clickable and open inert rulers (EV in manual). **SCHEDULED this cycle** (respect `enabled`; EV hint).
+- **UX-25 / M10** [Med] — Overlay rotation animates the long way at 270°→0°. **SCHEDULED this cycle.**
+- UX-11..UX-30 (focus magnifier auto-engage, WB dial UX, AE/AF lock indicators, tabular figures, haptic detents, partial-sheet preview, tab-rail glyphs, overflow affordance, battery/storage, reduced-motion, strings.xml, ruler scrim) — **DEFERRED**, all recorded in `designer.md`.
+
+### Test coverage (test-engineer)
+- **Infra finding** [High] — JVM unit tests can't read `android.*` getters (`Method … not mocked`); `isReturnDefaultValues=true` returns 0/false/null (useless for value assertions). ⇒ **the correct pattern is to extract pure math with zero android types** (the `FocusMapping` precedent), or add Robolectric where the android type IS the contract.
+- **TEST-1** [High] — `CameraSelector2` closest-to-70 mm + standalone tie-break untested. **SCHEDULED this cycle** (extract `pickBest` pure fn + test).
+- **TEST-2/3/4** [High] — `previewRotationDegrees` / `captureRotationDegrees` / `exifOrientationFor` untested. **SCHEDULED this cycle** (extract `RotationMath` pure object + test).
+- **TEST-5..14** [High/Med] — `GyroEis.currentDeviceOrientation`, `kelvinTintToRggbGains`, `isoStops/shutterStops`, `effectiveExposureNs`, `applyGainAndLevel`, `equivFocalOf`, `fileName` collision, AEB steps. **DEFERRED** (schedule; several need pure-extraction or Robolectric — `fileName` BURST same-second collision is a real latent bug worth its own fix).
+- **TEST-13** [Med] — `fileName()` can collide within the same wall-clock second during BURST (duplicate DISPLAY_NAME). MediaStore may append `(1)` but worth a monotonic suffix. **DEFERRED** (exit: uniqueness guard).
+
+### Docs
+- **A-TRACE-5a / DOC** [Low/High] — `docs/ARCHITECTURE.md` (~L190-201) still documents the old `-sensorOrientation + 180` preview-rotation formula; code simplified to `if (teleconverterMode) 180 else 0`. **SCHEDULED this cycle** (doc fix).
+
+---
 
 ## Notes on what was verified sound (no change needed)
 - `CameraController` session fallback ladder, `closed`/`paused` lifecycle guards, `Pending` image close-on-failure, HandlerThread `quitSafely` — all present and correct in code.
