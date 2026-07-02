@@ -299,6 +299,6 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onCleared() {
         mainHandler.removeCallbacksAndMessages(null)
         engine.release()
-        super.onCleared()
+        // ViewModel.onCleared() is @EmptySuper (empty base impl) — do not call super (lint EmptySuperCall).
     }
 }
