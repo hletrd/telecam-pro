@@ -1,247 +1,307 @@
-# Performance & Concurrency Review — find-x9-ultra-camera
+# Performance & Concurrency Review (deep, independent re-verification) — find-x9-ultra-camera
 
-Role: perf-reviewer. Scope: real-time camera/GL/sensor/encode/UI paths.
-Package: `com.hletrd.findx9tele`. Android 16 (API 36), Kotlin + Compose + Camera2 + OpenGL ES 10-bit.
-Date: 2026-07-02.
+Role: perf-reviewer. Scope: real-time camera / GL / sensor / encode / Compose paths for the OPPO
+Find X9 Ultra teleconverter camera app. Package `com.hletrd.findx9tele`. Android 16 (API 36),
+Kotlin 2.3.10 + Jetpack Compose (BOM 2026.06.00, strong-skipping on) + Camera2 + OpenGL ES 2.
+Date: 2026-07-03. All findings validated against the **current** code, not comments.
 
-Classification legend: **Confirmed** = verified from code with a concrete mechanism; **Likely** = strong evidence, one assumption; **Risk** = conditional / device-dependent. Confidence is separate (High/Medium/Low).
+Method: inventoried and read all 27 Kotlin files under `app/src/main/kotlin/**`; re-verified every
+prior finding in the earlier `perf-reviewer.md` / `docs/plans/2026-07-02-review-fixes.md` against the
+present source; then swept for new hot-path allocations, main-thread work, lock contention, GL
+readback stalls, and Compose recomposition churn. Camera/GL runtime *timings* are device-only and are
+flagged **needs-device-profiling** where I cannot measure them; the *mechanisms* are code-verified.
 
----
-
-## 1. File inventory (performance-relevant, 25 .kt files)
-
-Real-time render / stabilization (hottest paths):
-- `gl/EglCore.kt` (97) — EGL 1.4 wrapper.
-- `gl/GlPipeline.kt` (188) — GL render thread; `drawFrame()` per-frame loop.
-- `gl/FlipRenderer.kt` (192) — per-frame draw, matrix math, uniform upload.
-- `gl/Shaders.kt` (101) — GLSL (peaking/zebra/false-color/transfer).
-- `stab/GyroEis.kt` (90) — gyro sampling + integration.
-
-Camera2 capture / control:
-- `camera/CameraEngine.kt` (250) — facade; capture encode; startup wiring.
-- `camera/CameraController.kt` (236) — session, repeating request, ImageReaders.
-- `camera/CameraSelector2.kt` (74) — lens selection (getCameraCharacteristics fan-out).
-- `camera/CaptureCapabilities.kt` (117) — caps read.
-- `camera/ManualControls.kt` (195) — CaptureRequest building.
-- `camera/CameraState.kt` (76), `camera/VendorTagInspector.kt` (57).
-
-Encode / storage:
-- `video/VideoRecorder.kt` (228) — HEVC/AAC drain threads, muxer.
-- `video/ColorProfiles.kt` (52).
-- `capture/DngCapture.kt` (30), `capture/HeifCapture.kt` (25).
-- `storage/MediaStoreWriter.kt` (84).
-
-UI / Compose:
-- `MainActivity.kt` (91), `ui/CameraViewModel.kt` (179), `ui/CameraScreen.kt` (353),
-  `ui/CameraActions.kt` (83), `ui/controls/ProControls.kt` (606),
-  `ui/overlays/Overlays.kt` (252), `ui/theme/Theme.kt` (41).
-
-Other: `focus/FocusMapping.kt` (35), `TeleCameraApp.kt` (6).
+Confidence = High/Medium/Low. "New" = not in the prior review. "Residual" = prior finding only
+partially fixed. "Re-opened" = prior finding the fix plan marked done that is still present.
 
 ---
 
-## 2. Findings (ranked by real-world impact)
+## Summary table
 
-### F1 — Camera selection + caps read run on the MAIN THREAD during `surfaceCreated`
-**Confirmed · Confidence High · Severity High (startup jank / near-ANR)**
-File: `camera/CameraEngine.kt:53-76` (also `:128-140` for override), reached via `ui/CameraScreen.kt:84-90` → `ui/CameraViewModel.kt:50` → engine.
+| ID | Area | Severity | Confidence | Status vs prior |
+|----|------|----------|------------|-----------------|
+| PERF-1 | Full-preview-res `glReadPixels` + double ~18 MB copy + GPU sync on GL thread every 12th frame (scopes) | High | High (mech.) / device (ms) | New (prior F-analysis was generic) |
+| PERF-2 | `setCameraOverride` runs 6–12 camera-service IPCs synchronously on the **UI thread** | Medium | High | Re-opened (F1 fix skipped this path) |
+| PERF-3 | Per-frame `FloatArray` allocation on the GL render thread (EIS provider) | Medium | High | Residual (F8, half-fixed) |
+| PERF-4 | `awaitMuxerStart()` busy-waits `Thread.sleep(2)` → couples audio-format arrival to video drain → GL stall at record start | Medium | Medium-High | Re-opened (F6 never fixed) |
+| PERF-5 | `CameraUiState` is Compose-**unstable** (IntArray) + whole-state passed to children → non-skippable tree recomposition on every emission; level/record/audio tickers emit 5–20 Hz | Medium | High | New |
+| PERF-6 | Muxer file-I/O held under `muxerLock`; encoder backpressure blocks the shared GL thread → preview fps collapse while recording | Medium | Medium | Re-confirmed (F7) |
+| PERF-7 | Camera streams up to 4K into the preview SurfaceTexture even when only previewing (not recording) | Low-Medium | Medium / device | New |
+| PERF-8 | `glReadPixels` runs **after** `eglSwapBuffers` (back buffer undefined) → expensive readback samples stale/garbage; redundant `makeCurrent` | Low-Medium | Medium | New |
+| PERF-9 | Main-thread pollers (level 10 Hz unconditional, orientation/record 5 Hz) not tied to `onStop` → keep waking main thread while backgrounded | Low | High | New |
+| PERF-10 | Unbounded `ioExecutor` queue in BURST/TIMELAPSE retains full compressed JPEGs + serialized full-bitmap decodes → transient memory/OOM | Low-Medium | Medium | New |
+| PERF-11 | Gyro correction tuple read non-atomically (3 separate volatile reads) across sensor/GL threads | Low | Medium | Residual (F11) |
+| PERF-12 | Static quad/texcoord uploaded from client memory every draw (no VBO); attrib enable/disable each frame | Low | Medium | Residual (F12) |
+| PERF-13 | Repeating request fully rebuilt from `TEMPLATE_PREVIEW` on every (debounced) control change; WB blackbody `Math.pow`/`log` recomputed | Low | Medium | Mitigated (F2 debounce) |
+| PERF-14 | `computeHistogram`/`computeWaveform` allocate fresh IntArrays each analysis pass (~40 KB/pass @ ~5 Hz) | Low | High | New |
 
-`SurfaceHolder.Callback.surfaceCreated` is delivered on the **main thread**. It calls (synchronously, still on main):
-- `CameraSelector2.select(manager, overrideId)` — `CameraSelector2.kt:43-56` iterates **every** camera id and **every** physical sub-camera, calling `getCameraCharacteristics` per id (line 44, 68 `equivFocalOf`). On a multi-camera device that is 6-12 characteristics reads.
-- `CameraCaps.read(...)` — `CaptureCapabilities.kt:57-115` does another `getCameraCharacteristics` + `getOutputSizes` (RAW/JPEG).
-- `chooseVideoSize(sel)` — `CameraEngine.kt:222-234` does yet another `getCameraCharacteristics` + `getOutputSizes`.
+**Verified-FIXED prior findings** (independently re-confirmed resolved): F1 startup path (setup on
+`setupExecutor`), F3 HEIF encode offloaded to `ioExecutor` + recycle + OOM guard, F4 `CameraController`
+HandlerThread `bg.quitSafely()` in `close()`, F5 gyro at 200 Hz (`SAMPLING_PERIOD_US=5000`), F8
+re-post Runnable removed (`setOnFrameAvailableListener({ drawFrame() }, handler)`), F9
+`VendorTagInspector` gated `BuildConfig.DEBUG` + off GL thread, F10 `inputSurface` `@Volatile`, F12
+peaking reuses `base` sample, F13 audio post-EOS blocking timeout, F14 `onShutter` `remember(mode)`.
 
-`getCameraCharacteristics` is an IPC to the camera service and costs several ms each (more on cold start / busy service). Total 50-150 ms of blocking work on the UI thread during launch/resume.
-
-Failure scenario: cold launch stalls the main thread → dropped first frames, visible jank; if the camera service is contended (e.g. another app just released the camera) this can approach the ANR window. No background dispatch exists (the app uses Handlers, not coroutines; there is no `viewModelScope`/`Dispatchers.IO` offload for setup).
-
-Fix: perform selection + `CameraCaps.read` + `chooseVideoSize` on a background executor, then hop back to wire the GL/preview surface. `setCameraOverride` (`:128`) has the same problem when the user switches lenses.
-
----
-
-### F2 — Manual-control changes rebuild & resubmit the repeating request on every slider tick
-**Confirmed · Confidence High · Severity High (interactive preview stutter)**
-Files: `ui/CameraViewModel.kt:168-172` (`updateControls`), `camera/CameraController.kt:149-152` (`updateControls`) + `:138-147` (`startPreview`).
-
-Every manual control funnels through the ViewModel `updateControls` → `engine.setControls` → `controller.updateControls` → `handler.post { startPreview() }`, and `startPreview()` **creates a brand-new `CaptureRequest` from `TEMPLATE_PREVIEW`**, re-applies ~15 keys via `applyManualControls`, and calls `setRepeatingRequest`.
-
-Compose `Slider.onValueChange` (ISO/shutter/EV/WB kelvin/tint/zoom/JPEG quality/focus — `ui/controls/ProControls.kt` and `FocusSlider`) fires continuously during a drag (tens of events/sec). There is **no debounce/throttle**. Each event:
-1. Rebuilds a full request (Builder alloc + template fetch + 15 `set()` calls; manual WB path also recomputes `kelvinTintToRggbGains` with `Math.pow`/`log` every time — `ManualControls.kt:166-195`), and
-2. Re-submits the repeating request to the HAL.
-
-Failure scenario: dragging the ISO/WB/zoom slider floods the camera HandlerThread with `startPreview` posts and forces the HAL to re-latch the repeating request ~30-60×/s. Many HALs momentarily re-run 3A or drop a frame on repeating-request replacement → visible exposure/WB flicker and preview stutter while the user interacts, plus control lag as posts queue.
-
-Fix: debounce control updates (~60-100 ms) and/or keep a single retained `CaptureRequest.Builder`, mutate only the changed keys, and resubmit — instead of rebuilding from template each time.
+Highest leverage: **PERF-1** (readback stall when scopes on — the backlog's own "profile it" item,
+confirmed), then **PERF-4 / PERF-6** (record-start and sustained-record preview hitches), then
+**PERF-2 / PERF-5** (lens-switch jank and idle recomposition churn).
 
 ---
 
-### F3 — Still-photo encoding (JPEG→Bitmap→rotate→HEIF) runs synchronously on the camera control thread; unbounded uncompressed-bitmap memory
-**Confirmed · Confidence High · Severity High (memory/OOM + control-thread stall)**
-Files: `camera/CameraEngine.kt:144-180` (`capturePhoto`/`saveHeif`/`saveDng`), `camera/CameraController.kt:195-215` (`tryComplete` calls `cb.onPhoto` on the camera handler), `capture/HeifCapture.kt`.
+## High
 
-`tryComplete` invokes `p.cb.onPhoto(...)` **on the "camera" HandlerThread**, and `saveHeif` does, synchronously:
-`BitmapFactory.decodeByteArray(jpeg)` → `rotate180` (`Bitmap.createBitmap(..., matrix, true)`) → MediaStore insert → `HeifWriter` re-encode → publish.
+### PERF-1 — Scope readback reads the FULL preview resolution and does two ~18 MB copies + a GPU sync on the render thread every 12th frame
+**Severity High (conditional: histogram or waveform enabled) · Confidence High for the mechanism, needs-device-profiling for the ms cost**
+`gl/GlPipeline.kt:248-288` (`runAnalysisReadback`), readback at `:269`, second copy at `:271`,
+throttle at `:227-232`. Sizes come from `previewW/previewH`, which are the on-screen preview
+**view** size set in `setPreviewOutput` (`:121-122`).
 
-Two problems:
-1. **Memory**: `decodeByteArray` produces a full ARGB_8888 bitmap. On this device class (50MP / 200MP sensors) that is ~200 MB for 50MP and outright OOM at 200MP; `rotate180` allocates a **second** full bitmap of the same size (peak ~2×). This is a decode→rotate→re-encode round-trip of the already-compressed JPEG.
-2. **Thread stall**: this can take hundreds of ms to seconds, and it runs on the single camera control thread that also services `updateControls`/`capturePhoto`/`onImage`. During the encode, all manual-control changes and subsequent captures are blocked, and the JPEG/RAW `Image` objects are held open (`finally` at `:210-214`), pinning ImageReader buffers.
+`previewW×previewH` on this device is the full-screen preview ≈ **1440×3168**. Each pass does:
+```
+GLES20.glReadPixels(0,0,w,h, GL_RGBA, GL_UNSIGNED_BYTE, buf)  // ~18.2 MB, forces a full GPU flush/sync
+buf.get(bytes, 0, size)                                       // second ~18.2 MB memcpy into a ByteArray
+```
+`glReadPixels` is a synchronous GPU→CPU transfer: it stalls the GL thread until the GPU has finished
+rendering the frame, then transfers the whole framebuffer. That happens every 12th frame while a
+scope is on — at 60 fps that is ~5 stalls/s and ~180 MB/s of copying (18 MB × 2 × 5). The `step=6`
+subsampling in `computeHistogram`/`computeWaveform` only reduces the *CPU compute*, not the readback
+size or the sync. Because preview and encoder share this one GL thread, each stall directly delays
+the next preview (and encoder) frame.
 
-Not a UI-thread ANR (it is a background HandlerThread), but it freezes manual-control responsiveness and buffer availability for the encode duration.
+Scenario: user enables Histogram and Waveform for exposure work → preview develops a periodic ~5 Hz
+hitch (and worse while also recording, since the encoder draw competes on the same thread). This is
+exactly the backlog's "verify they don't stall rendering… profile it" item, now code-confirmed.
 
-Fix: hand the encode to a dedicated IO thread/executor (not the camera control handler); for HEIF avoid the decode+rotate+re-encode — capture via a HEIC-capable `ImageReader` or use `HeifWriter` INPUT_MODE_BUFFER with the sensor YUV, and bake the 180° rotation into the GL/EXIF path as the DNG path already does (`DngCapture.kt:24`).
-
----
-
-### F4 — `CameraController` HandlerThread ("camera") is never quit → thread leak on every override/teardown
-**Confirmed · Confidence High · Severity Medium**
-File: `camera/CameraController.kt:42-43` (`bg = HandlerThread("camera").apply { start() }`) vs `:217-228` (`close()`).
-
-`close()` posts `session/device/reader` cleanup but never calls `bg.quitSafely()`. A new `CameraController` is created on the initial open **and on every `setCameraOverride`** (`CameraEngine.kt:104,139`), each with its own "camera" HandlerThread. Old instances' threads never terminate.
-
-Failure scenario: repeatedly switching the camera override (or engine restarts) accumulates live "camera" HandlerThreads for the process lifetime — leaked threads, wasted memory/scheduler slots, and lingering looper references. `GlPipeline` does this correctly (`GlPipeline.kt:180 thread?.quitSafely()`); `CameraController` should mirror it.
-
-Fix: quit `bg` in `close()` (post the cleanup, then `bg.quitSafely()`), or reuse one controller instance across overrides.
-
----
-
-### F5 — Gyro sampled at `SENSOR_DELAY_FASTEST` (~500-1000 Hz) but consumed at frame rate
-**Confirmed · Confidence High · Severity Medium (CPU/battery)**
-File: `stab/GyroEis.kt:46`.
-
-`registerListener(..., SENSOR_DELAY_FASTEST)` requests the maximum hardware rate (commonly 500 Hz, up to ~1 kHz). `onSensorChanged` (`:57-74`) runs float integration + low-pass + 3 volatile writes on every event. The GL loop only reads the result once per rendered frame (30-60 Hz), so the signal is oversampled ~10-30×.
-
-Failure scenario: sustained high-rate sensor callbacks burn CPU and prevent the app processor from idling → measurable battery drain and extra scheduling load during recording, with no stabilization-quality benefit (the low-pass is time-constant-based, `LOW_PASS_ALPHA = 0.02` is tuned per-sample so a rate change also shifts the effective cutoff — retune alongside).
-
-Fix: use `SENSOR_DELAY_GAME` or an explicit `samplingPeriodUs` of ~5000 µs (200 Hz), which is ample for shake integration; recompute `LOW_PASS_ALPHA` for the chosen rate.
+Fix: read back at a small fixed analysis resolution instead of the full preview. Render (or blit) the
+frame once into a small FBO (e.g. 256×512) and `glReadPixels` that, or use `glReadPixels` over a
+downscaled viewport; the histogram/waveform are already heavily subsampled so a small buffer loses
+nothing. That cuts the transfer ~150× and the copy cost with it. Optionally use a PBO for an async
+readback so the GL thread never blocks on the transfer.
 
 ---
 
-### F6 — `VideoRecorder.awaitMuxerStart()` busy-waits with `Thread.sleep(2)`, coupling audio startup to video drain → potential GL backpressure
-**Confirmed · Confidence Medium-High · Severity Medium**
-File: `video/VideoRecorder.kt:217-219`, consumed at `:120` (video) and `:194` (audio).
+## Medium
 
-`awaitMuxerStart()` is a spin-poll: `while (running && !muxerStarted) Thread.sleep(2)`. The muxer starts only once **all expected tracks** are added (`maybeStartMuxer`, `:210-215`); with audio enabled `expectedTracks == 2`, so the **video** drain thread blocks in this loop until the **audio** encoder emits its `INFO_OUTPUT_FORMAT_CHANGED`.
+### PERF-2 — `setCameraOverride` issues 6–12 camera-service IPCs synchronously on the UI thread
+**Severity Medium · Confidence High · Re-opened (the F1/H-MAIN fix moved only the startup path off-main)**
+`camera/CameraEngine.kt:255-271`, invoked from `ui/CameraViewModel.kt:282-285` (`onCameraOverride`,
+UI thread). It runs, all on the caller's (main) thread:
+- `CameraSelector2.select(manager, id)` — iterates every camera id and every physical sub-camera,
+  calling `getCameraCharacteristics` per id (`camera/CameraSelector2.kt:43-52`, `equivFocalOf` at
+  `:65-71`): 6–12 IPCs on a multi-camera device.
+- `CameraCaps.read(...)` — another `getCameraCharacteristics` + `getOutputSizes` (`CaptureCapabilities.kt:69-133`).
+- `chooseVideoSize(sel)` — a third `getCameraCharacteristics` + `getOutputSizes` (`CameraEngine.kt:549-561`).
 
-Failure scenario (chained to GL): while the video drain thread is parked here, it stops calling `releaseOutputBuffer`; the HEVC encoder's output buffers fill; because the encoder input is the GL `encoderEgl` surface, `eglSwapBuffers(encoderEgl)` in `GlPipeline.drawFrame()` (`GlPipeline.kt:159`) blocks, which stalls the single GL thread and therefore the **preview** (drawn on the same thread) — dropped preview frames at recording start until audio's format arrives. The 2 ms poll also spins CPU.
+The startup path (`onPreviewSurfaceAvailable`, `:94`) was correctly moved onto `setupExecutor`, but
+this override path was not — it is the identical anti-pattern the prior review's F1 explicitly called
+out ("`setCameraOverride` has the same problem when the user switches lenses"). Each IPC is several
+ms; total 50–150 ms of blocked UI thread → visible jank.
 
-Fix: replace the spin with a `CountDownLatch`/`wait`/`notify`; start the muxer on the video track with a bounded timeout for the audio track so a slow audio start cannot block video drain.
+Real-world trigger is currently narrow: the only UI entry is `AdvancedTab`'s "Camera Override" reset,
+which calls `onCameraOverride(null)` (`ui/controls/ProSheet.kt:561-568`) — but `select(manager, null)`
+still runs the full fan-out, and any future "set a specific lens" UI would hit it too.
+
+Fix: dispatch the whole `select + CameraCaps.read + chooseVideoSize` block onto `setupExecutor`
+(as the startup path does), then hop back to wire GL/preview and `openCamera`.
+
+### PERF-3 — Per-frame `FloatArray` allocation on the GL render thread (EIS provider)
+**Severity Medium · Confidence High · Residual (F8 half-fixed: the Runnable re-post was removed, this was not)**
+`gl/GlPipeline.kt:209` calls `eisProvider?.invoke()` every frame while EIS is on (EIS defaults ON,
+`CameraEngine.kt:66`). The provider is `{ gyro.currentCorrection() }` (`CameraEngine.kt:112`) and
+`GyroEis.currentCorrection()` returns `floatArrayOf(corrYaw, corrPitch, corrRoll)`
+(`stab/GyroEis.kt:63`) — a **new 3-element FloatArray every rendered frame** (30–60/s). ~32 B/frame →
+low individually, but it is the only per-frame heap allocation left in the single hottest loop, so it
+sets the young-gen GC cadence and will compound with any future per-frame work. The in-code comment
+at `GlPipeline.kt:205-208` acknowledges it and defers it as "outside this file's scope."
+
+Fix: change the provider contract to write into a GL-thread-owned reusable `FloatArray` (e.g.
+`currentCorrection(out: FloatArray)`), or expose `corrYaw/corrPitch/corrRoll` as three reads. Folds
+cleanly together with PERF-11 (publish the three values as one snapshot).
+
+### PERF-4 — `awaitMuxerStart()` busy-waits with `Thread.sleep(2)`, coupling audio-format arrival to the video drain → GL/preview stall at record start
+**Severity Medium · Confidence Medium-High · Re-opened (F6 was never in the fix plan's Fixed list)**
+`video/VideoRecorder.kt:317-320`:
+```
+private fun awaitMuxerStart(): Boolean { while (running && !muxerStarted) Thread.sleep(2); return muxerStarted }
+```
+consumed by the video drain at `:172` and audio drain at `:255`. The muxer only starts once **all
+expected tracks** are added (`maybeStartMuxer`, `:304-309`); with audio enabled `expectedTracks == 2`,
+so the **video** drain thread parks in this spin until the **audio** encoder emits its
+`INFO_OUTPUT_FORMAT_CHANGED`. While parked it stops calling `releaseOutputBuffer`, the HEVC encoder's
+output buffers fill, and because the encoder input is the GL `encoderEgl` surface,
+`eglSwapBuffers(encoderEgl)` in `GlPipeline.drawFrame()` (`gl/GlPipeline.kt:238`) blocks — which
+stalls the single GL thread and therefore the **preview** (drawn on the same thread). Result: dropped
+preview frames at the start of every audio-enabled recording until the audio format arrives, plus a
+2 ms CPU spin.
+
+Fix: replace the spin with a `CountDownLatch` (or `wait/notify`); start the muxer on the video track
+with a bounded timeout for audio so a slow audio start cannot block video drain (and hence GL).
+
+### PERF-5 — `CameraUiState` is Compose-unstable, so every composable that takes it is non-skippable; unconditional tickers emit new state 5–20 Hz
+**Severity Medium · Confidence High · New**
+`camera/CameraState.kt:113-129`: `HistogramData` and `WaveformData` hold `IntArray` fields, which the
+Compose compiler treats as **unstable**; that makes both data classes unstable, and therefore
+`CameraUiState` (which holds `histogramData`/`waveformData`, `:109-110`) is **unstable**. There is no
+stability-config file and no `@Stable`/`@Immutable` annotations (verified). Strong-skipping (default
+in Kotlin 2.3.10's Compose compiler) falls back to *instance* equality for unstable params, but every
+StateFlow emission is a fresh `it.copy(...)` instance, so the check always fails.
+
+Consequence: `CameraScreen(state=…)` (`ui/CameraScreen.kt:100`), `TopBar(state=…)` (`:329`),
+`ManualDialCluster(state=…)` (`ui/controls/ManualDials.kt:65`) and `ProSheet(state=…)`
+(`ui/controls/ProSheet.kt:86`) all recompose on **every** emission, regardless of which field
+changed. The dial cluster then rebuilds all 6 `DialChip`s and their `.format()`/`formatShutterSpeed`/
+`formatFocusRelative` strings each time (`ManualDials.kt:141-187`).
+
+Emission cadence makes this bite during recording/assist use:
+- `levelTicker` (`ui/CameraViewModel.kt:65-70`) emits `it.copy(levelRoll=…)` every 100 ms
+  **unconditionally** (no change check) while Level is on → 10 Hz full-tree recomposition.
+- `recordTicker` (`:47-52`) emits every 200 ms during recording → 5 Hz.
+- `onAudioLevel` (`:86`) emits ~10 Hz during audio recording.
+- analysis callback (`:85`) emits ~5 Hz when scopes on.
+Combined that is ~15–25 Hz of whole-`CameraScreen`-tree recomposition during recording, none of it
+skippable at the `state`-taking boundaries. (At idle it is fine: `orientationTicker`, `:74-80`, only
+emits on an actual orientation change.)
+
+Fix: (1) make the scope data stable — annotate `HistogramData`/`WaveformData` `@Immutable`, or move
+them out of `CameraUiState` into their own StateFlow so the main UI state stops depending on arrays;
+(2) pass children the granular fields they read (`controls`, `caps`, `mode`, …) instead of the whole
+`state`, so a `levelRoll`/`audioLevel` tick can't force the dial cluster to recompose; (3) give
+`levelTicker` a change threshold so it doesn't emit identical rolls at 10 Hz.
+
+### PERF-6 — Muxer writes hold `muxerLock` across file I/O; encoder backpressure blocks the shared GL thread
+**Severity Medium · Confidence Medium · Re-confirmed (F7)**
+`video/VideoRecorder.kt:175` (`muxer?.writeSampleData(videoTrack, …)` inside `synchronized(muxerLock)`)
+and `:258` (audio, same lock). `MediaMuxer.writeSampleData` writes into the MediaStore-backed
+`ParcelFileDescriptor` and can block on I/O; both drain threads contend on the one lock (the muxer is
+not thread-safe, so serialization is required). If the audio thread holds the lock during a slow
+write, the video thread's `writeSampleData` waits → video output buffers aren't released → the HEVC
+encoder input fills → `eglSwapBuffers(encoderEgl)` on the GL thread (`gl/GlPipeline.kt:234-239`)
+blocks → preview cadence collapses to encoder/muxer throughput. Preview-before-encoder ordering
+(`:221-223` then `:234-239`) means the *current* shown frame isn't gated, but the *next* frame can't
+start until the encoder swap returns.
+
+This is inherent to one-thread-draws-both plus one-lock-serializes-both-writes. Mitigations: keep the
+critical section minimal (already just the write), guarantee the drain never parks (PERF-4), and
+consider a separate EGL-shared thread/context for the encoder surface so preview cadence is decoupled
+from encoder/muxer backpressure. Needs-device-profiling to quantify the fps drop.
+
+### PERF-7 — Camera streams up to 4K into the preview SurfaceTexture even when only previewing
+**Severity Low-Medium · Confidence Medium · needs-device-profiling · New**
+`camera/CameraEngine.kt:105` sets `videoSize = chooseVideoSize(sel)` (largest 16:9 up to **3840**
+wide, `:557`), and `:111` / `gl/GlPipeline.kt:142-147` push that into the SurfaceTexture default
+buffer size (`setDefaultBufferSize(cameraW, cameraH)`, `:129/:145`). The repeating preview request
+targets this SurfaceTexture, so the camera/ISP produces **up to 4K frames continuously**, even when
+the user is merely framing (not recording) — the GL stage then downsamples to the ~1440-wide preview.
+Streaming 4K continuously costs meaningfully more ISP/bus/power/heat than a preview-sized stream on a
+telephoto app where users hold a framing for a long time.
+
+Fix: feed the preview SurfaceTexture at a preview-appropriate size (e.g. ≤1080p) until recording
+starts; raise to the record resolution on `startRecording` (a session reconfig is already implied by
+the "streams the old size until the next open" note at `:249-253`). Verify thermals on device.
 
 ---
 
-### F7 — Video encoder backpressure blocks the shared GL thread (preview + encode on one thread)
-**Confirmed (architectural) · Confidence Medium · Severity Medium**
-File: `gl/GlPipeline.kt:151-160`.
+## Low / hardening
 
-`drawFrame()` renders preview then, if recording, makes the encoder surface current and `swapBuffers(encoderEgl)`. `eglSwapBuffers` into a `MediaCodec` input surface blocks when encoder input buffers are full. Since both preview and encoder draw on the single "gl-pipeline" thread, any sustained drain slowdown (slow MediaStore fd writes under `muxerLock`, `:123`; or F6) throttles the whole loop, so preview framerate collapses to encoder throughput during recording.
+### PERF-8 — `glReadPixels` executes after `eglSwapBuffers`, reading an undefined back buffer
+**Severity Low-Medium · Confidence Medium · New (perf-waste + correctness)**
+In `drawFrame` the order is: `swapBuffers(previewEgl)` (`gl/GlPipeline.kt:223`) **then** the analysis
+block (`:227-232`) → `runAnalysisReadback` → `makeCurrent(previewEgl)` again (`:267`) → `glReadPixels`
+(`:269`). By default EGL window surfaces use `EGL_SWAP_BEHAVIOR = EGL_BUFFER_DESTROYED`, so after
+`eglSwapBuffers` the back-buffer contents are **undefined**. The (expensive, per PERF-1) readback may
+therefore sample garbage or a stale frame — wasted work at best, wrong scopes at worst — and it also
+issues a redundant `makeCurrent` for a surface that is already current post-swap.
 
-Preview-before-encoder ordering (`:153` then `:159`) is good (the shown frame isn't gated by the encoder swap), but the **next** frame cannot start until the encoder swap returns. This is inherent to one-thread-draws-both; the mitigation is ensuring the drain path never blocks (F6) and keeping muxer writes off the critical section where possible.
+Fix: move the readback **before** `swapBuffers(previewEgl)` (right after the preview `draw`), which
+makes the sampled pixels valid and drops the redundant `makeCurrent`. (Combine with PERF-1's small-FBO
+readback.)
 
-Fix: guarantee non-blocking drain; consider a separate EGL-shared thread/context for the encoder surface so preview cadence is decoupled from encoder backpressure.
+### PERF-9 — Main-thread pollers aren't tied to the `onStop` lifecycle
+**Severity Low · Confidence High · New**
+`ui/CameraViewModel.kt`: `levelTicker` (10 Hz, `:65-70`), `orientationTicker` (5 Hz, always posted in
+`init`, `:88`), `recordTicker` (5 Hz, `:47-52`). `onStop()` (`:297`) only calls `engine.pause()`; it
+does not stop these `mainHandler` loops (they're only cleared in `onCleared`, `:299-303`). So while
+backgrounded the app keeps waking the main thread 5–10×/s (orientation poll reads the now-reset gyro;
+level keeps emitting). Worse, if the app is backgrounded **while recording**, `pause()` stops the
+recorder but `recordTicker` keeps firing and `isRecording` stays true in UI state — a leaked timer
+plus stale state. Low battery/correctness cost.
 
----
+Fix: stop `levelTicker`/`orientationTicker`/`recordTicker` in `onStop` (and restart the appropriate
+ones in `onStart`); reconcile `isRecording`/`recordElapsedMs` when `pause()` tears the recorder down.
 
-### F8 — Per-frame allocations in the GL render loop
-**Confirmed · Confidence High · Severity Low-Medium (steady GC pressure in hottest loop)**
-Files: `gl/GlPipeline.kt:142` + `stab/GyroEis.kt:55`; `gl/GlPipeline.kt:84` + `:185-187`.
+### PERF-10 — Unbounded `ioExecutor` queue during BURST/TIMELAPSE holds full JPEGs + serialized full-bitmap decodes
+**Severity Low-Medium · Confidence Medium · New**
+`camera/CameraEngine.kt:352` posts `saveHeifAsync(bytes, rotation)` to the single-thread `ioExecutor`
+(`:35`). Each queued task retains the shot's full compressed JPEG `bytes` (`:348-352`) and, when it
+runs, decodes to a full ARGB_8888 bitmap (~4 bytes/px; ~200 MB at 50 MP, more at 200 MP) plus a
+rotated copy (`saveHeifAsync`, `:376-416`). BURST fires 5 shots (`BURST_COUNT`, `:575`, chained but
+each queues an encode) and TIMELAPSE (`:320-326`) re-fires on a fixed **delay** where `capturePhoto`
+returns immediately (async), so captures can enqueue faster than `ioExecutor` drains. Under a fast
+interval or slow big-sensor encode the queue and its retained compressed buffers grow unboundedly →
+transient memory growth / OOM pressure (the per-task `OutOfMemoryError` guard at `:402` catches the
+decode, but not queue growth). The single-thread executor correctly prevents *parallel* OOM.
 
-1. `eisProvider?.invoke()` (`:142`) calls `GyroEis.currentCorrection()` which returns `floatArrayOf(corrYaw, corrPitch, corrRoll)` (`GyroEis.kt:55`) — a **new FloatArray every frame** while EIS is on (EIS defaults ON). ~32 B/frame → ~2 KB/s at 60 fps.
-2. `st.setOnFrameAvailableListener({ post { drawFrame() } }, handler)` (`:84`): the frame-available callback already runs on the GL handler thread, yet it **re-posts** `drawFrame` through the inline `post` (`:185`), allocating a fresh `Runnable` per frame and adding one message-queue round-trip of latency. The re-post is unnecessary — `drawFrame()` can be called directly since the listener handler is the GL thread.
+Fix: bound the in-flight/queued encode count (drop or coalesce when saturated), and free the retained
+`bytes` promptly. Longer-term this disappears with direct-HEIC capture (deferred L-HEIF-TRANSCODE).
 
-Failure scenario: not individually large, but these are in the single hottest loop and combine with any future per-frame work to raise young-gen GC frequency and add a frame of input-to-display latency (#2). Cheap to remove.
+### PERF-11 — Gyro correction tuple read non-atomically across sensor and GL threads
+**Severity Low · Confidence Medium · Residual (F11)**
+`stab/GyroEis.kt:40-42` (three separate `@Volatile` floats), written together in `onSensorChanged`
+(`:97-99`) and read separately in `currentCorrection()` (`:63`). The GL thread can observe a mix of
+axes from adjacent samples (torn tuple). Visually negligible (≤1 sample, smoothed by the low-pass),
+but it is a genuine data race — fold into the PERF-3 fix by publishing all three into one reused array
+under a single volatile store.
 
-Fix: give `GyroEis` a `currentCorrection(out: FloatArray)` that writes into a GL-thread-owned reusable array (or expose three floats); call `drawFrame()` directly from the frame-available callback instead of re-posting.
+### PERF-12 — Static geometry uploaded from client memory every draw (no VBO)
+**Severity Low · Confidence Medium · Residual (F12)**
+`gl/FlipRenderer.kt:155-163` binds `quad`/`texCoords` client `FloatBuffer`s via
+`glVertexAttribPointer` and enables/disables the two attrib arrays on every `draw`. Trivial for 4
+vertices, but it is per-frame CPU→driver copying and redundant state churn in the hottest loop. Fix:
+upload the static quad+texcoords into a VBO once in `init()` and bind once. Low priority.
 
----
+### PERF-13 — Repeating request fully rebuilt from `TEMPLATE_PREVIEW` on every control change
+**Severity Low · Confidence Medium · Mitigated (F2 debounce present)**
+`camera/CameraController.kt:199-242` (`startPreview`) allocates a new `CaptureRequest.Builder` from
+`TEMPLATE_PREVIEW`, re-applies ~20 keys via `applyManualControls`/`applyMetering`, and calls
+`setRepeatingRequest` — on every `updateControls` (`:287-290`). In MANUAL WB it also recomputes
+`kelvinTintToRggbGains` with `Math.pow`/`Math.log` each time (`camera/ManualControls.kt:143`,
+`:242-271`). The 80 ms debounce in `ui/CameraViewModel.kt:287-293` caps this at ~12/s during a drag
+(down from per-tick), so it is no longer a stutter driver, but it still rebuilds the whole request and
+re-latches the repeating request each time rather than mutating a retained builder. Fix (optional):
+keep one retained `CaptureRequest.Builder`, mutate only changed keys, resubmit; cache WB gains keyed
+on `(kelvin,tint)`.
 
-### F9 — `VendorTagInspector.dumpAll` runs on the GL thread and gates first preview
-**Confirmed · Confidence Medium · Severity Low-Medium (startup latency on a real-time thread)**
-File: `camera/CameraEngine.kt:71` (inside the `gl.start{...}` onInputReady callback, which runs on the GL thread), impl `camera/VendorTagInspector.kt:18-48`.
-
-`dumpAll` iterates all cameras + all physical sub-cameras, calling `getCameraCharacteristics` for each and `Log.i` for potentially hundreds of characteristic/request/session keys — all **before** `openCamera(input)` and **on the GL render thread**. This delays camera open / first frame and blocks the thread that must also service `setPreviewOutput`/`drawFrame`. Heavy Logcat spam per launch.
-
-Fix: run it once on a background thread (or gate behind `BuildConfig.DEBUG`); do not call it on the GL thread ahead of `openCamera`.
-
----
-
-### F10 — `GlPipeline.inputSurface` written on GL thread, read on main thread without synchronization
-**Confirmed · Confidence Medium · Severity Low-Medium (visibility race)**
-File: `gl/GlPipeline.kt:28-29` (plain `var inputSurface`, set at `:87` on GL thread) read at `camera/CameraEngine.kt:131` (`setCameraOverride`, main thread).
-
-`inputSurface` is a non-volatile `var` published from the GL thread and read from the main thread in `setCameraOverride`. Without a happens-before edge the main thread may observe a stale value (null before init completes, or a stale surface during teardown), leading to a missed override (`return`) or use of a released surface.
-
-The initial open path is safe (it flows through the Handler post in `onInputReady`, which carries the memory edge), but the main-thread read in `setCameraOverride` does not.
-
-Fix: mark `inputSurface` `@Volatile`, or route override through the GL handler so the read is confined to the GL thread.
-
----
-
-### F11 — Gyro correction tuple read non-atomically across sensor and GL threads
-**Confirmed · Confidence Medium · Severity Low (visually negligible)**
-File: `stab/GyroEis.kt:38-40, 55, 71-73`.
-
-`corrPitch/corrYaw/corrRoll` are individually `@Volatile`, but `currentCorrection()` reads the three separately while `onSensorChanged` writes them; the GL thread can observe a mix of axes from adjacent samples (torn tuple). Practical impact is at most a ~1-sample (1-2 ms) cross-axis mismatch, smoothed by the low-pass — negligible visually, but it is a genuine data race worth folding into the F8 fix (write all three into one reused array under a single publish).
-
----
-
-### F12 — Redundant fragment work / client-side vertex arrays in the draw path
-**Confirmed · Confidence Medium · Severity Low (GPU micro-inefficiency)**
-Files: `gl/Shaders.kt:59,81`; `gl/FlipRenderer.kt:35-41,144-147`.
-
-- Shader samples `texture2D(uTexture, vTexCoord)` at `:59` and again at `:81` when peaking is on — a duplicated texel fetch per fragment while peaking is enabled (3 extra samples total for the edge test). Reuse the `color`/base sample.
-- The static quad/texcoord `FloatBuffer`s are re-bound with `glVertexAttribPointer` from client memory every draw (`:144-147`) rather than via a VBO. Trivial for 4 vertices, but it is per-frame CPU→driver copying and repeated attrib enable/disable.
-
-Fix: reuse the base sample in the peaking branch; optionally move the static geometry into a VBO and bind once. Low priority.
-
----
-
-### F13 — Audio encode drains in a hot spin after EOS
-**Confirmed · Confidence Medium · Severity Low**
-File: `video/VideoRecorder.kt:163-207`.
-
-After `sentEos` is set, the outer `while(true)` skips the input branch and calls `dequeueOutputBuffer(info, 0)` (non-blocking); when no output is ready the inner while exits immediately and the outer loop re-spins at 100% CPU until the EOS-flagged output buffer appears. Brief (a few ms at stop), but a busy spin.
-
-Fix: use a small blocking timeout (e.g. `dequeueOutputBuffer(info, TIMEOUT_US)`) on the post-EOS drain.
-
----
-
-### F14 — Recording ticker / recomposition scope (minor)
-**Confirmed · Confidence Medium · Severity Low**
-Files: `ui/CameraViewModel.kt:37-42,158`; `ui/CameraScreen.kt:196-206`.
-
-The 200 ms `recordTicker` copies the whole `CameraUiState` 5×/s; `collectAsState` re-emits and `CameraScreen` recomposes. Most children skip (stable params / method-reference lambdas), so cost is low, but `onShutter = { ... }` (`CameraScreen.kt:201`) allocates a fresh unstable lambda each recomposition, forcing `BottomBar`/`ShutterButton` to recompose on every state change. Wrap `onShutter` in `remember`/`rememberUpdatedState` (mode + actions) to keep `BottomBar` skippable, or scope the elapsed-time read to the indicator only. Low priority.
+### PERF-14 — Analysis compute allocates fresh IntArrays each pass
+**Severity Low · Confidence High · New**
+`gl/GlPipeline.kt:291-316` (`computeHistogram`: four `IntArray(256)`) and `:319-342`
+(`computeWaveform`: `IntArray(128*64)` = 8192 ints) allocate on every analysis pass (~5 Hz when scopes
+on), plus the `HistogramData`/`WaveformData` wrappers, all retained in UI state until the next update.
+~40 KB/pass → ~200 KB/s of garbage on the `analysisExecutor` thread. Off the GL thread, so no render
+stall, but avoidable GC churn. Fix: reuse per-scope IntArray buffers (double-buffered against the UI
+read) instead of allocating each pass.
 
 ---
 
-## 3. Non-issues verified (to bound the review)
+## Non-issues verified (to bound the review)
 
-- **No per-frame shader/program recompile**: program + uniform locations built once in `FlipRenderer.init()`; `draw()` only sets uniforms. Good.
-- **Draw matrices reuse preallocated arrays** (`FlipRenderer.kt:43-45 mvp/rot/texMatrix`, `GlPipeline.kt:55 stMatrix`) — no per-frame matrix allocation. Good.
-- **No free-running render loop / Choreographer misuse**: rendering is driven by `SurfaceTexture.onFrameAvailable` (camera cadence) and paced by vsync on `eglSwapBuffers`. No busy loop.
-- **Preview stream does not target the JPEG/RAW ImageReaders** (`CameraController.startPreview` adds only the GL surface), so there is no continuous ImageReader backpressure; readers are used only on still capture with `maxImages=2`. Acceptable.
-- **`CameraController.pending` state machine is thread-confined**: `capturePhoto`, the capture callback, and both `onImage` listeners are all bound to the single "camera" handler, so the `synchronized(p)`/`@Volatile` guards are effectively redundant (harmless). NOTE: if F3's encode is offloaded to another thread, these guards become load-bearing — keep them.
-- **`MutableStateFlow.update` from background threads** (`engine.onStatus`/`onCapsReady`) is safe; `collectAsState` observes on main.
-- **`GlPipeline` config setters** all `post` to the GL handler and are read in `drawFrame` on the same thread — thread-confined, no race (except the public `inputSurface`, F10).
-- **VideoRecorder video/audio threads** are created via `thread{}` and `join`ed in `stop()` — no leak (unlike F4).
-
----
-
-## 4. Priority summary
-
-| # | Area | Impact | Severity | Confidence |
-|---|------|--------|----------|-----------|
-| F1 | Main-thread camera-service I/O on surfaceCreated | startup jank / near-ANR | High | High |
-| F2 | Repeating request rebuilt per slider tick (no debounce) | interactive preview stutter/flicker | High | High |
-| F3 | Synchronous HEIF decode+rotate+encode on camera thread; 2× full bitmaps | OOM on big sensors + control stall | High | High |
-| F4 | CameraController HandlerThread never quit | thread leak per override | Medium | High |
-| F5 | Gyro at SENSOR_DELAY_FASTEST | CPU/battery | Medium | High |
-| F6 | awaitMuxerStart busy-wait couples audio→video→GL | preview drop at record start | Medium | Med-High |
-| F7 | Encoder backpressure blocks shared GL thread | preview fps collapse while recording | Medium | Medium |
-| F8 | Per-frame FloatArray + Runnable in GL loop | GC pressure + 1 frame latency | Low-Med | High |
-| F9 | VendorTagInspector.dumpAll on GL thread pre-open | first-frame latency | Low-Med | Medium |
-| F10 | inputSurface cross-thread non-volatile read | override race | Low-Med | Medium |
-| F11 | Gyro tuple torn read | negligible | Low | Medium |
-| F12 | Duplicate texel fetch / client vertex arrays | GPU micro-cost | Low | Medium |
-| F13 | Audio post-EOS spin | brief CPU spin | Low | Medium |
-| F14 | Unstable onShutter lambda / recompose scope | minor | Low | Medium |
-
-Highest leverage: **F1, F2, F3** (each independently causes user-visible jank, flicker, or an OOM). **F4/F5/F6** are the next tier (leaks, battery, record-start hitch).
+- **No per-frame shader/program recompile**: program + uniform locations built once in
+  `FlipRenderer.init()` (`gl/FlipRenderer.kt:57-79`); `draw()` only sets uniforms.
+- **Draw matrices reuse preallocated arrays** (`FlipRenderer.kt:43-45`, `GlPipeline.kt:85 stMatrix`),
+  and `getTransformMatrix(stMatrix)` reuses the buffer — no per-frame matrix allocation.
+- **Rendering is camera-cadence driven** (`SurfaceTexture.onFrameAvailable` → `drawFrame()` directly
+  on the GL handler, `GlPipeline.kt:132`) and vsync-paced by `eglSwapBuffers` — no free-running loop,
+  and the F8 Runnable re-post is gone.
+- **Preview stream doesn't target the JPEG/RAW ImageReaders** (`CameraController.startPreview` adds
+  only the GL surface, `:209-210`), so no continuous ImageReader backpressure; readers are `maxImages=2`
+  and used only on capture.
+- **Thread lifecycle is clean now**: `CameraController.bg` quits (`:397`), `GlPipeline.thread`
+  quits (`GlPipeline.kt:362`), `analysisExecutor`/`setupExecutor`/`ioExecutor`/`timelapseScheduler`
+  shut down (`GlPipeline.kt:345`, `CameraEngine.kt:501-503`), VideoRecorder video/audio threads are
+  `join`ed (`VideoRecorder.kt:127-128`), gyro unregisters (`GyroEis.kt:57-60`). No leaked threads found.
+- **Gyro is 200 Hz** (`GyroEis.kt:127`) — F5 resolved; consumed once per frame, no longer oversampled.
+- **`MutableStateFlow.update` from background threads** (`onAnalysis`/`onAudioLevel`/`onStatus`) is
+  thread-safe; `collectAsState` observes on main.
+- **`orientationTicker` only emits on an actual orientation change** (`CameraViewModel.kt:77`), so it
+  does not churn recomposition at rest (contrast with `levelTicker`, PERF-5/PERF-9).
+- **`onShutter` is stable** (`remember(state.mode)`, `CameraScreen.kt:262-270`) — F14 resolved; the
+  Canvas chrome buttons take primitive params and skip.
