@@ -68,6 +68,16 @@ class GyroEis(context: Context) : SensorEventListener {
      */
     fun currentRollDegrees(): Float = rollDegrees
 
+    /**
+     * Discrete physical device orientation (0/90/180/270), derived from gravity, for auto-rotating
+     * captures while the UI stays portrait-locked. 0 = upright portrait; 90/270 = the two landscapes;
+     * 180 = upside down. Lying flat (gravity ≈ ±z) reads ~0, so a desk shot defaults to portrait.
+     */
+    fun currentDeviceOrientation(): Int {
+        val d = Math.round(rollDegrees / 90f) * 90
+        return ((d % 360) + 360) % 360
+    }
+
     override fun onSensorChanged(event: SensorEvent) {
         when (event.sensor.type) {
             Sensor.TYPE_GYROSCOPE -> {

@@ -13,8 +13,9 @@ data class ManualControls(
     val focusMode: FocusMode = FocusMode.MANUAL,
     val focusDistanceDiopters: Float = 0f, // 0 = infinity
     val afLock: Boolean = false,
-    // Exposure
-    val autoExposure: Boolean = false,
+    // Exposure — default to auto so the preview is correctly exposed on launch; the user opts into
+    // manual (which reveals iso/shutter as live overrides) via the exposure controls.
+    val autoExposure: Boolean = true,
     val iso: Int = 400,
     val exposureTimeNs: Long = 8_000_000L, // ~1/125 s (SPEED mode)
     val shutterMode: ShutterMode = ShutterMode.SPEED,

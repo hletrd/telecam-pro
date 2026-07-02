@@ -10,18 +10,23 @@ import java.io.OutputStream
 /** Writes a RAW_SENSOR [Image] out as a DNG using the capture's own characteristics/result. */
 object DngCapture {
 
-    /** Caller owns [out] and [image]; neither is closed here. */
+    /**
+     * Caller owns [out] and [image]; neither is closed here.
+     *
+     * [orientation] is an [ExifInterface] `ORIENTATION_*` constant carrying the full display
+     * rotation (sensor + afocal 180° + device tilt) computed by the caller — RAW records it as an
+     * orientation tag rather than rotating the Bayer pixels (which would break the CFA).
+     */
     fun writeDng(
         out: OutputStream,
         image: Image,
         characteristics: CameraCharacteristics,
         result: CaptureResult,
+        orientation: Int = ExifInterface.ORIENTATION_ROTATE_180,
     ) {
         val creator = DngCreator(characteristics, result)
         try {
-            // The afocal teleconverter needs a 180deg flip; RAW carries this via the orientation
-            // tag rather than rotating pixels.
-            creator.setOrientation(ExifInterface.ORIENTATION_ROTATE_180)
+            creator.setOrientation(orientation)
             creator.writeImage(out, image)
         } finally {
             creator.close()

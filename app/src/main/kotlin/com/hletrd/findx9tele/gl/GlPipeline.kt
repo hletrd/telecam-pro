@@ -104,9 +104,9 @@ class GlPipeline {
             previewSurface = null
             return@post
         }
-        // SurfaceView delivers surfaceCreated then surfaceChanged back-to-back on the same native
-        // window; if it's the same surface already bound at the same size, there is nothing to do —
-        // recreating the EGLSurface on a still-live native window throws EGL_BAD_ALLOC.
+        // The TextureView host can deliver available-then-size-changed back-to-back on the same
+        // native window; if it's the same surface already bound at the same size, there is nothing
+        // to do — recreating the EGLSurface on a still-live native window throws EGL_BAD_ALLOC.
         if (surface === previewSurface && previewEgl != EGL14.EGL_NO_SURFACE &&
             width == previewW && height == previewH
         ) {

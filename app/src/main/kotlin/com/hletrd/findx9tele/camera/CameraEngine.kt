@@ -55,6 +55,10 @@ class CameraEngine(private val context: Context) {
     // Set true synchronously on the calling thread once startup setup is dispatched, so a second
     // onPreviewSurfaceAvailable arriving before setup completes doesn't launch a duplicate start.
     @Volatile private var starting = false
+    // True between pause() and resume(). openCamera() honors it so a camera open queued during
+    // startup (the GL onInputReady continuation) doesn't fire while the app is backgrounded — e.g.
+    // launched behind the keyguard, where onStop lands right as the session would configure.
+    @Volatile private var paused = false
     @Volatile private var previewSurface: Surface? = null
 
     private val gyro = com.hletrd.findx9tele.stab.GyroEis(context)
@@ -126,9 +130,23 @@ class CameraEngine(private val context: Context) {
     /** Rotation (afocal 180° only in teleconverter mode) + gyro-EIS focal scaled to the effective FL. */
     private fun applyStabilization() {
         val c = caps ?: return
-        gl.setRotationDegrees(c.sensorOrientation + if (teleconverterMode) 180 else 0)
+        gl.setRotationDegrees(previewRotationDegrees())
         val mag = if (teleconverterMode) TELECONVERTER_MAGNIFICATION else 1f
         gl.setEis(eisEnabled, c.nativeFocalInImageWidths * mag, eisCrop)
+    }
+
+    /**
+     * CW degrees passed to the GL renderer to display the preview upright. The renderer rotates
+     * TEXTURE COORDINATES, which rotates the sampled image the OPPOSITE way — so the sensor
+     * orientation is NEGATED here (unlike [captureRotationDegrees], which rotates pixels directly and
+     * uses it as-is). The afocal teleconverter's 180° is self-inverse, so it kept the old
+     * `+sensorOrientation` looking right until the 90° sensor term exposed the sign. Portrait-locked
+     * UI ⇒ no device-orientation term (tilting the phone should tilt the world in the preview).
+     */
+    private fun previewRotationDegrees(): Int {
+        val c = caps ?: return 0
+        val base = -c.sensorOrientation + if (teleconverterMode) 180 else 0
+        return (base % 360 + 360) % 360
     }
 
     fun setTeleconverterMode(enabled: Boolean) { teleconverterMode = enabled; applyStabilization() }
@@ -148,8 +166,10 @@ class CameraEngine(private val context: Context) {
     }
 
     private fun openCamera(input: Surface) {
+        if (paused) return // don't grab the camera while backgrounded (queued GL continuation, etc.)
         val sel = selection ?: return
         val c = caps ?: return
+        controller?.close() // idempotent: closes any prior controller so two never race for the device
         val ctrl = CameraController(context)
         controller = ctrl
         ctrl.open(
@@ -188,8 +208,8 @@ class CameraEngine(private val context: Context) {
      * flipping once validated against the live preview.
      */
     fun setTapPoint(nx: Float, ny: Float) {
-        val c = caps ?: return
-        val total = ((c.sensorOrientation + if (teleconverterMode) 180 else 0) % 360 + 360) % 360
+        caps ?: return
+        val total = previewRotationDegrees()
         val px = nx - 0.5f
         val py = ny - 0.5f
         val rad = Math.toRadians(-total.toDouble())
@@ -313,6 +333,9 @@ class CameraEngine(private val context: Context) {
     private fun photoCallback(formats: PhotoFormats, onDone: (() -> Unit)? = null) =
         object : CameraController.PhotoCallback {
             override fun onPhoto(jpeg: Image?, raw: Image?, result: TotalCaptureResult, rawChars: CameraCharacteristics) {
+                // Snapshot the orientation once, at the moment of capture, so the deferred HEIF encode
+                // and the synchronous DNG write agree on how the phone was held for this shot.
+                val rotation = captureRotationDegrees()
                 if (formats.heif) {
                     if (jpeg != null) {
                         // Cheaply copy the compressed JPEG bytes out while the Image is alive, then
@@ -321,14 +344,14 @@ class CameraEngine(private val context: Context) {
                             val buf = jpeg.planes[0].buffer
                             ByteArray(buf.remaining()).also { buf.get(it) }
                         }.getOrNull()
-                        if (bytes != null) ioExecutor.execute { saveHeifAsync(bytes) }
+                        if (bytes != null) ioExecutor.execute { saveHeifAsync(bytes, rotation) }
                         else onStatus?.invoke("Failed to save HEIF")
                     } else onStatus?.invoke("Failed to save HEIF: no JPEG")
                 }
                 if (formats.dngRaw) {
                     if (raw != null) {
                         // DngCreator needs the live raw Image → must stay synchronous in this callback.
-                        runCatching { saveDng(raw, rawChars, result) }
+                        runCatching { saveDng(raw, rawChars, result, rotation) }
                             .onSuccess { onStatus?.invoke("DNG saved") }
                             .onFailure { onStatus?.invoke("Failed to save DNG: ${it.message}") }
                     } else onStatus?.invoke("Failed to save DNG: no RAW")
@@ -345,7 +368,7 @@ class CameraEngine(private val context: Context) {
      * full-frame) → rotate 180° → write HEIF, on [ioExecutor]. Publishes only on success; deletes
      * on any failure.
      */
-    private fun saveHeifAsync(bytes: ByteArray) {
+    private fun saveHeifAsync(bytes: ByteArray, rotationDegrees: Int) {
         var decoded: Bitmap? = null
         var cropped: Bitmap? = null
         var rotated: Bitmap? = null
@@ -360,7 +383,7 @@ class CameraEngine(private val context: Context) {
                 cropped = c
                 c
             } else d
-            val r = rotate180(base)
+            val r = rotateBitmap(base, rotationDegrees)
             rotated = r
             val u = MediaStoreWriter.createPendingImage(context, fileName("IMG", "heic"), "image/heic")
             if (u == null) { onStatus?.invoke("Failed to save HEIF"); return }
@@ -388,13 +411,13 @@ class CameraEngine(private val context: Context) {
     }
 
     /** Writes the RAW image as DNG synchronously (always full-frame; no [aspectRatio] crop applied). Publishes only on success; deletes then rethrows on failure. */
-    private fun saveDng(raw: Image, chars: CameraCharacteristics, result: TotalCaptureResult) {
+    private fun saveDng(raw: Image, chars: CameraCharacteristics, result: TotalCaptureResult, rotationDegrees: Int) {
         val uri = MediaStoreWriter.createPendingImage(context, fileName("IMG", "dng"), "image/x-adobe-dng")
             ?: throw IllegalStateException("Failed to create MediaStore entry")
         try {
             val out = MediaStoreWriter.openOutputStream(context, uri)
                 ?: throw IllegalStateException("Failed to open output stream")
-            out.use { DngCapture.writeDng(it, raw, chars, result) }
+            out.use { DngCapture.writeDng(it, raw, chars, result, exifOrientationFor(rotationDegrees)) }
             MediaStoreWriter.publish(context, uri)
         } catch (t: Throwable) {
             MediaStoreWriter.delete(context, uri)
@@ -436,6 +459,7 @@ class CameraEngine(private val context: Context) {
 
     /** Releases the camera + gyro for backgrounding without tearing down the GL pipeline or start state. */
     fun pause() {
+        paused = true
         runCatching { recorder?.stop() }
         recorder = null
         gyro.stop()
@@ -445,6 +469,7 @@ class CameraEngine(private val context: Context) {
 
     /** Reopens the camera after [pause], reusing the existing GL input surface and start state. */
     fun resume() {
+        paused = false
         val input = gl.inputSurface ?: return
         if (controller != null) return
         gyro.start()
@@ -472,9 +497,30 @@ class CameraEngine(private val context: Context) {
 
     // ---- Helpers ----
 
-    private fun rotate180(src: Bitmap): Bitmap {
-        val m = Matrix().apply { postRotate(180f) }
+    /**
+     * Total rotation (deg, clockwise) to apply to a still so it saves upright: the tele lens's
+     * sensor orientation + the afocal 180° (teleconverter only) + the phone's physical orientation
+     * from gravity — so a shot framed while holding the phone in landscape saves landscape-correct,
+     * even though the UI is portrait-locked. Matches the GL preview rotation at 0° device tilt.
+     */
+    private fun captureRotationDegrees(): Int {
+        val c = caps ?: return 0
+        val base = c.sensorOrientation + if (teleconverterMode) 180 else 0
+        return ((base + gyro.currentDeviceOrientation()) % 360 + 360) % 360
+    }
+
+    private fun rotateBitmap(src: Bitmap, degrees: Int): Bitmap {
+        if (degrees % 360 == 0) return src
+        val m = Matrix().apply { postRotate(degrees.toFloat()) }
         return Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
+    }
+
+    /** Maps a clockwise rotation (0/90/180/270) to the matching EXIF/TIFF orientation tag for DNG. */
+    private fun exifOrientationFor(degrees: Int): Int = when (((degrees % 360) + 360) % 360) {
+        90 -> android.media.ExifInterface.ORIENTATION_ROTATE_90
+        180 -> android.media.ExifInterface.ORIENTATION_ROTATE_180
+        270 -> android.media.ExifInterface.ORIENTATION_ROTATE_270
+        else -> android.media.ExifInterface.ORIENTATION_NORMAL
     }
 
     /** Returns the largest [ratioW]:[ratioH] rect centered within [src], cropped out of it. HEIF-only (see [saveHeifAsync]). */

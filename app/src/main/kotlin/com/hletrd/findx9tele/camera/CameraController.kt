@@ -49,6 +49,10 @@ class CameraController(context: Context) {
     private var session: CameraCaptureSession? = null
     private var jpegReader: ImageReader? = null
     private var rawReader: ImageReader? = null
+    // Set once close() runs so late-arriving open/config callbacks (which can fire after the app
+    // backgrounds mid-startup — e.g. onStop behind the keyguard closes us while the session is still
+    // configuring) short-circuit instead of touching an already-disconnected device.
+    @Volatile private var closed = false
 
     private lateinit var selection: TeleSelection
     private lateinit var caps: CameraCaps
@@ -91,6 +95,7 @@ class CameraController(context: Context) {
 
         manager.openCamera(selection.logicalId, executor, object : CameraDevice.StateCallback() {
             override fun onOpened(camera: CameraDevice) {
+                if (closed) { runCatching { camera.close() }; return } // closed before open completed
                 device = camera
                 configAttempt = 0
                 runCatching { configureSession(onReady, onError) }.onFailure { onError.onError(it) }
@@ -161,6 +166,7 @@ class CameraController(context: Context) {
             SessionConfiguration.SESSION_REGULAR, configs, executor,
             object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(s: CameraCaptureSession) {
+                    if (closed) { runCatching { s.close() }; return } // closed before config completed
                     session = s
                     Log.i(TAG, "Session configured (fallback=$attempt, hlg=$useHlg, jpeg=$useJpeg, raw=$useRaw)")
                     startPreview()
@@ -191,36 +197,43 @@ class CameraController(context: Context) {
      * that result. All calls guard nulls so a torn-down session is a no-op.
      */
     private fun startPreview() {
+        if (closed) return
         val camera = device ?: return
         val preview = glSurface ?: return
         val s = session ?: return
-        val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-            addTarget(preview)
-            applyManualControls(controls, caps)
-            applyMetering(this, controls)
-            // AF lock: freeze focus at the last AF-resolved distance instead of leaving AF running.
-            // Not applicable in MANUAL focus mode, where focus is already fixed by the user.
-            if (controls.afLock && controls.focusMode != FocusMode.MANUAL && caps.supportsManualFocus) {
-                set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
-                set(CaptureRequest.LENS_FOCUS_DISTANCE, lastFocusDistance)
+        // The device can be disconnected asynchronously (app backgrounded, another client, HAL) between
+        // session config and here; createCaptureRequest/setRepeatingRequest then throw CameraAccess/
+        // IllegalState. Guard the whole build+submit so a torn-down session degrades to "no preview
+        // this cycle" instead of crashing the camera thread.
+        runCatching {
+            val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                addTarget(preview)
+                applyManualControls(controls, caps)
+                applyMetering(this, controls)
+                // AF lock: freeze focus at the last AF-resolved distance instead of leaving AF running.
+                // Not applicable in MANUAL focus mode, where focus is already fixed by the user.
+                if (controls.afLock && controls.focusMode != FocusMode.MANUAL && caps.supportsManualFocus) {
+                    set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+                    set(CaptureRequest.LENS_FOCUS_DISTANCE, lastFocusDistance)
+                }
             }
-        }
-        val callback = object : CameraCaptureSession.CaptureCallback() {
-            override fun onCaptureCompleted(
-                session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult,
-            ) {
-                result.get(android.hardware.camera2.CaptureResult.LENS_FOCUS_DISTANCE)?.let { lastFocusDistance = it }
+            val callback = object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureCompleted(
+                    session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult,
+                ) {
+                    result.get(android.hardware.camera2.CaptureResult.LENS_FOCUS_DISTANCE)?.let { lastFocusDistance = it }
+                }
             }
-        }
-        // Tap-to-focus one-shot: START the AF engine at the new point, then fall through to the
-        // repeating request with the trigger cleared so the converged focus is held.
-        if (afTriggerPending && controls.focusMode != FocusMode.MANUAL) {
-            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
-            runCatching { s.capture(builder.build(), callback, handler) }
-            builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
-        }
-        afTriggerPending = false
-        s.setRepeatingRequest(builder.build(), callback, handler)
+            // Tap-to-focus one-shot: START the AF engine at the new point, then fall through to the
+            // repeating request with the trigger cleared so the converged focus is held.
+            if (afTriggerPending && controls.focusMode != FocusMode.MANUAL) {
+                builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
+                runCatching { s.capture(builder.build(), callback, handler) }
+                builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
+            }
+            afTriggerPending = false
+            s.setRepeatingRequest(builder.build(), callback, handler)
+        }.onFailure { Log.w(TAG, "startPreview skipped: ${it.message}") }
     }
 
     /**
@@ -363,6 +376,7 @@ class CameraController(context: Context) {
     }
 
     fun close() {
+        closed = true
         handler.post {
             runCatching { session?.close() }
             runCatching { device?.close() }
