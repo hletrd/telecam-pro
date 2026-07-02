@@ -68,6 +68,7 @@ class VideoRecorder(private val context: Context) {
         codec: VideoCodec,
         recordAudio: Boolean,
         audioGain: Float = 1f,
+        orientationHint: Int = 0,
         onLevel: ((Float) -> Unit)? = null,
     ): Surface? {
         this.uri = uri
@@ -78,6 +79,10 @@ class VideoRecorder(private val context: Context) {
 
         val videoOk = runCatching {
             muxer = MediaMuxer(descriptor.fileDescriptor, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            // GL already bakes the afocal 180° into the frames; this hint adds ONLY the physical device
+            // orientation (0/90/180/270) captured at record start, so a landscape-held clip plays
+            // upright. Must be set before start(). Sign is device-verify (may need (360-deg)%360).
+            runCatching { muxer?.setOrientationHint(((orientationHint % 360) + 360) % 360) }
 
             val vFmt = ColorProfiles.videoFormat(codec, size.width, size.height, fps, bitRate, transfer)
             val vCodec = MediaCodec.createEncoderByType(ColorProfiles.mimeFor(codec))
@@ -140,7 +145,10 @@ class VideoRecorder(private val context: Context) {
         runCatching { muxer?.release() }
         runCatching { pfd?.close() }
 
-        uri?.let { MediaStoreWriter.publish(context, it) }
+        // Publish only if the muxer actually started (≥1 track added, i.e. real content). Stopping
+        // before the encoder emitted its output format would otherwise publish a 0-byte / unplayable
+        // MP4 into the gallery — delete it instead.
+        uri?.let { if (muxerStarted) MediaStoreWriter.publish(context, it) else MediaStoreWriter.delete(context, it) }
 
         videoCodec = null
         audioCodec = null
@@ -195,6 +203,14 @@ class VideoRecorder(private val context: Context) {
                 (minBuf * 2).coerceAtLeast(8192),
             )
         }.getOrNull() ?: run { expectedTracks = 1; return }
+        // An AudioRecord that failed to initialize (busy mic, unsupported config) is left in
+        // STATE_UNINITIALIZED; calling startRecording() on it throws on the audio thread → crash.
+        // Degrade to video-only instead.
+        if (record.state != AudioRecord.STATE_INITIALIZED) {
+            runCatching { record.release() }
+            expectedTracks = 1
+            return
+        }
         audioRecord = record
 
         val codec = MediaCodec.createEncoderByType(ColorProfiles.MIME_AAC)
@@ -206,7 +222,9 @@ class VideoRecorder(private val context: Context) {
     }
 
     private fun runAudio(record: AudioRecord, codec: MediaCodec) {
-        record.startRecording()
+        // Guard startRecording() too: if the mic is grabbed between init and here it throws, and an
+        // uncaught throw on this thread would crash the app — bail to video-only instead.
+        if (runCatching { record.startRecording() }.isFailure) return
         val info = MediaCodec.BufferInfo()
         var totalSamples = 0L
         val bytesPerFrame = 2 * ColorProfiles.AUDIO_CHANNELS
