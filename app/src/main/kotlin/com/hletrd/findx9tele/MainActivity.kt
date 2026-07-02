@@ -1,8 +1,11 @@
 package com.hletrd.findx9tele
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -17,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -24,10 +28,10 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.hletrd.findx9tele.ui.CameraScreen
@@ -38,20 +42,30 @@ class MainActivity : ComponentActivity() {
 
     private val vm: CameraViewModel by viewModels()
 
+    // Compose-observable permission state, held on the Activity so onResume (return from the system
+    // Settings screen) can re-check and flip the gate without the user re-launching.
+    private var hasCamera by mutableStateOf(false)
+    // True once the user has denied with "don't ask again": the runtime dialog no longer appears, so
+    // the CTA must deep-link into App Settings instead of a dead re-request (designer UX-6 / M8).
+    private var permanentlyDenied by mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        hasCamera = hasCameraPermission()
 
         setContent {
             FindX9TeleTheme {
                 val state by vm.state.collectAsState()
-                var hasCamera by remember { mutableStateOf(hasCameraPermission()) }
 
                 val launcher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestMultiplePermissions(),
                 ) { result ->
                     hasCamera = result[Manifest.permission.CAMERA] == true || hasCameraPermission()
+                    if (!hasCamera) {
+                        permanentlyDenied = !shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)
+                    }
                 }
 
                 LaunchedEffect(Unit) {
@@ -61,7 +75,11 @@ class MainActivity : ComponentActivity() {
                 if (hasCamera) {
                     CameraScreen(state = state, actions = vm, modifier = Modifier.fillMaxSize())
                 } else {
-                    PermissionGate { launcher.launch(REQUIRED_PERMISSIONS) }
+                    PermissionGate(
+                        permanentlyDenied = permanentlyDenied,
+                        onRequest = { launcher.launch(REQUIRED_PERMISSIONS) },
+                        onOpenSettings = ::openAppSettings,
+                    )
                 }
             }
         }
@@ -72,6 +90,12 @@ class MainActivity : ComponentActivity() {
         vm.onStart()
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Re-check after returning from App Settings so granting there flips the gate immediately.
+        if (!hasCamera && hasCameraPermission()) hasCamera = true
+    }
+
     override fun onStop() {
         vm.onStop()
         super.onStop()
@@ -80,22 +104,44 @@ class MainActivity : ComponentActivity() {
     private fun hasCameraPermission(): Boolean =
         ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
 
+    private fun openAppSettings() {
+        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { startActivity(intent) }
+    }
+
     private companion object {
         val REQUIRED_PERMISSIONS = arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
     }
 }
 
 @Composable
-private fun PermissionGate(onRequest: () -> Unit) {
+private fun PermissionGate(
+    permanentlyDenied: Boolean,
+    onRequest: () -> Unit,
+    onOpenSettings: () -> Unit,
+) {
     Surface(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier.fillMaxSize().padding(24.dp),
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text("Camera permission is required")
+            Text(
+                text = if (permanentlyDenied) {
+                    "Camera access is off. Enable Camera (and Microphone for video) in Settings to use the app."
+                } else {
+                    "This app needs the camera to see through the 300 mm teleconverter, and the microphone to record video sound."
+                },
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.bodyLarge,
+            )
             Spacer(Modifier.height(16.dp))
-            Button(onClick = onRequest) { Text("Grant Permission") }
+            if (permanentlyDenied) {
+                Button(onClick = onOpenSettings) { Text("Open Settings") }
+            } else {
+                Button(onClick = onRequest) { Text("Grant Permission") }
+            }
         }
     }
 }
