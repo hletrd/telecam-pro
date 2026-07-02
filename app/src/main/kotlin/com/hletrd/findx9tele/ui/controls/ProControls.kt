@@ -1,7 +1,5 @@
 package com.hletrd.findx9tele.ui.controls
 
-import android.util.Range
-import android.util.Rational
 import android.util.Size
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -10,18 +8,17 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -29,8 +26,6 @@ import androidx.compose.ui.unit.dp
 import com.hletrd.findx9tele.camera.Antibanding
 import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.BitrateLevel
-import com.hletrd.findx9tele.camera.CameraCaps
-import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.DriveMode
@@ -38,7 +33,6 @@ import com.hletrd.findx9tele.camera.EisStrength
 import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
-import com.hletrd.findx9tele.camera.ManualControls
 import com.hletrd.findx9tele.camera.MeteringMode
 import com.hletrd.findx9tele.camera.PhotoFormats
 import com.hletrd.findx9tele.camera.ProcessingLevel
@@ -46,69 +40,51 @@ import com.hletrd.findx9tele.camera.ShutterMode
 import com.hletrd.findx9tele.camera.ShutterTimer
 import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.camera.WbMode
-import com.hletrd.findx9tele.camera.effectiveExposureNs
 import com.hletrd.findx9tele.focus.FocusMapping
-import com.hletrd.findx9tele.ui.CameraActions
+import com.hletrd.findx9tele.ui.theme.CameraColors
 import kotlin.math.exp
 import kotlin.math.ln
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
-// ---------------------------------------------------------------------------
-// Focus (slider lives here; called directly from CameraScreen)
-// ---------------------------------------------------------------------------
-
 /**
- * Manual-focus slider mapped through [FocusMapping]. Displays the resolved distance in
- * meters/centimeters, or "∞" at zero diopters. Disabled unless [focusMode] is MANUAL and the lens
- * has a manual-focus range (fixed-focus, [minFocusDiopters] <= 0, disables it).
+ * Shared row/building-block library for the pro settings menu ([com.hletrd.findx9tele.ui.controls.ProSheet]).
+ * Every composable here is purely presentational — values in, callbacks out — so the tabbed pages
+ * in ProSheet.kt can assemble them freely. Visibility is `internal` (not `private`) so ProSheet.kt
+ * and ManualDials.kt, in the same module, can call these directly.
  */
-@Composable
-fun FocusSlider(
-    focusDistanceDiopters: Float,
-    minFocusDiopters: Float,
-    focusMode: FocusMode,
-    onFocusSlider: (Float) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val sliderPos = remember(focusDistanceDiopters, minFocusDiopters) {
-        FocusMapping.dioptersToSlider(focusDistanceDiopters, minFocusDiopters)
-    }
-    val distanceLabel = remember(focusDistanceDiopters) { formatFocusDistance(focusDistanceDiopters) }
-    val enabled = focusMode == FocusMode.MANUAL && minFocusDiopters > 0f
-    Column(modifier = modifier.fillMaxWidth()) {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text("초점", color = Color.White, style = MaterialTheme.typography.labelMedium)
-            Text(distanceLabel, color = Color.White, style = MaterialTheme.typography.labelMedium)
-        }
-        Slider(
-            value = sliderPos,
-            onValueChange = onFocusSlider,
-            enabled = enabled,
-            valueRange = 0f..1f,
-            modifier = Modifier.fillMaxWidth(),
-        )
-    }
-}
-
-private fun formatFocusDistance(diopters: Float): String {
-    val meters = FocusMapping.dioptersToMeters(diopters)
-    return when {
-        meters.isInfinite() -> "∞"
-        meters < 1f -> "${(meters * 100).roundToInt()}cm"
-        else -> "%.2fm".format(meters)
-    }
-}
 
 // ---------------------------------------------------------------------------
-// Small reusable building blocks shared by every section below
+// Small reusable building blocks shared by every settings row
 // ---------------------------------------------------------------------------
 
-/** Section header used to group rows (Focus/Exposure/White balance/...). */
+/** Small caps sub-heading used to group a handful of rows within a settings tab page. */
 @Composable
-private fun SectionHeader(text: String, modifier: Modifier = Modifier) {
-    Text(text, color = Color(0xFF8E8E93), style = MaterialTheme.typography.labelSmall, modifier = modifier)
+internal fun SectionHeader(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text,
+        color = CameraColors.TextSecondary,
+        style = MaterialTheme.typography.labelSmall,
+        modifier = modifier,
+    )
 }
+
+/** Colors shared by every [FilterChip] in the settings menu: filled white when selected, ghost otherwise. */
+@Composable
+internal fun pixelChipColors() = FilterChipDefaults.filterChipColors(
+    containerColor = Color.Transparent,
+    labelColor = CameraColors.TextPrimary,
+    selectedContainerColor = CameraColors.TextPrimary,
+    selectedLabelColor = Color.Black,
+)
+
+@Composable
+internal fun pixelChipBorder(selected: Boolean) = FilterChipDefaults.filterChipBorder(
+    enabled = true,
+    selected = selected,
+    borderColor = Color.White.copy(alpha = 0.18f),
+    selectedBorderWidth = 0.dp,
+)
 
 /** Reusable Auto/Manual segmented toggle used by exposure and white-balance rows. */
 @Composable
@@ -116,27 +92,40 @@ fun AutoManualToggle(
     auto: Boolean,
     onToggle: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
-    autoLabel: String = "자동",
-    manualLabel: String = "수동",
+    autoLabel: String = "Auto",
+    manualLabel: String = "Manual",
 ) {
     Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        FilterChip(selected = auto, onClick = { onToggle(true) }, label = { Text(autoLabel) })
-        FilterChip(selected = !auto, onClick = { onToggle(false) }, label = { Text(manualLabel) })
+        FilterChip(
+            selected = auto,
+            onClick = { onToggle(true) },
+            label = { Text(autoLabel) },
+            colors = pixelChipColors(),
+            border = pixelChipBorder(auto),
+        )
+        FilterChip(
+            selected = !auto,
+            onClick = { onToggle(false) },
+            label = { Text(manualLabel) },
+            colors = pixelChipColors(),
+            border = pixelChipBorder(!auto),
+        )
     }
 }
 
-/** Exclusive segmented selector (FilterChip row) for a fixed set of enum options. */
+/** Exclusive segmented selector (FilterChip row) for a fixed set of enum/value options. */
 @Composable
-private fun <T> SegmentedSelector(
+internal fun <T> SegmentedSelector(
     label: String,
     options: List<T>,
     selected: T,
     labelFor: (T) -> String,
     onSelect: (T) -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
-    Column(modifier = modifier.fillMaxWidth()) {
-        Text(label, color = Color.White, style = MaterialTheme.typography.labelMedium)
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(label, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -144,19 +133,33 @@ private fun <T> SegmentedSelector(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             options.forEach { option ->
+                val isSelected = option == selected
                 FilterChip(
-                    selected = option == selected,
+                    selected = isSelected,
                     onClick = { onSelect(option) },
+                    enabled = enabled,
                     label = { Text(labelFor(option)) },
+                    colors = pixelChipColors(),
+                    border = pixelChipBorder(isSelected),
                 )
             }
         }
     }
 }
 
+@Composable
+internal fun pixelSliderColors() = SliderDefaults.colors(
+    thumbColor = CameraColors.TextPrimary,
+    activeTrackColor = CameraColors.Accent,
+    inactiveTrackColor = Color.White.copy(alpha = 0.18f),
+    disabledThumbColor = CameraColors.TextSecondary,
+    disabledActiveTrackColor = Color.White.copy(alpha = 0.25f),
+    disabledInactiveTrackColor = Color.White.copy(alpha = 0.1f),
+)
+
 /** Label + value header with a slider beneath it. */
 @Composable
-private fun LabeledSlider(
+internal fun LabeledSlider(
     label: String,
     valueLabel: String,
     value: Float,
@@ -167,145 +170,183 @@ private fun LabeledSlider(
 ) {
     Column(modifier = modifier.fillMaxWidth()) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(label, color = Color.White, style = MaterialTheme.typography.labelMedium)
-            Text(valueLabel, color = Color.White, style = MaterialTheme.typography.labelMedium)
+            Text(label, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
+            Text(valueLabel, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelMedium)
         }
         Slider(
             value = value,
             onValueChange = onValueChange,
             enabled = enabled,
             valueRange = valueRange,
+            colors = pixelSliderColors(),
             modifier = Modifier.fillMaxWidth(),
         )
     }
 }
 
-/** Label + Switch row used by every boolean toggle in the panel. */
+/** Label + Switch row used by every boolean toggle in the settings menu. */
 @Composable
-private fun ToggleRow(
+internal fun ToggleRow(
     label: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     Row(
         modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, color = Color.White, style = MaterialTheme.typography.labelMedium)
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        Text(
+            label,
+            color = if (enabled) CameraColors.TextPrimary else CameraColors.TextSecondary,
+            style = MaterialTheme.typography.labelMedium,
+        )
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            enabled = enabled,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = CameraColors.Accent,
+                checkedBorderColor = Color.Transparent,
+                uncheckedThumbColor = CameraColors.TextSecondary,
+                uncheckedTrackColor = Color.White.copy(alpha = 0.15f),
+                uncheckedBorderColor = Color.Transparent,
+            ),
+        )
+    }
+}
+
+/** Label + clickable value row (e.g. "Camera Override  Default"), used for one-off advanced rows. */
+@Composable
+internal fun LabelValueRow(
+    label: String,
+    valueLabel: String,
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null,
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
+        Text(valueLabel, color = CameraColors.Accent, style = MaterialTheme.typography.labelMedium)
     }
 }
 
 // ---------------------------------------------------------------------------
-// Enum -> Korean short-label mappings
+// Enum -> short-label mappings
 // ---------------------------------------------------------------------------
 
-private fun focusModeLabel(mode: FocusMode): String = when (mode) {
+internal fun focusModeLabel(mode: FocusMode): String = when (mode) {
     FocusMode.MANUAL -> "MF"
     FocusMode.AUTO -> "AF"
     FocusMode.CONTINUOUS -> "AF-C"
-    FocusMode.MACRO -> "매크로"
+    FocusMode.MACRO -> "Macro"
 }
 
-private fun antibandingLabel(mode: Antibanding): String = when (mode) {
-    Antibanding.AUTO -> "자동"
+internal fun antibandingLabel(mode: Antibanding): String = when (mode) {
+    Antibanding.AUTO -> "Auto"
     Antibanding.HZ50 -> "50Hz"
     Antibanding.HZ60 -> "60Hz"
-    Antibanding.OFF -> "끄기"
+    Antibanding.OFF -> "Off"
 }
 
-private fun processingLevelLabel(level: ProcessingLevel): String = when (level) {
-    ProcessingLevel.OFF -> "끄기"
-    ProcessingLevel.FAST -> "빠름"
-    ProcessingLevel.HIGH_QUALITY -> "고품질"
+internal fun processingLevelLabel(level: ProcessingLevel): String = when (level) {
+    ProcessingLevel.OFF -> "Off"
+    ProcessingLevel.FAST -> "Fast"
+    ProcessingLevel.HIGH_QUALITY -> "High Quality"
 }
 
-private fun colorEffectLabel(effect: ColorEffect): String = when (effect) {
-    ColorEffect.NONE -> "없음"
-    ColorEffect.MONO -> "흑백"
-    ColorEffect.NEGATIVE -> "네거티브"
-    ColorEffect.SEPIA -> "세피아"
-    ColorEffect.AQUA -> "아쿠아"
-    ColorEffect.POSTERIZE -> "포스터라이즈"
+internal fun colorEffectLabel(effect: ColorEffect): String = when (effect) {
+    ColorEffect.NONE -> "None"
+    ColorEffect.MONO -> "Mono"
+    ColorEffect.NEGATIVE -> "Negative"
+    ColorEffect.SEPIA -> "Sepia"
+    ColorEffect.AQUA -> "Aqua"
+    ColorEffect.POSTERIZE -> "Posterize"
 }
 
-private fun flashModeLabel(mode: FlashMode): String = when (mode) {
-    FlashMode.OFF -> "끄기"
-    FlashMode.AUTO -> "자동"
-    FlashMode.ON -> "켜기"
-    FlashMode.TORCH -> "손전등"
+internal fun flashModeLabel(mode: FlashMode): String = when (mode) {
+    FlashMode.OFF -> "Off"
+    FlashMode.AUTO -> "Auto"
+    FlashMode.ON -> "On"
+    FlashMode.TORCH -> "Torch"
 }
 
-private fun gridTypeLabel(type: GridType): String = when (type) {
-    GridType.NONE -> "없음"
-    GridType.THIRDS -> "3분할"
-    GridType.GOLDEN -> "황금비"
-    GridType.SQUARE -> "정사각형"
-    GridType.CENTER -> "중앙"
+internal fun gridTypeLabel(type: GridType): String = when (type) {
+    GridType.NONE -> "None"
+    GridType.THIRDS -> "Thirds"
+    GridType.GOLDEN -> "Golden Ratio"
+    GridType.SQUARE -> "Square"
+    GridType.CENTER -> "Center"
 }
 
-private fun shutterTimerLabel(timer: ShutterTimer): String = when (timer) {
-    ShutterTimer.OFF -> "끄기"
-    ShutterTimer.SEC3 -> "3초"
-    ShutterTimer.SEC10 -> "10초"
+internal fun shutterTimerLabel(timer: ShutterTimer): String = when (timer) {
+    ShutterTimer.OFF -> "Off"
+    ShutterTimer.SEC3 -> "3s"
+    ShutterTimer.SEC10 -> "10s"
 }
 
-private fun shutterModeLabel(mode: ShutterMode): String = when (mode) {
-    ShutterMode.SPEED -> "속도"
-    ShutterMode.ANGLE -> "각도"
+internal fun shutterModeLabel(mode: ShutterMode): String = when (mode) {
+    ShutterMode.SPEED -> "Speed"
+    ShutterMode.ANGLE -> "Angle"
 }
 
-private fun eisStrengthLabel(strength: EisStrength): String = when (strength) {
-    EisStrength.LOW -> "약"
-    EisStrength.MEDIUM -> "중"
-    EisStrength.HIGH -> "강"
+internal fun eisStrengthLabel(strength: EisStrength): String = when (strength) {
+    EisStrength.LOW -> "Low"
+    EisStrength.MEDIUM -> "Medium"
+    EisStrength.HIGH -> "High"
 }
 
-private fun wbModeLabel(mode: WbMode): String = when (mode) {
-    WbMode.AUTO -> "자동"
-    WbMode.INCANDESCENT -> "백열"
-    WbMode.FLUORESCENT -> "형광"
-    WbMode.DAYLIGHT -> "주광"
-    WbMode.CLOUDY -> "흐림"
-    WbMode.SHADE -> "그늘"
-    WbMode.MANUAL -> "수동"
+internal fun wbModeLabel(mode: WbMode): String = when (mode) {
+    WbMode.AUTO -> "Auto"
+    WbMode.INCANDESCENT -> "Incandescent"
+    WbMode.FLUORESCENT -> "Fluorescent"
+    WbMode.DAYLIGHT -> "Daylight"
+    WbMode.CLOUDY -> "Cloudy"
+    WbMode.SHADE -> "Shade"
+    WbMode.MANUAL -> "Manual"
 }
 
-private fun meteringModeLabel(mode: MeteringMode): String = when (mode) {
-    MeteringMode.MATRIX -> "평가"
-    MeteringMode.CENTER -> "중앙"
-    MeteringMode.SPOT -> "스팟"
+internal fun meteringModeLabel(mode: MeteringMode): String = when (mode) {
+    MeteringMode.MATRIX -> "Matrix"
+    MeteringMode.CENTER -> "Center"
+    MeteringMode.SPOT -> "Spot"
 }
 
-private fun driveModeLabel(mode: DriveMode): String = when (mode) {
-    DriveMode.SINGLE -> "단일"
-    DriveMode.BURST -> "연사"
+internal fun driveModeLabel(mode: DriveMode): String = when (mode) {
+    DriveMode.SINGLE -> "Single"
+    DriveMode.BURST -> "Burst"
     DriveMode.AEB -> "AEB"
-    DriveMode.TIMELAPSE -> "타임랩스"
+    DriveMode.TIMELAPSE -> "Timelapse"
 }
 
-private fun aspectRatioLabel(ratio: AspectRatio): String = when (ratio) {
-    AspectRatio.FULL -> "전체"
+internal fun aspectRatioLabel(ratio: AspectRatio): String = when (ratio) {
+    AspectRatio.FULL -> "Full"
     AspectRatio.W16_9 -> "16:9"
     AspectRatio.W4_3 -> "4:3"
     AspectRatio.W1_1 -> "1:1"
 }
 
-private fun videoCodecLabel(codec: VideoCodec): String = when (codec) {
+internal fun videoCodecLabel(codec: VideoCodec): String = when (codec) {
     VideoCodec.HEVC -> "HEVC"
     VideoCodec.AVC -> "H.264"
 }
 
-private fun bitrateLevelLabel(level: BitrateLevel): String = when (level) {
-    BitrateLevel.LOW -> "낮음"
-    BitrateLevel.MEDIUM -> "보통"
-    BitrateLevel.HIGH -> "높음"
+internal fun bitrateLevelLabel(level: BitrateLevel): String = when (level) {
+    BitrateLevel.LOW -> "Low"
+    BitrateLevel.MEDIUM -> "Medium"
+    BitrateLevel.HIGH -> "High"
 }
 
 /** "2160" -> "4K", "1080" -> "1080p", etc.; unrecognized heights fall back to "WxH". */
-private fun videoResolutionLabel(size: Size): String = when (size.height) {
+internal fun videoResolutionLabel(size: Size): String = when (size.height) {
     4320 -> "8K"
     2160 -> "4K"
     1440 -> "1440p"
@@ -314,10 +355,11 @@ private fun videoResolutionLabel(size: Size): String = when (size.height) {
 }
 
 // ---------------------------------------------------------------------------
-// Exposure: ISO / Shutter / EV helpers
+// Exposure: ISO / Shutter helpers (shared by the exposure/color settings tab and the manual
+// shutter ruler dial)
 // ---------------------------------------------------------------------------
 
-private fun shutterNsToSlider(ns: Long, range: Range<Long>): Float {
+internal fun shutterNsToSlider(ns: Long, range: android.util.Range<Long>): Float {
     if (range.lower >= range.upper) return 0f
     val lo = ln(range.lower.toDouble())
     val hi = ln(range.upper.toDouble())
@@ -325,7 +367,7 @@ private fun shutterNsToSlider(ns: Long, range: Range<Long>): Float {
     return ((v - lo) / (hi - lo)).toFloat().coerceIn(0f, 1f)
 }
 
-private fun sliderToShutterNs(slider: Float, range: Range<Long>): Long {
+internal fun sliderToShutterNs(slider: Float, range: android.util.Range<Long>): Long {
     if (range.lower >= range.upper) return range.lower
     val lo = ln(range.lower.toDouble())
     val hi = ln(range.upper.toDouble())
@@ -333,7 +375,7 @@ private fun sliderToShutterNs(slider: Float, range: Range<Long>): Long {
     return v.roundToLong().coerceIn(range.lower, range.upper)
 }
 
-private fun formatShutterSpeed(ns: Long): String {
+internal fun formatShutterSpeed(ns: Long): String {
     val seconds = ns / 1_000_000_000.0
     return if (seconds >= 1.0) {
         "%.1fs".format(seconds)
@@ -343,8 +385,18 @@ private fun formatShutterSpeed(ns: Long): String {
     }
 }
 
+/** Human-readable focus distance. Infinity for diopters <= 0. Shared with the manual focus ruler. */
+internal fun formatFocusDistance(diopters: Float): String {
+    val meters = FocusMapping.dioptersToMeters(diopters)
+    return when {
+        meters.isInfinite() -> "∞"
+        meters < 1f -> "${(meters * 100).roundToInt()}cm"
+        else -> "%.2fm".format(meters)
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Transfer / formats / audio (shared standalone rows)
+// Transfer / formats (shared standalone rows used by the shooting/video settings tabs)
 // ---------------------------------------------------------------------------
 
 /** HLG / LOG transfer-function selector. */
@@ -354,17 +406,24 @@ fun TransferSelector(
     onTransfer: (ColorTransfer) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        FilterChip(
-            selected = transfer == ColorTransfer.HLG,
-            onClick = { onTransfer(ColorTransfer.HLG) },
-            label = { Text("HLG") },
-        )
-        FilterChip(
-            selected = transfer == ColorTransfer.LOG,
-            onClick = { onTransfer(ColorTransfer.LOG) },
-            label = { Text("LOG") },
-        )
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("Transfer Function", color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FilterChip(
+                selected = transfer == ColorTransfer.HLG,
+                onClick = { onTransfer(ColorTransfer.HLG) },
+                label = { Text("HLG") },
+                colors = pixelChipColors(),
+                border = pixelChipBorder(transfer == ColorTransfer.HLG),
+            )
+            FilterChip(
+                selected = transfer == ColorTransfer.LOG,
+                onClick = { onTransfer(ColorTransfer.LOG) },
+                label = { Text("LOG") },
+                colors = pixelChipColors(),
+                border = pixelChipBorder(transfer == ColorTransfer.LOG),
+            )
+        }
     }
 }
 
@@ -375,410 +434,23 @@ fun PhotoFormatToggles(
     onSetPhotoFormats: (PhotoFormats) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        FilterChip(
-            selected = formats.heif,
-            onClick = { onSetPhotoFormats(formats.copy(heif = !formats.heif)) },
-            label = { Text("HEIF") },
-        )
-        FilterChip(
-            selected = formats.dngRaw,
-            onClick = { onSetPhotoFormats(formats.copy(dngRaw = !formats.dngRaw)) },
-            label = { Text("DNG") },
-        )
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Sections
-// ---------------------------------------------------------------------------
-
-@Composable
-private fun FocusSection(controls: ManualControls, actions: CameraActions, modifier: Modifier = Modifier) {
-    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SectionHeader("초점")
-        SegmentedSelector(
-            label = "모드",
-            options = FocusMode.entries,
-            selected = controls.focusMode,
-            labelFor = ::focusModeLabel,
-            onSelect = actions::onFocusMode,
-        )
-        if (controls.focusMode != FocusMode.MANUAL) {
-            ToggleRow(label = "AF 잠금", checked = controls.afLock, onCheckedChange = actions::onAfLock)
-        }
-    }
-}
-
-@Composable
-private fun ExposureSection(
-    controls: ManualControls,
-    caps: CameraCaps?,
-    actions: CameraActions,
-    modifier: Modifier = Modifier,
-) {
-    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SectionHeader("노출")
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("모드", color = Color.White, style = MaterialTheme.typography.labelMedium)
-            AutoManualToggle(auto = controls.autoExposure, onToggle = actions::onToggleAutoExposure)
-        }
-
-        val isoRange = caps?.isoRange ?: Range(controls.iso, controls.iso)
-        LabeledSlider(
-            label = "ISO",
-            valueLabel = controls.iso.toString(),
-            value = controls.iso.toFloat().coerceIn(isoRange.lower.toFloat(), isoRange.upper.toFloat()),
-            onValueChange = { actions.onIso(it.roundToInt()) },
-            valueRange = isoRange.lower.toFloat()..isoRange.upper.toFloat(),
-            enabled = !controls.autoExposure,
-        )
-
-        SegmentedSelector(
-            label = "셔터 모드",
-            options = ShutterMode.entries,
-            selected = controls.shutterMode,
-            labelFor = ::shutterModeLabel,
-            onSelect = actions::onShutterMode,
-        )
-
-        if (controls.shutterMode == ShutterMode.ANGLE) {
-            LabeledSlider(
-                label = "셔터 각도",
-                valueLabel = "%.0f° (%s)".format(controls.shutterAngle, formatShutterSpeed(controls.effectiveExposureNs())),
-                value = controls.shutterAngle,
-                onValueChange = actions::onShutterAngle,
-                valueRange = 1f..360f,
-                enabled = !controls.autoExposure,
+    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("Output Format", color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FilterChip(
+                selected = formats.heif,
+                onClick = { onSetPhotoFormats(formats.copy(heif = !formats.heif)) },
+                label = { Text("HEIF") },
+                colors = pixelChipColors(),
+                border = pixelChipBorder(formats.heif),
             )
-        } else {
-            val shutterRange = caps?.exposureTimeRange ?: Range(controls.exposureTimeNs, controls.exposureTimeNs)
-            val shutterSlider = remember(controls.exposureTimeNs, shutterRange) {
-                shutterNsToSlider(controls.exposureTimeNs, shutterRange)
-            }
-            LabeledSlider(
-                label = "셔터",
-                valueLabel = formatShutterSpeed(controls.exposureTimeNs),
-                value = shutterSlider,
-                onValueChange = { actions.onShutterNs(sliderToShutterNs(it, shutterRange)) },
-                valueRange = 0f..1f,
-                enabled = !controls.autoExposure,
+            FilterChip(
+                selected = formats.dngRaw,
+                onClick = { onSetPhotoFormats(formats.copy(dngRaw = !formats.dngRaw)) },
+                label = { Text("DNG") },
+                colors = pixelChipColors(),
+                border = pixelChipBorder(formats.dngRaw),
             )
         }
-
-        val fpsOptions = caps?.availableFps?.takeIf { it.isNotEmpty() } ?: listOf(24, 30, 60)
-        SegmentedSelector(
-            label = "FPS",
-            options = fpsOptions,
-            selected = controls.fps,
-            labelFor = { it.toString() },
-            onSelect = actions::onFps,
-        )
-
-        val evRange = caps?.evRange ?: Range(0, 0)
-        val evStep = caps?.evStep ?: Rational(1, 3)
-        val stepValue = evStep.numerator.toFloat() / evStep.denominator.toFloat()
-        val evLo = minOf(evRange.lower, evRange.upper).toFloat()
-        val evHi = maxOf(evRange.lower, evRange.upper).toFloat()
-        LabeledSlider(
-            label = "EV",
-            valueLabel = "%+.1f EV".format(controls.exposureCompensation * stepValue),
-            value = controls.exposureCompensation.toFloat().coerceIn(evLo, evHi),
-            onValueChange = { actions.onExposureCompensation(it.roundToInt()) },
-            valueRange = evLo..evHi,
-            enabled = controls.autoExposure,
-        )
-
-        ToggleRow(label = "AE 잠금", checked = controls.aeLock, onCheckedChange = actions::onToggleAeLock)
-
-        SegmentedSelector(
-            label = "안티밴딩",
-            options = Antibanding.entries,
-            selected = controls.antibanding,
-            labelFor = ::antibandingLabel,
-            onSelect = actions::onAntibanding,
-        )
-
-        SegmentedSelector(
-            label = "측광",
-            options = MeteringMode.entries,
-            selected = controls.meteringMode,
-            labelFor = ::meteringModeLabel,
-            onSelect = actions::onMeteringMode,
-        )
-    }
-}
-
-@Composable
-private fun WhiteBalanceSection(controls: ManualControls, actions: CameraActions, modifier: Modifier = Modifier) {
-    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SectionHeader("화이트밸런스")
-        SegmentedSelector(
-            label = "모드",
-            options = WbMode.entries,
-            selected = controls.wbMode,
-            labelFor = ::wbModeLabel,
-            onSelect = actions::onWbMode,
-        )
-        if (controls.wbMode == WbMode.MANUAL) {
-            LabeledSlider(
-                label = "색온도",
-                valueLabel = "${controls.wbKelvin}K",
-                value = controls.wbKelvin.toFloat().coerceIn(2000f, 10000f),
-                onValueChange = { actions.onWbKelvin(it.roundToInt()) },
-                valueRange = 2000f..10000f,
-            )
-            LabeledSlider(
-                label = "틴트",
-                valueLabel = "%+d".format(controls.wbTint),
-                value = controls.wbTint.toFloat().coerceIn(-50f, 50f),
-                onValueChange = { actions.onWbTint(it.roundToInt()) },
-                valueRange = -50f..50f,
-            )
-            ToggleRow(label = "AWB 잠금", checked = controls.awbLock, onCheckedChange = actions::onToggleAwbLock)
-        }
-    }
-}
-
-@Composable
-private fun ProcessingSection(controls: ManualControls, actions: CameraActions, modifier: Modifier = Modifier) {
-    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SectionHeader("이미지 처리")
-        SegmentedSelector(
-            label = "샤프니스",
-            options = ProcessingLevel.entries,
-            selected = controls.edge,
-            labelFor = ::processingLevelLabel,
-            onSelect = actions::onEdge,
-        )
-        SegmentedSelector(
-            label = "노이즈 감소",
-            options = ProcessingLevel.entries,
-            selected = controls.noiseReduction,
-            labelFor = ::processingLevelLabel,
-            onSelect = actions::onNoiseReduction,
-        )
-        SegmentedSelector(
-            label = "색상 효과",
-            options = ColorEffect.entries,
-            selected = controls.colorEffect,
-            labelFor = ::colorEffectLabel,
-            onSelect = actions::onColorEffect,
-        )
-    }
-}
-
-@Composable
-private fun OpticsOutputSection(
-    controls: ManualControls,
-    caps: CameraCaps?,
-    actions: CameraActions,
-    modifier: Modifier = Modifier,
-) {
-    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SectionHeader("광학/출력")
-        SegmentedSelector(
-            label = "플래시",
-            options = FlashMode.entries,
-            selected = controls.flash,
-            labelFor = ::flashModeLabel,
-            onSelect = actions::onFlash,
-        )
-        if (caps?.oisAvailable == true) {
-            ToggleRow(label = "손떨림보정(OIS)", checked = controls.oisEnabled, onCheckedChange = actions::onToggleOis)
-        }
-        caps?.zoomRatioRange?.let { range ->
-            LabeledSlider(
-                label = "줌",
-                valueLabel = "%.1fx".format(controls.zoomRatio),
-                value = controls.zoomRatio.coerceIn(range.lower, range.upper),
-                onValueChange = actions::onZoomRatio,
-                valueRange = range.lower..range.upper,
-            )
-        }
-        LabeledSlider(
-            label = "JPEG 품질",
-            valueLabel = controls.jpegQuality.toString(),
-            value = controls.jpegQuality.toFloat().coerceIn(1f, 100f),
-            onValueChange = { actions.onJpegQuality(it.roundToInt()) },
-            valueRange = 1f..100f,
-        )
-    }
-}
-
-@Composable
-private fun ModeSection(state: CameraUiState, actions: CameraActions, modifier: Modifier = Modifier) {
-    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SectionHeader("모드")
-        ToggleRow(
-            label = "텔레컨버터(300mm)",
-            checked = state.teleconverterMode,
-            onCheckedChange = actions::onToggleTeleconverter,
-        )
-        ToggleRow(label = "손떨림보정(EIS)", checked = state.eisEnabled, onCheckedChange = actions::onToggleEis)
-        SegmentedSelector(
-            label = "EIS 강도",
-            options = EisStrength.entries,
-            selected = state.eisStrength,
-            labelFor = ::eisStrengthLabel,
-            onSelect = actions::onEisStrength,
-        )
-        TransferSelector(transfer = state.transfer, onTransfer = actions::onTransfer)
-        PhotoFormatToggles(formats = state.photoFormats, onSetPhotoFormats = actions::onSetPhotoFormats)
-        SegmentedSelector(
-            label = "화면비",
-            options = AspectRatio.entries,
-            selected = state.aspectRatio,
-            labelFor = ::aspectRatioLabel,
-            onSelect = actions::onAspectRatio,
-        )
-        ToggleRow(label = "오디오 녹음", checked = state.recordAudio, onCheckedChange = actions::onToggleRecordAudio)
-        LabeledSlider(
-            label = "게인",
-            valueLabel = "%.1fx".format(state.audioGain),
-            value = state.audioGain,
-            onValueChange = actions::onAudioGain,
-            valueRange = 0f..2f,
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text("카메라 오버라이드", color = Color.White, style = MaterialTheme.typography.labelMedium)
-            Text(
-                text = state.cameraOverrideId ?: "기본",
-                color = Color(0xFF4C9AFF),
-                style = MaterialTheme.typography.labelMedium,
-                modifier = Modifier.clickable(enabled = state.cameraOverrideId != null) {
-                    actions.onCameraOverride(null)
-                },
-            )
-        }
-    }
-}
-
-@Composable
-private fun AssistsSection(state: CameraUiState, actions: CameraActions, modifier: Modifier = Modifier) {
-    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SectionHeader("어시스트")
-        ToggleRow(label = "포커스 피킹", checked = state.focusPeaking, onCheckedChange = actions::onTogglePeaking)
-        ToggleRow(label = "제브라", checked = state.zebra, onCheckedChange = actions::onToggleZebra)
-        ToggleRow(label = "폴스컬러", checked = state.falseColor, onCheckedChange = actions::onToggleFalseColor)
-        ToggleRow(label = "히스토그램", checked = state.histogram, onCheckedChange = actions::onToggleHistogram)
-        ToggleRow(label = "웨이브폼", checked = state.waveform, onCheckedChange = actions::onToggleWaveform)
-        SegmentedSelector(
-            label = "그리드",
-            options = GridType.entries,
-            selected = state.grid,
-            labelFor = ::gridTypeLabel,
-            onSelect = actions::onGridType,
-        )
-        ToggleRow(label = "수평계", checked = state.level, onCheckedChange = actions::onToggleLevel)
-        ToggleRow(label = "펀치인", checked = state.punchIn, onCheckedChange = actions::onTogglePunchIn)
-    }
-}
-
-@Composable
-private fun DriveSection(state: CameraUiState, actions: CameraActions, modifier: Modifier = Modifier) {
-    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SectionHeader("드라이브")
-        SegmentedSelector(
-            label = "드라이브 모드",
-            options = DriveMode.entries,
-            selected = state.driveMode,
-            labelFor = ::driveModeLabel,
-            onSelect = actions::onDriveMode,
-        )
-        if (state.driveMode == DriveMode.TIMELAPSE) {
-            LabeledSlider(
-                label = "간격",
-                valueLabel = "${state.intervalSec}초 간격",
-                value = state.intervalSec.toFloat().coerceIn(1f, 30f),
-                onValueChange = { actions.onIntervalSec(it.roundToInt()) },
-                valueRange = 1f..30f,
-            )
-        }
-        SegmentedSelector(
-            label = "셀프타이머",
-            options = ShutterTimer.entries,
-            selected = state.timer,
-            labelFor = ::shutterTimerLabel,
-            onSelect = actions::onTimer,
-        )
-    }
-}
-
-@Composable
-private fun VideoSection(state: CameraUiState, actions: CameraActions, modifier: Modifier = Modifier) {
-    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SectionHeader("동영상")
-        SegmentedSelector(
-            label = "코덱",
-            options = VideoCodec.entries,
-            selected = state.videoCodec,
-            labelFor = ::videoCodecLabel,
-            onSelect = actions::onVideoCodec,
-        )
-        val resolutionOptions = state.caps?.availableVideoSizes?.takeIf { it.isNotEmpty() }
-            ?: listOf(Size(3840, 2160), Size(1920, 1080))
-        SegmentedSelector(
-            label = "해상도",
-            options = resolutionOptions,
-            selected = state.videoResolution,
-            labelFor = ::videoResolutionLabel,
-            onSelect = actions::onVideoResolution,
-        )
-        SegmentedSelector(
-            label = "비트레이트",
-            options = BitrateLevel.entries,
-            selected = state.bitrateLevel,
-            labelFor = ::bitrateLevelLabel,
-            onSelect = actions::onBitrateLevel,
-        )
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Collapsible pro panel (composition root for every section above)
-// ---------------------------------------------------------------------------
-
-/**
- * Collapsible pro-control panel composed of the sections above. Purely presentational: every
- * value is read from [state] and every interaction is forwarded straight to the matching
- * [CameraActions] method. Scrolls vertically since it holds many rows.
- */
-@Composable
-fun ProPanel(
-    expanded: Boolean,
-    state: CameraUiState,
-    actions: CameraActions,
-    modifier: Modifier = Modifier,
-) {
-    if (!expanded) return
-    val controls = state.controls
-    val caps = state.caps
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .heightIn(max = 360.dp)
-            .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(16.dp))
-            .verticalScroll(rememberScrollState())
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-        FocusSection(controls = controls, actions = actions)
-        ExposureSection(controls = controls, caps = caps, actions = actions)
-        WhiteBalanceSection(controls = controls, actions = actions)
-        ProcessingSection(controls = controls, actions = actions)
-        OpticsOutputSection(controls = controls, caps = caps, actions = actions)
-        ModeSection(state = state, actions = actions)
-        VideoSection(state = state, actions = actions)
-        AssistsSection(state = state, actions = actions)
-        DriveSection(state = state, actions = actions)
     }
 }

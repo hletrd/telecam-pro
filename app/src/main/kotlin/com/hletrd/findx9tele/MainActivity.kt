@@ -93,9 +93,9 @@ private fun PermissionGate(onRequest: () -> Unit) {
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text("카메라 권한이 필요합니다")
+            Text("Camera permission is required")
             Spacer(Modifier.height(16.dp))
-            Button(onClick = onRequest) { Text("권한 허용") }
+            Button(onClick = onRequest) { Text("Grant Permission") }
         }
     }
 }

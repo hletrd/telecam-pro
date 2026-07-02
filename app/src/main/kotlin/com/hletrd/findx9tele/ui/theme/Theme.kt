@@ -5,26 +5,45 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
-/** Accent used throughout the camera chrome (focus ring, active toggles, transfer label). */
-private val AccentBlue = Color(0xFF4C9AFF)
+/**
+ * Pixel-Camera-inspired design tokens. Kept as plain constants (rather than only
+ * [MaterialTheme.colorScheme] entries) so Canvas-drawn glyphs, overlays and chrome scrims can
+ * reference them directly without threading the color scheme through every draw call.
+ */
+object CameraColors {
+    /** True-black viewfinder background. */
+    val Background = Color(0xFF000000)
+    /** Base color for translucent chrome scrims (top bar, bottom cluster gradient). Callers apply alpha 0.40-0.55. */
+    val ChromeScrim = Color(0xFF000000)
+    /** Solid pill/chip background (ghost chips, sheet surface). */
+    val Pill = Color(0xFF1C1C1E)
+    val TextPrimary = Color(0xFFFFFFFF)
+    val TextSecondary = Color(0xFF9E9E9E)
+    /** Primary accent: links, active non-manual highlights. */
+    val Accent = Color(0xFF8AB4F8)
+    /** Recording / destructive state. */
+    val Record = Color(0xFFFF3B30)
+    /** Manual-control-active accent (focus reticle, open ruler dial, manual chip). */
+    val ManualActive = Color(0xFFFFD60A)
+}
 
 private val TeleDarkColorScheme = darkColorScheme(
-    primary = AccentBlue,
+    primary = CameraColors.Accent,
     onPrimary = Color.Black,
     primaryContainer = Color(0xFF16324F),
     onPrimaryContainer = Color(0xFFD6E8FF),
-    secondary = AccentBlue,
+    secondary = CameraColors.Accent,
     onSecondary = Color.Black,
-    tertiary = AccentBlue,
+    tertiary = CameraColors.ManualActive,
     onTertiary = Color.Black,
-    background = Color(0xFF050505),
-    onBackground = Color(0xFFECECEC),
+    background = CameraColors.Background,
+    onBackground = CameraColors.TextPrimary,
     surface = Color(0xFF0B0B0B),
-    onSurface = Color(0xFFECECEC),
-    surfaceVariant = Color(0xFF1A1A1A),
-    onSurfaceVariant = Color(0xFFB0B0B0),
+    onSurface = CameraColors.TextPrimary,
+    surfaceVariant = CameraColors.Pill,
+    onSurfaceVariant = CameraColors.TextSecondary,
     outline = Color(0xFF3A3A3A),
-    error = Color(0xFFFF5252),
+    error = CameraColors.Record,
     onError = Color.Black,
 )
 

@@ -269,7 +269,7 @@ fun StatusBar(
     }
     val focalLabel = when {
         equivFocalMm <= 0f -> "--"
-        teleconverter -> "%.0fmm 텔레".format(equivFocalMm)
+        teleconverter -> "%.0fmm tele".format(equivFocalMm)
         else -> "%.0fmm".format(equivFocalMm)
     }
     Row(
