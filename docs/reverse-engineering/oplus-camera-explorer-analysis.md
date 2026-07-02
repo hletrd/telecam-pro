@@ -1,8 +1,8 @@
 # OPPO Find X9 Ultra — "Explorer" Teleconverter Mode & Its Stabilization Behavior
 
-**Reverse-engineering analysis of the stock `OplusCamera.apk`**
+**Reverse-engineering analysis of stock `OplusCamera.apk`**
 **Date:** 2026-07-01
-**Scope:** Authorized analysis of a legally-obtained APK on the owner's own device, to build a compatible third-party camera app.
+**Scope:** Authorized analysis of legally-obtained APK on owner's own device to build compatible third-party camera app.
 **Sources:** `jadx-out/` (16,697 decompiled Java files), `dumpsys_camera.txt`, `vendor_tags.txt`, `all_strings.txt`.
 
 ---

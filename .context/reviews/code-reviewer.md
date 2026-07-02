@@ -148,7 +148,7 @@ Fix: Recompute `videoSize = chooseVideoSize(sel)` and call `gl.setCameraPreviewS
 File: `ui/CameraScreen.kt:111-113`, consumer `ui/overlays/Overlays.kt:110-131`, available source `stab/GyroEis.kt:55`
 Confidence: High — Confirmed.
 
-`LevelOverlay(modifier = Modifier.fillMaxSize())` is called with the default `rollDegrees = 0f`. So `isLevel` is always true (green) and the moving line never tilts. The gyro already computes roll (`corrRoll`, and integrated `angRoll`), but no roll value is exposed through `CameraUiState`/`CameraActions` to the UI. The "수평계" toggle therefore renders a decorative, non-functional indicator.
+`LevelOverlay(modifier = Modifier.fillMaxSize())` is called with the default `rollDegrees = 0f`. So `isLevel` is always true (green) and the moving line never tilts. The gyro already computes roll (`corrRoll`, and integrated `angRoll`), but no roll value is exposed through `CameraUiState`/`CameraActions` to the UI. The level gauge toggle therefore renders a decorative, non-functional indicator.
 Fix: Expose device roll (an absolute roll from the accelerometer/gravity vector is more appropriate than the high-pass `corrRoll`, which is tuned for shake) via `CameraUiState`, update it on a cadence, and pass it into `LevelOverlay(rollDegrees = state.levelRollDeg)`.
 
 ### M5 — `punchIn` toggle is inert (dead feature)

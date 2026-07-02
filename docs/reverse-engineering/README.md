@@ -1,43 +1,43 @@
-# 리버스 엔지니어링 — 지식베이스
+# Reverse Engineering — Knowledge Base
 
-Find X9 Ultra 순정 카메라(`com.oplus.camera`)와 카메라 HAL 을 분석해, 텔레컨버터("Explorer") 손떨방/줌 메커니즘과 프로 제어를 우리 앱에서 재현하기 위한 자료 모음. (소유자 본인 기기 + 합법 취득 APK 대상의 정당한 분석)
+Collection of materials from analyzing the Find X9 Ultra stock camera (`com.oplus.camera`) and camera HAL to understand teleconverter ("Explorer") stabilization/zoom mechanisms and professional controls for replication in our app. (Authorized analysis of owner's own device + legally-obtained APK)
 
-## 문서
+## Documents
 
-- [`camera-hardware-map.md`](camera-hardware-map.md) — 7개 카메라 매핑(초점거리/센서/역할), 텔레컨버터 대상 렌즈(dev4, 70mm), 셀렉터 함의.
-- [`vendor-tags-catalog.md`](vendor-tags-catalog.md) — 손떨방/OIS/자이로/줌/Explorer/프로제어 벤더태그 큐레이션.
-- [`oplus-camera-explorer-analysis.md`](oplus-camera-explorer-analysis.md) — 순정앱 디컴파일 심층 분석(Explorer 감지·손떨방 전환·줌 override 코드 근거). *(에이전트 분석 결과)*
-- [`raw/vendor_tags.txt`](raw/vendor_tags.txt) — dumpsys 벤더태그 정의 원문(1,509개).
+- [`camera-hardware-map.md`](camera-hardware-map.md) — 7-camera mapping (focal length / sensor / role), teleconverter target lens (dev4, 70mm), selector implications.
+- [`vendor-tags-catalog.md`](vendor-tags-catalog.md) — Curated vendor tags for stabilization/OIS/gyro/zoom/Explorer/pro controls.
+- [`oplus-camera-explorer-analysis.md`](oplus-camera-explorer-analysis.md) — Deep decompilation analysis of stock app (Explorer detection, stabilization switching, zoom override code evidence). *(agent analysis result)*
+- [`raw/vendor_tags.txt`](raw/vendor_tags.txt) — Raw dumpsys vendor tag definitions (1,509 entries).
 
-## 캡처 방법 (재현용)
+## Capture Method (for reproduction)
 
 ```bash
 export ANDROID_HOME=/opt/homebrew/share/android-commandlinetools
 ADB="$ANDROID_HOME/platform-tools/adb"
-$ADB connect 172.30.50.127:38189            # 무선 adb (기기 슬립 시 재연결 필요)
-$ADB shell dumpsys media.camera > dumpsys_camera.txt   # 카메라 특성 + 벤더태그
+$ADB connect 172.30.50.127:38189            # wireless adb (reconnect needed if device sleeps)
+$ADB shell dumpsys media.camera > dumpsys_camera.txt   # camera characteristics + vendor tags
 $ADB shell pm path com.oplus.camera         # → /product/app/OplusCamera/OplusCamera.apk
-$ADB pull <path> OplusCamera.apk            # 순정앱 (169MB, 단일 base.apk)
-jadx -j 6 --no-res -d jadx-out OplusCamera.apk   # 디컴파일 (16,697 java)
+$ADB pull <path> OplusCamera.apk            # stock app (169MB, single base.apk)
+jadx -j 6 --no-res -d jadx-out OplusCamera.apk   # decompile (16,697 java files)
 ```
 
-## 핵심 결론 (요약)
+## Key Conclusions (Summary)
 
-1. **텔레컨버터 대상 = 70mm 3x 페리스코프(dev4, 실초점 20.10mm)**. 최장초점(230mm/10x)이 아님 → 셀렉터는 70mm-equiv 타겟.
-2. **텔레컨버터 모드는 수동 진입**(자동감지 아님). 컨버터 칩은 안전/인증 체크용으로 보임 → 우리 앱도 **수동 토글**.
-3. **손떨방은 Qualcomm EIS(`EISMode`, `eisrealtime.*`) + OPPO 벤더태그(`ois.control.mode`, `sois.custom.info`, `video.stabilization.mode`)** 로 제어. 유효초점(300mm)에 맞춘 OIS/EIS 프로파일 전환이 핵심.
-4. **줌/FOV 는 `custom.zoom.range`/`expert.zoom.range`/`fov.Angle` override** 로 3x→13x(300mm) 범위를 만듦.
-5. `gyroFromAP` 태그는 HAL 디스크립터에만 있고 **순정앱은 참조 안 함**(자이로는 HAL 내부 처리). 우리는 클라이언트단 gyro EIS 로 직접 구현.
+1. **Teleconverter target = 70mm 3x periscope (dev4, actual focal length 20.10mm)**. Not the longest focal length (230mm/10x) → selector targets 70mm-equiv.
+2. **Teleconverter mode is manual entry** (not auto-detect). Converter chip appears to be for safety/authentication checks → our app also **manual toggle**.
+3. **Stabilization controlled by Qualcomm EIS (`EISMode`, `eisrealtime.*`) + OPPO vendor tags (`ois.control.mode`, `sois.custom.info`, `video.stabilization.mode`)**. Key is OIS/EIS profile switching tuned to effective focal length (300mm).
+4. **Zoom/FOV created via `custom.zoom.range`/`expert.zoom.range`/`fov.Angle` override** to achieve 3x→13x (300mm) range.
+5. `gyroFromAP` tag exists only in HAL descriptor and **stock app doesn't reference it** (gyro handled internally by HAL). We implement client-side gyro EIS directly.
 
-## 우리 앱 전략
+## Our App Strategy
 
-> **심층 디컴파일 결론(oplus-camera-explorer-analysis.md)**: 순정앱조차 OIS/EIS 벤더태그(`ois.control.mode`, `sois.custom.info`, `gyroFromAP` 등)를 **직접 세팅하지 않음**. 올바른 초점거리 손떨방은 **HAL 부작용** — (1) 페리스코프 물리렌즈를 Explorer operation/sensor 모드로 선택, (2) zoom ratio, (3) 세션 구성 시 넘기는 `explorer.chip.state`, (4) 일반 `super_stabilization` 요청 — 의 결과임. Explorer 전용 태그는 정적 벤더태그 디스크립터에도 없어(엔지니어링 태그만 존재) **서드파티 CaptureRequest 로는 사실상 못 씀(system/factory gated)**.
+> **Deep decompilation conclusion (oplus-camera-explorer-analysis.md)**: Even the stock app **does not directly set** OIS/EIS vendor tags (`ois.control.mode`, `sois.custom.info`, `gyroFromAP`, etc). Correct focal-length stabilization is a **HAL side-effect** of: (1) selecting the periscope physical lens in Explorer operation/sensor mode, (2) zoom ratio, (3) passing `explorer.chip.state` at session configuration, (4) requesting generic `super_stabilization`. Explorer-specific tags are absent from the static vendor-tag descriptor (only engineering tags exist), so third-party `CaptureRequest` **cannot practically use them (system/factory gated)**.
 
-- **표준 Camera2 + 자체 gyro EIS (채택)**: 70mm 렌즈 선택 + GL gyro EIS(유효초점 300mm 스케일) + HAL EIS off + OIS 토글. 벤더태그 불필요, 서드파티에서 확실히 동작 → **이게 우리 방식**.
-- **벤더태그 네이티브 경로 (비현실적)**: gated 로 보여 기대난망. 다만 앱 내 `VendorTagInspector` 로 어떤 태그가 서드파티에 노출되는지 온디바이스 확인은 해둘 가치 있음(`super_stabilization` 계열 값 세팅 시도 등).
+- **Standard Camera2 + client-side gyro EIS (adopted)**: Select 70mm lens + GL gyro EIS (effective focal length 300mm scale) + HAL EIS off + OIS toggle. No vendor tags needed, works reliably for third-party → **this is our approach**.
+- **Native vendor-tag path (unrealistic)**: Appears gated, unlikely to work. However, on-device verification via `VendorTagInspector` in app to see which tags are exposed to third-party is valuable (e.g., attempt to set `super_stabilization` series values).
 
-## 남은 작업(재연결 필요)
+## Remaining Tasks (reconnection needed)
 
-- 엔지니어 카메라 앱(`com.oplus.engineercamera`), 센서/코덱/카메라 config XML 덤프.
-- 순정앱에서 텔레컨버터 모드 토글하며 `logcat` 라이브 캡처 → 실제 세팅되는 태그/값 확인.
-- 우리 앱 온디바이스 설치·촬영 검증.
+- Engineer camera app (`com.oplus.engineercamera`), sensor/codec/camera config XML dumps.
+- Live logcat capture while toggling teleconverter mode in stock app → verify actual tag/value settings.
+- On-device installation & capture verification of our app.

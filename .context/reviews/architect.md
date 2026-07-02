@@ -142,7 +142,7 @@ can be open on the same camera during the overlap.
 **Why risky:** thread leak accumulates across override switches; the concurrent open can throw
 `CAMERA_IN_USE`/`MAX_CAMERAS_IN_USE`, routed to the unhandled `onError` string.
 **Failure scenario:** user flips camera override a few times → N leaked "camera" threads and an
-intermittent "카메라 오류" on switch because the previous device is still closing.
+intermittent "camera error" on switch because the previous device is still closing.
 **Refactor:** reuse a single long-lived `CameraController` (re-configure session instead of
 recreating), and `bg.quitSafely()` in `close()`. If recreation is kept, make `open()` wait for
 the prior device's `onClosed` before opening the same id. Trade-off: sequencing adds a small
@@ -186,15 +186,15 @@ that one snapshot. Trade-off: a slightly larger apply call per change vs. elimin
 ### F7 — Error propagation is a single mutable status string; success is reported even on total failure — CONFIRMED, Medium
 **Where:** `CameraEngine.onStatus: ((String?) -> Unit)?` (line 48) → `ViewModel` writes it into
 `statusMessage` (line 45). In `capturePhoto` (144–156) each save is wrapped in
-`runCatching{…}.onFailure{ onStatus("…실패") }`, then **unconditionally** `onStatus("저장됨")`
+`runCatching{…}.onFailure{ onStatus("…failed") }`, then **unconditionally** `onStatus("saved")`
 (line 152) runs afterward.
 **Problem:** because the last write wins, a capture where **both** HEIF and DNG throw still ends
-with `statusMessage = "저장됨"` ("saved"). There is no error type, severity, id, or queue —
+with `statusMessage = "saved"`. There is no error type, severity, id, or queue —
 localized strings are the entire error channel, and rapid statuses overwrite each other.
 **Why risky:** users are told files were saved when they were not; failures are unobservable in
 logs (everything is `runCatching{}.getOrNull()` — `CameraSelector2`, `CameraCaps.read`,
 `MediaStoreWriter`, `openCamera` all swallow silently).
-**Failure scenario:** storage full → both writes fail → toast says "저장됨" → user believes the
+**Failure scenario:** storage full → both writes fail → toast says "saved" → user believes the
 shot is safe and it is lost.
 **Refactor:** introduce a small sealed `CaptureResult`/`CameraEvent` type (Success/PartialFail/
 Fail with cause) emitted on a channel; only report success when at least one write succeeded.
