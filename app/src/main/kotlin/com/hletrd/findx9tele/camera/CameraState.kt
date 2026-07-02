@@ -94,6 +94,8 @@ data class CameraUiState(
     val grid: GridType = GridType.THIRDS,
     val level: Boolean = false,
     val levelRoll: Float = 0f,
+    // Physical device orientation (0/90/180/270) from gravity; rotates overlays to stay upright.
+    val deviceOrientation: Int = 0,
     val punchIn: Boolean = false,
     // Transient tap point (normalized 0..1 in view space) for the focus/meter reticle; null = none.
     val tapPoint: Pair<Float, Float>? = null,

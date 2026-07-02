@@ -483,6 +483,9 @@ class CameraEngine(private val context: Context) {
 
     fun currentRollDegrees(): Float = gyro.currentRollDegrees()
 
+    /** Discrete physical device orientation (0/90/180/270) from gravity, for auto-rotating overlays. */
+    fun currentDeviceOrientation(): Int = gyro.currentDeviceOrientation()
+
     fun setPunchIn(enabled: Boolean) = gl.setPunchIn(enabled)
 
     fun release() {

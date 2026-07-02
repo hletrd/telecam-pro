@@ -34,7 +34,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -101,6 +103,7 @@ fun CameraScreen(
     modifier: Modifier = Modifier,
 ) {
     var sheetVisible by remember { mutableStateOf(false) }
+    // Remembers the last-viewed settings tab so the gear reopens where the user left off.
     var sheetInitialTab by remember { mutableStateOf(ProSheetTab.SHOOTING) }
     val currentActions = rememberUpdatedState(actions)
 
@@ -108,6 +111,13 @@ fun CameraScreen(
         sheetInitialTab = tab
         sheetVisible = true
     }
+
+    // Counter-rotates the on-screen scopes/readouts so they stay upright as the phone turns, even
+    // though the activity is portrait-locked (like Pixel/Sony). Animated between the 4 orientations.
+    val overlayRotation by animateFloatAsState(
+        targetValue = -state.deviceOrientation.toFloat(),
+        label = "overlayRotation",
+    )
 
     Box(
         modifier = modifier
@@ -195,7 +205,8 @@ fun CameraScreen(
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .statusBarsPadding()
-                .padding(start = 12.dp, top = 52.dp),
+                .padding(start = 12.dp, top = 52.dp)
+                .rotate(overlayRotation),
         )
 
         Column(
@@ -213,10 +224,10 @@ fun CameraScreen(
                 AudioMeter(level = state.audioLevel)
             }
             if (state.histogram) {
-                HistogramOverlay(data = state.histogramData)
+                Box(Modifier.rotate(overlayRotation)) { HistogramOverlay(data = state.histogramData) }
             }
             if (state.waveform) {
-                WaveformOverlay(data = state.waveformData)
+                Box(Modifier.rotate(overlayRotation)) { WaveformOverlay(data = state.waveformData) }
             }
         }
 
@@ -241,7 +252,7 @@ fun CameraScreen(
         TopBar(
             state = state,
             actions = actions,
-            onOpenSheet = { openSheet(ProSheetTab.SHOOTING) },
+            onOpenSheet = { sheetVisible = true }, // reopen to the remembered last tab
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
@@ -304,6 +315,7 @@ fun CameraScreen(
             state = state,
             actions = actions,
             initialTab = sheetInitialTab,
+            onTabChange = { sheetInitialTab = it },
             onDismiss = { sheetVisible = false },
         )
     }

@@ -69,12 +69,23 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         }
     }
 
+    // Always-on: tracks the physical device orientation so overlays can rotate to stay upright even
+    // though the activity is portrait-locked. Only writes state when the discrete value changes.
+    private val orientationTicker = object : Runnable {
+        override fun run() {
+            val o = engine.currentDeviceOrientation()
+            if (o != _state.value.deviceOrientation) _state.update { it.copy(deviceOrientation = o) }
+            mainHandler.postDelayed(this, 200)
+        }
+    }
+
     init {
         engine.onStatus = { msg -> _state.update { it.copy(statusMessage = msg) } }
         engine.onCapsReady = { caps -> _state.update { it.copy(caps = caps) } }
         engine.onAnalysis = { h, w -> _state.update { it.copy(histogramData = h, waveformData = w) } }
         engine.onAudioLevel = { lvl -> _state.update { it.copy(audioLevel = lvl) } }
         if (_state.value.level) mainHandler.post(levelTicker)
+        mainHandler.post(orientationTicker)
     }
 
     // ---- Preview surface ----
