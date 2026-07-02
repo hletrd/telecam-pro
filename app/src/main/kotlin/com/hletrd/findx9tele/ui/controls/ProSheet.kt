@@ -149,18 +149,23 @@ internal fun ProSheet(
 
 @Composable
 private fun CloseButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    // 44 dp touch target; 32 dp visual pill.
     Box(
-        modifier = modifier
-            .size(32.dp)
-            .clip(RoundedCornerShape(50))
-            .background(Color.White.copy(alpha = 0.08f))
-            .clickable(onClick = onClick),
+        modifier = modifier.size(44.dp).clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Canvas(modifier = Modifier.size(12.dp)) {
-            val c = CameraColors.TextPrimary
-            drawLine(c, Offset(0f, 0f), Offset(size.width, size.height), strokeWidth = 1.6.dp.toPx())
-            drawLine(c, Offset(size.width, 0f), Offset(0f, size.height), strokeWidth = 1.6.dp.toPx())
+        Box(
+            modifier = Modifier
+                .size(32.dp)
+                .clip(RoundedCornerShape(50))
+                .background(Color.White.copy(alpha = 0.08f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Canvas(modifier = Modifier.size(12.dp)) {
+                val c = CameraColors.TextPrimary
+                drawLine(c, Offset(0f, 0f), Offset(size.width, size.height), strokeWidth = 1.6.dp.toPx())
+                drawLine(c, Offset(size.width, 0f), Offset(0f, size.height), strokeWidth = 1.6.dp.toPx())
+            }
         }
     }
 }
