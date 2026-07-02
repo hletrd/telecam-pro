@@ -149,7 +149,7 @@ class CameraEngine(private val context: Context) {
      * −sensorOrientation (90°) read 90° CW, so the upright value is the afocal 180° alone. Portrait-
      * locked UI ⇒ no device-orientation term (tilting the phone tilts the world in the preview).
      */
-    private fun previewRotationDegrees(): Int = if (teleconverterMode) 180 else 0
+    private fun previewRotationDegrees(): Int = RotationMath.previewRotationDegrees(teleconverterMode)
 
     fun setTeleconverterMode(enabled: Boolean) { teleconverterMode = enabled; applyStabilization() }
     fun setEisEnabled(enabled: Boolean) { eisEnabled = enabled; applyStabilization() }
@@ -522,8 +522,7 @@ class CameraEngine(private val context: Context) {
      */
     private fun captureRotationDegrees(): Int {
         val c = caps ?: return 0
-        val base = c.sensorOrientation + if (teleconverterMode) 180 else 0
-        return ((base + gyro.currentDeviceOrientation()) % 360 + 360) % 360
+        return RotationMath.captureRotationDegrees(c.sensorOrientation, teleconverterMode, gyro.currentDeviceOrientation())
     }
 
     private fun rotateBitmap(src: Bitmap, degrees: Int): Bitmap {
@@ -533,12 +532,7 @@ class CameraEngine(private val context: Context) {
     }
 
     /** Maps a clockwise rotation (0/90/180/270) to the matching EXIF/TIFF orientation tag for DNG. */
-    private fun exifOrientationFor(degrees: Int): Int = when (((degrees % 360) + 360) % 360) {
-        90 -> android.media.ExifInterface.ORIENTATION_ROTATE_90
-        180 -> android.media.ExifInterface.ORIENTATION_ROTATE_180
-        270 -> android.media.ExifInterface.ORIENTATION_ROTATE_270
-        else -> android.media.ExifInterface.ORIENTATION_NORMAL
-    }
+    private fun exifOrientationFor(degrees: Int): Int = RotationMath.exifOrientationFor(degrees)
 
     /** Returns the largest [ratioW]:[ratioH] rect centered within [src], cropped out of it. HEIF-only (see [saveHeifAsync]). */
     private fun centerCrop(src: Bitmap, ratioW: Int, ratioH: Int): Bitmap {
