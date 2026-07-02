@@ -130,24 +130,26 @@ class CameraEngine(private val context: Context) {
     /** Rotation (afocal 180° only in teleconverter mode) + gyro-EIS focal scaled to the effective FL. */
     private fun applyStabilization() {
         val c = caps ?: return
+        // The camera SurfaceTexture transform already rotates the sampled image by the sensor
+        // orientation, so the renderer only needs the afocal flip on top (see previewRotationDegrees).
+        // It still needs the sensor orientation separately to pick the right preview ASPECT, because
+        // that ~90° SurfaceTexture rotation swaps the displayed width/height.
+        gl.setSensorOrientation(c.sensorOrientation)
         gl.setRotationDegrees(previewRotationDegrees())
         val mag = if (teleconverterMode) TELECONVERTER_MAGNIFICATION else 1f
         gl.setEis(eisEnabled, c.nativeFocalInImageWidths * mag, eisCrop)
     }
 
     /**
-     * CW degrees passed to the GL renderer to display the preview upright. The renderer rotates
-     * TEXTURE COORDINATES, which rotates the sampled image the OPPOSITE way — so the sensor
-     * orientation is NEGATED here (unlike [captureRotationDegrees], which rotates pixels directly and
-     * uses it as-is). The afocal teleconverter's 180° is self-inverse, so it kept the old
-     * `+sensorOrientation` looking right until the 90° sensor term exposed the sign. Portrait-locked
-     * UI ⇒ no device-orientation term (tilting the phone should tilt the world in the preview).
+     * CW degrees the GL renderer adds ON TOP of the camera SurfaceTexture transform to show the
+     * preview upright. That transform already applies the sensor orientation to the sampled image, so
+     * the ONLY correction left is the afocal teleconverter's 180° inversion — no sensor term here
+     * (unlike [captureRotationDegrees], which rotates the raw-sensor JPEG/RAW and therefore keeps it).
+     * Empirically calibrated on this device: +sensorOrientation (270°) read 90° CCW and
+     * −sensorOrientation (90°) read 90° CW, so the upright value is the afocal 180° alone. Portrait-
+     * locked UI ⇒ no device-orientation term (tilting the phone tilts the world in the preview).
      */
-    private fun previewRotationDegrees(): Int {
-        val c = caps ?: return 0
-        val base = -c.sensorOrientation + if (teleconverterMode) 180 else 0
-        return (base % 360 + 360) % 360
-    }
+    private fun previewRotationDegrees(): Int = if (teleconverterMode) 180 else 0
 
     fun setTeleconverterMode(enabled: Boolean) { teleconverterMode = enabled; applyStabilization() }
     fun setEisEnabled(enabled: Boolean) { eisEnabled = enabled; applyStabilization() }
@@ -208,8 +210,11 @@ class CameraEngine(private val context: Context) {
      * flipping once validated against the live preview.
      */
     fun setTapPoint(nx: Float, ny: Float) {
-        caps ?: return
-        val total = previewRotationDegrees()
+        val c = caps ?: return
+        // The tapped point is in VIEW space; metering regions are in RAW-SENSOR space. Invert the full
+        // sensor→view rotation = sensor orientation (from the SurfaceTexture transform) + the afocal
+        // 180° — NOT previewRotationDegrees (which is only the afocal part the renderer adds).
+        val total = ((c.sensorOrientation + if (teleconverterMode) 180 else 0) % 360 + 360) % 360
         val px = nx - 0.5f
         val py = ny - 0.5f
         val rad = Math.toRadians(-total.toDouble())

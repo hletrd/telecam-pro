@@ -9,8 +9,10 @@ import android.hardware.camera2.params.RggbChannelVector
  * re-applies to the repeating request and still/video captures.
  */
 data class ManualControls(
-    // Focus
-    val focusMode: FocusMode = FocusMode.MANUAL,
+    // Focus — default to continuous AF so the preview is sharp out of the box (a bare-lens near
+    // subject at manual ∞ is blurry). Through the afocal teleconverter AF still converges near ∞ on a
+    // distant subject; the user switches to MANUAL for fine focus around infinity.
+    val focusMode: FocusMode = FocusMode.CONTINUOUS,
     val focusDistanceDiopters: Float = 0f, // 0 = infinity
     val afLock: Boolean = false,
     // Exposure — default to auto so the preview is correctly exposed on launch; the user opts into

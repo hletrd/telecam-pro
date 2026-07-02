@@ -147,6 +147,7 @@ class GlPipeline {
     }
 
     fun setRotationDegrees(deg: Int) = post { renderer.setRotationDegrees(deg) }
+    fun setSensorOrientation(deg: Int) = post { renderer.setSensorOrientation(deg) }
     fun setTransfer(t: ColorTransfer?) = post { transfer = t }
     fun setPeaking(enabled: Boolean) = post { peaking = enabled }
     fun setZebra(enabled: Boolean) = post { zebra = enabled }

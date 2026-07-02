@@ -47,6 +47,11 @@ class FlipRenderer {
     private var previewW = 1
     private var previewH = 1
     private var rotationDeg = 0
+    // Rotation the camera SurfaceTexture transform already bakes into the sampled image (the sensor
+    // orientation). It is NOT re-applied to texcoords (stMatrix does that), but it DOES decide the
+    // displayed aspect: a ~90° sensor rotation swaps the shown width/height. Combined with rotationDeg
+    // to pick the preview aspect. See CameraEngine.previewRotationDegrees.
+    private var sensorOrientationDeg = 0
 
     /** Compiles the program and allocates the external texture. Must run with an EGL context current. */
     fun init(): Int {
@@ -78,9 +83,14 @@ class FlipRenderer {
         previewH = height.coerceAtLeast(1)
     }
 
-    /** Total rotation to un-invert content = normalize(sensorOrientation + 180). */
+    /** Extra CW rotation applied to texcoords on top of the SurfaceTexture transform (afocal flip). */
     fun setRotationDegrees(deg: Int) {
         rotationDeg = ((deg % 360) + 360) % 360
+    }
+
+    /** Sensor orientation the SurfaceTexture transform already applies; used only for aspect choice. */
+    fun setSensorOrientation(deg: Int) {
+        sensorOrientationDeg = ((deg % 360) + 360) % 360
     }
 
     fun draw(
@@ -102,8 +112,9 @@ class FlipRenderer {
 
         GLES20.glUseProgram(program)
 
-        // Content aspect as displayed after texcoord rotation.
-        val rotated = rotationDeg % 180 == 90
+        // Content aspect as displayed after ALL rotation: the SurfaceTexture transform's sensor
+        // orientation PLUS the extra texcoord rotation. A net 90/270 swaps width/height.
+        val rotated = (sensorOrientationDeg + rotationDeg) % 180 == 90
         val displayedAspect = if (rotated) previewH.toFloat() / previewW else previewW.toFloat() / previewH
         val viewAspect = targetWidth.toFloat() / targetHeight.coerceAtLeast(1)
 
