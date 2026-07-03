@@ -10,18 +10,32 @@ Legend: ✅ done & verified · 🟢 done in code, gates green · 🟡 done in co
 ## 0. Verified on the physical device this session ✅
 
 The device is on **wireless ADB** (IP/port change per session — ask the user; last was
-`172.30.50.127:34265`). These were confirmed with real screenshots / logs / pulled files:
+`172.30.50.127:34265`). Confirmed via **screenshots + logcat only** — see the caveat below on
+output-file verification.
 
 - ✅ **Camera opens, no crash** — standalone tele (cam 4), SDR session, RAW gated. Also survives the
-  keyguard/lifecycle race (`closed`/`paused` guards).
+  keyguard/lifecycle race (`closed`/`paused` guards). *(logcat)*
 - ✅ **Preview renders and is upright** — TextureView host; tele mode applies the afocal 180° only
-  (the SurfaceTexture transform already bakes in the sensor orientation). User-confirmed upright.
-- ✅ **Auto-exposure + continuous-AF defaults** — preview is exposed & sharp on launch.
+  (the SurfaceTexture transform already bakes in the sensor orientation). User-confirmed upright. *(screenshot)*
+- ✅ **Auto-exposure + continuous-AF defaults** — preview is exposed & sharp on launch. *(screenshot)*
 - ✅ **Tap-to-focus works** — reticle lands on the tap; AF scans that region (logcat `Touch AF` +
-  `afState` reaches FOCUSED). Uses `CONTROL_AF_MODE_AUTO` one-shot lock.
-- ✅ **Photo capture saves** — "Saved" toast; unique filenames (ms + monotonic counter).
+  `afState` reaches FOCUSED). Uses `CONTROL_AF_MODE_AUTO` one-shot lock. *(screenshot + logcat)*
 - ✅ **Exposure-dial UX** — AE Auto/Manual chip; ISO/shutter **stop-snap with haptic detents**;
-  relative focus scale. (Snapping was iterated until it *felt* snapped on device.)
+  relative focus scale. (Iterated until it *felt* snapped on device.) *(screenshot)*
+- 🟡 **Photo capture** — the shutter shows a "Saved" toast, BUT no saved file was ever pulled and
+  inspected this session. See the output-file caveat.
+
+### ⚠️ Output-file verification NOT done (important honesty note)
+Nothing was verified by **pulling the actual saved file** (`adb pull` a HEIC/DNG/MP4 and checking its
+pixels, dimensions, EXIF orientation, exposure, or video track). All ✅ above are screenshot/logcat
+evidence. So these remain UNVERIFIED at the output-file level:
+- HEIC/DNG save correctly, decode, and are **upright** in portrait AND landscape holds (this is the
+  whole point of `captureRotationDegrees()` — must be checked on a real file).
+- DNG carries the right EXIF orientation tag; JPEG option produces a valid JPEG.
+- Video (any resolution/fps/codec) produces a **playable, non-zero MP4** with the expected track.
+Blocked when attempted: the phone was on a **secure keyguard** (can't drive the shutter via adb, and
+the camera won't open behind the keyguard by design). To finish: unlock the phone, then use the
+`adb pull` + inspect commands at the bottom of this doc.
 
 ### 3A finding (important context for the next agent)
 On-device 3A logs decoded as: **AE converges** but was pinned at 1/30s by the fixed 30fps target,
@@ -108,8 +122,17 @@ adb shell input keyevent KEYCODE_WAKEUP
 adb shell am start -n com.hletrd.findx9tele/.MainActivity
 adb logcat -d | grep -E "CameraController|3A:|Touch AF|AndroidRuntime|Session configured"
 adb exec-out screencap -p > /tmp/shot.png       # flat phone = dark texture, not a bug
-# capture then check orientation/exposure:
-adb shell 'ls -t /sdcard/DCIM/Camera /sdcard/Pictures 2>/dev/null | grep X9TELE | head'
+
+# ---- OUTPUT-FILE verification (the part still not done — UNLOCK THE PHONE FIRST) ----
+# Grant CAMERA/RECORD_AUDIO on the device once (pm grant fails on ColorOS). Then, with the app
+# in the foreground and UNLOCKED, tap the shutter (find bounds via `uiautomator dump`, don't
+# guess pixels) and pull the newest capture:
+adb shell 'ls -t /sdcard/DCIM/Camera /sdcard/Pictures /sdcard/DCIM 2>/dev/null | grep X9TELE | head'
+adb pull "/sdcard/Pictures/<file>.heic" /tmp/ && sips -g pixelWidth -g pixelHeight -g orientation /tmp/<file>.heic
+adb pull "/sdcard/DCIM/Camera/<file>.dng" /tmp/ && exiftool -Orientation -ImageWidth -ImageHeight /tmp/<file>.dng
+# video: record a few seconds, stop, then
+adb pull "/sdcard/DCIM/Camera/<file>.mp4" /tmp/ && ffprobe -hide_banner /tmp/<file>.mp4   # codec, dims, fps, non-zero
+# CHECK: portrait AND landscape holds both save upright; DNG orientation tag correct; MP4 plays.
 ```
 
 **AVD note:** a `camtest` AVD (android-36, 1440×3168) exists for UI/crash checks, but its camera is
