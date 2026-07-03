@@ -91,10 +91,30 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
   config → device disconnects → `createCaptureRequest` throws `CAMERA_DISCONNECTED`. Guarded by a
   `closed` flag + `runCatching` in `CameraController`, and a `paused` flag in `CameraEngine` (never
   open the camera while backgrounded).
-- **Sensor orientation = 90; activity is portrait-locked.** GL rotates **texture coordinates**
-  (inverse of the image), so the preview uses **`-sensorOrientation`**; pixel-rotating captures use
-  **`+sensorOrientation`**. The afocal 180° is self-inverse, which masked the sign until the 90° term
-  exposed it.
+- **Sensor orientation = 90; activity is portrait-locked; preview verified upright on device.** The
+  camera SurfaceTexture transform *already* rotates the sampled image by the sensor orientation, so
+  the GL renderer adds **only the afocal 180°** in tele mode (`CameraEngine.previewRotationDegrees()`
+  returns 180 in tele, 0 otherwise) — NOT `±sensorOrientation` (both 270° and 90° read 90° off on
+  device). It still passes `sensorOrientation` to the renderer purely to pick the preview **aspect**
+  (the ~90° swaps displayed W/H). Captures rotate raw pixels by `sensorOrientation + afocal180 +
+  deviceOrientation(gravity)` (`captureRotationDegrees()`), so stills save upright in any hold; HEIF
+  pixel-rotates, DNG tags EXIF orientation. `camera/RotationMath.kt` holds this as pure, unit-tested
+  functions.
+- **Low-light AE was pinned at 1/30s.** A fixed `[30,30]` target-fps range caps exposure at 1/30s, so
+  AE can't brighten dark scenes. Auto exposure uses `CameraCaps.autoFpsRange()` (lowest floor at the
+  target max) so AE can slow the preview for a brighter live view. Manual exposure still pins fps.
+- **Tap-to-focus uses `AF_MODE_AUTO`.** CONTINUOUS + a bare trigger just holds the (often wrong)
+  current distance; a tapped point sets a metering region and forces a one-shot AUTO scan that LOCKS
+  (`touchAfActive`, cleared on focus-mode change). AF reaches FOCUSED on device.
+- **Aspect ratio is only 4:3 or 16:9.** The sensor is 4:3-native: `AspectRatio.W4_3` = full readout
+  (no crop, the default + the no-crop sentinel), `W16_9` = its center crop. Full/1:1/portrait removed.
+- **Video caps come from the device, not hardcodes.** `video/EncoderCaps.kt` scans `MediaCodecList`
+  (HW AVC/HEVC + Dolby-Vision present; AV1 is **software-only** → label "slow/SW", gate ≤4K).
+  `VideoFrameRate` gates drop-frame/high-speed fps per resolution (8K≤30; 120 only where a high-speed
+  config exists). Resolutions come from the selected camera's `StreamConfigurationMap`.
+- **Settings persist across launches** via `storage/SettingsStore.kt` (SharedPreferences, enums by
+  name, defensive load). Gated by a "Remember Settings" toggle that **defaults ON**; saved on
+  background, restored on launch (pushed to the engine pre-start).
 - **The teleconverter's "auto steady" is a HAL side-effect, not an API.** Reverse engineering (see
   `docs/reverse-engineering/`) confirmed the stock app sets no Explorer-specific OIS/EIS tag — the
   vendor tags (`com.oplus.ois.*`, `org.quic.camera.eisrealtime`, `explorer.chip.state`) exist in the
@@ -106,14 +126,15 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
 
 ```
 MainActivity → CameraViewModel(CameraUiState/CameraActions) → CameraEngine (facade)
-CameraEngine ├─ CameraSelector2  pick tele (closest-to-70mm, standalone)
-             ├─ CameraController Camera2 session, fallback ladder, capture
-             ├─ GlPipeline       GL thread: 180°+sensor rotation, EIS, OETF, scopes
+CameraEngine ├─ CameraSelector2  pick tele (closest-to-70mm, standalone; pickBest pure+tested)
+             ├─ CameraController Camera2 session, fallback ladder, capture, 3A/tap-AF
+             ├─ RotationMath     pure preview/capture/EXIF rotation (unit-tested)
+             ├─ GlPipeline       GL thread: afocal 180° + EIS + OETF + scopes
              │    └─ FlipRenderer / EglCore / Shaders
              ├─ GyroEis          gyro shake + gravity roll + device orientation
              ├─ capture/HeifCapture (pixel-rotate) + DngCapture (EXIF orient)
-             ├─ video/VideoRecorder (HEVC Main10 HLG/Log or AVC SDR) + ColorProfiles
-             └─ storage/MediaStoreWriter (scoped, IS_PENDING)
+             ├─ video/VideoRecorder (HEVC/AVC/AV1, HLG/Log) + EncoderCaps + ColorProfiles
+             └─ storage/MediaStoreWriter (scoped, IS_PENDING) + SettingsStore (persist)
 UI: CameraScreen (Pixel-style) + controls/{ManualDials,ProSheet,ProControls} + overlays/*
 ```
 

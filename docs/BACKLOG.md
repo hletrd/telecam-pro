@@ -1,105 +1,99 @@
 # Backlog & Status — Find X9 Ultra Teleconverter Camera
 
-Living handoff document. Read after `CLAUDE.md`. Goal: **Google Play release.** Status as of
-2026-07-02.
+Living handoff document. Read after `CLAUDE.md`. Goal: **Google Play release.** Updated 2026-07-03.
 
-Legend: ✅ done & verified · 🟡 done in code, **unverified on device** · 🔴 not started · ⏸ deferred
-
----
-
-## 0. Immediate — needs a physical device in hand
-
-The device is on **wireless ADB** (IP/port change per session — ask the user for the current
-`adb connect` target). These items are implemented and compile, but their correctness is a matter of
-**pixels on the real phone through the actual teleconverter**, which only the user can currently see.
-Verify each, then flip 🟡 → ✅ (or open a fix).
-
-- 🟡 **Preview rotation sign.** Preview now uses `-sensorOrientation` (+ afocal 180° in tele mode) →
-  total 90° in tele mode. User reported the previous `+sensorOrientation` (270°) was 90° CCW off; the
-  negation is the reasoned fix but the **final upright result is not yet visually confirmed**. If it's
-  now upside-down, the afocal 180° term is wrong; if still 90° off, revisit the `FlipRenderer`
-  texcoord/aspect coupling. Source: `CameraEngine.previewRotationDegrees()`.
-- 🟡 **Capture orientation (stills).** HEIF pixel-rotates and DNG sets the EXIF orientation tag from
-  `captureRotationDegrees()` = `sensorOrientation + afocal180 + deviceOrientation(gravity)`. **Pull a
-  real HEIC and DNG and confirm both are upright** in portrait AND landscape holds. The GL(texcoord)
-  vs bitmap(pixel) sign asymmetry is intentional — verify it empirically, don't assume.
-  `adb pull` the file from `/sdcard/DCIM` or `/sdcard/Pictures` and inspect.
-- 🟡 **Exposure default.** Now boots in **auto exposure** (was manual ISO400/1/125s → very dark
-  through the tele). Confirm the preview is well-exposed on launch and that switching to manual still
-  works. Source: `ManualControls(autoExposure = true)`.
-- 🟡 **300 mm EIS actually stabilizes.** Client gyro EIS is wired and scaled by
-  `TELECONVERTER_MAGNIFICATION` (300/70 ≈ 4.286×), HAL stabilization OFF. But `GyroEis` itself flags
-  that the **axis mapping and sign need on-device tuning** (a wrong sign amplifies shake instead of
-  cancelling it). Hand-hold test at 300 mm: does the preview steady or jitter worse? Tune
-  `GlPipeline.drawFrame` shift signs / `GyroEis` axis order accordingly.
-- 🟡 **Tap-to-focus mapping.** `CameraEngine.setTapPoint` inverts `previewRotationDegrees()` to map a
-  view tap → sensor coords, but ignores EIS/punch-in crop and may need an axis/mirror flip. Tap a
-  known point and confirm the AF/AE region lands there.
-- ✅ **Camera opens without crashing** (standalone id 4, SDR session, RAW gated) — verified on device
-  (`Session configured (fallback=0, hlg=false, jpeg=true, raw=true)`, no SIGSEGV).
-- ✅ **Session-lifecycle disconnect crash fixed** — `closed`/`paused` guards; verified no
-  `CAMERA_DISCONNECTED` crash after relaunch on an awake device.
-- ✅ **Preview is no longer black** — TextureView host renders camera frames (verified: textured
-  preview visible under the grid overlay).
+Legend: ✅ done & verified · 🟢 done in code, gates green · 🟡 done in code, **unverified on device** ·
+🔴 not started · ⏸ deferred
 
 ---
 
-## 1. Correctness gaps (before Play)
+## 0. Verified on the physical device this session ✅
 
-- 🔴 **Video orientation ignores the G-sensor.** Stills are now device-orientation-aware, but video
-  is encoded from the GL output, which uses the **fixed preview rotation** (no device orientation).
-  A clip shot in landscape saves portrait-framed-rotated. Options: rotate the encoder draw by device
-  orientation captured at record-start, or write a rotation matrix / `MediaFormat` rotation hint into
-  the muxer. Decide and implement in `VideoRecorder` / `GlPipeline` encoder path.
-- 🟡 **HLG/Log video color is approximate.** True OPPO LOG is not reproducible (stock-app exclusive);
-  we apply a GL Log OETF and tag Rec.2020. Honestly labeled. Verify HLG playback looks correct on an
-  HDR display and that Log grades sanely; document the gamut/curve we actually emit.
-- ⏸ **10-bit HDR *preview*.** Deferred: HLG10 preview + full-res JPEG/RAW crashes the HAL, so the
-  live session is SDR (video still encodes 10-bit HLG/Log). Revisit if a stream combo is found that
-  the HAL accepts (e.g. HLG preview with RAW dropped, smaller JPEG), via the fallback ladder.
-- 🟡 **Manual WB Kelvin→RGGB gains** use a Tanner-Helland blackbody approximation. Verify neutral
-  grey looks neutral at 5200 K and that tint behaves; may need per-device calibration.
+The device is on **wireless ADB** (IP/port change per session — ask the user; last was
+`172.30.50.127:34265`). These were confirmed with real screenshots / logs / pulled files:
 
-## 2. Deferred features (pro-camera completeness)
+- ✅ **Camera opens, no crash** — standalone tele (cam 4), SDR session, RAW gated. Also survives the
+  keyguard/lifecycle race (`closed`/`paused` guards).
+- ✅ **Preview renders and is upright** — TextureView host; tele mode applies the afocal 180° only
+  (the SurfaceTexture transform already bakes in the sensor orientation). User-confirmed upright.
+- ✅ **Auto-exposure + continuous-AF defaults** — preview is exposed & sharp on launch.
+- ✅ **Tap-to-focus works** — reticle lands on the tap; AF scans that region (logcat `Touch AF` +
+  `afState` reaches FOCUSED). Uses `CONTROL_AF_MODE_AUTO` one-shot lock.
+- ✅ **Photo capture saves** — "Saved" toast; unique filenames (ms + monotonic counter).
+- ✅ **Exposure-dial UX** — AE Auto/Manual chip; ISO/shutter **stop-snap with haptic detents**;
+  relative focus scale. (Snapping was iterated until it *felt* snapped on device.)
 
-- 🔴 **Slow-motion / high-speed video** (120/240 fps) — needs a `CameraConstrainedHighSpeedCaptureSession`;
-  not yet wired. UI has no entry point.
-- 🔴 **Geotagging** — needs the location permission + fusing GPS into EXIF (HEIF/DNG) and the MP4
-  udta. Not started; add opt-in toggle.
-- 🔴 **Custom save folder / filename pattern** — currently fixed `IMG_/VID_` + timestamp into
-  DCIM/Pictures. Add a setting.
-- 🔴 **Bracketing beyond AEB / focus stacking**, **interval-shooting UI polish** — drive modes exist
-  (SINGLE/BURST/AEB/TIMELAPSE) but UX/edge cases need a pass.
-- 🟡 **Histogram/waveform/zebra/peaking/false-color** are implemented (GL readback + shader) — verify
-  they read correctly and don't stall rendering on device (analysis is throttled to every ~12th
-  frame; profile it).
+### 3A finding (important context for the next agent)
+On-device 3A logs decoded as: **AE converges** but was pinned at 1/30s by the fixed 30fps target,
+and **AF passive-scans** in low light. Fixes landed: AUTO exposure now uses a **low fps floor**
+(`CameraCaps.autoFpsRange`) so AE can lengthen exposure in dim scenes, and tap-to-focus forces
+`AF_MODE_AUTO` for a real region scan+lock. **Re-test AE/AF in normal room light** — through an
+f/2.2 tele at night they are near the physical floor, which reads as "AE/AF barely work."
 
-## 3. Play-release readiness (release engineering)
+---
 
-- 🔴 **Release build**: signing config, `minifyEnabled`/R8 rules (keep Camera2/DngCreator/heifwriter
-  reflection-safe), `shrinkResources`, a real app icon + adaptive icon, splash.
-- 🔴 **Single-device distribution**: this app targets exactly one device model. Decide the Play
-  strategy — device catalog restriction, or a clear "will only work on Find X9 Ultra + teleconverter"
-  store listing. `minSdk 36` already excludes most devices.
-- 🔴 **Permissions & privacy**: CAMERA + RECORD_AUDIO (+ future LOCATION) — write the data-safety form
-  and a privacy policy. No network is used; state that.
-- 🔴 **Store assets**: screenshots (portrait), feature graphic, description, category.
-- 🔴 **Crash/ANR hardening pass**: exercise permission-denied, rapid mode switching, background/
-  foreground during record, low storage, teleconverter chip absent.
-- 🔴 **Licensing**: confirm heifwriter `-alpha01` is acceptable for a release, or pin to the newest
-  stable when it lands.
-- 🔴 **Versioning**: set `versionCode`/`versionName`; wire a changelog.
+## 1. Done in code, needs on-device verification 🟡
 
-## 4. Engineering hygiene
+- 🟡 **Video capabilities** (8K/4K, drop-frame fps 23.976/29.97/59.94, 120fps high-speed, H.264/
+  HEVC/AV1(SW), HEIF/JPEG, Mbps readout, Open-Gate). Builds + unit-tested, but the implementing
+  agent was interrupted before a recording was pulled. **Verify a real MP4 saves & plays** at each
+  new resolution/fps/codec; confirm 8K/4K120 availability tracks the *selected* camera (tele may not
+  offer them — tied to the lens switcher below). See `video/EncoderCaps.kt`, `VideoRecorder.kt`.
+- 🟡 **300 mm EIS actually stabilizes.** Wired + scaled by `TELECONVERTER_MAGNIFICATION` (300/70),
+  HAL stabilization OFF. `GyroEis` flags the axis/sign need on-device tuning (wrong sign amplifies
+  shake). Hand-hold at 300 mm and confirm the preview steadies. (task #3)
+- 🟡 **TELE toggle ↔ OIS/EIS focal 70↔300.** EIS focal switches with the mode; OIS on/off is a user
+  toggle and its focal is HAL-owned (vendor-gated). Confirm the stock-app-like behavior. (task #4)
+- 🟡 **Capture orientation in landscape** — stills rotate by device orientation (gravity); verify a
+  landscape-held HEIC/DNG saves upright.
 
-- 🟡 **Test coverage** is thin: only `FocusMappingTest`. Add pure-logic unit tests for
-  `CameraSelector2` (closest-to-70 mm + standalone tie-break), rotation math
-  (`previewRotationDegrees`/`captureRotationDegrees`/`exifOrientationFor`), `GyroEis.currentDeviceOrientation`,
-  Kelvin→RGGB, and color-profile params. Hardware paths stay manual-verify.
-- 🔴 **Commit history is Korean** (pre-English-switch). Not rewritten (destructive; needs explicit
-  sign-off). New commits are English.
-- 🟢 Reviews in `.context/reviews/` (architect/code/perf/security) — findings were addressed in the
-  earlier `/review-plan-fix` pass; re-run before release.
+---
+
+## 2. Remaining feature work (prioritized by the user) 🔴
+
+The user explicitly wants all of these; ordered by their stated priority.
+
+- 🔴 **Lens switcher (Pixel-style)** — UW (14 mm) / main (23 mm) / 3× (70 mm) / 10× (230 mm) / front.
+  Reuse `CameraSelector2` override + `engine.setCameraOverride`. **Teleconverter mode only on the 3×
+  lens.** This also unblocks 8K/4K120 (main camera). (task #14)
+- 🔴 **Settings UX overhaul** (task #15/#17/#18):
+  - Surface **color transfer (Log / SDR Rec.709 / HLG)** on the main screen, not buried.
+  - **Manual WB Kelvin + Tint** sliders when WB=Manual (Kelvin ruler exists; Tint not surfaced).
+  - **Audio options** — mic source/sample rate/channel, and **direction** if the device API supports
+    it (AudioRecord preferred-mic-direction / spatial). (task #8)
+  - Make the settings sheet more intuitive overall (per-element adjustment feels indirect).
+- 🔴 **AV1 caveat UX** — only a software AV1 encoder exists; keep it labeled "slow/SW" and gate to
+  ≤4K (done in code — verify the label/guard on device).
+
+## 3. Deferred / lower priority ⏸
+
+- ⏸ **10-bit HDR *preview*** — HLG10 preview + full-res JPEG/RAW crashes the HAL; live session stays
+  SDR (video still encodes 10-bit HLG/Log). Revisit if a HAL-accepted stream combo is found.
+- 🔴 **Slow-motion playback metadata**, **geotagging** (needs location permission), **custom save
+  folder/filename**, **focus stacking / advanced bracketing UX**.
+
+## 4. Play-release readiness 🔴
+
+- 🔴 Release build: signing config, R8/minify rules (keep Camera2/DngCreator/heifwriter/MediaCodec
+  reflection-safe), app icon + adaptive icon, splash.
+- 🔴 Single-device distribution strategy (device-catalog restriction or a clear store listing);
+  `minSdk 36` already excludes most devices.
+- 🔴 Data-safety form + privacy policy (CAMERA, RECORD_AUDIO, future LOCATION; no network).
+- 🔴 Store assets (portrait screenshots, feature graphic, description), crash/ANR hardening pass,
+  `versionCode`/`versionName`, changelog.
+
+## 5. Engineering hygiene 🟢/🟡
+
+- 🟢 **Gates green** every commit: `:app:assembleDebug :app:testDebugUnitTest :app:lintDebug`.
+- 🟢 **Tests**: `FocusMappingTest`, `RotationMathTest`, `CameraSelector2Test`, `VideoCapabilitiesTest`.
+  Pure logic (rotation, selection, fps gating, focus mapping). Hardware paths stay manual-verify.
+- 🟢 **QA agent**: `.claude/agents/qa-adversary.md` — build/test/device feature gate. Run before
+  releases. There is also `qa-adversary` as a registered subagent type.
+- 🟡 **`review-plan-fix` loop** ran cycle 1 (21 commits) + cycle 2 (review only; then rate-limited).
+  The large background review fan-out FAILS in this environment — do reviews **inline** or with ≤2
+  synchronous helpers. `.context/reviews/_aggregate.md` + `docs/plans/2026-07-03-*` hold the findings.
+- 🔴 Commit history is Korean pre-English-switch (not rewritten — destructive, needs sign-off). New
+  commits are English.
 
 ---
 
@@ -107,14 +101,17 @@ Verify each, then flip 🟡 → ✅ (or open a fix).
 
 ```bash
 export JAVA_HOME="/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home"; export PATH="$JAVA_HOME/bin:$PATH"
-./gradlew :app:assembleDebug :app:testDebugUnitTest
-adb connect 172.30.50.127:<port>      # ask user for current port
+./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
+adb connect 172.30.50.127:<port>     # ask user for current port
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb shell input keyevent KEYCODE_WAKEUP
 adb shell am start -n com.hletrd.findx9tele/.MainActivity
-adb logcat -d | grep -E "CameraController|AndroidRuntime|Session configured"
-adb exec-out screencap -p > /tmp/shot.png      # flat phone = dark texture, not a bug
-# to check capture orientation, take a shot then:
-adb shell 'ls -t /sdcard/DCIM/Camera /sdcard/Pictures 2>/dev/null | head'
-adb pull /sdcard/Pictures/<file>.heic /tmp/
+adb logcat -d | grep -E "CameraController|3A:|Touch AF|AndroidRuntime|Session configured"
+adb exec-out screencap -p > /tmp/shot.png       # flat phone = dark texture, not a bug
+# capture then check orientation/exposure:
+adb shell 'ls -t /sdcard/DCIM/Camera /sdcard/Pictures 2>/dev/null | grep X9TELE | head'
 ```
+
+**AVD note:** a `camtest` AVD (android-36, 1440×3168) exists for UI/crash checks, but its camera is
+synthetic — tele/RAW/HLG/EIS/capture behavior is **device-only**. Kill the emulator when done
+(`adb -s emulator-5554 emu kill`); headless QEMU otherwise pins the CPU.
