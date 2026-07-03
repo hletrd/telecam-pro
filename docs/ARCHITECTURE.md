@@ -329,8 +329,14 @@ Accelerometer sample → gravity vector → roll angle (atan2(x, y)).
 rollDegrees = (rollDeg - rollDegrees) * ROLL_LOW_PASS_ALPHA
 // Used for:
 // 1. Horizon/level overlay (currentRollDegrees)
-// 2. Auto-rotating captures while UI is portrait-locked (currentDeviceOrientation: rounds to 0/90/180/270)
+// 2. Auto-rotating captures while UI is portrait-locked (currentDeviceOrientation → 0/90/180/270)
 ```
+`currentDeviceOrientation()` returns a `stableOrientation` that is **only updated while the phone is
+clearly held** — the in-plane gravity magnitude `hypot(x, y)` must exceed `FLAT_GRAVITY_THRESHOLD`
+(~half g). When the phone lies flat, `x`/`y` are ~0 and `atan2(x, y)` is pure noise, so the last
+confident orientation is held instead of snapping randomly. This was found via output-file
+inspection: a DNG shot flat-on-desk had tagged `ORIENTATION_NORMAL` (0°) instead of the expected
+270°, because the pre-fix code derived a discrete value from the noisy flat-phone angle.
 
 **Application in GL:**
 

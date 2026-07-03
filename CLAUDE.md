@@ -100,6 +100,16 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
   deviceOrientation(gravity)` (`captureRotationDegrees()`), so stills save upright in any hold; HEIF
   pixel-rotates, DNG tags EXIF orientation. `camera/RotationMath.kt` holds this as pure, unit-tested
   functions.
+- **Device orientation only updates while the phone is HELD.** `GyroEis.currentDeviceOrientation()`
+  derives 0/90/180/270 from gravity, but when the phone is **flat** the in-plane gravity is ~0 and
+  `atan2(x,y)` is noise — so it updates the discrete value only when `hypot(x,y) > FLAT_GRAVITY_
+  THRESHOLD` (~½ g) and otherwise holds the last confident value. Found via output-file check: a
+  flat-on-desk DNG had wrongly tagged `ORIENTATION_NORMAL` instead of 270°.
+- **Output-file capture verified on device (2026-07-03).** Pulled + inspected real files: HEIF =
+  HEVC 4096×3072 (4:3 full sensor); DNG = valid 16-bit RAW (`OPPO PMA110`, ISO/exposure EXIF);
+  video = HEVC 4K (3840×2160) ~29.97 fps drop-frame, ~172 Mbps, AAC audio, playable. Unique
+  filenames confirmed (monotonic counter). **Capture upright-ness in a held portrait/landscape pose
+  is still unverified** (needs a lit, deliberately-held shot) — see `docs/BACKLOG.md`.
 - **Low-light AE was pinned at 1/30s.** A fixed `[30,30]` target-fps range caps exposure at 1/30s, so
   AE can't brighten dark scenes. Auto exposure uses `CameraCaps.autoFpsRange()` (lowest floor at the
   target max) so AE can slow the preview for a brighter live view. Manual exposure still pins fps.

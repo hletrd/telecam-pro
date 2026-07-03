@@ -58,7 +58,9 @@ Requires JDK 21 + Android SDK (API 36, build-tools 36.0.0). Design document: [`d
 
 Complete scaffold + core implementation (Camera2 tele selection & manual control, GL 180° flip preview/encoder, HEIF+DNG+JPEG photos, device-orientation-aware capture, HEVC/AVC/AV1 video with runtime codec detection, settings persistence, Compose pro UI with stop-snapping exposure dials and tap-to-focus).
 
-- ✅ **Build**: `./gradlew assembleDebug :app:testDebugUnitTest` passes. APK builds successfully.
+- ✅ **Build & gates**: `./gradlew assembleDebug testDebugUnitTest lintDebug` all pass.
 - ✅ **Unit tests**: FocusMappingTest, RotationMathTest, CameraSelector2Test, VideoCapabilitiesTest pass.
-- ⏳ **On-device verification**: Manual focus, RAW/DNG, 10-bit HDR preview, tap-to-focus, device-orientation auto-rotate, video codec detection, and settings persistence require on-device testing on actual Find X9 Ultra tele lens.
-- ⏳ **Tuning**: EIS gain scaling, gyro axis calibration, LOG curve tonality, and Dolby Vision support (if present) need device verification.
+- ✅ **Verified on the Find X9 Ultra**: camera opens (standalone tele, no HAL crash), preview renders upright, auto-exposure + continuous-AF defaults, tap-to-focus locks on the tapped region, stop-snapping exposure dials. Output files pulled + inspected: HEIF (HEVC 4096×3072 4:3), DNG (valid 16-bit RAW), and video (HEVC 4K ~29.97 fps drop-frame, ~172 Mbps, AAC audio, playable).
+- ⏳ **On-device verification pending**: capture upright-ness in a deliberately-held portrait/landscape pose; the 8K / 4K120 / AV1 / Open-Gate video variants; 300 mm EIS stabilization; teleconverter OIS/EIS focal switching.
+- ⏳ **Tuning**: EIS gain scaling / gyro axis calibration, LOG curve tonality, and (optional) Dolby Vision.
+- 🚧 **Not started**: lens switcher (UW/main/3×/10×/front), some settings-UX polish, Play-release engineering (signing, R8, store assets). See [`docs/BACKLOG.md`](docs/BACKLOG.md).
