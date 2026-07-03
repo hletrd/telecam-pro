@@ -64,6 +64,20 @@ fun ManualControls.effectiveExposureNs(): Long =
     }
 
 /**
+ * The SENSOR_FRAME_DURATION (ns) to request in manual exposure. Camera2 requires the frame duration
+ * be >= the exposure time, so a shutter slower than 1/[fps] must stretch the frame duration up to
+ * [exposureNs] — otherwise the HAL silently caps the exposure at 1/fps (which killed long-exposure /
+ * astro through the tele). Bounded by [maxFrameDurationNs] when the sensor reports it (>0). With
+ * [fps] <= 0 the nominal 1/fps term drops out and the exposure alone drives the duration. Pure so the
+ * "exposure longer than the frame interval" edge case is unit-testable off-device.
+ */
+fun sensorFrameDurationNs(fps: Int, exposureNs: Long, maxFrameDurationNs: Long): Long {
+    val nominal = if (fps > 0) 1_000_000_000L / fps else 0L
+    val needed = maxOf(nominal, exposureNs)
+    return if (maxFrameDurationNs > 0L) needed.coerceAtMost(maxFrameDurationNs) else needed
+}
+
+/**
  * Applies the parameters to a CaptureRequest, clamping to hardware ranges and honoring capability
  * gates. Also forces HAL video stabilization OFF (its gain is wrong for the afocal teleconverter —
  * our gyro EIS handles stabilization at the true focal length) and sets OIS per the user toggle.
@@ -108,11 +122,13 @@ private fun CaptureRequest.Builder.applyExposure(c: ManualControls, caps: Camera
     if (!c.autoExposure && caps.supportsManualSensor) {
         set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
         caps.isoRange?.let { set(CaptureRequest.SENSOR_SENSITIVITY, c.iso.coerceIn(it.lower, it.upper)) }
-        caps.exposureTimeRange?.let {
-            set(CaptureRequest.SENSOR_EXPOSURE_TIME, c.effectiveExposureNs().coerceIn(it.lower, it.upper))
-        }
-        // Honor the target fps in manual exposure via the frame duration.
-        if (c.fps > 0) set(CaptureRequest.SENSOR_FRAME_DURATION, 1_000_000_000L / c.fps)
+        val exposureNs = caps.exposureTimeRange
+            ?.let { c.effectiveExposureNs().coerceIn(it.lower, it.upper) }
+            ?: c.effectiveExposureNs()
+        caps.exposureTimeRange?.let { set(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureNs) }
+        // Frame duration must be >= the exposure (Camera2 contract). Stretch it to the exposure so a
+        // shutter slower than 1/fps survives instead of being clamped to 1/fps (long-exposure/astro).
+        set(CaptureRequest.SENSOR_FRAME_DURATION, sensorFrameDurationNs(c.fps, exposureNs, caps.maxFrameDurationNs))
     } else {
         set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
         set(CaptureRequest.CONTROL_AE_LOCK, c.aeLock)

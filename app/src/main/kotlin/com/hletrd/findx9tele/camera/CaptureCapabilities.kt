@@ -22,6 +22,13 @@ data class CameraCaps(
     val hyperfocalDiopters: Float,
     val isoRange: Range<Int>?,
     val exposureTimeRange: Range<Long>?, // ns
+    /**
+     * Max sensor frame duration (ns), from SENSOR_INFO_MAX_FRAME_DURATION; 0 if unreported. This is
+     * the ceiling a single frame's exposure can occupy — a manual shutter slower than 1/fps needs the
+     * frame duration stretched up to here (Camera2 requires frameDuration >= exposureTime), otherwise
+     * the HAL silently caps the exposure at 1/fps (kills long-exposure/astro through the tele).
+     */
+    val maxFrameDurationNs: Long,
     val evRange: Range<Int>,
     val evStep: Rational,
     val focalLengthsMm: FloatArray,
@@ -142,6 +149,7 @@ data class CameraCaps(
                 hyperfocalDiopters = chars.get(CameraCharacteristics.LENS_INFO_HYPERFOCAL_DISTANCE) ?: 0f,
                 isoRange = chars.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE),
                 exposureTimeRange = chars.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE),
+                maxFrameDurationNs = chars.get(CameraCharacteristics.SENSOR_INFO_MAX_FRAME_DURATION) ?: 0L,
                 evRange = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE) ?: Range(0, 0),
                 evStep = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP) ?: Rational(1, 3),
                 focalLengthsMm = focals,
