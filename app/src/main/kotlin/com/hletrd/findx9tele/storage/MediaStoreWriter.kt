@@ -1,8 +1,11 @@
 package com.hletrd.findx9tele.storage
 
+import android.content.ContentResolver
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
+import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import java.io.OutputStream
@@ -80,5 +83,41 @@ object MediaStoreWriter {
 
     fun delete(context: Context, uri: Uri) {
         runCatching { context.contentResolver.delete(uri, null, null) }
+    }
+
+    /**
+     * Deletes our own leftover pending (IS_PENDING=1) entries under DCIM/[subDir] — orphans from a
+     * prior crash / force-kill where [publish]/[delete] never ran (a recording whose MediaMuxer was
+     * never stopped, leaving a corrupt, invisible 0-byte-ish file). Safe to run on launch: the normal
+     * capture/record paths publish or delete synchronously, so nothing of ours is legitimately pending
+     * at startup, and scoped storage only exposes our own entries. Best-effort; never throws.
+     */
+    fun cleanupOrphanedPending(context: Context, subDir: String = "X9Tele") {
+        val selection = "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?"
+        val args = arrayOf("DCIM/$subDir%")
+        for (base in listOf(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+        )) {
+            runCatching {
+                val queryArgs = Bundle().apply {
+                    putString(ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
+                    putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, args)
+                    // Pending items are hidden from ordinary queries even for the owner; opt in.
+                    putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
+                }
+                context.contentResolver.query(
+                    base, arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.IS_PENDING), queryArgs, null,
+                )?.use { cursor ->
+                    val idCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                    val pendingCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.IS_PENDING)
+                    while (cursor.moveToNext()) {
+                        if (cursor.getInt(pendingCol) != 1) continue
+                        val uri = ContentUris.withAppendedId(base, cursor.getLong(idCol))
+                        runCatching { context.contentResolver.delete(uri, null, null) }
+                    }
+                }
+            }
+        }
     }
 }

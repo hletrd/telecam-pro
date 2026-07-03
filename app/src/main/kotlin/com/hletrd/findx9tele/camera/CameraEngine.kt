@@ -201,7 +201,10 @@ class CameraEngine(private val context: Context) {
         controller?.updateControls(c)
     }
 
-    fun setTransfer(t: ColorTransfer) { transfer = t; gl.setTransfer(t) }
+    // Changing the OETF mid-recording would tag the file with the start transfer but bake a different
+    // curve into the second half; only push it to GL when idle (the field still updates for the next
+    // recording). See docs/reviews record-pipeline #4.
+    fun setTransfer(t: ColorTransfer) { transfer = t; if (recorder == null) gl.setTransfer(t) }
     fun setPeaking(enabled: Boolean) = gl.setPeaking(enabled)
     fun setZebra(enabled: Boolean) = gl.setZebra(enabled)
 
@@ -260,6 +263,8 @@ class CameraEngine(private val context: Context) {
     /** Open Gate: record the full 4:3 sensor readout. Switches [videoSize] to a 4:3 size and re-picks it. */
     fun setOpenGate(enabled: Boolean) {
         if (openGate == enabled) return
+        // Open Gate changes the recorded aspect/size; refuse mid-recording (the encoder is fixed-size).
+        if (recorder != null) { onStatus?.invoke("Stop recording to change Open Gate"); return }
         openGate = enabled
         val sel = selection ?: return
         videoSize = chooseVideoSize(sel)
@@ -282,6 +287,9 @@ class CameraEngine(private val context: Context) {
     /** Reopen the camera (if started) so the session type tracks [desiredHighSpeedFps]. */
     private fun reopenForSession() {
         if (!started || paused) return
+        // Never tear the camera down under an active recording — it strands the encoder input surface
+        // and gaps/corrupts the clip. The rate/open-gate change applies on the next recording instead.
+        if (recorder != null) return
         val input = gl.inputSurface ?: return
         controller?.close()
         controller = null
@@ -301,10 +309,15 @@ class CameraEngine(private val context: Context) {
      */
     fun setVideoResolution(s: Size) {
         videoSize = s
-        gl.setCameraPreviewSize(s.width, s.height)
+        // The live encoder is fixed-size; resizing the camera texture mid-recording would scale the
+        // recorded frame. Apply to GL only when idle — the new size takes on the next (re)open/record.
+        if (recorder == null) gl.setCameraPreviewSize(s.width, s.height)
     }
 
     fun setCameraOverride(id: String?) {
+        // Switching the physical lens mid-recording reconfigures the camera under the encoder and
+        // gaps/corrupts the clip. Refuse until recording stops; the UI also gates this.
+        if (recorder != null) { onStatus?.invoke("Stop recording to switch lens"); return }
         overrideId = id
         if (!started) return
         val input = gl.inputSurface ?: return // @Volatile in GlPipeline: safe cross-thread read
@@ -566,7 +579,12 @@ class CameraEngine(private val context: Context) {
             uri, size, rate.encoderRate, captureRate, bitRateFor(size, rate),
             transfer, codec, recordAudio, audioGain, orientationHint,
         ) { lvl -> onAudioLevel?.invoke(lvl) }
-        if (surface == null) { onStatus?.invoke("Failed to start recording"); return false }
+        if (surface == null) {
+            // Encoder/muxer failed to configure; drop the pending MediaStore row we created so it
+            // doesn't linger as a 0-byte orphan (VideoRecorder.start already released its own half).
+            MediaStoreWriter.delete(context, uri)
+            onStatus?.invoke("Failed to start recording"); return false
+        }
         gl.setTransfer(glTransfer)
         gl.setEncoderOutput(surface, size.width, size.height)
         recorder = rec
@@ -592,8 +610,15 @@ class CameraEngine(private val context: Context) {
     /** Releases the camera + gyro for backgrounding without tearing down the GL pipeline or start state. */
     fun pause() {
         paused = true
-        runCatching { recorder?.stop() }
+        // Finalize an in-flight recording OFF the main thread: rec.stop() joins the drain threads (up
+        // to a few seconds) and calling it inline on onStop risks an ANR. Clear the encoder EGL first
+        // so GL stops drawing into the input surface before the codec releases it.
+        val rec = recorder
         recorder = null
+        if (rec != null) {
+            gl.setEncoderOutput(null, 0, 0)
+            ioExecutor.execute { runCatching { rec.stop() }; onStatus?.invoke("Video saved") }
+        }
         gyro.stop()
         controller?.close()
         controller = null
@@ -606,6 +631,15 @@ class CameraEngine(private val context: Context) {
         if (controller != null) return
         gyro.start()
         openCamera(input)
+    }
+
+    /**
+     * Deletes leftover pending MediaStore entries from a prior crash / force-kill (a recording whose
+     * MediaMuxer was never stopped → corrupt, invisible file). Runs on the setup thread so it never
+     * blocks the UI. Call once on launch.
+     */
+    fun cleanupOrphans() {
+        setupExecutor.execute { runCatching { MediaStoreWriter.cleanupOrphanedPending(context) } }
     }
 
     fun currentRollDegrees(): Float = gyro.currentRollDegrees()

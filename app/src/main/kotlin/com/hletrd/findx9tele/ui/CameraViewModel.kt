@@ -91,6 +91,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.onAnalysis = { h, w -> _state.update { it.copy(histogramData = h, waveformData = w) } }
         engine.onAudioLevel = { lvl -> _state.update { it.copy(audioLevel = lvl) } }
         restoreSettingsIfEnabled()
+        // Sweep any pending media orphaned by a prior crash/force-kill (record stop never ran).
+        engine.cleanupOrphans()
         if (_state.value.level) mainHandler.post(levelTicker)
         mainHandler.post(orientationTicker)
     }
