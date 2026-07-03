@@ -4,7 +4,7 @@ Collection of materials from analyzing the Find X9 Ultra stock camera (`com.oplu
 
 ## Documents
 
-- [`camera-hardware-map.md`](camera-hardware-map.md) — 7-camera mapping (focal length / sensor / role), teleconverter target lens (dev4, 70mm), selector implications.
+- [`camera-hardware-map.md`](camera-hardware-map.md) — 7-camera mapping (focal length / sensor / role), teleconverter target lens (dev4, 70mm), selector implications, the tele's manual-sensor/RAW/fps capabilities + observed 3A behavior, and the device's video encoders (HW AVC/HEVC/Dolby-Vision, SW AV1).
 - [`vendor-tags-catalog.md`](vendor-tags-catalog.md) — Curated vendor tags for stabilization/OIS/gyro/zoom/Explorer/pro controls.
 - [`oplus-camera-explorer-analysis.md`](oplus-camera-explorer-analysis.md) — Deep decompilation analysis of stock app (Explorer detection, stabilization switching, zoom override code evidence). *(agent analysis result)*
 - [`raw/vendor_tags.txt`](raw/vendor_tags.txt) — Raw dumpsys vendor tag definitions (1,509 entries).
