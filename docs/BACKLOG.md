@@ -22,20 +22,29 @@ output-file verification.
   `afState` reaches FOCUSED). Uses `CONTROL_AF_MODE_AUTO` one-shot lock. *(screenshot + logcat)*
 - ✅ **Exposure-dial UX** — AE Auto/Manual chip; ISO/shutter **stop-snap with haptic detents**;
   relative focus scale. (Iterated until it *felt* snapped on device.) *(screenshot)*
-- 🟡 **Photo capture** — the shutter shows a "Saved" toast, BUT no saved file was ever pulled and
-  inspected this session. See the output-file caveat.
+- ✅ **Photo capture saves valid files** — pulled + inspected real output (2026-07-03): HEIF decodes
+  as HEVC HEIF **4096×3072 (4:3 full sensor, ~12.6 MP)**; DNG is valid 16-bit uncompressed RAW,
+  `OPPO PMA110`, 4096×3072, EXIF `ISO 12800 / 1/30 s`; HEIF+DNG both saved from one shutter; unique
+  filenames with a working monotonic counter (`_000`.._003`). Files land in `/sdcard/DCIM/X9Tele/`.
 
-### ⚠️ Output-file verification NOT done (important honesty note)
-Nothing was verified by **pulling the actual saved file** (`adb pull` a HEIC/DNG/MP4 and checking its
-pixels, dimensions, EXIF orientation, exposure, or video track). All ✅ above are screenshot/logcat
-evidence. So these remain UNVERIFIED at the output-file level:
-- HEIC/DNG save correctly, decode, and are **upright** in portrait AND landscape holds (this is the
-  whole point of `captureRotationDegrees()` — must be checked on a real file).
-- DNG carries the right EXIF orientation tag; JPEG option produces a valid JPEG.
-- Video (any resolution/fps/codec) produces a **playable, non-zero MP4** with the expected track.
-Blocked when attempted: the phone was on a **secure keyguard** (can't drive the shutter via adb, and
-the camera won't open behind the keyguard by design). To finish: unlock the phone, then use the
-`adb pull` + inspect commands at the bottom of this doc.
+### ⚠️ Capture ORIENTATION still unverified (real finding)
+The saved **DNG orientation tag came out "Normal" (0°)** on the test shot. For a portrait-held phone
+`captureRotationDegrees()` should resolve to 270° (sensor 90 + afocal 180 + device 0) — a 0° result
+means the gyro reported **device orientation = 90°**. Likely cause: the phone was **lying flat**, so
+gravity is ~all-Z and `GyroEis.currentDeviceOrientation()` (from `atan2(x,y)`) is noisy/ambiguous when
+flat. The scene was also near-black (ISO 12800), so pixels give no visual "up" either. **To confirm
+upright capture:** shoot a lit subject with a clear top, held deliberately in portrait AND in
+landscape, pull the HEIC/DNG, and check each looks upright + the DNG tag matches. Also consider
+snapping device-orientation to the last stable non-flat value when gravity is near-vertical.
+
+- ✅ **Video records a valid MP4** — pulled + ffprobe'd real output (2026-07-03): **HEVC 4K
+  (3840×2160)**, ~29.97 fps (measured 29.9 — the drop-frame default works), **~172 Mbps**, **AAC
+  audio track** present, ~4.5 s, playable. File in `/sdcard/DCIM/X9Tele/`.
+
+Still unverified at the output-file level:
+- Capture/video **upright-ness** in portrait/landscape (see the orientation note above — needs a lit,
+  deliberately-held shot); JPEG-format option produces a valid JPEG; 8K / 4K120 / AV1 / Open-Gate
+  variants (default was 4K HEVC 29.97).
 
 ### 3A finding (important context for the next agent)
 On-device 3A logs decoded as: **AE converges** but was pinned at 1/30s by the fixed 30fps target,

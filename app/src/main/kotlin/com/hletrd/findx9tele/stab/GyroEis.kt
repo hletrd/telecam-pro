@@ -6,6 +6,7 @@ import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import kotlin.math.atan2
+import kotlin.math.hypot
 
 /**
  * Gyroscope-driven electronic stabilization signal.
@@ -46,6 +47,11 @@ class GyroEis(context: Context) : SensorEventListener {
     // blind to slow tilt) this tracks the device's true tilt and does not drift over time.
     @Volatile private var rollDegrees = 0f
 
+    // Last discrete device orientation (0/90/180/270) captured while the phone was clearly HELD
+    // (strong horizontal gravity). Held here so a flat phone — where the in-plane gravity is tiny and
+    // atan2(x,y) is pure noise — keeps the last confident orientation instead of snapping randomly.
+    @Volatile private var stableOrientation = 0
+
     val isAvailable: Boolean get() = gyroscope != null
 
     fun start() {
@@ -71,12 +77,10 @@ class GyroEis(context: Context) : SensorEventListener {
     /**
      * Discrete physical device orientation (0/90/180/270), derived from gravity, for auto-rotating
      * captures while the UI stays portrait-locked. 0 = upright portrait; 90/270 = the two landscapes;
-     * 180 = upside down. Lying flat (gravity ≈ ±z) reads ~0, so a desk shot defaults to portrait.
+     * 180 = upside down. Updated only while the phone is clearly HELD (strong in-plane gravity); a
+     * flat phone keeps the last confident value rather than snapping randomly.
      */
-    fun currentDeviceOrientation(): Int {
-        val d = Math.round(rollDegrees / 90f) * 90
-        return ((d % 360) + 360) % 360
-    }
+    fun currentDeviceOrientation(): Int = stableOrientation
 
     override fun onSensorChanged(event: SensorEvent) {
         when (event.sensor.type) {
@@ -105,6 +109,14 @@ class GyroEis(context: Context) : SensorEventListener {
                 val y = event.values[1]
                 val rollDeg = Math.toDegrees(atan2(x, y).toDouble()).toFloat()
                 rollDegrees += ROLL_LOW_PASS_ALPHA * (rollDeg - rollDegrees)
+
+                // Only update the discrete capture orientation when the phone is clearly HELD: the
+                // in-plane gravity magnitude must exceed a threshold. When flat on a desk, x/y ≈ 0 and
+                // atan2 is noise, so we hold the last confident value (a flat shot keeps the last hold).
+                if (hypot(x, y) > FLAT_GRAVITY_THRESHOLD) {
+                    val d = Math.round(rollDegrees / 90f) * 90
+                    stableOrientation = ((d % 360) + 360) % 360
+                }
             }
         }
     }
@@ -117,6 +129,7 @@ class GyroEis(context: Context) : SensorEventListener {
         smoothPitch = 0f; smoothYaw = 0f; smoothRoll = 0f
         corrPitch = 0f; corrYaw = 0f; corrRoll = 0f
         rollDegrees = 0f
+        stableOrientation = 0
     }
 
     private companion object {
@@ -125,6 +138,10 @@ class GyroEis(context: Context) : SensorEventListener {
         // rendered frame (30-60 Hz), so anything faster is wasted CPU/battery with no
         // stabilization-quality benefit.
         const val SAMPLING_PERIOD_US = 5000
+
+        // In-plane gravity magnitude (m/s²) above which the phone is considered clearly HELD (not
+        // flat), so its discrete orientation can be trusted. ~4.9 = half g ≈ tilted ≥30° from flat.
+        const val FLAT_GRAVITY_THRESHOLD = 4.9f
 
         // Per-sample low-pass coefficient for the gyro's "intended orientation" estimate. This is
         // a per-SAMPLE coefficient, so it assumes the ~200 Hz gyroscope sampling period set above
