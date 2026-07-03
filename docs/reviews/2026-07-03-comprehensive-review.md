@@ -29,7 +29,7 @@ Verdict legend: ✗ broken/unsafe · ⚠ works-but-fragile · ✓ handled well.
 | 6 | **Manual exposure longer than 1/fps** | `applyExposure` sets `SENSOR_FRAME_DURATION = 1e9/fps` whenever `fps>0` and never queries `SENSOR_INFO_MAX_FRAME_DURATION`; per Camera2 the frame duration must be ≥ exposure, so a >1/fps shutter is silently clamped to 1/fps. Long-exposure astro/night is effectively impossible. | ✗ | HIGH |
 | 7 | **Force-kill / crash mid-record** | `VideoRecorder.stop()` never runs → MediaMuxer never stopped → **moov atom never written = unplayable MP4**, and the MediaStore row stays `IS_PENDING=1`. Nothing scans/cleans orphaned pending entries on next launch. | ✗ | HIGH |
 | 8 | **Background (onStop) while recording** | `CameraEngine.pause()` runs `recorder.stop()` on the **main thread**; `stop()` joins video+audio drains up to ~6 s → ANR risk during `onStop`. (The file does finalize.) | ⚠ | HIGH |
-| 9 | **Audio+video A/V sync** | Video PTS = `SurfaceTexture.getTimestamp()` (boot-based sensor clock); audio PTS = 0-based sample counter. No rebase → every audio clip is desynced by a large constant. | ✗ | HIGH |
+| 9 | **Audio+video A/V sync** | Video PTS = `SurfaceTexture.getTimestamp()` (boot-based sensor clock); audio PTS = 0-based sample counter. No rebase → every audio clip is desynced by a large constant. **FIXED + device-verified 2026-07-04:** encoder PTS rebased to the first frame; a pulled clip shows video and audio both `start_time=0.000000`, durations equal to 7 µs (was video `start_time≈429496 s`). | ✓ fixed | HIGH |
 | 10 | **"10-bit HLG" recording** | GL EglCore is built `tenBit=false` (8-bit), and the encoder input surface shares that context, yet the HEVC format is tagged Main10 / BT2020 / HLG → 8-bit pixels mistagged as 10-bit HDR (banding). | ✗ | HIGH |
 | 11 | **Encoder config failure at start** | `rec.start()` returns null → engine reports failure but the pending video MediaStore row is never deleted → 0-byte orphan. | ✗ | MED |
 | 12 | **Instant stop (before muxer start)** | `awaitMuxerStart()` returns false → samples skipped → `muxerStarted=false` → uri deleted. No 0-byte file. | ✓ | — |
@@ -136,10 +136,14 @@ option, RGB parade/vectorscope, mic direction/source options.
 - **Android SDK** was missing (no `ANDROID_HOME`, no `local.properties`, no `~/Library/Android/sdk`) →
   even JVM unit tests fail because `:app` won't compile against `android.jar`. Installed
   cmdline-tools + platform-37/36 + build-tools and wrote `local.properties`.
-- New unit test `ExposureMathTest.kt` (9 cases: cine-angle↔speed, fps=0 guard, angle clamp, and the
-  "exposure longer than the frame interval" invariant).
-- Device verification (record→file at each codec/res/fps, lens switch, long exposure, force-kill) is
-  pending a live wireless-ADB port (changes per session) and a fresh build.
+- New unit test `ExposureMathTest.kt` (13 cases: cine-angle↔speed, fps=0 guard, angle clamp, and the
+  `sensorFrameDurationNs` long-exposure invariant). Full suite: 48 tests green.
+- **Device-verified on the PMA110 (2026-07-04):** fresh build installs, launches, no crash, live
+  preview, 3A healthy (AE converged, continuous AF, near-∞ focus) — the record-pipeline fixes cause no
+  regression. A real recording produces a playable HLG HEVC MP4, and after the A/V-sync fix a pulled
+  clip has **video and audio both at `start_time=0` with equal duration** (#9 confirmed fixed).
+- Still device-pending: long-exposure read-back at a >1/fps shutter (#6), and the lens/settings
+  in-recording locks (#1–5) once the lens switcher exists.
 
 Pure-logic pipeline decisions (frame duration vs exposure, AV1 clamp, orientation-hint normalization,
 publish-vs-delete) are currently entangled with Android types; extracting them into pure helpers is
