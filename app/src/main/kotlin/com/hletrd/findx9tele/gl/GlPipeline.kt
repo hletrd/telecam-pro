@@ -47,6 +47,13 @@ class GlPipeline {
     private var cameraW = 1
     private var cameraH = 1
 
+    // Video frames are timestamped with the camera/sensor clock (SurfaceTexture.getTimestamp), a large
+    // boot-based value; audio is 0-based (sample counter). Muxing the two as-is offsets the video track
+    // by ~boot-time from audio → broken A/V sync. Rebase the encoder presentation time to the first
+    // recorded frame so both tracks start near 0 (see docs/reviews record-pipeline #9).
+    private var encoderBaseNs = 0L
+    private var encoderBaseSet = false
+
     private var transfer: ColorTransfer? = null
     private var peaking = false
     private var zebra = false
@@ -181,6 +188,10 @@ class GlPipeline {
             core.releaseSurface(encoderEgl)
             encoderEgl = EGL14.EGL_NO_SURFACE
         }
+        // Reset the presentation-time base whenever the encoder surface changes (record start/stop) so
+        // the next recording rebases from its own first frame.
+        encoderBaseSet = false
+        encoderBaseNs = 0L
         if (surface != null) {
             encoderW = width
             encoderH = height
@@ -234,7 +245,10 @@ class GlPipeline {
         if (encoderEgl != EGL14.EGL_NO_SURFACE) {
             core.makeCurrent(encoderEgl)
             renderer.draw(stMatrix, encoderW, encoderH, transfer, false, false, false, sx, sy, roll, crop)
-            core.setPresentationTime(encoderEgl, st.timestamp)
+            // Rebase to the first recorded frame so video PTS starts near 0 like the audio track.
+            val ts = st.timestamp
+            if (!encoderBaseSet && ts > 0L) { encoderBaseNs = ts; encoderBaseSet = true }
+            core.setPresentationTime(encoderEgl, if (encoderBaseSet) ts - encoderBaseNs else 0L)
             core.swapBuffers(encoderEgl)
         }
     }
