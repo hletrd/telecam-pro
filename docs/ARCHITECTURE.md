@@ -36,6 +36,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `CameraState.kt` | Enums (CaptureMode, ColorTransfer, FocusMode, DriveMode, etc.) and data classes (CameraUiState, ManualControls, CameraCaps) — the shared language between UI and engine. |
 | `CaptureCapabilities.kt` | Queries Camera2 characteristics for manual-sensor, RAW, 10-bit HDR, focus range, metering regions — gate-keeping capabilities. |
 | `ManualControls.kt` | Immutable snapshot of all pro capture parameters (focus, ISO, shutter, white balance, metering, processing). The ViewModel updates a copy; the Engine applies it to the repeating request. |
+| `RotationMath.kt` | Pure, unit-tested functions for preview/capture/EXIF rotation math (extracted from CameraEngine). |
 | `VendorTagInspector.kt` | Debug-only vendor-tag dump (e.g., com.oplus.*, org.quic.camera.*, explorer.chip.*) to reverse-engineer device-specific capabilities. |
 | **gl/** | |
 | `GlPipeline.kt` | Owns the GL render thread. Receives camera SurfaceTexture, renders 180°-flipped quads to preview Surface and video encoder Surface. Owns EGL context, texture, sampling buffers. Drives histogram/waveform analysis on a background executor. |
@@ -50,8 +51,10 @@ Two critical consequences of the afocal converter drive the entire design:
 | **video/** | |
 | `VideoRecorder.kt` | MediaCodec HEVC/AVC encoder + AAC audio encoder + MediaMuxer. Drains video/audio to MP4. Video input comes from GL (already 180°-flipped); audio captured from microphone on a separate thread. Software PCM gain. |
 | `ColorProfiles.kt` | Builds MediaFormat specs for HEVC Main10 (Rec.2020 + HLG/Log) and AVC 8-bit SDR. Tags dynamic range, color space, transfer function. |
+| `EncoderCaps.kt` | Scans MediaCodecList for available video encoders (HW AVC/HEVC, Dolby Vision; AV1 software-only) and reports which VideoCodec values are supported/hardware. |
 | **storage/** | |
 | `MediaStoreWriter.kt` | Scoped-storage wrapper: creates pending DCIM/Pictures entries (IS_PENDING), publishes on success, deletes on failure. Opened files backed by ParcelFileDescriptor. |
+| `SettingsStore.kt` | SharedPreferences persistence of ManualControls + ExtraSettings across launches, gated by a "Remember Settings" toggle (default ON); enums stored by name, defensive load. |
 | **focus/** | |
 | `FocusMapping.kt` | Maps UI slider (0..1) to LENS_FOCUS_DISTANCE (diopters). Nonlinear to enhance resolution near infinity (√ curve and offset). Bidirectional. |
 | **ui/** | |
@@ -129,7 +132,7 @@ Two critical consequences of the afocal converter drive the entire design:
 **Still-photo journey (HEIF):**
 1. Camera2 → JPEG ImageReader → photoCallback on camera thread.
 2. JPEG bytes copied out of Image (which is valid only during callback).
-3. ioExecutor: decode JPEG → Bitmap → center-crop (if AspectRatio != FULL) → Matrix.postRotate(180°) for pixel-level rotation → encode HEIF.
+3. ioExecutor: decode JPEG → Bitmap → center-crop (if AspectRatio is W16_9; W4_3 is the full-sensor, no-crop default) → Matrix.postRotate by `captureRotationDegrees()` (afocal 180° + sensor + device orientation) for pixel-level rotation → encode HEIF (or write JPEG straight from the ImageReader bytes).
 4. MediaStore: create pending, write, publish on success; delete on failure.
 
 **Still-photo journey (DNG/RAW):**
@@ -188,35 +191,35 @@ Additionally, **device orientation** from gravity (GyroEis.currentDeviceOrientat
 **Preview (GL):**
 
 ```kotlin
-// CameraEngine.previewRotationDegrees() -> RotationMath.previewRotationDegrees(teleconverterMode)
-val rotation = if (teleconverterMode) 180 else 0   // afocal 180° flip only (no sensor term)
+// RotationMath.previewRotationDegrees(teleconverterMode)
+val rotation = if (teleconverterMode) 180 else 0   // afocal 180° only; sensor already applied by SurfaceTexture
 // Then pass to FlipRenderer.setRotationDegrees(rotation)
-// Example: sensorOrientation=90, teleconverter ON -> preview rotation = 180°
+// Example: sensorOrientation=90, teleconverter ON -> preview rotation = 180° (sensor term NOT added)
 ```
 
-Subtlety: the preview rotation carries **NO sensor term** — the camera SurfaceTexture transform
-(applied via `stMatrix` in `FlipRenderer.draw`) already rotates the sampled image by the sensor
-orientation, so the GL renderer only needs to add the afocal teleconverter's **180°** inversion on
-top (and nothing when the teleconverter is off). This differs from the capture path below, which
-rotates the raw-sensor pixels and therefore keeps `sensor + afocal + device`. Empirically calibrated
-on-device: `+sensorOrientation` (270°) read 90° CCW and `−sensorOrientation` (90°) read 90° CW, so
-the upright value is the afocal 180° alone. (`FlipRenderer` still needs the sensor orientation
-separately, but only to pick the displayed **aspect**, since a ~90° rotation swaps width/height.)
+**Key insight**: The camera SurfaceTexture transform (applied via `stMatrix` in `FlipRenderer.draw`) 
+**already rotates the sampled image by the sensor orientation**. The GL renderer adds **only the afocal 180°** 
+in tele mode (and 0° otherwise). The sensor orientation is still passed to the renderer, but **only to pick the 
+preview aspect ratio** (a ~90° rotation swaps displayed width/height). On-device testing confirmed: preview is 
+upright when using 180° afocal correction alone, with no sensor-orientation term added. `FlipRenderer` still 
+receives sensorOrientation for aspect calculation, not for image rotation.
 
 **Captures (pixel rotation + device orientation):**
 
 ```kotlin
-// CameraEngine.captureRotationDegrees()
+// RotationMath.captureRotationDegrees(sensorOrientation, teleconverterMode, deviceOrientation)
 val base = sensorOrientation + (if (teleconverterMode) 180 else 0)
-val total = (base + gyro.currentDeviceOrientation()) % 360
+val total = (base + deviceOrientation) % 360
 // Direct pixel rotation (Matrix.postRotate), no negation
-// Example: same as above, phone held upright
+// Example: phone held upright, teleconverter ON
 //   sensorOrientation=90, teleconverter ON, device orientation=0
 //   base = 90 + 180 = 270°
-//   total = 270° (landscape is displayed landscape)
+//   total = 270° (saves landscape-oriented)
 ```
 
-Device orientation is added so a shot framed while tilting the phone into landscape saves with the correct pixel orientation, matching the visual intent in the portrait-locked preview (which does NOT rotate).
+Device orientation (from gravity via `GyroEis.currentDeviceOrientation()`) is added so a photo framed 
+while tilting the phone into landscape saves with the correct pixel orientation, matching the visual intent 
+in the portrait-locked preview (which does NOT rotate). This ensures captures are always upright in any hold.
 
 **HEIF (pixel-rotated):**
 1. JPEG → decode to Bitmap.
@@ -231,12 +234,14 @@ Device orientation is added so a shot framed while tilting the phone into landsc
 **Mapping: degrees → EXIF tag**
 
 ```kotlin
-// exifOrientationFor(degrees): degrees (0/90/180/270)
+// RotationMath.exifOrientationFor(degrees): degrees (0/90/180/270)
 // 0   → ORIENTATION_NORMAL
 // 90  → ORIENTATION_ROTATE_90
 // 180 → ORIENTATION_ROTATE_180
 // 270 → ORIENTATION_ROTATE_270
 ```
+
+All rotation math (preview, capture, EXIF orientation mapping) is pure and unit-tested in `camera/RotationMath.kt`.
 
 ---
 
@@ -268,6 +273,19 @@ val useHlg = tenBitHlg && caps.supportsHlg10() && attempt < 2  // Drop HLG at at
 val useJpeg = attempt < 3  // Drop JPEG at attempt 3
 val useRaw = attempt < 1 && caps.supportsRaw && selection.physicalId == null  // Only attempt 0
 ```
+
+**Auto-exposure frame-rate floor:**
+
+A fixed target-fps range `[30, 30]` pins the exposure at 1/30 s, capping brightness in low light. Automatic 
+exposure now uses `CameraCaps.autoFpsRange()`, which provides the lowest floor fps at the target max. This 
+allows AE to slow the preview frame rate and extend exposure in dim scenes. Manual exposure mode still pins fps.
+
+**Tap-to-focus (region AF):**
+
+Continuous AF mode (`AF_MODE_CONTINUOUS_PICTURE`) with a bare trigger holds the current (often incorrect) 
+focus distance. Instead, tapping a region sets a metering/AF region and forces a one-shot `AF_MODE_AUTO` 
+scan that **locks** the focus on the tapped point (`touchAfActive` flag, cleared when focus mode changes). 
+AF state reaches FOCUSED on device.
 
 ---
 
@@ -335,10 +353,28 @@ Correction is scaled by eisCrop (0.06 to 0.18, default 0.10) to limit the headro
 
 **Video codec & 10-bit support:**
 
+Supported codecs are scanned at runtime via `EncoderCaps.kt` (MediaCodecList), which detects 
+available HW encoders (AVC/HEVC/AV1) and any Dolby Vision support. AV1 is software-only on this device 
+and labeled "slow/SW" in the UI; it is gated to 4K and below for performance.
+
 | Codec | Bit-depth | Color Space | Transfer | Container | Notes |
 |---|---|---|---|---|---|
-| HEVC (H.265) | 10-bit | Rec.2020 | HLG or Log | MP4 | Primary; supports Main10 profile; HDR-playable. |
-| AVC (H.264) | 8-bit | Rec.709 | SDR | MP4 | Fallback; user selectable; forces GL color curve to SDR (no HLG/Log). |
+| HEVC (H.265) | 10-bit | Rec.2020 | HLG or Log | MP4 | Primary; supports Main10 profile; HDR-playable; hardware accelerated. |
+| AVC (H.264) | 8-bit | Rec.709 | SDR | MP4 | Fallback; user selectable; forces GL color curve to SDR (no HLG/Log); hardware accelerated. |
+| AV1 | Variable | Rec.2020 | Per-setting | MP4 | Software encoder only (slow); gated to 4K; labeled "slow/SW" in UI. |
+| Dolby Vision | 10-bit | Rec.2020 | Dolby Vision | MP4 | Detected if available on device; requires compatible encoder. |
+
+**Video resolution and frame rates:**
+
+Resolutions come from the selected camera's `StreamConfigurationMap`. The camera reports video sizes 
+up to 8K where available, plus high-speed capture sizes. Frame rates include standard rates (24/25/30/60 fps), 
+drop-frame equivalents (23.976/29.97/59.94), and 120 fps high-speed capture where a high-speed configuration exists. 
+The `VideoFrameRate` enum gates frame-rate availability per resolution: 8K is limited to 30 fps or below; 
+120 fps high-speed is only offered where the HAL provides a dedicated high-speed config.
+
+Open-Gate (full 4:3 sensor) is available as a recording option alongside standard crops.
+
+Exact bitrate is displayed in Mbps and user-selectable per codec and resolution.
 
 **10-bit paths:**
 
@@ -402,16 +438,26 @@ Captured via AudioRecord on a separate thread. Software PCM gain applied (user-s
 
 ## Capture & Storage
 
+**Photo formats:**
+
+Users can select HEIF or JPEG for still captures (not mutually exclusive). Both capture paths start from 
+the JPEG ImageReader and apply the same rotation.
+
 **HEIF (still photo):**
 
 1. Camera2 → JPEG ImageReader (full resolution).
 2. photoCallback on camera thread: copy JPEG bytes out (Image valid only during callback).
 3. ioExecutor (off-camera thread):
    - Decode JPEG → Bitmap.
-   - Center-crop (if AspectRatio != FULL).
+   - Center-crop (if AspectRatio != W4_3).
    - Matrix.postRotate(captureRotationDegrees) → new Bitmap.
    - HeifCapture.writeHeif(ParcelFileDescriptor, Bitmap) → HEIF-encoded bytes.
 4. MediaStore: create pending entry with IS_PENDING flag → write → publish on success; delete on failure.
+
+**JPEG (still photo):**
+
+JPEG is written directly from the raw Camera2 JPEG ImageReader bytes (no re-encoding). Metadata and rotation 
+are handled via the EXIF orientation tag (same as DNG). This avoids quality loss from re-compression.
 
 **DNG (RAW, full-frame):**
 
@@ -425,15 +471,14 @@ Captured via AudioRecord on a separate thread. Software PCM gain applied (user-s
 
 ```kotlin
 data class AspectRatio(val w: Int, val h: Int) {
-    FULL(0, 0),      // No crop
-    W16_9(16, 9),    // Landscape
-    W4_3(4, 3),      // 4:3
-    W1_1(1, 1)       // Square
+    W4_3(4, 3),      // Full sensor (no crop, default, the no-crop sentinel)
+    W16_9(16, 9)     // Center crop of 4:3 to 16:9 landscape
 }
 // CameraEngine.centerCrop(bitmap, w, h)
 // Computes largest w:h rect centered in the bitmap, crops it out.
 ```
 
+The sensor is 4:3-native; `W4_3` is full readout, and `W16_9` is its center crop. 
 DNG always saves full-frame (crop not applied).
 
 **MediaStore scoped storage (MediaStoreWriter):**
@@ -457,6 +502,11 @@ On failure (OOM, disk full, etc.), the pending entry is deleted → no partial f
 
 **Overview:**
 All professional capture parameters are housed in ManualControls, a 44-field immutable data class. The ViewModel copies it with updated fields on each interaction and re-applies to the camera via CameraEngine.setControls().
+
+Settings are persisted across app launches via `SettingsStore.kt` (SharedPreferences), gated by a 
+"Remember Settings" toggle that **defaults ON**. On launch, saved pro settings are restored from storage 
+and pushed to the engine before the camera starts. Enums are stored by name for forward compatibility, 
+and loads are defensive (unknown values revert to defaults).
 
 **Control categories (see ManualControls.kt for full list):**
 
@@ -515,31 +565,29 @@ All values clamped to hardware ranges (CameraCaps gates what's supported).
 
 ## Build & Toolchain
 
-See `CLAUDE.md` § **Toolchain** for full detail. Summary:
+See `CLAUDE.md` § **Toolchain** for complete toolchain versions and build setup details.
 
-| Component | Version | Notes |
-|---|---|---|
-| AGP | 9.2.0 | Kotlin built-in; no separate kotlin.android plugin. |
-| Kotlin | 2.3.10 | Matches AGP 9.2. |
-| Gradle | 9.6.1 | Wrapper. |
-| compileSdk / targetSdk / minSdk | 37 / 36 / 36 | compileSdk 37 required by lifecycle 2.11.0. |
-| JDK | 21 (aarch64) | Required for Kotlin 2.3 + AGP 9. JAVA_HOME must be set for CLI builds. |
-| Compose BOM | 2026.06.00 | Material3, latest. |
-| heifwriter | 1.2.0-alpha01 | No stable 1.1.0; latest per policy. |
+**Quick reference:**
+- Kotlin 2.3.10 (built into AGP 9.2.0), Gradle 9.6.1
+- compileSdk 37 / targetSdk 36 / minSdk 36 (API 36 is Android 16)
+- JDK 21 required; set JAVA_HOME for CLI builds
+- Compose BOM 2026.06.00
 
-**Build command:**
+**Build:**
 ```bash
 ./gradlew :app:assembleDebug :app:testDebugUnitTest
 ```
 
-**Install + run:**
+**Test suite:** FocusMappingTest, RotationMathTest, CameraSelector2Test, VideoCapabilitiesTest.
+
+**Device verification:**
 ```bash
 adb connect <device-ip>:<port>
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb shell am start -n com.hletrd.findx9tele/.MainActivity
 ```
 
-**Permissions:** CAMERA + RECORD_AUDIO requested at runtime (pm grant fails on ColorOS).
+**Permissions:** CAMERA + RECORD_AUDIO requested at runtime (ColorOS blocks pm grant; user grants on device once).
 
 ---
 
