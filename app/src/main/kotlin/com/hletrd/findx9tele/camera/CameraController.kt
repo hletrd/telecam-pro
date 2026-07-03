@@ -60,7 +60,10 @@ class CameraController(context: Context) {
     private lateinit var selection: TeleSelection
     private lateinit var caps: CameraCaps
     private var glSurface: Surface? = null
-    private var controls = ManualControls()
+    // Read on the camera handler thread (startPreview/capturePhoto) and mutated via updateControls,
+    // which is invoked from BOTH the main thread (ViewModel) and the camera thread (AEB/BURST chain).
+    // @Volatile for visibility; updateControls confines the actual write to the handler thread.
+    @Volatile private var controls = ManualControls()
     private var tenBitHlg = false
     private var rawChars: CameraCharacteristics? = null
     private var configAttempt = 0
@@ -386,10 +389,15 @@ class CameraController(context: Context) {
     }
 
     fun updateControls(controls: ManualControls) {
-        // An explicit focus-mode change ends the tap-to-focus AUTO hold and resumes the chosen mode.
-        if (controls.focusMode != this.controls.focusMode) touchAfActive = false
-        this.controls = controls
-        handler.post { startPreview() }
+        // Confine the field write to the camera handler thread: updateControls is called from both the
+        // main thread (ViewModel) and the camera thread (AEB/BURST chain), and the field is read on the
+        // camera thread, so doing the mutation here keeps it single-threaded (no lost-update race).
+        handler.post {
+            // An explicit focus-mode change ends the tap-to-focus AUTO hold and resumes the chosen mode.
+            if (controls.focusMode != this.controls.focusMode) touchAfActive = false
+            this.controls = controls
+            startPreview()
+        }
     }
 
     /**
