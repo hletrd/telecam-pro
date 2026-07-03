@@ -56,7 +56,10 @@ import com.hletrd.findx9tele.camera.ProcessingLevel
 import com.hletrd.findx9tele.camera.ShutterMode
 import com.hletrd.findx9tele.camera.ShutterTimer
 import com.hletrd.findx9tele.camera.VideoCodec
+import com.hletrd.findx9tele.camera.VideoFrameRate
 import com.hletrd.findx9tele.camera.WbMode
+import com.hletrd.findx9tele.camera.videoBitRate
+import com.hletrd.findx9tele.video.EncoderCaps
 import com.hletrd.findx9tele.ui.CameraActions
 import com.hletrd.findx9tele.ui.theme.CameraColors
 import kotlinx.coroutines.launch
@@ -473,16 +476,40 @@ private fun StabilizationTab(state: CameraUiState, actions: CameraActions) {
 
 @Composable
 private fun VideoTab(state: CameraUiState, actions: CameraActions) {
+    val caps = state.caps
+    val codec = state.videoCodec
     TabTitle("Video")
+
+    // Codecs are limited to what MediaCodecList actually advertises an encoder for (HEVC/AVC are HW;
+    // AV1 is software-only on this SoC, flagged in its chip label).
+    val codecOptions = remember { EncoderCaps.availableCodecs().ifEmpty { listOf(VideoCodec.HEVC, VideoCodec.AVC) } }
     SegmentedSelector(
         label = "Codec",
-        options = VideoCodec.entries,
-        selected = state.videoCodec,
+        options = codecOptions,
+        selected = codec,
         labelFor = ::videoCodecLabel,
         onSelect = actions::onVideoCodec,
     )
-    val resolutionOptions = state.caps?.availableVideoSizes?.takeIf { it.isNotEmpty() }
-        ?: listOf(Size(3840, 2160), Size(1920, 1080))
+    if (codec == VideoCodec.AV1) {
+        Text(
+            "AV1 uses the software encoder on this device — slow, ≤1080p / ≤30fps. Use HEVC for 4K/high-fps.",
+            color = CameraColors.TextSecondary,
+            style = MaterialTheme.typography.labelSmall,
+        )
+    }
+
+    // Open Gate records the full 4:3 sensor readout instead of a 16:9 crop; it swaps the resolution
+    // list to the camera's 4:3 sizes.
+    ToggleRow(label = "Open Gate (4:3 full sensor)", checked = state.openGate, onCheckedChange = actions::onToggleOpenGate)
+
+    // Resolutions come from the SELECTED camera's real StreamConfigurationMap (4:3 when Open Gate,
+    // else 16:9). AV1 (SW) is clamped to ≤1080p.
+    val allSizes = when {
+        caps == null -> listOf(Size(3840, 2160), Size(1920, 1080))
+        state.openGate -> caps.openGateVideoSizes
+        else -> caps.availableVideoSizes
+    }.ifEmpty { listOf(Size(3840, 2160), Size(1920, 1080)) }
+    val resolutionOptions = if (codec == VideoCodec.AV1) allSizes.filter { it.width <= 1920 }.ifEmpty { listOf(Size(1920, 1080)) } else allSizes
     SegmentedSelector(
         label = "Resolution",
         options = resolutionOptions,
@@ -490,6 +517,26 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         labelFor = ::videoResolutionLabel,
         onSelect = actions::onVideoResolution,
     )
+
+    // Frame rates gated per-resolution by real caps: normal rates need the camera to advertise the
+    // integer fps (24/30/60 here); 120 needs a matching high-speed config; drop-frame variants
+    // (23.976/29.97/59.94) ride their integer parent. 8K is capped ≤30.
+    val fpsOptions = VideoFrameRate.availableFor(caps, state.videoResolution, codec)
+    SegmentedSelector(
+        label = "Frame Rate",
+        options = fpsOptions,
+        selected = state.videoFrameRate,
+        labelFor = ::videoFrameRateLabel,
+        onSelect = actions::onVideoFrameRate,
+    )
+    if (state.videoFrameRate.highSpeed) {
+        Text(
+            "High-speed capture (slow-motion) — records via a constrained high-speed session; still capture is off while selected.",
+            color = CameraColors.TextSecondary,
+            style = MaterialTheme.typography.labelSmall,
+        )
+    }
+
     SegmentedSelector(
         label = "Bitrate",
         options = BitrateLevel.entries,
@@ -497,14 +544,16 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         labelFor = ::bitrateLevelLabel,
         onSelect = actions::onBitrateLevel,
     )
-    val fpsOptions = state.caps?.availableFps?.takeIf { it.isNotEmpty() } ?: listOf(24, 30, 60)
-    SegmentedSelector(
-        label = "FPS",
-        options = fpsOptions,
-        selected = state.controls.fps,
-        labelFor = { it.toString() },
-        onSelect = actions::onFps,
+    // Resolved encoder settings summary, e.g. "HEVC · 4K · 30 · 84 Mbps" — the exact computed bitrate.
+    val mbps = videoBitRate(
+        state.videoResolution.width, state.videoResolution.height,
+        state.videoFrameRate.encoderRate, state.bitrateLevel.bpp, codec,
+    ) / 1_000_000
+    LabelValueRow(
+        label = "Encoder",
+        valueLabel = "${videoCodecLabelShort(codec)} · ${videoResolutionLabel(state.videoResolution)} · ${state.videoFrameRate.label} · $mbps Mbps",
     )
+
     ToggleRow(label = "Record Audio", checked = state.recordAudio, onCheckedChange = actions::onToggleRecordAudio)
     LabeledSlider(
         label = "Gain",
@@ -514,6 +563,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         valueRange = 0f..2f,
         enabled = state.recordAudio,
     )
+    // Transfer (HLG/LOG) only affects the 10-bit HEVC path; AVC/AV1 record 8-bit SDR.
     TransferSelector(transfer = state.transfer, onTransfer = actions::onTransfer)
 }
 

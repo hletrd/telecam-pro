@@ -21,17 +21,32 @@ import com.hletrd.findx9tele.camera.VideoCodec
 object ColorProfiles {
     const val MIME_HEVC = MediaFormat.MIMETYPE_VIDEO_HEVC
     const val MIME_AVC = MediaFormat.MIMETYPE_VIDEO_AVC
+    const val MIME_AV1 = EncoderCaps.MIME_AV1
     const val MIME_AAC = MediaFormat.MIMETYPE_AUDIO_AAC
 
     const val AUDIO_SAMPLE_RATE = 48_000
     const val AUDIO_CHANNELS = 2
     const val AUDIO_BIT_RATE = 192_000
 
-    fun hevcFormat(width: Int, height: Int, fps: Int, bitRate: Int, transfer: ColorTransfer): MediaFormat {
+    /**
+     * Applies the frame-rate keys shared by every video encoder. [encoderRate] is the TRUE rate as
+     * a float, so NTSC drop-frame rates (23.976 = 24000/1001, etc.) are tagged exactly rather than
+     * rounded. For high-speed capture, [captureRate] (> 0) sets KEY_CAPTURE_RATE + KEY_OPERATING_RATE
+     * so the encoder is told it is fed frames faster than real-time.
+     */
+    private fun MediaFormat.applyFrameRate(encoderRate: Double, captureRate: Double) {
+        setFloat(MediaFormat.KEY_FRAME_RATE, encoderRate.toFloat())
+        if (captureRate > 0.0) {
+            setFloat(MediaFormat.KEY_CAPTURE_RATE, captureRate.toFloat())
+            setInteger(MediaFormat.KEY_OPERATING_RATE, captureRate.toInt())
+        }
+    }
+
+    fun hevcFormat(width: Int, height: Int, encoderRate: Double, captureRate: Double, bitRate: Int, transfer: ColorTransfer): MediaFormat {
         return MediaFormat.createVideoFormat(MIME_HEVC, width, height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
-            setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+            applyFrameRate(encoderRate, captureRate)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10)
             setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT2020)
@@ -48,20 +63,43 @@ object ColorProfiles {
     }
 
     /** Builds the video MediaFormat for the given encoder and color transfer. */
-    fun videoFormat(codec: VideoCodec, width: Int, height: Int, fps: Int, bitRate: Int, transfer: ColorTransfer): MediaFormat {
+    fun videoFormat(
+        codec: VideoCodec,
+        width: Int,
+        height: Int,
+        encoderRate: Double,
+        captureRate: Double,
+        bitRate: Int,
+        transfer: ColorTransfer,
+    ): MediaFormat {
         return when (codec) {
-            VideoCodec.HEVC -> hevcFormat(width, height, fps, bitRate, transfer)
-            VideoCodec.AVC -> avcFormat(width, height, fps, bitRate)
+            VideoCodec.HEVC -> hevcFormat(width, height, encoderRate, captureRate, bitRate, transfer)
+            VideoCodec.AVC -> avcFormat(width, height, encoderRate, captureRate, bitRate)
+            VideoCodec.AV1 -> av1Format(width, height, encoderRate, captureRate, bitRate)
         }
     }
 
-    private fun avcFormat(width: Int, height: Int, fps: Int, bitRate: Int): MediaFormat {
+    private fun avcFormat(width: Int, height: Int, encoderRate: Double, captureRate: Double, bitRate: Int): MediaFormat {
         return MediaFormat.createVideoFormat(MIME_AVC, width, height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
-            setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+            applyFrameRate(encoderRate, captureRate)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileHigh)
+            setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
+            setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
+            setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
+        }
+    }
+
+    /** AV1 8-bit SDR (BT.709). Software encoder on this device — the engine gates it to ≤1080p/≤30fps. */
+    private fun av1Format(width: Int, height: Int, encoderRate: Double, captureRate: Double, bitRate: Int): MediaFormat {
+        return MediaFormat.createVideoFormat(MIME_AV1, width, height).apply {
+            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+            setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
+            applyFrameRate(encoderRate, captureRate)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+            setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AV1ProfileMain8)
             setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
             setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
             setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
@@ -72,6 +110,7 @@ object ColorProfiles {
     fun mimeFor(codec: VideoCodec): String = when (codec) {
         VideoCodec.HEVC -> MIME_HEVC
         VideoCodec.AVC -> MIME_AVC
+        VideoCodec.AV1 -> MIME_AV1
     }
 
     fun aacFormat(): MediaFormat {

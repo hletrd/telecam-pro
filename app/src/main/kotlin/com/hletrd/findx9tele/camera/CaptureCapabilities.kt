@@ -48,6 +48,15 @@ data class CameraCaps(
     val availableFpsRanges: Array<Range<Int>>,
     /** 16:9 SurfaceTexture output sizes (width <= 7680), largest-first; empty if none. */
     val availableVideoSizes: List<Size>,
+    /** 4:3 SurfaceTexture output sizes (Open Gate / full sensor readout), largest-first; empty if none. */
+    val openGateVideoSizes: List<Size>,
+    /**
+     * High-speed (slow-motion) video configs the camera advertises, as size → max fps
+     * (from StreamConfigurationMap.getHighSpeedVideoSizes / getHighSpeedVideoFpsRangesFor). A size
+     * present here can drive a CameraConstrainedHighSpeedCaptureSession up to that fps. Empty if the
+     * camera exposes no high-speed configs.
+     */
+    val highSpeedConfigs: Map<Size, Int>,
 ) {
     val supportsManualFocus: Boolean get() = minFocusDistanceDiopters > 0f
     val maxFocalMm: Float get() = focalLengthsMm.maxOrNull() ?: 0f
@@ -57,6 +66,9 @@ data class CameraCaps(
     /** Distinct fixed frame rates the device advertises (upper bound of each fps range), sorted. */
     val availableFps: List<Int>
         get() = availableFpsRanges.map { it.upper }.distinct().sorted()
+
+    /** Max high-speed fps advertised for [size] (0 if the camera exposes no high-speed config for it). */
+    fun highSpeedFpsFor(size: Size): Int = highSpeedConfigs[size] ?: 0
 
     /** A supported target-fps range for [fps]: prefer a fixed [fps,fps] range, else one covering it. */
     fun clampFpsRange(fps: Int): Range<Int>? =
@@ -86,11 +98,25 @@ data class CameraCaps(
             val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             val rawSize = map?.getOutputSizes(ImageFormat.RAW_SENSOR)?.maxByOrNull { it.width.toLong() * it.height }
             val jpegSize = map?.getOutputSizes(ImageFormat.JPEG)?.maxByOrNull { it.width.toLong() * it.height }
-            // 16:9 preview/video sizes for the SurfaceTexture path (width <= 7680 = 8K), largest-first.
-            val videoSizes = (map?.getOutputSizes(android.graphics.SurfaceTexture::class.java) ?: emptyArray())
-                .filter { it.height * 16 == it.width * 9 && it.width <= 7680 }
+            // SurfaceTexture output sizes (the recording/preview path). Split by aspect: 16:9 for
+            // standard video, 4:3 for Open Gate (full sensor readout). Both largest-first, ≤8K wide.
+            val stSizes = (map?.getOutputSizes(android.graphics.SurfaceTexture::class.java) ?: emptyArray())
+                .filter { it.width <= 7680 }
                 .distinct()
+            val videoSizes = stSizes
+                .filter { it.height * 16 == it.width * 9 }
                 .sortedByDescending { it.width.toLong() * it.height }
+            val openGateSizes = stSizes
+                .filter { it.height * 4 == it.width * 3 }
+                .sortedByDescending { it.width.toLong() * it.height }
+
+            // High-speed (slow-motion) configs: size → max advertised fps. Read defensively — some
+            // cameras/HALs return null or throw for getHighSpeedVideoFpsRangesFor on odd sizes.
+            val highSpeed: Map<Size, Int> = runCatching {
+                (map?.highSpeedVideoSizes ?: emptyArray()).associateWith { sz ->
+                    runCatching { map!!.getHighSpeedVideoFpsRangesFor(sz).maxOf { it.upper } }.getOrDefault(0)
+                }.filterValues { it > 0 }
+            }.getOrDefault(emptyMap())
 
             val dynamicProfiles: Set<Long> =
                 chars.get(CameraCharacteristics.REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES)
@@ -139,6 +165,8 @@ data class CameraCaps(
                 noiseReductionModes = chars.get(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES) ?: IntArray(0),
                 availableFpsRanges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: emptyArray(),
                 availableVideoSizes = videoSizes,
+                openGateVideoSizes = openGateSizes,
+                highSpeedConfigs = highSpeed,
             )
         }
     }

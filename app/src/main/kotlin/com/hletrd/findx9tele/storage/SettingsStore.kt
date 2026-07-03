@@ -10,6 +10,7 @@ import com.hletrd.findx9tele.camera.EisStrength
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.ManualControls
 import com.hletrd.findx9tele.camera.VideoCodec
+import com.hletrd.findx9tele.camera.VideoFrameRate
 
 /**
  * App-level settings that aren't part of [ManualControls] but should still persist across launches
@@ -20,6 +21,7 @@ import com.hletrd.findx9tele.camera.VideoCodec
 data class ExtraSettings(
     val transfer: ColorTransfer = ColorTransfer.HLG,
     val heif: Boolean = true,
+    val jpeg: Boolean = false,
     val dngRaw: Boolean = true,
     val mode: CaptureMode = CaptureMode.PHOTO,
     val teleconverter: Boolean = true,
@@ -29,6 +31,8 @@ data class ExtraSettings(
     val grid: GridType = GridType.THIRDS,
     val videoCodec: VideoCodec = VideoCodec.HEVC,
     val bitrateLevel: BitrateLevel = BitrateLevel.MEDIUM,
+    val videoFrameRate: VideoFrameRate = VideoFrameRate.DEFAULT,
+    val openGate: Boolean = false,
 )
 
 /**
@@ -76,6 +80,7 @@ class SettingsStore(context: Context) {
             putInt("jpegQuality", c.jpegQuality)
             putString("transfer", e.transfer.name)
             putBoolean("heif", e.heif)
+            putBoolean("jpeg", e.jpeg)
             putBoolean("dngRaw", e.dngRaw)
             putString("mode", e.mode.name)
             putBoolean("teleconverter", e.teleconverter)
@@ -85,6 +90,8 @@ class SettingsStore(context: Context) {
             putString("grid", e.grid.name)
             putString("videoCodec", e.videoCodec.name)
             putString("bitrateLevel", e.bitrateLevel.name)
+            putString("videoFrameRate", e.videoFrameRate.name)
+            putBoolean("openGate", e.openGate)
             putBoolean(K_HAS, true)
         }.apply()
     }
@@ -125,6 +132,7 @@ class SettingsStore(context: Context) {
             val extras = ExtraSettings(
                 transfer = enumOr(prefs.getString("transfer", null), ed.transfer),
                 heif = prefs.getBoolean("heif", ed.heif),
+                jpeg = prefs.getBoolean("jpeg", ed.jpeg),
                 dngRaw = prefs.getBoolean("dngRaw", ed.dngRaw),
                 mode = enumOr(prefs.getString("mode", null), ed.mode),
                 teleconverter = prefs.getBoolean("teleconverter", ed.teleconverter),
@@ -134,6 +142,8 @@ class SettingsStore(context: Context) {
                 grid = enumOr(prefs.getString("grid", null), ed.grid),
                 videoCodec = enumOr(prefs.getString("videoCodec", null), ed.videoCodec),
                 bitrateLevel = enumOr(prefs.getString("bitrateLevel", null), ed.bitrateLevel),
+                videoFrameRate = enumOr(prefs.getString("videoFrameRate", null), ed.videoFrameRate),
+                openGate = prefs.getBoolean("openGate", ed.openGate),
             )
             Loaded(controls, extras)
         }.getOrNull()

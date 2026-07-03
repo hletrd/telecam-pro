@@ -46,6 +46,8 @@ class CameraEngine(private val context: Context) {
     @Volatile private var videoSize = Size(1920, 1080)
     @Volatile private var videoCodec: VideoCodec = VideoCodec.HEVC
     @Volatile private var bitrateLevel: BitrateLevel = BitrateLevel.MEDIUM
+    @Volatile private var videoFrameRate: VideoFrameRate = VideoFrameRate.DEFAULT
+    @Volatile private var openGate = false
     @Volatile private var driveMode: DriveMode = DriveMode.SINGLE
     @Volatile private var intervalSec: Int = 5
     @Volatile private var controls = ManualControls()
@@ -184,6 +186,9 @@ class CameraEngine(private val context: Context) {
             glInputSurface = input,
             controls = controls,
             tenBitHlg = false, // SDR session — HLG10+RAW+JPEG crashes the HAL
+            // >0 → build a CameraConstrainedHighSpeedCaptureSession at this fps (no JPEG/RAW). 0 keeps
+            // the regular tele session with full still capture. Falls back to regular on config failure.
+            highSpeedFps = desiredHighSpeedFps(),
             onReady = { onStatus?.invoke(null) },
             onError = { onStatus?.invoke("Camera error: ${it.message}") },
         )
@@ -239,6 +244,49 @@ class CameraEngine(private val context: Context) {
     fun setIntervalSec(s: Int) { intervalSec = s }
     fun setVideoCodec(c: VideoCodec) { videoCodec = c }
     fun setBitrateLevel(b: BitrateLevel) { bitrateLevel = b }
+
+    /**
+     * Selects the video frame rate. When this crosses the high-speed boundary (into or out of a
+     * ≥120fps rate the current camera advertises for [videoSize]), the camera is reopened so the
+     * session type — regular vs CameraConstrainedHighSpeedCaptureSession — matches. Purely changing
+     * a normal rate just updates the encoder rate for the next recording, no reopen.
+     */
+    fun setVideoFrameRate(r: VideoFrameRate) {
+        val before = desiredHighSpeedFps()
+        videoFrameRate = r
+        if (desiredHighSpeedFps() != before) reopenForSession()
+    }
+
+    /** Open Gate: record the full 4:3 sensor readout. Switches [videoSize] to a 4:3 size and re-picks it. */
+    fun setOpenGate(enabled: Boolean) {
+        if (openGate == enabled) return
+        openGate = enabled
+        val sel = selection ?: return
+        videoSize = chooseVideoSize(sel)
+        onVideoSizeChosen?.invoke(videoSize)
+        gl.setCameraPreviewSize(videoSize.width, videoSize.height)
+        if (desiredHighSpeedFps() != 0) reopenForSession()
+    }
+
+    /**
+     * The high-speed fps the camera should run at right now (0 = regular session): non-zero only when
+     * the selected rate is a high-speed one AND the current camera advertises a high-speed config for
+     * [videoSize] at ≥ that fps. Keeps the tele's normal recording path untouched when nothing needs it.
+     */
+    private fun desiredHighSpeedFps(): Int {
+        val c = caps ?: return 0
+        val r = videoFrameRate
+        return if (r.highSpeed && c.highSpeedFpsFor(videoSize) >= r.fps) r.fps else 0
+    }
+
+    /** Reopen the camera (if started) so the session type tracks [desiredHighSpeedFps]. */
+    private fun reopenForSession() {
+        if (!started || paused) return
+        val input = gl.inputSurface ?: return
+        controller?.close()
+        controller = null
+        openCamera(input)
+    }
 
     /** Software gain applied to recorded PCM audio (1f = passthrough); takes effect on the next [startRecording]. */
     fun setAudioGain(g: Float) { audioGain = g }
@@ -348,17 +396,20 @@ class CameraEngine(private val context: Context) {
                 // Snapshot the orientation once, at the moment of capture, so the deferred HEIF encode
                 // and the synchronous DNG write agree on how the phone was held for this shot.
                 val rotation = captureRotationDegrees()
-                if (formats.heif) {
+                // HEIF and JPEG both come from the single JPEG ImageReader; copy the compressed bytes
+                // out ONCE while the Image is alive, then fan out to whichever containers are enabled
+                // off the camera thread (HEIF re-encodes; JPEG is written straight through).
+                if (formats.heif || formats.jpeg) {
                     if (jpeg != null) {
-                        // Cheaply copy the compressed JPEG bytes out while the Image is alive, then
-                        // decode/rotate/encode HEIF off the camera thread (avoids OOM + control stall).
                         val bytes = runCatching {
                             val buf = jpeg.planes[0].buffer
                             ByteArray(buf.remaining()).also { buf.get(it) }
                         }.getOrNull()
-                        if (bytes != null) ioExecutor.execute { saveHeifAsync(bytes, rotation) }
-                        else onStatus?.invoke("Failed to save HEIF")
-                    } else onStatus?.invoke("Failed to save HEIF: no JPEG")
+                        if (bytes != null) {
+                            if (formats.heif) ioExecutor.execute { saveHeifAsync(bytes, rotation) }
+                            if (formats.jpeg) ioExecutor.execute { saveJpegAsync(bytes, rotation) }
+                        } else onStatus?.invoke("Failed to save photo")
+                    } else onStatus?.invoke("Failed to save photo: no JPEG")
                 }
                 if (formats.dngRaw) {
                     if (raw != null) {
@@ -368,7 +419,7 @@ class CameraEngine(private val context: Context) {
                             .onFailure { onStatus?.invoke("Failed to save DNG: ${it.message}") }
                     } else onStatus?.invoke("Failed to save DNG: no RAW")
                 }
-                if (!formats.heif && !formats.dngRaw) onStatus?.invoke("No output format selected")
+                if (!formats.heif && !formats.jpeg && !formats.dngRaw) onStatus?.invoke("No output format selected")
                 // HEIF success/failure is reported from inside saveHeifAsync (it runs later).
                 onDone?.invoke()
             }
@@ -422,6 +473,55 @@ class CameraEngine(private val context: Context) {
         }
     }
 
+    /**
+     * Decode → center-crop to [aspectRatio] → rotate 180°(+device) → re-encode JPEG (at
+     * [ManualControls.jpegQuality]), on [ioExecutor]. Uses the same processed-pixel pipeline as
+     * [saveHeifAsync] — NOT the HEIF encoder — so JPEG and HEIF frame identically. Publishes only on
+     * success; deletes on any failure.
+     */
+    private fun saveJpegAsync(bytes: ByteArray, rotationDegrees: Int) {
+        var decoded: Bitmap? = null
+        var cropped: Bitmap? = null
+        var rotated: Bitmap? = null
+        var uri: android.net.Uri? = null
+        try {
+            val d = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            if (d == null) { onStatus?.invoke("Failed to save JPEG: decode failed"); return }
+            decoded = d
+            val ar = aspectRatio
+            val base = if (ar != AspectRatio.W4_3) { // W4_3 = full sensor, no crop needed
+                val c = centerCrop(d, ar.w, ar.h)
+                cropped = c
+                c
+            } else d
+            val r = rotateBitmap(base, rotationDegrees)
+            rotated = r
+            val u = MediaStoreWriter.createPendingImage(context, fileName("IMG", "jpg"), "image/jpeg")
+            if (u == null) { onStatus?.invoke("Failed to save JPEG"); return }
+            uri = u
+            val quality = controls.jpegQuality.coerceIn(1, 100)
+            val wrote = MediaStoreWriter.openOutputStream(context, u)?.use { out ->
+                r.compress(Bitmap.CompressFormat.JPEG, quality, out); true
+            } ?: false
+            if (!wrote) { MediaStoreWriter.delete(context, u); onStatus?.invoke("Failed to save JPEG"); return }
+            MediaStoreWriter.publish(context, u)
+            onStatus?.invoke("Saved")
+        } catch (e: OutOfMemoryError) {
+            uri?.let { MediaStoreWriter.delete(context, it) }
+            onStatus?.invoke("Failed to save JPEG: out of memory")
+        } catch (t: Throwable) {
+            uri?.let { MediaStoreWriter.delete(context, it) }
+            onStatus?.invoke("Failed to save JPEG: ${t.message}")
+        } finally {
+            val rr = rotated
+            val cc = cropped
+            val dd = decoded
+            if (rr != null && rr !== cc && rr !== dd) rr.recycle()
+            if (cc != null && cc !== dd) cc.recycle()
+            dd?.recycle()
+        }
+    }
+
     /** Writes the RAW image as DNG synchronously (always full-frame; no [aspectRatio] crop applied). Publishes only on success; deletes then rethrows on failure. */
     private fun saveDng(raw: Image, chars: CameraCharacteristics, result: TotalCaptureResult, rotationDegrees: Int) {
         val uri = MediaStoreWriter.createPendingImage(context, fileName("IMG", "dng"), "image/x-adobe-dng")
@@ -443,19 +543,28 @@ class CameraEngine(private val context: Context) {
         if (recorder != null) return false
         val name = fileName("VID", "mp4")
         val uri = MediaStoreWriter.createPendingVideo(context, name, "video/mp4") ?: return false
-        val size = videoSize
-        val fps = controls.fps.takeIf { it > 0 } ?: FPS
+        var size = videoSize
         val codec = videoCodec
-        // AVC is 8-bit SDR only: force the GL color curve to SDR (no HLG/Log) for AVC recordings,
-        // and let VideoRecorder pick the 8-bit AVC format. HEVC keeps the 10-bit HLG/Log path.
-        // (Resolution changes made after this point stream the old size until the next record/open.)
-        val glTransfer = if (codec == VideoCodec.AVC) null else transfer
+        var rate = videoFrameRate
+        // AV1 here is the software encoder (no HW AV1 on this SoC): clamp to what it can sustain —
+        // ≤1080p and ≤30 fps — so a mis-set higher size/rate degrades instead of failing to configure.
+        if (codec == VideoCodec.AV1) {
+            if (size.width > 1920) size = pickSizeUpTo(1920)
+            if (rate.fps > 30) rate = VideoFrameRate.FPS_30
+        }
+        // High-speed (≥120 fps via the constrained session) tells the encoder it is fed faster than
+        // real-time via KEY_CAPTURE_RATE; a regular clip leaves it 0.
+        val captureRate = if (desiredHighSpeedFps() != 0) rate.encoderRate else 0.0
+        // AVC and AV1 are 8-bit SDR only: force the GL color curve to SDR (no HLG/Log). HEVC keeps the
+        // 10-bit HLG/Log path. (Resolution changes after this point stream the old size until reopen.)
+        val glTransfer = if (codec == VideoCodec.HEVC) transfer else null
         val rec = VideoRecorder(context)
         // Physical device orientation at record start → muxer rotation hint so a landscape-held clip
         // plays upright (GL only bakes the afocal 180°; see VideoRecorder.start).
         val orientationHint = gyro.currentDeviceOrientation()
         val surface = rec.start(
-            uri, size, fps, bitRateFor(size, fps), transfer, codec, recordAudio, audioGain, orientationHint,
+            uri, size, rate.encoderRate, captureRate, bitRateFor(size, rate),
+            transfer, codec, recordAudio, audioGain, orientationHint,
         ) { lvl -> onAudioLevel?.invoke(lvl) }
         if (surface == null) { onStatus?.invoke("Failed to start recording"); return false }
         gl.setTransfer(glTransfer)
@@ -463,6 +572,10 @@ class CameraEngine(private val context: Context) {
         recorder = rec
         return true
     }
+
+    /** Largest reported 16:9 SurfaceTexture size no wider than [maxWidth]; used to clamp AV1 to ≤1080p. */
+    private fun pickSizeUpTo(maxWidth: Int): Size =
+        caps?.availableVideoSizes?.firstOrNull { it.width <= maxWidth } ?: Size(1920, 1080)
 
     fun stopRecording() {
         val rec = recorder ?: return
@@ -554,23 +667,36 @@ class CameraEngine(private val context: Context) {
         return Bitmap.createBitmap(src, x, y, cropW, cropH)
     }
 
+    /**
+     * The default recording size for the current lens: the largest matching-aspect SurfaceTexture
+     * size the camera reports — 4:3 when [openGate] (full sensor readout), else 16:9. Capped at 3840
+     * wide (this device's cameras top out at 4K/4096 for the recording surface; no camera exposes 8K
+     * video here). Falls back through the caps lists so it never returns an unsupported size.
+     */
     private fun chooseVideoSize(sel: TeleSelection): Size {
+        val c = caps
+        if (c != null) {
+            val list = if (openGate) c.openGateVideoSizes else c.availableVideoSizes
+            (list.firstOrNull { it.width <= 3840 } ?: list.firstOrNull())?.let { return it }
+        }
+        // Fallback: query directly (pre-caps or empty list).
         val chars = runCatching {
             manager.getCameraCharacteristics(sel.physicalId ?: sel.logicalId)
         }.getOrNull() ?: return Size(1920, 1080)
         val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             ?: return Size(1920, 1080)
         val sizes = map.getOutputSizes(SurfaceTexture::class.java) ?: return Size(1920, 1080)
-        // Largest 16:9 up to 3840 wide; fall back to the largest available.
-        return sizes.filter { it.width <= 3840 && it.height * 16 == it.width * 9 }
+        val wantW = if (openGate) 4 else 16
+        val wantH = if (openGate) 3 else 9
+        return sizes.filter { it.width <= 3840 && it.height * wantW == it.width * wantH }
             .maxByOrNull { it.width.toLong() * it.height }
             ?: sizes.maxByOrNull { it.width.toLong() * it.height }
             ?: Size(1920, 1080)
     }
 
-    // bits/s = bits-per-pixel-per-frame (from the selected bitrate level) × pixels × fps.
-    private fun bitRateFor(size: Size, fps: Int): Int =
-        (bitrateLevel.bpp.toDouble() * size.width * size.height * fps).toInt().coerceIn(8_000_000, 120_000_000)
+    // Resolved encoder bitrate (bits/s) for the current level, size, true frame rate, and codec.
+    private fun bitRateFor(size: Size, rate: VideoFrameRate): Int =
+        videoBitRate(size.width, size.height, rate.encoderRate, bitrateLevel.bpp, videoCodec)
 
     // Monotonic per-session counter so rapid captures (BURST/AEB/timelapse) that land within the same
     // second — or even millisecond — never collide on filename and overwrite/duplicate each other.
@@ -583,7 +709,6 @@ class CameraEngine(private val context: Context) {
     }
 
     private companion object {
-        const val FPS = 30
         // Number of frames fired for a single BURST drive-mode shutter press.
         const val BURST_COUNT = 5
         // 300mm / 70mm ≈ 4.286: the Explorer teleconverter's angular magnification.

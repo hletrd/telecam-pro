@@ -58,11 +58,16 @@ class VideoRecorder(private val context: Context) {
     private var onLevel: ((Float) -> Unit)? = null
     private var lastLevelEmitNs = 0L
 
-    /** Returns the encoder input Surface for the GL pipeline, or null on failure. */
+    /**
+     * Returns the encoder input Surface for the GL pipeline, or null on failure. [encoderRate] is the
+     * true (possibly fractional, drop-frame) frame rate; [captureRate] > 0 marks a high-speed clip so
+     * the encoder is told it is fed faster than real-time (KEY_CAPTURE_RATE).
+     */
     fun start(
         uri: Uri,
         size: Size,
-        fps: Int,
+        encoderRate: Double,
+        captureRate: Double,
         bitRate: Int,
         transfer: ColorTransfer,
         codec: VideoCodec,
@@ -84,7 +89,7 @@ class VideoRecorder(private val context: Context) {
             // upright. Must be set before start(). Sign is device-verify (may need (360-deg)%360).
             runCatching { muxer?.setOrientationHint(((orientationHint % 360) + 360) % 360) }
 
-            val vFmt = ColorProfiles.videoFormat(codec, size.width, size.height, fps, bitRate, transfer)
+            val vFmt = ColorProfiles.videoFormat(codec, size.width, size.height, encoderRate, captureRate, bitRate, transfer)
             val vCodec = MediaCodec.createEncoderByType(ColorProfiles.mimeFor(codec))
             vCodec.configure(vFmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             inputSurface = vCodec.createInputSurface()

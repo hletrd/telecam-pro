@@ -28,6 +28,7 @@ import com.hletrd.findx9tele.camera.ProcessingLevel
 import com.hletrd.findx9tele.camera.ShutterMode
 import com.hletrd.findx9tele.camera.ShutterTimer
 import com.hletrd.findx9tele.camera.VideoCodec
+import com.hletrd.findx9tele.camera.VideoFrameRate
 import com.hletrd.findx9tele.camera.WbMode
 import com.hletrd.findx9tele.focus.FocusMapping
 import com.hletrd.findx9tele.storage.ExtraSettings
@@ -84,8 +85,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     init {
         engine.onStatus = { msg -> _state.update { it.copy(statusMessage = msg) } }
-        engine.onCapsReady = { caps -> _state.update { it.copy(caps = caps) } }
-        engine.onVideoSizeChosen = { size -> _state.update { it.copy(videoResolution = size) } }
+        // caps/size arrive on the engine's setup thread; hop to main before touching the engine again.
+        engine.onCapsReady = { caps -> _state.update { it.copy(caps = caps) }; mainHandler.post { reconcileFrameRate() } }
+        engine.onVideoSizeChosen = { size -> _state.update { it.copy(videoResolution = size) }; mainHandler.post { reconcileFrameRate() } }
         engine.onAnalysis = { h, w -> _state.update { it.copy(histogramData = h, waveformData = w) } }
         engine.onAudioLevel = { lvl -> _state.update { it.copy(audioLevel = lvl) } }
         restoreSettingsIfEnabled()
@@ -109,12 +111,14 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setAspectRatio(e.aspectRatio)
         engine.setVideoCodec(e.videoCodec)
         engine.setBitrateLevel(e.bitrateLevel)
+        engine.setOpenGate(e.openGate)
+        engine.setVideoFrameRate(e.videoFrameRate)
         _state.update {
             it.copy(
                 rememberSettings = true,
                 controls = c,
                 transfer = e.transfer,
-                photoFormats = PhotoFormats(e.heif, e.dngRaw),
+                photoFormats = PhotoFormats(e.heif, e.jpeg, e.dngRaw),
                 mode = e.mode,
                 teleconverterMode = e.teleconverter,
                 eisEnabled = e.eisEnabled,
@@ -123,6 +127,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 grid = e.grid,
                 videoCodec = e.videoCodec,
                 bitrateLevel = e.bitrateLevel,
+                videoFrameRate = e.videoFrameRate,
+                openGate = e.openGate,
             )
         }
     }
@@ -131,6 +137,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         ExtraSettings(
             transfer = s.transfer,
             heif = s.photoFormats.heif,
+            jpeg = s.photoFormats.jpeg,
             dngRaw = s.photoFormats.dngRaw,
             mode = s.mode,
             teleconverter = s.teleconverterMode,
@@ -140,6 +147,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             grid = s.grid,
             videoCodec = s.videoCodec,
             bitrateLevel = s.bitrateLevel,
+            videoFrameRate = s.videoFrameRate,
+            openGate = s.openGate,
         )
     }
 
@@ -233,6 +242,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onVideoCodec(codec: VideoCodec) {
         engine.setVideoCodec(codec)
         _state.update { it.copy(videoCodec = codec) }
+        reconcileFrameRate()
     }
     override fun onBitrateLevel(level: BitrateLevel) {
         engine.setBitrateLevel(level)
@@ -241,6 +251,33 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onVideoResolution(size: Size) {
         engine.setVideoResolution(size)
         _state.update { it.copy(videoResolution = size) }
+        reconcileFrameRate()
+    }
+    override fun onVideoFrameRate(rate: VideoFrameRate) {
+        engine.setVideoFrameRate(rate)
+        // Keep the exposure fps in step so the AE target-fps range, cine shutter angle and sensor
+        // frame duration follow the selected video rate (drop-frame rates use their rounded parent).
+        val controls = _state.value.controls.copy(fps = rate.fps)
+        engine.setControls(controls)
+        _state.update { it.copy(videoFrameRate = rate, controls = controls) }
+    }
+    override fun onToggleOpenGate(enabled: Boolean) {
+        engine.setOpenGate(enabled)
+        _state.update { it.copy(openGate = enabled) }
+        reconcileFrameRate()
+    }
+
+    /**
+     * After a change to resolution / codec / open-gate, ensure the selected [VideoFrameRate] is still
+     * one the current camera can deliver for the new size+codec; if not, snap to the nearest valid
+     * rate (preferring the same rounded fps) so the encoder is never handed an impossible rate.
+     */
+    private fun reconcileFrameRate() {
+        val s = _state.value
+        val allowed = VideoFrameRate.availableFor(s.caps, s.videoResolution, s.videoCodec)
+        if (s.videoFrameRate in allowed) return
+        val replacement = allowed.minByOrNull { kotlin.math.abs(it.fps - s.videoFrameRate.fps) } ?: return
+        onVideoFrameRate(replacement)
     }
 
     // ---- Stabilization ----

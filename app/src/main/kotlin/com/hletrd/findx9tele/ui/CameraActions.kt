@@ -20,6 +20,7 @@ import com.hletrd.findx9tele.camera.ProcessingLevel
 import com.hletrd.findx9tele.camera.ShutterMode
 import com.hletrd.findx9tele.camera.ShutterTimer
 import com.hletrd.findx9tele.camera.VideoCodec
+import com.hletrd.findx9tele.camera.VideoFrameRate
 import com.hletrd.findx9tele.camera.WbMode
 
 /**
@@ -80,6 +81,8 @@ interface CameraActions {
     fun onVideoCodec(codec: VideoCodec)
     fun onBitrateLevel(level: BitrateLevel)
     fun onVideoResolution(size: Size)
+    fun onVideoFrameRate(rate: VideoFrameRate)
+    fun onToggleOpenGate(enabled: Boolean)
 
     // Stabilization
     fun onToggleEis(enabled: Boolean)

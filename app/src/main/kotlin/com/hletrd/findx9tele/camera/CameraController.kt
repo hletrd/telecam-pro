@@ -5,8 +5,10 @@ import android.content.Context
 import android.graphics.ImageFormat
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraConstrainedHighSpeedCaptureSession
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
@@ -62,6 +64,10 @@ class CameraController(context: Context) {
     private var tenBitHlg = false
     private var rawChars: CameraCharacteristics? = null
     private var configAttempt = 0
+    // >0 → configure a CameraConstrainedHighSpeedCaptureSession at this fps (slow-motion), feeding
+    // ONLY the GL input surface (no JPEG/RAW — high-speed sessions forbid extra targets). 0 = the
+    // regular tele session. Set once per open(); on a high-speed config failure it drops back to 0.
+    private var highSpeedFps = 0
 
     @Volatile private var pending: Pending? = null
     // Last AF-resolved focus distance, tracked from repeating-preview results so afLock can freeze
@@ -88,6 +94,7 @@ class CameraController(context: Context) {
         glInputSurface: Surface,
         controls: ManualControls,
         tenBitHlg: Boolean,
+        highSpeedFps: Int = 0,
         onReady: Ready,
         onError: ErrorCb,
     ) {
@@ -96,6 +103,7 @@ class CameraController(context: Context) {
         this.glSurface = glInputSurface
         this.controls = controls
         this.tenBitHlg = tenBitHlg
+        this.highSpeedFps = highSpeedFps
         this.rawChars = runCatching {
             manager.getCameraCharacteristics(selection.physicalId ?: selection.logicalId)
         }.getOrNull()
@@ -134,6 +142,10 @@ class CameraController(context: Context) {
         runCatching { rawReader?.close() }
         jpegReader = null
         rawReader = null
+
+        // High-speed (slow-motion) uses a dedicated constrained session with ONLY the GL surface;
+        // it cannot coexist with the JPEG/RAW still readers, so it is a separate path.
+        if (highSpeedFps > 0) { configureHighSpeed(camera, preview, onReady, onError); return }
 
         val attempt = configAttempt
         val useHlg = tenBitHlg && caps.supportsHlg10() && attempt < 2
@@ -197,6 +209,69 @@ class CameraController(context: Context) {
     }
 
     /**
+     * Builds a [CameraConstrainedHighSpeedCaptureSession] targeting only the GL input surface at
+     * [highSpeedFps]. The GL SurfaceTexture must already be sized to a supported high-speed size
+     * (the engine sets it before opening). Still capture (JPEG/RAW) is unavailable in this mode.
+     * If configuration fails, drop [highSpeedFps] to 0 and rebuild the regular session so the user
+     * still gets a live preview instead of a dead viewfinder.
+     */
+    private fun configureHighSpeed(camera: CameraDevice, preview: Surface, onReady: Ready, onError: ErrorCb) {
+        val cfg = OutputConfiguration(preview).apply {
+            selection.physicalId?.let { setPhysicalCameraId(it) }
+        }
+        val sessionConfig = SessionConfiguration(
+            SessionConfiguration.SESSION_HIGH_SPEED, listOf(cfg), executor,
+            object : CameraCaptureSession.StateCallback() {
+                override fun onConfigured(s: CameraCaptureSession) {
+                    if (closed) { runCatching { s.close() }; return }
+                    session = s
+                    Log.i(TAG, "High-speed session configured (${highSpeedFps}fps)")
+                    startHighSpeedPreview()
+                    onReady.onReady()
+                }
+                override fun onConfigureFailed(s: CameraCaptureSession) {
+                    Log.w(TAG, "High-speed session config failed at ${highSpeedFps}fps; falling back to regular session")
+                    highSpeedFps = 0
+                    configAttempt = 0
+                    runCatching { configureSession(onReady, onError) }.onFailure { onError.onError(it) }
+                }
+            },
+        )
+        runCatching { camera.createCaptureSession(sessionConfig) }.onFailure {
+            Log.w(TAG, "createCaptureSession(HIGH_SPEED) threw; falling back: ${it.message}")
+            highSpeedFps = 0
+            configAttempt = 0
+            runCatching { configureSession(onReady, onError) }.onFailure { e -> onError.onError(e) }
+        }
+    }
+
+    /** Issues the high-speed repeating burst (one request expanded to N by the HAL) at [highSpeedFps]. */
+    private fun startHighSpeedPreview() {
+        if (closed) return
+        val camera = device ?: return
+        val preview = glSurface ?: return
+        val s = session as? CameraConstrainedHighSpeedCaptureSession ?: return
+        runCatching {
+            val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
+                addTarget(preview)
+                set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, android.util.Range(highSpeedFps, highSpeedFps))
+                // Our gyro EIS handles stabilization at the effective focal length; keep HAL video
+                // stabilization off, matching the regular path. OIS per the user toggle.
+                set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+                if (caps.oisAvailable) {
+                    set(
+                        CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,
+                        if (controls.oisEnabled) CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON
+                        else CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_OFF,
+                    )
+                }
+            }
+            val list = s.createHighSpeedRequestList(builder.build())
+            s.setRepeatingBurst(list, null, handler)
+        }.onFailure { Log.w(TAG, "startHighSpeedPreview skipped: ${it.message}") }
+    }
+
+    /**
      * (Re)issues the repeating preview request. When [afTriggerPending] is set (a fresh tap-to-focus
      * point) and AF is running (non-MANUAL focus), it first fires ONE triggered capture identical to
      * the repeating request but carrying CONTROL_AF_TRIGGER_START, so the AF engine converges on the
@@ -205,6 +280,9 @@ class CameraController(context: Context) {
      */
     private fun startPreview() {
         if (closed) return
+        // In high-speed mode the session is a constrained high-speed one; its repeating request must
+        // be a burst list, so route there instead of the regular single-request path below.
+        if (highSpeedFps > 0) { startHighSpeedPreview(); return }
         val camera = device ?: return
         val preview = glSurface ?: return
         val s = session ?: return

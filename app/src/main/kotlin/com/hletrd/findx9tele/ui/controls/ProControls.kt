@@ -39,6 +39,7 @@ import com.hletrd.findx9tele.camera.ProcessingLevel
 import com.hletrd.findx9tele.camera.ShutterMode
 import com.hletrd.findx9tele.camera.ShutterTimer
 import com.hletrd.findx9tele.camera.VideoCodec
+import com.hletrd.findx9tele.camera.VideoFrameRate
 import com.hletrd.findx9tele.camera.WbMode
 import com.hletrd.findx9tele.focus.FocusMapping
 import com.hletrd.findx9tele.ui.theme.CameraColors
@@ -335,6 +336,17 @@ internal fun aspectRatioLabel(ratio: AspectRatio): String = when (ratio) {
 internal fun videoCodecLabel(codec: VideoCodec): String = when (codec) {
     VideoCodec.HEVC -> "HEVC"
     VideoCodec.AVC -> "H.264"
+    // Software-only on this device (no c2.qti.av1.*), so it is slow and ≤1080p — flag it in the chip.
+    VideoCodec.AV1 -> "AV1 (SW, slow)"
+}
+
+internal fun videoFrameRateLabel(rate: VideoFrameRate): String = rate.label
+
+/** Compact codec name for the encoder-summary row (no "(SW, slow)" qualifier). */
+internal fun videoCodecLabelShort(codec: VideoCodec): String = when (codec) {
+    VideoCodec.HEVC -> "HEVC"
+    VideoCodec.AVC -> "H.264"
+    VideoCodec.AV1 -> "AV1"
 }
 
 internal fun bitrateLevelLabel(level: BitrateLevel): String = when (level) {
@@ -343,13 +355,27 @@ internal fun bitrateLevelLabel(level: BitrateLevel): String = when (level) {
     BitrateLevel.HIGH -> "High"
 }
 
-/** "2160" -> "4K", "1080" -> "1080p", etc.; unrecognized heights fall back to "WxH". */
-internal fun videoResolutionLabel(size: Size): String = when (size.height) {
-    4320 -> "8K"
-    2160 -> "4K"
-    1440 -> "1440p"
-    1080 -> "1080p"
-    else -> "${size.width}x${size.height}"
+/**
+ * "3840×2160" -> "4K", "1920×1080" -> "1080p", etc. 4:3 Open-Gate sizes are tagged by their width
+ * bucket with a "4:3" suffix (e.g. 4096×3072 -> "4K 4:3"); anything unrecognized falls back to "W×H".
+ */
+internal fun videoResolutionLabel(size: Size): String {
+    val is43 = size.height * 4 == size.width * 3
+    if (is43) return when {
+        size.width >= 7680 -> "8K 4:3"
+        size.width >= 3840 -> "4K 4:3"
+        size.width >= 2560 -> "2.5K 4:3"
+        size.width >= 1920 -> "1080 4:3"
+        else -> "${size.width}×${size.height}"
+    }
+    return when (size.height) {
+        4320 -> "8K"
+        2160 -> "4K"
+        1440 -> "1440p"
+        1080 -> "1080p"
+        720 -> "720p"
+        else -> "${size.width}×${size.height}"
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -451,6 +477,13 @@ fun PhotoFormatToggles(
                 label = { Text("HEIF") },
                 colors = pixelChipColors(),
                 border = pixelChipBorder(formats.heif),
+            )
+            FilterChip(
+                selected = formats.jpeg,
+                onClick = { onSetPhotoFormats(formats.copy(jpeg = !formats.jpeg)) },
+                label = { Text("JPEG") },
+                colors = pixelChipColors(),
+                border = pixelChipBorder(formats.jpeg),
             )
             FilterChip(
                 selected = formats.dngRaw,

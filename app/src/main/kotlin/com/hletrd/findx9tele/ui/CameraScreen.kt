@@ -796,6 +796,8 @@ private object PreviewCameraActions : CameraActions {
     override fun onVideoCodec(codec: VideoCodec) = Unit
     override fun onBitrateLevel(level: BitrateLevel) = Unit
     override fun onVideoResolution(size: android.util.Size) = Unit
+    override fun onVideoFrameRate(rate: com.hletrd.findx9tele.camera.VideoFrameRate) = Unit
+    override fun onToggleOpenGate(enabled: Boolean) = Unit
 
     override fun onToggleEis(enabled: Boolean) = Unit
     override fun onEisStrength(strength: EisStrength) = Unit

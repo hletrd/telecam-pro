@@ -261,6 +261,10 @@ fun StatusBar(
 ) {
     val formatLabel = buildString {
         if (photoFormats.heif) append("HEIF")
+        if (photoFormats.jpeg) {
+            if (isNotEmpty()) append("+")
+            append("JPEG")
+        }
         if (photoFormats.dngRaw) {
             if (isNotEmpty()) append("+")
             append("DNG")
