@@ -203,21 +203,8 @@ fun CameraScreen(
             FocusReticle(point = state.tapPoint, modifier = Modifier.fillMaxSize())
         }
 
-        val cameraLabel = remember(state.caps) {
-            val caps = state.caps
-            when {
-                caps == null -> "-"
-                caps.physicalId != null -> "${caps.logicalId}:${caps.physicalId}"
-                else -> caps.logicalId
-            }
-        }
         StatusBar(
-            cameraLabel = cameraLabel,
-            equivFocalMm = state.caps?.equivalentFocalMm ?: 0f,
-            teleconverter = state.teleconverterMode,
-            transfer = state.transfer,
-            photoFormats = state.photoFormats,
-            eis = state.eisEnabled,
+            state = state,
             // NOT rotated: it's a wide top-left row, so a 90° spin about its center swings it off
             // screen. It stays fixed (readable in portrait); only the compact scopes counter-rotate.
             modifier = Modifier

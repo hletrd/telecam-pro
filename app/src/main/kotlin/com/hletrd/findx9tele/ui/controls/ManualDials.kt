@@ -46,10 +46,13 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.hletrd.findx9tele.camera.CameraCaps
 import com.hletrd.findx9tele.camera.CameraUiState
+import com.hletrd.findx9tele.camera.CaptureMode
+import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.ExposureStep
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.ManualControls
 import com.hletrd.findx9tele.camera.ShutterMode
+import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.camera.WbMode
 import com.hletrd.findx9tele.focus.FocusMapping
 import com.hletrd.findx9tele.ui.CameraActions
@@ -112,6 +115,7 @@ fun ManualDialCluster(
             state = state,
             openDial = openDial,
             onToggleAutoExposure = actions::onToggleAutoExposure,
+            onTransfer = actions::onTransfer,
             onSelect = { type ->
                 when {
                     type == DialType.WB && controls.wbMode != WbMode.MANUAL -> {
@@ -144,6 +148,7 @@ private fun DialChipRow(
     state: CameraUiState,
     openDial: DialType?,
     onToggleAutoExposure: (Boolean) -> Unit,
+    onTransfer: (ColorTransfer) -> Unit,
     onSelect: (DialType) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -217,7 +222,27 @@ private fun DialChipRow(
             enabled = controls.autoExposure,
             onClick = { onSelect(DialType.EV) },
         )
+        // Video-only transfer quick chip (HLG → O-Log2 → SDR cycle): surfaces the color pipeline on
+        // the shooting screen instead of burying it in the settings sheet. Locked while recording
+        // (the engine defers the GL curve until the clip ends — changing it would only mislead) and
+        // outside HEVC (AVC/AV1 are always 8-bit SDR).
+        if (state.mode == CaptureMode.VIDEO) {
+            val transferMutable = !state.isRecording && state.videoCodec == VideoCodec.HEVC
+            DialChip(
+                label = "TF",
+                value = transferLabelShort(state.transfer),
+                active = false,
+                enabled = transferMutable,
+                onClick = { if (transferMutable) onTransfer(nextTransfer(state.transfer)) },
+            )
+        }
     }
+}
+
+private fun nextTransfer(t: ColorTransfer): ColorTransfer = when (t) {
+    ColorTransfer.HLG -> ColorTransfer.LOG
+    ColorTransfer.LOG -> ColorTransfer.SDR
+    ColorTransfer.SDR -> ColorTransfer.HLG
 }
 
 @Composable

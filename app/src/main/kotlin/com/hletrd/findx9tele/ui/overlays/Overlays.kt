@@ -27,13 +27,22 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.hletrd.findx9tele.BuildConfig
 import com.hletrd.findx9tele.camera.AspectRatio
-import com.hletrd.findx9tele.camera.ColorTransfer
+import com.hletrd.findx9tele.camera.CameraUiState
+import com.hletrd.findx9tele.camera.CaptureMode
+import com.hletrd.findx9tele.camera.DriveMode
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.HistogramData
-import com.hletrd.findx9tele.camera.PhotoFormats
+import com.hletrd.findx9tele.camera.MeteringMode
+import com.hletrd.findx9tele.camera.ShutterTimer
 import com.hletrd.findx9tele.camera.WaveformData
+import com.hletrd.findx9tele.camera.videoBitRate
+import com.hletrd.findx9tele.ui.controls.transferLabelShort
+import com.hletrd.findx9tele.ui.controls.videoCodecLabelShort
+import com.hletrd.findx9tele.ui.controls.videoResolutionLabel
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * Composition grid, drawn per [GridType]. Purely decorative; visibility/style is entirely driven
@@ -246,35 +255,22 @@ fun AudioMeter(level: Float, modifier: Modifier = Modifier) {
 }
 
 /**
- * Top status strip: active camera id, 35mm-equivalent focal length (annotated when the afocal
- * teleconverter is engaged), enabled photo formats, transfer function, and an EIS tag.
+ * Top status strip — the Sony-style shooting OSD. Mode-aware so it only shows what affects the
+ * NEXT shot in the current mode:
+ *  - PHOTO: 35mm-equivalent focal (tagged TELE through the converter), still formats, drive mode
+ *    (when not single-shot) and self-timer (when armed).
+ *  - VIDEO: focal, the resolved recording spec (resolution · fps · codec · Mbps — what the encoder
+ *    will actually write), and the transfer function.
+ *  - Both: metering pattern (when not matrix) and an EIS tag. The raw camera id is appended on
+ *    DEBUG builds only — it is a lens bring-up aid, noise to a photographer.
  */
 @Composable
-fun StatusBar(
-    cameraLabel: String,
-    equivFocalMm: Float,
-    teleconverter: Boolean,
-    transfer: ColorTransfer,
-    photoFormats: PhotoFormats,
-    eis: Boolean,
-    modifier: Modifier = Modifier,
-) {
-    val formatLabel = buildString {
-        if (photoFormats.heif) append("HEIF")
-        if (photoFormats.jpeg) {
-            if (isNotEmpty()) append("+")
-            append("JPEG")
-        }
-        if (photoFormats.dngRaw) {
-            if (isNotEmpty()) append("+")
-            append("DNG")
-        }
-        if (isEmpty()) append("-")
-    }
+fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier) {
+    val focal = state.caps?.equivalentFocalMm ?: 0f
     val focalLabel = when {
-        equivFocalMm <= 0f -> "--"
-        teleconverter -> "%.0fmm tele".format(equivFocalMm)
-        else -> "%.0fmm".format(equivFocalMm)
+        focal <= 0f -> "--"
+        state.teleconverterMode -> "%.0fmm TELE".format(focal)
+        else -> "%.0fmm".format(focal)
     }
     Row(
         modifier = modifier
@@ -283,12 +279,64 @@ fun StatusBar(
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(cameraLabel, color = Color.White, style = MaterialTheme.typography.labelMedium)
         Text(focalLabel, color = Color.White, style = MaterialTheme.typography.labelMedium)
-        Text(formatLabel, color = Color.White, style = MaterialTheme.typography.labelMedium)
-        Text(transfer.name, color = Color(0xFF4C9AFF), style = MaterialTheme.typography.labelMedium)
-        if (eis) {
+        if (state.mode == CaptureMode.VIDEO) {
+            val mbps = videoBitRate(
+                state.videoResolution.width, state.videoResolution.height,
+                state.videoFrameRate.encoderRate, state.bitrateLevel.bpp, state.videoCodec,
+            ) / 1_000_000
+            Text(
+                "${videoResolutionLabel(state.videoResolution)} ${state.videoFrameRate.label}p " +
+                    "${videoCodecLabelShort(state.videoCodec)} ${mbps}Mb",
+                color = Color.White,
+                style = MaterialTheme.typography.labelMedium,
+            )
+            Text(transferLabelShort(state.transfer), color = Color(0xFF4C9AFF), style = MaterialTheme.typography.labelMedium)
+        } else {
+            val formatLabel = buildString {
+                if (state.photoFormats.heif) append("HEIF")
+                if (state.photoFormats.jpeg) {
+                    if (isNotEmpty()) append("+")
+                    append("JPEG")
+                }
+                if (state.photoFormats.dngRaw) {
+                    if (isNotEmpty()) append("+")
+                    append("DNG")
+                }
+                if (isEmpty()) append("-")
+            }
+            Text(formatLabel, color = Color.White, style = MaterialTheme.typography.labelMedium)
+            if (state.driveMode != DriveMode.SINGLE) {
+                val driveLabel = when (state.driveMode) {
+                    DriveMode.BURST -> "BURST"
+                    DriveMode.AEB -> "AEB±2"
+                    DriveMode.TIMELAPSE -> "TL ${state.intervalSec}s"
+                    DriveMode.SINGLE -> ""
+                }
+                Text(driveLabel, color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+            }
+            if (state.timer != ShutterTimer.OFF) {
+                Text("T${state.timer.seconds}s", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+            }
+        }
+        if (state.controls.meteringMode != MeteringMode.MATRIX) {
+            Text(
+                if (state.controls.meteringMode == MeteringMode.SPOT) "SPOT" else "CENTER",
+                color = Color.White,
+                style = MaterialTheme.typography.labelMedium,
+            )
+        }
+        if (state.eisEnabled) {
             Text("EIS", color = Color(0xFF4CD964), style = MaterialTheme.typography.labelMedium)
+        }
+        if (BuildConfig.DEBUG) {
+            val caps = state.caps
+            val cameraLabel = when {
+                caps == null -> "-"
+                caps.physicalId != null -> "${caps.logicalId}:${caps.physicalId}"
+                else -> caps.logicalId
+            }
+            Text(cameraLabel, color = Color.White.copy(alpha = 0.5f), style = MaterialTheme.typography.labelMedium)
         }
     }
 }
