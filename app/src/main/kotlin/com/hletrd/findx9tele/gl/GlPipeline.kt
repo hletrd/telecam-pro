@@ -60,6 +60,10 @@ class GlPipeline {
     private var falseColor = false
     private var tenBit = false
     private var punchIn = false
+    // Movable focus loupe: texcoord point the punch-in zoom magnifies (0.5,0.5 = frame center), set
+    // from the tapped point so the loupe follows an off-center subject. Preview-only.
+    private var punchInX = 0.5f
+    private var punchInY = 0.5f
 
     // Gyro EIS: provider returns [yaw, pitch, roll] shake radians; eisFocal scales to the effective
     // (teleconverter) focal length in image widths; eisCrop is the headroom (e.g. 0.10).
@@ -171,6 +175,12 @@ class GlPipeline {
     /** Preview-only center crop-zoom (focus punch-in); does not affect the recorded/encoder frame. */
     fun setPunchIn(enabled: Boolean) = post { punchIn = enabled }
 
+    /** Sets the loupe magnification center (texcoord 0..1); the punch-in zoom follows this point. */
+    fun setPunchInCenter(x: Float, y: Float) = post {
+        punchInX = x.coerceIn(0f, 1f)
+        punchInY = y.coerceIn(0f, 1f)
+    }
+
     /** Toggle live histogram/waveform readback. Both off → readback is skipped entirely. */
     fun setAnalysisEnabled(histogram: Boolean, waveform: Boolean) = post {
         analysisHistogram = histogram
@@ -229,8 +239,12 @@ class GlPipeline {
         // Punch-in is preview-only: the encoder draw below always uses the original `crop`.
         val previewCrop = if (punchIn) maxOf(crop, 0.6f) else crop
 
+        // The loupe (movable punch-in) recenters the preview zoom on the tapped point; the encoder
+        // draw below stays centered so recordings are unaffected.
+        val loupeX = if (punchIn) punchInX else 0.5f
+        val loupeY = if (punchIn) punchInY else 0.5f
         core.makeCurrent(previewEgl)
-        renderer.draw(stMatrix, previewW, previewH, null, peaking, zebra, falseColor, sx, sy, roll, previewCrop)
+        renderer.draw(stMatrix, previewW, previewH, null, peaking, zebra, falseColor, sx, sy, roll, previewCrop, loupeX, loupeY)
         core.swapBuffers(previewEgl)
 
         // Additive scope analysis: throttled GL readback of the just-drawn preview, computed off-thread.

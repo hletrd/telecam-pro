@@ -239,6 +239,17 @@ class CameraEngine(private val context: Context) {
         val rx = px * cos - py * sin
         val ry = px * sin + py * cos
         controller?.setMeteringPoint((rx + 0.5f).coerceIn(0f, 1f), (ry + 0.5f).coerceIn(0f, 1f))
+
+        // Movable focus loupe: point the punch-in zoom at the tapped spot. The renderer rotates
+        // texcoords by previewRotationDegrees (the afocal 180° only — sensor orientation lives in the
+        // SurfaceTexture matrix, which the loupe center passes through unchanged), so the loupe center
+        // is the tap offset rotated by that same angle, re-centered.
+        val loupeRad = Math.toRadians(previewRotationDegrees().toDouble())
+        val lcos = Math.cos(loupeRad).toFloat()
+        val lsin = Math.sin(loupeRad).toFloat()
+        val lx = px * lcos - py * lsin
+        val ly = px * lsin + py * lcos
+        gl.setPunchInCenter((lx + 0.5f).coerceIn(0f, 1f), (ly + 0.5f).coerceIn(0f, 1f))
     }
 
     // ---- Drive mode + video parameters ----

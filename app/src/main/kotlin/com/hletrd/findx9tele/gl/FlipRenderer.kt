@@ -105,6 +105,10 @@ class FlipRenderer {
         stabShiftY: Float = 0f,
         stabRollDeg: Float = 0f,
         crop: Float = 0f,
+        // Texcoord point the crop-zoom centers on (0.5,0.5 = frame center). The movable focus loupe
+        // sets this to the tapped point so punch-in magnifies an off-center subject.
+        centerX: Float = 0.5f,
+        centerY: Float = 0.5f,
     ) {
         GLES20.glViewport(0, 0, targetWidth, targetHeight)
         GLES20.glClearColor(0f, 0f, 0f, 1f)
@@ -127,7 +131,7 @@ class FlipRenderer {
         // Texcoord transform about center: content rotation (afocal 180° + sensor) + EIS roll,
         // crop-zoom for stabilization headroom, then EIS translation, then the SurfaceTexture matrix.
         Matrix.setIdentityM(rot, 0)
-        Matrix.translateM(rot, 0, 0.5f + stabShiftX, 0.5f + stabShiftY, 0f)
+        Matrix.translateM(rot, 0, centerX + stabShiftX, centerY + stabShiftY, 0f)
         Matrix.rotateM(rot, 0, rotationDeg.toFloat() + stabRollDeg, 0f, 0f, 1f)
         Matrix.scaleM(rot, 0, 1f - crop, 1f - crop, 1f)
         Matrix.translateM(rot, 0, -0.5f, -0.5f, 0f)
