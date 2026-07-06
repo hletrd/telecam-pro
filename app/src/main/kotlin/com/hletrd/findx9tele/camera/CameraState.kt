@@ -166,7 +166,15 @@ data class PhotoFormats(
     val heif: Boolean = true,
     val jpeg: Boolean = false,
     val dngRaw: Boolean = true,
-)
+) {
+    /**
+     * True when the capture needs the camera's JPEG stream: BOTH processed containers (HEIF and
+     * JPEG) are produced from that single ImageReader, so the controller must be asked for it when
+     * either is enabled — gating it on [heif] alone made a JPEG-only selection fail with
+     * "no capture target".
+     */
+    val wantsProcessedStill: Boolean get() = heif || jpeg
+}
 
 /**
  * Immutable snapshot the UI renders. Hardware-independent so it can be previewed/unit-tested.

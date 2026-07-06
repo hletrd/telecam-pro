@@ -372,7 +372,7 @@ class CameraEngine(private val context: Context) {
     fun capturePhoto(formats: PhotoFormats) {
         val ctrl = controller ?: return
         when (driveMode) {
-            DriveMode.SINGLE -> ctrl.capturePhoto(formats.heif, formats.dngRaw, photoCallback(formats))
+            DriveMode.SINGLE -> ctrl.capturePhoto(formats.wantsProcessedStill, formats.dngRaw, photoCallback(formats))
             DriveMode.BURST -> captureBurst(ctrl, formats)
             DriveMode.AEB -> captureAeb(ctrl, formats)
             DriveMode.TIMELAPSE -> startTimelapse(formats)
@@ -387,7 +387,7 @@ class CameraEngine(private val context: Context) {
     private fun captureBurst(ctrl: CameraController, formats: PhotoFormats) {
         fun fire(shot: Int) {
             if (shot >= BURST_COUNT) return
-            ctrl.capturePhoto(formats.heif, formats.dngRaw, photoCallback(formats) { fire(shot + 1) })
+            ctrl.capturePhoto(formats.wantsProcessedStill, formats.dngRaw, photoCallback(formats) { fire(shot + 1) })
         }
         fire(0)
     }
@@ -420,7 +420,7 @@ class CameraEngine(private val context: Context) {
         stopTimelapse()
         val period = intervalSec.coerceAtLeast(1).toLong()
         timelapseFuture = timelapseScheduler.scheduleWithFixedDelay({
-            controller?.capturePhoto(formats.heif, formats.dngRaw, photoCallback(formats))
+            controller?.capturePhoto(formats.wantsProcessedStill, formats.dngRaw, photoCallback(formats))
         }, 0, period, java.util.concurrent.TimeUnit.SECONDS)
     }
 
