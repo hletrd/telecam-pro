@@ -95,6 +95,12 @@ class CameraController(context: Context) {
     @Volatile var onExposure: ((iso: Int?, exposureNs: Long?) -> Unit)? = null
     private var lastReportedIso: Int? = null
     private var lastReportedExpNs: Long? = null
+    // Live lens focus distance (diopters, from CaptureResult.LENS_FOCUS_DISTANCE) surfaced to the UI:
+    // shows where AF actually parked the lens, and seeds the manual-focus slider on the AF→MF
+    // handoff so fine focus starts from AF's solution instead of a stale value. Reported on change,
+    // throttled with the exposure readout.
+    @Volatile var onFocusDistance: ((Float) -> Unit)? = null
+    private var lastReportedFocus = Float.NaN
 
     @SuppressLint("MissingPermission") // caller guarantees CAMERA permission before open()
     fun open(
@@ -332,6 +338,12 @@ class CameraController(context: Context) {
                             lastReportedIso = iso
                             lastReportedExpNs = expNs
                             onExposure?.invoke(iso, expNs)
+                        }
+                        if (lastReportedFocus.isNaN() ||
+                            kotlin.math.abs(lastFocusDistance - lastReportedFocus) > 0.005f
+                        ) {
+                            lastReportedFocus = lastFocusDistance
+                            onFocusDistance?.invoke(lastFocusDistance)
                         }
                     }
                     // Diagnostic: log what 3A is actually doing (throttled ~1/sec) so we can tell

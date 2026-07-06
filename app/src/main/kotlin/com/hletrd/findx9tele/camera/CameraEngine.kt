@@ -86,6 +86,9 @@ class CameraEngine(private val context: Context) {
     // AE-resolved ISO/shutter (auto mode) from the controller, for the live dial readout. Fired from
     // the camera thread, only on change; the ViewModel hoists it into UI state.
     var onExposureInfo: ((iso: Int?, exposureNs: Long?) -> Unit)? = null
+    // Live lens focus distance (diopters) from the controller: the AF-resolved position shown on the
+    // Focus chip and used to seed the manual slider when the user switches into MF (AF→MF handoff).
+    var onFocusDistance: ((Float) -> Unit)? = null
     // The most recently saved still (HEIF/JPEG) URI, for the gallery thumbnail + in-app review. Fired
     // from the io thread after the file publishes.
     var onMediaSaved: ((android.net.Uri) -> Unit)? = null
@@ -187,6 +190,7 @@ class CameraEngine(private val context: Context) {
         val ctrl = CameraController(context)
         controller = ctrl
         ctrl.onExposure = { iso, exp -> onExposureInfo?.invoke(iso, exp) }
+        ctrl.onFocusDistance = { d -> onFocusDistance?.invoke(d) }
         ctrl.open(
             selection = sel,
             caps = c,

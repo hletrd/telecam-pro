@@ -151,8 +151,16 @@ private fun DialChipRow(
             onClick = { onToggleAutoExposure(!controls.autoExposure) },
         )
         DialChip(
-            label = "Focus",
-            value = formatFocusRelative(controls.focusDistanceDiopters, caps?.minFocusDistanceDiopters ?: 0f),
+            // Sony-style: the label IS the focus mode (MF / AF / AF-C / Macro), so the current mode
+            // is always visible on the shooting screen without opening the sheet.
+            label = focusModeLabel(controls.focusMode),
+            // In an AF mode, show the LIVE lens position (where AF parked the lens) instead of the
+            // stale manual value — a lens distance scale, and the value MF will seed from on entry.
+            value = formatFocusRelative(
+                if (controls.focusMode == FocusMode.MANUAL) controls.focusDistanceDiopters
+                else state.liveFocusDiopters ?: controls.focusDistanceDiopters,
+                caps?.minFocusDistanceDiopters ?: 0f,
+            ),
             active = openDial == DialType.FOCUS,
             enabled = controls.focusMode == FocusMode.MANUAL && (caps?.supportsManualFocus ?: false),
             onClick = { onSelect(DialType.FOCUS) },

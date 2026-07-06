@@ -96,6 +96,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // AE-resolved ISO/shutter (auto mode) for the live dial readout; camera thread → StateFlow is
         // thread-safe, Compose observes on main. The controller only fires this on change.
         engine.onExposureInfo = { iso, exp -> _state.update { it.copy(liveIso = iso, liveExposureNs = exp) } }
+        // Live lens focus distance for the Focus chip readout + the AF→MF handoff seed (camera
+        // thread → StateFlow is thread-safe, same as the exposure readout above).
+        engine.onFocusDistance = { d -> _state.update { it.copy(liveFocusDiopters = d) } }
         // Last saved still → gallery thumbnail + in-app review (io thread → StateFlow is thread-safe).
         engine.onMediaSaved = { uri -> _state.update { it.copy(lastMediaUri = uri) } }
         restoreSettingsIfEnabled()
@@ -173,7 +176,18 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onPreviewSurfaceDestroyed() = engine.onPreviewSurfaceDestroyed()
 
     // ---- Focus ----
-    override fun onFocusMode(mode: FocusMode) = updateControls { it.copy(focusMode = mode) }
+    override fun onFocusMode(mode: FocusMode) = updateControls { c ->
+        // AF→MF handoff: entering MANUAL seeds the slider from the LIVE lens position, so fine
+        // focus starts from AF's solution (near ∞ through the afocal converter) instead of a stale
+        // or 0-diopter value — the workflow is "AF once, then trim by hand".
+        val live = _state.value.liveFocusDiopters
+        val min = _state.value.caps?.minFocusDistanceDiopters ?: 0f
+        if (mode == FocusMode.MANUAL && c.focusMode != FocusMode.MANUAL && live != null && min > 0f) {
+            c.copy(focusMode = mode, focusDistanceDiopters = live.coerceIn(0f, min))
+        } else {
+            c.copy(focusMode = mode)
+        }
+    }
     override fun onFocusSlider(slider: Float) {
         val min = _state.value.caps?.minFocusDistanceDiopters ?: 0f
         val d = FocusMapping.sliderToDiopters(slider, min)

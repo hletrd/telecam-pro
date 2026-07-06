@@ -229,6 +229,9 @@ data class CameraUiState(
     // result. Lets the Shutter/ISO chips show what AE actually chose instead of just "Auto".
     val liveIso: Int? = null,
     val liveExposureNs: Long? = null,
+    // Live lens focus distance (diopters, from CaptureResult); null before the first result. Shows
+    // where AF parked the lens and seeds the manual slider on the AF→MF handoff.
+    val liveFocusDiopters: Float? = null,
     // Runtime
     val isRecording: Boolean = false,
     val recordElapsedMs: Long = 0L,
