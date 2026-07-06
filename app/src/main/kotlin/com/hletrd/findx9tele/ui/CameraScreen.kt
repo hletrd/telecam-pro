@@ -786,6 +786,7 @@ private object PreviewCameraActions : CameraActions {
 
     override fun onCameraOverride(id: String?) = Unit
     override fun onToggleRememberSettings(enabled: Boolean) = Unit
+    override fun onVendorLogMode(mode: com.hletrd.findx9tele.camera.VendorLogMode) = Unit
 }
 
 @Preview(showBackground = true)

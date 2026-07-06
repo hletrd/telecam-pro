@@ -115,4 +115,5 @@ interface CameraActions {
     // Settings
     fun onCameraOverride(id: String?)
     fun onToggleRememberSettings(enabled: Boolean)
+    fun onVendorLogMode(mode: com.hletrd.findx9tele.camera.VendorLogMode)
 }

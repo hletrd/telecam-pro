@@ -58,6 +58,7 @@ import com.hletrd.findx9tele.camera.MeteringMode
 import com.hletrd.findx9tele.camera.ProcessingLevel
 import com.hletrd.findx9tele.camera.ShutterMode
 import com.hletrd.findx9tele.camera.ShutterTimer
+import com.hletrd.findx9tele.camera.VendorLogMode
 import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.camera.VideoFrameRate
 import com.hletrd.findx9tele.camera.WbMode
@@ -663,5 +664,22 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
         label = "Camera Override",
         valueLabel = state.cameraOverrideId ?: "Default",
         onClick = if (state.cameraOverrideId != null) ({ actions.onCameraOverride(null) }) else null,
+    )
+    SegmentedSelector(
+        label = "Native Log (HAL, experimental)",
+        options = VendorLogMode.entries,
+        selected = state.vendorLogMode,
+        labelFor = { if (it == VendorLogMode.ON) "On" else "Off" },
+        onSelect = actions::onVendorLogMode,
+    )
+    Text(
+        "Drives the stock app's own log key (com.oplus.log.video.mode) so the ISP emits a " +
+            "scene-referred log stream from sensor data — more latitude than the GL curve, which " +
+            "can only re-map the display SDR output. Bypasses the GL curve and tags the file " +
+            "BT.2020 full-range. Note: not white-balanced (warm scenes read warm — set WB in grade) " +
+            "and not a drop-in for OPPO's O-Log2 LUT; use TF O-Log2 for a LUT-accurate file. Not " +
+            "persisted across launches.",
+        color = CameraColors.TextSecondary,
+        style = MaterialTheme.typography.labelSmall,
     )
 }

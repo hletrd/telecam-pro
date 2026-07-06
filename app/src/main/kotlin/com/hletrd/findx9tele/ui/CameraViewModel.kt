@@ -430,6 +430,13 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         if (enabled) saveSettingsIfEnabled() // capture the current setup immediately
     }
 
+    // Deliberately NOT persisted (see [VendorLogMode]): an experimental HAL mode that misbehaves
+    // must never survive into the next launch.
+    override fun onVendorLogMode(mode: com.hletrd.findx9tele.camera.VendorLogMode) {
+        engine.setVendorLogMode(mode)
+        _state.update { it.copy(vendorLogMode = mode) }
+    }
+
     private inline fun updateControls(block: (ManualControls) -> ManualControls) {
         val updated = block(_state.value.controls)
         _state.update { it.copy(controls = updated) }
