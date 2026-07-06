@@ -125,13 +125,25 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
 - **Settings persist across launches** via `storage/SettingsStore.kt` (SharedPreferences, enums by
   name, defensive load). Gated by a "Remember Settings" toggle that **defaults ON**; saved on
   background, restored on launch (pushed to the engine pre-start).
+- **HAL-native log IS reachable via the stock key `com.oplus.log.video.mode` (verified 2026-07-06).**
+  Decompiling `OplusCamera.apk` showed the stock O-Log path is the OCS SDK ConfigureKey
+  `KEY_CONFIGURE_LOG_VIDEO_MODE` → vendor tag `com.oplus.log.video.mode` (Integer, a **session** key).
+  That tag IS in the tele's `availableRequestKeys`+`availableSessionKeys` (dumpsys), so raw Camera2
+  can set it — do so as a **session parameter** (from `TEMPLATE_RECORD`) AND on every request, fully
+  guarded. Device-verified: value `1` engages a genuine scene-referred log stream (flat, mean luma
+  ~½ of SDR, GL curve off); `1`≡`2` (on/off). `com.oplus.movie.log.enable` (the byte gate) is NOT
+  exposed. CAVEAT: the HAL log is not a clean round-trip for OPPO's published O-Log2/O-Log-gen1 LUTs
+  (scene-referred, un-white-balanced, warm cast) — for a LUT-accurate deliverable use the GL O-Log2
+  path below. Exposed as Pro→Advanced→"Native Log" (`VendorLogMode`, not persisted). Full analysis:
+  `docs/reverse-engineering/oplus-log-video-analysis.md`.
 - **LOG = official O-Log2, applied in GL; HAL-native log is vendor-gated (verified 2026-07-06).**
   The `ColorTransfer.LOG` path bakes OPPO's published O-Log2 OETF (white paper EN v1:
   `P = 0.08550479·log₂(R+0.00964052)+0.69336945`, parabolic toe below R=0.006, O-Gamut = BT.2020/D65
   full-range) after a γ2.2 linearization of the display-referred SDR stream + 709→2020 matrix. 18 %
-  grey lands on the official 0.4868 anchor, so OPPO's public O-Log2 LUTs restore it. No above-white
-  headroom is possible: the `com.oplus.*` log vendor keys (`movie.log.enable`, `log.video.mode`) are
-  NOT in the request keys exposed to third-party apps (request-key dump on device). Also: leaving
+  grey lands on the official 0.4868 anchor, so OPPO's public O-Log2 LUTs restore it. This GL path is
+  the LUT-accurate deliverable, but it can only re-map the display-referred SDR output (no above-white
+  headroom). For a true scene-referred stream use the HAL `com.oplus.log.video.mode` key (see the
+  entry just above — it IS exposed; only `movie.log.enable` is gated). Also: leaving
   `KEY_COLOR_TRANSFER` unset on a BT2020 full-range HEVC format makes the QTI encoder tag the VUI
   **ST2084 (PQ)** — players then tone-map log footage as HDR. Tag a transfer explicitly, always.
 - **The teleconverter's "auto steady" is a HAL side-effect, not an API.** Reverse engineering (see

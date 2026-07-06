@@ -18,8 +18,13 @@ Full-app review session; screenshots + pulled files + ffprobe as evidence.
   numerically against the white-paper anchors (18 % → 0.4868). *(ffprobe + frame extract)*
 - ✅ **LOG transfer-tag fix** — before: VUI defaulted to `smpte2084` (PQ) → players tone-mapped log as
   HDR; after: SDR-class `bt2020-10`. HLG clip verified tagging `arib-std-b67` + `tv` range. *(ffprobe)*
-- ✅ **Vendor log tags are gated** — `com.oplus.movie.log.enable` / `log.video.mode` absent from the
-  request keys exposed to this app (X9TeleVendor dump) → HAL-native O-Log2 unavailable to 3rd parties.
+- ✅ **HAL-native log IS reachable** — decompiled `OplusCamera.apk`: the stock O-Log path is the OCS
+  SDK ConfigureKey `KEY_CONFIGURE_LOG_VIDEO_MODE` → `com.oplus.log.video.mode` (Integer, session key),
+  which IS in the tele's availableRequest+SessionKeys. Set via raw Camera2 (session param + request);
+  device-verified value 1 engages a genuine scene-referred log stream (flat, mean luma ~½ SDR). Only
+  `com.oplus.movie.log.enable` is gated. Exposed as Pro→Advanced→"Native Log". CAVEAT: not a clean
+  round-trip for OPPO's O-Log2/O-Log-gen1 LUTs (un-white-balanced) — GL O-Log2 stays the LUT-accurate
+  option. See `docs/reverse-engineering/oplus-log-video-analysis.md`.
 
 New in code this session, **not yet device-verified**: manual-exposure AEB shutter bracket (unit-tested;
 needs a 3-file exposure sweep check), SDR (Rec.709) HEVC clip, JPEG-only format capture, quadrant level
