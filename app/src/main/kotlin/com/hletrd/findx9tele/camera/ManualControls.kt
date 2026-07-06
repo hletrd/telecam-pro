@@ -64,6 +64,18 @@ fun ManualControls.effectiveExposureNs(): Long =
     }
 
 /**
+ * Exposure times (ns) for a MANUAL-exposure AEB bracket: -2 / 0 / +2 EV around [baseNs] (×¼ / ×1 /
+ * ×4), clamped to the sensor's [minNs]..[maxNs] and deduplicated after clamping (a base near a
+ * range edge collapses to fewer, distinct shots). Needed because with AE OFF the HAL ignores
+ * CONTROL_AE_EXPOSURE_COMPENSATION — an EV-comp bracket fires three identical frames — so the
+ * bracket must vary SENSOR_EXPOSURE_TIME itself (ISO untouched). Pure so it is unit-testable.
+ */
+fun manualAebExposuresNs(baseNs: Long, minNs: Long, maxNs: Long): List<Long> {
+    if (minNs > maxNs) return listOf(baseNs)
+    return listOf(baseNs / 4, baseNs, baseNs * 4).map { it.coerceIn(minNs, maxNs) }.distinct()
+}
+
+/**
  * The SENSOR_FRAME_DURATION (ns) to request in manual exposure. Camera2 requires the frame duration
  * be >= the exposure time, so a shutter slower than 1/[fps] must stretch the frame duration up to
  * [exposureNs] — otherwise the HAL silently caps the exposure at 1/fps (which killed long-exposure /

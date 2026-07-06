@@ -116,6 +116,33 @@ class ExposureMathTest {
         assertEquals(500_000_000L, sensorFrameDurationNs(fps = 0, exposureNs = 500_000_000L, maxFrameDurationNs = 0L))
     }
 
+    // ---- manualAebExposuresNs: the manual-exposure AEB shutter bracket ----
+
+    @Test
+    fun `manual AEB brackets minus2 0 plus2 EV as quarter and quadruple exposure times`() {
+        // 1/125 s base, wide sensor range → exact ×¼ / ×1 / ×4 bracket.
+        val steps = manualAebExposuresNs(8_000_000L, 1_000L, 10_000_000_000L)
+        assertEquals(listOf(2_000_000L, 8_000_000L, 32_000_000L), steps)
+    }
+
+    @Test
+    fun `manual AEB clamps to the sensor exposure range`() {
+        // Base at the range top: +2 EV clamps back onto the max → deduplicated to 2 shots.
+        val steps = manualAebExposuresNs(1_000_000_000L, 1_000L, 1_000_000_000L)
+        assertEquals(listOf(250_000_000L, 1_000_000_000L), steps)
+    }
+
+    @Test
+    fun `manual AEB collapses to a single shot when the range pins everything`() {
+        val steps = manualAebExposuresNs(8_000_000L, 8_000_000L, 8_000_000L)
+        assertEquals(listOf(8_000_000L), steps)
+    }
+
+    @Test
+    fun `manual AEB with an inverted range degrades to the base exposure`() {
+        assertEquals(listOf(8_000_000L), manualAebExposuresNs(8_000_000L, 10L, 1L))
+    }
+
     @Test
     fun `frame duration never underruns the exposure - the invariant that makes long exposure work`() {
         // Property check across a range: the returned duration is always >= the (bounded) exposure,

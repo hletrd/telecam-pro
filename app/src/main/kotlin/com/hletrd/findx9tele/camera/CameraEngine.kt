@@ -397,21 +397,38 @@ class CameraEngine(private val context: Context) {
     }
 
     /**
-     * AEB: three stills at exposure-compensation -2 / 0 / +2 steps (clamped to the AE-comp range),
-     * applied by re-issuing the controls with a different [ManualControls.exposureCompensation] before
-     * each shot; the original controls are restored when the bracket finishes. Chained for the same
-     * single-`pending` reason as BURST.
+     * AEB: three stills at -2 / 0 / +2 EV. In AUTO exposure the bracket drives
+     * CONTROL_AE_EXPOSURE_COMPENSATION; in MANUAL exposure the HAL ignores that key entirely (AE
+     * is OFF), which used to fire three identical frames — so the manual path brackets the
+     * exposure TIME instead (×¼ / ×1 / ×4, clamped to the sensor range, ISO untouched; see
+     * [manualAebExposuresNs]). Either way the original controls are restored when the bracket
+     * finishes, and shots are chained for the same single-`pending` reason as BURST.
      */
     private fun captureAeb(ctrl: CameraController, formats: PhotoFormats) {
-        val range = caps?.evRange
+        val c = caps
+        val original = controls
+        if (!original.autoExposure && c?.supportsManualSensor == true) {
+            val base = original.effectiveExposureNs()
+            val range = c.exposureTimeRange
+            val steps = manualAebExposuresNs(base, range?.lower ?: base, range?.upper ?: base)
+            fun fire(i: Int) {
+                if (i >= steps.size) { ctrl.updateControls(original); return }
+                // SPEED override so the bracketed time applies even when the user dials ANGLE.
+                ctrl.updateControls(original.copy(shutterMode = ShutterMode.SPEED, exposureTimeNs = steps[i]))
+                ctrl.capturePhoto(formats.wantsProcessedStill, formats.dngRaw, photoCallback(formats) { fire(i + 1) })
+            }
+            fire(0)
+            return
+        }
+        val range = c?.evRange
         // distinct() so a narrow EV range that clamps -2/0/+2 to the same value doesn't fire duplicate
         // identical frames (a 1-shot "bracket").
         val steps = if (range != null) listOf(-2, 0, 2).map { it.coerceIn(range.lower, range.upper) }.distinct()
-        else listOf(controls.exposureCompensation)
+        else listOf(original.exposureCompensation)
         fun fire(i: Int) {
-            if (i >= steps.size) { ctrl.updateControls(controls); return }
-            ctrl.updateControls(controls.copy(exposureCompensation = steps[i]))
-            ctrl.capturePhoto(formats.heif, formats.dngRaw, photoCallback(formats) { fire(i + 1) })
+            if (i >= steps.size) { ctrl.updateControls(original); return }
+            ctrl.updateControls(original.copy(exposureCompensation = steps[i]))
+            ctrl.capturePhoto(formats.wantsProcessedStill, formats.dngRaw, photoCallback(formats) { fire(i + 1) })
         }
         fire(0)
     }
