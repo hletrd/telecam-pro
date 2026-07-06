@@ -67,6 +67,10 @@ class CameraController(context: Context) {
     private var tenBitHlg = false
     private var rawChars: CameraCharacteristics? = null
     private var configAttempt = 0
+    // HAL-native log (vendor com.oplus.log.video.mode; 0 = off). It is BOTH a request key and a
+    // SESSION key on this device, so it goes into the session parameters (pipeline configuration)
+    // AND every repeating/still request. Set once per open(); changing it requires a reopen.
+    private var vendorLogMode = 0
     // >0 → configure a CameraConstrainedHighSpeedCaptureSession at this fps (slow-motion), feeding
     // ONLY the GL input surface (no JPEG/RAW — high-speed sessions forbid extra targets). 0 = the
     // regular tele session. Set once per open(); on a high-speed config failure it drops back to 0.
@@ -110,6 +114,7 @@ class CameraController(context: Context) {
         controls: ManualControls,
         tenBitHlg: Boolean,
         highSpeedFps: Int = 0,
+        vendorLogMode: Int = 0,
         onReady: Ready,
         onError: ErrorCb,
     ) {
@@ -119,6 +124,7 @@ class CameraController(context: Context) {
         this.controls = controls
         this.tenBitHlg = tenBitHlg
         this.highSpeedFps = highSpeedFps
+        this.vendorLogMode = vendorLogMode
         this.rawChars = runCatching {
             manager.getCameraCharacteristics(selection.physicalId ?: selection.logicalId)
         }.getOrNull()
@@ -136,6 +142,21 @@ class CameraController(context: Context) {
                 close()
             }
         })
+    }
+
+    /**
+     * The stock camera's log-pipeline selector. Advertised in this device's availableRequestKeys
+     * AND availableSessionKeys for the tele (dumpsys 2026-07-06), so constructing the Key and
+     * setting it is legal public API — the framework resolves it against the vendor tag provider.
+     */
+    private val logVideoModeKey = CaptureRequest.Key("com.oplus.log.video.mode", Int::class.javaObjectType)
+
+    /** Applies the HAL-native log mode (no-op at 0). Defensive: a rejected vendor tag must never kill the preview build. */
+    private fun CaptureRequest.Builder.applyVendorLog() {
+        if (vendorLogMode == 0) return
+        runCatching { set(logVideoModeKey, vendorLogMode) }
+            .onSuccess { Log.i(TAG, "vendor log.video.mode=$vendorLogMode applied") }
+            .onFailure { Log.w(TAG, "vendor log.video.mode=$vendorLogMode rejected: ${it.message}") }
     }
 
     /**
@@ -202,7 +223,7 @@ class CameraController(context: Context) {
                 override fun onConfigured(s: CameraCaptureSession) {
                     if (closed) { runCatching { s.close() }; return } // closed before config completed
                     session = s
-                    Log.i(TAG, "Session configured (fallback=$attempt, hlg=$useHlg, jpeg=$useJpeg, raw=$useRaw)")
+                    Log.i(TAG, "Session configured (fallback=$attempt, hlg=$useHlg, jpeg=$useJpeg, raw=$useRaw, vendorLog=$vendorLogMode)")
                     startPreview()
                     onReady.onReady()
                 }
@@ -220,6 +241,18 @@ class CameraController(context: Context) {
                 }
             },
         )
+        // log.video.mode is a SESSION key: the log pipeline is chosen at configure time, so the
+        // vendor value must ride in the session parameters, not only in per-frame requests. Built
+        // from TEMPLATE_RECORD (the movie-pipeline template the stock log mode uses). Fully
+        // defensive — a session-parameter failure falls back to a plain session, not a dead camera.
+        if (vendorLogMode != 0) {
+            runCatching {
+                val sp = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
+                sp.applyManualControls(controls, caps)
+                sp.applyVendorLog()
+                sessionConfig.setSessionParameters(sp.build())
+            }.onFailure { Log.w(TAG, "session params with vendor log failed: ${it.message}") }
+        }
         camera.createCaptureSession(sessionConfig)
     }
 
@@ -309,6 +342,7 @@ class CameraController(context: Context) {
             val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                 addTarget(preview)
                 applyManualControls(controls, caps)
+                applyVendorLog()
                 applyMetering(this, controls)
                 // Tap-to-focus: force AF_MODE_AUTO for a one-shot region scan that LOCKS on the tapped
                 // spot (CONTINUOUS + a bare trigger just holds the current, often-wrong, distance). The
@@ -465,6 +499,9 @@ class CameraController(context: Context) {
             jpeg?.let { addTarget(it) }
             raw?.let { addTarget(it) }
             applyManualControls(controls, caps)
+            // Keep stills consistent with the session's pipeline: with the log session active the
+            // HAL processes everything scene-referred, so an unset key mid-session is undefined.
+            applyVendorLog()
             applyMetering(this, controls)
             // We rotate pixels ourselves (HEIF) / tag DNG orientation; keep JPEG upright.
             set(CaptureRequest.JPEG_ORIENTATION, 0)

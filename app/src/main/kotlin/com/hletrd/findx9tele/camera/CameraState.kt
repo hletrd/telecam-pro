@@ -59,6 +59,26 @@ enum class WbMode { AUTO, INCANDESCENT, FLUORESCENT, DAYLIGHT, CLOUDY, SHADE, MA
 /** Metering pattern for auto-exposure. SPOT/CENTER use an AE region; MATRIX uses the whole frame. */
 enum class MeteringMode { MATRIX, CENTER, SPOT }
 
+/**
+ * HAL-native log video via the vendor key `com.oplus.log.video.mode` (int32) — the same session key
+ * the stock camera drives for O-Log recording (confirmed by decompiling OplusCamera.apk: the OCS SDK
+ * `CameraParameter.KEY_CONFIGURE_LOG_VIDEO_MODE`). Unlike the GL-baked curve (which can only re-map
+ * the ISP's display-referred SDR output), this makes the ISP emit a SCENE-REFERRED log stream from
+ * sensor data, before the OEM display tone mapping.
+ *
+ * The key is advertised in this device's `availableRequestKeys` AND `availableSessionKeys` for the
+ * tele (dumpsys 2026-07-06), so setting it via Camera2 is legal API. Device-verified 2026-07-06: ON
+ * genuinely engages the HAL log pipeline (recorded stream goes flat/low-contrast, mean luma ~half of
+ * SDR, GL curve off). Values 1 and 2 produced identical output → the key is on/off here.
+ *
+ * CAVEAT: the resulting log is not a drop-in for OPPO's published O-Log2 LUT — it appears
+ * scene-referred WITHOUT baked white balance (warm ambient reads warm), which a colorist neutralizes
+ * in grade. For a LUT-accurate deliverable, the GL O-Log2 path ([ColorTransfer.LOG]) is exact. This
+ * mode is for maximum latitude / minimal in-camera processing. Deliberately NOT persisted: an
+ * experimental HAL mode must never survive a relaunch.
+ */
+enum class VendorLogMode(val halValue: Int) { OFF(0), ON(1) }
+
 /** Shutter drive mode. */
 enum class DriveMode { SINGLE, BURST, AEB, TIMELAPSE }
 
@@ -194,6 +214,8 @@ data class CameraUiState(
     val aspectRatio: AspectRatio = AspectRatio.W4_3,
     // Teleconverter mode: manual (not auto-detected). ON = afocal 180° flip + EIS scaled to 300mm.
     val teleconverterMode: Boolean = true,
+    // HAL-native log (vendor com.oplus.log.video.mode). Experimental; see [VendorLogMode].
+    val vendorLogMode: VendorLogMode = VendorLogMode.OFF,
     // Stabilization
     val eisEnabled: Boolean = true,
     val eisStrength: EisStrength = EisStrength.MEDIUM,

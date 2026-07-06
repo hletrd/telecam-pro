@@ -65,6 +65,8 @@ class CameraEngine(private val context: Context) {
 
     private val gyro = com.hletrd.findx9tele.stab.GyroEis(context)
     @Volatile private var teleconverterMode = true
+    // HAL-native log (vendor com.oplus.log.video.mode). Session key → changing it reopens the camera.
+    @Volatile private var vendorLogMode = VendorLogMode.OFF
     @Volatile private var eisEnabled = true
     @Volatile private var eisCrop: Float = EisStrength.MEDIUM.crop
 
@@ -166,6 +168,17 @@ class CameraEngine(private val context: Context) {
      */
     private fun previewRotationDegrees(): Int = RotationMath.previewRotationDegrees(teleconverterMode)
 
+    /**
+     * Selects the HAL-native log mode. It is a SESSION parameter, so the camera is reopened for the
+     * new pipeline. Refused mid-recording (reconfiguring under the encoder corrupts the clip).
+     */
+    fun setVendorLogMode(m: VendorLogMode) {
+        if (vendorLogMode == m) return
+        if (recorder != null) { onStatus?.invoke("Stop recording to change native log"); return }
+        vendorLogMode = m
+        reopenForSession()
+    }
+
     fun setTeleconverterMode(enabled: Boolean) { teleconverterMode = enabled; applyStabilization() }
     fun setEisEnabled(enabled: Boolean) { eisEnabled = enabled; applyStabilization() }
     fun setEisStrength(s: EisStrength) { eisCrop = s.crop; applyStabilization() }
@@ -200,6 +213,7 @@ class CameraEngine(private val context: Context) {
             // >0 → build a CameraConstrainedHighSpeedCaptureSession at this fps (no JPEG/RAW). 0 keeps
             // the regular tele session with full still capture. Falls back to regular on config failure.
             highSpeedFps = desiredHighSpeedFps(),
+            vendorLogMode = vendorLogMode.halValue,
             onReady = { onStatus?.invoke(null) },
             onError = { onStatus?.invoke("Camera error: ${it.message}") },
         )
@@ -623,15 +637,30 @@ class CameraEngine(private val context: Context) {
         // real-time via KEY_CAPTURE_RATE; a regular clip leaves it 0.
         val captureRate = if (desiredHighSpeedFps() != 0) rate.encoderRate else 0.0
         // AVC and AV1 are 8-bit SDR only: force the GL color curve to SDR (no HLG/Log). HEVC keeps the
-        // 10-bit HLG/Log path. (Resolution changes after this point stream the old size until reopen.)
-        val glTransfer = if (codec == VideoCodec.HEVC) transfer else null
+        // 10-bit HLG/Log path. With HAL-native log active the stream is ALREADY log-encoded by the
+        // ISP — GL must pass it through untouched or the curve would be applied twice.
+        // (Resolution changes after this point stream the old size until reopen.)
+        val glTransfer = when {
+            vendorLogMode != VendorLogMode.OFF -> null
+            codec == VideoCodec.HEVC -> transfer
+            else -> null
+        }
+        // File color tags: when the HAL emits O-Log2 the container MUST be tagged as the LOG profile
+        // (BT.2020 full-range, SDR-class transfer) regardless of the TF chip, so players don't
+        // HDR-tone-map it and OPPO's O-Log2 LUTs round-trip. Otherwise use the selected transfer
+        // (HEVC only; AVC/AV1 are always SDR).
+        val fileTransfer = when {
+            vendorLogMode != VendorLogMode.OFF -> ColorTransfer.LOG
+            codec == VideoCodec.HEVC -> transfer
+            else -> ColorTransfer.SDR
+        }
         val rec = VideoRecorder(context)
         // Physical device orientation at record start → muxer rotation hint so a landscape-held clip
         // plays upright (GL only bakes the afocal 180°; see VideoRecorder.start).
         val orientationHint = gyro.currentDeviceOrientation()
         val surface = rec.start(
             uri, size, rate.encoderRate, captureRate, bitRateFor(size, rate),
-            transfer, codec, recordAudio, audioGain, orientationHint,
+            fileTransfer, codec, recordAudio, audioGain, orientationHint,
         ) { lvl -> onAudioLevel?.invoke(lvl) }
         if (surface == null) {
             // Encoder/muxer failed to configure; drop the pending MediaStore row we created so it
