@@ -169,16 +169,23 @@ internal fun LabeledSlider(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
 ) {
+    // A degenerate range (start >= endInclusive) — e.g. an ISO/zoom slider rendered before the
+    // camera caps arrive, so the range collapses to `iso..iso` — makes Material3 compute a
+    // `(value-start)/(end-start) = 0/0 = NaN` thumb fraction, and `Float.roundToInt()` throws on NaN.
+    // Render a disabled track over a safe padded range instead (never interactive, never NaN).
+    val degenerate = valueRange.endInclusive <= valueRange.start
+    val safeRange = if (degenerate) valueRange.start..(valueRange.start + 1f) else valueRange
+    val safeValue = value.coerceIn(safeRange.start, safeRange.endInclusive)
     Column(modifier = modifier.fillMaxWidth()) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(label, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
             Text(valueLabel, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelMedium)
         }
         Slider(
-            value = value,
+            value = safeValue,
             onValueChange = onValueChange,
-            enabled = enabled,
-            valueRange = valueRange,
+            enabled = enabled && !degenerate,
+            valueRange = safeRange,
             colors = pixelSliderColors(),
             modifier = Modifier.fillMaxWidth(),
         )
