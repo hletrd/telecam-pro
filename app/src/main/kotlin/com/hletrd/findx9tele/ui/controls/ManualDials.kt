@@ -159,8 +159,10 @@ private fun DialChipRow(
         )
         DialChip(
             label = "Shutter",
+            // In auto, show the AE-resolved shutter (what AE chose) instead of a bare "Auto"; fall
+            // back to "Auto" until the first result arrives.
             value = when {
-                controls.autoExposure -> "Auto"
+                controls.autoExposure -> state.liveExposureNs?.let { formatShutterSpeed(it) } ?: "Auto"
                 controls.shutterMode == ShutterMode.ANGLE -> "%.0f°".format(controls.shutterAngle)
                 else -> formatShutterSpeed(controls.exposureTimeNs)
             },
@@ -170,7 +172,7 @@ private fun DialChipRow(
         )
         DialChip(
             label = "ISO",
-            value = if (controls.autoExposure) "Auto" else controls.iso.toString(),
+            value = if (controls.autoExposure) (state.liveIso?.let { "$it" } ?: "Auto") else controls.iso.toString(),
             active = openDial == DialType.ISO,
             enabled = !controls.autoExposure,
             onClick = { onSelect(DialType.ISO) },

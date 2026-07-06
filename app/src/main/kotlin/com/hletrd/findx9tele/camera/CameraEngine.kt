@@ -83,6 +83,9 @@ class CameraEngine(private val context: Context) {
     var onAnalysis: ((HistogramData?, WaveformData?) -> Unit)? = null
     // Live recording-audio level (0..1 RMS, post-gain), throttled by VideoRecorder to ~10 Hz.
     var onAudioLevel: ((Float) -> Unit)? = null
+    // AE-resolved ISO/shutter (auto mode) from the controller, for the live dial readout. Fired from
+    // the camera thread, only on change; the ViewModel hoists it into UI state.
+    var onExposureInfo: ((iso: Int?, exposureNs: Long?) -> Unit)? = null
 
     // ---- Preview surface lifecycle ----
 
@@ -180,6 +183,7 @@ class CameraEngine(private val context: Context) {
         controller?.close() // idempotent: closes any prior controller so two never race for the device
         val ctrl = CameraController(context)
         controller = ctrl
+        ctrl.onExposure = { iso, exp -> onExposureInfo?.invoke(iso, exp) }
         ctrl.open(
             selection = sel,
             caps = c,

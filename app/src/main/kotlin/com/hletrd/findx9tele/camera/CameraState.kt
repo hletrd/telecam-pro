@@ -199,6 +199,10 @@ data class CameraUiState(
     val rememberSettings: Boolean = true,
     // Transient tap point (normalized 0..1 in view space) for the focus/meter reticle; null = none.
     val tapPoint: Pair<Float, Float>? = null,
+    // AE-resolved exposure while in auto (from CaptureResult); null in manual or before the first
+    // result. Lets the Shutter/ISO chips show what AE actually chose instead of just "Auto".
+    val liveIso: Int? = null,
+    val liveExposureNs: Long? = null,
     // Runtime
     val isRecording: Boolean = false,
     val recordElapsedMs: Long = 0L,

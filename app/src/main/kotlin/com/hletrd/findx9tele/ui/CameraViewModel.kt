@@ -90,6 +90,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.onVideoSizeChosen = { size -> _state.update { it.copy(videoResolution = size) }; mainHandler.post { reconcileFrameRate() } }
         engine.onAnalysis = { h, w -> _state.update { it.copy(histogramData = h, waveformData = w) } }
         engine.onAudioLevel = { lvl -> _state.update { it.copy(audioLevel = lvl) } }
+        // AE-resolved ISO/shutter (auto mode) for the live dial readout; camera thread → StateFlow is
+        // thread-safe, Compose observes on main. The controller only fires this on change.
+        engine.onExposureInfo = { iso, exp -> _state.update { it.copy(liveIso = iso, liveExposureNs = exp) } }
         restoreSettingsIfEnabled()
         // Sweep any pending media orphaned by a prior crash/force-kill (record stop never ran).
         engine.cleanupOrphans()

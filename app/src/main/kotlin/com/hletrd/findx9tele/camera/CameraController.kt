@@ -89,6 +89,12 @@ class CameraController(context: Context) {
     @Volatile private var touchAfActive = false
     // Throttle counter for the 3A-state diagnostic log (AE/AF convergence on the standalone tele).
     private var threeAFrame = 0
+    // Live AE-resolved (ISO, exposureNs) surfaced to the UI so the Shutter/ISO chips can show what AE
+    // chose in auto mode. Reported only on change (see startPreview's repeating callback) so a steady
+    // scene doesn't spam recomposition.
+    @Volatile var onExposure: ((iso: Int?, exposureNs: Long?) -> Unit)? = null
+    private var lastReportedIso: Int? = null
+    private var lastReportedExpNs: Long? = null
 
     @SuppressLint("MissingPermission") // caller guarantees CAMERA permission before open()
     fun open(
@@ -315,16 +321,26 @@ class CameraController(context: Context) {
                 override fun onCaptureCompleted(
                     session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult,
                 ) {
-                    result.get(android.hardware.camera2.CaptureResult.LENS_FOCUS_DISTANCE)?.let { lastFocusDistance = it }
+                    result.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let { lastFocusDistance = it }
+                    threeAFrame++
+                    // Surface the AE-resolved ISO/shutter to the UI (throttled ~3 Hz, only on change)
+                    // so the Shutter/ISO chips can show what AE actually chose in auto mode.
+                    if (threeAFrame % 10 == 0) {
+                        val iso = result.get(CaptureResult.SENSOR_SENSITIVITY)
+                        val expNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
+                        if (iso != lastReportedIso || expNs != lastReportedExpNs) {
+                            lastReportedIso = iso
+                            lastReportedExpNs = expNs
+                            onExposure?.invoke(iso, expNs)
+                        }
+                    }
                     // Diagnostic: log what 3A is actually doing (throttled ~1/sec) so we can tell
                     // whether AE/AF are converging on the standalone tele or effectively inert.
-                    if (++threeAFrame % 30 == 0) {
+                    if (threeAFrame % 30 == 0) {
                         val ae = result.get(CaptureResult.CONTROL_AE_STATE)
                         val af = result.get(CaptureResult.CONTROL_AF_STATE)
-                        val iso = result.get(CaptureResult.SENSOR_SENSITIVITY)
-                        val exp = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
                         val afMode = result.get(CaptureResult.CONTROL_AF_MODE)
-                        Log.i(TAG, "3A: aeState=$ae afState=$af afMode=$afMode iso=$iso expNs=$exp lens=$lastFocusDistance")
+                        Log.i(TAG, "3A: aeState=$ae afState=$af afMode=$afMode iso=${result.get(CaptureResult.SENSOR_SENSITIVITY)} expNs=${result.get(CaptureResult.SENSOR_EXPOSURE_TIME)} lens=$lastFocusDistance")
                     }
                 }
             }
