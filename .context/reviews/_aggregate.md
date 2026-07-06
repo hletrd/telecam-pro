@@ -1,200 +1,242 @@
-# Aggregate Deep Review — Cycle 2 (2026-07-03)
+# Aggregate Deep Review — Run-2 Cycle 1 (2026-07-06)
 
-**Scope:** Full inline re-review of all 29 Kotlin sources under `app/src/main/kotlin/**` plus
-`app/src/test/**`, done directly by the cycle-2 lead (no background agent fan-out — the environment
-kills large nested review swarms). Judged against the run goal: *perfect this as a professional
-camera app for photographers migrating from Sony (BIONZ XR2) and Google Pixel Camera — pro
-ergonomics, correct manual controls, discoverability, polish.*
+**Scope:** Full inline re-review of all 31 Kotlin sources under `app/src/main/kotlin/**` + the 4 JVM
+test suites + `AndroidManifest.xml`, done directly by the cycle lead (no background agent fan-out —
+the environment kills nested review swarms). One synchronous helper (`code-reviewer`) covered the
+~2900 LOC Compose UI layer; its findings are merged here and preserved in `designer.md` /
+`code-reviewer.md`.
 
-**Provenance:** Cycle 1 landed 21 commits fixing the gate + a crash/ANR/pro-UX subset and DEFERRED a
-large remainder (see `docs/plans/2026-07-03-cycle1-fixes.md`). Cycle-1 findings kept their IDs
-(H*/M*/L*/A-*/UX-*/TEST-*). Cycle-2 net-new / re-validated findings are prefixed **C2-**. Items
-already fixed in cycle 1 are NOT re-listed except where re-validated as still-open.
+**Provenance:** The prior `_aggregate.md` was Run-1 Cycle-2 (findings `C2-*`, `H*/M*/UX-*/TEST-*`).
+Since then several of its flagship items shipped and are now **CLOSED** (verified in source this
+cycle) — see the CLOSED list below. This cycle keeps stable IDs prefixed **`R1-`** (net-new or
+re-validated-still-open). Where an item maps to a prior ID it is noted `(=C2-x)`.
 
-**Gate baseline (this cycle, measured):** `:app:assembleDebug` ✅ · `:app:testDebugUnitTest` ✅
-(26 tests) · `:app:lintDebug` ✅ **0 errors, 9 warnings**. Gate is GREEN at cycle start.
+**Gate baseline (measured this cycle):** `:app:assembleDebug` ✅ · `:app:testDebugUnitTest` ✅
+(37 tests) · `:app:lintDebug` ✅ **0 errors, 9 warnings** (`OldTargetApi` L4 deferred-by-policy,
+AGP 9.2.0→9.2.1 hint, heifwriter -alpha01, a few Compose hints). Gate is GREEN at cycle start.
 
-Severity: **High** = crash/gate-red/data-loss/corrupt output/pro-blocking correctness · **Medium** =
-wrong behavior, pro-UX gap, state desync · **Low** = polish/hygiene/warnings.
-Confidence: High / Med / Low. Device-only items flagged `[device-verify]` (AVD has synthetic camera
-hardware — no tele/RAW/HLG/EIS/mic-through-converter).
-
----
-
-## Cycle-2 summary table (net-new + re-validated open)
-
-| ID | Sev | Conf | Area | One-liner |
-|----|-----|------|------|-----------|
-| C2-1 | Med | High | data/naming | `fileName()` second-resolution stamp collides in BURST/AEB/timelapse → overwritten/duplicate files |
-| C2-2 (=M2) | Med | High | pro-UX | No settings persistence across process death (Sony/Pixel remember settings) |
-| C2-3 (=A-TRACE-4) | Med | Med | camera race | Rapid shutter overwrites the single `pending` slot → dropped/misattributed/leaked Image |
-| C2-4 (=A-TRACE-3a) | Med | High | lifecycle | Switching to PHOTO mode while recording orphans the recording (no stop affordance) |
-| C2-5 | Low | High | pro-audio | Audio source + sample rate hardcoded (CAMCORDER/48k) — no pro audio options |
-| C2-6 (=A-PERF-3) | Med | High | perf | Per-frame `FloatArray` alloc on the GL render thread (EIS provider) → GC pressure |
-| C2-7 | Low | Med | pro-UX | Assist toggles (peaking/zebra/…) set before GL start are silently lost (no-op `post`) |
-| C2-8 (=UX-4) | High | Med | discoverability | Settings gear only in the top chrome bar — hard to reach one-handed at 3168 px |
-| C2-9 (=UX-5/M7) | High | Med | pro-UX | Dead gallery thumbnail; no last-shot review (chimping focus at 300 mm) |
-| C2-10 (=UX-8) | High | Med | a11y | Zero accessibility semantics on custom controls; fails Play a11y |
-| C2-11 (=UX-3) | High | Med | pro-UX | HUD reports requested-not-actual capture config (fallback ladder silently drops RAW/HLG) |
-| C2-12 (=UX-1) | High | Med | pro-UX | No metered-manual exposure indicator (M.M./EV needle) `[device-verify]` |
-| C2-13 (=M6) | Med | High | pro-UX | No pinch-to-zoom on the viewfinder |
-
-Net-new this cycle: **C2-1, C2-5, C2-6-revalidated, C2-7** (4 genuinely new); the rest are cycle-1
-deferred items re-validated against source as still-open and re-prioritized.
+Severity: **High** = crash / gate-red / data-loss / corrupt output / pro-blocking correctness ·
+**Medium** = wrong behavior, pro-UX gap, state desync · **Low** = polish / hygiene / docs.
+Confidence: High / Med / Low. Device-only items flagged `[device-verify]` (AVD has a synthetic
+camera — no tele/RAW/HLG/EIS/mic-through-converter).
 
 ---
 
-## NET-NEW findings (validated from source this cycle)
+## CLOSED since Run-1 Cycle-2 (verified in source this cycle)
+- **C2-1 fileName() burst collision** — CLOSED. `CameraEngine.fileName()` now stamps
+  `yyyyMMdd_HHmmss_SSS` + a process-monotonic `AtomicInteger` sequence (`CameraEngine.kt:703-709`).
+- **C2-2 settings persistence** — CLOSED. `storage/SettingsStore.kt` + `ExtraSettings` + a
+  "Remember settings" toggle (default ON), restored in `CameraViewModel.init` and saved on
+  `onStop` (`CameraViewModel.kt:98-157, 386-411`).
+- **C2-4 mode→PHOTO while recording orphans the clip** — CLOSED. `onModeChange` stops recording
+  first when leaving VIDEO (`CameraViewModel.kt:217-223`).
+- **L7 AEB duplicate frames** — CLOSED (`.distinct()` on clamped EV steps, `CameraEngine.kt:361`).
 
-### C2-1 — `fileName()` collides within one wall-clock second → lost/duplicate captures [Med/High]
-`camera/CameraEngine.kt:575-578` — `fileName()` formats `yyyyMMdd_HHmmss` (1-second resolution).
-BURST fires `BURST_COUNT = 5` stills and AEB fires up to 3, all chained within well under one second,
-so every frame in the burst gets the **same** `DISPLAY_NAME` (e.g. `IMG_X9TELE_20260703_142530.heic`).
-TIMELAPSE at `intervalSec` ≥ 1 s is usually safe but a 1 s interval can also collide.
-**Failure scenario:** a 5-frame burst produces one file plus MediaStore-appended `(1)…(4)` *iff* the
-provider dedups; if it doesn't (or for the DNG+HEIF of different frames), frames overwrite or clobber
-each other → the photographer loses shots from the burst. This is the cycle-1 **TEST-13** latent bug,
-now confirmed and promoted to a fix.
-**Fix:** extract a pure `capture/CaptureNaming` object with a process-monotonic counter (or ms + a
-short suffix) so consecutive names are unique; unit-test uniqueness across a simulated burst.
+---
+
+## Cycle summary table (net-new + re-validated open)
+
+| ID | Sev | Conf | Area | One-liner | Disposition |
+|----|-----|------|------|-----------|-------------|
+| R1-1 (=C2-3) | Med | High | camera race | `CameraController.capturePhoto` has no busy guard → a 2nd shutter tap overwrites the single `pending` slot, dropping/misattributing the 1st shot and leaking its `Image` | SCHEDULE |
+| R1-2 (=C2-6) | Med | High | perf/GC | Per-frame `FloatArray` alloc on the GL render thread (`eisProvider` → `GyroEis.currentCorrection()`) | SCHEDULE |
+| R1-3 (=UI-1) | High | Med | UI crash | Degenerate `Slider` valueRange (ISO `400..400` before caps) → NaN thumb fraction → `roundToInt` throws | SCHEDULE |
+| R1-4 (=UI-5) | Med | Med | UI state | AV1 codec / Open-Gate toggle doesn't reconcile `videoResolution` → no chip selected + bogus "4K AV1" encoder summary | SCHEDULE |
+| R1-5 (=UI-6) | Low-Med | High | i18n | Locale-sensitive `String.format` on machine-format readouts (timecode/focal/shutter/zoom/EV) | SCHEDULE |
+| R1-6 (=UI-7) | Low | Med | UI crash | `drawWaveform` indexes `bins[col*rows+row]` without checking `bins.size` → AIOOBE on a resize race | SCHEDULE |
+| R1-7 (=UI-3) | Med | High | UX/touch | Touch targets < 48 dp: `ModeLabel` (~25 dp), `TeleChip` (36 dp), `DialChip` (~38 dp) | SCHEDULE |
+| R1-8 (=UI-4) | Med | High | UX/a11y | `DialChip.enabled` is cosmetic — the greyed EV chip in manual is a fully-clickable no-op & mis-announced to TalkBack | SCHEDULE (EV-chip slice) |
+| R1-9 (=DOC-1) | Low | High | docs | `VideoRecorder` class KDoc says "NO MediaMuxer orientation hint is set"; the code sets one | SCHEDULE |
+| R1-10 (=UI-10) | Low | High | docs | `Overlays.AspectMask` KDoc references the removed `AspectRatio.FULL` | SCHEDULE |
+| R1-11 (=UI-2) | Med-High | High | perf | `CameraUiState` is unstable & passed whole to `TopBar`/`ManualDialCluster`/`ProSheet` → every telemetry tick recomposes them | DEFER |
+| R1-12 (=UI-11) | Low | Med | perf | `VideoTab` recomputes/re-allocates option lists every recomposition | DEFER |
+| R1-13 (=UI-8) | Low | High | maintainability | `RulerSlider` unkeyed `remember` + snapshot-state write during composition | DEFER |
+| R1-14 (=UI-9) | Low | Med | maintainability | `onFractionChange` captured in `pointerInput` without `rememberUpdatedState` (latent trap) | DEFER |
+| R1-15 | Low | Med | UX | Top-bar `GridButton` toggles only `NONE⇄THIRDS`, silently discarding a sheet-chosen GOLDEN/SQUARE/CENTER | DEFER |
+
+Genuinely net-new this cycle: **R1-3, R1-4, R1-5, R1-6, R1-9, R1-10, R1-15**. Re-validated
+still-open from prior cycles: **R1-1, R1-2, R1-7, R1-8, R1-11..R1-14**.
+
+---
+
+## SCHEDULED findings (detail)
+
+### R1-1 (=C2-3) — `capturePhoto` has no in-flight guard → rapid double-tap corrupts a capture [Med/High]
+`camera/CameraController.kt:413-457`. `capturePhoto` unconditionally assigns `pending = Pending(...)`
+(`:426`). A second shutter tap that lands before the first capture resolves its images overwrites
+`pending`; the first capture's `onImage`/`onCaptureCompleted` then find a mismatched slot → the first
+shot is dropped/misattributed and any `Image` it already acquired leaks (`ImageReader` `maxImages=2`,
+so two leaks starve the reader and freeze still capture).
+**Why BURST/AEB are NOT affected:** their next shot is fired from inside `onPhoto` (→ `onDone`), which
+runs inside `tryComplete`'s `try` *before* the `finally` sets `pending = null` — but `capturePhoto`
+`handler.post {…}` only *queues* the next capture, which the handler runs *after* the current
+`tryComplete` returns, i.e. after `pending` is cleared. Verified by tracing the completion order.
+**Fix:** at the top of the posted body, if `pending != null` call `cb.onError("capture already in
+progress")` and return — rejects a genuine rapid double-tap while leaving BURST/AEB chains intact.
+Confidence High (mechanism); device-stress final verify.
+
+### R1-2 (=C2-6, A-PERF-3) — per-frame `FloatArray` alloc on the GL thread [Med/High]
+`camera/CameraEngine.kt:118` `gl.setEisProvider { gyro.currentCorrection() }` and
+`stab/GyroEis.kt:69` `currentCorrection(): FloatArray = floatArrayOf(corrYaw, corrPitch, corrRoll)`.
+The provider is invoked once per rendered frame (30–60 Hz) in `GlPipeline.drawFrame` (`:209`),
+allocating a fresh 3-element array each time on the latency-critical GL thread → steady short-lived
+garbage → periodic GC that can hitch the preview exactly when EIS matters (hand-held 300 mm).
+`GlPipeline` already documents the alloc and defers the fix to the provider owner (`:205-208`).
+**Fix:** fill-in-place contract. Add `GyroEis.fillCorrection(out: FloatArray)`; change
+`GlPipeline.eisProvider` to `((FloatArray) -> Unit)?` with a GL-owned reusable `FloatArray(3)`; wire
+`CameraEngine` to `gl.setEisProvider { out -> gyro.fillCorrection(out) }`. Zero per-frame alloc; math
+identical. Confidence High.
+
+### R1-3 (=UI-1) — degenerate `Slider` valueRange → NaN thumb fraction → crash risk [High/Med]
+`ui/controls/ProControls.kt:177-184` (`LabeledSlider`) fed by `ui/controls/ProSheet.kt:391-399` — ISO
+uses `isoRange = caps?.isoRange ?: Range(controls.iso, controls.iso)`, so before the camera opens
+`caps == null` ⇒ `valueRange = 400f..400f` (start == endInclusive). Material3 `Slider` computes
+`fraction = (value-start)/(end-start) = 0f/0f = NaN`; thumb placement does `(track*fraction)
+.roundToInt()`, and `Float.roundToInt()` throws `IllegalArgumentException("Cannot round NaN value.")`.
+A disabled slider still lays out its thumb, so `autoExposure=true` (ISO disabled) doesn't protect it.
+The Zoom slider (`ProSheet.kt:317-324`) is only non-null-guarded, not `lower < upper`-guarded.
+**Failure:** cold launch → open the gear before caps arrive → Exposure/Color tab → ISO row → crash or
+mis-placed thumb. **Fix:** in `LabeledSlider`, when `valueRange.endInclusive <= valueRange.start`
+render a static/disabled full-track row instead of an interactive `Slider` (protects every call site).
+Confidence Med-High; device-confirm the exact Material3 behavior.
+
+### R1-4 (=UI-5) — AV1 / Open-Gate toggle leaves `videoResolution` out of range [Med/Med]
+`ui/CameraViewModel.kt:242-268` — `onVideoCodec` and `onToggleOpenGate` call `reconcileFrameRate()`
+but never reconcile `videoResolution`. Picking AV1 filters `resolutionOptions` to `width <= 1920`
+(`ProSheet.kt:512`) while `state.videoResolution` can still be `3840×2160`, so (1) no resolution chip
+is highlighted and (2) the summary computes `videoBitRate(3840, 2160, …)` and displays "AV1 · 4K · N
+Mbps" for a config AV1 is explicitly gated against. Same mismatch toggling Open Gate (options flip to
+4:3 while the selection stays 16:9). **Fix:** after `onVideoCodec`/`onToggleOpenGate`, clamp
+`videoResolution` to the first entry of the newly-valid option set (or drive the summary from an
+in-range size). Confidence Med (needs a device glance at the engine's `onVideoSizeChosen`).
+
+### R1-5 (=UI-6) — locale-sensitive number formatting on machine-format readouts [Low-Med/High]
+`ManualDials.kt:164,187,279,418`; `ProSheet.kt:319,421,428,548-554`; `ProControls.kt:412-417,428`;
+`Overlays.kt:203,276-277`. Every `"%.1fx"/"%+.1f"/"%.0f°"/"%02d:%02d"/"%.0fmm".format(...)` resolves
+the default locale → German shows `1,5x`, Arabic/Farsi render Arabic-Indic digits. Display-only (never
+parsed back) so no crash, but for a worldwide Play release the machine values (timecode, focal,
+shutter, K, EV) should be locale-stable. **Fix:** `String.format(Locale.US, …)` for those. Confidence
+High.
+
+### R1-6 (=UI-7) — `drawWaveform` unchecked `bins` length → AIOOBE [Low/Med]
+`ui/overlays/Overlays.kt:349-371`. `WaveformOverlay` guards only `columns>0 && rows>0` before indexing
+`bins[col*rows+row]` across the whole grid; if a producer ever emits `bins.size != columns*rows` (a
+resize race between GL analysis config and readback) it throws `ArrayIndexOutOfBoundsException` on the
+UI thread. **Fix:** add `if (data.bins.size < data.columns * data.rows) return` to the guard.
+Confidence Med.
+
+### R1-7 (=UI-3) — primary touch targets below 48 dp [Med/High]
+`CameraScreen.kt:576-600` (`ModeLabel` Photo/Video, ~24-26 dp tall), `:517-531` (`TeleChip`, 36 dp);
+`ManualDials.kt:195-225` (`DialChip`, ~38 dp). The most-used control (mode switch) and the TELE chip
+miss the WCAG/Material 48 dp minimum on a 3168 px panel → frequent one-handed mis-taps. (Chrome
+buttons/snapshot/lens-flip are already 48-52 dp — keep that pattern.) **Fix:** add
+`Modifier.sizeIn(minWidth=48.dp, minHeight=48.dp)` to the clickable node, visual size unchanged.
 Confidence High.
 
-### C2-5 — Audio source and sample rate hardcoded — no pro audio options [Low/High] `[device-verify audio]`
-`video/VideoRecorder.kt:199` pins `MediaRecorder.AudioSource.CAMCORDER`; `video/ColorProfiles.kt:26`
-pins `AUDIO_SAMPLE_RATE = 48_000` and `AUDIO_BIT_RATE = 192_000`. The Video tab exposes only a
-Record-Audio toggle and a software gain slider.
-BACKLOG explicitly lists "more pro audio options in settings." Pros want to pick the input route —
-CAMCORDER (zoom-aware, default), MIC (raw), UNPROCESSED (no AGC/NS, best for external processing),
-VOICE_RECOGNITION — and a sample rate (48 kHz vs 44.1 kHz for delivery matching).
-**Fix:** add `AudioSource` + `AudioSampleRate` enums, plumb UI → state → engine → `VideoRecorder`
-(AudioRecord source + rate) → `ColorProfiles.aacFormat(rate)`. Use the selected rate consistently for
-`getMinBufferSize`, the `AudioRecord` ctor, and the PTS math. Build-verifiable; actual capture is
-device-verify. Confidence High (implementation), device-verify (audio quality).
+### R1-8 (=UI-4) — `DialChip.enabled` cosmetic; greyed EV chip is a clickable no-op [Med/High]
+`ManualDials.kt:195-225` always applies `.clickable(onClick)` regardless of `enabled` (which only
+tints). Focus/Shutter/ISO greyed chips are *intentionally* actionable (a tap flips to Manual), but the
+EV chip in manual (`:116`) is a pure no-op that still consumes the tap and is announced by TalkBack as
+an enabled button. **Fix (this cycle):** make the EV chip non-clickable when `!autoExposure`
+(`clickable(enabled=…)`) + `Modifier.semantics { disabled() }`; broader a11y semantics pass stays
+deferred. Confidence High.
 
-### C2-6 — Per-frame `FloatArray` allocation on the GL render thread [Med/High]  (re-validated A-PERF-3)
-`camera/CameraEngine.kt:116` `gl.setEisProvider { gyro.currentCorrection() }` and
-`stab/GyroEis.kt:63` `currentCorrection(): FloatArray = floatArrayOf(corrYaw, corrPitch, corrRoll)`.
-The provider is invoked once per rendered frame (30–60 Hz) and allocates a fresh 3-element array each
-time on the **latency-critical GL thread**, creating steady short-lived garbage → periodic GC that can
-cause preview hitches, worst exactly when EIS matters (hand-held 300 mm).
-**Fix:** convert the provider to fill-in-place — GL owns a reusable `FloatArray(3)`, passes it to a
-`GyroEis.fillCorrection(out)`; no per-frame alloc. Confidence High.
+### R1-9 (=DOC-1) — `VideoRecorder` KDoc contradicts the code [Low/High]
+`video/VideoRecorder.kt:28-30` class KDoc: "therefore NO MediaMuxer orientation hint is set." But
+`start()` calls `muxer?.setOrientationHint(...)` (`:88-90`) — the hint was added for landscape holds.
+Per the repo's "keep the why-comments accurate" rule, fix the KDoc to describe the device-orientation
+hint. Confidence High.
 
-### C2-7 — Viewfinder-assist toggles set before GL start are silently dropped [Low/Med]
-`gl/GlPipeline.kt:368` `post` = `handler?.post{…}` (null-safe no-op until `start()`), and
-`camera/CameraEngine.kt` forwards `setPeaking/setZebra/setFalseColor/setPunchIn/setAnalysis/setTransfer`
-straight to GL with no engine-side memory. Any assist toggled before the preview surface arrives (and,
-critically, any assist **restored from persisted settings at ViewModel init** — see C2-2) is lost
-because the GL handler doesn't exist yet, and nothing re-applies it once GL starts.
-**Fix:** hold the assist/transfer state as engine `@Volatile` fields and re-apply them to GL in the
-`gl.start{…}` onInputReady callback (next to `applyStabilization()`), so toggles made before start —
-and restored settings — take effect. Also unblocks C2-2 restore. Confidence Med-High.
+### R1-10 (=UI-10) — `AspectMask` KDoc references removed `AspectRatio.FULL` [Low/High]
+`ui/overlays/Overlays.kt:110-118` docs say "non-[AspectRatio.FULL]" / "Draws nothing for
+[AspectRatio.FULL]", but the enum is only `W4_3`/`W16_9` and the code early-returns on `W4_3`. Broken
+doc links. **Fix:** reference `W4_3` as the no-crop case. Confidence High.
 
 ---
 
-## RE-VALIDATED cycle-1 deferred (still open, source-confirmed)
+## DEFERRED findings (recorded — reason + exit criterion; severity/confidence NOT downgraded)
 
-### C2-2 = M2 — No settings persistence across process death [Med/High] (pro-UX flagship)
-`ui/CameraViewModel.kt:42` seeds `MutableStateFlow(CameraUiState())`; every field is in-memory. A cold
-start resets ISO/shutter/WB/format/EIS/grid/drive/assists/audio to defaults. Sony and Pixel both
-persist shooting settings between sessions.
-**Fix:** pure `settings/PersistedSettings` (enums + primitives only, no `android.*`) + pure
-`SettingsCodec` (`toMap`/`fromMap`, robust to missing/garbage keys), unit-tested; an android
-`SettingsStore` (SharedPreferences) bridge; a **"Remember settings"** toggle (default ON) in the pro
-sheet; restore in VM `init` and debounced save on change. Restore of GL-thread assists depends on C2-7.
-Confidence High. AVD-verifiable (unit round-trip + relaunch renders restored state).
+Deferral basis per repo policy: `CLAUDE.md` mandates on-device verification for camera/GL/orientation
+behavior ("Compilation ≠ correct pixels"), pins targetSdk, and favors focused fine-grained changes;
+none of the deferred items below are security, correctness, or data-loss defects (those — R1-1, R1-3,
+R1-6 — are all SCHEDULED). Perf/maintainability/device-tuning deferrals are permitted.
 
-### C2-3 = A-TRACE-4 — Rapid shutter overwrites the single `pending` slot [Med/Med]
-`camera/CameraController.kt:322` — `capturePhoto` unconditionally assigns `pending = Pending(...)`. A
-second tap posted before the first capture resolves its Images overwrites `pending`, so the first
-capture's `onImage` finds a mismatched slot → the first shot is dropped/misattributed and its acquired
-`Image` can leak the reader (maxImages=2). BURST/AEB chaining is NOT affected (the chain posts its next
-shot from inside `onPhoto`, which runs before `tryComplete`'s `finally` sets `pending = null`, so by the
-time the posted capture runs the slot is free — verified by reading the completion order).
-**Fix:** reject a new `capturePhoto` when `pending != null` via `cb.onError("capture in progress")`.
-Device-stress final verify. Confidence Med (mechanism High; timing device-only).
+- **R1-11 (=UI-2)** [Med-High/High perf] — `CameraUiState` unstable + passed whole → per-frame
+  recomposition of the dial cluster/top bar/pro sheet while a telemetry field (`audioLevel`/
+  `histogramData`/`waveformData`/`recordElapsedMs`) ticks. **Reason:** the real fix narrows the child
+  signatures or splits per-frame telemetry into a separate `StateFlow` — a `CameraScreen` refactor
+  that needs on-device recomposition-count profiling to verify (device-only per CLAUDE.md); doing it
+  blind risks regressing the carefully-tuned dial/recording UI. **Exit:** children take narrow
+  stable params (or telemetry lives in its own flow) and a device profile shows the dials no longer
+  recompose on a meter tick.
+- **R1-12 (=UI-11)** [Low/Med perf] — `VideoTab` re-allocates `allSizes`/`resolutionOptions`/
+  `availableFor`/`videoBitRate` each recomposition. **Reason:** low impact and coupled to the R1-11
+  recomposition-frequency fix; best done together. **Exit:** the lists are `remember`ed keyed on
+  their inputs, folded into the R1-11 pass.
+- **R1-13 (=UI-8)** [Low/High maintainability] — `RulerSlider` unkeyed `remember` + snapshot write in
+  composition. **Reason:** the dial feel is device-tuned ("iterated until it felt snapped on device",
+  CLAUDE.md); refactoring the state reconciliation risks changing the haptic-detent behavior and must
+  be re-felt on hardware. **Exit:** keyed `remember` + `LaunchedEffect`/`derivedStateOf`
+  reconciliation, re-verified on device that snapping still feels identical.
+- **R1-14 (=UI-9)** [Low/Med maintainability] — `onFractionChange` not `rememberUpdatedState`;
+  currently no live bug (callers co-vary with the `pointerInput` keys). **Reason:** latent-trap
+  hardening, no current defect; bundle with R1-13's ruler pass. **Exit:** `rememberUpdatedState`
+  applied when the ruler is next touched.
+- **R1-15** [Low/Med UX] — top-bar `GridButton` collapses to `NONE⇄THIRDS`, discarding a
+  sheet-chosen grid. **Reason:** UX-polish micro-decision (round-trip the last non-NONE type) better
+  batched with the deferred overlay/UX-token pass. **Exit:** the top-bar toggle restores the last
+  non-NONE grid type.
 
-### C2-4 = A-TRACE-3a — Mode→PHOTO while recording orphans the recording [Med/High]
-`ui/CameraViewModel.kt:150` `onModeChange` only cancels the countdown and sets `mode`. If the user
-switches to PHOTO while `isRecording`, the recorder keeps running but the shutter becomes a photo
-shutter — there is no stop affordance and the clip only finalizes on background/exit.
-**Fix:** in `onModeChange`, if leaving VIDEO while `isRecording`, stop recording first (mirror
-`onToggleRecording`'s stop path). AVD-verifiable (pure UI logic). Confidence High.
-
-### C2-8 = UX-4 — Settings gear reachable only in the top chrome bar [High/Med] (discoverability)
-`ui/CameraScreen.kt` mounts the gear in the top bar; on a 1440×3168 panel that is a long thumb-stretch
-one-handed. **DEFERRED** (needs a reachable bottom/edge entry or swipe-up; larger layout change).
-Exit: a settings entry reachable in the bottom thumb zone.
-
-### C2-9 = UX-5/M7 — Dead gallery thumbnail; no last-shot review [High/Med]
-`ui/CameraScreen.kt` `GalleryThumbPlaceholder` is decorative/unwired. **DEFERRED** (needs last-saved
-URI tracking + `ACTION_VIEW`; own feature). Exit: thumbnail opens the last capture.
-
-### C2-10 = UX-8 — Zero accessibility semantics [High/Med]
-No `contentDescription`/`role`/`stateDescription` on the custom Canvas/Box controls; TalkBack gets
-nothing; fails Play pre-launch a11y. **DEFERRED** (broad pass across every control + `strings.xml`).
-Exit: semantics on every interactive control; a11y scan clean.
-
-### C2-11 = UX-3 — HUD reports requested-not-actual capture config [High/Med]
-The fallback ladder in `CameraController.configureSession` can silently drop RAW/HLG, but the UI still
-shows them enabled. **DEFERRED** (engine must surface achieved streams to state + an amber warning
-chip). Exit: `activeFormats`/`fallbackLevel` on state, warning shown.
-
-### C2-12 = UX-1 — No metered-manual exposure indicator [High/Med] `[device-verify]`
-No M.M. scale / EV needle; the manual shooter is flying blind vs the meter. **DEFERRED** (needs metered
-EV from `TotalCaptureResult` → state; device path). Exit: needle driven by metered delta.
-
-### C2-13 = M6 — No pinch-to-zoom on the viewfinder [Med/High]
-`ui/CameraScreen.kt` wires only `detectTapGestures → onTapFocus`; zoom lives in a buried slider.
-**DEFERRED** (needs `detectTransformGestures` composed with tap-to-focus without gesture conflict).
-Exit: two-finger zoom clamped to `caps.zoomRatioRange`, coexisting with tap-focus.
-
----
-
-## Still-deferred from cycle 1 (unchanged severity; see cycle-1 plan for full exit criteria)
-- **A-BUG-2/A-PERF-2** [Med-High/High] — `setCameraOverride` runs camera-service IPC + `CameraCaps.read`
-  on the MAIN thread. Off-main move needs care to preserve reopen ordering. **DEFERRED.**
-- **A-BUG-3/A-TRACE-2b** [Med/Med] — VideoRecorder teardown vs stalled drain-thread `muxer!!` race.
-  **DEFERRED** (device rapid start/stop stress). Note: writes already `runCatching`-guard `muxer?`.
-- **A-BUG-5** [Med/Med] — stale-Surface bind in the async startup window. **DEFERRED** (device-repro).
-- **A-PERF-1** [High/High-mech] — full-res scope `glReadPixels` (~18 MB) each analysis frame.
-  **DEFERRED** (needs device profiling + downscaled-FBO readback).
-- **UX-7** [High] — no loading/hard-error state (`CameraStatus{Initializing,Ready,Error}` + Retry).
-  **DEFERRED.**
-- **UX-10** [High] — `LensFlipButton` duplicates TELE; repurpose as settings/scopes/review entry.
-  **DEFERRED** (pairs with C2-8).
-- **UX-16** [High] — overlay colors off-token; single-tone grid vanishes on bright scenes. **DEFERRED.**
-- **UX-21** [High] — shutter re-centers when the snapshot button appears mid-record. **DEFERRED.**
-- **UX-11..UX-30 (remainder)** [Med/Low] — focus-magnifier auto-engage, WB dial inline, AE/AF lock
-  indicators + long-press lock, tabular figures, haptic detents, partial-sheet preview, tab-rail glyph
-  legibility, overflow affordance, battery/storage readout, reduced-motion, ruler scrim. **DEFERRED.**
-- **TEST-5..12,14** [High/Med] — pure-extraction tests for `GyroEis.currentDeviceOrientation`,
-  kelvin→RGGB, iso/shutter stops, `effectiveExposureNs`, `applyGainAndLevel`, `equivFocalOf`, AEB steps.
-  **DEFERRED** (progressively; C2-1 lands the `CaptureNaming`/TEST-13 slice this cycle).
-- **M3** [Med/Med] — tap-to-focus EIS/punch-in crop inverse. **DEFERRED** device-only sign/axis.
-- **M4** [Med/Med] — 300 mm gyro-EIS axis/sign tuning. **DEFERRED** device-only.
-- **H2 sign** [High/Med] — muxer orientation-hint sign. Plumbing shipped cycle 1; **DEFERRED** device-only.
-- **L4** [Low/High] — `OldTargetApi` targetSdk 36 — **DEFERRED by CLAUDE.md policy** (targetSdk pinned
-  to the device OS; quoted in the plan).
-- **L5** [Low/Med] — live exposure readout in Auto. **DEFERRED** (needs `TotalCaptureResult` plumbing;
-  overlaps C2-12).
+### Carried device-only / larger deferrals (unchanged from prior cycles — still open)
+- **C2-5** [Low/High] pro audio options (source/sample-rate) — `VideoRecorder.kt:198-204` hardcodes
+  CAMCORDER/48 k. Deferred (own feature; audio quality is device-verify). Exit: `AudioSource` +
+  `AudioSampleRate` enums plumbed UI→engine→recorder.
+- **C2-7** [Low/Med] assist toggles set before GL `start()` are dropped (`GlPipeline.post` no-ops until
+  `start()`); assists aren't persisted so restore isn't affected today. Exit: engine holds assist
+  state and re-applies in the `gl.start{…}` onInputReady callback.
+- **A-BUG-2/A-PERF-2** [Med-High/High] `setCameraOverride` runs camera IPC + `CameraCaps.read` on the
+  MAIN thread (`CameraEngine.kt:307-324`). Exit: off-main with preserved reopen ordering, device-verify
+  no reopen race.
+- **A-PERF-1** [High/High-mech] full-res scope `glReadPixels` (~preview-size × 4 B) every 12th frame
+  (`GlPipeline.kt:248-288`). Exit: downscaled-FBO readback, device-profiled.
+- **UX-3** HUD reports requested-not-actual capture config (fallback ladder silently drops RAW/HLG).
+  **UX-4** reachable bottom settings entry. **UX-5/M7** gallery/last-shot review. **UX-7** loading/
+  hard-error state. **UX-8** full accessibility semantics + `strings.xml`. **UX-10** repurpose
+  `LensFlipButton`. **UX-16** overlay color tokens. **UX-21** shutter re-center on snapshot. **M6**
+  pinch-to-zoom. **UX-1/C2-12** metered-manual EV needle. All `[device-verify]`/larger — unchanged
+  exit criteria in prior plans.
+- **M3/M4, H2-sign** [device-only] tap-focus EIS/punch-in crop inverse; 300 mm gyro-EIS axis/sign;
+  muxer orientation-hint sign. Exit: on-device calibration.
+- **TEST-5..12** [High/Med] pure-extraction unit tests for `effectiveExposureNs`,
+  `kelvinTintToRggbGains`, `GyroEis.currentDeviceOrientation`, iso/shutter stop math, AEB steps.
+  Exit: progressively extracted + tested. (`videoBitRate`/`VideoFrameRate.availableFor`/RotationMath/
+  CameraSelector2/FocusMapping already covered — 37 tests.)
+- **L4** [Low/High] `OldTargetApi` targetSdk 36 — **DEFERRED BY CLAUDE.md POLICY** (targetSdk pinned
+  to the sole device's OS = Android 16/API 36; bumping opts into API-37 runtime behavior on a 36
+  device). Exit: device ships a newer OS level or a deliberate release decision.
 
 ---
 
 ## Security / correctness sweep (this cycle)
-- Permissions: CAMERA + RECORD_AUDIO requested at runtime; permanent-denial deep-link present. No new
-  gaps. Adding pro `AudioSource` options does **not** add permissions (all covered by RECORD_AUDIO).
-- Storage: scoped MediaStore with `IS_PENDING`, publish-on-success / delete-on-failure — sound. C2-1 is
-  a naming-uniqueness issue, not a scoped-storage issue.
-- No secrets, no network, no unsafe reflection beyond the documented heifwriter alpha suppression.
-- `@Volatile` seams between UI/GL/camera threads verified consistent for the fields touched this cycle.
+- **Permissions:** only CAMERA + RECORD_AUDIO, both requested at runtime with a permanent-denial
+  Settings deep-link (`MainActivity.kt:62-111`). `AndroidManifest.xml` declares nothing extra. No
+  network permission → no exfiltration surface.
+- **Storage:** scoped MediaStore with `IS_PENDING`, publish-on-success / delete-on-failure across
+  HEIF/JPEG/DNG/MP4 (`CameraEngine` + `MediaStoreWriter` + `VideoRecorder.stop`). Sound.
+  `allowBackup=false` — no capture/settings leakage via backup.
+- **No secrets, no reflection** beyond the documented heifwriter-alpha `RestrictedApi` suppression
+  (`HeifCapture.kt:21`) and `VendorTagInspector` which is `BuildConfig.DEBUG`-gated
+  (`CameraEngine.kt:131-134`).
+- **Concurrency:** `@Volatile` seams between UI/GL/camera/audio threads verified for the fields
+  touched this cycle; `Pending` is `synchronized`; the video/audio muxer is `muxerLock`-guarded.
+  R1-1 is the one shared-state hazard found (single `pending` slot, unguarded on entry).
 
 ## Verified sound (no change needed)
-- Cycle-1 fixes hold: capture callback on no-target path, `AudioRecord` STATE guard (both `startAudio`
-  and `runAudio`), empty-MP4 delete, record-stop off the main thread, recording UI sync on background,
-  muxer orientation-hint plumbing, RotationMath + CameraSelector2 extraction & tests, 48 dp touch
-  targets, shortest-path HUD rotation, permission Settings deep-link.
-- `CameraController` fallback ladder, `closed`/`paused` guards, `Pending` close-on-failure,
-  HandlerThread `quitSafely` — correct.
-- `FocusMapping`, `kelvinTintToRggbGains` (R,Geven,Godd,B order), `saveHeifAsync` recycle/publish/OOM —
-  correct.
+- `RotationMath`, `CameraSelector2.pickBest`, `FocusMapping`, `VideoFrameRate.availableFor`,
+  `videoBitRate`, `kelvinTintToRggbGains` (R,Geven,Godd,B order correct) — logic + tests correct.
+- Session fallback ladder, `closed`/`paused`/`starting` guards, `Pending` close-on-failure/partial,
+  HandlerThread `quitSafely`, `AudioRecord` STATE guard (both `startAudio` + `runAudio`), empty-MP4
+  delete, record-stop off the main thread, HEIF/JPEG OOM-guarded recycle/publish paths — all correct.
+
+## AGENT FAILURES
+None. One synchronous helper (`code-reviewer`, UI layer) completed and returned full findings.
