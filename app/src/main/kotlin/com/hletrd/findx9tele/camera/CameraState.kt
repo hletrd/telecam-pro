@@ -35,8 +35,41 @@ enum class ShutterTimer(val seconds: Int) { OFF(0), SEC3(3), SEC10(10) }
 /** How shutter is expressed: absolute SPEED (exposure time) or cine ANGLE (relative to fps). */
 enum class ShutterMode { SPEED, ANGLE }
 
-/** Electronic stabilization crop strength (headroom). OFF handled by the EIS toggle. */
+/** Electronic stabilization crop strength (headroom), for the app-side gyro EIS ([VideoStabMode.GYRO]). */
 enum class EisStrength(val crop: Float) { LOW(0.06f), MEDIUM(0.10f), HIGH(0.18f) }
+
+/**
+ * Video stabilization strategy. The important consequence for the 300 mm teleconverter: at a fixed
+ * video shutter (e.g. 1/60 s) the per-frame MOTION BLUR is set by the shutter, and only OIS — which
+ * physically counter-moves the lens DURING the exposure — can reduce it. App-side gyro EIS ([GYRO])
+ * only warps whole frames after capture, so it steadies frame-to-frame jitter but cannot de-blur.
+ *
+ *  - [OFF]      — no stabilization (OIS still follows the separate OIS toggle).
+ *  - [GYRO]     — app-side gyro EIS scaled to the effective focal (our old default); no HAL stab.
+ *  - [STANDARD] — HAL `CONTROL_VIDEO_STABILIZATION_MODE_ON`: the HAL's own OIS+EIS.
+ *  - [ENHANCED] — HAL `PREVIEW_STABILIZATION`: the modern combined OIS+EIS the stock "super steady"
+ *                 uses (the stock app drives `com.oplus.configure.video.stabilization`, which the
+ *                 vendor SDK maps to this). Reduces motion blur via OIS; best on the tele.
+ *
+ * The two HAL modes are gated by `CameraCaps.videoStabModes`; app-side EIS is suppressed while a HAL
+ * mode is active so the two don't double-warp.
+ */
+enum class VideoStabMode(val label: String) {
+    OFF("Off"),
+    GYRO("Gyro (app)"),
+    STANDARD("OIS Std"),
+    ENHANCED("OIS Enhanced");
+
+    /** CONTROL_VIDEO_STABILIZATION_MODE value for the HAL modes; null for [OFF]/[GYRO]. */
+    val halControlMode: Int?
+        get() = when (this) {
+            STANDARD -> android.hardware.camera2.CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON
+            ENHANCED -> android.hardware.camera2.CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION
+            else -> null
+        }
+
+    val usesClientEis: Boolean get() = this == GYRO
+}
 
 /** Focus-peaking edge-detection threshold; a LOWER threshold highlights more edges (more sensitive). */
 enum class PeakingLevel(val threshold: Float) { LOW(0.12f), MEDIUM(0.06f), HIGH(0.03f) }
@@ -235,8 +268,9 @@ data class CameraUiState(
     val teleconverterMode: Boolean = true,
     // HAL-native log (vendor com.oplus.log.video.mode). Experimental; see [VendorLogMode].
     val vendorLogMode: VendorLogMode = VendorLogMode.OFF,
-    // Stabilization
-    val eisEnabled: Boolean = true,
+    // Stabilization. Default ENHANCED = HAL OIS+EIS ("super steady"): at 300 mm it reduces the
+    // per-frame motion blur that app-side gyro EIS cannot touch (see [VideoStabMode]).
+    val videoStabMode: VideoStabMode = VideoStabMode.ENHANCED,
     val eisStrength: EisStrength = EisStrength.MEDIUM,
     // Video
     val videoCodec: VideoCodec = VideoCodec.HEVC,

@@ -119,7 +119,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setControls(c)
         engine.setTransfer(e.transfer)
         engine.setTeleconverterMode(e.teleconverter)
-        engine.setEisEnabled(e.eisEnabled)
+        engine.setVideoStabMode(e.videoStabMode)
         engine.setEisStrength(e.eisStrength)
         engine.setAspectRatio(e.aspectRatio)
         engine.setVideoCodec(e.videoCodec)
@@ -134,7 +134,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 photoFormats = PhotoFormats(e.heif, e.jpeg, e.dngRaw),
                 mode = e.mode,
                 teleconverterMode = e.teleconverter,
-                eisEnabled = e.eisEnabled,
+                videoStabMode = e.videoStabMode,
                 eisStrength = e.eisStrength,
                 aspectRatio = e.aspectRatio,
                 grid = e.grid,
@@ -154,7 +154,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             dngRaw = s.photoFormats.dngRaw,
             mode = s.mode,
             teleconverter = s.teleconverterMode,
-            eisEnabled = s.eisEnabled,
+            videoStabMode = s.videoStabMode,
             eisStrength = s.eisStrength,
             aspectRatio = s.aspectRatio,
             grid = s.grid,
@@ -311,9 +311,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
 
     // ---- Stabilization ----
-    override fun onToggleEis(enabled: Boolean) {
-        engine.setEisEnabled(enabled)
-        _state.update { it.copy(eisEnabled = enabled) }
+    override fun onVideoStabMode(mode: com.hletrd.findx9tele.camera.VideoStabMode) {
+        engine.setVideoStabMode(mode)
+        _state.update { it.copy(videoStabMode = mode) }
     }
     override fun onEisStrength(strength: EisStrength) {
         engine.setEisStrength(strength)

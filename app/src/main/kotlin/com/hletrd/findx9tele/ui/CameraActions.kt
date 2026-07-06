@@ -87,7 +87,7 @@ interface CameraActions {
     fun onToggleOpenGate(enabled: Boolean)
 
     // Stabilization
-    fun onToggleEis(enabled: Boolean)
+    fun onVideoStabMode(mode: com.hletrd.findx9tele.camera.VideoStabMode)
     fun onEisStrength(strength: EisStrength)
 
     // Viewfinder assists

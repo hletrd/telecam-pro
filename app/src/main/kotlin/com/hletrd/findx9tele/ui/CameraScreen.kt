@@ -762,7 +762,7 @@ private object PreviewCameraActions : CameraActions {
     override fun onVideoFrameRate(rate: com.hletrd.findx9tele.camera.VideoFrameRate) = Unit
     override fun onToggleOpenGate(enabled: Boolean) = Unit
 
-    override fun onToggleEis(enabled: Boolean) = Unit
+    override fun onVideoStabMode(mode: com.hletrd.findx9tele.camera.VideoStabMode) = Unit
     override fun onEisStrength(strength: EisStrength) = Unit
 
     override fun onTogglePeaking(enabled: Boolean) = Unit

@@ -7,6 +7,7 @@ import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.EisStrength
+import com.hletrd.findx9tele.camera.VideoStabMode
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.ManualControls
 import com.hletrd.findx9tele.camera.VideoCodec
@@ -25,7 +26,7 @@ data class ExtraSettings(
     val dngRaw: Boolean = true,
     val mode: CaptureMode = CaptureMode.PHOTO,
     val teleconverter: Boolean = true,
-    val eisEnabled: Boolean = true,
+    val videoStabMode: VideoStabMode = VideoStabMode.ENHANCED,
     val eisStrength: EisStrength = EisStrength.MEDIUM,
     val aspectRatio: AspectRatio = AspectRatio.W4_3,
     val grid: GridType = GridType.THIRDS,
@@ -84,7 +85,7 @@ class SettingsStore(context: Context) {
             putBoolean("dngRaw", e.dngRaw)
             putString("mode", e.mode.name)
             putBoolean("teleconverter", e.teleconverter)
-            putBoolean("eisEnabled", e.eisEnabled)
+            putString("videoStabMode", e.videoStabMode.name)
             putString("eisStrength", e.eisStrength.name)
             putString("aspectRatio", e.aspectRatio.name)
             putString("grid", e.grid.name)
@@ -136,7 +137,7 @@ class SettingsStore(context: Context) {
                 dngRaw = prefs.getBoolean("dngRaw", ed.dngRaw),
                 mode = enumOr(prefs.getString("mode", null), ed.mode),
                 teleconverter = prefs.getBoolean("teleconverter", ed.teleconverter),
-                eisEnabled = prefs.getBoolean("eisEnabled", ed.eisEnabled),
+                videoStabMode = enumOr(prefs.getString("videoStabMode", null), ed.videoStabMode),
                 eisStrength = enumOr(prefs.getString("eisStrength", null), ed.eisStrength),
                 aspectRatio = enumOr(prefs.getString("aspectRatio", null), ed.aspectRatio),
                 grid = enumOr(prefs.getString("grid", null), ed.grid),

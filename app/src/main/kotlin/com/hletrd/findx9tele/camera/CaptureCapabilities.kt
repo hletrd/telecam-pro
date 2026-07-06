@@ -45,6 +45,8 @@ data class CameraCaps(
     val oisAvailable: Boolean,
     val flashAvailable: Boolean,
     val zoomRatioRange: Range<Float>?,
+    /** CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES: which HAL video-stab modes this lens supports (0/1/2). */
+    val videoStabModes: IntArray,
     val afModes: IntArray,
     val awbModes: IntArray,
     val aeModes: IntArray,
@@ -76,6 +78,19 @@ data class CameraCaps(
 
     /** Max high-speed fps advertised for [size] (0 if the camera exposes no high-speed config for it). */
     fun highSpeedFpsFor(size: Size): Int = highSpeedConfigs[size] ?: 0
+
+    /**
+     * The CONTROL_VIDEO_STABILIZATION_MODE value to request for [mode], honoring what this lens
+     * actually supports: ENHANCED falls back to ON when PREVIEW_STABILIZATION is absent, and any HAL
+     * mode falls back to OFF when unsupported. OFF/GYRO resolve to OFF (GYRO stabilizes in our GL).
+     */
+    fun videoStabControlMode(mode: VideoStabMode): Int {
+        val off = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF
+        val want = mode.halControlMode ?: return off
+        if (videoStabModes.contains(want)) return want
+        val on = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON
+        return if (mode == VideoStabMode.ENHANCED && videoStabModes.contains(on)) on else off
+    }
 
     /** A supported target-fps range for [fps]: prefer a fixed [fps,fps] range, else one covering it. */
     fun clampFpsRange(fps: Int): Range<Int>? =
@@ -164,6 +179,7 @@ data class CameraCaps(
                 oisAvailable = oisModes.contains(CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON),
                 flashAvailable = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true,
                 zoomRatioRange = chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE),
+                videoStabModes = chars.get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES) ?: IntArray(0),
                 afModes = chars.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: IntArray(0),
                 awbModes = chars.get(CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES) ?: IntArray(0),
                 aeModes = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_MODES) ?: IntArray(0),

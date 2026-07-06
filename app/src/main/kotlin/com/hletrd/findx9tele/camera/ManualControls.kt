@@ -91,8 +91,9 @@ fun sensorFrameDurationNs(fps: Int, exposureNs: Long, maxFrameDurationNs: Long):
 
 /**
  * Applies the parameters to a CaptureRequest, clamping to hardware ranges and honoring capability
- * gates. Also forces HAL video stabilization OFF (its gain is wrong for the afocal teleconverter —
- * our gyro EIS handles stabilization at the true focal length) and sets OIS per the user toggle.
+ * gates. Sets OIS per the user toggle. HAL video stabilization (CONTROL_VIDEO_STABILIZATION_MODE)
+ * is owned by [CameraController], which sets it on the repeating preview/video request per the
+ * selected [VideoStabMode] — not here, so it isn't forced onto still captures.
  */
 fun CaptureRequest.Builder.applyManualControls(c: ManualControls, caps: CameraCaps) {
     applyFocus(c, caps)
@@ -105,8 +106,8 @@ fun CaptureRequest.Builder.applyManualControls(c: ManualControls, caps: CameraCa
     applyZoom(c, caps)
     set(CaptureRequest.JPEG_QUALITY, c.jpegQuality.coerceIn(1, 100).toByte())
 
-    // Stabilization
-    set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+    // OIS: physically counter-moves the lens during exposure → the only thing that cuts per-frame
+    // motion blur at 300 mm. HAL video stabilization is applied separately by the controller.
     if (caps.oisAvailable) {
         set(
             CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,

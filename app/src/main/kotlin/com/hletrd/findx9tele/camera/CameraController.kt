@@ -71,6 +71,10 @@ class CameraController(context: Context) {
     // SESSION key on this device, so it goes into the session parameters (pipeline configuration)
     // AND every repeating/still request. Set once per open(); changing it requires a reopen.
     private var vendorLogMode = 0
+    // HAL video stabilization mode for the repeating preview/video request (CONTROL_VIDEO_
+    // STABILIZATION_MODE: 0 off / 1 on / 2 preview-stabilization). Drives the HAL's OIS+EIS —
+    // the only thing that cuts per-frame motion blur at 300 mm. Updated live via [setVideoStabMode].
+    @Volatile private var videoStabHalMode = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF
     // >0 → configure a CameraConstrainedHighSpeedCaptureSession at this fps (slow-motion), feeding
     // ONLY the GL input surface (no JPEG/RAW — high-speed sessions forbid extra targets). 0 = the
     // regular tele session. Set once per open(); on a high-speed config failure it drops back to 0.
@@ -115,6 +119,7 @@ class CameraController(context: Context) {
         tenBitHlg: Boolean,
         highSpeedFps: Int = 0,
         vendorLogMode: Int = 0,
+        videoStabHalMode: Int = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF,
         onReady: Ready,
         onError: ErrorCb,
     ) {
@@ -125,23 +130,30 @@ class CameraController(context: Context) {
         this.tenBitHlg = tenBitHlg
         this.highSpeedFps = highSpeedFps
         this.vendorLogMode = vendorLogMode
+        this.videoStabHalMode = videoStabHalMode
         this.rawChars = runCatching {
             manager.getCameraCharacteristics(selection.physicalId ?: selection.logicalId)
         }.getOrNull()
 
-        manager.openCamera(selection.logicalId, executor, object : CameraDevice.StateCallback() {
-            override fun onOpened(camera: CameraDevice) {
-                if (closed) { runCatching { camera.close() }; return } // closed before open completed
-                device = camera
-                configAttempt = 0
-                runCatching { configureSession(onReady, onError) }.onFailure { onError.onError(it) }
-            }
-            override fun onDisconnected(camera: CameraDevice) { close() }
-            override fun onError(camera: CameraDevice, error: Int) {
-                onError.onError(IllegalStateException("Camera error $error"))
-                close()
-            }
-        })
+        // openCamera can throw SYNCHRONOUSLY — CameraAccessException CAMERA_DISABLED when the app is
+        // opening from a background proc state (e.g. relaunched behind the keyguard / while the screen
+        // just woke), or SecurityException. Guard it so that lifecycle race surfaces as an onError
+        // status instead of crashing the app; the next foreground resume() reopens cleanly.
+        runCatching {
+            manager.openCamera(selection.logicalId, executor, object : CameraDevice.StateCallback() {
+                override fun onOpened(camera: CameraDevice) {
+                    if (closed) { runCatching { camera.close() }; return } // closed before open completed
+                    device = camera
+                    configAttempt = 0
+                    runCatching { configureSession(onReady, onError) }.onFailure { onError.onError(it) }
+                }
+                override fun onDisconnected(camera: CameraDevice) { close() }
+                override fun onError(camera: CameraDevice, error: Int) {
+                    onError.onError(IllegalStateException("Camera error $error"))
+                    close()
+                }
+            })
+        }.onFailure { onError.onError(it) }
     }
 
     /**
@@ -157,6 +169,26 @@ class CameraController(context: Context) {
         runCatching { set(logVideoModeKey, vendorLogMode) }
             .onSuccess { Log.i(TAG, "vendor log.video.mode=$vendorLogMode applied") }
             .onFailure { Log.w(TAG, "vendor log.video.mode=$vendorLogMode rejected: ${it.message}") }
+    }
+
+    /**
+     * The stock app's stabilization vendor tag (`com.oplus.video.stabilization.mode`, int) — the SDK
+     * translation of `VIDEO_STABILIZATION_MODE`. Advertised in the tele's request+session keys, so we
+     * set it alongside the standard CONTROL_VIDEO_STABILIZATION_MODE to nudge the HAL's OIS/EIS
+     * profile toward the active lens (the same path "super steady" takes). Best-effort.
+     */
+    private val vendorVideoStabKey = CaptureRequest.Key("com.oplus.video.stabilization.mode", Int::class.javaObjectType)
+
+    /** Sets the HAL video stabilization on the preview/video repeating request: the standard mode plus the vendor mirror. */
+    private fun CaptureRequest.Builder.applyVideoStab() {
+        set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, videoStabHalMode)
+        runCatching { set(vendorVideoStabKey, videoStabHalMode) }
+    }
+
+    /** Live-updates the HAL video stabilization mode and re-issues the repeating request. */
+    fun setVideoStabMode(controlMode: Int) {
+        videoStabHalMode = controlMode
+        handler.post { startPreview() }
     }
 
     /**
@@ -343,6 +375,7 @@ class CameraController(context: Context) {
                 addTarget(preview)
                 applyManualControls(controls, caps)
                 applyVendorLog()
+                applyVideoStab()
                 applyMetering(this, controls)
                 // Tap-to-focus: force AF_MODE_AUTO for a one-shot region scan that LOCKS on the tapped
                 // spot (CONTINUOUS + a bare trigger just holds the current, often-wrong, distance). The
@@ -386,7 +419,9 @@ class CameraController(context: Context) {
                         val ae = result.get(CaptureResult.CONTROL_AE_STATE)
                         val af = result.get(CaptureResult.CONTROL_AF_STATE)
                         val afMode = result.get(CaptureResult.CONTROL_AF_MODE)
-                        Log.i(TAG, "3A: aeState=$ae afState=$af afMode=$afMode iso=${result.get(CaptureResult.SENSOR_SENSITIVITY)} expNs=${result.get(CaptureResult.SENSOR_EXPOSURE_TIME)} lens=$lastFocusDistance")
+                        val ois = result.get(CaptureResult.LENS_OPTICAL_STABILIZATION_MODE)
+                        val vstab = result.get(CaptureResult.CONTROL_VIDEO_STABILIZATION_MODE)
+                        Log.i(TAG, "3A: aeState=$ae afState=$af afMode=$afMode iso=${result.get(CaptureResult.SENSOR_SENSITIVITY)} expNs=${result.get(CaptureResult.SENSOR_EXPOSURE_TIME)} lens=$lastFocusDistance ois=$ois vstab=$vstab (req=$videoStabHalMode)")
                     }
                 }
             }

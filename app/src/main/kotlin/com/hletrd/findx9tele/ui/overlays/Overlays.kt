@@ -36,6 +36,7 @@ import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.HistogramData
 import com.hletrd.findx9tele.camera.MeteringMode
 import com.hletrd.findx9tele.camera.ShutterTimer
+import com.hletrd.findx9tele.camera.VideoStabMode
 import com.hletrd.findx9tele.camera.WaveformData
 import com.hletrd.findx9tele.camera.videoBitRate
 import com.hletrd.findx9tele.ui.controls.transferLabelShort
@@ -330,8 +331,14 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier) {
                 style = MaterialTheme.typography.labelMedium,
             )
         }
-        if (state.eisEnabled) {
-            Text("EIS", color = Color(0xFF4CD964), style = MaterialTheme.typography.labelMedium)
+        if (state.videoStabMode != VideoStabMode.OFF) {
+            val stabTag = when (state.videoStabMode) {
+                VideoStabMode.GYRO -> "EIS"
+                VideoStabMode.STANDARD -> "OIS+"
+                VideoStabMode.ENHANCED -> "STEADY"
+                VideoStabMode.OFF -> ""
+            }
+            Text(stabTag, color = Color(0xFF4CD964), style = MaterialTheme.typography.labelMedium)
         }
         if (BuildConfig.DEBUG) {
             val caps = state.caps

@@ -67,7 +67,8 @@ class CameraEngine(private val context: Context) {
     @Volatile private var teleconverterMode = true
     // HAL-native log (vendor com.oplus.log.video.mode). Session key → changing it reopens the camera.
     @Volatile private var vendorLogMode = VendorLogMode.OFF
-    @Volatile private var eisEnabled = true
+    // Video stabilization strategy. Default ENHANCED = HAL OIS+EIS (motion-blur reduction at 300 mm).
+    @Volatile private var videoStabMode = VideoStabMode.ENHANCED
     @Volatile private var eisCrop: Float = EisStrength.MEDIUM.crop
 
     // Software recording-audio gain (1f = passthrough) and the still-photo aspect-ratio crop;
@@ -154,7 +155,10 @@ class CameraEngine(private val context: Context) {
         gl.setSensorOrientation(c.sensorOrientation)
         gl.setRotationDegrees(previewRotationDegrees())
         val mag = if (teleconverterMode) TELECONVERTER_MAGNIFICATION else 1f
-        gl.setEis(eisEnabled, c.nativeFocalInImageWidths * mag, eisCrop)
+        // App-side gyro EIS runs only in GYRO mode; the HAL modes own stabilization otherwise (and
+        // the two would double-warp). Push the resolved HAL control mode to the live request too.
+        gl.setEis(videoStabMode.usesClientEis, c.nativeFocalInImageWidths * mag, eisCrop)
+        controller?.setVideoStabMode(c.videoStabControlMode(videoStabMode))
     }
 
     /**
@@ -180,7 +184,7 @@ class CameraEngine(private val context: Context) {
     }
 
     fun setTeleconverterMode(enabled: Boolean) { teleconverterMode = enabled; applyStabilization() }
-    fun setEisEnabled(enabled: Boolean) { eisEnabled = enabled; applyStabilization() }
+    fun setVideoStabMode(m: VideoStabMode) { videoStabMode = m; applyStabilization() }
     fun setEisStrength(s: EisStrength) { eisCrop = s.crop; applyStabilization() }
     fun setFalseColor(enabled: Boolean) = gl.setFalseColor(enabled)
 
@@ -214,6 +218,7 @@ class CameraEngine(private val context: Context) {
             // the regular tele session with full still capture. Falls back to regular on config failure.
             highSpeedFps = desiredHighSpeedFps(),
             vendorLogMode = vendorLogMode.halValue,
+            videoStabHalMode = c.videoStabControlMode(videoStabMode),
             onReady = { onStatus?.invoke(null) },
             onError = { onStatus?.invoke("Camera error: ${it.message}") },
         )

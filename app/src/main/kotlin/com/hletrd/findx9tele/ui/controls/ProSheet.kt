@@ -61,6 +61,7 @@ import com.hletrd.findx9tele.camera.ShutterMode
 import com.hletrd.findx9tele.camera.ShutterTimer
 import com.hletrd.findx9tele.camera.VendorLogMode
 import com.hletrd.findx9tele.camera.VideoCodec
+import com.hletrd.findx9tele.camera.VideoStabMode
 import com.hletrd.findx9tele.camera.VideoFrameRate
 import com.hletrd.findx9tele.camera.WbMode
 import com.hletrd.findx9tele.camera.videoBitRate
@@ -493,28 +494,43 @@ private fun StabilizationTab(state: CameraUiState, actions: CameraActions) {
     }
     Text(focalCaption, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
 
-    SectionHeader("Stabilization")
-    ToggleRow(label = "Stabilization (EIS)", checked = state.eisEnabled, onCheckedChange = actions::onToggleEis)
+    SectionHeader("Video Stabilization")
+    // The stock camera's approach: engage the HAL's OIS+EIS ("super steady") so OIS physically cuts
+    // per-frame motion blur at 300 mm. App-side gyro EIS only warps whole frames — it steadies
+    // jitter but can't de-blur a fixed 1/60 s frame. Modes gated by what the lens reports.
     SegmentedSelector(
-        label = "EIS Strength",
-        options = EisStrength.entries,
-        selected = state.eisStrength,
-        labelFor = ::eisStrengthLabel,
-        onSelect = actions::onEisStrength,
-        enabled = state.eisEnabled,
+        label = "Video Stabilization",
+        options = VideoStabMode.entries,
+        selected = state.videoStabMode,
+        labelFor = { it.label },
+        onSelect = actions::onVideoStabMode,
     )
+    val stabCaption = when (state.videoStabMode) {
+        VideoStabMode.OFF -> "No stabilization."
+        VideoStabMode.GYRO -> "App gyro EIS scaled to the effective focal — steadies frame jitter, " +
+            "but does NOT reduce per-frame motion blur (only OIS can)."
+        VideoStabMode.STANDARD -> "HAL OIS+EIS. OIS moves the lens during exposure → less motion blur at 300 mm."
+        VideoStabMode.ENHANCED -> "HAL preview-stabilization (the stock 'super steady' path) — strongest " +
+            "OIS+EIS; best motion-blur reduction on the tele. Crops the frame slightly."
+    }
+    Text(stabCaption, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
+    if (state.videoStabMode == VideoStabMode.GYRO) {
+        SegmentedSelector(
+            label = "EIS Strength",
+            options = EisStrength.entries,
+            selected = state.eisStrength,
+            labelFor = ::eisStrengthLabel,
+            onSelect = actions::onEisStrength,
+        )
+    }
     if (caps?.oisAvailable == true) {
         ToggleRow(label = "Optical Stabilization (OIS)", checked = state.controls.oisEnabled, onCheckedChange = actions::onToggleOis)
-        if (state.teleconverterMode) {
-            Text(
-                "OIS is calibrated for the native 70 mm, so through the ×4.3 converter it only " +
-                    "corrects part of the shake at 300 mm (its gain is HAL-owned and not tunable by " +
-                    "apps) — gyro-EIS above does the heavy lifting for preview/video. Stills bypass " +
-                    "EIS, so keep the shutter fast (≈1/320 s+) and OIS on for sharp handheld tele shots.",
-                color = CameraColors.TextSecondary,
-                style = MaterialTheme.typography.labelSmall,
-            )
-        }
+        Text(
+            "Keep OIS on for the tele: it de-blurs each frame. Note a still capture bypasses EIS, so " +
+                "a fast shutter (≈1/320 s+) plus OIS gives the sharpest handheld 300 mm photos.",
+            color = CameraColors.TextSecondary,
+            style = MaterialTheme.typography.labelSmall,
+        )
     }
     ToggleRow(
         label = "Teleconverter (300mm, 180° flip)",
