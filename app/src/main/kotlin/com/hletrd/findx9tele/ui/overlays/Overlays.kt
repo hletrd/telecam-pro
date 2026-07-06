@@ -151,7 +151,11 @@ fun AspectMask(ratio: AspectRatio, modifier: Modifier = Modifier) {
  */
 @Composable
 fun LevelOverlay(rollDegrees: Float = 0f, modifier: Modifier = Modifier) {
-    val isLevel = abs(rollDegrees) < 0.5f
+    // Deviation from the NEAREST quadrant (upright, either landscape, upside-down) rather than raw
+    // roll: a landscape hold reads ±90° raw and would never show level, but the photographer's
+    // question is "am I square to the horizon in THIS hold" — captures auto-rotate per quadrant.
+    val deviation = rollDegrees - (rollDegrees / 90f).roundToInt() * 90f
+    val isLevel = abs(deviation) < 0.5f
     val indicatorColor = if (isLevel) Color(0xFF4CD964) else Color.White
     Canvas(modifier = modifier.fillMaxSize()) {
         val cy = size.height / 2f
@@ -162,7 +166,7 @@ fun LevelOverlay(rollDegrees: Float = 0f, modifier: Modifier = Modifier) {
             end = Offset(size.width / 2f + halfSpan, cy),
             strokeWidth = 2.dp.toPx(),
         )
-        rotate(degrees = rollDegrees, pivot = Offset(size.width / 2f, cy)) {
+        rotate(degrees = deviation, pivot = Offset(size.width / 2f, cy)) {
             drawLine(
                 color = indicatorColor,
                 start = Offset(size.width / 2f - halfSpan, cy),
