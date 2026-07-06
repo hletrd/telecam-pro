@@ -89,6 +89,8 @@ import com.hletrd.findx9tele.ui.overlays.RecordingIndicator
 import com.hletrd.findx9tele.ui.overlays.StatusBar
 import com.hletrd.findx9tele.ui.overlays.TimerCountdown
 import com.hletrd.findx9tele.ui.overlays.WaveformOverlay
+import com.hletrd.findx9tele.ui.review.GalleryThumb
+import com.hletrd.findx9tele.ui.review.MediaReviewOverlay
 import com.hletrd.findx9tele.ui.theme.CameraColors
 import com.hletrd.findx9tele.ui.theme.FindX9TeleTheme
 import kotlin.math.cos
@@ -109,6 +111,8 @@ fun CameraScreen(
     modifier: Modifier = Modifier,
 ) {
     var sheetVisible by remember { mutableStateOf(false) }
+    // In-app review overlay (last saved still, pinch-to-zoom for focus check).
+    var reviewOpen by remember { mutableStateOf(false) }
     // Remembers the last-viewed settings tab so the gear reopens where the user left off.
     var sheetInitialTab by remember { mutableStateOf(ProSheetTab.SHOOTING) }
     val currentActions = rememberUpdatedState(actions)
@@ -313,6 +317,8 @@ fun CameraScreen(
                 mode = state.mode,
                 isRecording = state.isRecording,
                 teleconverterOn = state.teleconverterMode,
+                lastMediaUri = state.lastMediaUri,
+                onOpenReview = { reviewOpen = true },
                 onShutter = onShutter,
                 onSnapshot = actions::onCapturePhoto,
                 onToggleTeleconverter = { actions.onToggleTeleconverter(!state.teleconverterMode) },
@@ -331,6 +337,11 @@ fun CameraScreen(
             onTabChange = { sheetInitialTab = it },
             onDismiss = { sheetVisible = false },
         )
+    }
+
+    val reviewUri = state.lastMediaUri
+    if (reviewOpen && reviewUri != null) {
+        MediaReviewOverlay(uri = reviewUri, onClose = { reviewOpen = false })
     }
 }
 
@@ -605,13 +616,15 @@ private fun ShutterRow(
     mode: CaptureMode,
     isRecording: Boolean,
     teleconverterOn: Boolean,
+    lastMediaUri: android.net.Uri?,
+    onOpenReview: () -> Unit,
     onShutter: () -> Unit,
     onSnapshot: () -> Unit,
     onToggleTeleconverter: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
-        GalleryThumbPlaceholder()
+        GalleryThumb(uri = lastMediaUri, onClick = onOpenReview)
         Spacer(modifier = Modifier.weight(1f))
         Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
             if (mode == CaptureMode.VIDEO && isRecording) {
@@ -621,43 +634,6 @@ private fun ShutterRow(
         }
         Spacer(modifier = Modifier.weight(1f))
         LensFlipButton(active = teleconverterOn, onClick = onToggleTeleconverter)
-    }
-}
-
-/**
- * Static gallery-thumbnail placeholder. Not wired to any [CameraActions] method — this app has no
- * gallery/media-browser integration in its contract — purely decorative, matching the Pixel layout.
- */
-@Composable
-private fun GalleryThumbPlaceholder(modifier: Modifier = Modifier) {
-    Box(
-        modifier = modifier
-            .size(52.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(CameraColors.Pill)
-            .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(14.dp)),
-        contentAlignment = Alignment.Center,
-    ) {
-        Canvas(Modifier.size(22.dp)) {
-            val color = CameraColors.TextSecondary
-            drawRoundRect(
-                color,
-                topLeft = Offset(size.width * 0.06f, size.height * 0.18f),
-                size = Size(size.width * 0.88f, size.height * 0.64f),
-                cornerRadius = CornerRadius(2.dp.toPx()),
-                style = Stroke(width = 1.3.dp.toPx()),
-            )
-            drawCircle(color, radius = size.minDimension * 0.1f, center = Offset(size.width * 0.3f, size.height * 0.4f))
-            val mountains = Path().apply {
-                moveTo(size.width * 0.12f, size.height * 0.78f)
-                lineTo(size.width * 0.38f, size.height * 0.48f)
-                lineTo(size.width * 0.56f, size.height * 0.66f)
-                lineTo(size.width * 0.74f, size.height * 0.44f)
-                lineTo(size.width * 0.92f, size.height * 0.78f)
-                close()
-            }
-            drawPath(mountains, color = color)
-        }
     }
 }
 

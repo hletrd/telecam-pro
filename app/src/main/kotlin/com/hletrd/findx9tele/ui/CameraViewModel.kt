@@ -93,6 +93,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // AE-resolved ISO/shutter (auto mode) for the live dial readout; camera thread → StateFlow is
         // thread-safe, Compose observes on main. The controller only fires this on change.
         engine.onExposureInfo = { iso, exp -> _state.update { it.copy(liveIso = iso, liveExposureNs = exp) } }
+        // Last saved still → gallery thumbnail + in-app review (io thread → StateFlow is thread-safe).
+        engine.onMediaSaved = { uri -> _state.update { it.copy(lastMediaUri = uri) } }
         restoreSettingsIfEnabled()
         // Sweep any pending media orphaned by a prior crash/force-kill (record stop never ran).
         engine.cleanupOrphans()

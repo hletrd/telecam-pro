@@ -86,6 +86,9 @@ class CameraEngine(private val context: Context) {
     // AE-resolved ISO/shutter (auto mode) from the controller, for the live dial readout. Fired from
     // the camera thread, only on change; the ViewModel hoists it into UI state.
     var onExposureInfo: ((iso: Int?, exposureNs: Long?) -> Unit)? = null
+    // The most recently saved still (HEIF/JPEG) URI, for the gallery thumbnail + in-app review. Fired
+    // from the io thread after the file publishes.
+    var onMediaSaved: ((android.net.Uri) -> Unit)? = null
 
     // ---- Preview surface lifecycle ----
 
@@ -484,6 +487,7 @@ class CameraEngine(private val context: Context) {
             } ?: false
             if (!wrote) { MediaStoreWriter.delete(context, u); onStatus?.invoke("Failed to save HEIF"); return }
             MediaStoreWriter.publish(context, u)
+            onMediaSaved?.invoke(u)
             onStatus?.invoke("Saved")
         } catch (e: OutOfMemoryError) {
             uri?.let { MediaStoreWriter.delete(context, it) }
@@ -533,6 +537,7 @@ class CameraEngine(private val context: Context) {
             } ?: false
             if (!wrote) { MediaStoreWriter.delete(context, u); onStatus?.invoke("Failed to save JPEG"); return }
             MediaStoreWriter.publish(context, u)
+            onMediaSaved?.invoke(u)
             onStatus?.invoke("Saved")
         } catch (e: OutOfMemoryError) {
             uri?.let { MediaStoreWriter.delete(context, it) }
