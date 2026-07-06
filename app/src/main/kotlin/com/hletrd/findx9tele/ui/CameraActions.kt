@@ -112,6 +112,9 @@ interface CameraActions {
     fun onCapturePhoto()
     fun onToggleRecording()
 
+    // Lens (bundles teleconverter mode: 3× on, others off)
+    fun onLens(choice: com.hletrd.findx9tele.camera.LensChoice)
+
     // Settings
     fun onCameraOverride(id: String?)
     fun onToggleRememberSettings(enabled: Boolean)

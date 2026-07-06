@@ -263,6 +263,12 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setTeleconverterMode(enabled)
         _state.update { it.copy(teleconverterMode = enabled) }
     }
+    override fun onLens(choice: com.hletrd.findx9tele.camera.LensChoice) {
+        // Bundled in the engine: resolves the lens id + flips teleconverter mode (3× on, else off)
+        // in one reopen. Mirror both into UI state so the picker and the TELE chip stay in sync.
+        engine.setLens(choice)
+        _state.update { it.copy(lens = choice, teleconverterMode = choice.isTeleconverterLens) }
+    }
     override fun onVideoCodec(codec: VideoCodec) {
         engine.setVideoCodec(codec)
         _state.update { it.copy(videoCodec = codec) }

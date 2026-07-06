@@ -784,6 +784,7 @@ private object PreviewCameraActions : CameraActions {
     override fun onCapturePhoto() = Unit
     override fun onToggleRecording() = Unit
 
+    override fun onLens(choice: com.hletrd.findx9tele.camera.LensChoice) = Unit
     override fun onCameraOverride(id: String?) = Unit
     override fun onToggleRememberSettings(enabled: Boolean) = Unit
     override fun onVendorLogMode(mode: com.hletrd.findx9tele.camera.VendorLogMode) = Unit

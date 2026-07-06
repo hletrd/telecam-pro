@@ -54,6 +54,7 @@ import com.hletrd.findx9tele.camera.PeakingLevel
 import com.hletrd.findx9tele.camera.ZebraLevel
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
+import com.hletrd.findx9tele.camera.LensChoice
 import com.hletrd.findx9tele.camera.MeteringMode
 import com.hletrd.findx9tele.camera.ProcessingLevel
 import com.hletrd.findx9tele.camera.ShutterMode
@@ -474,7 +475,25 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
 @Composable
 private fun StabilizationTab(state: CameraUiState, actions: CameraActions) {
     val caps = state.caps
-    TabTitle("Stabilization")
+    TabTitle("Lens")
+    // Picking a lens bundles teleconverter mode: 3× turns it ON (afocal 180° flip + gyro-EIS scaled
+    // to the ~300 mm effective focal), every other lens turns it OFF — one tap.
+    SegmentedSelector(
+        label = "Lens (bundles teleconverter on 3×)",
+        options = LensChoice.entries,
+        selected = state.lens,
+        labelFor = ::lensLabel,
+        onSelect = actions::onLens,
+    )
+    val focalCaption = when (state.lens) {
+        LensChoice.ULTRAWIDE -> "≈ 14 mm ultra-wide"
+        LensChoice.MAIN -> "≈ 23 mm main"
+        LensChoice.TELE3X -> "70 mm → 300 mm with the teleconverter (EIS ×4.3, 180° flip)"
+        LensChoice.TELE10X -> "≈ 230 mm periscope"
+    }
+    Text(focalCaption, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
+
+    SectionHeader("Stabilization")
     ToggleRow(label = "Stabilization (EIS)", checked = state.eisEnabled, onCheckedChange = actions::onToggleEis)
     SegmentedSelector(
         label = "EIS Strength",
@@ -486,6 +505,16 @@ private fun StabilizationTab(state: CameraUiState, actions: CameraActions) {
     )
     if (caps?.oisAvailable == true) {
         ToggleRow(label = "Optical Stabilization (OIS)", checked = state.controls.oisEnabled, onCheckedChange = actions::onToggleOis)
+        if (state.teleconverterMode) {
+            Text(
+                "OIS is calibrated for the native 70 mm, so through the ×4.3 converter it only " +
+                    "corrects part of the shake at 300 mm (its gain is HAL-owned and not tunable by " +
+                    "apps) — gyro-EIS above does the heavy lifting for preview/video. Stills bypass " +
+                    "EIS, so keep the shutter fast (≈1/320 s+) and OIS on for sharp handheld tele shots.",
+                color = CameraColors.TextSecondary,
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
     }
     ToggleRow(
         label = "Teleconverter (300mm, 180° flip)",

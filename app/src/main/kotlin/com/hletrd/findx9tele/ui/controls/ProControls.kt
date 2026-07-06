@@ -321,6 +321,13 @@ internal fun meteringModeLabel(mode: MeteringMode): String = when (mode) {
     MeteringMode.SPOT -> "Spot"
 }
 
+internal fun lensLabel(lens: com.hletrd.findx9tele.camera.LensChoice): String = when (lens) {
+    com.hletrd.findx9tele.camera.LensChoice.ULTRAWIDE -> "UW"
+    com.hletrd.findx9tele.camera.LensChoice.MAIN -> "1×"
+    com.hletrd.findx9tele.camera.LensChoice.TELE3X -> "3× tele"
+    com.hletrd.findx9tele.camera.LensChoice.TELE10X -> "10×"
+}
+
 internal fun driveModeLabel(mode: DriveMode): String = when (mode) {
     DriveMode.SINGLE -> "Single"
     DriveMode.BURST -> "Burst"
