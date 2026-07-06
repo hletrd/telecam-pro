@@ -104,9 +104,12 @@ f/2.2 tele at night they are near the physical floor, which reads as "AE/AF bare
 
 The user explicitly wants all of these; ordered by their stated priority.
 
-- 🔴 **Lens switcher (Pixel-style)** — UW (14 mm) / main (23 mm) / 3× (70 mm) / 10× (230 mm) / front.
-  Reuse `CameraSelector2` override + `engine.setCameraOverride`. **Teleconverter mode only on the 3×
-  lens.** This also unblocks 8K/4K120 (main camera). (task #14)
+- ✅ **Lens switcher — DONE 2026-07-06.** `LensChoice` (UW 14 / main 23 / 3× 70 / 10× 230), resolved
+  by 35mm-equiv focal via `CameraSelector2.overrideIdForFocal` (standalone-preferred). Pro sheet →
+  Stabilization → Lens picker; `engine.setLens()` bundles teleconverter mode (3× on: afocal 180° +
+  EIS ×4.3; others off) in one reopen. **Device-verified on PMA110: all four standalone lenses (ids
+  3/2/4/5) open cleanly with RAW; only 3× re-engages TELE+flip.** Front lens not added (rear-tele
+  app). Still unblocks 8K/4K120 on the main camera — verify those resolutions on the main lens next.
 - 🔴 **Settings UX overhaul** (task #15/#17/#18):
   - ✅ ~~Surface **color transfer (Log / SDR Rec.709 / HLG)** on the main screen~~ — done 2026-07-06:
     `ColorTransfer.SDR` added (HEVC Main 8-bit BT.709) and a video-mode **TF quick chip** cycles
