@@ -146,12 +146,23 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
   entry just above — it IS exposed; only `movie.log.enable` is gated). Also: leaving
   `KEY_COLOR_TRANSFER` unset on a BT2020 full-range HEVC format makes the QTI encoder tag the VUI
   **ST2084 (PQ)** — players then tone-map log footage as HDR. Tag a transfer explicitly, always.
-- **The teleconverter's "auto steady" is a HAL side-effect, not an API.** Reverse engineering (see
-  `docs/reverse-engineering/`) confirmed the stock app sets no Explorer-specific OIS/EIS tag — the
-  vendor tags (`com.oplus.ois.*`, `org.quic.camera.eisrealtime`, `explorer.chip.state`) exist in the
-  HAL but are gated for third parties. So we do **client-side gyro EIS** scaled to the effective
-  300 mm focal length, HAL video stabilization OFF. `explorer.chip.state` is a damage/safety check,
-  not a stabilization control.
+- **Video stabilization = HAL OIS+EIS, like the stock app (verified 2026-07-07).** For VIDEO the
+  shutter is fixed (e.g. 1/60 s), so per-frame MOTION BLUR is set by the shutter and only **OIS**
+  (which moves the lens DURING the exposure) can cut it — app-side gyro EIS only warps whole frames
+  and cannot de-blur. Decompiling `OplusCamera.apk`: the stock app drives the SDK key
+  `VIDEO_STABILIZATION_MODE` (`com.oplus.configure.video.stabilization`) → the vendor int
+  `com.oplus.video.stabilization.mode` (0x8119009e), and the HAL applies the right OIS/EIS profile for
+  the active lens. The tele advertises standard `availableVideoStabilizationModes = [0,1,2]`
+  (OFF/ON/**PREVIEW_STABILIZATION**) and both `videoStabilizationMode` + the vendor int are in its
+  request+session keys. So we **no longer force video-stab OFF**: `VideoStabMode { OFF/GYRO/STANDARD/
+  ENHANCED }` (default ENHANCED = PREVIEW_STABILIZATION) sets `CONTROL_VIDEO_STABILIZATION_MODE` on the
+  repeating request (+ the vendor int mirror). **Device-verified: result metadata `ois=1`, `vstab=2`
+  — OIS physically engaged at 1/30 s, preview + 4K recording fine.** App-side gyro EIS is suppressed
+  while a HAL mode runs (no double-warp); it stays as the `GYRO` option. The Explorer-specific
+  `com.oplus.ois.*` / `eisrealtime` tags remain gated — but the generic HAL video-stab is enough.
+- **`manager.openCamera()` can throw synchronously.** Opening from a background proc state (relaunch
+  behind the keyguard / screen just woke) raises `CameraAccessException CAMERA_DISABLED` from the
+  `openCamera` call itself, not the StateCallback — wrap it in `runCatching → onError` or it crashes.
 
 ## Architecture (one-liner per module; full map in docs/ARCHITECTURE.md)
 

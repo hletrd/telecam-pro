@@ -111,4 +111,26 @@ repeating/still request, fully guarded (a rejected vendor tag never kills the pr
 reopens the session (session key). When ON: the GL curve is bypassed and the file is force-tagged the
 LOG profile (BT.2020 full-range) so players don't tone-map it. Not persisted across launches.
 
+## 5. Video stabilization (`com.oplus.video.stabilization.mode`) — implemented 2026-07-07
+
+Same shape as the log key. The stock app's IS drives the SDK `VIDEO_STABILIZATION_MODE`
+(`com.oplus.configure.video.stabilization`, String: `video_stabilization` / `video_stabilization_ois`
+/ `super_stabilization`), which the OCS SDK maps to the int vendor tag
+`com.oplus.video.stabilization.mode` (0x8119009e). The HAL then applies the OIS/EIS profile for the
+active lens.
+
+- The tele advertises standard `android.control.availableVideoStabilizationModes = [0,1,2]`
+  (OFF / ON / **PREVIEW_STABILIZATION**), and both the standard `videoStabilizationMode` (0x10011) and
+  the vendor int (0x8119009e) are in its `availableRequestKeys` + `availableSessionKeys` — so a
+  raw-Camera2 app can drive HAL video stabilization directly.
+- **Why it matters:** at a fixed video shutter (1/60 s) the per-frame motion blur is set by the
+  shutter; only **OIS** (lens moves during the exposure) reduces it. App-side gyro EIS warps whole
+  frames and cannot de-blur. Engaging the HAL video-stab turns OIS on and lets the HAL run its
+  combined OIS+EIS.
+- **Device-verified (2026-07-07):** setting `CONTROL_VIDEO_STABILIZATION_MODE = PREVIEW_STABILIZATION`
+  (2) on the tele gives result metadata `ois=1, vstab=2` — OIS physically engaged at 1/30 s, preview
+  live, 4K HEVC recording valid, no crash. Implemented as `VideoStabMode { OFF/GYRO/STANDARD/ENHANCED }`
+  (default ENHANCED); the vendor int is mirrored best-effort. This replaces the earlier "force
+  video-stab OFF + client gyro EIS" approach (kept as the `GYRO` option).
+
 See also: `oplus-camera-explorer-analysis.md` (Explorer/stabilization), `vendor-tags-catalog.md`.
