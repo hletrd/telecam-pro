@@ -25,9 +25,11 @@ import kotlin.math.sqrt
 /**
  * Records HEVC Main10 (Rec.2020, HLG/Log) video plus optional AAC audio into a MediaStore MP4.
  *
- * The 180° flip is already baked into the frames by [com.hletrd.findx9tele.gl.GlPipeline], which
- * renders into [inputSurface]; therefore NO MediaMuxer orientation hint is set. Video output is
- * drained synchronously on its own thread; audio (if enabled) runs a second capture+encode thread.
+ * The afocal 180° flip is already baked into the frames by [com.hletrd.findx9tele.gl.GlPipeline],
+ * which renders into [inputSurface]. The MediaMuxer orientation hint therefore carries ONLY the
+ * physical device orientation (0/90/180/270) captured at record start, so a landscape-held clip plays
+ * upright (see [start]'s `orientationHint`). Video output is drained synchronously on its own thread;
+ * audio (if enabled) runs a second capture+encode thread.
  * Both write to one MediaMuxer guarded by [muxerLock]; the muxer starts once all tracks are added.
  */
 class VideoRecorder(private val context: Context) {
