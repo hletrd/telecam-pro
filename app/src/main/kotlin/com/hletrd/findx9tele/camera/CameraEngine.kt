@@ -363,6 +363,23 @@ class CameraEngine(private val context: Context) {
         if (recorder == null) gl.setCameraPreviewSize(s.width, s.height)
     }
 
+    /**
+     * Switches to one of the four rear lenses AND bundles teleconverter mode: the 3× lens enables it
+     * (afocal 180° flip + gyro-EIS scaled to ~300 mm), any other lens disables it — one action, one
+     * camera reopen. Resolves the [LensChoice]'s target focal to a concrete (standalone-preferred)
+     * camera id so nothing is hardcoded. No-op mid-recording (reconfiguring under the encoder
+     * corrupts the clip); the UI also gates it.
+     */
+    fun setLens(choice: LensChoice) {
+        if (recorder != null) { onStatus?.invoke("Stop recording to switch lens"); return }
+        val id = CameraSelector2.overrideIdForFocal(manager, choice.targetEquivMm)
+        if (id == null) { onStatus?.invoke("Could not find the ${choice.label} lens"); return }
+        // Set the teleconverter flag BEFORE the reopen so applyStabilization() inside setCameraOverride
+        // picks the right rotation + EIS focal for the new lens in the same pass.
+        teleconverterMode = choice.isTeleconverterLens
+        setCameraOverride(id)
+    }
+
     fun setCameraOverride(id: String?) {
         // Switching the physical lens mid-recording reconfigures the camera under the encoder and
         // gaps/corrupts the clip. Refuse until recording stops; the UI also gates this.

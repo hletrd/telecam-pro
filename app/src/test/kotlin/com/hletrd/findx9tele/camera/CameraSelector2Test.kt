@@ -69,4 +69,33 @@ class CameraSelector2Test {
         // filter removes both -> firstOrNull() fallback keeps the app from selecting nothing.
         assertEquals("a", CameraSelector2.pickBest(candidates)!!.logicalId)
     }
+
+    // ---- pickClosest: the lens-switcher resolver (UW / main / 3× / 10×) ----
+
+    private val fourLenses = listOf(
+        sel("3", null, 14f),   // ultra-wide
+        sel("2", null, 23f),   // main
+        sel("4", null, 70f),   // 3× periscope (teleconverter lens)
+        sel("5", null, 230f),  // 10× periscope
+    )
+
+    @Test
+    fun `pickClosest resolves each lens choice to its nearest camera`() {
+        assertEquals("3", CameraSelector2.pickClosest(fourLenses, LensChoice.ULTRAWIDE.targetEquivMm)!!.logicalId)
+        assertEquals("2", CameraSelector2.pickClosest(fourLenses, LensChoice.MAIN.targetEquivMm)!!.logicalId)
+        assertEquals("4", CameraSelector2.pickClosest(fourLenses, LensChoice.TELE3X.targetEquivMm)!!.logicalId)
+        assertEquals("5", CameraSelector2.pickClosest(fourLenses, LensChoice.TELE10X.targetEquivMm)!!.logicalId)
+    }
+
+    @Test
+    fun `pickClosest prefers the standalone id when a physical route ties on focal`() {
+        val candidates = listOf(sel("0", "5", 230f), sel("5", null, 230f))
+        assertNull(CameraSelector2.pickClosest(candidates, LensChoice.TELE10X.targetEquivMm)!!.physicalId)
+    }
+
+    @Test
+    fun `every lens choice targets a distinct focal so they never collapse`() {
+        val targets = LensChoice.entries.map { it.targetEquivMm }
+        assertEquals(targets.size, targets.toSet().size)
+    }
 }

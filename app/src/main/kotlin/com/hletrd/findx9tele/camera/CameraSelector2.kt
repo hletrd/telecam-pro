@@ -38,7 +38,11 @@ object CameraSelector2 {
                 TeleSelection(overrideId, null, equivFocalOf(manager, overrideId))
             }
         }
+        return pickBest(candidatesOf(manager))
+    }
 
+    /** Enumerates every back-facing lens as a candidate (standalone ids + logical physical sub-cameras). */
+    fun candidatesOf(manager: CameraManager): List<TeleSelection> {
         val candidates = ArrayList<TeleSelection>()
         for (id in manager.cameraIdList) {
             val chars = runCatching { manager.getCameraCharacteristics(id) }.getOrNull() ?: continue
@@ -51,8 +55,29 @@ object CameraSelector2 {
                 for (pid in physicalIds) candidates.add(TeleSelection(id, pid, equivFocalOf(manager, pid)))
             }
         }
-        return pickBest(candidates)
+        return candidates
     }
+
+    /**
+     * Resolves the lens whose 35mm-equiv is closest to [targetEquivMm] to a concrete override id
+     * string ("logicalId" for a standalone, "logicalId:physicalId" for a routed sub-camera). Returns
+     * null when no back lens is readable. Used by the lens switcher to pick UW/main/3×/10×; prefers a
+     * standalone id so the QTI-HAL routing crash is avoided (same rule as [pickBest]).
+     */
+    fun overrideIdForFocal(manager: CameraManager, targetEquivMm: Float): String? {
+        val sel = pickClosest(candidatesOf(manager), targetEquivMm) ?: return null
+        return if (sel.physicalId != null) "${sel.logicalId}:${sel.physicalId}" else sel.logicalId
+    }
+
+    /**
+     * The candidate whose 35mm-equiv is closest to [targetEquivMm]; on ties prefers a STANDALONE
+     * camera (physicalId == null). Pure, so lens-picker resolution is JVM-unit-testable.
+     */
+    fun pickClosest(candidates: List<TeleSelection>, targetEquivMm: Float): TeleSelection? =
+        candidates.filter { it.equivFocalMm > 0f }
+            .minWithOrNull(
+                compareBy({ abs(it.equivFocalMm - targetEquivMm) }, { if (it.physicalId == null) 0 else 1 }),
+            ) ?: candidates.firstOrNull()
 
     /**
      * Pure selection over an enumerated candidate list: the one whose 35mm-equiv is CLOSEST to
@@ -63,11 +88,7 @@ object CameraSelector2 {
      * Candidates with a non-positive equiv focal (unreadable lens) are excluded. Extracted from
      * [select] so it is JVM-unit-testable (no CameraManager / CameraCharacteristics needed).
      */
-    fun pickBest(candidates: List<TeleSelection>): TeleSelection? =
-        candidates.filter { it.equivFocalMm > 0f }
-            .minWithOrNull(
-                compareBy({ abs(it.equivFocalMm - TARGET_EQUIV_MM) }, { if (it.physicalId == null) 0 else 1 }),
-            ) ?: candidates.firstOrNull()
+    fun pickBest(candidates: List<TeleSelection>): TeleSelection? = pickClosest(candidates, TARGET_EQUIV_MM)
 
     private fun equivFocalOf(manager: CameraManager, id: String): Float {
         val chars = runCatching { manager.getCameraCharacteristics(id) }.getOrNull() ?: return 0f

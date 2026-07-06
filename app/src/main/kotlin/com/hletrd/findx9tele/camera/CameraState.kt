@@ -60,6 +60,22 @@ enum class WbMode { AUTO, INCANDESCENT, FLUORESCENT, DAYLIGHT, CLOUDY, SHADE, MA
 enum class MeteringMode { MATRIX, CENTER, SPOT }
 
 /**
+ * The four rear lenses, addressed by their 35mm-equivalent focal length (the app resolves each to
+ * the back camera whose equiv focal is closest — no hardcoded ids). [TELE3X] is the 3×/70 mm
+ * periscope the Hasselblad teleconverter clamps onto; selecting it bundles teleconverter mode ON
+ * (afocal 180° flip + gyro-EIS scaled to the ~300 mm effective focal), and selecting any other lens
+ * turns teleconverter mode OFF, all in one action.
+ */
+enum class LensChoice(val targetEquivMm: Float, val label: String) {
+    ULTRAWIDE(14f, "UW"),
+    MAIN(23f, "1×"),
+    TELE3X(70f, "3×"),
+    TELE10X(230f, "10×");
+
+    val isTeleconverterLens: Boolean get() = this == TELE3X
+}
+
+/**
  * HAL-native log video via the vendor key `com.oplus.log.video.mode` (int32) — the same session key
  * the stock camera drives for O-Log recording (confirmed by decompiling OplusCamera.apk: the OCS SDK
  * `CameraParameter.KEY_CONFIGURE_LOG_VIDEO_MODE`). Unlike the GL-baked curve (which can only re-map
@@ -212,6 +228,9 @@ data class CameraUiState(
     val audioGain: Float = 1f, // 0..2 software gain applied to recorded PCM
     val audioLevel: Float = 0f, // 0..1 live input level (RMS), for the meter
     val aspectRatio: AspectRatio = AspectRatio.W4_3,
+    // Selected rear lens. Default 3× — the teleconverter lens. Selecting it bundles teleconverter
+    // mode on; other lenses bundle it off (see [LensChoice]).
+    val lens: LensChoice = LensChoice.TELE3X,
     // Teleconverter mode: manual (not auto-detected). ON = afocal 180° flip + EIS scaled to 300mm.
     val teleconverterMode: Boolean = true,
     // HAL-native log (vendor com.oplus.log.video.mode). Experimental; see [VendorLogMode].
