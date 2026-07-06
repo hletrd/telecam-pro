@@ -71,6 +71,16 @@ enum class VideoCodec { HEVC, AVC, AV1 }
 enum class BitrateLevel(val bpp: Float) { LOW(0.06f), MEDIUM(0.10f), HIGH(0.16f) }
 
 /**
+ * Preferred microphone pickup direction (AudioRecord.setPreferredMicrophoneDirection). SUBJECT aims
+ * the array away from the operator toward what the lens points at — the useful default for a tele.
+ * The HAL may ignore it; VideoRecorder logs whether each request was honored.
+ */
+enum class MicDirection { AUTO, SUBJECT, SELF }
+
+/** Audio "zoom": AudioRecord field dimension, 0 (omni) → 1 (max directional toward the front). */
+enum class AudioZoom(val dimension: Float) { OFF(0f), MEDIUM(0.5f), MAX(1f) }
+
+/**
  * A selectable video frame rate. [encoderRate] is the TRUE rate handed to the encoder
  * (`MediaFormat.KEY_FRAME_RATE` as a float): the NTSC drop-frame rates are the real fractions
  * (24000/1001 ≈ 23.976, 30000/1001 ≈ 29.97, 60000/1001 ≈ 59.94), not their rounded neighbours.
@@ -180,6 +190,8 @@ data class CameraUiState(
     val recordAudio: Boolean = true,
     val audioGain: Float = 1f, // 0..2 software gain applied to recorded PCM
     val audioLevel: Float = 0f, // 0..1 live input level (RMS), for the meter
+    val micDirection: MicDirection = MicDirection.AUTO,
+    val audioZoom: AudioZoom = AudioZoom.OFF,
     val aspectRatio: AspectRatio = AspectRatio.W4_3,
     // Teleconverter mode: manual (not auto-detected). ON = afocal 180° flip + EIS scaled to 300mm.
     val teleconverterMode: Boolean = true,

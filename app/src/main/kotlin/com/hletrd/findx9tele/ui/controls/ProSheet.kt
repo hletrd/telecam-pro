@@ -48,7 +48,9 @@ import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.DriveMode
+import com.hletrd.findx9tele.camera.AudioZoom
 import com.hletrd.findx9tele.camera.EisStrength
+import com.hletrd.findx9tele.camera.MicDirection
 import com.hletrd.findx9tele.camera.PeakingColor
 import com.hletrd.findx9tele.camera.PeakingLevel
 import com.hletrd.findx9tele.camera.ZebraLevel
@@ -580,6 +582,28 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         value = state.audioGain,
         onValueChange = actions::onAudioGain,
         valueRange = 0f..2f,
+        enabled = state.recordAudio,
+    )
+    SegmentedSelector(
+        label = "Mic Direction",
+        options = MicDirection.entries,
+        selected = state.micDirection,
+        labelFor = {
+            when (it) {
+                MicDirection.AUTO -> "Auto"
+                MicDirection.SUBJECT -> "Subject"
+                MicDirection.SELF -> "Self"
+            }
+        },
+        onSelect = actions::onMicDirection,
+        enabled = state.recordAudio,
+    )
+    SegmentedSelector(
+        label = "Audio Zoom",
+        options = AudioZoom.entries,
+        selected = state.audioZoom,
+        labelFor = { it.name.lowercase().replaceFirstChar { c -> c.uppercase() } },
+        onSelect = actions::onAudioZoom,
         enabled = state.recordAudio,
     )
     // Transfer (HLG/LOG) only affects the 10-bit HEVC path; AVC/AV1 record 8-bit SDR.

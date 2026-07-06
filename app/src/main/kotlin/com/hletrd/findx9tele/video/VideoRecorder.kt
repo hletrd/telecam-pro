@@ -8,12 +8,15 @@ import android.media.AudioRecord
 import android.media.MediaCodec
 import android.media.MediaMuxer
 import android.media.MediaRecorder
+import android.media.MicrophoneDirection
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.util.Log
 import android.util.Size
 import android.view.Surface
 import androidx.core.content.ContextCompat
 import com.hletrd.findx9tele.camera.ColorTransfer
+import com.hletrd.findx9tele.camera.MicDirection
 import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.storage.MediaStoreWriter
 import java.nio.ByteBuffer
@@ -57,6 +60,10 @@ class VideoRecorder(private val context: Context) {
     private var audioGain = 1f
     private var onLevel: ((Float) -> Unit)? = null
     private var lastLevelEmitNs = 0L
+    // Preferred mic pickup direction + field "zoom" (0 = omni, 1 = max directional). Applied to the
+    // AudioRecord after init; the HAL may ignore them (logged).
+    private var micDirection = MicDirection.AUTO
+    private var micFieldDimension = 0f
 
     /**
      * Returns the encoder input Surface for the GL pipeline, or null on failure. [encoderRate] is the
@@ -74,10 +81,14 @@ class VideoRecorder(private val context: Context) {
         recordAudio: Boolean,
         audioGain: Float = 1f,
         orientationHint: Int = 0,
+        micDirection: MicDirection = MicDirection.AUTO,
+        micFieldDimension: Float = 0f,
         onLevel: ((Float) -> Unit)? = null,
     ): Surface? {
         this.uri = uri
         this.audioGain = audioGain
+        this.micDirection = micDirection
+        this.micFieldDimension = micFieldDimension
         this.onLevel = onLevel
         val descriptor = MediaStoreWriter.openParcelFd(context, uri, "rw") ?: return null
         pfd = descriptor
@@ -217,6 +228,7 @@ class VideoRecorder(private val context: Context) {
             return
         }
         audioRecord = record
+        applyMicDirectionality(record)
 
         val codec = MediaCodec.createEncoderByType(ColorProfiles.MIME_AAC)
         codec.configure(ColorProfiles.aacFormat(), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
@@ -224,6 +236,26 @@ class VideoRecorder(private val context: Context) {
         audioCodec = codec
 
         audioThread = thread(name = "audio-encode") { runAudio(record, codec) }
+    }
+
+    /**
+     * Requests the preferred mic pickup direction + field "zoom" on [record]. Both are best-effort:
+     * [AudioRecord.setPreferredMicrophoneDirection]/[AudioRecord.setPreferredMicrophoneFieldDimension]
+     * return whether the HAL accepted them, which we log so device support is verifiable. Also logs
+     * the active-microphone array so we can see what the device actually offers.
+     */
+    private fun applyMicDirectionality(record: AudioRecord) {
+        val dir = when (micDirection) {
+            MicDirection.AUTO -> MicrophoneDirection.MIC_DIRECTION_UNSPECIFIED
+            MicDirection.SUBJECT -> MicrophoneDirection.MIC_DIRECTION_AWAY_FROM_USER
+            MicDirection.SELF -> MicrophoneDirection.MIC_DIRECTION_TOWARDS_USER
+        }
+        val dirOk = runCatching { record.setPreferredMicrophoneDirection(dir) }.getOrDefault(false)
+        val zoomOk = if (micFieldDimension > 0f) {
+            runCatching { record.setPreferredMicrophoneFieldDimension(micFieldDimension) }.getOrDefault(false)
+        } else true
+        val mics = runCatching { record.activeMicrophones.size }.getOrDefault(-1)
+        Log.i(TAG, "mic direction=$micDirection accepted=$dirOk; fieldDim=$micFieldDimension accepted=$zoomOk; activeMics=$mics")
     }
 
     private fun runAudio(record: AudioRecord, codec: MediaCodec) {
@@ -347,6 +379,7 @@ class VideoRecorder(private val context: Context) {
             PackageManager.PERMISSION_GRANTED
 
     private companion object {
+        const val TAG = "VideoRecorder"
         const val TIMEOUT_US = 10_000L
         // ~10 Hz cap on onLevel callbacks so the UI meter isn't spammed once per PCM buffer.
         const val LEVEL_THROTTLE_NS = 100_000_000L

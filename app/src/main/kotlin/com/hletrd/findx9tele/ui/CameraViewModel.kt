@@ -9,7 +9,9 @@ import android.view.Surface
 import androidx.lifecycle.AndroidViewModel
 import com.hletrd.findx9tele.camera.Antibanding
 import com.hletrd.findx9tele.camera.AspectRatio
+import com.hletrd.findx9tele.camera.AudioZoom
 import com.hletrd.findx9tele.camera.BitrateLevel
+import com.hletrd.findx9tele.camera.MicDirection
 import com.hletrd.findx9tele.camera.CameraEngine
 import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.CaptureMode
@@ -244,6 +246,14 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onAudioGain(gain: Float) {
         engine.setAudioGain(gain)
         _state.update { it.copy(audioGain = gain) }
+    }
+    override fun onMicDirection(direction: MicDirection) {
+        engine.setMicDirection(direction)
+        _state.update { it.copy(micDirection = direction) }
+    }
+    override fun onAudioZoom(zoom: AudioZoom) {
+        engine.setAudioZoom(zoom)
+        _state.update { it.copy(audioZoom = zoom) }
     }
     override fun onToggleTeleconverter(enabled: Boolean) {
         engine.setTeleconverterMode(enabled)

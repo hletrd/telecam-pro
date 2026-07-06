@@ -71,6 +71,8 @@ class CameraEngine(private val context: Context) {
     // Software recording-audio gain (1f = passthrough) and the still-photo aspect-ratio crop;
     // read from the audio-encode / io-executor threads, so both are @Volatile.
     @Volatile private var audioGain = 1f
+    @Volatile private var micDirection = MicDirection.AUTO
+    @Volatile private var audioZoom = AudioZoom.OFF
     @Volatile private var aspectRatio = AspectRatio.W4_3
 
     var onStatus: ((String?) -> Unit)? = null
@@ -329,6 +331,10 @@ class CameraEngine(private val context: Context) {
 
     /** Software gain applied to recorded PCM audio (1f = passthrough); takes effect on the next [startRecording]. */
     fun setAudioGain(g: Float) { audioGain = g }
+
+    /** Preferred mic pickup direction + audio "zoom"; applied to AudioRecord on the next [startRecording]. */
+    fun setMicDirection(d: MicDirection) { micDirection = d }
+    fun setAudioZoom(z: AudioZoom) { audioZoom = z }
 
     /** Still-photo center-crop aspect ratio; applies to HEIF only (see [saveHeifAsync]). FULL = no crop. */
     fun setAspectRatio(a: AspectRatio) { aspectRatio = a }
@@ -611,6 +617,7 @@ class CameraEngine(private val context: Context) {
         val surface = rec.start(
             uri, size, rate.encoderRate, captureRate, bitRateFor(size, rate),
             transfer, codec, recordAudio, audioGain, orientationHint,
+            micDirection, audioZoom.dimension,
         ) { lvl -> onAudioLevel?.invoke(lvl) }
         if (surface == null) {
             // Encoder/muxer failed to configure; drop the pending MediaStore row we created so it
