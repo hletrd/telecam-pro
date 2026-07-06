@@ -356,6 +356,11 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
 
     // ---- Shutter ----
+    /** Hardware (volume-key) shutter: capture a still in photo mode, start/stop in video mode. */
+    fun onHardwareShutter() {
+        if (_state.value.mode == CaptureMode.PHOTO) onCapturePhoto() else onToggleRecording()
+    }
+
     override fun onCapturePhoto() {
         if (_state.value.timerCountdownSec > 0) return // countdown already in progress; ignore re-tap
         val seconds = _state.value.timer.seconds

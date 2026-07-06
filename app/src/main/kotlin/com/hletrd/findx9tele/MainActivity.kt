@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
+import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -99,6 +100,23 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         vm.onStop()
         super.onStop()
+    }
+
+    // Volume keys fire the shutter: at 300 mm even a light screen tap visibly shakes the rig, so a
+    // hardware key (or a volume-button remote/selfie grip) is the only vibration-free release short
+    // of the self-timer. Both keys are consumed on DOWN and UP so holding one never turns the media
+    // volume into a burst of beeps mid-shot; repeatCount gates auto-repeat to a single capture.
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+            if (hasCamera && event.repeatCount == 0) vm.onHardwareShutter()
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
+    }
+
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_UP) return true
+        return super.onKeyUp(keyCode, event)
     }
 
     private fun hasCameraPermission(): Boolean =
