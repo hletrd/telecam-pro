@@ -1,0 +1,114 @@
+# OPPO Find X9 Ultra — HAL-native Log Video (`com.oplus.log.video.mode`)
+
+**Reverse-engineering + on-device analysis of the stock O-Log recording path**
+**Date:** 2026-07-06
+**Scope:** Authorized analysis of the legally-obtained `OplusCamera.apk` (v pulled from
+`/product/app/OplusCamera/OplusCamera.apk`) on the owner's own device, to build a compatible
+third-party camera app.
+**Tools:** `jadx` full decompile (16k+ classes), `adb shell dumpsys media.camera`, real recordings
+pulled + `ffprobe`/`ffmpeg` + OPPO's official O-Log/O-Log2 `.cube` LUTs.
+
+---
+
+## TL;DR
+
+- The stock app records O-Log through the **OPPO OCS camera SDK** (`com.oplus.ocs.camera`), not raw
+  Camera2. The relevant SDK keys are **session-configure** keys:
+  - `KEY_CONFIGURE_LOG_VIDEO_MODE` → vendor tag **`com.oplus.log.video.mode`** (Integer)
+  - `KEY_MOVIE_LOG_ENABLE` → **`com.oplus.movie.log.enable`** (Byte)
+  - `KEY_CONFIGURE_MASTER_VIDEO_CUSTOM_LUT_NAME` → `com.oplus.customize.lut.file.name` (byte[])
+  - `KEY_LOG_VIDEO_PREVIEW_MONITOR_TYPE` → `com.oplus.log.video.preview.monitor.type` (Integer)
+  - `VIDEO_DATASPACE` → `com.oplus.configure.dataspace` (Integer)
+- On **this device**, `com.oplus.log.video.mode` is advertised in the tele camera's
+  `android.request.availableRequestKeys` **and** `availableSessionKeys`, so a third-party app can set
+  it through **raw Camera2** (`CaptureRequest.Key` + `SessionConfiguration.setSessionParameters`).
+  `com.oplus.movie.log.enable` is **not** exposed — so `log.video.mode` alone is the on/off select.
+- **Device-verified:** setting `com.oplus.log.video.mode = 1` makes the ISP emit a genuine
+  **scene-referred log stream** (flat, low contrast, lifted blacks; mean luma ≈ half of the SDR
+  stream) with our GL curve OFF. Values 1 and 2 gave byte-identical output → the key is on/off here.
+- **Caveat:** the resulting log is **not** a drop-in for OPPO's published O-Log2 (or O-Log gen-1)
+  `→Rec709` LUT — a naive ffmpeg round-trip leaves a warm/red cast. It appears to be
+  scene-referred **without baked white balance** (correct for true log; the colorist sets WB in
+  grade), and possibly without the exact color-management the stock app pairs via `VIDEO_DATASPACE` /
+  `customize.lut.file.name`. For a **LUT-accurate O-Log2 deliverable**, the app's GL O-Log2 path
+  (white-paper OETF, `ColorTransfer.LOG`) is exact and round-trips cleanly with OPPO's LUT (verified).
+
+---
+
+## 1. How the stock app selects log (decompiled)
+
+The SDK key table (`com/oplus/ocs/camera/CameraParameter.java`):
+
+```java
+// all ConfigureKey → applied at session-configure time (session parameters)
+KEY_CONFIGURE_LOG_VIDEO_MODE            = ConfigureKey<Integer>("com.oplus.log.video.mode")
+KEY_MOVIE_LOG_ENABLE                    = ConfigureKey<Byte>   ("com.oplus.movie.log.enable")
+KEY_CONFIGURE_MASTER_VIDEO_CUSTOM_LUT_NAME = ConfigureKey<byte[]>("com.oplus.customize.lut.file.name")
+KEY_LOG_VIDEO_PREVIEW_MONITOR_TYPE      = ConfigureKey<Integer>("com.oplus.log.video.preview.monitor.type")
+VIDEO_DATASPACE                         = ConfigureKey<Integer>("com.oplus.configure.dataspace")
+```
+
+The feature lives in the `com.oplus.camera.feature.logvideo` module (LUT picker UI in
+`logvideo/mode/EditorLutSelectItem.java`, state flags `isLogVideoOpened` in `com/oplus/camera/d.java`,
+the toggle entry point `AndroidTestAdapter.setProfessionalVideoLogState`). The app pushes the state
+into the OCS SDK, which resolves the ConfigureKey string to the HAL vendor tag on the real Camera2
+session. The concrete key strings are what a raw-Camera2 app reuses.
+
+`ConfigureKey` = **session parameter** (chosen at pipeline-configure time), which is why the log mode
+must ride in `SessionConfiguration.setSessionParameters(...)`, not only in per-frame requests.
+
+## 2. What third parties can reach (dumpsys)
+
+`dumpsys media.camera`, tele (standalone id `4`) static info:
+
+| vendor tag | id | in requestKeys? | in sessionKeys? |
+|---|---|---|---|
+| `com.oplus.log.video.mode` | 0x811901e5 | ✅ | ✅ |
+| `com.oplus.customize.lut.file.name` | 0x811901e4 | ✅ | ✅ |
+| `com.oplus.movie.log.enable` | 0x81190063 | ❌ | ❌ |
+| `com.oplus.movie.hdr.enable` | 0x81190064 | ❌ | ❌ |
+
+So `log.video.mode` (and, if ever needed, a custom LUT name) are settable from a third-party app;
+the `movie.log.enable` / `movie.hdr.enable` byte gates are HAL-internal only.
+
+`android.tonemap.availableToneMapModes = [0,1,2]` and `maxCurvePoints = 512` — i.e.
+`TONEMAP_MODE_CONTRAST_CURVE` is also available as a standard-API fallback for a client-supplied
+curve, but the vendor log key is the exact stock path and needs no per-frame 512-point curve upload.
+
+## 3. On-device verification (2026-07-06)
+
+Same framing (300 mm, static wall), three matched clips, GL curve passthrough, Y-plane means
+(tag-independent, 8-bit):
+
+| `log.video.mode` | mean Y | look |
+|---|---|---|
+| OFF (0) | 203 | bright, contrasty display-referred |
+| 1 | 91 | flat, low-contrast, lifted blacks — **log** |
+| 2 | 91 | identical to 1 |
+
+- logcat: `CameraController: vendor log.video.mode=1 applied` + `Session configured (... vendorLog=1)`.
+- No crash; the tele session configures with the vendor session parameter set.
+- The dramatic flattening with the GL curve OFF proves the log is applied **inside the ISP to sensor
+  data**, i.e. genuinely scene-referred — the thing an app cannot get from the display-referred SDR
+  stream.
+
+### Curve identity (inconclusive)
+
+Applying OPPO's official `O-Log2-to-Rec709_Gamma24` and `O-Log-Rec.709 Gamma2.4` LUTs to the HAL clip
+(correctly tagged BT.2020 full-range) both leave a warm/red cast rather than a neutral restoration.
+**Control:** the same O-Log2 LUT on the app's own GL-generated O-Log2 clip restores a clean neutral
+grey — so the ffmpeg+LUT pipeline is correct and the HAL curve is simply not that LUT's input. Most
+likely the HAL log is scene-referred without display white-balance (a grading decision) and/or needs
+the stock app's `VIDEO_DATASPACE` + custom-LUT color management to become picture-ready. Confirming
+the exact IDT belongs in a grading tool (Resolve CST), out of scope for a quick ffmpeg check.
+
+## 4. Implementation in this app
+
+`ManualControls`/engine: `VendorLogMode { OFF(0), ON(1) }`, surfaced in Pro sheet → Advanced → "Native
+Log (HAL, experimental)". `CameraController` builds `CaptureRequest.Key("com.oplus.log.video.mode",
+Integer)` and sets it as a **session parameter** (from `TEMPLATE_RECORD`) **and** on every
+repeating/still request, fully guarded (a rejected vendor tag never kills the preview). Changing it
+reopens the session (session key). When ON: the GL curve is bypassed and the file is force-tagged the
+LOG profile (BT.2020 full-range) so players don't tone-map it. Not persisted across launches.
+
+See also: `oplus-camera-explorer-analysis.md` (Explorer/stabilization), `vendor-tags-catalog.md`.
