@@ -125,6 +125,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setVideoCodec(e.videoCodec)
         engine.setBitrateLevel(e.bitrateLevel)
         engine.setOpenGate(e.openGate)
+        engine.setAudioScene(e.audioScene)
         engine.setVideoFrameRate(e.videoFrameRate)
         _state.update {
             it.copy(
@@ -142,6 +143,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 bitrateLevel = e.bitrateLevel,
                 videoFrameRate = e.videoFrameRate,
                 openGate = e.openGate,
+                audioScene = e.audioScene,
             )
         }
     }
@@ -162,6 +164,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             bitrateLevel = s.bitrateLevel,
             videoFrameRate = s.videoFrameRate,
             openGate = s.openGate,
+            audioScene = s.audioScene,
         )
     }
 
@@ -258,6 +261,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onAudioGain(gain: Float) {
         engine.setAudioGain(gain)
         _state.update { it.copy(audioGain = gain) }
+    }
+    override fun onAudioScene(scene: com.hletrd.findx9tele.camera.AudioScene) {
+        engine.setAudioScene(scene)
+        _state.update { it.copy(audioScene = scene) }
     }
     override fun onToggleTeleconverter(enabled: Boolean) {
         engine.setTeleconverterMode(enabled)

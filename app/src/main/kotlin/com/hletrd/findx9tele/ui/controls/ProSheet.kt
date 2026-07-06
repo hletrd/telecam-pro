@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.sp
 import com.hletrd.findx9tele.camera.Antibanding
 import com.hletrd.findx9tele.camera.ExposureStep
 import com.hletrd.findx9tele.camera.AspectRatio
+import com.hletrd.findx9tele.camera.AudioScene
 import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.ColorEffect
@@ -620,6 +621,23 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     )
 
     ToggleRow(label = "Record Audio", checked = state.recordAudio, onCheckedChange = actions::onToggleRecordAudio)
+    // Directional audio — the stock Sound Focus (aims the mic array at the framed subject, tightens
+    // with zoom — the 300 mm use case) / Sound Stage (wider spatial stereo), via the vendor audio-HAL.
+    SegmentedSelector(
+        label = "Audio Scene",
+        options = AudioScene.entries,
+        selected = state.audioScene,
+        labelFor = { it.label },
+        onSelect = actions::onAudioScene,
+        enabled = state.recordAudio,
+    )
+    if (state.audioScene == AudioScene.SOUND_FOCUS) {
+        Text(
+            "Aims the mic toward the subject and narrows with zoom (best for distant 300 mm subjects).",
+            color = CameraColors.TextSecondary,
+            style = MaterialTheme.typography.labelSmall,
+        )
+    }
     LabeledSlider(
         label = "Gain",
         valueLabel = "%.1fx".format(state.audioGain),

@@ -93,6 +93,22 @@ enum class WbMode { AUTO, INCANDESCENT, FLUORESCENT, DAYLIGHT, CLOUDY, SHADE, MA
 enum class MeteringMode { MATRIX, CENTER, SPOT }
 
 /**
+ * Recording audio scene, replicating the stock camera's Sound Focus / Sound Stage. The stock app
+ * drives the vendor audio-HAL parameters (`vendor_audiorecord_effect_type` + friends) — NOT the
+ * standard `AudioRecord.setPreferredMicrophoneDirection`, which the PMA110 HAL rejects. [effectType]
+ * is the vendor int the HAL expects (decompiled from OplusCamera `lj.t0`):
+ *  - STANDARD (1) — normal stereo pickup.
+ *  - SOUND_FOCUS (2) — directional "audio zoom": narrows the pickup toward the framed subject and
+ *    tightens with optical/digital zoom (the 300 mm use case). Sets focus_zoom + focus_angle too.
+ *  - SOUND_STAGE (5) — widened spatial stereo image.
+ */
+enum class AudioScene(val effectType: Int, val label: String) {
+    STANDARD(1, "Standard"),
+    SOUND_FOCUS(2, "Sound Focus"),
+    SOUND_STAGE(5, "Sound Stage"),
+}
+
+/**
  * The four rear lenses, addressed by their 35mm-equivalent focal length (the app resolves each to
  * the back camera whose equiv focal is closest — no hardcoded ids). [TELE3X] is the 3×/70 mm
  * periscope the Hasselblad teleconverter clamps onto; selecting it bundles teleconverter mode ON
@@ -258,6 +274,8 @@ data class CameraUiState(
     val transfer: ColorTransfer = ColorTransfer.HLG,
     val photoFormats: PhotoFormats = PhotoFormats(),
     val recordAudio: Boolean = true,
+    // Directional audio (stock Sound Focus / Sound Stage) via vendor audio-HAL params.
+    val audioScene: AudioScene = AudioScene.STANDARD,
     val audioGain: Float = 1f, // 0..2 software gain applied to recorded PCM
     val audioLevel: Float = 0f, // 0..1 live input level (RMS), for the meter
     val aspectRatio: AspectRatio = AspectRatio.W4_3,

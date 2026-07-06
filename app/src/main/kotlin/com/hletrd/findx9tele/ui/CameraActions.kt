@@ -79,6 +79,7 @@ interface CameraActions {
     fun onAspectRatio(ratio: AspectRatio)
     fun onToggleRecordAudio(enabled: Boolean)
     fun onAudioGain(gain: Float)
+    fun onAudioScene(scene: com.hletrd.findx9tele.camera.AudioScene)
     fun onToggleTeleconverter(enabled: Boolean)
     fun onVideoCodec(codec: VideoCodec)
     fun onBitrateLevel(level: BitrateLevel)

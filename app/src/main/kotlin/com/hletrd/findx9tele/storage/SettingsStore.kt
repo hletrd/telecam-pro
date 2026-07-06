@@ -3,6 +3,7 @@ package com.hletrd.findx9tele.storage
 import android.content.Context
 import android.content.SharedPreferences
 import com.hletrd.findx9tele.camera.AspectRatio
+import com.hletrd.findx9tele.camera.AudioScene
 import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorTransfer
@@ -34,6 +35,7 @@ data class ExtraSettings(
     val bitrateLevel: BitrateLevel = BitrateLevel.MEDIUM,
     val videoFrameRate: VideoFrameRate = VideoFrameRate.DEFAULT,
     val openGate: Boolean = false,
+    val audioScene: AudioScene = AudioScene.STANDARD,
 )
 
 /**
@@ -93,6 +95,7 @@ class SettingsStore(context: Context) {
             putString("bitrateLevel", e.bitrateLevel.name)
             putString("videoFrameRate", e.videoFrameRate.name)
             putBoolean("openGate", e.openGate)
+            putString("audioScene", e.audioScene.name)
             putBoolean(K_HAS, true)
         }.apply()
     }
@@ -145,6 +148,7 @@ class SettingsStore(context: Context) {
                 bitrateLevel = enumOr(prefs.getString("bitrateLevel", null), ed.bitrateLevel),
                 videoFrameRate = enumOr(prefs.getString("videoFrameRate", null), ed.videoFrameRate),
                 openGate = prefs.getBoolean("openGate", ed.openGate),
+                audioScene = enumOr(prefs.getString("audioScene", null), ed.audioScene),
             )
             Loaded(controls, extras)
         }.getOrNull()

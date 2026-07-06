@@ -4,15 +4,18 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaCodec
 import android.media.MediaMuxer
 import android.media.MediaRecorder
 import android.net.Uri
 import android.os.ParcelFileDescriptor
+import android.util.Log
 import android.util.Size
 import android.view.Surface
 import androidx.core.content.ContextCompat
+import com.hletrd.findx9tele.camera.AudioScene
 import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.storage.MediaStoreWriter
@@ -57,6 +60,11 @@ class VideoRecorder(private val context: Context) {
     private var audioGain = 1f
     private var onLevel: ((Float) -> Unit)? = null
     private var lastLevelEmitNs = 0L
+    // Directional-audio scene (stock Sound Focus / Sound Stage) + the current zoom and device
+    // orientation, applied to the audio HAL via AudioManager.setParameters after AudioRecord init.
+    private var audioScene = AudioScene.STANDARD
+    private var audioZoom = 1f
+    private var audioOrientation = 0
 
     /**
      * Returns the encoder input Surface for the GL pipeline, or null on failure. [encoderRate] is the
@@ -74,10 +82,15 @@ class VideoRecorder(private val context: Context) {
         recordAudio: Boolean,
         audioGain: Float = 1f,
         orientationHint: Int = 0,
+        audioScene: AudioScene = AudioScene.STANDARD,
+        audioZoom: Float = 1f,
         onLevel: ((Float) -> Unit)? = null,
     ): Surface? {
         this.uri = uri
         this.audioGain = audioGain
+        this.audioScene = audioScene
+        this.audioZoom = audioZoom
+        this.audioOrientation = ((orientationHint % 360) + 360) % 360
         this.onLevel = onLevel
         val descriptor = MediaStoreWriter.openParcelFd(context, uri, "rw") ?: return null
         pfd = descriptor
@@ -217,6 +230,7 @@ class VideoRecorder(private val context: Context) {
             return
         }
         audioRecord = record
+        applyAudioScene(record)
 
         val codec = MediaCodec.createEncoderByType(ColorProfiles.MIME_AAC)
         codec.configure(ColorProfiles.aacFormat(), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
@@ -224,6 +238,40 @@ class VideoRecorder(private val context: Context) {
         audioCodec = codec
 
         audioThread = thread(name = "audio-encode") { runAudio(record, codec) }
+    }
+
+    /**
+     * Applies the stock Sound Focus / Sound Stage effect via the vendor audio-HAL parameters
+     * (`vendor_audiorecord_effect_type` etc.), the exact keys the stock `lj.t0` recorder sets. Uses
+     * [AudioManager.setParameters] (public, forwards to the audio HAL) while our CAMCORDER-source
+     * AudioRecord is live — the same source the stock app records from. Best-effort and fully
+     * guarded: we log the HAL echo (getParameters) so device acceptance is verifiable, and a
+     * rejected param never affects recording. No-op for STANDARD.
+     */
+    private fun applyAudioScene(record: AudioRecord) {
+        if (audioScene == AudioScene.STANDARD) return
+        val am = context.getSystemService(AudioManager::class.java) ?: return
+        val support = runCatching { am.getParameters("vendor_audiorecord_track_support") }.getOrNull()
+        fun set(kv: String) { runCatching { am.setParameters(kv) } }
+        // Session id scopes the param to our record where the HAL honors it; harmless if ignored.
+        val sid = record.audioSessionId
+        set("vendor_audiorecord_session_id=$sid")
+        set("vendor_audiorecord_effect_type=${audioScene.effectType}")
+        set("vendor_audiorecord_orientation=$audioOrientation")
+        if (audioScene == AudioScene.SOUND_FOCUS) {
+            set("vendor_audiorecord_focus_zoom=$audioZoom")
+            // Pickup angle narrows as zoom rises: ~60° at 1× down to ~36° by 6× (stock uses 36/60).
+            val angle = (60f - (audioZoom.coerceIn(1f, 6f) - 1f) / 5f * 24f)
+            set("vendor_audiorecord_focus_angle=$angle")
+        }
+        val echo = runCatching {
+            am.getParameters(
+                "vendor_audiorecord_effect_type;vendor_audiorecord_focus_angle;" +
+                    "vendor_audiorecord_focus_zoom;vendor_audiorecord_orientation",
+            )
+        }.getOrNull()
+        Log.i(TAG, "audioScene=$audioScene applied (zoom=$audioZoom orient=$audioOrientation) " +
+            "trackSupport=[$support] echo=[$echo]")
     }
 
     private fun runAudio(record: AudioRecord, codec: MediaCodec) {
@@ -347,6 +395,7 @@ class VideoRecorder(private val context: Context) {
             PackageManager.PERMISSION_GRANTED
 
     private companion object {
+        const val TAG = "VideoRecorder"
         const val TIMEOUT_US = 10_000L
         // ~10 Hz cap on onLevel callbacks so the UI meter isn't spammed once per PCM buffer.
         const val LEVEL_THROTTLE_NS = 100_000_000L

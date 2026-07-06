@@ -755,6 +755,7 @@ private object PreviewCameraActions : CameraActions {
     override fun onAspectRatio(ratio: AspectRatio) = Unit
     override fun onToggleRecordAudio(enabled: Boolean) = Unit
     override fun onAudioGain(gain: Float) = Unit
+    override fun onAudioScene(scene: com.hletrd.findx9tele.camera.AudioScene) = Unit
     override fun onToggleTeleconverter(enabled: Boolean) = Unit
     override fun onVideoCodec(codec: VideoCodec) = Unit
     override fun onBitrateLevel(level: BitrateLevel) = Unit
