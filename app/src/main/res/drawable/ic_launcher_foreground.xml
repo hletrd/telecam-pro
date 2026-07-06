@@ -1,21 +1,45 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Telephoto lens head-on: white rings + deep-navy glass with a bright specular highlight and a
+     tele "chevron" hint below. Sits inside the adaptive-icon safe zone (~26..82 of 108). -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- Outer lens ring -->
+    <!-- Outer barrel ring -->
     <path
-        android:strokeColor="#E6E6EA"
-        android:strokeWidth="4"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="5"
         android:fillColor="#00000000"
-        android:pathData="M54,30 a24,24 0 1,0 0.01,0 Z" />
-    <!-- Inner aperture -->
+        android:pathData="M54,26 a28,28 0 1,0 0.01,0 Z" />
+    <!-- Inner ring -->
     <path
-        android:fillColor="#4C9AFF"
-        android:pathData="M54,42 a12,12 0 1,0 0.01,0 Z" />
-    <!-- Tele mark -->
+        android:strokeColor="#CCFFFFFF"
+        android:strokeWidth="3"
+        android:fillColor="#00000000"
+        android:pathData="M54,34 a20,20 0 1,0 0.01,0 Z" />
+    <!-- Glass element -->
+    <path android:pathData="M54,40 a14,14 0 1,0 0.01,0 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="radial"
+                android:centerX="49" android:centerY="49" android:gradientRadius="20">
+                <item android:offset="0.0" android:color="#FF2A4B7A" />
+                <item android:offset="1.0" android:color="#FF0C1B33" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- Specular highlight -->
     <path
-        android:fillColor="#E6E6EA"
-        android:pathData="M50,64 h8 v14 h-8 z" />
+        android:fillColor="#F2FFFFFF"
+        android:pathData="M48,45 a4,4 0 1,0 0.01,0 Z" />
+    <!-- Tele chevron mark below the lens -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000"
+        android:pathData="M46,80 l8,-6 l8,6" />
 </vector>
