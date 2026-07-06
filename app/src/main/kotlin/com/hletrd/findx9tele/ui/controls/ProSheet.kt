@@ -613,7 +613,8 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     // Resolved encoder settings summary, e.g. "HEVC · 4K · 30 · 84 Mbps" — the exact computed bitrate.
     val mbps = videoBitRate(
         state.videoResolution.width, state.videoResolution.height,
-        state.videoFrameRate.encoderRate, state.bitrateLevel.bpp, codec,
+        state.videoFrameRate.encoderRate,
+        com.hletrd.findx9tele.camera.effectiveBpp(state.bitrateLevel, codec), codec,
     ) / 1_000_000
     LabelValueRow(
         label = "Encoder",

@@ -345,6 +345,8 @@ internal fun videoCodecLabel(codec: VideoCodec): String = when (codec) {
     VideoCodec.AVC -> "H.264"
     // Software-only on this device (no c2.qti.av1.*), so it is slow and ≤1080p — flag it in the chip.
     VideoCodec.AV1 -> "AV1 (SW, slow)"
+    // All-intra professional codec (ProRes / XAVC-I class), HW-accelerated, very high bitrate.
+    VideoCodec.APV -> "APV (pro intra)"
 }
 
 internal fun videoFrameRateLabel(rate: VideoFrameRate): String = rate.label
@@ -354,12 +356,15 @@ internal fun videoCodecLabelShort(codec: VideoCodec): String = when (codec) {
     VideoCodec.HEVC -> "HEVC"
     VideoCodec.AVC -> "H.264"
     VideoCodec.AV1 -> "AV1"
+    VideoCodec.APV -> "APV"
 }
 
 internal fun bitrateLevelLabel(level: BitrateLevel): String = when (level) {
     BitrateLevel.LOW -> "Low"
     BitrateLevel.MEDIUM -> "Medium"
     BitrateLevel.HIGH -> "High"
+    BitrateLevel.ULTRA -> "Ultra"
+    BitrateLevel.MAX -> "Max"
 }
 
 /**

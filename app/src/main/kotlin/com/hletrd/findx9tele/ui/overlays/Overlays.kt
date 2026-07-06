@@ -288,7 +288,8 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier) {
         if (state.mode == CaptureMode.VIDEO) {
             val mbps = videoBitRate(
                 state.videoResolution.width, state.videoResolution.height,
-                state.videoFrameRate.encoderRate, state.bitrateLevel.bpp, state.videoCodec,
+                state.videoFrameRate.encoderRate,
+                com.hletrd.findx9tele.camera.effectiveBpp(state.bitrateLevel, state.videoCodec), state.videoCodec,
             ) / 1_000_000
             Text(
                 "${videoResolutionLabel(state.videoResolution)} ${state.videoFrameRate.label}p " +

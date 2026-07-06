@@ -24,6 +24,7 @@ object ColorProfiles {
     const val MIME_HEVC = MediaFormat.MIMETYPE_VIDEO_HEVC
     const val MIME_AVC = MediaFormat.MIMETYPE_VIDEO_AVC
     const val MIME_AV1 = EncoderCaps.MIME_AV1
+    const val MIME_APV = EncoderCaps.MIME_APV
     const val MIME_AAC = MediaFormat.MIMETYPE_AUDIO_AAC
 
     const val AUDIO_SAMPLE_RATE = 48_000
@@ -94,6 +95,25 @@ object ColorProfiles {
             VideoCodec.HEVC -> hevcFormat(width, height, encoderRate, captureRate, bitRate, transfer)
             VideoCodec.AVC -> avcFormat(width, height, encoderRate, captureRate, bitRate)
             VideoCodec.AV1 -> av1Format(width, height, encoderRate, captureRate, bitRate)
+            VideoCodec.APV -> apvFormat(width, height, encoderRate, captureRate, bitRate)
+        }
+    }
+
+    /**
+     * APV (Advanced Professional Video, ISO/IEC 21794) — an ALL-INTRA professional codec, the
+     * ProRes/XAVC-I analogue. Every frame is a keyframe (I-frame interval 0), 10-bit 4:2:2 tagged
+     * BT.2020 full-range so it grades like the other 10-bit paths. The QTI encoder handles the huge
+     * intra bitrate; [bitRate] is already scaled up for intra by [com.hletrd.findx9tele.camera.effectiveBpp].
+     */
+    private fun apvFormat(width: Int, height: Int, encoderRate: Double, captureRate: Double, bitRate: Int): MediaFormat {
+        return MediaFormat.createVideoFormat(MIME_APV, width, height).apply {
+            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+            setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
+            applyFrameRate(encoderRate, captureRate)
+            // All-intra: a keyframe every frame (interval 0). No inter prediction to grade around.
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 0)
+            setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT2020)
+            setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_FULL)
         }
     }
 
@@ -129,6 +149,7 @@ object ColorProfiles {
         VideoCodec.HEVC -> MIME_HEVC
         VideoCodec.AVC -> MIME_AVC
         VideoCodec.AV1 -> MIME_AV1
+        VideoCodec.APV -> MIME_APV
     }
 
     fun aacFormat(): MediaFormat {

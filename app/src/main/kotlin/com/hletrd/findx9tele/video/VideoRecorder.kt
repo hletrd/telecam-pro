@@ -181,6 +181,18 @@ class VideoRecorder(private val context: Context) {
     private fun drainVideo() {
         val codec = videoCodec ?: return
         val info = MediaCodec.BufferInfo()
+        // The encoder can error asynchronously (a codec/container mismatch — e.g. a format the
+        // MediaMuxer rejects — makes dequeueOutputBuffer throw IllegalStateException "Pending
+        // dequeue ... cancelled"). This runs on its own thread, so an uncaught throw crashes the
+        // app; guard the whole loop and end the recording cleanly instead.
+        try {
+            drainVideoLoop(codec, info)
+        } catch (t: IllegalStateException) {
+            Log.w(TAG, "video drain aborted (encoder error): ${t.message}")
+        }
+    }
+
+    private fun drainVideoLoop(codec: MediaCodec, info: MediaCodec.BufferInfo) {
         while (true) {
             val idx = codec.dequeueOutputBuffer(info, TIMEOUT_US)
             when {

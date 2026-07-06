@@ -33,6 +33,7 @@ object EncoderCaps {
             VideoCodec.HEVC to MediaFormat.MIMETYPE_VIDEO_HEVC,
             VideoCodec.AVC to MediaFormat.MIMETYPE_VIDEO_AVC,
             VideoCodec.AV1 to MIME_AV1,
+            VideoCodec.APV to MIME_APV,
         )) {
             encoderFor(mime)?.let { out[codec] = it }
         }
@@ -55,7 +56,13 @@ object EncoderCaps {
         return fallback
     }
 
-    /** Codecs the device can actually encode, in UI order (HEVC, AVC, then AV1 if present). */
+    /**
+     * Codecs the device can actually encode AND that we can mux into MP4, in UI order (HEVC, AVC,
+     * then AV1 if present). APV is intentionally EXCLUDED: the HW `c2.qti.apv.encoder` exists, but
+     * Android's MediaMuxer (API 36) rejects APV in an MP4 container — device-verified it errors the
+     * encoder mid-drain — so there is no working recording path for it via MediaCodec+MediaMuxer.
+     * [isSupported]/[encoderName] still report it for diagnostics.
+     */
     fun availableCodecs(): List<VideoCodec> =
         listOf(VideoCodec.HEVC, VideoCodec.AVC, VideoCodec.AV1).filter { byCodec.containsKey(it) }
 
@@ -69,4 +76,6 @@ object EncoderCaps {
 
     const val MIME_AV1 = "video/av01"
     const val MIME_DOLBY_VISION = "video/dolby-vision"
+    // APV (Advanced Professional Video, ISO/IEC 21794) — HW `c2.qti.apv.encoder` on this SoC.
+    const val MIME_APV = "video/apv"
 }

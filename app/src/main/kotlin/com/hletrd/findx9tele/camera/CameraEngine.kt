@@ -665,18 +665,19 @@ class CameraEngine(private val context: Context) {
         // 10-bit HLG/Log path. With HAL-native log active the stream is ALREADY log-encoded by the
         // ISP — GL must pass it through untouched or the curve would be applied twice.
         // (Resolution changes after this point stream the old size until reopen.)
+        // HEVC and APV are the 10-bit paths (keep the HLG/Log GL curve); AVC/AV1 are 8-bit SDR.
         val glTransfer = when {
             vendorLogMode != VendorLogMode.OFF -> null
-            codec == VideoCodec.HEVC -> transfer
+            codec == VideoCodec.HEVC || codec == VideoCodec.APV -> transfer
             else -> null
         }
         // File color tags: when the HAL emits O-Log2 the container MUST be tagged as the LOG profile
         // (BT.2020 full-range, SDR-class transfer) regardless of the TF chip, so players don't
-        // HDR-tone-map it and OPPO's O-Log2 LUTs round-trip. Otherwise use the selected transfer
-        // (HEVC only; AVC/AV1 are always SDR).
+        // HDR-tone-map it and OPPO's O-Log2 LUTs round-trip. Otherwise use the selected transfer on
+        // the 10-bit paths (HEVC/APV); AVC/AV1 are always SDR.
         val fileTransfer = when {
             vendorLogMode != VendorLogMode.OFF -> ColorTransfer.LOG
-            codec == VideoCodec.HEVC -> transfer
+            codec == VideoCodec.HEVC || codec == VideoCodec.APV -> transfer
             else -> ColorTransfer.SDR
         }
         val rec = VideoRecorder(context)
@@ -838,8 +839,9 @@ class CameraEngine(private val context: Context) {
     }
 
     // Resolved encoder bitrate (bits/s) for the current level, size, true frame rate, and codec.
+    // effectiveBpp scales the level up for the all-intra APV codec.
     private fun bitRateFor(size: Size, rate: VideoFrameRate): Int =
-        videoBitRate(size.width, size.height, rate.encoderRate, bitrateLevel.bpp, videoCodec)
+        videoBitRate(size.width, size.height, rate.encoderRate, effectiveBpp(bitrateLevel, videoCodec), videoCodec)
 
     // Monotonic per-session counter so rapid captures (BURST/AEB/timelapse) that land within the same
     // second — or even millisecond — never collide on filename and overwrite/duplicate each other.

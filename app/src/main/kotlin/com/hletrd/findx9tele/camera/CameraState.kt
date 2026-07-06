@@ -149,14 +149,22 @@ enum class DriveMode { SINGLE, BURST, AEB, TIMELAPSE }
 
 /**
  * Video codec. HEVC supports 10-bit HLG/Log; AVC is 8-bit SDR only; AV1 is SW-only on this device
- * (`c2.android.av1.encoder` — no HW AV1 on SM8850), so it is slow and gated to ≤1080p/≤30fps.
+ * (`c2.android.av1.encoder` — no HW AV1 on SM8850), so it is slow and gated to ≤1080p/≤30fps. APV is
+ * the professional intra-frame codec (`c2.qti.apv.encoder`, ISO/IEC 21794) — HW-accelerated up to
+ * ~2 Gbps, the closest thing to ProRes / XAVC-I on this device (all-intra, huge bitrate, grade-ready).
  * Which of these are actually offered is decided at runtime from [android.media.MediaCodecList]
  * (see [com.hletrd.findx9tele.video.EncoderCaps]).
  */
-enum class VideoCodec { HEVC, AVC, AV1 }
+enum class VideoCodec { HEVC, AVC, AV1, APV }
 
-/** Video bitrate level as bits-per-pixel-per-frame factor. */
-enum class BitrateLevel(val bpp: Float) { LOW(0.06f), MEDIUM(0.10f), HIGH(0.16f) }
+/**
+ * Video bitrate level as bits-per-pixel-per-frame factor. The top presets reach the QTI HW encoder
+ * ceilings measured on this device (HEVC/AVC ≈ 100 Mbps at 4K; MAX ≈ 100 Mbps at 4K30, matching the
+ * stock O-Log2's ~120 Mbps class) — the old HIGH (0.16) left over half the HW headroom unused.
+ */
+enum class BitrateLevel(val bpp: Float) {
+    LOW(0.06f), MEDIUM(0.10f), HIGH(0.16f), ULTRA(0.26f), MAX(0.40f)
+}
 
 /**
  * A selectable video frame rate. [encoderRate] is the TRUE rate handed to the encoder
@@ -234,10 +242,24 @@ enum class VideoFrameRate(
  * configure the encoder) and the UI (to display the exact Mbps).
  */
 fun videoBitRate(width: Int, height: Int, encoderRate: Double, bpp: Float, codec: VideoCodec): Int {
-    val raw = (bpp.toDouble() * width * height * encoderRate).toInt()
-    val ceiling = if (codec == VideoCodec.AV1) 20_000_000 else 200_000_000
-    return raw.coerceIn(8_000_000, ceiling)
+    val raw = (bpp.toDouble() * width * height * encoderRate).toLong()
+    // Per-codec ceilings from this device's media_codecs.xml: AV1(SW) ~20 Mbps; APV pro-intra tops
+    // out ~2 Gbps but is capped to a storage-sane 480 Mbps here; QTI HEVC/AVC advertise 100 Mbps.
+    val ceiling = when (codec) {
+        VideoCodec.AV1 -> 20_000_000L
+        VideoCodec.APV -> 480_000_000L
+        else -> 120_000_000L
+    }
+    return raw.coerceIn(8_000_000L, ceiling).toInt()
 }
+
+/**
+ * APV needs a far higher bits-per-pixel than a Long-GOP codec: it is ALL-INTRA (every frame a
+ * keyframe), so the [BitrateLevel] bpp is scaled up when the codec is APV to land in the pro-intra
+ * range (~ProRes 422 HQ / XAVC-I). e.g. 4K30 MEDIUM → ~200 Mbps, HIGH → ~320 Mbps.
+ */
+fun effectiveBpp(level: BitrateLevel, codec: VideoCodec): Float =
+    if (codec == VideoCodec.APV) level.bpp * 8f else level.bpp
 
 /** Capture aspect ratio. FULL = whole sensor; others crop. w/h = 0 means full. */
 // Only the two ratios that matter for this 4:3-native sensor: 4:3 is the full sensor readout, 16:9

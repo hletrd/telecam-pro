@@ -78,9 +78,9 @@ class VideoCapabilitiesTest {
         // 4K30 HEVC at MEDIUM (0.10 bpp): 0.10 * 3840*2160*30 = 24,883,200 (~24.9 Mbps), within range.
         val mid = videoBitRate(3840, 2160, 30.0, BitrateLevel.MEDIUM.bpp, VideoCodec.HEVC)
         assertEquals(24_883_200, mid)
-        // A huge frame×rate (8K60 HIGH ≈ 318 Mbps) exceeds the 200 Mbps HW ceiling and is clamped.
+        // A huge frame×rate (8K60 HIGH ≈ 318 Mbps) exceeds the 120 Mbps HEVC HW ceiling and is clamped.
         val hi = videoBitRate(7680, 4320, 60.0, BitrateLevel.HIGH.bpp, VideoCodec.HEVC)
-        assertEquals(200_000_000, hi)
+        assertEquals(120_000_000, hi)
         // Tiny frame hits the 8 Mbps floor.
         val lo = videoBitRate(640, 480, 24.0, BitrateLevel.LOW.bpp, VideoCodec.HEVC)
         assertEquals(8_000_000, lo)
@@ -91,5 +91,23 @@ class VideoCapabilitiesTest {
         // Large inputs push past AV1's 20 Mbps cap (the function is pure; the engine also clamps size).
         val av1 = videoBitRate(3840, 2160, 60.0, BitrateLevel.HIGH.bpp, VideoCodec.AV1)
         assertEquals(20_000_000, av1)
+    }
+
+    @Test
+    fun `MAX preset reaches the HEVC HW ceiling range at 4K`() {
+        // 4K30 MAX (0.40 bpp): ~99.5 Mbps — the whole point of adding the higher presets.
+        val max = videoBitRate(3840, 2160, 30.0, BitrateLevel.MAX.bpp, VideoCodec.HEVC)
+        assertTrue("4K30 MAX should be ~99.5 Mbps, was $max", max in 99_000_000..100_000_000)
+    }
+
+    @Test
+    fun `APV scales bpp up for all-intra and has a higher ceiling`() {
+        // effectiveBpp ×8 for APV: 4K30 MEDIUM → 0.80 bpp → ~199 Mbps (pro-intra range), under 480M cap.
+        val bpp = effectiveBpp(BitrateLevel.MEDIUM, VideoCodec.APV)
+        assertEquals(0.80f, bpp, 1e-4f)
+        val apv = videoBitRate(3840, 2160, 30.0, bpp, VideoCodec.APV)
+        assertTrue("APV 4K30 should be ~199 Mbps, was $apv", apv in 198_000_000..200_000_000)
+        // A Long-GOP codec keeps its base bpp.
+        assertEquals(BitrateLevel.MEDIUM.bpp, effectiveBpp(BitrateLevel.MEDIUM, VideoCodec.HEVC), 1e-6f)
     }
 }
