@@ -28,7 +28,10 @@ class FlipRenderer {
     private var uTexture = 0
     private var uTransfer = 0
     private var uPeaking = 0
+    private var uPeakThreshold = 0
+    private var uPeakColor = 0
     private var uZebra = 0
+    private var uZebraThreshold = 0
     private var uFalseColor = 0
     private var uTexel = 0
 
@@ -63,7 +66,10 @@ class FlipRenderer {
         uTexture = GLES20.glGetUniformLocation(program, "uTexture")
         uTransfer = GLES20.glGetUniformLocation(program, "uTransfer")
         uPeaking = GLES20.glGetUniformLocation(program, "uPeaking")
+        uPeakThreshold = GLES20.glGetUniformLocation(program, "uPeakThreshold")
+        uPeakColor = GLES20.glGetUniformLocation(program, "uPeakColor")
         uZebra = GLES20.glGetUniformLocation(program, "uZebra")
+        uZebraThreshold = GLES20.glGetUniformLocation(program, "uZebraThreshold")
         uFalseColor = GLES20.glGetUniformLocation(program, "uFalseColor")
         uTexel = GLES20.glGetUniformLocation(program, "uTexel")
 
@@ -109,6 +115,12 @@ class FlipRenderer {
         // sets this to the tapped point so punch-in magnifies an off-center subject.
         centerX: Float = 0.5f,
         centerY: Float = 0.5f,
+        // Adjustable focus-peaking (edge threshold + highlight color) and zebra (clipping threshold).
+        peakThreshold: Float = 0.06f,
+        peakR: Float = 1f,
+        peakG: Float = 0.1f,
+        peakB: Float = 0.7f,
+        zebraThreshold: Float = 0.95f,
     ) {
         GLES20.glViewport(0, 0, targetWidth, targetHeight)
         GLES20.glClearColor(0f, 0f, 0f, 1f)
@@ -149,7 +161,10 @@ class FlipRenderer {
             },
         )
         GLES20.glUniform1i(uPeaking, if (peaking) 1 else 0)
+        GLES20.glUniform1f(uPeakThreshold, peakThreshold)
+        GLES20.glUniform3f(uPeakColor, peakR, peakG, peakB)
         GLES20.glUniform1i(uZebra, if (zebra) 1 else 0)
+        GLES20.glUniform1f(uZebraThreshold, zebraThreshold)
         GLES20.glUniform1i(uFalseColor, if (falseColor) 1 else 0)
         GLES20.glUniform2f(uTexel, 1f / previewW, 1f / previewH)
 

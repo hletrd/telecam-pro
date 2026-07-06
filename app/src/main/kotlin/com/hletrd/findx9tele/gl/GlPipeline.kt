@@ -56,7 +56,13 @@ class GlPipeline {
 
     private var transfer: ColorTransfer? = null
     private var peaking = false
+    // Adjustable focus-peaking edge threshold + highlight color, and the zebra clipping threshold.
+    private var peakThreshold = 0.06f
+    private var peakR = 1f
+    private var peakG = 0.1f
+    private var peakB = 0.7f
     private var zebra = false
+    private var zebraThreshold = 0.95f
     private var falseColor = false
     private var tenBit = false
     private var punchIn = false
@@ -162,6 +168,14 @@ class GlPipeline {
     fun setTransfer(t: ColorTransfer?) = post { transfer = t }
     fun setPeaking(enabled: Boolean) = post { peaking = enabled }
     fun setZebra(enabled: Boolean) = post { zebra = enabled }
+
+    /** Focus-peaking edge threshold (lower = more sensitive) + highlight color (RGB 0..1). */
+    fun setPeakingParams(threshold: Float, r: Float, g: Float, b: Float) = post {
+        peakThreshold = threshold; peakR = r; peakG = g; peakB = b
+    }
+
+    /** Zebra clipping threshold (luma 0..1 above which stripes draw). */
+    fun setZebraThreshold(t: Float) = post { zebraThreshold = t }
     fun setFalseColor(enabled: Boolean) = post { falseColor = enabled }
 
     fun setEis(enabled: Boolean, focalInImageWidths: Float, crop: Float) = post {
@@ -244,7 +258,10 @@ class GlPipeline {
         val loupeX = if (punchIn) punchInX else 0.5f
         val loupeY = if (punchIn) punchInY else 0.5f
         core.makeCurrent(previewEgl)
-        renderer.draw(stMatrix, previewW, previewH, null, peaking, zebra, falseColor, sx, sy, roll, previewCrop, loupeX, loupeY)
+        renderer.draw(
+            stMatrix, previewW, previewH, null, peaking, zebra, falseColor, sx, sy, roll, previewCrop, loupeX, loupeY,
+            peakThreshold = peakThreshold, peakR = peakR, peakG = peakG, peakB = peakB, zebraThreshold = zebraThreshold,
+        )
         core.swapBuffers(previewEgl)
 
         // Additive scope analysis: throttled GL readback of the just-drawn preview, computed off-thread.

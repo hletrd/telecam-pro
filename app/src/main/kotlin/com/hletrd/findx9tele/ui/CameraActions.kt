@@ -15,6 +15,8 @@ import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.MeteringMode
+import com.hletrd.findx9tele.camera.PeakingColor
+import com.hletrd.findx9tele.camera.PeakingLevel
 import com.hletrd.findx9tele.camera.PhotoFormats
 import com.hletrd.findx9tele.camera.ProcessingLevel
 import com.hletrd.findx9tele.camera.ShutterMode
@@ -90,7 +92,10 @@ interface CameraActions {
 
     // Viewfinder assists
     fun onTogglePeaking(enabled: Boolean)
+    fun onPeakingLevel(level: PeakingLevel)
+    fun onPeakingColor(color: PeakingColor)
     fun onToggleZebra(enabled: Boolean)
+    fun onZebraLevel(level: com.hletrd.findx9tele.camera.ZebraLevel)
     fun onToggleFalseColor(enabled: Boolean)
     fun onToggleHistogram(enabled: Boolean)
     fun onToggleWaveform(enabled: Boolean)

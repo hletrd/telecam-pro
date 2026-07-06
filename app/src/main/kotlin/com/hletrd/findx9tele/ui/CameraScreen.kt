@@ -779,7 +779,10 @@ private object PreviewCameraActions : CameraActions {
     override fun onEisStrength(strength: EisStrength) = Unit
 
     override fun onTogglePeaking(enabled: Boolean) = Unit
+    override fun onPeakingLevel(level: com.hletrd.findx9tele.camera.PeakingLevel) = Unit
+    override fun onPeakingColor(color: com.hletrd.findx9tele.camera.PeakingColor) = Unit
     override fun onToggleZebra(enabled: Boolean) = Unit
+    override fun onZebraLevel(level: com.hletrd.findx9tele.camera.ZebraLevel) = Unit
     override fun onToggleFalseColor(enabled: Boolean) = Unit
     override fun onToggleHistogram(enabled: Boolean) = Unit
     override fun onToggleWaveform(enabled: Boolean) = Unit

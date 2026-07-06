@@ -23,6 +23,8 @@ import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.ManualControls
 import com.hletrd.findx9tele.camera.MeteringMode
+import com.hletrd.findx9tele.camera.PeakingColor
+import com.hletrd.findx9tele.camera.PeakingLevel
 import com.hletrd.findx9tele.camera.PhotoFormats
 import com.hletrd.findx9tele.camera.ProcessingLevel
 import com.hletrd.findx9tele.camera.ShutterMode
@@ -30,6 +32,7 @@ import com.hletrd.findx9tele.camera.ShutterTimer
 import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.camera.VideoFrameRate
 import com.hletrd.findx9tele.camera.WbMode
+import com.hletrd.findx9tele.camera.ZebraLevel
 import com.hletrd.findx9tele.focus.FocusMapping
 import com.hletrd.findx9tele.storage.ExtraSettings
 import com.hletrd.findx9tele.storage.SettingsStore
@@ -302,9 +305,21 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setPeaking(enabled)
         _state.update { it.copy(focusPeaking = enabled) }
     }
+    override fun onPeakingLevel(level: PeakingLevel) {
+        engine.setPeakingLevel(level)
+        _state.update { it.copy(peakingLevel = level) }
+    }
+    override fun onPeakingColor(color: PeakingColor) {
+        engine.setPeakingColor(color)
+        _state.update { it.copy(peakingColor = color) }
+    }
     override fun onToggleZebra(enabled: Boolean) {
         engine.setZebra(enabled)
         _state.update { it.copy(zebra = enabled) }
+    }
+    override fun onZebraLevel(level: ZebraLevel) {
+        engine.setZebraLevel(level)
+        _state.update { it.copy(zebraLevel = level) }
     }
     override fun onToggleFalseColor(enabled: Boolean) {
         engine.setFalseColor(enabled)

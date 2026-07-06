@@ -215,6 +215,15 @@ class CameraEngine(private val context: Context) {
     fun setPeaking(enabled: Boolean) = gl.setPeaking(enabled)
     fun setZebra(enabled: Boolean) = gl.setZebra(enabled)
 
+    // Adjustable peaking (sensitivity + color) and zebra (%): threshold and color are combined into
+    // one GL call, so either change re-applies both from the current level/color.
+    @Volatile private var peakingLevel = PeakingLevel.MEDIUM
+    @Volatile private var peakingColor = PeakingColor.MAGENTA
+    private fun applyPeaking() = gl.setPeakingParams(peakingLevel.threshold, peakingColor.r, peakingColor.g, peakingColor.b)
+    fun setPeakingLevel(l: PeakingLevel) { peakingLevel = l; applyPeaking() }
+    fun setPeakingColor(c: PeakingColor) { peakingColor = c; applyPeaking() }
+    fun setZebraLevel(z: ZebraLevel) = gl.setZebraThreshold(z.threshold)
+
     /** Enables/disables GL-thread histogram and/or waveform computation feeding [onAnalysis]. */
     fun setAnalysis(histogram: Boolean, waveform: Boolean) = gl.setAnalysisEnabled(histogram, waveform)
 

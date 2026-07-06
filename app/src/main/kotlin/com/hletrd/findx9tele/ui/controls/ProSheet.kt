@@ -49,6 +49,9 @@ import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.DriveMode
 import com.hletrd.findx9tele.camera.EisStrength
+import com.hletrd.findx9tele.camera.PeakingColor
+import com.hletrd.findx9tele.camera.PeakingLevel
+import com.hletrd.findx9tele.camera.ZebraLevel
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.MeteringMode
@@ -449,6 +452,22 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
         ToggleRow(label = "AF Lock", checked = controls.afLock, onCheckedChange = actions::onAfLock)
     }
     ToggleRow(label = "Focus Peaking", checked = state.focusPeaking, onCheckedChange = actions::onTogglePeaking)
+    SegmentedSelector(
+        label = "Peaking Sensitivity",
+        options = PeakingLevel.entries,
+        selected = state.peakingLevel,
+        labelFor = { it.name.lowercase().replaceFirstChar { c -> c.uppercase() } },
+        onSelect = actions::onPeakingLevel,
+        enabled = state.focusPeaking,
+    )
+    SegmentedSelector(
+        label = "Peaking Color",
+        options = PeakingColor.entries,
+        selected = state.peakingColor,
+        labelFor = { it.name.lowercase().replaceFirstChar { c -> c.uppercase() } },
+        onSelect = actions::onPeakingColor,
+        enabled = state.focusPeaking,
+    )
 }
 
 @Composable
@@ -598,6 +617,21 @@ private fun ProcessingTab(state: CameraUiState, actions: CameraActions) {
 private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
     TabTitle("Assists")
     ToggleRow(label = "Zebra", checked = state.zebra, onCheckedChange = actions::onToggleZebra)
+    SegmentedSelector(
+        label = "Zebra Level",
+        options = ZebraLevel.entries,
+        selected = state.zebraLevel,
+        labelFor = {
+            when (it) {
+                ZebraLevel.IRE70 -> "70%"
+                ZebraLevel.IRE85 -> "85%"
+                ZebraLevel.IRE95 -> "95%"
+                ZebraLevel.CLIP100 -> "100%"
+            }
+        },
+        onSelect = actions::onZebraLevel,
+        enabled = state.zebra,
+    )
     ToggleRow(label = "False Color", checked = state.falseColor, onCheckedChange = actions::onToggleFalseColor)
     ToggleRow(label = "Histogram", checked = state.histogram, onCheckedChange = actions::onToggleHistogram)
     ToggleRow(label = "Waveform", checked = state.waveform, onCheckedChange = actions::onToggleWaveform)

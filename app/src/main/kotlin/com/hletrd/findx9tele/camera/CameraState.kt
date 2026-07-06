@@ -35,6 +35,21 @@ enum class ShutterMode { SPEED, ANGLE }
 /** Electronic stabilization crop strength (headroom). OFF handled by the EIS toggle. */
 enum class EisStrength(val crop: Float) { LOW(0.06f), MEDIUM(0.10f), HIGH(0.18f) }
 
+/** Focus-peaking edge-detection threshold; a LOWER threshold highlights more edges (more sensitive). */
+enum class PeakingLevel(val threshold: Float) { LOW(0.12f), MEDIUM(0.06f), HIGH(0.03f) }
+
+/** Focus-peaking highlight color (RGB 0..1). */
+enum class PeakingColor(val r: Float, val g: Float, val b: Float) {
+    RED(1f, 0.15f, 0.15f),
+    GREEN(0.1f, 1f, 0.25f),
+    BLUE(0.3f, 0.55f, 1f),
+    YELLOW(1f, 0.9f, 0f),
+    MAGENTA(1f, 0.1f, 0.7f),
+}
+
+/** Zebra threshold: luma above which clipping stripes are drawn (100 = only fully clipped). */
+enum class ZebraLevel(val threshold: Float) { IRE70(0.70f), IRE85(0.85f), IRE95(0.95f), CLIP100(1.0f) }
+
 /** White balance: AUTO, a named preset (CONTROL_AWB_MODE_*), or MANUAL (Kelvin + tint). */
 enum class WbMode { AUTO, INCANDESCENT, FLUORESCENT, DAYLIGHT, CLOUDY, SHADE, MANUAL }
 
@@ -185,7 +200,10 @@ data class CameraUiState(
     val intervalSec: Int = 5,
     // Viewfinder assists
     val focusPeaking: Boolean = false,
+    val peakingLevel: PeakingLevel = PeakingLevel.MEDIUM,
+    val peakingColor: PeakingColor = PeakingColor.MAGENTA,
     val zebra: Boolean = false,
+    val zebraLevel: ZebraLevel = ZebraLevel.IRE95,
     val falseColor: Boolean = false,
     val histogram: Boolean = false,
     val waveform: Boolean = false,

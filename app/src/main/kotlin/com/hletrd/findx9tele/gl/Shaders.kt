@@ -33,7 +33,10 @@ object Shaders {
         uniform samplerExternalOES uTexture;
         uniform int uTransfer;   // 0 = display (preview), 1 = HLG, 2 = LOG
         uniform int uPeaking;    // 0/1  (preview only)
+        uniform float uPeakThreshold; // edge magnitude above which peaking paints
+        uniform vec3 uPeakColor;      // peaking highlight color
         uniform int uZebra;      // 0/1  (preview only)
+        uniform float uZebraThreshold; // luma above which zebra stripes draw
         uniform int uFalseColor; // 0/1  (preview only) exposure false-color map
         uniform vec2 uTexel;     // 1/width, 1/height for neighbor sampling
         varying vec2 vTexCoord;
@@ -83,14 +86,14 @@ object Shaders {
                 float rx = luma(texture2D(uTexture, vTexCoord + vec2(uTexel.x, 0.0)).rgb);
                 float ry = luma(texture2D(uTexture, vTexCoord + vec2(0.0, uTexel.y)).rgb);
                 float edge = abs(c - rx) + abs(c - ry);
-                if (edge > 0.06) {
-                    color = mix(color, vec3(1.0, 0.1, 0.7), 0.85);
+                if (edge > uPeakThreshold) {
+                    color = mix(color, uPeakColor, 0.85);
                 }
             }
 
             // Zebra: diagonal stripes over near-clipped highlights.
             if (uZebra == 1) {
-                if (luma(color) > 0.95) {
+                if (luma(color) > uZebraThreshold) {
                     float stripe = mod(gl_FragCoord.x + gl_FragCoord.y, 16.0);
                     if (stripe < 8.0) color = vec3(0.0);
                 }
