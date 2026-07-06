@@ -4,9 +4,7 @@ import android.util.Size
 import android.view.Surface
 import com.hletrd.findx9tele.camera.Antibanding
 import com.hletrd.findx9tele.camera.AspectRatio
-import com.hletrd.findx9tele.camera.AudioZoom
 import com.hletrd.findx9tele.camera.BitrateLevel
-import com.hletrd.findx9tele.camera.MicDirection
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.ColorTransfer
@@ -81,8 +79,6 @@ interface CameraActions {
     fun onAspectRatio(ratio: AspectRatio)
     fun onToggleRecordAudio(enabled: Boolean)
     fun onAudioGain(gain: Float)
-    fun onMicDirection(direction: MicDirection)
-    fun onAudioZoom(zoom: AudioZoom)
     fun onToggleTeleconverter(enabled: Boolean)
     fun onVideoCodec(codec: VideoCodec)
     fun onBitrateLevel(level: BitrateLevel)
