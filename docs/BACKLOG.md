@@ -1,6 +1,29 @@
 # Backlog & Status — Find X9 Ultra Teleconverter Camera
 
-Living handoff document. Read after `CLAUDE.md`. Goal: **Google Play release.** Updated 2026-07-03.
+Living handoff document. Read after `CLAUDE.md`. Goal: **Google Play release.** Updated 2026-07-06.
+
+## 0-bis. Verified on device 2026-07-06 (USB ADB) ✅
+
+Full-app review session; screenshots + pulled files + ffprobe as evidence.
+
+- ✅ **Volume-key hardware shutter** — photo mode saved HEIC (4096×3072) + DNG on `KEYCODE_VOLUME_DOWN`;
+  video mode started/stopped real clips. *(files + logcat)*
+- ✅ **AF→MF handoff + live focus readout** — Focus chip showed `AF-C ∞ + 40` live (matches logged
+  `lens=0.4276`); tapping it entered MF seeded at the same `∞ + 40`. *(screenshots)*
+- ✅ **MF auto punch-in loupe** — opening the Focus ruler magnified the preview; closed restores. *(screenshot)*
+- ✅ **Sony-style OSD** — photo mode shows `69mm TELE · HEIF+DNG · EIS`; video mode shows
+  `4K 30p HEVC 24Mb · <TF> · EIS`; camera id only on DEBUG. *(screenshots)*
+- ✅ **O-Log2 recording** — clip is HEVC 4K 10-bit **BT.2020 + full-range** (the LOG fingerprint);
+  frame reads flat-log; official `O-Log2-to-Rec709_Gamma24` LUT restores contrast. Curve verified
+  numerically against the white-paper anchors (18 % → 0.4868). *(ffprobe + frame extract)*
+- ✅ **LOG transfer-tag fix** — before: VUI defaulted to `smpte2084` (PQ) → players tone-mapped log as
+  HDR; after: SDR-class `bt2020-10`. HLG clip verified tagging `arib-std-b67` + `tv` range. *(ffprobe)*
+- ✅ **Vendor log tags are gated** — `com.oplus.movie.log.enable` / `log.video.mode` absent from the
+  request keys exposed to this app (X9TeleVendor dump) → HAL-native O-Log2 unavailable to 3rd parties.
+
+New in code this session, **not yet device-verified**: manual-exposure AEB shutter bracket (unit-tested;
+needs a 3-file exposure sweep check), SDR (Rec.709) HEVC clip, JPEG-only format capture, quadrant level
+gauge in a landscape hold.
 
 Legend: ✅ done & verified · 🟢 done in code, gates green · 🟡 done in code, **unverified on device** ·
 🔴 not started · ⏸ deferred
@@ -80,8 +103,11 @@ The user explicitly wants all of these; ordered by their stated priority.
   Reuse `CameraSelector2` override + `engine.setCameraOverride`. **Teleconverter mode only on the 3×
   lens.** This also unblocks 8K/4K120 (main camera). (task #14)
 - 🔴 **Settings UX overhaul** (task #15/#17/#18):
-  - Surface **color transfer (Log / SDR Rec.709 / HLG)** on the main screen, not buried.
-  - **Manual WB Kelvin + Tint** sliders when WB=Manual (Kelvin ruler exists; Tint not surfaced).
+  - ✅ ~~Surface **color transfer (Log / SDR Rec.709 / HLG)** on the main screen~~ — done 2026-07-06:
+    `ColorTransfer.SDR` added (HEVC Main 8-bit BT.709) and a video-mode **TF quick chip** cycles
+    HLG → O-Log2 → SDR on the dial row.
+  - **Manual WB Kelvin + Tint** sliders when WB=Manual (both exist in the Exposure/Color tab; Tint
+    is not on the quick WB ruler).
   - **Audio options** — mic source/sample rate/channel, and **direction** if the device API supports
     it (AudioRecord preferred-mic-direction / spatial). (task #8)
   - Make the settings sheet more intuitive overall (per-element adjustment feels indirect).

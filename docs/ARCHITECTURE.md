@@ -365,7 +365,7 @@ and labeled "slow/SW" in the UI; it is gated to 4K and below for performance.
 
 | Codec | Bit-depth | Color Space | Transfer | Container | Notes |
 |---|---|---|---|---|---|
-| HEVC (H.265) | 10-bit | Rec.2020 | HLG or Log | MP4 | Primary; supports Main10 profile; HDR-playable; hardware accelerated. |
+| HEVC (H.265) | 10-bit (SDR: 8-bit) | Rec.2020 (SDR: Rec.709) | HLG / O-Log2 / SDR | MP4 | Primary; Main10 (SDR: Main); HDR-playable (HLG); hardware accelerated. |
 | AVC (H.264) | 8-bit | Rec.709 | SDR | MP4 | Fallback; user selectable; forces GL color curve to SDR (no HLG/Log); hardware accelerated. |
 | AV1 | Variable | Rec.2020 | Per-setting | MP4 | Software encoder only (slow); gated to 4K; labeled "slow/SW" in UI. |
 | Dolby Vision | 10-bit | Rec.2020 | Dolby Vision | MP4 | Detected if available on device; requires compatible encoder. |
@@ -414,7 +414,10 @@ All 10-bit rendering happens in the fragment shader:
 - **Input**: normalized [0, 1] RGBA from camera SurfaceTexture sampling.
 - **OETF** (Opto-Electronic Transfer Function):
   - **HLG (Hybrid Log-Gamma)**: Rec.2100 standard. Applied in shader; supports HDR playback.
-  - **Log**: Flat log-like curve for grading. Approximate (not vendor-native LOG); tagged as such in metadata.
+  - **O-Log2 (LOG)**: OPPO's official O-Log2 curve (white-paper constants), applied after γ2.2
+    linearization of the SDR stream + Rec.709→BT.2020 matrix (O-Gamut). Grades with OPPO's public
+    O-Log2 LUTs; no above-white headroom (HAL-native log is vendor-gated — see CLAUDE.md).
+  - **SDR**: no shader curve; HEVC Main 8-bit BT.709 limited-range for zero-grading footage.
 - **Output**: 10-bit RGBA1010102 to encoder.
 
 **Fragment shader (Shaders.kt):**

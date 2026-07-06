@@ -125,6 +125,15 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
 - **Settings persist across launches** via `storage/SettingsStore.kt` (SharedPreferences, enums by
   name, defensive load). Gated by a "Remember Settings" toggle that **defaults ON**; saved on
   background, restored on launch (pushed to the engine pre-start).
+- **LOG = official O-Log2, applied in GL; HAL-native log is vendor-gated (verified 2026-07-06).**
+  The `ColorTransfer.LOG` path bakes OPPO's published O-Log2 OETF (white paper EN v1:
+  `P = 0.08550479·log₂(R+0.00964052)+0.69336945`, parabolic toe below R=0.006, O-Gamut = BT.2020/D65
+  full-range) after a γ2.2 linearization of the display-referred SDR stream + 709→2020 matrix. 18 %
+  grey lands on the official 0.4868 anchor, so OPPO's public O-Log2 LUTs restore it. No above-white
+  headroom is possible: the `com.oplus.*` log vendor keys (`movie.log.enable`, `log.video.mode`) are
+  NOT in the request keys exposed to third-party apps (request-key dump on device). Also: leaving
+  `KEY_COLOR_TRANSFER` unset on a BT2020 full-range HEVC format makes the QTI encoder tag the VUI
+  **ST2084 (PQ)** — players then tone-map log footage as HDR. Tag a transfer explicitly, always.
 - **The teleconverter's "auto steady" is a HAL side-effect, not an API.** Reverse engineering (see
   `docs/reverse-engineering/`) confirmed the stock app sets no Explorer-specific OIS/EIS tag — the
   vendor tags (`com.oplus.ois.*`, `org.quic.camera.eisrealtime`, `explorer.chip.state`) exist in the
