@@ -439,6 +439,15 @@ class CameraController(context: Context) {
         // BURST/AEB chain's onDone still fires and the user gets feedback instead of a silent no-op.
         val camera = device ?: return@post cb.onError(IllegalStateException("Camera not ready"))
         val s = session ?: return@post cb.onError(IllegalStateException("Camera session not ready"))
+        // Reject a new capture while one is still resolving its images: capturePhoto keeps a SINGLE
+        // `pending` slot, so overwriting it would drop/misattribute the in-flight shot and leak the
+        // Image it already acquired (ImageReader maxImages=2 → two leaks starve the reader). Runs on
+        // the camera handler thread, same thread that clears `pending` in tryComplete's finally, so
+        // this is race-free. BURST/AEB are unaffected: their next shot is POSTED and only runs after
+        // the current tryComplete returns (i.e. after `pending` is already null).
+        if (pending != null) {
+            return@post cb.onError(IllegalStateException("A capture is already in progress"))
+        }
         val jpeg = jpegReader?.surface?.takeIf { wantJpeg }
         val raw = rawReader?.surface?.takeIf { wantRaw && caps.supportsRaw }
         if (jpeg == null && raw == null) {
