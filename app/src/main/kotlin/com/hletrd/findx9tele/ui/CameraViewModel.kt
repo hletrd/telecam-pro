@@ -87,7 +87,12 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.onStatus = { msg -> _state.update { it.copy(statusMessage = msg) } }
         // caps/size arrive on the engine's setup thread; hop to main before touching the engine again.
         engine.onCapsReady = { caps -> _state.update { it.copy(caps = caps) }; mainHandler.post { reconcileFrameRate() } }
-        engine.onVideoSizeChosen = { size -> _state.update { it.copy(videoResolution = size) }; mainHandler.post { reconcileFrameRate() } }
+        engine.onVideoSizeChosen = { size ->
+            _state.update { it.copy(videoResolution = size) }
+            // An engine re-pick (e.g. Open Gate switching to the largest 4:3 size) can land above AV1's
+            // ≤1080p ceiling; reconcile so the selection/summary never shows a resolution AV1 can't use.
+            mainHandler.post { reconcileResolution(); reconcileFrameRate() }
+        }
         engine.onAnalysis = { h, w -> _state.update { it.copy(histogramData = h, waveformData = w) } }
         engine.onAudioLevel = { lvl -> _state.update { it.copy(audioLevel = lvl) } }
         // AE-resolved ISO/shutter (auto mode) for the live dial readout; camera thread → StateFlow is
@@ -247,6 +252,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onVideoCodec(codec: VideoCodec) {
         engine.setVideoCodec(codec)
         _state.update { it.copy(videoCodec = codec) }
+        // Switching to AV1 (software, ≤1080p) while at 4K would leave an out-of-range resolution
+        // selected and a bogus "4K AV1" encoder summary — clamp it before reconciling the frame rate.
+        reconcileResolution()
         reconcileFrameRate()
     }
     override fun onBitrateLevel(level: BitrateLevel) {
@@ -269,7 +277,28 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onToggleOpenGate(enabled: Boolean) {
         engine.setOpenGate(enabled)
         _state.update { it.copy(openGate = enabled) }
+        reconcileResolution()
         reconcileFrameRate()
+    }
+
+    /**
+     * Keeps [CameraUiState.videoResolution] within the option set the currently-selected codec allows.
+     * Only AV1 constrains resolution (software encoder, ≤1080p); when it is selected and the current
+     * size is wider than 1080p, snap to the largest ≤1920-wide size the selected camera actually
+     * offers (matching the recording-time clamp in [CameraEngine.startRecording]).
+     */
+    private fun reconcileResolution() {
+        val s = _state.value
+        if (s.videoCodec != VideoCodec.AV1) return
+        if (s.videoResolution.width <= 1920) return
+        val caps = s.caps
+        val sizes = when {
+            caps == null -> listOf(Size(1920, 1080))
+            s.openGate -> caps.openGateVideoSizes
+            else -> caps.availableVideoSizes
+        }
+        val replacement = sizes.firstOrNull { it.width <= 1920 } ?: Size(1920, 1080)
+        onVideoResolution(replacement)
     }
 
     /**
