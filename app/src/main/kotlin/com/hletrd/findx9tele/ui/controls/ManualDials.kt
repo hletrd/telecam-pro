@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -53,6 +54,7 @@ import com.hletrd.findx9tele.camera.WbMode
 import com.hletrd.findx9tele.focus.FocusMapping
 import com.hletrd.findx9tele.ui.CameraActions
 import com.hletrd.findx9tele.ui.theme.CameraColors
+import java.util.Locale
 import kotlin.math.roundToInt
 
 /**
@@ -163,7 +165,7 @@ private fun DialChipRow(
             // back to "Auto" until the first result arrives.
             value = when {
                 controls.autoExposure -> state.liveExposureNs?.let { formatShutterSpeed(it) } ?: "Auto"
-                controls.shutterMode == ShutterMode.ANGLE -> "%.0f°".format(controls.shutterAngle)
+                controls.shutterMode == ShutterMode.ANGLE -> "%.0f°".format(Locale.US, controls.shutterAngle)
                 else -> formatShutterSpeed(controls.exposureTimeNs)
             },
             active = openDial == DialType.SHUTTER,
@@ -186,9 +188,11 @@ private fun DialChipRow(
         )
         DialChip(
             label = "EV",
-            value = "%+.1f".format(controls.exposureCompensation * evStepValue),
+            value = "%+.1f".format(Locale.US, controls.exposureCompensation * evStepValue),
             active = openDial == DialType.EV,
             enabled = controls.autoExposure,
+            // EV comp only applies in Auto; in Manual the chip is a true no-op, so don't accept taps.
+            clickEnabled = controls.autoExposure,
             onClick = { onSelect(DialType.EV) },
         )
     }
@@ -202,6 +206,10 @@ private fun DialChip(
     enabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    // Whether the chip actually accepts taps. Most greyed (enabled=false) chips are still tappable —
+    // a tap flips the exposure/focus to Manual — but the EV chip in manual is a genuine no-op, so it
+    // passes clickEnabled=false to drop the dead tap and expose a disabled state to accessibility.
+    clickEnabled: Boolean = true,
 ) {
     val bg = if (active) CameraColors.TextPrimary else CameraColors.Pill.copy(alpha = 0.7f)
     val fg = when {
@@ -216,7 +224,9 @@ private fun DialChip(
             .then(
                 if (!active) Modifier.border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(50)) else Modifier,
             )
-            .clickable(onClick = onClick)
+            .clickable(enabled = clickEnabled, onClick = onClick)
+            // ≥48 dp touch target (WCAG/Material) — the visual pill stays compact, the hit area doesn't.
+            .defaultMinSize(minHeight = 48.dp)
             .padding(horizontal = 14.dp, vertical = 9.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -278,7 +288,7 @@ private fun ShutterRuler(controls: ManualControls, caps: CameraCaps?, actions: C
     if (controls.shutterMode == ShutterMode.ANGLE) {
         val fraction = ((controls.shutterAngle - 1f) / 359f).coerceIn(0f, 1f)
         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            RulerReadout("%.0f°  (%s)".format(controls.shutterAngle, formatShutterSpeed(controls.effectiveExposureNsForDisplay())))
+            RulerReadout("%.0f°  (%s)".format(Locale.US, controls.shutterAngle, formatShutterSpeed(controls.effectiveExposureNsForDisplay())))
             RulerSlider(
                 fraction = fraction,
                 onFractionChange = { f -> actions.onShutterAngle((1f + f * 359f).coerceIn(1f, 360f)) },
@@ -417,7 +427,7 @@ private fun EvRuler(controls: ManualControls, caps: CameraCaps?, onEv: (Int) -> 
     val fraction = if (lo >= hi) 0f else ((controls.exposureCompensation - lo).toFloat() / (hi - lo).toFloat()).coerceIn(0f, 1f)
     val majorEvery = (1f / stepValue).roundToInt().coerceAtLeast(1)
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        RulerReadout("%+.1f EV".format(controls.exposureCompensation * stepValue))
+        RulerReadout("%+.1f EV".format(Locale.US, controls.exposureCompensation * stepValue))
         RulerSlider(
             fraction = fraction,
             onFractionChange = { f ->

@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -31,6 +32,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -121,7 +123,7 @@ fun CameraScreen(
     // Counter-rotates the on-screen scopes/readouts so they stay upright as the phone turns, even
     // though the activity is portrait-locked (like Pixel/Sony). We accumulate an UNWRAPPED target so
     // the animation always takes the shortest ≤90° path (e.g. 270°→0° rotates +90°, not −270°).
-    var overlayRotationTarget by remember { mutableStateOf(-state.deviceOrientation.toFloat()) }
+    var overlayRotationTarget by remember { mutableFloatStateOf(-state.deviceOrientation.toFloat()) }
     LaunchedEffect(state.deviceOrientation) {
         val desired = -state.deviceOrientation.toFloat()
         var delta = (desired - overlayRotationTarget) % 360f
@@ -519,7 +521,7 @@ private fun TeleChip(active: Boolean, onClick: () -> Unit, modifier: Modifier = 
     val fg = if (active) Color.Black else CameraColors.TextPrimary
     Box(
         modifier = modifier
-            .height(36.dp)
+            .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
             .clip(RoundedCornerShape(50))
             .background(bg)
             .clickable(onClick = onClick)
@@ -577,8 +579,10 @@ private fun ModeLabel(text: String, active: Boolean, onClick: () -> Unit, modifi
     Column(
         modifier = modifier
             .clickable(onClick = onClick)
+            .defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
             .padding(horizontal = 6.dp, vertical = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
     ) {
         Text(
             text = text,

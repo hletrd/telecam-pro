@@ -63,6 +63,7 @@ import com.hletrd.findx9tele.video.EncoderCaps
 import com.hletrd.findx9tele.ui.CameraActions
 import com.hletrd.findx9tele.ui.theme.CameraColors
 import kotlinx.coroutines.launch
+import java.util.Locale
 import kotlin.math.roundToInt
 
 /**
@@ -317,7 +318,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
     caps?.zoomRatioRange?.let { range ->
         LabeledSlider(
             label = "Zoom",
-            valueLabel = "%.1fx".format(state.controls.zoomRatio),
+            valueLabel = "%.1fx".format(Locale.US, state.controls.zoomRatio),
             value = state.controls.zoomRatio.coerceIn(range.lower, range.upper),
             onValueChange = actions::onZoomRatio,
             valueRange = range.lower..range.upper,
@@ -425,7 +426,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         )
         LabeledSlider(
             label = "Tint",
-            valueLabel = "%+d".format(controls.wbTint),
+            valueLabel = "%+d".format(Locale.US, controls.wbTint),
             value = controls.wbTint.toFloat().coerceIn(-50f, 50f),
             onValueChange = { actions.onWbTint(it.roundToInt()) },
             valueRange = -50f..50f,
@@ -557,7 +558,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     ToggleRow(label = "Record Audio", checked = state.recordAudio, onCheckedChange = actions::onToggleRecordAudio)
     LabeledSlider(
         label = "Gain",
-        valueLabel = "%.1fx".format(state.audioGain),
+        valueLabel = "%.1fx".format(Locale.US, state.audioGain),
         value = state.audioGain,
         onValueChange = actions::onAudioGain,
         valueRange = 0f..2f,

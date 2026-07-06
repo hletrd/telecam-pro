@@ -43,6 +43,7 @@ import com.hletrd.findx9tele.camera.VideoFrameRate
 import com.hletrd.findx9tele.camera.WbMode
 import com.hletrd.findx9tele.focus.FocusMapping
 import com.hletrd.findx9tele.ui.theme.CameraColors
+import java.util.Locale
 import kotlin.math.exp
 import kotlin.math.ln
 import kotlin.math.roundToInt
@@ -416,8 +417,8 @@ private val NICE_SHUTTER_DENOM = intArrayOf(
 internal fun formatShutterSpeed(ns: Long): String {
     val seconds = ns / 1_000_000_000.0
     return when {
-        seconds >= 10.0 -> "%.0fs".format(seconds)
-        seconds >= 1.0 -> "%.1fs".format(seconds)
+        seconds >= 10.0 -> "%.0fs".format(Locale.US, seconds)
+        seconds >= 1.0 -> "%.1fs".format(Locale.US, seconds)
         else -> {
             val denom = 1.0 / seconds
             val nice = NICE_SHUTTER_DENOM.minByOrNull { kotlin.math.abs(it - denom) } ?: denom.roundToInt().coerceAtLeast(1)
@@ -432,7 +433,7 @@ internal fun formatFocusDistance(diopters: Float): String {
     return when {
         meters.isInfinite() -> "∞"
         meters < 1f -> "${(meters * 100).roundToInt()}cm"
-        else -> "%.2fm".format(meters)
+        else -> "%.2fm".format(Locale.US, meters)
     }
 }
 

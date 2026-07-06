@@ -33,6 +33,7 @@ import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.HistogramData
 import com.hletrd.findx9tele.camera.PhotoFormats
 import com.hletrd.findx9tele.camera.WaveformData
+import java.util.Locale
 import kotlin.math.abs
 
 /**
@@ -108,10 +109,10 @@ private fun DrawScope.drawCenterMark(color: Color, strokeWidth: Float) {
 }
 
 /**
- * Crop mask for non-[AspectRatio.FULL] capture ratios: dims the sensor area outside
+ * Crop mask for the cropped capture ratio ([AspectRatio.W16_9]): dims the sensor area outside
  * [ratio]'s w:h box with semi-opaque black bars (letterboxed top/bottom or pillarboxed
  * left/right, whichever the view's own aspect requires) so the framed area is obvious in the
- * viewfinder. Draws nothing for [AspectRatio.FULL].
+ * viewfinder. Draws nothing for [AspectRatio.W4_3] (the full-sensor readout — no crop).
  */
 @Composable
 fun AspectMask(ratio: AspectRatio, modifier: Modifier = Modifier) {
@@ -200,7 +201,7 @@ fun RecordingIndicator(elapsedMs: Long, modifier: Modifier = Modifier) {
     val totalSeconds = elapsedMs / 1000L
     val minutes = totalSeconds / 60L
     val seconds = totalSeconds % 60L
-    val timeLabel = "%02d:%02d".format(minutes, seconds)
+    val timeLabel = "%02d:%02d".format(Locale.US, minutes, seconds)
     Row(
         modifier = modifier
             .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(50)),
@@ -273,8 +274,8 @@ fun StatusBar(
     }
     val focalLabel = when {
         equivFocalMm <= 0f -> "--"
-        teleconverter -> "%.0fmm tele".format(equivFocalMm)
-        else -> "%.0fmm".format(equivFocalMm)
+        teleconverter -> "%.0fmm tele".format(Locale.US, equivFocalMm)
+        else -> "%.0fmm".format(Locale.US, equivFocalMm)
     }
     Row(
         modifier = modifier
@@ -346,7 +347,11 @@ fun WaveformOverlay(data: WaveformData?, modifier: Modifier = Modifier) {
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             drawRect(color = Color.White.copy(alpha = 0.3f), style = Stroke(width = 1.dp.toPx()))
-            if (data != null && data.columns > 0 && data.rows > 0) {
+            // Guard bins length too: drawWaveform indexes bins[col*rows+row] across the full grid, so a
+            // producer/consumer resize race that leaves bins.size < columns*rows would throw AIOOBE.
+            if (data != null && data.columns > 0 && data.rows > 0 &&
+                data.bins.size >= data.columns * data.rows
+            ) {
                 drawWaveform(data)
             }
         }
