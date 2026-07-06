@@ -61,6 +61,12 @@ object ColorProfiles {
                     setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10)
                     setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT2020)
                     setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_FULL)
+                    // No CICP code exists for a log curve, and leaving KEY_COLOR_TRANSFER unset let
+                    // this QTI encoder default the VUI to ST2084 (PQ) — players then tone-mapped the
+                    // O-Log2 data as HDR and crushed it (found via ffprobe on a device recording).
+                    // Tag SDR like other phone log formats: players show the flat log image as-is
+                    // and graders assign the O-Log2 IDT/LUT manually.
+                    setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
                 }
                 // SDR: 8-bit Main profile, BT.709 limited-range, standard SDR transfer — matches the
                 // untouched (no-OETF) frames the GL pipeline delivers for this setting.
