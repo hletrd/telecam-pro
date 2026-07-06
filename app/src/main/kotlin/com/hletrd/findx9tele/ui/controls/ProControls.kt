@@ -433,30 +433,42 @@ internal fun formatFocusDistance(diopters: Float): String {
 // Transfer / formats (shared standalone rows used by the shooting/video settings tabs)
 // ---------------------------------------------------------------------------
 
-/** HLG / LOG transfer-function selector. */
+/** Transfer-function display label: what the footage IS, not just the enum name. */
+internal fun transferLabel(transfer: ColorTransfer): String = when (transfer) {
+    ColorTransfer.HLG -> "HLG (HDR)"
+    ColorTransfer.LOG -> "O-Log2"
+    ColorTransfer.SDR -> "SDR (709)"
+}
+
+/** Compact transfer name for the video-mode quick chip and the OSD. */
+internal fun transferLabelShort(transfer: ColorTransfer): String = when (transfer) {
+    ColorTransfer.HLG -> "HLG"
+    ColorTransfer.LOG -> "O-Log2"
+    ColorTransfer.SDR -> "SDR"
+}
+
+/** HLG / LOG / SDR transfer-function selector. Only the 10-bit HEVC path honors HLG/LOG. */
 @Composable
 fun TransferSelector(
     transfer: ColorTransfer,
     onTransfer: (ColorTransfer) -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text("Transfer Function", color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            FilterChip(
-                selected = transfer == ColorTransfer.HLG,
-                onClick = { onTransfer(ColorTransfer.HLG) },
-                label = { Text("HLG") },
-                colors = pixelChipColors(),
-                border = pixelChipBorder(transfer == ColorTransfer.HLG),
-            )
-            FilterChip(
-                selected = transfer == ColorTransfer.LOG,
-                onClick = { onTransfer(ColorTransfer.LOG) },
-                label = { Text("LOG") },
-                colors = pixelChipColors(),
-                border = pixelChipBorder(transfer == ColorTransfer.LOG),
-            )
+            ColorTransfer.entries.forEach { option ->
+                val isSelected = transfer == option
+                FilterChip(
+                    selected = isSelected,
+                    onClick = { onTransfer(option) },
+                    enabled = enabled,
+                    label = { Text(transferLabel(option)) },
+                    colors = pixelChipColors(),
+                    border = pixelChipBorder(isSelected),
+                )
+            }
         }
     }
 }

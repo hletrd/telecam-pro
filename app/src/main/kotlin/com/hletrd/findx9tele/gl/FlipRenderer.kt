@@ -157,7 +157,8 @@ class FlipRenderer {
             when (transfer) {
                 ColorTransfer.HLG -> 1
                 ColorTransfer.LOG -> 2
-                null -> 0
+                // SDR = no OETF, same as the preview/null path (the camera frames are already SDR).
+                ColorTransfer.SDR, null -> 0
             },
         )
         GLES20.glUniform1i(uPeaking, if (peaking) 1 else 0)

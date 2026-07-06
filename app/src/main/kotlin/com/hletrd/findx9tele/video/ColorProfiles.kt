@@ -8,10 +8,12 @@ import com.hletrd.findx9tele.camera.VideoCodec
 /**
  * Builds the encoder MediaFormats.
  *
- * - HEVC: Main10 (10-bit) tagged Rec.2020.
+ * - HEVC: Main10 (10-bit) tagged Rec.2020, except SDR which is Main (8-bit) BT.709.
  *   - HLG: tagged with the HLG transfer so HDR players render it directly.
  *   - LOG: our GL pipeline bakes a flat log curve; there is no standard "log" transfer id, so the
  *          stream is tagged BT.2020 full-range with transfer left unspecified (grade manually).
+ *   - SDR: plain Rec.709/SDR — the GL pipeline applies no curve (camera frames are already SDR),
+ *          for footage that plays correctly everywhere with zero grading.
  *
  *   True 10-bit requires the EGL input surface to be 10-bit; if the device falls back to 8-bit the
  *   stream is still Main10 but not genuinely 10-bit. Verify on hardware.
@@ -48,15 +50,25 @@ object ColorProfiles {
             setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
             applyFrameRate(encoderRate, captureRate)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
-            setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10)
-            setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT2020)
             when (transfer) {
                 ColorTransfer.HLG -> {
+                    setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10)
+                    setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT2020)
                     setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
                     setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_HLG)
                 }
                 ColorTransfer.LOG -> {
+                    setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10)
+                    setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT2020)
                     setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_FULL)
+                }
+                // SDR: 8-bit Main profile, BT.709 limited-range, standard SDR transfer — matches the
+                // untouched (no-OETF) frames the GL pipeline delivers for this setting.
+                ColorTransfer.SDR -> {
+                    setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.HEVCProfileMain)
+                    setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
+                    setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
+                    setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
                 }
             }
         }

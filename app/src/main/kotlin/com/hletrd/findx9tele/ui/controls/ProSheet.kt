@@ -582,8 +582,13 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         valueRange = 0f..2f,
         enabled = state.recordAudio,
     )
-    // Transfer (HLG/LOG) only affects the 10-bit HEVC path; AVC/AV1 record 8-bit SDR.
-    TransferSelector(transfer = state.transfer, onTransfer = actions::onTransfer)
+    // Transfer (HLG/LOG/SDR) only drives the HEVC path; AVC/AV1 always record 8-bit SDR, so the
+    // selector is disabled there rather than pretending the choice applies.
+    TransferSelector(
+        transfer = state.transfer,
+        onTransfer = actions::onTransfer,
+        enabled = codec == VideoCodec.HEVC,
+    )
 }
 
 @Composable

@@ -5,8 +5,11 @@ import android.util.Size
 /** Photo vs video capture mode. */
 enum class CaptureMode { PHOTO, VIDEO }
 
-/** Video transfer function. HLG = HDR-viewable; LOG = flat, for grading (our GL applies the curve). */
-enum class ColorTransfer { HLG, LOG }
+/**
+ * Video transfer function. HLG = HDR-viewable; LOG = flat, for grading (our GL applies the curve);
+ * SDR = plain Rec.709 with no GL curve — HEVC Main 8-bit, for footage that needs zero grading.
+ */
+enum class ColorTransfer { HLG, LOG, SDR }
 
 /** Focus behaviour. MANUAL drives LENS_FOCUS_DISTANCE; others use the AF engine. */
 enum class FocusMode { MANUAL, AUTO, CONTINUOUS, MACRO }
