@@ -7,11 +7,15 @@ package com.hletrd.findx9tele.gl
  * uMvp) and transforms external-texture coordinates via the SurfaceTexture matrix (uTexMatrix).
  *
  * The fragment shader samples the camera's external OES texture and optionally applies:
- *  - a transfer OETF for the video encoder path (HLG or a flat Log-like curve),
+ *  - a transfer OETF for the video encoder path (HLG, or the official OPPO O-Log2 curve),
  *  - focus peaking (edge highlight) and zebra (clipping stripes) for the preview path.
  *
- * NOTE: the camera preview signal is display-referred (already non-linear); applying HLG/Log here
- * is a look approximation for grading, not a colorimetric scene-linear transform. Verify on device.
+ * NOTE: the camera preview signal is display-referred (already non-linear). The LOG path
+ * linearizes it (γ2.2 approximation of the ISP's SDR output), converts Rec.709→BT.2020 primaries
+ * (O-Gamut), and applies the official O-Log2 OETF so mid-grey lands on OPPO's published anchor and
+ * footage grades with OPPO's O-Log2 LUTs. It is still an approximation: third-party apps cannot
+ * get the sensor's scene-linear data (the HAL-native log path is vendor-gated), so there is no
+ * above-white highlight headroom — the SDR tone mapping bounds the dynamic range. Verify on device.
  */
 object Shaders {
 
@@ -53,9 +57,23 @@ object Shaders {
             return mix(hi, lo, step(x, vec3(1.0 / 12.0)));
         }
 
-        // Flat Cineon-like log curve for grading headroom.
-        vec3 logc(vec3 x) {
-            return log(1.0 + 90.0 * clamp(x, 0.0, 1.0)) / log(91.0);
+        // Rec.709 -> Rec.2020 primaries (linear light), for the O-Log2 encode (O-Gamut = BT.2020).
+        vec3 toRec2020(vec3 c) {
+            return vec3(
+                dot(vec3(0.6274, 0.3293, 0.0433), c),
+                dot(vec3(0.0691, 0.9195, 0.0114), c),
+                dot(vec3(0.0164, 0.0880, 0.8956), c));
+        }
+
+        // OPPO O-Log2 OETF, constants from the official white paper (2026-04, EN v1):
+        //   P = 0.08550479 * log2(R + 0.00964052) + 0.69336945   for R >= 0.006,
+        //   P = 47.28711236 * (R - (-0.05641088))^2              for the shadow toe below.
+        // R is scene reflectance (1.0 = diffuse white); 18% grey encodes to the official
+        // 0.4868 (499/1023) anchor, so OPPO's published O-Log2 LUTs restore it correctly.
+        vec3 olog2(vec3 R) {
+            vec3 logP = 0.08550479 * log2(max(R + 0.00964052, 1e-5)) + 0.69336945;
+            vec3 toe = 47.28711236 * (R + 0.05641088) * (R + 0.05641088);
+            return clamp(mix(logP, toe, step(R, vec3(0.006))), 0.0, 1.0);
         }
 
         void main() {
@@ -65,7 +83,10 @@ object Shaders {
             if (uTransfer == 1) {
                 color = hlg(color);
             } else if (uTransfer == 2) {
-                color = logc(color);
+                // O-Log2 from the display-referred SDR stream: linearize (the ISP's SDR output is
+                // ~gamma 2.2), move to O-Gamut primaries, then the official OETF (see file docs).
+                vec3 lin = pow(clamp(color, 0.0, 1.0), vec3(2.2));
+                color = olog2(toRec2020(lin));
             }
 
             // False color: map exposure (luma) to IRE-style bands.
