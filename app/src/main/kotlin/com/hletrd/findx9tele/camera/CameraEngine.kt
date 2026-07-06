@@ -254,13 +254,17 @@ class CameraEngine(private val context: Context) {
 
         // Movable focus loupe: point the punch-in zoom at the tapped spot. The renderer rotates
         // texcoords by previewRotationDegrees (the afocal 180° only — sensor orientation lives in the
-        // SurfaceTexture matrix, which the loupe center passes through unchanged), so the loupe center
-        // is the tap offset rotated by that same angle, re-centered.
+        // SurfaceTexture matrix, which the loupe center passes through unchanged). View space is
+        // y-DOWN while the texcoord/NDC the renderer works in is y-UP, so the vertical tap offset is
+        // flipped before applying the content rotation; then re-centered. (Verified on device: without
+        // the y-flip a top tap sent the loupe to the bottom half.)
         val loupeRad = Math.toRadians(previewRotationDegrees().toDouble())
         val lcos = Math.cos(loupeRad).toFloat()
         val lsin = Math.sin(loupeRad).toFloat()
-        val lx = px * lcos - py * lsin
-        val ly = px * lsin + py * lcos
+        val ax = px
+        val ay = -py
+        val lx = ax * lcos - ay * lsin
+        val ly = ax * lsin + ay * lcos
         gl.setPunchInCenter((lx + 0.5f).coerceIn(0f, 1f), (ly + 0.5f).coerceIn(0f, 1f))
     }
 
