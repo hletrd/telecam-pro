@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -73,6 +74,23 @@ fun ManualDialCluster(
     var openDial by remember { mutableStateOf<DialType?>(null) }
     val controls = state.controls
     val caps = state.caps
+
+    // MF assist: while the Focus ruler is open, punch in on the loupe point (last tap, else center)
+    // so critical focus at 300 mm is judged on magnified pixels — the auto-magnify every MF-first
+    // camera ships. Only auto-toggles when the user didn't already have punch-in on, and restores
+    // the previous state when the ruler closes (manual sheet toggles mid-drag win: if the user
+    // turned punch-in off while the ruler was open, closing it won't re-toggle).
+    val focusOpen = openDial == DialType.FOCUS
+    var loupeAutoOn by remember { mutableStateOf(false) }
+    LaunchedEffect(focusOpen) {
+        if (focusOpen && !state.punchIn) {
+            loupeAutoOn = true
+            actions.onTogglePunchIn(true)
+        } else if (!focusOpen && loupeAutoOn) {
+            loupeAutoOn = false
+            if (state.punchIn) actions.onTogglePunchIn(false)
+        }
+    }
 
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
         AnimatedVisibility(
