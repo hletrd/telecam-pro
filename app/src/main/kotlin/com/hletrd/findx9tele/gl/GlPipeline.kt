@@ -70,7 +70,10 @@ class GlPipeline {
     private var eisEnabled = false
     private var eisFocal = 0f
     private var eisCrop = 0f
-    private var eisProvider: (() -> FloatArray)? = null
+    // Fill-in-place provider (writes [yaw, pitch, roll] radians into the passed array) + a GL-owned
+    // reusable buffer, so the per-frame EIS read allocates nothing on the render thread.
+    private var eisProvider: ((FloatArray) -> Unit)? = null
+    private val eisCorrection = FloatArray(3)
 
     // Real-time scope analysis (histogram + waveform) via GL readback. The glReadPixels call runs on
     // the GL thread and is throttled; the per-pixel compute is dispatched to [analysisExecutor] so it
@@ -170,7 +173,7 @@ class GlPipeline {
         eisCrop = crop
     }
 
-    fun setEisProvider(provider: (() -> FloatArray)?) = post { eisProvider = provider }
+    fun setEisProvider(provider: ((FloatArray) -> Unit)?) = post { eisProvider = provider }
 
     /** Preview-only center crop-zoom (focus punch-in); does not affect the recorded/encoder frame. */
     fun setPunchIn(enabled: Boolean) = post { punchIn = enabled }
@@ -223,16 +226,15 @@ class GlPipeline {
         var crop = 0f
         if (eisEnabled) {
             crop = eisCrop
-            // Note: the provider lambda (set via setEisProvider) returns a new FloatArray per call;
-            // its 3 values are copied into local floats immediately below and not retained here.
-            // Removing that allocation would require changing the provider contract, which is owned
-            // by the caller (CameraEngine/GyroEis), outside this file's scope.
-            val c = eisProvider?.invoke()
-            if (c != null && c.size >= 3) {
+            // Fill-in-place read: the provider writes [yaw, pitch, roll] into the GL-owned reusable
+            // buffer, so this per-frame EIS read allocates nothing on the render thread.
+            val provider = eisProvider
+            if (provider != null) {
+                provider(eisCorrection)
                 val half = eisCrop / 2f
-                sx = (c[0] * eisFocal).coerceIn(-half, half)
-                sy = (c[1] * eisFocal).coerceIn(-half, half)
-                roll = Math.toDegrees(c[2].toDouble()).toFloat().coerceIn(-6f, 6f)
+                sx = (eisCorrection[0] * eisFocal).coerceIn(-half, half)
+                sy = (eisCorrection[1] * eisFocal).coerceIn(-half, half)
+                roll = Math.toDegrees(eisCorrection[2].toDouble()).toFloat().coerceIn(-6f, 6f)
             }
         }
 

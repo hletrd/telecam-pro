@@ -65,8 +65,18 @@ class GyroEis(context: Context) : SensorEventListener {
         reset()
     }
 
-    /** Latest high-frequency shake to counter: [0]=yaw, [1]=pitch, [2]=roll, all radians. */
-    fun currentCorrection(): FloatArray = floatArrayOf(corrYaw, corrPitch, corrRoll)
+    /**
+     * Writes the latest high-frequency shake to counter into [out]: [0]=yaw, [1]=pitch, [2]=roll,
+     * all radians. Fill-in-place (no allocation) because this is called once per rendered frame on
+     * the latency-critical GL thread — a fresh array each frame would create steady GC pressure that
+     * hitches the preview exactly when EIS matters (hand-held 300 mm). [out] must have size ≥ 3.
+     */
+    fun fillCorrection(out: FloatArray) {
+        if (out.size < 3) return
+        out[0] = corrYaw
+        out[1] = corrPitch
+        out[2] = corrRoll
+    }
 
     /**
      * Latest absolute device roll in degrees (0° = upright portrait), derived from gravity via

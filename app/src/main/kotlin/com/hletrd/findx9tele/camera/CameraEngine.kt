@@ -118,7 +118,7 @@ class CameraEngine(private val context: Context) {
             val tenBit = false
             gl.start(tenBit) { input ->
                 gl.setCameraPreviewSize(videoSize.width, videoSize.height)
-                gl.setEisProvider { gyro.currentCorrection() }
+                gl.setEisProvider { out -> gyro.fillCorrection(out) }
                 gl.setAnalysisCallback { h, w -> onAnalysis?.invoke(h, w) }
                 applyStabilization()
                 gyro.start()
