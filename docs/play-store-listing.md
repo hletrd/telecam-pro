@@ -12,7 +12,7 @@ Copy-paste source for the Play Console listing. Character limits noted; everythi
 | **Package name** | `com.hletrd.telecampro` |
 | **Category** | Photography |
 | **Content rating** | Everyone (no user-generated content shared, no ads, no data collection) |
-| **Contact email** | `01@0101010101.com` |
+| **Contact email** | `mnmnnmnnn@gmail.com` |
 | **Privacy policy URL** | `https://hletrd.github.io/telecam-pro/privacy-policy/` |
 | **Source code URL** | `https://github.com/hletrd/telecam-pro` |
 | **Ads** | No |

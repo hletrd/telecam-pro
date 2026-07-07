@@ -48,4 +48,4 @@ Public URL for Google Play: `https://hletrd.github.io/telecam-pro/privacy-policy
 
 ## Contact
 
-Questions about this policy: `01@0101010101.com`
+Questions about this policy: `mnmnnmnnn@gmail.com`
