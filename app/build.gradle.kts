@@ -1,7 +1,18 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
 }
+
+// Release signing is driven by a gitignored `keystore.properties` at the repo root (see
+// keystore.properties.example). When it is absent — CI, a fresh clone, debug-only work — the release
+// signingConfig is simply not wired, so `assembleDebug` and unit tests still run without any keystore.
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
+}
+val hasReleaseKeystore = keystorePropsFile.exists()
 
 android {
     namespace = "com.hletrd.findx9tele"
@@ -19,13 +30,32 @@ android {
         versionName = "1.0"
     }
 
+    signingConfigs {
+        // Upload key for Google Play App Signing. Populated only when keystore.properties exists;
+        // secrets live there (gitignored), never in this file or git history.
+        if (hasReleaseKeystore) {
+            create("release") {
+                storeFile = rootProject.file(keystoreProps.getProperty("storeFile"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
+            // R8/minify intentionally OFF for v1 (Play does not require it; keeps the Camera2/HAL
+            // capture paths risk-free). Enabling it later needs keep-rules for the name-persisted
+            // enums in SettingsStore + a full on-device re-verification pass.
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            // Only sign when the keystore is present; otherwise the release artifact is unsigned
+            // (still builds — CI/clone-friendly) and you sign after creating keystore.properties.
+            if (hasReleaseKeystore) signingConfig = signingConfigs.getByName("release")
         }
     }
 
