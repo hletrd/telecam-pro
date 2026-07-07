@@ -57,6 +57,28 @@ See [`CLAUDE.md`](CLAUDE.md) § **Toolchain** for pinned versions and build setu
 
 Requires JDK 21 + Android SDK (API 36, build-tools 36.0.0). Design document: [`docs/superpowers/specs/2026-07-01-find-x9-ultra-camera-design.md`](docs/superpowers/specs/2026-07-01-find-x9-ultra-camera-design.md)
 
+### Release build (Google Play)
+
+The signed release artifact is a **Play App Bundle** (`.aab`). Signing is driven by a gitignored
+`keystore.properties` — no keys live in git. One-time setup:
+
+```bash
+# 1. create an upload keystore (from the repo root)
+keytool -genkeypair -v -keystore telecampro-upload.jks -alias telecampro \
+  -keyalg RSA -keysize 4096 -validity 10000
+
+# 2. copy the template and fill in your path/alias/passwords
+cp keystore.properties.example keystore.properties   # then edit it
+
+# 3. build the signed bundle
+./gradlew bundleRelease        # → app/build/outputs/bundle/release/app-release.aab
+```
+
+Without `keystore.properties`, debug builds and tests still work; only release signing is skipped.
+R8/minify is intentionally off for v1. Store listing text, privacy policy, and graphic assets live in
+[`docs/play-store-listing.md`](docs/play-store-listing.md), [`PRIVACY.md`](PRIVACY.md), and
+[`docs/assets/play/`](docs/assets/play/).
+
 ## Device vendor HAL features
 
 Beyond the standard Camera2 surface, the device's camera HAL advertises vendor session/request keys
@@ -78,7 +100,8 @@ them directly, each device-verified through to a saved file (not just "session c
 - ✅ **Unit tests**: FocusMappingTest, RotationMathTest, CameraSelector2Test, VideoCapabilitiesTest, ExposureMathTest.
 - ✅ **Device-verified on PMA110**: all 4 lenses open (standalone, no HAL crash) with RAW; teleconverter bundling; preview upright; tap-to-focus lock; AF→MF handoff; volume-key shutter; HEIF (4096×3072) + DNG + JPEG saves; HEVC 4K video incl. Max bitrate (~134 Mbps); HAL log + HAL OIS+EIS + directional-audio support + Auto HDR + in-sensor zoom all accepted end-to-end.
 - ⏳ **Needs your eyes/ears in a real scene**: the acoustic effect of directional audio (off-axis A/B), and the image gain of Auto HDR / in-sensor zoom (high-contrast / distant subjects) — undetectable from a static desk.
-- 🚧 **Not started**: Play-release engineering (signing, R8/minify keep-rules, store assets, data-safety/privacy). Dolby Vision (HW encoder detected, MP4 muxing non-trivial). See [`docs/BACKLOG.md`](docs/BACKLOG.md).
+- ✅ **Play-release scaffolding**: release signing config (gitignored `keystore.properties`), privacy policy, store-listing text, icon + feature graphic — see the Release build section above. Remaining human steps: generate the upload keystore, capture on-device screenshots, and complete the Play Console listing/data-safety form.
+- 🚧 **Not started**: R8/minify (deferred — needs enum keep-rules + device re-verification). Dolby Vision (HW encoder detected, MP4 muxing non-trivial). See [`docs/BACKLOG.md`](docs/BACKLOG.md).
 
 ## Trademarks
 
