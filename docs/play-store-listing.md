@@ -8,7 +8,7 @@ Copy-paste source for the Play Console listing. Character limits noted; everythi
 
 | Field | Value |
 |---|---|
-| **App name** (≤30) | `TeleCam for Find X9 Ultra` |
+| **App name** (≤30) | `TeleCam Pro` |
 | **Package name** | `com.hletrd.telecampro` |
 | **Category** | Photography |
 | **Content rating** | Everyone (no user-generated content shared, no ads, no data collection) |
