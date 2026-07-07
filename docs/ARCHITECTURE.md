@@ -348,10 +348,17 @@ inspection: a DNG shot flat-on-desk had tagged `ORIENTATION_NORMAL` (0°) instea
 
 Correction is scaled by eisCrop (0.06 to 0.18, default 0.10) to limit the headroom used — higher values crop more but leave less guard band.
 
-**Known limitations (documented in CLAUDE.md):**
-- Gyro axis/sign mapping + on-device tuning needed (currently approximate).
-- OIS (optical image stabilization) left to user toggle; at 300 mm telephoto, OIS + EIS interaction unverified.
-- HAL video stabilization forced OFF (its gain is wrong for the afocal magnification).
+**Stabilization strategy (updated 2026-07-07):** the app-side gyro EIS above is now ONE of four
+`VideoStabMode` options (`Gyro`), no longer the default. For video the shutter is fixed, so per-frame
+MOTION BLUR is set by the shutter and only **OIS** (lens moves during exposure) can reduce it — app-side
+gyro EIS only warps whole frames. The default is now the HAL's own OIS+EIS via
+`CONTROL_VIDEO_STABILIZATION_MODE = PREVIEW_STABILIZATION` (the tele advertises modes [0,1,2]), the
+same "super steady" path the stock app drives through `com.oplus.video.stabilization.mode` — device-
+verified `ois=1, vstab=2`. See CLAUDE.md and `docs/reverse-engineering/oplus-log-video-analysis.md` §5.
+
+**Remaining gyro-EIS notes (apply only to the `Gyro` mode):**
+- Gyro axis/sign mapping + on-device tuning are approximate.
+- OIS is a user toggle; keep it on at 300 mm (it de-blurs each frame).
 
 ---
 
@@ -359,16 +366,24 @@ Correction is scaled by eisCrop (0.06 to 0.18, default 0.10) to limit the headro
 
 **Video codec & 10-bit support:**
 
-Supported codecs are scanned at runtime via `EncoderCaps.kt` (MediaCodecList), which detects 
-available HW encoders (AVC/HEVC/AV1) and any Dolby Vision support. AV1 is software-only on this device 
-and labeled "slow/SW" in the UI; it is gated to 4K and below for performance.
+Supported codecs are scanned at runtime via `EncoderCaps.kt` (MediaCodecList), which detects
+available HW encoders and Dolby Vision support. AV1 is software-only on this device (labeled "slow/SW",
+gated ≤1080p/≤30fps). Bitrate presets run Low → **Max** (`BitrateLevel`), reaching the QTI HW ceiling
+(~120 Mbps at 4K, device-verified ~134 Mbps at HEVC 4K30 Max — the old High left half the headroom
+unused). Also alongside `com.oplus.log.video.mode` (HAL-native scene-referred log) as a separate path.
 
 | Codec | Bit-depth | Color Space | Transfer | Container | Notes |
 |---|---|---|---|---|---|
-| HEVC (H.265) | 10-bit (SDR: 8-bit) | Rec.2020 (SDR: Rec.709) | HLG / O-Log2 / SDR | MP4 | Primary; Main10 (SDR: Main); HDR-playable (HLG); hardware accelerated. |
-| AVC (H.264) | 8-bit | Rec.709 | SDR | MP4 | Fallback; user selectable; forces GL color curve to SDR (no HLG/Log); hardware accelerated. |
-| AV1 | Variable | Rec.2020 | Per-setting | MP4 | Software encoder only (slow); gated to 4K; labeled "slow/SW" in UI. |
-| Dolby Vision | 10-bit | Rec.2020 | Dolby Vision | MP4 | Detected if available on device; requires compatible encoder. |
+| HEVC (H.265) | 10-bit (SDR: 8-bit) | Rec.2020 (SDR: Rec.709) | HLG / O-Log2 / SDR | MP4 | Primary; Main10 (SDR: Main); HDR-playable (HLG); HW. O-Log2 = official OPPO OETF baked in GL. |
+| AVC (H.264) | 8-bit | Rec.709 | SDR | MP4 | Fallback; forces GL SDR (no HLG/Log); HW. |
+| AV1 | 8-bit | Rec.709 | SDR | MP4 | Software encoder only (slow); gated ≤1080p/≤30fps; labeled "slow/SW". |
+| APV | — | — | — | — | HW `c2.qti.apv.encoder` (pro all-intra ≤2 Gbps) EXISTS but **gated out** — MediaMuxer rejects APV-in-MP4 (breaks the encoder mid-drain). |
+| Dolby Vision | 10-bit | Rec.2020 | Dolby Vision | MP4 | HW `c2.qti.dv.encoder` detected (`hasDolbyVision`); not wired (clean DV-in-MP4 muxing non-trivial). |
+
+**Vendor HAL features:** several stock-app vendor keys are reachable from third-party Camera2 and are
+implemented — HAL-native log, HAL OIS+EIS stabilization, directional audio (Sound Focus/Stage), Auto
+HDR, in-sensor zoom. Full decompile + device-verified audit:
+`docs/reverse-engineering/oplus-log-video-analysis.md` §6.
 
 **Video resolution and frame rates:**
 
@@ -561,8 +576,8 @@ fun CaptureRequest.Builder.applyManualControls(c: ManualControls, caps: CameraCa
     applyProcessing(c, caps)
     applyFlash(c, caps)
     applyZoom(c, caps)
-    // Stabilization: HAL video stab OFF, OIS per toggle
-    set(CONTROL_VIDEO_STABILIZATION_MODE, OFF)
+    // OIS per toggle here; HAL video stabilization (CONTROL_VIDEO_STABILIZATION_MODE) is owned by
+    // CameraController and set per the selected VideoStabMode on the repeating request (not forced OFF).
     if (caps.oisAvailable)
         set(LENS_OPTICAL_STABILIZATION_MODE, if (c.oisEnabled) ON else OFF)
 }

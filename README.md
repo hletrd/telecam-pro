@@ -2,10 +2,10 @@
 
 <img src="docs/assets/logo.svg" width="112" alt="Find X9 Ultra Tele Camera logo" />
 
-<h1>Find X9 Ultra Tele Camera</h1>
+<h1>X9 Tele Camera</h1>
 
 <p><b>Professional camera app for OPPO Find X9 Ultra</b><br/>
-3x periscope telephoto + afocal teleconverter (300mm) · full manual control · afocal 180° flip · gyro EIS</p>
+4-lens switcher + Hasselblad afocal teleconverter (70&nbsp;mm&nbsp;→&nbsp;300&nbsp;mm) · full manual control · afocal 180° flip · HAL OIS+EIS · HAL-native log · directional audio</p>
 
 <p>
 <img src="https://img.shields.io/badge/Android-16%20(API%2036)-3DDC84?logo=android&logoColor=white" alt="Android 16" />
@@ -20,16 +20,19 @@
 
 ## Features
 
-- **Single-device exclusive**: Android 16 (API 36), latest toolchain only (no backward compatibility).
-- **Afocal 180° flip**: The teleconverter is afocal, so images are flipped 180° on input → preview/photos/videos all corrected.
-- **Full manual control**: Focus (fine-tuning near infinity), ISO, shutter, WB, EV. Stop-snapping dials with haptic detents for exposure controls.
-- **Tap-to-focus**: Region-based autofocus that locks on the tapped point until focus mode changes.
-- **Device-orientation-aware capture**: Stills save upright in any phone hold (portrait/landscape/tilted), thanks to gyro-derived gravity orientation.
-- **Photos**: HEIF + JPEG + RAW (DNG) formats selectable. HEIF/JPEG with 180° pixel rotation; DNG with EXIF orientation tag.
-- **Video**: 10-bit HEVC (Main10, Rec.2020, HLG / Log); 8-bit AVC (H.264, SDR); AV1 software-only. Resolutions up to 8K; frame rates include 24/25/30/60 fps, drop-frame (23.976/29.97/59.94), and 120 fps high-speed. Exact bitrate displayed in Mbps. Open-Gate (full 4:3 sensor) recording. Audio AAC, ~128 kbps.
-- **Aspect ratios**: 4:3 (full sensor, no crop) and 16:9 (center crop).
-- **Settings persistence**: Pro controls and manual settings saved across app launches (toggle: "Remember Settings", default ON).
-- **Capture aids**: Focus peaking, zebra, grid, spirit level, punch-in zoom, histogram, waveform monitor.
+- **Single-device exclusive**: Android 16 (API 36), latest toolchain only (no backward compatibility). Camera2 direct — no CameraX.
+- **4-lens switcher + teleconverter bundle**: UW (14 mm) / main (23 mm) / 3× (70 mm) / 10× (230 mm), resolved by 35 mm-equivalent focal (no hardcoded ids, standalone-preferred to avoid the QTI-HAL routing crash). Selecting the 3× lens **bundles teleconverter mode on** (afocal 180° flip + gyro-EIS scaled to ~300 mm) in one tap; other lenses turn it off.
+- **Afocal 180° flip**: The teleconverter is afocal, so images arrive flipped 180° → preview/photos/videos all corrected (GL texcoord rotation for preview, pixel rotation for HEIF/JPEG, EXIF tag for DNG).
+- **Full manual control**: Focus (nonlinear slider tuned near infinity), ISO, shutter (speed or cine angle), WB (presets + Kelvin/tint), EV, metering, drive modes (single/burst/AEB/timelapse). Stop-snapping dials with haptic detents; AF→MF handoff seeds the manual slider from AF's live lens position.
+- **Volume-key hardware shutter**: vibration-free release at 300 mm (photo capture / video start-stop).
+- **Directional audio (stock Sound Focus / Sound Stage)**: drives the vendor audio-HAL params (`vendor_audiorecord_effect_type` …), the same path the stock app uses — Sound Focus narrows the mic toward the framed subject and tightens with zoom.
+- **Photos**: HEIF + JPEG + RAW (DNG), any combination. Device-orientation-aware (stills save upright in any hold via gyro gravity).
+- **Video**: 10-bit HEVC (Main10, Rec.2020) in **HLG / O-Log2 / SDR**, plus HAL-native log (`com.oplus.log.video.mode`); 8-bit AVC; AV1 (SW). 4K DCI max (HEVC/AVC HW ceiling); 24/25/30/60 fps + NTSC drop-frame (23.976/29.97/59.94) + 120 fps high-speed; **Low → Max bitrate presets up to ~134 Mbps at 4K**; Open-Gate (full 4:3 sensor); AAC 48 kHz stereo.
+- **Video stabilization = HAL OIS+EIS** (the stock "super steady" path): OIS physically cuts per-frame motion blur at 300 mm (Off / Gyro / OIS-Standard / OIS-Enhanced).
+- **Vendor features (experimental)**: Auto HDR (`EnableAutoHDR`+`HDRMode`) and in-sensor zoom (`EnableInsensorZoom`), driven directly via the QTI vendor session keys.
+- **Aspect ratios**: 4:3 (full sensor) / 16:9 (center crop). Sony-style mode-aware OSD.
+- **Capture aids**: focus peaking (adjustable sensitivity/color), zebra, false color, grid, spirit level, movable punch-in loupe, histogram, waveform, in-app last-shot pinch-to-zoom review.
+- **Settings persistence**: pro controls saved across launches ("Remember Settings", default ON).
 
 ## Toolchain
 
@@ -54,13 +57,26 @@ See [`CLAUDE.md`](CLAUDE.md) § **Toolchain** for pinned versions and build setu
 
 Requires JDK 21 + Android SDK (API 36, build-tools 36.0.0). Design document: [`docs/superpowers/specs/2026-07-01-find-x9-ultra-camera-design.md`](docs/superpowers/specs/2026-07-01-find-x9-ultra-camera-design.md)
 
+## Reverse-engineered stock vendor features
+
+The stock OPPO camera reaches its pro capabilities through the OPPO OCS SDK, which maps to **vendor
+HAL keys** — many of which are exposed to third-party Camera2 apps on the tele. We decompiled
+`OplusCamera.apk` and drive the same keys directly (each device-verified through to a saved file, not
+just "session configured"). Full audit: [`docs/reverse-engineering/oplus-log-video-analysis.md`](docs/reverse-engineering/oplus-log-video-analysis.md).
+
+| Stock feature | Mechanism | Status |
+|---|---|---|
+| HAL-native log | `com.oplus.log.video.mode` (session key) | ✅ scene-referred log stream verified |
+| Video stabilization | `CONTROL_VIDEO_STABILIZATION_MODE` + `com.oplus.video.stabilization.mode` | ✅ `ois=1, vstab=2` verified |
+| Directional audio | `vendor_audiorecord_effect_type` / `focus_angle` … | ✅ HAL `track_support=true` |
+| Auto HDR | `EnableAutoHDR` + `HDRMode=1` | ✅ session + capture verified |
+| In-sensor zoom | `EnableInsensorZoom` | ✅ verified |
+| Ideal RAW / APV / macro / custom-LUT | — | ⛔ tried, gated/excluded (break capture or inert — see the audit) |
+
 ## Implementation Status
 
-Complete scaffold + core implementation (Camera2 tele selection & manual control, GL 180° flip preview/encoder, HEIF+DNG+JPEG photos, device-orientation-aware capture, HEVC/AVC/AV1 video with runtime codec detection, settings persistence, Compose pro UI with stop-snapping exposure dials and tap-to-focus).
-
 - ✅ **Build & gates**: `./gradlew assembleDebug testDebugUnitTest lintDebug` all pass.
-- ✅ **Unit tests**: FocusMappingTest, RotationMathTest, CameraSelector2Test, VideoCapabilitiesTest pass.
-- ✅ **Verified on the Find X9 Ultra**: camera opens (standalone tele, no HAL crash), preview renders upright, auto-exposure + continuous-AF defaults, tap-to-focus locks on the tapped region, stop-snapping exposure dials. Output files pulled + inspected: HEIF (HEVC 4096×3072 4:3), DNG (valid 16-bit RAW), and video (HEVC 4K ~29.97 fps drop-frame, ~172 Mbps, AAC audio, playable).
-- ⏳ **On-device verification pending**: capture upright-ness in a deliberately-held portrait/landscape pose; the 8K / 4K120 / AV1 / Open-Gate video variants; 300 mm EIS stabilization; teleconverter OIS/EIS focal switching.
-- ⏳ **Tuning**: EIS gain scaling / gyro axis calibration, LOG curve tonality, and (optional) Dolby Vision.
-- 🚧 **Not started**: lens switcher (UW/main/3×/10×/front), some settings-UX polish, Play-release engineering (signing, R8, store assets). See [`docs/BACKLOG.md`](docs/BACKLOG.md).
+- ✅ **Unit tests**: FocusMappingTest, RotationMathTest, CameraSelector2Test, VideoCapabilitiesTest, ExposureMathTest.
+- ✅ **Device-verified on PMA110**: all 4 lenses open (standalone, no HAL crash) with RAW; teleconverter bundling; preview upright; tap-to-focus lock; AF→MF handoff; volume-key shutter; HEIF (4096×3072) + DNG + JPEG saves; HEVC 4K video incl. Max bitrate (~134 Mbps); HAL log + HAL OIS+EIS + directional-audio support + Auto HDR + in-sensor zoom all accepted end-to-end.
+- ⏳ **Needs your eyes/ears in a real scene**: the acoustic effect of directional audio (off-axis A/B), and the image gain of Auto HDR / in-sensor zoom (high-contrast / distant subjects) — undetectable from a static desk.
+- 🚧 **Not started**: Play-release engineering (signing, R8/minify keep-rules, store assets, data-safety/privacy). Dolby Vision (HW encoder detected, MP4 muxing non-trivial). See [`docs/BACKLOG.md`](docs/BACKLOG.md).
