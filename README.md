@@ -13,7 +13,7 @@
 <img src="https://img.shields.io/badge/Jetpack%20Compose-2026.06-4285F4?logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
 <img src="https://img.shields.io/badge/Camera2-Pro%20manual-FF7043" alt="Camera2" />
 <img src="https://img.shields.io/badge/Gradle-9.6.1-02303A?logo=gradle&logoColor=white" alt="Gradle" />
-<img src="https://img.shields.io/badge/Device-Find%20X9%20Ultra%20(PMA110)-000000" alt="Find X9 Ultra" />
+<img src="https://img.shields.io/badge/Device-Find%20X9%20Ultra%20(CPH2841%2FPMA110)-000000" alt="Find X9 Ultra" />
 </p>
 
 </div>
@@ -33,6 +33,12 @@
 - **Aspect ratios**: 4:3 (full sensor) / 16:9 (center crop). Sony-style mode-aware OSD.
 - **Capture aids**: focus peaking (adjustable sensitivity/color), zebra, false color, grid, spirit level, movable punch-in loupe, histogram, waveform, in-app last-shot pinch-to-zoom review.
 - **Settings persistence**: pro controls saved across launches ("Remember Settings", default ON).
+
+## Open source
+
+TeleCam Pro is free and open source. The source code is public at
+[`github.com/hletrd/telecam-pro`](https://github.com/hletrd/telecam-pro), and the app contains no ads,
+analytics, in-app purchases, accounts, or cloud sync.
 
 ## Toolchain
 
@@ -68,7 +74,7 @@ The signed release artifact is a **Play App Bundle** (`.aab`). Signing is driven
 keytool -genkeypair -v -keystore telecampro-upload.jks -alias telecampro \
   -keyalg RSA -keysize 4096 -validity 10000
 
-# 2. copy the template and fill in the path/alias (passwords can stay out of the file)
+# 2. copy the template and fill in the path/alias (passwords should stay out of the file)
 cp keystore.properties.example keystore.properties   # then edit storeFile/keyAlias if needed
 
 # 3. provide passwords for this shell without putting them in shell history
@@ -83,9 +89,15 @@ export TELECAMPRO_KEY_PASSWORD
 
 Without `keystore.properties`, debug builds, tests, and lint still work; release bundling intentionally
 fails instead of producing an unsigned artifact that cannot be uploaded to Play.
-R8/minify is intentionally off for v1. Store listing text, privacy policy, and graphic assets live in
-[`docs/play-store-listing.md`](docs/play-store-listing.md), [`PRIVACY.md`](PRIVACY.md), and
-[`docs/assets/play/`](docs/assets/play/).
+R8/minify is intentionally off for v1. Store listing text, privacy policy, Data Safety answers, and
+graphic assets live in [`docs/play-store-listing.md`](docs/play-store-listing.md),
+[`privacy-policy/index.html`](privacy-policy/index.html), [`docs/play-data-safety.md`](docs/play-data-safety.md),
+and [`docs/assets/play/`](docs/assets/play/).
+
+This working copy has a local upload keystore at `telecampro-upload.jks`, a gitignored
+`keystore.properties` containing only the keystore path/alias, and an encrypted password backup at
+`telecampro-upload-passwords.txt.gpg`. Decrypt that backup locally and export the two `TELECAMPRO_*`
+password variables before rebuilding release bundles.
 
 ## Device vendor HAL features
 
@@ -106,12 +118,12 @@ them directly, each device-verified through to a saved file (not just "session c
 
 - ✅ **Build & gates**: `./gradlew assembleDebug testDebugUnitTest lintDebug` all pass.
 - ✅ **Unit tests**: FocusMappingTest, RotationMathTest, CameraSelector2Test, VideoCapabilitiesTest, ExposureMathTest.
-- ✅ **Device-verified on PMA110**: all 4 lenses open (standalone, no HAL crash) with RAW; teleconverter bundling; preview upright; tap-to-focus lock; AF→MF handoff; volume-key shutter; HEIF (4096×3072) + DNG + JPEG saves; HEVC 4K video incl. Max bitrate (~134 Mbps); HAL log + HAL OIS+EIS + directional-audio support + Auto HDR + in-sensor zoom all accepted end-to-end.
+- ✅ **Device-verified on PMA110**: all 4 lenses open (standalone, no HAL crash) with RAW; teleconverter bundling; preview upright; tap-to-focus lock; AF→MF handoff; volume-key shutter; HEIF (4096×3072) + DNG + JPEG saves; HEVC 4K video incl. Max bitrate (~134 Mbps); HAL log + HAL OIS+EIS + directional-audio support + Auto HDR + in-sensor zoom all accepted end-to-end. Global Find X9 Ultra device code is CPH2841 per OPPO's public specs; Play device catalog should allow CPH2841 and PMA110.
 - ⏳ **Needs your eyes/ears in a real scene**: the acoustic effect of directional audio (off-axis A/B), and the image gain of Auto HDR / in-sensor zoom (high-contrast / distant subjects) — undetectable from a static desk.
-- ✅ **Play-release scaffolding**: release signing config with unsigned-bundle fail-fast, privacy policy
-  reachable from the app, store-listing text, icon + feature graphic — see the Release build section
-  above. Remaining human steps: generate the upload keystore, capture on-device screenshots, complete
-  the Play Console listing/data-safety form, and restrict availability to the target device.
+- ✅ **Play-release scaffolding**: release signing config with unsigned-bundle fail-fast, public
+  privacy policy URL, store-listing text, Data Safety answer sheet, icon + feature graphic — see the
+  Release build section above. Remaining human steps: complete the Play Console listing/data-safety
+  form and restrict availability to CPH2841/PMA110.
 - 🚧 **Not started**: R8/minify (deferred — needs enum keep-rules + device re-verification). Dolby Vision (HW encoder detected, MP4 muxing non-trivial). See [`docs/BACKLOG.md`](docs/BACKLOG.md).
 
 ## Trademarks

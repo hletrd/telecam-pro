@@ -25,6 +25,6 @@
 
   <!-- wordmark + two short tagline lines, right; all within the center band and 1024 width -->
   <text x="440" y="500" font-family="Helvetica, Arial, sans-serif" font-size="78" font-weight="700" fill="#F4F4F6">TeleCam Pro</text>
-  <text x="442" y="558" font-family="Helvetica, Arial, sans-serif" font-size="28" font-weight="400" fill="#9AA3B2">Pro manual camera &#183; Find X9 Ultra</text>
+  <text x="442" y="558" font-family="Helvetica, Arial, sans-serif" font-size="28" font-weight="400" fill="#9AA3B2">Open-source manual camera</text>
   <text x="442" y="598" font-family="Helvetica, Arial, sans-serif" font-size="28" font-weight="400" fill="#9AA3B2">300&#8201;mm afocal teleconverter</text>
 </svg>

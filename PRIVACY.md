@@ -44,6 +44,8 @@ user, including children.
 If this policy changes, the updated version will be published in the app's public repository with a new
 "Last updated" date.
 
+Public URL for Google Play: `https://hletrd.github.io/telecam-pro/privacy-policy/`
+
 ## Contact
 
 Questions about this policy: `01@0101010101.com`

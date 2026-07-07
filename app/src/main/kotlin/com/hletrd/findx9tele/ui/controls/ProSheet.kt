@@ -785,4 +785,4 @@ private fun openPrivacyPolicy(context: Context) {
     runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, PRIVACY_POLICY_URL.toUri())) }
 }
 
-private const val PRIVACY_POLICY_URL = "https://github.com/hletrd/telecam-pro/blob/main/PRIVACY.md"
+private const val PRIVACY_POLICY_URL = "https://hletrd.github.io/telecam-pro/privacy-policy/"

@@ -139,7 +139,7 @@ class MainActivity : ComponentActivity() {
 
     private companion object {
         val REQUIRED_PERMISSIONS = arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
-        const val PRIVACY_POLICY_URL = "https://github.com/hletrd/telecam-pro/blob/main/PRIVACY.md"
+        const val PRIVACY_POLICY_URL = "https://hletrd.github.io/telecam-pro/privacy-policy/"
     }
 }
 

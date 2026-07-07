@@ -17,6 +17,7 @@ captures/
 *.jks
 *.keystore
 keystore.properties
+telecampro-upload-passwords.txt.gpg
 
 # OS
 .DS_Store

@@ -8,29 +8,36 @@ Copy-paste source for the Play Console listing. Character limits noted; everythi
 
 | Field | Value |
 |---|---|
-| **App name** (≤30) | `TeleCam Pro` |
+| **App name** (≤30) | `TeleCam for Find X9 Ultra` |
 | **Package name** | `com.hletrd.telecampro` |
 | **Category** | Photography |
 | **Content rating** | Everyone (no user-generated content shared, no ads, no data collection) |
 | **Contact email** | `01@0101010101.com` |
-| **Privacy policy URL** | `https://github.com/hletrd/telecam-pro/blob/main/PRIVACY.md` |
+| **Privacy policy URL** | `https://hletrd.github.io/telecam-pro/privacy-policy/` |
+| **Source code URL** | `https://github.com/hletrd/telecam-pro` |
 | **Ads** | No |
 | **In-app purchases** | No |
+| **Price** | Free (set in Play Console pricing, not in title or short description) |
 
 ## Short description (≤80 chars)
 
 ```
-Pro manual camera for Find X9 Ultra telephoto and 300mm teleconverters.
+Open-source manual camera for Find X9 Ultra telephoto.
 ```
 
 ## Full description (≤4000 chars)
 
 ```
-TeleCam Pro is a professional manual camera built for one phone — the OPPO Find X9 Ultra — and tuned for
-its periscope telephoto lens and for 300 mm afocal teleconverters that clamp onto it.
+TeleCam Pro is an open-source professional manual camera built for one phone - the OPPO Find X9 Ultra -
+and tuned for its periscope telephoto lens and for 300 mm afocal teleconverters that clamp onto it.
 
 It talks to the camera through Camera2 directly, so you get real manual control and the device's own pro
 video pipeline instead of a generic auto camera.
+
+OPEN SOURCE
+• Source code is public and auditable: github.com/hletrd/telecam-pro
+• No ads, no analytics, no in-app purchases, no account, and no cloud sync.
+• Built for owners who want a focused camera tool, not another tracking surface.
 
 TELECONVERTER MODE
 • One tap selects the 3x periscope lens and enables teleconverter mode: the afocal converter flips the
@@ -62,28 +69,33 @@ FRAMING AND MONITORING
 PRIVACY
 • No ads. No analytics. No internet permission. Nothing leaves your device.
 
+SOURCE
+• Open-source project: github.com/hletrd/telecam-pro
+
 TeleCam Pro is an independent app and is not affiliated with, endorsed by, or sponsored by OPPO,
 Hasselblad, or any hardware maker. Product names are used only to describe hardware compatibility.
 
-Requires an OPPO Find X9 Ultra running Android 16. It will not work on other devices.
+Requires an OPPO Find X9 Ultra running Android 16. Target model codes: CPH2841 (global) and PMA110
+(China/import). It will not work on other devices.
 ```
 
 ## Data Safety form answers
 
-- **Does your app collect or share any of the required user data types?** → **No.**
+- **Does your app collect or share any of the required user data types?** -> **No.**
 - Justification: the app declares no `INTERNET` permission and contains no analytics, ads, or third-party
   SDKs; camera and microphone input is used only on-device to produce files saved to local storage.
-- **Is all user data encrypted in transit?** → N/A (no data transmitted).
-- **Do you provide a way to request data deletion?** → N/A (no data collected); users delete their own
+- **Is all user data encrypted in transit?** -> N/A (no data transmitted).
+- **Do you provide a way to request data deletion?** -> N/A (no data collected); users delete their own
   photos/videos via the gallery.
+- Full console answer sheet: [`docs/play-data-safety.md`](play-data-safety.md).
 
 ## Required graphic assets
 
 | Asset | Spec | Source |
 |---|---|---|
 | Hi-res app icon | 512×512 PNG, 32-bit | `docs/assets/play/icon-512.png` (generated) |
-| Feature graphic | 1024×500 PNG/JPG | `docs/assets/play/feature-graphic.png` (generated) |
-| Phone screenshots | ≥2, 16:9 or 9:16, 320–3840 px | Capture on device (see below) |
+| Feature graphic | 1024×500 PNG/JPG, no alpha | `docs/assets/play/feature-graphic.png` (generated) |
+| Phone screenshots | >=2, 16:9 or 9:16, 320-3840 px | Capture on device (see below) |
 
 ### Screenshots to capture (on the Find X9 Ultra)
 
@@ -96,10 +108,12 @@ Take these with the app running on the device (`adb exec-out screencap -p`), ide
 ## Release checklist
 
 1. Create the upload keystore and `keystore.properties` (see `keystore.properties.example`).
-2. `./gradlew bundleRelease` → `app/build/outputs/bundle/release/app-release.aab`; this now fails
+2. `./gradlew bundleRelease` -> `app/build/outputs/bundle/release/app-release.aab`; this now fails
    fast when signing credentials are missing so an unsigned bundle cannot be uploaded by mistake.
 3. Play Console → create app → upload the signed AAB to an **internal testing** track.
-4. Paste the descriptions above, set category/rating, complete the Data Safety form as above.
+4. Set pricing to **free**, paste the descriptions above, set category/rating, complete the Data Safety form as above.
 5. Add the privacy policy URL, contact email, icon, feature graphic, and screenshots.
-6. Device catalog → restrict availability to OPPO Find X9 Ultra / PMA110 before wider rollout.
-7. Roll out internal testing → closed → production.
+6. Device catalog -> restrict availability to OPPO Find X9 Ultra / CPH2841 and PMA110 before wider rollout.
+7. Roll out internal testing -> closed -> production.
+
+Console-ready summary: [`docs/play-console-submit.md`](play-console-submit.md).
