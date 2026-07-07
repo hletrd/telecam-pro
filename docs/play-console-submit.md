@@ -16,13 +16,13 @@ Do not upload debug APKs or older unsigned/stale release bundles. Use the signed
 
 ## Store Listing
 
-- App name: `TeleCam for Find X9 Ultra`
+- App name: `TeleCam Pro`
 - Short description: `Open-source manual camera for Find X9 Ultra telephoto.`
 - Category: Photography
 - Price: Free
 - Ads: No
 - In-app purchases: No
-- Contact email: `01@0101010101.com`
+- Contact email: `mnmnnmnnn@gmail.com`
 - Privacy policy URL: `https://hletrd.github.io/telecam-pro/privacy-policy/`
 - Source code URL: `https://github.com/hletrd/telecam-pro`
 - Full listing copy: [`docs/play-store-listing.md`](play-store-listing.md)
