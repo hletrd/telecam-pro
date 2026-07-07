@@ -51,8 +51,11 @@ Summary:
   - 1024 x 500 PNG
   - no alpha
 - Phone screenshots:
-  - capture at least 2 from the physical Find X9 Ultra
-  - recommended: 4 portrait screenshots showing viewfinder, Pro settings, focus overlay, and review
+  - `docs/assets/play/screenshots/01-main-viewfinder.png`
+  - `docs/assets/play/screenshots/02-pro-settings.png`
+  - `docs/assets/play/screenshots/03-focus-loupe.png`
+  - `docs/assets/play/screenshots/04-video-controls.png`
+  - all are 1440 x 2880 no-alpha PNGs captured from the physical PMA110
 
 ## Device Catalog
 

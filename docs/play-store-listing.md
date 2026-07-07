@@ -95,15 +95,16 @@ Requires an OPPO Find X9 Ultra running Android 16. Target model codes: CPH2841 (
 |---|---|---|
 | Hi-res app icon | 512×512 PNG, 32-bit | `docs/assets/play/icon-512.png` (generated) |
 | Feature graphic | 1024×500 PNG/JPG, no alpha | `docs/assets/play/feature-graphic.png` (generated) |
-| Phone screenshots | >=2, 16:9 or 9:16, 320-3840 px | Capture on device (see below) |
+| Phone screenshots | >=2, PNG/JPG, 320-3840 px, max side <=2x min side, no alpha | `docs/assets/play/screenshots/` |
 
-### Screenshots to capture (on the Find X9 Ultra)
+### Screenshots captured on PMA110
 
-Take these with the app running on the device (`adb exec-out screencap -p`), ideally on a lit scene:
-1. Main viewfinder with the OSD (mode, ISO, shutter, focal) visible.
-2. Pro settings sheet open (manual dials / lens picker).
-3. A focus-monitoring overlay (peaking or punch-in loupe) active.
-4. The in-app review screen with pinch-to-zoom.
+All screenshots are 1440 x 2880, no-alpha PNGs captured from the physical PMA110:
+
+1. `docs/assets/play/screenshots/01-main-viewfinder.png` - main viewfinder with OSD.
+2. `docs/assets/play/screenshots/02-pro-settings.png` - Pro settings sheet.
+3. `docs/assets/play/screenshots/03-focus-loupe.png` - manual focus ruler / punch-in state.
+4. `docs/assets/play/screenshots/04-video-controls.png` - video controls and HLG status.
 
 ## Release checklist
 
