@@ -1,11 +1,11 @@
 <div align="center">
 
-<img src="docs/assets/logo.svg" width="112" alt="Find X9 Ultra Tele Camera logo" />
+<img src="docs/assets/logo.svg" width="112" alt="TeleCam Pro logo" />
 
-<h1>X9 Tele Camera</h1>
+<h1>TeleCam Pro</h1>
 
-<p><b>Professional camera app for OPPO Find X9 Ultra</b><br/>
-4-lens switcher + Hasselblad afocal teleconverter (70&nbsp;mm&nbsp;→&nbsp;300&nbsp;mm) · full manual control · afocal 180° flip · HAL OIS+EIS · HAL-native log · directional audio</p>
+<p><b>Professional manual camera for the OPPO Find X9 Ultra periscope telephoto and 300&nbsp;mm afocal teleconverters</b><br/>
+4-lens switcher, afocal 180° flip, HAL OIS+EIS, HAL-native log, directional audio</p>
 
 <p>
 <img src="https://img.shields.io/badge/Android-16%20(API%2036)-3DDC84?logo=android&logoColor=white" alt="Android 16" />
@@ -25,7 +25,7 @@
 - **Afocal 180° flip**: The teleconverter is afocal, so images arrive flipped 180° → preview/photos/videos all corrected (GL texcoord rotation for preview, pixel rotation for HEIF/JPEG, EXIF tag for DNG).
 - **Full manual control**: Focus (nonlinear slider tuned near infinity), ISO, shutter (speed or cine angle), WB (presets + Kelvin/tint), EV, metering, drive modes (single/burst/AEB/timelapse). Stop-snapping dials with haptic detents; AF→MF handoff seeds the manual slider from AF's live lens position.
 - **Volume-key hardware shutter**: vibration-free release at 300 mm (photo capture / video start-stop).
-- **Directional audio (stock Sound Focus / Sound Stage)**: drives the vendor audio-HAL params (`vendor_audiorecord_effect_type` …), the same path the stock app uses — Sound Focus narrows the mic toward the framed subject and tightens with zoom.
+- **Directional audio (Sound Focus / Sound Stage)**: drives the vendor audio-HAL params (`vendor_audiorecord_effect_type` …), the device's own directional-audio path — Sound Focus narrows the mic toward the framed subject and tightens with zoom.
 - **Photos**: HEIF + JPEG + RAW (DNG), any combination. Device-orientation-aware (stills save upright in any hold via gyro gravity).
 - **Video**: 10-bit HEVC (Main10, Rec.2020) in **HLG / O-Log2 / SDR**, plus HAL-native log (`com.oplus.log.video.mode`); 8-bit AVC; AV1 (SW). 4K DCI max (HEVC/AVC HW ceiling); 24/25/30/60 fps + NTSC drop-frame (23.976/29.97/59.94) + 120 fps high-speed; **Low → Max bitrate presets up to ~134 Mbps at 4K**; Open-Gate (full 4:3 sensor); AAC 48 kHz stereo.
 - **Video stabilization = HAL OIS+EIS** (the stock "super steady" path): OIS physically cuts per-frame motion blur at 300 mm (Off / Gyro / OIS-Standard / OIS-Enhanced).
@@ -57,21 +57,20 @@ See [`CLAUDE.md`](CLAUDE.md) § **Toolchain** for pinned versions and build setu
 
 Requires JDK 21 + Android SDK (API 36, build-tools 36.0.0). Design document: [`docs/superpowers/specs/2026-07-01-find-x9-ultra-camera-design.md`](docs/superpowers/specs/2026-07-01-find-x9-ultra-camera-design.md)
 
-## Reverse-engineered stock vendor features
+## Device vendor HAL features
 
-The stock OPPO camera reaches its pro capabilities through the OPPO OCS SDK, which maps to **vendor
-HAL keys** — many of which are exposed to third-party Camera2 apps on the tele. We decompiled
-`OplusCamera.apk` and drive the same keys directly (each device-verified through to a saved file, not
-just "session configured"). Full audit: [`docs/reverse-engineering/oplus-log-video-analysis.md`](docs/reverse-engineering/oplus-log-video-analysis.md).
+Beyond the standard Camera2 surface, the device's camera HAL advertises vendor session/request keys
+for its pro pipeline, and several are available to third-party apps on the tele. TeleCam Pro drives
+them directly, each device-verified through to a saved file (not just "session configured"):
 
-| Stock feature | Mechanism | Status |
+| Feature | Key | Status |
 |---|---|---|
-| HAL-native log | `com.oplus.log.video.mode` (session key) | ✅ scene-referred log stream verified |
+| Native log | `com.oplus.log.video.mode` (session key) | ✅ scene-referred log stream verified |
 | Video stabilization | `CONTROL_VIDEO_STABILIZATION_MODE` + `com.oplus.video.stabilization.mode` | ✅ `ois=1, vstab=2` verified |
 | Directional audio | `vendor_audiorecord_effect_type` / `focus_angle` … | ✅ HAL `track_support=true` |
 | Auto HDR | `EnableAutoHDR` + `HDRMode=1` | ✅ session + capture verified |
 | In-sensor zoom | `EnableInsensorZoom` | ✅ verified |
-| Ideal RAW / APV / macro / custom-LUT | — | ⛔ tried, gated/excluded (break capture or inert — see the audit) |
+| Ideal RAW / APV / macro / custom-LUT | — | ⛔ tried, gated/excluded (break capture or inert) |
 
 ## Implementation Status
 
@@ -80,3 +79,7 @@ just "session configured"). Full audit: [`docs/reverse-engineering/oplus-log-vid
 - ✅ **Device-verified on PMA110**: all 4 lenses open (standalone, no HAL crash) with RAW; teleconverter bundling; preview upright; tap-to-focus lock; AF→MF handoff; volume-key shutter; HEIF (4096×3072) + DNG + JPEG saves; HEVC 4K video incl. Max bitrate (~134 Mbps); HAL log + HAL OIS+EIS + directional-audio support + Auto HDR + in-sensor zoom all accepted end-to-end.
 - ⏳ **Needs your eyes/ears in a real scene**: the acoustic effect of directional audio (off-axis A/B), and the image gain of Auto HDR / in-sensor zoom (high-contrast / distant subjects) — undetectable from a static desk.
 - 🚧 **Not started**: Play-release engineering (signing, R8/minify keep-rules, store assets, data-safety/privacy). Dolby Vision (HW encoder detected, MP4 muxing non-trivial). See [`docs/BACKLOG.md`](docs/BACKLOG.md).
+
+## Trademarks
+
+TeleCam Pro is an independent project and is not affiliated with, endorsed by, or sponsored by OPPO, Hasselblad, or any hardware maker. "OPPO", "Find X9 Ultra", and other product names are trademarks of their respective owners, used here only to describe hardware compatibility.

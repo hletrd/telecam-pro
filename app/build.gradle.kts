@@ -10,7 +10,9 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.hletrd.findx9tele"
+        // Public app id (Play URL / Settings). The internal Kotlin/namespace package stays
+        // com.hletrd.findx9tele — not user-visible, so it is left to avoid a repo-wide package move.
+        applicationId = "com.hletrd.telecampro"
         minSdk = 36
         targetSdk = 36
         versionCode = 1
