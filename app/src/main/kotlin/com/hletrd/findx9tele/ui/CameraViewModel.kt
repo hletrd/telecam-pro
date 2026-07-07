@@ -457,6 +457,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setVendorInSensorZoom(enabled)
         _state.update { it.copy(vendorInSensorZoom = enabled) }
     }
+    override fun onVendorIdealRaw(enabled: Boolean) {
+        engine.setVendorIdealRaw(enabled)
+        _state.update { it.copy(vendorIdealRaw = enabled) }
+    }
 
     private inline fun updateControls(block: (ManualControls) -> ManualControls) {
         val updated = block(_state.value.controls)

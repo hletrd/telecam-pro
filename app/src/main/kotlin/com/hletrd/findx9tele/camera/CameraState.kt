@@ -308,9 +308,10 @@ data class CameraUiState(
     val teleconverterMode: Boolean = true,
     // HAL-native log (vendor com.oplus.log.video.mode). Experimental; see [VendorLogMode].
     val vendorLogMode: VendorLogMode = VendorLogMode.OFF,
-    // QTI vendor session features: Auto-HDR (EnableAutoHDR + HDRMode) and in-sensor zoom. Experimental.
+    // QTI vendor session features: Auto-HDR (EnableAutoHDR + HDRMode), in-sensor zoom, ideal RAW.
     val vendorHdr: Boolean = false,
     val vendorInSensorZoom: Boolean = false,
+    val vendorIdealRaw: Boolean = false,
     // Stabilization. Default ENHANCED = HAL OIS+EIS ("super steady"): at 300 mm it reduces the
     // per-frame motion blur that app-side gyro EIS cannot touch (see [VideoStabMode]).
     val videoStabMode: VideoStabMode = VideoStabMode.ENHANCED,

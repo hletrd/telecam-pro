@@ -122,4 +122,5 @@ interface CameraActions {
     fun onVendorLogMode(mode: com.hletrd.findx9tele.camera.VendorLogMode)
     fun onVendorHdr(enabled: Boolean)
     fun onVendorInSensorZoom(enabled: Boolean)
+    fun onVendorIdealRaw(enabled: Boolean)
 }

@@ -72,6 +72,7 @@ class CameraEngine(private val context: Context) {
     // Extra QTI vendor session features (HDR, in-sensor zoom). Session keys → changing reopens.
     @Volatile private var vendorHdr = false
     @Volatile private var vendorInSensorZoom = false
+    @Volatile private var vendorIdealRaw = false
     @Volatile private var eisCrop: Float = EisStrength.MEDIUM.crop
 
     // Software recording-audio gain (1f = passthrough) and the still-photo aspect-ratio crop;
@@ -203,6 +204,14 @@ class CameraEngine(private val context: Context) {
         reopenForSession()
     }
 
+    /** Ideal RAW (QTI EnableIdealRAW): a processed "ideal" Bayer for the DNG. Session key → reopen. */
+    fun setVendorIdealRaw(enabled: Boolean) {
+        if (vendorIdealRaw == enabled) return
+        if (recorder != null) { onStatus?.invoke("Stop recording to change ideal RAW"); return }
+        vendorIdealRaw = enabled
+        reopenForSession()
+    }
+
     fun setTeleconverterMode(enabled: Boolean) { teleconverterMode = enabled; applyStabilization() }
     fun setVideoStabMode(m: VideoStabMode) { videoStabMode = m; applyStabilization() }
     fun setEisStrength(s: EisStrength) { eisCrop = s.crop; applyStabilization() }
@@ -241,6 +250,7 @@ class CameraEngine(private val context: Context) {
             videoStabHalMode = c.videoStabControlMode(videoStabMode),
             vendorHdr = vendorHdr,
             vendorInSensorZoom = vendorInSensorZoom,
+            vendorIdealRaw = vendorIdealRaw,
             onReady = { onStatus?.invoke(null) },
             onError = { onStatus?.invoke("Camera error: ${it.message}") },
         )

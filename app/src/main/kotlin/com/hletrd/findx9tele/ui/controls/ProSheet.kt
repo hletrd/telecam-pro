@@ -753,8 +753,9 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
     Text(
         "QTI HAL session features the stock app drives via its SDK: Auto HDR (EnableAutoHDR + " +
             "HDRMode — multi-exposure high-dynamic-range, good for high-contrast tele scenes) and " +
-            "in-sensor zoom (EnableInsensorZoom — sensor-domain crop-zoom for cleaner detail than " +
-            "digital zoom). Each reopens the camera; not persisted.",
+            "in-sensor zoom (EnableInsensorZoom — sensor-domain crop-zoom, cleaner than digital " +
+            "zoom). Each reopens the camera; not persisted. (Ideal RAW / macro / custom-LUT vendor " +
+            "keys were tried but excluded — device-verified they break capture or don't apply here.)",
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.labelSmall,
     )

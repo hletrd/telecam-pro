@@ -78,6 +78,7 @@ class CameraController(context: Context) {
     // Extra QTI vendor session params (set once per open() — session keys). Changing them reopens.
     @Volatile private var vendorHdr = false
     @Volatile private var vendorInSensorZoom = false
+    @Volatile private var vendorIdealRaw = false
     // >0 → configure a CameraConstrainedHighSpeedCaptureSession at this fps (slow-motion), feeding
     // ONLY the GL input surface (no JPEG/RAW — high-speed sessions forbid extra targets). 0 = the
     // regular tele session. Set once per open(); on a high-speed config failure it drops back to 0.
@@ -125,6 +126,7 @@ class CameraController(context: Context) {
         videoStabHalMode: Int = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF,
         vendorHdr: Boolean = false,
         vendorInSensorZoom: Boolean = false,
+        vendorIdealRaw: Boolean = false,
         onReady: Ready,
         onError: ErrorCb,
     ) {
@@ -138,6 +140,7 @@ class CameraController(context: Context) {
         this.videoStabHalMode = videoStabHalMode
         this.vendorHdr = vendorHdr
         this.vendorInSensorZoom = vendorInSensorZoom
+        this.vendorIdealRaw = vendorIdealRaw
         this.rawChars = runCatching {
             manager.getCameraCharacteristics(selection.physicalId ?: selection.logicalId)
         }.getOrNull()
@@ -185,13 +188,19 @@ class CameraController(context: Context) {
     private val enableAutoHdrKey = CaptureRequest.Key("org.codeaurora.qcamera3.sessionParameters.EnableAutoHDR", Int::class.javaObjectType)
     private val hdrModeKey = CaptureRequest.Key("org.codeaurora.qcamera3.sessionParameters.HDRMode", Int::class.javaObjectType)
     private val inSensorZoomKey = CaptureRequest.Key("org.codeaurora.qcamera3.sessionParameters.EnableInsensorZoom", Int::class.javaObjectType)
+    private val idealRawKey = CaptureRequest.Key("org.codeaurora.qcamera3.sessionParameters.EnableIdealRAW", Int::class.javaObjectType)
 
-    /** Extra QTI vendor session params (HDR, in-sensor zoom). Each guarded — a rejected key never kills the build. */
+    /** Extra QTI vendor session params (HDR, in-sensor zoom, ideal RAW). Each guarded — a rejected key never kills the build. */
     private fun CaptureRequest.Builder.applyVendorExtras() {
         if (vendorHdr) runCatching { set(enableAutoHdrKey, 1); set(hdrModeKey, 1) }
             .onFailure { Log.w(TAG, "vendor HDR rejected: ${it.message}") }
         if (vendorInSensorZoom) runCatching { set(inSensorZoomKey, 1) }
             .onFailure { Log.w(TAG, "vendor in-sensor zoom rejected: ${it.message}") }
+        // Ideal RAW is wired but GATED OFF (no UI toggle sets it): device-verified that although the
+        // session configures with EnableIdealRAW=1, the RAW still capture then fails silently (no DNG
+        // saved; CameraCaptureSession error + reconfigure timeout) — so it stays unreachable.
+        if (vendorIdealRaw) runCatching { set(idealRawKey, 1) }
+            .onFailure { Log.w(TAG, "vendor ideal RAW rejected: ${it.message}") }
     }
 
     /**
@@ -300,7 +309,7 @@ class CameraController(context: Context) {
         // at configure time, so they must ride in the session parameters, not only per-frame requests.
         // Built from TEMPLATE_RECORD (the movie-pipeline template). Fully defensive — a session-
         // parameter failure falls back to a plain session, not a dead camera.
-        if (vendorLogMode != 0 || vendorHdr || vendorInSensorZoom) {
+        if (vendorLogMode != 0 || vendorHdr || vendorInSensorZoom || vendorIdealRaw) {
             runCatching {
                 val sp = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
                 sp.applyManualControls(controls, caps)
