@@ -12,7 +12,23 @@ val keystorePropsFile = rootProject.file("keystore.properties")
 val keystoreProps = Properties().apply {
     if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
 }
-val hasReleaseKeystore = keystorePropsFile.exists()
+
+fun signingValue(propertyName: String, envName: String): String? =
+    keystoreProps.getProperty(propertyName)
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() && it != "CHANGE_ME" }
+        ?: System.getenv(envName)?.trim()?.takeIf { it.isNotEmpty() }
+
+val releaseStoreFile = signingValue("storeFile", "TELECAMPRO_STORE_FILE")
+val releaseKeyAlias = signingValue("keyAlias", "TELECAMPRO_KEY_ALIAS")
+val releaseStorePassword = signingValue("storePassword", "TELECAMPRO_STORE_PASSWORD")
+val releaseKeyPassword = signingValue("keyPassword", "TELECAMPRO_KEY_PASSWORD") ?: releaseStorePassword
+val hasReleaseSigning =
+    keystorePropsFile.exists() &&
+        releaseStoreFile != null &&
+        releaseKeyAlias != null &&
+        releaseStorePassword != null &&
+        releaseKeyPassword != null
 
 android {
     namespace = "com.hletrd.findx9tele"
@@ -31,14 +47,14 @@ android {
     }
 
     signingConfigs {
-        // Upload key for Google Play App Signing. Populated only when keystore.properties exists;
-        // secrets live there (gitignored), never in this file or git history.
-        if (hasReleaseKeystore) {
+        // Upload key for Google Play App Signing. The gitignored keystore.properties names the key;
+        // passwords can live there or, preferably, in TELECAMPRO_* environment variables for the build.
+        if (hasReleaseSigning) {
             create("release") {
-                storeFile = rootProject.file(keystoreProps.getProperty("storeFile"))
-                storePassword = keystoreProps.getProperty("storePassword")
-                keyAlias = keystoreProps.getProperty("keyAlias")
-                keyPassword = keystoreProps.getProperty("keyPassword")
+                storeFile = rootProject.file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
             }
         }
     }
@@ -55,7 +71,7 @@ android {
             )
             // Only sign when the keystore is present. The release packaging task below fails fast
             // without it, so a Play-ineligible unsigned AAB is never produced as a "successful" build.
-            if (hasReleaseKeystore) signingConfig = signingConfigs.getByName("release")
+            if (hasReleaseSigning) signingConfig = signingConfigs.getByName("release")
         }
     }
 
@@ -101,13 +117,14 @@ dependencies {
     testImplementation(libs.junit)
 }
 
-if (!hasReleaseKeystore) {
+if (!hasReleaseSigning) {
     tasks.matching { it.name == "packageReleaseBundle" || it.name == "bundleRelease" || it.name == "assembleRelease" }
         .configureEach {
             doFirst {
                 throw GradleException(
                     "Release signing is required for Play upload. Create gitignored keystore.properties " +
-                        "from keystore.properties.example, then rerun this task.",
+                        "from keystore.properties.example and provide store/key passwords either there " +
+                        "or via TELECAMPRO_STORE_PASSWORD and TELECAMPRO_KEY_PASSWORD.",
                 )
             }
         }

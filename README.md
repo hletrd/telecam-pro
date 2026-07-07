@@ -68,10 +68,16 @@ The signed release artifact is a **Play App Bundle** (`.aab`). Signing is driven
 keytool -genkeypair -v -keystore telecampro-upload.jks -alias telecampro \
   -keyalg RSA -keysize 4096 -validity 10000
 
-# 2. copy the template and fill in your path/alias/passwords
-cp keystore.properties.example keystore.properties   # then edit it
+# 2. copy the template and fill in the path/alias (passwords can stay out of the file)
+cp keystore.properties.example keystore.properties   # then edit storeFile/keyAlias if needed
 
-# 3. build the signed bundle (fails fast if keystore.properties is missing)
+# 3. provide passwords for this shell without putting them in shell history
+read -s "TELECAMPRO_STORE_PASSWORD?Store password: "; echo
+export TELECAMPRO_STORE_PASSWORD
+read -s "TELECAMPRO_KEY_PASSWORD?Key password (enter the same value if you reused it): "; echo
+export TELECAMPRO_KEY_PASSWORD
+
+# 4. build the signed bundle (fails fast if signing credentials are missing)
 ./gradlew bundleRelease        # → app/build/outputs/bundle/release/app-release.aab
 ```
 
