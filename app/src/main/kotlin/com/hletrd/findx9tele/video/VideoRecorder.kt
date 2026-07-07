@@ -253,10 +253,10 @@ class VideoRecorder(private val context: Context) {
     }
 
     /**
-     * Applies the stock Sound Focus / Sound Stage effect via the vendor audio-HAL parameters
-     * (`vendor_audiorecord_effect_type` etc.), the exact keys the stock `lj.t0` recorder sets. Uses
-     * [AudioManager.setParameters] (public, forwards to the audio HAL) while our CAMCORDER-source
-     * AudioRecord is live — the same source the stock app records from. Best-effort and fully
+     * Applies the device's Sound Focus / Sound Stage effect via the vendor audio-HAL parameters
+     * (`vendor_audiorecord_effect_type` etc.). Uses [AudioManager.setParameters] (public, forwards
+     * to the audio HAL) while our CAMCORDER-source AudioRecord is live — the standard recording
+     * source the audio HAL applies the effect to. Best-effort and fully
      * guarded: we log the HAL echo (getParameters) so device acceptance is verifiable, and a
      * rejected param never affects recording. No-op for STANDARD.
      */

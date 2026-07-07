@@ -18,13 +18,12 @@ Full-app review session; screenshots + pulled files + ffprobe as evidence.
   numerically against the white-paper anchors (18 % → 0.4868). *(ffprobe + frame extract)*
 - ✅ **LOG transfer-tag fix** — before: VUI defaulted to `smpte2084` (PQ) → players tone-mapped log as
   HDR; after: SDR-class `bt2020-10`. HLG clip verified tagging `arib-std-b67` + `tv` range. *(ffprobe)*
-- ✅ **HAL-native log IS reachable** — decompiled `OplusCamera.apk`: the stock O-Log path is the OCS
-  SDK ConfigureKey `KEY_CONFIGURE_LOG_VIDEO_MODE` → `com.oplus.log.video.mode` (Integer, session key),
-  which IS in the tele's availableRequest+SessionKeys. Set via raw Camera2 (session param + request);
+- ✅ **HAL-native log IS reachable** — the vendor tag `com.oplus.log.video.mode` (Integer, session key)
+  IS in the tele's availableRequest+SessionKeys. Set via raw Camera2 (session param + request);
   device-verified value 1 engages a genuine scene-referred log stream (flat, mean luma ~½ SDR). Only
   `com.oplus.movie.log.enable` is gated. Exposed as Pro→Advanced→"Native Log". CAVEAT: not a clean
-  round-trip for OPPO's O-Log2/O-Log-gen1 LUTs (un-white-balanced) — GL O-Log2 stays the LUT-accurate
-  option. See `docs/reverse-engineering/oplus-log-video-analysis.md`.
+  round-trip for the published O-Log2/O-Log-gen1 LUTs (un-white-balanced) — GL O-Log2 stays the
+  LUT-accurate option.
 
 New in code this session, **not yet device-verified**: manual-exposure AEB shutter bracket (unit-tested;
 needs a 3-file exposure sweep check), SDR (Rec.709) HEVC clip, JPEG-only format capture, quadrant level
@@ -94,7 +93,7 @@ f/2.2 tele at night they are near the physical floor, which reads as "AE/AF bare
   HAL stabilization OFF. `GyroEis` flags the axis/sign need on-device tuning (wrong sign amplifies
   shake). Hand-hold at 300 mm and confirm the preview steadies. (task #3)
 - 🟡 **TELE toggle ↔ OIS/EIS focal 70↔300.** EIS focal switches with the mode; OIS on/off is a user
-  toggle and its focal is HAL-owned (vendor-gated). Confirm the stock-app-like behavior. (task #4)
+  toggle and its focal is HAL-owned (vendor-gated). Confirm the device-native behavior. (task #4)
 - 🟡 **Capture orientation in landscape** — stills rotate by device orientation (gravity); verify a
   landscape-held HEIC/DNG saves upright.
 

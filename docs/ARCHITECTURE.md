@@ -37,7 +37,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `CaptureCapabilities.kt` | Queries Camera2 characteristics for manual-sensor, RAW, 10-bit HDR, focus range, metering regions — gate-keeping capabilities. |
 | `ManualControls.kt` | Immutable snapshot of all pro capture parameters (focus, ISO, shutter, white balance, metering, processing). The ViewModel updates a copy; the Engine applies it to the repeating request. |
 | `RotationMath.kt` | Pure, unit-tested functions for preview/capture/EXIF rotation math (extracted from CameraEngine). |
-| `VendorTagInspector.kt` | Debug-only vendor-tag dump (e.g., com.oplus.*, org.quic.camera.*, explorer.chip.*) to reverse-engineer device-specific capabilities. |
+| `VendorTagInspector.kt` | Debug-only vendor-tag dump (e.g., com.oplus.*, org.quic.camera.*) to inspect device-specific vendor capabilities. |
 | **gl/** | |
 | `GlPipeline.kt` | Owns the GL render thread. Receives camera SurfaceTexture, renders 180°-flipped quads to preview Surface and video encoder Surface. Owns EGL context, texture, sampling buffers. Drives histogram/waveform analysis on a background executor. |
 | `FlipRenderer.kt` | Low-level OpenGL ES fullscreen quad renderer with texture-coordinate rotation (inverse of image rotation) to flip the 180° afocal image. Applies OETF (HLG / Log) in the fragment shader. Handles focus peaking (edge detection) and zebra (exposure clipping). |
@@ -353,8 +353,8 @@ Correction is scaled by eisCrop (0.06 to 0.18, default 0.10) to limit the headro
 MOTION BLUR is set by the shutter and only **OIS** (lens moves during exposure) can reduce it — app-side
 gyro EIS only warps whole frames. The default is now the HAL's own OIS+EIS via
 `CONTROL_VIDEO_STABILIZATION_MODE = PREVIEW_STABILIZATION` (the tele advertises modes [0,1,2]), the
-same "super steady" path the stock app drives through `com.oplus.video.stabilization.mode` — device-
-verified `ois=1, vstab=2`. See CLAUDE.md and `docs/reverse-engineering/oplus-log-video-analysis.md` §5.
+same "super steady" path exposed through the vendor int `com.oplus.video.stabilization.mode` — device-
+verified `ois=1, vstab=2`. See CLAUDE.md for the full HAL-key notes.
 
 **Remaining gyro-EIS notes (apply only to the `Gyro` mode):**
 - Gyro axis/sign mapping + on-device tuning are approximate.
@@ -380,10 +380,10 @@ unused). Also alongside `com.oplus.log.video.mode` (HAL-native scene-referred lo
 | APV | — | — | — | — | HW `c2.qti.apv.encoder` (pro all-intra ≤2 Gbps) EXISTS but **gated out** — MediaMuxer rejects APV-in-MP4 (breaks the encoder mid-drain). |
 | Dolby Vision | 10-bit | Rec.2020 | Dolby Vision | MP4 | HW `c2.qti.dv.encoder` detected (`hasDolbyVision`); not wired (clean DV-in-MP4 muxing non-trivial). |
 
-**Vendor HAL features:** several stock-app vendor keys are reachable from third-party Camera2 and are
+**Vendor HAL features:** several vendor keys are reachable from third-party Camera2 and are
 implemented — HAL-native log, HAL OIS+EIS stabilization, directional audio (Sound Focus/Stage), Auto
-HDR, in-sensor zoom. Full decompile + device-verified audit:
-`docs/reverse-engineering/oplus-log-video-analysis.md` §6.
+HDR, in-sensor zoom. Each is device-verified through to a saved file; see CLAUDE.md for the per-key
+notes.
 
 **Video resolution and frame rates:**
 
@@ -618,6 +618,5 @@ adb shell am start -n com.hletrd.findx9tele/.MainActivity
 ## See Also
 
 - `docs/BACKLOG.md` — prioritized remaining work + known-unverified items.
-- `docs/reverse-engineering/` — device camera map, vendor-tag catalog, stock-app reverse-engineering notes.
 - `docs/superpowers/specs/2026-07-01-find-x9-ultra-camera-design.md` — original design doc (intent; superseded by actual code where it diverges).
 - `CLAUDE.md` § **Hard-won device facts** — HAL crash workarounds and their signatures.

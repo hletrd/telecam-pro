@@ -47,9 +47,9 @@ enum class EisStrength(val crop: Float) { LOW(0.06f), MEDIUM(0.10f), HIGH(0.18f)
  *  - [OFF]      — no stabilization (OIS still follows the separate OIS toggle).
  *  - [GYRO]     — app-side gyro EIS scaled to the effective focal (our old default); no HAL stab.
  *  - [STANDARD] — HAL `CONTROL_VIDEO_STABILIZATION_MODE_ON`: the HAL's own OIS+EIS.
- *  - [ENHANCED] — HAL `PREVIEW_STABILIZATION`: the modern combined OIS+EIS the stock "super steady"
- *                 uses (the stock app drives `com.oplus.configure.video.stabilization`, which the
- *                 vendor SDK maps to this). Reduces motion blur via OIS; best on the tele.
+ *  - [ENHANCED] — HAL `PREVIEW_STABILIZATION`: the modern combined OIS+EIS behind "super steady"
+ *                 (the HAL also exposes the vendor mirror `com.oplus.video.stabilization.mode`).
+ *                 Reduces motion blur via OIS; best on the tele.
  *
  * The two HAL modes are gated by `CameraCaps.videoStabModes`; app-side EIS is suppressed while a HAL
  * mode is active so the two don't double-warp.
@@ -93,10 +93,10 @@ enum class WbMode { AUTO, INCANDESCENT, FLUORESCENT, DAYLIGHT, CLOUDY, SHADE, MA
 enum class MeteringMode { MATRIX, CENTER, SPOT }
 
 /**
- * Recording audio scene, replicating the stock camera's Sound Focus / Sound Stage. The stock app
- * drives the vendor audio-HAL parameters (`vendor_audiorecord_effect_type` + friends) — NOT the
- * standard `AudioRecord.setPreferredMicrophoneDirection`, which the PMA110 HAL rejects. [effectType]
- * is the vendor int the HAL expects (decompiled from OplusCamera `lj.t0`):
+ * Recording audio scene: the device's Sound Focus / Sound Stage. These run through the vendor
+ * audio-HAL parameters (`vendor_audiorecord_effect_type` + friends) — NOT the standard
+ * `AudioRecord.setPreferredMicrophoneDirection`, which the PMA110 HAL rejects. [effectType]
+ * is the vendor int the HAL expects:
  *  - STANDARD (1) — normal stereo pickup.
  *  - SOUND_FOCUS (2) — directional "audio zoom": narrows the pickup toward the framed subject and
  *    tightens with optical/digital zoom (the 300 mm use case). Sets focus_zoom + focus_angle too.
@@ -125,11 +125,10 @@ enum class LensChoice(val targetEquivMm: Float, val label: String) {
 }
 
 /**
- * HAL-native log video via the vendor key `com.oplus.log.video.mode` (int32) — the same session key
- * the stock camera drives for O-Log recording (confirmed by decompiling OplusCamera.apk: the OCS SDK
- * `CameraParameter.KEY_CONFIGURE_LOG_VIDEO_MODE`). Unlike the GL-baked curve (which can only re-map
- * the ISP's display-referred SDR output), this makes the ISP emit a SCENE-REFERRED log stream from
- * sensor data, before the OEM display tone mapping.
+ * HAL-native log video via the vendor key `com.oplus.log.video.mode` (int32) — the device's own
+ * session key for O-Log recording. Unlike the GL-baked curve (which can only re-map the ISP's
+ * display-referred SDR output), this makes the ISP emit a SCENE-REFERRED log stream from sensor
+ * data, before the OEM display tone mapping.
  *
  * The key is advertised in this device's `availableRequestKeys` AND `availableSessionKeys` for the
  * tele (dumpsys 2026-07-06), so setting it via Camera2 is legal API. Device-verified 2026-07-06: ON

@@ -5,12 +5,12 @@ import android.hardware.camera2.CameraManager
 import android.util.Log
 
 /**
- * On-device reverse-engineering aid: dumps every camera's characteristics keys (INCLUDING OPPO/QTI
+ * On-device diagnostic aid: dumps every camera's characteristics keys (INCLUDING OPPO/QTI
  * vendor tags such as `com.oplus.ois.control.mode`, `com.oplus.custom.zoom.range`), plus the
  * available capture-request and session keys, to Logcat under tag [TAG].
  *
  * Run `adb logcat -s X9TeleVendor` while the app is open to discover which vendor tags the HAL
- * exposes to third-party apps — the basis for attempting native teleconverter stabilization.
+ * exposes to third-party apps — the basis for the native teleconverter stabilization path.
  */
 object VendorTagInspector {
     const val TAG = "X9TeleVendor"

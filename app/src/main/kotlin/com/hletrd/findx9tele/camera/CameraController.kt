@@ -182,9 +182,8 @@ class CameraController(context: Context) {
     }
 
     // QTI session-parameter vendor keys, all int32 and all in the tele's availableRequest+SessionKeys
-    // (dumpsys 2026-07-07). The stock app reaches these through the OCS SDK (com.oplus.configure.
-    // video.3hdr → EnableAutoHDR/HDRMode); we set them directly. HDRMode=1 is the single value the
-    // device advertises in supportedHDRmodes.HDRModes. EnableInsensorZoom improves tele zoom quality.
+    // (dumpsys 2026-07-07). We set them directly. HDRMode=1 is the single value the device advertises
+    // in supportedHDRmodes.HDRModes. EnableInsensorZoom improves tele zoom quality.
     private val enableAutoHdrKey = CaptureRequest.Key("org.codeaurora.qcamera3.sessionParameters.EnableAutoHDR", Int::class.javaObjectType)
     private val hdrModeKey = CaptureRequest.Key("org.codeaurora.qcamera3.sessionParameters.HDRMode", Int::class.javaObjectType)
     private val inSensorZoomKey = CaptureRequest.Key("org.codeaurora.qcamera3.sessionParameters.EnableInsensorZoom", Int::class.javaObjectType)
@@ -204,8 +203,8 @@ class CameraController(context: Context) {
     }
 
     /**
-     * The stock app's stabilization vendor tag (`com.oplus.video.stabilization.mode`, int) — the SDK
-     * translation of `VIDEO_STABILIZATION_MODE`. Advertised in the tele's request+session keys, so we
+     * The HAL's stabilization vendor tag (`com.oplus.video.stabilization.mode`, int) — the vendor
+     * mirror of `VIDEO_STABILIZATION_MODE`. Advertised in the tele's request+session keys, so we
      * set it alongside the standard CONTROL_VIDEO_STABILIZATION_MODE to nudge the HAL's OIS/EIS
      * profile toward the active lens (the same path "super steady" takes). Best-effort.
      */

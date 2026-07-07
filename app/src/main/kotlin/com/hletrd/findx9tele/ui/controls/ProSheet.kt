@@ -737,7 +737,7 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
         onSelect = actions::onVendorLogMode,
     )
     Text(
-        "Drives the stock app's own log key (com.oplus.log.video.mode) so the ISP emits a " +
+        "Drives the device's own log key (com.oplus.log.video.mode) so the ISP emits a " +
             "scene-referred log stream from sensor data — more latitude than the GL curve, which " +
             "can only re-map the display SDR output. Bypasses the GL curve and tags the file " +
             "BT.2020 full-range. Note: not white-balanced (warm scenes read warm — set WB in grade) " +
@@ -751,7 +751,7 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
     ToggleRow(label = "Auto HDR", checked = state.vendorHdr, onCheckedChange = actions::onVendorHdr)
     ToggleRow(label = "In-Sensor Zoom", checked = state.vendorInSensorZoom, onCheckedChange = actions::onVendorInSensorZoom)
     Text(
-        "QTI HAL session features the stock app drives via its SDK: Auto HDR (EnableAutoHDR + " +
+        "QTI HAL session features the device exposes: Auto HDR (EnableAutoHDR + " +
             "HDRMode — multi-exposure high-dynamic-range, good for high-contrast tele scenes) and " +
             "in-sensor zoom (EnableInsensorZoom — sensor-domain crop-zoom, cleaner than digital " +
             "zoom). Each reopens the camera; not persisted. (Ideal RAW / macro / custom-LUT vendor " +

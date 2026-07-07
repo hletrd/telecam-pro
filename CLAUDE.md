@@ -125,17 +125,15 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
 - **Settings persist across launches** via `storage/SettingsStore.kt` (SharedPreferences, enums by
   name, defensive load). Gated by a "Remember Settings" toggle that **defaults ON**; saved on
   background, restored on launch (pushed to the engine pre-start).
-- **HAL-native log IS reachable via the stock key `com.oplus.log.video.mode` (verified 2026-07-06).**
-  Decompiling `OplusCamera.apk` showed the stock O-Log path is the OCS SDK ConfigureKey
-  `KEY_CONFIGURE_LOG_VIDEO_MODE` → vendor tag `com.oplus.log.video.mode` (Integer, a **session** key).
-  That tag IS in the tele's `availableRequestKeys`+`availableSessionKeys` (dumpsys), so raw Camera2
-  can set it — do so as a **session parameter** (from `TEMPLATE_RECORD`) AND on every request, fully
-  guarded. Device-verified: value `1` engages a genuine scene-referred log stream (flat, mean luma
-  ~½ of SDR, GL curve off); `1`≡`2` (on/off). `com.oplus.movie.log.enable` (the byte gate) is NOT
-  exposed. CAVEAT: the HAL log is not a clean round-trip for OPPO's published O-Log2/O-Log-gen1 LUTs
-  (scene-referred, un-white-balanced, warm cast) — for a LUT-accurate deliverable use the GL O-Log2
-  path below. Exposed as Pro→Advanced→"Native Log" (`VendorLogMode`, not persisted). Full analysis:
-  `docs/reverse-engineering/oplus-log-video-analysis.md`.
+- **HAL-native log IS reachable via `com.oplus.log.video.mode` (verified 2026-07-06).**
+  The vendor tag `com.oplus.log.video.mode` (Integer, a **session** key) is in the tele's
+  `availableRequestKeys`+`availableSessionKeys` (dumpsys), so raw Camera2 can set it — do so as a
+  **session parameter** (from `TEMPLATE_RECORD`) AND on every request, fully guarded. Device-verified:
+  value `1` engages a genuine scene-referred log stream (flat, mean luma ~½ of SDR, GL curve off);
+  `1`≡`2` (on/off). `com.oplus.movie.log.enable` (the byte gate) is NOT exposed. CAVEAT: the HAL log
+  is not a clean round-trip for the published O-Log2/O-Log-gen1 LUTs (scene-referred,
+  un-white-balanced, warm cast) — for a LUT-accurate deliverable use the GL O-Log2 path below.
+  Exposed as Pro→Advanced→"Native Log" (`VendorLogMode`, not persisted).
 - **LOG = official O-Log2, applied in GL; HAL-native log is vendor-gated (verified 2026-07-06).**
   The `ColorTransfer.LOG` path bakes OPPO's published O-Log2 OETF (white paper EN v1:
   `P = 0.08550479·log₂(R+0.00964052)+0.69336945`, parabolic toe below R=0.006, O-Gamut = BT.2020/D65
@@ -146,13 +144,11 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
   entry just above — it IS exposed; only `movie.log.enable` is gated). Also: leaving
   `KEY_COLOR_TRANSFER` unset on a BT2020 full-range HEVC format makes the QTI encoder tag the VUI
   **ST2084 (PQ)** — players then tone-map log footage as HDR. Tag a transfer explicitly, always.
-- **Video stabilization = HAL OIS+EIS, like the stock app (verified 2026-07-07).** For VIDEO the
+- **Video stabilization = HAL OIS+EIS via the device's own path (verified 2026-07-07).** For VIDEO the
   shutter is fixed (e.g. 1/60 s), so per-frame MOTION BLUR is set by the shutter and only **OIS**
   (which moves the lens DURING the exposure) can cut it — app-side gyro EIS only warps whole frames
-  and cannot de-blur. Decompiling `OplusCamera.apk`: the stock app drives the SDK key
-  `VIDEO_STABILIZATION_MODE` (`com.oplus.configure.video.stabilization`) → the vendor int
-  `com.oplus.video.stabilization.mode` (0x8119009e), and the HAL applies the right OIS/EIS profile for
-  the active lens. The tele advertises standard `availableVideoStabilizationModes = [0,1,2]`
+  and cannot de-blur. The HAL exposes the vendor int `com.oplus.video.stabilization.mode`
+  (0x8119009e) alongside the standard key, and applies the right OIS/EIS profile for the active lens. The tele advertises standard `availableVideoStabilizationModes = [0,1,2]`
   (OFF/ON/**PREVIEW_STABILIZATION**) and both `videoStabilizationMode` + the vendor int are in its
   request+session keys. So we **no longer force video-stab OFF**: `VideoStabMode { OFF/GYRO/STANDARD/
   ENHANCED }` (default ENHANCED = PREVIEW_STABILIZATION) sets `CONTROL_VIDEO_STABILIZATION_MODE` on the
@@ -201,7 +197,6 @@ own threads/executors.
 
 - `docs/BACKLOG.md` — prioritized remaining work + known-unverified items (READ THIS SECOND).
 - `docs/ARCHITECTURE.md` — module map, threading model, data flow, gotchas in depth.
-- `docs/reverse-engineering/` — device camera map, vendor-tag catalog, stock-app analysis.
 - `docs/superpowers/specs/2026-07-01-...md` — original design doc (intent; some details superseded
   by the as-built notes above).
 - `.context/reviews/` — architecture/code/perf/security review notes (findings already addressed).
