@@ -60,6 +60,14 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Keep debug installs distinguishable from the Play identity. Without this, a debug APK
+            // occupies com.hletrd.telecampro and is indistinguishable from a release install by
+            // package name (QA gate 2026-07-07 caught exactly that: a DEBUGGABLE binary emitting the
+            // debug-only X9TeleVendor dump under the release id).
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+        }
         release {
             // R8/minify intentionally OFF for v1 (Play does not require it; keeps the Camera2/HAL
             // capture paths risk-free). Enabling it later needs keep-rules for the name-persisted
