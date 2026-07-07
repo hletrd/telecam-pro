@@ -1,0 +1,30 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="TeleCam Pro feature graphic">
+  <!--
+    Square 1024x1024 canvas so qlmanage renders it edge-to-edge. The design is centered in the middle
+    500px band (y 262..762); render with qlmanage, then crop the center 500 rows with sips to produce
+    the 1024x500 Play asset (see docs/play-store-listing.md for the exact commands).
+  -->
+  <defs>
+    <radialGradient id="glow" cx="27%" cy="50%" r="60%">
+      <stop offset="0%" stop-color="#17243B"/>
+      <stop offset="100%" stop-color="#0B0B0D"/>
+    </radialGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#glow)"/>
+
+  <!-- logo mark, left, vertically centered -->
+  <g transform="translate(120,360) scale(2.0)">
+    <circle cx="80" cy="70" r="34" fill="none" stroke="#E6E6EA" stroke-width="5"/>
+    <circle cx="80" cy="70" r="16" fill="#4C9AFF"/>
+    <circle cx="74" cy="64" r="5" fill="#BCDCFF" opacity="0.85"/>
+    <rect x="72" y="104" width="16" height="22" rx="3" fill="#E6E6EA"/>
+    <rect x="66" y="122" width="28" height="8" rx="4" fill="#4C9AFF"/>
+    <rect x="40" y="66" width="10" height="4" rx="2" fill="#8A8A93"/>
+    <rect x="110" y="66" width="10" height="4" rx="2" fill="#8A8A93"/>
+  </g>
+
+  <!-- wordmark + two short tagline lines, right; all within the center band and 1024 width -->
+  <text x="440" y="500" font-family="Helvetica, Arial, sans-serif" font-size="78" font-weight="700" fill="#F4F4F6">TeleCam Pro</text>
+  <text x="442" y="558" font-family="Helvetica, Arial, sans-serif" font-size="28" font-weight="400" fill="#9AA3B2">Pro manual camera &#183; Find X9 Ultra</text>
+  <text x="442" y="598" font-family="Helvetica, Arial, sans-serif" font-size="28" font-weight="400" fill="#9AA3B2">300&#8201;mm afocal teleconverter</text>
+</svg>
