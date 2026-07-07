@@ -75,6 +75,9 @@ class CameraController(context: Context) {
     // STABILIZATION_MODE: 0 off / 1 on / 2 preview-stabilization). Drives the HAL's OIS+EIS —
     // the only thing that cuts per-frame motion blur at 300 mm. Updated live via [setVideoStabMode].
     @Volatile private var videoStabHalMode = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF
+    // Extra QTI vendor session params (set once per open() — session keys). Changing them reopens.
+    @Volatile private var vendorHdr = false
+    @Volatile private var vendorInSensorZoom = false
     // >0 → configure a CameraConstrainedHighSpeedCaptureSession at this fps (slow-motion), feeding
     // ONLY the GL input surface (no JPEG/RAW — high-speed sessions forbid extra targets). 0 = the
     // regular tele session. Set once per open(); on a high-speed config failure it drops back to 0.
@@ -120,6 +123,8 @@ class CameraController(context: Context) {
         highSpeedFps: Int = 0,
         vendorLogMode: Int = 0,
         videoStabHalMode: Int = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF,
+        vendorHdr: Boolean = false,
+        vendorInSensorZoom: Boolean = false,
         onReady: Ready,
         onError: ErrorCb,
     ) {
@@ -131,6 +136,8 @@ class CameraController(context: Context) {
         this.highSpeedFps = highSpeedFps
         this.vendorLogMode = vendorLogMode
         this.videoStabHalMode = videoStabHalMode
+        this.vendorHdr = vendorHdr
+        this.vendorInSensorZoom = vendorInSensorZoom
         this.rawChars = runCatching {
             manager.getCameraCharacteristics(selection.physicalId ?: selection.logicalId)
         }.getOrNull()
@@ -169,6 +176,22 @@ class CameraController(context: Context) {
         runCatching { set(logVideoModeKey, vendorLogMode) }
             .onSuccess { Log.i(TAG, "vendor log.video.mode=$vendorLogMode applied") }
             .onFailure { Log.w(TAG, "vendor log.video.mode=$vendorLogMode rejected: ${it.message}") }
+    }
+
+    // QTI session-parameter vendor keys, all int32 and all in the tele's availableRequest+SessionKeys
+    // (dumpsys 2026-07-07). The stock app reaches these through the OCS SDK (com.oplus.configure.
+    // video.3hdr → EnableAutoHDR/HDRMode); we set them directly. HDRMode=1 is the single value the
+    // device advertises in supportedHDRmodes.HDRModes. EnableInsensorZoom improves tele zoom quality.
+    private val enableAutoHdrKey = CaptureRequest.Key("org.codeaurora.qcamera3.sessionParameters.EnableAutoHDR", Int::class.javaObjectType)
+    private val hdrModeKey = CaptureRequest.Key("org.codeaurora.qcamera3.sessionParameters.HDRMode", Int::class.javaObjectType)
+    private val inSensorZoomKey = CaptureRequest.Key("org.codeaurora.qcamera3.sessionParameters.EnableInsensorZoom", Int::class.javaObjectType)
+
+    /** Extra QTI vendor session params (HDR, in-sensor zoom). Each guarded — a rejected key never kills the build. */
+    private fun CaptureRequest.Builder.applyVendorExtras() {
+        if (vendorHdr) runCatching { set(enableAutoHdrKey, 1); set(hdrModeKey, 1) }
+            .onFailure { Log.w(TAG, "vendor HDR rejected: ${it.message}") }
+        if (vendorInSensorZoom) runCatching { set(inSensorZoomKey, 1) }
+            .onFailure { Log.w(TAG, "vendor in-sensor zoom rejected: ${it.message}") }
     }
 
     /**
@@ -273,17 +296,18 @@ class CameraController(context: Context) {
                 }
             },
         )
-        // log.video.mode is a SESSION key: the log pipeline is chosen at configure time, so the
-        // vendor value must ride in the session parameters, not only in per-frame requests. Built
-        // from TEMPLATE_RECORD (the movie-pipeline template the stock log mode uses). Fully
-        // defensive — a session-parameter failure falls back to a plain session, not a dead camera.
-        if (vendorLogMode != 0) {
+        // The vendor session keys (log.video.mode, EnableAutoHDR/HDRMode, in-sensor zoom) are chosen
+        // at configure time, so they must ride in the session parameters, not only per-frame requests.
+        // Built from TEMPLATE_RECORD (the movie-pipeline template). Fully defensive — a session-
+        // parameter failure falls back to a plain session, not a dead camera.
+        if (vendorLogMode != 0 || vendorHdr || vendorInSensorZoom) {
             runCatching {
                 val sp = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
                 sp.applyManualControls(controls, caps)
                 sp.applyVendorLog()
+                sp.applyVendorExtras()
                 sessionConfig.setSessionParameters(sp.build())
-            }.onFailure { Log.w(TAG, "session params with vendor log failed: ${it.message}") }
+            }.onFailure { Log.w(TAG, "session params with vendor keys failed: ${it.message}") }
         }
         camera.createCaptureSession(sessionConfig)
     }
@@ -375,6 +399,7 @@ class CameraController(context: Context) {
                 addTarget(preview)
                 applyManualControls(controls, caps)
                 applyVendorLog()
+                applyVendorExtras()
                 applyVideoStab()
                 applyMetering(this, controls)
                 // Tap-to-focus: force AF_MODE_AUTO for a one-shot region scan that LOCKS on the tapped
@@ -537,6 +562,7 @@ class CameraController(context: Context) {
             // Keep stills consistent with the session's pipeline: with the log session active the
             // HAL processes everything scene-referred, so an unset key mid-session is undefined.
             applyVendorLog()
+            applyVendorExtras()
             applyMetering(this, controls)
             // We rotate pixels ourselves (HEIF) / tag DNG orientation; keep JPEG upright.
             set(CaptureRequest.JPEG_ORIENTATION, 0)

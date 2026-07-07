@@ -746,4 +746,16 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.labelSmall,
     )
+
+    SectionHeader("Vendor Features (experimental)")
+    ToggleRow(label = "Auto HDR", checked = state.vendorHdr, onCheckedChange = actions::onVendorHdr)
+    ToggleRow(label = "In-Sensor Zoom", checked = state.vendorInSensorZoom, onCheckedChange = actions::onVendorInSensorZoom)
+    Text(
+        "QTI HAL session features the stock app drives via its SDK: Auto HDR (EnableAutoHDR + " +
+            "HDRMode — multi-exposure high-dynamic-range, good for high-contrast tele scenes) and " +
+            "in-sensor zoom (EnableInsensorZoom — sensor-domain crop-zoom for cleaner detail than " +
+            "digital zoom). Each reopens the camera; not persisted.",
+        color = CameraColors.TextSecondary,
+        style = MaterialTheme.typography.labelSmall,
+    )
 }

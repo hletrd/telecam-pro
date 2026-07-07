@@ -69,6 +69,9 @@ class CameraEngine(private val context: Context) {
     @Volatile private var vendorLogMode = VendorLogMode.OFF
     // Video stabilization strategy. Default ENHANCED = HAL OIS+EIS (motion-blur reduction at 300 mm).
     @Volatile private var videoStabMode = VideoStabMode.ENHANCED
+    // Extra QTI vendor session features (HDR, in-sensor zoom). Session keys → changing reopens.
+    @Volatile private var vendorHdr = false
+    @Volatile private var vendorInSensorZoom = false
     @Volatile private var eisCrop: Float = EisStrength.MEDIUM.crop
 
     // Software recording-audio gain (1f = passthrough) and the still-photo aspect-ratio crop;
@@ -184,6 +187,22 @@ class CameraEngine(private val context: Context) {
         reopenForSession()
     }
 
+    /** Auto-HDR (QTI EnableAutoHDR + HDRMode=1). Session key → reopen. Refused mid-recording. */
+    fun setVendorHdr(enabled: Boolean) {
+        if (vendorHdr == enabled) return
+        if (recorder != null) { onStatus?.invoke("Stop recording to change HDR"); return }
+        vendorHdr = enabled
+        reopenForSession()
+    }
+
+    /** In-sensor zoom (QTI EnableInsensorZoom). Session key → reopen. Refused mid-recording. */
+    fun setVendorInSensorZoom(enabled: Boolean) {
+        if (vendorInSensorZoom == enabled) return
+        if (recorder != null) { onStatus?.invoke("Stop recording to change in-sensor zoom"); return }
+        vendorInSensorZoom = enabled
+        reopenForSession()
+    }
+
     fun setTeleconverterMode(enabled: Boolean) { teleconverterMode = enabled; applyStabilization() }
     fun setVideoStabMode(m: VideoStabMode) { videoStabMode = m; applyStabilization() }
     fun setEisStrength(s: EisStrength) { eisCrop = s.crop; applyStabilization() }
@@ -220,6 +239,8 @@ class CameraEngine(private val context: Context) {
             highSpeedFps = desiredHighSpeedFps(),
             vendorLogMode = vendorLogMode.halValue,
             videoStabHalMode = c.videoStabControlMode(videoStabMode),
+            vendorHdr = vendorHdr,
+            vendorInSensorZoom = vendorInSensorZoom,
             onReady = { onStatus?.invoke(null) },
             onError = { onStatus?.invoke("Camera error: ${it.message}") },
         )
