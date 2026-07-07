@@ -31,6 +31,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -43,6 +44,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -79,6 +85,9 @@ import com.hletrd.findx9tele.camera.WbMode
 import com.hletrd.findx9tele.ui.controls.ManualDialCluster
 import com.hletrd.findx9tele.ui.controls.ProSheet
 import com.hletrd.findx9tele.ui.controls.ProSheetTab
+import com.hletrd.findx9tele.ui.controls.aspectRatioLabel
+import com.hletrd.findx9tele.ui.controls.flashModeLabel
+import com.hletrd.findx9tele.ui.controls.shutterTimerLabel
 import com.hletrd.findx9tele.ui.overlays.AspectMask
 import com.hletrd.findx9tele.ui.overlays.AudioMeter
 import com.hletrd.findx9tele.ui.overlays.FocusReticle
@@ -125,7 +134,7 @@ fun CameraScreen(
     // Counter-rotates the on-screen scopes/readouts so they stay upright as the phone turns, even
     // though the activity is portrait-locked (like Pixel/Sony). We accumulate an UNWRAPPED target so
     // the animation always takes the shortest ≤90° path (e.g. 270°→0° rotates +90°, not −270°).
-    var overlayRotationTarget by remember { mutableStateOf(-state.deviceOrientation.toFloat()) }
+    var overlayRotationTarget by remember { mutableFloatStateOf(-state.deviceOrientation.toFloat()) }
     LaunchedEffect(state.deviceOrientation) {
         val desired = -state.deviceOrientation.toFloat()
         var delta = (desired - overlayRotationTarget) % 360f
@@ -196,7 +205,7 @@ fun CameraScreen(
         }
 
         if (state.level) {
-            LevelOverlay(rollDegrees = state.levelRoll, modifier = Modifier.fillMaxSize())
+            LevelOverlay(modifier = Modifier.fillMaxSize(), rollDegrees = state.levelRoll)
         }
 
         if (state.tapPoint != null) {
@@ -390,6 +399,7 @@ private fun nextAspect(ratio: AspectRatio): AspectRatio = when (ratio) {
 @Composable
 private fun ChromeIconButton(
     onClick: () -> Unit,
+    contentDescription: String,
     modifier: Modifier = Modifier,
     content: @Composable BoxScope.() -> Unit,
 ) {
@@ -397,6 +407,10 @@ private fun ChromeIconButton(
         modifier = modifier
             .size(48.dp)
             .clip(CircleShape)
+            .semantics {
+                this.contentDescription = contentDescription
+                role = Role.Button
+            }
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -418,7 +432,7 @@ private fun FlashButton(mode: FlashMode, onClick: () -> Unit, modifier: Modifier
         FlashMode.TORCH -> CameraColors.Accent
         else -> CameraColors.TextPrimary
     }
-    ChromeIconButton(onClick = onClick, modifier = modifier) {
+    ChromeIconButton(onClick = onClick, contentDescription = "Flash ${flashModeLabel(mode)}", modifier = modifier) {
         Canvas(Modifier.size(16.dp)) {
             val bolt = Path().apply {
                 moveTo(size.width * 0.56f, 0f)
@@ -454,7 +468,7 @@ private fun FlashButton(mode: FlashMode, onClick: () -> Unit, modifier: Modifier
 
 @Composable
 private fun TimerButton(timer: ShutterTimer, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    ChromeIconButton(onClick = onClick, modifier = modifier) {
+    ChromeIconButton(onClick = onClick, contentDescription = "Self timer ${shutterTimerLabel(timer)}", modifier = modifier) {
         if (timer == ShutterTimer.OFF) {
             Canvas(Modifier.size(16.dp)) {
                 val color = CameraColors.TextSecondary
@@ -470,7 +484,7 @@ private fun TimerButton(timer: ShutterTimer, onClick: () -> Unit, modifier: Modi
 
 @Composable
 private fun AspectButton(ratio: AspectRatio, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    ChromeIconButton(onClick = onClick, modifier = modifier) {
+    ChromeIconButton(onClick = onClick, contentDescription = "Aspect ratio ${aspectRatioLabel(ratio)}", modifier = modifier) {
         Canvas(Modifier.size(18.dp)) {
             val color = CameraColors.TextPrimary
             val sw = 1.4.dp.toPx()
@@ -495,7 +509,7 @@ private fun AspectButton(ratio: AspectRatio, onClick: () -> Unit, modifier: Modi
 @Composable
 private fun GridButton(active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val color = if (active) CameraColors.TextPrimary else CameraColors.TextSecondary
-    ChromeIconButton(onClick = onClick, modifier = modifier) {
+    ChromeIconButton(onClick = onClick, contentDescription = if (active) "Grid on" else "Grid off", modifier = modifier) {
         Canvas(Modifier.size(16.dp)) {
             val sw = 1.2.dp.toPx()
             drawRect(color, topLeft = Offset.Zero, size = this.size, style = Stroke(width = sw))
@@ -520,6 +534,11 @@ private fun TeleChip(active: Boolean, onClick: () -> Unit, modifier: Modifier = 
             .height(36.dp)
             .clip(RoundedCornerShape(50))
             .background(bg)
+            .semantics {
+                contentDescription = "Teleconverter"
+                stateDescription = if (active) "On" else "Off"
+                role = Role.Button
+            }
             .clickable(onClick = onClick)
             .padding(horizontal = 12.dp),
         contentAlignment = Alignment.Center,
@@ -530,7 +549,7 @@ private fun TeleChip(active: Boolean, onClick: () -> Unit, modifier: Modifier = 
 
 @Composable
 private fun GearButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
-    ChromeIconButton(onClick = onClick, modifier = modifier) {
+    ChromeIconButton(onClick = onClick, contentDescription = "Open settings", modifier = modifier) {
         Canvas(Modifier.size(18.dp)) {
             val color = CameraColors.TextPrimary
             drawCircle(color, radius = size.minDimension * 0.18f, style = Stroke(width = 1.4.dp.toPx()))
@@ -642,6 +661,14 @@ private fun ShutterButton(
         modifier = modifier
             .size(76.dp)
             .scale(shutterScale)
+            .semantics {
+                contentDescription = when {
+                    mode == CaptureMode.PHOTO -> "Take photo"
+                    isRecording -> "Stop recording"
+                    else -> "Start recording"
+                }
+                role = Role.Button
+            }
             .clickable(interactionSource = interaction, indication = null) {
                 view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
                 onClick()
@@ -673,7 +700,13 @@ private fun ShutterButton(
 private fun SnapshotButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
     // 48 dp touch target, 36 dp visual dot.
     Box(
-        modifier = modifier.size(48.dp).clickable(onClick = onClick),
+        modifier = modifier
+            .size(48.dp)
+            .semantics {
+                contentDescription = "Take photo while recording"
+                role = Role.Button
+            }
+            .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Canvas(modifier = Modifier.size(36.dp)) {
@@ -701,6 +734,11 @@ private fun LensFlipButton(active: Boolean, onClick: () -> Unit, modifier: Modif
             .clip(CircleShape)
             .background(CameraColors.Pill)
             .border(1.5.dp, ringColor, CircleShape)
+            .semantics {
+                contentDescription = "Teleconverter"
+                stateDescription = if (active) "On" else "Off"
+                role = Role.Button
+            }
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {

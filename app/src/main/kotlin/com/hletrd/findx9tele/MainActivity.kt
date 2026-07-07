@@ -35,6 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
 import com.hletrd.findx9tele.ui.CameraScreen
 import com.hletrd.findx9tele.ui.CameraViewModel
 import com.hletrd.findx9tele.ui.theme.FindX9TeleTheme
@@ -45,7 +46,7 @@ class MainActivity : ComponentActivity() {
 
     // Compose-observable permission state, held on the Activity so onResume (return from the system
     // Settings screen) can re-check and flip the gate without the user re-launching.
-    private var hasCamera by mutableStateOf(false)
+    private var hasRequiredPermissions by mutableStateOf(false)
     // True once the user has denied with "don't ask again": the runtime dialog no longer appears, so
     // the CTA must deep-link into App Settings instead of a dead re-request (designer UX-6 / M8).
     private var permanentlyDenied by mutableStateOf(false)
@@ -54,7 +55,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        hasCamera = hasCameraPermission()
+        hasRequiredPermissions = hasRequiredPermissions()
 
         setContent {
             FindX9TeleTheme {
@@ -63,23 +64,27 @@ class MainActivity : ComponentActivity() {
                 val launcher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestMultiplePermissions(),
                 ) { result ->
-                    hasCamera = result[Manifest.permission.CAMERA] == true || hasCameraPermission()
-                    if (!hasCamera) {
-                        permanentlyDenied = !shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)
+                    hasRequiredPermissions = hasRequiredPermissions()
+                    if (!hasRequiredPermissions) {
+                        permanentlyDenied = REQUIRED_PERMISSIONS.any { permission ->
+                            ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED &&
+                                !shouldShowRequestPermissionRationale(permission)
+                        }
                     }
                 }
 
                 LaunchedEffect(Unit) {
-                    if (!hasCamera) launcher.launch(REQUIRED_PERMISSIONS)
+                    if (!hasRequiredPermissions) launcher.launch(REQUIRED_PERMISSIONS)
                 }
 
-                if (hasCamera) {
+                if (hasRequiredPermissions) {
                     CameraScreen(state = state, actions = vm, modifier = Modifier.fillMaxSize())
                 } else {
                     PermissionGate(
                         permanentlyDenied = permanentlyDenied,
                         onRequest = { launcher.launch(REQUIRED_PERMISSIONS) },
                         onOpenSettings = ::openAppSettings,
+                        onOpenPrivacy = ::openPrivacyPolicy,
                     )
                 }
             }
@@ -94,7 +99,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         // Re-check after returning from App Settings so granting there flips the gate immediately.
-        if (!hasCamera && hasCameraPermission()) hasCamera = true
+        if (!hasRequiredPermissions && hasRequiredPermissions()) hasRequiredPermissions = true
     }
 
     override fun onStop() {
@@ -108,7 +113,7 @@ class MainActivity : ComponentActivity() {
     // volume into a burst of beeps mid-shot; repeatCount gates auto-repeat to a single capture.
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
-            if (hasCamera && event.repeatCount == 0) vm.onHardwareShutter()
+            if (hasRequiredPermissions && event.repeatCount == 0) vm.onHardwareShutter()
             return true
         }
         return super.onKeyDown(keyCode, event)
@@ -119,8 +124,8 @@ class MainActivity : ComponentActivity() {
         return super.onKeyUp(keyCode, event)
     }
 
-    private fun hasCameraPermission(): Boolean =
-        ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+    private fun hasRequiredPermissions(): Boolean =
+        REQUIRED_PERMISSIONS.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }
 
     private fun openAppSettings() {
         val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null))
@@ -128,8 +133,13 @@ class MainActivity : ComponentActivity() {
         runCatching { startActivity(intent) }
     }
 
+    private fun openPrivacyPolicy() {
+        runCatching { startActivity(Intent(Intent.ACTION_VIEW, PRIVACY_POLICY_URL.toUri())) }
+    }
+
     private companion object {
         val REQUIRED_PERMISSIONS = arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
+        const val PRIVACY_POLICY_URL = "https://github.com/hletrd/telecam-pro/blob/main/PRIVACY.md"
     }
 }
 
@@ -138,6 +148,7 @@ private fun PermissionGate(
     permanentlyDenied: Boolean,
     onRequest: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenPrivacy: () -> Unit,
 ) {
     Surface(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -147,9 +158,9 @@ private fun PermissionGate(
         ) {
             Text(
                 text = if (permanentlyDenied) {
-                    "Camera access is off. Enable Camera (and Microphone for video) in Settings to use the app."
+                    "Camera or microphone access is off. Enable both permissions in Settings to use the app."
                 } else {
-                    "This app needs the camera to see through the 300 mm teleconverter, and the microphone to record video sound."
+                    "TeleCam Pro needs Camera for the viewfinder and capture, and Microphone for video sound."
                 },
                 textAlign = TextAlign.Center,
                 style = MaterialTheme.typography.bodyLarge,
@@ -158,8 +169,10 @@ private fun PermissionGate(
             if (permanentlyDenied) {
                 Button(onClick = onOpenSettings) { Text("Open Settings") }
             } else {
-                Button(onClick = onRequest) { Text("Grant Permission") }
+                Button(onClick = onRequest) { Text("Grant Permissions") }
             }
+            Spacer(Modifier.height(8.dp))
+            Button(onClick = onOpenPrivacy) { Text("Privacy Policy") }
         }
     }
 }

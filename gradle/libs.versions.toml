@@ -1,12 +1,12 @@
 [versions]
-agp = "9.2.0"
-# Matches AGP 9.2's built-in Kotlin (KGP 2.3.10); the Compose compiler plugin must track it.
-kotlin = "2.3.10"
+agp = "9.2.1"
+# Matches the latest stable Compose compiler plugin; AGP 9 supplies Kotlin Android support.
+kotlin = "2.4.0"
 coreKtx = "1.19.0"
 activityCompose = "1.13.0"
 lifecycle = "2.11.0"
 composeBom = "2026.06.01"
-coroutines = "1.10.2"
+coroutines = "1.11.0"
 heifwriter = "1.2.0-alpha01"
 junit = "4.13.2"
 

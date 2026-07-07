@@ -30,11 +30,11 @@
 
 | Component | Version |
 |---|---|
-| AGP | 9.2.0 (Kotlin **built-in** — `kotlin.android` plugin not used) |
+| AGP | 9.2.1 (Kotlin **built-in** — `kotlin.android` plugin not used) |
 | Gradle | 9.6.1 (wrapper) |
-| Kotlin | 2.3.10 (AGP 9.2 built-in) |
-| Compose Compiler plugin | 2.3.10 (`org.jetbrains.kotlin.plugin.compose`, matches built-in Kotlin) |
-| Compose BOM | 2026.06.00 |
+| Kotlin | 2.4.0 |
+| Compose Compiler plugin | 2.4.0 (`org.jetbrains.kotlin.plugin.compose`) |
+| Compose BOM | 2026.06.01 |
 | compileSdk / targetSdk / minSdk | 37 / 36 / 36 |
 | Build Tools | 36.0.0 (+37.0.0 installed) |
 | JDK | 21 (aarch64 / Apple Silicon) |

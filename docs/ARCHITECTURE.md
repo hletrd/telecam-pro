@@ -592,10 +592,10 @@ All values clamped to hardware ranges (CameraCaps gates what's supported).
 See `CLAUDE.md` § **Toolchain** for complete toolchain versions and build setup details.
 
 **Quick reference:**
-- Kotlin 2.3.10 (built into AGP 9.2.0), Gradle 9.6.1
+- Kotlin / Compose compiler 2.4.0, AGP 9.2.1, Gradle 9.6.1
 - compileSdk 37 / targetSdk 36 / minSdk 36 (API 36 is Android 16)
 - JDK 21 required; set JAVA_HOME for CLI builds
-- Compose BOM 2026.06.00
+- Compose BOM 2026.06.01
 
 **Build:**
 ```bash

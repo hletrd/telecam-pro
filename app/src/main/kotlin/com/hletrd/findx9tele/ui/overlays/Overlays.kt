@@ -151,7 +151,7 @@ fun AspectMask(ratio: AspectRatio, modifier: Modifier = Modifier) {
  * rotates with device roll and turns green once within a small tolerance of level.
  */
 @Composable
-fun LevelOverlay(rollDegrees: Float = 0f, modifier: Modifier = Modifier) {
+fun LevelOverlay(modifier: Modifier = Modifier, rollDegrees: Float = 0f) {
     // Deviation from the NEAREST quadrant (upright, either landscape, upside-down) rather than raw
     // roll: a landscape hold reads ±90° raw and would never show level, but the photographer's
     // question is "am I square to the horizon in THIS hold" — captures auto-rotate per quadrant.

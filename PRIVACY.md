@@ -46,6 +46,4 @@ If this policy changes, the updated version will be published in the app's publi
 
 ## Contact
 
-Questions about this policy: `your-contact-email@example.com`
-
-<!-- Replace the contact address above with the email you want listed on Google Play before publishing. -->
+Questions about this policy: `01@0101010101.com`

@@ -130,13 +130,15 @@ The user explicitly wants all of these; ordered by their stated priority.
 
 ## 4. Play-release readiness 🔴
 
-- 🔴 Release build: signing config, R8/minify rules (keep Camera2/DngCreator/heifwriter/MediaCodec
-  reflection-safe), app icon + adaptive icon, splash.
+- 🟡 Release build: signing config is wired and release bundling fails fast if
+  `keystore.properties` is missing, so an unsigned AAB cannot be mistaken for a Play-ready artifact.
+  R8/minify remains intentionally off for v1 until a full device re-verification pass.
 - 🔴 Single-device distribution strategy (device-catalog restriction or a clear store listing);
   `minSdk 36` already excludes most devices.
-- 🔴 Data-safety form + privacy policy (CAMERA, RECORD_AUDIO, future LOCATION; no network).
-- 🔴 Store assets (portrait screenshots, feature graphic, description), crash/ANR hardening pass,
-  `versionCode`/`versionName`, changelog.
+- 🟡 Data-safety form + privacy policy: policy file, app-internal link, no-network claim, and listing
+  copy are in place; Play Console form submission remains.
+- 🟡 Store assets: icon + feature graphic + listing text are present; portrait screenshots,
+  crash/ANR hardening pass, `versionCode`/`versionName`, and changelog remain.
 
 ## 5. Engineering hygiene 🟢/🟡
 

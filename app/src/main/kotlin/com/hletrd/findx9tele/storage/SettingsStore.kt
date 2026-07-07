@@ -2,6 +2,7 @@ package com.hletrd.findx9tele.storage
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.core.content.edit
 import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.AudioScene
 import com.hletrd.findx9tele.camera.BitrateLevel
@@ -52,10 +53,10 @@ class SettingsStore(context: Context) {
     // Default ON: photographers expect their setup to survive an app restart out of the box.
     var rememberEnabled: Boolean
         get() = prefs.getBoolean(K_REMEMBER, true)
-        set(value) { prefs.edit().putBoolean(K_REMEMBER, value).apply() }
+        set(value) { prefs.edit { putBoolean(K_REMEMBER, value) } }
 
     fun save(c: ManualControls, e: ExtraSettings) {
-        prefs.edit().apply {
+        prefs.edit {
             putString("focusMode", c.focusMode.name)
             putFloat("focusDiopters", c.focusDistanceDiopters)
             putBoolean("afLock", c.afLock)
@@ -97,7 +98,7 @@ class SettingsStore(context: Context) {
             putBoolean("openGate", e.openGate)
             putString("audioScene", e.audioScene.name)
             putBoolean(K_HAS, true)
-        }.apply()
+        }
     }
 
     /** Returns the persisted state, or null if nothing was ever saved. Never throws. */

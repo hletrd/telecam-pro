@@ -1,7 +1,6 @@
 # Google Play listing — TeleCam Pro
 
 Copy-paste source for the Play Console listing. Character limits noted; everything here is within them.
-Replace the contact email placeholder before publishing.
 
 ---
 
@@ -13,8 +12,8 @@ Replace the contact email placeholder before publishing.
 | **Package name** | `com.hletrd.telecampro` |
 | **Category** | Photography |
 | **Content rating** | Everyone (no user-generated content shared, no ads, no data collection) |
-| **Contact email** | `your-contact-email@example.com` *(replace before publishing)* |
-| **Privacy policy URL** | Host `PRIVACY.md` publicly and paste its URL (e.g. GitHub Pages, or the raw file URL from the public repo) |
+| **Contact email** | `01@0101010101.com` |
+| **Privacy policy URL** | `https://github.com/hletrd/telecam-pro/blob/main/PRIVACY.md` |
 | **Ads** | No |
 | **In-app purchases** | No |
 
@@ -97,8 +96,10 @@ Take these with the app running on the device (`adb exec-out screencap -p`), ide
 ## Release checklist
 
 1. Create the upload keystore and `keystore.properties` (see `keystore.properties.example`).
-2. `./gradlew bundleRelease` → `app/build/outputs/bundle/release/app-release.aab`.
-3. Play Console → create app → upload the AAB to an **internal testing** track.
+2. `./gradlew bundleRelease` → `app/build/outputs/bundle/release/app-release.aab`; this now fails
+   fast when signing credentials are missing so an unsigned bundle cannot be uploaded by mistake.
+3. Play Console → create app → upload the signed AAB to an **internal testing** track.
 4. Paste the descriptions above, set category/rating, complete the Data Safety form as above.
 5. Add the privacy policy URL, contact email, icon, feature graphic, and screenshots.
-6. Roll out internal testing → closed → production.
+6. Device catalog → restrict availability to OPPO Find X9 Ultra / PMA110 before wider rollout.
+7. Roll out internal testing → closed → production.

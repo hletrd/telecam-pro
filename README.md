@@ -9,7 +9,7 @@
 
 <p>
 <img src="https://img.shields.io/badge/Android-16%20(API%2036)-3DDC84?logo=android&logoColor=white" alt="Android 16" />
-<img src="https://img.shields.io/badge/Kotlin-2.3-7F52FF?logo=kotlin&logoColor=white" alt="Kotlin" />
+<img src="https://img.shields.io/badge/Kotlin-2.4-7F52FF?logo=kotlin&logoColor=white" alt="Kotlin" />
 <img src="https://img.shields.io/badge/Jetpack%20Compose-2026.06-4285F4?logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
 <img src="https://img.shields.io/badge/Camera2-Pro%20manual-FF7043" alt="Camera2" />
 <img src="https://img.shields.io/badge/Gradle-9.6.1-02303A?logo=gradle&logoColor=white" alt="Gradle" />
@@ -40,9 +40,10 @@ See [`CLAUDE.md`](CLAUDE.md) § **Toolchain** for pinned versions and build setu
 
 | Component | Version |
 |---|---|
-| AGP | 9.2.0 (Kotlin 2.3.10 built-in) |
+| AGP | 9.2.1 |
 | Gradle | 9.6.1 |
-| Compose BOM | 2026.06.00 |
+| Kotlin / Compose compiler | 2.4.0 |
+| Compose BOM | 2026.06.01 |
 | compileSdk / targetSdk / minSdk | 37 / 36 / 36 |
 | JDK | 21 (aarch64) |
 
@@ -70,11 +71,12 @@ keytool -genkeypair -v -keystore telecampro-upload.jks -alias telecampro \
 # 2. copy the template and fill in your path/alias/passwords
 cp keystore.properties.example keystore.properties   # then edit it
 
-# 3. build the signed bundle
+# 3. build the signed bundle (fails fast if keystore.properties is missing)
 ./gradlew bundleRelease        # → app/build/outputs/bundle/release/app-release.aab
 ```
 
-Without `keystore.properties`, debug builds and tests still work; only release signing is skipped.
+Without `keystore.properties`, debug builds, tests, and lint still work; release bundling intentionally
+fails instead of producing an unsigned artifact that cannot be uploaded to Play.
 R8/minify is intentionally off for v1. Store listing text, privacy policy, and graphic assets live in
 [`docs/play-store-listing.md`](docs/play-store-listing.md), [`PRIVACY.md`](PRIVACY.md), and
 [`docs/assets/play/`](docs/assets/play/).
@@ -100,7 +102,10 @@ them directly, each device-verified through to a saved file (not just "session c
 - ✅ **Unit tests**: FocusMappingTest, RotationMathTest, CameraSelector2Test, VideoCapabilitiesTest, ExposureMathTest.
 - ✅ **Device-verified on PMA110**: all 4 lenses open (standalone, no HAL crash) with RAW; teleconverter bundling; preview upright; tap-to-focus lock; AF→MF handoff; volume-key shutter; HEIF (4096×3072) + DNG + JPEG saves; HEVC 4K video incl. Max bitrate (~134 Mbps); HAL log + HAL OIS+EIS + directional-audio support + Auto HDR + in-sensor zoom all accepted end-to-end.
 - ⏳ **Needs your eyes/ears in a real scene**: the acoustic effect of directional audio (off-axis A/B), and the image gain of Auto HDR / in-sensor zoom (high-contrast / distant subjects) — undetectable from a static desk.
-- ✅ **Play-release scaffolding**: release signing config (gitignored `keystore.properties`), privacy policy, store-listing text, icon + feature graphic — see the Release build section above. Remaining human steps: generate the upload keystore, capture on-device screenshots, and complete the Play Console listing/data-safety form.
+- ✅ **Play-release scaffolding**: release signing config with unsigned-bundle fail-fast, privacy policy
+  reachable from the app, store-listing text, icon + feature graphic — see the Release build section
+  above. Remaining human steps: generate the upload keystore, capture on-device screenshots, complete
+  the Play Console listing/data-safety form, and restrict availability to the target device.
 - 🚧 **Not started**: R8/minify (deferred — needs enum keep-rules + device re-verification). Dolby Vision (HW encoder detected, MP4 muxing non-trivial). See [`docs/BACKLOG.md`](docs/BACKLOG.md).
 
 ## Trademarks

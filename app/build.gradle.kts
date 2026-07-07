@@ -53,10 +53,19 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
-            // Only sign when the keystore is present; otherwise the release artifact is unsigned
-            // (still builds — CI/clone-friendly) and you sign after creating keystore.properties.
+            // Only sign when the keystore is present. The release packaging task below fails fast
+            // without it, so a Play-ineligible unsigned AAB is never produced as a "successful" build.
             if (hasReleaseKeystore) signingConfig = signingConfigs.getByName("release")
         }
+    }
+
+    lint {
+        // Intentional for this single-device camera: runtime support targets Android 16 / API 36
+        // even though compileSdk is newer for AndroidX. Play's current target requirement is satisfied.
+        disable += "OldTargetApi"
+        // minSdk is 36; keeping adaptive icons in the conventional v26 folder is harmless and clearer
+        // than moving resources for a packaging-only lint warning.
+        disable += "ObsoleteSdkInt"
     }
 
     buildFeatures {
@@ -90,4 +99,16 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
 
     testImplementation(libs.junit)
+}
+
+if (!hasReleaseKeystore) {
+    tasks.matching { it.name == "packageReleaseBundle" || it.name == "bundleRelease" || it.name == "assembleRelease" }
+        .configureEach {
+            doFirst {
+                throw GradleException(
+                    "Release signing is required for Play upload. Create gitignored keystore.properties " +
+                        "from keystore.properties.example, then rerun this task.",
+                )
+            }
+        }
 }

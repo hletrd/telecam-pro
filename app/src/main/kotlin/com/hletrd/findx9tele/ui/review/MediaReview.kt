@@ -21,6 +21,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -36,6 +37,10 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.hletrd.findx9tele.ui.theme.CameraColors
@@ -81,6 +86,10 @@ fun GalleryThumb(uri: Uri?, onClick: () -> Unit, modifier: Modifier = Modifier) 
             .clip(RoundedCornerShape(14.dp))
             .background(CameraColors.Pill)
             .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(14.dp))
+            .semantics {
+                contentDescription = if (uri != null) "Review last shot" else "No shot to review"
+                role = Role.Button
+            }
             .clickable(enabled = uri != null, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -112,7 +121,7 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, modifier: Modifier = Modif
     val bitmap by produceState<ImageBitmap?>(initialValue = null, uri) {
         value = loadBitmap(context, uri, 0) ?: loadBitmap(context, uri, 3000)
     }
-    var scale by remember { mutableStateOf(1f) }
+    var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
 
     Box(
@@ -175,6 +184,10 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, modifier: Modifier = Modif
                 .size(44.dp)
                 .clip(CircleShape)
                 .background(Color.Black.copy(alpha = 0.5f))
+                .semantics {
+                    contentDescription = "Close review"
+                    role = Role.Button
+                }
                 .clickable(onClick = onClose),
             contentAlignment = Alignment.Center,
         ) {

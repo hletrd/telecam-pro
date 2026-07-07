@@ -1,5 +1,7 @@
 package com.hletrd.findx9tele.ui.controls
 
+import android.content.Context
+import android.content.Intent
 import android.util.Range
 import android.util.Size
 import androidx.compose.foundation.Canvas
@@ -37,10 +39,16 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.net.toUri
 import com.hletrd.findx9tele.camera.Antibanding
 import com.hletrd.findx9tele.camera.ExposureStep
 import com.hletrd.findx9tele.camera.AspectRatio
@@ -161,7 +169,13 @@ internal fun ProSheet(
 private fun CloseButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
     // 44 dp touch target; 32 dp visual pill.
     Box(
-        modifier = modifier.size(44.dp).clickable(onClick = onClick),
+        modifier = modifier
+            .size(44.dp)
+            .semantics {
+                contentDescription = "Close settings"
+                role = Role.Button
+            }
+            .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Box(
@@ -718,7 +732,13 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
 
 @Composable
 private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
+    val context = LocalContext.current
     TabTitle("Advanced")
+    LabelValueRow(
+        label = "Privacy Policy",
+        valueLabel = "Open",
+        onClick = { openPrivacyPolicy(context) },
+    )
     ToggleRow(
         label = "Remember Settings",
         checked = state.rememberSettings,
@@ -760,3 +780,9 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
         style = MaterialTheme.typography.labelSmall,
     )
 }
+
+private fun openPrivacyPolicy(context: Context) {
+    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, PRIVACY_POLICY_URL.toUri())) }
+}
+
+private const val PRIVACY_POLICY_URL = "https://github.com/hletrd/telecam-pro/blob/main/PRIVACY.md"
