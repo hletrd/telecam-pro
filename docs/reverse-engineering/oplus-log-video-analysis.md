@@ -133,4 +133,34 @@ active lens.
   (default ENHANCED); the vendor int is mirrored best-effort. This replaces the earlier "force
   video-stab OFF + client gyro EIS" approach (kept as the `GYRO` option).
 
+## 6. Full vendor-feature audit (2026-07-07)
+
+Every `com.oplus.*` / `org.codeaurora.qcamera3.*` key that is in the tele's
+`availableRequestKeys`+`availableSessionKeys`, cross-checked against what the stock app drives and
+what actually works from a third-party Camera2 app:
+
+| Feature | Vendor key(s) | Status |
+|---|---|---|
+| HAL-native log | `com.oplus.log.video.mode` | ✅ implemented (§1–4), verified |
+| Video stabilization | `com.oplus.video.stabilization.mode` + std `CONTROL_VIDEO_STABILIZATION_MODE` | ✅ implemented, verified `ois=1 vstab=2` |
+| Directional audio | `vendor_audiorecord_effect_type/focus_angle/focus_zoom/orientation` | ✅ implemented (Sound Focus/Stage); HAL `track_support=true` |
+| Auto HDR | `org.codeaurora.qcamera3.sessionParameters.EnableAutoHDR` + `HDRMode` (=1, the sole advertised `supportedHDRmodes.HDRModes`) | ✅ implemented, session reconfig clean + capture OK |
+| In-sensor zoom | `…sessionParameters.EnableInsensorZoom` | ✅ implemented, verified |
+| Ideal RAW | `…sessionParameters.EnableIdealRAW` | ⛔ gated — session configures but RAW capture then fails silently (no DNG; CaptureSession error). |
+| Higher bitrate | (not a vendor key) | ✅ Ultra/Max presets, 120 Mbps ceiling; HEVC 4K30 Max ≈134 Mbps verified |
+| APV pro-intra | `video/apv` (`c2.qti.apv.encoder`) | ⛔ gated — HW encoder exists but MediaMuxer rejects APV-in-MP4, errors the encoder mid-drain |
+| Macro | `com.oplus.macro.closeup.enable` | ✗ excluded — physically meaningless through a 300 mm afocal converter |
+| Custom LUT | `com.oplus.customize.lut.file.name` | ✗ excluded — HAL reads only the stock app's own LUT path; inert for third parties |
+| Dolby Vision | `video/dolby-vision` (`c2.qti.dv.encoder`) | detected (`EncoderCaps.hasDolbyVision`), not wired (clean DV-in-MP4 muxing is non-trivial) |
+
+Notable read-only characteristics (cannot be set): `org.codeaurora.qcamera3.platformCapabilities.
+ExtendedMaxZoom`, `supportedHDRmodes.HDRModes`. The Explorer-specific OIS/EIS focal tags
+(`com.oplus.ois.*`, `eisrealtime`) remain absent from the exposed key set (see
+`oplus-camera-explorer-analysis.md`).
+
+**Pattern:** a vendor key being in `availableRequestKeys` means the framework will *accept* it, but
+NOT that the downstream pipeline honors it end-to-end — Ideal RAW and APV both configure cleanly yet
+break capture. Every vendor feature must be verified through to a saved file, not just to
+"session configured".
+
 See also: `oplus-camera-explorer-analysis.md` (Explorer/stabilization), `vendor-tags-catalog.md`.
