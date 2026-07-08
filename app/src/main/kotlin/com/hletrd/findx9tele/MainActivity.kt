@@ -111,13 +111,12 @@ class MainActivity : ComponentActivity() {
         super.onStop()
     }
 
-    // Volume keys AND the hardware camera button fire the shutter: at 300 mm even a light screen tap
-    // visibly shakes the rig, so a hardware key (volume remote / selfie grip / the Find X9 Ultra's
-    // camera-control button, which the framework surfaces as the standard KEYCODE_CAMERA) is the only
-    // vibration-free release short of the self-timer. (The button's capacitive slide/light-press
-    // gestures are on a separate `cs_press` sensor behind OPPO's framework and are NOT standard key
-    // events — only the full press reaches us here.) Keys are consumed on DOWN and UP so holding one
-    // never turns the media volume into a burst of beeps mid-shot; repeatCount gates auto-repeat.
+    // Volume keys AND the hardware camera button's FULL press fire the shutter (KEYCODE_CAMERA): at
+    // 300 mm even a light screen tap visibly shakes the rig, so a hardware key (volume remote / selfie
+    // grip / the camera-control button) is the only vibration-free release short of the self-timer. The
+    // button's slide + light-press gestures arrive separately as non-standard OPPO keycodes and are
+    // handled in dispatchKeyEvent (zoom / AF). Keys are consumed on DOWN and UP so holding one never
+    // turns the media volume into a burst of beeps mid-shot; repeatCount gates auto-repeat.
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         if (isShutterKey(keyCode)) {
             if (hasRequiredPermissions && event.repeatCount == 0) vm.onHardwareShutter()
@@ -129,6 +128,26 @@ class MainActivity : ComponentActivity() {
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
         if (isShutterKey(keyCode)) return true
         return super.onKeyUp(keyCode, event)
+    }
+
+    // The Find X9 Ultra camera-control button's capacitive gestures ride the `cs_press` sensor, and the
+    // framework DOES surface them to a focused third-party app as (non-standard OPPO) keycodes — device-
+    // verified they reach dispatchKeyEvent: a light press and each slide notch arrive as key 767/769/782.
+    // Map them: the two slide keycodes → stepped zoom in/out, the press keycode → a centre AF trigger
+    // (half-press). Handled on ACTION_DOWN and consumed. (Directions calibrated on device; swap the two
+    // slide constants if reversed.) A temporary BtnDbg log stays so the mapping can be re-checked.
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (hasRequiredPermissions && event.action == KeyEvent.ACTION_DOWN) {
+            when (event.keyCode) {
+                KEY_CAM_SLIDE_IN -> { vm.onPinchZoom(ZOOM_STEP); return true }
+                KEY_CAM_SLIDE_OUT -> { vm.onPinchZoom(1f / ZOOM_STEP); return true }
+                KEY_CAM_HALF_PRESS -> { vm.onTapFocus(0.5f, 0.5f); return true }
+            }
+        }
+        if (!isShutterKey(event.keyCode) && event.keyCode !in CAMERA_BUTTON_KEYS) {
+            android.util.Log.i("BtnDbg", "key code=${event.keyCode} action=${event.action}")
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     private fun isShutterKey(keyCode: Int): Boolean =
@@ -152,6 +171,16 @@ class MainActivity : ComponentActivity() {
     private companion object {
         val REQUIRED_PERMISSIONS = arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
         const val PRIVACY_POLICY_URL = "https://hletrd.github.io/telecam-pro/privacy-policy/"
+
+        // Non-standard OPPO keycodes the Find X9 Ultra camera-control button delivers to the focused app
+        // (device-captured via a dispatchKeyEvent log). Two are slide notches, one is the light-press.
+        // Directions are a calibrated guess — swap SLIDE_IN/OUT if the on-device zoom goes the wrong way.
+        const val KEY_CAM_SLIDE_IN = 767
+        const val KEY_CAM_SLIDE_OUT = 769
+        const val KEY_CAM_HALF_PRESS = 782
+        val CAMERA_BUTTON_KEYS = setOf(KEY_CAM_SLIDE_IN, KEY_CAM_SLIDE_OUT, KEY_CAM_HALF_PRESS)
+        // Per-notch zoom multiplier for the slide gesture.
+        const val ZOOM_STEP = 1.15f
     }
 }
 
