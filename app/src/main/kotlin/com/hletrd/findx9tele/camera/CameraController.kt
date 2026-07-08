@@ -237,9 +237,13 @@ class CameraController(context: Context) {
         val effectiveZoom = controls.zoomRatio.coerceAtLeast(1f) *
             if (teleconverterMode) TELECONVERTER_MAGNIFICATION else 1f
         if (teleconverterMode) {
-            runCatching { set(oplusCameraModeKey, OPLUS_CAMERA_MODE_TELEPHOTO_HASSELBLAD) }
+            runCatching {
+                set(oplusCameraModeKey, OPLUS_CAMERA_MODE_TELEPHOTO_HASSELBLAD)
+            }.onFailure { Log.w(TAG, "Hasselblad camera mode hint rejected: ${it.message}") }
         }
-        runCatching { set(oplusOriginalZoomRatioKey, effectiveZoom) }
+        runCatching {
+            set(oplusOriginalZoomRatioKey, effectiveZoom)
+        }.onFailure { Log.w(TAG, "original zoom ratio hint rejected: ${it.message}") }
     }
 
     /** Live-updates the HAL video stabilization mode and re-issues the repeating request. */
