@@ -107,6 +107,23 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
   `atan2(x,y)` is noise — so it updates the discrete value only when `hypot(x,y) > FLAT_GRAVITY_
   THRESHOLD` (~½ g) and otherwise holds the last confident value. Found via output-file check: a
   flat-on-desk DNG had wrongly tagged `ORIENTATION_NORMAL` instead of 270°.
+- **On-screen glyph counter-rotation is `+deviceOrientation`, NOT `−` (device-confirmed 2026-07-08).**
+  `atan2(x,y)` on gravity yields **dev=90 for a COUNTER-clockwise (left) landscape and dev=270 for a
+  clockwise (right) landscape** — the opposite of the naive "90=right" assumption. So the counter-
+  rotation that keeps glyphs upright is `+dev`. A `−dev` sign leaves BOTH landscapes 180° off, which is
+  invisible on near-symmetric icons and only shows once text (mode labels, the zoom `×`) rotates. Only
+  compact glyphs + short labels rotate; wide dial pills / the OSD row stay screen-fixed (rotating a wide
+  box 90° pokes it out of its layout slot — `Modifier.rotate` is a draw transform, not a re-layout).
+- **PASM+ISO exposure = HAL AE only in PROGRAM; S/ISO/M are app-side.** `ExposureMode { PROGRAM,
+  SHUTTER, ISO, MANUAL }` (no aperture-priority — fixed tele aperture). Camera2 has no shutter-/ISO-
+  priority, so `camera/AutoExposure.kt` closes the loop off the GL preview luma: SHUTTER drives ISO,
+  ISO drives exposure time, toward an EV-shifted mid-grey (log-domain P-control, deadband, unit-tested).
+  The GL luma readback is force-enabled in S/ISO via `gl.setAeMetering(true)` independent of the scope
+  toggles. `autoExposure` is now a **derived** `val` (`== PROGRAM`); the capture path treats S/ISO/M
+  identically (AE off, sensor values set) because the controller keeps `iso`/`exposureTimeNs` fresh.
+- **Controls apply is a THROTTLE, not a debounce.** `CameraViewModel.updateControls` applies the newest
+  value at ~12 Hz *while* a gesture continues (a debounce starved: continuous pinch reset the timer so
+  zoom only landed on finger-up). Keep the `applyScheduled`-flag trailing throttle.
 - **Output-file capture verified on device (2026-07-03).** Pulled + inspected real files: HEIF =
   HEVC 4096×3072 (4:3 full sensor); DNG = valid 16-bit RAW (`OPPO PMA110`, ISO/exposure EXIF);
   video = HEVC 4K (3840×2160) ~29.97 fps drop-frame, ~172 Mbps, AAC audio, playable. Unique
@@ -169,9 +186,10 @@ MainActivity → CameraViewModel(CameraUiState/CameraActions) → CameraEngine (
 CameraEngine ├─ CameraSelector2  pick tele (closest-to-70mm, standalone; pickBest pure+tested)
              ├─ CameraController Camera2 session, fallback ladder, capture, 3A/tap-AF
              ├─ RotationMath     pure preview/capture/EXIF rotation (unit-tested)
-             ├─ GlPipeline       GL thread: afocal 180° + EIS + OETF + scopes
+             ├─ GlPipeline       GL thread: afocal 180° + EIS + OETF + scopes + AE luma readback
              │    └─ FlipRenderer / EglCore / Shaders
              ├─ GyroEis          gyro shake + gravity roll + device orientation
+             ├─ AutoExposure     app-side S/ISO-priority AE loop (meters GL luma; pure+tested)
              ├─ capture/HeifCapture (pixel-rotate) + DngCapture (EXIF orient)
              ├─ video/VideoRecorder (HEVC/AVC/AV1, HLG/Log) + EncoderCaps + ColorProfiles
              └─ storage/MediaStoreWriter (scoped, IS_PENDING) + SettingsStore (persist)

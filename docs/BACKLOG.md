@@ -51,14 +51,41 @@ and **Play-submission-ready** at the packaging level. Since the last device-veri
    NOT rotated — a wide box rotated 90° makes the histogram/waveform overlap; kept screen-fixed.)
 7. **Last-used capture mode persists** — Photo/Video is now saved the instant it changes (an async
    onStop-only write could be lost to a Recents-swipe before it flushed).
+8. **Rotation direction fixed (device-confirmed).** The counter-rotation sign was wrong:
+   `GyroEis.currentDeviceOrientation()` derives the value from gravity via `atan2(x,y)`, which yields
+   **dev=90 for a COUNTER-clockwise (left) landscape and dev=270 for a clockwise (right) landscape** —
+   the opposite of the naive assumption. So the glyph rotation must be **`+deviceOrientation`**, not
+   `−`. The old `−` left BOTH landscapes 180° off (invisible on near-symmetric icons; obvious once the
+   mode labels/zoom `×` rotate). User-confirmed "로테이션 방향 잘맞아".
+9. **Live pinch-zoom + throttle.** Pinch now updates the zoom continuously during the gesture: the
+   `engine.setControls()` apply was a *debounce* that a sustained pinch kept resetting (zoom only
+   landed on finger-up). Switched to a **trailing throttle** (`applyScheduled` flag, ~12 Hz) so drags
+   apply live and the final value still lands ≤80 ms after release.
+10. **PASM + ISO-priority exposure system (NEW, device-verified S mode).** `ExposureMode { PROGRAM,
+    SHUTTER, ISO, MANUAL }` (no aperture-priority — the tele aperture is fixed). Camera2 has no native
+    shutter-/ISO-priority, so `camera/AutoExposure.kt` closes the loop **app-side**: it meters the
+    preview luma the GL pipeline computes (a new AE-metering gate forces that readback on regardless of
+    the scope toggles) and nudges the free variable (ISO in S, shutter in ISO) toward an EV-shiftable
+    mid-grey target — log-domain P-control, per-tick clamp + deadband, unit-tested. The AE dial chip
+    cycles P→S→ISO→M; tapping the Shutter/ISO dial enters that priority; leaving P seeds the now-owned
+    value from the HAL AE for a smooth handoff. **Speed⇄Angle toggle added on the shutter ruler.**
+    Device-verified: switching to **S** made Shutter user-owned (bright) and ISO app-driven (greyed,
+    tracking); no crash.
+11. **Hardware camera button** → shutter (`KEYCODE_CAMERA` via `uinput_nav`, wired into the volume-key
+    `onHardwareShutter` path). The capacitive slide/light-press gestures are on a separate `cs_press`
+    sensor behind OPPO's framework — NOT standard key events, so only the full press is reachable.
+    **Needs a physical-button press to confirm ColorOS delivers it to the focused app.**
+12. **Pro-camera Settings sliders** — replaced the Material `Slider` with a custom `CameraSlider`
+    (tick-marked track, accent fill, needle thumb, bold accent HUD value). Device-verified.
 
 ### 🔴 Open polish items (still TODO)
-1. **LOG preview not visibly flat** — native log key IS applied, but the preview/output doesn't read as
-   log; investigate the GL pass-through (`gl.setTransfer(null)`) + ffprobe a recorded clip.
-2. **Rotation direction — confirm both landscapes upright.** Device values are portrait=0,
-   right-landscape=90, left-landscape=270 (captured via `OrientDbg`); `overlayRotation =
-   animate(-deviceOrientation)` is geometrically correct for both, so the original "left-landscape 180°
-   off" should be resolved — needs a final held-in-hand visual confirm.
+1. **LOG preview not visibly flat** — native log key IS applied (`vendorLogMode=ON` → session reopen →
+   GL pass-through `gl.setTransfer(null)`); CLAUDE.md notes it was device-verified flat before. Re-verify
+   with a **lit scene that has a tonal range** (a dark remote preview can't show flatness) + ffprobe a
+   recorded clip. Only reachable in VIDEO mode (the TF quick-chip).
+2. **Physical camera-button press test** (see #11 above).
+3. **Keep-screen-on is unconditional** (`FLAG_KEEP_SCREEN_ON` in MainActivity). Optional: make it a
+   toggle if battery-saving is wanted — currently always-on (the usual camera-app choice).
 
 ### 🔧 Infra note — wireless ADB on this Mac
 `adb connect 172.30.50.127:<port>` returns **"No route to host"** even though ping + raw TCP reach the
