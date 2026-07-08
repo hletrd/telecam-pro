@@ -449,10 +449,6 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setVendorLogMode(mode)
         _state.update { it.copy(vendorLogMode = mode) }
     }
-    override fun onVendorHdr(enabled: Boolean) {
-        engine.setVendorHdr(enabled)
-        _state.update { it.copy(vendorHdr = enabled) }
-    }
     override fun onVendorInSensorZoom(enabled: Boolean) {
         engine.setVendorInSensorZoom(enabled)
         _state.update { it.copy(vendorInSensorZoom = enabled) }

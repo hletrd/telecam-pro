@@ -91,7 +91,6 @@ class CameraController(context: Context) {
     // the only thing that cuts per-frame motion blur at 300 mm. Updated live via [setVideoStabMode].
     @Volatile private var videoStabHalMode = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF
     // Extra QTI vendor session params (set once per open() — session keys). Changing them reopens.
-    @Volatile private var vendorHdr = false
     @Volatile private var vendorInSensorZoom = false
     @Volatile private var vendorIdealRaw = false
     // >0 → configure a CameraConstrainedHighSpeedCaptureSession at this fps (slow-motion), feeding
@@ -139,7 +138,6 @@ class CameraController(context: Context) {
         highSpeedFps: Int = 0,
         vendorLogMode: Int = 0,
         videoStabHalMode: Int = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF,
-        vendorHdr: Boolean = false,
         vendorInSensorZoom: Boolean = false,
         vendorIdealRaw: Boolean = false,
         onReady: Ready,
@@ -153,7 +151,6 @@ class CameraController(context: Context) {
         this.highSpeedFps = highSpeedFps
         this.vendorLogMode = vendorLogMode
         this.videoStabHalMode = videoStabHalMode
-        this.vendorHdr = vendorHdr
         this.vendorInSensorZoom = vendorInSensorZoom
         this.vendorIdealRaw = vendorIdealRaw
         this.rawChars = runCatching {
@@ -197,17 +194,16 @@ class CameraController(context: Context) {
     }
 
     // QTI session-parameter vendor keys, all int32 and all in the tele's availableRequest+SessionKeys
-    // (dumpsys 2026-07-07). We set them directly. HDRMode=1 is the single value the device advertises
-    // in supportedHDRmodes.HDRModes. EnableInsensorZoom improves tele zoom quality.
-    private val enableAutoHdrKey = CaptureRequest.Key("org.codeaurora.qcamera3.sessionParameters.EnableAutoHDR", Int::class.javaObjectType)
-    private val hdrModeKey = CaptureRequest.Key("org.codeaurora.qcamera3.sessionParameters.HDRMode", Int::class.javaObjectType)
+    // (dumpsys 2026-07-07). We set them directly. EnableInsensorZoom improves tele zoom quality.
+    // Auto HDR (EnableAutoHDR + HDRMode) is deliberately NOT wired: adversarial device testing showed it
+    // reproducibly SIGABRTs the QTI camera-provider HAL on reopen+capture (evicts the camera → stuck
+    // CAMERA_DISCONNECTED), so it's gated out like Ideal RAW / APV — accepted by the HAL but breaks the
+    // pipeline. Do not re-add without a HAL-stable path.
     private val inSensorZoomKey = CaptureRequest.Key("org.codeaurora.qcamera3.sessionParameters.EnableInsensorZoom", Int::class.javaObjectType)
     private val idealRawKey = CaptureRequest.Key("org.codeaurora.qcamera3.sessionParameters.EnableIdealRAW", Int::class.javaObjectType)
 
-    /** Extra QTI vendor session params (HDR, in-sensor zoom, ideal RAW). Each guarded — a rejected key never kills the build. */
+    /** Extra QTI vendor session params (in-sensor zoom, ideal RAW). Each guarded — a rejected key never kills the build. */
     private fun CaptureRequest.Builder.applyVendorExtras() {
-        if (vendorHdr) runCatching { set(enableAutoHdrKey, 1); set(hdrModeKey, 1) }
-            .onFailure { Log.w(TAG, "vendor HDR rejected: ${it.message}") }
         if (vendorInSensorZoom) runCatching { set(inSensorZoomKey, 1) }
             .onFailure { Log.w(TAG, "vendor in-sensor zoom rejected: ${it.message}") }
         // Ideal RAW is wired but GATED OFF (no UI toggle sets it): device-verified that although the
@@ -319,11 +315,11 @@ class CameraController(context: Context) {
                 }
             },
         )
-        // The vendor session keys (log.video.mode, EnableAutoHDR/HDRMode, in-sensor zoom) are chosen
-        // at configure time, so they must ride in the session parameters, not only per-frame requests.
-        // Built from TEMPLATE_RECORD (the movie-pipeline template). Fully defensive — a session-
-        // parameter failure falls back to a plain session, not a dead camera.
-        if (vendorLogMode != 0 || vendorHdr || vendorInSensorZoom || vendorIdealRaw) {
+        // The vendor session keys (log.video.mode, in-sensor zoom) are chosen at configure time, so they
+        // must ride in the session parameters, not only per-frame requests. Built from TEMPLATE_RECORD
+        // (the movie-pipeline template). Fully defensive — a session-parameter failure falls back to a
+        // plain session, not a dead camera.
+        if (vendorLogMode != 0 || vendorInSensorZoom || vendorIdealRaw) {
             runCatching {
                 val sp = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
                 sp.applyManualControls(controls, caps)

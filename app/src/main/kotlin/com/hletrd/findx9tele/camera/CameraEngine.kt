@@ -69,10 +69,13 @@ class CameraEngine(private val context: Context) {
     @Volatile private var vendorLogMode = VendorLogMode.OFF
     // Video stabilization strategy. Default ENHANCED = HAL OIS+EIS (motion-blur reduction at 300 mm).
     @Volatile private var videoStabMode = VideoStabMode.ENHANCED
-    // Extra QTI vendor session features (HDR, in-sensor zoom). Session keys → changing reopens.
-    @Volatile private var vendorHdr = false
+    // Extra QTI vendor session features (in-sensor zoom). Session keys → changing reopens. (Auto HDR
+    // was gated out — it SIGABRTs the camera-provider HAL; see CameraController.applyVendorExtras.)
     @Volatile private var vendorInSensorZoom = false
     @Volatile private var vendorIdealRaw = false
+    // Bounded auto-recovery when the camera HAL disconnects/errors mid-session (its provider process can
+    // crash). Reset on a successful open so the viewfinder self-heals instead of sitting black.
+    @Volatile private var cameraRecoveryAttempts = 0
     @Volatile private var eisCrop: Float = EisStrength.MEDIUM.crop
 
     // Software recording-audio gain (1f = passthrough) and the still-photo aspect-ratio crop;
@@ -188,14 +191,6 @@ class CameraEngine(private val context: Context) {
         reopenForSession()
     }
 
-    /** Auto-HDR (QTI EnableAutoHDR + HDRMode=1). Session key → reopen. Refused mid-recording. */
-    fun setVendorHdr(enabled: Boolean) {
-        if (vendorHdr == enabled) return
-        if (recorder != null) { onStatus?.invoke("Stop recording to change HDR"); return }
-        vendorHdr = enabled
-        reopenForSession()
-    }
-
     /** In-sensor zoom (QTI EnableInsensorZoom). Session key → reopen. Refused mid-recording. */
     fun setVendorInSensorZoom(enabled: Boolean) {
         if (vendorInSensorZoom == enabled) return
@@ -248,11 +243,10 @@ class CameraEngine(private val context: Context) {
             highSpeedFps = desiredHighSpeedFps(),
             vendorLogMode = vendorLogMode.halValue,
             videoStabHalMode = c.videoStabControlMode(videoStabMode),
-            vendorHdr = vendorHdr,
             vendorInSensorZoom = vendorInSensorZoom,
             vendorIdealRaw = vendorIdealRaw,
-            onReady = { onStatus?.invoke(null) },
-            onError = { onStatus?.invoke("Camera error: ${it.message}") },
+            onReady = { onStatus?.invoke(null); cameraRecoveryAttempts = 0 },
+            onError = { onStatus?.invoke("Camera error: ${it.message}"); scheduleCameraRecovery() },
         )
     }
 
@@ -386,6 +380,23 @@ class CameraEngine(private val context: Context) {
             controller?.close()
             controller = null
             openCamera(input)
+        }
+    }
+
+    /**
+     * The camera HAL reported an error/disconnect mid-session — its provider process can crash (e.g. a
+     * vendor key destabilizes it), which otherwise leaves a black CAMERA_DISCONNECTED viewfinder until
+     * the user backgrounds/foregrounds the app. Auto-reopen a bounded number of times, after a short
+     * delay so the provider has time to restart. The attempt counter resets on the next successful open.
+     */
+    private fun scheduleCameraRecovery() {
+        if (!started || paused || recorder != null) return
+        if (cameraRecoveryAttempts >= MAX_CAMERA_RECOVERY_ATTEMPTS) return
+        cameraRecoveryAttempts++
+        runCatching {
+            timelapseScheduler.schedule(
+                { reopenForSession() }, CAMERA_RECOVERY_DELAY_MS, java.util.concurrent.TimeUnit.MILLISECONDS,
+            )
         }
     }
 
@@ -902,5 +913,8 @@ class CameraEngine(private val context: Context) {
         const val BURST_COUNT = 5
         // 300mm / 70mm ≈ 4.286: the Explorer teleconverter's angular magnification.
         const val TELECONVERTER_MAGNIFICATION = 300f / 70f
+        // Auto-recovery from a mid-session camera HAL error/disconnect (see scheduleCameraRecovery).
+        const val MAX_CAMERA_RECOVERY_ATTEMPTS = 3
+        const val CAMERA_RECOVERY_DELAY_MS = 1000L
     }
 }

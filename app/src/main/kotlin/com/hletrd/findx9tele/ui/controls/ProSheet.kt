@@ -768,14 +768,12 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
     )
 
     SectionHeader("Vendor Features (experimental)")
-    ToggleRow(label = "Auto HDR", checked = state.vendorHdr, onCheckedChange = actions::onVendorHdr)
     ToggleRow(label = "In-Sensor Zoom", checked = state.vendorInSensorZoom, onCheckedChange = actions::onVendorInSensorZoom)
     Text(
-        "QTI HAL session features the device exposes: Auto HDR (EnableAutoHDR + " +
-            "HDRMode — multi-exposure high-dynamic-range, good for high-contrast tele scenes) and " +
-            "in-sensor zoom (EnableInsensorZoom — sensor-domain crop-zoom, cleaner than digital " +
-            "zoom). Each reopens the camera; not persisted. (Ideal RAW / macro / custom-LUT vendor " +
-            "keys were tried but excluded — device-verified they break capture or don't apply here.)",
+        "In-sensor zoom (EnableInsensorZoom — sensor-domain crop-zoom, cleaner than digital zoom), a " +
+            "QTI HAL session feature the device exposes. Reopens the camera; not persisted. (Auto HDR / " +
+            "Ideal RAW / APV / macro / custom-LUT vendor keys were tried but excluded — device-verified " +
+            "they break capture or crash the camera HAL on this device.)",
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.labelSmall,
     )
