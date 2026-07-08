@@ -64,8 +64,8 @@ android {
         debug {
             // Keep debug installs distinguishable from the Play identity. Without this, a debug APK
             // occupies me.hletrd.telecampro and is indistinguishable from a release install by
-            // package name (QA gate 2026-07-07 caught exactly that: a DEBUGGABLE binary emitting the
-            // debug-only X9TeleVendor dump under the release id).
+            // package name (QA gate 2026-07-07 caught exactly that: a DEBUGGABLE binary emitting
+            // debug-only camera capability logs under the release id).
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
         }
@@ -123,8 +123,8 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     debugImplementation(libs.androidx.compose.ui.tooling)
 
-    // OPPO CameraUnit / OCS SDK — bridge to the privileged system-camera path (super-steady
-    // stabilization for the teleconverter, etc.) that raw Camera2 can't reach. POC for 300 mm OIS.
+    // OPPO CameraUnit / OCS SDK — official OEM extension SDK for stabilization modes and related
+    // camera capabilities. Kept as an availability check for future 300 mm OIS work.
     implementation("com.oplus.ocs:camera:1.1.0")
     implementation("com.oplus.ocs:base:1.0.16")
 

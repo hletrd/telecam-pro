@@ -62,7 +62,7 @@ class VideoRecorder(private val context: Context) {
     private var audioGain = 1f
     private var onLevel: ((Float) -> Unit)? = null
     private var lastLevelEmitNs = 0L
-    // Directional-audio scene (stock Sound Focus / Sound Stage) + the current zoom and device
+    // Directional-audio scene (Sound Focus / Sound Stage) + the current zoom and device
     // orientation, applied to the audio HAL via AudioManager.setParameters after AudioRecord init.
     private var audioScene = AudioScene.STANDARD
     private var audioZoom = 1f

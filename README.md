@@ -102,11 +102,12 @@ This working copy has a local upload keystore at `telecampro-upload.jks`, a giti
 `telecampro-upload-passwords.txt.gpg`. Decrypt that backup locally and export the two `TELECAMPRO_*`
 password variables before rebuilding release bundles.
 
-## Device vendor HAL features
+## Device camera capabilities
 
-Beyond the standard Camera2 surface, the device's camera HAL advertises vendor session/request keys
-for its pro pipeline, and several are available to third-party apps on the tele. TeleCam Pro drives
-them directly, each device-verified through to a saved file (not just "session configured"):
+Beyond the standard Camera2 surface, the device advertises extra session/request capabilities for its
+camera pipeline, and several are available to third-party apps on the tele. TeleCam Pro uses the
+capabilities that are available through public Camera2/SDK surfaces and verifies them through saved
+files, not just session setup logs:
 
 | Feature | Key | Status |
 |---|---|---|
@@ -114,13 +115,13 @@ them directly, each device-verified through to a saved file (not just "session c
 | Video stabilization | `CONTROL_VIDEO_STABILIZATION_MODE` + `com.oplus.video.stabilization.mode` | ✅ `ois=1, vstab=2` verified |
 | Directional audio | `vendor_audiorecord_effect_type` / `focus_angle` … | ✅ HAL `track_support=true` |
 | In-sensor zoom | `EnableInsensorZoom` | ✅ verified |
-| Auto HDR / Ideal RAW / APV / macro / custom-LUT | — | ⛔ tried, gated/excluded (Auto HDR SIGABRTs the camera HAL on reopen+capture; the rest break capture or are inert) |
+| Auto HDR / Ideal RAW / APV / macro / custom-LUT | — | ⛔ not exposed in the shipped UI; excluded after device compatibility checks |
 
 ## Implementation Status
 
 - ✅ **Build & gates**: `./gradlew assembleDebug testDebugUnitTest lintDebug` all pass.
 - ✅ **Unit tests**: FocusMappingTest, RotationMathTest, CameraSelector2Test, VideoCapabilitiesTest, ExposureMathTest.
-- ✅ **Device-verified on PMA110**: all 4 lenses open (standalone, no HAL crash) with RAW; teleconverter bundling; preview upright; tap-to-focus lock; AF→MF handoff; volume-key shutter; HEIF (4096×3072) + DNG + JPEG saves; HEVC 4K video incl. Max bitrate (~134 Mbps); HAL log + HAL OIS+EIS + directional-audio support + in-sensor zoom all accepted end-to-end (release build re-verified: not debuggable, no diagnostic dump; camera-reopen race fixed; Auto HDR gated out after it SIGABRT'd the HAL). Global Find X9 Ultra device code is CPH2841 per OPPO's public specs; Play device catalog should allow CPH2841 and PMA110.
+- ✅ **Device-verified on PMA110**: all 4 lenses open (standalone, no HAL crash) with RAW; teleconverter bundling; preview upright; tap-to-focus lock; AF→MF handoff; volume-key shutter; HEIF (4096×3072) + DNG + JPEG saves; HEVC 4K video incl. Max bitrate (~134 Mbps); LOG, OIS+EIS, directional audio, and in-sensor zoom all accepted end-to-end through available device capabilities. Release build re-verified: not debuggable, no debug capability logs, camera-reopen race fixed. Global Find X9 Ultra device code is CPH2841 per OPPO's public specs; Play device catalog should allow CPH2841 and PMA110.
 - ⏳ **Needs your eyes/ears in a real scene**: the acoustic effect of directional audio (off-axis A/B), and the image gain of in-sensor zoom (distant subjects) — undetectable from a static desk.
 - ✅ **Play-release scaffolding**: release signing config with unsigned-bundle fail-fast, public
   privacy policy URL, store-listing text, Data Safety answer sheet, icon + feature graphic — see the

@@ -9,26 +9,22 @@ import com.oplus.ocs.camera.CameraUnit
 import com.oplus.ocs.camera.CameraUnitClient
 
 /**
- * Probe + capability gatherer for the OPPO CameraUnit / OCS SDK.
+ * Availability check for the OPPO CameraUnit / OCS SDK.
  *
- * The stock OPPO camera app routes the 300 mm teleconverter OIS amplification through authenticated
- * OCS `ConfigureKey`s (`com.oplus.configure.video.stabilization` → `super_stabilization`,
- * `com.oplus.explorer.chip.state`, etc.). Those keys are not exposed to raw Camera2, so the only
- * known way to reach the stock 300 mm profile is through a CameraUnit session after OPPO has
- * authenticated this package.
+ * Some 300 mm teleconverter stabilization options are exposed through OPPO's CameraUnit extension
+ * layer rather than raw Camera2. This check records whether the SDK is available to this package and
+ * which documented capability ranges it reports.
  *
- * This probe does NOT open the camera. It binds to `com.oplus.ocs.service.OpenAuthenticateService`,
- * reports whether the app is accepted, and (on success) queries which private capabilities the
- * device advertises. The result is surfaced as [OcsAuthState] so the UI can explain why the
- * teleconverter OIS profile is unavailable and what the user must do to unlock it.
+ * This check does NOT open the camera. It only initializes the CameraUnit client and, on success,
+ * queries documented capability ranges. The result is surfaced as [OcsAuthState] for future UI or
+ * diagnostics.
  */
 object OcsProbe {
     const val TAG = "OcsProbe"
 
     /**
-     * Run the probe on every launch in debug builds. In release builds it is silent: we do not want
-     * to spam unregistered users with auth-failure logs, and the CameraUnit path is not ready for
-     * production without an AUTH_CODE anyway.
+     * Run the check on every launch in debug builds. In release builds it is silent: CameraUnit
+     * integration is not enabled for production until an official AUTH_CODE is configured.
      */
     val ENABLED = BuildConfig.DEBUG
 
@@ -42,8 +38,8 @@ object OcsProbe {
     enum class OcsAuthState {
         UNKNOWN,
         NOT_SUPPORTED,          // CameraUnit SDK / service not present on this device
-        AUTH_FAILED,            // service rejected us (errorCode 1004/1002 → not registered)
-        AUTH_SUCCEEDED          // accepted; capability report available in logcat
+        AUTH_FAILED,            // CameraUnit not enabled for this package
+        AUTH_SUCCEEDED          // CameraUnit client ready; capability report available in logcat
     }
 
     data class CapabilityReport(
@@ -80,15 +76,15 @@ object OcsProbe {
             Log.i(TAG, "getCameraClient OK; isSupportAsyncAuthenticate=${CameraUnitClient.isSupportAsyncAuthenticate(context)}")
 
             client.addOnConnectionSucceedListener {
-                Log.i(TAG, "★ AUTH SUCCEEDED — opencapabilityservice accepted our app")
-                runCatching { dumpCapabilities(client) }
-                    .onFailure { Log.w(TAG, "capability dump failed: ${it.message}") }
+                Log.i(TAG, "CameraUnit client ready")
+                runCatching { logCapabilities(client) }
+                    .onFailure { Log.w(TAG, "capability query failed: ${it.message}") }
                 transition(OcsAuthState.AUTH_SUCCEEDED)
             }
             client.addOnConnectionFailedListener { result ->
                 val code = runCatching { result.errorCode }.getOrNull() ?: -1
                 val meaning = authErrorMeaning(code)
-                Log.e(TAG, "✗ AUTH FAILED — errorCode=$code ($meaning)")
+                Log.w(TAG, "CameraUnit not enabled; errorCode=$code ($meaning)")
                 transition(OcsAuthState.AUTH_FAILED)
             }
             Log.i(TAG, "connection listeners registered; waiting for auth callback…")
@@ -104,9 +100,8 @@ object OcsProbe {
     }
 
     /**
-     * Error-code meanings recovered from the stock OPPO camera app decompilation
-     * (`androidx.appcompat.app.z.g(int)`). The most common one for an unregistered third-party app
-     * is 1004 (AUTHCODE_EXPECTED).
+     * Error-code names used by the OPPO CameraUnit SDK. The common unconfigured-package result is
+     * 1004 (AUTHCODE_EXPECTED).
      */
     private fun authErrorMeaning(code: Int): String = when (code) {
         1001 -> "AUTHENTICATE_SUCCESS"
@@ -122,14 +117,14 @@ object OcsProbe {
         else -> "UNKNOWN"
     }
 
-    private fun dumpCapabilities(client: CameraUnitClient) {
+    private fun logCapabilities(client: CameraUnitClient) {
         val cameraTypes = runCatching { client.allSupportCameraType }.getOrNull() ?: emptyList()
         val modes = runCatching { client.allSupportCameraMode }.getOrNull() ?: emptyMap()
         Log.i(TAG, "supported cameraTypes=$cameraTypes")
         Log.i(TAG, "supported modes=$modes")
 
-        // The teleconverter is mounted on the 3×/70 mm periscope. CameraUnit exposes it as
-        // REAR_TELE (or possibly REAR_SAT). Query both for the private keys we need.
+        // The teleconverter is mounted on the 3×/70 mm periscope. Query the relevant rear camera
+        // families exposed by the public SDK.
         val targetTypes = listOf(
             CameraUnitClient.CameraType.REAR_TELE,
             CameraUnitClient.CameraType.REAR_SAT,
@@ -157,10 +152,9 @@ object OcsProbe {
                 }.getOrNull() ?: emptyList<String>()
                 Log.i(TAG, "  type=$type mode=$mode: VIDEO_STABILIZATION_MODE supported=$stabSupported values=$stabValues")
 
-                // Our public SDK (1.1.0) does not expose KEY_EXPLORER_CHIP_STATE / KEY_EXPLORER_ENABLE.
-                // The stock app uses a newer embedded SDK. We therefore cannot query those keys
-                // through the typed API, but we log the SDK limitation here.
-                Log.i(TAG, "  type=$type mode=$mode: explorer keys not in public SDK 1.1.0")
+                // SDK 1.1.0 does not expose Explorer-specific typed parameters, so keep the check to
+                // documented stabilization ranges only.
+                Log.i(TAG, "  type=$type mode=$mode: Explorer params not exposed by SDK 1.1.0")
             }
         }
 

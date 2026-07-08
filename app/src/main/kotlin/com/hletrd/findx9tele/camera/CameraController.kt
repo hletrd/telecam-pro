@@ -91,10 +91,9 @@ class CameraController(context: Context) {
     // the only thing that cuts per-frame motion blur at 300 mm. Updated live via [setVideoStabMode].
     @Volatile private var videoStabHalMode = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF
     // True when the external Hasselblad 300 mm afocal converter is mounted on the native 70 mm tele.
-    // The public Camera2 OIS key only says "OIS on"; OPPO's stock app configures the Explorer path via
-    // CameraUnit/session parameters. We cannot use the auth-gated CameraUnit path yet, but we can give
-    // the HAL the same public session hints it exposes to third-party Camera2: "Hasselblad telephoto"
-    // camera mode + effective zoom ~= 300/70. These are best-effort and fully guarded.
+    // The public Camera2 OIS key only says "OIS on". For teleconverter mode, pass the public session
+    // hints this device exposes through Camera2: Hasselblad telephoto mode + effective zoom ~= 300/70.
+    // These are best-effort and fully guarded.
     private var teleconverterMode = true
     // >0 → configure a CameraConstrainedHighSpeedCaptureSession at this fps (slow-motion), feeding
     // ONLY the GL input surface (no JPEG/RAW — high-speed sessions forbid extra targets). 0 = the
@@ -180,9 +179,9 @@ class CameraController(context: Context) {
     }
 
     /**
-     * The stock camera's log-pipeline selector. Advertised in this device's availableRequestKeys
-     * AND availableSessionKeys for the tele (dumpsys 2026-07-06), so constructing the Key and
-     * setting it is legal public API — the framework resolves it against the vendor tag provider.
+     * Device log-pipeline selector. Advertised in this device's availableRequestKeys AND
+     * availableSessionKeys for the tele, so constructing the Key and setting it is standard Camera2
+     * vendor-tag usage — the framework resolves it against the device tag provider.
      */
     private val logVideoModeKey = CaptureRequest.Key("com.oplus.log.video.mode", Int::class.javaObjectType)
 
@@ -203,15 +202,14 @@ class CameraController(context: Context) {
      * The HAL's stabilization vendor tag (`com.oplus.video.stabilization.mode`, int) — the vendor
      * mirror of `VIDEO_STABILIZATION_MODE`. Advertised in the tele's request+session keys, so we
      * set it alongside the standard CONTROL_VIDEO_STABILIZATION_MODE to nudge the HAL's OIS/EIS
-     * profile toward the active lens (the same path "super steady" takes). Best-effort.
+     * profile toward the active lens. Best-effort.
      */
     private val vendorVideoStabKey = CaptureRequest.Key("com.oplus.video.stabilization.mode", Int::class.javaObjectType)
 
-    // OPPO CameraUnit stock-mode equivalents that are also exposed as raw Camera2 session/request keys
-    // on the tele. Decompiled OplusCamera maps `camera_mode_telephoto_hasselblad` to mode id 40 and
-    // routes stabilization through CameraUnit's `super_stabilization`; the raw Camera2 ceiling is these
-    // public vendor hints plus CONTROL_VIDEO_STABILIZATION_MODE=PREVIEW_STABILIZATION.
-    private val oplusCameraModeKey = CaptureRequest.Key("com.oplus.camera.mode", Byte::class.javaObjectType)
+    // OPPO CameraUnit-related mode hints that are also exposed as Camera2 session/request keys on the
+    // tele. The Camera2 ceiling is these public hints plus
+    // CONTROL_VIDEO_STABILIZATION_MODE=PREVIEW_STABILIZATION.
+    private val oplusModeKey = CaptureRequest.Key("com.oplus.camera.mode", Byte::class.javaObjectType)
     private val oplusOriginalZoomRatioKey = CaptureRequest.Key("com.oplus.original.zoomRatio", Float::class.javaObjectType)
 
     /** Sets the HAL video stabilization on the preview/video repeating request: the standard mode plus the vendor mirror. */
@@ -223,22 +221,20 @@ class CameraController(context: Context) {
     /**
      * Best-effort hints for the external 300 mm converter.
      *
-     * Stock OplusCamera does not publish a raw "OIS focal scale" key. Its Hasselblad/Explorer path
-     * uses CameraUnit (auth-gated for third-party apps) with a telephoto-Hasselblad mode and super
-     * stabilization. The exposed raw Camera2 overlap is:
-     *  - `com.oplus.camera.mode` byte: stock maps Hasselblad telephoto to 40.
-     *  - `com.oplus.original.zoomRatio` float: stock CameraUnit configure key for the app's logical zoom.
+     * The device does not publish a raw "OIS focal scale" Camera2 key. The exposed Camera2 overlap is:
+     *  - `com.oplus.camera.mode` byte: Hasselblad telephoto mode.
+     *  - `com.oplus.original.zoomRatio` float: logical zoom context for the session.
      *
-     * Setting these cannot force the private Explorer OIS profile by itself, but it gives the HAL the
-     * effective 300 mm context when it chooses the public PREVIEW_STABILIZATION OIS+EIS profile. Fully
-     * guarded because vendor tags can disappear or reject values across ColorOS builds.
+     * Setting these cannot force an unavailable OIS profile by itself, but it gives the HAL the
+     * effective 300 mm context when it chooses the public PREVIEW_STABILIZATION OIS+EIS profile.
+     * Fully guarded because device-specific tags can disappear or reject values across ColorOS builds.
      */
     private fun CaptureRequest.Builder.applyTeleconverterHints() {
         val effectiveZoom = controls.zoomRatio.coerceAtLeast(1f) *
             if (teleconverterMode) TELECONVERTER_MAGNIFICATION else 1f
         if (teleconverterMode) {
             runCatching {
-                set(oplusCameraModeKey, OPLUS_CAMERA_MODE_TELEPHOTO_HASSELBLAD)
+                set(oplusModeKey, OPLUS_CAMERA_MODE_TELEPHOTO_HASSELBLAD)
             }.onFailure { Log.w(TAG, "Hasselblad camera mode hint rejected: ${it.message}") }
         }
         runCatching {
@@ -337,7 +333,7 @@ class CameraController(context: Context) {
         // Session keys must ride in the session parameters, not only per-frame requests. This matters
         // for PREVIEW_STABILIZATION (documented as a session key on this HAL) and for the Oplus vendor
         // mirror/original-zoom hints: the HAL can pick its OIS/EIS profile at configure time, which is
-        // where the stock CameraUnit path also supplies "super_stabilization" + Explorer context.
+        // where the CameraUnit path may also supply stabilization + Explorer context.
         // Fully defensive — a session-parameter failure falls back to a plain session, not a dead camera.
         runCatching {
             val sp = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)

@@ -655,7 +655,7 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
 private fun StabilizationTab(state: CameraUiState, actions: CameraActions) {
     val caps = state.caps
     TabTitle("Steady")
-    // The stock camera's approach: engage the HAL's OIS+EIS ("super steady") so OIS physically cuts
+    // Engage the HAL's OIS+EIS stabilization path so OIS physically cuts
     // per-frame motion blur at 300 mm. (App-side gyro EIS was removed — it only warped whole frames
     // and couldn't de-blur a fixed 1/60 s frame.) Modes gated by what the lens reports.
     SegmentedSelector(
@@ -788,8 +788,8 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         label = if (state.isRecording) "Audio Route" else "Input",
         valueLabel = state.audioRouteLabel,
     )
-    // Directional audio — the stock Sound Focus (aims the mic array at the framed subject, tightens
-    // with zoom — the 300 mm use case) / Sound Stage (wider spatial stereo), via the vendor audio-HAL.
+    // Directional audio: Sound Focus aims the mic array at the framed subject and tightens with zoom;
+    // Sound Stage keeps a wider stereo image.
     SegmentedSelector(
         label = "Scene",
         options = AudioScene.entries,

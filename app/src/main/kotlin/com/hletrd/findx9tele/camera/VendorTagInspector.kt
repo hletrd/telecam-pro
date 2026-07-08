@@ -5,27 +5,26 @@ import android.hardware.camera2.CameraManager
 import android.util.Log
 
 /**
- * On-device diagnostic aid: dumps every camera's characteristics keys (INCLUDING OPPO/QTI
- * vendor tags such as `com.oplus.ois.control.mode`, `com.oplus.custom.zoom.range`), plus the
- * available capture-request and session keys, to Logcat under tag [TAG].
+ * Debug-only camera capability logger. It records camera characteristics plus available
+ * capture-request and session keys to Logcat under tag [TAG].
  *
- * Run `adb logcat -s X9TeleVendor` while the app is open to discover which vendor tags the HAL
- * exposes to third-party apps — the basis for the native teleconverter stabilization path.
+ * Run `adb logcat -s X9TeleVendor` while the app is open to confirm which Camera2 capabilities are
+ * available on the device.
  */
 object VendorTagInspector {
     const val TAG = "X9TeleVendor"
 
-    fun dumpAll(manager: CameraManager) {
+    fun logAll(manager: CameraManager) {
         runCatching {
             for (id in manager.cameraIdList) {
-                dumpCamera(manager, id)
+                logCamera(manager, id)
                 val chars = runCatching { manager.getCameraCharacteristics(id) }.getOrNull() ?: continue
-                for (pid in chars.physicalCameraIds) dumpCamera(manager, pid, parent = id)
+                for (pid in chars.physicalCameraIds) logCamera(manager, pid, parent = id)
             }
-        }.onFailure { Log.w(TAG, "dumpAll failed: ${it.message}") }
+        }.onFailure { Log.w(TAG, "logAll failed: ${it.message}") }
     }
 
-    private fun dumpCamera(manager: CameraManager, id: String, parent: String? = null) {
+    private fun logCamera(manager: CameraManager, id: String, parent: String? = null) {
         val chars = runCatching { manager.getCameraCharacteristics(id) }.getOrNull() ?: return
         val facing = chars.get(CameraCharacteristics.LENS_FACING)
         val focals = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.toList()

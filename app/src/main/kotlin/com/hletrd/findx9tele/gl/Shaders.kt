@@ -13,9 +13,9 @@ package com.hletrd.findx9tele.gl
  * NOTE: the camera preview signal is display-referred (already non-linear). The LOG path
  * linearizes it (γ2.2 approximation of the ISP's SDR output), converts Rec.709→BT.2020 primaries
  * (O-Gamut), and applies the official O-Log2 OETF so mid-grey lands on OPPO's published anchor and
- * footage grades with OPPO's O-Log2 LUTs. It is still an approximation: third-party apps cannot
- * get the sensor's scene-linear data (the HAL-native log path is vendor-gated), so there is no
- * above-white highlight headroom — the SDR tone mapping bounds the dynamic range. Verify on device.
+ * footage grades with OPPO's O-Log2 LUTs. It is still an approximation because the preview stream is
+ * already display-referred, so there is no above-white highlight headroom — the SDR tone mapping
+ * bounds the dynamic range. Verify on device.
  */
 object Shaders {
 

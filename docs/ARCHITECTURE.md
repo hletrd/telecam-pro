@@ -42,7 +42,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `CaptureCapabilities.kt` | Queries Camera2 characteristics for manual-sensor, RAW, 10-bit HDR, focus range, metering regions — gate-keeping capabilities. |
 | `ManualControls.kt` | Immutable snapshot of all pro capture parameters (focus, ISO, shutter, white balance, metering, processing). The ViewModel updates a copy; the Engine applies it to the repeating request. |
 | `RotationMath.kt` | Pure, unit-tested functions for preview/capture/EXIF rotation math (extracted from CameraEngine). |
-| `VendorTagInspector.kt` | Debug-only vendor-tag dump (e.g., com.oplus.*, org.quic.camera.*) to inspect device-specific vendor capabilities. |
+| `VendorTagInspector.kt` | Debug-only Camera2 capability logger for device-specific request/session keys. |
 | **gl/** | |
 | `GlPipeline.kt` | Owns the GL render thread. Receives camera SurfaceTexture, renders 180°-flipped quads to preview Surface and video encoder Surface. Owns EGL context, texture, sampling buffers. Drives histogram/waveform analysis on a background executor. |
 | `FlipRenderer.kt` | Low-level OpenGL ES fullscreen quad renderer with texture-coordinate rotation (inverse of image rotation) to flip the 180° afocal image. Applies OETF (HLG / Log) in the fragment shader. Handles focus peaking (edge detection) and zebra (exposure clipping). |
@@ -156,7 +156,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | **Main (UI)** | Android framework | Compose recomposition, ViewModel StateFlow updates, lifecycle callbacks (onStart/onStop). |
 | **gl-pipeline** HandlerThread | GlPipeline | EGL operations, texture sampling, rendering, GL shader execution. |
 | **camera** HandlerThread | CameraController | Camera2 callbacks (onOpened, onDisconnected, onCaptureCompleted, onCaptureProgressed). Photo encoding (HEIF decode/rotate, DNG write). |
-| **setupExecutor** (single-thread) | CameraEngine | Camera characteristic IPCs (CameraManager.getCameraCharacteristics) at startup and on camera override. Vendor-tag debug dump. |
+| **setupExecutor** (single-thread) | CameraEngine | Camera characteristic IPCs (CameraManager.getCameraCharacteristics) at startup and on camera override. Debug capability logging. |
 | **ioExecutor** (single-thread) | CameraEngine | Deferred HEIF encoding (decode JPEG, center-crop, rotate, encode) off the camera thread to avoid OOM + stall. |
 | **timelapseScheduler** (scheduled) | CameraEngine | Interval-driven timelapse capture trigger every N seconds. |
 | **analysisExecutor** (single-thread) | GlPipeline | Histogram/waveform computation from GL readback (per-pixel math). |
@@ -358,8 +358,8 @@ Correction is scaled by eisCrop (0.06 to 0.18, default 0.10) to limit the headro
 MOTION BLUR is set by the shutter and only **OIS** (lens moves during exposure) can reduce it — app-side
 gyro EIS only warps whole frames. The default is now the HAL's own OIS+EIS via
 `CONTROL_VIDEO_STABILIZATION_MODE = PREVIEW_STABILIZATION` (the tele advertises modes [0,1,2]), the
-same "super steady" path exposed through the vendor int `com.oplus.video.stabilization.mode` — device-
-verified `ois=1, vstab=2`. See CLAUDE.md for the full HAL-key notes.
+same stabilization path exposed through the device-specific `com.oplus.video.stabilization.mode` key
+— device-verified `ois=1, vstab=2`. See CLAUDE.md for the full Camera2 capability notes.
 
 **Remaining gyro-EIS notes (apply only to the `Gyro` mode):**
 - Gyro axis/sign mapping + on-device tuning are approximate.

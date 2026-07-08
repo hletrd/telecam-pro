@@ -137,7 +137,7 @@ class CameraEngine(private val context: Context) {
                 gl.setAnalysisCallback { h, w -> onAnalysis?.invoke(h, w) }
                 applyStabilization()
                 gyro.start()
-                maybeDumpVendorTags()
+                maybeLogCameraCapabilities()
                 openCamera(input)
             }
             gl.setPreviewOutput(surface, width, height)
@@ -145,10 +145,10 @@ class CameraEngine(private val context: Context) {
         }
     }
 
-    /** Debug-only vendor-tag dump, run off the GL thread so it never delays openCamera / first frame. */
-    private fun maybeDumpVendorTags() {
+    /** Debug-only Camera2 capability log, run off the GL thread so it never delays openCamera / first frame. */
+    private fun maybeLogCameraCapabilities() {
         if (!com.hletrd.findx9tele.BuildConfig.DEBUG) return
-        setupExecutor.execute { runCatching { VendorTagInspector.dumpAll(manager) } }
+        setupExecutor.execute { runCatching { VendorTagInspector.logAll(manager) } }
     }
 
     /** Rotation (afocal 180° only in teleconverter mode) + gyro-EIS focal scaled to the effective FL. */
@@ -184,8 +184,8 @@ class CameraEngine(private val context: Context) {
         applyStabilization()
         // The afocal 180° preview flip can update live, but OPPO's available stabilization hints
         // (`com.oplus.camera.mode` + effective `original.zoomRatio`) are session keys. Reopen while
-        // idle so the HAL chooses the OIS/EIS profile with the 300 mm context, matching the stock
-        // CameraUnit path as closely as raw Camera2 allows.
+        // idle so the HAL chooses the OIS/EIS profile with the 300 mm context, matching the
+        // CameraUnit path as closely as Camera2 allows.
         reopenForSession()
     }
 
@@ -413,7 +413,7 @@ class CameraEngine(private val context: Context) {
 
     /** Software gain applied to recorded PCM audio (1f = passthrough); takes effect on the next [startRecording]. */
     fun setAudioGain(g: Float) { audioGain = g }
-    /** Directional-audio scene (stock Sound Focus/Stage); applies on the next [startRecording]. */
+    /** Directional-audio scene (Sound Focus/Stage); applies on the next [startRecording]. */
     fun setAudioScene(s: AudioScene) { audioScene = s }
     /** Preferred recording input; resolved against connected AudioDeviceInfo entries at record start. */
     fun setAudioInputPreference(p: AudioInputPreference) { audioInputPreference = p }

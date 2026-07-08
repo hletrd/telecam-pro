@@ -181,7 +181,7 @@ enum class LensChoice(val targetEquivMm: Float, val label: String) {
  * data, before the OEM display tone mapping.
  *
  * The key is advertised in this device's `availableRequestKeys` AND `availableSessionKeys` for the
- * tele (dumpsys 2026-07-06), so setting it via Camera2 is legal API. Device-verified 2026-07-06: ON
+ * tele, so setting it via Camera2 is standard vendor-tag usage. Device-verified 2026-07-06: ON
  * genuinely engages the HAL log pipeline (recorded stream goes flat/low-contrast, mean luma ~half of
  * SDR, GL curve off). Values 1 and 2 produced identical output → the key is on/off here.
  *
@@ -189,7 +189,7 @@ enum class LensChoice(val targetEquivMm: Float, val label: String) {
  * scene-referred WITHOUT baked white balance (warm ambient reads warm), which a colorist neutralizes
  * in grade. For a LUT-accurate deliverable, the GL O-Log2 path ([ColorTransfer.LOG]) is exact. This
  * mode is for maximum latitude / minimal in-camera processing. Deliberately NOT persisted: an
- * experimental HAL mode must never survive a relaunch.
+ * experimental device mode must never survive a relaunch.
  */
 enum class VendorLogMode(val halValue: Int) { OFF(0), ON(1) }
 
@@ -209,7 +209,7 @@ enum class VideoCodec { HEVC, AVC, APV }
 /**
  * Video bitrate level as bits-per-pixel-per-frame factor. The top presets reach the QTI HW encoder
  * ceilings measured on this device (HEVC/AVC ≈ 100 Mbps at 4K; MAX ≈ 100 Mbps at 4K30, matching the
- * stock O-Log2's ~120 Mbps class) — the old HIGH (0.16) left over half the HW headroom unused.
+ * OEM O-Log2's ~120 Mbps class) — the old HIGH (0.16) left over half the HW headroom unused.
  */
 enum class BitrateLevel(val bpp: Float) {
     LOW(0.06f), MEDIUM(0.10f), HIGH(0.16f), ULTRA(0.26f), MAX(0.40f)
@@ -344,7 +344,7 @@ data class CameraUiState(
     val transfer: ColorTransfer = ColorTransfer.HLG,
     val photoFormats: PhotoFormats = PhotoFormats(),
     val recordAudio: Boolean = true,
-    // Directional audio (stock Sound Focus / Sound Stage) via vendor audio-HAL params.
+    // Directional audio (Sound Focus / Sound Stage) via device audio-HAL params.
     val audioScene: AudioScene = AudioScene.STANDARD,
     val audioInputPreference: AudioInputPreference = AudioInputPreference.AUTO,
     val audioRouteLabel: String = "Auto",

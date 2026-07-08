@@ -63,8 +63,8 @@ class MainActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         refreshPermissionState()
 
-        // POC: probe whether OPPO's CameraUnit/OCS service authenticates this app (→ path to the stock
-        // 300 mm teleconverter OIS). Query-only, off the main thread; see OcsProbe. TODO: remove after POC.
+        // Debug-only CameraUnit availability check. Query-only, off the main thread; see OcsProbe.
+        // TODO: remove once the 300 mm OIS integration path is settled.
         Thread { com.hletrd.findx9tele.camera.OcsProbe.run(applicationContext) }.start()
 
         setContent {
@@ -185,7 +185,7 @@ class MainActivity : ComponentActivity() {
     // verified they reach dispatchKeyEvent: a light press and each slide notch arrive as key 767/769/782.
     // Map them: the two slide keycodes → stepped zoom in/out, the press keycode → a centre AF trigger
     // (half-press). Handled on ACTION_DOWN and consumed. (Directions calibrated on device; swap the two
-    // slide constants if reversed.)
+        // slide constants if the on-device direction is wrong.)
     @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (hasCameraPermission) {

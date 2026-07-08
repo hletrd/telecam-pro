@@ -20,7 +20,7 @@
         android:theme="@style/Theme.FindX9TeleCamera">
 
         <!-- After registering com.hletrd.telecampro + our signing cert on OPPO's CameraUnit developer
-             portal, paste the issued AUTH_CODE here to unlock CameraUnit (super-steady → 300mm tele OIS):
+             portal, paste the issued AUTH_CODE here to enable CameraUnit features:
              <meta-data android:name="com.coloros.ocs.camera.AUTH_CODE" android:value="…" /> -->
 
         <activity

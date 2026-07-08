@@ -186,15 +186,13 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
   entirely** (it warps whole frames and can't de-blur; the HAL path is strictly better) — there is no
   `GYRO` mode. The Explorer-specific `com.oplus.ois.*` / `eisrealtime` tags remain gated — but the
   generic HAL video-stab is enough.
-- **300 mm teleconverter OIS amplification is OPPO-auth-gated (2026-07-08).** The stock app's
-  Hasselblad-Teleconverter "4.3×" OIS profile is set through authenticated OCS `ConfigureKey`s
-  (`com.oplus.configure.video.stabilization` → `super_stabilization`, `com.oplus.explorer.chip.state`,
-  etc.). These keys are absent from every camera's `availableRequestKeys`/`availableResultKeys`, so
-  raw Camera2 cannot reach them. The app applies the public overlap (`com.oplus.camera.mode=40`,
-  `com.oplus.original.zoomRatio` 4.286×) and runs `OcsProbe` in debug builds to verify auth status.
-  Unlocking the full profile requires an OPPO enterprise-developer CameraUnit AUTH_CODE plus a
-  CameraUnit camera-session path; see `docs/BACKLOG.md` item #4 for the registration checklist and
-  SDK-limitation notes.
+- **300 mm teleconverter OIS integration depends on OPPO CameraUnit availability (2026-07-08).**
+  The 4.3× teleconverter stabilization profile appears to use CameraUnit extension parameters that
+  are not exposed through raw Camera2 request/result keys. The app applies the public Camera2 overlap
+  (`com.oplus.camera.mode=40`, `com.oplus.original.zoomRatio` 4.286×) and runs `OcsProbe` in debug
+  builds as a read-only CameraUnit availability check. Enabling the full CameraUnit path requires the
+  official OPPO developer registration flow and an AUTH_CODE; see `docs/BACKLOG.md` item #4 for the
+  checklist and SDK notes.
 - **The camera-control button IS reachable by a third-party app (device-verified 2026-07-09).** Its
   FULL mechanical press arrives as the standard `KEYCODE_CAMERA` (→ shutter, `onKeyDown`). Its
   capacitive slide + light-press ride a separate `cs_press` input device (`ABS_X` 0..100 slide,

@@ -32,7 +32,7 @@ Status: ☐ not started · ◐ in progress · ☑ completed · ⏸ deferred (rea
 
 ## Low / Hardening
 
-- ☐ L-DUMP (sec 1 / perf F9): VendorTagInspector always exposed in release + runs on GL thread. Gate with BuildConfig.DEBUG + move to background.
+- ☐ L-CAPLOG (sec 1 / perf F9): camera capability logging always exposed in release + runs on GL thread. Gate with BuildConfig.DEBUG + move to background.
 - ☐ L-BACKUP (sec 2): set allowBackup=false.
 - ☐ L-PEAK (perf F12 / code L3): focus peaking duplicates texel fetch/rotation. Reuse base sample.
 - ⏸ L-MINIFY (sec 3): R8 not applied in release — enabling without on-device verification risks regression. Enable after on-device verification (exit: confirm build/run on real device). Severity LOW maintained.
@@ -46,7 +46,7 @@ Status: ☐ not started · ◐ in progress · ☑ completed · ⏸ deferred (rea
 ### Fixed ☑
 High: H-CFG (session fallback ladder), H-EGL (EGL surface release/skip), H-EOS (drain to EOS), H-MUX (muxer guard + audio degrade), H-MAIN (setup background), H-DEB (80ms debounce), H-ENC (encoding IO offload + recycle + publish on success + OOM guard), H-LEAK (HandlerThread quit), H-VOL (@Volatile engine/inputSurface), H-LIFE (onStart/onStop → resume/pause).
 Medium: M-IMG (onCaptureFailed close), M-LVL (accelerometer roll → level), M-PUNCH (GL preview crop/zoom), M-TMR (timer guard/cancel), M-OK (report success only on ≥1 success), M-FLASH (AE mode flash), M-WB (COLOR_CORRECTION_MODE_FAST), M-GYRO (200Hz + alpha), M-OVR (videoSize recalc), M-ALLOC (drawFrame direct call).
-Low: L-DUMP (BuildConfig.DEBUG gate + background), L-BACKUP (allowBackup=false), L-PEAK (base sample reuse).
+Low: L-CAPLOG (BuildConfig.DEBUG gate + background), L-BACKUP (allowBackup=false), L-PEAK (base sample reuse).
 
 ### Deferred ⏸ (reason recorded, severity maintained)
 - L-MINIFY (LOW): Enable R8 after on-device verification. Exit: confirm build/run on real device.

@@ -12,7 +12,7 @@ and **Play-submission-ready** at the packaging level. Since the last device-veri
 - **Play release engineering**: signed AAB (upload keystore + gitignored `keystore.properties`, password
   backed up encrypted to the user's GPG key), privacy policy live on GitHub Pages
   (`/privacy-policy/`), store-listing + data-safety docs, 512 icon + 1024×500 feature graphic, phone
-  screenshots. Release build re-verified: **not debuggable**, **no `X9TeleVendor` diagnostic dump**.
+  screenshots. Release build re-verified: **not debuggable**, **no debug camera capability logs**.
 - **`.debug` applicationIdSuffix** — a QA gate caught a debug APK impersonating the release id; fixed.
 - **Camera-reopen race fixed** — reopens run off the main thread on `setupExecutor`, `close()` is
   idempotent + awaits the HAL device release. 0 ANRs; in-sensor-zoom/lens reopen + capture 100% in a
@@ -86,49 +86,31 @@ and **Play-submission-ready** at the packaging level. Since the last device-veri
 2. **Physical camera-button press test** (see #11 above).
 3. **Keep-screen-on is unconditional** (`FLAG_KEEP_SCREEN_ON` in MainActivity). Optional: make it a
    toggle if battery-saving is wanted — currently always-on (the usual camera-app choice).
-4. **300 mm teleconverter OIS amplification is gated behind OPPO CameraUnit/OCS SDK authentication**
-   (investigated 2026-07-08). The stock OPPO camera app routes teleconverter detection and the "4.3×"
-   OIS/super-steady profile through authenticated OCS `ConfigureKey`s (`com.oplus.configure.explorer.*`,
-   `com.oplus.configure.video.stabilization`/`super_stabilization`). None of these vendor tags appear in
-   any camera's `availableRequestKeys`/`availableResultKeys` in `dumpsys media.camera`, so raw Camera2
-   cannot set or read them. The current raw-Camera2 path already applies the maximum available hints
-   (`com.oplus.camera.mode=40` for Hasselblad telephoto and `com.oplus.original.zoomRatio` scaled by
-   4.286×).
+4. **300 mm teleconverter OIS integration depends on OPPO CameraUnit availability**
+   (reviewed 2026-07-08). The 4.3× teleconverter stabilization profile appears to use OPPO
+   CameraUnit extension parameters that are not exposed through raw Camera2 request/result keys. The
+   current Camera2 path already applies the available public hints (`com.oplus.camera.mode=40` for
+   Hasselblad telephoto and `com.oplus.original.zoomRatio` scaled by 4.286×).
 
-   **Stock-app teleconverter flow (reverse-engineered):**
-   1. `BaseMode.pg(OplusCaptureResult)` reads result key `com.oplus.explorer.hw.capacity`
-      (`BaseMode.java:7722`).
-   2. Capacity `0` or `0x40000000` → chip-state `0` (damaged/invalid), otherwise `1`
-      (`BaseMode.java:7727-7729`).
-   3. The state is saved to DataManager key `key_explorer_chip_state` (`BaseMode.java:7731-7733`).
-   4. `BaseMode.buildSession` reads it back and sets OCS `KEY_EXPLORER_CHIP_STATE`
-      (`com.oplus.explorer.chip.state`, Integer) on the session config (`BaseMode.java:3221-3222`).
-   5. Stabilization is set via OCS `VIDEO_STABILIZATION_MODE`
-      (`com.oplus.configure.video.stabilization`, String) → `super_stabilization` (`va/e.java:164`).
+   **Observed teleconverter capability path:**
+   - Camera2 exposes standard video stabilization plus the device-specific
+     `com.oplus.video.stabilization.mode` key.
+   - CameraUnit SDK 1.1.0 exposes `VIDEO_STABILIZATION_MODE`
+     (`video_stabilization` / `super_stabilization`) through its documented typed API.
+   - Explorer-specific typed parameters are not exposed by SDK 1.1.0, so this app does not attempt to
+     construct or call them directly.
 
-   **OCS auth error-code meanings (from `androidx.appcompat.app.z.g(int)`):**
-   `1001` AUTHENTICATE_SUCCESS, `1002` AUTHENTICATE_FAIL, `1003` TIME_EXPIRED,
-   **1004 AUTHCODE_EXPECTED**, `1005` VERSION_INCOMPATIBLE, `1006` AUTHCODE_RECYCLE,
-   `1007` AUTHCODE_INVALID, `1008` CAPABILITY_EXCEPTION, `1009` STATUS_EXCEPTION,
-   `1010` INTERNAL_EXCEPTION. Unregistered third-party apps typically get **1004**.
+   **Current check:** `camera/OcsProbe.kt` runs only in debug builds as a read-only CameraUnit
+   availability check. It initializes the official SDK client, records whether the package is enabled
+   for CameraUnit, and queries documented capability ranges when available.
 
-   **What has been prepared:** `camera/OcsProbe.kt` now runs automatically in debug builds, binds to
-   `com.oplus.ocs.service.OpenAuthenticateService`, decodes the error code, and reports `OcsAuthState`
-   plus a capability dump. It confirms the public OCS SDK (`com.oplus.ocs:camera:1.1.0`) only exposes
-   `VIDEO_STABILIZATION_MODE` (`video_stabilization`/`super_stabilization`); the Explorer keys
-   (`com.oplus.explorer.chip.state`, `com.oplus.configure.explorer.enable`) are only present in the
-   stock app's newer embedded SDK and cannot be instantiated from the public SDK because
-   `ConfigureKey` constructors are private.
-
-   **What is still required to unlock the stock profile:**
-   1. An **OPPO enterprise developer account** (CameraUnit AUTH_CODE is not confirmed for individual
-      developers; the application asks for package name + SHA1 signature hash + business reason).
-   2. Create `me.hletrd.telecampro` on https://open.oppomobile.com, apply for **CameraUnit**, wait up to
-      7 business days, and paste the issued 5-year `AUTH_CODE` into `AndroidManifest.xml`.
-   3. Decide whether to add a **CameraUnit camera session** for teleconverter mode. CameraUnit is a
-      high-level API; the public SDK does not expose RAW/DNG/manual-sensor controls, so a full switch
-      would drop Pro/RAW features. A hybrid (CameraUnit only for teleconverter video, Camera2 for
-      photo/manual) is possible but a large architectural addition.
+   **What is still required to enable the full CameraUnit path:**
+   1. Complete OPPO's official CameraUnit developer registration for package `me.hletrd.telecampro`
+      and the release signing certificate.
+   2. Add the issued `AUTH_CODE` to `AndroidManifest.xml`.
+   3. Decide whether teleconverter video should use a CameraUnit camera session. The public SDK is a
+      higher-level API and does not expose RAW/DNG/manual-sensor controls, so a hybrid approach
+      (CameraUnit for teleconverter video, Camera2 for photo/manual) would be a larger addition.
 
 ### 🔧 Infra note — wireless ADB on this Mac
 `adb connect 172.30.50.127:<port>` returns **"No route to host"** even though ping + raw TCP reach the
@@ -156,8 +138,8 @@ Full-app review session; screenshots + pulled files + ffprobe as evidence.
   numerically against the white-paper anchors (18 % → 0.4868). *(ffprobe + frame extract)*
 - ✅ **LOG transfer-tag fix** — before: VUI defaulted to `smpte2084` (PQ) → players tone-mapped log as
   HDR; after: SDR-class `bt2020-10`. HLG clip verified tagging `arib-std-b67` + `tv` range. *(ffprobe)*
-- ✅ **HAL-native log IS reachable** — the vendor tag `com.oplus.log.video.mode` (Integer, session key)
-  IS in the tele's availableRequest+SessionKeys. Set via raw Camera2 (session param + request);
+- ✅ **HAL-native log IS reachable** — the device-specific key `com.oplus.log.video.mode` (Integer,
+  session key) is in the tele's available request/session keys. Set via Camera2 session param + request;
   device-verified value 1 engages a genuine scene-referred log stream (flat, mean luma ~½ SDR). Only
   `com.oplus.movie.log.enable` is gated. Exposed as Pro→Advanced→"Native Log". CAVEAT: not a clean
   round-trip for the published O-Log2/O-Log-gen1 LUTs (un-white-balanced) — GL O-Log2 stays the

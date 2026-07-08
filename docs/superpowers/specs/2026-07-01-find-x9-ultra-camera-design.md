@@ -24,7 +24,7 @@
 ### Non-Goals
 - Multi-device compatibility, backward compatibility (lower minSdk), CameraX use.
 - Auto scene detection / AI correction / filters, cloud sync.
-- Vendor-specific LOG profile bit-perfect replication (stock app exclusive, impossible). We approximate with GL Log OETF.
+- OEM LOG profile bit-perfect replication. We use the documented/available GL Log OETF path instead.
 
 ## 3. Build / Toolchain (all latest, deprecated excluded)
 
