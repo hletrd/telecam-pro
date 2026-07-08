@@ -111,12 +111,15 @@ class MainActivity : ComponentActivity() {
         super.onStop()
     }
 
-    // Volume keys fire the shutter: at 300 mm even a light screen tap visibly shakes the rig, so a
-    // hardware key (or a volume-button remote/selfie grip) is the only vibration-free release short
-    // of the self-timer. Both keys are consumed on DOWN and UP so holding one never turns the media
-    // volume into a burst of beeps mid-shot; repeatCount gates auto-repeat to a single capture.
+    // Volume keys AND the hardware camera button fire the shutter: at 300 mm even a light screen tap
+    // visibly shakes the rig, so a hardware key (volume remote / selfie grip / the Find X9 Ultra's
+    // camera-control button, which the framework surfaces as the standard KEYCODE_CAMERA) is the only
+    // vibration-free release short of the self-timer. (The button's capacitive slide/light-press
+    // gestures are on a separate `cs_press` sensor behind OPPO's framework and are NOT standard key
+    // events — only the full press reaches us here.) Keys are consumed on DOWN and UP so holding one
+    // never turns the media volume into a burst of beeps mid-shot; repeatCount gates auto-repeat.
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_UP) {
+        if (isShutterKey(keyCode)) {
             if (hasRequiredPermissions && event.repeatCount == 0) vm.onHardwareShutter()
             return true
         }
@@ -124,9 +127,14 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN || keyCode == KeyEvent.KEYCODE_VOLUME_UP) return true
+        if (isShutterKey(keyCode)) return true
         return super.onKeyUp(keyCode, event)
     }
+
+    private fun isShutterKey(keyCode: Int): Boolean =
+        keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ||
+            keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
+            keyCode == KeyEvent.KEYCODE_CAMERA
 
     private fun hasRequiredPermissions(): Boolean =
         REQUIRED_PERMISSIONS.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }
