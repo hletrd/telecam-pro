@@ -227,7 +227,7 @@ fun CameraScreen(
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .statusBarsPadding()
-                .padding(start = 12.dp, top = 52.dp),
+                .padding(start = 12.dp, top = 72.dp),
         )
 
         // Scopes/readouts stack in the top-end column. Pushed below the top bar (top = 72dp) so the

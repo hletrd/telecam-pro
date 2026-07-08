@@ -1,6 +1,55 @@
 # Backlog & Status — Find X9 Ultra Teleconverter Camera
 
-Living handoff document. Read after `CLAUDE.md`. Goal: **Google Play release.** Updated 2026-07-06.
+Living handoff document. Read after `CLAUDE.md`. Goal: **Google Play release.** Updated 2026-07-08.
+
+## ★ Current status (2026-07-08) — read this first
+
+The app is **rebranded "TeleCam Pro"** (`com.hletrd.telecampro`), **public on GitHub** (`telecam-pro`),
+and **Play-submission-ready** at the packaging level. Since the last device-verified baseline, a large
+**UX-polish + feature-trim pass** landed (mostly code-complete; several items still need on-device eyes).
+
+### ✅ Done & device-verified
+- **Play release engineering**: signed AAB (upload keystore + gitignored `keystore.properties`, password
+  backed up encrypted to the user's GPG key), privacy policy live on GitHub Pages
+  (`/privacy-policy/`), store-listing + data-safety docs, 512 icon + 1024×500 feature graphic, phone
+  screenshots. Release build re-verified: **not debuggable**, **no `X9TeleVendor` diagnostic dump**.
+- **`.debug` applicationIdSuffix** — a QA gate caught a debug APK impersonating the release id; fixed.
+- **Camera-reopen race fixed** — reopens run off the main thread on `setupExecutor`, `close()` is
+  idempotent + awaits the HAL device release. 0 ANRs; in-sensor-zoom/lens reopen + capture 100% in a
+  13-cycle stress loop. Capture pipeline (HEIC+DNG, burst, HEVC/HLG/AAC video) all re-verified on release.
+- **HAL-hostile features gated out**: Auto HDR (SIGABRTs the camera-provider HAL) and **120 fps
+  high-speed** (same crash class). HAL-disconnect **auto-recovery** added (bounded reopen).
+- **Native log confirmed engaging** on the release build (`vendor log.video.mode=1 applied`, `vendorLog=1`).
+
+### 🟢 Done in code, deployed, needs on-device visual verification
+- **Trim to standard-API / HAL-stable**: removed in-sensor zoom, ideal-RAW, app-side gyro-EIS, and AV1
+  (SW-only on this SoC). **LOG transfer now drives the native HAL log** (removed the separate
+  experimental toggle). Default bitrate → **Ultra**. Default frame rate → **29.97 (NTSC)**.
+- **Teleconverter toggle locks to the 3× lens.**
+- **OSD shows effective ~300 mm** in teleconverter mode (rounded); status bar nudged down for top margin.
+- **UI**: pinch-to-zoom, iPhone-style control-glyph rotation, lens picker in its own tab, tune/sliders
+  gear icon, fixed-width AE/AF/shutter chips.
+
+### 🔴 Open polish items (found in the 2026-07-08 live-test loop — TODO)
+1. **LOG preview not visibly flat** — native log key IS applied, but the preview/output doesn't read as
+   log; investigate the GL pass-through (`gl.setTransfer(null)`) + ffprobe a recorded clip.
+2. **Icon rotation — left-landscape is 180° off** (right-landscape is correct).
+3. **Icon rotation — rotated text pills overflow / rounded-rect corners stretch** (nine-patch-like); the
+   rotate approach needs bounds-aware layout or to rotate only compact glyphs.
+4. **Scopes (waveform/histogram)** should rotate with orientation and **refresh faster**.
+5. **Pinch-to-zoom does nothing** — verify the tele's `zoomRatioRange` values + the tap/transform gesture
+   conflict.
+6. **Settings sheet still overscrolls/bounces at the bottom** (`LocalOverscrollFactory = null` didn't fix it).
+
+### 🔧 Infra note — wireless ADB on this Mac
+`adb connect 172.30.50.127:<port>` returns **"No route to host"** even though ping + raw TCP reach the
+phone, because the Mac is multi-homed (en0 Ethernet + en1 Wi-Fi on the same /17) with Tailscale — adb's
+server binds a path that can't reach the phone. **Workaround: a localhost TCP proxy**
+(`scratchpad/adbproxy.py <phone-ip> <port>`) then `adb connect 127.0.0.1:5599`. The wireless-debug **port
+changes every time Wi-Fi/wireless-debugging is toggled** — re-read it from the phone each time.
+
+---
+
 
 ## 0-bis. Verified on device 2026-07-06 (USB ADB) ✅
 

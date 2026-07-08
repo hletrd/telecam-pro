@@ -43,6 +43,7 @@ import com.hletrd.findx9tele.ui.controls.transferLabelShort
 import com.hletrd.findx9tele.ui.controls.videoCodecLabelShort
 import com.hletrd.findx9tele.ui.controls.videoResolutionLabel
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * Composition grid, drawn per [GridType]. Purely decorative; visibility/style is entirely driven
@@ -276,9 +277,12 @@ fun AudioMeter(level: Float, modifier: Modifier = Modifier) {
 @Composable
 fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier) {
     val focal = state.caps?.equivalentFocalMm ?: 0f
+    // The afocal teleconverter multiplies the ~70 mm periscope by 300/70 → a ~300 mm effective focal.
+    // Round to the nearest 10 mm so the readout reads a clean "300mm" rather than 296.
+    val effFocal = ((focal * (300f / 70f)) / 10f).roundToInt() * 10
     val focalLabel = when {
         focal <= 0f -> "--"
-        state.teleconverterMode -> "%.0fmm TELE".format(focal)
+        state.teleconverterMode -> "${effFocal}mm TELE"
         else -> "%.0fmm".format(focal)
     }
     Row(

@@ -186,8 +186,8 @@ enum class VideoFrameRate(
     FPS_120("120", 120.0, 120, false, highSpeed = true);
 
     companion object {
-        /** The default (30 fps) — matches [ManualControls.fps]'s default and the old fixed rate. */
-        val DEFAULT = FPS_30
+        /** The default: 29.97 fps NTSC drop-frame (the standard cine/broadcast rate). */
+        val DEFAULT = FPS_29_97
 
         /**
          * The frame rates the [caps] camera can actually deliver at [size] with [codec], honoring:
