@@ -136,12 +136,16 @@ fun CameraScreen(
         sheetVisible = true
     }
 
-    // Counter-rotates the on-screen scopes/readouts so they stay upright as the phone turns, even
-    // though the activity is portrait-locked (like Pixel/Sony). We accumulate an UNWRAPPED target so
-    // the animation always takes the shortest ≤90° path (e.g. 270°→0° rotates +90°, not −270°).
-    var overlayRotationTarget by remember { mutableFloatStateOf(-state.deviceOrientation.toFloat()) }
+    // Counter-rotates the on-screen glyphs/labels so they stay upright as the phone turns, even though
+    // the activity is portrait-locked (like Pixel/Sony). The counter-rotation is +deviceOrientation:
+    // GyroEis derives the discrete value from gravity via atan2(x,y), which yields dev=90 for a
+    // COUNTER-clockwise (left) landscape and dev=270 for a clockwise (right) landscape — the opposite
+    // of the naive assumption. So the glyph must rotate by +dev to undo the phone's turn (a −dev sign
+    // left both landscapes 180° off — invisible on symmetric icons, obvious once text rotates).
+    // Accumulate an UNWRAPPED target so the animation always takes the shortest ≤90° path.
+    var overlayRotationTarget by remember { mutableFloatStateOf(state.deviceOrientation.toFloat()) }
     LaunchedEffect(state.deviceOrientation) {
-        val desired = -state.deviceOrientation.toFloat()
+        val desired = state.deviceOrientation.toFloat()
         var delta = (desired - overlayRotationTarget) % 360f
         if (delta > 180f) delta -= 360f
         if (delta < -180f) delta += 360f
