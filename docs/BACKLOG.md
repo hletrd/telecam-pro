@@ -93,9 +93,24 @@ and **Play-submission-ready** at the packaging level. Since the last device-veri
    any camera's `availableRequestKeys`/`availableResultKeys` in `dumpsys media.camera`, so raw Camera2
    cannot set or read them. The current raw-Camera2 path already applies the maximum available hints
    (`com.oplus.camera.mode=40` for Hasselblad telephoto and `com.oplus.original.zoomRatio` scaled by
-   4.286×). To unlock the stock 300 mm OIS profile, the app package must be registered on OPPO's
-   CameraUnit developer portal to receive an `AUTH_CODE`; then the OCS/CameraUnit path can be wired in.
-   See CLAUDE.md for the manifest placeholder and `camera/OcsProbe.kt` for the current auth-probe stub.
+   4.286×).
+
+   **What has been prepared:** `camera/OcsProbe.kt` now runs automatically in debug builds, binds to
+   `com.oplus.ocs.service.OpenAuthenticateService`, and reports `OcsAuthState` plus a capability dump.
+   It confirms the public OCS SDK (`com.oplus.ocs:camera:1.1.0`) only exposes `VIDEO_STABILIZATION_MODE`
+   (`video_stabilization`/`super_stabilization`); the Explorer keys (`com.oplus.explorer.chip.state`,
+   `com.oplus.configure.explorer.enable`) are only present in the stock app's newer embedded SDK and
+   cannot be instantiated from the public SDK because `ConfigureKey` constructors are private.
+
+   **What is still required to unlock the stock profile:**
+   1. An **OPPO enterprise developer account** (CameraUnit AUTH_CODE is not confirmed for individual
+      developers; the application asks for package name + SHA1 signature hash + business reason).
+   2. Create `me.hletrd.telecampro` on https://open.oppomobile.com, apply for **CameraUnit**, wait up to
+      7 business days, and paste the issued 5-year `AUTH_CODE` into `AndroidManifest.xml`.
+   3. Decide whether to add a **CameraUnit camera session** for teleconverter mode. CameraUnit is a
+      high-level API; the public SDK does not expose RAW/DNG/manual-sensor controls, so a full switch
+      would drop Pro/RAW features. A hybrid (CameraUnit only for teleconverter video, Camera2 for
+      photo/manual) is possible but a large architectural addition.
 
 ### 🔧 Infra note — wireless ADB on this Mac
 `adb connect 172.30.50.127:<port>` returns **"No route to host"** even though ping + raw TCP reach the
