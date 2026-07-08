@@ -267,6 +267,9 @@ class CameraEngine(private val context: Context) {
     /** Enables/disables GL-thread histogram and/or waveform computation feeding [onAnalysis]. */
     fun setAnalysis(histogram: Boolean, waveform: Boolean) = gl.setAnalysisEnabled(histogram, waveform)
 
+    /** Forces the luma readback for the app-side auto-exposure loop (SHUTTER/ISO priority). */
+    fun setAeMetering(enabled: Boolean) = gl.setAeMetering(enabled)
+
     /**
      * Tap-to-focus/meter. Maps a VIEW-normalized tap [(nx,ny), origin top-left] to a
      * SENSOR-normalized point by inverting the GL content rotation applied to the preview — the

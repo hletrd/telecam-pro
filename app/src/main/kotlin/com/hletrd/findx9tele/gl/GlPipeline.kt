@@ -84,6 +84,9 @@ class GlPipeline {
     // a tradeoff (GPU->CPU stall + copy) that should be profiled/tuned on device.
     private var analysisHistogram = false
     private var analysisWaveform = false
+    // Force the luma readback on (independent of the user's scope toggles) so the app-side
+    // auto-exposure loop in SHUTTER/ISO-priority always has fresh luma to meter from.
+    private var analysisAe = false
     private var analysisCallback: ((HistogramData?, WaveformData?) -> Unit)? = null
     private var analysisFrameCounter = 0
     private var analysisBuffer: ByteBuffer? = null
@@ -195,11 +198,14 @@ class GlPipeline {
         punchInY = y.coerceIn(0f, 1f)
     }
 
-    /** Toggle live histogram/waveform readback. Both off → readback is skipped entirely. */
+    /** Toggle live histogram/waveform readback. Both off (and AE metering off) → readback is skipped. */
     fun setAnalysisEnabled(histogram: Boolean, waveform: Boolean) = post {
         analysisHistogram = histogram
         analysisWaveform = waveform
     }
+
+    /** Force the luma readback for app-side AE (SHUTTER/ISO priority), independent of scope toggles. */
+    fun setAeMetering(enabled: Boolean) = post { analysisAe = enabled }
 
     /** Sink for computed scopes; invoked on the [analysisExecutor] thread, not the GL thread. */
     fun setAnalysisCallback(cb: ((HistogramData?, WaveformData?) -> Unit)?) = post {
@@ -266,9 +272,9 @@ class GlPipeline {
 
         // Additive scope analysis: throttled GL readback of the just-drawn preview, computed off-thread.
         // Kept entirely defensive so it can never block or crash the preview/encoder draw below.
-        if ((analysisHistogram || analysisWaveform) && analysisCallback != null) {
-            // Refresh the scopes ~6×/s (every 5th frame at 30 fps) — snappy without stalling the 4K
-            // preview on the readback. (Was every 12th ≈ 2.5×/s, which felt laggy.)
+        if ((analysisHistogram || analysisWaveform || analysisAe) && analysisCallback != null) {
+            // Refresh the scopes / AE meter ~6×/s (every 5th frame at 30 fps) — snappy without stalling
+            // the 4K preview on the readback. (Was every 12th ≈ 2.5×/s, which felt laggy.)
             if (++analysisFrameCounter >= 5) {
                 analysisFrameCounter = 0
                 runAnalysisReadback(core)
@@ -296,7 +302,9 @@ class GlPipeline {
         if (previewEgl == EGL14.EGL_NO_SURFACE || previewW <= 0 || previewH <= 0) return
         if (analysisBusy) return
         val cb = analysisCallback ?: return
-        val doHist = analysisHistogram
+        // AE metering needs the luma histogram; compute it whenever AE is active even if the user's
+        // histogram overlay is off (the callback consumer picks luma out and ignores the rest).
+        val doHist = analysisHistogram || analysisAe
         val doWave = analysisWaveform
         if (!doHist && !doWave) return
         try {

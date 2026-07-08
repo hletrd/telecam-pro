@@ -8,6 +8,7 @@ import com.hletrd.findx9tele.camera.AudioScene
 import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorTransfer
+import com.hletrd.findx9tele.camera.ExposureMode
 import com.hletrd.findx9tele.camera.VideoStabMode
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.ManualControls
@@ -58,7 +59,7 @@ class SettingsStore(context: Context) {
             putString("focusMode", c.focusMode.name)
             putFloat("focusDiopters", c.focusDistanceDiopters)
             putBoolean("afLock", c.afLock)
-            putBoolean("autoExposure", c.autoExposure)
+            putString("exposureMode", c.exposureMode.name)
             putInt("iso", c.iso)
             putLong("exposureTimeNs", c.exposureTimeNs)
             putString("shutterMode", c.shutterMode.name)
@@ -107,7 +108,7 @@ class SettingsStore(context: Context) {
                 focusMode = enumOr(prefs.getString("focusMode", null), d.focusMode),
                 focusDistanceDiopters = prefs.getFloat("focusDiopters", d.focusDistanceDiopters),
                 afLock = prefs.getBoolean("afLock", d.afLock),
-                autoExposure = prefs.getBoolean("autoExposure", d.autoExposure),
+                exposureMode = enumOr(prefs.getString("exposureMode", null), d.exposureMode),
                 iso = prefs.getInt("iso", d.iso),
                 exposureTimeNs = prefs.getLong("exposureTimeNs", d.exposureTimeNs),
                 shutterMode = enumOr(prefs.getString("shutterMode", null), d.shutterMode),

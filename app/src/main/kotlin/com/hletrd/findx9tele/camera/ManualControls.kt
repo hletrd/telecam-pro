@@ -15,9 +15,12 @@ data class ManualControls(
     val focusMode: FocusMode = FocusMode.CONTINUOUS,
     val focusDistanceDiopters: Float = 0f, // 0 = infinity
     val afLock: Boolean = false,
-    // Exposure — default to auto so the preview is correctly exposed on launch; the user opts into
-    // manual (which reveals iso/shutter as live overrides) via the exposure controls.
-    val autoExposure: Boolean = true,
+    // Exposure — PASM-style mode. PROGRAM (default) = HAL auto ISO+shutter, correctly exposed on
+    // launch. SHUTTER = you set shutter, an app-side loop auto-drives ISO. ISO = you set ISO, the loop
+    // auto-drives shutter. MANUAL = you set both. (This device's tele aperture is fixed, so there is
+    // no aperture-priority mode.) In SHUTTER/ISO the app-side controller keeps the driven field fresh
+    // in [iso]/[exposureTimeNs], so the capture path treats S/ISO/M identically (AE off, sensor set).
+    val exposureMode: ExposureMode = ExposureMode.PROGRAM,
     val iso: Int = 400,
     val exposureTimeNs: Long = 8_000_000L, // ~1/125 s (SPEED mode)
     val shutterMode: ShutterMode = ShutterMode.SPEED,
@@ -46,7 +49,32 @@ data class ManualControls(
     val zoomRatio: Float = 1f,
     // Output
     val jpegQuality: Int = 95,
-)
+) {
+    /**
+     * True when the HAL auto-exposure is ON (PROGRAM only). In SHUTTER/ISO/MANUAL the HAL AE is OFF
+     * and the sensor values are set directly — in SHUTTER/ISO the app-side controller supplies the
+     * driven value, so the capture path treats all three the same. Kept as the single read-only
+     * meaning of "AE on" that the whole codebase already reasons about.
+     */
+    val autoExposure: Boolean get() = exposureMode == ExposureMode.PROGRAM
+
+    /** SHUTTER mode: the app-side AE loop drives ISO (user owns the shutter). */
+    val autoIsoDriven: Boolean get() = exposureMode == ExposureMode.SHUTTER
+
+    /** ISO mode: the app-side AE loop drives the shutter/exposure time (user owns ISO). */
+    val autoShutterDriven: Boolean get() = exposureMode == ExposureMode.ISO
+}
+
+/**
+ * PASM-style exposure mode. No aperture-priority: the tele's aperture is fixed, so there is nothing
+ * to prioritize. [letter] is the compact dial badge; [label] the settings-row name.
+ */
+enum class ExposureMode(val letter: String, val label: String) {
+    PROGRAM("P", "Program"),
+    SHUTTER("S", "Shutter priority"),
+    ISO("ISO", "ISO priority"),
+    MANUAL("M", "Manual"),
+}
 
 /** Snap increment for the manual ISO/shutter dials, in EV (stops). */
 enum class ExposureStep(val ev: Float, val label: String) {
