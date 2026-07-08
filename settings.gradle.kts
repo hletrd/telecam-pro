@@ -17,6 +17,17 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // OPPO Open Capability Service (CameraUnit SDK) — the privileged system-camera bridge that
+        // exposes super/ultra-steady stabilization etc. to third-party apps. Credentials are the
+        // read-only ones OPPO publishes for third-party developers (github.com/oppo/CameraUnit).
+        maven {
+            url = uri("https://maven.columbus.heytapmobi.com/repository/OpenCapability/")
+            credentials {
+                username = "ocuser"
+                password = "3dca1351358f49aeaf5af516ffd05a7c8e0cbd56"
+            }
+            content { includeGroup("com.oplus.ocs") }
+        }
     }
 }
 

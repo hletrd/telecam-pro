@@ -122,6 +122,11 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     debugImplementation(libs.androidx.compose.ui.tooling)
 
+    // OPPO CameraUnit / OCS SDK — bridge to the privileged system-camera path (super-steady
+    // stabilization for the teleconverter, etc.) that raw Camera2 can't reach. POC for 300 mm OIS.
+    implementation("com.oplus.ocs:camera:1.1.0")
+    implementation("com.oplus.ocs:base:1.0.16")
+
     testImplementation(libs.junit)
 }
 

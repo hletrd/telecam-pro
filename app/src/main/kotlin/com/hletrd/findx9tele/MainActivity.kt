@@ -57,6 +57,10 @@ class MainActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         hasRequiredPermissions = hasRequiredPermissions()
 
+        // POC: probe whether OPPO's CameraUnit/OCS service authenticates this app (→ path to the stock
+        // 300 mm teleconverter OIS). Query-only, off the main thread; see OcsProbe. TODO: remove after POC.
+        Thread { com.hletrd.findx9tele.camera.OcsProbe.run(applicationContext) }.start()
+
         setContent {
             FindX9TeleTheme {
                 val state by vm.state.collectAsState()
