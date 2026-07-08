@@ -130,6 +130,13 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // Last saved still → gallery thumbnail + in-app review (io thread → StateFlow is thread-safe).
         engine.onMediaSaved = { uri -> _state.update { it.copy(lastMediaUri = uri) } }
         restoreSettingsIfEnabled()
+        refreshProgramAppSide()
+        // Seed the review thumbnail with the newest photo this app previously saved, so "last shot"
+        // works on a fresh launch instead of only after the first capture of the session (feedback).
+        Thread {
+            val seeded = com.hletrd.findx9tele.storage.MediaStoreWriter.latestOwnImage(getApplication())
+            if (seeded != null) _state.update { if (it.lastMediaUri == null) it.copy(lastMediaUri = seeded) else it }
+        }.start()
         _state.update { it.copy(savedMemorySlots = settingsStore.savedPresetSlots()) }
         // Sweep any pending media orphaned by a prior crash/force-kill (record stop never ran).
         engine.cleanupOrphans()
@@ -157,7 +164,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setControls(c)
         // Manual/priority modes need luma analysis even when scopes are hidden: priority AE drives
         // from it, and full manual uses it for the live exposure meter.
-        engine.setAeMetering(usesExposureAnalysis(c.exposureMode))
+        engine.setAeMetering(usesExposureAnalysis(c))
         engine.setLens(e.lens)
         engine.setTransfer(e.transfer)
         engine.setTeleconverterMode(e.teleconverter)
@@ -245,7 +252,44 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     fun onAppStatus(message: String) = showStatus(message)
 
-    private fun usesExposureAnalysis(mode: ExposureMode): Boolean = mode != ExposureMode.PROGRAM
+    private fun usesExposureAnalysis(c: ManualControls): Boolean =
+        c.exposureMode != ExposureMode.PROGRAM || c.programAppSide
+
+    /**
+     * PROGRAM runs app-side for STILLS — the auto min-shutter (1/focal rule) + Auto ISO a real P mode
+     * gives, which the HAL AE cannot (no min-shutter hint → 1/30 s blur at 300 mm). The HAL AE keeps
+     * video PROGRAM (its shutter conventions are frame-rate driven) and any flash-metered PROGRAM
+     * (AUTO/ON flash metering only exists with AE ON).
+     */
+    private fun programShouldRunAppSide(mode: CaptureMode, flash: FlashMode): Boolean =
+        mode == CaptureMode.PHOTO && flash != FlashMode.AUTO && flash != FlashMode.ON
+
+    /** Recomputes [ManualControls.programAppSide] after mode/flash changes, seeding a smooth handoff. */
+    private fun refreshProgramAppSide() {
+        val live = _state.value
+        val want = programShouldRunAppSide(live.mode, live.controls.flash)
+        if (live.controls.programAppSide == want) return
+        updateControls {
+            if (want && it.exposureMode == ExposureMode.PROGRAM) {
+                // HAL AE → app-side handoff: seed from the AE's last resolved values so exposure
+                // doesn't jump, and force SPEED so the loop's exposureTimeNs is what the request uses.
+                it.copy(
+                    programAppSide = true,
+                    shutterMode = ShutterMode.SPEED,
+                    iso = live.liveIso ?: it.iso,
+                    exposureTimeNs = live.liveExposureNs ?: it.exposureTimeNs,
+                )
+            } else {
+                it.copy(programAppSide = want)
+            }
+        }
+    }
+
+    /** Handheld-safe shutter target for app-side PROGRAM: the 1/(35mm-equivalent focal) rule. */
+    private fun preferredProgramShutterNs(s: CameraUiState): Long {
+        val eff = s.lens.targetEquivMm * (if (s.teleconverterMode) 300f / 70f else 1f) // afocal TC ≈ 4.286×
+        return (1_000_000_000f / eff.coerceAtLeast(1f)).toLong()
+    }
 
     private fun audioInputStatus(preference: AudioInputPreference = _state.value.audioInputPreference) =
         AudioInputInspector.status(getApplication(), preference)
@@ -310,12 +354,12 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     // Dragging the ISO dial only makes sense when the user owns ISO (ISO/MANUAL). If ISO is currently
     // auto (PROGRAM or SHUTTER), taking manual control of it drops to MANUAL.
     override fun onIso(iso: Int) = updateControls(FnSlot.ISO) {
-        val mode = if (it.autoExposure || it.autoIsoDriven) ExposureMode.MANUAL else it.exposureMode
+        val mode = if (it.exposureMode == ExposureMode.PROGRAM || it.autoIsoDriven) ExposureMode.MANUAL else it.exposureMode
         it.copy(iso = iso, exposureMode = mode)
     }
     // Likewise for shutter: if the shutter is currently auto (PROGRAM or ISO), taking it over → MANUAL.
     override fun onShutterNs(ns: Long) = updateControls(FnSlot.SHUTTER) {
-        val mode = if (it.autoExposure || it.autoShutterDriven) ExposureMode.MANUAL else it.exposureMode
+        val mode = if (it.exposureMode == ExposureMode.PROGRAM || it.autoShutterDriven) ExposureMode.MANUAL else it.exposureMode
         it.copy(exposureTimeNs = ns, exposureMode = mode)
     }
     override fun onExposureCompensation(ev: Int) = updateControls(FnSlot.EV) { it.copy(exposureCompensation = ev) }
@@ -332,21 +376,21 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             val exp = if (fromProgram) (live.liveExposureNs ?: it.exposureTimeNs) else it.exposureTimeNs
             it.copy(exposureMode = mode, shutterMode = shutterMode, iso = iso, exposureTimeNs = exp)
         }
-        // Force the GL luma readback on while manual/priority modes need a live meter; off in P.
-        engine.setAeMetering(usesExposureAnalysis(mode))
+        // Entering/leaving PROGRAM may flip the app-side flag (photo P is app-side, video P is HAL).
+        refreshProgramAppSide()
     }
     // Legacy binary toggle (kept for any caller): Auto→PROGRAM, Manual→MANUAL.
     override fun onToggleAutoExposure(auto: Boolean) {
         val mode = if (auto) ExposureMode.PROGRAM else ExposureMode.MANUAL
-        engine.setAeMetering(usesExposureAnalysis(mode))
         updateControls(FnSlot.EXPOSURE_MODE) { it.copy(exposureMode = mode) }
+        refreshProgramAppSide()
     }
     override fun onToggleAeLock(locked: Boolean) = updateControls(FnSlot.EXPOSURE_MODE) { it.copy(aeLock = locked) }
     override fun onAntibanding(mode: Antibanding) = updateControls { it.copy(antibanding = mode) }
     override fun onFps(fps: Int) = updateControls { it.copy(fps = fps) }
     override fun onShutterMode(mode: ShutterMode) = updateControls(FnSlot.SHUTTER) { it.copy(shutterMode = mode) }
     override fun onShutterAngle(angle: Float) = updateControls(FnSlot.SHUTTER) {
-        val mode = if (it.autoExposure || it.autoShutterDriven) ExposureMode.MANUAL else it.exposureMode
+        val mode = if (it.exposureMode == ExposureMode.PROGRAM || it.autoShutterDriven) ExposureMode.MANUAL else it.exposureMode
         it.copy(shutterAngle = angle, shutterMode = ShutterMode.ANGLE, exposureMode = mode)
     }
     override fun onExposureStep(step: ExposureStep) = updateControls { it.copy(exposureStep = step) }
@@ -364,7 +408,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onColorEffect(effect: ColorEffect) = updateControls { it.copy(colorEffect = effect) }
 
     // ---- Optics / output ----
-    override fun onFlash(mode: FlashMode) = updateControls { it.copy(flash = mode) }
+    override fun onFlash(mode: FlashMode) {
+        updateControls { it.copy(flash = mode) }
+        refreshProgramAppSide() // AUTO/ON flash needs the HAL AE — photo P falls back off app-side
+    }
     override fun onToggleOis(enabled: Boolean) = updateControls(FnSlot.STABILIZATION) { it.copy(oisEnabled = enabled) }
     override fun onZoomRatio(ratio: Float) = updateControls(FnSlot.ZOOM) { it.copy(zoomRatio = ratio) }
     override fun onPinchZoom(factor: Float) {
@@ -383,6 +430,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // gone). Stop and save it first so the mode switch can't strand an in-progress recording.
         if (_state.value.isRecording && mode != CaptureMode.VIDEO) onToggleRecording()
         _state.update { it.copy(mode = mode) }
+        refreshProgramAppSide() // photo P is app-side (min-shutter rule), video P is HAL AE
         markChanged(if (mode == CaptureMode.VIDEO) FnSlot.TRANSFER else FnSlot.EXPOSURE_MODE)
         // Persist the mode the instant it changes, not just on onStop: swiping the app from Recents
         // can kill the process before onStop's async prefs write flushes, which is why "last mode"
@@ -712,7 +760,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     private fun updateControls(slot: FnSlot? = null, block: (ManualControls) -> ManualControls) {
         val updated = block(_state.value.controls)
-        engine.setAeMetering(usesExposureAnalysis(updated.exposureMode))
+        engine.setAeMetering(usesExposureAnalysis(updated))
         _state.update { it.copy(controls = updated) }
         slot?.let(::markChanged)
         pendingControls = updated
@@ -746,6 +794,14 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 AutoExposure.driveShutterNs(luma, c.effectiveExposureNs(), caps.exposureTimeRange, evStops)?.let { newNs ->
                     updateControls { it.copy(exposureTimeNs = newNs) }
                 }
+            ExposureMode.PROGRAM -> if (c.programAppSide) {
+                AutoExposure.driveProgram(
+                    luma, c.iso, c.effectiveExposureNs(), preferredProgramShutterNs(s),
+                    caps.isoRange, caps.exposureTimeRange, evStops,
+                )?.let { (newIso, newNs) ->
+                    updateControls { it.copy(iso = newIso, exposureTimeNs = newNs) }
+                }
+            }
             else -> Unit
         }
     }

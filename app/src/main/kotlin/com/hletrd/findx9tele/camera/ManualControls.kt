@@ -21,6 +21,11 @@ data class ManualControls(
     // no aperture-priority mode.) In SHUTTER/ISO the app-side controller keeps the driven field fresh
     // in [iso]/[exposureTimeNs], so the capture path treats S/ISO/M identically (AE off, sensor set).
     val exposureMode: ExposureMode = ExposureMode.PROGRAM,
+    // PROGRAM runs APP-SIDE for stills (auto min-shutter by the 1/focal rule + Auto ISO — the HAL AE
+    // can't take a minimum-shutter hint, so it happily picks 1/30 s at 300 mm). The ViewModel keeps
+    // this flag true whenever mode is PROGRAM + PHOTO and the flash doesn't need the HAL AE
+    // (AUTO/ON flash metering only exists with AE ON); video PROGRAM stays on the HAL AE.
+    val programAppSide: Boolean = false,
     val iso: Int = 400,
     val exposureTimeNs: Long = 8_000_000L, // ~1/125 s (SPEED mode)
     val shutterMode: ShutterMode = ShutterMode.SPEED,
@@ -56,7 +61,7 @@ data class ManualControls(
      * driven value, so the capture path treats all three the same. Kept as the single read-only
      * meaning of "AE on" that the whole codebase already reasons about.
      */
-    val autoExposure: Boolean get() = exposureMode == ExposureMode.PROGRAM
+    val autoExposure: Boolean get() = exposureMode == ExposureMode.PROGRAM && !programAppSide
 
     /** SHUTTER mode: the app-side AE loop drives ISO (user owns the shutter). */
     val autoIsoDriven: Boolean get() = exposureMode == ExposureMode.SHUTTER

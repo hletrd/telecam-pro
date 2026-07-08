@@ -135,6 +135,12 @@ class CameraEngine(private val context: Context) {
                 gl.setCameraPreviewSize(videoSize.width, videoSize.height)
                 gl.setEisProvider { gyro.currentCorrection() }
                 gl.setAnalysisCallback { h, w -> onAnalysis?.invoke(h, w) }
+                // Re-seed GL state that may have been set BEFORE the GL thread existed:
+                // GlPipeline.post is handler?.post, so pre-start calls (e.g. a LOG transfer or a
+                // priority-mode AE metering flag restored from settings) were silently dropped —
+                // the LOG preview only turned flat after the first recording pushed the transfer.
+                gl.setTransfer(if (recorder == null) transfer else null)
+                gl.setAeMetering(aeMetering)
                 applyStabilization()
                 gyro.start()
                 maybeLogCameraCapabilities()
@@ -285,7 +291,14 @@ class CameraEngine(private val context: Context) {
     fun setAnalysis(histogram: Boolean, waveform: Boolean) = gl.setAnalysisEnabled(histogram, waveform)
 
     /** Forces the luma readback for the app-side auto-exposure loop (SHUTTER/ISO priority). */
-    fun setAeMetering(enabled: Boolean) = gl.setAeMetering(enabled)
+    fun setAeMetering(enabled: Boolean) {
+        aeMetering = enabled
+        gl.setAeMetering(enabled)
+    }
+
+    // Remembered so the GL-start callback can re-seed it: setAeMetering can arrive from settings
+    // restore BEFORE the GL thread exists, where GlPipeline.post silently drops it.
+    @Volatile private var aeMetering = false
 
     /**
      * Tap-to-focus/meter. Maps a VIEW-normalized tap [(nx,ny), origin top-left] to a
@@ -910,7 +923,8 @@ class CameraEngine(private val context: Context) {
     private fun fileName(prefix: String, ext: String): String {
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
         val seq = fileSeq.getAndIncrement() % 1000
-        return "%s_X9TELE_%s_%03d.%s".format(prefix, stamp, seq, ext)
+        // TELECAM = the app name (TeleCam Pro); files read IMG_TELECAM_… / VID_TELECAM_… in galleries.
+        return "%s_TELECAM_%s_%03d.%s".format(prefix, stamp, seq, ext)
     }
 
     private companion object {

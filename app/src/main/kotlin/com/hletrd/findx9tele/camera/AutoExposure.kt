@@ -77,6 +77,57 @@ object AutoExposure {
         return if (next == currentNs) null else next
     }
 
+    /**
+     * PROGRAM (photo): next (ISO, exposure ns) on a classic Auto-ISO program line, or null if settled.
+     *
+     * The line: hold the shutter at [preferredNs] — the handheld-safe 1/(effective focal) rule, the
+     * "auto min shutter" every real camera applies in P — and let ISO carry the exposure. Only when
+     * ISO clamps does the shutter leave the preferred point: at max ISO in the dark it lengthens (down
+     * to a 1/10 s handheld ceiling), at min ISO in the bright it shortens. Per tick the shutter moves
+     * at most one stop (no visible exposure snaps), and ISO counter-moves so a shutter re-centering
+     * never changes overall brightness.
+     */
+    fun driveProgram(
+        luma: IntArray,
+        currentIso: Int,
+        currentNs: Long,
+        preferredNs: Long,
+        isoRange: Range<Int>?,
+        expRange: Range<Long>?,
+        evCompStops: Float,
+    ): Pair<Int, Long>? {
+        val isoR = isoRange ?: return null
+        val expR = expRange ?: return null
+        // Handheld ceiling: past ~1/10 s no amount of "P mode" saves the shot; stop trading there.
+        val slowCapNs = minOf(expR.upper, 100_000_000L)
+        val pref = preferredNs.coerceIn(expR.lower, slowCapNs)
+
+        val corr = correctionStops(meanLuma(luma), evCompStops) ?: 0f
+        // Re-center the shutter toward the preferred point by at most 1 stop this tick…
+        val shutterStops = log2(pref.toFloat() / currentNs.toFloat()).coerceIn(-1f, 1f)
+        // …and give ISO the exposure correction minus what the shutter move already contributes
+        // (longer shutter = brighter), so re-centering is brightness-neutral.
+        val isoStops = corr - shutterStops
+        var newNs = (currentNs * pow2(shutterStops)).roundToLong()
+        val wantIso = currentIso * pow2(isoStops)
+        var newIso = wantIso.roundToInt()
+        if (wantIso > isoR.upper) {
+            // Dark scene, ISO exhausted → push the remainder into a slower shutter (≤ handheld cap).
+            val overflowStops = log2((wantIso / isoR.upper).toFloat())
+            newIso = isoR.upper
+            newNs = (newNs * pow2(overflowStops)).roundToLong()
+        } else if (wantIso < isoR.lower) {
+            // Bright scene at base ISO → shorten the shutter below the preferred point.
+            val overflowStops = log2((wantIso / isoR.lower).toFloat())
+            newIso = isoR.lower
+            newNs = (newNs * pow2(overflowStops)).roundToLong()
+        }
+        newNs = newNs.coerceIn(expR.lower, slowCapNs)
+        newIso = newIso.coerceIn(isoR.lower, isoR.upper)
+        if (newIso == currentIso && newNs == currentNs) return null
+        return newIso to newNs
+    }
+
     private fun pow2(x: Float): Double = Math.pow(2.0, x.toDouble())
     private fun log2(x: Float): Float = (ln(x.toDouble()) / ln(2.0)).toFloat()
 }
