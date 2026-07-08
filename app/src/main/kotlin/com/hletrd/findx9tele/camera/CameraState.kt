@@ -147,6 +147,18 @@ enum class AudioScene(val effectType: Int, val label: String) {
 }
 
 /**
+ * Preferred recording input. AUTO lets Android pick the route; the others are resolved against
+ * currently connected input-capable AudioDeviceInfo entries when video recording starts.
+ */
+enum class AudioInputPreference(val label: String) {
+    AUTO("Auto"),
+    BUILT_IN("Phone"),
+    WIRED("Wired"),
+    USB("USB"),
+    BLUETOOTH("BT"),
+}
+
+/**
  * The four rear lenses, addressed by their 35mm-equivalent focal length (the app resolves each to
  * the back camera whose equiv focal is closest — no hardcoded ids). [TELE3X] is the 3×/70 mm
  * periscope the Hasselblad teleconverter clamps onto; selecting it bundles teleconverter mode ON
@@ -334,6 +346,8 @@ data class CameraUiState(
     val recordAudio: Boolean = true,
     // Directional audio (stock Sound Focus / Sound Stage) via vendor audio-HAL params.
     val audioScene: AudioScene = AudioScene.STANDARD,
+    val audioInputPreference: AudioInputPreference = AudioInputPreference.AUTO,
+    val audioRouteLabel: String = "Auto",
     val audioGain: Float = 1f, // 0..2 software gain applied to recorded PCM
     val audioLevel: Float = 0f, // 0..1 live input level (RMS), for the meter
     val aspectRatio: AspectRatio = AspectRatio.W4_3,

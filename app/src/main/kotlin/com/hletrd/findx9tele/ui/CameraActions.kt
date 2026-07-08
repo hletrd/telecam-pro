@@ -86,6 +86,7 @@ interface CameraActions {
     fun onToggleRecordAudio(enabled: Boolean)
     fun onAudioGain(gain: Float)
     fun onAudioScene(scene: com.hletrd.findx9tele.camera.AudioScene)
+    fun onAudioInputPreference(preference: com.hletrd.findx9tele.camera.AudioInputPreference)
     fun onToggleTeleconverter(enabled: Boolean)
     fun onVideoCodec(codec: VideoCodec)
     fun onBitrateLevel(level: BitrateLevel)

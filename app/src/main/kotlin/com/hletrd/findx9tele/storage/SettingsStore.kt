@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import androidx.core.content.edit
 import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.AudioScene
+import com.hletrd.findx9tele.camera.AudioInputPreference
 import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorTransfer
@@ -41,6 +42,7 @@ data class ExtraSettings(
     val videoFrameRate: VideoFrameRate = VideoFrameRate.DEFAULT,
     val openGate: Boolean = false,
     val audioScene: AudioScene = AudioScene.STANDARD,
+    val audioInputPreference: AudioInputPreference = AudioInputPreference.AUTO,
     val fnSlots: List<FnSlot> = FnSlot.DEFAULT,
     val myMenuSlots: List<FnSlot> = FnSlot.MY_MENU_DEFAULT,
     val volumeKeyAction: HardwareKeyAction = HardwareKeyAction.SHUTTER,
@@ -132,6 +134,7 @@ class SettingsStore(context: Context) {
                 videoFrameRate = enumOr(prefs.getString("${prefix}videoFrameRate", null), ed.videoFrameRate),
                 openGate = prefs.getBoolean("${prefix}openGate", ed.openGate),
                 audioScene = enumOr(prefs.getString("${prefix}audioScene", null), ed.audioScene),
+                audioInputPreference = enumOr(prefs.getString("${prefix}audioInputPreference", null), ed.audioInputPreference),
                 fnSlots = enumListOr(prefs.getString("${prefix}fnSlots", null), ed.fnSlots),
                 myMenuSlots = enumListOr(prefs.getString("${prefix}myMenuSlots", null), ed.myMenuSlots),
                 volumeKeyAction = enumOr(prefs.getString("${prefix}volumeKeyAction", null), ed.volumeKeyAction),
@@ -182,6 +185,7 @@ class SettingsStore(context: Context) {
         putString("${prefix}videoFrameRate", e.videoFrameRate.name)
         putBoolean("${prefix}openGate", e.openGate)
         putString("${prefix}audioScene", e.audioScene.name)
+        putString("${prefix}audioInputPreference", e.audioInputPreference.name)
         putString("${prefix}fnSlots", e.fnSlots.joinToString(",") { it.name })
         putString("${prefix}myMenuSlots", e.myMenuSlots.joinToString(",") { it.name })
         putString("${prefix}volumeKeyAction", e.volumeKeyAction.name)

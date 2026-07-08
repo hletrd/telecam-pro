@@ -77,6 +77,7 @@ class CameraEngine(private val context: Context) {
     // read from the audio-encode / io-executor threads, so both are @Volatile.
     @Volatile private var audioGain = 1f
     @Volatile private var audioScene = AudioScene.STANDARD
+    @Volatile private var audioInputPreference = AudioInputPreference.AUTO
     @Volatile private var aspectRatio = AspectRatio.W4_3
 
     var onStatus: ((String?) -> Unit)? = null
@@ -89,6 +90,8 @@ class CameraEngine(private val context: Context) {
     var onAnalysis: ((HistogramData?, WaveformData?) -> Unit)? = null
     // Live recording-audio level (0..1 RMS, post-gain), throttled by VideoRecorder to ~10 Hz.
     var onAudioLevel: ((Float) -> Unit)? = null
+    // Actual AudioRecord route once recording starts, e.g. "USB · DJI Mic Mini".
+    var onAudioRoute: ((String) -> Unit)? = null
     // AE-resolved ISO/shutter (auto mode) from the controller, for the live dial readout. Fired from
     // the camera thread, only on change; the ViewModel hoists it into UI state.
     var onExposureInfo: ((iso: Int?, exposureNs: Long?) -> Unit)? = null
@@ -412,6 +415,8 @@ class CameraEngine(private val context: Context) {
     fun setAudioGain(g: Float) { audioGain = g }
     /** Directional-audio scene (stock Sound Focus/Stage); applies on the next [startRecording]. */
     fun setAudioScene(s: AudioScene) { audioScene = s }
+    /** Preferred recording input; resolved against connected AudioDeviceInfo entries at record start. */
+    fun setAudioInputPreference(p: AudioInputPreference) { audioInputPreference = p }
 
     /** Still-photo center-crop aspect ratio; applies to HEIF only (see [saveHeifAsync]). FULL = no crop. */
     fun setAspectRatio(a: AspectRatio) { aspectRatio = a }
@@ -744,8 +749,10 @@ class CameraEngine(private val context: Context) {
         val surface = rec.start(
             uri, size, rate.encoderRate, captureRate, bitRateFor(size, rate),
             fileTransfer, codec, recordAudio, audioGain, orientationHint,
-            audioScene, controls.zoomRatio,
-        ) { lvl -> onAudioLevel?.invoke(lvl) }
+            audioScene, controls.zoomRatio, audioInputPreference,
+            onRoute = { route -> onAudioRoute?.invoke(route) },
+            onLevel = { lvl -> onAudioLevel?.invoke(lvl) },
+        )
         if (surface == null) {
             // Encoder/muxer failed to configure; drop the pending MediaStore row we created so it
             // doesn't linger as a 0-byte orphan (VideoRecorder.start already released its own half).

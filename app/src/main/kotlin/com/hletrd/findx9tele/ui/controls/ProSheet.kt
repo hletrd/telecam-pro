@@ -57,6 +57,7 @@ import com.hletrd.findx9tele.camera.ExposureMode
 import com.hletrd.findx9tele.camera.ExposureStep
 import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.AudioScene
+import com.hletrd.findx9tele.camera.AudioInputPreference
 import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.ColorEffect
@@ -711,6 +712,18 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     )
 
     ToggleRow(label = "Record Audio", checked = state.recordAudio, onCheckedChange = actions::onToggleRecordAudio)
+    SegmentedSelector(
+        label = "Audio Input",
+        options = AudioInputPreference.entries,
+        selected = state.audioInputPreference,
+        labelFor = { it.label },
+        onSelect = actions::onAudioInputPreference,
+        enabled = state.recordAudio && !state.isRecording,
+    )
+    LabelValueRow(
+        label = if (state.isRecording) "Audio Route" else "Preferred Input",
+        valueLabel = state.audioRouteLabel,
+    )
     // Directional audio — the stock Sound Focus (aims the mic array at the framed subject, tightens
     // with zoom — the 300 mm use case) / Sound Stage (wider spatial stereo), via the vendor audio-HAL.
     SegmentedSelector(

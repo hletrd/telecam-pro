@@ -9,6 +9,7 @@ import android.view.Surface
 import androidx.lifecycle.AndroidViewModel
 import com.hletrd.findx9tele.camera.Antibanding
 import com.hletrd.findx9tele.camera.AspectRatio
+import com.hletrd.findx9tele.camera.AudioInputPreference
 import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CameraEngine
 import com.hletrd.findx9tele.camera.CameraUiState
@@ -118,6 +119,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             if (h != null) mainHandler.post { applyAutoExposure(h.luma) }
         }
         engine.onAudioLevel = { lvl -> _state.update { it.copy(audioLevel = lvl) } }
+        engine.onAudioRoute = { route -> _state.update { it.copy(audioRouteLabel = route) } }
         // AE-resolved ISO/shutter (auto mode) for the live dial readout; camera thread → StateFlow is
         // thread-safe, Compose observes on main. The controller only fires this on change.
         engine.onExposureInfo = { iso, exp -> _state.update { it.copy(liveIso = iso, liveExposureNs = exp) } }
@@ -163,6 +165,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setBitrateLevel(e.bitrateLevel)
         engine.setOpenGate(e.openGate)
         engine.setAudioScene(e.audioScene)
+        engine.setAudioInputPreference(e.audioInputPreference)
         engine.setVideoFrameRate(e.videoFrameRate)
         _state.update {
             it.copy(
@@ -181,6 +184,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 videoFrameRate = e.videoFrameRate,
                 openGate = e.openGate,
                 audioScene = e.audioScene,
+                audioInputPreference = e.audioInputPreference,
+                audioRouteLabel = e.audioInputPreference.label,
                 fnSlots = e.fnSlots,
                 myMenuSlots = e.myMenuSlots,
                 volumeKeyAction = e.volumeKeyAction,
@@ -212,6 +217,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             videoFrameRate = s.videoFrameRate,
             openGate = s.openGate,
             audioScene = s.audioScene,
+            audioInputPreference = s.audioInputPreference,
             fnSlots = s.fnSlots,
             myMenuSlots = s.myMenuSlots,
             volumeKeyAction = s.volumeKeyAction,
@@ -375,6 +381,17 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setAudioScene(scene)
         _state.update { it.copy(audioScene = scene) }
         markChanged(FnSlot.AUDIO_SCENE)
+    }
+    override fun onAudioInputPreference(preference: AudioInputPreference) {
+        engine.setAudioInputPreference(preference)
+        _state.update {
+            it.copy(
+                audioInputPreference = preference,
+                audioRouteLabel = if (it.isRecording) it.audioRouteLabel else preference.label,
+                activeMemorySlot = null,
+            )
+        }
+        saveSettingsIfEnabled()
     }
     override fun onToggleTeleconverter(enabled: Boolean) {
         // The teleconverter is only meaningful on the 3× periscope. Turning it ON from any other lens
@@ -574,11 +591,17 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         if (_state.value.isRecording) {
             engine.stopRecording()
             mainHandler.removeCallbacks(recordTicker)
-            _state.update { it.copy(isRecording = false) }
+            _state.update { it.copy(isRecording = false, audioRouteLabel = it.audioInputPreference.label) }
         } else if (engine.startRecording(_state.value.recordAudio)) {
             recordStartMs = SystemClock.elapsedRealtime()
             mainHandler.post(recordTicker)
-            _state.update { it.copy(isRecording = true, recordElapsedMs = 0) }
+            _state.update {
+                it.copy(
+                    isRecording = true,
+                    recordElapsedMs = 0,
+                    audioRouteLabel = if (it.recordAudio) "Starting..." else "Off",
+                )
+            }
         }
     }
 

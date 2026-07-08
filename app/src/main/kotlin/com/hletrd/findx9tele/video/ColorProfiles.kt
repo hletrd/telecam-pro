@@ -135,8 +135,8 @@ object ColorProfiles {
         VideoCodec.APV -> MIME_APV
     }
 
-    fun aacFormat(): MediaFormat {
-        return MediaFormat.createAudioFormat(MIME_AAC, AUDIO_SAMPLE_RATE, AUDIO_CHANNELS).apply {
+    fun aacFormat(channelCount: Int = AUDIO_CHANNELS): MediaFormat {
+        return MediaFormat.createAudioFormat(MIME_AAC, AUDIO_SAMPLE_RATE, channelCount.coerceIn(1, AUDIO_CHANNELS)).apply {
             setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
             setInteger(MediaFormat.KEY_BIT_RATE, AUDIO_BIT_RATE)
             setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16_384)
