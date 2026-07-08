@@ -9,9 +9,11 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -84,6 +86,7 @@ import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.MeteringMode
+import com.hletrd.findx9tele.camera.MemorySlot
 import com.hletrd.findx9tele.camera.PhotoFormats
 import com.hletrd.findx9tele.camera.ProcessingLevel
 import com.hletrd.findx9tele.camera.ShutterMode
@@ -419,6 +422,15 @@ fun CameraScreen(
                 .padding(top = 28.dp, bottom = 12.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
+            MemoryRecallStrip(
+                state = state,
+                actions = actions,
+                glyphRotation = overlayRotation,
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .padding(horizontal = 16.dp),
+            )
+
             ManualDialCluster(
                 state = state,
                 actions = actions,
@@ -775,6 +787,57 @@ private fun ZoomIndicator(
                     .fillMaxHeight()
                     .clip(RoundedCornerShape(2.dp))
                     .background(CameraColors.Accent),
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun MemoryRecallStrip(
+    state: CameraUiState,
+    actions: CameraActions,
+    glyphRotation: Float,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(50))
+            .background(Color.Black.copy(alpha = 0.36f))
+            .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(50))
+            .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        MemorySlot.entries.forEach { slot ->
+            val saved = slot in state.savedMemorySlots
+            val active = state.activeMemorySlot == slot
+            val bg = when {
+                active -> Color(0xFFFFD60A)
+                saved -> Color.White.copy(alpha = 0.14f)
+                else -> Color.Transparent
+            }
+            val fg = when {
+                active -> Color.Black
+                saved -> CameraColors.TextPrimary
+                else -> CameraColors.TextSecondary
+            }
+            Text(
+                text = slot.label,
+                color = fg,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                    .rotate(glyphRotation)
+                    .clip(RoundedCornerShape(50))
+                    .background(bg)
+                    .combinedClickable(
+                        onClick = {
+                            if (saved) actions.onRecallMemorySlot(slot) else actions.onStoreMemorySlot(slot)
+                        },
+                        onLongClick = { actions.onStoreMemorySlot(slot) },
+                    )
+                    .padding(horizontal = 11.dp, vertical = 6.dp),
             )
         }
     }
