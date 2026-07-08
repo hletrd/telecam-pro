@@ -46,7 +46,22 @@ class CameraController(context: Context) {
     private val manager = context.getSystemService(CameraManager::class.java)
     private val bg = HandlerThread("camera").apply { start() }
     private val handler = Handler(bg.looper)
-    private val executor = Executor { handler.post(it) }
+    // Camera2 posts its callbacks through this executor; guard the post so a framework callback that
+    // lands AFTER close() quit the looper is dropped instead of thrown — OPPO's LegacyMessageQueue
+    // raises IllegalStateException "sending message to a dead thread" rather than returning false.
+    private val executor = Executor { cmd -> runCatching { handler.post(cmd) } }
+
+    /**
+     * Posts [block] to the camera thread, or drops it if this controller is closing/closed. On a
+     * session-key reopen (Auto HDR, in-sensor zoom, lens switch, high-speed fps) the engine closes THIS
+     * controller and opens a new one; a control update or capture racing that swap must not post to the
+     * quit looper — OPPO's LegacyMessageQueue throws "dead thread" instead of returning false, which
+     * previously crashed capture. Returns whether the post landed.
+     */
+    private fun postToCamera(block: () -> Unit): Boolean {
+        if (closed || !bg.isAlive) return false
+        return runCatching { handler.post(block) }.getOrDefault(false)
+    }
 
     private var device: CameraDevice? = null
     private var session: CameraCaptureSession? = null
@@ -219,7 +234,7 @@ class CameraController(context: Context) {
     /** Live-updates the HAL video stabilization mode and re-issues the repeating request. */
     fun setVideoStabMode(controlMode: Int) {
         videoStabHalMode = controlMode
-        handler.post { startPreview() }
+        postToCamera { startPreview() }
     }
 
     /**
@@ -522,7 +537,7 @@ class CameraController(context: Context) {
         // Confine the field write to the camera handler thread: updateControls is called from both the
         // main thread (ViewModel) and the camera thread (AEB/BURST chain), and the field is read on the
         // camera thread, so doing the mutation here keeps it single-threaded (no lost-update race).
-        handler.post {
+        postToCamera {
             // An explicit focus-mode change ends the tap-to-focus AUTO hold and resumes the chosen mode.
             if (controls.focusMode != this.controls.focusMode) touchAfActive = false
             this.controls = controls
@@ -539,63 +554,69 @@ class CameraController(context: Context) {
         meteringPoint = sx.coerceIn(0f, 1f) to sy.coerceIn(0f, 1f)
         afTriggerPending = true
         touchAfActive = true // hold AF_MODE_AUTO on this spot until the focus mode changes
-        handler.post { startPreview() }
+        postToCamera { startPreview() }
     }
 
     /** Clears the tap target, restoring the metering-mode regions on the next preview build. */
     fun clearMeteringPoint() {
         meteringPoint = null
-        handler.post { startPreview() }
+        postToCamera { startPreview() }
     }
 
-    fun capturePhoto(wantJpeg: Boolean, wantRaw: Boolean, cb: PhotoCallback) = handler.post {
-        // Always surface a result through the callback (even on the no-target/not-ready paths) so a
-        // BURST/AEB chain's onDone still fires and the user gets feedback instead of a silent no-op.
-        val camera = device ?: return@post cb.onError(IllegalStateException("Camera not ready"))
-        val s = session ?: return@post cb.onError(IllegalStateException("Camera session not ready"))
-        val jpeg = jpegReader?.surface?.takeIf { wantJpeg }
-        val raw = rawReader?.surface?.takeIf { wantRaw && caps.supportsRaw }
-        if (jpeg == null && raw == null) {
-            return@post cb.onError(
-                IllegalStateException("No capture target — enable HEIF or DNG (the session may have fallen back to preview-only)"),
-            )
-        }
-
-        pending = Pending(jpeg != null, raw != null, cb)
-
-        val req = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
-            jpeg?.let { addTarget(it) }
-            raw?.let { addTarget(it) }
-            applyManualControls(controls, caps)
-            // Keep stills consistent with the session's pipeline: with the log session active the
-            // HAL processes everything scene-referred, so an unset key mid-session is undefined.
-            applyVendorLog()
-            applyVendorExtras()
-            applyMetering(this, controls)
-            // We rotate pixels ourselves (HEIF) / tag DNG orientation; keep JPEG upright.
-            set(CaptureRequest.JPEG_ORIENTATION, 0)
-        }
-        s.capture(req.build(), object : CameraCaptureSession.CaptureCallback() {
-            override fun onCaptureCompleted(
-                session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult,
-            ) {
-                pending?.let { it.result = result; tryComplete(it) }
+    fun capturePhoto(wantJpeg: Boolean, wantRaw: Boolean, cb: PhotoCallback) {
+        val posted = postToCamera {
+            // Always surface a result through the callback (even on the no-target/not-ready paths) so a
+            // BURST/AEB chain's onDone still fires and the user gets feedback instead of a silent no-op.
+            val camera = device ?: return@postToCamera cb.onError(IllegalStateException("Camera not ready"))
+            val s = session ?: return@postToCamera cb.onError(IllegalStateException("Camera session not ready"))
+            val jpeg = jpegReader?.surface?.takeIf { wantJpeg }
+            val raw = rawReader?.surface?.takeIf { wantRaw && caps.supportsRaw }
+            if (jpeg == null && raw == null) {
+                return@postToCamera cb.onError(
+                    IllegalStateException("No capture target — enable HEIF or DNG (the session may have fallen back to preview-only)"),
+                )
             }
-            override fun onCaptureFailed(session: CameraCaptureSession, request: CaptureRequest, failure: android.hardware.camera2.CaptureFailure) {
-                val p = pending
-                if (p != null) {
-                    // Close any already-acquired images so the ImageReader (maxImages=2) isn't
-                    // starved, and mark done so a late-arriving partial can't re-enter tryComplete.
-                    synchronized(p) {
-                        p.done = true
-                        runCatching { p.jpeg?.close() }
-                        runCatching { p.raw?.close() }
-                    }
-                    p.cb.onError(IllegalStateException("Capture failed: ${failure.reason}"))
+
+            pending = Pending(jpeg != null, raw != null, cb)
+
+            val req = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                jpeg?.let { addTarget(it) }
+                raw?.let { addTarget(it) }
+                applyManualControls(controls, caps)
+                // Keep stills consistent with the session's pipeline: with the log session active the
+                // HAL processes everything scene-referred, so an unset key mid-session is undefined.
+                applyVendorLog()
+                applyVendorExtras()
+                applyMetering(this, controls)
+                // We rotate pixels ourselves (HEIF) / tag DNG orientation; keep JPEG upright.
+                set(CaptureRequest.JPEG_ORIENTATION, 0)
+            }
+            s.capture(req.build(), object : CameraCaptureSession.CaptureCallback() {
+                override fun onCaptureCompleted(
+                    session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult,
+                ) {
+                    pending?.let { it.result = result; tryComplete(it) }
                 }
-                pending = null
-            }
-        }, handler)
+                override fun onCaptureFailed(session: CameraCaptureSession, request: CaptureRequest, failure: android.hardware.camera2.CaptureFailure) {
+                    val p = pending
+                    if (p != null) {
+                        // Close any already-acquired images so the ImageReader (maxImages=2) isn't
+                        // starved, and mark done so a late-arriving partial can't re-enter tryComplete.
+                        synchronized(p) {
+                            p.done = true
+                            runCatching { p.jpeg?.close() }
+                            runCatching { p.raw?.close() }
+                        }
+                        p.cb.onError(IllegalStateException("Capture failed: ${failure.reason}"))
+                    }
+                    pending = null
+                }
+            }, handler)
+        }
+        // The controller is mid-teardown — a session-key reopen (Auto HDR / in-sensor zoom / lens / fps)
+        // quit the camera thread. Route the failure through the callback so a BURST/AEB chain's onDone
+        // still fires and the user gets feedback, instead of the post throwing a dead-thread exception.
+        if (!posted) cb.onError(IllegalStateException("Camera is reconfiguring — try the shot again"))
     }
 
     private fun onImage(reader: ImageReader, isRaw: Boolean) {
@@ -633,6 +654,10 @@ class CameraController(context: Context) {
     }
 
     fun close() {
+        // Idempotent: a second close() must not run — the looper is already quitting, so posting the
+        // teardown again would throw on OPPO's LegacyMessageQueue. setCameraOverride() → openCamera()
+        // both call close() on the same controller, so this path is real.
+        if (closed) return
         closed = true
         handler.post {
             runCatching { session?.close() }
@@ -647,6 +672,12 @@ class CameraController(context: Context) {
         // Quit AFTER posting cleanup so the queued teardown runs first, then the thread exits.
         // (Previously the "camera" HandlerThread leaked once per controller / override switch.)
         bg.quitSafely()
+        // Block (bounded) until that teardown actually runs and the HAL device is released, so a
+        // subsequent open of the SAME physical camera on a session-key reopen (Auto HDR / in-sensor
+        // zoom / lens / high-speed fps) doesn't race a half-closed device — that race surfaces as
+        // Camera3-Device "Broken pipe -32" → ERROR_CAMERA_DEVICE and a dead session that needs an app
+        // relaunch to recover. Never join from the camera thread itself (would deadlock).
+        if (Thread.currentThread() !== bg) runCatching { bg.join(CLOSE_JOIN_TIMEOUT_MS) }
     }
 
     private class Pending(val wantJpeg: Boolean, val wantRaw: Boolean, val cb: PhotoCallback) {
@@ -660,5 +691,8 @@ class CameraController(context: Context) {
         const val TAG = "CameraController"
         // Highest fallback index (attempt 3 = preview-only). Beyond this the session can't be built.
         const val MAX_CONFIG_ATTEMPT = 3
+        // Max time close() waits for the camera thread to release the HAL device before a reopen.
+        // Device close is normally well under this; the cap keeps a wedged close from hanging the UI.
+        const val CLOSE_JOIN_TIMEOUT_MS = 1500L
     }
 }

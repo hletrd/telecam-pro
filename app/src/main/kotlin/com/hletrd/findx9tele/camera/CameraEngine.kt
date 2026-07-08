@@ -377,9 +377,16 @@ class CameraEngine(private val context: Context) {
         // and gaps/corrupts the clip. The rate/open-gate change applies on the next recording instead.
         if (recorder != null) return
         val input = gl.inputSurface ?: return
-        controller?.close()
-        controller = null
-        openCamera(input)
+        // Run the close+reopen OFF the main thread. close() blocks until the HAL device is released
+        // (bounded join) and openCamera() issues several getCameraCharacteristics/openCamera Binder
+        // calls; on this HAL those can take seconds under contention, so doing it on the UI thread
+        // (vendor-feature toggles are main-thread ViewModel calls) exceeds the 5s ANR watchdog and the
+        // OS kills the app. setupExecutor is single-threaded, so reopens also serialize cleanly.
+        setupExecutor.execute {
+            controller?.close()
+            controller = null
+            openCamera(input)
+        }
     }
 
     /** Software gain applied to recorded PCM audio (1f = passthrough); takes effect on the next [startRecording]. */
@@ -426,19 +433,25 @@ class CameraEngine(private val context: Context) {
         overrideId = id
         if (!started) return
         val input = gl.inputSurface ?: return // @Volatile in GlPipeline: safe cross-thread read
-        controller?.close()
-        val sel = CameraSelector2.select(manager, id) ?: run { onStatus?.invoke("Could not find that camera ID"); return }
-        selection = sel
-        val c = CameraCaps.read(manager, sel.logicalId, sel.physicalId)
-        caps = c
-        onCapsReady?.invoke(c)
-        // The new lens can expose different output sizes; refresh videoSize + the GL camera size so
-        // aspect (FlipRenderer "cover"), EIS focal scaling, and the encoder size match the new lens.
-        videoSize = chooseVideoSize(sel)
-        onVideoSizeChosen?.invoke(videoSize)
-        gl.setCameraPreviewSize(videoSize.width, videoSize.height)
-        applyStabilization()
-        openCamera(input)
+        // Off the main thread (same reason as reopenForSession): close() blocks on the HAL device
+        // release and select/read/openCamera are several Binder IPCs — on the UI thread this ANR-kills
+        // the app under HAL contention. Runs on the single-thread setupExecutor so it serializes with
+        // the initial open and other reopens.
+        setupExecutor.execute {
+            controller?.close()
+            val sel = CameraSelector2.select(manager, id) ?: run { onStatus?.invoke("Could not find that camera ID"); return@execute }
+            selection = sel
+            val c = CameraCaps.read(manager, sel.logicalId, sel.physicalId)
+            caps = c
+            onCapsReady?.invoke(c)
+            // The new lens can expose different output sizes; refresh videoSize + the GL camera size so
+            // aspect (FlipRenderer "cover"), EIS focal scaling, and the encoder size match the new lens.
+            videoSize = chooseVideoSize(sel)
+            onVideoSizeChosen?.invoke(videoSize)
+            gl.setCameraPreviewSize(videoSize.width, videoSize.height)
+            applyStabilization()
+            openCamera(input)
+        }
     }
 
     // ---- Photo ----
