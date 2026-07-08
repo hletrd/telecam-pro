@@ -30,16 +30,35 @@ and **Play-submission-ready** at the packaging level. Since the last device-veri
 - **UI**: pinch-to-zoom, iPhone-style control-glyph rotation, lens picker in its own tab, tune/sliders
   gear icon, fixed-width AE/AF/shutter chips.
 
-### 🔴 Open polish items (found in the 2026-07-08 live-test loop — TODO)
+### ✅ Polish items resolved in the 2026-07-08 live-test loop
+1. **OSD focal + default 29.97** — device-verified: TELE flips the readout to `300mm TELE`, base is
+   `4K 29.97p`.
+2. **Pinch-to-zoom fixed** — tap-focus + pinch fought in two separate `pointerInput` blocks (the tap
+   detector consumed the gesture and pinned zoom at 1.0× after ~2 frames; `ZoomDbg` on device confirmed).
+   Merged into one `awaitEachGesture` loop: two fingers → pinch-zoom, clean single touch → tap-focus.
+   Zoom rode 1.0→5.3×→back cleanly in the logs; tele reports `zoomRatioRange = [1.0, 10.0]`.
+3. **Live zoom bar** — transient centered `N.N×` pill + range-fill bar shown while zooming (pinch/slider),
+   fading ~1.4 s after the last change. The `×` number counter-rotates upright (iPhone-style); bar stays
+   horizontal.
+4. **Settings drag/bounce fixed** — the real cause was **the Material3 `ModalBottomSheet` itself being
+   draggable upward past its rest** (not content overscroll); Material3 1.4.0 has no flag to disable it.
+   Replaced with a fixed scrim + non-draggable bottom panel (dismiss via X / scrim-tap / Back).
+   User-confirmed on device.
+5. **Rotation overflow fixed** — the wide dial pills (AE/AF/Shutter/ISO) no longer counter-rotate (that
+   poked them out of their fixed row slots). iPhone rule now: **rotate what fits** (compact glyphs +
+   short mode labels + the zoom `×`), **leave what doesn't** (wide pills, the top OSD row).
+6. **Scopes refresh faster** — readback cadence 12→5 frames (~2.5×/s → ~6×/s). (Scopes are intentionally
+   NOT rotated — a wide box rotated 90° makes the histogram/waveform overlap; kept screen-fixed.)
+7. **Last-used capture mode persists** — Photo/Video is now saved the instant it changes (an async
+   onStop-only write could be lost to a Recents-swipe before it flushed).
+
+### 🔴 Open polish items (still TODO)
 1. **LOG preview not visibly flat** — native log key IS applied, but the preview/output doesn't read as
    log; investigate the GL pass-through (`gl.setTransfer(null)`) + ffprobe a recorded clip.
-2. **Icon rotation — left-landscape is 180° off** (right-landscape is correct).
-3. **Icon rotation — rotated text pills overflow / rounded-rect corners stretch** (nine-patch-like); the
-   rotate approach needs bounds-aware layout or to rotate only compact glyphs.
-4. **Scopes (waveform/histogram)** should rotate with orientation and **refresh faster**.
-5. **Pinch-to-zoom does nothing** — verify the tele's `zoomRatioRange` values + the tap/transform gesture
-   conflict.
-6. **Settings sheet still overscrolls/bounces at the bottom** (`LocalOverscrollFactory = null` didn't fix it).
+2. **Rotation direction — confirm both landscapes upright.** Device values are portrait=0,
+   right-landscape=90, left-landscape=270 (captured via `OrientDbg`); `overlayRotation =
+   animate(-deviceOrientation)` is geometrically correct for both, so the original "left-landscape 180°
+   off" should be resolved — needs a final held-in-hand visual confirm.
 
 ### 🔧 Infra note — wireless ADB on this Mac
 `adb connect 172.30.50.127:<port>` returns **"No route to host"** even though ping + raw TCP reach the
