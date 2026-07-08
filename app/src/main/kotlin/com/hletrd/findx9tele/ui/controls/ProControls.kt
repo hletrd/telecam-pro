@@ -1,27 +1,34 @@
 package com.hletrd.findx9tele.ui.controls
 
 import android.util.Size
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.hletrd.findx9tele.camera.Antibanding
 import com.hletrd.findx9tele.camera.AspectRatio
@@ -120,17 +127,7 @@ internal fun <T> SegmentedSelector(
     }
 }
 
-@Composable
-internal fun pixelSliderColors() = SliderDefaults.colors(
-    thumbColor = CameraColors.TextPrimary,
-    activeTrackColor = CameraColors.Accent,
-    inactiveTrackColor = Color.White.copy(alpha = 0.18f),
-    disabledThumbColor = CameraColors.TextSecondary,
-    disabledActiveTrackColor = Color.White.copy(alpha = 0.25f),
-    disabledInactiveTrackColor = Color.White.copy(alpha = 0.1f),
-)
-
-/** Label + value header with a slider beneath it. */
+/** Label + value header with a pro-camera-style tick slider beneath it. */
 @Composable
 internal fun LabeledSlider(
     label: String,
@@ -141,18 +138,110 @@ internal fun LabeledSlider(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
 ) {
+    val span = valueRange.endInclusive - valueRange.start
+    val fraction = if (span <= 0f) 0f else ((value - valueRange.start) / span).coerceIn(0f, 1f)
     Column(modifier = modifier.fillMaxWidth()) {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(label, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
-            Text(valueLabel, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelMedium)
-        }
-        Slider(
-            value = value,
-            onValueChange = onValueChange,
-            enabled = enabled,
-            valueRange = valueRange,
-            colors = pixelSliderColors(),
+        Row(
             modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                label,
+                color = if (enabled) CameraColors.TextPrimary else CameraColors.TextSecondary,
+                style = MaterialTheme.typography.labelMedium,
+            )
+            // The value reads like a camera HUD readout: accent-colored and bold.
+            Text(
+                valueLabel,
+                color = if (enabled) CameraColors.ManualActive else CameraColors.TextSecondary,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+        Spacer(modifier = Modifier.height(2.dp))
+        CameraSlider(
+            fraction = fraction,
+            onFraction = { f -> onValueChange(valueRange.start + f * span) },
+            enabled = enabled,
+        )
+    }
+}
+
+/**
+ * A pro-camera-style slider: a tick-marked track with an accent fill and a thin needle thumb (not the
+ * round Material knob), tuned to match the shooting-screen dial rulers. Tap anywhere on the track to
+ * jump, or drag the needle. Operates on a normalized [fraction]; the caller maps it to its own range.
+ */
+@Composable
+private fun CameraSlider(
+    fraction: Float,
+    onFraction: (Float) -> Unit,
+    enabled: Boolean,
+    tickCount: Int = 11,
+) {
+    val accent = if (enabled) CameraColors.ManualActive else CameraColors.TextSecondary
+    val trackColor = Color.White.copy(alpha = if (enabled) 0.16f else 0.08f)
+    val tickColor = Color.White.copy(alpha = if (enabled) 0.35f else 0.15f)
+    Canvas(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(36.dp)
+            .pointerInput(enabled) {
+                if (!enabled) return@pointerInput
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    val pad = 8.dp.toPx()
+                    val trackSpan = (size.width - 2f * pad).coerceAtLeast(1f)
+                    fun emit(x: Float) = onFraction(((x - pad) / trackSpan).coerceIn(0f, 1f))
+                    emit(down.position.x)
+                    down.consume()
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull() ?: break
+                        if (!change.pressed) break
+                        emit(change.position.x)
+                        change.consume()
+                    }
+                }
+            },
+    ) {
+        val pad = 8.dp.toPx()
+        val cy = size.height / 2f
+        val trackH = 5.dp.toPx()
+        val span = size.width - 2f * pad
+        val radius = CornerRadius(trackH / 2f, trackH / 2f)
+        drawRoundRect(
+            color = trackColor,
+            topLeft = Offset(pad, cy - trackH / 2f),
+            size = androidx.compose.ui.geometry.Size(span, trackH),
+            cornerRadius = radius,
+        )
+        // Tick marks; the ends and centre are taller (major) for a scale-like read.
+        for (i in 0 until tickCount) {
+            val x = pad + span * i / (tickCount - 1)
+            val major = i == 0 || i == tickCount - 1 || i == (tickCount - 1) / 2
+            val th = (if (major) 8.dp else 4.dp).toPx()
+            drawLine(tickColor, Offset(x, cy - th / 2f), Offset(x, cy + th / 2f), strokeWidth = 1.5.dp.toPx())
+        }
+        val fillW = (span * fraction).coerceIn(0f, span)
+        if (fillW > 0f) {
+            drawRoundRect(
+                color = accent,
+                topLeft = Offset(pad, cy - trackH / 2f),
+                size = androidx.compose.ui.geometry.Size(fillW, trackH),
+                cornerRadius = radius,
+            )
+        }
+        // Needle thumb: a tall rounded bar in the accent colour.
+        val thumbX = pad + span * fraction
+        val thumbW = 4.dp.toPx()
+        val thumbH = 22.dp.toPx()
+        drawRoundRect(
+            color = accent,
+            topLeft = Offset(thumbX - thumbW / 2f, cy - thumbH / 2f),
+            size = androidx.compose.ui.geometry.Size(thumbW, thumbH),
+            cornerRadius = CornerRadius(thumbW / 2f, thumbW / 2f),
         )
     }
 }
