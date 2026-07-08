@@ -27,3 +27,7 @@ telecampro-upload-passwords.txt.gpg
 
 # OMC
 .omc/
+
+# Local agent/context scaffolding (not part of the shipped project)
+.context/
+.claude/
