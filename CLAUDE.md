@@ -121,6 +121,9 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
   invisible on near-symmetric icons and only shows once text (mode labels, the zoom `×`) rotates. Only
   compact glyphs + short labels rotate; wide dial pills / the OSD row stay screen-fixed (rotating a wide
   box 90° pokes it out of its layout slot — `Modifier.rotate` is a draw transform, not a re-layout).
+  The scopes (histogram/waveform) DO rotate, via a `rotateLayout` modifier that reserves the ROTATED
+  bounding box (swaps W/H at 90/270) so a stack of rotated scopes doesn't overlap — the reason plain
+  `rotate()` couldn't be used and they were screen-fixed before.
 - **PASM+ISO exposure = HAL AE only in PROGRAM; S/ISO/M are app-side.** `ExposureMode { PROGRAM,
   SHUTTER, ISO, MANUAL }` (no aperture-priority — fixed tele aperture). Camera2 has no shutter-/ISO-
   priority, so `camera/AutoExposure.kt` closes the loop off the GL preview luma: SHUTTER drives ISO,
@@ -144,8 +147,11 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
   (`touchAfActive`, cleared on focus-mode change). AF reaches FOCUSED on device.
 - **Aspect ratio is only 4:3 or 16:9.** The sensor is 4:3-native: `AspectRatio.W4_3` = full readout
   (no crop, the default + the no-crop sentinel), `W16_9` = its center crop. Full/1:1/portrait removed.
-- **Video caps come from the device, not hardcodes.** `video/EncoderCaps.kt` scans `MediaCodecList`
-  (HW AVC/HEVC + Dolby-Vision present; AV1 is **software-only** → label "slow/SW", gate ≤4K).
+- **Video caps come from the device, not hardcodes.** `video/EncoderCaps.kt` scans `MediaCodecList`.
+  Only **HEVC + AVC** are offered (both HW). **AV1 was removed** (the only AV1 encoder here is SW
+  `c2.android.av1.encoder` — too slow/low-res to ship). **APV** (`VideoCodec.APV`, HW
+  `c2.qti.apv.encoder`) is defined but **intentionally EXCLUDED**: Android's MediaMuxer (API 36) rejects
+  APV in an MP4 container (device-verified — it errors the encoder mid-drain).
   `VideoFrameRate` gates drop-frame/high-speed fps per resolution (8K≤30; 120 only where a high-speed
   config exists). Resolutions come from the selected camera's `StreamConfigurationMap`.
 - **Settings persist across launches** via `storage/SettingsStore.kt` (SharedPreferences, enums by
@@ -176,12 +182,13 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
   and cannot de-blur. The HAL exposes the vendor int `com.oplus.video.stabilization.mode`
   (0x8119009e) alongside the standard key, and applies the right OIS/EIS profile for the active lens. The tele advertises standard `availableVideoStabilizationModes = [0,1,2]`
   (OFF/ON/**PREVIEW_STABILIZATION**) and both `videoStabilizationMode` + the vendor int are in its
-  request+session keys. So we **no longer force video-stab OFF**: `VideoStabMode { OFF/GYRO/STANDARD/
-  ENHANCED }` (default ENHANCED = PREVIEW_STABILIZATION) sets `CONTROL_VIDEO_STABILIZATION_MODE` on the
-  repeating request (+ the vendor int mirror). **Device-verified: result metadata `ois=1`, `vstab=2`
-  — OIS physically engaged at 1/30 s, preview + 4K recording fine.** App-side gyro EIS is suppressed
-  while a HAL mode runs (no double-warp); it stays as the `GYRO` option. The Explorer-specific
-  `com.oplus.ois.*` / `eisrealtime` tags remain gated — but the generic HAL video-stab is enough.
+  request+session keys. So we **no longer force video-stab OFF**: `VideoStabMode { OFF, STANDARD
+  ("OIS Std"), ENHANCED ("OIS Enhanced") }` sets `CONTROL_VIDEO_STABILIZATION_MODE` on the repeating
+  request (+ the vendor int mirror). **Device-verified: result metadata `ois=1`, `vstab=2` — OIS
+  physically engaged at 1/30 s, preview + 4K recording fine.** App-side gyro EIS was **removed
+  entirely** (it warps whole frames and can't de-blur; the HAL path is strictly better) — there is no
+  `GYRO` mode. The Explorer-specific `com.oplus.ois.*` / `eisrealtime` tags remain gated — but the
+  generic HAL video-stab is enough.
 - **300 mm teleconverter OIS amplification is OPPO-auth-gated (2026-07-08).** The stock app's
   Hasselblad-Teleconverter "4.3×" OIS profile is set through authenticated OCS `ConfigureKey`s
   (`com.oplus.configure.video.stabilization` → `super_stabilization`, `com.oplus.explorer.chip.state`,
@@ -191,6 +198,21 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
   Unlocking the full profile requires an OPPO enterprise-developer CameraUnit AUTH_CODE plus a
   CameraUnit camera-session path; see `docs/BACKLOG.md` item #4 for the registration checklist and
   SDK-limitation notes.
+- **The camera-control button IS reachable by a third-party app (device-verified 2026-07-09).** Its
+  FULL mechanical press arrives as the standard `KEYCODE_CAMERA` (→ shutter, `onKeyDown`). Its
+  capacitive slide + light-press ride a separate `cs_press` input device (`ABS_X` 0..100 slide,
+  `ABS_DISTANCE` press) the app can't read directly (no `/dev/input` access) — BUT the framework
+  re-emits them to the FOCUSED app as **non-standard OPPO keycodes** via `dispatchKeyEvent`: slide
+  notches = **767 / 769**, light-press = **782**. These are DISCRETE keys (no continuous position), so
+  the slide drives STEPPED zoom, not smooth. Wired through a configurable `HardwareKeyAction` system
+  (`volumeKeyAction` / `halfPressAction`, reassignable in Advanced, persisted): full → SHUTTER,
+  half-press → AF-ON, slide → zoom ±. The button's advanced OIS / zoom-HUD (iPhone-Camera-Control style)
+  is NOT exposed. **Injecting these keycodes via `adb input keyevent` does NOT reach the focused app**
+  (ColorOS routes them elsewhere) — only a physical press does, so verify slide/half-press on-device.
+- **The horizon level holds its angle when the phone points steeply up/down.** Roll comes from
+  `atan2(gravity.x, gravity.y)`; near-vertical the in-plane x/y → 0 and it's pure noise, so the level
+  spun. `GyroEis` only updates the roll when `hypot(x,y) > LEVEL_GRAVITY_THRESHOLD` (~2.5), else holds
+  the last confident angle (same idea as the discrete-orientation `FLAT_GRAVITY_THRESHOLD` guard).
 - **`manager.openCamera()` can throw synchronously.** Opening from a background proc state (relaunch
   behind the keyguard / screen just woke) raises `CameraAccessException CAMERA_DISABLED` from the
   `openCamera` call itself, not the StateCallback — wrap it in `runCatching → onError` or it crashes.
@@ -207,7 +229,7 @@ CameraEngine ├─ CameraSelector2  pick tele (closest-to-70mm, standalone; pic
              ├─ GyroEis          gyro shake + gravity roll + device orientation
              ├─ AutoExposure     app-side S/ISO-priority AE loop (meters GL luma; pure+tested)
              ├─ capture/HeifCapture (pixel-rotate) + DngCapture (EXIF orient)
-             ├─ video/VideoRecorder (HEVC/AVC/AV1, HLG/Log) + EncoderCaps + ColorProfiles
+             ├─ video/VideoRecorder (HEVC/AVC, HLG/O-Log2/SDR) + EncoderCaps + ColorProfiles
              └─ storage/MediaStoreWriter (scoped, IS_PENDING) + SettingsStore (persist)
 UI: CameraScreen (Sony-style pro surface) + controls/{ManualDials,ProSheet,ProControls} + overlays/*
 ```
