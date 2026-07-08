@@ -14,6 +14,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -52,6 +53,7 @@ import androidx.compose.ui.unit.dp
 import com.hletrd.findx9tele.ui.theme.CameraColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -146,8 +148,7 @@ fun GalleryThumb(uri: Uri?, onClick: () -> Unit, modifier: Modifier = Modifier) 
 
 /**
  * Fullscreen pinch-to-zoom review of [uri]. Loads full resolution for pixel-level focus checking
- * (falls back to a large downsample on failure). Pinch to zoom (1×–12×), drag to pan, double-tap to
- * toggle 1×/4×, tap the ✕ to close.
+ * (falls back to a large downsample on failure).
  */
 @Composable
 fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modifier: Modifier = Modifier) {
@@ -175,6 +176,10 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
             .pointerInput(Unit) {
                 detectTapGestures(onDoubleTap = {
                     if (scale > 1f) { scale = 1f; offset = Offset.Zero } else scale = 4f
+                }, onLongPress = { tap ->
+                    scale = 8f
+                    val center = Offset(size.width / 2f, size.height / 2f)
+                    offset = (center - tap) * scale
                 })
             },
         contentAlignment = Alignment.Center,
@@ -211,6 +216,18 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                 .clip(RoundedCornerShape(50))
                 .background(Color.Black.copy(alpha = 0.5f))
                 .padding(horizontal = 12.dp, vertical = 6.dp),
+        )
+
+        ZoomPresetStrip(
+            scale = scale,
+            onScale = {
+                scale = it
+                offset = Offset.Zero
+            },
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(top = 54.dp),
         )
 
         metadata?.let { meta ->
@@ -286,6 +303,42 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                 TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
             },
         )
+    }
+}
+
+@Composable
+private fun ZoomPresetStrip(
+    scale: Float,
+    onScale: (Float) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(50))
+            .background(Color.Black.copy(alpha = 0.52f))
+            .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(50))
+            .padding(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        listOf(1f, 4f, 8f, 12f).forEach { preset ->
+            val active = abs(scale - preset) < 0.25f
+            Text(
+                text = "${preset.roundToInt()}×",
+                color = if (active) Color.Black else CameraColors.TextPrimary,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(if (active) CameraColors.TextPrimary else Color.Transparent)
+                    .semantics {
+                        contentDescription = "Review zoom ${preset.roundToInt()} times"
+                        role = Role.Button
+                    }
+                    .clickable { onScale(preset) }
+                    .padding(horizontal = 11.dp, vertical = 6.dp),
+            )
+        }
     }
 }
 
