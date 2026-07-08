@@ -107,13 +107,21 @@ class GyroEis(context: Context) : SensorEventListener {
                 // angle of the gravity vector in the x/y plane. Lightly low-passed to kill jitter.
                 val x = event.values[0]
                 val y = event.values[1]
-                val rollDeg = Math.toDegrees(atan2(x, y).toDouble()).toFloat()
-                rollDegrees += ROLL_LOW_PASS_ALPHA * (rollDeg - rollDegrees)
+                val inPlane = hypot(x, y)
+
+                // Only update the roll when there's enough in-plane gravity to actually define it.
+                // Pointing the phone straight down/up puts gravity along ±z, so x/y ≈ 0 and atan2(x,y)
+                // is pure noise — the horizon level would spin. Below the threshold we HOLD the last
+                // confident angle instead of chasing the noise (QA: "level spins when pointing down").
+                if (inPlane > LEVEL_GRAVITY_THRESHOLD) {
+                    val rollDeg = Math.toDegrees(atan2(x, y).toDouble()).toFloat()
+                    rollDegrees += ROLL_LOW_PASS_ALPHA * (rollDeg - rollDegrees)
+                }
 
                 // Only update the discrete capture orientation when the phone is clearly HELD: the
                 // in-plane gravity magnitude must exceed a threshold. When flat on a desk, x/y ≈ 0 and
                 // atan2 is noise, so we hold the last confident value (a flat shot keeps the last hold).
-                if (hypot(x, y) > FLAT_GRAVITY_THRESHOLD) {
+                if (inPlane > FLAT_GRAVITY_THRESHOLD) {
                     val d = Math.round(rollDegrees / 90f) * 90
                     stableOrientation = ((d % 360) + 360) % 360
                 }
@@ -142,6 +150,10 @@ class GyroEis(context: Context) : SensorEventListener {
         // In-plane gravity magnitude (m/s²) above which the phone is considered clearly HELD (not
         // flat), so its discrete orientation can be trusted. ~4.9 = half g ≈ tilted ≥30° from flat.
         const val FLAT_GRAVITY_THRESHOLD = 4.9f
+
+        // In-plane gravity magnitude (m/s²) below which the roll angle is undefined (phone pointing
+        // steeply up/down) — hold the last value so the horizon level doesn't spin on atan2 noise.
+        const val LEVEL_GRAVITY_THRESHOLD = 2.5f
 
         // Per-sample low-pass coefficient for the gyro's "intended orientation" estimate. This is
         // a per-SAMPLE coefficient, so it assumes the ~200 Hz gyroscope sampling period set above
