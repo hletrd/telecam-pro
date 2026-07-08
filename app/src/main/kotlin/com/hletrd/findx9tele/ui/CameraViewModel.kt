@@ -60,9 +60,14 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         }
     }
 
-    // Debounces engine.setControls() so rapid slider drags don't rebuild the repeating request per tick.
+    // Throttles engine.setControls() so rapid drags don't rebuild the repeating request per tick, but
+    // still apply the LATEST value at a steady ~12 Hz WHILE the gesture continues (a plain debounce
+    // starved: continuous pinch/drag kept resetting the timer, so zoom only landed after the finger
+    // lifted). First change schedules an apply; changes within the window just refresh pendingControls.
     private var pendingControls: ManualControls? = null
+    private var applyScheduled = false
     private val applyControlsRunnable = Runnable {
+        applyScheduled = false
         pendingControls?.let { engine.setControls(it) }
         pendingControls = null
     }
@@ -492,12 +497,16 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         if (enabled) saveSettingsIfEnabled() // capture the current setup immediately
     }
 
-    private inline fun updateControls(block: (ManualControls) -> ManualControls) {
+    private fun updateControls(block: (ManualControls) -> ManualControls) {
         val updated = block(_state.value.controls)
         _state.update { it.copy(controls = updated) }
         pendingControls = updated
-        mainHandler.removeCallbacks(applyControlsRunnable)
-        mainHandler.postDelayed(applyControlsRunnable, 80)
+        // Trailing throttle: apply at most every 80 ms with the newest value, but DON'T cancel a
+        // pending apply — so a sustained gesture keeps landing updates live instead of only at the end.
+        if (!applyScheduled) {
+            applyScheduled = true
+            mainHandler.postDelayed(applyControlsRunnable, 80)
+        }
     }
 
     /**
