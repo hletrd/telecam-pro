@@ -267,7 +267,9 @@ class GlPipeline {
         // Additive scope analysis: throttled GL readback of the just-drawn preview, computed off-thread.
         // Kept entirely defensive so it can never block or crash the preview/encoder draw below.
         if ((analysisHistogram || analysisWaveform) && analysisCallback != null) {
-            if (++analysisFrameCounter >= 12) {
+            // Refresh the scopes ~6×/s (every 5th frame at 30 fps) — snappy without stalling the 4K
+            // preview on the readback. (Was every 12th ≈ 2.5×/s, which felt laggy.)
+            if (++analysisFrameCounter >= 5) {
                 analysisFrameCounter = 0
                 runAnalysisReadback(core)
             }
