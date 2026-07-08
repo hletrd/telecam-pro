@@ -154,8 +154,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         val e = loaded.extras
         // Push to the engine (safe pre-start: these set @Volatile fields read when the camera opens).
         engine.setControls(c)
-        // If a priority mode was restored, arm the app-side AE luma metering so it drives on launch.
-        engine.setAeMetering(c.exposureMode == ExposureMode.SHUTTER || c.exposureMode == ExposureMode.ISO)
+        // Manual/priority modes need luma analysis even when scopes are hidden: priority AE drives
+        // from it, and full manual uses it for the live exposure meter.
+        engine.setAeMetering(usesExposureAnalysis(c.exposureMode))
         engine.setLens(e.lens)
         engine.setTransfer(e.transfer)
         engine.setTeleconverterMode(e.teleconverter)
@@ -243,6 +244,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     fun onAppStatus(message: String) = showStatus(message)
 
+    private fun usesExposureAnalysis(mode: ExposureMode): Boolean = mode != ExposureMode.PROGRAM
+
     private fun markChanged(slot: FnSlot) {
         _state.update { s ->
             val recent = (listOf(slot) + s.recentSettingSlots.filterNot { it == slot }).take(RECENT_SETTING_LIMIT)
@@ -316,12 +319,15 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             val exp = if (fromProgram) (live.liveExposureNs ?: it.exposureTimeNs) else it.exposureTimeNs
             it.copy(exposureMode = mode, shutterMode = shutterMode, iso = iso, exposureTimeNs = exp)
         }
-        // Force the GL luma readback on while a priority mode needs to meter; off otherwise.
-        engine.setAeMetering(mode == ExposureMode.SHUTTER || mode == ExposureMode.ISO)
+        // Force the GL luma readback on while manual/priority modes need a live meter; off in P.
+        engine.setAeMetering(usesExposureAnalysis(mode))
     }
     // Legacy binary toggle (kept for any caller): Auto→PROGRAM, Manual→MANUAL.
-    override fun onToggleAutoExposure(auto: Boolean) =
-        updateControls(FnSlot.EXPOSURE_MODE) { it.copy(exposureMode = if (auto) ExposureMode.PROGRAM else ExposureMode.MANUAL) }
+    override fun onToggleAutoExposure(auto: Boolean) {
+        val mode = if (auto) ExposureMode.PROGRAM else ExposureMode.MANUAL
+        engine.setAeMetering(usesExposureAnalysis(mode))
+        updateControls(FnSlot.EXPOSURE_MODE) { it.copy(exposureMode = mode) }
+    }
     override fun onToggleAeLock(locked: Boolean) = updateControls(FnSlot.EXPOSURE_MODE) { it.copy(aeLock = locked) }
     override fun onAntibanding(mode: Antibanding) = updateControls { it.copy(antibanding = mode) }
     override fun onFps(fps: Int) = updateControls { it.copy(fps = fps) }
@@ -686,6 +692,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     private fun updateControls(slot: FnSlot? = null, block: (ManualControls) -> ManualControls) {
         val updated = block(_state.value.controls)
+        engine.setAeMetering(usesExposureAnalysis(updated.exposureMode))
         _state.update { it.copy(controls = updated) }
         slot?.let(::markChanged)
         pendingControls = updated

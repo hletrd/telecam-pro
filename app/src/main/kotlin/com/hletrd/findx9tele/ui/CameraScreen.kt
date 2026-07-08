@@ -76,12 +76,14 @@ import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
 import com.hletrd.findx9tele.camera.Antibanding
 import com.hletrd.findx9tele.camera.AspectRatio
+import com.hletrd.findx9tele.camera.AutoExposure
 import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.DriveMode
+import com.hletrd.findx9tele.camera.ExposureMode
 import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FnSlot
 import com.hletrd.findx9tele.camera.FocusMode
@@ -119,6 +121,7 @@ import com.hletrd.findx9tele.ui.review.GalleryThumb
 import com.hletrd.findx9tele.ui.review.MediaReviewOverlay
 import com.hletrd.findx9tele.ui.theme.CameraColors
 import com.hletrd.findx9tele.ui.theme.FindX9TeleTheme
+import kotlin.math.ln
 import kotlin.math.roundToInt
 
 /**
@@ -294,19 +297,14 @@ fun CameraScreen(
                 .padding(start = 12.dp, top = 60.dp),
         )
 
-        teleSafetyMessage(state)?.let { warning ->
-            Text(
-                text = warning,
-                color = Color.Black,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold,
+        teleSafetyWarning(state)?.let { warning ->
+            TeleSafetyBanner(
+                warning = warning,
+                actions = actions,
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .statusBarsPadding()
-                    .padding(start = 12.dp, top = 98.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(Color(0xFFFFD60A).copy(alpha = 0.95f))
-                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                    .padding(start = 12.dp, top = 98.dp),
             )
         }
 
@@ -985,8 +983,14 @@ private fun ExposureMeter(state: CameraUiState, modifier: Modifier = Modifier) {
     val evStep = caps?.evStep?.let {
         if (it.denominator == 0) 1f / 3f else it.numerator.toFloat() / it.denominator.toFloat()
     } ?: (1f / 3f)
-    val ev = (state.controls.exposureCompensation * evStep).coerceIn(-3f, 3f)
-    val label = if (state.controls.exposureMode == com.hletrd.findx9tele.camera.ExposureMode.MANUAL) "M" else "%+.1f".format(ev)
+    val compensationEv = (state.controls.exposureCompensation * evStep).coerceIn(-3f, 3f)
+    val manualEv = manualMeterEv(state)
+    val indicatorEv = if (state.controls.exposureMode == ExposureMode.MANUAL) manualEv else compensationEv
+    val label = when {
+        state.controls.exposureMode == ExposureMode.MANUAL && manualEv != null -> "M %+.1f".format(manualEv)
+        state.controls.exposureMode == ExposureMode.MANUAL -> "M --"
+        else -> "%+.1f".format(compensationEv)
+    }
     Row(
         modifier = modifier
             .width(208.dp)
@@ -1014,23 +1018,86 @@ private fun ExposureMeter(state: CameraUiState, modifier: Modifier = Modifier) {
                     strokeWidth = if (major) 1.6.dp.toPx() else 1.dp.toPx(),
                 )
             }
-            if (state.controls.exposureMode != com.hletrd.findx9tele.camera.ExposureMode.MANUAL) {
-                val x = ((ev + 3f) / 6f).coerceIn(0f, 1f) * size.width
+            if (indicatorEv != null) {
+                val x = ((indicatorEv + 3f) / 6f).coerceIn(0f, 1f) * size.width
                 drawCircle(CameraColors.ManualActive, radius = 4.dp.toPx(), center = Offset(x, cy))
             }
         }
     }
 }
 
-private fun teleSafetyMessage(state: CameraUiState): String? {
+private fun manualMeterEv(state: CameraUiState): Float? {
+    if (state.controls.exposureMode != ExposureMode.MANUAL) return null
+    val luma = state.histogramData?.luma ?: return null
+    var total = 0L
+    luma.forEach { total += it }
+    if (total == 0L) return null
+    val mean = AutoExposure.meanLuma(luma).coerceAtLeast(0.001f)
+    return log2(mean / AutoExposure.TARGET_LUMA).coerceIn(-3f, 3f)
+}
+
+private fun log2(value: Float): Float = (ln(value.toDouble()) / ln(2.0)).toFloat()
+
+@Composable
+private fun TeleSafetyBanner(
+    warning: TeleSafetyWarning,
+    actions: CameraActions,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color(0xFFFFD60A).copy(alpha = 0.95f))
+            .padding(start = 10.dp, top = 5.dp, end = 5.dp, bottom = 5.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = warning.message,
+            color = Color.Black,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+        )
+        Text(
+            text = warning.actionLabel,
+            color = Color.White,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier
+                .clip(RoundedCornerShape(50))
+                .background(Color.Black.copy(alpha = 0.82f))
+                .clickable {
+                    when (warning.action) {
+                        TeleSafetyAction.ENABLE_OIS -> actions.onToggleOis(true)
+                        TeleSafetyAction.ENABLE_STAB -> actions.onVideoStabMode(VideoStabMode.ENHANCED)
+                        TeleSafetyAction.SET_SAFE_SHUTTER -> {
+                            actions.onShutterMode(ShutterMode.SPEED)
+                            actions.onShutterNs(TELE_SAFE_SHUTTER_NS)
+                        }
+                    }
+                }
+                .padding(horizontal = 8.dp, vertical = 3.dp),
+        )
+    }
+}
+
+private fun teleSafetyWarning(state: CameraUiState): TeleSafetyWarning? {
     if (!state.teleconverterMode) return null
-    if (!state.controls.oisEnabled) return "300mm WARN · OIS OFF"
-    if (state.videoStabMode == VideoStabMode.OFF && state.mode == CaptureMode.VIDEO) return "300mm WARN · STAB OFF"
+    if (!state.controls.oisEnabled) {
+        return TeleSafetyWarning("300mm WARN · OIS OFF", "OIS ON", TeleSafetyAction.ENABLE_OIS)
+    }
+    if (state.videoStabMode == VideoStabMode.OFF && state.mode == CaptureMode.VIDEO) {
+        return TeleSafetyWarning("300mm WARN · STAB OFF", "STAB ON", TeleSafetyAction.ENABLE_STAB)
+    }
     val exposureNs = when {
-        state.controls.exposureMode == com.hletrd.findx9tele.camera.ExposureMode.PROGRAM -> state.liveExposureNs
+        state.controls.exposureMode == ExposureMode.PROGRAM -> state.liveExposureNs
         else -> state.controls.effectiveExposureNs()
     } ?: return null
-    return if (exposureNs > TELE_SAFE_SHUTTER_NS) "300mm WARN · ${formatSafetyShutter(exposureNs)}" else null
+    return if (exposureNs > TELE_SAFE_SHUTTER_NS) {
+        TeleSafetyWarning("300mm WARN · ${formatSafetyShutter(exposureNs)}", "SET 1/320", TeleSafetyAction.SET_SAFE_SHUTTER)
+    } else {
+        null
+    }
 }
 
 private fun formatSafetyShutter(ns: Long): String {
@@ -1039,6 +1106,18 @@ private fun formatSafetyShutter(ns: Long): String {
 }
 
 private const val TELE_SAFE_SHUTTER_NS = 1_000_000_000L / 320L
+
+private data class TeleSafetyWarning(
+    val message: String,
+    val actionLabel: String,
+    val action: TeleSafetyAction,
+)
+
+private enum class TeleSafetyAction {
+    ENABLE_OIS,
+    ENABLE_STAB,
+    SET_SAFE_SHUTTER,
+}
 
 // ---------------------------------------------------------------------------
 // Bottom cluster: mode carousel + shutter row (the manual dial cluster lives in ManualDials.kt).
