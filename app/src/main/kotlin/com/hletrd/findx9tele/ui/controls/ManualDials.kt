@@ -80,9 +80,9 @@ fun ManualDialCluster(
     state: CameraUiState,
     actions: CameraActions,
     onRequestWhiteBalanceSheet: () -> Unit,
+    modifier: Modifier = Modifier,
     onOpenFnMenu: () -> Unit = {},
     onDialOpenChange: (Boolean) -> Unit = {},
-    modifier: Modifier = Modifier,
 ) {
     var openDial by remember { mutableStateOf<DialType?>(null) }
     val controls = state.controls

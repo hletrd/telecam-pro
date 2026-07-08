@@ -126,8 +126,8 @@ dependencies {
 
     // OPPO CameraUnit / OCS SDK — official OEM extension SDK for stabilization modes and related
     // camera capabilities. Kept as an availability check for future 300 mm OIS work.
-    implementation("com.oplus.ocs:camera:1.1.0")
-    implementation("com.oplus.ocs:base:1.0.16")
+    implementation(libs.oplus.ocs.camera)
+    implementation(libs.oplus.ocs.base)
 
     testImplementation(libs.junit)
 }
