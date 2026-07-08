@@ -200,11 +200,11 @@ class MainActivity : ComponentActivity() {
                 // KEYCODE_ZOOM_IN/OUT (168/169), repeating ~20 Hz while the finger slides — NOT the
                 // OPPO 767/769 codes seen in one earlier session (kept as aliases just in case).
                 KeyEvent.KEYCODE_ZOOM_IN, KEY_CAM_SLIDE_IN -> {
-                    if (event.action == KeyEvent.ACTION_DOWN) vm.onPinchZoom(ZOOM_STEP)
+                    if (event.action == KeyEvent.ACTION_DOWN) vm.onHardwareZoomStep(ZOOM_STEP)
                     return true
                 }
                 KeyEvent.KEYCODE_ZOOM_OUT, KEY_CAM_SLIDE_OUT -> {
-                    if (event.action == KeyEvent.ACTION_DOWN) vm.onPinchZoom(1f / ZOOM_STEP)
+                    if (event.action == KeyEvent.ACTION_DOWN) vm.onHardwareZoomStep(1f / ZOOM_STEP)
                     return true
                 }
                 // Half-press = the standard camera-family KEYCODE_FOCUS (DOWN engages, UP releases).

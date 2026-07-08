@@ -414,6 +414,35 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
     override fun onToggleOis(enabled: Boolean) = updateControls(FnSlot.STABILIZATION) { it.copy(oisEnabled = enabled) }
     override fun onZoomRatio(ratio: Float) = updateControls(FnSlot.ZOOM) { it.copy(zoomRatio = ratio) }
+    // Hardware slide-zoom easing: the camera button emits DISCRETE key repeats (~20 Hz), and applying
+    // each 1.04x jump directly reads as stutter. Instead the steps move a TARGET and a ~30 Hz ticker
+    // glides the actual ratio toward it (exponential approach in log-zoom space), so the preview
+    // sweeps smoothly like a powered zoom rocker.
+    private var zoomEaseTarget: Float? = null
+    private val zoomEaseTicker = object : Runnable {
+        override fun run() {
+            val target = zoomEaseTarget ?: return
+            val cur = _state.value.controls.zoomRatio
+            val next = (cur * Math.pow((target / cur).toDouble(), 0.4)).toFloat()
+            if (kotlin.math.abs(kotlin.math.ln((target / next).toDouble())) < 0.004) {
+                zoomEaseTarget = null
+                onZoomRatio(target)
+                return
+            }
+            onZoomRatio(next)
+            mainHandler.postDelayed(this, 33)
+        }
+    }
+
+    /** One hardware zoom-key repeat: nudge the ease target and make sure the glide ticker runs. */
+    fun onHardwareZoomStep(factor: Float) {
+        val range = _state.value.caps?.zoomRatioRange ?: return
+        val base = zoomEaseTarget ?: _state.value.controls.zoomRatio
+        val wasIdle = zoomEaseTarget == null
+        zoomEaseTarget = (base * factor).coerceIn(range.lower, range.upper)
+        if (wasIdle) mainHandler.post(zoomEaseTicker)
+    }
+
     override fun onPinchZoom(factor: Float) {
         // Pinch multiplies the current zoom ratio, clamped to the lens's advertised range; reuses the
         // debounced onZoomRatio path so the in-sheet Zoom slider and the viewfinder pinch stay in sync.
@@ -764,11 +793,12 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         _state.update { it.copy(controls = updated) }
         slot?.let(::markChanged)
         pendingControls = updated
-        // Trailing throttle: apply at most every 80 ms with the newest value, but DON'T cancel a
-        // pending apply — so a sustained gesture keeps landing updates live instead of only at the end.
+        // Trailing throttle: apply at most every 40 ms with the newest value, but DON'T cancel a
+        // pending apply — so a sustained gesture keeps landing updates live instead of only at the
+        // end. (80 ms quantized the hardware slide-zoom into visible steps — user-reported stutter.)
         if (!applyScheduled) {
             applyScheduled = true
-            mainHandler.postDelayed(applyControlsRunnable, 80)
+            mainHandler.postDelayed(applyControlsRunnable, 40)
         }
     }
 
