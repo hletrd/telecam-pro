@@ -4,11 +4,12 @@ import android.content.Context
 import android.content.Intent
 import android.util.Range
 import android.util.Size
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.LocalOverscrollFactory
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,23 +19,20 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -79,7 +77,6 @@ import com.hletrd.findx9tele.camera.videoBitRate
 import com.hletrd.findx9tele.video.EncoderCaps
 import com.hletrd.findx9tele.ui.CameraActions
 import com.hletrd.findx9tele.ui.theme.CameraColors
-import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 /**
@@ -102,7 +99,7 @@ internal enum class ProSheetTab(val label: String) {
     ADVANCED("Advanced"),
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun ProSheet(
     state: CameraUiState,
@@ -112,62 +109,72 @@ internal fun ProSheet(
     initialTab: ProSheetTab = ProSheetTab.SHOOTING,
     onTabChange: (ProSheetTab) -> Unit = {},
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val scope = rememberCoroutineScope()
     var selectedTab by remember { mutableStateOf(initialTab) }
-    val dismiss: () -> Unit = {
-        scope.launch { sheetState.hide() }.invokeOnCompletion { if (!sheetState.isVisible) onDismiss() }
-    }
+    // A fixed, NON-draggable bottom panel — NOT Material3's ModalBottomSheet. The sheet let the whole
+    // dialog be dragged upward past its rest position (the "bounce" the user saw), and Material3 1.4.0
+    // exposes no way to disable that drag. A plain scrim + anchored panel can't be dragged at all;
+    // it's dismissed only by the X, a scrim tap, or the system Back gesture.
+    BackHandler(enabled = true, onBack = onDismiss)
+    // Interaction sources for indication-free clickables (scrim dismiss + panel click-through block).
+    val scrimInteraction = remember { MutableInteractionSource() }
+    val panelInteraction = remember { MutableInteractionSource() }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        modifier = modifier,
-        containerColor = CameraColors.Pill,
-        contentColor = CameraColors.TextPrimary,
-        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
-        dragHandle = {
-            Box(modifier = Modifier.padding(top = 10.dp).width(36.dp).height(4.dp).background(Color.White.copy(alpha = 0.3f), RoundedCornerShape(2.dp)))
-        },
-    ) {
-        Column(modifier = Modifier.fillMaxWidth()) {
+    Box(modifier = modifier.fillMaxSize()) {
+        // Scrim: tap outside the panel to dismiss.
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.5f))
+                .clickable(interactionSource = scrimInteraction, indication = null, onClick = onDismiss),
+        )
+
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .fillMaxHeight(0.9f)
+                .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
+                .background(CameraColors.Pill)
+                // Consume taps on the panel so they don't fall through to the scrim below and dismiss.
+                .clickable(interactionSource = panelInteraction, indication = null, onClick = {})
+                .statusBarsPadding()
+                .navigationBarsPadding(),
+        ) {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 4.dp, bottom = 8.dp),
+                modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 14.dp, bottom = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text("Settings", color = CameraColors.TextPrimary, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                CloseButton(onClick = dismiss)
+                CloseButton(onClick = onDismiss)
             }
 
-            Row(modifier = Modifier.fillMaxWidth().fillMaxHeight(0.82f)) {
+            Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
                 TabRail(selected = selectedTab, onSelect = { selectedTab = it; onTabChange(it) })
                 Box(modifier = Modifier.width(1.dp).fillMaxHeight().background(Color.White.copy(alpha = 0.08f)))
-                // Providing a null overscroll factory disables the stretch-overshoot on the content
-                // scroll, so it no longer bounces past the last row. Wrapped in a weighted Box because
-                // Modifier.weight is a RowScope extension and the provider lambda isn't a RowScope.
+                // Content scroll. overscrollEffect = null removes the stretch glow at the ends; the
+                // panel itself no longer drags, so there is nothing left to bounce. Weighted Box because
+                // Modifier.weight is a RowScope extension.
                 Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
-                    CompositionLocalProvider(LocalOverscrollFactory provides null) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .verticalScroll(rememberScrollState())
-                                .padding(horizontal = 18.dp, vertical = 16.dp),
-                            verticalArrangement = Arrangement.spacedBy(20.dp),
-                        ) {
-                            when (selectedTab) {
-                                ProSheetTab.SHOOTING -> ShootingTab(state, actions)
-                                ProSheetTab.EXPOSURE -> ExposureColorTab(state, actions)
-                                ProSheetTab.FOCUS -> FocusTab(state, actions)
-                                ProSheetTab.LENS -> LensTab(state, actions)
-                                ProSheetTab.STABILIZATION -> StabilizationTab(state, actions)
-                                ProSheetTab.VIDEO -> VideoTab(state, actions)
-                                ProSheetTab.PROCESSING -> ProcessingTab(state, actions)
-                                ProSheetTab.ASSISTS -> AssistsTab(state, actions)
-                                ProSheetTab.ADVANCED -> AdvancedTab(state, actions)
-                            }
-                            Spacer(modifier = Modifier.height(8.dp))
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .verticalScroll(rememberScrollState(), overscrollEffect = null)
+                            .padding(horizontal = 18.dp, vertical = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(20.dp),
+                    ) {
+                        when (selectedTab) {
+                            ProSheetTab.SHOOTING -> ShootingTab(state, actions)
+                            ProSheetTab.EXPOSURE -> ExposureColorTab(state, actions)
+                            ProSheetTab.FOCUS -> FocusTab(state, actions)
+                            ProSheetTab.LENS -> LensTab(state, actions)
+                            ProSheetTab.STABILIZATION -> StabilizationTab(state, actions)
+                            ProSheetTab.VIDEO -> VideoTab(state, actions)
+                            ProSheetTab.PROCESSING -> ProcessingTab(state, actions)
+                            ProSheetTab.ASSISTS -> AssistsTab(state, actions)
+                            ProSheetTab.ADVANCED -> AdvancedTab(state, actions)
                         }
+                        Spacer(modifier = Modifier.height(8.dp))
                     }
                 }
             }
