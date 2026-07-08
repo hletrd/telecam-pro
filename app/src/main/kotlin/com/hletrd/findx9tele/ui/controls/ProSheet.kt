@@ -28,6 +28,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -59,13 +60,17 @@ import com.hletrd.findx9tele.camera.AudioScene
 import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.ColorEffect
+import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.DriveMode
+import com.hletrd.findx9tele.camera.FnSlot
+import com.hletrd.findx9tele.camera.HardwareKeyAction
 import com.hletrd.findx9tele.camera.PeakingColor
 import com.hletrd.findx9tele.camera.PeakingLevel
 import com.hletrd.findx9tele.camera.ZebraLevel
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.LensChoice
+import com.hletrd.findx9tele.camera.MemorySlot
 import com.hletrd.findx9tele.camera.MeteringMode
 import com.hletrd.findx9tele.camera.ProcessingLevel
 import com.hletrd.findx9tele.camera.ShutterMode
@@ -348,9 +353,39 @@ private fun TabTitle(text: String) {
 }
 
 @Composable
+private fun MemoryRecallControls(state: CameraUiState, actions: CameraActions) {
+    SectionHeader("Memory Recall")
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+        MemorySlot.entries.forEach { slot ->
+            val saved = slot in state.savedMemorySlots
+            FilterChip(
+                selected = state.activeMemorySlot == slot,
+                onClick = { actions.onRecallMemorySlot(slot) },
+                enabled = saved,
+                label = { Text(memorySlotLabel(slot)) },
+                colors = pixelChipColors(),
+                border = pixelChipBorder(state.activeMemorySlot == slot),
+            )
+        }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+        MemorySlot.entries.forEach { slot ->
+            FilterChip(
+                selected = false,
+                onClick = { actions.onStoreMemorySlot(slot) },
+                label = { Text("Save ${memorySlotLabel(slot)}") },
+                colors = pixelChipColors(),
+                border = pixelChipBorder(false),
+            )
+        }
+    }
+}
+
+@Composable
 private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
     val caps = state.caps
     TabTitle("Shooting")
+    MemoryRecallControls(state = state, actions = actions)
     PhotoFormatToggles(formats = state.photoFormats, onSetPhotoFormats = actions::onSetPhotoFormats)
     SegmentedSelector(
         label = "Aspect Ratio",
@@ -416,6 +451,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         labelFor = { it.letter },
         onSelect = actions::onExposureMode,
     )
+    AutoIsoShutterPresets(actions = actions)
     ToggleRow(label = "AE Lock", checked = controls.aeLock, onCheckedChange = actions::onToggleAeLock)
     SegmentedSelector(
         label = "Anti-Flicker",
@@ -482,6 +518,27 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         )
     }
     ToggleRow(label = "AWB Lock", checked = controls.awbLock, onCheckedChange = actions::onToggleAwbLock)
+}
+
+@Composable
+private fun AutoIsoShutterPresets(actions: CameraActions) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("300mm Auto ISO Shutter", color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+            listOf(320 to "1/320", 500 to "1/500", 1000 to "1/1000").forEach { (denom, label) ->
+                FilterChip(
+                    selected = false,
+                    onClick = {
+                        actions.onExposureMode(ExposureMode.SHUTTER)
+                        actions.onShutterNs(1_000_000_000L / denom)
+                    },
+                    label = { Text(label) },
+                    colors = pixelChipColors(),
+                    border = pixelChipBorder(false),
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -762,6 +819,48 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
         checked = state.rememberSettings,
         onCheckedChange = actions::onToggleRememberSettings,
     )
+    SectionHeader("My Menu")
+    if (state.myMenuSlots.isEmpty()) {
+        Text("No items selected.", color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
+    } else {
+        state.myMenuSlots.forEach { slot ->
+            LabelValueRow(
+                label = fnSlotLabel(slot),
+                valueLabel = fnSlotValue(slot, state),
+                onClick = { performQuickFn(slot, state, actions) },
+            )
+        }
+    }
+    if (state.recentSettingSlots.isNotEmpty()) {
+        SectionHeader("Recently Changed")
+        state.recentSettingSlots.forEach { slot ->
+            LabelValueRow(
+                label = fnSlotLabel(slot),
+                valueLabel = fnSlotValue(slot, state),
+                onClick = { performQuickFn(slot, state, actions) },
+            )
+        }
+    }
+    SectionHeader("Fn Bar")
+    Text("Choose up to 8 chips for the shooting-screen Fn row.", color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
+    FnSlotToggleList(selected = state.fnSlots, onSet = actions::onSetFnSlots)
+    SectionHeader("My Menu Items")
+    FnSlotToggleList(selected = state.myMenuSlots, onSet = actions::onSetMyMenuSlots)
+    SectionHeader("Hardware Keys")
+    SegmentedSelector(
+        label = "Volume / Full Press",
+        options = HardwareKeyAction.entries,
+        selected = state.volumeKeyAction,
+        labelFor = ::hardwareKeyActionLabel,
+        onSelect = actions::onVolumeKeyAction,
+    )
+    SegmentedSelector(
+        label = "Half Press",
+        options = HardwareKeyAction.entries,
+        selected = state.halfPressAction,
+        labelFor = ::hardwareKeyActionLabel,
+        onSelect = actions::onHalfPressAction,
+    )
     LabelValueRow(
         label = "Camera Override",
         valueLabel = state.cameraOverrideId ?: "Default",
@@ -775,6 +874,131 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.labelSmall,
     )
+}
+
+@Composable
+private fun FnSlotToggleList(selected: List<FnSlot>, onSet: (List<FnSlot>) -> Unit) {
+    FnSlot.entries.forEach { slot ->
+        val checked = slot in selected
+        ToggleRow(
+            label = fnSlotLabel(slot),
+            checked = checked,
+            onCheckedChange = { enabled ->
+                val next = if (enabled) selected + slot else selected.filterNot { it == slot }
+                onSet(next)
+            },
+            enabled = checked || selected.size < 8,
+        )
+    }
+}
+
+private fun fnSlotValue(slot: FnSlot, state: CameraUiState): String {
+    val c = state.controls
+    return when (slot) {
+        FnSlot.EXPOSURE_MODE -> c.exposureMode.letter
+        FnSlot.FOCUS -> focusModeLabel(c.focusMode)
+        FnSlot.SHUTTER -> if (c.shutterMode == ShutterMode.ANGLE) "%.0f°".format(c.shutterAngle) else formatShutterSpeed(c.exposureTimeNs)
+        FnSlot.ISO -> c.iso.toString()
+        FnSlot.WB -> if (c.wbMode == WbMode.MANUAL) "${c.wbKelvin}K" else wbModeLabel(c.wbMode)
+        FnSlot.EV -> "%+.1f".format(c.exposureCompensation * 0.333f)
+        FnSlot.ZOOM -> "%.1fx".format(c.zoomRatio)
+        FnSlot.STABILIZATION -> state.videoStabMode.label
+        FnSlot.DRIVE -> driveModeLabel(state.driveMode)
+        FnSlot.METERING -> meteringModeLabel(c.meteringMode)
+        FnSlot.PEAKING -> if (state.focusPeaking) "On" else "Off"
+        FnSlot.ZEBRA -> if (state.zebra) "On" else "Off"
+        FnSlot.TRANSFER -> transferLabelShort(state.transfer)
+        FnSlot.AUDIO_SCENE -> state.audioScene.label
+        FnSlot.GRID -> gridTypeLabel(state.grid)
+        FnSlot.LEVEL -> if (state.level) "On" else "Off"
+        FnSlot.PUNCH_IN -> if (state.punchIn) "On" else "Off"
+        FnSlot.TELECONVERTER -> if (state.teleconverterMode) "300mm" else "Off"
+    }
+}
+
+private fun performQuickFn(slot: FnSlot, state: CameraUiState, actions: CameraActions) {
+    when (slot) {
+        FnSlot.EXPOSURE_MODE -> actions.onExposureMode(nextExposureMode(state.controls.exposureMode))
+        FnSlot.FOCUS -> actions.onFocusMode(nextFocusMode(state.controls.focusMode))
+        FnSlot.SHUTTER -> actions.onShutterMode(if (state.controls.shutterMode == ShutterMode.SPEED) ShutterMode.ANGLE else ShutterMode.SPEED)
+        FnSlot.ISO -> actions.onExposureMode(if (state.controls.exposureMode == com.hletrd.findx9tele.camera.ExposureMode.ISO) com.hletrd.findx9tele.camera.ExposureMode.PROGRAM else com.hletrd.findx9tele.camera.ExposureMode.ISO)
+        FnSlot.WB -> actions.onWbMode(nextWbMode(state.controls.wbMode))
+        FnSlot.EV -> actions.onExposureCompensation(0)
+        FnSlot.ZOOM -> actions.onZoomRatio(1f)
+        FnSlot.STABILIZATION -> actions.onVideoStabMode(nextVideoStabMode(state.videoStabMode))
+        FnSlot.DRIVE -> actions.onDriveMode(nextDriveMode(state.driveMode))
+        FnSlot.METERING -> actions.onMeteringMode(nextMeteringMode(state.controls.meteringMode))
+        FnSlot.PEAKING -> actions.onTogglePeaking(!state.focusPeaking)
+        FnSlot.ZEBRA -> actions.onToggleZebra(!state.zebra)
+        FnSlot.TRANSFER -> actions.onTransfer(nextTransfer(state.transfer))
+        FnSlot.AUDIO_SCENE -> actions.onAudioScene(nextAudioScene(state.audioScene))
+        FnSlot.GRID -> actions.onGridType(nextGridType(state.grid))
+        FnSlot.LEVEL -> actions.onToggleLevel(!state.level)
+        FnSlot.PUNCH_IN -> actions.onTogglePunchIn(!state.punchIn)
+        FnSlot.TELECONVERTER -> actions.onToggleTeleconverter(!state.teleconverterMode)
+    }
+}
+
+private fun nextExposureMode(mode: com.hletrd.findx9tele.camera.ExposureMode): com.hletrd.findx9tele.camera.ExposureMode = when (mode) {
+    com.hletrd.findx9tele.camera.ExposureMode.PROGRAM -> com.hletrd.findx9tele.camera.ExposureMode.SHUTTER
+    com.hletrd.findx9tele.camera.ExposureMode.SHUTTER -> com.hletrd.findx9tele.camera.ExposureMode.ISO
+    com.hletrd.findx9tele.camera.ExposureMode.ISO -> com.hletrd.findx9tele.camera.ExposureMode.MANUAL
+    com.hletrd.findx9tele.camera.ExposureMode.MANUAL -> com.hletrd.findx9tele.camera.ExposureMode.PROGRAM
+}
+
+private fun nextFocusMode(mode: FocusMode): FocusMode = when (mode) {
+    FocusMode.CONTINUOUS -> FocusMode.AUTO
+    FocusMode.AUTO -> FocusMode.MANUAL
+    FocusMode.MANUAL -> FocusMode.MACRO
+    FocusMode.MACRO -> FocusMode.CONTINUOUS
+}
+
+private fun nextWbMode(mode: WbMode): WbMode = when (mode) {
+    WbMode.AUTO -> WbMode.DAYLIGHT
+    WbMode.DAYLIGHT -> WbMode.CLOUDY
+    WbMode.CLOUDY -> WbMode.SHADE
+    WbMode.SHADE -> WbMode.MANUAL
+    WbMode.MANUAL -> WbMode.AUTO
+    WbMode.INCANDESCENT, WbMode.FLUORESCENT -> WbMode.AUTO
+}
+
+private fun nextVideoStabMode(mode: VideoStabMode): VideoStabMode = when (mode) {
+    VideoStabMode.OFF -> VideoStabMode.STANDARD
+    VideoStabMode.STANDARD -> VideoStabMode.ENHANCED
+    VideoStabMode.ENHANCED -> VideoStabMode.OFF
+}
+
+private fun nextDriveMode(mode: DriveMode): DriveMode = when (mode) {
+    DriveMode.SINGLE -> DriveMode.BURST
+    DriveMode.BURST -> DriveMode.AEB
+    DriveMode.AEB -> DriveMode.TIMELAPSE
+    DriveMode.TIMELAPSE -> DriveMode.SINGLE
+}
+
+private fun nextMeteringMode(mode: MeteringMode): MeteringMode = when (mode) {
+    MeteringMode.MATRIX -> MeteringMode.CENTER
+    MeteringMode.CENTER -> MeteringMode.SPOT
+    MeteringMode.SPOT -> MeteringMode.MATRIX
+}
+
+private fun nextTransfer(transfer: ColorTransfer): ColorTransfer = when (transfer) {
+    ColorTransfer.HLG -> ColorTransfer.LOG
+    ColorTransfer.LOG -> ColorTransfer.SDR
+    ColorTransfer.SDR -> ColorTransfer.HLG
+}
+
+private fun nextAudioScene(scene: AudioScene): AudioScene = when (scene) {
+    AudioScene.STANDARD -> AudioScene.SOUND_FOCUS
+    AudioScene.SOUND_FOCUS -> AudioScene.SOUND_STAGE
+    AudioScene.SOUND_STAGE -> AudioScene.STANDARD
+}
+
+private fun nextGridType(type: GridType): GridType = when (type) {
+    GridType.NONE -> GridType.THIRDS
+    GridType.THIRDS -> GridType.GOLDEN
+    GridType.GOLDEN -> GridType.SQUARE
+    GridType.SQUARE -> GridType.CENTER
+    GridType.CENTER -> GridType.NONE
 }
 
 private fun openPrivacyPolicy(context: Context) {

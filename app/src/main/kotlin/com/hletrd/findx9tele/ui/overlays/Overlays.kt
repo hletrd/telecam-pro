@@ -293,6 +293,9 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(focalLabel, color = Color.White, style = MaterialTheme.typography.labelMedium)
+        state.activeMemorySlot?.let {
+            Text(it.label, color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+        }
         if (state.mode == CaptureMode.VIDEO) {
             val mbps = videoBitRate(
                 state.videoResolution.width, state.videoResolution.height,

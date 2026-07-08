@@ -3,6 +3,8 @@ package com.hletrd.findx9tele.ui.review
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.provider.MediaStore
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -11,14 +13,18 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -73,6 +79,34 @@ private suspend fun loadBitmap(context: Context, uri: Uri, maxDim: Int): ImageBi
         }.getOrNull()
     }
 
+private data class ReviewMetadata(
+    val name: String,
+    val sizeBytes: Long,
+    val width: Int,
+    val height: Int,
+)
+
+private suspend fun loadMetadata(context: Context, uri: Uri): ReviewMetadata? =
+    withContext(Dispatchers.IO) {
+        runCatching {
+            val columns = arrayOf(
+                MediaStore.MediaColumns.DISPLAY_NAME,
+                MediaStore.MediaColumns.SIZE,
+                MediaStore.MediaColumns.WIDTH,
+                MediaStore.MediaColumns.HEIGHT,
+            )
+            context.contentResolver.query(uri, columns, null, null, null)?.use { c ->
+                if (!c.moveToFirst()) return@use null
+                ReviewMetadata(
+                    name = c.getString(c.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)),
+                    sizeBytes = c.getLong(c.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)),
+                    width = c.getInt(c.getColumnIndexOrThrow(MediaStore.MediaColumns.WIDTH)),
+                    height = c.getInt(c.getColumnIndexOrThrow(MediaStore.MediaColumns.HEIGHT)),
+                )
+            }
+        }.getOrNull()
+    }
+
 /** Tappable thumbnail of the last saved still; a placeholder frame until one exists. */
 @Composable
 fun GalleryThumb(uri: Uri?, onClick: () -> Unit, modifier: Modifier = Modifier) {
@@ -116,13 +150,17 @@ fun GalleryThumb(uri: Uri?, onClick: () -> Unit, modifier: Modifier = Modifier) 
  * toggle 1×/4×, tap the ✕ to close.
  */
 @Composable
-fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, modifier: Modifier = Modifier) {
+fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val bitmap by produceState<ImageBitmap?>(initialValue = null, uri) {
         value = loadBitmap(context, uri, 0) ?: loadBitmap(context, uri, 3000)
     }
+    val metadata by produceState<ReviewMetadata?>(initialValue = null, uri) {
+        value = loadMetadata(context, uri)
+    }
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
+    var confirmDelete by remember { mutableStateOf(false) }
 
     Box(
         modifier = modifier
@@ -175,6 +213,26 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, modifier: Modifier = Modif
                 .padding(horizontal = 12.dp, vertical = 6.dp),
         )
 
+        metadata?.let { meta ->
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(14.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .widthIn(max = 280.dp)
+                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(meta.name, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "${meta.width}×${meta.height} · ${formatBytes(meta.sizeBytes)}",
+                    color = CameraColors.TextSecondary,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+        }
+
         // Close button, top-left.
         Box(
             modifier = Modifier
@@ -193,5 +251,46 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, modifier: Modifier = Modif
         ) {
             Text("✕", color = CameraColors.TextPrimary, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
         }
+
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+                .padding(12.dp)
+                .size(44.dp)
+                .clip(CircleShape)
+                .background(Color.Black.copy(alpha = 0.5f))
+                .semantics {
+                    contentDescription = "Delete last shot"
+                    role = Role.Button
+                }
+                .clickable { confirmDelete = true },
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("Del", color = Color(0xFFFF6B6B), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+        }
     }
+
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("Delete last shot?") },
+            text = { Text("This removes the reviewed file from MediaStore.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDelete = false
+                    onDelete()
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
+            },
+        )
+    }
+}
+
+private fun formatBytes(bytes: Long): String {
+    if (bytes <= 0L) return "--"
+    val mib = bytes / (1024.0 * 1024.0)
+    return "%.1f MB".format(mib)
 }

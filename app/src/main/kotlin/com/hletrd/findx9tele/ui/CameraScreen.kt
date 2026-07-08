@@ -89,7 +89,9 @@ import com.hletrd.findx9tele.camera.ProcessingLevel
 import com.hletrd.findx9tele.camera.ShutterMode
 import com.hletrd.findx9tele.camera.ShutterTimer
 import com.hletrd.findx9tele.camera.VideoCodec
+import com.hletrd.findx9tele.camera.VideoStabMode
 import com.hletrd.findx9tele.camera.WbMode
+import com.hletrd.findx9tele.camera.effectiveExposureNs
 import com.hletrd.findx9tele.ui.controls.ManualDialCluster
 import com.hletrd.findx9tele.ui.controls.ProSheet
 import com.hletrd.findx9tele.ui.controls.ProSheetTab
@@ -110,6 +112,7 @@ import com.hletrd.findx9tele.ui.review.GalleryThumb
 import com.hletrd.findx9tele.ui.review.MediaReviewOverlay
 import com.hletrd.findx9tele.ui.theme.CameraColors
 import com.hletrd.findx9tele.ui.theme.FindX9TeleTheme
+import kotlin.math.roundToInt
 
 /**
  * Root camera UI, styled after the Google Pixel Camera app: a near-empty viewfinder at rest, a
@@ -283,6 +286,38 @@ fun CameraScreen(
                 .padding(start = 12.dp, top = 60.dp),
         )
 
+        teleSafetyMessage(state)?.let { warning ->
+            Text(
+                text = warning,
+                color = Color.Black,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .statusBarsPadding()
+                    .padding(start = 12.dp, top = 98.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color(0xFFFFD60A).copy(alpha = 0.95f))
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
+            )
+        }
+
+        if (state.halfPressActive) {
+            Text(
+                text = state.halfPressAction.label,
+                color = CameraColors.ManualActive,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 106.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .padding(horizontal = 12.dp, vertical = 5.dp),
+            )
+        }
+
         // Scopes/readouts stack in the top-end column. top = 100dp clears the OSD status row (which ends
         // ~90dp) — QA hit an overlap at 72dp. Each scope counter-rotates to stay horizontal as the phone
         // turns (rotateLayout reserves the ROTATED bounding box, so a 90° hold no longer makes the
@@ -352,6 +387,14 @@ fun CameraScreen(
             ZoomIndicator(zoom = state.controls.zoomRatio, range = state.caps?.zoomRatioRange, numberRotation = overlayRotation)
         }
 
+        ExposureMeter(
+            state = state,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(bottom = 274.dp),
+        )
+
         val onShutter = remember(state.mode) {
             {
                 if (state.mode == CaptureMode.PHOTO) {
@@ -419,7 +462,14 @@ fun CameraScreen(
 
     val reviewUri = state.lastMediaUri
     if (reviewOpen && reviewUri != null) {
-        MediaReviewOverlay(uri = reviewUri, onClose = { reviewOpen = false })
+        MediaReviewOverlay(
+            uri = reviewUri,
+            onClose = { reviewOpen = false },
+            onDelete = {
+                actions.onDeleteLastMedia()
+                reviewOpen = false
+            },
+        )
     }
 }
 
@@ -730,6 +780,67 @@ private fun ZoomIndicator(
     }
 }
 
+@Composable
+private fun ExposureMeter(state: CameraUiState, modifier: Modifier = Modifier) {
+    val caps = state.caps
+    val evStep = caps?.evStep?.let {
+        if (it.denominator == 0) 1f / 3f else it.numerator.toFloat() / it.denominator.toFloat()
+    } ?: (1f / 3f)
+    val ev = (state.controls.exposureCompensation * evStep).coerceIn(-3f, 3f)
+    val label = if (state.controls.exposureMode == com.hletrd.findx9tele.camera.ExposureMode.MANUAL) "M" else "%+.1f".format(ev)
+    Row(
+        modifier = modifier
+            .width(208.dp)
+            .height(34.dp)
+            .clip(RoundedCornerShape(50))
+            .background(Color.Black.copy(alpha = 0.48f))
+            .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(label, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+        Canvas(modifier = Modifier.weight(1f).height(22.dp)) {
+            val cy = size.height / 2f
+            val start = 0f
+            val end = size.width
+            drawLine(Color.White.copy(alpha = 0.34f), Offset(start, cy), Offset(end, cy), strokeWidth = 1.2.dp.toPx())
+            for (i in -3..3) {
+                val x = (i + 3) / 6f * size.width
+                val major = i == 0 || i == -3 || i == 3
+                val half = if (major) 6.dp.toPx() else 3.dp.toPx()
+                drawLine(
+                    color = if (i == 0) Color.White.copy(alpha = 0.75f) else Color.White.copy(alpha = 0.42f),
+                    start = Offset(x, cy - half),
+                    end = Offset(x, cy + half),
+                    strokeWidth = if (major) 1.6.dp.toPx() else 1.dp.toPx(),
+                )
+            }
+            if (state.controls.exposureMode != com.hletrd.findx9tele.camera.ExposureMode.MANUAL) {
+                val x = ((ev + 3f) / 6f).coerceIn(0f, 1f) * size.width
+                drawCircle(CameraColors.ManualActive, radius = 4.dp.toPx(), center = Offset(x, cy))
+            }
+        }
+    }
+}
+
+private fun teleSafetyMessage(state: CameraUiState): String? {
+    if (!state.teleconverterMode) return null
+    if (!state.controls.oisEnabled) return "300mm WARN · OIS OFF"
+    if (state.videoStabMode == VideoStabMode.OFF && state.mode == CaptureMode.VIDEO) return "300mm WARN · STAB OFF"
+    val exposureNs = when {
+        state.controls.exposureMode == com.hletrd.findx9tele.camera.ExposureMode.PROGRAM -> state.liveExposureNs
+        else -> state.controls.effectiveExposureNs()
+    } ?: return null
+    return if (exposureNs > TELE_SAFE_SHUTTER_NS) "300mm WARN · ${formatSafetyShutter(exposureNs)}" else null
+}
+
+private fun formatSafetyShutter(ns: Long): String {
+    val seconds = ns / 1_000_000_000.0
+    return if (seconds >= 1.0) "%.1fs".format(seconds) else "1/${(1.0 / seconds).roundToInt().coerceAtLeast(1)}s"
+}
+
+private const val TELE_SAFE_SHUTTER_NS = 1_000_000_000L / 320L
+
 // ---------------------------------------------------------------------------
 // Bottom cluster: mode carousel + shutter row (the manual dial cluster lives in ManualDials.kt).
 // ---------------------------------------------------------------------------
@@ -988,10 +1099,18 @@ private object PreviewCameraActions : CameraActions {
 
     override fun onCapturePhoto() = Unit
     override fun onToggleRecording() = Unit
+    override fun onHardwareHalfPress(active: Boolean) = Unit
 
     override fun onLens(choice: com.hletrd.findx9tele.camera.LensChoice) = Unit
     override fun onCameraOverride(id: String?) = Unit
     override fun onToggleRememberSettings(enabled: Boolean) = Unit
+    override fun onSetFnSlots(slots: List<com.hletrd.findx9tele.camera.FnSlot>) = Unit
+    override fun onSetMyMenuSlots(slots: List<com.hletrd.findx9tele.camera.FnSlot>) = Unit
+    override fun onStoreMemorySlot(slot: com.hletrd.findx9tele.camera.MemorySlot) = Unit
+    override fun onRecallMemorySlot(slot: com.hletrd.findx9tele.camera.MemorySlot) = Unit
+    override fun onVolumeKeyAction(action: com.hletrd.findx9tele.camera.HardwareKeyAction) = Unit
+    override fun onHalfPressAction(action: com.hletrd.findx9tele.camera.HardwareKeyAction) = Unit
+    override fun onDeleteLastMedia() = Unit
 }
 
 @Preview(showBackground = true)

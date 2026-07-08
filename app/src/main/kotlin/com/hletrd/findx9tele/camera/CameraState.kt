@@ -65,6 +65,50 @@ enum class VideoStabMode(val label: String) {
         }
 }
 
+/** Sony-style memory recall banks: complete shooting setups saved by the user. */
+enum class MemorySlot(val label: String) { MR1("MR1"), MR2("MR2"), MR3("MR3") }
+
+/**
+ * Customizable shooting-screen Fn bar slots. The first six defaults mirror the current always-visible
+ * dials; the rest are quick toggles/cycles a Sony user expects to keep out of the deep menu.
+ */
+enum class FnSlot(val label: String) {
+    EXPOSURE_MODE("AE"),
+    FOCUS("Focus"),
+    SHUTTER("Shutter"),
+    ISO("ISO"),
+    WB("WB"),
+    EV("EV"),
+    ZOOM("Zoom"),
+    STABILIZATION("Stab"),
+    DRIVE("Drive"),
+    METERING("Meter"),
+    PEAKING("Peaking"),
+    ZEBRA("Zebra"),
+    TRANSFER("TF"),
+    AUDIO_SCENE("Audio"),
+    GRID("Grid"),
+    LEVEL("Level"),
+    PUNCH_IN("Loupe"),
+    TELECONVERTER("Tele");
+
+    companion object {
+        val DEFAULT = listOf(EXPOSURE_MODE, FOCUS, SHUTTER, ISO, WB, EV)
+        val MY_MENU_DEFAULT = listOf(STABILIZATION, PEAKING, ZEBRA, DRIVE, METERING, TRANSFER)
+    }
+}
+
+/** Assignable action for physical keys. Camera slide zoom remains fixed because it has direction. */
+enum class HardwareKeyAction(val label: String) {
+    SHUTTER("Shutter/REC"),
+    AF_ON("AF-ON"),
+    AEL("AEL"),
+    PUNCH_IN("Punch-In"),
+    ZOOM_IN("Zoom In"),
+    ZOOM_OUT("Zoom Out"),
+    NONE("None"),
+}
+
 /** Focus-peaking edge-detection threshold; a LOWER threshold highlights more edges (more sensitive). */
 enum class PeakingLevel(val threshold: Float) { LOW(0.12f), MEDIUM(0.06f), HIGH(0.03f) }
 
@@ -328,6 +372,17 @@ data class CameraUiState(
     // Physical device orientation (0/90/180/270) from gravity; rotates overlays to stay upright.
     val deviceOrientation: Int = 0,
     val punchIn: Boolean = false,
+    // Sony-style customization: Fn row, My Menu, recent changed settings and MR banks.
+    val fnSlots: List<FnSlot> = FnSlot.DEFAULT,
+    val myMenuSlots: List<FnSlot> = FnSlot.MY_MENU_DEFAULT,
+    val recentSettingSlots: List<FnSlot> = emptyList(),
+    val activeMemorySlot: MemorySlot? = null,
+    val savedMemorySlots: Set<MemorySlot> = emptySet(),
+    // Hardware controls. The OPPO half-press key defaults to AF-ON; volume/camera full press defaults
+    // to shutter/REC. [halfPressActive] only drives the viewfinder feedback ring/chip.
+    val volumeKeyAction: HardwareKeyAction = HardwareKeyAction.SHUTTER,
+    val halfPressAction: HardwareKeyAction = HardwareKeyAction.AF_ON,
+    val halfPressActive: Boolean = false,
     // When true, pro settings are persisted across launches and restored on next start (default on).
     val rememberSettings: Boolean = true,
     // Transient tap point (normalized 0..1 in view space) for the focus/meter reticle; null = none.

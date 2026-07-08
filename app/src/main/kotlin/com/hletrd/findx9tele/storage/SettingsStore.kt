@@ -9,9 +9,13 @@ import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.ExposureMode
+import com.hletrd.findx9tele.camera.FnSlot
 import com.hletrd.findx9tele.camera.VideoStabMode
 import com.hletrd.findx9tele.camera.GridType
+import com.hletrd.findx9tele.camera.HardwareKeyAction
+import com.hletrd.findx9tele.camera.LensChoice
 import com.hletrd.findx9tele.camera.ManualControls
+import com.hletrd.findx9tele.camera.MemorySlot
 import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.camera.VideoFrameRate
 
@@ -27,6 +31,7 @@ data class ExtraSettings(
     val jpeg: Boolean = false,
     val dngRaw: Boolean = true,
     val mode: CaptureMode = CaptureMode.PHOTO,
+    val lens: LensChoice = LensChoice.TELE3X,
     val teleconverter: Boolean = true,
     val videoStabMode: VideoStabMode = VideoStabMode.ENHANCED,
     val aspectRatio: AspectRatio = AspectRatio.W4_3,
@@ -36,6 +41,10 @@ data class ExtraSettings(
     val videoFrameRate: VideoFrameRate = VideoFrameRate.DEFAULT,
     val openGate: Boolean = false,
     val audioScene: AudioScene = AudioScene.STANDARD,
+    val fnSlots: List<FnSlot> = FnSlot.DEFAULT,
+    val myMenuSlots: List<FnSlot> = FnSlot.MY_MENU_DEFAULT,
+    val volumeKeyAction: HardwareKeyAction = HardwareKeyAction.SHUTTER,
+    val halfPressAction: HardwareKeyAction = HardwareKeyAction.AF_ON,
 )
 
 /**
@@ -55,110 +64,147 @@ class SettingsStore(context: Context) {
         set(value) { prefs.edit { putBoolean(K_REMEMBER, value) } }
 
     fun save(c: ManualControls, e: ExtraSettings) {
-        prefs.edit {
-            putString("focusMode", c.focusMode.name)
-            putFloat("focusDiopters", c.focusDistanceDiopters)
-            putBoolean("afLock", c.afLock)
-            putString("exposureMode", c.exposureMode.name)
-            putInt("iso", c.iso)
-            putLong("exposureTimeNs", c.exposureTimeNs)
-            putString("shutterMode", c.shutterMode.name)
-            putFloat("shutterAngle", c.shutterAngle)
-            putInt("exposureCompensation", c.exposureCompensation)
-            putBoolean("aeLock", c.aeLock)
-            putString("antibanding", c.antibanding.name)
-            putInt("fps", c.fps)
-            putString("exposureStep", c.exposureStep.name)
-            putString("wbMode", c.wbMode.name)
-            putInt("wbKelvin", c.wbKelvin)
-            putInt("wbTint", c.wbTint)
-            putBoolean("awbLock", c.awbLock)
-            putString("meteringMode", c.meteringMode.name)
-            putString("edge", c.edge.name)
-            putString("noiseReduction", c.noiseReduction.name)
-            putString("colorEffect", c.colorEffect.name)
-            putString("flash", c.flash.name)
-            putBoolean("oisEnabled", c.oisEnabled)
-            putFloat("zoomRatio", c.zoomRatio)
-            putInt("jpegQuality", c.jpegQuality)
-            putString("transfer", e.transfer.name)
-            putBoolean("heif", e.heif)
-            putBoolean("jpeg", e.jpeg)
-            putBoolean("dngRaw", e.dngRaw)
-            putString("mode", e.mode.name)
-            putBoolean("teleconverter", e.teleconverter)
-            putString("videoStabMode", e.videoStabMode.name)
-            putString("aspectRatio", e.aspectRatio.name)
-            putString("grid", e.grid.name)
-            putString("videoCodec", e.videoCodec.name)
-            putString("bitrateLevel", e.bitrateLevel.name)
-            putString("videoFrameRate", e.videoFrameRate.name)
-            putBoolean("openGate", e.openGate)
-            putString("audioScene", e.audioScene.name)
-            putBoolean(K_HAS, true)
-        }
+        prefs.edit { putLoaded("", c, e); putBoolean(K_HAS, true) }
     }
 
     /** Returns the persisted state, or null if nothing was ever saved. Never throws. */
-    fun load(): Loaded? {
-        if (!prefs.getBoolean(K_HAS, false)) return null
+    fun load(): Loaded? = loadWithPrefix("", K_HAS)
+
+    fun savePreset(slot: MemorySlot, c: ManualControls, e: ExtraSettings) {
+        val prefix = presetPrefix(slot)
+        prefs.edit {
+            putLoaded(prefix, c, e)
+            putBoolean("${prefix}hasSaved", true)
+        }
+    }
+
+    fun loadPreset(slot: MemorySlot): Loaded? =
+        loadWithPrefix(presetPrefix(slot), "${presetPrefix(slot)}hasSaved")
+
+    fun savedPresetSlots(): Set<MemorySlot> =
+        MemorySlot.entries.filterTo(mutableSetOf()) { prefs.getBoolean("${presetPrefix(it)}hasSaved", false) }
+
+    private fun loadWithPrefix(prefix: String, hasKey: String): Loaded? {
+        if (!prefs.getBoolean(hasKey, false)) return null
         return runCatching {
             val d = ManualControls()
             val controls = ManualControls(
-                focusMode = enumOr(prefs.getString("focusMode", null), d.focusMode),
-                focusDistanceDiopters = prefs.getFloat("focusDiopters", d.focusDistanceDiopters),
-                afLock = prefs.getBoolean("afLock", d.afLock),
-                exposureMode = enumOr(prefs.getString("exposureMode", null), d.exposureMode),
-                iso = prefs.getInt("iso", d.iso),
-                exposureTimeNs = prefs.getLong("exposureTimeNs", d.exposureTimeNs),
-                shutterMode = enumOr(prefs.getString("shutterMode", null), d.shutterMode),
-                shutterAngle = prefs.getFloat("shutterAngle", d.shutterAngle),
-                exposureCompensation = prefs.getInt("exposureCompensation", d.exposureCompensation),
-                aeLock = prefs.getBoolean("aeLock", d.aeLock),
-                antibanding = enumOr(prefs.getString("antibanding", null), d.antibanding),
-                fps = prefs.getInt("fps", d.fps),
-                exposureStep = enumOr(prefs.getString("exposureStep", null), d.exposureStep),
-                wbMode = enumOr(prefs.getString("wbMode", null), d.wbMode),
-                wbKelvin = prefs.getInt("wbKelvin", d.wbKelvin),
-                wbTint = prefs.getInt("wbTint", d.wbTint),
-                awbLock = prefs.getBoolean("awbLock", d.awbLock),
-                meteringMode = enumOr(prefs.getString("meteringMode", null), d.meteringMode),
-                edge = enumOr(prefs.getString("edge", null), d.edge),
-                noiseReduction = enumOr(prefs.getString("noiseReduction", null), d.noiseReduction),
-                colorEffect = enumOr(prefs.getString("colorEffect", null), d.colorEffect),
-                flash = enumOr(prefs.getString("flash", null), d.flash),
-                oisEnabled = prefs.getBoolean("oisEnabled", d.oisEnabled),
-                zoomRatio = prefs.getFloat("zoomRatio", d.zoomRatio),
-                jpegQuality = prefs.getInt("jpegQuality", d.jpegQuality),
+                focusMode = enumOr(prefs.getString("${prefix}focusMode", null), d.focusMode),
+                focusDistanceDiopters = prefs.getFloat("${prefix}focusDiopters", d.focusDistanceDiopters),
+                afLock = prefs.getBoolean("${prefix}afLock", d.afLock),
+                exposureMode = enumOr(prefs.getString("${prefix}exposureMode", null), d.exposureMode),
+                iso = prefs.getInt("${prefix}iso", d.iso),
+                exposureTimeNs = prefs.getLong("${prefix}exposureTimeNs", d.exposureTimeNs),
+                shutterMode = enumOr(prefs.getString("${prefix}shutterMode", null), d.shutterMode),
+                shutterAngle = prefs.getFloat("${prefix}shutterAngle", d.shutterAngle),
+                exposureCompensation = prefs.getInt("${prefix}exposureCompensation", d.exposureCompensation),
+                aeLock = prefs.getBoolean("${prefix}aeLock", d.aeLock),
+                antibanding = enumOr(prefs.getString("${prefix}antibanding", null), d.antibanding),
+                fps = prefs.getInt("${prefix}fps", d.fps),
+                exposureStep = enumOr(prefs.getString("${prefix}exposureStep", null), d.exposureStep),
+                wbMode = enumOr(prefs.getString("${prefix}wbMode", null), d.wbMode),
+                wbKelvin = prefs.getInt("${prefix}wbKelvin", d.wbKelvin),
+                wbTint = prefs.getInt("${prefix}wbTint", d.wbTint),
+                awbLock = prefs.getBoolean("${prefix}awbLock", d.awbLock),
+                meteringMode = enumOr(prefs.getString("${prefix}meteringMode", null), d.meteringMode),
+                edge = enumOr(prefs.getString("${prefix}edge", null), d.edge),
+                noiseReduction = enumOr(prefs.getString("${prefix}noiseReduction", null), d.noiseReduction),
+                colorEffect = enumOr(prefs.getString("${prefix}colorEffect", null), d.colorEffect),
+                flash = enumOr(prefs.getString("${prefix}flash", null), d.flash),
+                oisEnabled = prefs.getBoolean("${prefix}oisEnabled", d.oisEnabled),
+                zoomRatio = prefs.getFloat("${prefix}zoomRatio", d.zoomRatio),
+                jpegQuality = prefs.getInt("${prefix}jpegQuality", d.jpegQuality),
             )
             val ed = ExtraSettings()
             val extras = ExtraSettings(
-                transfer = enumOr(prefs.getString("transfer", null), ed.transfer),
-                heif = prefs.getBoolean("heif", ed.heif),
-                jpeg = prefs.getBoolean("jpeg", ed.jpeg),
-                dngRaw = prefs.getBoolean("dngRaw", ed.dngRaw),
-                mode = enumOr(prefs.getString("mode", null), ed.mode),
-                teleconverter = prefs.getBoolean("teleconverter", ed.teleconverter),
-                videoStabMode = enumOr(prefs.getString("videoStabMode", null), ed.videoStabMode),
-                aspectRatio = enumOr(prefs.getString("aspectRatio", null), ed.aspectRatio),
-                grid = enumOr(prefs.getString("grid", null), ed.grid),
-                videoCodec = enumOr(prefs.getString("videoCodec", null), ed.videoCodec),
-                bitrateLevel = enumOr(prefs.getString("bitrateLevel", null), ed.bitrateLevel),
-                videoFrameRate = enumOr(prefs.getString("videoFrameRate", null), ed.videoFrameRate),
-                openGate = prefs.getBoolean("openGate", ed.openGate),
-                audioScene = enumOr(prefs.getString("audioScene", null), ed.audioScene),
+                transfer = enumOr(prefs.getString("${prefix}transfer", null), ed.transfer),
+                heif = prefs.getBoolean("${prefix}heif", ed.heif),
+                jpeg = prefs.getBoolean("${prefix}jpeg", ed.jpeg),
+                dngRaw = prefs.getBoolean("${prefix}dngRaw", ed.dngRaw),
+                mode = enumOr(prefs.getString("${prefix}mode", null), ed.mode),
+                lens = enumOr(prefs.getString("${prefix}lens", null), ed.lens),
+                teleconverter = prefs.getBoolean("${prefix}teleconverter", ed.teleconverter),
+                videoStabMode = enumOr(prefs.getString("${prefix}videoStabMode", null), ed.videoStabMode),
+                aspectRatio = enumOr(prefs.getString("${prefix}aspectRatio", null), ed.aspectRatio),
+                grid = enumOr(prefs.getString("${prefix}grid", null), ed.grid),
+                videoCodec = enumOr(prefs.getString("${prefix}videoCodec", null), ed.videoCodec),
+                bitrateLevel = enumOr(prefs.getString("${prefix}bitrateLevel", null), ed.bitrateLevel),
+                videoFrameRate = enumOr(prefs.getString("${prefix}videoFrameRate", null), ed.videoFrameRate),
+                openGate = prefs.getBoolean("${prefix}openGate", ed.openGate),
+                audioScene = enumOr(prefs.getString("${prefix}audioScene", null), ed.audioScene),
+                fnSlots = enumListOr(prefs.getString("${prefix}fnSlots", null), ed.fnSlots),
+                myMenuSlots = enumListOr(prefs.getString("${prefix}myMenuSlots", null), ed.myMenuSlots),
+                volumeKeyAction = enumOr(prefs.getString("${prefix}volumeKeyAction", null), ed.volumeKeyAction),
+                halfPressAction = enumOr(prefs.getString("${prefix}halfPressAction", null), ed.halfPressAction),
             )
             Loaded(controls, extras)
         }.getOrNull()
     }
 
+    private fun SharedPreferences.Editor.putLoaded(prefix: String, c: ManualControls, e: ExtraSettings) {
+        putString("${prefix}focusMode", c.focusMode.name)
+        putFloat("${prefix}focusDiopters", c.focusDistanceDiopters)
+        putBoolean("${prefix}afLock", c.afLock)
+        putString("${prefix}exposureMode", c.exposureMode.name)
+        putInt("${prefix}iso", c.iso)
+        putLong("${prefix}exposureTimeNs", c.exposureTimeNs)
+        putString("${prefix}shutterMode", c.shutterMode.name)
+        putFloat("${prefix}shutterAngle", c.shutterAngle)
+        putInt("${prefix}exposureCompensation", c.exposureCompensation)
+        putBoolean("${prefix}aeLock", c.aeLock)
+        putString("${prefix}antibanding", c.antibanding.name)
+        putInt("${prefix}fps", c.fps)
+        putString("${prefix}exposureStep", c.exposureStep.name)
+        putString("${prefix}wbMode", c.wbMode.name)
+        putInt("${prefix}wbKelvin", c.wbKelvin)
+        putInt("${prefix}wbTint", c.wbTint)
+        putBoolean("${prefix}awbLock", c.awbLock)
+        putString("${prefix}meteringMode", c.meteringMode.name)
+        putString("${prefix}edge", c.edge.name)
+        putString("${prefix}noiseReduction", c.noiseReduction.name)
+        putString("${prefix}colorEffect", c.colorEffect.name)
+        putString("${prefix}flash", c.flash.name)
+        putBoolean("${prefix}oisEnabled", c.oisEnabled)
+        putFloat("${prefix}zoomRatio", c.zoomRatio)
+        putInt("${prefix}jpegQuality", c.jpegQuality)
+        putString("${prefix}transfer", e.transfer.name)
+        putBoolean("${prefix}heif", e.heif)
+        putBoolean("${prefix}jpeg", e.jpeg)
+        putBoolean("${prefix}dngRaw", e.dngRaw)
+        putString("${prefix}mode", e.mode.name)
+        putString("${prefix}lens", e.lens.name)
+        putBoolean("${prefix}teleconverter", e.teleconverter)
+        putString("${prefix}videoStabMode", e.videoStabMode.name)
+        putString("${prefix}aspectRatio", e.aspectRatio.name)
+        putString("${prefix}grid", e.grid.name)
+        putString("${prefix}videoCodec", e.videoCodec.name)
+        putString("${prefix}bitrateLevel", e.bitrateLevel.name)
+        putString("${prefix}videoFrameRate", e.videoFrameRate.name)
+        putBoolean("${prefix}openGate", e.openGate)
+        putString("${prefix}audioScene", e.audioScene.name)
+        putString("${prefix}fnSlots", e.fnSlots.joinToString(",") { it.name })
+        putString("${prefix}myMenuSlots", e.myMenuSlots.joinToString(",") { it.name })
+        putString("${prefix}volumeKeyAction", e.volumeKeyAction.name)
+        putString("${prefix}halfPressAction", e.halfPressAction.name)
+    }
+
     private inline fun <reified T : Enum<T>> enumOr(name: String?, default: T): T =
         name?.let { runCatching { enumValueOf<T>(it) }.getOrNull() } ?: default
+
+    private inline fun <reified T : Enum<T>> enumListOr(raw: String?, default: List<T>): List<T> {
+        val parsed = raw
+            ?.split(',')
+            ?.mapNotNull { name -> runCatching { enumValueOf<T>(name) }.getOrNull() }
+            ?.distinct()
+            .orEmpty()
+        return parsed.ifEmpty { default }
+    }
 
     data class Loaded(val controls: ManualControls, val extras: ExtraSettings)
 
     private companion object {
         const val K_REMEMBER = "rememberSettings"
         const val K_HAS = "hasSaved"
+        fun presetPrefix(slot: MemorySlot): String = "preset_${slot.name}_"
     }
 }

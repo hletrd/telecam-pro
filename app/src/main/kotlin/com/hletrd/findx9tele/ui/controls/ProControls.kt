@@ -37,9 +37,12 @@ import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.DriveMode
 import com.hletrd.findx9tele.camera.FlashMode
+import com.hletrd.findx9tele.camera.FnSlot
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
+import com.hletrd.findx9tele.camera.HardwareKeyAction
 import com.hletrd.findx9tele.camera.MeteringMode
+import com.hletrd.findx9tele.camera.MemorySlot
 import com.hletrd.findx9tele.camera.PhotoFormats
 import com.hletrd.findx9tele.camera.ProcessingLevel
 import com.hletrd.findx9tele.camera.ShutterMode
@@ -389,6 +392,12 @@ internal fun driveModeLabel(mode: DriveMode): String = when (mode) {
     DriveMode.AEB -> "AEB"
     DriveMode.TIMELAPSE -> "Timelapse"
 }
+
+internal fun fnSlotLabel(slot: FnSlot): String = slot.label
+
+internal fun memorySlotLabel(slot: MemorySlot): String = slot.label
+
+internal fun hardwareKeyActionLabel(action: HardwareKeyAction): String = action.label
 
 internal fun aspectRatioLabel(ratio: AspectRatio): String = when (ratio) {
     AspectRatio.W16_9 -> "16:9"

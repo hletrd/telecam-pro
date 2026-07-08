@@ -12,9 +12,12 @@ import com.hletrd.findx9tele.camera.DriveMode
 import com.hletrd.findx9tele.camera.ExposureMode
 import com.hletrd.findx9tele.camera.ExposureStep
 import com.hletrd.findx9tele.camera.FlashMode
+import com.hletrd.findx9tele.camera.FnSlot
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
+import com.hletrd.findx9tele.camera.HardwareKeyAction
 import com.hletrd.findx9tele.camera.MeteringMode
+import com.hletrd.findx9tele.camera.MemorySlot
 import com.hletrd.findx9tele.camera.PeakingColor
 import com.hletrd.findx9tele.camera.PeakingLevel
 import com.hletrd.findx9tele.camera.PhotoFormats
@@ -114,6 +117,7 @@ interface CameraActions {
     // Shutter
     fun onCapturePhoto()
     fun onToggleRecording()
+    fun onHardwareHalfPress(active: Boolean)
 
     // Lens (bundles teleconverter mode: 3× on, others off)
     fun onLens(choice: com.hletrd.findx9tele.camera.LensChoice)
@@ -121,4 +125,11 @@ interface CameraActions {
     // Settings
     fun onCameraOverride(id: String?)
     fun onToggleRememberSettings(enabled: Boolean)
+    fun onSetFnSlots(slots: List<FnSlot>)
+    fun onSetMyMenuSlots(slots: List<FnSlot>)
+    fun onStoreMemorySlot(slot: MemorySlot)
+    fun onRecallMemorySlot(slot: MemorySlot)
+    fun onVolumeKeyAction(action: HardwareKeyAction)
+    fun onHalfPressAction(action: HardwareKeyAction)
+    fun onDeleteLastMedia()
 }

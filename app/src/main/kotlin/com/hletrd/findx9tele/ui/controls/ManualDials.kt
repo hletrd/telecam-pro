@@ -51,9 +51,13 @@ import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.ExposureMode
 import com.hletrd.findx9tele.camera.ExposureStep
+import com.hletrd.findx9tele.camera.FnSlot
 import com.hletrd.findx9tele.camera.FocusMode
+import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.ManualControls
+import com.hletrd.findx9tele.camera.MeteringMode
 import com.hletrd.findx9tele.camera.ShutterMode
+import com.hletrd.findx9tele.camera.VideoStabMode
 import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.camera.WbMode
 import com.hletrd.findx9tele.focus.FocusMapping
@@ -67,7 +71,7 @@ import kotlin.math.roundToInt
  * above the row where the current value is always centered under a fixed indicator and the ruler
  * scrolls beneath it as the user drags. Only one dial is open at a time.
  */
-enum class DialType { FOCUS, SHUTTER, ISO, WB, EV }
+enum class DialType { FOCUS, SHUTTER, ISO, WB, EV, ZOOM }
 
 @Composable
 fun ManualDialCluster(
@@ -109,6 +113,7 @@ fun ManualDialCluster(
                 DialType.ISO -> IsoRuler(controls = controls, caps = caps, onIso = actions::onIso)
                 DialType.WB -> WbRuler(controls = controls, onWbKelvin = actions::onWbKelvin)
                 DialType.EV -> EvRuler(controls = controls, caps = caps, onEv = actions::onExposureCompensation)
+                DialType.ZOOM -> ZoomRuler(controls = controls, caps = caps, onZoomRatio = actions::onZoomRatio)
                 null -> Unit
             }
         }
@@ -116,8 +121,6 @@ fun ManualDialCluster(
         DialChipRow(
             state = state,
             openDial = openDial,
-            onExposureMode = actions::onExposureMode,
-            onTransfer = actions::onTransfer,
             onSelect = { type ->
                 when {
                     type == DialType.WB && controls.wbMode != WbMode.MANUAL -> {
@@ -147,6 +150,7 @@ fun ManualDialCluster(
                     else -> openDial = if (openDial == type) null else type
                 }
             },
+            actions = actions,
         )
     }
 }
@@ -155,9 +159,8 @@ fun ManualDialCluster(
 private fun DialChipRow(
     state: CameraUiState,
     openDial: DialType?,
-    onExposureMode: (ExposureMode) -> Unit,
-    onTransfer: (ColorTransfer) -> Unit,
     onSelect: (DialType) -> Unit,
+    actions: CameraActions,
     modifier: Modifier = Modifier,
 ) {
     val controls = state.controls
@@ -172,21 +175,40 @@ private fun DialChipRow(
             .horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        // PASM-style exposure-mode chip: tap to cycle P → S → ISO → M. The badge is the current mode
-        // letter; P is the "resting" auto state (not highlighted), the priority/manual modes are.
-        DialChip(
+        state.fnSlots.forEach { slot ->
+            FnDialChip(
+                slot = slot,
+                state = state,
+                openDial = openDial,
+                evStepValue = evStepValue,
+                onSelect = onSelect,
+                actions = actions,
+            )
+        }
+    }
+}
+
+@Composable
+private fun FnDialChip(
+    slot: FnSlot,
+    state: CameraUiState,
+    openDial: DialType?,
+    evStepValue: Float,
+    onSelect: (DialType) -> Unit,
+    actions: CameraActions,
+) {
+    val controls = state.controls
+    val caps = state.caps
+    when (slot) {
+        FnSlot.EXPOSURE_MODE -> DialChip(
             label = "AE",
             value = controls.exposureMode.letter,
             active = controls.exposureMode != ExposureMode.PROGRAM,
             enabled = true,
-            onClick = { onExposureMode(nextExposureMode(controls.exposureMode)) },
+            onClick = { actions.onExposureMode(nextExposureMode(controls.exposureMode)) },
         )
-        DialChip(
-            // Sony-style: the label IS the focus mode (MF / AF / AF-C / Macro), so the current mode
-            // is always visible on the shooting screen without opening the sheet.
+        FnSlot.FOCUS -> DialChip(
             label = focusModeLabel(controls.focusMode),
-            // In an AF mode, show the LIVE lens position (where AF parked the lens) instead of the
-            // stale manual value — a lens distance scale, and the value MF will seed from on entry.
             value = formatFocusRelative(
                 if (controls.focusMode == FocusMode.MANUAL) controls.focusDistanceDiopters
                 else state.liveFocusDiopters ?: controls.focusDistanceDiopters,
@@ -194,11 +216,10 @@ private fun DialChipRow(
             ),
             active = openDial == DialType.FOCUS,
             enabled = controls.focusMode == FocusMode.MANUAL && (caps?.supportsManualFocus ?: false),
-            onClick = { onSelect(DialType.FOCUS) },        )
-        DialChip(
+            onClick = { onSelect(DialType.FOCUS) },
+        )
+        FnSlot.SHUTTER -> DialChip(
             label = "Shutter",
-            // PROGRAM: show the HAL AE-resolved shutter. ISO priority: the app drives exposureTimeNs, so
-            // show that live value (greyed — not user-owned). SHUTTER/MANUAL: the user's value.
             value = when {
                 controls.exposureMode == ExposureMode.PROGRAM -> state.liveExposureNs?.let { formatShutterSpeed(it) } ?: "Auto"
                 controls.shutterMode == ShutterMode.ANGLE -> "%.0f°".format(controls.shutterAngle)
@@ -206,43 +227,121 @@ private fun DialChipRow(
             },
             active = openDial == DialType.SHUTTER,
             enabled = controls.exposureMode == ExposureMode.SHUTTER || controls.exposureMode == ExposureMode.MANUAL,
-            onClick = { onSelect(DialType.SHUTTER) },        )
-        DialChip(
+            onClick = { onSelect(DialType.SHUTTER) },
+        )
+        FnSlot.ISO -> DialChip(
             label = "ISO",
-            // PROGRAM: HAL AE ISO. SHUTTER priority: the app drives controls.iso (show it, greyed).
-            // ISO/MANUAL: the user's value.
             value = if (controls.exposureMode == ExposureMode.PROGRAM) (state.liveIso?.let { "$it" } ?: "Auto")
             else controls.iso.toString(),
             active = openDial == DialType.ISO,
             enabled = controls.exposureMode == ExposureMode.ISO || controls.exposureMode == ExposureMode.MANUAL,
-            onClick = { onSelect(DialType.ISO) },        )
-        DialChip(
+            onClick = { onSelect(DialType.ISO) },
+        )
+        FnSlot.WB -> DialChip(
             label = "WB",
             value = if (controls.wbMode == WbMode.MANUAL) "${controls.wbKelvin}K" else wbModeLabel(controls.wbMode),
             active = openDial == DialType.WB,
             enabled = true,
-            onClick = { onSelect(DialType.WB) },        )
-        DialChip(
+            onClick = { onSelect(DialType.WB) },
+        )
+        FnSlot.EV -> DialChip(
             label = "EV",
             value = "%+.1f".format(controls.exposureCompensation * evStepValue),
             active = openDial == DialType.EV,
-            // EV comp biases the meter, so it's live in every metered mode (P/S/ISO); inert in Manual.
             enabled = controls.exposureMode != ExposureMode.MANUAL,
-            onClick = { onSelect(DialType.EV) },        )
-        // Video-only transfer quick chip (HLG → O-Log2 → SDR cycle): surfaces the color pipeline on
-        // the shooting screen instead of burying it in the settings sheet. Locked while recording
-        // (the engine defers the GL curve until the clip ends — changing it would only mislead) and
-        // outside HEVC (AVC is always 8-bit SDR).
-        if (state.mode == CaptureMode.VIDEO) {
+            onClick = { onSelect(DialType.EV) },
+        )
+        FnSlot.ZOOM -> DialChip(
+            label = "Zoom",
+            value = "%.1fx".format(controls.zoomRatio),
+            active = openDial == DialType.ZOOM,
+            enabled = caps?.zoomRatioRange != null,
+            onClick = { onSelect(DialType.ZOOM) },
+        )
+        FnSlot.STABILIZATION -> DialChip(
+            label = "Stab",
+            value = when (state.videoStabMode) {
+                VideoStabMode.OFF -> "Off"
+                VideoStabMode.STANDARD -> "OIS+"
+                VideoStabMode.ENHANCED -> "Steady"
+            },
+            active = state.videoStabMode != VideoStabMode.OFF,
+            enabled = true,
+            onClick = { actions.onVideoStabMode(nextVideoStab(state.videoStabMode)) },
+        )
+        FnSlot.DRIVE -> DialChip(
+            label = "Drive",
+            value = driveModeLabel(state.driveMode),
+            active = state.driveMode != com.hletrd.findx9tele.camera.DriveMode.SINGLE,
+            enabled = true,
+            onClick = { actions.onDriveMode(nextDriveMode(state.driveMode)) },
+        )
+        FnSlot.METERING -> DialChip(
+            label = "Meter",
+            value = meteringModeLabel(controls.meteringMode),
+            active = controls.meteringMode != MeteringMode.MATRIX,
+            enabled = true,
+            onClick = { actions.onMeteringMode(nextMeteringMode(controls.meteringMode)) },
+        )
+        FnSlot.PEAKING -> DialChip(
+            label = "Peaking",
+            value = if (state.focusPeaking) "On" else "Off",
+            active = state.focusPeaking,
+            enabled = true,
+            onClick = { actions.onTogglePeaking(!state.focusPeaking) },
+        )
+        FnSlot.ZEBRA -> DialChip(
+            label = "Zebra",
+            value = if (state.zebra) "On" else "Off",
+            active = state.zebra,
+            enabled = true,
+            onClick = { actions.onToggleZebra(!state.zebra) },
+        )
+        FnSlot.TRANSFER -> {
             val transferMutable = !state.isRecording && state.videoCodec == VideoCodec.HEVC
             DialChip(
                 label = "TF",
                 value = transferLabelShort(state.transfer),
-                active = false,
+                active = state.transfer != ColorTransfer.SDR,
                 enabled = transferMutable,
-                onClick = { if (transferMutable) onTransfer(nextTransfer(state.transfer)) },
+                onClick = { if (transferMutable) actions.onTransfer(nextTransfer(state.transfer)) },
             )
         }
+        FnSlot.AUDIO_SCENE -> DialChip(
+            label = "Audio",
+            value = state.audioScene.label,
+            active = state.audioScene != com.hletrd.findx9tele.camera.AudioScene.STANDARD,
+            enabled = true,
+            onClick = { actions.onAudioScene(nextAudioScene(state.audioScene)) },
+        )
+        FnSlot.GRID -> DialChip(
+            label = "Grid",
+            value = gridTypeLabel(state.grid),
+            active = state.grid != GridType.NONE,
+            enabled = true,
+            onClick = { actions.onGridType(nextGridType(state.grid)) },
+        )
+        FnSlot.LEVEL -> DialChip(
+            label = "Level",
+            value = if (state.level) "On" else "Off",
+            active = state.level,
+            enabled = true,
+            onClick = { actions.onToggleLevel(!state.level) },
+        )
+        FnSlot.PUNCH_IN -> DialChip(
+            label = "Loupe",
+            value = if (state.punchIn) "On" else "Off",
+            active = state.punchIn,
+            enabled = true,
+            onClick = { actions.onTogglePunchIn(!state.punchIn) },
+        )
+        FnSlot.TELECONVERTER -> DialChip(
+            label = "Tele",
+            value = if (state.teleconverterMode) "300" else "Off",
+            active = state.teleconverterMode,
+            enabled = true,
+            onClick = { actions.onToggleTeleconverter(!state.teleconverterMode) },
+        )
     }
 }
 
@@ -250,6 +349,39 @@ private fun nextTransfer(t: ColorTransfer): ColorTransfer = when (t) {
     ColorTransfer.HLG -> ColorTransfer.LOG
     ColorTransfer.LOG -> ColorTransfer.SDR
     ColorTransfer.SDR -> ColorTransfer.HLG
+}
+
+private fun nextVideoStab(mode: VideoStabMode): VideoStabMode = when (mode) {
+    VideoStabMode.OFF -> VideoStabMode.STANDARD
+    VideoStabMode.STANDARD -> VideoStabMode.ENHANCED
+    VideoStabMode.ENHANCED -> VideoStabMode.OFF
+}
+
+private fun nextDriveMode(mode: com.hletrd.findx9tele.camera.DriveMode): com.hletrd.findx9tele.camera.DriveMode = when (mode) {
+    com.hletrd.findx9tele.camera.DriveMode.SINGLE -> com.hletrd.findx9tele.camera.DriveMode.BURST
+    com.hletrd.findx9tele.camera.DriveMode.BURST -> com.hletrd.findx9tele.camera.DriveMode.AEB
+    com.hletrd.findx9tele.camera.DriveMode.AEB -> com.hletrd.findx9tele.camera.DriveMode.TIMELAPSE
+    com.hletrd.findx9tele.camera.DriveMode.TIMELAPSE -> com.hletrd.findx9tele.camera.DriveMode.SINGLE
+}
+
+private fun nextMeteringMode(mode: MeteringMode): MeteringMode = when (mode) {
+    MeteringMode.MATRIX -> MeteringMode.CENTER
+    MeteringMode.CENTER -> MeteringMode.SPOT
+    MeteringMode.SPOT -> MeteringMode.MATRIX
+}
+
+private fun nextAudioScene(scene: com.hletrd.findx9tele.camera.AudioScene): com.hletrd.findx9tele.camera.AudioScene = when (scene) {
+    com.hletrd.findx9tele.camera.AudioScene.STANDARD -> com.hletrd.findx9tele.camera.AudioScene.SOUND_FOCUS
+    com.hletrd.findx9tele.camera.AudioScene.SOUND_FOCUS -> com.hletrd.findx9tele.camera.AudioScene.SOUND_STAGE
+    com.hletrd.findx9tele.camera.AudioScene.SOUND_STAGE -> com.hletrd.findx9tele.camera.AudioScene.STANDARD
+}
+
+private fun nextGridType(type: GridType): GridType = when (type) {
+    GridType.NONE -> GridType.THIRDS
+    GridType.THIRDS -> GridType.GOLDEN
+    GridType.GOLDEN -> GridType.SQUARE
+    GridType.SQUARE -> GridType.CENTER
+    GridType.CENTER -> GridType.NONE
 }
 
 /** PASM cycle order: Program → Shutter-priority → ISO-priority → Manual → (back to Program). */
@@ -528,6 +660,24 @@ private fun EvRuler(controls: ManualControls, caps: CameraCaps?, onEv: (Int) -> 
             totalUnits = (hi - lo).coerceAtLeast(1),
             majorEvery = majorEvery,
             snap = true,
+        )
+    }
+}
+
+@Composable
+private fun ZoomRuler(controls: ManualControls, caps: CameraCaps?, onZoomRatio: (Float) -> Unit) {
+    val range = caps?.zoomRatioRange ?: Range(1f, 1f)
+    val lo = range.lower
+    val hi = range.upper
+    val fraction = if (hi <= lo) 0f else ((controls.zoomRatio - lo) / (hi - lo)).coerceIn(0f, 1f)
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        RulerReadout("%.1f×".format(controls.zoomRatio))
+        RulerSlider(
+            fraction = fraction,
+            onFractionChange = { f -> onZoomRatio((lo + f * (hi - lo)).coerceIn(lo, hi)) },
+            enabled = hi > lo,
+            totalUnits = 120,
+            majorEvery = 12,
         )
     }
 }

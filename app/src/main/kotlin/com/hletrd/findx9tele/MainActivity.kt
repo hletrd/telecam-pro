@@ -1,6 +1,7 @@
 package com.hletrd.findx9tele
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -119,14 +120,17 @@ class MainActivity : ComponentActivity() {
     // turns the media volume into a burst of beeps mid-shot; repeatCount gates auto-repeat.
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         if (isShutterKey(keyCode)) {
-            if (hasRequiredPermissions && event.repeatCount == 0) vm.onHardwareShutter()
+            if (hasRequiredPermissions && event.repeatCount == 0) vm.onHardwareFullKey(active = true)
             return true
         }
         return super.onKeyDown(keyCode, event)
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
-        if (isShutterKey(keyCode)) return true
+        if (isShutterKey(keyCode)) {
+            if (hasRequiredPermissions) vm.onHardwareFullKey(active = false)
+            return true
+        }
         return super.onKeyUp(keyCode, event)
     }
 
@@ -135,17 +139,26 @@ class MainActivity : ComponentActivity() {
     // verified they reach dispatchKeyEvent: a light press and each slide notch arrive as key 767/769/782.
     // Map them: the two slide keycodes → stepped zoom in/out, the press keycode → a centre AF trigger
     // (half-press). Handled on ACTION_DOWN and consumed. (Directions calibrated on device; swap the two
-    // slide constants if reversed.) A temporary BtnDbg log stays so the mapping can be re-checked.
+    // slide constants if reversed.)
+    @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (hasRequiredPermissions && event.action == KeyEvent.ACTION_DOWN) {
+        if (hasRequiredPermissions) {
             when (event.keyCode) {
-                KEY_CAM_SLIDE_IN -> { vm.onPinchZoom(ZOOM_STEP); return true }
-                KEY_CAM_SLIDE_OUT -> { vm.onPinchZoom(1f / ZOOM_STEP); return true }
-                KEY_CAM_HALF_PRESS -> { vm.onTapFocus(0.5f, 0.5f); return true }
+                KEY_CAM_SLIDE_IN -> {
+                    if (event.action == KeyEvent.ACTION_DOWN) vm.onPinchZoom(ZOOM_STEP)
+                    return true
+                }
+                KEY_CAM_SLIDE_OUT -> {
+                    if (event.action == KeyEvent.ACTION_DOWN) vm.onPinchZoom(1f / ZOOM_STEP)
+                    return true
+                }
+                KEY_CAM_HALF_PRESS -> {
+                    if (event.action == KeyEvent.ACTION_DOWN || event.action == KeyEvent.ACTION_UP) {
+                        vm.onHardwareHalfPress(event.action == KeyEvent.ACTION_DOWN)
+                    }
+                    return true
+                }
             }
-        }
-        if (!isShutterKey(event.keyCode) && event.keyCode !in CAMERA_BUTTON_KEYS) {
-            android.util.Log.i("BtnDbg", "key code=${event.keyCode} action=${event.action}")
         }
         return super.dispatchKeyEvent(event)
     }
