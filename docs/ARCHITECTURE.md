@@ -19,11 +19,10 @@
 
 A professional single-device camera app for the **OPPO Find X9 Ultra** (Android 16 / API 36) that uses Camera2 to control the rear 3× periscope telephoto lens through a **Hasselblad "Earth Explorer" afocal 300 mm teleconverter** (≈4.286× magnification: 300 mm ÷ 70 mm). The app captures high-quality stills (HEIF + RAW/DNG) and video (10-bit HEVC Rec.2020 in HLG or Log transfer function).
 
-The UI/UX reference is **Sony Alpha / Sony Xperia Pro camera operation**. Controls should feel like a
-professional camera surface: Fn access, My Menu, MR banks, PASM-style exposure, compact OSD, and
-minimal viewfinder obstruction. Avoid conspicuous warning banners, tutorial copy, marketing-style
-cards, and "helpful" overlays unless the user explicitly asks for them; important states belong in
-normal status readouts or menu rows. See [`UX_POLICY.md`](UX_POLICY.md).
+The UI/UX reference is **Sony Alpha / Sony Xperia Pro camera operation**. Use Fn access, My Menu, MR
+banks, PASM-style exposure, compact OSD, peaking, zebra, histogram, waveform, and review zoom. Keep
+the viewfinder quiet: no tutorial banners, warning chips, marketing cards, or helper overlays unless
+the user asks. Important states belong in the OSD, Fn, or menu rows. See [`UX_POLICY.md`](UX_POLICY.md).
 
 Two critical consequences of the afocal converter drive the entire design:
 - **Image rotation**: The afocal telescope delivers light rotated 180° (no erecting prism). Both the live preview and saved results must be corrected. Vertical flip + horizontal flip = 180° rotation (parity-preserving, not a mirror).

@@ -96,16 +96,16 @@ import kotlin.math.roundToInt
  * Every row is a thin wrapper around a [CameraActions] method; this file owns no camera state.
  */
 internal enum class ProSheetTab(val label: String) {
-    MY_MENU("My Menu"),
-    SHOOTING("Shooting"),
-    EXPOSURE("Exposure/Color"),
+    MY_MENU("My"),
+    SHOOTING("Shoot"),
+    EXPOSURE("Exposure"),
     FOCUS("Focus"),
     LENS("Lens"),
-    STABILIZATION("Stabilization"),
+    STABILIZATION("Steady"),
     VIDEO("Video"),
-    PROCESSING("Processing"),
-    ASSISTS("Assists"),
-    ADVANCED("Advanced"),
+    PROCESSING("Image"),
+    ASSISTS("Assist"),
+    ADVANCED("Setup"),
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -154,7 +154,7 @@ internal fun ProSheet(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Settings", color = CameraColors.TextPrimary, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("Menu", color = CameraColors.TextPrimary, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 CloseButton(onClick = onDismiss)
             }
 
@@ -376,7 +376,7 @@ private fun TabTitle(text: String) {
 private fun MyMenuTab(state: CameraUiState, actions: CameraActions) {
     TabTitle("My Menu")
     if (state.myMenuSlots.isEmpty()) {
-        Text("No items selected.", color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
+        Text("Empty", color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
     } else {
         state.myMenuSlots.forEach { slot ->
             LabelValueRow(
@@ -387,7 +387,7 @@ private fun MyMenuTab(state: CameraUiState, actions: CameraActions) {
         }
     }
     if (state.recentSettingSlots.isNotEmpty()) {
-        SectionHeader("Recently Changed")
+        SectionHeader("Recent")
         state.recentSettingSlots.forEach { slot ->
             LabelValueRow(
                 label = fnSlotLabel(slot),
@@ -400,7 +400,7 @@ private fun MyMenuTab(state: CameraUiState, actions: CameraActions) {
 
 @Composable
 private fun MemoryRecallControls(state: CameraUiState, actions: CameraActions) {
-    SectionHeader("Memory Recall")
+    SectionHeader("MR")
     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
         MemorySlot.entries.forEach { slot ->
             val saved = slot in state.savedMemorySlots
@@ -434,7 +434,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
     MemoryRecallControls(state = state, actions = actions)
     PhotoFormatToggles(formats = state.photoFormats, onSetPhotoFormats = actions::onSetPhotoFormats)
     SegmentedSelector(
-        label = "Aspect Ratio",
+        label = "Aspect",
         options = AspectRatio.entries,
         selected = state.aspectRatio,
         labelFor = ::aspectRatioLabel,
@@ -450,7 +450,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         )
     }
     LabeledSlider(
-        label = "JPEG Quality",
+        label = "JPEG Q",
         valueLabel = state.controls.jpegQuality.toString(),
         value = state.controls.jpegQuality.toFloat().coerceIn(1f, 100f),
         onValueChange = { actions.onJpegQuality(it.roundToInt()) },
@@ -458,7 +458,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
     )
     SectionHeader("Drive")
     SegmentedSelector(
-        label = "Drive Mode",
+        label = "Drive",
         options = DriveMode.entries,
         selected = state.driveMode,
         labelFor = ::driveModeLabel,
@@ -486,7 +486,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
 private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     val controls = state.controls
     val caps = state.caps
-    TabTitle("Exposure/Color")
+    TabTitle("Exposure")
     SectionHeader("Exposure")
     // PASM-style: P (auto), S (shutter-priority, app auto-ISO), ISO (iso-priority, app auto-shutter),
     // M (manual). No aperture-priority — the tele aperture is fixed.
@@ -500,21 +500,21 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     AutoIsoShutterPresets(actions = actions)
     ToggleRow(label = "AE Lock", checked = controls.aeLock, onCheckedChange = actions::onToggleAeLock)
     SegmentedSelector(
-        label = "Anti-Flicker",
+        label = "Flicker",
         options = Antibanding.entries,
         selected = controls.antibanding,
         labelFor = ::antibandingLabel,
         onSelect = actions::onAntibanding,
     )
     SegmentedSelector(
-        label = "Shutter Mode",
+        label = "Shutter",
         options = ShutterMode.entries,
         selected = controls.shutterMode,
         labelFor = ::shutterModeLabel,
         onSelect = actions::onShutterMode,
     )
     SegmentedSelector(
-        label = "Exposure Step",
+        label = "Step",
         options = ExposureStep.entries,
         selected = controls.exposureStep,
         labelFor = { "${it.label} EV" },
@@ -539,9 +539,9 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         onSelect = actions::onMeteringMode,
     )
 
-    SectionHeader("White Balance")
+    SectionHeader("WB")
     SegmentedSelector(
-        label = "Preset",
+        label = "WB",
         options = WbMode.entries,
         selected = controls.wbMode,
         labelFor = ::wbModeLabel,
@@ -549,7 +549,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     )
     if (controls.wbMode == WbMode.MANUAL) {
         LabeledSlider(
-            label = "Color Temp",
+            label = "Kelvin",
             valueLabel = "${controls.wbKelvin}K",
             value = controls.wbKelvin.toFloat().coerceIn(2000f, 10000f),
             onValueChange = { actions.onWbKelvin(it.roundToInt()) },
@@ -569,7 +569,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
 @Composable
 private fun AutoIsoShutterPresets(actions: CameraActions) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text("300mm Auto ISO Shutter", color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
+        Text("Auto ISO floor", color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
             listOf(320 to "1/320", 500 to "1/500", 1000 to "1/1000").forEach { (denom, label) ->
                 FilterChip(
@@ -592,7 +592,7 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
     val controls = state.controls
     TabTitle("Focus")
     SegmentedSelector(
-        label = "AF Mode",
+        label = "AF",
         options = FocusMode.entries,
         selected = controls.focusMode,
         labelFor = ::focusModeLabel,
@@ -601,9 +601,9 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
     if (controls.focusMode != FocusMode.MANUAL) {
         ToggleRow(label = "AF Lock", checked = controls.afLock, onCheckedChange = actions::onAfLock)
     }
-    ToggleRow(label = "Focus Peaking", checked = state.focusPeaking, onCheckedChange = actions::onTogglePeaking)
+    ToggleRow(label = "Peaking", checked = state.focusPeaking, onCheckedChange = actions::onTogglePeaking)
     SegmentedSelector(
-        label = "Peaking Sensitivity",
+        label = "Peaking Level",
         options = PeakingLevel.entries,
         selected = state.peakingLevel,
         labelFor = { it.name.lowercase().replaceFirstChar { c -> c.uppercase() } },
@@ -626,26 +626,26 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
     // Picking a lens bundles teleconverter mode: 3× turns it ON (afocal 180° flip), every other lens
     // turns it OFF — one tap. The teleconverter is locked to the 3× periscope.
     SegmentedSelector(
-        label = "Lens (bundles teleconverter on 3×)",
+        label = "Lens",
         options = LensChoice.entries,
         selected = state.lens,
         labelFor = ::lensLabel,
         onSelect = actions::onLens,
     )
     val focalCaption = when (state.lens) {
-        LensChoice.ULTRAWIDE -> "≈ 14 mm ultra-wide"
-        LensChoice.MAIN -> "≈ 23 mm main"
-        LensChoice.TELE3X -> "70 mm → 300 mm with the teleconverter (180° flip)"
-        LensChoice.TELE10X -> "≈ 230 mm periscope"
+        LensChoice.ULTRAWIDE -> "14 mm"
+        LensChoice.MAIN -> "23 mm"
+        LensChoice.TELE3X -> "70 mm + TC = 300 mm"
+        LensChoice.TELE10X -> "230 mm"
     }
     Text(focalCaption, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
     ToggleRow(
-        label = "Teleconverter (300mm, 180° flip)",
+        label = "Teleconverter",
         checked = state.teleconverterMode,
         onCheckedChange = actions::onToggleTeleconverter,
     )
     Text(
-        "The teleconverter is locked to the 3× periscope — turning it on from any other lens switches to 3×.",
+        "3× lens only.",
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.labelSmall,
     )
@@ -654,29 +654,27 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
 @Composable
 private fun StabilizationTab(state: CameraUiState, actions: CameraActions) {
     val caps = state.caps
-    TabTitle("Stabilization")
+    TabTitle("Steady")
     // The stock camera's approach: engage the HAL's OIS+EIS ("super steady") so OIS physically cuts
     // per-frame motion blur at 300 mm. (App-side gyro EIS was removed — it only warped whole frames
     // and couldn't de-blur a fixed 1/60 s frame.) Modes gated by what the lens reports.
     SegmentedSelector(
-        label = "Video Stabilization",
+        label = "Steady",
         options = VideoStabMode.entries,
         selected = state.videoStabMode,
         labelFor = { it.label },
         onSelect = actions::onVideoStabMode,
     )
     val stabCaption = when (state.videoStabMode) {
-        VideoStabMode.OFF -> "No stabilization."
-        VideoStabMode.STANDARD -> "HAL OIS+EIS. OIS moves the lens during exposure → less motion blur at 300 mm."
-        VideoStabMode.ENHANCED -> "HAL preview-stabilization (the stock 'super steady' path) — strongest " +
-            "OIS+EIS; best motion-blur reduction on the tele. Crops the frame slightly."
+        VideoStabMode.OFF -> "Off"
+        VideoStabMode.STANDARD -> "OIS+EIS"
+        VideoStabMode.ENHANCED -> "OIS+EIS, crop"
     }
     Text(stabCaption, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
     if (caps?.oisAvailable == true) {
-        ToggleRow(label = "Optical Stabilization (OIS)", checked = state.controls.oisEnabled, onCheckedChange = actions::onToggleOis)
+        ToggleRow(label = "OIS", checked = state.controls.oisEnabled, onCheckedChange = actions::onToggleOis)
         Text(
-            "Keep OIS on for the tele: it de-blurs each frame. Note a still capture bypasses EIS, so " +
-                "a fast shutter (≈1/320 s+) plus OIS gives the sharpest handheld 300 mm photos.",
+            "Stills use OIS.",
             color = CameraColors.TextSecondary,
             style = MaterialTheme.typography.labelSmall,
         )
@@ -691,8 +689,8 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     TabTitle("Video")
     if (state.isRecording) {
         LabelValueRow(
-            label = "Recording Lock",
-            valueLabel = "Stop REC to change format",
+            label = "REC Lock",
+            valueLabel = "Stop REC first",
         )
     }
 
@@ -711,7 +709,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     // Open Gate records the full 4:3 sensor readout instead of a 16:9 crop; it swaps the resolution
     // list to the camera's 4:3 sizes.
     ToggleRow(
-        label = "Open Gate (4:3 full sensor)",
+        label = "Open Gate 4:3",
         checked = state.openGate,
         onCheckedChange = actions::onToggleOpenGate,
         enabled = recordingMutable,
@@ -738,7 +736,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     // (23.976/29.97/59.94) ride their integer parent. 8K is capped ≤30.
     val fpsOptions = VideoFrameRate.availableFor(caps, state.videoResolution, codec)
     SegmentedSelector(
-        label = "Frame Rate",
+        label = "FPS",
         options = fpsOptions,
         selected = state.videoFrameRate,
         labelFor = ::videoFrameRateLabel,
@@ -747,7 +745,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     )
     if (state.videoFrameRate.highSpeed) {
         Text(
-            "High-speed capture (slow-motion) — records via a constrained high-speed session; still capture is off while selected.",
+            "Still capture off.",
             color = CameraColors.TextSecondary,
             style = MaterialTheme.typography.labelSmall,
         )
@@ -773,13 +771,13 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     )
 
     ToggleRow(
-        label = "Record Audio",
+        label = "Audio",
         checked = state.recordAudio,
         onCheckedChange = actions::onToggleRecordAudio,
         enabled = recordingMutable,
     )
     SegmentedSelector(
-        label = "Audio Input",
+        label = "Input",
         options = AudioInputPreference.entries,
         selected = state.audioInputPreference,
         labelFor = { it.label },
@@ -787,13 +785,13 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         enabled = state.recordAudio && recordingMutable,
     )
     LabelValueRow(
-        label = if (state.isRecording) "Audio Route" else "Input Status",
+        label = if (state.isRecording) "Audio Route" else "Input",
         valueLabel = state.audioRouteLabel,
     )
     // Directional audio — the stock Sound Focus (aims the mic array at the framed subject, tightens
     // with zoom — the 300 mm use case) / Sound Stage (wider spatial stereo), via the vendor audio-HAL.
     SegmentedSelector(
-        label = "Audio Scene",
+        label = "Scene",
         options = AudioScene.entries,
         selected = state.audioScene,
         labelFor = { it.label },
@@ -802,7 +800,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     )
     if (state.audioScene == AudioScene.SOUND_FOCUS) {
         Text(
-            "Aims the mic toward the subject and narrows with zoom (best for distant 300 mm subjects).",
+            "Directional pickup.",
             color = CameraColors.TextSecondary,
             style = MaterialTheme.typography.labelSmall,
         )
@@ -827,7 +825,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
 @Composable
 private fun ProcessingTab(state: CameraUiState, actions: CameraActions) {
     val controls = state.controls
-    TabTitle("Processing")
+    TabTitle("Image")
     SegmentedSelector(
         label = "Sharpness",
         options = ProcessingLevel.entries,
@@ -836,14 +834,14 @@ private fun ProcessingTab(state: CameraUiState, actions: CameraActions) {
         onSelect = actions::onEdge,
     )
     SegmentedSelector(
-        label = "Noise Reduction",
+        label = "NR",
         options = ProcessingLevel.entries,
         selected = controls.noiseReduction,
         labelFor = ::processingLevelLabel,
         onSelect = actions::onNoiseReduction,
     )
     SegmentedSelector(
-        label = "Color Effect",
+        label = "Color",
         options = ColorEffect.entries,
         selected = controls.colorEffect,
         labelFor = ::colorEffectLabel,
@@ -853,10 +851,10 @@ private fun ProcessingTab(state: CameraUiState, actions: CameraActions) {
 
 @Composable
 private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
-    TabTitle("Assists")
+    TabTitle("Assist")
     ToggleRow(label = "Zebra", checked = state.zebra, onCheckedChange = actions::onToggleZebra)
     SegmentedSelector(
-        label = "Zebra Level",
+        label = "Zebra IRE",
         options = ZebraLevel.entries,
         selected = state.zebraLevel,
         labelFor = {
@@ -887,25 +885,25 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
 @Composable
 private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
     val context = LocalContext.current
-    TabTitle("Advanced")
+    TabTitle("Setup")
     LabelValueRow(
-        label = "Privacy Policy",
+        label = "Privacy",
         valueLabel = "Open",
         onClick = { openPrivacyPolicy(context) },
     )
     ToggleRow(
-        label = "Remember Settings",
+        label = "Remember",
         checked = state.rememberSettings,
         onCheckedChange = actions::onToggleRememberSettings,
     )
     SectionHeader("Fn Bar")
-    Text("Choose up to 8 chips for the shooting-screen Fn row.", color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
+    Text("Up to 8.", color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
     FnSlotToggleList(selected = state.fnSlots, onSet = actions::onSetFnSlots)
-    SectionHeader("My Menu Items")
+    SectionHeader("My Menu")
     FnSlotToggleList(selected = state.myMenuSlots, onSet = actions::onSetMyMenuSlots)
-    SectionHeader("Hardware Keys")
+    SectionHeader("Keys")
     SegmentedSelector(
-        label = "Volume / Full Press",
+        label = "Full Press",
         options = HardwareKeyAction.entries,
         selected = state.volumeKeyAction,
         labelFor = ::hardwareKeyActionLabel,
@@ -919,15 +917,12 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
         onSelect = actions::onHalfPressAction,
     )
     LabelValueRow(
-        label = "Camera Override",
+        label = "Camera ID",
         valueLabel = state.cameraOverrideId ?: "Default",
         onClick = if (state.cameraOverrideId != null) ({ actions.onCameraOverride(null) }) else null,
     )
     Text(
-        "The LOG transfer (Video tab) drives the device's native scene-referred log directly — no " +
-            "separate toggle. Vendor keys that break or crash the camera HAL on this device (Auto HDR, " +
-            "in-sensor zoom, Ideal RAW, APV) are intentionally excluded; only standard-API and " +
-            "HAL-stable features are exposed.",
+        "Log is under Video.",
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.labelSmall,
     )

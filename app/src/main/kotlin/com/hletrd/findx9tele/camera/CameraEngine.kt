@@ -117,7 +117,7 @@ class CameraEngine(private val context: Context) {
         setupExecutor.execute {
             val sel = CameraSelector2.select(manager, overrideId)
             if (sel == null) {
-                onStatus?.invoke("Could not find the telephoto camera")
+                onStatus?.invoke("Tele camera unavailable")
                 starting = false
                 return@execute
             }
@@ -355,7 +355,7 @@ class CameraEngine(private val context: Context) {
     fun setOpenGate(enabled: Boolean) {
         if (openGate == enabled) return
         // Open Gate changes the recorded aspect/size; refuse mid-recording (the encoder is fixed-size).
-        if (recorder != null) { onStatus?.invoke("Stop recording to change Open Gate"); return }
+        if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
         openGate = enabled
         val sel = selection ?: return
         videoSize = chooseVideoSize(sel)
@@ -441,9 +441,9 @@ class CameraEngine(private val context: Context) {
      * corrupts the clip); the UI also gates it.
      */
     fun setLens(choice: LensChoice) {
-        if (recorder != null) { onStatus?.invoke("Stop recording to switch lens"); return }
+        if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
         val id = CameraSelector2.overrideIdForFocal(manager, choice.targetEquivMm)
-        if (id == null) { onStatus?.invoke("Could not find the ${choice.label} lens"); return }
+        if (id == null) { onStatus?.invoke("${choice.label} unavailable"); return }
         // Set the teleconverter flag BEFORE the reopen so applyStabilization() inside setCameraOverride
         // picks the right rotation + EIS focal for the new lens in the same pass.
         teleconverterMode = choice.isTeleconverterLens
@@ -453,7 +453,7 @@ class CameraEngine(private val context: Context) {
     fun setCameraOverride(id: String?) {
         // Switching the physical lens mid-recording reconfigures the camera under the encoder and
         // gaps/corrupts the clip. Refuse until recording stops; the UI also gates this.
-        if (recorder != null) { onStatus?.invoke("Stop recording to switch lens"); return }
+        if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
         overrideId = id
         if (!started) return
         val input = gl.inputSurface ?: return // @Volatile in GlPipeline: safe cross-thread read
@@ -463,7 +463,7 @@ class CameraEngine(private val context: Context) {
         // the initial open and other reopens.
         setupExecutor.execute {
             controller?.close()
-            val sel = CameraSelector2.select(manager, id) ?: run { onStatus?.invoke("Could not find that camera ID"); return@execute }
+            val sel = CameraSelector2.select(manager, id) ?: run { onStatus?.invoke("Camera ID unavailable"); return@execute }
             selection = sel
             val c = CameraCaps.read(manager, sel.logicalId, sel.physicalId)
             caps = c
@@ -591,7 +591,7 @@ class CameraEngine(private val context: Context) {
                             .onFailure { onStatus?.invoke("Failed to save DNG: ${it.message}") }
                     } else onStatus?.invoke("Failed to save DNG: no RAW")
                 }
-                if (!formats.heif && !formats.jpeg && !formats.dngRaw) onStatus?.invoke("No output format selected")
+                if (!formats.heif && !formats.jpeg && !formats.dngRaw) onStatus?.invoke("No output selected")
                 // HEIF success/failure is reported from inside saveHeifAsync (it runs later).
                 onDone?.invoke()
             }
@@ -757,7 +757,7 @@ class CameraEngine(private val context: Context) {
             // Encoder/muxer failed to configure; drop the pending MediaStore row we created so it
             // doesn't linger as a 0-byte orphan (VideoRecorder.start already released its own half).
             MediaStoreWriter.delete(context, uri)
-            onStatus?.invoke("Failed to start recording"); return false
+            onStatus?.invoke("REC failed"); return false
         }
         gl.setTransfer(glTransfer)
         gl.setEncoderOutput(surface, size.width, size.height)

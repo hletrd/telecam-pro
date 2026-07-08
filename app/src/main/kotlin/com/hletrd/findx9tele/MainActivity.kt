@@ -283,22 +283,22 @@ private fun PermissionGate(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
-	                text = if (permanentlyDenied) {
-	                    "Camera access is off. Enable it in Settings to use the app."
-	                } else {
-	                    "TeleCam Pro needs Camera for the viewfinder and capture. Microphone is requested only when recording audio."
-	                },
+                text = if (permanentlyDenied) {
+                    "Camera access is off. Enable it in Settings."
+                } else {
+                    "Camera is required. Mic is used for video only."
+                },
                 textAlign = TextAlign.Center,
                 style = MaterialTheme.typography.bodyLarge,
             )
             Spacer(Modifier.height(16.dp))
             if (permanentlyDenied) {
-                Button(onClick = onOpenSettings) { Text("Open Settings") }
+                Button(onClick = onOpenSettings) { Text("Settings") }
             } else {
-                Button(onClick = onRequest) { Text("Grant Permissions") }
+                Button(onClick = onRequest) { Text("Grant Camera") }
             }
             Spacer(Modifier.height(8.dp))
-            Button(onClick = onOpenPrivacy) { Text("Privacy Policy") }
+            Button(onClick = onOpenPrivacy) { Text("Privacy") }
         }
     }
 }

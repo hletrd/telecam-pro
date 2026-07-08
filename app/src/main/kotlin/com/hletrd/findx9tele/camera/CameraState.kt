@@ -53,8 +53,8 @@ enum class ShutterMode { SPEED, ANGLE }
  */
 enum class VideoStabMode(val label: String) {
     OFF("Off"),
-    STANDARD("OIS Std"),
-    ENHANCED("OIS Enhanced");
+    STANDARD("Standard"),
+    ENHANCED("Active");
 
     /** CONTROL_VIDEO_STABILIZATION_MODE value for the HAL modes; null for [OFF]. */
     val halControlMode: Int?

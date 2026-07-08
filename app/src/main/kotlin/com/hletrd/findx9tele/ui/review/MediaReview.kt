@@ -278,21 +278,21 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                 .clip(CircleShape)
                 .background(Color.Black.copy(alpha = 0.5f))
                 .semantics {
-                    contentDescription = "Delete last shot"
+                    contentDescription = "Delete shot"
                     role = Role.Button
                 }
                 .clickable { confirmDelete = true },
             contentAlignment = Alignment.Center,
         ) {
-            Text("Del", color = Color(0xFFFF6B6B), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+            Text("DEL", color = Color(0xFFFF6B6B), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
         }
     }
 
     if (confirmDelete) {
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
-            title = { Text("Delete last shot?") },
-            text = { Text("This removes the reviewed file from MediaStore.") },
+            title = { Text("Delete shot?") },
+            text = { Text("Delete from device.") },
             confirmButton = {
                 TextButton(onClick = {
                     confirmDelete = false

@@ -29,13 +29,10 @@ deprecated APIs, latest stable everything.
 - **Latest toolchain, no deprecated APIs.** See versions below; bump when newer stable ships.
 - **Everything user-facing in English.** (Historical commit messages are Korean; do not rewrite
   history — that's a destructive op requiring explicit sign-off.)
-- **UI/UX reference is Sony Alpha / Sony Xperia Pro camera, not generic phone-camera helpers.**
-  Prefer quiet, dense, operator-facing controls: Fn, My Menu, MR banks, PASM-style exposure, clear
-  status readouts, and controls that stay out of the viewfinder. Do **not** add tutorial banners,
-  nagging warning pills, safety nags, marketing copy, or "helpful" overlays that real pro cameras
-  would not show. If a condition matters, expose it as a normal camera status/control state or put it
-  in the relevant menu; do not invent conspicuous alert UI without explicit user approval. See
-  `docs/UX_POLICY.md`.
+- **UI/UX reference: Sony Alpha / Xperia Pro.** Keep the viewfinder quiet. Use Fn, My Menu, MR banks,
+  PASM-style exposure, compact OSD, peaking, zebra, histogram, waveform, and review zoom. Do not add
+  tutorial banners, warning chips, coach marks, marketing copy, or helper overlays unless the user
+  asks. Important states belong in the OSD, Fn, or menu rows. See `docs/UX_POLICY.md`.
 
 ## Toolchain (all pinned in `gradle/libs.versions.toml`)
 

@@ -325,7 +325,7 @@ internal fun antibandingLabel(mode: Antibanding): String = when (mode) {
 internal fun processingLevelLabel(level: ProcessingLevel): String = when (level) {
     ProcessingLevel.OFF -> "Off"
     ProcessingLevel.FAST -> "Fast"
-    ProcessingLevel.HIGH_QUALITY -> "High Quality"
+    ProcessingLevel.HIGH_QUALITY -> "HQ"
 }
 
 internal fun colorEffectLabel(effect: ColorEffect): String = when (effect) {
@@ -347,7 +347,7 @@ internal fun flashModeLabel(mode: FlashMode): String = when (mode) {
 internal fun gridTypeLabel(type: GridType): String = when (type) {
     GridType.NONE -> "None"
     GridType.THIRDS -> "Thirds"
-    GridType.GOLDEN -> "Golden Ratio"
+    GridType.GOLDEN -> "Golden"
     GridType.SQUARE -> "Square"
     GridType.CENTER -> "Center"
 }
@@ -365,8 +365,8 @@ internal fun shutterModeLabel(mode: ShutterMode): String = when (mode) {
 
 internal fun wbModeLabel(mode: WbMode): String = when (mode) {
     WbMode.AUTO -> "Auto"
-    WbMode.INCANDESCENT -> "Incandescent"
-    WbMode.FLUORESCENT -> "Fluorescent"
+    WbMode.INCANDESCENT -> "Tungsten"
+    WbMode.FLUORESCENT -> "Fluor."
     WbMode.DAYLIGHT -> "Daylight"
     WbMode.CLOUDY -> "Cloudy"
     WbMode.SHADE -> "Shade"
@@ -382,7 +382,7 @@ internal fun meteringModeLabel(mode: MeteringMode): String = when (mode) {
 internal fun lensLabel(lens: com.hletrd.findx9tele.camera.LensChoice): String = when (lens) {
     com.hletrd.findx9tele.camera.LensChoice.ULTRAWIDE -> "UW"
     com.hletrd.findx9tele.camera.LensChoice.MAIN -> "1×"
-    com.hletrd.findx9tele.camera.LensChoice.TELE3X -> "3× tele"
+    com.hletrd.findx9tele.camera.LensChoice.TELE3X -> "3×"
     com.hletrd.findx9tele.camera.LensChoice.TELE10X -> "10×"
 }
 
@@ -408,7 +408,7 @@ internal fun videoCodecLabel(codec: VideoCodec): String = when (codec) {
     VideoCodec.HEVC -> "HEVC"
     VideoCodec.AVC -> "H.264"
     // All-intra professional codec (ProRes / XAVC-I class), HW-accelerated, very high bitrate.
-    VideoCodec.APV -> "APV (pro intra)"
+    VideoCodec.APV -> "APV Intra"
 }
 
 internal fun videoFrameRateLabel(rate: VideoFrameRate): String = rate.label
@@ -508,10 +508,10 @@ internal fun formatFocusDistance(diopters: Float): String {
 
 /** Transfer-function display label: what the footage IS, not just the enum name. */
 internal fun transferLabel(transfer: ColorTransfer): String = when (transfer) {
-    ColorTransfer.HLG -> "HLG (HDR)"
+    ColorTransfer.HLG -> "HLG"
     // LOG drives the device's native HAL log (scene-referred, genuinely flat) — not the GL O-Log2 curve.
     ColorTransfer.LOG -> "O-Log"
-    ColorTransfer.SDR -> "SDR (709)"
+    ColorTransfer.SDR -> "SDR"
 }
 
 /** Compact transfer name for the video-mode quick chip and the OSD. */
@@ -530,7 +530,7 @@ fun TransferSelector(
     enabled: Boolean = true,
 ) {
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text("Transfer Function", color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
+        Text("Transfer", color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             ColorTransfer.entries.forEach { option ->
                 val isSelected = transfer == option
@@ -555,7 +555,7 @@ fun PhotoFormatToggles(
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text("Output Format", color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
+        Text("Output", color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             FilterChip(
                 selected = formats.heif,
