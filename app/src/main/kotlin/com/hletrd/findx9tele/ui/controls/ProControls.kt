@@ -29,7 +29,6 @@ import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.DriveMode
-import com.hletrd.findx9tele.camera.EisStrength
 import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
@@ -299,12 +298,6 @@ internal fun shutterModeLabel(mode: ShutterMode): String = when (mode) {
     ShutterMode.ANGLE -> "Angle"
 }
 
-internal fun eisStrengthLabel(strength: EisStrength): String = when (strength) {
-    EisStrength.LOW -> "Low"
-    EisStrength.MEDIUM -> "Medium"
-    EisStrength.HIGH -> "High"
-}
-
 internal fun wbModeLabel(mode: WbMode): String = when (mode) {
     WbMode.AUTO -> "Auto"
     WbMode.INCANDESCENT -> "Incandescent"
@@ -343,8 +336,6 @@ internal fun aspectRatioLabel(ratio: AspectRatio): String = when (ratio) {
 internal fun videoCodecLabel(codec: VideoCodec): String = when (codec) {
     VideoCodec.HEVC -> "HEVC"
     VideoCodec.AVC -> "H.264"
-    // Software-only on this device (no c2.qti.av1.*), so it is slow and ≤1080p — flag it in the chip.
-    VideoCodec.AV1 -> "AV1 (SW, slow)"
     // All-intra professional codec (ProRes / XAVC-I class), HW-accelerated, very high bitrate.
     VideoCodec.APV -> "APV (pro intra)"
 }
@@ -355,7 +346,6 @@ internal fun videoFrameRateLabel(rate: VideoFrameRate): String = rate.label
 internal fun videoCodecLabelShort(codec: VideoCodec): String = when (codec) {
     VideoCodec.HEVC -> "HEVC"
     VideoCodec.AVC -> "H.264"
-    VideoCodec.AV1 -> "AV1"
     VideoCodec.APV -> "APV"
 }
 
@@ -448,14 +438,15 @@ internal fun formatFocusDistance(diopters: Float): String {
 /** Transfer-function display label: what the footage IS, not just the enum name. */
 internal fun transferLabel(transfer: ColorTransfer): String = when (transfer) {
     ColorTransfer.HLG -> "HLG (HDR)"
-    ColorTransfer.LOG -> "O-Log2"
+    // LOG drives the device's native HAL log (scene-referred, genuinely flat) — not the GL O-Log2 curve.
+    ColorTransfer.LOG -> "O-Log"
     ColorTransfer.SDR -> "SDR (709)"
 }
 
 /** Compact transfer name for the video-mode quick chip and the OSD. */
 internal fun transferLabelShort(transfer: ColorTransfer): String = when (transfer) {
     ColorTransfer.HLG -> "HLG"
-    ColorTransfer.LOG -> "O-Log2"
+    ColorTransfer.LOG -> "O-Log"
     ColorTransfer.SDR -> "SDR"
 }
 

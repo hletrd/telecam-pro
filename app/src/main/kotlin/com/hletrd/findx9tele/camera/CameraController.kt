@@ -90,9 +90,6 @@ class CameraController(context: Context) {
     // STABILIZATION_MODE: 0 off / 1 on / 2 preview-stabilization). Drives the HAL's OIS+EIS —
     // the only thing that cuts per-frame motion blur at 300 mm. Updated live via [setVideoStabMode].
     @Volatile private var videoStabHalMode = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF
-    // Extra QTI vendor session params (set once per open() — session keys). Changing them reopens.
-    @Volatile private var vendorInSensorZoom = false
-    @Volatile private var vendorIdealRaw = false
     // >0 → configure a CameraConstrainedHighSpeedCaptureSession at this fps (slow-motion), feeding
     // ONLY the GL input surface (no JPEG/RAW — high-speed sessions forbid extra targets). 0 = the
     // regular tele session. Set once per open(); on a high-speed config failure it drops back to 0.
@@ -138,8 +135,6 @@ class CameraController(context: Context) {
         highSpeedFps: Int = 0,
         vendorLogMode: Int = 0,
         videoStabHalMode: Int = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF,
-        vendorInSensorZoom: Boolean = false,
-        vendorIdealRaw: Boolean = false,
         onReady: Ready,
         onError: ErrorCb,
     ) {
@@ -151,8 +146,6 @@ class CameraController(context: Context) {
         this.highSpeedFps = highSpeedFps
         this.vendorLogMode = vendorLogMode
         this.videoStabHalMode = videoStabHalMode
-        this.vendorInSensorZoom = vendorInSensorZoom
-        this.vendorIdealRaw = vendorIdealRaw
         this.rawChars = runCatching {
             manager.getCameraCharacteristics(selection.physicalId ?: selection.logicalId)
         }.getOrNull()
@@ -193,25 +186,10 @@ class CameraController(context: Context) {
             .onFailure { Log.w(TAG, "vendor log.video.mode=$vendorLogMode rejected: ${it.message}") }
     }
 
-    // QTI session-parameter vendor keys, all int32 and all in the tele's availableRequest+SessionKeys
-    // (dumpsys 2026-07-07). We set them directly. EnableInsensorZoom improves tele zoom quality.
-    // Auto HDR (EnableAutoHDR + HDRMode) is deliberately NOT wired: adversarial device testing showed it
-    // reproducibly SIGABRTs the QTI camera-provider HAL on reopen+capture (evicts the camera → stuck
-    // CAMERA_DISCONNECTED), so it's gated out like Ideal RAW / APV — accepted by the HAL but breaks the
-    // pipeline. Do not re-add without a HAL-stable path.
-    private val inSensorZoomKey = CaptureRequest.Key("org.codeaurora.qcamera3.sessionParameters.EnableInsensorZoom", Int::class.javaObjectType)
-    private val idealRawKey = CaptureRequest.Key("org.codeaurora.qcamera3.sessionParameters.EnableIdealRAW", Int::class.javaObjectType)
-
-    /** Extra QTI vendor session params (in-sensor zoom, ideal RAW). Each guarded — a rejected key never kills the build. */
-    private fun CaptureRequest.Builder.applyVendorExtras() {
-        if (vendorInSensorZoom) runCatching { set(inSensorZoomKey, 1) }
-            .onFailure { Log.w(TAG, "vendor in-sensor zoom rejected: ${it.message}") }
-        // Ideal RAW is wired but GATED OFF (no UI toggle sets it): device-verified that although the
-        // session configures with EnableIdealRAW=1, the RAW still capture then fails silently (no DNG
-        // saved; CameraCaptureSession error + reconfigure timeout) — so it stays unreachable.
-        if (vendorIdealRaw) runCatching { set(idealRawKey, 1) }
-            .onFailure { Log.w(TAG, "vendor ideal RAW rejected: ${it.message}") }
-    }
+    // The QTI vendor "extras" (Auto HDR, in-sensor zoom, ideal RAW) were all removed: Auto HDR SIGABRTs
+    // the camera-provider HAL on reopen+capture, in-sensor zoom is redundant with the standard
+    // CONTROL_ZOOM_RATIO API, and ideal RAW silently breaks DNG capture. Only the native log session key
+    // remains (see applyVendorLog) — set through Camera2, HAL-stable, device-verified.
 
     /**
      * The HAL's stabilization vendor tag (`com.oplus.video.stabilization.mode`, int) — the vendor
@@ -315,18 +293,16 @@ class CameraController(context: Context) {
                 }
             },
         )
-        // The vendor session keys (log.video.mode, in-sensor zoom) are chosen at configure time, so they
-        // must ride in the session parameters, not only per-frame requests. Built from TEMPLATE_RECORD
-        // (the movie-pipeline template). Fully defensive — a session-parameter failure falls back to a
-        // plain session, not a dead camera.
-        if (vendorLogMode != 0 || vendorInSensorZoom || vendorIdealRaw) {
+        // The native-log session key must ride in the session parameters, not only per-frame requests.
+        // Built from TEMPLATE_RECORD (the movie-pipeline template). Fully defensive — a session-parameter
+        // failure falls back to a plain session, not a dead camera.
+        if (vendorLogMode != 0) {
             runCatching {
                 val sp = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
                 sp.applyManualControls(controls, caps)
                 sp.applyVendorLog()
-                sp.applyVendorExtras()
                 sessionConfig.setSessionParameters(sp.build())
-            }.onFailure { Log.w(TAG, "session params with vendor keys failed: ${it.message}") }
+            }.onFailure { Log.w(TAG, "session params with vendor log failed: ${it.message}") }
         }
         camera.createCaptureSession(sessionConfig)
     }
@@ -418,7 +394,6 @@ class CameraController(context: Context) {
                 addTarget(preview)
                 applyManualControls(controls, caps)
                 applyVendorLog()
-                applyVendorExtras()
                 applyVideoStab()
                 applyMetering(this, controls)
                 // Tap-to-focus: force AF_MODE_AUTO for a one-shot region scan that LOCKS on the tapped
@@ -582,7 +557,6 @@ class CameraController(context: Context) {
                 // Keep stills consistent with the session's pipeline: with the log session active the
                 // HAL processes everything scene-referred, so an unset key mid-session is undefined.
                 applyVendorLog()
-                applyVendorExtras()
                 applyMetering(this, controls)
                 // We rotate pixels ourselves (HEIF) / tag DNG orientation; keep JPEG upright.
                 set(CaptureRequest.JPEG_ORIENTATION, 0)

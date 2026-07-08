@@ -35,40 +35,34 @@ enum class ShutterTimer(val seconds: Int) { OFF(0), SEC3(3), SEC10(10) }
 /** How shutter is expressed: absolute SPEED (exposure time) or cine ANGLE (relative to fps). */
 enum class ShutterMode { SPEED, ANGLE }
 
-/** Electronic stabilization crop strength (headroom), for the app-side gyro EIS ([VideoStabMode.GYRO]). */
-enum class EisStrength(val crop: Float) { LOW(0.06f), MEDIUM(0.10f), HIGH(0.18f) }
-
 /**
  * Video stabilization strategy. The important consequence for the 300 mm teleconverter: at a fixed
  * video shutter (e.g. 1/60 s) the per-frame MOTION BLUR is set by the shutter, and only OIS — which
- * physically counter-moves the lens DURING the exposure — can reduce it. App-side gyro EIS ([GYRO])
- * only warps whole frames after capture, so it steadies frame-to-frame jitter but cannot de-blur.
+ * physically counter-moves the lens DURING the exposure — can reduce it. Frame-warp-only EIS steadies
+ * jitter but cannot de-blur, so the app relies entirely on the HAL's own OIS+EIS profiles. (The
+ * app-side gyro-EIS mode was dropped — unusable at 300 mm; [com.hletrd.findx9tele.stab.GyroEis]
+ * stays only for device-orientation + gravity roll.)
  *
  *  - [OFF]      — no stabilization (OIS still follows the separate OIS toggle).
- *  - [GYRO]     — app-side gyro EIS scaled to the effective focal (our old default); no HAL stab.
  *  - [STANDARD] — HAL `CONTROL_VIDEO_STABILIZATION_MODE_ON`: the HAL's own OIS+EIS.
  *  - [ENHANCED] — HAL `PREVIEW_STABILIZATION`: the modern combined OIS+EIS behind "super steady"
  *                 (the HAL also exposes the vendor mirror `com.oplus.video.stabilization.mode`).
  *                 Reduces motion blur via OIS; best on the tele.
  *
- * The two HAL modes are gated by `CameraCaps.videoStabModes`; app-side EIS is suppressed while a HAL
- * mode is active so the two don't double-warp.
+ * The HAL modes are gated by `CameraCaps.videoStabModes`.
  */
 enum class VideoStabMode(val label: String) {
     OFF("Off"),
-    GYRO("Gyro (app)"),
     STANDARD("OIS Std"),
     ENHANCED("OIS Enhanced");
 
-    /** CONTROL_VIDEO_STABILIZATION_MODE value for the HAL modes; null for [OFF]/[GYRO]. */
+    /** CONTROL_VIDEO_STABILIZATION_MODE value for the HAL modes; null for [OFF]. */
     val halControlMode: Int?
         get() = when (this) {
             STANDARD -> android.hardware.camera2.CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON
             ENHANCED -> android.hardware.camera2.CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_PREVIEW_STABILIZATION
             else -> null
         }
-
-    val usesClientEis: Boolean get() = this == GYRO
 }
 
 /** Focus-peaking edge-detection threshold; a LOWER threshold highlights more edges (more sensitive). */
@@ -147,14 +141,14 @@ enum class VendorLogMode(val halValue: Int) { OFF(0), ON(1) }
 enum class DriveMode { SINGLE, BURST, AEB, TIMELAPSE }
 
 /**
- * Video codec. HEVC supports 10-bit HLG/Log; AVC is 8-bit SDR only; AV1 is SW-only on this device
- * (`c2.android.av1.encoder` — no HW AV1 on SM8850), so it is slow and gated to ≤1080p/≤30fps. APV is
- * the professional intra-frame codec (`c2.qti.apv.encoder`, ISO/IEC 21794) — HW-accelerated up to
- * ~2 Gbps, the closest thing to ProRes / XAVC-I on this device (all-intra, huge bitrate, grade-ready).
+ * Video codec. HEVC supports 10-bit HLG/Log; AVC is 8-bit SDR only. APV is the professional
+ * intra-frame codec (`c2.qti.apv.encoder`, ISO/IEC 21794) — HW-accelerated up to ~2 Gbps, the
+ * closest thing to ProRes / XAVC-I on this device (all-intra, huge bitrate, grade-ready). (AV1 was
+ * removed — the only encoder on this SoC is software `c2.android.av1.encoder`, too slow to ship.)
  * Which of these are actually offered is decided at runtime from [android.media.MediaCodecList]
  * (see [com.hletrd.findx9tele.video.EncoderCaps]).
  */
-enum class VideoCodec { HEVC, AVC, AV1, APV }
+enum class VideoCodec { HEVC, AVC, APV }
 
 /**
  * Video bitrate level as bits-per-pixel-per-frame factor. The top presets reach the QTI HW encoder
@@ -201,9 +195,8 @@ enum class VideoFrameRate(
          *  - normal (non-high-speed) rates require the camera to advertise the integer [fps] as a
          *    fixed AE target-fps range (this device exposes 24/30/60 → 25/50 are correctly dropped),
          *    so a drop-frame rate rides on its integer parent (29.97 needs 30, etc.);
-         *  - high-speed rates (120) require a matching entry in the camera's high-speed config list
-         *    for [size] at ≥ that rate;
-         *  - AV1 (software) is clamped to ≤1080p and ≤30 fps regardless of what the camera offers.
+         *  - high-speed rates (120) are NEVER offered — the constrained high-speed session SIGABRTs
+         *    this device's HAL (QA-confirmed), so [FPS_120] is intentionally unselectable.
          * Always returns at least one rate so the UI never shows an empty selector.
          */
         fun availableFor(caps: CameraCaps?, size: Size, codec: VideoCodec): List<VideoFrameRate> {
@@ -220,12 +213,13 @@ enum class VideoFrameRate(
             codec: VideoCodec,
         ): List<VideoFrameRate> {
             val is8k = height >= 4320
-            val av1 = codec == VideoCodec.AV1
             val out = entries.filter { r ->
                 when {
                     is8k && r.fps > 30 -> false
-                    av1 && (width > 1920 || r.fps > 30) -> false
-                    r.highSpeed -> highSpeedMaxFps >= r.fps
+                    // High-speed (≥120 fps constrained session) is disabled outright: it SIGABRTs the
+                    // HAL on this device (QA-confirmed), so no high-speed rate is ever selectable —
+                    // [highSpeedMaxFps] is ignored on purpose.
+                    r.highSpeed -> false
                     else -> normalFps.contains(r.fps)
                 }
             }
@@ -236,16 +230,15 @@ enum class VideoFrameRate(
 
 /**
  * Resolved video bitrate (bits/s) for [width]×[height] at [encoderRate] fps and the [bpp]
- * bits-per-pixel-per-frame level, clamped to a sane floor and a codec-specific ceiling (AV1's SW
- * encoder tops out ~20 Mbps; the QTI HEVC/AVC encoders go far higher). Shared by the engine (to
+ * bits-per-pixel-per-frame level, clamped to a sane floor and a codec-specific ceiling (APV's
+ * all-intra pipe goes far higher than the QTI HEVC/AVC encoders). Shared by the engine (to
  * configure the encoder) and the UI (to display the exact Mbps).
  */
 fun videoBitRate(width: Int, height: Int, encoderRate: Double, bpp: Float, codec: VideoCodec): Int {
     val raw = (bpp.toDouble() * width * height * encoderRate).toLong()
-    // Per-codec ceilings from this device's media_codecs.xml: AV1(SW) ~20 Mbps; APV pro-intra tops
-    // out ~2 Gbps but is capped to a storage-sane 480 Mbps here; QTI HEVC/AVC advertise 100 Mbps.
+    // Per-codec ceilings from this device's media_codecs.xml: APV pro-intra tops out ~2 Gbps but is
+    // capped to a storage-sane 480 Mbps here; QTI HEVC/AVC advertise ~100-120 Mbps.
     val ceiling = when (codec) {
-        VideoCodec.AV1 -> 20_000_000L
         VideoCodec.APV -> 480_000_000L
         else -> 120_000_000L
     }
@@ -303,20 +296,14 @@ data class CameraUiState(
     // Selected rear lens. Default 3× — the teleconverter lens. Selecting it bundles teleconverter
     // mode on; other lenses bundle it off (see [LensChoice]).
     val lens: LensChoice = LensChoice.TELE3X,
-    // Teleconverter mode: manual (not auto-detected). ON = afocal 180° flip + EIS scaled to 300mm.
+    // Teleconverter mode: manual (not auto-detected). ON = afocal 180° flip; locked to the 3× lens.
     val teleconverterMode: Boolean = true,
-    // HAL-native log (vendor com.oplus.log.video.mode). Experimental; see [VendorLogMode].
-    val vendorLogMode: VendorLogMode = VendorLogMode.OFF,
-    // QTI vendor session features: in-sensor zoom, ideal RAW. (Auto HDR gated out — SIGABRTs the HAL.)
-    val vendorInSensorZoom: Boolean = false,
-    val vendorIdealRaw: Boolean = false,
     // Stabilization. Default ENHANCED = HAL OIS+EIS ("super steady"): at 300 mm it reduces the
-    // per-frame motion blur that app-side gyro EIS cannot touch (see [VideoStabMode]).
+    // per-frame motion blur (see [VideoStabMode]).
     val videoStabMode: VideoStabMode = VideoStabMode.ENHANCED,
-    val eisStrength: EisStrength = EisStrength.MEDIUM,
     // Video
     val videoCodec: VideoCodec = VideoCodec.HEVC,
-    val bitrateLevel: BitrateLevel = BitrateLevel.MEDIUM,
+    val bitrateLevel: BitrateLevel = BitrateLevel.ULTRA,
     val videoResolution: Size = Size(3840, 2160),
     val videoFrameRate: VideoFrameRate = VideoFrameRate.DEFAULT,
     // Open Gate: record the full 4:3 sensor readout instead of a 16:9 crop. Switches the resolution

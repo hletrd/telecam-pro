@@ -45,7 +45,7 @@ class CameraEngine(private val context: Context) {
     @Volatile private var caps: CameraCaps? = null
     @Volatile private var videoSize = Size(1920, 1080)
     @Volatile private var videoCodec: VideoCodec = VideoCodec.HEVC
-    @Volatile private var bitrateLevel: BitrateLevel = BitrateLevel.MEDIUM
+    @Volatile private var bitrateLevel: BitrateLevel = BitrateLevel.ULTRA
     @Volatile private var videoFrameRate: VideoFrameRate = VideoFrameRate.DEFAULT
     @Volatile private var openGate = false
     @Volatile private var driveMode: DriveMode = DriveMode.SINGLE
@@ -69,14 +69,9 @@ class CameraEngine(private val context: Context) {
     @Volatile private var vendorLogMode = VendorLogMode.OFF
     // Video stabilization strategy. Default ENHANCED = HAL OIS+EIS (motion-blur reduction at 300 mm).
     @Volatile private var videoStabMode = VideoStabMode.ENHANCED
-    // Extra QTI vendor session features (in-sensor zoom). Session keys → changing reopens. (Auto HDR
-    // was gated out — it SIGABRTs the camera-provider HAL; see CameraController.applyVendorExtras.)
-    @Volatile private var vendorInSensorZoom = false
-    @Volatile private var vendorIdealRaw = false
     // Bounded auto-recovery when the camera HAL disconnects/errors mid-session (its provider process can
     // crash). Reset on a successful open so the viewfinder self-heals instead of sitting black.
     @Volatile private var cameraRecoveryAttempts = 0
-    @Volatile private var eisCrop: Float = EisStrength.MEDIUM.crop
 
     // Software recording-audio gain (1f = passthrough) and the still-photo aspect-ratio crop;
     // read from the audio-encode / io-executor threads, so both are @Volatile.
@@ -162,10 +157,10 @@ class CameraEngine(private val context: Context) {
         // that ~90° SurfaceTexture rotation swaps the displayed width/height.
         gl.setSensorOrientation(c.sensorOrientation)
         gl.setRotationDegrees(previewRotationDegrees())
-        val mag = if (teleconverterMode) TELECONVERTER_MAGNIFICATION else 1f
-        // App-side gyro EIS runs only in GYRO mode; the HAL modes own stabilization otherwise (and
-        // the two would double-warp). Push the resolved HAL control mode to the live request too.
-        gl.setEis(videoStabMode.usesClientEis, c.nativeFocalInImageWidths * mag, eisCrop)
+        // App-side gyro EIS was removed (unusable at 300 mm): the HAL video-stab modes own
+        // stabilization now, so GL EIS stays permanently disabled — it can never double-warp. Push
+        // the resolved HAL control mode to the live request.
+        gl.setEis(false, 0f, 0f)
         controller?.setVideoStabMode(c.videoStabControlMode(videoStabMode))
     }
 
@@ -180,36 +175,8 @@ class CameraEngine(private val context: Context) {
      */
     private fun previewRotationDegrees(): Int = RotationMath.previewRotationDegrees(teleconverterMode)
 
-    /**
-     * Selects the HAL-native log mode. It is a SESSION parameter, so the camera is reopened for the
-     * new pipeline. Refused mid-recording (reconfiguring under the encoder corrupts the clip).
-     */
-    fun setVendorLogMode(m: VendorLogMode) {
-        if (vendorLogMode == m) return
-        if (recorder != null) { onStatus?.invoke("Stop recording to change native log"); return }
-        vendorLogMode = m
-        reopenForSession()
-    }
-
-    /** In-sensor zoom (QTI EnableInsensorZoom). Session key → reopen. Refused mid-recording. */
-    fun setVendorInSensorZoom(enabled: Boolean) {
-        if (vendorInSensorZoom == enabled) return
-        if (recorder != null) { onStatus?.invoke("Stop recording to change in-sensor zoom"); return }
-        vendorInSensorZoom = enabled
-        reopenForSession()
-    }
-
-    /** Ideal RAW (QTI EnableIdealRAW): a processed "ideal" Bayer for the DNG. Session key → reopen. */
-    fun setVendorIdealRaw(enabled: Boolean) {
-        if (vendorIdealRaw == enabled) return
-        if (recorder != null) { onStatus?.invoke("Stop recording to change ideal RAW"); return }
-        vendorIdealRaw = enabled
-        reopenForSession()
-    }
-
     fun setTeleconverterMode(enabled: Boolean) { teleconverterMode = enabled; applyStabilization() }
     fun setVideoStabMode(m: VideoStabMode) { videoStabMode = m; applyStabilization() }
-    fun setEisStrength(s: EisStrength) { eisCrop = s.crop; applyStabilization() }
     fun setFalseColor(enabled: Boolean) = gl.setFalseColor(enabled)
 
     fun onPreviewSurfaceChanged(width: Int, height: Int) {
@@ -243,8 +210,6 @@ class CameraEngine(private val context: Context) {
             highSpeedFps = desiredHighSpeedFps(),
             vendorLogMode = vendorLogMode.halValue,
             videoStabHalMode = c.videoStabControlMode(videoStabMode),
-            vendorInSensorZoom = vendorInSensorZoom,
-            vendorIdealRaw = vendorIdealRaw,
             onReady = { onStatus?.invoke(null); cameraRecoveryAttempts = 0 },
             onError = { onStatus?.invoke("Camera error: ${it.message}"); scheduleCameraRecovery() },
         )
@@ -257,10 +222,36 @@ class CameraEngine(private val context: Context) {
         controller?.updateControls(c)
     }
 
-    // Changing the OETF mid-recording would tag the file with the start transfer but bake a different
-    // curve into the second half; only push it to GL when idle (the field still updates for the next
-    // recording). See docs/reviews record-pipeline #4.
-    fun setTransfer(t: ColorTransfer) { transfer = t; if (recorder == null) gl.setTransfer(t) }
+    /**
+     * Selects the color transfer — the single source of truth. LOG now drives the device's NATIVE
+     * HAL log (the vendor `com.oplus.log.video.mode` session key): the ISP emits a genuinely flat,
+     * scene-referred log stream, so the GL stage must PASS IT THROUGH rather than bake a second
+     * curve. Because it is a SESSION parameter, engaging/dropping native log reopens the camera
+     * ([reopenForSession] is guarded — a no-op mid-recording / before start, so the current clip's
+     * pipeline is never reconfigured underneath it). HLG/SDR keep the GL OETF path and turn native
+     * log off. [vendorLogMode] is a private field derived from [transfer]; there is no public setter.
+     *
+     * Changing the OETF mid-recording would tag the file with the start transfer but bake a different
+     * curve into the second half, so the GL curve is only pushed when idle (the field still updates
+     * for the next recording). See docs/reviews record-pipeline #4.
+     */
+    fun setTransfer(t: ColorTransfer) {
+        transfer = t
+        if (t == ColorTransfer.LOG) {
+            // Engage native HAL log via the session key; the GL stage passes the (already
+            // log-encoded) frames through untouched so the curve isn't applied twice.
+            if (vendorLogMode != VendorLogMode.ON) {
+                vendorLogMode = VendorLogMode.ON
+                reopenForSession()
+            }
+            if (recorder == null) gl.setTransfer(null)
+        } else {
+            val wasLog = vendorLogMode != VendorLogMode.OFF
+            vendorLogMode = VendorLogMode.OFF
+            if (wasLog) reopenForSession() // drop the native-log pipeline
+            if (recorder == null) gl.setTransfer(t)
+        }
+    }
     fun setPeaking(enabled: Boolean) = gl.setPeaking(enabled)
     fun setZebra(enabled: Boolean) = gl.setZebra(enabled)
 
@@ -704,23 +695,17 @@ class CameraEngine(private val context: Context) {
         if (recorder != null) return false
         val name = fileName("VID", "mp4")
         val uri = MediaStoreWriter.createPendingVideo(context, name, "video/mp4") ?: return false
-        var size = videoSize
+        val size = videoSize
         val codec = videoCodec
-        var rate = videoFrameRate
-        // AV1 here is the software encoder (no HW AV1 on this SoC): clamp to what it can sustain —
-        // ≤1080p and ≤30 fps — so a mis-set higher size/rate degrades instead of failing to configure.
-        if (codec == VideoCodec.AV1) {
-            if (size.width > 1920) size = pickSizeUpTo(1920)
-            if (rate.fps > 30) rate = VideoFrameRate.FPS_30
-        }
+        val rate = videoFrameRate
         // High-speed (≥120 fps via the constrained session) tells the encoder it is fed faster than
-        // real-time via KEY_CAPTURE_RATE; a regular clip leaves it 0.
+        // real-time via KEY_CAPTURE_RATE; a regular clip leaves it 0. (High-speed is disabled — it
+        // SIGABRTs the HAL — so desiredHighSpeedFps() is always 0 in practice.)
         val captureRate = if (desiredHighSpeedFps() != 0) rate.encoderRate else 0.0
-        // AVC and AV1 are 8-bit SDR only: force the GL color curve to SDR (no HLG/Log). HEVC keeps the
+        // AVC is 8-bit SDR only: force the GL color curve to SDR (no HLG/Log). HEVC/APV keep the
         // 10-bit HLG/Log path. With HAL-native log active the stream is ALREADY log-encoded by the
         // ISP — GL must pass it through untouched or the curve would be applied twice.
         // (Resolution changes after this point stream the old size until reopen.)
-        // HEVC and APV are the 10-bit paths (keep the HLG/Log GL curve); AVC/AV1 are 8-bit SDR.
         val glTransfer = when {
             vendorLogMode != VendorLogMode.OFF -> null
             codec == VideoCodec.HEVC || codec == VideoCodec.APV -> transfer
@@ -729,7 +714,7 @@ class CameraEngine(private val context: Context) {
         // File color tags: when the HAL emits O-Log2 the container MUST be tagged as the LOG profile
         // (BT.2020 full-range, SDR-class transfer) regardless of the TF chip, so players don't
         // HDR-tone-map it and OPPO's O-Log2 LUTs round-trip. Otherwise use the selected transfer on
-        // the 10-bit paths (HEVC/APV); AVC/AV1 are always SDR.
+        // the 10-bit paths (HEVC/APV); AVC is always SDR.
         val fileTransfer = when {
             vendorLogMode != VendorLogMode.OFF -> ColorTransfer.LOG
             codec == VideoCodec.HEVC || codec == VideoCodec.APV -> transfer
@@ -755,10 +740,6 @@ class CameraEngine(private val context: Context) {
         recorder = rec
         return true
     }
-
-    /** Largest reported 16:9 SurfaceTexture size no wider than [maxWidth]; used to clamp AV1 to ≤1080p. */
-    private fun pickSizeUpTo(maxWidth: Int): Size =
-        caps?.availableVideoSizes?.firstOrNull { it.width <= maxWidth } ?: Size(1920, 1080)
 
     fun stopRecording() {
         val rec = recorder ?: return

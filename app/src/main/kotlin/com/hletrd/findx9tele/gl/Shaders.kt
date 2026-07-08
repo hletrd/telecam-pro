@@ -112,11 +112,19 @@ object Shaders {
                 }
             }
 
-            // Zebra: diagonal stripes over near-clipped highlights.
+            // Zebra: diagonal stripes over near-clipped highlights. The stripe phase is derived from
+            // the highp texture coordinate reconstructed to pixels (vTexCoord / uTexel) rather than
+            // gl_FragCoord: on some Adreno drivers gl_FragCoord is only mediump, so on this 4K preview
+            // its large window coords overflowed the mantissa and mod(...) degenerated — the stripes
+            // never drew (QA: "zebra toggles on but shows nothing"). Reconstructed pixel coords stay
+            // highp, so the modulo is exact and the stripes render. Luma is clamped so an out-of-range
+            // sample can't slip past the threshold test.
             if (uZebra == 1) {
-                if (luma(color) > uZebraThreshold) {
-                    float stripe = mod(gl_FragCoord.x + gl_FragCoord.y, 16.0);
-                    if (stripe < 8.0) color = vec3(0.0);
+                if (luma(clamp(color, 0.0, 1.0)) > uZebraThreshold) {
+                    float px = vTexCoord.x / max(uTexel.x, 1e-6);
+                    float py = vTexCoord.y / max(uTexel.y, 1e-6);
+                    float stripe = mod(px + py, 24.0);
+                    if (stripe < 12.0) color = vec3(0.0);
                 }
             }
 

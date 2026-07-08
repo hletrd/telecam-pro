@@ -8,7 +8,6 @@ import com.hletrd.findx9tele.camera.AudioScene
 import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorTransfer
-import com.hletrd.findx9tele.camera.EisStrength
 import com.hletrd.findx9tele.camera.VideoStabMode
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.ManualControls
@@ -17,7 +16,7 @@ import com.hletrd.findx9tele.camera.VideoFrameRate
 
 /**
  * App-level settings that aren't part of [ManualControls] but should still persist across launches
- * (transfer curve, save formats, mode, teleconverter/EIS/aspect/grid, video codec/bitrate).
+ * (transfer curve, save formats, mode, teleconverter/aspect/grid, video codec/bitrate).
  * Defaults mirror [com.hletrd.findx9tele.camera.CameraUiState] so a missing key restores the same
  * value a fresh install would show.
  */
@@ -29,11 +28,10 @@ data class ExtraSettings(
     val mode: CaptureMode = CaptureMode.PHOTO,
     val teleconverter: Boolean = true,
     val videoStabMode: VideoStabMode = VideoStabMode.ENHANCED,
-    val eisStrength: EisStrength = EisStrength.MEDIUM,
     val aspectRatio: AspectRatio = AspectRatio.W4_3,
     val grid: GridType = GridType.THIRDS,
     val videoCodec: VideoCodec = VideoCodec.HEVC,
-    val bitrateLevel: BitrateLevel = BitrateLevel.MEDIUM,
+    val bitrateLevel: BitrateLevel = BitrateLevel.ULTRA,
     val videoFrameRate: VideoFrameRate = VideoFrameRate.DEFAULT,
     val openGate: Boolean = false,
     val audioScene: AudioScene = AudioScene.STANDARD,
@@ -89,7 +87,6 @@ class SettingsStore(context: Context) {
             putString("mode", e.mode.name)
             putBoolean("teleconverter", e.teleconverter)
             putString("videoStabMode", e.videoStabMode.name)
-            putString("eisStrength", e.eisStrength.name)
             putString("aspectRatio", e.aspectRatio.name)
             putString("grid", e.grid.name)
             putString("videoCodec", e.videoCodec.name)
@@ -142,7 +139,6 @@ class SettingsStore(context: Context) {
                 mode = enumOr(prefs.getString("mode", null), ed.mode),
                 teleconverter = prefs.getBoolean("teleconverter", ed.teleconverter),
                 videoStabMode = enumOr(prefs.getString("videoStabMode", null), ed.videoStabMode),
-                eisStrength = enumOr(prefs.getString("eisStrength", null), ed.eisStrength),
                 aspectRatio = enumOr(prefs.getString("aspectRatio", null), ed.aspectRatio),
                 grid = enumOr(prefs.getString("grid", null), ed.grid),
                 videoCodec = enumOr(prefs.getString("videoCodec", null), ed.videoCodec),

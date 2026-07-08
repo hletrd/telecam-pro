@@ -5,6 +5,8 @@ import android.content.Intent
 import android.util.Range
 import android.util.Size
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.LocalOverscrollFactory
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -13,6 +15,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -27,6 +30,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -57,7 +61,6 @@ import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.DriveMode
-import com.hletrd.findx9tele.camera.EisStrength
 import com.hletrd.findx9tele.camera.PeakingColor
 import com.hletrd.findx9tele.camera.PeakingLevel
 import com.hletrd.findx9tele.camera.ZebraLevel
@@ -68,7 +71,6 @@ import com.hletrd.findx9tele.camera.MeteringMode
 import com.hletrd.findx9tele.camera.ProcessingLevel
 import com.hletrd.findx9tele.camera.ShutterMode
 import com.hletrd.findx9tele.camera.ShutterTimer
-import com.hletrd.findx9tele.camera.VendorLogMode
 import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.camera.VideoStabMode
 import com.hletrd.findx9tele.camera.VideoFrameRate
@@ -92,6 +94,7 @@ internal enum class ProSheetTab(val label: String) {
     SHOOTING("Shooting"),
     EXPOSURE("Exposure/Color"),
     FOCUS("Focus"),
+    LENS("Lens"),
     STABILIZATION("Stabilization"),
     VIDEO("Video"),
     PROCESSING("Processing"),
@@ -99,7 +102,7 @@ internal enum class ProSheetTab(val label: String) {
     ADVANCED("Advanced"),
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 internal fun ProSheet(
     state: CameraUiState,
@@ -140,25 +143,32 @@ internal fun ProSheet(
             Row(modifier = Modifier.fillMaxWidth().fillMaxHeight(0.82f)) {
                 TabRail(selected = selectedTab, onSelect = { selectedTab = it; onTabChange(it) })
                 Box(modifier = Modifier.width(1.dp).fillMaxHeight().background(Color.White.copy(alpha = 0.08f)))
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 18.dp, vertical = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(20.dp),
-                ) {
-                    when (selectedTab) {
-                        ProSheetTab.SHOOTING -> ShootingTab(state, actions)
-                        ProSheetTab.EXPOSURE -> ExposureColorTab(state, actions)
-                        ProSheetTab.FOCUS -> FocusTab(state, actions)
-                        ProSheetTab.STABILIZATION -> StabilizationTab(state, actions)
-                        ProSheetTab.VIDEO -> VideoTab(state, actions)
-                        ProSheetTab.PROCESSING -> ProcessingTab(state, actions)
-                        ProSheetTab.ASSISTS -> AssistsTab(state, actions)
-                        ProSheetTab.ADVANCED -> AdvancedTab(state, actions)
+                // Providing a null overscroll factory disables the stretch-overshoot on the content
+                // scroll, so it no longer bounces past the last row. Wrapped in a weighted Box because
+                // Modifier.weight is a RowScope extension and the provider lambda isn't a RowScope.
+                Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                    CompositionLocalProvider(LocalOverscrollFactory provides null) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .verticalScroll(rememberScrollState())
+                                .padding(horizontal = 18.dp, vertical = 16.dp),
+                            verticalArrangement = Arrangement.spacedBy(20.dp),
+                        ) {
+                            when (selectedTab) {
+                                ProSheetTab.SHOOTING -> ShootingTab(state, actions)
+                                ProSheetTab.EXPOSURE -> ExposureColorTab(state, actions)
+                                ProSheetTab.FOCUS -> FocusTab(state, actions)
+                                ProSheetTab.LENS -> LensTab(state, actions)
+                                ProSheetTab.STABILIZATION -> StabilizationTab(state, actions)
+                                ProSheetTab.VIDEO -> VideoTab(state, actions)
+                                ProSheetTab.PROCESSING -> ProcessingTab(state, actions)
+                                ProSheetTab.ASSISTS -> AssistsTab(state, actions)
+                                ProSheetTab.ADVANCED -> AdvancedTab(state, actions)
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                        }
                     }
-                    Spacer(modifier = Modifier.height(8.dp))
                 }
             }
         }
@@ -272,6 +282,12 @@ private fun DrawScope.drawTabIcon(tab: ProSheetTab, color: Color) {
             drawLine(color, Offset(center.x, size.height * 0.86f), Offset(center.x, size.height), strokeWidth = 1.4.dp.toPx())
             drawLine(color, Offset(0f, center.y), Offset(size.width * 0.14f, center.y), strokeWidth = 1.4.dp.toPx())
             drawLine(color, Offset(size.width * 0.86f, center.y), Offset(size.width, center.y), strokeWidth = 1.4.dp.toPx())
+        }
+        ProSheetTab.LENS -> {
+            // Lens glyph: nested optic rings with a solid center element.
+            drawCircle(color, radius = size.minDimension * 0.46f, center = center, style = stroke)
+            drawCircle(color, radius = size.minDimension * 0.28f, center = center, style = Stroke(width = 1.2.dp.toPx()))
+            drawCircle(color, radius = size.minDimension * 0.1f, center = center)
         }
         ProSheetTab.STABILIZATION -> {
             drawCircle(color, radius = size.minDimension * 0.16f, center = center, style = stroke)
@@ -489,11 +505,10 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
 }
 
 @Composable
-private fun StabilizationTab(state: CameraUiState, actions: CameraActions) {
-    val caps = state.caps
+private fun LensTab(state: CameraUiState, actions: CameraActions) {
     TabTitle("Lens")
-    // Picking a lens bundles teleconverter mode: 3× turns it ON (afocal 180° flip + gyro-EIS scaled
-    // to the ~300 mm effective focal), every other lens turns it OFF — one tap.
+    // Picking a lens bundles teleconverter mode: 3× turns it ON (afocal 180° flip), every other lens
+    // turns it OFF — one tap. The teleconverter is locked to the 3× periscope.
     SegmentedSelector(
         label = "Lens (bundles teleconverter on 3×)",
         options = LensChoice.entries,
@@ -504,15 +519,29 @@ private fun StabilizationTab(state: CameraUiState, actions: CameraActions) {
     val focalCaption = when (state.lens) {
         LensChoice.ULTRAWIDE -> "≈ 14 mm ultra-wide"
         LensChoice.MAIN -> "≈ 23 mm main"
-        LensChoice.TELE3X -> "70 mm → 300 mm with the teleconverter (EIS ×4.3, 180° flip)"
+        LensChoice.TELE3X -> "70 mm → 300 mm with the teleconverter (180° flip)"
         LensChoice.TELE10X -> "≈ 230 mm periscope"
     }
     Text(focalCaption, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
+    ToggleRow(
+        label = "Teleconverter (300mm, 180° flip)",
+        checked = state.teleconverterMode,
+        onCheckedChange = actions::onToggleTeleconverter,
+    )
+    Text(
+        "The teleconverter is locked to the 3× periscope — turning it on from any other lens switches to 3×.",
+        color = CameraColors.TextSecondary,
+        style = MaterialTheme.typography.labelSmall,
+    )
+}
 
-    SectionHeader("Video Stabilization")
+@Composable
+private fun StabilizationTab(state: CameraUiState, actions: CameraActions) {
+    val caps = state.caps
+    TabTitle("Stabilization")
     // The stock camera's approach: engage the HAL's OIS+EIS ("super steady") so OIS physically cuts
-    // per-frame motion blur at 300 mm. App-side gyro EIS only warps whole frames — it steadies
-    // jitter but can't de-blur a fixed 1/60 s frame. Modes gated by what the lens reports.
+    // per-frame motion blur at 300 mm. (App-side gyro EIS was removed — it only warped whole frames
+    // and couldn't de-blur a fixed 1/60 s frame.) Modes gated by what the lens reports.
     SegmentedSelector(
         label = "Video Stabilization",
         options = VideoStabMode.entries,
@@ -522,22 +551,11 @@ private fun StabilizationTab(state: CameraUiState, actions: CameraActions) {
     )
     val stabCaption = when (state.videoStabMode) {
         VideoStabMode.OFF -> "No stabilization."
-        VideoStabMode.GYRO -> "App gyro EIS scaled to the effective focal — steadies frame jitter, " +
-            "but does NOT reduce per-frame motion blur (only OIS can)."
         VideoStabMode.STANDARD -> "HAL OIS+EIS. OIS moves the lens during exposure → less motion blur at 300 mm."
         VideoStabMode.ENHANCED -> "HAL preview-stabilization (the stock 'super steady' path) — strongest " +
             "OIS+EIS; best motion-blur reduction on the tele. Crops the frame slightly."
     }
     Text(stabCaption, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
-    if (state.videoStabMode == VideoStabMode.GYRO) {
-        SegmentedSelector(
-            label = "EIS Strength",
-            options = EisStrength.entries,
-            selected = state.eisStrength,
-            labelFor = ::eisStrengthLabel,
-            onSelect = actions::onEisStrength,
-        )
-    }
     if (caps?.oisAvailable == true) {
         ToggleRow(label = "Optical Stabilization (OIS)", checked = state.controls.oisEnabled, onCheckedChange = actions::onToggleOis)
         Text(
@@ -547,11 +565,6 @@ private fun StabilizationTab(state: CameraUiState, actions: CameraActions) {
             style = MaterialTheme.typography.labelSmall,
         )
     }
-    ToggleRow(
-        label = "Teleconverter (300mm, 180° flip)",
-        checked = state.teleconverterMode,
-        onCheckedChange = actions::onToggleTeleconverter,
-    )
 }
 
 @Composable
@@ -560,8 +573,8 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     val codec = state.videoCodec
     TabTitle("Video")
 
-    // Codecs are limited to what MediaCodecList actually advertises an encoder for (HEVC/AVC are HW;
-    // AV1 is software-only on this SoC, flagged in its chip label).
+    // Codecs are limited to what MediaCodecList actually advertises a muxable HW encoder for
+    // (HEVC/AVC on this SoC).
     val codecOptions = remember { EncoderCaps.availableCodecs().ifEmpty { listOf(VideoCodec.HEVC, VideoCodec.AVC) } }
     SegmentedSelector(
         label = "Codec",
@@ -570,26 +583,18 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         labelFor = ::videoCodecLabel,
         onSelect = actions::onVideoCodec,
     )
-    if (codec == VideoCodec.AV1) {
-        Text(
-            "AV1 uses the software encoder on this device — slow, ≤1080p / ≤30fps. Use HEVC for 4K/high-fps.",
-            color = CameraColors.TextSecondary,
-            style = MaterialTheme.typography.labelSmall,
-        )
-    }
 
     // Open Gate records the full 4:3 sensor readout instead of a 16:9 crop; it swaps the resolution
     // list to the camera's 4:3 sizes.
     ToggleRow(label = "Open Gate (4:3 full sensor)", checked = state.openGate, onCheckedChange = actions::onToggleOpenGate)
 
     // Resolutions come from the SELECTED camera's real StreamConfigurationMap (4:3 when Open Gate,
-    // else 16:9). AV1 (SW) is clamped to ≤1080p.
-    val allSizes = when {
+    // else 16:9).
+    val resolutionOptions = when {
         caps == null -> listOf(Size(3840, 2160), Size(1920, 1080))
         state.openGate -> caps.openGateVideoSizes
         else -> caps.availableVideoSizes
     }.ifEmpty { listOf(Size(3840, 2160), Size(1920, 1080)) }
-    val resolutionOptions = if (codec == VideoCodec.AV1) allSizes.filter { it.width <= 1920 }.ifEmpty { listOf(Size(1920, 1080)) } else allSizes
     SegmentedSelector(
         label = "Resolution",
         options = resolutionOptions,
@@ -661,7 +666,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         valueRange = 0f..2f,
         enabled = state.recordAudio,
     )
-    // Transfer (HLG/LOG/SDR) only drives the HEVC path; AVC/AV1 always record 8-bit SDR, so the
+    // Transfer (HLG/LOG/SDR) only drives the HEVC path; AVC always records 8-bit SDR, so the
     // selector is disabled there rather than pretending the choice applies.
     TransferSelector(
         transfer = state.transfer,
@@ -749,31 +754,11 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
         valueLabel = state.cameraOverrideId ?: "Default",
         onClick = if (state.cameraOverrideId != null) ({ actions.onCameraOverride(null) }) else null,
     )
-    SegmentedSelector(
-        label = "Native Log (HAL, experimental)",
-        options = VendorLogMode.entries,
-        selected = state.vendorLogMode,
-        labelFor = { if (it == VendorLogMode.ON) "On" else "Off" },
-        onSelect = actions::onVendorLogMode,
-    )
     Text(
-        "Drives the device's own log key (com.oplus.log.video.mode) so the ISP emits a " +
-            "scene-referred log stream from sensor data — more latitude than the GL curve, which " +
-            "can only re-map the display SDR output. Bypasses the GL curve and tags the file " +
-            "BT.2020 full-range. Note: not white-balanced (warm scenes read warm — set WB in grade) " +
-            "and not a drop-in for OPPO's O-Log2 LUT; use TF O-Log2 for a LUT-accurate file. Not " +
-            "persisted across launches.",
-        color = CameraColors.TextSecondary,
-        style = MaterialTheme.typography.labelSmall,
-    )
-
-    SectionHeader("Vendor Features (experimental)")
-    ToggleRow(label = "In-Sensor Zoom", checked = state.vendorInSensorZoom, onCheckedChange = actions::onVendorInSensorZoom)
-    Text(
-        "In-sensor zoom (EnableInsensorZoom — sensor-domain crop-zoom, cleaner than digital zoom), a " +
-            "QTI HAL session feature the device exposes. Reopens the camera; not persisted. (Auto HDR / " +
-            "Ideal RAW / APV / macro / custom-LUT vendor keys were tried but excluded — device-verified " +
-            "they break capture or crash the camera HAL on this device.)",
+        "The LOG transfer (Video tab) drives the device's native scene-referred log directly — no " +
+            "separate toggle. Vendor keys that break or crash the camera HAL on this device (Auto HDR, " +
+            "in-sensor zoom, Ideal RAW, APV) are intentionally excluded; only standard-API and " +
+            "HAL-stable features are exposed.",
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.labelSmall,
     )

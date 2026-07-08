@@ -9,7 +9,6 @@ import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.DriveMode
-import com.hletrd.findx9tele.camera.EisStrength
 import com.hletrd.findx9tele.camera.ExposureStep
 import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FocusMode
@@ -70,6 +69,8 @@ interface CameraActions {
     fun onFlash(mode: FlashMode)
     fun onToggleOis(enabled: Boolean)
     fun onZoomRatio(ratio: Float)
+    // Pinch-to-zoom on the viewfinder: [factor] is the incremental pinch scale (1.0 = no change).
+    fun onPinchZoom(factor: Float)
     fun onJpegQuality(quality: Int)
 
     // Modes
@@ -89,7 +90,6 @@ interface CameraActions {
 
     // Stabilization
     fun onVideoStabMode(mode: com.hletrd.findx9tele.camera.VideoStabMode)
-    fun onEisStrength(strength: EisStrength)
 
     // Viewfinder assists
     fun onTogglePeaking(enabled: Boolean)
@@ -119,7 +119,4 @@ interface CameraActions {
     // Settings
     fun onCameraOverride(id: String?)
     fun onToggleRememberSettings(enabled: Boolean)
-    fun onVendorLogMode(mode: com.hletrd.findx9tele.camera.VendorLogMode)
-    fun onVendorInSensorZoom(enabled: Boolean)
-    fun onVendorIdealRaw(enabled: Boolean)
 }

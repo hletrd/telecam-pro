@@ -43,7 +43,6 @@ import com.hletrd.findx9tele.ui.controls.transferLabelShort
 import com.hletrd.findx9tele.ui.controls.videoCodecLabelShort
 import com.hletrd.findx9tele.ui.controls.videoResolutionLabel
 import kotlin.math.abs
-import kotlin.math.roundToInt
 
 /**
  * Composition grid, drawn per [GridType]. Purely decorative; visibility/style is entirely driven
@@ -148,16 +147,21 @@ fun AspectMask(ratio: AspectRatio, modifier: Modifier = Modifier) {
 
 /**
  * Horizon/level indicator. A static reference line marks true-horizontal; the [rollDegrees] line
- * rotates with device roll and turns green once within a small tolerance of level.
+ * rotates with device roll and turns YELLOW (Sony style) once within a small tolerance of level. In
+ * a landscape hold the gauge stays horizontal on screen: deviation is measured against the current
+ * held quadrant ([deviceOrientation], the task-8 gravity orientation), so "level" means square to
+ * the horizon in whatever way the phone is being held.
  */
 @Composable
-fun LevelOverlay(modifier: Modifier = Modifier, rollDegrees: Float = 0f) {
-    // Deviation from the NEAREST quadrant (upright, either landscape, upside-down) rather than raw
-    // roll: a landscape hold reads ±90° raw and would never show level, but the photographer's
-    // question is "am I square to the horizon in THIS hold" — captures auto-rotate per quadrant.
-    val deviation = rollDegrees - (rollDegrees / 90f).roundToInt() * 90f
+fun LevelOverlay(modifier: Modifier = Modifier, rollDegrees: Float = 0f, deviceOrientation: Int = 0) {
+    // Deviation from the CURRENT held orientation (the gravity quadrant) rather than raw roll: a
+    // landscape hold reads ±90° raw and would never show level, but the photographer's question is
+    // "am I square to the horizon in THIS hold" — captures auto-rotate per quadrant. Normalized to
+    // (-180, 180].
+    var deviation = rollDegrees - deviceOrientation
+    deviation = ((deviation + 180f) % 360f + 360f) % 360f - 180f
     val isLevel = abs(deviation) < 0.5f
-    val indicatorColor = if (isLevel) Color(0xFF4CD964) else Color.White
+    val indicatorColor = if (isLevel) Color(0xFFFFD60A) else Color.White
     Canvas(modifier = modifier.fillMaxSize()) {
         val cy = size.height / 2f
         val halfSpan = size.width * 0.16f
@@ -334,7 +338,6 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier) {
         }
         if (state.videoStabMode != VideoStabMode.OFF) {
             val stabTag = when (state.videoStabMode) {
-                VideoStabMode.GYRO -> "EIS"
                 VideoStabMode.STANDARD -> "OIS+"
                 VideoStabMode.ENHANCED -> "STEADY"
                 VideoStabMode.OFF -> ""
@@ -397,15 +400,18 @@ private fun DrawScope.drawHistogramCurve(bins: IntArray, color: Color) {
  */
 @Composable
 fun WaveformOverlay(data: WaveformData?, modifier: Modifier = Modifier) {
+    // Fixed compact box (matching the histogram's footprint) instead of a fraction of the screen
+    // width, so it has a known extent, stacks cleanly under the histogram, and stays clear of the
+    // top-bar settings glyph. Darker scrim + brighter trace (below) so it reads at a glance.
     Box(
         modifier = modifier
-            .fillMaxWidth(0.3f)
-            .height(90.dp)
-            .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(8.dp))
+            .width(150.dp)
+            .height(84.dp)
+            .background(Color.Black.copy(alpha = 0.62f), RoundedCornerShape(8.dp))
             .padding(6.dp),
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
-            drawRect(color = Color.White.copy(alpha = 0.3f), style = Stroke(width = 1.dp.toPx()))
+            drawRect(color = Color.White.copy(alpha = 0.35f), style = Stroke(width = 1.dp.toPx()))
             if (data != null && data.columns > 0 && data.rows > 0) {
                 drawWaveform(data)
             }
@@ -417,15 +423,18 @@ private fun DrawScope.drawWaveform(data: WaveformData) {
     val maxVal = (data.bins.maxOrNull() ?: 0).coerceAtLeast(1)
     val colWidth = size.width / data.columns
     val rowHeight = size.height / data.rows
-    val color = Color(0xFF4CD964)
+    val color = Color(0xFF8BFFA8) // brighter green than before for contrast against the scrim
     for (col in 0 until data.columns) {
         val x = col * colWidth + colWidth / 2f
         for (row in 0 until data.rows) {
             val value = data.bins[col * data.rows + row]
             if (value <= 0) continue
-            val alpha = (value.toFloat() / maxVal).coerceIn(0f, 1f)
+            // The old linear alpha (value/max) left low-count buckets nearly invisible. Lift them with
+            // a floor + √ curve so any populated bucket paints clearly (QA: "waveform too faint").
+            val norm = (value.toFloat() / maxVal).coerceIn(0f, 1f)
+            val alpha = (0.4f + 0.6f * kotlin.math.sqrt(norm)).coerceIn(0f, 1f)
             val y = row * rowHeight + rowHeight / 2f
-            drawCircle(color = color.copy(alpha = alpha), radius = 1.2.dp.toPx(), center = Offset(x, y))
+            drawCircle(color = color.copy(alpha = alpha), radius = 1.6.dp.toPx(), center = Offset(x, y))
         }
     }
 }

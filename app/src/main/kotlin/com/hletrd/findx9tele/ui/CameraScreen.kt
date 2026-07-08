@@ -11,6 +11,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -71,7 +72,6 @@ import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.DriveMode
-import com.hletrd.findx9tele.camera.EisStrength
 import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
@@ -102,8 +102,6 @@ import com.hletrd.findx9tele.ui.review.GalleryThumb
 import com.hletrd.findx9tele.ui.review.MediaReviewOverlay
 import com.hletrd.findx9tele.ui.theme.CameraColors
 import com.hletrd.findx9tele.ui.theme.FindX9TeleTheme
-import kotlin.math.cos
-import kotlin.math.sin
 
 /**
  * Root camera UI, styled after the Google Pixel Camera app: a near-empty viewfinder at rest, a
@@ -158,6 +156,12 @@ fun CameraScreen(
                         val h = size.height.toFloat()
                         if (w > 0f && h > 0f) currentActions.value.onTapFocus(offset.x / w, offset.y / h)
                     }
+                }
+                .pointerInput(Unit) {
+                    // Pinch-to-zoom the viewfinder: [zoom] is the incremental pinch scale per gesture
+                    // event (1.0 = no change). The ViewModel multiplies it into the current zoom ratio
+                    // and clamps to the lens range, so this and the in-sheet Zoom slider stay in sync.
+                    detectTransformGestures { _, _, zoom, _ -> currentActions.value.onPinchZoom(zoom) }
                 },
             factory = { context ->
                 // TextureView (not SurfaceView): its content composites inside the view hierarchy, so
@@ -205,7 +209,11 @@ fun CameraScreen(
         }
 
         if (state.level) {
-            LevelOverlay(modifier = Modifier.fillMaxSize(), rollDegrees = state.levelRoll)
+            LevelOverlay(
+                modifier = Modifier.fillMaxSize(),
+                rollDegrees = state.levelRoll,
+                deviceOrientation = state.deviceOrientation,
+            )
         }
 
         if (state.tapPoint != null) {
@@ -222,13 +230,18 @@ fun CameraScreen(
                 .padding(start = 12.dp, top = 52.dp),
         )
 
+        // Scopes/readouts stack in the top-end column. Pushed below the top bar (top = 72dp) so the
+        // histogram/waveform clear the settings glyph, with generous spacing between them. The scopes
+        // themselves are NOT counter-rotated: they are orientation-neutral data monitors, and rotating
+        // a wide box 90° made the histogram and waveform overlap in a landscape hold (QA). Keeping them
+        // screen-fixed lets them stack cleanly in every hold.
         Column(
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .statusBarsPadding()
-                .padding(end = 12.dp, top = 52.dp),
+                .padding(end = 12.dp, top = 72.dp),
             horizontalAlignment = Alignment.End,
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             if (state.isRecording) {
                 RecordingIndicator(elapsedMs = state.recordElapsedMs)
@@ -237,10 +250,10 @@ fun CameraScreen(
                 AudioMeter(level = state.audioLevel)
             }
             if (state.histogram) {
-                Box(Modifier.rotate(overlayRotation)) { HistogramOverlay(data = state.histogramData) }
+                HistogramOverlay(data = state.histogramData)
             }
             if (state.waveform) {
-                Box(Modifier.rotate(overlayRotation)) { WaveformOverlay(data = state.waveformData) }
+                WaveformOverlay(data = state.waveformData)
             }
         }
 
@@ -266,6 +279,7 @@ fun CameraScreen(
             state = state,
             actions = actions,
             onOpenSheet = { sheetVisible = true }, // reopen to the remembered last tab
+            glyphRotation = overlayRotation,
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
@@ -300,12 +314,14 @@ fun CameraScreen(
                 state = state,
                 actions = actions,
                 onRequestWhiteBalanceSheet = { openSheet(ProSheetTab.EXPOSURE) },
+                glyphRotation = overlayRotation,
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
 
             ModeCarousel(
                 mode = state.mode,
                 onModeChange = actions::onModeChange,
+                glyphRotation = overlayRotation,
                 modifier = Modifier.fillMaxWidth(),
             )
 
@@ -318,6 +334,7 @@ fun CameraScreen(
                 onShutter = onShutter,
                 onSnapshot = actions::onCapturePhoto,
                 onToggleTeleconverter = { actions.onToggleTeleconverter(!state.teleconverterMode) },
+                glyphRotation = overlayRotation,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 28.dp),
@@ -351,6 +368,7 @@ private fun TopBar(
     actions: CameraActions,
     onOpenSheet: () -> Unit,
     modifier: Modifier = Modifier,
+    glyphRotation: Float = 0f,
 ) {
     Row(
         modifier = modifier
@@ -369,7 +387,8 @@ private fun TopBar(
             )
             TeleChip(active = state.teleconverterMode, onClick = { actions.onToggleTeleconverter(!state.teleconverterMode) })
         }
-        GearButton(onClick = onOpenSheet)
+        // Counter-rotate the settings glyph so it stays upright as the phone turns (iPhone-style).
+        GearButton(onClick = onOpenSheet, modifier = Modifier.rotate(glyphRotation))
     }
 }
 
@@ -549,23 +568,23 @@ private fun TeleChip(active: Boolean, onClick: () -> Unit, modifier: Modifier = 
 
 @Composable
 private fun GearButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    // A "tune" / sliders glyph (three horizontal rails, each with a knob at a different position) —
+    // reads more clearly as "settings" than the old hand-drawn gear on this dense panel.
     ChromeIconButton(onClick = onClick, contentDescription = "Open settings", modifier = modifier) {
         Canvas(Modifier.size(18.dp)) {
             val color = CameraColors.TextPrimary
-            drawCircle(color, radius = size.minDimension * 0.18f, style = Stroke(width = 1.4.dp.toPx()))
-            drawCircle(color, radius = size.minDimension * 0.08f)
-            for (i in 0 until 8) {
-                val angle = (Math.PI * 2 * i / 8).toFloat()
-                val inner = size.minDimension * 0.3f
-                val outer = size.minDimension * 0.46f
-                val dx = cos(angle)
-                val dy = sin(angle)
-                drawLine(
-                    color,
-                    Offset(center.x + dx * inner, center.y + dy * inner),
-                    Offset(center.x + dx * outer, center.y + dy * outer),
-                    strokeWidth = 1.6.dp.toPx(),
-                )
+            val railStroke = 1.6.dp.toPx()
+            val knobRadius = size.minDimension * 0.11f
+            // Three rails at 1/4, 1/2, 3/4 height; knobs sit at varying x to imply adjustable levels.
+            val rows = listOf(0.25f to 0.66f, 0.5f to 0.34f, 0.75f to 0.6f)
+            val left = size.width * 0.12f
+            val right = size.width * 0.88f
+            rows.forEach { (yf, knobXf) ->
+                val y = size.height * yf
+                drawLine(color, Offset(left, y), Offset(right, y), strokeWidth = railStroke)
+                val knobX = left + (right - left) * knobXf
+                drawCircle(color = CameraColors.ChromeScrim.copy(alpha = 0.45f), radius = knobRadius * 1.4f, center = Offset(knobX, y))
+                drawCircle(color, radius = knobRadius, center = Offset(knobX, y), style = Stroke(width = 1.4.dp.toPx()))
             }
         }
     }
@@ -580,11 +599,13 @@ private fun ModeCarousel(
     mode: CaptureMode,
     onModeChange: (CaptureMode) -> Unit,
     modifier: Modifier = Modifier,
+    glyphRotation: Float = 0f,
 ) {
     Row(modifier = modifier, horizontalArrangement = Arrangement.Center) {
         Row(horizontalArrangement = Arrangement.spacedBy(32.dp)) {
-            ModeLabel(text = "Photo", active = mode == CaptureMode.PHOTO, onClick = { onModeChange(CaptureMode.PHOTO) })
-            ModeLabel(text = "Video", active = mode == CaptureMode.VIDEO, onClick = { onModeChange(CaptureMode.VIDEO) })
+            // Counter-rotate the mode labels so they stay upright as the phone turns (iPhone-style).
+            ModeLabel(text = "Photo", active = mode == CaptureMode.PHOTO, onClick = { onModeChange(CaptureMode.PHOTO) }, modifier = Modifier.rotate(glyphRotation))
+            ModeLabel(text = "Video", active = mode == CaptureMode.VIDEO, onClick = { onModeChange(CaptureMode.VIDEO) }, modifier = Modifier.rotate(glyphRotation))
         }
     }
 }
@@ -628,9 +649,11 @@ private fun ShutterRow(
     onSnapshot: () -> Unit,
     onToggleTeleconverter: () -> Unit,
     modifier: Modifier = Modifier,
+    glyphRotation: Float = 0f,
 ) {
     Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
-        GalleryThumb(uri = lastMediaUri, onClick = onOpenReview)
+        // Counter-rotate the review thumbnail so its image reads upright as the phone turns.
+        GalleryThumb(uri = lastMediaUri, onClick = onOpenReview, modifier = Modifier.rotate(glyphRotation))
         Spacer(modifier = Modifier.weight(1f))
         Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
             if (mode == CaptureMode.VIDEO && isRecording) {
@@ -785,6 +808,7 @@ private object PreviewCameraActions : CameraActions {
     override fun onFlash(mode: FlashMode) = Unit
     override fun onToggleOis(enabled: Boolean) = Unit
     override fun onZoomRatio(ratio: Float) = Unit
+    override fun onPinchZoom(factor: Float) = Unit
     override fun onJpegQuality(quality: Int) = Unit
 
     override fun onModeChange(mode: CaptureMode) = Unit
@@ -802,7 +826,6 @@ private object PreviewCameraActions : CameraActions {
     override fun onToggleOpenGate(enabled: Boolean) = Unit
 
     override fun onVideoStabMode(mode: com.hletrd.findx9tele.camera.VideoStabMode) = Unit
-    override fun onEisStrength(strength: EisStrength) = Unit
 
     override fun onTogglePeaking(enabled: Boolean) = Unit
     override fun onPeakingLevel(level: com.hletrd.findx9tele.camera.PeakingLevel) = Unit
@@ -826,9 +849,6 @@ private object PreviewCameraActions : CameraActions {
     override fun onLens(choice: com.hletrd.findx9tele.camera.LensChoice) = Unit
     override fun onCameraOverride(id: String?) = Unit
     override fun onToggleRememberSettings(enabled: Boolean) = Unit
-    override fun onVendorLogMode(mode: com.hletrd.findx9tele.camera.VendorLogMode) = Unit
-    override fun onVendorInSensorZoom(enabled: Boolean) = Unit
-    override fun onVendorIdealRaw(enabled: Boolean) = Unit
 }
 
 @Preview(showBackground = true)

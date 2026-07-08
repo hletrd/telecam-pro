@@ -17,13 +17,15 @@ class VideoCapabilitiesTest {
     private val teleNormalFps = setOf(10, 15, 22, 24, 30, 60)
 
     @Test
-    fun `4K on the tele offers drop-frame + integer rates up to 60, plus 120 high-speed`() {
+    fun `4K on the tele offers drop-frame + integer rates up to 60, but never 120 high-speed`() {
         val rates = VideoFrameRate.availableFor(teleNormalFps, highSpeedMaxFps = 120, width = 3840, height = 2160, codec = VideoCodec.HEVC)
         assertTrue(rates.contains(VideoFrameRate.FPS_23_976))
         assertTrue(rates.contains(VideoFrameRate.FPS_29_97))
         assertTrue(rates.contains(VideoFrameRate.FPS_59_94))
         assertTrue(rates.contains(VideoFrameRate.FPS_60))
-        assertTrue("4K@120 is a real high-speed config on this device", rates.contains(VideoFrameRate.FPS_120))
+        // High-speed 120 is gated out entirely now — the constrained high-speed session SIGABRTs the
+        // HAL on this device — even when the camera advertises a matching high-speed config.
+        assertFalse("120 high-speed must never be offered (HAL SIGABRT)", rates.contains(VideoFrameRate.FPS_120))
     }
 
     @Test
@@ -45,15 +47,6 @@ class VideoCapabilitiesTest {
         assertTrue(rates.all { it.fps <= 30 })
         assertTrue(rates.contains(VideoFrameRate.FPS_30))
         assertFalse(rates.contains(VideoFrameRate.FPS_60))
-    }
-
-    @Test
-    fun `AV1 is clamped to 1080p and 30fps`() {
-        val at4k = VideoFrameRate.availableFor(teleNormalFps, highSpeedMaxFps = 120, width = 3840, height = 2160, codec = VideoCodec.AV1)
-        assertEquals("AV1 offers nothing above 1080p → falls back to the single safe rate", listOf(VideoFrameRate.FPS_30), at4k)
-        val at1080 = VideoFrameRate.availableFor(teleNormalFps, highSpeedMaxFps = 240, width = 1920, height = 1080, codec = VideoCodec.AV1)
-        assertTrue(at1080.all { it.fps <= 30 })
-        assertFalse(at1080.contains(VideoFrameRate.FPS_120))
     }
 
     @Test
@@ -84,13 +77,6 @@ class VideoCapabilitiesTest {
         // Tiny frame hits the 8 Mbps floor.
         val lo = videoBitRate(640, 480, 24.0, BitrateLevel.LOW.bpp, VideoCodec.HEVC)
         assertEquals(8_000_000, lo)
-    }
-
-    @Test
-    fun `AV1 bitrate is capped at the software encoder ceiling`() {
-        // Large inputs push past AV1's 20 Mbps cap (the function is pure; the engine also clamps size).
-        val av1 = videoBitRate(3840, 2160, 60.0, BitrateLevel.HIGH.bpp, VideoCodec.AV1)
-        assertEquals(20_000_000, av1)
     }
 
     @Test

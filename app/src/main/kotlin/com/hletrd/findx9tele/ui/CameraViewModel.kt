@@ -16,7 +16,6 @@ import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.DriveMode
-import com.hletrd.findx9tele.camera.EisStrength
 import com.hletrd.findx9tele.camera.ExposureStep
 import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FocusMode
@@ -120,7 +119,6 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setTransfer(e.transfer)
         engine.setTeleconverterMode(e.teleconverter)
         engine.setVideoStabMode(e.videoStabMode)
-        engine.setEisStrength(e.eisStrength)
         engine.setAspectRatio(e.aspectRatio)
         engine.setVideoCodec(e.videoCodec)
         engine.setBitrateLevel(e.bitrateLevel)
@@ -136,7 +134,6 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 mode = e.mode,
                 teleconverterMode = e.teleconverter,
                 videoStabMode = e.videoStabMode,
-                eisStrength = e.eisStrength,
                 aspectRatio = e.aspectRatio,
                 grid = e.grid,
                 videoCodec = e.videoCodec,
@@ -157,7 +154,6 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             mode = s.mode,
             teleconverter = s.teleconverterMode,
             videoStabMode = s.videoStabMode,
-            eisStrength = s.eisStrength,
             aspectRatio = s.aspectRatio,
             grid = s.grid,
             videoCodec = s.videoCodec,
@@ -238,6 +234,13 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onFlash(mode: FlashMode) = updateControls { it.copy(flash = mode) }
     override fun onToggleOis(enabled: Boolean) = updateControls { it.copy(oisEnabled = enabled) }
     override fun onZoomRatio(ratio: Float) = updateControls { it.copy(zoomRatio = ratio) }
+    override fun onPinchZoom(factor: Float) {
+        // Pinch multiplies the current zoom ratio, clamped to the lens's advertised range; reuses the
+        // debounced onZoomRatio path so the in-sheet Zoom slider and the viewfinder pinch stay in sync.
+        val range = _state.value.caps?.zoomRatioRange ?: return
+        val next = (_state.value.controls.zoomRatio * factor).coerceIn(range.lower, range.upper)
+        onZoomRatio(next)
+    }
     override fun onJpegQuality(quality: Int) = updateControls { it.copy(jpegQuality = quality) }
 
     // ---- Modes ----
@@ -267,6 +270,13 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         _state.update { it.copy(audioScene = scene) }
     }
     override fun onToggleTeleconverter(enabled: Boolean) {
+        // The teleconverter is only meaningful on the 3× periscope. Turning it ON from any other lens
+        // switches to 3× (which itself bundles teleconverter mode on, one reopen); onLens keeps the
+        // lens picker + TELE chips in sync. Turning it OFF just clears the afocal flip on the 3× lens.
+        if (enabled && _state.value.lens != com.hletrd.findx9tele.camera.LensChoice.TELE3X) {
+            onLens(com.hletrd.findx9tele.camera.LensChoice.TELE3X)
+            return
+        }
         engine.setTeleconverterMode(enabled)
         _state.update { it.copy(teleconverterMode = enabled) }
     }
@@ -321,10 +331,6 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onVideoStabMode(mode: com.hletrd.findx9tele.camera.VideoStabMode) {
         engine.setVideoStabMode(mode)
         _state.update { it.copy(videoStabMode = mode) }
-    }
-    override fun onEisStrength(strength: EisStrength) {
-        engine.setEisStrength(strength)
-        _state.update { it.copy(eisStrength = strength) }
     }
 
     // ---- Assists ----
@@ -441,21 +447,6 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         settingsStore.rememberEnabled = enabled
         _state.update { it.copy(rememberSettings = enabled) }
         if (enabled) saveSettingsIfEnabled() // capture the current setup immediately
-    }
-
-    // Deliberately NOT persisted (see [VendorLogMode]): an experimental HAL mode that misbehaves
-    // must never survive into the next launch.
-    override fun onVendorLogMode(mode: com.hletrd.findx9tele.camera.VendorLogMode) {
-        engine.setVendorLogMode(mode)
-        _state.update { it.copy(vendorLogMode = mode) }
-    }
-    override fun onVendorInSensorZoom(enabled: Boolean) {
-        engine.setVendorInSensorZoom(enabled)
-        _state.update { it.copy(vendorInSensorZoom = enabled) }
-    }
-    override fun onVendorIdealRaw(enabled: Boolean) {
-        engine.setVendorIdealRaw(enabled)
-        _state.update { it.copy(vendorIdealRaw = enabled) }
     }
 
     private inline fun updateControls(block: (ManualControls) -> ManualControls) {

@@ -23,7 +23,6 @@ import com.hletrd.findx9tele.camera.VideoCodec
 object ColorProfiles {
     const val MIME_HEVC = MediaFormat.MIMETYPE_VIDEO_HEVC
     const val MIME_AVC = MediaFormat.MIMETYPE_VIDEO_AVC
-    const val MIME_AV1 = EncoderCaps.MIME_AV1
     const val MIME_APV = EncoderCaps.MIME_APV
     const val MIME_AAC = MediaFormat.MIMETYPE_AUDIO_AAC
 
@@ -94,7 +93,6 @@ object ColorProfiles {
         return when (codec) {
             VideoCodec.HEVC -> hevcFormat(width, height, encoderRate, captureRate, bitRate, transfer)
             VideoCodec.AVC -> avcFormat(width, height, encoderRate, captureRate, bitRate)
-            VideoCodec.AV1 -> av1Format(width, height, encoderRate, captureRate, bitRate)
             VideoCodec.APV -> apvFormat(width, height, encoderRate, captureRate, bitRate)
         }
     }
@@ -130,25 +128,10 @@ object ColorProfiles {
         }
     }
 
-    /** AV1 8-bit SDR (BT.709). Software encoder on this device — the engine gates it to ≤1080p/≤30fps. */
-    private fun av1Format(width: Int, height: Int, encoderRate: Double, captureRate: Double, bitRate: Int): MediaFormat {
-        return MediaFormat.createVideoFormat(MIME_AV1, width, height).apply {
-            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
-            applyFrameRate(encoderRate, captureRate)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
-            setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AV1ProfileMain8)
-            setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
-            setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
-            setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
-        }
-    }
-
     /** Returns the encoder MIME type for the given codec. */
     fun mimeFor(codec: VideoCodec): String = when (codec) {
         VideoCodec.HEVC -> MIME_HEVC
         VideoCodec.AVC -> MIME_AVC
-        VideoCodec.AV1 -> MIME_AV1
         VideoCodec.APV -> MIME_APV
     }
 

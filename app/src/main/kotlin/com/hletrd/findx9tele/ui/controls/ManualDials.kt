@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -35,6 +36,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -73,6 +75,9 @@ fun ManualDialCluster(
     actions: CameraActions,
     onRequestWhiteBalanceSheet: () -> Unit,
     modifier: Modifier = Modifier,
+    // Counter-rotation (deg) that keeps the value chips upright as the phone turns (iPhone-style);
+    // the row layout stays fixed, only each chip glyph spins. 0 = portrait.
+    glyphRotation: Float = 0f,
 ) {
     var openDial by remember { mutableStateOf<DialType?>(null) }
     val controls = state.controls
@@ -114,6 +119,7 @@ fun ManualDialCluster(
         DialChipRow(
             state = state,
             openDial = openDial,
+            glyphRotation = glyphRotation,
             onToggleAutoExposure = actions::onToggleAutoExposure,
             onTransfer = actions::onTransfer,
             onSelect = { type ->
@@ -151,6 +157,7 @@ private fun DialChipRow(
     onTransfer: (ColorTransfer) -> Unit,
     onSelect: (DialType) -> Unit,
     modifier: Modifier = Modifier,
+    glyphRotation: Float = 0f,
 ) {
     val controls = state.controls
     val caps = state.caps
@@ -172,6 +179,7 @@ private fun DialChipRow(
             active = !controls.autoExposure,
             enabled = true,
             onClick = { onToggleAutoExposure(!controls.autoExposure) },
+            rotation = glyphRotation,
         )
         DialChip(
             // Sony-style: the label IS the focus mode (MF / AF / AF-C / Macro), so the current mode
@@ -187,6 +195,7 @@ private fun DialChipRow(
             active = openDial == DialType.FOCUS,
             enabled = controls.focusMode == FocusMode.MANUAL && (caps?.supportsManualFocus ?: false),
             onClick = { onSelect(DialType.FOCUS) },
+            rotation = glyphRotation,
         )
         DialChip(
             label = "Shutter",
@@ -200,6 +209,7 @@ private fun DialChipRow(
             active = openDial == DialType.SHUTTER,
             enabled = !controls.autoExposure,
             onClick = { onSelect(DialType.SHUTTER) },
+            rotation = glyphRotation,
         )
         DialChip(
             label = "ISO",
@@ -207,6 +217,7 @@ private fun DialChipRow(
             active = openDial == DialType.ISO,
             enabled = !controls.autoExposure,
             onClick = { onSelect(DialType.ISO) },
+            rotation = glyphRotation,
         )
         DialChip(
             label = "WB",
@@ -214,6 +225,7 @@ private fun DialChipRow(
             active = openDial == DialType.WB,
             enabled = true,
             onClick = { onSelect(DialType.WB) },
+            rotation = glyphRotation,
         )
         DialChip(
             label = "EV",
@@ -221,11 +233,12 @@ private fun DialChipRow(
             active = openDial == DialType.EV,
             enabled = controls.autoExposure,
             onClick = { onSelect(DialType.EV) },
+            rotation = glyphRotation,
         )
         // Video-only transfer quick chip (HLG → O-Log2 → SDR cycle): surfaces the color pipeline on
         // the shooting screen instead of burying it in the settings sheet. Locked while recording
         // (the engine defers the GL curve until the clip ends — changing it would only mislead) and
-        // outside HEVC (AVC/AV1 are always 8-bit SDR).
+        // outside HEVC (AVC is always 8-bit SDR).
         if (state.mode == CaptureMode.VIDEO) {
             val transferMutable = !state.isRecording && state.videoCodec == VideoCodec.HEVC
             DialChip(
@@ -234,6 +247,7 @@ private fun DialChipRow(
                 active = false,
                 enabled = transferMutable,
                 onClick = { if (transferMutable) onTransfer(nextTransfer(state.transfer)) },
+                rotation = glyphRotation,
             )
         }
     }
@@ -253,6 +267,7 @@ private fun DialChip(
     enabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    rotation: Float = 0f,
 ) {
     val bg = if (active) CameraColors.TextPrimary else CameraColors.Pill.copy(alpha = 0.7f)
     val fg = when {
@@ -262,6 +277,12 @@ private fun DialChip(
     }
     Row(
         modifier = modifier
+            // Counter-rotate the whole chip so it reads upright when the phone is held in landscape
+            // (iPhone-style); the row's layout slot is unchanged, so siblings don't move.
+            .rotate(rotation)
+            // Fixed floor width + centered content so a chip's OWN value changes (e.g. "Auto" ↔
+            // "1/125s", "ISO 100" ↔ "ISO 12800") never resize it and shift the whole row.
+            .defaultMinSize(minWidth = 96.dp)
             .clip(RoundedCornerShape(50))
             .background(bg)
             .then(
@@ -269,7 +290,7 @@ private fun DialChip(
             )
             .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 9.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(label, color = fg, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
