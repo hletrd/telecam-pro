@@ -263,9 +263,14 @@ class GlPipeline {
         // draw below stays centered so recordings are unaffected.
         val loupeX = if (punchIn) punchInX else 0.5f
         val loupeY = if (punchIn) punchInY else 0.5f
+        // Show the LOG (O-Log2) curve FLAT in the live preview so the user can monitor that they're on a
+        // log profile — previously the preview was hardcoded to SDR (null) and only the encoder got the
+        // curve, so LOG never looked flat on screen. HLG/SDR keep a natural SDR preview (an HLG curve on
+        // this SDR preview surface would just look washed; HDR is monitored on an HDR display, not here).
+        val previewTransfer = if (transfer == ColorTransfer.LOG) ColorTransfer.LOG else null
         core.makeCurrent(previewEgl)
         renderer.draw(
-            stMatrix, previewW, previewH, null, peaking, zebra, falseColor, sx, sy, roll, previewCrop, loupeX, loupeY,
+            stMatrix, previewW, previewH, previewTransfer, peaking, zebra, falseColor, sx, sy, roll, previewCrop, loupeX, loupeY,
             peakThreshold = peakThreshold, peakR = peakR, peakG = peakG, peakB = peakB, zebraThreshold = zebraThreshold,
         )
         core.swapBuffers(previewEgl)

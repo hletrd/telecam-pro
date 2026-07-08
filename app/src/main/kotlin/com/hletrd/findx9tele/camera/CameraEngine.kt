@@ -237,20 +237,15 @@ class CameraEngine(private val context: Context) {
      */
     fun setTransfer(t: ColorTransfer) {
         transfer = t
-        if (t == ColorTransfer.LOG) {
-            // Engage native HAL log via the session key; the GL stage passes the (already
-            // log-encoded) frames through untouched so the curve isn't applied twice.
-            if (vendorLogMode != VendorLogMode.ON) {
-                vendorLogMode = VendorLogMode.ON
-                reopenForSession()
-            }
-            if (recorder == null) gl.setTransfer(null)
-        } else {
-            val wasLog = vendorLogMode != VendorLogMode.OFF
-            vendorLogMode = VendorLogMode.OFF
-            if (wasLog) reopenForSession() // drop the native-log pipeline
-            if (recorder == null) gl.setTransfer(t)
-        }
+        // Every transfer — including LOG (O-Log2) — is applied in the GL stage so the LIVE PREVIEW can
+        // show the curve. The native HAL log (com.oplus.log.video.mode) only flattened the RECORD
+        // stream, never the preview, so LOG never looked flat on screen. Drive the GL O-Log2 OETF
+        // instead: it's the LUT-accurate path and the GL preview renderer can display it flat. Keep
+        // the native-log pipeline off (drop it if it was engaged by a prior build/state).
+        val wasNativeLog = vendorLogMode != VendorLogMode.OFF
+        vendorLogMode = VendorLogMode.OFF
+        if (wasNativeLog) reopenForSession()
+        if (recorder == null) gl.setTransfer(t)
     }
     fun setPeaking(enabled: Boolean) = gl.setPeaking(enabled)
     fun setZebra(enabled: Boolean) = gl.setZebra(enabled)
