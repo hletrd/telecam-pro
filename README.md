@@ -29,7 +29,7 @@
 - **Photos**: HEIF + JPEG + RAW (DNG), any combination. Device-orientation-aware (stills save upright in any hold via gyro gravity).
 - **Video**: 10-bit HEVC (Main10, Rec.2020) in **HLG / O-Log2 / SDR**, plus HAL-native log (`com.oplus.log.video.mode`); 8-bit AVC; AV1 (SW). 4K DCI max (HEVC/AVC HW ceiling); 24/25/30/60 fps + NTSC drop-frame (23.976/29.97/59.94) + 120 fps high-speed; **Low → Max bitrate presets up to ~134 Mbps at 4K**; Open-Gate (full 4:3 sensor); AAC 48 kHz stereo.
 - **Video stabilization = HAL OIS+EIS** (the stock "super steady" path): OIS physically cuts per-frame motion blur at 300 mm (Off / Gyro / OIS-Standard / OIS-Enhanced).
-- **Vendor features (experimental)**: Auto HDR (`EnableAutoHDR`+`HDRMode`) and in-sensor zoom (`EnableInsensorZoom`), driven directly via the QTI vendor session keys.
+- **Vendor features (experimental)**: in-sensor zoom (`EnableInsensorZoom`), driven directly via the QTI vendor session keys. (Auto HDR was tried but gated out — it SIGABRTs the camera HAL on reopen+capture.)
 - **Aspect ratios**: 4:3 (full sensor) / 16:9 (center crop). Sony-style mode-aware OSD.
 - **Capture aids**: focus peaking (adjustable sensitivity/color), zebra, false color, grid, spirit level, movable punch-in loupe, histogram, waveform, in-app last-shot pinch-to-zoom review.
 - **Settings persistence**: pro controls saved across launches ("Remember Settings", default ON).
@@ -110,16 +110,15 @@ them directly, each device-verified through to a saved file (not just "session c
 | Native log | `com.oplus.log.video.mode` (session key) | ✅ scene-referred log stream verified |
 | Video stabilization | `CONTROL_VIDEO_STABILIZATION_MODE` + `com.oplus.video.stabilization.mode` | ✅ `ois=1, vstab=2` verified |
 | Directional audio | `vendor_audiorecord_effect_type` / `focus_angle` … | ✅ HAL `track_support=true` |
-| Auto HDR | `EnableAutoHDR` + `HDRMode=1` | ✅ session + capture verified |
 | In-sensor zoom | `EnableInsensorZoom` | ✅ verified |
-| Ideal RAW / APV / macro / custom-LUT | — | ⛔ tried, gated/excluded (break capture or inert) |
+| Auto HDR / Ideal RAW / APV / macro / custom-LUT | — | ⛔ tried, gated/excluded (Auto HDR SIGABRTs the camera HAL on reopen+capture; the rest break capture or are inert) |
 
 ## Implementation Status
 
 - ✅ **Build & gates**: `./gradlew assembleDebug testDebugUnitTest lintDebug` all pass.
 - ✅ **Unit tests**: FocusMappingTest, RotationMathTest, CameraSelector2Test, VideoCapabilitiesTest, ExposureMathTest.
-- ✅ **Device-verified on PMA110**: all 4 lenses open (standalone, no HAL crash) with RAW; teleconverter bundling; preview upright; tap-to-focus lock; AF→MF handoff; volume-key shutter; HEIF (4096×3072) + DNG + JPEG saves; HEVC 4K video incl. Max bitrate (~134 Mbps); HAL log + HAL OIS+EIS + directional-audio support + Auto HDR + in-sensor zoom all accepted end-to-end. Global Find X9 Ultra device code is CPH2841 per OPPO's public specs; Play device catalog should allow CPH2841 and PMA110.
-- ⏳ **Needs your eyes/ears in a real scene**: the acoustic effect of directional audio (off-axis A/B), and the image gain of Auto HDR / in-sensor zoom (high-contrast / distant subjects) — undetectable from a static desk.
+- ✅ **Device-verified on PMA110**: all 4 lenses open (standalone, no HAL crash) with RAW; teleconverter bundling; preview upright; tap-to-focus lock; AF→MF handoff; volume-key shutter; HEIF (4096×3072) + DNG + JPEG saves; HEVC 4K video incl. Max bitrate (~134 Mbps); HAL log + HAL OIS+EIS + directional-audio support + in-sensor zoom all accepted end-to-end (release build re-verified: not debuggable, no diagnostic dump; camera-reopen race fixed; Auto HDR gated out after it SIGABRT'd the HAL). Global Find X9 Ultra device code is CPH2841 per OPPO's public specs; Play device catalog should allow CPH2841 and PMA110.
+- ⏳ **Needs your eyes/ears in a real scene**: the acoustic effect of directional audio (off-axis A/B), and the image gain of in-sensor zoom (distant subjects) — undetectable from a static desk.
 - ✅ **Play-release scaffolding**: release signing config with unsigned-bundle fail-fast, public
   privacy policy URL, store-listing text, Data Safety answer sheet, icon + feature graphic — see the
   Release build section above. Remaining human steps: complete the Play Console listing/data-safety
