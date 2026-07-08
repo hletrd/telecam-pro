@@ -344,7 +344,7 @@ fun CameraScreen(
                 .navigationBarsPadding()
                 .padding(bottom = 220.dp),
         ) {
-            ZoomIndicator(zoom = state.controls.zoomRatio, range = state.caps?.zoomRatioRange)
+            ZoomIndicator(zoom = state.controls.zoomRatio, range = state.caps?.zoomRatioRange, numberRotation = overlayRotation)
         }
 
         val onShutter = remember(state.mode) {
@@ -660,7 +660,12 @@ private fun GearButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
  * camera. Screen-fixed (not counter-rotated) — a compact centered HUD reads fine in any hold.
  */
 @Composable
-private fun ZoomIndicator(zoom: Float, range: android.util.Range<Float>?, modifier: Modifier = Modifier) {
+private fun ZoomIndicator(
+    zoom: Float,
+    range: android.util.Range<Float>?,
+    modifier: Modifier = Modifier,
+    numberRotation: Float = 0f,
+) {
     val min = range?.lower ?: 1f
     val max = range?.upper ?: 10f
     val fraction = if (max > min) ((zoom - min) / (max - min)).coerceIn(0f, 1f) else 0f
@@ -669,12 +674,16 @@ private fun ZoomIndicator(zoom: Float, range: android.util.Range<Float>?, modifi
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
+        // The "N.N×" readout is short, so it counter-rotates to stay upright as the phone turns
+        // (iPhone-style). The bar below stays horizontal — a generic level indicator reads fine at any
+        // angle, and rotating it would collide with the surrounding chrome.
         Text(
             text = "%.1f×".format(zoom),
             color = CameraColors.Accent,
             fontSize = 15.sp,
             fontWeight = FontWeight.Bold,
             modifier = Modifier
+                .rotate(numberRotation)
                 .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(50))
                 .padding(horizontal = 12.dp, vertical = 4.dp),
         )
