@@ -40,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
@@ -95,6 +96,7 @@ import kotlin.math.roundToInt
  * Every row is a thin wrapper around a [CameraActions] method; this file owns no camera state.
  */
 internal enum class ProSheetTab(val label: String) {
+    MY_MENU("My Menu"),
     SHOOTING("Shooting"),
     EXPOSURE("Exposure/Color"),
     FOCUS("Focus"),
@@ -171,6 +173,7 @@ internal fun ProSheet(
                         verticalArrangement = Arrangement.spacedBy(20.dp),
                     ) {
                         when (selectedTab) {
+                            ProSheetTab.MY_MENU -> MyMenuTab(state, actions)
                             ProSheetTab.SHOOTING -> ShootingTab(state, actions)
                             ProSheetTab.EXPOSURE -> ExposureColorTab(state, actions)
                             ProSheetTab.FOCUS -> FocusTab(state, actions)
@@ -278,6 +281,22 @@ private fun DrawScope.drawTabIcon(tab: ProSheetTab, color: Color) {
             drawRect(color, topLeft = Offset(size.width * 0.35f, size.height * 0.14f), size = androidx.compose.ui.geometry.Size(size.width * 0.3f, size.height * 0.18f), style = stroke)
             drawCircle(color, radius = size.minDimension * 0.16f, center = Offset(size.width / 2f, size.height * 0.58f), style = stroke)
         }
+        ProSheetTab.MY_MENU -> {
+            val p = Path().apply {
+                moveTo(size.width * 0.5f, size.height * 0.12f)
+                lineTo(size.width * 0.62f, size.height * 0.38f)
+                lineTo(size.width * 0.9f, size.height * 0.42f)
+                lineTo(size.width * 0.68f, size.height * 0.62f)
+                lineTo(size.width * 0.74f, size.height * 0.9f)
+                lineTo(size.width * 0.5f, size.height * 0.76f)
+                lineTo(size.width * 0.26f, size.height * 0.9f)
+                lineTo(size.width * 0.32f, size.height * 0.62f)
+                lineTo(size.width * 0.1f, size.height * 0.42f)
+                lineTo(size.width * 0.38f, size.height * 0.38f)
+                close()
+            }
+            drawPath(p, color, style = stroke)
+        }
         ProSheetTab.EXPOSURE -> {
             drawCircle(color, radius = size.minDimension * 0.22f, center = center, style = stroke)
             val r1 = size.minDimension * 0.3f
@@ -351,6 +370,32 @@ private fun DrawScope.drawTabIcon(tab: ProSheetTab, color: Color) {
 @Composable
 private fun TabTitle(text: String) {
     Text(text, color = CameraColors.TextPrimary, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+}
+
+@Composable
+private fun MyMenuTab(state: CameraUiState, actions: CameraActions) {
+    TabTitle("My Menu")
+    if (state.myMenuSlots.isEmpty()) {
+        Text("No items selected.", color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
+    } else {
+        state.myMenuSlots.forEach { slot ->
+            LabelValueRow(
+                label = fnSlotLabel(slot),
+                valueLabel = fnSlotValue(slot, state),
+                onClick = { performQuickFn(slot, state, actions) },
+            )
+        }
+    }
+    if (state.recentSettingSlots.isNotEmpty()) {
+        SectionHeader("Recently Changed")
+        state.recentSettingSlots.forEach { slot ->
+            LabelValueRow(
+                label = fnSlotLabel(slot),
+                valueLabel = fnSlotValue(slot, state),
+                onClick = { performQuickFn(slot, state, actions) },
+            )
+        }
+    }
 }
 
 @Composable
@@ -832,28 +877,6 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
         checked = state.rememberSettings,
         onCheckedChange = actions::onToggleRememberSettings,
     )
-    SectionHeader("My Menu")
-    if (state.myMenuSlots.isEmpty()) {
-        Text("No items selected.", color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
-    } else {
-        state.myMenuSlots.forEach { slot ->
-            LabelValueRow(
-                label = fnSlotLabel(slot),
-                valueLabel = fnSlotValue(slot, state),
-                onClick = { performQuickFn(slot, state, actions) },
-            )
-        }
-    }
-    if (state.recentSettingSlots.isNotEmpty()) {
-        SectionHeader("Recently Changed")
-        state.recentSettingSlots.forEach { slot ->
-            LabelValueRow(
-                label = fnSlotLabel(slot),
-                valueLabel = fnSlotValue(slot, state),
-                onClick = { performQuickFn(slot, state, actions) },
-            )
-        }
-    }
     SectionHeader("Fn Bar")
     Text("Choose up to 8 chips for the shooting-screen Fn row.", color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
     FnSlotToggleList(selected = state.fnSlots, onSet = actions::onSetFnSlots)
@@ -905,7 +928,7 @@ private fun FnSlotToggleList(selected: List<FnSlot>, onSet: (List<FnSlot>) -> Un
     }
 }
 
-private fun fnSlotValue(slot: FnSlot, state: CameraUiState): String {
+internal fun fnSlotValue(slot: FnSlot, state: CameraUiState): String {
     val c = state.controls
     return when (slot) {
         FnSlot.EXPOSURE_MODE -> c.exposureMode.letter
@@ -929,7 +952,7 @@ private fun fnSlotValue(slot: FnSlot, state: CameraUiState): String {
     }
 }
 
-private fun performQuickFn(slot: FnSlot, state: CameraUiState, actions: CameraActions) {
+internal fun performQuickFn(slot: FnSlot, state: CameraUiState, actions: CameraActions) {
     when (slot) {
         FnSlot.EXPOSURE_MODE -> actions.onExposureMode(nextExposureMode(state.controls.exposureMode))
         FnSlot.FOCUS -> actions.onFocusMode(nextFocusMode(state.controls.focusMode))

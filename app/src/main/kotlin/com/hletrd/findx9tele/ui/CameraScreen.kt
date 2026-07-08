@@ -83,6 +83,7 @@ import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.DriveMode
 import com.hletrd.findx9tele.camera.FlashMode
+import com.hletrd.findx9tele.camera.FnSlot
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.MeteringMode
@@ -100,6 +101,9 @@ import com.hletrd.findx9tele.ui.controls.ProSheet
 import com.hletrd.findx9tele.ui.controls.ProSheetTab
 import com.hletrd.findx9tele.ui.controls.aspectRatioLabel
 import com.hletrd.findx9tele.ui.controls.flashModeLabel
+import com.hletrd.findx9tele.ui.controls.fnSlotLabel
+import com.hletrd.findx9tele.ui.controls.fnSlotValue
+import com.hletrd.findx9tele.ui.controls.performQuickFn
 import com.hletrd.findx9tele.ui.controls.shutterTimerLabel
 import com.hletrd.findx9tele.ui.overlays.AspectMask
 import com.hletrd.findx9tele.ui.overlays.AudioMeter
@@ -135,7 +139,8 @@ fun CameraScreen(
     // In-app review overlay (last saved still, pinch-to-zoom for focus check).
     var reviewOpen by remember { mutableStateOf(false) }
     // Remembers the last-viewed settings tab so the gear reopens where the user left off.
-    var sheetInitialTab by remember { mutableStateOf(ProSheetTab.SHOOTING) }
+    var sheetInitialTab by remember { mutableStateOf(ProSheetTab.MY_MENU) }
+    var fnOverlayVisible by remember { mutableStateOf(false) }
     val currentActions = rememberUpdatedState(actions)
 
     fun openSheet(tab: ProSheetTab) {
@@ -435,6 +440,7 @@ fun CameraScreen(
                 state = state,
                 actions = actions,
                 onRequestWhiteBalanceSheet = { openSheet(ProSheetTab.EXPOSURE) },
+                onOpenFnMenu = { fnOverlayVisible = true },
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
 
@@ -469,6 +475,14 @@ fun CameraScreen(
             initialTab = sheetInitialTab,
             onTabChange = { sheetInitialTab = it },
             onDismiss = { sheetVisible = false },
+        )
+    }
+
+    if (fnOverlayVisible) {
+        FnOverlay(
+            state = state,
+            actions = actions,
+            onDismiss = { fnOverlayVisible = false },
         )
     }
 
@@ -840,6 +854,128 @@ private fun MemoryRecallStrip(
                     .padding(horizontal = 11.dp, vertical = 6.dp),
             )
         }
+    }
+}
+
+@Composable
+private fun FnOverlay(
+    state: CameraUiState,
+    actions: CameraActions,
+    onDismiss: () -> Unit,
+) {
+    val slots = remember(state.fnSlots, state.myMenuSlots, state.recentSettingSlots) {
+        (state.fnSlots + state.myMenuSlots + state.recentSettingSlots)
+            .distinct()
+            .take(12)
+            .ifEmpty { FnSlot.DEFAULT }
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.56f)),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .semantics {
+                    contentDescription = "Close Fn menu"
+                    role = Role.Button
+                }
+                .clickable(onClick = onDismiss),
+        )
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(horizontal = 14.dp)
+                .padding(bottom = 154.dp)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color(0xF0181818))
+                .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(8.dp))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = {},
+                )
+                .padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Fn", color = CameraColors.TextPrimary, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text(
+                    "Close",
+                    color = CameraColors.TextSecondary,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .clickable(onClick = onDismiss)
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                )
+            }
+            slots.chunked(3).forEach { rowSlots ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    rowSlots.forEach { slot ->
+                        FnOverlayTile(
+                            slot = slot,
+                            value = fnSlotValue(slot, state),
+                            onClick = {
+                                performQuickFn(slot, state, actions)
+                                onDismiss()
+                            },
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    repeat(3 - rowSlots.size) {
+                        Spacer(modifier = Modifier.weight(1f))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FnOverlayTile(
+    slot: FnSlot,
+    value: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .height(58.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color.White.copy(alpha = 0.09f))
+            .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(8.dp))
+            .semantics {
+                contentDescription = "${fnSlotLabel(slot)} $value"
+                role = Role.Button
+            }
+            .clickable(onClick = onClick)
+            .padding(horizontal = 9.dp, vertical = 7.dp),
+        verticalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(
+            fnSlotLabel(slot),
+            color = CameraColors.TextSecondary,
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+        )
+        Text(
+            value,
+            color = CameraColors.TextPrimary,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+        )
     }
 }
 

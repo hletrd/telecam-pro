@@ -12,6 +12,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -78,6 +80,7 @@ fun ManualDialCluster(
     state: CameraUiState,
     actions: CameraActions,
     onRequestWhiteBalanceSheet: () -> Unit,
+    onOpenFnMenu: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     var openDial by remember { mutableStateOf<DialType?>(null) }
@@ -151,6 +154,7 @@ fun ManualDialCluster(
                 }
             },
             actions = actions,
+            onOpenFnMenu = onOpenFnMenu,
         )
     }
 }
@@ -161,6 +165,7 @@ private fun DialChipRow(
     openDial: DialType?,
     onSelect: (DialType) -> Unit,
     actions: CameraActions,
+    onOpenFnMenu: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val controls = state.controls
@@ -183,6 +188,7 @@ private fun DialChipRow(
                 evStepValue = evStepValue,
                 onSelect = onSelect,
                 actions = actions,
+                onOpenFnMenu = onOpenFnMenu,
             )
         }
     }
@@ -196,6 +202,7 @@ private fun FnDialChip(
     evStepValue: Float,
     onSelect: (DialType) -> Unit,
     actions: CameraActions,
+    onOpenFnMenu: () -> Unit,
 ) {
     val controls = state.controls
     val caps = state.caps
@@ -206,6 +213,7 @@ private fun FnDialChip(
             active = controls.exposureMode != ExposureMode.PROGRAM,
             enabled = true,
             onClick = { actions.onExposureMode(nextExposureMode(controls.exposureMode)) },
+            onLongClick = onOpenFnMenu,
         )
         FnSlot.FOCUS -> DialChip(
             label = focusModeLabel(controls.focusMode),
@@ -217,6 +225,7 @@ private fun FnDialChip(
             active = openDial == DialType.FOCUS,
             enabled = controls.focusMode == FocusMode.MANUAL && (caps?.supportsManualFocus ?: false),
             onClick = { onSelect(DialType.FOCUS) },
+            onLongClick = onOpenFnMenu,
         )
         FnSlot.SHUTTER -> DialChip(
             label = "Shutter",
@@ -228,6 +237,7 @@ private fun FnDialChip(
             active = openDial == DialType.SHUTTER,
             enabled = controls.exposureMode == ExposureMode.SHUTTER || controls.exposureMode == ExposureMode.MANUAL,
             onClick = { onSelect(DialType.SHUTTER) },
+            onLongClick = onOpenFnMenu,
         )
         FnSlot.ISO -> DialChip(
             label = "ISO",
@@ -236,6 +246,7 @@ private fun FnDialChip(
             active = openDial == DialType.ISO,
             enabled = controls.exposureMode == ExposureMode.ISO || controls.exposureMode == ExposureMode.MANUAL,
             onClick = { onSelect(DialType.ISO) },
+            onLongClick = onOpenFnMenu,
         )
         FnSlot.WB -> DialChip(
             label = "WB",
@@ -243,6 +254,7 @@ private fun FnDialChip(
             active = openDial == DialType.WB,
             enabled = true,
             onClick = { onSelect(DialType.WB) },
+            onLongClick = onOpenFnMenu,
         )
         FnSlot.EV -> DialChip(
             label = "EV",
@@ -250,6 +262,7 @@ private fun FnDialChip(
             active = openDial == DialType.EV,
             enabled = controls.exposureMode != ExposureMode.MANUAL,
             onClick = { onSelect(DialType.EV) },
+            onLongClick = onOpenFnMenu,
         )
         FnSlot.ZOOM -> DialChip(
             label = "Zoom",
@@ -257,6 +270,7 @@ private fun FnDialChip(
             active = openDial == DialType.ZOOM,
             enabled = caps?.zoomRatioRange != null,
             onClick = { onSelect(DialType.ZOOM) },
+            onLongClick = onOpenFnMenu,
         )
         FnSlot.STABILIZATION -> DialChip(
             label = "Stab",
@@ -268,6 +282,7 @@ private fun FnDialChip(
             active = state.videoStabMode != VideoStabMode.OFF,
             enabled = true,
             onClick = { actions.onVideoStabMode(nextVideoStab(state.videoStabMode)) },
+            onLongClick = onOpenFnMenu,
         )
         FnSlot.DRIVE -> DialChip(
             label = "Drive",
@@ -275,6 +290,7 @@ private fun FnDialChip(
             active = state.driveMode != com.hletrd.findx9tele.camera.DriveMode.SINGLE,
             enabled = true,
             onClick = { actions.onDriveMode(nextDriveMode(state.driveMode)) },
+            onLongClick = onOpenFnMenu,
         )
         FnSlot.METERING -> DialChip(
             label = "Meter",
@@ -282,6 +298,7 @@ private fun FnDialChip(
             active = controls.meteringMode != MeteringMode.MATRIX,
             enabled = true,
             onClick = { actions.onMeteringMode(nextMeteringMode(controls.meteringMode)) },
+            onLongClick = onOpenFnMenu,
         )
         FnSlot.PEAKING -> DialChip(
             label = "Peaking",
@@ -289,6 +306,7 @@ private fun FnDialChip(
             active = state.focusPeaking,
             enabled = true,
             onClick = { actions.onTogglePeaking(!state.focusPeaking) },
+            onLongClick = onOpenFnMenu,
         )
         FnSlot.ZEBRA -> DialChip(
             label = "Zebra",
@@ -296,6 +314,7 @@ private fun FnDialChip(
             active = state.zebra,
             enabled = true,
             onClick = { actions.onToggleZebra(!state.zebra) },
+            onLongClick = onOpenFnMenu,
         )
         FnSlot.TRANSFER -> {
             val transferMutable = !state.isRecording && state.videoCodec == VideoCodec.HEVC
@@ -305,6 +324,7 @@ private fun FnDialChip(
                 active = state.transfer != ColorTransfer.SDR,
                 enabled = transferMutable,
                 onClick = { if (transferMutable) actions.onTransfer(nextTransfer(state.transfer)) },
+                onLongClick = onOpenFnMenu,
             )
         }
         FnSlot.AUDIO_SCENE -> DialChip(
@@ -313,6 +333,7 @@ private fun FnDialChip(
             active = state.audioScene != com.hletrd.findx9tele.camera.AudioScene.STANDARD,
             enabled = true,
             onClick = { actions.onAudioScene(nextAudioScene(state.audioScene)) },
+            onLongClick = onOpenFnMenu,
         )
         FnSlot.GRID -> DialChip(
             label = "Grid",
@@ -320,6 +341,7 @@ private fun FnDialChip(
             active = state.grid != GridType.NONE,
             enabled = true,
             onClick = { actions.onGridType(nextGridType(state.grid)) },
+            onLongClick = onOpenFnMenu,
         )
         FnSlot.LEVEL -> DialChip(
             label = "Level",
@@ -327,6 +349,7 @@ private fun FnDialChip(
             active = state.level,
             enabled = true,
             onClick = { actions.onToggleLevel(!state.level) },
+            onLongClick = onOpenFnMenu,
         )
         FnSlot.PUNCH_IN -> DialChip(
             label = "Loupe",
@@ -334,6 +357,7 @@ private fun FnDialChip(
             active = state.punchIn,
             enabled = true,
             onClick = { actions.onTogglePunchIn(!state.punchIn) },
+            onLongClick = onOpenFnMenu,
         )
         FnSlot.TELECONVERTER -> DialChip(
             label = "Tele",
@@ -341,6 +365,7 @@ private fun FnDialChip(
             active = state.teleconverterMode,
             enabled = true,
             onClick = { actions.onToggleTeleconverter(!state.teleconverterMode) },
+            onLongClick = onOpenFnMenu,
         )
     }
 }
@@ -392,6 +417,7 @@ private fun nextExposureMode(m: ExposureMode): ExposureMode = when (m) {
     ExposureMode.MANUAL -> ExposureMode.PROGRAM
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun DialChip(
     label: String,
@@ -399,6 +425,7 @@ private fun DialChip(
     active: Boolean,
     enabled: Boolean,
     onClick: () -> Unit,
+    onLongClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val bg = if (active) CameraColors.TextPrimary else CameraColors.Pill.copy(alpha = 0.7f)
@@ -417,7 +444,7 @@ private fun DialChip(
             .then(
                 if (!active) Modifier.border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(50)) else Modifier,
             )
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 14.dp, vertical = 9.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
