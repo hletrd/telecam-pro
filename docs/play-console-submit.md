@@ -7,7 +7,7 @@ Use this sheet for the parts that must be entered manually in Play Console.
 - Signed Android App Bundle:
   `app/build/outputs/bundle/release/app-release.aab`
 - Version: `versionCode=1`, `versionName=1.0`
-- Package name: `com.hletrd.telecampro`
+- Package name: `me.hletrd.telecampro`
 - Upload key alias: `telecampro`
 - Upload certificate SHA-256:
   `5D:83:9F:0E:44:89:0C:DD:84:5D:ED:2E:A9:97:F8:F5:80:76:A1:9F:45:B5:3D:F8:95:FA:48:C0:6C:C1:E9:2C`

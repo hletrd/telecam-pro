@@ -4,7 +4,7 @@ Use this as the source of truth when filling Play Console > Policy > App content
 
 ## Evidence
 
-- Package name: `com.hletrd.telecampro`
+- Package name: `me.hletrd.telecampro`
 - Declared permissions: `CAMERA`, `RECORD_AUDIO`
 - No declared `INTERNET` permission
 - No ads, analytics, accounts, cloud sync, crash telemetry, or third-party SDKs

@@ -37,9 +37,10 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        // Public app id (Play URL / Settings). The internal Kotlin/namespace package stays
-        // com.hletrd.findx9tele — not user-visible, so it is left to avoid a repo-wide package move.
-        applicationId = "com.hletrd.telecampro"
+        // Public app id (Play URL / Settings / OPPO CameraUnit auth-code binding). The internal
+        // Kotlin/namespace package stays com.hletrd.findx9tele — not user-visible, so it is left to
+        // avoid a repo-wide package move.
+        applicationId = "me.hletrd.telecampro"
         minSdk = 36
         targetSdk = 36
         versionCode = 1
@@ -62,7 +63,7 @@ android {
     buildTypes {
         debug {
             // Keep debug installs distinguishable from the Play identity. Without this, a debug APK
-            // occupies com.hletrd.telecampro and is indistinguishable from a release install by
+            // occupies me.hletrd.telecampro and is indistinguishable from a release install by
             // package name (QA gate 2026-07-07 caught exactly that: a DEBUGGABLE binary emitting the
             // debug-only X9TeleVendor dump under the release id).
             applicationIdSuffix = ".debug"

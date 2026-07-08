@@ -56,10 +56,10 @@ export PATH="$JAVA_HOME/bin:$PATH"
 
 # device is over wireless ADB — IP/port change between sessions, ask the user for the current one
 adb connect 172.30.50.127:<port>
-# debug installs as com.hletrd.telecampro.debug (applicationIdSuffix) — a SEPARATE app from the
-# release com.hletrd.telecampro, so runtime permissions must be granted once per package.
+# debug installs as me.hletrd.telecampro.debug (applicationIdSuffix) — a SEPARATE app from the
+# release me.hletrd.telecampro, so runtime permissions must be granted once per package.
 adb install -r app/build/outputs/apk/debug/app-debug.apk
-adb shell am start -n com.hletrd.telecampro.debug/com.hletrd.findx9tele.MainActivity
+adb shell am start -n me.hletrd.telecampro.debug/com.hletrd.findx9tele.MainActivity
 
 # verify: no crash + a real preview. The device may be asleep/locked — wake first, and note that
 # a screenshot of a flat-lying phone shows a dark textured surface, NOT a bug.

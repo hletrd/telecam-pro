@@ -4,7 +4,7 @@ Living handoff document. Read after `CLAUDE.md`. Goal: **Google Play release.** 
 
 ## ★ Current status (2026-07-08) — read this first
 
-The app is **rebranded "TeleCam Pro"** (`com.hletrd.telecampro`), **public on GitHub** (`telecam-pro`),
+The app is **rebranded "TeleCam Pro"** (`me.hletrd.telecampro`), **public on GitHub** (`telecam-pro`),
 and **Play-submission-ready** at the packaging level. Since the last device-verified baseline, a large
 **UX-polish + feature-trim pass** landed (mostly code-complete; several items still need on-device eyes).
 
