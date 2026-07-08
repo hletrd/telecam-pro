@@ -381,6 +381,7 @@ fun CameraScreen(
             ModeCarousel(
                 mode = state.mode,
                 onModeChange = actions::onModeChange,
+                glyphRotation = overlayRotation,
                 modifier = Modifier.fillMaxWidth(),
             )
 
@@ -704,14 +705,15 @@ private fun ModeCarousel(
     mode: CaptureMode,
     onModeChange: (CaptureMode) -> Unit,
     modifier: Modifier = Modifier,
+    glyphRotation: Float = 0f,
 ) {
     Row(modifier = modifier, horizontalArrangement = Arrangement.Center) {
         Row(horizontalArrangement = Arrangement.spacedBy(32.dp)) {
-            // Mode labels are wide text, not compact glyphs: rotating them in place would poke out of
-            // their fixed row slot (the overflow QA caught). They stay upright in portrait; only the
-            // square/circular glyphs (gear, gallery thumb, top-bar icons) counter-rotate iPhone-style.
-            ModeLabel(text = "Photo", active = mode == CaptureMode.PHOTO, onClick = { onModeChange(CaptureMode.PHOTO) })
-            ModeLabel(text = "Video", active = mode == CaptureMode.VIDEO, onClick = { onModeChange(CaptureMode.VIDEO) })
+            // The mode labels are SHORT ("Photo"/"Video"), so — iPhone-style — they DO counter-rotate
+            // to stay upright as the phone turns (unlike the wide dial pills, which would overflow their
+            // fixed row slots and are kept screen-fixed). The label + its underline rotate as one unit.
+            ModeLabel(text = "Photo", active = mode == CaptureMode.PHOTO, onClick = { onModeChange(CaptureMode.PHOTO) }, modifier = Modifier.rotate(glyphRotation))
+            ModeLabel(text = "Video", active = mode == CaptureMode.VIDEO, onClick = { onModeChange(CaptureMode.VIDEO) }, modifier = Modifier.rotate(glyphRotation))
         }
     }
 }
