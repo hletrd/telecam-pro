@@ -250,6 +250,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // gone). Stop and save it first so the mode switch can't strand an in-progress recording.
         if (_state.value.isRecording && mode != CaptureMode.VIDEO) onToggleRecording()
         _state.update { it.copy(mode = mode) }
+        // Persist the mode the instant it changes, not just on onStop: swiping the app from Recents
+        // can kill the process before onStop's async prefs write flushes, which is why "last mode"
+        // seemed not to stick. Writing here means the mode is already on disk well before any kill.
+        saveSettingsIfEnabled()
     }
     override fun onTransfer(transfer: ColorTransfer) {
         engine.setTransfer(transfer)
