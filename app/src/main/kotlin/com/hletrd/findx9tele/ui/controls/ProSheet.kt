@@ -687,7 +687,14 @@ private fun StabilizationTab(state: CameraUiState, actions: CameraActions) {
 private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     val caps = state.caps
     val codec = state.videoCodec
+    val recordingMutable = !state.isRecording
     TabTitle("Video")
+    if (state.isRecording) {
+        LabelValueRow(
+            label = "Recording Lock",
+            valueLabel = "Stop REC to change format",
+        )
+    }
 
     // Codecs are limited to what MediaCodecList actually advertises a muxable HW encoder for
     // (HEVC/AVC on this SoC).
@@ -698,11 +705,17 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         selected = codec,
         labelFor = ::videoCodecLabel,
         onSelect = actions::onVideoCodec,
+        enabled = recordingMutable,
     )
 
     // Open Gate records the full 4:3 sensor readout instead of a 16:9 crop; it swaps the resolution
     // list to the camera's 4:3 sizes.
-    ToggleRow(label = "Open Gate (4:3 full sensor)", checked = state.openGate, onCheckedChange = actions::onToggleOpenGate)
+    ToggleRow(
+        label = "Open Gate (4:3 full sensor)",
+        checked = state.openGate,
+        onCheckedChange = actions::onToggleOpenGate,
+        enabled = recordingMutable,
+    )
 
     // Resolutions come from the SELECTED camera's real StreamConfigurationMap (4:3 when Open Gate,
     // else 16:9).
@@ -717,6 +730,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         selected = state.videoResolution,
         labelFor = ::videoResolutionLabel,
         onSelect = actions::onVideoResolution,
+        enabled = recordingMutable,
     )
 
     // Frame rates gated per-resolution by real caps: normal rates need the camera to advertise the
@@ -729,6 +743,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         selected = state.videoFrameRate,
         labelFor = ::videoFrameRateLabel,
         onSelect = actions::onVideoFrameRate,
+        enabled = recordingMutable,
     )
     if (state.videoFrameRate.highSpeed) {
         Text(
@@ -744,6 +759,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         selected = state.bitrateLevel,
         labelFor = ::bitrateLevelLabel,
         onSelect = actions::onBitrateLevel,
+        enabled = recordingMutable,
     )
     // Resolved encoder settings summary, e.g. "HEVC · 4K · 30 · 84 Mbps" — the exact computed bitrate.
     val mbps = videoBitRate(
@@ -756,14 +772,19 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         valueLabel = "${videoCodecLabelShort(codec)} · ${videoResolutionLabel(state.videoResolution)} · ${state.videoFrameRate.label} · $mbps Mbps",
     )
 
-    ToggleRow(label = "Record Audio", checked = state.recordAudio, onCheckedChange = actions::onToggleRecordAudio)
+    ToggleRow(
+        label = "Record Audio",
+        checked = state.recordAudio,
+        onCheckedChange = actions::onToggleRecordAudio,
+        enabled = recordingMutable,
+    )
     SegmentedSelector(
         label = "Audio Input",
         options = AudioInputPreference.entries,
         selected = state.audioInputPreference,
         labelFor = { it.label },
         onSelect = actions::onAudioInputPreference,
-        enabled = state.recordAudio && !state.isRecording,
+        enabled = state.recordAudio && recordingMutable,
     )
     LabelValueRow(
         label = if (state.isRecording) "Audio Route" else "Preferred Input",
@@ -777,7 +798,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         selected = state.audioScene,
         labelFor = { it.label },
         onSelect = actions::onAudioScene,
-        enabled = state.recordAudio,
+        enabled = state.recordAudio && recordingMutable,
     )
     if (state.audioScene == AudioScene.SOUND_FOCUS) {
         Text(
@@ -792,14 +813,14 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         value = state.audioGain,
         onValueChange = actions::onAudioGain,
         valueRange = 0f..2f,
-        enabled = state.recordAudio,
+        enabled = state.recordAudio && recordingMutable,
     )
     // Transfer (HLG/LOG/SDR) only drives the HEVC path; AVC always records 8-bit SDR, so the
     // selector is disabled there rather than pretending the choice applies.
     TransferSelector(
         transfer = state.transfer,
         onTransfer = actions::onTransfer,
-        enabled = codec == VideoCodec.HEVC,
+        enabled = codec == VideoCodec.HEVC && recordingMutable,
     )
 }
 

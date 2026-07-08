@@ -235,6 +235,12 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         mainHandler.postDelayed(clearStatusRunnable, 2000)
     }
 
+    private fun rejectIfRecording(message: String): Boolean {
+        if (!_state.value.isRecording) return false
+        showStatus(message)
+        return true
+    }
+
     fun onAppStatus(message: String) = showStatus(message)
 
     private fun markChanged(slot: FnSlot) {
@@ -365,6 +371,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         saveSettingsIfEnabled()
     }
     override fun onTransfer(transfer: ColorTransfer) {
+        if (rejectIfRecording("Stop REC to change transfer")) return
         engine.setTransfer(transfer)
         _state.update { it.copy(transfer = transfer) }
         markChanged(FnSlot.TRANSFER)
@@ -374,17 +381,23 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setAspectRatio(ratio)
         _state.update { it.copy(aspectRatio = ratio, activeMemorySlot = null) }
     }
-    override fun onToggleRecordAudio(enabled: Boolean) = _state.update { it.copy(recordAudio = enabled, activeMemorySlot = null) }
+    override fun onToggleRecordAudio(enabled: Boolean) {
+        if (rejectIfRecording("Stop REC to change audio")) return
+        _state.update { it.copy(recordAudio = enabled, activeMemorySlot = null) }
+    }
     override fun onAudioGain(gain: Float) {
+        if (rejectIfRecording("Stop REC to change audio gain")) return
         engine.setAudioGain(gain)
         _state.update { it.copy(audioGain = gain, activeMemorySlot = null) }
     }
     override fun onAudioScene(scene: com.hletrd.findx9tele.camera.AudioScene) {
+        if (rejectIfRecording("Stop REC to change audio scene")) return
         engine.setAudioScene(scene)
         _state.update { it.copy(audioScene = scene) }
         markChanged(FnSlot.AUDIO_SCENE)
     }
     override fun onAudioInputPreference(preference: AudioInputPreference) {
+        if (rejectIfRecording("Stop REC to change audio input")) return
         engine.setAudioInputPreference(preference)
         _state.update {
             it.copy(
@@ -415,20 +428,24 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         markChanged(FnSlot.TELECONVERTER)
     }
     override fun onVideoCodec(codec: VideoCodec) {
+        if (rejectIfRecording("Stop REC to change codec")) return
         engine.setVideoCodec(codec)
         _state.update { it.copy(videoCodec = codec, activeMemorySlot = null) }
         reconcileFrameRate()
     }
     override fun onBitrateLevel(level: BitrateLevel) {
+        if (rejectIfRecording("Stop REC to change bitrate")) return
         engine.setBitrateLevel(level)
         _state.update { it.copy(bitrateLevel = level, activeMemorySlot = null) }
     }
     override fun onVideoResolution(size: Size) {
+        if (rejectIfRecording("Stop REC to change resolution")) return
         engine.setVideoResolution(size)
         _state.update { it.copy(videoResolution = size, activeMemorySlot = null) }
         reconcileFrameRate()
     }
     override fun onVideoFrameRate(rate: VideoFrameRate) {
+        if (rejectIfRecording("Stop REC to change frame rate")) return
         engine.setVideoFrameRate(rate)
         // Keep the exposure fps in step so the AE target-fps range, cine shutter angle and sensor
         // frame duration follow the selected video rate (drop-frame rates use their rounded parent).
@@ -437,6 +454,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         _state.update { it.copy(videoFrameRate = rate, controls = controls, activeMemorySlot = null) }
     }
     override fun onToggleOpenGate(enabled: Boolean) {
+        if (rejectIfRecording("Stop REC to change Open Gate")) return
         engine.setOpenGate(enabled)
         _state.update { it.copy(openGate = enabled, activeMemorySlot = null) }
         reconcileFrameRate()
