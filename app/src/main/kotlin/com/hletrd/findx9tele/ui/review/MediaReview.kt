@@ -10,8 +10,11 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -162,15 +165,39 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     var confirmDelete by remember { mutableStateOf(false) }
+    // Stock-gallery-style dismiss: at 1x, a vertical drag slides the image and past a threshold
+    // closes the review; below it springs back. Zoomed in, vertical pan just pans.
+    var dismissDrag by remember { mutableFloatStateOf(0f) }
 
     Box(
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black)
             .pointerInput(Unit) {
-                detectTransformGestures { _, pan, zoom, _ ->
-                    scale = (scale * zoom).coerceIn(1f, 12f)
-                    offset = if (scale > 1f) offset + pan else Offset.Zero
+                // One loop for pinch + pan + swipe-dismiss (detectTransformGestures has no end
+                // callback, and dismiss needs to decide on finger-up).
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        if (event.changes.none { it.pressed }) break
+                        val zoom = event.calculateZoom()
+                        val pan = event.calculatePan()
+                        if (zoom != 1f) scale = (scale * zoom).coerceIn(1f, 12f)
+                        if (scale > 1f) {
+                            offset += pan
+                            dismissDrag = 0f
+                        } else {
+                            offset = Offset.Zero
+                            dismissDrag += pan.y
+                        }
+                        event.changes.forEach { it.consume() }
+                    }
+                    if (scale <= 1f) {
+                        if (abs(dismissDrag) > size.height * 0.16f) onClose() else dismissDrag = 0f
+                    } else {
+                        dismissDrag = 0f
+                    }
                 }
             }
             .pointerInput(Unit) {
@@ -196,39 +223,13 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                         scaleX = scale,
                         scaleY = scale,
                         translationX = offset.x,
-                        translationY = offset.y,
+                        translationY = offset.y + dismissDrag,
+                        alpha = (1f - abs(dismissDrag) / 1400f).coerceIn(0.3f, 1f),
                     ),
             )
         } else {
             Text("Loading…", color = CameraColors.TextSecondary, style = MaterialTheme.typography.bodyMedium)
         }
-
-        // Zoom readout (multiplier vs. fit), top-center.
-        Text(
-            text = "%.1f×".format(scale),
-            color = CameraColors.TextPrimary,
-            fontWeight = FontWeight.SemiBold,
-            style = MaterialTheme.typography.labelLarge,
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .statusBarsPadding()
-                .padding(top = 8.dp)
-                .clip(RoundedCornerShape(50))
-                .background(Color.Black.copy(alpha = 0.5f))
-                .padding(horizontal = 12.dp, vertical = 6.dp),
-        )
-
-        ZoomPresetStrip(
-            scale = scale,
-            onScale = {
-                scale = it
-                offset = Offset.Zero
-            },
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .statusBarsPadding()
-                .padding(top = 54.dp),
-        )
 
         metadata?.let { meta ->
             Column(
@@ -284,7 +285,23 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                 .clickable { confirmDelete = true },
             contentAlignment = Alignment.Center,
         ) {
-            Text("DEL", color = Color(0xFFFF6B6B), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelMedium)
+            // Trash-can glyph (icon per feedback, not a "DEL" text chip), tinted delete-red.
+            Canvas(Modifier.size(18.dp)) {
+                val c = Color(0xFFFF6B6B)
+                val sw = 1.6.dp.toPx()
+                val w = size.width
+                val h = size.height
+                // lid + handle
+                drawLine(c, Offset(w * 0.08f, h * 0.2f), Offset(w * 0.92f, h * 0.2f), strokeWidth = sw)
+                drawLine(c, Offset(w * 0.36f, h * 0.08f), Offset(w * 0.64f, h * 0.08f), strokeWidth = sw)
+                // body
+                drawLine(c, Offset(w * 0.2f, h * 0.2f), Offset(w * 0.28f, h * 0.94f), strokeWidth = sw)
+                drawLine(c, Offset(w * 0.8f, h * 0.2f), Offset(w * 0.72f, h * 0.94f), strokeWidth = sw)
+                drawLine(c, Offset(w * 0.28f, h * 0.94f), Offset(w * 0.72f, h * 0.94f), strokeWidth = sw)
+                // ribs
+                drawLine(c, Offset(w * 0.42f, h * 0.34f), Offset(w * 0.44f, h * 0.8f), strokeWidth = sw * 0.8f)
+                drawLine(c, Offset(w * 0.58f, h * 0.34f), Offset(w * 0.56f, h * 0.8f), strokeWidth = sw * 0.8f)
+            }
         }
     }
 
@@ -303,42 +320,6 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                 TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
             },
         )
-    }
-}
-
-@Composable
-private fun ZoomPresetStrip(
-    scale: Float,
-    onScale: (Float) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Row(
-        modifier = modifier
-            .clip(RoundedCornerShape(50))
-            .background(Color.Black.copy(alpha = 0.52f))
-            .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(50))
-            .padding(4.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        listOf(1f, 4f, 8f, 12f).forEach { preset ->
-            val active = abs(scale - preset) < 0.25f
-            Text(
-                text = "${preset.roundToInt()}×",
-                color = if (active) Color.Black else CameraColors.TextPrimary,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(50))
-                    .background(if (active) CameraColors.TextPrimary else Color.Transparent)
-                    .semantics {
-                        contentDescription = "Review zoom ${preset.roundToInt()} times"
-                        role = Role.Button
-                    }
-                    .clickable { onScale(preset) }
-                    .padding(horizontal = 11.dp, vertical = 6.dp),
-            )
-        }
     }
 }
 

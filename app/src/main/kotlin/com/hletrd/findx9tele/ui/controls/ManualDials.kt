@@ -279,12 +279,10 @@ private fun FnDialChip(
             onLongClick = onOpenFnMenu,
         )
         FnSlot.STABILIZATION -> DialChip(
-            label = "Stab",
-            value = when (state.videoStabMode) {
-                VideoStabMode.OFF -> "Off"
-                VideoStabMode.STANDARD -> "OIS+"
-                VideoStabMode.ENHANCED -> "Steady"
-            },
+            // Full words, not in-house abbreviations ("Stab"/"Steady" read as nonsense to camera
+            // users — feedback). Values come from VideoStabMode.label (Off/Standard/Active).
+            label = "Stabilization",
+            value = state.videoStabMode.label,
             active = state.videoStabMode != VideoStabMode.OFF,
             enabled = true,
             onClick = { actions.onVideoStabMode(nextVideoStab(state.videoStabMode)) },
@@ -325,7 +323,9 @@ private fun FnDialChip(
         FnSlot.TRANSFER -> {
             val transferMutable = !state.isRecording && state.videoCodec == VideoCodec.HEVC
             DialChip(
-                label = "TF",
+                // "Gamma" is the standard camera term for the transfer curve (HLG / O-Log / SDR);
+                // the old "TF" abbreviation read as nonsense (feedback).
+                label = "Gamma",
                 value = transferLabelShort(state.transfer),
                 active = state.transfer != ColorTransfer.SDR,
                 enabled = transferMutable,

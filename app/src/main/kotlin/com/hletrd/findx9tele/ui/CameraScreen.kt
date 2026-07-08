@@ -380,23 +380,14 @@ fun CameraScreen(
             ZoomIndicator(zoom = state.controls.zoomRatio, range = state.caps?.zoomRatioRange, numberRotation = overlayRotation)
         }
 
-        if (manualDialOpen) {
-            ExposureMeter(
-                state = state,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .statusBarsPadding()
-                    .padding(top = 146.dp),
-            )
-        } else {
-            ExposureMeter(
-                state = state,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .navigationBarsPadding()
-                    .padding(bottom = 274.dp),
-            )
-        }
+        // Exposure meter: pinned to the LEFT edge as a vertical scale (the scopes own the right).
+        // A fixed home beats the old jump between top/bottom as the dial opened (feedback).
+        ExposureMeter(
+            state = state,
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .padding(start = 10.dp),
+        )
 
         val onShutter = remember(state.mode) {
             {
@@ -989,36 +980,34 @@ private fun ExposureMeter(state: CameraUiState, modifier: Modifier = Modifier) {
         state.controls.exposureMode == ExposureMode.MANUAL -> "M --"
         else -> "%+.1f".format(compensationEv)
     }
-    Row(
+    // Vertical Sony-style scale: +3 EV at the top, -3 EV at the bottom, readout above it.
+    Column(
         modifier = modifier
-            .width(208.dp)
-            .height(34.dp)
-            .clip(RoundedCornerShape(50))
+            .clip(RoundedCornerShape(14.dp))
             .background(Color.Black.copy(alpha = 0.48f))
-            .padding(horizontal = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(horizontal = 6.dp, vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text(label, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-        Canvas(modifier = Modifier.weight(1f).height(22.dp)) {
-            val cy = size.height / 2f
-            val start = 0f
-            val end = size.width
-            drawLine(Color.White.copy(alpha = 0.34f), Offset(start, cy), Offset(end, cy), strokeWidth = 1.2.dp.toPx())
+        Canvas(modifier = Modifier.width(22.dp).height(150.dp)) {
+            val cx = size.width / 2f
+            drawLine(Color.White.copy(alpha = 0.34f), Offset(cx, 0f), Offset(cx, size.height), strokeWidth = 1.2.dp.toPx())
             for (i in -3..3) {
-                val x = (i + 3) / 6f * size.width
+                // +EV up: EV i sits at y = (3 - i)/6 of the track.
+                val y = (3 - i) / 6f * size.height
                 val major = i == 0 || i == -3 || i == 3
                 val half = if (major) 6.dp.toPx() else 3.dp.toPx()
                 drawLine(
                     color = if (i == 0) Color.White.copy(alpha = 0.75f) else Color.White.copy(alpha = 0.42f),
-                    start = Offset(x, cy - half),
-                    end = Offset(x, cy + half),
+                    start = Offset(cx - half, y),
+                    end = Offset(cx + half, y),
                     strokeWidth = if (major) 1.6.dp.toPx() else 1.dp.toPx(),
                 )
             }
             if (indicatorEv != null) {
-                val x = ((indicatorEv + 3f) / 6f).coerceIn(0f, 1f) * size.width
-                drawCircle(CameraColors.ManualActive, radius = 4.dp.toPx(), center = Offset(x, cy))
+                val y = ((3f - indicatorEv) / 6f).coerceIn(0f, 1f) * size.height
+                drawCircle(CameraColors.ManualActive, radius = 4.dp.toPx(), center = Offset(cx, y))
             }
         }
     }

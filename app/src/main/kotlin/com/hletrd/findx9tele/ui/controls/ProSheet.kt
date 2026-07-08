@@ -101,7 +101,6 @@ internal enum class ProSheetTab(val label: String) {
     EXPOSURE("Exposure"),
     FOCUS("Focus"),
     LENS("Lens"),
-    STABILIZATION("Steady"),
     VIDEO("Video"),
     PROCESSING("Image"),
     ASSISTS("Assist"),
@@ -178,7 +177,6 @@ internal fun ProSheet(
                             ProSheetTab.EXPOSURE -> ExposureColorTab(state, actions)
                             ProSheetTab.FOCUS -> FocusTab(state, actions)
                             ProSheetTab.LENS -> LensTab(state, actions)
-                            ProSheetTab.STABILIZATION -> StabilizationTab(state, actions)
                             ProSheetTab.VIDEO -> VideoTab(state, actions)
                             ProSheetTab.PROCESSING -> ProcessingTab(state, actions)
                             ProSheetTab.ASSISTS -> AssistsTab(state, actions)
@@ -322,11 +320,6 @@ private fun DrawScope.drawTabIcon(tab: ProSheetTab, color: Color) {
             drawCircle(color, radius = size.minDimension * 0.28f, center = center, style = Stroke(width = 1.2.dp.toPx()))
             drawCircle(color, radius = size.minDimension * 0.1f, center = center)
         }
-        ProSheetTab.STABILIZATION -> {
-            drawCircle(color, radius = size.minDimension * 0.16f, center = center, style = stroke)
-            drawCircle(color, radius = size.minDimension * 0.32f, center = center, style = Stroke(width = 1.2.dp.toPx()))
-            drawCircle(color, radius = size.minDimension * 0.46f, center = center, style = Stroke(width = 1.dp.toPx()))
-        }
         ProSheetTab.VIDEO -> {
             drawRoundRect(color, topLeft = Offset(size.width * 0.08f, size.height * 0.18f), size = androidx.compose.ui.geometry.Size(size.width * 0.84f, size.height * 0.64f), cornerRadius = androidx.compose.ui.geometry.CornerRadius(2.dp.toPx()), style = stroke)
             val path = androidx.compose.ui.graphics.Path().apply {
@@ -450,7 +443,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         )
     }
     LabeledSlider(
-        label = "JPEG Q",
+        label = "JPEG Quality",
         valueLabel = state.controls.jpegQuality.toString(),
         value = state.controls.jpegQuality.toFloat().coerceIn(1f, 100f),
         onValueChange = { actions.onJpegQuality(it.roundToInt()) },
@@ -497,7 +490,6 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         labelFor = { it.letter },
         onSelect = actions::onExposureMode,
     )
-    AutoIsoShutterPresets(actions = actions)
     ToggleRow(label = "AE Lock", checked = controls.aeLock, onCheckedChange = actions::onToggleAeLock)
     SegmentedSelector(
         label = "Flicker",
@@ -567,27 +559,6 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
 }
 
 @Composable
-private fun AutoIsoShutterPresets(actions: CameraActions) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text("Auto ISO floor", color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-            listOf(320 to "1/320", 500 to "1/500", 1000 to "1/1000").forEach { (denom, label) ->
-                FilterChip(
-                    selected = false,
-                    onClick = {
-                        actions.onExposureMode(ExposureMode.SHUTTER)
-                        actions.onShutterNs(1_000_000_000L / denom)
-                    },
-                    label = { Text(label) },
-                    colors = pixelChipColors(),
-                    border = pixelChipBorder(false),
-                )
-            }
-        }
-    }
-}
-
-@Composable
 private fun FocusTab(state: CameraUiState, actions: CameraActions) {
     val controls = state.controls
     TabTitle("Focus")
@@ -649,17 +620,12 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.labelSmall,
     )
-}
 
-@Composable
-private fun StabilizationTab(state: CameraUiState, actions: CameraActions) {
-    val caps = state.caps
-    TabTitle("Steady")
-    // Engage the HAL's OIS+EIS stabilization path so OIS physically cuts
-    // per-frame motion blur at 300 mm. (App-side gyro EIS was removed — it only warped whole frames
-    // and couldn't de-blur a fixed 1/60 s frame.) Modes gated by what the lens reports.
+    // Stabilization lives here with the rest of the optics — it does not need its own menu tab
+    // (feedback). HAL OIS+EIS path; OIS physically cuts per-frame motion blur at 300 mm.
+    SectionHeader("Image Stabilization")
     SegmentedSelector(
-        label = "Steady",
+        label = "Image Stabilization",
         options = VideoStabMode.entries,
         selected = state.videoStabMode,
         labelFor = { it.label },
@@ -671,7 +637,7 @@ private fun StabilizationTab(state: CameraUiState, actions: CameraActions) {
         VideoStabMode.ENHANCED -> "OIS+EIS, crop"
     }
     Text(stabCaption, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
-    if (caps?.oisAvailable == true) {
+    if (state.caps?.oisAvailable == true) {
         ToggleRow(label = "OIS", checked = state.controls.oisEnabled, onCheckedChange = actions::onToggleOis)
         Text(
             "Stills use OIS.",

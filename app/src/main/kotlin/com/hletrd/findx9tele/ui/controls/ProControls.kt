@@ -379,8 +379,10 @@ internal fun meteringModeLabel(mode: MeteringMode): String = when (mode) {
     MeteringMode.SPOT -> "Spot"
 }
 
+// Magnification labels throughout (0.6×/1×/3×/10×), matching stock camera apps — "UW" was the odd
+// one out (user feedback).
 internal fun lensLabel(lens: com.hletrd.findx9tele.camera.LensChoice): String = when (lens) {
-    com.hletrd.findx9tele.camera.LensChoice.ULTRAWIDE -> "UW"
+    com.hletrd.findx9tele.camera.LensChoice.ULTRAWIDE -> "0.6×"
     com.hletrd.findx9tele.camera.LensChoice.MAIN -> "1×"
     com.hletrd.findx9tele.camera.LensChoice.TELE3X -> "3×"
     com.hletrd.findx9tele.camera.LensChoice.TELE10X -> "10×"

@@ -35,6 +35,28 @@ object MediaStoreWriter {
         return uri
     }
 
+    /**
+     * Newest still THIS APP saved (scoped storage shows an app its own contributions without any
+     * read permission). Seeds the review thumbnail on a fresh launch, so "last shot" works before
+     * the first capture of the session. DNGs are skipped — BitmapFactory can't decode them, and the
+     * HEIF/JPEG sibling of the same capture is always newer or equal.
+     */
+    fun latestOwnImage(context: Context): Uri? = runCatching {
+        val base = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+        val queryArgs = Bundle().apply {
+            putString(
+                ContentResolver.QUERY_ARG_SQL_SELECTION,
+                "${MediaStore.MediaColumns.MIME_TYPE} != ?",
+            )
+            putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, arrayOf("image/x-adobe-dng"))
+            putString(ContentResolver.QUERY_ARG_SQL_SORT_ORDER, "${MediaStore.MediaColumns.DATE_ADDED} DESC")
+            putInt(ContentResolver.QUERY_ARG_LIMIT, 1)
+        }
+        context.contentResolver.query(base, arrayOf(MediaStore.MediaColumns._ID), queryArgs, null)?.use { cursor ->
+            if (cursor.moveToFirst()) ContentUris.withAppendedId(base, cursor.getLong(0)) else null
+        }
+    }.getOrNull()
+
     fun createPendingImage(
         context: Context,
         displayName: String,

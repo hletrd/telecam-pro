@@ -166,7 +166,7 @@ enum class AudioInputPreference(val label: String) {
  * turns teleconverter mode OFF, all in one action.
  */
 enum class LensChoice(val targetEquivMm: Float, val label: String) {
-    ULTRAWIDE(14f, "UW"),
+    ULTRAWIDE(14f, "0.6×"),
     MAIN(23f, "1×"),
     TELE3X(70f, "3×"),
     TELE10X(230f, "10×");

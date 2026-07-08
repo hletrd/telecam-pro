@@ -188,6 +188,12 @@ class MainActivity : ComponentActivity() {
         // slide constants if the on-device direction is wrong.)
     @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // DEBUG: trace every non-standard key so the camera-button gestures can be re-mapped from a
+        // live session — the codes seen once (767/769/782) may not be the full story (user reports
+        // slide/half-press dead while full press works).
+        if (BuildConfig.DEBUG && !isShutterKey(event.keyCode) && event.keyCode != KeyEvent.KEYCODE_BACK) {
+            android.util.Log.i("BtnDbg", "key code=${event.keyCode} action=${event.action} perm=$hasCameraPermission")
+        }
         if (hasCameraPermission) {
             when (event.keyCode) {
                 KEY_CAM_SLIDE_IN -> {
