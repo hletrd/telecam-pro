@@ -95,12 +95,30 @@ and **Play-submission-ready** at the packaging level. Since the last device-veri
    (`com.oplus.camera.mode=40` for Hasselblad telephoto and `com.oplus.original.zoomRatio` scaled by
    4.286×).
 
+   **Stock-app teleconverter flow (reverse-engineered):**
+   1. `BaseMode.pg(OplusCaptureResult)` reads result key `com.oplus.explorer.hw.capacity`
+      (`BaseMode.java:7722`).
+   2. Capacity `0` or `0x40000000` → chip-state `0` (damaged/invalid), otherwise `1`
+      (`BaseMode.java:7727-7729`).
+   3. The state is saved to DataManager key `key_explorer_chip_state` (`BaseMode.java:7731-7733`).
+   4. `BaseMode.buildSession` reads it back and sets OCS `KEY_EXPLORER_CHIP_STATE`
+      (`com.oplus.explorer.chip.state`, Integer) on the session config (`BaseMode.java:3221-3222`).
+   5. Stabilization is set via OCS `VIDEO_STABILIZATION_MODE`
+      (`com.oplus.configure.video.stabilization`, String) → `super_stabilization` (`va/e.java:164`).
+
+   **OCS auth error-code meanings (from `androidx.appcompat.app.z.g(int)`):**
+   `1001` AUTHENTICATE_SUCCESS, `1002` AUTHENTICATE_FAIL, `1003` TIME_EXPIRED,
+   **1004 AUTHCODE_EXPECTED**, `1005` VERSION_INCOMPATIBLE, `1006` AUTHCODE_RECYCLE,
+   `1007` AUTHCODE_INVALID, `1008` CAPABILITY_EXCEPTION, `1009` STATUS_EXCEPTION,
+   `1010` INTERNAL_EXCEPTION. Unregistered third-party apps typically get **1004**.
+
    **What has been prepared:** `camera/OcsProbe.kt` now runs automatically in debug builds, binds to
-   `com.oplus.ocs.service.OpenAuthenticateService`, and reports `OcsAuthState` plus a capability dump.
-   It confirms the public OCS SDK (`com.oplus.ocs:camera:1.1.0`) only exposes `VIDEO_STABILIZATION_MODE`
-   (`video_stabilization`/`super_stabilization`); the Explorer keys (`com.oplus.explorer.chip.state`,
-   `com.oplus.configure.explorer.enable`) are only present in the stock app's newer embedded SDK and
-   cannot be instantiated from the public SDK because `ConfigureKey` constructors are private.
+   `com.oplus.ocs.service.OpenAuthenticateService`, decodes the error code, and reports `OcsAuthState`
+   plus a capability dump. It confirms the public OCS SDK (`com.oplus.ocs:camera:1.1.0`) only exposes
+   `VIDEO_STABILIZATION_MODE` (`video_stabilization`/`super_stabilization`); the Explorer keys
+   (`com.oplus.explorer.chip.state`, `com.oplus.configure.explorer.enable`) are only present in the
+   stock app's newer embedded SDK and cannot be instantiated from the public SDK because
+   `ConfigureKey` constructors are private.
 
    **What is still required to unlock the stock profile:**
    1. An **OPPO enterprise developer account** (CameraUnit AUTH_CODE is not confirmed for individual
