@@ -175,6 +175,15 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
   — OIS physically engaged at 1/30 s, preview + 4K recording fine.** App-side gyro EIS is suppressed
   while a HAL mode runs (no double-warp); it stays as the `GYRO` option. The Explorer-specific
   `com.oplus.ois.*` / `eisrealtime` tags remain gated — but the generic HAL video-stab is enough.
+- **300 mm teleconverter OIS amplification is OPPO-auth-gated (2026-07-08).** The stock app's
+  Hasselblad-Teleconverter "4.3×" OIS profile is set through authenticated OCS `ConfigureKey`s
+  (`com.oplus.configure.video.stabilization` → `super_stabilization`, `com.oplus.explorer.chip.state`,
+  etc.). These keys are absent from every camera's `availableRequestKeys`/`availableResultKeys`, so
+  raw Camera2 cannot reach them. The app applies the public overlap (`com.oplus.camera.mode=40`,
+  `com.oplus.original.zoomRatio` 4.286×) and runs `OcsProbe` in debug builds to verify auth status.
+  Unlocking the full profile requires an OPPO enterprise-developer CameraUnit AUTH_CODE plus a
+  CameraUnit camera-session path; see `docs/BACKLOG.md` item #4 for the registration checklist and
+  SDK-limitation notes.
 - **`manager.openCamera()` can throw synchronously.** Opening from a background proc state (relaunch
   behind the keyguard / screen just woke) raises `CameraAccessException CAMERA_DISABLED` from the
   `openCamera` call itself, not the StateCallback — wrap it in `runCatching → onError` or it crashes.
