@@ -196,15 +196,19 @@ class MainActivity : ComponentActivity() {
         }
         if (hasCameraPermission) {
             when (event.keyCode) {
-                KEY_CAM_SLIDE_IN -> {
+                // Live-captured 2026-07-09: the camera-control button's slide arrives as the STANDARD
+                // KEYCODE_ZOOM_IN/OUT (168/169), repeating ~20 Hz while the finger slides — NOT the
+                // OPPO 767/769 codes seen in one earlier session (kept as aliases just in case).
+                KeyEvent.KEYCODE_ZOOM_IN, KEY_CAM_SLIDE_IN -> {
                     if (event.action == KeyEvent.ACTION_DOWN) vm.onPinchZoom(ZOOM_STEP)
                     return true
                 }
-                KEY_CAM_SLIDE_OUT -> {
+                KeyEvent.KEYCODE_ZOOM_OUT, KEY_CAM_SLIDE_OUT -> {
                     if (event.action == KeyEvent.ACTION_DOWN) vm.onPinchZoom(1f / ZOOM_STEP)
                     return true
                 }
-                KEY_CAM_HALF_PRESS -> {
+                // Half-press = the standard camera-family KEYCODE_FOCUS (DOWN engages, UP releases).
+                KeyEvent.KEYCODE_FOCUS, KEY_CAM_HALF_PRESS -> {
                     if (event.action == KeyEvent.ACTION_DOWN || event.action == KeyEvent.ACTION_UP) {
                         vm.onHardwareHalfPress(event.action == KeyEvent.ACTION_DOWN)
                     }
@@ -268,8 +272,9 @@ class MainActivity : ComponentActivity() {
         const val KEY_CAM_SLIDE_OUT = 769
         const val KEY_CAM_HALF_PRESS = 782
         val CAMERA_BUTTON_KEYS = setOf(KEY_CAM_SLIDE_IN, KEY_CAM_SLIDE_OUT, KEY_CAM_HALF_PRESS)
-        // Per-notch zoom multiplier for the slide gesture.
-        const val ZOOM_STEP = 1.15f
+        // Per-EVENT zoom multiplier: the slide repeats ~20 Hz, so ~1.04/event = a controlled
+        // ~2.2x per second of continuous slide (1.15 raced 1x-10x in under two seconds).
+        const val ZOOM_STEP = 1.04f
     }
 
     private enum class PendingAudioAction { ENABLE_AUDIO, START_RECORDING }
