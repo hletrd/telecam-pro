@@ -175,8 +175,26 @@ class CameraEngine(private val context: Context) {
      */
     private fun previewRotationDegrees(): Int = RotationMath.previewRotationDegrees(teleconverterMode)
 
-    fun setTeleconverterMode(enabled: Boolean) { teleconverterMode = enabled; applyStabilization() }
-    fun setVideoStabMode(m: VideoStabMode) { videoStabMode = m; applyStabilization() }
+    fun setTeleconverterMode(enabled: Boolean) {
+        if (teleconverterMode == enabled) return
+        teleconverterMode = enabled
+        applyStabilization()
+        // The afocal 180° preview flip can update live, but OPPO's available stabilization hints
+        // (`com.oplus.camera.mode` + effective `original.zoomRatio`) are session keys. Reopen while
+        // idle so the HAL chooses the OIS/EIS profile with the 300 mm context, matching the stock
+        // CameraUnit path as closely as raw Camera2 allows.
+        reopenForSession()
+    }
+
+    fun setVideoStabMode(m: VideoStabMode) {
+        if (videoStabMode == m) return
+        videoStabMode = m
+        applyStabilization()
+        // CONTROL_VIDEO_STABILIZATION_MODE is advertised as a session key on the Find X9 Ultra tele.
+        // Request-only updates work, but the HAL can select a different OIS/EIS pipeline at configure
+        // time, so recreate the session when the user changes the stabilization class.
+        reopenForSession()
+    }
     fun setFalseColor(enabled: Boolean) = gl.setFalseColor(enabled)
 
     fun onPreviewSurfaceChanged(width: Int, height: Int) {
@@ -210,6 +228,7 @@ class CameraEngine(private val context: Context) {
             highSpeedFps = desiredHighSpeedFps(),
             vendorLogMode = vendorLogMode.halValue,
             videoStabHalMode = c.videoStabControlMode(videoStabMode),
+            teleconverterMode = teleconverterMode,
             onReady = { onStatus?.invoke(null); cameraRecoveryAttempts = 0 },
             onError = { onStatus?.invoke("Camera error: ${it.message}"); scheduleCameraRecovery() },
         )

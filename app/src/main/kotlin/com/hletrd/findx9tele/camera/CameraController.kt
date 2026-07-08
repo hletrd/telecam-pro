@@ -90,6 +90,12 @@ class CameraController(context: Context) {
     // STABILIZATION_MODE: 0 off / 1 on / 2 preview-stabilization). Drives the HAL's OIS+EIS —
     // the only thing that cuts per-frame motion blur at 300 mm. Updated live via [setVideoStabMode].
     @Volatile private var videoStabHalMode = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF
+    // True when the external Hasselblad 300 mm afocal converter is mounted on the native 70 mm tele.
+    // The public Camera2 OIS key only says "OIS on"; OPPO's stock app configures the Explorer path via
+    // CameraUnit/session parameters. We cannot use the auth-gated CameraUnit path yet, but we can give
+    // the HAL the same public session hints it exposes to third-party Camera2: "Hasselblad telephoto"
+    // camera mode + effective zoom ~= 300/70. These are best-effort and fully guarded.
+    private var teleconverterMode = true
     // >0 → configure a CameraConstrainedHighSpeedCaptureSession at this fps (slow-motion), feeding
     // ONLY the GL input surface (no JPEG/RAW — high-speed sessions forbid extra targets). 0 = the
     // regular tele session. Set once per open(); on a high-speed config failure it drops back to 0.
@@ -135,6 +141,7 @@ class CameraController(context: Context) {
         highSpeedFps: Int = 0,
         vendorLogMode: Int = 0,
         videoStabHalMode: Int = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF,
+        teleconverterMode: Boolean = true,
         onReady: Ready,
         onError: ErrorCb,
     ) {
@@ -146,6 +153,7 @@ class CameraController(context: Context) {
         this.highSpeedFps = highSpeedFps
         this.vendorLogMode = vendorLogMode
         this.videoStabHalMode = videoStabHalMode
+        this.teleconverterMode = teleconverterMode
         this.rawChars = runCatching {
             manager.getCameraCharacteristics(selection.physicalId ?: selection.logicalId)
         }.getOrNull()
@@ -199,10 +207,39 @@ class CameraController(context: Context) {
      */
     private val vendorVideoStabKey = CaptureRequest.Key("com.oplus.video.stabilization.mode", Int::class.javaObjectType)
 
+    // OPPO CameraUnit stock-mode equivalents that are also exposed as raw Camera2 session/request keys
+    // on the tele. Decompiled OplusCamera maps `camera_mode_telephoto_hasselblad` to mode id 40 and
+    // routes stabilization through CameraUnit's `super_stabilization`; the raw Camera2 ceiling is these
+    // public vendor hints plus CONTROL_VIDEO_STABILIZATION_MODE=PREVIEW_STABILIZATION.
+    private val oplusCameraModeKey = CaptureRequest.Key("com.oplus.camera.mode", Byte::class.javaObjectType)
+    private val oplusOriginalZoomRatioKey = CaptureRequest.Key("com.oplus.original.zoomRatio", Float::class.javaObjectType)
+
     /** Sets the HAL video stabilization on the preview/video repeating request: the standard mode plus the vendor mirror. */
     private fun CaptureRequest.Builder.applyVideoStab() {
         set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, videoStabHalMode)
         runCatching { set(vendorVideoStabKey, videoStabHalMode) }
+    }
+
+    /**
+     * Best-effort hints for the external 300 mm converter.
+     *
+     * Stock OplusCamera does not publish a raw "OIS focal scale" key. Its Hasselblad/Explorer path
+     * uses CameraUnit (auth-gated for third-party apps) with a telephoto-Hasselblad mode and super
+     * stabilization. The exposed raw Camera2 overlap is:
+     *  - `com.oplus.camera.mode` byte: stock maps Hasselblad telephoto to 40.
+     *  - `com.oplus.original.zoomRatio` float: stock CameraUnit configure key for the app's logical zoom.
+     *
+     * Setting these cannot force the private Explorer OIS profile by itself, but it gives the HAL the
+     * effective 300 mm context when it chooses the public PREVIEW_STABILIZATION OIS+EIS profile. Fully
+     * guarded because vendor tags can disappear or reject values across ColorOS builds.
+     */
+    private fun CaptureRequest.Builder.applyTeleconverterHints() {
+        val effectiveZoom = controls.zoomRatio.coerceAtLeast(1f) *
+            if (teleconverterMode) TELECONVERTER_MAGNIFICATION else 1f
+        if (teleconverterMode) {
+            runCatching { set(oplusCameraModeKey, OPLUS_CAMERA_MODE_TELEPHOTO_HASSELBLAD) }
+        }
+        runCatching { set(oplusOriginalZoomRatioKey, effectiveZoom) }
     }
 
     /** Live-updates the HAL video stabilization mode and re-issues the repeating request. */
@@ -293,17 +330,18 @@ class CameraController(context: Context) {
                 }
             },
         )
-        // The native-log session key must ride in the session parameters, not only per-frame requests.
-        // Built from TEMPLATE_RECORD (the movie-pipeline template). Fully defensive — a session-parameter
-        // failure falls back to a plain session, not a dead camera.
-        if (vendorLogMode != 0) {
-            runCatching {
-                val sp = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
-                sp.applyManualControls(controls, caps)
-                sp.applyVendorLog()
-                sessionConfig.setSessionParameters(sp.build())
-            }.onFailure { Log.w(TAG, "session params with vendor log failed: ${it.message}") }
-        }
+        // Session keys must ride in the session parameters, not only per-frame requests. This matters
+        // for PREVIEW_STABILIZATION (documented as a session key on this HAL) and for the Oplus vendor
+        // mirror/original-zoom hints: the HAL can pick its OIS/EIS profile at configure time, which is
+        // where the stock CameraUnit path also supplies "super_stabilization" + Explorer context.
+        // Fully defensive — a session-parameter failure falls back to a plain session, not a dead camera.
+        runCatching {
+            val sp = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
+            sp.applyVideoStab()
+            sp.applyTeleconverterHints()
+            sp.applyVendorLog()
+            sessionConfig.setSessionParameters(sp.build())
+        }.onFailure { Log.w(TAG, "session params with vendor stabilization/log failed: ${it.message}") }
         camera.createCaptureSession(sessionConfig)
     }
 
@@ -336,6 +374,13 @@ class CameraController(context: Context) {
                 }
             },
         )
+        runCatching {
+            val sp = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
+            sp.applyVideoStab()
+            sp.applyTeleconverterHints()
+            sp.applyVendorLog()
+            sessionConfig.setSessionParameters(sp.build())
+        }.onFailure { Log.w(TAG, "high-speed session params with vendor stabilization/log failed: ${it.message}") }
         runCatching { camera.createCaptureSession(sessionConfig) }.onFailure {
             Log.w(TAG, "createCaptureSession(HIGH_SPEED) threw; falling back: ${it.message}")
             highSpeedFps = 0
@@ -395,6 +440,7 @@ class CameraController(context: Context) {
                 applyManualControls(controls, caps)
                 applyVendorLog()
                 applyVideoStab()
+                applyTeleconverterHints()
                 applyMetering(this, controls)
                 // Tap-to-focus: force AF_MODE_AUTO for a one-shot region scan that LOCKS on the tapped
                 // spot (CONTINUOUS + a bare trigger just holds the current, often-wrong, distance). The
@@ -440,7 +486,9 @@ class CameraController(context: Context) {
                         val afMode = result.get(CaptureResult.CONTROL_AF_MODE)
                         val ois = result.get(CaptureResult.LENS_OPTICAL_STABILIZATION_MODE)
                         val vstab = result.get(CaptureResult.CONTROL_VIDEO_STABILIZATION_MODE)
-                        Log.i(TAG, "3A: aeState=$ae afState=$af afMode=$afMode iso=${result.get(CaptureResult.SENSOR_SENSITIVITY)} expNs=${result.get(CaptureResult.SENSOR_EXPOSURE_TIME)} lens=$lastFocusDistance ois=$ois vstab=$vstab (req=$videoStabHalMode)")
+                        val effectiveZoom = controls.zoomRatio.coerceAtLeast(1f) *
+                            if (teleconverterMode) TELECONVERTER_MAGNIFICATION else 1f
+                        Log.i(TAG, "3A: aeState=$ae afState=$af afMode=$afMode iso=${result.get(CaptureResult.SENSOR_SENSITIVITY)} expNs=${result.get(CaptureResult.SENSOR_EXPOSURE_TIME)} lens=$lastFocusDistance ois=$ois vstab=$vstab (req=$videoStabHalMode tele=$teleconverterMode effZoom=$effectiveZoom)")
                     }
                 }
             }
@@ -557,6 +605,7 @@ class CameraController(context: Context) {
                 // Keep stills consistent with the session's pipeline: with the log session active the
                 // HAL processes everything scene-referred, so an unset key mid-session is undefined.
                 applyVendorLog()
+                applyTeleconverterHints()
                 applyMetering(this, controls)
                 // We rotate pixels ourselves (HEIF) / tag DNG orientation; keep JPEG upright.
                 set(CaptureRequest.JPEG_ORIENTATION, 0)
@@ -664,5 +713,7 @@ class CameraController(context: Context) {
         // Max time close() waits for the camera thread to release the HAL device before a reopen.
         // Device close is normally well under this; the cap keeps a wedged close from hanging the UI.
         const val CLOSE_JOIN_TIMEOUT_MS = 1500L
+        const val TELECONVERTER_MAGNIFICATION = 300f / 70f
+        const val OPLUS_CAMERA_MODE_TELEPHOTO_HASSELBLAD: Byte = 40
     }
 }
