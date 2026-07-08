@@ -229,7 +229,7 @@ class VideoRecorder(private val context: Context) {
     }
 
     private fun startAudio() {
-        val preferredDevice = resolvePreferredInput(audioInputPreference)
+        val preferredDevice = AudioInputInspector.preferredDevice(context, audioInputPreference)
         var channelCount = channelCountFor(preferredDevice)
         var channelMask = channelMaskFor(channelCount)
         val minBuf = AudioRecord.getMinBufferSize(
@@ -277,7 +277,7 @@ class VideoRecorder(private val context: Context) {
             return
         }
         if (preferredDevice != null && !record.setPreferredDevice(preferredDevice)) {
-            Log.w(TAG, "preferred audio input rejected: ${describeDevice(preferredDevice)}")
+            Log.w(TAG, "preferred audio input rejected: ${AudioInputInspector.routeLabel(audioInputPreference, preferredDevice)}")
         }
         audioChannelCount = channelCount
         audioRecord = record
@@ -336,7 +336,7 @@ class VideoRecorder(private val context: Context) {
             }
             return
         }
-        onRoute?.invoke(describeDevice(record.routedDevice ?: record.preferredDevice))
+        onRoute?.invoke(AudioInputInspector.routeLabel(audioInputPreference, record.routedDevice ?: record.preferredDevice))
         val info = MediaCodec.BufferInfo()
         var totalSamples = 0L
         val bytesPerFrame = 2 * audioChannelCount
@@ -453,62 +453,21 @@ class VideoRecorder(private val context: Context) {
         ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
 
-    private fun resolvePreferredInput(preference: AudioInputPreference): AudioDeviceInfo? {
-        if (preference == AudioInputPreference.AUTO) return null
-        val am = context.getSystemService(AudioManager::class.java) ?: return null
-        val devices = am.getDevices(AudioManager.GET_DEVICES_INPUTS).filter { it.isSource }
-        return devices.firstOrNull { device ->
-            when (preference) {
-                AudioInputPreference.AUTO -> false
-                AudioInputPreference.BUILT_IN -> device.type == AudioDeviceInfo.TYPE_BUILTIN_MIC
-                AudioInputPreference.WIRED -> device.type == AudioDeviceInfo.TYPE_WIRED_HEADSET
-                AudioInputPreference.USB -> device.type in USB_INPUT_TYPES
-                AudioInputPreference.BLUETOOTH -> device.type in BLUETOOTH_INPUT_TYPES
-            }
-        }
-    }
-
     private fun channelCountFor(device: AudioDeviceInfo?): Int {
         if (device == null) return ColorProfiles.AUDIO_CHANNELS
         val counts = device.channelCounts
         if (counts.any { it >= ColorProfiles.AUDIO_CHANNELS }) return ColorProfiles.AUDIO_CHANNELS
-        if (counts.isEmpty() && device.type !in BLUETOOTH_INPUT_TYPES) return ColorProfiles.AUDIO_CHANNELS
+        if (counts.isEmpty() && !AudioInputInspector.isBluetoothInput(device.type)) return ColorProfiles.AUDIO_CHANNELS
         return 1
     }
 
     private fun channelMaskFor(channelCount: Int): Int =
         if (channelCount >= ColorProfiles.AUDIO_CHANNELS) AudioFormat.CHANNEL_IN_STEREO else AudioFormat.CHANNEL_IN_MONO
 
-    private fun describeDevice(device: AudioDeviceInfo?): String {
-        if (device == null) return audioInputPreference.label
-        val name = device.productName?.toString()?.takeIf { it.isNotBlank() && it != "Unknown" }
-        return listOfNotNull(audioDeviceTypeLabel(device.type), name).joinToString(" · ")
-    }
-
-    private fun audioDeviceTypeLabel(type: Int): String = when (type) {
-        AudioDeviceInfo.TYPE_BUILTIN_MIC -> "Phone mic"
-        AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired mic"
-        AudioDeviceInfo.TYPE_USB_DEVICE, AudioDeviceInfo.TYPE_USB_ACCESSORY, AudioDeviceInfo.TYPE_USB_HEADSET -> "USB mic"
-        AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "BT mic"
-        AudioDeviceInfo.TYPE_BLE_HEADSET -> "BLE mic"
-        AudioDeviceInfo.TYPE_HEARING_AID -> "BT hearing aid"
-        else -> "Mic"
-    }
-
     private companion object {
         const val TAG = "VideoRecorder"
         const val TIMEOUT_US = 10_000L
         // ~10 Hz cap on onLevel callbacks so the UI meter isn't spammed once per PCM buffer.
         const val LEVEL_THROTTLE_NS = 100_000_000L
-        val USB_INPUT_TYPES = setOf(
-            AudioDeviceInfo.TYPE_USB_DEVICE,
-            AudioDeviceInfo.TYPE_USB_ACCESSORY,
-            AudioDeviceInfo.TYPE_USB_HEADSET,
-        )
-        val BLUETOOTH_INPUT_TYPES = setOf(
-            AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
-            AudioDeviceInfo.TYPE_BLE_HEADSET,
-            AudioDeviceInfo.TYPE_HEARING_AID,
-        )
     }
 }

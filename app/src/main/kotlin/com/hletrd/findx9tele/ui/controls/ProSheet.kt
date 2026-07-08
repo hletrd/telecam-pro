@@ -787,7 +787,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         enabled = state.recordAudio && recordingMutable,
     )
     LabelValueRow(
-        label = if (state.isRecording) "Audio Route" else "Preferred Input",
+        label = if (state.isRecording) "Audio Route" else "Input Status",
         valueLabel = state.audioRouteLabel,
     )
     // Directional audio — the stock Sound Focus (aims the mic array at the framed subject, tightens

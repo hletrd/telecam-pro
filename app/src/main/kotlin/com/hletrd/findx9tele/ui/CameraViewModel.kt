@@ -44,6 +44,7 @@ import com.hletrd.findx9tele.focus.FocusMapping
 import com.hletrd.findx9tele.storage.ExtraSettings
 import com.hletrd.findx9tele.storage.MediaStoreWriter
 import com.hletrd.findx9tele.storage.SettingsStore
+import com.hletrd.findx9tele.video.AudioInputInspector
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -186,7 +187,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 openGate = e.openGate,
                 audioScene = e.audioScene,
                 audioInputPreference = e.audioInputPreference,
-                audioRouteLabel = e.audioInputPreference.label,
+                audioRouteLabel = audioInputStatusLabel(e.audioInputPreference),
                 fnSlots = e.fnSlots,
                 myMenuSlots = e.myMenuSlots,
                 volumeKeyAction = e.volumeKeyAction,
@@ -245,6 +246,18 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     fun onAppStatus(message: String) = showStatus(message)
 
     private fun usesExposureAnalysis(mode: ExposureMode): Boolean = mode != ExposureMode.PROGRAM
+
+    private fun audioInputStatus(preference: AudioInputPreference = _state.value.audioInputPreference) =
+        AudioInputInspector.status(getApplication(), preference)
+
+    private fun audioInputStatusLabel(preference: AudioInputPreference = _state.value.audioInputPreference): String =
+        audioInputStatus(preference).label
+
+    private fun refreshAudioInputStatus() {
+        if (!_state.value.isRecording) {
+            _state.update { it.copy(audioRouteLabel = audioInputStatusLabel(it.audioInputPreference)) }
+        }
+    }
 
     private fun markChanged(slot: FnSlot) {
         _state.update { s ->
@@ -408,7 +421,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         _state.update {
             it.copy(
                 audioInputPreference = preference,
-                audioRouteLabel = if (it.isRecording) it.audioRouteLabel else preference.label,
+                audioRouteLabel = if (it.isRecording) it.audioRouteLabel else audioInputStatusLabel(preference),
                 activeMemorySlot = null,
             )
         }
@@ -617,8 +630,15 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         if (_state.value.isRecording) {
             engine.stopRecording()
             mainHandler.removeCallbacks(recordTicker)
-            _state.update { it.copy(isRecording = false, audioRouteLabel = it.audioInputPreference.label) }
-        } else if (engine.startRecording(_state.value.recordAudio)) {
+            _state.update { it.copy(isRecording = false, audioRouteLabel = audioInputStatusLabel(it.audioInputPreference)) }
+        } else {
+            val s = _state.value
+            val inputStatus = audioInputStatus(s.audioInputPreference)
+            if (s.recordAudio) {
+                _state.update { it.copy(audioRouteLabel = inputStatus.label) }
+                if (!inputStatus.available) showStatus("${inputStatus.label}; fallback to default")
+            }
+            if (!engine.startRecording(s.recordAudio)) return
             recordStartMs = SystemClock.elapsedRealtime()
             mainHandler.post(recordTicker)
             _state.update {
@@ -731,7 +751,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
 
     // ---- Lifecycle ----
-    fun onStart() = engine.resume()
+    fun onStart() {
+        refreshAudioInputStatus()
+        engine.resume()
+    }
     fun onStop() {
         // engine.pause() finalizes any in-flight recording; keep the UI in sync so we don't return
         // to a phantom "recording" state with the timer still ticking.
