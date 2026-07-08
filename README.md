@@ -21,6 +21,10 @@
 ## Features
 
 - **Single-device exclusive**: Android 16 (API 36), latest toolchain only (no backward compatibility). Camera2 direct — no CameraX.
+- **Sony-style pro UX**: quiet, operator-facing camera controls inspired by Sony Alpha / Xperia Pro
+  workflows: Fn access, My Menu, MR banks, PASM-like exposure, and compact status readouts. The app
+  intentionally avoids phone-camera tutorial banners, nagging warning chips, or decorative helper UI
+  that would distract from the viewfinder.
 - **4-lens switcher + teleconverter bundle**: UW (14 mm) / main (23 mm) / 3× (70 mm) / 10× (230 mm), resolved by 35 mm-equivalent focal (no hardcoded ids, standalone-preferred to avoid the QTI-HAL routing crash). Selecting the 3× lens **bundles teleconverter mode on** (afocal 180° flip + gyro-EIS scaled to ~300 mm) in one tap; other lenses turn it off.
 - **Afocal 180° flip**: The teleconverter is afocal, so images arrive flipped 180° → preview/photos/videos all corrected (GL texcoord rotation for preview, pixel rotation for HEIF/JPEG, EXIF tag for DNG).
 - **Full manual control**: Focus (nonlinear slider tuned near infinity), ISO, shutter (speed or cine angle), WB (presets + Kelvin/tint), EV, metering, drive modes (single/burst/AEB/timelapse). Stop-snapping dials with haptic detents; AF→MF handoff seeds the manual slider from AF's live lens position.
@@ -124,7 +128,3 @@ them directly, each device-verified through to a saved file (not just "session c
   Release build section above. Remaining human steps: complete the Play Console listing/data-safety
   form and restrict availability to CPH2841/PMA110.
 - 🚧 **Not started**: R8/minify (deferred — needs enum keep-rules + device re-verification). Dolby Vision (HW encoder detected, MP4 muxing non-trivial). See [`docs/BACKLOG.md`](docs/BACKLOG.md).
-
-## Trademarks
-
-TeleCam Pro is an independent project and is not affiliated with, endorsed by, or sponsored by OPPO, Hasselblad, or any hardware maker. "OPPO", "Find X9 Ultra", and other product names are trademarks of their respective owners, used here only to describe hardware compatibility.
