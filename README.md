@@ -24,7 +24,7 @@
 - **Sony-style pro UX**: quiet, operator-facing camera controls inspired by Sony Alpha / Xperia Pro
   workflows: Fn access, My Menu, MR banks, PASM-like exposure, and compact status readouts. The app
   intentionally avoids phone-camera tutorial banners, nagging warning chips, or decorative helper UI
-  that would distract from the viewfinder.
+  that would distract from the viewfinder. See [`docs/UX_POLICY.md`](docs/UX_POLICY.md).
 - **4-lens switcher + teleconverter bundle**: UW (14 mm) / main (23 mm) / 3× (70 mm) / 10× (230 mm), resolved by 35 mm-equivalent focal (no hardcoded ids, standalone-preferred to avoid the QTI-HAL routing crash). Selecting the 3× lens **bundles teleconverter mode on** (afocal 180° flip + gyro-EIS scaled to ~300 mm) in one tap; other lenses turn it off.
 - **Afocal 180° flip**: The teleconverter is afocal, so images arrive flipped 180° → preview/photos/videos all corrected (GL texcoord rotation for preview, pixel rotation for HEIF/JPEG, EXIF tag for DNG).
 - **Full manual control**: Focus (nonlinear slider tuned near infinity), ISO, shutter (speed or cine angle), WB (presets + Kelvin/tint), EV, metering, drive modes (single/burst/AEB/timelapse). Stop-snapping dials with haptic detents; AF→MF handoff seeds the manual slider from AF's live lens position.

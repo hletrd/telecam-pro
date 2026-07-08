@@ -95,9 +95,7 @@ import com.hletrd.findx9tele.camera.ProcessingLevel
 import com.hletrd.findx9tele.camera.ShutterMode
 import com.hletrd.findx9tele.camera.ShutterTimer
 import com.hletrd.findx9tele.camera.VideoCodec
-import com.hletrd.findx9tele.camera.VideoStabMode
 import com.hletrd.findx9tele.camera.WbMode
-import com.hletrd.findx9tele.camera.effectiveExposureNs
 import com.hletrd.findx9tele.ui.controls.ManualDialCluster
 import com.hletrd.findx9tele.ui.controls.ProSheet
 import com.hletrd.findx9tele.ui.controls.ProSheetTab
@@ -122,13 +120,12 @@ import com.hletrd.findx9tele.ui.review.MediaReviewOverlay
 import com.hletrd.findx9tele.ui.theme.CameraColors
 import com.hletrd.findx9tele.ui.theme.FindX9TeleTheme
 import kotlin.math.ln
-import kotlin.math.roundToInt
 
 /**
- * Root camera UI, styled after the Google Pixel Camera app: a near-empty viewfinder at rest, a
- * thin row of quick toggles up top, and a bottom cluster of manual "Fn" dials + mode switch +
- * shutter. Everything else lives one tap away in [ProSheet], a Sony-menu-style tabbed settings
- * system. Stateless: everything shown comes from [state], every interaction is forwarded to
+ * Root camera UI, styled after Sony Alpha / Xperia Pro operation: a clear viewfinder at rest, compact
+ * status readouts, and a bottom cluster of manual "Fn" dials + mode switch + shutter. Everything else
+ * lives one tap away in [ProSheet], a Sony-menu-style tabbed settings system. Stateless: everything
+ * shown comes from [state], every interaction is forwarded to
  * [actions]. Hosts the GL preview via a [TextureView] (an external GL thread renders into its
  * SurfaceTexture) and layers overlays and chrome on top.
  */
@@ -144,6 +141,7 @@ fun CameraScreen(
     // Remembers the last-viewed settings tab so the gear reopens where the user left off.
     var sheetInitialTab by remember { mutableStateOf(ProSheetTab.MY_MENU) }
     var fnOverlayVisible by remember { mutableStateOf(false) }
+    var manualDialOpen by remember { mutableStateOf(false) }
     val currentActions = rememberUpdatedState(actions)
 
     fun openSheet(tab: ProSheetTab) {
@@ -151,8 +149,8 @@ fun CameraScreen(
         sheetVisible = true
     }
 
-    // Counter-rotates the on-screen glyphs/labels so they stay upright as the phone turns, even though
-    // the activity is portrait-locked (like Pixel/Sony). The counter-rotation is +deviceOrientation:
+    // Counter-rotates compact on-screen glyphs/labels so they stay upright as the phone turns, even
+    // though the activity is portrait-locked. The counter-rotation is +deviceOrientation:
     // GyroEis derives the discrete value from gravity via atan2(x,y), which yields dev=90 for a
     // COUNTER-clockwise (left) landscape and dev=270 for a clockwise (right) landscape — the opposite
     // of the naive assumption. So the glyph must rotate by +dev to undo the phone's turn (a −dev sign
@@ -297,17 +295,6 @@ fun CameraScreen(
                 .padding(start = 12.dp, top = 60.dp),
         )
 
-        teleSafetyWarning(state)?.let { warning ->
-            TeleSafetyBanner(
-                warning = warning,
-                actions = actions,
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .statusBarsPadding()
-                    .padding(start = 12.dp, top = 98.dp),
-            )
-        }
-
         if (state.halfPressActive) {
             Text(
                 text = state.halfPressAction.label,
@@ -393,13 +380,23 @@ fun CameraScreen(
             ZoomIndicator(zoom = state.controls.zoomRatio, range = state.caps?.zoomRatioRange, numberRotation = overlayRotation)
         }
 
-        ExposureMeter(
-            state = state,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
-                .padding(bottom = 274.dp),
-        )
+        if (manualDialOpen) {
+            ExposureMeter(
+                state = state,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 146.dp),
+            )
+        } else {
+            ExposureMeter(
+                state = state,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = 274.dp),
+            )
+        }
 
         val onShutter = remember(state.mode) {
             {
@@ -439,6 +436,7 @@ fun CameraScreen(
                 actions = actions,
                 onRequestWhiteBalanceSheet = { openSheet(ProSheetTab.EXPOSURE) },
                 onOpenFnMenu = { fnOverlayVisible = true },
+                onDialOpenChange = { manualDialOpen = it },
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
 
@@ -1038,87 +1036,6 @@ private fun manualMeterEv(state: CameraUiState): Float? {
 
 private fun log2(value: Float): Float = (ln(value.toDouble()) / ln(2.0)).toFloat()
 
-@Composable
-private fun TeleSafetyBanner(
-    warning: TeleSafetyWarning,
-    actions: CameraActions,
-    modifier: Modifier = Modifier,
-) {
-    Row(
-        modifier = modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(Color(0xFFFFD60A).copy(alpha = 0.95f))
-            .padding(start = 10.dp, top = 5.dp, end = 5.dp, bottom = 5.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = warning.message,
-            color = Color.Black,
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.Bold,
-        )
-        Text(
-            text = warning.actionLabel,
-            color = Color.White,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier
-                .clip(RoundedCornerShape(50))
-                .background(Color.Black.copy(alpha = 0.82f))
-                .clickable {
-                    when (warning.action) {
-                        TeleSafetyAction.ENABLE_OIS -> actions.onToggleOis(true)
-                        TeleSafetyAction.ENABLE_STAB -> actions.onVideoStabMode(VideoStabMode.ENHANCED)
-                        TeleSafetyAction.SET_SAFE_SHUTTER -> {
-                            actions.onShutterMode(ShutterMode.SPEED)
-                            actions.onShutterNs(TELE_SAFE_SHUTTER_NS)
-                        }
-                    }
-                }
-                .padding(horizontal = 8.dp, vertical = 3.dp),
-        )
-    }
-}
-
-private fun teleSafetyWarning(state: CameraUiState): TeleSafetyWarning? {
-    if (!state.teleconverterMode) return null
-    if (!state.controls.oisEnabled) {
-        return TeleSafetyWarning("300mm WARN · OIS OFF", "OIS ON", TeleSafetyAction.ENABLE_OIS)
-    }
-    if (state.videoStabMode == VideoStabMode.OFF && state.mode == CaptureMode.VIDEO) {
-        return TeleSafetyWarning("300mm WARN · STAB OFF", "STAB ON", TeleSafetyAction.ENABLE_STAB)
-    }
-    val exposureNs = when {
-        state.controls.exposureMode == ExposureMode.PROGRAM -> state.liveExposureNs
-        else -> state.controls.effectiveExposureNs()
-    } ?: return null
-    return if (exposureNs > TELE_SAFE_SHUTTER_NS) {
-        TeleSafetyWarning("300mm WARN · ${formatSafetyShutter(exposureNs)}", "SET 1/320", TeleSafetyAction.SET_SAFE_SHUTTER)
-    } else {
-        null
-    }
-}
-
-private fun formatSafetyShutter(ns: Long): String {
-    val seconds = ns / 1_000_000_000.0
-    return if (seconds >= 1.0) "%.1fs".format(seconds) else "1/${(1.0 / seconds).roundToInt().coerceAtLeast(1)}s"
-}
-
-private const val TELE_SAFE_SHUTTER_NS = 1_000_000_000L / 320L
-
-private data class TeleSafetyWarning(
-    val message: String,
-    val actionLabel: String,
-    val action: TeleSafetyAction,
-)
-
-private enum class TeleSafetyAction {
-    ENABLE_OIS,
-    ENABLE_STAB,
-    SET_SAFE_SHUTTER,
-}
-
 // ---------------------------------------------------------------------------
 // Bottom cluster: mode carousel + shutter row (the manual dial cluster lives in ManualDials.kt).
 // ---------------------------------------------------------------------------
@@ -1273,7 +1190,7 @@ private fun SnapshotButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
 /**
  * Teleconverter toggle, drawn as a lens glyph. The engine describes engaging the teleconverter as
  * an "afocal 180° flip" (see [com.hletrd.findx9tele.camera.CameraUiState.teleconverterMode]), so
- * this doubles as the "lens/flip" slot Pixel-style camera apps reserve for a front/back switch —
+ * this doubles as the pro camera's lens/teleconverter state slot —
  * this app has a single fixed tele lens, so there is nothing to flip to; the teleconverter toggle
  * is the closest in-contract analogue and is duplicated here (also reachable via the top-bar TELE
  * chip and the pro sheet's Stabilization tab) for quick access next to the shutter.

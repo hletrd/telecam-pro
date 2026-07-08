@@ -81,11 +81,17 @@ fun ManualDialCluster(
     actions: CameraActions,
     onRequestWhiteBalanceSheet: () -> Unit,
     onOpenFnMenu: () -> Unit = {},
+    onDialOpenChange: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     var openDial by remember { mutableStateOf<DialType?>(null) }
     val controls = state.controls
     val caps = state.caps
+    val dialOpen = openDial != null
+
+    LaunchedEffect(dialOpen) {
+        onDialOpenChange(dialOpen)
+    }
 
     // MF assist: while the Focus ruler is open, punch in on the loupe point (last tap, else center)
     // so critical focus at 300 mm is judged on magnified pixels — the auto-magnify every MF-first
@@ -106,7 +112,7 @@ fun ManualDialCluster(
 
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
         AnimatedVisibility(
-            visible = openDial != null,
+            visible = dialOpen,
             enter = fadeIn(tween(160)) + expandVertically(tween(180)),
             exit = fadeOut(tween(120)) + shrinkVertically(tween(160)),
         ) {

@@ -19,6 +19,12 @@
 
 A professional single-device camera app for the **OPPO Find X9 Ultra** (Android 16 / API 36) that uses Camera2 to control the rear 3× periscope telephoto lens through a **Hasselblad "Earth Explorer" afocal 300 mm teleconverter** (≈4.286× magnification: 300 mm ÷ 70 mm). The app captures high-quality stills (HEIF + RAW/DNG) and video (10-bit HEVC Rec.2020 in HLG or Log transfer function).
 
+The UI/UX reference is **Sony Alpha / Sony Xperia Pro camera operation**. Controls should feel like a
+professional camera surface: Fn access, My Menu, MR banks, PASM-style exposure, compact OSD, and
+minimal viewfinder obstruction. Avoid conspicuous warning banners, tutorial copy, marketing-style
+cards, and "helpful" overlays unless the user explicitly asks for them; important states belong in
+normal status readouts or menu rows. See [`UX_POLICY.md`](UX_POLICY.md).
+
 Two critical consequences of the afocal converter drive the entire design:
 - **Image rotation**: The afocal telescope delivers light rotated 180° (no erecting prism). Both the live preview and saved results must be corrected. Vertical flip + horizontal flip = 180° rotation (parity-preserving, not a mirror).
 - **Near-infinity focus**: Exit light is approximately collimated, so the phone lens focuses near infinity. Manual focus with a nonlinear slider is essential for fine-tuning that critical zone.
@@ -68,7 +74,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | **ui/overlays/** | |
 | `Overlays.kt` | Compose overlays: reticle (tap-to-focus), histogram/waveform, grid, spirit level, peaking, zebra, punch-in zoom indicator. Stateless off CameraUiState. |
 | **ui/theme/** | |
-| `Theme.kt` | Material3 dark theme (Pixel-style), typography, color palette, text field/button shapes. |
+| `Theme.kt` | Material3 dark theme tuned for a Sony-style pro camera surface, typography, color palette, text field/button shapes. |
 | `MainActivity.kt` | Entry point. Requests CAMERA/RECORD_AUDIO permissions at runtime (ColorOS blocks pm grant). Hosts the Compose root and ViewModel. Lifecycle: onStart/onStop call engine pause/resume. |
 | `TeleCameraApp.kt` | Application class, kept minimal. No wiring needed; all setup in MainActivity/ViewModel. |
 

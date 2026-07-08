@@ -29,6 +29,13 @@ deprecated APIs, latest stable everything.
 - **Latest toolchain, no deprecated APIs.** See versions below; bump when newer stable ships.
 - **Everything user-facing in English.** (Historical commit messages are Korean; do not rewrite
   history — that's a destructive op requiring explicit sign-off.)
+- **UI/UX reference is Sony Alpha / Sony Xperia Pro camera, not generic phone-camera helpers.**
+  Prefer quiet, dense, operator-facing controls: Fn, My Menu, MR banks, PASM-style exposure, clear
+  status readouts, and controls that stay out of the viewfinder. Do **not** add tutorial banners,
+  nagging warning pills, safety nags, marketing copy, or "helpful" overlays that real pro cameras
+  would not show. If a condition matters, expose it as a normal camera status/control state or put it
+  in the relevant menu; do not invent conspicuous alert UI without explicit user approval. See
+  `docs/UX_POLICY.md`.
 
 ## Toolchain (all pinned in `gradle/libs.versions.toml`)
 
@@ -144,25 +151,25 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
 - **Settings persist across launches** via `storage/SettingsStore.kt` (SharedPreferences, enums by
   name, defensive load). Gated by a "Remember Settings" toggle that **defaults ON**; saved on
   background, restored on launch (pushed to the engine pre-start).
-- **HAL-native log IS reachable via `com.oplus.log.video.mode` (verified 2026-07-06).**
-  The vendor tag `com.oplus.log.video.mode` (Integer, a **session** key) is in the tele's
-  `availableRequestKeys`+`availableSessionKeys` (dumpsys), so raw Camera2 can set it — do so as a
-  **session parameter** (from `TEMPLATE_RECORD`) AND on every request, fully guarded. Device-verified:
-  value `1` engages a genuine scene-referred log stream (flat, mean luma ~½ of SDR, GL curve off);
-  `1`≡`2` (on/off). `com.oplus.movie.log.enable` (the byte gate) is NOT exposed. CAVEAT: the HAL log
-  is not a clean round-trip for the published O-Log2/O-Log-gen1 LUTs (scene-referred,
-  un-white-balanced, warm cast) — for a LUT-accurate deliverable use the GL O-Log2 path below.
-  Exposed as Pro→Advanced→"Native Log" (`VendorLogMode`, not persisted).
-- **LOG = official O-Log2, applied in GL; HAL-native log is vendor-gated (verified 2026-07-06).**
-  The `ColorTransfer.LOG` path bakes OPPO's published O-Log2 OETF (white paper EN v1:
+- **LOG = GL O-Log2, and it now renders in the live PREVIEW (behavior corrected 2026-07-08).**
+  `ColorTransfer.LOG` bakes OPPO's published O-Log2 OETF in the GL stage (white paper EN v1:
   `P = 0.08550479·log₂(R+0.00964052)+0.69336945`, parabolic toe below R=0.006, O-Gamut = BT.2020/D65
-  full-range) after a γ2.2 linearization of the display-referred SDR stream + 709→2020 matrix. 18 %
-  grey lands on the official 0.4868 anchor, so OPPO's public O-Log2 LUTs restore it. This GL path is
-  the LUT-accurate deliverable, but it can only re-map the display-referred SDR output (no above-white
-  headroom). For a true scene-referred stream use the HAL `com.oplus.log.video.mode` key (see the
-  entry just above — it IS exposed; only `movie.log.enable` is gated). Also: leaving
-  `KEY_COLOR_TRANSFER` unset on a BT2020 full-range HEVC format makes the QTI encoder tag the VUI
-  **ST2084 (PQ)** — players then tone-map log footage as HDR. Tag a transfer explicitly, always.
+  full-range) after a γ2.2 linearization of the display-referred SDR stream + 709→2020 matrix; 18 %
+  grey lands on the official 0.4868 anchor, so OPPO's public O-Log2 LUTs restore it. **The preview draw
+  now applies the LOG curve too** (`previewTransfer = if (transfer == LOG) LOG else null` in
+  `GlPipeline`) — previously the preview was hardcoded SDR (`null`) and ONLY the encoder got the curve,
+  so LOG baked into the recorded file but the live preview never looked flat (user-reported; fixed and
+  device-confirmed). HLG/SDR preview stays natural (an HLG curve on the SDR preview surface just looks
+  washed — HDR is monitored on an HDR display, not here).
+- **HAL-native log is reachable but NO LONGER wired to LOG.** The vendor tag `com.oplus.log.video.mode`
+  (Integer **session** key) IS in the tele's `availableRequestKeys`+`availableSessionKeys` and
+  device-verified (value `1`≡`2` engages a genuine scene-referred stream, flat, mean luma ~½ SDR);
+  `com.oplus.movie.log.enable` (the byte gate) is NOT exposed. But it only flattens the RECORD stream,
+  not the preview, so `ColorTransfer.LOG` drives GL O-Log2 instead (above) and `vendorLogMode` is kept
+  **OFF**. The separate "Native Log" toggle was removed; the key infra stays dormant for a future
+  scene-referred path. NOTE: leaving `KEY_COLOR_TRANSFER` unset on a BT2020 full-range HEVC format makes
+  the QTI encoder tag the VUI **ST2084 (PQ)** — players then tone-map log footage as HDR. Tag a transfer
+  explicitly, always.
 - **Video stabilization = HAL OIS+EIS via the device's own path (verified 2026-07-07).** For VIDEO the
   shutter is fixed (e.g. 1/60 s), so per-frame MOTION BLUR is set by the shutter and only **OIS**
   (which moves the lens DURING the exposure) can cut it — app-side gyro EIS only warps whole frames
@@ -202,7 +209,7 @@ CameraEngine ├─ CameraSelector2  pick tele (closest-to-70mm, standalone; pic
              ├─ capture/HeifCapture (pixel-rotate) + DngCapture (EXIF orient)
              ├─ video/VideoRecorder (HEVC/AVC/AV1, HLG/Log) + EncoderCaps + ColorProfiles
              └─ storage/MediaStoreWriter (scoped, IS_PENDING) + SettingsStore (persist)
-UI: CameraScreen (Pixel-style) + controls/{ManualDials,ProSheet,ProControls} + overlays/*
+UI: CameraScreen (Sony-style pro surface) + controls/{ManualDials,ProSheet,ProControls} + overlays/*
 ```
 
 Data flow is unidirectional: Compose UI is stateless off `CameraUiState`; every interaction goes

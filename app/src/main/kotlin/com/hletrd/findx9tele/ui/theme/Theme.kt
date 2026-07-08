@@ -6,7 +6,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
 /**
- * Pixel-Camera-inspired design tokens. Kept as plain constants (rather than only
+ * Sony-style pro camera design tokens. Kept as plain constants (rather than only
  * [MaterialTheme.colorScheme] entries) so Canvas-drawn glyphs, overlays and chrome scrims can
  * reference them directly without threading the color scheme through every draw call.
  */
