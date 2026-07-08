@@ -54,7 +54,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.net.toUri
 import com.hletrd.findx9tele.camera.Antibanding
+import com.hletrd.findx9tele.camera.AfSpotSize
 import com.hletrd.findx9tele.camera.ExposureMode
+import com.hletrd.findx9tele.camera.FrameLineType
 import com.hletrd.findx9tele.camera.ExposureStep
 import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.AudioScene
@@ -555,6 +557,19 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
             valueRange = -50f..50f,
         )
     }
+    // Sony Custom WB: frame a white/grey card and capture — freezes the AWB gains of that frame.
+    FilterChip(
+        selected = controls.wbMode == WbMode.CUSTOM,
+        onClick = actions::onCaptureCustomWb,
+        label = { Text("Capture Custom WB") },
+        colors = pixelChipColors(),
+        border = pixelChipBorder(controls.wbMode == WbMode.CUSTOM),
+    )
+    Text(
+        "Frame a white or grey card, then tap.",
+        color = CameraColors.TextSecondary,
+        style = MaterialTheme.typography.labelSmall,
+    )
     ToggleRow(label = "AWB Lock", checked = controls.awbLock, onCheckedChange = actions::onToggleAwbLock)
 }
 
@@ -568,6 +583,14 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
         selected = controls.focusMode,
         labelFor = ::focusModeLabel,
         onSelect = actions::onFocusMode,
+    )
+    // Sony Focus Area: Spot S/M/L — the size of the tap-AF/metering region.
+    SegmentedSelector(
+        label = "Spot Size",
+        options = AfSpotSize.entries,
+        selected = controls.afSpotSize,
+        labelFor = { it.label },
+        onSelect = actions::onAfSpotSize,
     )
     if (controls.focusMode != FocusMode.MANUAL) {
         ToggleRow(label = "AF Lock", checked = controls.afLock, onCheckedChange = actions::onAfLock)
@@ -623,7 +646,6 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
 
     // Stabilization lives here with the rest of the optics — it does not need its own menu tab
     // (feedback). HAL OIS+EIS path; OIS physically cuts per-frame motion blur at 300 mm.
-    SectionHeader("Image Stabilization")
     SegmentedSelector(
         label = "Image Stabilization",
         options = VideoStabMode.entries,
@@ -818,6 +840,21 @@ private fun ProcessingTab(state: CameraUiState, actions: CameraActions) {
 @Composable
 private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
     TabTitle("Assist")
+    // Gamma Display Assist (Sony): only meaningful while the Gamma is O-Log — the monitor shows the
+    // normal image, the recorded file stays log.
+    ToggleRow(
+        label = "Gamma Disp. Assist",
+        checked = state.gammaAssist,
+        onCheckedChange = actions::onToggleGammaAssist,
+        enabled = state.transfer == ColorTransfer.LOG,
+    )
+    SegmentedSelector(
+        label = "Frame Lines",
+        options = FrameLineType.entries,
+        selected = state.frameLines,
+        labelFor = { it.label },
+        onSelect = actions::onFrameLines,
+    )
     ToggleRow(label = "Zebra", checked = state.zebra, onCheckedChange = actions::onToggleZebra)
     SegmentedSelector(
         label = "Zebra IRE",
@@ -977,7 +1014,8 @@ private fun nextWbMode(mode: WbMode): WbMode = when (mode) {
     WbMode.CLOUDY -> WbMode.SHADE
     WbMode.SHADE -> WbMode.MANUAL
     WbMode.MANUAL -> WbMode.AUTO
-    WbMode.INCANDESCENT, WbMode.FLUORESCENT -> WbMode.AUTO
+    // CUSTOM is only ENTERED via "Capture Custom WB"; the Fn cycle steps past it back to AUTO.
+    WbMode.INCANDESCENT, WbMode.FLUORESCENT, WbMode.CUSTOM -> WbMode.AUTO
 }
 
 private fun nextVideoStabMode(mode: VideoStabMode): VideoStabMode = when (mode) {

@@ -84,6 +84,7 @@ import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.DriveMode
 import com.hletrd.findx9tele.camera.ExposureMode
+import com.hletrd.findx9tele.camera.FrameLineType
 import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FnSlot
 import com.hletrd.findx9tele.camera.FocusMode
@@ -107,6 +108,7 @@ import com.hletrd.findx9tele.ui.controls.performQuickFn
 import com.hletrd.findx9tele.ui.controls.shutterTimerLabel
 import com.hletrd.findx9tele.ui.overlays.AspectMask
 import com.hletrd.findx9tele.ui.overlays.AudioMeter
+import com.hletrd.findx9tele.ui.overlays.FrameLinesOverlay
 import com.hletrd.findx9tele.ui.overlays.FocusReticle
 import com.hletrd.findx9tele.ui.overlays.GridOverlay
 import com.hletrd.findx9tele.ui.overlays.HistogramOverlay
@@ -136,6 +138,8 @@ fun CameraScreen(
     modifier: Modifier = Modifier,
 ) {
     var sheetVisible by remember { mutableStateOf(false) }
+    // Sony DISP: one tap declutters the viewfinder (hides OSD/meter/scopes/MR; keeps REC + framing).
+    var dispClean by remember { mutableStateOf(false) }
     // In-app review overlay (last saved still, pinch-to-zoom for focus check).
     var reviewOpen by remember { mutableStateOf(false) }
     // Remembers the last-viewed settings tab so the gear reopens where the user left off.
@@ -269,6 +273,16 @@ fun CameraScreen(
 
         GridOverlay(type = state.grid, modifier = Modifier.fillMaxSize())
 
+        if (state.frameLines != FrameLineType.OFF) {
+            FrameLinesOverlay(type = state.frameLines, modifier = Modifier.fillMaxSize())
+        }
+
+        // Emphasized REC display (Sony FX): a thin red frame while rolling — unmissable, even in
+        // DISP-clean mode.
+        if (state.isRecording) {
+            Box(modifier = Modifier.fillMaxSize().border(3.dp, CameraColors.Record))
+        }
+
         if (state.aspectRatio != AspectRatio.W4_3) {
             AspectMask(ratio = state.aspectRatio, modifier = Modifier.fillMaxSize())
         }
@@ -285,7 +299,7 @@ fun CameraScreen(
             FocusReticle(point = state.tapPoint, modifier = Modifier.fillMaxSize())
         }
 
-        StatusBar(
+        if (!dispClean) StatusBar(
             state = state,
             // NOT rotated: it's a wide top-left row, so a 90° spin about its center swings it off
             // screen. It stays fixed (readable in portrait); only the compact scopes counter-rotate.
@@ -324,16 +338,21 @@ fun CameraScreen(
             horizontalAlignment = Alignment.End,
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            if (!dispClean) {
+                StatusInfoPill(state = state, modifier = Modifier.rotateLayout(overlayRotation))
+            }
             if (state.isRecording) {
                 RecordingIndicator(elapsedMs = state.recordElapsedMs, modifier = Modifier.rotateLayout(overlayRotation))
             }
-            if (state.isRecording && state.recordAudio) {
+            // Sony-style standby metering: input levels are visible while video is ARMED,
+            // not just while rolling (the engine runs a levels-only mic tap in standby).
+            if (state.mode == CaptureMode.VIDEO && state.recordAudio) {
                 AudioMeter(level = state.audioLevel, modifier = Modifier.rotateLayout(overlayRotation))
             }
-            if (state.histogram) {
+            if (!dispClean && state.histogram) {
                 HistogramOverlay(data = state.histogramData, modifier = Modifier.rotateLayout(overlayRotation))
             }
-            if (state.waveform) {
+            if (!dispClean && state.waveform) {
                 WaveformOverlay(data = state.waveformData, modifier = Modifier.rotateLayout(overlayRotation))
             }
         }
@@ -360,6 +379,8 @@ fun CameraScreen(
             state = state,
             actions = actions,
             onOpenSheet = { sheetVisible = true }, // reopen to the remembered last tab
+            dispClean = dispClean,
+            onToggleDisp = { dispClean = !dispClean },
             glyphRotation = overlayRotation,
             modifier = Modifier
                 .align(Alignment.TopCenter)
@@ -382,7 +403,7 @@ fun CameraScreen(
 
         // Exposure meter: pinned to the LEFT edge as a vertical scale (the scopes own the right).
         // A fixed home beats the old jump between top/bottom as the dial opened (feedback).
-        ExposureMeter(
+        if (!dispClean) ExposureMeter(
             state = state,
             modifier = Modifier
                 .align(Alignment.CenterStart)
@@ -413,7 +434,7 @@ fun CameraScreen(
                 .padding(top = 28.dp, bottom = 12.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            MemoryRecallStrip(
+            if (!dispClean) MemoryRecallStrip(
                 state = state,
                 actions = actions,
                 glyphRotation = overlayRotation,
@@ -515,6 +536,8 @@ private fun TopBar(
     state: CameraUiState,
     actions: CameraActions,
     onOpenSheet: () -> Unit,
+    dispClean: Boolean,
+    onToggleDisp: () -> Unit,
     modifier: Modifier = Modifier,
     glyphRotation: Float = 0f,
 ) {
@@ -540,7 +563,10 @@ private fun TopBar(
             TeleChip(active = state.teleconverterMode, onClick = { actions.onToggleTeleconverter(!state.teleconverterMode) })
         }
         // Counter-rotate the settings glyph so it stays upright as the phone turns (iPhone-style).
-        GearButton(onClick = onOpenSheet, modifier = Modifier.rotate(glyphRotation))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            DispButton(active = dispClean, onClick = onToggleDisp, modifier = Modifier.rotate(glyphRotation))
+            GearButton(onClick = onOpenSheet, modifier = Modifier.rotate(glyphRotation))
+        }
     }
 }
 
@@ -738,6 +764,77 @@ private fun GearButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
                 drawCircle(color = CameraColors.ChromeScrim.copy(alpha = 0.45f), radius = knobRadius * 1.4f, center = Offset(knobX, y))
                 drawCircle(color, radius = knobRadius, center = Offset(knobX, y), style = Stroke(width = 1.4.dp.toPx()))
             }
+        }
+    }
+}
+
+/** Sony DISP toggle: viewfinder-frame glyph whose info lines drop out when the display is clean. */
+@Composable
+private fun DispButton(active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    ChromeIconButton(
+        onClick = onClick,
+        contentDescription = if (active) "Show shooting info" else "Hide shooting info",
+        modifier = modifier,
+    ) {
+        Canvas(Modifier.size(16.dp)) {
+            val color = if (active) CameraColors.Accent else CameraColors.TextPrimary
+            val sw = 1.3.dp.toPx()
+            drawRect(color, style = Stroke(width = sw))
+            drawLine(color, Offset(size.width * 0.22f, size.height * 0.36f), Offset(size.width * 0.78f, size.height * 0.36f), strokeWidth = sw)
+            drawLine(color, Offset(size.width * 0.22f, size.height * 0.64f), Offset(size.width * 0.55f, size.height * 0.64f), strokeWidth = sw)
+        }
+    }
+}
+
+/**
+ * Battery % + remaining media (Sony viewfinder staple). Video mode estimates minutes at the CURRENT
+ * encode bitrate; photo mode estimates shots from the enabled formats. Rough by design — it answers
+ * "do I have enough left", not accounting.
+ */
+@Composable
+private fun StatusInfoPill(state: CameraUiState, modifier: Modifier = Modifier) {
+    if (state.batteryPct < 0 && state.freeBytes <= 0) return
+    val remaining: String? = when {
+        state.freeBytes <= 0 -> null
+        state.mode == CaptureMode.VIDEO -> {
+            val bps = com.hletrd.findx9tele.camera.videoBitRate(
+                state.videoResolution.width, state.videoResolution.height,
+                state.videoFrameRate.encoderRate,
+                com.hletrd.findx9tele.camera.effectiveBpp(state.bitrateLevel, state.videoCodec), state.videoCodec,
+            ).toLong() + 192_000L // + AAC
+            val min = (state.freeBytes * 8L / bps.coerceAtLeast(1L)) / 60L
+            when {
+                min >= 600 -> "9h+"
+                min >= 60 -> "${min / 60}h${min % 60}m"
+                else -> "${min}min"
+            }
+        }
+        else -> {
+            var perShot = 0L
+            if (state.photoFormats.heif) perShot += 8_000_000L
+            if (state.photoFormats.jpeg) perShot += 6_000_000L
+            if (state.photoFormats.dngRaw) perShot += 26_000_000L
+            if (perShot == 0L) perShot = 8_000_000L
+            val shots = state.freeBytes / perShot
+            if (shots > 9999) "9999+" else "$shots"
+        }
+    }
+    Row(
+        modifier = modifier
+            .background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(8.dp))
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (state.batteryPct >= 0) {
+            Text(
+                "${state.batteryPct}%",
+                color = if (state.batteryPct <= 15) CameraColors.Record else CameraColors.TextPrimary,
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
+        remaining?.let {
+            Text(it, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
         }
     }
 }
@@ -1274,6 +1371,10 @@ private object PreviewCameraActions : CameraActions {
     override fun onToggleFalseColor(enabled: Boolean) = Unit
     override fun onToggleHistogram(enabled: Boolean) = Unit
     override fun onToggleWaveform(enabled: Boolean) = Unit
+    override fun onToggleGammaAssist(enabled: Boolean) = Unit
+    override fun onFrameLines(type: FrameLineType) = Unit
+    override fun onAfSpotSize(size: com.hletrd.findx9tele.camera.AfSpotSize) = Unit
+    override fun onCaptureCustomWb() = Unit
     override fun onGridType(type: GridType) = Unit
     override fun onToggleLevel(enabled: Boolean) = Unit
     override fun onTogglePunchIn(enabled: Boolean) = Unit

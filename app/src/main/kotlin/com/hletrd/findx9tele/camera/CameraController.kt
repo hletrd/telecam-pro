@@ -460,6 +460,11 @@ class CameraController(context: Context) {
                     session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult,
                 ) {
                     result.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let { lastFocusDistance = it }
+                    // Stashed for custom-WB capture (grey-card measure) and JPEG EXIF: the AWB gains
+                    // and exposure the HAL actually used on the latest frame.
+                    result.get(CaptureResult.COLOR_CORRECTION_GAINS)?.let { lastAwbGains = it }
+                    result.get(CaptureResult.SENSOR_SENSITIVITY)?.let { lastIso = it }
+                    result.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let { lastExposureNs = it }
                     threeAFrame++
                     // Surface the AE-resolved ISO/shutter to the UI (throttled ~3 Hz, only on change)
                     // so the Shutter/ISO chips can show what AE actually chose in auto mode.
@@ -521,6 +526,14 @@ class CameraController(context: Context) {
      *   SPOT   → one center rectangle covering 12%, at METERING_WEIGHT_MAX.
      * No-op when the active array is unavailable, so it degrades to full-frame metering.
      */
+    /** Latest-frame AWB gains / exposure, for custom-WB capture and JPEG EXIF. */
+    @Volatile var lastAwbGains: android.hardware.camera2.params.RggbChannelVector? = null
+        private set
+    @Volatile var lastIso: Int = 0
+        private set
+    @Volatile var lastExposureNs: Long = 0L
+        private set
+
     private fun applyMetering(builder: CaptureRequest.Builder, controls: ManualControls) {
         val active = rawChars?.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
 
@@ -530,7 +543,7 @@ class CameraController(context: Context) {
             Triple(
                 active.left + (point.first * active.width()).toInt(),
                 active.top + (point.second * active.height()).toInt(),
-                0.10f,
+                controls.afSpotSize.fraction, // Sony-style Spot S/M/L
             )
         } else {
             val f = when (controls.meteringMode) {

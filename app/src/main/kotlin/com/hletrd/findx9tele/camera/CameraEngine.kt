@@ -141,6 +141,7 @@ class CameraEngine(private val context: Context) {
                 // the LOG preview only turned flat after the first recording pushed the transfer.
                 gl.setTransfer(if (recorder == null) transfer else null)
                 gl.setAeMetering(aeMetering)
+                gl.setGammaAssist(gammaAssist)
                 applyStabilization()
                 gyro.start()
                 maybeLogCameraCapabilities()
@@ -295,6 +296,18 @@ class CameraEngine(private val context: Context) {
         aeMetering = enabled
         gl.setAeMetering(enabled)
     }
+
+    /** Gamma Display Assist: normal monitor image while recording O-Log (the file stays log). */
+    fun setGammaAssist(enabled: Boolean) {
+        gammaAssist = enabled
+        gl.setGammaAssist(enabled)
+    }
+
+    @Volatile private var gammaAssist = false
+
+    /** AWB gains of the latest frame, for custom (grey-card) WB capture. Null until 3A runs. */
+    fun currentAwbGains(): WbGains? =
+        controller?.lastAwbGains?.let { WbGains(it.red, it.greenEven, it.greenOdd, it.blue) }
 
     // Remembered so the GL-start callback can re-seed it: setAeMetering can arrive from settings
     // restore BEFORE the GL thread exists, where GlPipeline.post silently drops it.
@@ -690,6 +703,9 @@ class CameraEngine(private val context: Context) {
                 r.compress(Bitmap.CompressFormat.JPEG, quality, out); true
             } ?: false
             if (!wrote) { MediaStoreWriter.delete(context, u); onStatus?.invoke("Failed to save JPEG"); return }
+            // Bitmap.compress strips all metadata, so stamp the exposure EXIF back before publishing
+            // (best-effort — a failed EXIF write must never lose the image itself).
+            runCatching { writeJpegExif(u) }
             MediaStoreWriter.publish(context, u)
             onMediaSaved?.invoke(u)
             onStatus?.invoke("Saved")
@@ -727,6 +743,11 @@ class CameraEngine(private val context: Context) {
     // ---- Video ----
 
     fun startRecording(recordAudio: Boolean): Boolean {
+        // The recorder owns the mic — stop the standby level tap first (its loop also self-exits on
+        // recorder != null, but be explicit and give it a beat to release the AudioRecord).
+        standbyMeterWanted = false
+        standbyMeterThread?.let { runCatching { it.join(150) } }
+        standbyMeterThread = null
         if (recorder != null) return false
         val name = fileName("VID", "mp4")
         val uri = MediaStoreWriter.createPendingVideo(context, name, "video/mp4") ?: return false
@@ -919,6 +940,80 @@ class CameraEngine(private val context: Context) {
     // Monotonic per-session counter so rapid captures (BURST/AEB/timelapse) that land within the same
     // second — or even millisecond — never collide on filename and overwrite/duplicate each other.
     private val fileSeq = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** Stamps ISO / exposure / 35mm focal / device EXIF onto a just-written JPEG (pending, rw). */
+    private fun writeJpegExif(uri: android.net.Uri) {
+        MediaStoreWriter.openParcelFd(context, uri, "rw")?.use { pfd ->
+            val exif = androidx.exifinterface.media.ExifInterface(pfd.fileDescriptor)
+            val iso = controller?.lastIso ?: 0
+            val expNs = controller?.lastExposureNs ?: 0L
+            if (iso > 0) exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY, iso.toString())
+            if (expNs > 0) {
+                exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_TIME, (expNs / 1_000_000_000.0).toString())
+            }
+            val focal = caps?.equivalentFocalMm ?: 0f
+            val eff = if (teleconverterMode) focal * TELECONVERTER_MAGNIFICATION else focal
+            if (eff > 0f) {
+                exif.setAttribute(
+                    androidx.exifinterface.media.ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM,
+                    Math.round(eff).toString(),
+                )
+            }
+            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_MAKE, android.os.Build.MANUFACTURER)
+            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_MODEL, android.os.Build.MODEL)
+            exif.saveAttributes()
+        }
+    }
+
+    // ---- Standby audio meter (Sony-style pre-roll level check) --------------------------------
+    // A levels-only mic tap that feeds [onAudioLevel] while video mode is ARMED but not recording,
+    // so input levels are visible before rolling. Stops itself the moment a real recording starts
+    // (the recorder owns the mic) or the flag drops.
+    @Volatile private var standbyMeterWanted = false
+    private var standbyMeterThread: Thread? = null
+
+    fun setStandbyAudioMonitor(enabled: Boolean) {
+        standbyMeterWanted = enabled
+        if (!enabled) return
+        if (standbyMeterThread?.isAlive == true) return
+        if (recorder != null) return
+        if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) return
+        val t = Thread({
+            val sampleRate = 48_000
+            val minBuf = android.media.AudioRecord.getMinBufferSize(
+                sampleRate, android.media.AudioFormat.CHANNEL_IN_MONO, android.media.AudioFormat.ENCODING_PCM_16BIT,
+            )
+            if (minBuf <= 0) return@Thread
+            val rec = runCatching {
+                android.media.AudioRecord(
+                    android.media.MediaRecorder.AudioSource.CAMCORDER, sampleRate,
+                    android.media.AudioFormat.CHANNEL_IN_MONO, android.media.AudioFormat.ENCODING_PCM_16BIT, minBuf * 2,
+                )
+            }.getOrNull() ?: return@Thread
+            if (rec.state != android.media.AudioRecord.STATE_INITIALIZED) { rec.release(); return@Thread }
+            runCatching { rec.startRecording() }.onFailure { rec.release(); return@Thread }
+            val buf = ShortArray(2048)
+            var lastEmit = 0L
+            while (standbyMeterWanted && recorder == null) {
+                val n = rec.read(buf, 0, buf.size)
+                if (n <= 0) continue
+                val now = System.nanoTime()
+                if (now - lastEmit < 100_000_000L) continue // ~10 Hz is plenty for a meter
+                lastEmit = now
+                var sum = 0.0
+                for (i in 0 until n) { val v = buf[i].toDouble(); sum += v * v }
+                val rms = kotlin.math.sqrt(sum / n) / 32767.0
+                onAudioLevel?.invoke((rms * audioGain).toFloat().coerceIn(0f, 1f))
+            }
+            runCatching { rec.stop() }
+            rec.release()
+            onAudioLevel?.invoke(0f)
+        }, "StandbyAudioMeter")
+        standbyMeterThread = t
+        t.start()
+    }
 
     private fun fileName(prefix: String, ext: String): String {
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())

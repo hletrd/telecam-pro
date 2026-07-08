@@ -17,9 +17,11 @@ import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.DriveMode
+import com.hletrd.findx9tele.camera.AfSpotSize
 import com.hletrd.findx9tele.camera.AutoExposure
 import com.hletrd.findx9tele.camera.ExposureMode
 import com.hletrd.findx9tele.camera.ExposureStep
+import com.hletrd.findx9tele.camera.FrameLineType
 import com.hletrd.findx9tele.camera.effectiveExposureNs
 import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FnSlot
@@ -104,6 +106,14 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         }
     }
 
+    // Battery % + free storage for the OSD info pill, Sony-style. Slow tick — these move slowly.
+    private val infoTicker = object : Runnable {
+        override fun run() {
+            _state.update { it.copy(batteryPct = readBatteryPct(), freeBytes = readFreeBytes()) }
+            mainHandler.postDelayed(this, 10_000)
+        }
+    }
+
     init {
         engine.onStatus = { msg ->
             _state.update { it.copy(statusMessage = msg) }
@@ -142,6 +152,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.cleanupOrphans()
         if (_state.value.level) mainHandler.post(levelTicker)
         mainHandler.post(orientationTicker)
+        mainHandler.post(infoTicker)
+        refreshStandbyAudioMeter()
     }
 
     /** On launch, restore persisted pro settings (if the user enabled "Remember settings"). */
@@ -167,6 +179,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setAeMetering(usesExposureAnalysis(c))
         engine.setLens(e.lens)
         engine.setTransfer(e.transfer)
+        engine.setGammaAssist(e.gammaAssist)
         engine.setTeleconverterMode(e.teleconverter)
         engine.setVideoStabMode(e.videoStabMode)
         engine.setAspectRatio(e.aspectRatio)
@@ -193,6 +206,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 videoFrameRate = e.videoFrameRate,
                 openGate = e.openGate,
                 audioScene = e.audioScene,
+                gammaAssist = e.gammaAssist,
+                frameLines = e.frameLines,
                 audioInputPreference = e.audioInputPreference,
                 audioRouteLabel = audioInputStatusLabel(e.audioInputPreference),
                 fnSlots = e.fnSlots,
@@ -231,11 +246,29 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             myMenuSlots = s.myMenuSlots,
             volumeKeyAction = s.volumeKeyAction,
             halfPressAction = s.halfPressAction,
+            gammaAssist = s.gammaAssist,
+            frameLines = s.frameLines,
         )
     }
 
     private fun saveSettingsIfEnabled() {
         if (_state.value.rememberSettings) settingsStore.save(_state.value.controls, currentExtras())
+    }
+
+    private fun readBatteryPct(): Int = runCatching {
+        val bm = getApplication<Application>().getSystemService(android.content.Context.BATTERY_SERVICE)
+            as android.os.BatteryManager
+        bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
+    }.getOrDefault(-1)
+
+    private fun readFreeBytes(): Long = runCatching {
+        android.os.StatFs(android.os.Environment.getExternalStorageDirectory().path).availableBytes
+    }.getOrDefault(-1L)
+
+    /** Sony-style standby level check: meter the mic whenever video mode is armed but not rolling. */
+    private fun refreshStandbyAudioMeter() {
+        val s = _state.value
+        engine.setStandbyAudioMonitor(s.mode == CaptureMode.VIDEO && s.recordAudio && !s.isRecording)
     }
 
     private fun showStatus(message: String) {
@@ -401,6 +434,17 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onWbTint(tint: Int) = updateControls(FnSlot.WB) { it.copy(wbTint = tint, wbMode = WbMode.MANUAL) }
     override fun onToggleAwbLock(locked: Boolean) = updateControls(FnSlot.WB) { it.copy(awbLock = locked) }
     override fun onMeteringMode(mode: MeteringMode) = updateControls(FnSlot.METERING) { it.copy(meteringMode = mode) }
+    override fun onAfSpotSize(size: AfSpotSize) = updateControls { it.copy(afSpotSize = size) }
+    override fun onCaptureCustomWb() {
+        // Grey/white-card WB: freeze the AWB gains the HAL used on the latest frame (Sony Custom WB).
+        val gains = engine.currentAwbGains()
+        if (gains == null) {
+            showStatus("No WB sample yet")
+            return
+        }
+        updateControls(FnSlot.WB) { it.copy(wbMode = WbMode.CUSTOM, customWbGains = gains) }
+        showStatus("Custom WB set")
+    }
 
     // ---- Processing ----
     override fun onEdge(level: ProcessingLevel) = updateControls { it.copy(edge = level) }
@@ -460,6 +504,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         if (_state.value.isRecording && mode != CaptureMode.VIDEO) onToggleRecording()
         _state.update { it.copy(mode = mode) }
         refreshProgramAppSide() // photo P is app-side (min-shutter rule), video P is HAL AE
+        refreshStandbyAudioMeter()
         markChanged(if (mode == CaptureMode.VIDEO) FnSlot.TRANSFER else FnSlot.EXPOSURE_MODE)
         // Persist the mode the instant it changes, not just on onStop: swiping the app from Recents
         // can kill the process before onStop's async prefs write flushes, which is why "last mode"
@@ -480,6 +525,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onToggleRecordAudio(enabled: Boolean) {
         if (rejectIfRecording("Stop REC first")) return
         _state.update { it.copy(recordAudio = enabled, activeMemorySlot = null) }
+        refreshStandbyAudioMeter()
     }
     override fun onAudioGain(gain: Float) {
         if (rejectIfRecording("Stop REC first")) return
@@ -614,6 +660,17 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setAnalysis(_state.value.histogram, enabled)
         _state.update { it.copy(waveform = enabled, activeMemorySlot = null) }
     }
+
+    override fun onToggleGammaAssist(enabled: Boolean) {
+        engine.setGammaAssist(enabled)
+        _state.update { it.copy(gammaAssist = enabled) }
+        saveSettingsIfEnabled()
+    }
+
+    override fun onFrameLines(type: FrameLineType) {
+        _state.update { it.copy(frameLines = type) }
+        saveSettingsIfEnabled()
+    }
     override fun onGridType(type: GridType) {
         _state.update { it.copy(grid = type) }
         markChanged(FnSlot.GRID)
@@ -726,6 +783,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 )
             }
         }
+        refreshStandbyAudioMeter()
     }
 
     override fun onCameraOverride(id: String?) {
@@ -840,6 +898,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     fun onStart() {
         refreshAudioInputStatus()
         engine.resume()
+        refreshStandbyAudioMeter()
     }
     fun onStop() {
         // engine.pause() finalizes any in-flight recording; keep the UI in sync so we don't return
@@ -849,6 +908,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             _state.update { it.copy(isRecording = false) }
         }
         saveSettingsIfEnabled() // persist on background so the next launch restores them
+        engine.setStandbyAudioMonitor(false) // release the mic while backgrounded
         engine.pause()
     }
 

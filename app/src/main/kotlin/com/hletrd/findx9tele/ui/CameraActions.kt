@@ -16,6 +16,8 @@ import com.hletrd.findx9tele.camera.FnSlot
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.HardwareKeyAction
+import com.hletrd.findx9tele.camera.AfSpotSize
+import com.hletrd.findx9tele.camera.FrameLineType
 import com.hletrd.findx9tele.camera.MeteringMode
 import com.hletrd.findx9tele.camera.MemorySlot
 import com.hletrd.findx9tele.camera.PeakingColor
@@ -64,6 +66,8 @@ interface CameraActions {
     fun onWbTint(tint: Int)
     fun onToggleAwbLock(locked: Boolean)
     fun onMeteringMode(mode: MeteringMode)
+    fun onAfSpotSize(size: AfSpotSize)
+    fun onCaptureCustomWb()
 
     // Processing
     fun onEdge(level: ProcessingLevel)
@@ -106,6 +110,8 @@ interface CameraActions {
     fun onToggleFalseColor(enabled: Boolean)
     fun onToggleHistogram(enabled: Boolean)
     fun onToggleWaveform(enabled: Boolean)
+    fun onToggleGammaAssist(enabled: Boolean)
+    fun onFrameLines(type: FrameLineType)
     fun onGridType(type: GridType)
     fun onToggleLevel(enabled: Boolean)
     fun onTogglePunchIn(enabled: Boolean)

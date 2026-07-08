@@ -3,6 +3,7 @@ package com.hletrd.findx9tele.storage
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.core.content.edit
+import com.hletrd.findx9tele.camera.AfSpotSize
 import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.AudioScene
 import com.hletrd.findx9tele.camera.AudioInputPreference
@@ -17,6 +18,8 @@ import com.hletrd.findx9tele.camera.HardwareKeyAction
 import com.hletrd.findx9tele.camera.LensChoice
 import com.hletrd.findx9tele.camera.ManualControls
 import com.hletrd.findx9tele.camera.MemorySlot
+import com.hletrd.findx9tele.camera.FrameLineType
+import com.hletrd.findx9tele.camera.WbGains
 import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.camera.VideoFrameRate
 
@@ -47,6 +50,8 @@ data class ExtraSettings(
     val myMenuSlots: List<FnSlot> = FnSlot.MY_MENU_DEFAULT,
     val volumeKeyAction: HardwareKeyAction = HardwareKeyAction.SHUTTER,
     val halfPressAction: HardwareKeyAction = HardwareKeyAction.AF_ON,
+    val gammaAssist: Boolean = false,
+    val frameLines: FrameLineType = FrameLineType.OFF,
 )
 
 /**
@@ -109,6 +114,17 @@ class SettingsStore(context: Context) {
                 wbTint = prefs.getInt("${prefix}wbTint", d.wbTint),
                 awbLock = prefs.getBoolean("${prefix}awbLock", d.awbLock),
                 meteringMode = enumOr(prefs.getString("${prefix}meteringMode", null), d.meteringMode),
+                afSpotSize = enumOr(prefs.getString("${prefix}afSpotSize", null), d.afSpotSize),
+                customWbGains = if (prefs.getBoolean("${prefix}hasCustomWb", false)) {
+                    WbGains(
+                        r = prefs.getFloat("${prefix}customWbR", 1f),
+                        gEven = prefs.getFloat("${prefix}customWbGe", 1f),
+                        gOdd = prefs.getFloat("${prefix}customWbGo", 1f),
+                        b = prefs.getFloat("${prefix}customWbB", 1f),
+                    )
+                } else {
+                    null
+                },
                 edge = enumOr(prefs.getString("${prefix}edge", null), d.edge),
                 noiseReduction = enumOr(prefs.getString("${prefix}noiseReduction", null), d.noiseReduction),
                 colorEffect = enumOr(prefs.getString("${prefix}colorEffect", null), d.colorEffect),
@@ -139,6 +155,8 @@ class SettingsStore(context: Context) {
                 myMenuSlots = enumListOr(prefs.getString("${prefix}myMenuSlots", null), ed.myMenuSlots),
                 volumeKeyAction = enumOr(prefs.getString("${prefix}volumeKeyAction", null), ed.volumeKeyAction),
                 halfPressAction = enumOr(prefs.getString("${prefix}halfPressAction", null), ed.halfPressAction),
+                gammaAssist = prefs.getBoolean("${prefix}gammaAssist", ed.gammaAssist),
+                frameLines = enumOr(prefs.getString("${prefix}frameLines", null), ed.frameLines),
             )
             Loaded(controls, extras)
         }.getOrNull()
@@ -163,6 +181,14 @@ class SettingsStore(context: Context) {
         putInt("${prefix}wbTint", c.wbTint)
         putBoolean("${prefix}awbLock", c.awbLock)
         putString("${prefix}meteringMode", c.meteringMode.name)
+        putString("${prefix}afSpotSize", c.afSpotSize.name)
+        putBoolean("${prefix}hasCustomWb", c.customWbGains != null)
+        c.customWbGains?.let { g ->
+            putFloat("${prefix}customWbR", g.r)
+            putFloat("${prefix}customWbGe", g.gEven)
+            putFloat("${prefix}customWbGo", g.gOdd)
+            putFloat("${prefix}customWbB", g.b)
+        }
         putString("${prefix}edge", c.edge.name)
         putString("${prefix}noiseReduction", c.noiseReduction.name)
         putString("${prefix}colorEffect", c.colorEffect.name)
@@ -190,6 +216,8 @@ class SettingsStore(context: Context) {
         putString("${prefix}myMenuSlots", e.myMenuSlots.joinToString(",") { it.name })
         putString("${prefix}volumeKeyAction", e.volumeKeyAction.name)
         putString("${prefix}halfPressAction", e.halfPressAction.name)
+        putBoolean("${prefix}gammaAssist", e.gammaAssist)
+        putString("${prefix}frameLines", e.frameLines.name)
     }
 
     private inline fun <reified T : Enum<T>> enumOr(name: String?, default: T): T =

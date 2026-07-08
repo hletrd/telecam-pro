@@ -89,11 +89,29 @@ private data class ReviewMetadata(
     val sizeBytes: Long,
     val width: Int,
     val height: Int,
+    /** "ISO 1250 · 1/300s · 300mm" when the file carries exposure EXIF (JPEG/DNG); null otherwise. */
+    val exifLine: String?,
 )
 
 private suspend fun loadMetadata(context: Context, uri: Uri): ReviewMetadata? =
     withContext(Dispatchers.IO) {
         runCatching {
+            // Sony playback-style exposure info, when the file carries EXIF (our JPEGs are stamped
+            // at save; HEIFs currently are not — the line simply drops out then).
+            val exifLine = runCatching {
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    val exif = androidx.exifinterface.media.ExifInterface(input)
+                    val iso = exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY)
+                    val expS = exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_TIME)?.toDoubleOrNull()
+                    val focal35 = exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM)
+                    val parts = buildList {
+                        iso?.let { add("ISO $it") }
+                        expS?.let { add(if (it >= 1.0) "%.1fs".format(it) else "1/${(1.0 / it).roundToInt()}s") }
+                        focal35?.takeIf { f -> f.toIntOrNull()?.let { it > 0 } == true }?.let { add("${it}mm") }
+                    }
+                    parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
+                }
+            }.getOrNull()
             val columns = arrayOf(
                 MediaStore.MediaColumns.DISPLAY_NAME,
                 MediaStore.MediaColumns.SIZE,
@@ -107,6 +125,7 @@ private suspend fun loadMetadata(context: Context, uri: Uri): ReviewMetadata? =
                     sizeBytes = c.getLong(c.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)),
                     width = c.getInt(c.getColumnIndexOrThrow(MediaStore.MediaColumns.WIDTH)),
                     height = c.getInt(c.getColumnIndexOrThrow(MediaStore.MediaColumns.HEIGHT)),
+                    exifLine = exifLine,
                 )
             }
         }.getOrNull()
@@ -248,6 +267,9 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                     color = CameraColors.TextSecondary,
                     style = MaterialTheme.typography.labelSmall,
                 )
+                meta.exifLine?.let {
+                    Text(it, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
+                }
             }
         }
 

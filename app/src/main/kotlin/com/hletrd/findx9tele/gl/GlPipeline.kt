@@ -55,6 +55,7 @@ class GlPipeline {
     private var encoderBaseSet = false
 
     private var transfer: ColorTransfer? = null
+    private var gammaAssist = false
     private var peaking = false
     // Adjustable focus-peaking edge threshold + highlight color, and the zebra clipping threshold.
     private var peakThreshold = 0.06f
@@ -169,6 +170,9 @@ class GlPipeline {
     fun setRotationDegrees(deg: Int) = post { renderer.setRotationDegrees(deg) }
     fun setSensorOrientation(deg: Int) = post { renderer.setSensorOrientation(deg) }
     fun setTransfer(t: ColorTransfer?) = post { transfer = t }
+
+    /** Gamma Display Assist: monitor shows the normal 709-ish image while the FILE stays log. */
+    fun setGammaAssist(enabled: Boolean) = post { gammaAssist = enabled }
     fun setPeaking(enabled: Boolean) = post { peaking = enabled }
     fun setZebra(enabled: Boolean) = post { zebra = enabled }
 
@@ -267,7 +271,9 @@ class GlPipeline {
         // log profile — previously the preview was hardcoded to SDR (null) and only the encoder got the
         // curve, so LOG never looked flat on screen. HLG/SDR keep a natural SDR preview (an HLG curve on
         // this SDR preview surface would just look washed; HDR is monitored on an HDR display, not here).
-        val previewTransfer = if (transfer == ColorTransfer.LOG) ColorTransfer.LOG else null
+        // Gamma Display Assist (Sony): with assist ON the monitor keeps the normal display-referred
+        // image and only the encoder applies O-Log2; with assist OFF the monitor shows the flat log.
+        val previewTransfer = if (transfer == ColorTransfer.LOG && !gammaAssist) ColorTransfer.LOG else null
         core.makeCurrent(previewEgl)
         renderer.draw(
             stMatrix, previewW, previewH, previewTransfer, peaking, zebra, falseColor, sx, sy, roll, previewCrop, loupeX, loupeY,

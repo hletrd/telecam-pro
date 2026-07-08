@@ -29,6 +29,24 @@ enum class FlashMode { OFF, AUTO, ON, TORCH }
 /** Composition grid style. */
 enum class GridType { NONE, THIRDS, GOLDEN, SQUARE, CENTER }
 
+/**
+ * Delivery-framing markers drawn over the viewfinder (Sony "Frame Lines"): a centered box of the
+ * target aspect, for judging a crop that will happen in post (scope, square, vertical).
+ */
+enum class FrameLineType(val label: String, val ratio: Float?) {
+    OFF("Off", null),
+    CINEMA("2.39:1", 2.39f),
+    SQUARE("1:1", 1f),
+    VERTICAL("9:16", 9f / 16f),
+}
+
+/** Tap-AF / spot-metering region size as a fraction of the active array (Sony Spot S/M/L). */
+enum class AfSpotSize(val fraction: Float, val label: String) {
+    SMALL(0.06f, "S"),
+    MEDIUM(0.10f, "M"),
+    LARGE(0.16f, "L"),
+}
+
 /** Self-timer before the shutter fires. */
 enum class ShutterTimer(val seconds: Int) { OFF(0), SEC3(3), SEC10(10) }
 
@@ -80,12 +98,12 @@ enum class FnSlot(val label: String) {
     WB("WB"),
     EV("EV"),
     ZOOM("Zoom"),
-    STABILIZATION("Stab"),
+    STABILIZATION("Stabilization"),
     DRIVE("Drive"),
     METERING("Meter"),
     PEAKING("Peaking"),
     ZEBRA("Zebra"),
-    TRANSFER("TF"),
+    TRANSFER("Gamma"),
     AUDIO_SCENE("Audio"),
     GRID("Grid"),
     LEVEL("Level"),
@@ -125,7 +143,10 @@ enum class PeakingColor(val r: Float, val g: Float, val b: Float) {
 enum class ZebraLevel(val threshold: Float) { IRE70(0.70f), IRE85(0.85f), IRE95(0.95f), CLIP100(1.0f) }
 
 /** White balance: AUTO, a named preset (CONTROL_AWB_MODE_*), or MANUAL (Kelvin + tint). */
-enum class WbMode { AUTO, INCANDESCENT, FLUORESCENT, DAYLIGHT, CLOUDY, SHADE, MANUAL }
+enum class WbMode { AUTO, INCANDESCENT, FLUORESCENT, DAYLIGHT, CLOUDY, SHADE, CUSTOM, MANUAL }
+
+/** Measured custom white balance: raw R/G_even/G_odd/B channel gains (Camera2 RggbChannelVector). */
+data class WbGains(val r: Float, val gEven: Float, val gOdd: Float, val b: Float)
 
 /** Metering pattern for auto-exposure. SPOT/CENTER use an AE region; MATRIX uses the whole frame. */
 enum class MeteringMode { MATRIX, CENTER, SPOT }
@@ -397,6 +418,14 @@ data class CameraUiState(
     val volumeKeyAction: HardwareKeyAction = HardwareKeyAction.SHUTTER,
     val halfPressAction: HardwareKeyAction = HardwareKeyAction.AF_ON,
     val halfPressActive: Boolean = false,
+    // Gamma Display Assist (Sony): while shooting O-Log, the MONITOR shows the normal 709-ish image
+    // and only the FILE stays log. Off = judge the flat log directly.
+    val gammaAssist: Boolean = false,
+    // Delivery-framing markers over the viewfinder.
+    val frameLines: FrameLineType = FrameLineType.OFF,
+    // Battery % and free storage for the OSD info pill (refreshed by a slow ticker; -1 = unknown).
+    val batteryPct: Int = -1,
+    val freeBytes: Long = -1L,
     // When true, pro settings are persisted across launches and restored on next start (default on).
     val rememberSettings: Boolean = true,
     // Transient tap point (normalized 0..1 in view space) for the focus/meter reticle; null = none.

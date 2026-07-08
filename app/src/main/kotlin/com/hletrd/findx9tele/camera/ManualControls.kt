@@ -40,9 +40,13 @@ data class ManualControls(
     val wbMode: WbMode = WbMode.AUTO,
     val wbKelvin: Int = 5200,
     val wbTint: Int = 0, // -50 (green) .. +50 (magenta)
+    // Measured custom WB (grey/white-card capture); active when wbMode == CUSTOM.
+    val customWbGains: WbGains? = null,
     val awbLock: Boolean = false,
     // Metering (SPOT/CENTER apply an AE region; region rect computed in CameraController)
     val meteringMode: MeteringMode = MeteringMode.MATRIX,
+    // Tap-AF / spot region size (Sony Spot S/M/L).
+    val afSpotSize: AfSpotSize = AfSpotSize.MEDIUM,
     // Processing — OFF by default: pros want a clean, un-sharpened, un-denoised signal to grade
     // themselves (and it keeps the afocal-tele image honest). The user opts into edge/NR per shot.
     val edge: ProcessingLevel = ProcessingLevel.OFF,
@@ -210,6 +214,18 @@ private fun CaptureRequest.Builder.applyWhiteBalance(c: ManualControls, caps: Ca
         } else {
             set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
         }
+        WbMode.CUSTOM -> {
+            val g = c.customWbGains
+            if (caps.supportsManualPostProcessing && g != null) {
+                // Measured card WB: replay the AWB gains sampled at capture time (see FAST-mode note
+                // on the MANUAL branch above).
+                set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
+                set(CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_FAST)
+                set(CaptureRequest.COLOR_CORRECTION_GAINS, RggbChannelVector(g.r, g.gEven, g.gOdd, g.b))
+            } else {
+                set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
+            }
+        }
         WbMode.AUTO -> {
             set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
             set(CaptureRequest.CONTROL_AWB_LOCK, c.awbLock)
@@ -226,7 +242,7 @@ private val WbMode.awbMetadata: Int
         WbMode.DAYLIGHT -> CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT
         WbMode.CLOUDY -> CameraMetadata.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT
         WbMode.SHADE -> CameraMetadata.CONTROL_AWB_MODE_SHADE
-        WbMode.AUTO, WbMode.MANUAL -> CameraMetadata.CONTROL_AWB_MODE_AUTO
+        WbMode.AUTO, WbMode.MANUAL, WbMode.CUSTOM -> CameraMetadata.CONTROL_AWB_MODE_AUTO
     }
 
 private fun CaptureRequest.Builder.applyProcessing(c: ManualControls, caps: CameraCaps) {

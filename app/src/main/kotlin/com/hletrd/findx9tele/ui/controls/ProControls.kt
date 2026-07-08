@@ -370,6 +370,7 @@ internal fun wbModeLabel(mode: WbMode): String = when (mode) {
     WbMode.DAYLIGHT -> "Daylight"
     WbMode.CLOUDY -> "Cloudy"
     WbMode.SHADE -> "Shade"
+    WbMode.CUSTOM -> "Custom"
     WbMode.MANUAL -> "Manual"
 }
 

@@ -49,6 +49,29 @@ import kotlin.math.roundToInt
  * Composition grid, drawn per [GridType]. Purely decorative; visibility/style is entirely driven
  * by the [type] argument (NONE draws nothing).
  */
+/**
+ * Sony "Frame Lines": a centered marker box of the delivery aspect (2.39:1 / 1:1 / 9:16), fitted to
+ * the viewfinder, for judging a crop that will happen in post.
+ */
+@Composable
+fun FrameLinesOverlay(type: com.hletrd.findx9tele.camera.FrameLineType, modifier: Modifier = Modifier) {
+    val ratio = type.ratio ?: return
+    Canvas(modifier = modifier) {
+        var w = size.width
+        var h = w / ratio
+        if (h > size.height) {
+            h = size.height
+            w = h * ratio
+        }
+        drawRect(
+            color = Color.White.copy(alpha = 0.55f),
+            topLeft = Offset((size.width - w) / 2f, (size.height - h) / 2f),
+            size = androidx.compose.ui.geometry.Size(w, h),
+            style = Stroke(width = 1.2.dp.toPx()),
+        )
+    }
+}
+
 @Composable
 fun GridOverlay(type: GridType, modifier: Modifier = Modifier) {
     if (type == GridType.NONE) return
@@ -309,6 +332,10 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier) {
                 style = MaterialTheme.typography.labelMedium,
             )
             Text(transferLabelShort(state.transfer), color = Color(0xFF4C9AFF), style = MaterialTheme.typography.labelMedium)
+            if (state.transfer == com.hletrd.findx9tele.camera.ColorTransfer.LOG && state.gammaAssist) {
+                // Gamma Display Assist active: the monitor is corrected, the file stays log.
+                Text("Assist", color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.labelMedium)
+            }
         } else {
             val formatLabel = buildString {
                 if (state.photoFormats.heif) append("HEIF")
