@@ -4,19 +4,25 @@ import android.graphics.SurfaceTexture
 import android.view.HapticFeedbackConstants
 import android.view.Surface
 import android.view.TextureView
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -64,6 +70,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import kotlinx.coroutines.delay
 import com.hletrd.findx9tele.camera.Antibanding
 import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.BitrateLevel
@@ -142,6 +149,19 @@ fun CameraScreen(
     }
     val overlayRotation by animateFloatAsState(targetValue = overlayRotationTarget, label = "overlayRotation")
 
+    // Live zoom readout: show a bar + "N.N×" whenever the zoom ratio moves (pinch or in-sheet slider),
+    // then fade it out ~1.4 s after the last change (iPhone-style). Never shown at rest.
+    var zoomVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(state.controls.zoomRatio) {
+        if (state.controls.zoomRatio != 1f) {
+            zoomVisible = true
+            delay(1400)
+            zoomVisible = false
+        } else {
+            zoomVisible = false
+        }
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -150,18 +170,46 @@ fun CameraScreen(
         AndroidView(
             modifier = Modifier
                 .fillMaxSize()
+                // Tap-to-focus AND pinch-to-zoom share ONE gesture loop. Two separate pointerInput
+                // blocks (detectTapGestures + detectTransformGestures) fought each other: the tap
+                // detector consumed the gesture and killed the pinch after ~2 frames, so the pinch
+                // scale never left 1.0 (device-diagnosed via ZoomDbg). Handling both in a single
+                // awaitEachGesture removes the conflict: two fingers → pinch-zoom, a clean single
+                // stationary touch → tap-focus.
                 .pointerInput(Unit) {
-                    detectTapGestures { offset ->
-                        val w = size.width.toFloat()
-                        val h = size.height.toFloat()
-                        if (w > 0f && h > 0f) currentActions.value.onTapFocus(offset.x / w, offset.y / h)
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        var maxPointers = 1
+                        var zoomed = false
+                        var dragged = false
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val pressed = event.changes.count { it.pressed }
+                            if (pressed == 0) break
+                            maxPointers = maxOf(maxPointers, pressed)
+                            if (pressed >= 2) {
+                                val zoom = event.calculateZoom()
+                                if (zoom != 1f) {
+                                    zoomed = true
+                                    currentActions.value.onPinchZoom(zoom)
+                                }
+                                event.changes.forEach { it.consume() }
+                            } else {
+                                val cur = event.changes.firstOrNull { it.id == down.id }?.position
+                                if (cur != null && (cur - down.position).getDistance() > viewConfiguration.touchSlop) {
+                                    dragged = true
+                                }
+                            }
+                        }
+                        // Only a clean single-finger tap (no second finger, no pinch, no drag) focuses.
+                        if (maxPointers == 1 && !zoomed && !dragged) {
+                            val w = size.width.toFloat()
+                            val h = size.height.toFloat()
+                            if (w > 0f && h > 0f) {
+                                currentActions.value.onTapFocus(down.position.x / w, down.position.y / h)
+                            }
+                        }
                     }
-                }
-                .pointerInput(Unit) {
-                    // Pinch-to-zoom the viewfinder: [zoom] is the incremental pinch scale per gesture
-                    // event (1.0 = no change). The ViewModel multiplies it into the current zoom ratio
-                    // and clamps to the lens range, so this and the in-sheet Zoom slider stay in sync.
-                    detectTransformGestures { _, _, zoom, _ -> currentActions.value.onPinchZoom(zoom) }
                 },
             factory = { context ->
                 // TextureView (not SurfaceView): its content composites inside the view hierarchy, so
@@ -286,6 +334,19 @@ fun CameraScreen(
                 .padding(top = 8.dp),
         )
 
+        // Live zoom bar, centered above the bottom cluster; fades in on pinch/slider change.
+        AnimatedVisibility(
+            visible = zoomVisible,
+            enter = fadeIn(tween(120)),
+            exit = fadeOut(tween(300)),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(bottom = 220.dp),
+        ) {
+            ZoomIndicator(zoom = state.controls.zoomRatio, range = state.caps?.zoomRatioRange)
+        }
+
         val onShutter = remember(state.mode) {
             {
                 if (state.mode == CaptureMode.PHOTO) {
@@ -314,14 +375,12 @@ fun CameraScreen(
                 state = state,
                 actions = actions,
                 onRequestWhiteBalanceSheet = { openSheet(ProSheetTab.EXPOSURE) },
-                glyphRotation = overlayRotation,
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
 
             ModeCarousel(
                 mode = state.mode,
                 onModeChange = actions::onModeChange,
-                glyphRotation = overlayRotation,
                 modifier = Modifier.fillMaxWidth(),
             )
 
@@ -378,12 +437,16 @@ private fun TopBar(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            FlashButton(mode = state.controls.flash, onClick = { actions.onFlash(nextFlashMode(state.controls.flash)) })
-            TimerButton(timer = state.timer, onClick = { actions.onTimer(nextTimer(state.timer)) })
-            AspectButton(ratio = state.aspectRatio, onClick = { actions.onAspectRatio(nextAspect(state.aspectRatio)) })
+            // Compact circular glyphs counter-rotate to stay upright as the phone turns (iPhone-style);
+            // the TELE chip is wide text, so it stays fixed to avoid poking out of its slot.
+            val glyphSpin = Modifier.rotate(glyphRotation)
+            FlashButton(mode = state.controls.flash, onClick = { actions.onFlash(nextFlashMode(state.controls.flash)) }, modifier = glyphSpin)
+            TimerButton(timer = state.timer, onClick = { actions.onTimer(nextTimer(state.timer)) }, modifier = glyphSpin)
+            AspectButton(ratio = state.aspectRatio, onClick = { actions.onAspectRatio(nextAspect(state.aspectRatio)) }, modifier = glyphSpin)
             GridButton(
                 active = state.grid != GridType.NONE,
                 onClick = { actions.onGridType(if (state.grid == GridType.NONE) GridType.THIRDS else GridType.NONE) },
+                modifier = glyphSpin,
             )
             TeleChip(active = state.teleconverterMode, onClick = { actions.onToggleTeleconverter(!state.teleconverterMode) })
         }
@@ -590,6 +653,48 @@ private fun GearButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * Live zoom readout: a "N.N×" pill over a thin bar that fills to the zoom's position within the lens's
+ * advertised range. Shown transiently while zooming (pinch or the in-sheet slider), like the stock
+ * camera. Screen-fixed (not counter-rotated) — a compact centered HUD reads fine in any hold.
+ */
+@Composable
+private fun ZoomIndicator(zoom: Float, range: android.util.Range<Float>?, modifier: Modifier = Modifier) {
+    val min = range?.lower ?: 1f
+    val max = range?.upper ?: 10f
+    val fraction = if (max > min) ((zoom - min) / (max - min)).coerceIn(0f, 1f) else 0f
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            text = "%.1f×".format(zoom),
+            color = CameraColors.Accent,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier
+                .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(50))
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+        )
+        Box(
+            modifier = Modifier
+                .width(180.dp)
+                .height(4.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(Color.White.copy(alpha = 0.25f)),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(fraction)
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(CameraColors.Accent),
+            )
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Bottom cluster: mode carousel + shutter row (the manual dial cluster lives in ManualDials.kt).
 // ---------------------------------------------------------------------------
@@ -599,13 +704,14 @@ private fun ModeCarousel(
     mode: CaptureMode,
     onModeChange: (CaptureMode) -> Unit,
     modifier: Modifier = Modifier,
-    glyphRotation: Float = 0f,
 ) {
     Row(modifier = modifier, horizontalArrangement = Arrangement.Center) {
         Row(horizontalArrangement = Arrangement.spacedBy(32.dp)) {
-            // Counter-rotate the mode labels so they stay upright as the phone turns (iPhone-style).
-            ModeLabel(text = "Photo", active = mode == CaptureMode.PHOTO, onClick = { onModeChange(CaptureMode.PHOTO) }, modifier = Modifier.rotate(glyphRotation))
-            ModeLabel(text = "Video", active = mode == CaptureMode.VIDEO, onClick = { onModeChange(CaptureMode.VIDEO) }, modifier = Modifier.rotate(glyphRotation))
+            // Mode labels are wide text, not compact glyphs: rotating them in place would poke out of
+            // their fixed row slot (the overflow QA caught). They stay upright in portrait; only the
+            // square/circular glyphs (gear, gallery thumb, top-bar icons) counter-rotate iPhone-style.
+            ModeLabel(text = "Photo", active = mode == CaptureMode.PHOTO, onClick = { onModeChange(CaptureMode.PHOTO) })
+            ModeLabel(text = "Video", active = mode == CaptureMode.VIDEO, onClick = { onModeChange(CaptureMode.VIDEO) })
         }
     }
 }
