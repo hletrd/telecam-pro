@@ -30,6 +30,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,6 +38,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
+import com.hletrd.findx9tele.camera.CaptureMode
+import com.hletrd.findx9tele.ui.CameraActions
 import com.hletrd.findx9tele.ui.CameraScreen
 import com.hletrd.findx9tele.ui.CameraViewModel
 import com.hletrd.findx9tele.ui.theme.FindX9TeleTheme
@@ -47,16 +50,18 @@ class MainActivity : ComponentActivity() {
 
     // Compose-observable permission state, held on the Activity so onResume (return from the system
     // Settings screen) can re-check and flip the gate without the user re-launching.
-    private var hasRequiredPermissions by mutableStateOf(false)
+    private var hasCameraPermission by mutableStateOf(false)
+    private var hasMicrophonePermission by mutableStateOf(false)
     // True once the user has denied with "don't ask again": the runtime dialog no longer appears, so
     // the CTA must deep-link into App Settings instead of a dead re-request (designer UX-6 / M8).
-    private var permanentlyDenied by mutableStateOf(false)
+    private var cameraPermanentlyDenied by mutableStateOf(false)
+    private var pendingAudioAction by mutableStateOf<PendingAudioAction?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        hasRequiredPermissions = hasRequiredPermissions()
+        refreshPermissionState()
 
         // POC: probe whether OPPO's CameraUnit/OCS service authenticates this app (→ path to the stock
         // 300 mm teleconverter OIS). Query-only, off the main thread; see OcsProbe. TODO: remove after POC.
@@ -66,28 +71,62 @@ class MainActivity : ComponentActivity() {
             FindX9TeleTheme {
                 val state by vm.state.collectAsState()
 
-                val launcher = rememberLauncherForActivityResult(
-                    ActivityResultContracts.RequestMultiplePermissions(),
+                val cameraLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission(),
                 ) { result ->
-                    hasRequiredPermissions = hasRequiredPermissions()
-                    if (!hasRequiredPermissions) {
-                        permanentlyDenied = REQUIRED_PERMISSIONS.any { permission ->
-                            ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED &&
-                                !shouldShowRequestPermissionRationale(permission)
-                        }
+                    refreshPermissionState()
+                    if (!result) updateCameraPermanentDenial()
+                }
+                val microphoneLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission(),
+                ) { granted ->
+                    hasMicrophonePermission = hasPermission(Manifest.permission.RECORD_AUDIO)
+                    val action = pendingAudioAction
+                    pendingAudioAction = null
+                    if (!granted) {
+                        vm.onToggleRecordAudio(false)
+                        vm.onAppStatus("Microphone permission denied")
+                        return@rememberLauncherForActivityResult
+                    }
+                    when (action) {
+                        PendingAudioAction.ENABLE_AUDIO -> vm.onToggleRecordAudio(true)
+                        PendingAudioAction.START_RECORDING -> vm.onToggleRecording()
+                        null -> Unit
                     }
                 }
 
                 LaunchedEffect(Unit) {
-                    if (!hasRequiredPermissions) launcher.launch(REQUIRED_PERMISSIONS)
+                    if (!hasCameraPermission) cameraLauncher.launch(Manifest.permission.CAMERA)
                 }
 
-                if (hasRequiredPermissions) {
-                    CameraScreen(state = state, actions = vm, modifier = Modifier.fillMaxSize())
+                if (hasCameraPermission) {
+                    val permissionAwareActions = remember(state.mode, state.isRecording, state.recordAudio, hasMicrophonePermission) {
+                        object : CameraActions by vm {
+                            override fun onToggleRecording() {
+                                requestMicrophoneThen(
+                                    action = PendingAudioAction.START_RECORDING,
+                                    launcher = { microphoneLauncher.launch(Manifest.permission.RECORD_AUDIO) },
+                                    block = vm::onToggleRecording,
+                                )
+                            }
+
+                            override fun onToggleRecordAudio(enabled: Boolean) {
+                                if (!enabled) {
+                                    vm.onToggleRecordAudio(false)
+                                    return
+                                }
+                                requestMicrophoneThen(
+                                    action = PendingAudioAction.ENABLE_AUDIO,
+                                    launcher = { microphoneLauncher.launch(Manifest.permission.RECORD_AUDIO) },
+                                ) { vm.onToggleRecordAudio(true) }
+                            }
+                        }
+                    }
+                    CameraScreen(state = state, actions = permissionAwareActions, modifier = Modifier.fillMaxSize())
                 } else {
                     PermissionGate(
-                        permanentlyDenied = permanentlyDenied,
-                        onRequest = { launcher.launch(REQUIRED_PERMISSIONS) },
+                        permanentlyDenied = cameraPermanentlyDenied,
+                        onRequest = { cameraLauncher.launch(Manifest.permission.CAMERA) },
                         onOpenSettings = ::openAppSettings,
                         onOpenPrivacy = ::openPrivacyPolicy,
                     )
@@ -104,7 +143,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         // Re-check after returning from App Settings so granting there flips the gate immediately.
-        if (!hasRequiredPermissions && hasRequiredPermissions()) hasRequiredPermissions = true
+        refreshPermissionState()
     }
 
     override fun onStop() {
@@ -120,7 +159,14 @@ class MainActivity : ComponentActivity() {
     // turns the media volume into a burst of beeps mid-shot; repeatCount gates auto-repeat.
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         if (isShutterKey(keyCode)) {
-            if (hasRequiredPermissions && event.repeatCount == 0) vm.onHardwareFullKey(active = true)
+            if (hasCameraPermission && event.repeatCount == 0) {
+                val s = vm.state.value
+                if (s.mode == CaptureMode.VIDEO && !s.isRecording && s.recordAudio && !hasMicrophonePermission) {
+                    vm.onToggleRecordAudio(false)
+                    vm.onAppStatus("Recording without audio")
+                }
+                vm.onHardwareFullKey(active = true)
+            }
             return true
         }
         return super.onKeyDown(keyCode, event)
@@ -128,7 +174,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
         if (isShutterKey(keyCode)) {
-            if (hasRequiredPermissions) vm.onHardwareFullKey(active = false)
+            if (hasCameraPermission) vm.onHardwareFullKey(active = false)
             return true
         }
         return super.onKeyUp(keyCode, event)
@@ -142,7 +188,7 @@ class MainActivity : ComponentActivity() {
     // slide constants if reversed.)
     @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (hasRequiredPermissions) {
+        if (hasCameraPermission) {
             when (event.keyCode) {
                 KEY_CAM_SLIDE_IN -> {
                     if (event.action == KeyEvent.ACTION_DOWN) vm.onPinchZoom(ZOOM_STEP)
@@ -168,8 +214,33 @@ class MainActivity : ComponentActivity() {
             keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
             keyCode == KeyEvent.KEYCODE_CAMERA
 
-    private fun hasRequiredPermissions(): Boolean =
-        REQUIRED_PERMISSIONS.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }
+    private fun requestMicrophoneThen(action: PendingAudioAction, launcher: () -> Unit, block: () -> Unit) {
+        val s = vm.state.value
+        val needsMicrophone = when (action) {
+            PendingAudioAction.ENABLE_AUDIO -> true
+            PendingAudioAction.START_RECORDING -> s.mode == CaptureMode.VIDEO && !s.isRecording && s.recordAudio
+        }
+        if (!needsMicrophone || hasMicrophonePermission) {
+            block()
+            return
+        }
+        pendingAudioAction = action
+        launcher()
+    }
+
+    private fun refreshPermissionState() {
+        hasCameraPermission = hasPermission(Manifest.permission.CAMERA)
+        hasMicrophonePermission = hasPermission(Manifest.permission.RECORD_AUDIO)
+        if (!hasCameraPermission) updateCameraPermanentDenial()
+    }
+
+    private fun updateCameraPermanentDenial() {
+        cameraPermanentlyDenied = !hasPermission(Manifest.permission.CAMERA) &&
+            !shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)
+    }
+
+    private fun hasPermission(permission: String): Boolean =
+        ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
 
     private fun openAppSettings() {
         val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null))
@@ -182,7 +253,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private companion object {
-        val REQUIRED_PERMISSIONS = arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO)
         const val PRIVACY_POLICY_URL = "https://hletrd.github.io/telecam-pro/privacy-policy/"
 
         // Non-standard OPPO keycodes the Find X9 Ultra camera-control button delivers to the focused app
@@ -195,6 +265,8 @@ class MainActivity : ComponentActivity() {
         // Per-notch zoom multiplier for the slide gesture.
         const val ZOOM_STEP = 1.15f
     }
+
+    private enum class PendingAudioAction { ENABLE_AUDIO, START_RECORDING }
 }
 
 @Composable
@@ -211,11 +283,11 @@ private fun PermissionGate(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
-                text = if (permanentlyDenied) {
-                    "Camera or microphone access is off. Enable both permissions in Settings to use the app."
-                } else {
-                    "TeleCam Pro needs Camera for the viewfinder and capture, and Microphone for video sound."
-                },
+	                text = if (permanentlyDenied) {
+	                    "Camera access is off. Enable it in Settings to use the app."
+	                } else {
+	                    "TeleCam Pro needs Camera for the viewfinder and capture. Microphone is requested only when recording audio."
+	                },
                 textAlign = TextAlign.Center,
                 style = MaterialTheme.typography.bodyLarge,
             )

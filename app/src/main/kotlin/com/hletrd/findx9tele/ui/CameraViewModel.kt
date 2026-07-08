@@ -235,6 +235,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         mainHandler.postDelayed(clearStatusRunnable, 2000)
     }
 
+    fun onAppStatus(message: String) = showStatus(message)
+
     private fun markChanged(slot: FnSlot) {
         _state.update { s ->
             val recent = (listOf(slot) + s.recentSettingSlots.filterNot { it == slot }).take(RECENT_SETTING_LIMIT)
