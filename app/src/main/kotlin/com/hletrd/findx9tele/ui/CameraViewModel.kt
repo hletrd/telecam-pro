@@ -16,7 +16,10 @@ import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.DriveMode
+import com.hletrd.findx9tele.camera.AutoExposure
+import com.hletrd.findx9tele.camera.ExposureMode
 import com.hletrd.findx9tele.camera.ExposureStep
+import com.hletrd.findx9tele.camera.effectiveExposureNs
 import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
@@ -90,7 +93,12 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // caps/size arrive on the engine's setup thread; hop to main before touching the engine again.
         engine.onCapsReady = { caps -> _state.update { it.copy(caps = caps) }; mainHandler.post { reconcileFrameRate() } }
         engine.onVideoSizeChosen = { size -> _state.update { it.copy(videoResolution = size) }; mainHandler.post { reconcileFrameRate() } }
-        engine.onAnalysis = { h, w -> _state.update { it.copy(histogramData = h, waveformData = w) } }
+        engine.onAnalysis = { h, w ->
+            _state.update { it.copy(histogramData = h, waveformData = w) }
+            // Feed the app-side auto-exposure loop (SHUTTER/ISO priority). The luma array is freshly
+            // allocated per callback, so it's safe to hand to the main thread. No-op in P/M.
+            if (h != null) mainHandler.post { applyAutoExposure(h.luma) }
+        }
         engine.onAudioLevel = { lvl -> _state.update { it.copy(audioLevel = lvl) } }
         // AE-resolved ISO/shutter (auto mode) for the live dial readout; camera thread → StateFlow is
         // thread-safe, Compose observes on main. The controller only fires this on change.
@@ -116,6 +124,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         val e = loaded.extras
         // Push to the engine (safe pre-start: these set @Volatile fields read when the camera opens).
         engine.setControls(c)
+        // If a priority mode was restored, arm the app-side AE luma metering so it drives on launch.
+        engine.setAeMetering(c.exposureMode == ExposureMode.SHUTTER || c.exposureMode == ExposureMode.ISO)
         engine.setTransfer(e.transfer)
         engine.setTeleconverterMode(e.teleconverter)
         engine.setVideoStabMode(e.videoStabMode)
@@ -206,16 +216,45 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
 
     // ---- Exposure ----
-    override fun onIso(iso: Int) = updateControls { it.copy(iso = iso, autoExposure = false) }
-    override fun onShutterNs(ns: Long) = updateControls { it.copy(exposureTimeNs = ns, autoExposure = false) }
+    // Dragging the ISO dial only makes sense when the user owns ISO (ISO/MANUAL). If ISO is currently
+    // auto (PROGRAM or SHUTTER), taking manual control of it drops to MANUAL.
+    override fun onIso(iso: Int) = updateControls {
+        val mode = if (it.autoExposure || it.autoIsoDriven) ExposureMode.MANUAL else it.exposureMode
+        it.copy(iso = iso, exposureMode = mode)
+    }
+    // Likewise for shutter: if the shutter is currently auto (PROGRAM or ISO), taking it over → MANUAL.
+    override fun onShutterNs(ns: Long) = updateControls {
+        val mode = if (it.autoExposure || it.autoShutterDriven) ExposureMode.MANUAL else it.exposureMode
+        it.copy(exposureTimeNs = ns, exposureMode = mode)
+    }
     override fun onExposureCompensation(ev: Int) = updateControls { it.copy(exposureCompensation = ev) }
-    override fun onToggleAutoExposure(auto: Boolean) = updateControls { it.copy(autoExposure = auto) }
+    override fun onExposureMode(mode: ExposureMode) {
+        val live = _state.value
+        updateControls {
+            // ISO priority auto-drives the shutter as a plain exposure time, so force SPEED — an ANGLE
+            // derivation would override the value the AE loop writes into exposureTimeNs.
+            val shutterMode = if (mode == ExposureMode.ISO) ShutterMode.SPEED else it.shutterMode
+            // Smooth handoff out of PROGRAM: seed the now-user-owned ISO/shutter from the HAL AE's last
+            // resolved values so S/ISO/M start correctly exposed instead of jumping to stale defaults.
+            val fromProgram = it.exposureMode == ExposureMode.PROGRAM
+            val iso = if (fromProgram) (live.liveIso ?: it.iso) else it.iso
+            val exp = if (fromProgram) (live.liveExposureNs ?: it.exposureTimeNs) else it.exposureTimeNs
+            it.copy(exposureMode = mode, shutterMode = shutterMode, iso = iso, exposureTimeNs = exp)
+        }
+        // Force the GL luma readback on while a priority mode needs to meter; off otherwise.
+        engine.setAeMetering(mode == ExposureMode.SHUTTER || mode == ExposureMode.ISO)
+    }
+    // Legacy binary toggle (kept for any caller): Auto→PROGRAM, Manual→MANUAL.
+    override fun onToggleAutoExposure(auto: Boolean) =
+        updateControls { it.copy(exposureMode = if (auto) ExposureMode.PROGRAM else ExposureMode.MANUAL) }
     override fun onToggleAeLock(locked: Boolean) = updateControls { it.copy(aeLock = locked) }
     override fun onAntibanding(mode: Antibanding) = updateControls { it.copy(antibanding = mode) }
     override fun onFps(fps: Int) = updateControls { it.copy(fps = fps) }
     override fun onShutterMode(mode: ShutterMode) = updateControls { it.copy(shutterMode = mode) }
-    override fun onShutterAngle(angle: Float) =
-        updateControls { it.copy(shutterAngle = angle, shutterMode = ShutterMode.ANGLE, autoExposure = false) }
+    override fun onShutterAngle(angle: Float) = updateControls {
+        val mode = if (it.autoExposure || it.autoShutterDriven) ExposureMode.MANUAL else it.exposureMode
+        it.copy(shutterAngle = angle, shutterMode = ShutterMode.ANGLE, exposureMode = mode)
+    }
     override fun onExposureStep(step: ExposureStep) = updateControls { it.copy(exposureStep = step) }
 
     // ---- White balance ----
@@ -459,6 +498,32 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         pendingControls = updated
         mainHandler.removeCallbacks(applyControlsRunnable)
         mainHandler.postDelayed(applyControlsRunnable, 80)
+    }
+
+    /**
+     * App-side auto-exposure for SHUTTER/ISO priority: meter the preview luma and nudge the free
+     * variable toward the EV-shifted mid-grey target. Writes the driven value WITHOUT changing the
+     * mode (unlike the user-facing onIso/onShutterNs, which take manual control). Main thread.
+     */
+    private fun applyAutoExposure(luma: IntArray) {
+        val s = _state.value
+        val caps = s.caps ?: return
+        val c = s.controls
+        val evStep = caps.evStep.let {
+            if (it.denominator == 0) 1f / 3f else it.numerator.toFloat() / it.denominator.toFloat()
+        }
+        val evStops = c.exposureCompensation * evStep
+        when (c.exposureMode) {
+            ExposureMode.SHUTTER ->
+                AutoExposure.driveIso(luma, c.iso, caps.isoRange, evStops)?.let { newIso ->
+                    updateControls { it.copy(iso = newIso) }
+                }
+            ExposureMode.ISO ->
+                AutoExposure.driveShutterNs(luma, c.effectiveExposureNs(), caps.exposureTimeRange, evStops)?.let { newNs ->
+                    updateControls { it.copy(exposureTimeNs = newNs) }
+                }
+            else -> Unit
+        }
     }
 
     // ---- Lifecycle ----

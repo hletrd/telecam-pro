@@ -49,6 +49,7 @@ import com.hletrd.findx9tele.camera.CameraCaps
 import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorTransfer
+import com.hletrd.findx9tele.camera.ExposureMode
 import com.hletrd.findx9tele.camera.ExposureStep
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.ManualControls
@@ -115,7 +116,7 @@ fun ManualDialCluster(
         DialChipRow(
             state = state,
             openDial = openDial,
-            onToggleAutoExposure = actions::onToggleAutoExposure,
+            onExposureMode = actions::onExposureMode,
             onTransfer = actions::onTransfer,
             onSelect = { type ->
                 when {
@@ -123,20 +124,26 @@ fun ManualDialCluster(
                         openDial = null
                         onRequestWhiteBalanceSheet()
                     }
-                    // Tapping a locked exposure dial (auto AE) switches to manual so it's adjustable —
-                    // otherwise the ruler is inert and there's no hint that manual mode is required.
-                    (type == DialType.ISO || type == DialType.SHUTTER) && controls.autoExposure -> {
-                        actions.onToggleAutoExposure(false)
+                    // Tapping the Shutter dial takes shutter control → Shutter-priority (from P or ISO);
+                    // in Manual it stays Manual (shutter already user-owned).
+                    type == DialType.SHUTTER &&
+                        (controls.exposureMode == ExposureMode.PROGRAM || controls.exposureMode == ExposureMode.ISO) -> {
+                        actions.onExposureMode(ExposureMode.SHUTTER)
                         openDial = type
                     }
-                    // Likewise for focus: default is continuous AF, so tapping Focus enters manual.
+                    // Tapping the ISO dial takes ISO control → ISO-priority (from P or S); Manual stays.
+                    type == DialType.ISO &&
+                        (controls.exposureMode == ExposureMode.PROGRAM || controls.exposureMode == ExposureMode.SHUTTER) -> {
+                        actions.onExposureMode(ExposureMode.ISO)
+                        openDial = type
+                    }
+                    // Focus: default is continuous AF, so tapping Focus enters manual.
                     type == DialType.FOCUS && controls.focusMode != FocusMode.MANUAL -> {
                         actions.onFocusMode(FocusMode.MANUAL)
                         openDial = type
                     }
-                    // EV compensation only applies in Auto exposure; in manual the chip is greyed —
-                    // don't open an inert, disabled ruler (designer UX-22).
-                    type == DialType.EV && !controls.autoExposure -> openDial = null
+                    // EV compensation applies whenever AE meters (P/S/ISO); in full Manual it's inert.
+                    type == DialType.EV && controls.exposureMode == ExposureMode.MANUAL -> openDial = null
                     else -> openDial = if (openDial == type) null else type
                 }
             },
@@ -148,7 +155,7 @@ fun ManualDialCluster(
 private fun DialChipRow(
     state: CameraUiState,
     openDial: DialType?,
-    onToggleAutoExposure: (Boolean) -> Unit,
+    onExposureMode: (ExposureMode) -> Unit,
     onTransfer: (ColorTransfer) -> Unit,
     onSelect: (DialType) -> Unit,
     modifier: Modifier = Modifier,
@@ -165,14 +172,14 @@ private fun DialChipRow(
             .horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        // Exposure-mode toggle: the visible "hint" that ISO/Shutter need Manual. Highlighted when
-        // Manual is active. Tapping flips Auto ⇄ Manual for the whole exposure triangle.
+        // PASM-style exposure-mode chip: tap to cycle P → S → ISO → M. The badge is the current mode
+        // letter; P is the "resting" auto state (not highlighted), the priority/manual modes are.
         DialChip(
             label = "AE",
-            value = if (controls.autoExposure) "Auto" else "Manual",
-            active = !controls.autoExposure,
+            value = controls.exposureMode.letter,
+            active = controls.exposureMode != ExposureMode.PROGRAM,
             enabled = true,
-            onClick = { onToggleAutoExposure(!controls.autoExposure) },
+            onClick = { onExposureMode(nextExposureMode(controls.exposureMode)) },
         )
         DialChip(
             // Sony-style: the label IS the focus mode (MF / AF / AF-C / Macro), so the current mode
@@ -190,21 +197,24 @@ private fun DialChipRow(
             onClick = { onSelect(DialType.FOCUS) },        )
         DialChip(
             label = "Shutter",
-            // In auto, show the AE-resolved shutter (what AE chose) instead of a bare "Auto"; fall
-            // back to "Auto" until the first result arrives.
+            // PROGRAM: show the HAL AE-resolved shutter. ISO priority: the app drives exposureTimeNs, so
+            // show that live value (greyed — not user-owned). SHUTTER/MANUAL: the user's value.
             value = when {
-                controls.autoExposure -> state.liveExposureNs?.let { formatShutterSpeed(it) } ?: "Auto"
+                controls.exposureMode == ExposureMode.PROGRAM -> state.liveExposureNs?.let { formatShutterSpeed(it) } ?: "Auto"
                 controls.shutterMode == ShutterMode.ANGLE -> "%.0f°".format(controls.shutterAngle)
                 else -> formatShutterSpeed(controls.exposureTimeNs)
             },
             active = openDial == DialType.SHUTTER,
-            enabled = !controls.autoExposure,
+            enabled = controls.exposureMode == ExposureMode.SHUTTER || controls.exposureMode == ExposureMode.MANUAL,
             onClick = { onSelect(DialType.SHUTTER) },        )
         DialChip(
             label = "ISO",
-            value = if (controls.autoExposure) (state.liveIso?.let { "$it" } ?: "Auto") else controls.iso.toString(),
+            // PROGRAM: HAL AE ISO. SHUTTER priority: the app drives controls.iso (show it, greyed).
+            // ISO/MANUAL: the user's value.
+            value = if (controls.exposureMode == ExposureMode.PROGRAM) (state.liveIso?.let { "$it" } ?: "Auto")
+            else controls.iso.toString(),
             active = openDial == DialType.ISO,
-            enabled = !controls.autoExposure,
+            enabled = controls.exposureMode == ExposureMode.ISO || controls.exposureMode == ExposureMode.MANUAL,
             onClick = { onSelect(DialType.ISO) },        )
         DialChip(
             label = "WB",
@@ -216,7 +226,8 @@ private fun DialChipRow(
             label = "EV",
             value = "%+.1f".format(controls.exposureCompensation * evStepValue),
             active = openDial == DialType.EV,
-            enabled = controls.autoExposure,
+            // EV comp biases the meter, so it's live in every metered mode (P/S/ISO); inert in Manual.
+            enabled = controls.exposureMode != ExposureMode.MANUAL,
             onClick = { onSelect(DialType.EV) },        )
         // Video-only transfer quick chip (HLG → O-Log2 → SDR cycle): surfaces the color pipeline on
         // the shooting screen instead of burying it in the settings sheet. Locked while recording
@@ -239,6 +250,14 @@ private fun nextTransfer(t: ColorTransfer): ColorTransfer = when (t) {
     ColorTransfer.HLG -> ColorTransfer.LOG
     ColorTransfer.LOG -> ColorTransfer.SDR
     ColorTransfer.SDR -> ColorTransfer.HLG
+}
+
+/** PASM cycle order: Program → Shutter-priority → ISO-priority → Manual → (back to Program). */
+private fun nextExposureMode(m: ExposureMode): ExposureMode = when (m) {
+    ExposureMode.PROGRAM -> ExposureMode.SHUTTER
+    ExposureMode.SHUTTER -> ExposureMode.ISO
+    ExposureMode.ISO -> ExposureMode.MANUAL
+    ExposureMode.MANUAL -> ExposureMode.PROGRAM
 }
 
 @Composable
@@ -324,26 +343,28 @@ private fun FocusRuler(controls: ManualControls, caps: CameraCaps?, onFocusSlide
 
 @Composable
 private fun ShutterRuler(controls: ManualControls, caps: CameraCaps?, actions: CameraActions) {
-    val enabled = !controls.autoExposure
-    if (controls.shutterMode == ShutterMode.ANGLE) {
-        val fraction = ((controls.shutterAngle - 1f) / 359f).coerceIn(0f, 1f)
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    // The shutter is user-editable in Shutter-priority and Manual; in ISO priority it's app-driven, so
+    // the ruler is shown but inert. ANGLE is a cine convention — same exposure, expressed as a shutter
+    // angle relative to the frame rate (180° = 1/(2·fps)).
+    val enabled = controls.exposureMode == ExposureMode.SHUTTER || controls.exposureMode == ExposureMode.MANUAL
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        SpeedAngleToggle(mode = controls.shutterMode, enabled = enabled, onSelect = actions::onShutterMode)
+        if (controls.shutterMode == ShutterMode.ANGLE) {
+            val fraction = ((controls.shutterAngle - 1f) / 359f).coerceIn(0f, 1f)
             RulerReadout("%.0f°  (%s)".format(controls.shutterAngle, formatShutterSpeed(controls.effectiveExposureNsForDisplay())))
             RulerSlider(
                 fraction = fraction,
                 onFractionChange = { f -> actions.onShutterAngle((1f + f * 359f).coerceIn(1f, 360f)) },
                 enabled = enabled,
             )
-        }
-    } else {
-        val range = caps?.exposureTimeRange ?: Range(controls.exposureTimeNs, controls.exposureTimeNs)
-        val stops = remember(range.lower, range.upper, controls.exposureStep) { shutterStops(range, controls.exposureStep.ev) }
-        val n = stops.size
-        val idx = remember(controls.exposureTimeNs, stops) {
-            stops.indices.minByOrNull { kotlin.math.abs(stops[it] - controls.exposureTimeNs) } ?: 0
-        }
-        val fraction = if (n <= 1) 0f else idx.toFloat() / (n - 1)
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        } else {
+            val range = caps?.exposureTimeRange ?: Range(controls.exposureTimeNs, controls.exposureTimeNs)
+            val stops = remember(range.lower, range.upper, controls.exposureStep) { shutterStops(range, controls.exposureStep.ev) }
+            val n = stops.size
+            val idx = remember(controls.exposureTimeNs, stops) {
+                stops.indices.minByOrNull { kotlin.math.abs(stops[it] - controls.exposureTimeNs) } ?: 0
+            }
+            val fraction = if (n <= 1) 0f else idx.toFloat() / (n - 1)
             RulerReadout(formatShutterSpeed(controls.exposureTimeNs))
             RulerSlider(
                 fraction = fraction,
@@ -353,6 +374,34 @@ private fun ShutterRuler(controls: ManualControls, caps: CameraCaps?, actions: C
                 majorEvery = stepMajorEvery(controls.exposureStep),
                 snap = true,
             )
+        }
+    }
+}
+
+/** Small Speed⇄Angle segmented switch on the shutter ruler (also mirrored in the settings sheet). */
+@Composable
+private fun SpeedAngleToggle(mode: ShutterMode, enabled: Boolean, onSelect: (ShutterMode) -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        ShutterMode.entries.forEach { m ->
+            val on = mode == m
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(if (on) CameraColors.ManualActive else CameraColors.Pill.copy(alpha = 0.7f))
+                    .clickable(enabled = enabled) { onSelect(m) }
+                    .padding(horizontal = 14.dp, vertical = 5.dp),
+            ) {
+                Text(
+                    text = if (m == ShutterMode.SPEED) "Speed" else "Angle",
+                    color = when {
+                        on -> Color.Black
+                        enabled -> CameraColors.TextPrimary
+                        else -> CameraColors.TextSecondary
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
         }
     }
 }
@@ -416,7 +465,8 @@ private fun stepMajorEvery(step: ExposureStep): Int = when (step) {
 @Composable
 private fun IsoRuler(controls: ManualControls, caps: CameraCaps?, onIso: (Int) -> Unit) {
     val range = caps?.isoRange ?: Range(controls.iso, controls.iso)
-    val enabled = !controls.autoExposure
+    // ISO is user-editable in ISO-priority and Manual; in Shutter-priority it's app-driven (inert).
+    val enabled = controls.exposureMode == ExposureMode.ISO || controls.exposureMode == ExposureMode.MANUAL
     val stops = remember(range.lower, range.upper, controls.exposureStep) { isoStops(range, controls.exposureStep.ev) }
     val n = stops.size
     val idx = remember(controls.iso, stops) {
@@ -474,7 +524,7 @@ private fun EvRuler(controls: ManualControls, caps: CameraCaps?, onEv: (Int) -> 
                 val ev = (lo + f * (hi - lo)).roundToInt().coerceIn(lo, hi)
                 onEv(ev)
             },
-            enabled = controls.autoExposure,
+            enabled = controls.exposureMode != ExposureMode.MANUAL,
             totalUnits = (hi - lo).coerceAtLeast(1),
             majorEvery = majorEvery,
             snap = true,

@@ -86,33 +86,6 @@ internal fun pixelChipBorder(selected: Boolean) = FilterChipDefaults.filterChipB
     selectedBorderWidth = 0.dp,
 )
 
-/** Reusable Auto/Manual segmented toggle used by exposure and white-balance rows. */
-@Composable
-fun AutoManualToggle(
-    auto: Boolean,
-    onToggle: (Boolean) -> Unit,
-    modifier: Modifier = Modifier,
-    autoLabel: String = "Auto",
-    manualLabel: String = "Manual",
-) {
-    Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        FilterChip(
-            selected = auto,
-            onClick = { onToggle(true) },
-            label = { Text(autoLabel) },
-            colors = pixelChipColors(),
-            border = pixelChipBorder(auto),
-        )
-        FilterChip(
-            selected = !auto,
-            onClick = { onToggle(false) },
-            label = { Text(manualLabel) },
-            colors = pixelChipColors(),
-            border = pixelChipBorder(!auto),
-        )
-    }
-}
-
 /** Exclusive segmented selector (FilterChip row) for a fixed set of enum/value options. */
 @Composable
 internal fun <T> SegmentedSelector(

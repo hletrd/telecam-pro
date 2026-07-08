@@ -9,6 +9,7 @@ import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.DriveMode
+import com.hletrd.findx9tele.camera.ExposureMode
 import com.hletrd.findx9tele.camera.ExposureStep
 import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FocusMode
@@ -45,6 +46,7 @@ interface CameraActions {
     fun onIso(iso: Int)
     fun onShutterNs(ns: Long)
     fun onExposureCompensation(ev: Int)
+    fun onExposureMode(mode: ExposureMode)
     fun onToggleAutoExposure(auto: Boolean)
     fun onToggleAeLock(locked: Boolean)
     fun onAntibanding(mode: Antibanding)

@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.net.toUri
 import com.hletrd.findx9tele.camera.Antibanding
+import com.hletrd.findx9tele.camera.ExposureMode
 import com.hletrd.findx9tele.camera.ExposureStep
 import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.AudioScene
@@ -406,10 +407,15 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     val caps = state.caps
     TabTitle("Exposure/Color")
     SectionHeader("Exposure")
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-        Text("Mode", color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
-        AutoManualToggle(auto = controls.autoExposure, onToggle = actions::onToggleAutoExposure)
-    }
+    // PASM-style: P (auto), S (shutter-priority, app auto-ISO), ISO (iso-priority, app auto-shutter),
+    // M (manual). No aperture-priority — the tele aperture is fixed.
+    SegmentedSelector(
+        label = "Mode",
+        options = ExposureMode.entries,
+        selected = controls.exposureMode,
+        labelFor = { it.letter },
+        onSelect = actions::onExposureMode,
+    )
     ToggleRow(label = "AE Lock", checked = controls.aeLock, onCheckedChange = actions::onToggleAeLock)
     SegmentedSelector(
         label = "Anti-Flicker",
@@ -439,7 +445,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         value = controls.iso.toFloat().coerceIn(isoRange.lower.toFloat(), isoRange.upper.toFloat()),
         onValueChange = { actions.onIso(it.roundToInt()) },
         valueRange = isoRange.lower.toFloat()..isoRange.upper.toFloat(),
-        enabled = !controls.autoExposure,
+        enabled = controls.exposureMode == ExposureMode.ISO || controls.exposureMode == ExposureMode.MANUAL,
     )
 
     SectionHeader("Metering")
