@@ -87,7 +87,8 @@ object OcsProbe {
             }
             client.addOnConnectionFailedListener { result ->
                 val code = runCatching { result.errorCode }.getOrNull() ?: -1
-                Log.e(TAG, "✗ AUTH FAILED — errorCode=$code (app not registered with OPPO)")
+                val meaning = authErrorMeaning(code)
+                Log.e(TAG, "✗ AUTH FAILED — errorCode=$code ($meaning)")
                 transition(OcsAuthState.AUTH_FAILED)
             }
             Log.i(TAG, "connection listeners registered; waiting for auth callback…")
@@ -100,6 +101,25 @@ object OcsProbe {
     private fun transition(newState: OcsAuthState) {
         state = newState
         listeners.forEach { runCatching { it(newState) } }
+    }
+
+    /**
+     * Error-code meanings recovered from the stock OPPO camera app decompilation
+     * (`androidx.appcompat.app.z.g(int)`). The most common one for an unregistered third-party app
+     * is 1004 (AUTHCODE_EXPECTED).
+     */
+    private fun authErrorMeaning(code: Int): String = when (code) {
+        1001 -> "AUTHENTICATE_SUCCESS"
+        1002 -> "AUTHENTICATE_FAIL"
+        1003 -> "TIME_EXPIRED"
+        1004 -> "AUTHCODE_EXPECTED"
+        1005 -> "VERSION_INCOMPATIBLE"
+        1006 -> "AUTHCODE_RECYCLE"
+        1007 -> "AUTHCODE_INVALID"
+        1008 -> "CAPABILITY_EXCEPTION"
+        1009 -> "STATUS_EXCEPTION"
+        1010 -> "INTERNAL_EXCEPTION"
+        else -> "UNKNOWN"
     }
 
     private fun dumpCapabilities(client: CameraUnitClient) {
