@@ -65,6 +65,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -282,30 +283,30 @@ fun CameraScreen(
                 .padding(start = 12.dp, top = 60.dp),
         )
 
-        // Scopes/readouts stack in the top-end column. Pushed below the top bar (top = 72dp) so the
-        // histogram/waveform clear the settings glyph, with generous spacing between them. The scopes
-        // themselves are NOT counter-rotated: they are orientation-neutral data monitors, and rotating
-        // a wide box 90° made the histogram and waveform overlap in a landscape hold (QA). Keeping them
-        // screen-fixed lets them stack cleanly in every hold.
+        // Scopes/readouts stack in the top-end column. top = 100dp clears the OSD status row (which ends
+        // ~90dp) — QA hit an overlap at 72dp. Each scope counter-rotates to stay horizontal as the phone
+        // turns (rotateLayout reserves the ROTATED bounding box, so a 90° hold no longer makes the
+        // histogram and waveform collide — the earlier plain rotate() did, which is why they were left
+        // fixed before).
         Column(
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .statusBarsPadding()
-                .padding(end = 12.dp, top = 72.dp),
+                .padding(end = 12.dp, top = 100.dp),
             horizontalAlignment = Alignment.End,
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             if (state.isRecording) {
-                RecordingIndicator(elapsedMs = state.recordElapsedMs)
+                RecordingIndicator(elapsedMs = state.recordElapsedMs, modifier = Modifier.rotateLayout(overlayRotation))
             }
             if (state.isRecording && state.recordAudio) {
-                AudioMeter(level = state.audioLevel)
+                AudioMeter(level = state.audioLevel, modifier = Modifier.rotateLayout(overlayRotation))
             }
             if (state.histogram) {
-                HistogramOverlay(data = state.histogramData)
+                HistogramOverlay(data = state.histogramData, modifier = Modifier.rotateLayout(overlayRotation))
             }
             if (state.waveform) {
-                WaveformOverlay(data = state.waveformData)
+                WaveformOverlay(data = state.waveformData, modifier = Modifier.rotateLayout(overlayRotation))
             }
         }
 
@@ -314,16 +315,16 @@ fun CameraScreen(
         }
 
         state.statusMessage?.let { message ->
+            // Centered transient toast ("Saved" / "Video saved" / errors). Previously pinned near the
+            // top, where it collided with the OSD status row (300mm / codec / etc.) — QA-reported.
             Text(
                 text = message,
                 color = CameraColors.TextPrimary,
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .statusBarsPadding()
-                    .padding(top = 64.dp)
-                    .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                    .align(Alignment.Center)
+                    .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
             )
         }
 
@@ -419,6 +420,26 @@ fun CameraScreen(
     val reviewUri = state.lastMediaUri
     if (reviewOpen && reviewUri != null) {
         MediaReviewOverlay(uri = reviewUri, onClose = { reviewOpen = false })
+    }
+}
+
+/**
+ * Rotates content by [degrees] AND reserves the ROTATED bounding box in layout — unlike Modifier.rotate,
+ * a pure draw transform that keeps the original (unrotated) slot, which made rotated wide scopes overlap
+ * their neighbours. For 90°/270° holds it swaps width/height so a stack of rotated scopes lays out
+ * without collisions; the content is rotated via the placement layer.
+ */
+private fun Modifier.rotateLayout(degrees: Float): Modifier = this.layout { measurable, constraints ->
+    val placeable = measurable.measure(constraints)
+    val norm = ((degrees % 360f) + 360f) % 360f
+    val swap = norm in 45f..135f || norm in 225f..315f
+    val w = if (swap) placeable.height else placeable.width
+    val h = if (swap) placeable.width else placeable.height
+    layout(w, h) {
+        placeable.placeRelativeWithLayer(
+            x = (w - placeable.width) / 2,
+            y = (h - placeable.height) / 2,
+        ) { rotationZ = degrees }
     }
 }
 

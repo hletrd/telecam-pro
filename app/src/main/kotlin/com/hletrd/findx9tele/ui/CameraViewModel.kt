@@ -74,6 +74,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     private var countdownRunnable: Runnable? = null
 
+    // Auto-dismisses the transient status toast ("Saved" / "Video saved" / errors) so it doesn't hang
+    // on screen forever (QA: "video saved" stuck). Each new message re-arms the 2 s timer.
+    private val clearStatusRunnable = Runnable { _state.update { it.copy(statusMessage = null) } }
+
     private var reticleHideRunnable: Runnable? = null
 
     private val levelTicker = object : Runnable {
@@ -94,7 +98,11 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
 
     init {
-        engine.onStatus = { msg -> _state.update { it.copy(statusMessage = msg) } }
+        engine.onStatus = { msg ->
+            _state.update { it.copy(statusMessage = msg) }
+            mainHandler.removeCallbacks(clearStatusRunnable)
+            if (msg != null) mainHandler.postDelayed(clearStatusRunnable, 2000)
+        }
         // caps/size arrive on the engine's setup thread; hop to main before touching the engine again.
         engine.onCapsReady = { caps -> _state.update { it.copy(caps = caps) }; mainHandler.post { reconcileFrameRate() } }
         engine.onVideoSizeChosen = { size -> _state.update { it.copy(videoResolution = size) }; mainHandler.post { reconcileFrameRate() } }
