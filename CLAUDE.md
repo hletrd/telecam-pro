@@ -121,13 +121,18 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
   The scopes (histogram/waveform) DO rotate, via a `rotateLayout` modifier that reserves the ROTATED
   bounding box (swaps W/H at 90/270) so a stack of rotated scopes doesn't overlap — the reason plain
   `rotate()` couldn't be used and they were screen-fixed before.
-- **PASM+ISO exposure = HAL AE only in PROGRAM; S/ISO/M are app-side.** `ExposureMode { PROGRAM,
-  SHUTTER, ISO, MANUAL }` (no aperture-priority — fixed tele aperture). Camera2 has no shutter-/ISO-
-  priority, so `camera/AutoExposure.kt` closes the loop off the GL preview luma: SHUTTER drives ISO,
-  ISO drives exposure time, toward an EV-shifted mid-grey (log-domain P-control, deadband, unit-tested).
-  The GL luma readback is force-enabled in S/ISO via `gl.setAeMetering(true)` independent of the scope
-  toggles. `autoExposure` is now a **derived** `val` (`== PROGRAM`); the capture path treats S/ISO/M
-  identically (AE off, sensor values set) because the controller keeps `iso`/`exposureTimeNs` fresh.
+- **PASM+ISO exposure: only video-P (and flash-metered P) uses the HAL AE; everything else is
+  app-side.** `ExposureMode { PROGRAM, SHUTTER, ISO, MANUAL }` (no aperture-priority — fixed tele
+  aperture). Camera2 has no shutter-/ISO-priority AND no min-shutter hint, so `camera/AutoExposure.kt`
+  closes the loop off the GL preview luma: SHUTTER drives ISO, ISO drives exposure time, and **photo
+  PROGRAM runs a real program line** (`driveProgram`): shutter held at the handheld 1/(effective focal)
+  rule (≈1/300 s with the TC), ISO carries exposure, shutter slides (≤1 stop/tick,
+  brightness-neutral) only when ISO clamps — down to a 1/10 s ceiling in the dark, faster at base ISO
+  in the bright. `ManualControls.programAppSide` (recomputed on mode/flash/exposure-mode changes) keeps
+  video-P and AUTO/ON-flash-P on the HAL AE (flash metering needs AE ON). The GL luma readback is
+  force-enabled whenever the app-side loop needs it (`gl.setAeMetering`). `autoExposure` is a derived
+  `val` (`== PROGRAM && !programAppSide`); the capture path treats all app-side modes identically
+  (AE off, sensor values set) because the loop keeps `iso`/`exposureTimeNs` fresh.
 - **Controls apply is a THROTTLE, not a debounce.** `CameraViewModel.updateControls` applies the newest
   value at ~12 Hz *while* a gesture continues (a debounce starved: continuous pinch reset the timer so
   zoom only landed on finger-up). Keep the `applyScheduled`-flag trailing throttle.
@@ -193,21 +198,36 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
   builds as a read-only CameraUnit availability check. Enabling the full CameraUnit path requires the
   official OPPO developer registration flow and an AUTH_CODE; see `docs/BACKLOG.md` item #4 for the
   checklist and SDK notes.
-- **The camera-control button IS reachable by a third-party app (device-verified 2026-07-09).** Its
-  FULL mechanical press arrives as the standard `KEYCODE_CAMERA` (→ shutter, `onKeyDown`). Its
-  capacitive slide + light-press ride a separate `cs_press` input device (`ABS_X` 0..100 slide,
-  `ABS_DISTANCE` press) the app can't read directly (no `/dev/input` access) — BUT the framework
-  re-emits them to the FOCUSED app as **non-standard OPPO keycodes** via `dispatchKeyEvent`: slide
-  notches = **767 / 769**, light-press = **782**. These are DISCRETE keys (no continuous position), so
-  the slide drives STEPPED zoom, not smooth. Wired through a configurable `HardwareKeyAction` system
-  (`volumeKeyAction` / `halfPressAction`, reassignable in Advanced, persisted): full → SHUTTER,
-  half-press → AF-ON, slide → zoom ±. The button's advanced OIS / zoom-HUD (iPhone-Camera-Control style)
-  is NOT exposed. **Injecting these keycodes via `adb input keyevent` does NOT reach the focused app**
-  (ColorOS routes them elsewhere) — only a physical press does, so verify slide/half-press on-device.
+- **The camera-control button: slides arrive as STANDARD `KEYCODE_ZOOM_IN`/`OUT` (live-verified
+  2026-07-09).** Full mechanical press = standard `KEYCODE_CAMERA` (→ shutter, `onKeyDown`). The
+  capacitive slide is re-emitted to the FOCUSED app as **KEYCODE_ZOOM_IN (168) / KEYCODE_ZOOM_OUT
+  (169), repeating ~20 Hz** while the finger slides — a one-off earlier capture showed OPPO codes
+  767/769/782 instead (config-dependent; both families are handled, `KEYCODE_FOCUS` too). The
+  **light-press (half-press) is NOT delivered at all** in the current configuration (nothing reaches
+  `dispatchKeyEvent`; likely stock-camera-only) — the FOCUS/782 handlers stay armed if it ever
+  arrives. The discrete ~20 Hz repeats stutter if applied 1:1: `onHardwareZoomStep` moves a TARGET and
+  a ~30 Hz ticker glides `zoomRatio` toward it (log-space exponential), like a powered zoom rocker.
+  Full/half actions are a configurable `HardwareKeyAction` system (reassignable in Setup, persisted).
+  **`adb input keyevent` injection does NOT reach the focused app** — only a physical press; verify
+  button behavior on-device.
 - **The horizon level holds its angle when the phone points steeply up/down.** Roll comes from
   `atan2(gravity.x, gravity.y)`; near-vertical the in-plane x/y → 0 and it's pure noise, so the level
   spun. `GyroEis` only updates the roll when `hypot(x,y) > LEVEL_GRAVITY_THRESHOLD` (~2.5), else holds
   the last confident angle (same idea as the discrete-orientation `FLAT_GRAVITY_THRESHOLD` guard).
+- **GlPipeline drops anything posted before `start()` — re-seed GL state in the start callback.**
+  `GlPipeline.post` is `handler?.post`, silently a no-op until the GL thread exists. Any GL state set
+  during settings-restore (LOG transfer, AE metering, gamma assist) MUST be re-applied inside the
+  `gl.start` callback in `CameraEngine` (it is — extend that block when adding GL state). Symptom when
+  missed: "works only after the first recording pushes it" (the LOG-preview bug).
+- **Exactly one owner of the mic.** The Sony-style standby audio meter is a levels-only `AudioRecord`
+  tap that runs while video is ARMED but not rolling; `startRecording` stops it (flag + short join)
+  BEFORE `VideoRecorder` opens its own AudioRecord, and it stays off outside video mode / while
+  backgrounded. Never add a second concurrent AudioRecord.
+- **`Bitmap.compress` strips ALL metadata — stamp JPEG EXIF back after writing.** `writeJpegExif`
+  (androidx.exifinterface, "rw" pending FD, before publish) re-adds ISO / exposure / 35mm focal /
+  make/model from the controller's latest capture result. HEIFs are currently NOT stamped (heifwriter
+  has no EXIF API; androidx ExifInterface can't write HEIC). The review card's exposure line simply
+  drops out for files without EXIF.
 - **`manager.openCamera()` can throw synchronously.** Opening from a background proc state (relaunch
   behind the keyguard / screen just woke) raises `CameraAccessException CAMERA_DISABLED` from the
   `openCamera` call itself, not the StateCallback — wrap it in `runCatching → onError` or it crashes.

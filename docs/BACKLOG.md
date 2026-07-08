@@ -1,6 +1,6 @@
 # Backlog & Status — Find X9 Ultra Teleconverter Camera
 
-Living handoff document. Read after `CLAUDE.md`. Goal: **Google Play release.** Updated 2026-07-08.
+Living handoff document. Read after `CLAUDE.md`. Goal: **Google Play release.** Updated 2026-07-09.
 
 ## ★ Current status (2026-07-08) — read this first
 
@@ -78,12 +78,25 @@ and **Play-submission-ready** at the packaging level. Since the last device-veri
 12. **Pro-camera Settings sliders** — replaced the Material `Slider` with a custom `CameraSlider`
     (tick-marked track, accent fill, needle thumb, bold accent HUD value). Device-verified.
 
+### ✅ Resolved in the 2026-07-09 session
+1. **LOG preview** — root cause: the preview draw was hardcoded SDR (only the encoder got the curve) AND
+   `GlPipeline.post` drops pre-start calls, so a restored LOG never reached GL until a recording pushed
+   it. LOG now = GL O-Log2 rendered in the live preview (user-confirmed "미리보기도 Log color로 잘 뜬다"),
+   seeded at pipeline start; the native HAL log key is dormant (not wired to LOG).
+2. **Camera-control button** — full press = `KEYCODE_CAMERA` → shutter ✅ (user-confirmed). Slides =
+   standard `KEYCODE_ZOOM_IN/OUT` (168/169) repeating ~20 Hz (live-captured) → eased stepped zoom
+   (target + 30 Hz glide; raw 1:1 application stuttered). **Half-press is not delivered to third-party
+   apps** in the current configuration (no event reaches dispatchKeyEvent; FOCUS/782 handlers stay armed).
+3. **True P mode** — app-side program line for stills (min-shutter 1/(eff focal) rule + Auto ISO,
+   1/10 s dark ceiling); HAL AE keeps video-P and flash-AUTO/ON-P. Auto-ISO preset chips removed.
+4. **Sony operator batch (device-verified via screenshots)** — Gamma Disp. Assist, battery/remaining-
+   media OSD pill, red REC border, DISP declutter toggle, frame lines (2.39:1/1:1/9:16), custom
+   (grey-card) WB capture, tap-AF spot size S/M/L, JPEG EXIF stamping + review exposure line, standby
+   audio meters. Plus: launch-seeded review thumbnail, left-pinned vertical exposure meter,
+   IMG_TELECAM_ filenames, review swipe-dismiss + trash icon, real names everywhere
+   (Stabilization/Gamma/JPEG Quality/0.6×; Stabilization tab merged into Lens).
+
 ### 🔴 Open polish items (still TODO)
-1. **LOG preview not visibly flat** — native log key IS applied (`vendorLogMode=ON` → session reopen →
-   GL pass-through `gl.setTransfer(null)`); CLAUDE.md notes it was device-verified flat before. Re-verify
-   with a **lit scene that has a tonal range** (a dark remote preview can't show flatness) + ffprobe a
-   recorded clip. Only reachable in VIDEO mode (the TF quick-chip).
-2. **Physical camera-button press test** (see #11 above).
 3. **Keep-screen-on is unconditional** (`FLAG_KEEP_SCREEN_ON` in MainActivity). Optional: make it a
    toggle if battery-saving is wanted — currently always-on (the usual camera-app choice).
 4. **300 mm teleconverter OIS integration depends on OPPO CameraUnit availability**
