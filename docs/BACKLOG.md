@@ -86,6 +86,16 @@ and **Play-submission-ready** at the packaging level. Since the last device-veri
 2. **Physical camera-button press test** (see #11 above).
 3. **Keep-screen-on is unconditional** (`FLAG_KEEP_SCREEN_ON` in MainActivity). Optional: make it a
    toggle if battery-saving is wanted — currently always-on (the usual camera-app choice).
+4. **300 mm teleconverter OIS amplification is gated behind OPPO CameraUnit/OCS SDK authentication**
+   (investigated 2026-07-08). The stock OPPO camera app routes teleconverter detection and the "4.3×"
+   OIS/super-steady profile through authenticated OCS `ConfigureKey`s (`com.oplus.configure.explorer.*`,
+   `com.oplus.configure.video.stabilization`/`super_stabilization`). None of these vendor tags appear in
+   any camera's `availableRequestKeys`/`availableResultKeys` in `dumpsys media.camera`, so raw Camera2
+   cannot set or read them. The current raw-Camera2 path already applies the maximum available hints
+   (`com.oplus.camera.mode=40` for Hasselblad telephoto and `com.oplus.original.zoomRatio` scaled by
+   4.286×). To unlock the stock 300 mm OIS profile, the app package must be registered on OPPO's
+   CameraUnit developer portal to receive an `AUTH_CODE`; then the OCS/CameraUnit path can be wired in.
+   See CLAUDE.md for the manifest placeholder and `camera/OcsProbe.kt` for the current auth-probe stub.
 
 ### 🔧 Infra note — wireless ADB on this Mac
 `adb connect 172.30.50.127:<port>` returns **"No route to host"** even though ping + raw TCP reach the
