@@ -1099,8 +1099,17 @@ internal fun fnSlotValue(slot: FnSlot, state: CameraUiState): String {
     return when (slot) {
         FnSlot.EXPOSURE_MODE -> c.exposureMode.letter
         FnSlot.FOCUS -> focusModeLabel(c.focusMode)
-        FnSlot.SHUTTER -> if (c.shutterMode == ShutterMode.ANGLE) "%.0f°".format(c.shutterAngle) else formatShutterSpeed(c.exposureTimeNs)
-        FnSlot.ISO -> c.iso.toString()
+        FnSlot.SHUTTER -> when {
+            c.exposureMode == ExposureMode.PROGRAM -> "A ${autoShutterText(state)}"
+            c.autoShutterDriven -> "A ${formatShutterSpeed(c.exposureTimeNs)}"
+            c.shutterMode == ShutterMode.ANGLE -> "%.0f°".format(c.shutterAngle)
+            else -> formatShutterSpeed(c.exposureTimeNs)
+        }
+        FnSlot.ISO -> when {
+            c.exposureMode == ExposureMode.PROGRAM -> "A ${autoIsoText(state)}"
+            c.autoIsoDriven -> "A ${c.iso}"
+            else -> c.iso.toString()
+        }
         FnSlot.WB -> if (c.wbMode == WbMode.MANUAL) "${c.wbKelvin}K" else wbModeLabel(c.wbMode)
         FnSlot.EV -> "%+.1f".format(c.exposureCompensation * 0.333f)
         FnSlot.ZOOM -> "%.1fx".format(c.zoomRatio)
@@ -1118,6 +1127,18 @@ internal fun fnSlotValue(slot: FnSlot, state: CameraUiState): String {
         FnSlot.OPEN_GATE -> if (state.openGate) "4:3" else "Off"
         FnSlot.FRAME_LINES -> state.frameLines.label
     }
+}
+
+private fun autoShutterText(state: CameraUiState): String {
+    val c = state.controls
+    val ns = if (c.autoExposure) state.liveExposureNs else c.exposureTimeNs
+    return ns?.let { formatShutterSpeed(it) } ?: "--"
+}
+
+private fun autoIsoText(state: CameraUiState): String {
+    val c = state.controls
+    val iso = if (c.autoExposure) state.liveIso else c.iso
+    return iso?.toString() ?: "--"
 }
 
 internal fun performQuickFn(slot: FnSlot, state: CameraUiState, actions: CameraActions) {

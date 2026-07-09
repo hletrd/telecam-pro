@@ -237,7 +237,8 @@ private fun FnDialChip(
         FnSlot.SHUTTER -> DialChip(
             label = "Shutter",
             value = when {
-                controls.exposureMode == ExposureMode.PROGRAM -> state.liveExposureNs?.let { formatShutterSpeed(it) } ?: "Auto"
+                controls.exposureMode == ExposureMode.PROGRAM -> "A ${autoShutterText(state)}"
+                controls.autoShutterDriven -> "A ${formatShutterSpeed(controls.exposureTimeNs)}"
                 controls.shutterMode == ShutterMode.ANGLE -> "%.0f°".format(controls.shutterAngle)
                 else -> formatShutterSpeed(controls.exposureTimeNs)
             },
@@ -248,8 +249,11 @@ private fun FnDialChip(
         )
         FnSlot.ISO -> DialChip(
             label = "ISO",
-            value = if (controls.exposureMode == ExposureMode.PROGRAM) (state.liveIso?.let { "$it" } ?: "Auto")
-            else controls.iso.toString(),
+            value = when {
+                controls.exposureMode == ExposureMode.PROGRAM -> "A ${autoIsoText(state)}"
+                controls.autoIsoDriven -> "A ${controls.iso}"
+                else -> controls.iso.toString()
+            },
             active = openDial == DialType.ISO,
             enabled = controls.exposureMode == ExposureMode.ISO || controls.exposureMode == ExposureMode.MANUAL,
             onClick = { onSelect(DialType.ISO) },
@@ -439,6 +443,18 @@ private fun nextFrameLine(type: FrameLineType): FrameLineType = when (type) {
     FrameLineType.VERTICAL -> FrameLineType.OFF
 }
 
+private fun autoShutterText(state: CameraUiState): String {
+    val c = state.controls
+    val ns = if (c.autoExposure) state.liveExposureNs else c.exposureTimeNs
+    return ns?.let { formatShutterSpeed(it) } ?: "--"
+}
+
+private fun autoIsoText(state: CameraUiState): String {
+    val c = state.controls
+    val iso = if (c.autoExposure) state.liveIso else c.iso
+    return iso?.toString() ?: "--"
+}
+
 /** PASM cycle order: Program → Shutter-priority → ISO-priority → Manual → (back to Program). */
 private fun nextExposureMode(m: ExposureMode): ExposureMode = when (m) {
     ExposureMode.PROGRAM -> ExposureMode.SHUTTER
@@ -540,7 +556,8 @@ private fun ShutterRuler(controls: ManualControls, caps: CameraCaps?, actions: C
         SpeedAngleToggle(mode = controls.shutterMode, enabled = enabled, onSelect = actions::onShutterMode)
         if (controls.shutterMode == ShutterMode.ANGLE) {
             val fraction = ((controls.shutterAngle - 1f) / 359f).coerceIn(0f, 1f)
-            RulerReadout("%.0f°  (%s)".format(controls.shutterAngle, formatShutterSpeed(controls.effectiveExposureNsForDisplay())))
+            val readout = "%.0f°  (%s)".format(controls.shutterAngle, formatShutterSpeed(controls.effectiveExposureNsForDisplay()))
+            RulerReadout(if (controls.autoShutterDriven) "A $readout" else readout)
             RulerSlider(
                 fraction = fraction,
                 onFractionChange = { f -> actions.onShutterAngle((1f + f * 359f).coerceIn(1f, 360f)) },
@@ -554,7 +571,7 @@ private fun ShutterRuler(controls: ManualControls, caps: CameraCaps?, actions: C
                 stops.indices.minByOrNull { kotlin.math.abs(stops[it] - controls.exposureTimeNs) } ?: 0
             }
             val fraction = if (n <= 1) 0f else idx.toFloat() / (n - 1)
-            RulerReadout(formatShutterSpeed(controls.exposureTimeNs))
+            RulerReadout(if (controls.autoShutterDriven) "A ${formatShutterSpeed(controls.exposureTimeNs)}" else formatShutterSpeed(controls.exposureTimeNs))
             RulerSlider(
                 fraction = fraction,
                 onFractionChange = { f -> actions.onShutterNs(stops[(f * (n - 1)).roundToInt().coerceIn(0, n - 1)]) },
@@ -663,7 +680,7 @@ private fun IsoRuler(controls: ManualControls, caps: CameraCaps?, onIso: (Int) -
     }
     val fraction = if (n <= 1) 0f else idx.toFloat() / (n - 1)
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        RulerReadout("ISO ${controls.iso}")
+        RulerReadout(if (controls.autoIsoDriven) "A ISO ${controls.iso}" else "ISO ${controls.iso}")
         RulerSlider(
             fraction = fraction,
             onFractionChange = { f -> onIso(stops[(f * (n - 1)).roundToInt().coerceIn(0, n - 1)]) },
