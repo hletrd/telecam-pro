@@ -31,6 +31,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -87,6 +89,7 @@ import com.hletrd.findx9tele.camera.videoBitRate
 import com.hletrd.findx9tele.video.EncoderCaps
 import com.hletrd.findx9tele.ui.CameraActions
 import com.hletrd.findx9tele.ui.theme.CameraColors
+import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
 /**
@@ -120,6 +123,15 @@ internal fun ProSheet(
     onTabChange: (ProSheetTab) -> Unit = {},
 ) {
     var selectedTab by remember { mutableStateOf(initialTab) }
+    // Sony-style on-demand help: long-pressing a row's label surfaces its one-liner here (the strip
+    // at the panel's bottom). Auto-clears; switching tabs clears immediately.
+    var helpTip by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(helpTip) {
+        if (helpTip != null) {
+            delay(6000)
+            helpTip = null
+        }
+    }
     // A fixed, NON-draggable bottom panel — NOT Material3's ModalBottomSheet. The sheet let the whole
     // dialog be dragged upward past its rest position (the "bounce" the user saw), and Material3 1.4.0
     // exposes no way to disable that drag. A plain scrim + anchored panel can't be dragged at all;
@@ -159,8 +171,9 @@ internal fun ProSheet(
                 CloseButton(onClick = onDismiss)
             }
 
+            CompositionLocalProvider(LocalSettingHelp provides { key -> settingHelp(key)?.let { helpTip = it } }) {
             Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                TabRail(selected = selectedTab, onSelect = { selectedTab = it; onTabChange(it) })
+                TabRail(selected = selectedTab, onSelect = { selectedTab = it; onTabChange(it); helpTip = null })
                 Box(modifier = Modifier.width(1.dp).fillMaxHeight().background(Color.White.copy(alpha = 0.08f)))
                 // Content scroll. overscrollEffect = null removes the stretch glow at the ends; the
                 // panel itself no longer drags, so there is nothing left to bounce. Weighted Box because
@@ -188,6 +201,16 @@ internal fun ProSheet(
                     }
                 }
             }
+            }
+
+            // Help strip (Sony menu-tips style): quiet hint at rest, the long-pressed row's
+            // one-liner when active. Fixed single line so the panel doesn't jump.
+            Text(
+                text = helpTip ?: "Hold a setting for details",
+                color = if (helpTip != null) CameraColors.TextPrimary else CameraColors.TextSecondary.copy(alpha = 0.45f),
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+            )
         }
     }
 }
@@ -426,6 +449,7 @@ private fun MemoryRecallControls(state: CameraUiState, actions: CameraActions) {
 private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
     val caps = state.caps
     TabTitle("Shooting")
+    SectionHeader("Format")
     MemoryRecallControls(state = state, actions = actions)
     PhotoFormatToggles(formats = state.photoFormats, onSetPhotoFormats = actions::onSetPhotoFormats)
     SegmentedSelector(
@@ -486,6 +510,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     // PASM-style: P (auto), S (shutter-priority, app auto-ISO), ISO (iso-priority, app auto-shutter),
     // M (manual). No aperture-priority — the tele aperture is fixed.
     SegmentedSelector(
+        helpKey = "Exposure Mode",
         label = "Mode",
         options = ExposureMode.entries,
         selected = controls.exposureMode,
@@ -500,6 +525,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         labelFor = ::antibandingLabel,
         onSelect = actions::onAntibanding,
     )
+    SectionHeader("Shutter")
     SegmentedSelector(
         label = "Shutter",
         options = ShutterMode.entries,
@@ -515,6 +541,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         onSelect = actions::onExposureStep,
     )
     val isoRange = caps?.isoRange ?: Range(controls.iso, controls.iso)
+    SectionHeader("ISO")
     LabeledSlider(
         label = "ISO",
         valueLabel = controls.iso.toString(),
@@ -577,6 +604,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
 private fun FocusTab(state: CameraUiState, actions: CameraActions) {
     val controls = state.controls
     TabTitle("Focus")
+    SectionHeader("Autofocus")
     SegmentedSelector(
         label = "AF",
         options = FocusMode.entries,
@@ -595,6 +623,7 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
     if (controls.focusMode != FocusMode.MANUAL) {
         ToggleRow(label = "AF Lock", checked = controls.afLock, onCheckedChange = actions::onAfLock)
     }
+    SectionHeader("MF Assist")
     ToggleRow(label = "Peaking", checked = state.focusPeaking, onCheckedChange = actions::onTogglePeaking)
     SegmentedSelector(
         label = "Peaking Level",
@@ -617,6 +646,7 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
 @Composable
 private fun LensTab(state: CameraUiState, actions: CameraActions) {
     TabTitle("Lens")
+    SectionHeader("Optics")
     // Picking a lens bundles teleconverter mode: 3× turns it ON (afocal 180° flip), every other lens
     // turns it OFF — one tap. The teleconverter is locked to the 3× periscope.
     SegmentedSelector(
@@ -646,8 +676,10 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
 
     // Stabilization lives here with the rest of the optics — it does not need its own menu tab
     // (feedback). HAL OIS+EIS path; OIS physically cuts per-frame motion blur at 300 mm.
+    SectionHeader("Stabilization")
     SegmentedSelector(
-        label = "Image Stabilization",
+        helpKey = "Stabilization Mode",
+        label = "Mode",
         options = VideoStabMode.entries,
         selected = state.videoStabMode,
         labelFor = { it.label },
@@ -685,6 +717,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     // Codecs are limited to what MediaCodecList actually advertises a muxable HW encoder for
     // (HEVC/AVC on this SoC).
     val codecOptions = remember { EncoderCaps.availableCodecs().ifEmpty { listOf(VideoCodec.HEVC, VideoCodec.AVC) } }
+    SectionHeader("Recording Format")
     SegmentedSelector(
         label = "Codec",
         options = codecOptions,
@@ -758,6 +791,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         valueLabel = "${videoCodecLabelShort(codec)} · ${videoResolutionLabel(state.videoResolution)} · ${state.videoFrameRate.label} · $mbps Mbps",
     )
 
+    SectionHeader("Audio")
     ToggleRow(
         label = "Audio",
         checked = state.recordAudio,
@@ -840,6 +874,7 @@ private fun ProcessingTab(state: CameraUiState, actions: CameraActions) {
 @Composable
 private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
     TabTitle("Assist")
+    SectionHeader("Monitor")
     // Gamma Display Assist (Sony): only meaningful while the Gamma is O-Log — the monitor shows the
     // normal image, the recorded file stays log.
     ToggleRow(
@@ -855,6 +890,7 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
         labelFor = { it.label },
         onSelect = actions::onFrameLines,
     )
+    SectionHeader("Exposure Aids")
     ToggleRow(label = "Zebra", checked = state.zebra, onCheckedChange = actions::onToggleZebra)
     SegmentedSelector(
         label = "Zebra IRE",
@@ -874,6 +910,7 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
     ToggleRow(label = "False Color", checked = state.falseColor, onCheckedChange = actions::onToggleFalseColor)
     ToggleRow(label = "Histogram", checked = state.histogram, onCheckedChange = actions::onToggleHistogram)
     ToggleRow(label = "Waveform", checked = state.waveform, onCheckedChange = actions::onToggleWaveform)
+    SectionHeader("Framing")
     SegmentedSelector(
         label = "Grid",
         options = GridType.entries,
@@ -882,6 +919,7 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
         onSelect = actions::onGridType,
     )
     ToggleRow(label = "Level", checked = state.level, onCheckedChange = actions::onToggleLevel)
+    SectionHeader("Focus Aids")
     ToggleRow(label = "Punch-In", checked = state.punchIn, onCheckedChange = actions::onTogglePunchIn)
 }
 
@@ -1062,3 +1100,63 @@ private fun openPrivacyPolicy(context: Context) {
 }
 
 private const val PRIVACY_POLICY_URL = "https://hletrd.github.io/telecam-pro/privacy-policy/"
+
+
+/**
+ * One-line descriptions for the long-press help strip. Keyed by the row's label ([SegmentedSelector]
+ * helpKey where labels repeat). Only NON-obvious settings get an entry — a row without one shows
+ * nothing, which is the correct amount of text for "Resolution". Keep lines under ~70 chars.
+ */
+private fun settingHelp(key: String): String? = when (key) {
+    "Exposure Mode" -> "P auto · S you fix shutter · ISO you fix ISO · M full manual"
+    "AE Lock" -> "Freezes auto exposure at its current level"
+    "Flicker" -> "Matches shutter to mains lighting to avoid banding"
+    "Shutter" -> "Speed = time (1/125s) · Angle = cinema style (180° = ½ frame)"
+    "Step" -> "EV increment used by the exposure dials"
+    "ISO" -> "Sensor gain — higher is brighter but noisier"
+    "Metering" -> "Matrix = whole frame · Center = weighted middle · Spot = point"
+    "Spot Size" -> "Size of the tap-AF / spot metering area"
+    "WB" -> "Color balance preset; Custom captures a white/grey card"
+    "Kelvin" -> "Manual color temperature — low is warm, high is cool"
+    "Tint" -> "Green–magenta shift on top of the temperature"
+    "AWB Lock" -> "Freezes auto white balance at its current gains"
+    "AF" -> "MF manual · AF one-shot · AF-C continuous · Macro close-up"
+    "AF Lock" -> "Holds the current focus distance"
+    "Peaking" -> "Outlines in-focus edges — the manual-focus aid"
+    "Peaking Level" -> "Edge sensitivity for peaking"
+    "Peaking Color" -> "Highlight color for peaking edges"
+    "Lens" -> "0.6× ultrawide · 1× main · 3× tele · 10× periscope"
+    "Teleconverter" -> "Corrects the 300 mm afocal adapter (180° flip). 3× lens only"
+    "Stabilization Mode" -> "Off · Standard OIS+EIS · Active = strongest, slight crop"
+    "OIS" -> "Optical (lens-shift) stabilization for stills"
+    "Codec" -> "HEVC = efficient · AVC = most compatible"
+    "Open Gate 4:3" -> "Records the full 4:3 sensor for reframing in post"
+    "FPS" -> "Recording frame rate — NTSC rates (29.97/59.94) are drop-frame"
+    "Bitrate" -> "Data per second of footage — higher is better and bigger"
+    "Input" -> "Microphone source — auto, built-in, or external"
+    "Scene" -> "Mic tuning profile for the environment"
+    "Gain" -> "Microphone input level"
+    "Gamma Disp. Assist" -> "Preview shows normal color while the FILE records O-Log"
+    "Frame Lines" -> "Marker box for a delivery crop (cinema, square, vertical)"
+    "Zebra" -> "Stripes over highlights brighter than the IRE level"
+    "Zebra IRE" -> "Brightness threshold where zebra stripes appear"
+    "False Color" -> "Exposure map — grey = mid, green = skin, red = clipping"
+    "Histogram" -> "Live brightness distribution scope"
+    "Waveform" -> "Broadcast-style luma scope, left-to-right of the frame"
+    "Grid" -> "Composition guides (thirds, golden, square, center)"
+    "Level" -> "Electronic horizon for keeping shots level"
+    "Punch-In" -> "Magnifies the frame to check manual focus"
+    "Sharpness" -> "Edge enhancement applied by the ISP"
+    "NR" -> "Noise reduction — Off keeps the most fine detail"
+    "Color" -> "Color rendering effect (mono, negative…)"
+    "Aspect" -> "4:3 = full sensor · 16:9 = center crop"
+    "Zoom" -> "Digital zoom on top of the selected lens"
+    "JPEG Quality" -> "Compression quality for JPEG files"
+    "Drive" -> "Single · burst · bracket · interval shooting"
+    "Interval" -> "Time between interval-timer shots"
+    "Self-Timer" -> "Delay before the shutter fires"
+    "Full Press" -> "What the camera button / volume keys trigger"
+    "Half Press" -> "Camera-button half-press action (when the OS delivers it)"
+    "Remember" -> "Restores all settings on the next launch"
+    else -> null
+}
