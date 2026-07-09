@@ -98,9 +98,10 @@ object MediaStoreWriter {
         runCatching { context.contentResolver.openOutputStream(uri) }.getOrNull()
 
     /** Clears IS_PENDING so the file becomes visible to other apps (e.g. the gallery). */
-    fun publish(context: Context, uri: Uri) {
+    fun publish(context: Context, uri: Uri): Boolean {
         val values = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
-        runCatching { context.contentResolver.update(uri, values, null, null) }
+        return runCatching { context.contentResolver.update(uri, values, null, null) > 0 }
+            .getOrDefault(false)
     }
 
     fun delete(context: Context, uri: Uri) {

@@ -824,10 +824,19 @@ class CameraEngine(private val context: Context) {
         // rec.stop() joins the video/audio drain threads (up to several seconds); run it OFF the caller
         // (main) thread to avoid an ANR. The file finalizes and the status fires from the io thread.
         ioExecutor.execute {
-            runCatching { rec.stop() }
-            // Surface the finished clip like a still: thumbnail + in-app review (frame-extracted).
-            uri?.let { onMediaSaved?.invoke(it) }
+            finishRecording(rec, uri)
+        }
+    }
+
+    private fun finishRecording(rec: VideoRecorder, uri: android.net.Uri?) {
+        val result = runCatching { rec.stop() }
+            .getOrElse { VideoRecorder.StopResult(saved = false, error = it) }
+        if (result.saved && uri != null) {
+            // Surface only a fully finalized, published clip to the review UI.
+            onMediaSaved?.invoke(uri)
             onStatus?.invoke("Video saved")
+        } else {
+            onStatus?.invoke("Video save failed")
         }
     }
 
@@ -843,8 +852,7 @@ class CameraEngine(private val context: Context) {
         activeRecordingUri = null
         if (rec != null) {
             gl.setEncoderOutput(null, 0, 0)
-            ioExecutor.execute { runCatching { rec.stop() }; onStatus?.invoke("Video saved") }
-                pausedClipUri?.let { onMediaSaved?.invoke(it) }
+            ioExecutor.execute { finishRecording(rec, pausedClipUri) }
         }
         gyro.stop()
         controller?.close()

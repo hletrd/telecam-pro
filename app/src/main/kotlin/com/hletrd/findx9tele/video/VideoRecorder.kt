@@ -37,6 +37,11 @@ import kotlin.math.sqrt
  */
 class VideoRecorder(private val context: Context) {
 
+    data class StopResult(
+        val saved: Boolean,
+        val error: Throwable? = null,
+    )
+
     private var videoCodec: MediaCodec? = null
     private var audioCodec: MediaCodec? = null
     private var muxer: MediaMuxer? = null
@@ -53,6 +58,8 @@ class VideoRecorder(private val context: Context) {
     private val muxerLock = Any()
 
     @Volatile private var running = false
+    @Volatile private var failure: Throwable? = null
+    @Volatile private var wroteVideoSample = false
     private var videoThread: Thread? = null
     private var audioThread: Thread? = null
     private var audioRecord: AudioRecord? = null
@@ -132,6 +139,10 @@ class VideoRecorder(private val context: Context) {
             return null
         }
 
+        // AudioRecord's worker reads this flag as soon as startAudio() creates its thread. Publish the
+        // running state first so a fast scheduler cannot observe false and enqueue EOS immediately.
+        running = true
+
         val doAudio = recordAudio && hasRecordPermission()
         expectedTracks = if (doAudio) 2 else 1
         if (doAudio) {
@@ -147,12 +158,11 @@ class VideoRecorder(private val context: Context) {
             }
         }
 
-        running = true
         videoThread = thread(name = "video-drain") { drainVideo() }
         return inputSurface
     }
 
-    fun stop() {
+    fun stop(): StopResult {
         running = false
         runCatching { videoCodec?.signalEndOfInputStream() }
         videoThread?.join(3000)
@@ -163,7 +173,9 @@ class VideoRecorder(private val context: Context) {
         audioRecord = null
 
         synchronized(muxerLock) {
-            if (muxerStarted) runCatching { muxer?.stop() }
+            if (muxerStarted) {
+                runCatching { muxer?.stop() }.onFailure(::recordFailure)
+            }
         }
         runCatching { videoCodec?.stop() }
         runCatching { videoCodec?.release() }
@@ -172,10 +184,12 @@ class VideoRecorder(private val context: Context) {
         runCatching { muxer?.release() }
         runCatching { pfd?.close() }
 
-        // Publish only if the muxer actually started (≥1 track added, i.e. real content). Stopping
-        // before the encoder emitted its output format would otherwise publish a 0-byte / unplayable
-        // MP4 into the gallery — delete it instead.
-        uri?.let { if (muxerStarted) MediaStoreWriter.publish(context, it) else MediaStoreWriter.delete(context, it) }
+        // A track alone is not enough: require at least one successfully muxed video sample and no
+        // asynchronous codec/muxer error. Keep failed or empty recordings out of the gallery.
+        val outputUri = uri
+        var saved = muxerStarted && wroteVideoSample && failure == null && outputUri != null
+        if (saved) saved = MediaStoreWriter.publish(context, outputUri!!)
+        if (!saved && outputUri != null) MediaStoreWriter.delete(context, outputUri)
 
         videoCodec = null
         audioCodec = null
@@ -185,6 +199,8 @@ class VideoRecorder(private val context: Context) {
         videoTrack = -1
         audioTrack = -1
         muxerStarted = false
+        wroteVideoSample = false
+        return StopResult(saved = saved, error = failure)
     }
 
     private fun drainVideo() {
@@ -198,6 +214,7 @@ class VideoRecorder(private val context: Context) {
             drainVideoLoop(codec, info)
         } catch (t: IllegalStateException) {
             Log.w(TAG, "video drain aborted (encoder error): ${t.message}")
+            recordFailure(t)
         }
     }
 
@@ -219,7 +236,11 @@ class VideoRecorder(private val context: Context) {
                     if (info.size > 0 && buf != null && awaitMuxerStart()) {
                         buf.position(info.offset)
                         buf.limit(info.offset + info.size)
-                        synchronized(muxerLock) { runCatching { muxer?.writeSampleData(videoTrack, buf, info) } }
+                        synchronized(muxerLock) {
+                            runCatching { muxer?.writeSampleData(videoTrack, buf, info) }
+                                .onSuccess { wroteVideoSample = true }
+                                .onFailure(::recordFailure)
+                        }
                     }
                     codec.releaseOutputBuffer(idx, false)
                     if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
@@ -385,7 +406,10 @@ class VideoRecorder(private val context: Context) {
                     if (info.size > 0 && buf != null && awaitMuxerStart()) {
                         buf.position(info.offset)
                         buf.limit(info.offset + info.size)
-                        synchronized(muxerLock) { runCatching { muxer?.writeSampleData(audioTrack, buf, info) } }
+                        synchronized(muxerLock) {
+                            runCatching { muxer?.writeSampleData(audioTrack, buf, info) }
+                                .onFailure(::recordFailure)
+                        }
                     }
                     codec.releaseOutputBuffer(outIdx, false)
                     if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) return
@@ -447,6 +471,12 @@ class VideoRecorder(private val context: Context) {
     private fun awaitMuxerStart(): Boolean {
         while (running && !muxerStarted) Thread.sleep(2)
         return muxerStarted
+    }
+
+    @Synchronized
+    private fun recordFailure(t: Throwable) {
+        if (failure == null) failure = t
+        running = false
     }
 
     private fun hasRecordPermission(): Boolean =
