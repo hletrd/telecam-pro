@@ -54,12 +54,12 @@ FULL MANUAL CONTROL
 • Volume keys as a vibration-free hardware shutter.
 
 PHOTO
-• HEIF, JPEG, and RAW (DNG) in any combination. Stills save upright in any hold.
+• HEIF, JPEG, and RAW (DNG) in any combination, with device-orientation-aware rotation.
 
 VIDEO
-• 10-bit HEVC (Rec.2020) in HLG or GL-baked O-Log2, plus SDR for fast delivery.
+• HEVC recording with HLG or GL-baked O-Log2 profiles, plus SDR for fast delivery.
 • Hardware OIS + EIS stabilization to cut motion blur at long focal lengths.
-• Directional audio (Sound Focus / Sound Stage) that narrows the mic toward your subject.
+• Device Sound Focus / Sound Stage controls for directional-audio recording.
 • 4K DCI, standard and NTSC drop-frame rates, up to ~120 Mbps.
 
 FRAMING AND MONITORING
@@ -121,6 +121,7 @@ LFS under `docs/assets/play/screenshots/`.
 4. Set pricing to **free**, paste the descriptions above, set category/rating, complete the Data Safety form as above.
 5. Add the privacy policy URL, contact email, icon, feature graphic, and screenshots.
 6. Device catalog -> restrict availability to OPPO Find X9 Ultra / CPH2841 and PMA110 before wider rollout.
-7. Roll out internal testing -> closed -> production.
+7. Roll out internal testing, review the pre-launch report, then promote to production. A closed test
+   remains optional for this 2015 developer account.
 
 Console-ready summary: [`docs/play-console-submit.md`](play-console-submit.md).

@@ -10,9 +10,12 @@ Use this sheet for the parts that must be entered manually in Play Console.
 - Package name: `me.hletrd.telecampro`
 - Upload key alias: `telecampro`
 - Upload certificate SHA-256:
-  `5D:83:9F:0E:44:89:0C:DD:84:5D:ED:2E:A9:97:F8:F5:80:76:A1:9F:45:B5:3D:F8:95:FA:48:C0:6C:C1:E9:2C`
+  `A6:D0:A0:3F:B1:48:09:50:8F:CA:27:0F:1B:57:6E:F9:55:DF:FC:CB:D6:19:D4:5D:87:04:38:6A:29:F4:BC:AF`
 
 Do not upload debug APKs or older unsigned/stale release bundles. Use the signed AAB above.
+
+The developer account was created in 2015, so the closed-test production-access requirement for new
+personal accounts created after November 13, 2023 does not apply.
 
 ## Store Listing
 

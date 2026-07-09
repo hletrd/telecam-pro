@@ -17,7 +17,7 @@
 
 ## Overview
 
-A professional single-device camera app for the **OPPO Find X9 Ultra** (Android 16 / API 36) that uses Camera2 to control the rear 3× periscope telephoto lens through a **Hasselblad "Earth Explorer" afocal 300 mm teleconverter** (≈4.286× magnification: 300 mm ÷ 70 mm). The app captures high-quality stills (HEIF + RAW/DNG) and video (10-bit HEVC Rec.2020 in HLG or Log transfer function).
+A professional single-device camera app for the **OPPO Find X9 Ultra** (Android 16 / API 36) that uses Camera2 to control the rear 3× periscope telephoto lens through a **Hasselblad "Earth Explorer" afocal 300 mm teleconverter** (≈4.286× magnification: 300 mm ÷ 70 mm). The app captures high-quality stills (HEIF + RAW/DNG) and HEVC video with HLG, O-Log2, or SDR profiles. For HAL stability, the shipping Camera2 and EGL input path is SDR/8-bit; HLG/O-Log2 uses an HEVC Main10 container profile but is not an end-to-end 10-bit source pipeline.
 
 The UI/UX reference is **Sony Alpha / Sony Xperia Pro camera operation**. Use Fn access, My Menu, MR
 banks, PASM-style exposure, compact OSD, peaking, zebra, histogram, waveform, and review zoom. Keep
@@ -46,7 +46,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | **gl/** | |
 | `GlPipeline.kt` | Owns the GL render thread. Receives camera SurfaceTexture, renders 180°-flipped quads to preview Surface and video encoder Surface. Owns EGL context, texture, sampling buffers. Drives histogram/waveform analysis on a background executor. |
 | `FlipRenderer.kt` | Low-level OpenGL ES fullscreen quad renderer with texture-coordinate rotation (inverse of image rotation) to flip the 180° afocal image. Applies OETF (HLG / Log) in the fragment shader. Handles focus peaking (edge detection) and zebra (exposure clipping). |
-| `EglCore.kt` | EGL/GLES setup: context creation, surface binding, 10-bit RGBA1010102 / FP16 color formats for Rec.2020. |
+| `EglCore.kt` | EGL/GLES setup: context creation and surface binding. Supports a 10-bit config, while v1 deliberately starts the stable 8-bit config. |
 | `Shaders.kt` | Fragment/vertex shader source code. OETF (HLG, Log) application; peaking/zebra compositing; punch-in zoom. |
 | **stab/** | |
 | `GyroEis.kt` | Integrates gyroscope + accelerometer data into shake (high-frequency residual) and device orientation (gravity-derived). Provides yaw/pitch/roll correction radians (scaled by focal length in GL) and absolute roll degrees for the horizon overlay. |
@@ -56,7 +56,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | **video/** | |
 | `VideoRecorder.kt` | MediaCodec HEVC/AVC encoder + AAC audio encoder + MediaMuxer. Drains video/audio to MP4. Video input comes from GL (already 180°-flipped); audio captured from microphone on a separate thread. Software PCM gain. |
 | `ColorProfiles.kt` | Builds MediaFormat specs for HEVC Main10 (Rec.2020 + HLG/Log) and AVC 8-bit SDR. Tags dynamic range, color space, transfer function. |
-| `EncoderCaps.kt` | Scans MediaCodecList for available video encoders (HW AVC/HEVC, Dolby Vision; AV1 software-only) and reports which VideoCodec values are supported/hardware. |
+| `EncoderCaps.kt` | Scans MediaCodecList and exposes the hardware AVC/HEVC encoders that are stable with MediaMuxer. |
 | **storage/** | |
 | `MediaStoreWriter.kt` | Scoped-storage wrapper: creates pending DCIM/Pictures entries (IS_PENDING), publishes on success, deletes on failure. Opened files backed by ParcelFileDescriptor. |
 | `SettingsStore.kt` | SharedPreferences persistence of ManualControls + ExtraSettings across launches, gated by a "Remember Settings" toggle (default ON); enums stored by name, defensive load. Lens and TELE restoration have separate default-on preserve toggles. |
@@ -129,7 +129,7 @@ Two critical consequences of the afocal converter drive the entire design:
 1. Camera2 → SurfaceTexture (backed by EGL texture) → GlPipeline.onFrameAvailable callback (GL thread).
 2. FlipRenderer samples the camera texture with rotated texture coordinates (inverse of image rotation, so the visual result is 180°-flipped).
 3. EIS correction applied: gyro shake scaled by effective focal length, subtracted from clip coordinates → sampled pixels drift to counter shake.
-4. OETF applied in fragment shader (HLG or Log curve for 10-bit; passthrough for SDR).
+4. OETF applied in fragment shader (HLG or Log curve; passthrough for SDR).
 5. Result rendered to:
    - **Preview Surface** (TextureView on main thread) → live on-screen.
    - **Encoder Surface** (MediaCodec input, if recording) → encoded into MP4.
@@ -224,7 +224,8 @@ val total = (base + deviceOrientation) % 360
 
 Device orientation (from gravity via `GyroEis.currentDeviceOrientation()`) is added so a photo framed 
 while tilting the phone into landscape saves with the correct pixel orientation, matching the visual intent 
-in the portrait-locked preview (which does NOT rotate). This ensures captures are always upright in any hold.
+in the portrait-locked preview (which does NOT rotate). Final visual uprightness is verified with held,
+lit portrait and landscape captures.
 
 **HEIF (pixel-rotated):**
 1. JPEG → decode to Bitmap.
@@ -353,56 +354,47 @@ inspection: a DNG shot flat-on-desk had tagged `ORIENTATION_NORMAL` (0°) instea
 
 Correction is scaled by eisCrop (0.06 to 0.18, default 0.10) to limit the headroom used — higher values crop more but leave less guard band.
 
-**Stabilization strategy (updated 2026-07-07):** the app-side gyro EIS above is now ONE of four
-`VideoStabMode` options (`Gyro`), no longer the default. For video the shutter is fixed, so per-frame
-MOTION BLUR is set by the shutter and only **OIS** (lens moves during exposure) can reduce it — app-side
-gyro EIS only warps whole frames. The default is now the HAL's own OIS+EIS via
+**Stabilization strategy (updated 2026-07-09):** app-side gyro EIS was removed. For video the shutter
+is fixed, so per-frame motion blur is set by the shutter and only **OIS** (lens movement during the
+exposure) can reduce it; whole-frame gyro warping cannot de-blur a frame. The app uses HAL OIS+EIS via
 `CONTROL_VIDEO_STABILIZATION_MODE = PREVIEW_STABILIZATION` (the tele advertises modes [0,1,2]), the
 same stabilization path exposed through the device-specific `com.oplus.video.stabilization.mode` key
 — device-verified `ois=1, vstab=2`. See CLAUDE.md for the full Camera2 capability notes.
-
-**Remaining gyro-EIS notes (apply only to the `Gyro` mode):**
-- Gyro axis/sign mapping + on-device tuning are approximate.
-- OIS is a user toggle; keep it on at 300 mm (it de-blurs each frame).
 
 ---
 
 ## Color & Video Pipeline
 
-**Video codec & 10-bit support:**
+**Video codec and color profiles:**
 
-Supported codecs are scanned at runtime via `EncoderCaps.kt` (MediaCodecList), which detects
-available HW encoders and Dolby Vision support. AV1 is software-only on this device (labeled "slow/SW",
-gated ≤1080p/≤30fps). Bitrate presets run Low → **Max** (`BitrateLevel`), reaching the QTI HW ceiling
+Supported codecs are scanned at runtime via `EncoderCaps.kt` (MediaCodecList). Only hardware HEVC and
+AVC encoders are exposed. Bitrate presets run Low → **Max** (`BitrateLevel`), reaching the QTI HW ceiling
 (~120 Mbps at 4K, device-verified ~134 Mbps at HEVC 4K30 Max — the old High left half the headroom
-unused). Also alongside `com.oplus.log.video.mode` (HAL-native scene-referred log) as a separate path.
+unused).
 
-| Codec | Bit-depth | Color Space | Transfer | Container | Notes |
+| Codec | Encoder profile | Color Space | Transfer | Container | Notes |
 |---|---|---|---|---|---|
-| HEVC (H.265) | 10-bit (SDR: 8-bit) | Rec.2020 (SDR: Rec.709) | HLG / O-Log2 / SDR | MP4 | Primary; Main10 (SDR: Main); HDR-playable (HLG); HW. O-Log2 = official OPPO OETF baked in GL. |
+| HEVC (H.265) | Main10 profile (SDR: Main) | Rec.2020 (SDR: Rec.709) | HLG / O-Log2 / SDR | MP4 | Primary HW encoder. Shipping source/EGL is 8-bit; Main10 is the output profile, not an end-to-end 10-bit claim. |
 | AVC (H.264) | 8-bit | Rec.709 | SDR | MP4 | Fallback; forces GL SDR (no HLG/Log); HW. |
-| AV1 | 8-bit | Rec.709 | SDR | MP4 | Software encoder only (slow); gated ≤1080p/≤30fps; labeled "slow/SW". |
 | APV | — | — | — | — | HW `c2.qti.apv.encoder` (pro all-intra ≤2 Gbps) EXISTS but **gated out** — MediaMuxer rejects APV-in-MP4 (breaks the encoder mid-drain). |
 | Dolby Vision | 10-bit | Rec.2020 | Dolby Vision | MP4 | HW `c2.qti.dv.encoder` detected (`hasDolbyVision`); not wired (clean DV-in-MP4 muxing non-trivial). |
 
-**Vendor HAL features:** several vendor keys are reachable from third-party Camera2 and are
-implemented — HAL-native log, HAL OIS+EIS stabilization, directional audio (Sound Focus/Stage), Auto
-HDR, in-sensor zoom. Each is device-verified through to a saved file; see CLAUDE.md for the per-key
-notes.
+**Vendor HAL features:** HAL OIS+EIS and directional-audio parameters are used where the device accepts
+them. Native vendor log is inert for third-party Camera2; Auto HDR and in-sensor zoom were removed after
+HAL stability testing. See CLAUDE.md for the per-key notes.
 
 **Video resolution and frame rates:**
 
 Resolutions come from the selected camera's `StreamConfigurationMap`. The camera reports video sizes 
 up to 8K where available, plus high-speed capture sizes. Frame rates include standard rates (24/25/30/60 fps), 
-drop-frame equivalents (23.976/29.97/59.94), and 120 fps high-speed capture where a high-speed configuration exists. 
-The `VideoFrameRate` enum gates frame-rate availability per resolution: 8K is limited to 30 fps or below; 
-120 fps high-speed is only offered where the HAL provides a dedicated high-speed config.
+drop-frame equivalents (23.976/29.97/59.94). The `VideoFrameRate` enum caps 8K at 30 fps and deliberately
+excludes 120 fps because the constrained high-speed session crashes this HAL.
 
 Open-Gate (full 4:3 sensor) is available as a recording option alongside standard crops.
 
 Exact bitrate is displayed in Mbps and user-selectable per codec and resolution.
 
-**10-bit paths:**
+**Main10 output profiles (v1):**
 
 HEVC Main10 profile → MediaCodec configured with:
 ```kotlin
@@ -416,21 +408,19 @@ ColorProfiles.videoFormat(
 //   MediaFormat.KEY_PROFILE = MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10
 //   MediaFormat.KEY_BIT_RATE = bitRate
 //   MediaFormat.KEY_COLOR_STANDARD = MediaFormat.COLOR_STANDARD_BT2020  (Rec.2020)
-//   MediaFormat.KEY_COLOR_TRANSFER = MediaFormat.COLOR_TRANSFER_HLG or COLOR_TRANSFER_ST2084 (PQ) or COLOR_TRANSFER_LINEAR (Log approx.)
-//   MediaFormat.KEY_COLOR_RANGE = MediaFormat.COLOR_RANGE_FULL
+//   MediaFormat.KEY_COLOR_TRANSFER = COLOR_TRANSFER_HLG or COLOR_TRANSFER_SDR_VIDEO (O-Log2)
+//   MediaFormat.KEY_COLOR_RANGE = LIMITED (HLG) or FULL (O-Log2)
 ```
 
-**GL pipeline (RGBA1010102 / Rec.2020):**
+**Shipping GL pipeline:**
 
 ```kotlin
-// EglCore creates 10-bit surface
-EGL_SURFACE_TYPE = EGL_WINDOW_BIT
-EGL_COLOR_BUFFER_TYPE = EGL_RGB_BUFFER (not luminance)
-EGL_RED_SIZE = 10, EGL_GREEN_SIZE = 10, EGL_BLUE_SIZE = 10, EGL_ALPHA_SIZE = 2
+// CameraEngine intentionally calls gl.start(tenBit = false)
+EGL_RED_SIZE = 8, EGL_GREEN_SIZE = 8, EGL_BLUE_SIZE = 8, EGL_ALPHA_SIZE = 8
 EGL_RECORDABLE_ANDROID = EGL_TRUE
 ```
 
-All 10-bit rendering happens in the fragment shader:
+Color-profile rendering happens in the fragment shader:
 - **Input**: normalized [0, 1] RGBA from camera SurfaceTexture sampling.
 - **OETF** (Opto-Electronic Transfer Function):
   - **HLG (Hybrid Log-Gamma)**: Rec.2100 standard. Applied in shader; supports HDR playback.
@@ -438,14 +428,14 @@ All 10-bit rendering happens in the fragment shader:
     linearization of the SDR stream + Rec.709→BT.2020 matrix (O-Gamut). Grades with OPPO's public
     O-Log2 LUTs; no above-white headroom (HAL-native log is vendor-gated — see CLAUDE.md).
   - **SDR**: no shader curve; HEVC Main 8-bit BT.709 limited-range for zero-grading footage.
-- **Output**: 10-bit RGBA1010102 to encoder.
+- **Output**: 8-bit EGL surface to a Main10-profile encoder for HLG/O-Log2.
 
 **Fragment shader (Shaders.kt):**
 ```glsl
 // Pseudocode
 vec3 color = texture(camera, uv).rgb;  // Linear [0, 1]
 color = applyOetf(color, transfer);    // HLG or Log curve
-// 10-bit quantization happens in the driver during texture write
+// v1 output precision remains 8-bit for HAL stability
 ```
 
 **AVC 8-bit fallback:**
@@ -459,7 +449,7 @@ gl.setTransfer(glTransfer)  // null = no OETF in shader (linear passthrough)
 
 Result: 8-bit SDR MP4, which AVC can encode natively.
 
-**Audio (AAC, ~128 kbps):**
+**Audio (AAC, 192 kbps):**
 
 Captured via AudioRecord on a separate thread. Software PCM gain applied (user-settable, 0.5× to 2.0× × post-gain). AAC LC encoder. Live RMS level throttled to ~10 Hz for the UI level meter.
 

@@ -222,7 +222,7 @@ enum class VendorLogMode(val halValue: Int) { OFF(0), ON(1) }
 enum class DriveMode { SINGLE, BURST, AEB, TIMELAPSE }
 
 /**
- * Video codec. HEVC supports 10-bit HLG/Log; AVC is 8-bit SDR only. APV is the professional
+ * Video codec. HEVC exposes Main10 HLG/Log profiles; AVC is 8-bit SDR only. APV is the professional
  * intra-frame codec (`c2.qti.apv.encoder`, ISO/IEC 21794) — HW-accelerated up to ~2 Gbps, the
  * closest thing to ProRes / XAVC-I on this device (all-intra, huge bitrate, grade-ready). (AV1 was
  * removed — the only encoder on this SoC is software `c2.android.av1.encoder`, too slow to ship.)
@@ -341,7 +341,8 @@ enum class AspectRatio(val w: Int, val h: Int) { W4_3(4, 3), W16_9(16, 9) }
 
 /**
  * Photo output formats. Any combination can be enabled at once. [heif] and [jpeg] are alternative
- * containers for the processed still (HEIF = 10-bit-capable, smaller; JPEG = universal); JPEG is
+ * containers for the processed still (HEIF = smaller, JPEG = universal); both use the camera's
+ * 8-bit JPEG ImageReader source in v1. JPEG is
  * written straight from the camera's JPEG ImageReader bytes with no HEIF re-encode. [dngRaw] adds
  * the full-frame RAW sensor file alongside either.
  */

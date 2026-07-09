@@ -28,9 +28,9 @@
 - **Afocal 180° flip**: The teleconverter is afocal, so images arrive flipped 180° → preview/photos/videos all corrected (GL texcoord rotation for preview, pixel rotation for HEIF/JPEG, EXIF tag for DNG).
 - **Full manual control**: Focus (nonlinear slider tuned near infinity), ISO, shutter (speed or cine angle), WB (presets + Kelvin/tint), EV, metering, drive modes (single/burst/AEB/timelapse). Stop-snapping dials with haptic detents; AF→MF handoff seeds the manual slider from AF's live lens position.
 - **Volume-key hardware shutter**: vibration-free release at 300 mm (photo capture / video start-stop).
-- **Directional audio (Sound Focus / Sound Stage)**: drives the vendor audio-HAL params (`vendor_audiorecord_effect_type` …), the device's own directional-audio path — Sound Focus narrows the mic toward the framed subject and tightens with zoom.
-- **Photos**: HEIF + JPEG + RAW (DNG), any combination. Device-orientation-aware (stills save upright in any hold via gyro gravity).
-- **Video**: 10-bit HEVC (Main10, Rec.2020) in **HLG / O-Log2 / SDR** (O-Log2 applied in GL and shown flat in the live preview); 8-bit AVC. 4K DCI max (HEVC/AVC HW ceiling); 24/30/60 fps class + NTSC drop-frame (23.976/29.97/59.94); **Low → Max bitrate presets up to ~120 Mbps at 4K**; Open-Gate (full 4:3 sensor); AAC 48 kHz stereo.
+- **Directional audio (Sound Focus / Sound Stage)**: drives the device's accepted vendor audio-HAL controls; the acoustic effect still needs an off-axis real-scene A/B check.
+- **Photos**: HEIF + JPEG + RAW (DNG), any combination, with gravity-derived orientation correction.
+- **Video**: HEVC Main10 profiles for **HLG / O-Log2** plus 8-bit HEVC/AVC SDR. The stable v1 Camera2 and EGL input is SDR/8-bit, so HLG/O-Log2 is not marketed as end-to-end 10-bit capture. 4K DCI max (HEVC/AVC HW ceiling); 24/30/60 fps class + NTSC drop-frame (23.976/29.97/59.94); **Low → Max bitrate presets up to ~120 Mbps at 4K**; Open-Gate (full 4:3 sensor); AAC 48 kHz stereo.
 - **Video stabilization = HAL OIS+EIS** (the stock "super steady" path): OIS physically cuts per-frame motion blur at 300 mm (Off / OIS-Standard / OIS-Enhanced).
 - **Vendor/HAL stability**: unstable or unmuxable device paths such as Auto HDR, high-speed 120 fps,
   AV1 software encode, APV MP4 muxing, and native vendor log are excluded from the shipped UI. O-Log2
@@ -123,7 +123,7 @@ files, not just session setup logs:
 
 - ✅ **Build & gates**: `./gradlew assembleDebug testDebugUnitTest lintDebug` all pass.
 - ✅ **Unit tests**: FocusMappingTest, RotationMathTest, CameraSelector2Test, VideoCapabilitiesTest, ExposureMathTest.
-- ✅ **Device-verified on PMA110**: all 4 lenses open (standalone, no HAL crash) with RAW; teleconverter bundling; preview upright; tap-to-focus lock; AF→MF handoff; volume-key shutter; HEIF (4096×3072) + DNG + JPEG saves; HEVC 4K video incl. Max bitrate (~120 Mbps); GL O-Log2, OIS+EIS, and directional audio all accepted end-to-end through available device capabilities. Release build re-verified: not debuggable, no debug capability logs, camera-reopen race fixed. Global Find X9 Ultra device code is CPH2841 per OPPO's public specs; Play device catalog should allow CPH2841 and PMA110.
+- ✅ **Device-verified on PMA110**: all 4 lenses open (standalone, no HAL crash) with RAW; teleconverter bundling; preview upright; tap-to-focus lock; AF→MF handoff; volume-key shutter; HEIF (4096×3072) + DNG + JPEG saves; HEVC 4K video incl. Max bitrate (~120 Mbps); GL O-Log2 and OIS+EIS. Directional-audio parameters are accepted by the HAL; their acoustic effect still needs the A/B check below. Release build re-verified: not debuggable, no debug capability logs, camera-reopen race fixed. Global Find X9 Ultra device code is CPH2841 per OPPO's public specs; Play device catalog should allow CPH2841 and PMA110.
 - ⏳ **Needs your eyes/ears in a real scene**: the acoustic effect of directional audio (off-axis A/B)
   and the latest UI pass on-device in portrait/landscape — undetectable from a static desk.
 - ✅ **Play-release scaffolding**: release signing config with unsigned-bundle fail-fast, public

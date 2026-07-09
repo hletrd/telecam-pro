@@ -148,7 +148,8 @@ Full-app review session; screenshots + pulled files + ffprobe as evidence.
 - ✅ **MF auto punch-in loupe** — opening the Focus ruler magnified the preview; closed restores. *(screenshot)*
 - ✅ **Sony-style OSD** — photo mode shows `69mm TELE · HEIF+DNG · EIS`; video mode shows
   `4K 30p HEVC 24Mb · <TF> · EIS`; camera id only on DEBUG. *(screenshots)*
-- ✅ **O-Log2 recording** — clip is HEVC 4K 10-bit **BT.2020 + full-range** (the LOG fingerprint);
+- ✅ **O-Log2 recording** — clip is HEVC 4K Main10-profile **BT.2020 + full-range**; the stable
+  Camera2/EGL source remains SDR/8-bit, so this is not described as end-to-end 10-bit capture;
   frame reads flat-log; official `O-Log2-to-Rec709_Gamma24` LUT restores contrast. Curve verified
   numerically against the white-paper anchors (18 % → 0.4868). *(ffprobe + frame extract)*
 - ✅ **LOG transfer-tag fix** — before: VUI defaulted to `smpte2084` (PQ) → players tone-mapped log as
@@ -258,8 +259,8 @@ The user explicitly wants all of these; ordered by their stated priority.
 
 ## 3. Deferred / lower priority ⏸
 
-- ⏸ **10-bit HDR *preview*** — HLG10 preview + full-res JPEG/RAW crashes the HAL; live session stays
-  SDR (video still encodes 10-bit HLG/Log). Revisit if a HAL-accepted stream combo is found.
+- ⏸ **End-to-end 10-bit HDR** — HLG10 preview + full-res JPEG/RAW crashes the HAL; Camera2/EGL stays
+  SDR/8-bit while HLG/Log uses a Main10 output profile. Revisit only with a HAL-stable session design.
 - 🔴 **Slow-motion playback metadata**, **geotagging** (needs location permission), **custom save
   folder/filename**, **focus stacking / advanced bracketing UX**.
 

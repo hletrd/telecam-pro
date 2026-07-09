@@ -83,9 +83,9 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
   (`ChiMulticameraBase::configureStreams` → `Broken pipe -32` / SIGSEGV). `CameraSelector2` picks the
   35 mm-equiv **closest to 70 mm** (NOT the longest lens — that's the 230 mm 10×), and **prefers
   `physicalId == null`** on ties. Opening standalone `4` works and permits RAW.
-- **SDR preview session.** HLG10 10-bit preview + full-res JPEG + RAW together crash the HAL. The
-  live session is SDR (`tenBit = false`); video still tags HLG/Log in the **encoder**. 10-bit HDR
-  *preview* is deferred (see backlog).
+- **SDR/8-bit shipping session.** HLG10 preview + full-res JPEG + RAW together crash the HAL. The
+  Camera2 stream and EGL config therefore stay SDR/8-bit (`tenBit = false`). HLG/Log files use HEVC
+  Main10 container profiles, but v1 is not end-to-end 10-bit capture and must not be marketed as such.
 - **RAW only on the standalone camera.** RAW routed through physical sub-camera routing crashes
   (`DataSpace override not allowed for format 0x20`). Gated to `selection.physicalId == null`.
 - **Session fallback ladder** in `CameraController.configureSession`: attempt 0 full → 1 drop RAW → 2
@@ -103,9 +103,9 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
   returns 180 in tele, 0 otherwise) — NOT `±sensorOrientation` (both 270° and 90° read 90° off on
   device). It still passes `sensorOrientation` to the renderer purely to pick the preview **aspect**
   (the ~90° swaps displayed W/H). Captures rotate raw pixels by `sensorOrientation + afocal180 +
-  deviceOrientation(gravity)` (`captureRotationDegrees()`), so stills save upright in any hold; HEIF
-  pixel-rotates, DNG tags EXIF orientation. `camera/RotationMath.kt` holds this as pure, unit-tested
-  functions.
+  deviceOrientation(gravity)` (`captureRotationDegrees()`); HEIF pixel-rotates and DNG tags EXIF
+  orientation. `camera/RotationMath.kt` holds this as pure, unit-tested functions. A deliberately held,
+  lit portrait/landscape output check remains the final proof of visual uprightness.
 - **Device orientation only updates while the phone is HELD.** `GyroEis.currentDeviceOrientation()`
   derives 0/90/180/270 from gravity, but when the phone is **flat** the in-plane gravity is ~0 and
   `atan2(x,y)` is noise — so it updates the discrete value only when `hypot(x,y) > FLAT_GRAVITY_

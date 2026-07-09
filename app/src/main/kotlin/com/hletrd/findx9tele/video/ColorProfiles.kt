@@ -8,15 +8,15 @@ import com.hletrd.findx9tele.camera.VideoCodec
 /**
  * Builds the encoder MediaFormats.
  *
- * - HEVC: Main10 (10-bit) tagged Rec.2020, except SDR which is Main (8-bit) BT.709.
+ * - HEVC: Main10 profile tagged Rec.2020, except SDR which is Main (8-bit) BT.709.
  *   - HLG: tagged with the HLG transfer so HDR players render it directly.
  *   - LOG: our GL pipeline bakes a flat log curve; there is no standard "log" transfer id, so the
  *          stream is tagged BT.2020 full-range with transfer left unspecified (grade manually).
  *   - SDR: plain Rec.709/SDR — the GL pipeline applies no curve (camera frames are already SDR),
  *          for footage that plays correctly everywhere with zero grading.
  *
- *   True 10-bit requires the EGL input surface to be 10-bit; if the device falls back to 8-bit the
- *   stream is still Main10 but not genuinely 10-bit. Verify on hardware.
+ *   The shipping Camera2/EGL path is deliberately SDR/8-bit because HLG10 + full-res JPEG/RAW crashes
+ *   this HAL. Main10 here is the encoder/container profile, not an end-to-end 10-bit source claim.
  * - AVC: H.264 High profile, 8-bit SDR (BT.709). No HDR/log support; the engine forces SDR
  *        transfer when AVC is selected.
  */
