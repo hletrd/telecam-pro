@@ -272,8 +272,9 @@ The user explicitly wants all of these; ordered by their stated priority.
   `minSdk 36` already excludes most devices.
 - 🟡 Data-safety form + privacy policy: policy file, app-internal link, no-network claim, and listing
   copy are in place; Play Console form submission remains.
-- 🟡 Store assets: icon + feature graphic + listing text are present; portrait screenshots,
-  crash/ANR hardening pass, `versionCode`/`versionName`, and changelog remain.
+- 🟡 Store assets: icon + feature graphic + listing text are present. Portrait screenshots exist but
+  are stale after the 300 mm OSD / 29.97p / Fn-MR / landscape dock / review-zoom UI pass; retake on
+  PMA110 before Play upload. `versionCode`/`versionName` and changelog remain.
 
 ## 5. Engineering hygiene 🟢/🟡
 

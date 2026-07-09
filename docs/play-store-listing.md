@@ -57,14 +57,15 @@ PHOTO
 • HEIF, JPEG, and RAW (DNG) in any combination. Stills save upright in any hold.
 
 VIDEO
-• 10-bit HEVC (Rec.2020) in HLG, O-Log2, or SDR, plus a native scene-referred log mode.
+• 10-bit HEVC (Rec.2020) in HLG or GL-baked O-Log2, plus SDR for fast delivery.
 • Hardware OIS + EIS stabilization to cut motion blur at long focal lengths.
 • Directional audio (Sound Focus / Sound Stage) that narrows the mic toward your subject.
-• 4K DCI, standard and NTSC drop-frame rates, high-speed 120 fps, up to ~134 Mbps.
+• 4K DCI, standard and NTSC drop-frame rates, up to ~120 Mbps.
 
 FRAMING AND MONITORING
 • Focus peaking, zebra, false color, grid, spirit level, punch-in loupe, histogram, waveform, and an
   in-app pinch-to-zoom review to check focus right after the shot.
+• Separate photo/video Fn menus, My Menu, and MR memory banks for Sony-style operation.
 
 PRIVACY
 • No ads. No analytics. No internet permission. Nothing leaves your device.
@@ -99,12 +100,24 @@ Requires an OPPO Find X9 Ultra running Android 16. Target model codes: CPH2841 (
 
 ### Screenshots captured on PMA110
 
-All screenshots are 1440 x 2880, no-alpha PNGs captured from the physical PMA110:
+The checked-in screenshots are 1440 x 2880, no-alpha PNGs captured from the physical PMA110, but they
+must be retaken before the next Play submission because the UI now shows 300 mm TELE, 29.97p defaults,
+separate photo/video Fn menus, named MR banks, landscape control dock behavior, and updated review zoom
+HUD.
 
 1. `docs/assets/play/screenshots/01-main-viewfinder.png` - main viewfinder with OSD.
 2. `docs/assets/play/screenshots/02-pro-settings.png` - Pro settings sheet.
 3. `docs/assets/play/screenshots/03-focus-loupe.png` - manual focus ruler / punch-in state.
 4. `docs/assets/play/screenshots/04-video-controls.png` - video controls and HLG status.
+
+Retake checklist:
+
+1. Main still viewfinder: `300mm TELE`, current format, stabilization tag, MR strip, and updated top
+   `LENS/TELE` chip behavior visible.
+2. Settings sheet: `Setup` tab showing separate Photo Fn / Video Fn order controls, or Shooting tab
+   showing named MR rows.
+3. Focus check: MF ruler open with `LOUPE` OSD state.
+4. Video screen: `4K 29.97p`, current bitrate, Gamma label, audio meter, REC lock behavior if possible.
 
 ## Release checklist
 

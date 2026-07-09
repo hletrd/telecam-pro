@@ -30,9 +30,11 @@
 - **Volume-key hardware shutter**: vibration-free release at 300 mm (photo capture / video start-stop).
 - **Directional audio (Sound Focus / Sound Stage)**: drives the vendor audio-HAL params (`vendor_audiorecord_effect_type` …), the device's own directional-audio path — Sound Focus narrows the mic toward the framed subject and tightens with zoom.
 - **Photos**: HEIF + JPEG + RAW (DNG), any combination. Device-orientation-aware (stills save upright in any hold via gyro gravity).
-- **Video**: 10-bit HEVC (Main10, Rec.2020) in **HLG / O-Log2 / SDR** (O-Log2 applied in GL and shown flat in the live preview); 8-bit AVC. 4K DCI max (HEVC/AVC HW ceiling); 24/25/30/60 fps + NTSC drop-frame (23.976/29.97/59.94) + 120 fps high-speed; **Low → Max bitrate presets up to ~134 Mbps at 4K**; Open-Gate (full 4:3 sensor); AAC 48 kHz stereo.
+- **Video**: 10-bit HEVC (Main10, Rec.2020) in **HLG / O-Log2 / SDR** (O-Log2 applied in GL and shown flat in the live preview); 8-bit AVC. 4K DCI max (HEVC/AVC HW ceiling); 24/30/60 fps class + NTSC drop-frame (23.976/29.97/59.94); **Low → Max bitrate presets up to ~120 Mbps at 4K**; Open-Gate (full 4:3 sensor); AAC 48 kHz stereo.
 - **Video stabilization = HAL OIS+EIS** (the stock "super steady" path): OIS physically cuts per-frame motion blur at 300 mm (Off / OIS-Standard / OIS-Enhanced).
-- **Vendor features (experimental)**: in-sensor zoom (`EnableInsensorZoom`), driven directly via the QTI vendor session keys. (Auto HDR was tried but gated out — it SIGABRTs the camera HAL on reopen+capture.)
+- **Vendor/HAL stability**: unstable or unmuxable device paths such as Auto HDR, high-speed 120 fps,
+  AV1 software encode, APV MP4 muxing, and native vendor log are excluded from the shipped UI. O-Log2
+  is the GL-baked shipping path.
 - **Aspect ratios**: 4:3 (full sensor) / 16:9 (center crop). Sony-style mode-aware OSD.
 - **Capture aids**: focus peaking (adjustable sensitivity/color), zebra, false color, grid, spirit level, movable punch-in loupe, histogram, waveform, in-app last-shot pinch-to-zoom review.
 - **Settings persistence**: pro controls saved across launches ("Remember Settings", default ON).
@@ -111,20 +113,21 @@ files, not just session setup logs:
 
 | Feature | Key | Status |
 |---|---|---|
-| Native log | `com.oplus.log.video.mode` (session key) | ✅ scene-referred log stream verified |
+| Native log | `com.oplus.log.video.mode` (session key) | ⛔ HAL accepts the key, but third-party Camera2 output remains 709; GL O-Log2 ships |
 | Video stabilization | `CONTROL_VIDEO_STABILIZATION_MODE` + `com.oplus.video.stabilization.mode` | ✅ `ois=1, vstab=2` verified |
 | Directional audio | `vendor_audiorecord_effect_type` / `focus_angle` … | ✅ HAL `track_support=true` |
-| In-sensor zoom | `EnableInsensorZoom` | ✅ verified |
-| Auto HDR / Ideal RAW / APV / macro / custom-LUT | — | ⛔ not exposed in the shipped UI; excluded after device compatibility checks |
+| Auto HDR / Ideal RAW / APV / AV1 / high-speed 120 / in-sensor zoom / macro / custom-LUT | — | ⛔ not exposed in the shipped UI; excluded after device compatibility checks |
 
 ## Implementation Status
 
 - ✅ **Build & gates**: `./gradlew assembleDebug testDebugUnitTest lintDebug` all pass.
 - ✅ **Unit tests**: FocusMappingTest, RotationMathTest, CameraSelector2Test, VideoCapabilitiesTest, ExposureMathTest.
-- ✅ **Device-verified on PMA110**: all 4 lenses open (standalone, no HAL crash) with RAW; teleconverter bundling; preview upright; tap-to-focus lock; AF→MF handoff; volume-key shutter; HEIF (4096×3072) + DNG + JPEG saves; HEVC 4K video incl. Max bitrate (~134 Mbps); LOG, OIS+EIS, directional audio, and in-sensor zoom all accepted end-to-end through available device capabilities. Release build re-verified: not debuggable, no debug capability logs, camera-reopen race fixed. Global Find X9 Ultra device code is CPH2841 per OPPO's public specs; Play device catalog should allow CPH2841 and PMA110.
-- ⏳ **Needs your eyes/ears in a real scene**: the acoustic effect of directional audio (off-axis A/B), and the image gain of in-sensor zoom (distant subjects) — undetectable from a static desk.
+- ✅ **Device-verified on PMA110**: all 4 lenses open (standalone, no HAL crash) with RAW; teleconverter bundling; preview upright; tap-to-focus lock; AF→MF handoff; volume-key shutter; HEIF (4096×3072) + DNG + JPEG saves; HEVC 4K video incl. Max bitrate (~120 Mbps); GL O-Log2, OIS+EIS, and directional audio all accepted end-to-end through available device capabilities. Release build re-verified: not debuggable, no debug capability logs, camera-reopen race fixed. Global Find X9 Ultra device code is CPH2841 per OPPO's public specs; Play device catalog should allow CPH2841 and PMA110.
+- ⏳ **Needs your eyes/ears in a real scene**: the acoustic effect of directional audio (off-axis A/B)
+  and the latest UI pass on-device in portrait/landscape — undetectable from a static desk.
 - ✅ **Play-release scaffolding**: release signing config with unsigned-bundle fail-fast, public
   privacy policy URL, store-listing text, Data Safety answer sheet, icon + feature graphic — see the
-  Release build section above. Remaining human steps: complete the Play Console listing/data-safety
-  form and restrict availability to CPH2841/PMA110.
+  Release build section above. Remaining human steps: retake Play screenshots after the latest UI
+  polish, complete the Play Console listing/data-safety form, and restrict availability to
+  CPH2841/PMA110.
 - 🚧 **Not started**: R8/minify (deferred — needs enum keep-rules + device re-verification). Dolby Vision (HW encoder detected, MP4 muxing non-trivial). See [`docs/BACKLOG.md`](docs/BACKLOG.md).
