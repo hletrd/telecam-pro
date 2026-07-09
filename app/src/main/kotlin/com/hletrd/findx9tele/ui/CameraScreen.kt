@@ -380,6 +380,7 @@ fun CameraScreen(
             state = state,
             actions = actions,
             onOpenSheet = { sheetVisible = true }, // reopen to the remembered last tab
+            onOpenLensSheet = { openSheet(ProSheetTab.LENS) },
             dispClean = dispClean,
             onToggleDisp = { dispClean = !dispClean },
             glyphRotation = overlayRotation,
@@ -558,6 +559,7 @@ private fun TopBar(
     state: CameraUiState,
     actions: CameraActions,
     onOpenSheet: () -> Unit,
+    onOpenLensSheet: () -> Unit,
     dispClean: Boolean,
     onToggleDisp: () -> Unit,
     modifier: Modifier = Modifier,
@@ -600,8 +602,8 @@ private fun TopBar(
             )
             TeleChip(
                 active = state.teleconverterMode,
-                enabled = !recordingLocked,
-                onClick = { actions.onToggleTeleconverter(!state.teleconverterMode) },
+                enabled = true,
+                onClick = onOpenLensSheet,
             )
         }
         // Counter-rotate the settings glyph so it stays upright as the phone turns (iPhone-style).
@@ -782,7 +784,7 @@ private fun TeleChip(active: Boolean, onClick: () -> Unit, modifier: Modifier = 
             .clip(RoundedCornerShape(50))
             .background(bg)
             .semantics {
-                contentDescription = "Teleconverter"
+                contentDescription = if (active) "Open lens settings, teleconverter on" else "Open lens settings"
                 stateDescription = if (active) "On" else "Off"
                 role = Role.Button
             }
@@ -790,7 +792,7 @@ private fun TeleChip(active: Boolean, onClick: () -> Unit, modifier: Modifier = 
             .padding(horizontal = 12.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text("TELE", color = fg, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        Text(if (active) "TELE" else "LENS", color = fg, fontSize = 11.sp, fontWeight = FontWeight.Bold)
     }
 }
 
