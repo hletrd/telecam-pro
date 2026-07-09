@@ -205,11 +205,11 @@ internal fun ProSheet(
             }
             }
 
-            // Help strip (Sony menu-tips style): quiet hint at rest, the long-pressed row's
-            // one-liner when active. Fixed single line so the panel doesn't jump.
+            // Help strip (Sony menu-tips style): empty at rest, then shows the long-pressed row's
+            // one-liner. Fixed single line so the panel doesn't jump.
             Text(
-                text = helpTip ?: "Hold a setting for details",
-                color = if (helpTip != null) CameraColors.TextPrimary else CameraColors.TextSecondary.copy(alpha = 0.45f),
+                text = helpTip.orEmpty(),
+                color = CameraColors.TextPrimary,
                 style = MaterialTheme.typography.labelSmall,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
             )
@@ -827,6 +827,13 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         label = "Encoder",
         valueLabel = "${videoCodecLabelShort(codec)} · ${videoResolutionLabel(state.videoResolution)} · ${state.videoFrameRate.label} · $mbps Mbps",
     )
+    // Transfer is part of the encoded image format, so keep it with codec/rate controls instead of
+    // below the unrelated audio controls.
+    TransferSelector(
+        transfer = state.transfer,
+        onTransfer = actions::onTransfer,
+        enabled = codec == VideoCodec.HEVC && recordingMutable,
+    )
 
     SectionHeader("Audio")
     ToggleRow(
@@ -871,13 +878,6 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         onValueChange = actions::onAudioGain,
         valueRange = 0f..2f,
         enabled = state.recordAudio && recordingMutable,
-    )
-    // Transfer (HLG/LOG/SDR) only drives the HEVC path; AVC always records 8-bit SDR, so the
-    // selector is disabled there rather than pretending the choice applies.
-    TransferSelector(
-        transfer = state.transfer,
-        onTransfer = actions::onTransfer,
-        enabled = codec == VideoCodec.HEVC && recordingMutable,
     )
 }
 
@@ -1012,16 +1012,15 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
         labelFor = ::hardwareKeyActionLabel,
         onSelect = actions::onHalfPressAction,
     )
-    LabelValueRow(
-        label = "Camera ID",
-        valueLabel = state.cameraOverrideId ?: "Default",
-        onClick = if (state.cameraOverrideId != null) ({ actions.onCameraOverride(null) }) else null,
-    )
-    Text(
-        "Log is under Video.",
-        color = CameraColors.TextSecondary,
-        style = MaterialTheme.typography.labelSmall,
-    )
+    // A stale diagnostic override must remain recoverable, but normal release users should not see
+    // an inert implementation-detail row.
+    state.cameraOverrideId?.let { cameraId ->
+        LabelValueRow(
+            label = "Camera ID",
+            valueLabel = cameraId,
+            onClick = { actions.onCameraOverride(null) },
+        )
+    }
 }
 
 @Composable
