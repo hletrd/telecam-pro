@@ -7,7 +7,9 @@ Use this as the source of truth when filling Play Console > Policy > App content
 - Package name: `me.hletrd.telecampro`
 - Declared permissions: `CAMERA`, `RECORD_AUDIO`
 - No declared `INTERNET` permission
-- No ads, analytics, accounts, cloud sync, crash telemetry, or third-party SDKs
+- No ads, analytics, accounts, cloud sync, crash telemetry, or network-capable SDKs
+- Includes OPPO's CameraUnit/OCS SDK only for local OEM camera capability checks; the app still
+  declares no `INTERNET` permission
 - Camera and microphone input are processed on device and written only to local user-selected media
   storage through Android MediaStore
 - Privacy policy URL: `https://hletrd.github.io/telecam-pro/privacy-policy/`
@@ -48,5 +50,6 @@ Use this wording in any free-text notes if Play review asks for clarification:
 TeleCam Pro is an offline camera app. It uses Camera permission for the live viewfinder and photo/video
 capture, and Microphone permission only to record audio into videos saved locally on the user's device.
 The app declares no INTERNET permission and includes no ads, analytics, accounts, cloud sync, crash
-telemetry, or third-party SDKs. No user data is collected or shared by the developer.
+telemetry, or network-capable SDKs. The OPPO CameraUnit/OCS SDK is used only for local OEM camera
+capability checks. No user data is collected or shared by the developer.
 ```

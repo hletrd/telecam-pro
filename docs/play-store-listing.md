@@ -83,8 +83,9 @@ Requires an OPPO Find X9 Ultra running Android 16. Target model codes: CPH2841 (
 ## Data Safety form answers
 
 - **Does your app collect or share any of the required user data types?** -> **No.**
-- Justification: the app declares no `INTERNET` permission and contains no analytics, ads, or third-party
-  SDKs; camera and microphone input is used only on-device to produce files saved to local storage.
+- Justification: the app declares no `INTERNET` permission and contains no analytics, ads, or
+  network-capable SDKs; camera and microphone input is used only on-device to produce files saved to
+  local storage. The OPPO CameraUnit/OCS SDK is used only for local OEM camera capability checks.
 - **Is all user data encrypted in transit?** -> N/A (no data transmitted).
 - **Do you provide a way to request data deletion?** -> N/A (no data collected); users delete their own
   photos/videos via the gallery.
@@ -101,9 +102,9 @@ Requires an OPPO Find X9 Ultra running Android 16. Target model codes: CPH2841 (
 ### Screenshots captured on PMA110
 
 The checked-in screenshots are 1440 x 2880, no-alpha PNGs captured from the physical PMA110, but they
-must be retaken before the next Play submission because the UI now shows 300 mm TELE, 29.97p defaults,
-separate photo/video Fn menus, named MR banks, landscape control dock behavior, and updated review zoom
-HUD.
+must be retaken before the next Play submission because the default launch now opens on the 1× lens
+with TELE off, the UI has 29.97p defaults, separate photo/video Fn menus, named MR banks, landscape
+control dock behavior, and updated review zoom HUD.
 
 1. `docs/assets/play/screenshots/01-main-viewfinder.png` - main viewfinder with OSD.
 2. `docs/assets/play/screenshots/02-pro-settings.png` - Pro settings sheet.
@@ -112,10 +113,9 @@ HUD.
 
 Retake checklist:
 
-1. Main still viewfinder: `300mm TELE`, current format, stabilization tag, MR strip, and top `TELE`
-   toggle behavior visible.
-2. Settings sheet: `Setup` tab showing separate Photo Fn / Video Fn order controls, or Shooting tab
-   showing named MR rows.
+1. Main still viewfinder: 1× main-lens default with TELE off, current format, stabilization tag, MR
+   strip, and the top TELE control visible.
+2. Settings sheet: `Setup` tab showing Remember plus the Preserve Lens / Preserve TELE toggles.
 3. Focus check: MF ruler open with `LOUPE` OSD state.
 4. Video screen: `4K 29.97p`, current bitrate, Gamma label, audio meter, REC lock behavior if possible.
 

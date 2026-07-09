@@ -7,8 +7,8 @@ does and does not do with your information.
 
 ## Summary
 
-**The app collects no personal data, sends nothing off your device, and contains no analytics, ads, or
-third-party SDKs.** Everything it does happens locally on your phone.
+**The app collects no personal data, sends nothing off your device, and contains no analytics, ads,
+tracking, accounts, or cloud sync.** Everything it does happens locally on your phone.
 
 ## Permissions the app requests
 
