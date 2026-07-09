@@ -169,6 +169,7 @@ fun CameraScreen(
         overlayRotationTarget += delta
     }
     val overlayRotation by animateFloatAsState(targetValue = overlayRotationTarget, label = "overlayRotation")
+    val landscapeHold = state.deviceOrientation == 90 || state.deviceOrientation == 270
 
     // Live zoom readout: show a bar + "N.N×" whenever the zoom ratio moves (pinch or in-sheet slider),
     // then fade it out ~1.4 s after the last change (iPhone-style). Never shown at rest.
@@ -420,59 +421,78 @@ fun CameraScreen(
             }
         }
 
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .background(
-                    Brush.verticalGradient(
-                        0f to Color.Transparent,
-                        1f to Color.Black.copy(alpha = 0.6f),
-                    ),
-                )
-                .navigationBarsPadding()
-                .padding(top = 28.dp, bottom = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            if (!dispClean) MemoryRecallStrip(
+        if (landscapeHold) {
+            LandscapeControlDock(
                 state = state,
                 actions = actions,
-                glyphRotation = overlayRotation,
-                modifier = Modifier
-                    .align(Alignment.CenterHorizontally)
-                    .padding(horizontal = 16.dp),
-            )
-
-            ManualDialCluster(
-                state = state,
-                actions = actions,
+                dispClean = dispClean,
                 onRequestWhiteBalanceSheet = { openSheet(ProSheetTab.EXPOSURE) },
                 onOpenFnMenu = { fnOverlayVisible = true },
                 onDialOpenChange = { manualDialOpen = it },
-                modifier = Modifier.padding(horizontal = 16.dp),
-            )
-
-            ModeCarousel(
-                mode = state.mode,
-                onModeChange = actions::onModeChange,
                 glyphRotation = overlayRotation,
-                modifier = Modifier.fillMaxWidth(),
-            )
-
-            ShutterRow(
-                mode = state.mode,
-                isRecording = state.isRecording,
-                teleconverterOn = state.teleconverterMode,
-                lastMediaUri = state.lastMediaUri,
-                onOpenReview = { reviewOpen = true },
                 onShutter = onShutter,
                 onSnapshot = actions::onCapturePhoto,
+                onOpenReview = { reviewOpen = true },
                 onToggleTeleconverter = { actions.onToggleTeleconverter(!state.teleconverterMode) },
-                glyphRotation = overlayRotation,
+                dockOnStart = state.deviceOrientation == 90,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 28.dp),
+                    .align(if (state.deviceOrientation == 90) Alignment.CenterStart else Alignment.CenterEnd),
             )
+        } else {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .background(
+                        Brush.verticalGradient(
+                            0f to Color.Transparent,
+                            1f to Color.Black.copy(alpha = 0.6f),
+                        ),
+                    )
+                    .navigationBarsPadding()
+                    .padding(top = 28.dp, bottom = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                if (!dispClean) MemoryRecallStrip(
+                    state = state,
+                    actions = actions,
+                    glyphRotation = overlayRotation,
+                    modifier = Modifier
+                        .align(Alignment.CenterHorizontally)
+                        .padding(horizontal = 16.dp),
+                )
+
+                ManualDialCluster(
+                    state = state,
+                    actions = actions,
+                    onRequestWhiteBalanceSheet = { openSheet(ProSheetTab.EXPOSURE) },
+                    onOpenFnMenu = { fnOverlayVisible = true },
+                    onDialOpenChange = { manualDialOpen = it },
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                )
+
+                ModeCarousel(
+                    mode = state.mode,
+                    onModeChange = actions::onModeChange,
+                    glyphRotation = overlayRotation,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                ShutterRow(
+                    mode = state.mode,
+                    isRecording = state.isRecording,
+                    teleconverterOn = state.teleconverterMode,
+                    lastMediaUri = state.lastMediaUri,
+                    onOpenReview = { reviewOpen = true },
+                    onShutter = onShutter,
+                    onSnapshot = actions::onCapturePhoto,
+                    onToggleTeleconverter = { actions.onToggleTeleconverter(!state.teleconverterMode) },
+                    glyphRotation = overlayRotation,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 28.dp),
+                )
+            }
         }
     }
 
@@ -1135,6 +1155,89 @@ private fun log2(value: Float): Float = (ln(value.toDouble()) / ln(2.0)).toFloat
 // ---------------------------------------------------------------------------
 // Bottom cluster: mode carousel + shutter row (the manual dial cluster lives in ManualDials.kt).
 // ---------------------------------------------------------------------------
+
+@Composable
+private fun LandscapeControlDock(
+    state: CameraUiState,
+    actions: CameraActions,
+    dispClean: Boolean,
+    onRequestWhiteBalanceSheet: () -> Unit,
+    onOpenFnMenu: () -> Unit,
+    onDialOpenChange: (Boolean) -> Unit,
+    glyphRotation: Float,
+    onShutter: () -> Unit,
+    onSnapshot: () -> Unit,
+    onOpenReview: () -> Unit,
+    onToggleTeleconverter: () -> Unit,
+    dockOnStart: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val gradient = if (dockOnStart) {
+        Brush.horizontalGradient(
+            0f to Color.Black.copy(alpha = 0.62f),
+            1f to Color.Transparent,
+        )
+    } else {
+        Brush.horizontalGradient(
+            0f to Color.Transparent,
+            1f to Color.Black.copy(alpha = 0.62f),
+        )
+    }
+    Box(
+        modifier = modifier
+            .fillMaxHeight()
+            .width(268.dp)
+            .background(gradient)
+            .navigationBarsPadding(),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier
+                .width(640.dp)
+                .rotateLayout(glyphRotation)
+                .padding(horizontal = 18.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            if (!dispClean) {
+                MemoryRecallStrip(
+                    state = state,
+                    actions = actions,
+                    glyphRotation = 0f,
+                    modifier = Modifier.align(Alignment.CenterHorizontally),
+                )
+            }
+            ManualDialCluster(
+                state = state,
+                actions = actions,
+                onRequestWhiteBalanceSheet = onRequestWhiteBalanceSheet,
+                onOpenFnMenu = onOpenFnMenu,
+                onDialOpenChange = onDialOpenChange,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            ModeCarousel(
+                mode = state.mode,
+                onModeChange = actions::onModeChange,
+                glyphRotation = 0f,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            ShutterRow(
+                mode = state.mode,
+                isRecording = state.isRecording,
+                teleconverterOn = state.teleconverterMode,
+                lastMediaUri = state.lastMediaUri,
+                onOpenReview = onOpenReview,
+                onShutter = onShutter,
+                onSnapshot = onSnapshot,
+                onToggleTeleconverter = onToggleTeleconverter,
+                glyphRotation = 0f,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 64.dp),
+            )
+        }
+    }
+}
 
 @Composable
 private fun ModeCarousel(
