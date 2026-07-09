@@ -169,7 +169,10 @@ class CameraController(context: Context) {
                     configAttempt = 0
                     runCatching { configureSession(onReady, onError) }.onFailure { onError.onError(it) }
                 }
-                override fun onDisconnected(camera: CameraDevice) { close() }
+                override fun onDisconnected(camera: CameraDevice) {
+                    onError.onError(IllegalStateException("Camera disconnected"))
+                    close()
+                }
                 override fun onError(camera: CameraDevice, error: Int) {
                     onError.onError(IllegalStateException("Camera error $error"))
                     close()

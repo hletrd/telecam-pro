@@ -64,6 +64,9 @@ class CameraEngine(private val context: Context) {
     // startup (the GL onInputReady continuation) doesn't fire while the app is backgrounded — e.g.
     // launched behind the keyguard, where onStop lands right as the session would configure.
     @Volatile private var paused = false
+    // True only after the CURRENT controller has configured a working session. Session-key and lens
+    // changes clear it before their asynchronous reopen is queued so REC cannot race the teardown.
+    @Volatile private var cameraReady = false
     @Volatile private var previewSurface: Surface? = null
 
     private val gyro = com.hletrd.findx9tele.stab.GyroEis(context)
@@ -226,6 +229,7 @@ class CameraEngine(private val context: Context) {
         if (paused) return // don't grab the camera while backgrounded (queued GL continuation, etc.)
         val sel = selection ?: return
         val c = caps ?: return
+        cameraReady = false
         controller?.close() // idempotent: closes any prior controller so two never race for the device
         val ctrl = CameraController(context)
         controller = ctrl
@@ -243,8 +247,21 @@ class CameraEngine(private val context: Context) {
             vendorLogMode = vendorLogMode.halValue,
             videoStabHalMode = c.videoStabControlMode(videoStabMode),
             teleconverterMode = teleconverterMode,
-            onReady = { onStatus?.invoke(null); cameraRecoveryAttempts = 0 },
-            onError = { onStatus?.invoke("Camera error: ${it.message}"); scheduleCameraRecovery() },
+            onReady = {
+                // A superseded controller can report ready after a newer reopen already replaced it.
+                if (controller === ctrl && !paused) {
+                    cameraReady = true
+                    onStatus?.invoke(null)
+                    cameraRecoveryAttempts = 0
+                }
+            },
+            onError = {
+                if (controller === ctrl) {
+                    cameraReady = false
+                    onStatus?.invoke("Camera error: ${it.message}")
+                    scheduleCameraRecovery()
+                }
+            },
         )
     }
 
@@ -417,14 +434,18 @@ class CameraEngine(private val context: Context) {
         // and gaps/corrupts the clip. The rate/open-gate change applies on the next recording instead.
         if (recorder != null) return
         val input = gl.inputSurface ?: return
+        cameraReady = false
         // Run the close+reopen OFF the main thread. close() blocks until the HAL device is released
         // (bounded join) and openCamera() issues several getCameraCharacteristics/openCamera Binder
         // calls; on this HAL those can take seconds under contention, so doing it on the UI thread
         // (vendor-feature toggles are main-thread ViewModel calls) exceeds the 5s ANR watchdog and the
         // OS kills the app. setupExecutor is single-threaded, so reopens also serialize cleanly.
         setupExecutor.execute {
+            // REC may have started after this reopen was queued. Never close a live recording stream.
+            if (paused || recorder != null) return@execute
             controller?.close()
             controller = null
+            if (paused || recorder != null) return@execute
             openCamera(input)
         }
     }
@@ -493,12 +514,16 @@ class CameraEngine(private val context: Context) {
         overrideId = id
         if (!started) return
         val input = gl.inputSurface ?: return // @Volatile in GlPipeline: safe cross-thread read
+        cameraReady = false
         // Off the main thread (same reason as reopenForSession): close() blocks on the HAL device
         // release and select/read/openCamera are several Binder IPCs — on the UI thread this ANR-kills
         // the app under HAL contention. Runs on the single-thread setupExecutor so it serializes with
         // the initial open and other reopens.
         setupExecutor.execute {
+            if (paused || recorder != null) return@execute
             controller?.close()
+            controller = null
+            if (paused || recorder != null) return@execute
             val sel = selectCurrentLens() ?: run { onStatus?.invoke("Camera ID unavailable"); return@execute }
             selection = sel
             val c = CameraCaps.read(manager, sel.logicalId, sel.physicalId)
@@ -758,6 +783,10 @@ class CameraEngine(private val context: Context) {
     // ---- Video ----
 
     fun startRecording(recordAudio: Boolean): Boolean {
+        if (!cameraReady) {
+            onStatus?.invoke("Camera reconfiguring")
+            return false
+        }
         // The recorder owns the mic — stop the standby level tap first (its loop also self-exits on
         // recorder != null, but be explicit and give it a beat to release the AudioRecord).
         standbyMeterWanted = false
@@ -843,6 +872,7 @@ class CameraEngine(private val context: Context) {
     /** Releases the camera + gyro for backgrounding without tearing down the GL pipeline or start state. */
     fun pause() {
         paused = true
+        cameraReady = false
         // Finalize an in-flight recording OFF the main thread: rec.stop() joins the drain threads (up
         // to a few seconds) and calling it inline on onStop risks an ANR. Clear the encoder EGL first
         // so GL stops drawing into the input surface before the codec releases it.
@@ -885,6 +915,7 @@ class CameraEngine(private val context: Context) {
     fun setPunchIn(enabled: Boolean) = gl.setPunchIn(enabled)
 
     fun release() {
+        cameraReady = false
         stopTimelapse()
         runCatching { recorder?.stop() }
         recorder = null
