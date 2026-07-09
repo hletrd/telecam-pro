@@ -487,7 +487,6 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
     val caps = state.caps
     TabTitle("Shooting")
     SectionHeader("Format")
-    MemoryRecallControls(state = state, actions = actions)
     PhotoFormatToggles(formats = state.photoFormats, onSetPhotoFormats = actions::onSetPhotoFormats)
     SegmentedSelector(
         label = "Aspect",
@@ -536,6 +535,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         labelFor = ::shutterTimerLabel,
         onSelect = actions::onTimer,
     )
+    MemoryRecallControls(state = state, actions = actions)
 }
 
 @Composable
@@ -885,6 +885,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
 private fun ProcessingTab(state: CameraUiState, actions: CameraActions) {
     val controls = state.controls
     TabTitle("Image")
+    SectionHeader("Processing")
     SegmentedSelector(
         label = "Sharpness",
         options = ProcessingLevel.entries,
@@ -964,11 +965,13 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
 private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
     val context = LocalContext.current
     TabTitle("Setup")
+    SectionHeader("App")
     LabelValueRow(
         label = "Privacy",
         valueLabel = "Open",
         onClick = { openPrivacyPolicy(context) },
     )
+    SectionHeader("Startup")
     ToggleRow(
         label = "Remember",
         checked = state.rememberSettings,

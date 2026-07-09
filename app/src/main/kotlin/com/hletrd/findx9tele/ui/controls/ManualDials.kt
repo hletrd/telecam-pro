@@ -47,6 +47,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.hletrd.findx9tele.camera.CameraCaps
 import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.CaptureMode
@@ -235,10 +236,10 @@ private fun FnDialChip(
             onLongClick = onOpenFnMenu,
         )
         FnSlot.SHUTTER -> DialChip(
-            label = "Shutter",
+            label = "SS",
             value = when {
-                controls.exposureMode == ExposureMode.PROGRAM -> "A ${autoShutterText(state)}"
-                controls.autoShutterDriven -> "A ${formatShutterSpeed(controls.exposureTimeNs)}"
+                controls.exposureMode == ExposureMode.PROGRAM -> "A${autoShutterText(state)}"
+                controls.autoShutterDriven -> "A${formatShutterSpeed(controls.exposureTimeNs)}"
                 controls.shutterMode == ShutterMode.ANGLE -> "%.0f°".format(controls.shutterAngle)
                 else -> formatShutterSpeed(controls.exposureTimeNs)
             },
@@ -250,8 +251,8 @@ private fun FnDialChip(
         FnSlot.ISO -> DialChip(
             label = "ISO",
             value = when {
-                controls.exposureMode == ExposureMode.PROGRAM -> "A ${autoIsoText(state)}"
-                controls.autoIsoDriven -> "A ${controls.iso}"
+                controls.exposureMode == ExposureMode.PROGRAM -> "A${autoIsoText(state)}"
+                controls.autoIsoDriven -> "A${controls.iso}"
                 else -> controls.iso.toString()
             },
             active = openDial == DialType.ISO,
@@ -484,19 +485,30 @@ private fun DialChip(
         modifier = modifier
             // Fixed floor width + centered content so a chip's OWN value changes (e.g. "Auto" ↔
             // "1/125s", "ISO 100" ↔ "ISO 12800") never resize it and shift the whole row.
-            .defaultMinSize(minWidth = 96.dp)
+            .defaultMinSize(minWidth = 76.dp)
             .clip(RoundedCornerShape(50))
             .background(bg)
             .then(
                 if (!active) Modifier.border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(50)) else Modifier,
             )
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(horizontal = 14.dp, vertical = 9.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally),
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterHorizontally),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, color = fg, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-        Text(value, color = fg.copy(alpha = if (active) 1f else 0.75f), style = MaterialTheme.typography.labelMedium)
+        Text(
+            label,
+            color = fg,
+            fontSize = 12.sp,
+            lineHeight = 14.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            value,
+            color = fg.copy(alpha = if (active) 1f else 0.75f),
+            fontSize = 12.sp,
+            lineHeight = 14.sp,
+        )
     }
 }
 
@@ -512,7 +524,7 @@ private fun DialChip(
 private fun formatFocusRelative(diopters: Float, minDiopters: Float): String {
     if (minDiopters <= 0f) return "∞"
     val f = FocusMapping.dioptersToSlider(diopters, minDiopters)
-    return if (f <= 0.005f) "∞" else "∞ + ${(f * 100).roundToInt()}"
+    return if (f <= 0.005f) "∞" else "∞+${(f * 100).roundToInt()}"
 }
 
 @Composable
