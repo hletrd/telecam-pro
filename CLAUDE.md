@@ -159,23 +159,22 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
 - **Settings persist across launches** via `storage/SettingsStore.kt` (SharedPreferences, enums by
   name, defensive load). Gated by a "Remember Settings" toggle that **defaults ON**; saved on
   background, restored on launch (pushed to the engine pre-start).
-- **LOG = the HAL-NATIVE O-Log2 stream (maintainer decision 2026-07-09).** `ColorTransfer.LOG` sets
-  the vendor **session** key `com.oplus.log.video.mode = 1` (in the tele's
-  `availableRequestKeys`+`availableSessionKeys` — one of the few OPPO keys the HAL advertises publicly,
-  unlike the OCS-gated OIS profile; `com.oplus.movie.log.enable` is NOT exposed). Session key →
-  changing it reopens the camera; the controller applies it as a session parameter at config AND on
-  every request. The ISP then emits a genuine scene-referred log stream (device-verified: flat, mean
-  luma ~½ SDR, `1`≡`2`), so **GL applies NO curve** (`gl.setNativeLog(true)`, transfer=null): the
-  preview shows the flat log directly, and **Gamma Display Assist de-logs it** for the monitor via the
-  exact inverse OETF shader (uTransfer=3: `olog2Inv` incl. the parabolic-toe root, O-Gamut→709 matrix,
-  γ2.2 encode). Rationale: scene-referred > the GL re-map of the display-referred SDR output, and
-  OPPO's published O-Log2 LUTs are being updated to match the native stream. The GL FORWARD O-Log2
-  path (uTransfer=2, official white-paper constants) is retained but unused. **Watch for on-device:**
-  the flat preview must appear at IDLE (an earlier build showed it only after the first recording —
-  root causes were GL-seeding + preview-transfer bugs since fixed; if it recurs, the HAL may gate the
-  key on an attached encoder surface). NOTE: leaving `KEY_COLOR_TRANSFER` unset on a BT2020 full-range
-  HEVC format makes the QTI encoder tag the VUI **ST2084 (PQ)** — players then tone-map log footage as
-  HDR. Tag a transfer explicitly, always (the muxer path tags the LOG profile).
+- **LOG = GL O-Log2; the native log key is INERT for third-party Camera2 (settled 2026-07-09).**
+  `com.oplus.log.video.mode` is advertised in the tele's request+session keys and the HAL ACCEPTS it
+  ("applied" logs), but it changes NOTHING a third-party session can see: with the key set (as session
+  parameter + on every request), the preview AND the recorded clip stay display-referred 709 — tested
+  with both `TEMPLATE_PREVIEW` and `TEMPLATE_RECORD` repeating requests on device, judged in a lit
+  scene. (Earlier "the file recorded as log" was the BT.2020 full-range container tag being misread by
+  players as a washed look; an "applied" log line only means the HAL didn't reject the key.) So
+  `ColorTransfer.LOG` bakes the official O-Log2 OETF in GL (white paper constants in `Shaders.kt`,
+  uTransfer=2; 18 % grey → the 0.4868 anchor, LUT-accurate): the encoder gets the curve, the preview
+  renders it flat, and **Gamma Display Assist** shows the normal display-referred image instead
+  (assist = skip the forward curve; the file always gets it). The de-log shader (uTransfer=3, exact
+  inverse incl. the toe root) and `vendorLogMode`/`setNativeLog` plumbing stay DORMANT for a future
+  CameraUnit-authenticated scene-referred stream. NOTE: leaving `KEY_COLOR_TRANSFER` unset on a BT2020
+  full-range HEVC format makes the QTI encoder tag the VUI **ST2084 (PQ)** — players then tone-map log
+  footage as HDR. Tag a transfer explicitly, always.
+
 - **Video stabilization = HAL OIS+EIS via the device's own path (verified 2026-07-07).** For VIDEO the
   shutter is fixed (e.g. 1/60 s), so per-frame MOTION BLUR is set by the shutter and only **OIS**
   (which moves the lens DURING the exposure) can cut it — app-side gyro EIS only warps whole frames
@@ -226,6 +225,10 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
   make/model from the controller's latest capture result. HEIFs are currently NOT stamped (heifwriter
   has no EXIF API; androidx ExifInterface can't write HEIC). The review card's exposure line simply
   drops out for files without EXIF.
+- **SettingsStore commits synchronously (`edit(commit = true)`), never apply().** Saves fire on user
+  actions (a mode switch), and the very next gesture can be a Recents swipe-kill — apply()'s async
+  disk write dies with the process and the change is silently lost ("last mode not remembered", hit
+  twice). The prefs file is tiny; the synchronous write is a few ms.
 - **`manager.openCamera()` can throw synchronously.** Opening from a background proc state (relaunch
   behind the keyguard / screen just woke) raises `CameraAccessException CAMERA_DISABLED` from the
   `openCamera` call itself, not the StateCallback — wrap it in `runCatching → onError` or it crashes.

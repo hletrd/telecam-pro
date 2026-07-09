@@ -38,6 +38,8 @@ class CameraEngine(private val context: Context) {
     @Volatile private var timelapseFuture: java.util.concurrent.ScheduledFuture<*>? = null
     @Volatile private var controller: CameraController? = null
     @Volatile private var recorder: VideoRecorder? = null
+    // URI of the clip currently being recorded, so stop can surface it (thumbnail/review).
+    @Volatile private var activeRecordingUri: android.net.Uri? = null
 
     // These are written from the UI thread and read on the GL thread (via the onInputReady
     // continuation), so they are @Volatile to give the JMM a visibility edge across the seam.
@@ -139,8 +141,8 @@ class CameraEngine(private val context: Context) {
                 // GlPipeline.post is handler?.post, so pre-start calls (e.g. a LOG transfer or a
                 // priority-mode AE metering flag restored from settings) were silently dropped —
                 // the LOG preview only turned flat after the first recording pushed the transfer.
-                gl.setNativeLog(transfer == ColorTransfer.LOG)
-                gl.setTransfer(if (transfer == ColorTransfer.LOG) null else transfer)
+                gl.setNativeLog(false)
+                gl.setTransfer(transfer)
                 gl.setAeMetering(aeMetering)
                 gl.setGammaAssist(gammaAssist)
                 applyStabilization()
@@ -267,26 +269,20 @@ class CameraEngine(private val context: Context) {
      */
     fun setTransfer(t: ColorTransfer) {
         transfer = t
-        // LOG = the HAL-NATIVE O-Log2 stream (com.oplus.log.video.mode, session key → reopen): the ISP
-        // emits scene-referred log from sensor data — more DR than the GL re-map of the display-
-        // referred SDR output, and OPPO's published LUTs are being updated to match it (maintainer
-        // decision 2026-07-09). GL applies NO curve on top (the stream is already log); the preview
-        // shows it flat, or de-logged when Gamma Display Assist is on. The GL O-Log2 shader path
-        // (uTransfer=2) is retained but unused. HLG/SDR keep the GL-curve encoder path as before.
-        val wantNative = t == ColorTransfer.LOG
-        gl.setNativeLog(wantNative)
-        if (wantNative) {
-            if (vendorLogMode != VendorLogMode.ON) {
-                vendorLogMode = VendorLogMode.ON
-                reopenForSession()
-            }
-            if (recorder == null) gl.setTransfer(null)
-        } else {
-            val wasNativeLog = vendorLogMode != VendorLogMode.OFF
-            vendorLogMode = VendorLogMode.OFF
-            if (wasNativeLog) reopenForSession()
-            if (recorder == null) gl.setTransfer(t)
-        }
+        // LOG = the GL O-Log2 OETF (proven path). The native com.oplus.log.video.mode key was tried
+        // twice and is effectively INERT for a third-party Camera2 session: the HAL accepts it
+        // ("applied" logs) but neither the preview nor the RECORDED stream is scene-referred —
+        // device-tested 2026-07-09 with TEMPLATE_PREVIEW and TEMPLATE_RECORD repeating requests (the
+        // clip came out plain 709; the earlier "file looked log" was the BT.2020 full-range container
+        // tag being misread by players as a washed look). So the GL path stays: encoder gets the
+        // official O-Log2 curve, the preview shows it flat, and Gamma Display Assist shows the normal
+        // display-referred image instead. vendorLogMode stays OFF (dormant, with the de-log shader,
+        // for a future CameraUnit-authenticated scene-referred path).
+        gl.setNativeLog(false)
+        val wasNativeLog = vendorLogMode != VendorLogMode.OFF
+        vendorLogMode = VendorLogMode.OFF
+        if (wasNativeLog) reopenForSession()
+        if (recorder == null) gl.setTransfer(t)
     }
     fun setPeaking(enabled: Boolean) = gl.setPeaking(enabled)
     fun setZebra(enabled: Boolean) = gl.setZebra(enabled)
@@ -763,6 +759,7 @@ class CameraEngine(private val context: Context) {
         if (recorder != null) return false
         val name = fileName("VID", "mp4")
         val uri = MediaStoreWriter.createPendingVideo(context, name, "video/mp4") ?: return false
+        activeRecordingUri = uri
         val size = videoSize
         val codec = videoCodec
         val rate = videoFrameRate
@@ -815,10 +812,14 @@ class CameraEngine(private val context: Context) {
         val rec = recorder ?: return
         recorder = null
         gl.setEncoderOutput(null, 0, 0)
+        val uri = activeRecordingUri
+        activeRecordingUri = null
         // rec.stop() joins the video/audio drain threads (up to several seconds); run it OFF the caller
         // (main) thread to avoid an ANR. The file finalizes and the status fires from the io thread.
         ioExecutor.execute {
             runCatching { rec.stop() }
+            // Surface the finished clip like a still: thumbnail + in-app review (frame-extracted).
+            uri?.let { onMediaSaved?.invoke(it) }
             onStatus?.invoke("Video saved")
         }
     }
@@ -831,9 +832,12 @@ class CameraEngine(private val context: Context) {
         // so GL stops drawing into the input surface before the codec releases it.
         val rec = recorder
         recorder = null
+        val pausedClipUri = activeRecordingUri
+        activeRecordingUri = null
         if (rec != null) {
             gl.setEncoderOutput(null, 0, 0)
             ioExecutor.execute { runCatching { rec.stop() }; onStatus?.invoke("Video saved") }
+                pausedClipUri?.let { onMediaSaved?.invoke(it) }
         }
         gyro.stop()
         controller?.close()

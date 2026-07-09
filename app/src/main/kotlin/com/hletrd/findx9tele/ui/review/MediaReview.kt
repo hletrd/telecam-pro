@@ -67,6 +67,24 @@ import kotlin.math.roundToInt
  */
 
 /** Decodes [uri] downsampled so its longest side is ~[maxDim] px (<=0 = full resolution). */
+/** First frame of a video, for the thumbnail/review of a just-recorded clip (BitmapFactory can't). */
+private fun loadVideoFrame(context: Context, uri: Uri, maxDim: Int): ImageBitmap? = runCatching {
+    val mmr = android.media.MediaMetadataRetriever()
+    try {
+        mmr.setDataSource(context, uri)
+        val frame = mmr.getFrameAtTime(0) ?: return@runCatching null
+        val scaled = if (maxDim > 0 && maxOf(frame.width, frame.height) > maxDim) {
+            val scale = maxDim.toFloat() / maxOf(frame.width, frame.height)
+            android.graphics.Bitmap.createScaledBitmap(
+                frame, (frame.width * scale).toInt().coerceAtLeast(1), (frame.height * scale).toInt().coerceAtLeast(1), true,
+            )
+        } else frame
+        scaled.asImageBitmap()
+    } finally {
+        runCatching { mmr.release() }
+    }
+}.getOrNull()
+
 private suspend fun loadBitmap(context: Context, uri: Uri, maxDim: Int): ImageBitmap? =
     withContext(Dispatchers.IO) {
         runCatching {
@@ -136,7 +154,7 @@ private suspend fun loadMetadata(context: Context, uri: Uri): ReviewMetadata? =
 fun GalleryThumb(uri: Uri?, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val thumb by produceState<ImageBitmap?>(initialValue = null, uri) {
-        value = uri?.let { loadBitmap(context, it, 240) }
+        value = uri?.let { loadBitmap(context, it, 240) ?: withContext(Dispatchers.IO) { loadVideoFrame(context, it, 240) } }
     }
     Box(
         modifier = modifier
@@ -177,6 +195,7 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
     val context = LocalContext.current
     val bitmap by produceState<ImageBitmap?>(initialValue = null, uri) {
         value = loadBitmap(context, uri, 0) ?: loadBitmap(context, uri, 3000)
+            ?: withContext(Dispatchers.IO) { loadVideoFrame(context, uri, 0) } // recorded clip: first frame
     }
     val metadata by produceState<ReviewMetadata?>(initialValue = null, uri) {
         value = loadMetadata(context, uri)

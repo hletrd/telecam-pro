@@ -32,9 +32,12 @@ object AutoExposure {
     // few ticks (~0.5 s at 6 Hz) without overshoot. The per-tick clamp bounds a huge scene change to
     // one stop per tick so a lens cap on/off ramps smoothly instead of snapping. The deadband holds
     // the value once we're within ~1/12 stop so a noisy meter doesn't jitter ISO/shutter forever.
-    private const val GAIN = 0.5f
-    private const val MAX_STEP_STOPS = 1.0f
-    private const val DEADBAND_STOPS = 0.08f
+    // Tuned for VISUALLY SMOOTH transitions (user: 1-stop ticks read as visible steps): smaller
+    // per-tick cap with slightly higher gain ≈ the same convergence time in many small slides
+    // (~1.8 stops/s at the 6 Hz meter) instead of a few big jumps.
+    private const val GAIN = 0.6f
+    private const val MAX_STEP_STOPS = 0.30f
+    private const val DEADBAND_STOPS = 0.05f
 
     /** Mean luma (0..1) of a 256-bin luma histogram. Returns 0 for an empty/degenerate histogram. */
     fun meanLuma(luma: IntArray): Float {
@@ -54,7 +57,7 @@ object AutoExposure {
      * ISO / lengthen shutter). Returns null inside the deadband (converged → no update).
      */
     internal fun correctionStops(mean: Float, evCompStops: Float): Float? {
-        if (mean <= 0f) return MAX_STEP_STOPS // pitch black meter → open up hard
+        if (mean <= 0f) return MAX_STEP_STOPS // pitch black meter → open up (per-tick cap)
         val target = (TARGET_LUMA * pow2(evCompStops).toFloat()).coerceIn(0.02f, 0.95f)
         val errorStops = log2(target / mean)
         if (kotlin.math.abs(errorStops) < DEADBAND_STOPS) return null
@@ -104,7 +107,7 @@ object AutoExposure {
 
         val corr = correctionStops(meanLuma(luma), evCompStops) ?: 0f
         // Re-center the shutter toward the preferred point by at most 1 stop this tick…
-        val shutterStops = log2(pref.toFloat() / currentNs.toFloat()).coerceIn(-1f, 1f)
+        val shutterStops = log2(pref.toFloat() / currentNs.toFloat()).coerceIn(-0.35f, 0.35f)
         // …and give ISO the exposure correction minus what the shutter move already contributes
         // (longer shutter = brighter), so re-centering is brightness-neutral.
         val isoStops = corr - shutterStops

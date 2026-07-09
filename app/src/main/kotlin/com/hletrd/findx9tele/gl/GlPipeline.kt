@@ -277,12 +277,14 @@ class GlPipeline {
         // log profile — previously the preview was hardcoded to SDR (null) and only the encoder got the
         // curve, so LOG never looked flat on screen. HLG/SDR keep a natural SDR preview (an HLG curve on
         // this SDR preview surface would just look washed; HDR is monitored on an HDR display, not here).
-        // LOG is the HAL-native O-Log2 stream: the preview passes it through untouched (flat), or —
-        // with Gamma Display Assist ON — de-logs it to an ordinary 709/γ2.2 monitor image while the
-        // recorded stream stays log. HLG/SDR keep the natural SDR preview (no curve).
+        // LOG = GL O-Log2: the preview renders the same flat curve the encoder bakes, or — with Gamma
+        // Display Assist ON — skips it and shows the normal display-referred image (the FILE always
+        // gets the curve). HLG/SDR keep the natural SDR preview. delogAssist stays dormant: it is only
+        // for a true scene-referred (native/CameraUnit) stream, which third-party Camera2 cannot get.
+        val previewTransfer = if (transfer == ColorTransfer.LOG && !gammaAssist) ColorTransfer.LOG else null
         core.makeCurrent(previewEgl)
         renderer.draw(
-            stMatrix, previewW, previewH, null, peaking, zebra, falseColor, sx, sy, roll, previewCrop, loupeX, loupeY,
+            stMatrix, previewW, previewH, previewTransfer, peaking, zebra, falseColor, sx, sy, roll, previewCrop, loupeX, loupeY,
             peakThreshold = peakThreshold, peakR = peakR, peakG = peakG, peakB = peakB, zebraThreshold = zebraThreshold,
             delogAssist = nativeLog && gammaAssist,
         )
