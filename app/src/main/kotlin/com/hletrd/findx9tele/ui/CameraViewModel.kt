@@ -147,7 +147,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             val seeded = com.hletrd.findx9tele.storage.MediaStoreWriter.latestOwnImage(getApplication())
             if (seeded != null) _state.update { if (it.lastMediaUri == null) it.copy(lastMediaUri = seeded) else it }
         }.start()
-        _state.update { it.copy(savedMemorySlots = settingsStore.savedPresetSlots()) }
+        refreshMemorySlotInfo()
         // Sweep any pending media orphaned by a prior crash/force-kill (record stop never ran).
         engine.cleanupOrphans()
         if (_state.value.level) mainHandler.post(levelTicker)
@@ -336,6 +336,58 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         if (!_state.value.isRecording) {
             _state.update { it.copy(audioRouteLabel = audioInputStatusLabel(it.audioInputPreference)) }
         }
+    }
+
+    private fun refreshMemorySlotInfo(activeSlot: MemorySlot? = _state.value.activeMemorySlot) {
+        val info = settingsStore.savedPresetInfo()
+        _state.update {
+            it.copy(
+                savedMemorySlots = info.keys,
+                memorySlotNames = info.mapValues { entry -> entry.value.name },
+                memorySlotSummaries = info.mapValues { entry -> entry.value.summary },
+                activeMemorySlot = activeSlot,
+            )
+        }
+    }
+
+    private fun presetNameFor(s: CameraUiState): String {
+        val focal = focalSummary(s)
+        return when (s.mode) {
+            CaptureMode.PHOTO -> "Photo $focal"
+            CaptureMode.VIDEO -> "Video ${transferSummary(s.transfer)}"
+        }
+    }
+
+    private fun presetSummaryFor(s: CameraUiState): String = when (s.mode) {
+        CaptureMode.PHOTO -> {
+            val formats = buildList {
+                if (s.photoFormats.heif) add("HEIF")
+                if (s.photoFormats.jpeg) add("JPEG")
+                if (s.photoFormats.dngRaw) add("DNG")
+            }.ifEmpty { listOf("No still format") }.joinToString("+")
+            "${focalSummary(s)} · ${s.controls.exposureMode.letter} · $formats"
+        }
+        CaptureMode.VIDEO -> {
+            "${focalSummary(s)} · ${videoSizeSummary(s.videoResolution)} ${s.videoFrameRate.label}p · " +
+                "${transferSummary(s.transfer)} · ${s.bitrateLevel.name.lowercase().replaceFirstChar { it.uppercase() }}"
+        }
+    }
+
+    private fun focalSummary(s: CameraUiState): String =
+        if (s.teleconverterMode) "300mm" else "${s.lens.targetEquivMm.toInt()}mm"
+
+    private fun transferSummary(t: ColorTransfer): String = when (t) {
+        ColorTransfer.HLG -> "HLG"
+        ColorTransfer.LOG -> "O-Log"
+        ColorTransfer.SDR -> "SDR"
+    }
+
+    private fun videoSizeSummary(size: Size): String = when {
+        size.height >= 4320 -> "8K"
+        size.height >= 2160 -> "4K"
+        size.height >= 1440 -> "1440p"
+        size.height >= 1080 -> "1080p"
+        else -> "${size.width}x${size.height}"
     }
 
     private fun markChanged(slot: FnSlot) {
@@ -818,9 +870,16 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
 
     override fun onStoreMemorySlot(slot: MemorySlot) {
-        settingsStore.savePreset(slot, _state.value.controls, currentExtras())
-        _state.update { it.copy(savedMemorySlots = settingsStore.savedPresetSlots(), activeMemorySlot = slot) }
-        showStatus("${slot.label} saved")
+        val snapshot = _state.value
+        settingsStore.savePreset(
+            slot,
+            snapshot.controls,
+            currentExtras(),
+            name = presetNameFor(snapshot),
+            summary = presetSummaryFor(snapshot),
+        )
+        refreshMemorySlotInfo(activeSlot = slot)
+        showStatus("${slot.label} saved · ${presetNameFor(snapshot)}")
     }
 
     override fun onRecallMemorySlot(slot: MemorySlot) {

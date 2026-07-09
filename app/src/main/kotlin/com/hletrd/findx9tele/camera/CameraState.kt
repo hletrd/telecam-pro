@@ -418,6 +418,8 @@ data class CameraUiState(
     val recentSettingSlots: List<FnSlot> = emptyList(),
     val activeMemorySlot: MemorySlot? = null,
     val savedMemorySlots: Set<MemorySlot> = emptySet(),
+    val memorySlotNames: Map<MemorySlot, String> = emptyMap(),
+    val memorySlotSummaries: Map<MemorySlot, String> = emptyMap(),
     // Hardware controls. The OPPO half-press key defaults to AF-ON; volume/camera full press defaults
     // to shutter/REC. [halfPressActive] only drives the viewfinder feedback ring/chip.
     val volumeKeyAction: HardwareKeyAction = HardwareKeyAction.SHUTTER,

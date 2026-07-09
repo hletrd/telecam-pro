@@ -8,6 +8,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -420,29 +421,61 @@ private fun MyMenuTab(state: CameraUiState, actions: CameraActions) {
 @Composable
 private fun MemoryRecallControls(state: CameraUiState, actions: CameraActions) {
     SectionHeader("MR")
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-        MemorySlot.entries.forEach { slot ->
-            val saved = slot in state.savedMemorySlots
-            FilterChip(
-                selected = state.activeMemorySlot == slot,
-                onClick = { actions.onRecallMemorySlot(slot) },
-                enabled = saved,
-                label = { Text(memorySlotLabel(slot)) },
-                colors = pixelChipColors(),
-                border = pixelChipBorder(state.activeMemorySlot == slot),
-            )
-        }
+    MemorySlot.entries.forEach { slot ->
+        val saved = slot in state.savedMemorySlots
+        val name = state.memorySlotNames[slot] ?: slot.label
+        val summary = state.memorySlotSummaries[slot].orEmpty()
+        MemoryPresetRow(
+            slot = slot,
+            name = if (saved) name else "Empty",
+            summary = if (saved) summary else "Save current setup",
+            active = state.activeMemorySlot == slot,
+            saved = saved,
+            onRecall = { actions.onRecallMemorySlot(slot) },
+            onSave = { actions.onStoreMemorySlot(slot) },
+        )
     }
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-        MemorySlot.entries.forEach { slot ->
-            FilterChip(
-                selected = false,
-                onClick = { actions.onStoreMemorySlot(slot) },
-                label = { Text("Save ${memorySlotLabel(slot)}") },
-                colors = pixelChipColors(),
-                border = pixelChipBorder(false),
-            )
+}
+
+@Composable
+private fun MemoryPresetRow(
+    slot: MemorySlot,
+    name: String,
+    summary: String,
+    active: Boolean,
+    saved: Boolean,
+    onRecall: () -> Unit,
+    onSave: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (active) Color(0xFFFFD60A).copy(alpha = 0.18f) else Color.White.copy(alpha = 0.05f))
+            .border(1.dp, Color.White.copy(alpha = if (active) 0.28f else 0.10f), RoundedCornerShape(8.dp))
+            .clickable(enabled = saved, onClick = onRecall)
+            .padding(horizontal = 12.dp, vertical = 9.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = slot.label,
+            color = if (active) Color(0xFFFFD60A) else CameraColors.TextSecondary,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.width(36.dp),
+        )
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(name, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
+            Text(summary, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
         }
+        FilterChip(
+            selected = false,
+            onClick = onSave,
+            label = { Text(if (saved) "Update" else "Save") },
+            colors = pixelChipColors(),
+            border = pixelChipBorder(false),
+        )
     }
 }
 

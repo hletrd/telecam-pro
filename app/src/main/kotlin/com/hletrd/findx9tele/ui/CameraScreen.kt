@@ -910,6 +910,8 @@ private fun MemoryRecallStrip(
         MemorySlot.entries.forEach { slot ->
             val saved = slot in state.savedMemorySlots
             val active = state.activeMemorySlot == slot
+            val name = state.memorySlotNames[slot] ?: slot.label
+            val summary = state.memorySlotSummaries[slot].orEmpty()
             val bg = when {
                 active -> Color(0xFFFFD60A)
                 saved -> Color.White.copy(alpha = 0.14f)
@@ -929,6 +931,14 @@ private fun MemoryRecallStrip(
                     .rotate(glyphRotation)
                     .clip(RoundedCornerShape(50))
                     .background(bg)
+                    .semantics {
+                        contentDescription = if (saved) {
+                            "${slot.label} $name $summary"
+                        } else {
+                            "${slot.label} empty"
+                        }
+                        role = Role.Button
+                    }
                     .combinedClickable(
                         onClick = {
                             if (saved) actions.onRecallMemorySlot(slot) else actions.onStoreMemorySlot(slot)

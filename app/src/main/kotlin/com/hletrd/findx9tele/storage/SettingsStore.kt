@@ -82,10 +82,12 @@ class SettingsStore(context: Context) {
     /** Returns the persisted state, or null if nothing was ever saved. Never throws. */
     fun load(): Loaded? = loadWithPrefix("", K_HAS)
 
-    fun savePreset(slot: MemorySlot, c: ManualControls, e: ExtraSettings) {
+    fun savePreset(slot: MemorySlot, c: ManualControls, e: ExtraSettings, name: String, summary: String) {
         val prefix = presetPrefix(slot)
         prefs.edit(commit = true) {
             putLoaded(prefix, c, e)
+            putString("${prefix}name", name)
+            putString("${prefix}summary", summary)
             putBoolean("${prefix}hasSaved", true)
         }
     }
@@ -95,6 +97,16 @@ class SettingsStore(context: Context) {
 
     fun savedPresetSlots(): Set<MemorySlot> =
         MemorySlot.entries.filterTo(mutableSetOf()) { prefs.getBoolean("${presetPrefix(it)}hasSaved", false) }
+
+    fun savedPresetInfo(): Map<MemorySlot, PresetInfo> =
+        MemorySlot.entries.mapNotNull { slot ->
+            val prefix = presetPrefix(slot)
+            if (!prefs.getBoolean("${prefix}hasSaved", false)) return@mapNotNull null
+            slot to PresetInfo(
+                name = prefs.getString("${prefix}name", null)?.takeIf { it.isNotBlank() } ?: slot.label,
+                summary = prefs.getString("${prefix}summary", null).orEmpty(),
+            )
+        }.toMap()
 
     private fun loadWithPrefix(prefix: String, hasKey: String): Loaded? {
         if (!prefs.getBoolean(hasKey, false)) return null
@@ -246,6 +258,7 @@ class SettingsStore(context: Context) {
     }
 
     data class Loaded(val controls: ManualControls, val extras: ExtraSettings)
+    data class PresetInfo(val name: String, val summary: String)
 
     private companion object {
         const val K_REMEMBER = "rememberSettings"
