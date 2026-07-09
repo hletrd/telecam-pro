@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -47,6 +48,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -67,6 +70,23 @@ import kotlin.math.roundToInt
  */
 
 /** Decodes [uri] downsampled so its longest side is ~[maxDim] px (<=0 = full resolution). */
+/** Rotation + dimensions of a video, for sizing/orienting the in-review player. */
+private data class VideoInfo(val rotationDeg: Int, val width: Int, val height: Int)
+
+private fun loadVideoInfo(context: Context, uri: Uri): VideoInfo? = runCatching {
+    if (context.contentResolver.getType(uri)?.startsWith("video/") != true) return@runCatching null
+    val mmr = android.media.MediaMetadataRetriever()
+    try {
+        mmr.setDataSource(context, uri)
+        val rot = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+        val w = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+        val h = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+        if (w > 0 && h > 0) VideoInfo(rot, w, h) else null
+    } finally {
+        runCatching { mmr.release() }
+    }
+}.getOrNull()
+
 /** First frame of a video, for the thumbnail/review of a just-recorded clip (BitmapFactory can't). */
 private fun loadVideoFrame(context: Context, uri: Uri, maxDim: Int): ImageBitmap? = runCatching {
     val mmr = android.media.MediaMetadataRetriever()
@@ -193,9 +213,12 @@ fun GalleryThumb(uri: Uri?, onClick: () -> Unit, modifier: Modifier = Modifier) 
 @Composable
 fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modifier: Modifier = Modifier) {
     val context = LocalContext.current
+    val videoInfo by produceState<VideoInfo?>(initialValue = null, uri) {
+        value = withContext(Dispatchers.IO) { loadVideoInfo(context, uri) }
+    }
     val bitmap by produceState<ImageBitmap?>(initialValue = null, uri) {
         value = loadBitmap(context, uri, 0) ?: loadBitmap(context, uri, 3000)
-            ?: withContext(Dispatchers.IO) { loadVideoFrame(context, uri, 0) } // recorded clip: first frame
+            ?: withContext(Dispatchers.IO) { loadVideoFrame(context, uri, 0) } // video poster until playback
     }
     val metadata by produceState<ReviewMetadata?>(initialValue = null, uri) {
         value = loadMetadata(context, uri)
@@ -203,6 +226,11 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     var confirmDelete by remember { mutableStateOf(false) }
+    // In-review playback (videos): a TextureView + MediaPlayer — NOT VideoView, whose SurfaceView
+    // sits behind the window and is occluded by this overlay's opaque black background (the same
+    // trap the camera preview hit). Tap toggles play/pause; the clip loops.
+    val playerRef = remember { mutableStateOf<android.media.MediaPlayer?>(null) }
+    var playing by remember { mutableStateOf(true) }
     // Stock-gallery-style dismiss: at 1x, a vertical drag slides the image and past a threshold
     // closes the review; below it springs back. Zoomed in, vertical pan just pans.
     var dismissDrag by remember { mutableFloatStateOf(0f) }
@@ -211,7 +239,7 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black)
-            .pointerInput(Unit) {
+            .pointerInput(videoInfo != null) {
                 // One loop for pinch + pan + swipe-dismiss (detectTransformGestures has no end
                 // callback, and dismiss needs to decide on finger-up).
                 awaitEachGesture {
@@ -221,7 +249,8 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                         if (event.changes.none { it.pressed }) break
                         val zoom = event.calculateZoom()
                         val pan = event.calculatePan()
-                        if (zoom != 1f) scale = (scale * zoom).coerceIn(1f, 12f)
+                        // Pinch-zoom is a stills-only focus check; a video plays at fit size.
+                        if (videoInfo == null && zoom != 1f) scale = (scale * zoom).coerceIn(1f, 12f)
                         if (scale > 1f) {
                             offset += pan
                             dismissDrag = 0f
@@ -238,8 +267,14 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                     }
                 }
             }
-            .pointerInput(Unit) {
-                detectTapGestures(onDoubleTap = {
+            .pointerInput(videoInfo != null) {
+                detectTapGestures(onTap = {
+                    // Video: tap toggles play/pause (stills ignore single taps).
+                    playerRef.value?.let { mp ->
+                        runCatching { if (mp.isPlaying) mp.pause() else mp.start() }
+                            .onSuccess { playing = mp.isPlaying }
+                    }
+                }, onDoubleTap = {
                     if (scale > 1f) { scale = 1f; offset = Offset.Zero } else scale = 4f
                 }, onLongPress = { tap ->
                     scale = 8f
@@ -249,6 +284,74 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
             },
         contentAlignment = Alignment.Center,
     ) {
+        val vi = videoInfo
+        if (vi != null) {
+            // Fit the ROTATED video within the screen; the rotation hint is applied as a TextureView
+            // transform (MediaPlayer ignores it on TextureView output).
+            val rotated = vi.rotationDeg % 180 != 0
+            val aspect = if (rotated) vi.height.toFloat() / vi.width else vi.width.toFloat() / vi.height
+            AndroidView(
+                modifier = Modifier
+                    .aspectRatio(aspect.coerceAtLeast(0.01f))
+                    .graphicsLayer(
+                        translationY = dismissDrag,
+                        alpha = (1f - abs(dismissDrag) / 1400f).coerceIn(0.3f, 1f),
+                    ),
+                factory = { ctx ->
+                    android.view.TextureView(ctx).apply {
+                        surfaceTextureListener = object : android.view.TextureView.SurfaceTextureListener {
+                            override fun onSurfaceTextureAvailable(st: android.graphics.SurfaceTexture, w: Int, h: Int) {
+                                // Undo the default stretch and apply the container rotation so a
+                                // landscape-held clip plays upright and undistorted.
+                                if (vi.rotationDeg != 0) {
+                                    val m = android.graphics.Matrix()
+                                    val cx = w / 2f
+                                    val cy = h / 2f
+                                    m.postRotate(vi.rotationDeg.toFloat(), cx, cy)
+                                    if (rotated) m.postScale(w.toFloat() / h, h.toFloat() / w, cx, cy)
+                                    setTransform(m)
+                                }
+                                val mp = android.media.MediaPlayer()
+                                playerRef.value = mp
+                                runCatching {
+                                    mp.setDataSource(ctx, uri)
+                                    mp.setSurface(android.view.Surface(st))
+                                    mp.isLooping = true
+                                    mp.setOnPreparedListener { it.start() }
+                                    mp.prepareAsync()
+                                }.onFailure {
+                                    runCatching { mp.release() }
+                                    playerRef.value = null
+                                }
+                            }
+
+                            override fun onSurfaceTextureSizeChanged(st: android.graphics.SurfaceTexture, w: Int, h: Int) = Unit
+
+                            override fun onSurfaceTextureDestroyed(st: android.graphics.SurfaceTexture): Boolean {
+                                runCatching { playerRef.value?.release() }
+                                playerRef.value = null
+                                return true
+                            }
+
+                            override fun onSurfaceTextureUpdated(st: android.graphics.SurfaceTexture) = Unit
+                        }
+                    }
+                },
+            )
+            if (!playing) {
+                // Paused indicator: a simple ▶ so it's obvious a tap resumes.
+                Canvas(Modifier.size(64.dp)) {
+                    drawCircle(Color.Black.copy(alpha = 0.45f), radius = size.minDimension / 2f)
+                    val tri = androidx.compose.ui.graphics.Path().apply {
+                        moveTo(size.width * 0.4f, size.height * 0.3f)
+                        lineTo(size.width * 0.4f, size.height * 0.7f)
+                        lineTo(size.width * 0.74f, size.height * 0.5f)
+                        close()
+                    }
+                    drawPath(tri, Color.White)
+                }
+            }
+        } else {
         val bmp = bitmap
         if (bmp != null) {
             Image(
@@ -267,6 +370,7 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
             )
         } else {
             Text("Loading…", color = CameraColors.TextSecondary, style = MaterialTheme.typography.bodyMedium)
+        }
         }
 
         metadata?.let { meta ->
@@ -343,6 +447,13 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                 drawLine(c, Offset(w * 0.42f, h * 0.34f), Offset(w * 0.44f, h * 0.8f), strokeWidth = sw * 0.8f)
                 drawLine(c, Offset(w * 0.58f, h * 0.34f), Offset(w * 0.56f, h * 0.8f), strokeWidth = sw * 0.8f)
             }
+        }
+    }
+
+    DisposableEffect(uri) {
+        onDispose {
+            runCatching { playerRef.value?.release() }
+            playerRef.value = null
         }
     }
 
