@@ -435,7 +435,13 @@ class CameraController(context: Context) {
         // IllegalState. Guard the whole build+submit so a torn-down session degrades to "no preview
         // this cycle" instead of crashing the camera thread.
         runCatching {
-            val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+            // With the native log engaged, build the repeating request from TEMPLATE_RECORD: the HAL
+            // gates com.oplus.log.video.mode on the request's record intent (CONTROL_CAPTURE_INTENT),
+            // so a TEMPLATE_PREVIEW stream stays display-referred SDR even with the key applied — the
+            // "log only after the first recording" / "de-log looks double-applied" symptoms. LOG is a
+            // video profile, so record-template 3A defaults are appropriate there.
+            val template = if (vendorLogMode != 0) CameraDevice.TEMPLATE_RECORD else CameraDevice.TEMPLATE_PREVIEW
+            val builder = camera.createCaptureRequest(template).apply {
                 addTarget(preview)
                 applyManualControls(controls, caps)
                 applyVendorLog()

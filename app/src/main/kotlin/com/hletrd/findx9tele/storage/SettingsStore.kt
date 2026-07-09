@@ -71,7 +71,11 @@ class SettingsStore(context: Context) {
         set(value) { prefs.edit { putBoolean(K_REMEMBER, value) } }
 
     fun save(c: ManualControls, e: ExtraSettings) {
-        prefs.edit { putLoaded("", c, e); putBoolean(K_HAS, true) }
+        // commit (synchronous), NOT apply: saves fire on user actions (e.g. a mode switch) and the
+        // very next thing the user may do is swipe-kill the app — apply()'s async disk write dies
+        // with the process and the change is silently lost ("last mode not remembered" bug). The
+        // file is tiny; the write is a few ms.
+        prefs.edit(commit = true) { putLoaded("", c, e); putBoolean(K_HAS, true) }
     }
 
     /** Returns the persisted state, or null if nothing was ever saved. Never throws. */
@@ -79,7 +83,7 @@ class SettingsStore(context: Context) {
 
     fun savePreset(slot: MemorySlot, c: ManualControls, e: ExtraSettings) {
         val prefix = presetPrefix(slot)
-        prefs.edit {
+        prefs.edit(commit = true) {
             putLoaded(prefix, c, e)
             putBoolean("${prefix}hasSaved", true)
         }
