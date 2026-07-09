@@ -178,7 +178,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // from it, and full manual uses it for the live exposure meter.
         engine.setAeMetering(usesExposureAnalysis(c))
         engine.setLens(e.lens)
-        engine.setTransfer(e.transfer)
+        applyEngineTransfer(e.mode, e.transfer)
         engine.setGammaAssist(e.gammaAssist)
         engine.setTeleconverterMode(e.teleconverter)
         engine.setVideoStabMode(e.videoStabMode)
@@ -271,6 +271,15 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     private fun refreshStandbyAudioMeter() {
         val s = _state.value
         engine.setStandbyAudioMonitor(s.mode == CaptureMode.VIDEO && s.recordAudio && !s.isRecording)
+    }
+
+    private fun applyEngineTransfer(
+        mode: CaptureMode = _state.value.mode,
+        transfer: ColorTransfer = _state.value.transfer,
+    ) {
+        // Gamma/Log monitoring is a VIDEO concern. Keeping O-Log selected for the next clip must not
+        // make the still-photo viewfinder look flat/log.
+        engine.setTransfer(if (mode == CaptureMode.VIDEO) transfer else ColorTransfer.SDR)
     }
 
     private fun showStatus(message: String) {
@@ -558,6 +567,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             return
         }
         _state.update { it.copy(mode = mode) }
+        applyEngineTransfer(mode, _state.value.transfer)
         refreshProgramAppSide() // photo P is app-side (min-shutter rule), video P is HAL AE
         refreshStandbyAudioMeter()
         markChanged(if (mode == CaptureMode.VIDEO) FnSlot.TRANSFER else FnSlot.EXPOSURE_MODE)
@@ -568,7 +578,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
     override fun onTransfer(transfer: ColorTransfer) {
         if (rejectIfRecording("Stop REC first")) return
-        engine.setTransfer(transfer)
+        applyEngineTransfer(_state.value.mode, transfer)
         _state.update { it.copy(transfer = transfer) }
         markChanged(FnSlot.TRANSFER)
     }

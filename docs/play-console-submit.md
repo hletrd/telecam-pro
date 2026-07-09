@@ -56,8 +56,8 @@ Summary:
   - `docs/assets/play/screenshots/03-focus-loupe.png`
   - `docs/assets/play/screenshots/04-video-controls.png`
   - all are 1440 x 2880 no-alpha PNGs captured from the physical PMA110
-  - retake before upload: these are now stale after the 300 mm OSD, 29.97p, Fn/MR, landscape dock,
-    Lens/TELE chip, REC lock, and review zoom HUD updates
+  - retake before upload: these are now stale after the 300 mm OSD, 29.97p, Fn/MR, TELE toggle,
+    REC lock, and review zoom HUD updates
 
 ## Device Catalog
 

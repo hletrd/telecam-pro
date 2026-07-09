@@ -112,8 +112,8 @@ HUD.
 
 Retake checklist:
 
-1. Main still viewfinder: `300mm TELE`, current format, stabilization tag, MR strip, and updated top
-   `LENS/TELE` chip behavior visible.
+1. Main still viewfinder: `300mm TELE`, current format, stabilization tag, MR strip, and top `TELE`
+   toggle behavior visible.
 2. Settings sheet: `Setup` tab showing separate Photo Fn / Video Fn order controls, or Shooting tab
    showing named MR rows.
 3. Focus check: MF ruler open with `LOUPE` OSD state.
