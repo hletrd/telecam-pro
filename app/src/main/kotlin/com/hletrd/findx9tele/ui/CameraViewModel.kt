@@ -199,6 +199,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setVideoCodec(e.videoCodec)
         engine.setBitrateLevel(e.bitrateLevel)
         engine.setOpenGate(e.openGate)
+        engine.setAudioGain(e.audioGain)
         engine.setAudioScene(e.audioScene)
         engine.setAudioInputPreference(e.audioInputPreference)
         engine.setVideoFrameRate(e.videoFrameRate)
@@ -218,6 +219,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 bitrateLevel = e.bitrateLevel,
                 videoFrameRate = e.videoFrameRate,
                 openGate = e.openGate,
+                recordAudio = e.recordAudio,
+                audioGain = e.audioGain,
                 audioScene = e.audioScene,
                 gammaAssist = e.gammaAssist,
                 frameLines = e.frameLines,
@@ -256,6 +259,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             bitrateLevel = s.bitrateLevel,
             videoFrameRate = s.videoFrameRate,
             openGate = s.openGate,
+            recordAudio = s.recordAudio,
+            audioGain = s.audioGain,
             audioScene = s.audioScene,
             audioInputPreference = s.audioInputPreference,
             photoFnSlots = s.photoFnSlots,
@@ -608,11 +613,13 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         if (rejectIfRecording("Stop REC first")) return
         _state.update { it.copy(recordAudio = enabled, activeMemorySlot = null) }
         refreshStandbyAudioMeter()
+        saveSettingsIfEnabled()
     }
     override fun onAudioGain(gain: Float) {
         if (rejectIfRecording("Stop REC first")) return
         engine.setAudioGain(gain)
         _state.update { it.copy(audioGain = gain, activeMemorySlot = null) }
+        saveSettingsIfEnabled()
     }
     override fun onAudioScene(scene: com.hletrd.findx9tele.camera.AudioScene) {
         if (rejectIfRecording("Stop REC first")) return

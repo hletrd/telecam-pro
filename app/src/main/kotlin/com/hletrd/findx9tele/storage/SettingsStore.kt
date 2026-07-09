@@ -44,6 +44,8 @@ data class ExtraSettings(
     val bitrateLevel: BitrateLevel = BitrateLevel.ULTRA,
     val videoFrameRate: VideoFrameRate = VideoFrameRate.DEFAULT,
     val openGate: Boolean = false,
+    val recordAudio: Boolean = true,
+    val audioGain: Float = 1f,
     val audioScene: AudioScene = AudioScene.STANDARD,
     val audioInputPreference: AudioInputPreference = AudioInputPreference.AUTO,
     val photoFnSlots: List<FnSlot> = FnSlot.PHOTO_DEFAULT,
@@ -168,6 +170,8 @@ class SettingsStore(context: Context) {
                 bitrateLevel = enumOr(prefs.getString("${prefix}bitrateLevel", null), ed.bitrateLevel),
                 videoFrameRate = enumOr(prefs.getString("${prefix}videoFrameRate", null), ed.videoFrameRate),
                 openGate = prefs.getBoolean("${prefix}openGate", ed.openGate),
+                recordAudio = prefs.getBoolean("${prefix}recordAudio", ed.recordAudio),
+                audioGain = prefs.getFloat("${prefix}audioGain", ed.audioGain),
                 audioScene = enumOr(prefs.getString("${prefix}audioScene", null), ed.audioScene),
                 audioInputPreference = enumOr(prefs.getString("${prefix}audioInputPreference", null), ed.audioInputPreference),
                 photoFnSlots = enumListOr(
@@ -238,6 +242,8 @@ class SettingsStore(context: Context) {
         putString("${prefix}bitrateLevel", e.bitrateLevel.name)
         putString("${prefix}videoFrameRate", e.videoFrameRate.name)
         putBoolean("${prefix}openGate", e.openGate)
+        putBoolean("${prefix}recordAudio", e.recordAudio)
+        putFloat("${prefix}audioGain", e.audioGain)
         putString("${prefix}audioScene", e.audioScene.name)
         putString("${prefix}audioInputPreference", e.audioInputPreference.name)
         putString("${prefix}photoFnSlots", e.photoFnSlots.joinToString(",") { it.name })
