@@ -165,10 +165,17 @@ class VideoRecorder(private val context: Context) {
     fun stop(): StopResult {
         running = false
         runCatching { videoCodec?.signalEndOfInputStream() }
+
+        // AudioRecord.read() may still be blocked after running flips false. Stop the input before
+        // joining so the worker can queue AAC EOS instead of timing out while waiting for PCM.
+        runCatching { audioRecord?.stop() }
         videoThread?.join(3000)
         audioThread?.join(3000)
 
-        runCatching { audioRecord?.stop() }
+        if (videoThread?.isAlive == true || audioThread?.isAlive == true) {
+            recordFailure(IllegalStateException("Encoder drain timed out"))
+        }
+
         runCatching { audioRecord?.release() }
         audioRecord = null
 
@@ -200,6 +207,8 @@ class VideoRecorder(private val context: Context) {
         audioTrack = -1
         muxerStarted = false
         wroteVideoSample = false
+        videoThread = null
+        audioThread = null
         return StopResult(saved = saved, error = failure)
     }
 
@@ -212,7 +221,7 @@ class VideoRecorder(private val context: Context) {
         // app; guard the whole loop and end the recording cleanly instead.
         try {
             drainVideoLoop(codec, info)
-        } catch (t: IllegalStateException) {
+        } catch (t: Exception) {
             Log.w(TAG, "video drain aborted (encoder error): ${t.message}")
             recordFailure(t)
         }
@@ -309,7 +318,14 @@ class VideoRecorder(private val context: Context) {
         codec.start()
         audioCodec = codec
 
-        audioThread = thread(name = "audio-encode") { runAudio(record, codec) }
+        audioThread = thread(name = "audio-encode") {
+            try {
+                runAudio(record, codec)
+            } catch (t: Exception) {
+                Log.w(TAG, "audio encode aborted: ${t.message}")
+                recordFailure(t)
+            }
+        }
     }
 
     /**
