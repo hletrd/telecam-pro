@@ -644,6 +644,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setTeleconverterMode(enabled)
         _state.update { it.copy(teleconverterMode = enabled) }
         markChanged(FnSlot.TELECONVERTER)
+        saveSettingsIfEnabled()
     }
     override fun onLens(choice: LensChoice) {
         if (rejectIfRecording("Stop REC first")) return
@@ -652,6 +653,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setLens(choice)
         _state.update { it.copy(lens = choice, teleconverterMode = choice.isTeleconverterLens) }
         markChanged(FnSlot.TELECONVERTER)
+        saveSettingsIfEnabled()
     }
     override fun onVideoCodec(codec: VideoCodec) {
         if (rejectIfRecording("Stop REC first")) return
