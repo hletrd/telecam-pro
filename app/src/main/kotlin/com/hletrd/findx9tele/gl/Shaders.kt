@@ -35,7 +35,7 @@ object Shaders {
         #extension GL_OES_EGL_image_external : require
         precision highp float;
         uniform samplerExternalOES uTexture;
-        uniform int uTransfer;   // 0 = display (preview), 1 = HLG, 2 = LOG
+        uniform int uTransfer;   // 0 = display, 1 = HLG, 2 = LOG (GL sim), 3 = de-log O-Log2→709 (Gamma Disp. Assist)
         uniform int uPeaking;    // 0/1  (preview only)
         uniform float uPeakThreshold; // edge magnitude above which peaking paints
         uniform vec3 uPeakColor;      // peaking highlight color
@@ -76,6 +76,24 @@ object Shaders {
             return clamp(mix(logP, toe, step(R, vec3(0.006))), 0.0, 1.0);
         }
 
+        // Exact inverse of the O-Log2 OETF above, for Gamma Display Assist: code value P -> scene
+        // reflectance R. Main segment inverts the log; the shadow toe inverts the parabola
+        // (positive root). Segment boundary: P(R=0.006) = 47.28711236 * 0.06641088^2 ≈ 0.20856.
+        vec3 olog2Inv(vec3 P) {
+            vec3 logR = exp2((P - 0.69336945) / 0.08550479) - 0.00964052;
+            vec3 toeR = sqrt(max(P, 0.0) / 47.28711236) - 0.05641088;
+            return mix(logR, toeR, step(P, vec3(0.20856)));
+        }
+
+        // Rec.2020 -> Rec.709 primaries (linear light), inverse of toRec2020 — the assist shows the
+        // scene-referred O-Gamut stream as an ordinary 709/γ2.2 monitor image.
+        vec3 toRec709(vec3 c) {
+            return vec3(
+                dot(vec3( 1.6605, -0.5876, -0.0728), c),
+                dot(vec3(-0.1246,  1.1329, -0.0083), c),
+                dot(vec3(-0.0182, -0.1006,  1.1187), c));
+        }
+
         void main() {
             vec3 base = texture2D(uTexture, vTexCoord).rgb;
             vec3 color = base;
@@ -87,6 +105,12 @@ object Shaders {
                 // ~gamma 2.2), move to O-Gamut primaries, then the official OETF (see file docs).
                 vec3 lin = pow(clamp(color, 0.0, 1.0), vec3(2.2));
                 color = olog2(toRec2020(lin));
+            } else if (uTransfer == 3) {
+                // Gamma Display Assist: the incoming stream IS native O-Log2 (scene-referred,
+                // O-Gamut). De-log to linear, move to 709 primaries, γ2.2-encode for the monitor.
+                // The RECORDED stream is untouched — this branch only ever runs on the preview.
+                vec3 lin = max(olog2Inv(clamp(color, 0.0, 1.0)), vec3(0.0));
+                color = pow(clamp(toRec709(lin), 0.0, 1.0), vec3(1.0 / 2.2));
             }
 
             // False color: map exposure (luma) to IRE-style bands.

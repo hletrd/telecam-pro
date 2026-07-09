@@ -159,25 +159,23 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
 - **Settings persist across launches** via `storage/SettingsStore.kt` (SharedPreferences, enums by
   name, defensive load). Gated by a "Remember Settings" toggle that **defaults ON**; saved on
   background, restored on launch (pushed to the engine pre-start).
-- **LOG = GL O-Log2, and it now renders in the live PREVIEW (behavior corrected 2026-07-08).**
-  `ColorTransfer.LOG` bakes OPPO's published O-Log2 OETF in the GL stage (white paper EN v1:
-  `P = 0.08550479·log₂(R+0.00964052)+0.69336945`, parabolic toe below R=0.006, O-Gamut = BT.2020/D65
-  full-range) after a γ2.2 linearization of the display-referred SDR stream + 709→2020 matrix; 18 %
-  grey lands on the official 0.4868 anchor, so OPPO's public O-Log2 LUTs restore it. **The preview draw
-  now applies the LOG curve too** (`previewTransfer = if (transfer == LOG) LOG else null` in
-  `GlPipeline`) — previously the preview was hardcoded SDR (`null`) and ONLY the encoder got the curve,
-  so LOG baked into the recorded file but the live preview never looked flat (user-reported; fixed and
-  device-confirmed). HLG/SDR preview stays natural (an HLG curve on the SDR preview surface just looks
-  washed — HDR is monitored on an HDR display, not here).
-- **HAL-native log is reachable but NO LONGER wired to LOG.** The vendor tag `com.oplus.log.video.mode`
-  (Integer **session** key) IS in the tele's `availableRequestKeys`+`availableSessionKeys` and
-  device-verified (value `1`≡`2` engages a genuine scene-referred stream, flat, mean luma ~½ SDR);
-  `com.oplus.movie.log.enable` (the byte gate) is NOT exposed. But it only flattens the RECORD stream,
-  not the preview, so `ColorTransfer.LOG` drives GL O-Log2 instead (above) and `vendorLogMode` is kept
-  **OFF**. The separate "Native Log" toggle was removed; the key infra stays dormant for a future
-  scene-referred path. NOTE: leaving `KEY_COLOR_TRANSFER` unset on a BT2020 full-range HEVC format makes
-  the QTI encoder tag the VUI **ST2084 (PQ)** — players then tone-map log footage as HDR. Tag a transfer
-  explicitly, always.
+- **LOG = the HAL-NATIVE O-Log2 stream (maintainer decision 2026-07-09).** `ColorTransfer.LOG` sets
+  the vendor **session** key `com.oplus.log.video.mode = 1` (in the tele's
+  `availableRequestKeys`+`availableSessionKeys` — one of the few OPPO keys the HAL advertises publicly,
+  unlike the OCS-gated OIS profile; `com.oplus.movie.log.enable` is NOT exposed). Session key →
+  changing it reopens the camera; the controller applies it as a session parameter at config AND on
+  every request. The ISP then emits a genuine scene-referred log stream (device-verified: flat, mean
+  luma ~½ SDR, `1`≡`2`), so **GL applies NO curve** (`gl.setNativeLog(true)`, transfer=null): the
+  preview shows the flat log directly, and **Gamma Display Assist de-logs it** for the monitor via the
+  exact inverse OETF shader (uTransfer=3: `olog2Inv` incl. the parabolic-toe root, O-Gamut→709 matrix,
+  γ2.2 encode). Rationale: scene-referred > the GL re-map of the display-referred SDR output, and
+  OPPO's published O-Log2 LUTs are being updated to match the native stream. The GL FORWARD O-Log2
+  path (uTransfer=2, official white-paper constants) is retained but unused. **Watch for on-device:**
+  the flat preview must appear at IDLE (an earlier build showed it only after the first recording —
+  root causes were GL-seeding + preview-transfer bugs since fixed; if it recurs, the HAL may gate the
+  key on an attached encoder surface). NOTE: leaving `KEY_COLOR_TRANSFER` unset on a BT2020 full-range
+  HEVC format makes the QTI encoder tag the VUI **ST2084 (PQ)** — players then tone-map log footage as
+  HDR. Tag a transfer explicitly, always (the muxer path tags the LOG profile).
 - **Video stabilization = HAL OIS+EIS via the device's own path (verified 2026-07-07).** For VIDEO the
   shutter is fixed (e.g. 1/60 s), so per-frame MOTION BLUR is set by the shutter and only **OIS**
   (which moves the lens DURING the exposure) can cut it — app-side gyro EIS only warps whole frames

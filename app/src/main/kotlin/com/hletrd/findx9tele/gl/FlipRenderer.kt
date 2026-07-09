@@ -120,6 +120,9 @@ class FlipRenderer {
         peakR: Float = 1f,
         peakG: Float = 0.1f,
         peakB: Float = 0.7f,
+        // Gamma Display Assist: de-log the (native O-Log2) stream for the monitor (uTransfer = 3).
+        // Overrides [transfer]; only ever set on the preview draw.
+        delogAssist: Boolean = false,
         zebraThreshold: Float = 0.95f,
     ) {
         GLES20.glViewport(0, 0, targetWidth, targetHeight)
@@ -154,11 +157,12 @@ class FlipRenderer {
         GLES20.glUniform1i(uTexture, 0)
         GLES20.glUniform1i(
             uTransfer,
-            when (transfer) {
-                ColorTransfer.HLG -> 1
-                ColorTransfer.LOG -> 2
+            when {
+                delogAssist -> 3
+                transfer == ColorTransfer.HLG -> 1
+                transfer == ColorTransfer.LOG -> 2
                 // SDR = no OETF, same as the preview/null path (the camera frames are already SDR).
-                ColorTransfer.SDR, null -> 0
+                else -> 0
             },
         )
         GLES20.glUniform1i(uPeaking, if (peaking) 1 else 0)

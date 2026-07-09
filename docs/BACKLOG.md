@@ -81,8 +81,12 @@ and **Play-submission-ready** at the packaging level. Since the last device-veri
 ### ✅ Resolved in the 2026-07-09 session
 1. **LOG preview** — root cause: the preview draw was hardcoded SDR (only the encoder got the curve) AND
    `GlPipeline.post` drops pre-start calls, so a restored LOG never reached GL until a recording pushed
-   it. LOG now = GL O-Log2 rendered in the live preview (user-confirmed "미리보기도 Log color로 잘 뜬다"),
-   seeded at pipeline start; the native HAL log key is dormant (not wired to LOG).
+   it. Fixed (user-confirmed "미리보기도 Log color로 잘 뜬다"). **Then pivoted to the HAL-NATIVE log**
+   (maintainer decision — OPPO's published LUTs will be updated to match): LOG sets
+   `com.oplus.log.video.mode=1` (session key, reopen), GL passes the scene-referred stream through
+   (preview = flat), Gamma Disp. Assist de-logs it via the exact inverse-OETF shader. VERIFY ON DEVICE:
+   flat preview at IDLE (not just while recording) + a recorded clip grades correctly with the updated
+   LUTs.
 2. **Camera-control button** — full press = `KEYCODE_CAMERA` → shutter ✅ (user-confirmed). Slides =
    standard `KEYCODE_ZOOM_IN/OUT` (168/169) repeating ~20 Hz (live-captured) → eased stepped zoom
    (target + 30 Hz glide; raw 1:1 application stuttered). **Half-press is not delivered to third-party

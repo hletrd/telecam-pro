@@ -139,7 +139,8 @@ class CameraEngine(private val context: Context) {
                 // GlPipeline.post is handler?.post, so pre-start calls (e.g. a LOG transfer or a
                 // priority-mode AE metering flag restored from settings) were silently dropped —
                 // the LOG preview only turned flat after the first recording pushed the transfer.
-                gl.setTransfer(if (recorder == null) transfer else null)
+                gl.setNativeLog(transfer == ColorTransfer.LOG)
+                gl.setTransfer(if (transfer == ColorTransfer.LOG) null else transfer)
                 gl.setAeMetering(aeMetering)
                 gl.setGammaAssist(gammaAssist)
                 applyStabilization()
@@ -266,15 +267,26 @@ class CameraEngine(private val context: Context) {
      */
     fun setTransfer(t: ColorTransfer) {
         transfer = t
-        // Every transfer — including LOG (O-Log2) — is applied in the GL stage so the LIVE PREVIEW can
-        // show the curve. The native HAL log (com.oplus.log.video.mode) only flattened the RECORD
-        // stream, never the preview, so LOG never looked flat on screen. Drive the GL O-Log2 OETF
-        // instead: it's the LUT-accurate path and the GL preview renderer can display it flat. Keep
-        // the native-log pipeline off (drop it if it was engaged by a prior build/state).
-        val wasNativeLog = vendorLogMode != VendorLogMode.OFF
-        vendorLogMode = VendorLogMode.OFF
-        if (wasNativeLog) reopenForSession()
-        if (recorder == null) gl.setTransfer(t)
+        // LOG = the HAL-NATIVE O-Log2 stream (com.oplus.log.video.mode, session key → reopen): the ISP
+        // emits scene-referred log from sensor data — more DR than the GL re-map of the display-
+        // referred SDR output, and OPPO's published LUTs are being updated to match it (maintainer
+        // decision 2026-07-09). GL applies NO curve on top (the stream is already log); the preview
+        // shows it flat, or de-logged when Gamma Display Assist is on. The GL O-Log2 shader path
+        // (uTransfer=2) is retained but unused. HLG/SDR keep the GL-curve encoder path as before.
+        val wantNative = t == ColorTransfer.LOG
+        gl.setNativeLog(wantNative)
+        if (wantNative) {
+            if (vendorLogMode != VendorLogMode.ON) {
+                vendorLogMode = VendorLogMode.ON
+                reopenForSession()
+            }
+            if (recorder == null) gl.setTransfer(null)
+        } else {
+            val wasNativeLog = vendorLogMode != VendorLogMode.OFF
+            vendorLogMode = VendorLogMode.OFF
+            if (wasNativeLog) reopenForSession()
+            if (recorder == null) gl.setTransfer(t)
+        }
     }
     fun setPeaking(enabled: Boolean) = gl.setPeaking(enabled)
     fun setZebra(enabled: Boolean) = gl.setZebra(enabled)

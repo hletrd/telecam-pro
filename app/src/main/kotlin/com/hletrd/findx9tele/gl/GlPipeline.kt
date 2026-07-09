@@ -56,6 +56,9 @@ class GlPipeline {
 
     private var transfer: ColorTransfer? = null
     private var gammaAssist = false
+    // True while the HAL-native O-Log2 stream is engaged: the frames arriving here are ALREADY log
+    // (scene-referred), so the preview passes through (flat) or de-logs for Gamma Display Assist.
+    private var nativeLog = false
     private var peaking = false
     // Adjustable focus-peaking edge threshold + highlight color, and the zebra clipping threshold.
     private var peakThreshold = 0.06f
@@ -173,6 +176,9 @@ class GlPipeline {
 
     /** Gamma Display Assist: monitor shows the normal 709-ish image while the FILE stays log. */
     fun setGammaAssist(enabled: Boolean) = post { gammaAssist = enabled }
+
+    /** HAL-native log engaged: frames are already scene-referred O-Log2 (see [nativeLog]). */
+    fun setNativeLog(enabled: Boolean) = post { nativeLog = enabled }
     fun setPeaking(enabled: Boolean) = post { peaking = enabled }
     fun setZebra(enabled: Boolean) = post { zebra = enabled }
 
@@ -271,13 +277,14 @@ class GlPipeline {
         // log profile — previously the preview was hardcoded to SDR (null) and only the encoder got the
         // curve, so LOG never looked flat on screen. HLG/SDR keep a natural SDR preview (an HLG curve on
         // this SDR preview surface would just look washed; HDR is monitored on an HDR display, not here).
-        // Gamma Display Assist (Sony): with assist ON the monitor keeps the normal display-referred
-        // image and only the encoder applies O-Log2; with assist OFF the monitor shows the flat log.
-        val previewTransfer = if (transfer == ColorTransfer.LOG && !gammaAssist) ColorTransfer.LOG else null
+        // LOG is the HAL-native O-Log2 stream: the preview passes it through untouched (flat), or —
+        // with Gamma Display Assist ON — de-logs it to an ordinary 709/γ2.2 monitor image while the
+        // recorded stream stays log. HLG/SDR keep the natural SDR preview (no curve).
         core.makeCurrent(previewEgl)
         renderer.draw(
-            stMatrix, previewW, previewH, previewTransfer, peaking, zebra, falseColor, sx, sy, roll, previewCrop, loupeX, loupeY,
+            stMatrix, previewW, previewH, null, peaking, zebra, falseColor, sx, sy, roll, previewCrop, loupeX, loupeY,
             peakThreshold = peakThreshold, peakR = peakR, peakG = peakG, peakB = peakB, zebraThreshold = zebraThreshold,
+            delogAssist = nativeLog && gammaAssist,
         )
         core.swapBuffers(previewEgl)
 
