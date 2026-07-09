@@ -376,11 +376,11 @@ data class CameraUiState(
     val audioGain: Float = 1f, // 0..2 software gain applied to recorded PCM
     val audioLevel: Float = 0f, // 0..1 live input level (RMS), for the meter
     val aspectRatio: AspectRatio = AspectRatio.W4_3,
-    // Selected rear lens. Default 3× — the teleconverter lens. Selecting it bundles teleconverter
-    // mode on; other lenses bundle it off (see [LensChoice]).
-    val lens: LensChoice = LensChoice.TELE3X,
+    // Selected rear lens. Default 1× main for a normal app launch. Selecting 3× bundles
+    // teleconverter mode on; other lenses bundle it off (see [LensChoice]).
+    val lens: LensChoice = LensChoice.MAIN,
     // Teleconverter mode: manual (not auto-detected). ON = afocal 180° flip; locked to the 3× lens.
-    val teleconverterMode: Boolean = true,
+    val teleconverterMode: Boolean = false,
     // Stabilization. Default ENHANCED = HAL OIS+EIS ("super steady"): at 300 mm it reduces the
     // per-frame motion blur (see [VideoStabMode]).
     val videoStabMode: VideoStabMode = VideoStabMode.ENHANCED,
@@ -435,6 +435,10 @@ data class CameraUiState(
     val freeBytes: Long = -1L,
     // When true, pro settings are persisted across launches and restored on next start (default on).
     val rememberSettings: Boolean = true,
+    // Granular launch-restore policy for optics. Both default ON so existing operator choices survive
+    // relaunches, while a fresh install still opens on the 1× main lens with TELE off.
+    val preserveLensSelection: Boolean = true,
+    val preserveTeleconverter: Boolean = true,
     // Transient tap point (normalized 0..1 in view space) for the focus/meter reticle; null = none.
     val tapPoint: Pair<Float, Float>? = null,
     // AE-resolved exposure while in auto (from CaptureResult); null in manual or before the first

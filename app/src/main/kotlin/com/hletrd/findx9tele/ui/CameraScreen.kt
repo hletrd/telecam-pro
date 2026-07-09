@@ -1454,6 +1454,8 @@ private object PreviewCameraActions : CameraActions {
     override fun onLens(choice: com.hletrd.findx9tele.camera.LensChoice) = Unit
     override fun onCameraOverride(id: String?) = Unit
     override fun onToggleRememberSettings(enabled: Boolean) = Unit
+    override fun onTogglePreserveLensSelection(enabled: Boolean) = Unit
+    override fun onTogglePreserveTeleconverter(enabled: Boolean) = Unit
     override fun onSetPhotoFnSlots(slots: List<com.hletrd.findx9tele.camera.FnSlot>) = Unit
     override fun onSetVideoFnSlots(slots: List<com.hletrd.findx9tele.camera.FnSlot>) = Unit
     override fun onSetMyMenuSlots(slots: List<com.hletrd.findx9tele.camera.FnSlot>) = Unit

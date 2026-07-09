@@ -974,6 +974,18 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
         checked = state.rememberSettings,
         onCheckedChange = actions::onToggleRememberSettings,
     )
+    ToggleRow(
+        label = "Preserve Lens",
+        checked = state.preserveLensSelection,
+        onCheckedChange = actions::onTogglePreserveLensSelection,
+        enabled = state.rememberSettings,
+    )
+    ToggleRow(
+        label = "Preserve TELE",
+        checked = state.preserveTeleconverter,
+        onCheckedChange = actions::onTogglePreserveTeleconverter,
+        enabled = state.rememberSettings,
+    )
     SectionHeader("Photo Fn")
     Text("Up to 8.", color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
     FnSlotEditor(selected = state.photoFnSlots, onSet = actions::onSetPhotoFnSlots)
@@ -1299,5 +1311,7 @@ private fun settingHelp(key: String): String? = when (key) {
     "Full Press" -> "What the camera button / volume keys trigger"
     "Half Press" -> "Camera-button half-press action (when the OS delivers it)"
     "Remember" -> "Restores all settings on the next launch"
+    "Preserve Lens" -> "Restores the last selected camera lens on launch"
+    "Preserve TELE" -> "Restores the TELE toggle on launch"
     else -> null
 }

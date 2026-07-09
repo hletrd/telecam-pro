@@ -158,10 +158,13 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     /** On launch, restore persisted pro settings (if the user enabled "Remember settings"). */
     private fun restoreSettingsIfEnabled() {
-        if (!settingsStore.rememberEnabled) return
+        if (!settingsStore.rememberEnabled) {
+            _state.update { it.copy(rememberSettings = false) }
+            return
+        }
         val loaded = settingsStore.load()
         if (loaded == null) { _state.update { it.copy(rememberSettings = true) }; return }
-        applyLoaded(loaded, rememberSettings = true, activeSlot = null, status = null)
+        applyLoaded(loaded, rememberSettings = true, activeSlot = null, status = null, honorPreserveOptions = true)
     }
 
     private fun applyLoaded(
@@ -169,18 +172,28 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         rememberSettings: Boolean? = null,
         activeSlot: MemorySlot? = null,
         status: String? = null,
+        honorPreserveOptions: Boolean = false,
     ) {
         val c = loaded.controls
         val e = loaded.extras
+        val defaults = CameraUiState()
+        val preservedTeleconverter =
+            if (honorPreserveOptions && !e.preserveTeleconverter) defaults.teleconverterMode else e.teleconverter
+        val restoredLens = when {
+            preservedTeleconverter -> LensChoice.TELE3X
+            honorPreserveOptions && !e.preserveLensSelection -> defaults.lens
+            else -> e.lens
+        }
+        val restoredTeleconverter = restoredLens == LensChoice.TELE3X && preservedTeleconverter
         // Push to the engine (safe pre-start: these set @Volatile fields read when the camera opens).
         engine.setControls(c)
         // Manual/priority modes need luma analysis even when scopes are hidden: priority AE drives
         // from it, and full manual uses it for the live exposure meter.
         engine.setAeMetering(usesExposureAnalysis(c))
-        engine.setLens(e.lens)
+        engine.setLens(restoredLens)
         applyEngineTransfer(e.mode, e.transfer)
         engine.setGammaAssist(e.gammaAssist)
-        engine.setTeleconverterMode(e.teleconverter)
+        engine.setTeleconverterMode(restoredTeleconverter)
         engine.setVideoStabMode(e.videoStabMode)
         engine.setAspectRatio(e.aspectRatio)
         engine.setVideoCodec(e.videoCodec)
@@ -196,8 +209,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 transfer = e.transfer,
                 photoFormats = PhotoFormats(e.heif, e.jpeg, e.dngRaw),
                 mode = e.mode,
-                lens = e.lens,
-                teleconverterMode = e.teleconverter,
+                lens = restoredLens,
+                teleconverterMode = restoredTeleconverter,
                 videoStabMode = e.videoStabMode,
                 aspectRatio = e.aspectRatio,
                 grid = e.grid,
@@ -215,6 +228,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 myMenuSlots = e.myMenuSlots,
                 volumeKeyAction = e.volumeKeyAction,
                 halfPressAction = e.halfPressAction,
+                preserveLensSelection = if (honorPreserveOptions) e.preserveLensSelection else it.preserveLensSelection,
+                preserveTeleconverter = if (honorPreserveOptions) e.preserveTeleconverter else it.preserveTeleconverter,
                 activeMemorySlot = activeSlot,
                 statusMessage = status,
             )
@@ -250,6 +265,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             halfPressAction = s.halfPressAction,
             gammaAssist = s.gammaAssist,
             frameLines = s.frameLines,
+            preserveLensSelection = s.preserveLensSelection,
+            preserveTeleconverter = s.preserveTeleconverter,
         )
     }
 
@@ -862,6 +879,16 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         settingsStore.rememberEnabled = enabled
         _state.update { it.copy(rememberSettings = enabled) }
         if (enabled) saveSettingsIfEnabled() // capture the current setup immediately
+    }
+
+    override fun onTogglePreserveLensSelection(enabled: Boolean) {
+        _state.update { it.copy(preserveLensSelection = enabled, activeMemorySlot = null) }
+        saveSettingsIfEnabled()
+    }
+
+    override fun onTogglePreserveTeleconverter(enabled: Boolean) {
+        _state.update { it.copy(preserveTeleconverter = enabled, activeMemorySlot = null) }
+        saveSettingsIfEnabled()
     }
 
     override fun onSetPhotoFnSlots(slots: List<FnSlot>) {

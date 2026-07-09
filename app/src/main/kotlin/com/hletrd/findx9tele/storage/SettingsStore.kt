@@ -35,8 +35,8 @@ data class ExtraSettings(
     val jpeg: Boolean = false,
     val dngRaw: Boolean = true,
     val mode: CaptureMode = CaptureMode.PHOTO,
-    val lens: LensChoice = LensChoice.TELE3X,
-    val teleconverter: Boolean = true,
+    val lens: LensChoice = LensChoice.MAIN,
+    val teleconverter: Boolean = false,
     val videoStabMode: VideoStabMode = VideoStabMode.ENHANCED,
     val aspectRatio: AspectRatio = AspectRatio.W4_3,
     val grid: GridType = GridType.THIRDS,
@@ -53,6 +53,8 @@ data class ExtraSettings(
     val halfPressAction: HardwareKeyAction = HardwareKeyAction.AF_ON,
     val gammaAssist: Boolean = false,
     val frameLines: FrameLineType = FrameLineType.OFF,
+    val preserveLensSelection: Boolean = true,
+    val preserveTeleconverter: Boolean = true,
 )
 
 /**
@@ -181,6 +183,8 @@ class SettingsStore(context: Context) {
                 halfPressAction = enumOr(prefs.getString("${prefix}halfPressAction", null), ed.halfPressAction),
                 gammaAssist = prefs.getBoolean("${prefix}gammaAssist", ed.gammaAssist),
                 frameLines = enumOr(prefs.getString("${prefix}frameLines", null), ed.frameLines),
+                preserveLensSelection = prefs.getBoolean("${prefix}preserveLensSelection", ed.preserveLensSelection),
+                preserveTeleconverter = prefs.getBoolean("${prefix}preserveTeleconverter", ed.preserveTeleconverter),
             )
             Loaded(controls, extras)
         }.getOrNull()
@@ -243,6 +247,8 @@ class SettingsStore(context: Context) {
         putString("${prefix}halfPressAction", e.halfPressAction.name)
         putBoolean("${prefix}gammaAssist", e.gammaAssist)
         putString("${prefix}frameLines", e.frameLines.name)
+        putBoolean("${prefix}preserveLensSelection", e.preserveLensSelection)
+        putBoolean("${prefix}preserveTeleconverter", e.preserveTeleconverter)
     }
 
     private inline fun <reified T : Enum<T>> enumOr(name: String?, default: T): T =

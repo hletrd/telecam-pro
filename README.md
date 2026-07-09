@@ -37,7 +37,8 @@
   is the GL-baked shipping path.
 - **Aspect ratios**: 4:3 (full sensor) / 16:9 (center crop). Sony-style mode-aware OSD.
 - **Capture aids**: focus peaking (adjustable sensitivity/color), zebra, false color, grid, spirit level, movable punch-in loupe, histogram, waveform, in-app last-shot pinch-to-zoom review.
-- **Settings persistence**: pro controls saved across launches ("Remember Settings", default ON).
+- **Settings persistence**: pro controls saved across launches ("Remember Settings", default ON),
+  with separate default-on preserve toggles for lens selection and TELE mode.
 
 ## Open source
 

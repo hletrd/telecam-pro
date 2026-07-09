@@ -59,7 +59,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `EncoderCaps.kt` | Scans MediaCodecList for available video encoders (HW AVC/HEVC, Dolby Vision; AV1 software-only) and reports which VideoCodec values are supported/hardware. |
 | **storage/** | |
 | `MediaStoreWriter.kt` | Scoped-storage wrapper: creates pending DCIM/Pictures entries (IS_PENDING), publishes on success, deletes on failure. Opened files backed by ParcelFileDescriptor. |
-| `SettingsStore.kt` | SharedPreferences persistence of ManualControls + ExtraSettings across launches, gated by a "Remember Settings" toggle (default ON); enums stored by name, defensive load. |
+| `SettingsStore.kt` | SharedPreferences persistence of ManualControls + ExtraSettings across launches, gated by a "Remember Settings" toggle (default ON); enums stored by name, defensive load. Lens and TELE restoration have separate default-on preserve toggles. |
 | **focus/** | |
 | `FocusMapping.kt` | Maps UI slider (0..1) to LENS_FOCUS_DISTANCE (diopters). Nonlinear to enhance resolution near infinity (√ curve and offset). Bidirectional. |
 | **ui/** | |
@@ -534,8 +534,9 @@ All professional capture parameters are housed in ManualControls, a 44-field imm
 
 Settings are persisted across app launches via `SettingsStore.kt` (SharedPreferences), gated by a 
 "Remember Settings" toggle that **defaults ON**. On launch, saved pro settings are restored from storage 
-and pushed to the engine before the camera starts. Enums are stored by name for forward compatibility, 
-and loads are defensive (unknown values revert to defaults).
+and pushed to the engine before the camera starts. Fresh installs open on the 1× main lens with TELE
+off; separate default-on Setup toggles decide whether the saved lens and TELE state are restored. Enums
+are stored by name for forward compatibility, and loads are defensive (unknown values revert to defaults).
 
 **Control categories (see ManualControls.kt for full list):**
 

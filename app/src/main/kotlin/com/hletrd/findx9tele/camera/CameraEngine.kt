@@ -54,6 +54,7 @@ class CameraEngine(private val context: Context) {
     @Volatile private var intervalSec: Int = 5
     @Volatile private var controls = ManualControls()
     @Volatile private var transfer = ColorTransfer.HLG
+    @Volatile private var lensChoice: LensChoice = LensChoice.MAIN
     @Volatile private var overrideId: String? = null
     @Volatile private var started = false
     // Set true synchronously on the calling thread once startup setup is dispatched, so a second
@@ -66,7 +67,7 @@ class CameraEngine(private val context: Context) {
     @Volatile private var previewSurface: Surface? = null
 
     private val gyro = com.hletrd.findx9tele.stab.GyroEis(context)
-    @Volatile private var teleconverterMode = true
+    @Volatile private var teleconverterMode = false
     // HAL-native log (vendor com.oplus.log.video.mode). Session key → changing it reopens the camera.
     @Volatile private var vendorLogMode = VendorLogMode.OFF
     // Video stabilization strategy. Default ENHANCED = HAL OIS+EIS (motion-blur reduction at 300 mm).
@@ -117,9 +118,9 @@ class CameraEngine(private val context: Context) {
         // thread, so run that setup on a background thread to avoid startup jank / near-ANR.
         // gl.start / gl.setPreviewOutput just post to the GL handler, so they're thread-safe here.
         setupExecutor.execute {
-            val sel = CameraSelector2.select(manager, overrideId)
+            val sel = selectCurrentLens()
             if (sel == null) {
-                onStatus?.invoke("Tele camera unavailable")
+                onStatus?.invoke("Camera unavailable")
                 starting = false
                 return@execute
             }
@@ -476,6 +477,7 @@ class CameraEngine(private val context: Context) {
      */
     fun setLens(choice: LensChoice) {
         if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
+        lensChoice = choice
         val id = CameraSelector2.overrideIdForFocal(manager, choice.targetEquivMm)
         if (id == null) { onStatus?.invoke("${choice.label} unavailable"); return }
         // Set the teleconverter flag BEFORE the reopen so applyStabilization() inside setCameraOverride
@@ -497,7 +499,7 @@ class CameraEngine(private val context: Context) {
         // the initial open and other reopens.
         setupExecutor.execute {
             controller?.close()
-            val sel = CameraSelector2.select(manager, id) ?: run { onStatus?.invoke("Camera ID unavailable"); return@execute }
+            val sel = selectCurrentLens() ?: run { onStatus?.invoke("Camera ID unavailable"); return@execute }
             selection = sel
             val c = CameraCaps.read(manager, sel.logicalId, sel.physicalId)
             caps = c
@@ -510,6 +512,11 @@ class CameraEngine(private val context: Context) {
             applyStabilization()
             openCamera(input)
         }
+    }
+
+    private fun selectCurrentLens(): TeleSelection? {
+        val id = overrideId ?: (CameraSelector2.overrideIdForFocal(manager, lensChoice.targetEquivMm) ?: return null)
+        return CameraSelector2.select(manager, id)
     }
 
     // ---- Photo ----

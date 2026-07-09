@@ -158,7 +158,9 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
   config exists). Resolutions come from the selected camera's `StreamConfigurationMap`.
 - **Settings persist across launches** via `storage/SettingsStore.kt` (SharedPreferences, enums by
   name, defensive load). Gated by a "Remember Settings" toggle that **defaults ON**; saved on
-  background, restored on launch (pushed to the engine pre-start).
+  background, restored on launch (pushed to the engine pre-start). Fresh launch defaults to the 1×
+  main lens with TELE off; separate default-on Setup toggles preserve the last lens selection and
+  TELE mode when restoring saved settings.
 - **LOG = GL O-Log2; the native log key is INERT for third-party Camera2 (settled 2026-07-09).**
   `com.oplus.log.video.mode` is advertised in the tele's request+session keys and the HAL ACCEPTS it
   ("applied" logs), but it changes NOTHING a third-party session can see: with the key set (as session

@@ -94,7 +94,7 @@ class CameraController(context: Context) {
     // The public Camera2 OIS key only says "OIS on". For teleconverter mode, pass the public session
     // hints this device exposes through Camera2: Hasselblad telephoto mode + effective zoom ~= 300/70.
     // These are best-effort and fully guarded.
-    private var teleconverterMode = true
+    private var teleconverterMode = false
     // >0 → configure a CameraConstrainedHighSpeedCaptureSession at this fps (slow-motion), feeding
     // ONLY the GL input surface (no JPEG/RAW — high-speed sessions forbid extra targets). 0 = the
     // regular tele session. Set once per open(); on a high-speed config failure it drops back to 0.
@@ -140,7 +140,7 @@ class CameraController(context: Context) {
         highSpeedFps: Int = 0,
         vendorLogMode: Int = 0,
         videoStabHalMode: Int = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF,
-        teleconverterMode: Boolean = true,
+        teleconverterMode: Boolean = false,
         onReady: Ready,
         onError: ErrorCb,
     ) {
