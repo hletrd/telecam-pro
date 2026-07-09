@@ -31,6 +31,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -235,6 +236,13 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
     // closes the review; below it springs back. Zoomed in, vertical pan just pans.
     var dismissDrag by remember { mutableFloatStateOf(0f) }
 
+    LaunchedEffect(uri) {
+        scale = 1f
+        offset = Offset.Zero
+        dismissDrag = 0f
+        playing = true
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -275,11 +283,22 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                             .onSuccess { playing = mp.isPlaying }
                     }
                 }, onDoubleTap = {
-                    if (scale > 1f) { scale = 1f; offset = Offset.Zero } else scale = 4f
+                    if (videoInfo == null) {
+                        val next = nextReviewScale(scale)
+                        scale = next
+                        offset = if (next <= 1f) {
+                            Offset.Zero
+                        } else {
+                            val center = Offset(size.width / 2f, size.height / 2f)
+                            (center - it) * next
+                        }
+                    }
                 }, onLongPress = { tap ->
-                    scale = 8f
-                    val center = Offset(size.width / 2f, size.height / 2f)
-                    offset = (center - tap) * scale
+                    if (videoInfo == null) {
+                        scale = 8f
+                        val center = Offset(size.width / 2f, size.height / 2f)
+                        offset = (center - tap) * scale
+                    }
                 })
             },
         contentAlignment = Alignment.Center,
@@ -396,6 +415,22 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
             }
         }
 
+        if (videoInfo == null && scale > 1.05f) {
+            Text(
+                text = reviewScaleLabel(scale),
+                color = CameraColors.TextPrimary,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 16.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .padding(horizontal = 12.dp, vertical = 5.dp),
+            )
+        }
+
         // Close button, top-left.
         Box(
             modifier = Modifier
@@ -474,6 +509,15 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
         )
     }
 }
+
+private fun nextReviewScale(current: Float): Float = when {
+    current < 1.5f -> 4f
+    current < 6f -> 8f
+    else -> 1f
+}
+
+private fun reviewScaleLabel(scale: Float): String =
+    if (scale >= 7.5f) "8×" else if (scale >= 3.5f) "4×" else "%.1f×".format(scale)
 
 private fun formatBytes(bytes: Long): String {
     if (bytes <= 0L) return "--"

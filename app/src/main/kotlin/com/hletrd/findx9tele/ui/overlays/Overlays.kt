@@ -378,6 +378,9 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier) {
             }
             Text(stabTag, color = Color(0xFF4CD964), style = MaterialTheme.typography.labelMedium)
         }
+        if (state.punchIn) {
+            Text("LOUPE", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+        }
         if (BuildConfig.DEBUG) {
             val caps = state.caps
             val cameraLabel = when {
