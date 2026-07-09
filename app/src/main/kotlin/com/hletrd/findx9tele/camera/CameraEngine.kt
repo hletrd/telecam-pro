@@ -410,10 +410,7 @@ class CameraEngine(private val context: Context) {
         if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
         openGate = enabled
         val sel = selection ?: return
-        videoSize = chooseVideoSize(sel)
-        onVideoSizeChosen?.invoke(videoSize)
-        gl.setCameraPreviewSize(videoSize.width, videoSize.height)
-        if (desiredHighSpeedFps() != 0) reopenForSession()
+        applyVideoSize(chooseVideoSize(sel))
     }
 
     /**
@@ -478,15 +475,21 @@ class CameraEngine(private val context: Context) {
     fun setAspectRatio(a: AspectRatio) { aspectRatio = a }
 
     /**
-     * Selects the video capture resolution: updates [videoSize] and the GL camera-input size so the
-     * encoder frame and preview aspect track the new size. NOTE: the live camera session keeps
-     * streaming the old size; the change fully applies on the next camera (re)open or recording start.
+     * Selects the video capture resolution and recreates the Camera2 session so the producer stream,
+     * SurfaceTexture buffer and encoder all agree on the same dimensions.
      */
     fun setVideoResolution(s: Size) {
+        if (videoSize == s) return
+        applyVideoSize(s)
+    }
+
+    private fun applyVideoSize(s: Size) {
         videoSize = s
-        // The live encoder is fixed-size; resizing the camera texture mid-recording would scale the
-        // recorded frame. Apply to GL only when idle — the new size takes on the next (re)open/record.
-        if (recorder == null) gl.setCameraPreviewSize(s.width, s.height)
+        onVideoSizeChosen?.invoke(s)
+        gl.setCameraPreviewSize(s.width, s.height)
+        // Output dimensions are part of Camera2's configured stream contract. Updating only the
+        // SurfaceTexture default size leaves the producer on the old 16:9/4:3 stream.
+        reopenForSession()
     }
 
     /**
