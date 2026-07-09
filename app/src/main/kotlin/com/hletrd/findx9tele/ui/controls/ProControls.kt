@@ -4,6 +4,7 @@ import android.util.Size
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.horizontalScroll
@@ -22,6 +23,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -63,6 +65,13 @@ import kotlin.math.roundToLong
  * in ProSheet.kt can assemble them freely. Visibility is `internal` (not `private`) so ProSheet.kt
  * and ManualDials.kt, in the same module, can call these directly.
  */
+
+/**
+ * Sony-style on-demand help: LONG-PRESS a setting's label to surface a one-line description in the
+ * menu's bottom strip (see ProSheet). The provider maps a row's help key to its copy; rows report
+ * through this local so the shared components below stay presentational.
+ */
+internal val LocalSettingHelp = compositionLocalOf<(String) -> Unit> { {} }
 
 // ---------------------------------------------------------------------------
 // Small reusable building blocks shared by every settings row
@@ -106,8 +115,16 @@ internal fun <T> SegmentedSelector(
     onSelect: (T) -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    // Distinct help-map key for rows whose display label repeats across tabs (e.g. "Mode").
+    helpKey: String = label,
 ) {
-    Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    val showHelp = LocalSettingHelp.current
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .pointerInput(helpKey) { detectTapGestures(onLongPress = { showHelp(helpKey) }) },
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
         Text(label, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
         Row(
             modifier = Modifier
@@ -143,7 +160,12 @@ internal fun LabeledSlider(
 ) {
     val span = valueRange.endInclusive - valueRange.start
     val fraction = if (span <= 0f) 0f else ((value - valueRange.start) / span).coerceIn(0f, 1f)
-    Column(modifier = modifier.fillMaxWidth()) {
+    val showHelp = LocalSettingHelp.current
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .pointerInput(label) { detectTapGestures(onLongPress = { showHelp(label) }) },
+    ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -258,8 +280,11 @@ internal fun ToggleRow(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
 ) {
+    val showHelp = LocalSettingHelp.current
     Row(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .pointerInput(label) { detectTapGestures(onLongPress = { showHelp(label) }) },
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
