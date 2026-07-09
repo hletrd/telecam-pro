@@ -101,23 +101,16 @@ Requires an OPPO Find X9 Ultra running Android 16. Target model codes: CPH2841 (
 
 ### Screenshots captured on PMA110
 
-The checked-in screenshots are 1440 x 2880, no-alpha PNGs captured from the physical PMA110, but they
-must be retaken before the next Play submission because the default launch now opens on the 1× lens
-with TELE off, the UI has 29.97p defaults, separate photo/video Fn menus, named MR banks, landscape
-control dock behavior, and updated review zoom HUD.
+The checked-in screenshots are 1440 x 2880, no-alpha PNGs captured from the physical PMA110 after the
+1x default-lens and separate Preserve Lens / Preserve TELE settings update. They are tracked with Git
+LFS under `docs/assets/play/screenshots/`.
 
-1. `docs/assets/play/screenshots/01-main-viewfinder.png` - main viewfinder with OSD.
-2. `docs/assets/play/screenshots/02-pro-settings.png` - Pro settings sheet.
-3. `docs/assets/play/screenshots/03-focus-loupe.png` - manual focus ruler / punch-in state.
-4. `docs/assets/play/screenshots/04-video-controls.png` - video controls and HLG status.
-
-Retake checklist:
-
-1. Main still viewfinder: 1× main-lens default with TELE off, current format, stabilization tag, MR
-   strip, and the top TELE control visible.
-2. Settings sheet: `Setup` tab showing Remember plus the Preserve Lens / Preserve TELE toggles.
-3. Focus check: MF ruler open with `LOUPE` OSD state.
-4. Video screen: `4K 29.97p`, current bitrate, Gamma label, audio meter, REC lock behavior if possible.
+1. `docs/assets/play/screenshots/01-main-viewfinder.png` - main still viewfinder with 1x / 23 mm and TELE off.
+2. `docs/assets/play/screenshots/02-pro-settings.png` - Setup tab with Remember, Preserve Lens, and Preserve TELE.
+3. `docs/assets/play/screenshots/03-focus-loupe.png` - Focus controls and focus-assist settings.
+4. `docs/assets/play/screenshots/04-video-controls.png` - video viewfinder with 4K 29.97p HEVC O-Log status.
+5. `docs/assets/play/screenshots/05-lens-selection.png` - Lens tab with 0.6x / 1x / 3x / 10x selection.
+6. `docs/assets/play/screenshots/06-video-settings.png` - Video tab with codec, resolution, FPS, and bitrate.
 
 ## Release checklist
 

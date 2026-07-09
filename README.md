@@ -128,7 +128,7 @@ files, not just session setup logs:
   and the latest UI pass on-device in portrait/landscape — undetectable from a static desk.
 - ✅ **Play-release scaffolding**: release signing config with unsigned-bundle fail-fast, public
   privacy policy URL, store-listing text, Data Safety answer sheet, icon + feature graphic — see the
-  Release build section above. Remaining human steps: retake Play screenshots after the latest UI
-  polish, complete the Play Console listing/data-safety form, and restrict availability to
-  CPH2841/PMA110.
+  Release build section above. Play screenshots are refreshed from PMA110 and tracked with Git LFS.
+  Remaining human steps: complete the Play Console listing/data-safety form and restrict availability
+  to CPH2841/PMA110.
 - 🚧 **Not started**: R8/minify (deferred — needs enum keep-rules + device re-verification). Dolby Vision (HW encoder detected, MP4 muxing non-trivial). See [`docs/BACKLOG.md`](docs/BACKLOG.md).

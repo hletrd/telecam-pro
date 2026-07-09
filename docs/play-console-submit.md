@@ -55,9 +55,9 @@ Summary:
   - `docs/assets/play/screenshots/02-pro-settings.png`
   - `docs/assets/play/screenshots/03-focus-loupe.png`
   - `docs/assets/play/screenshots/04-video-controls.png`
-  - all are 1440 x 2880 no-alpha PNGs captured from the physical PMA110
-  - retake before upload: these are now stale after the 1× default launch, 29.97p, Fn/MR, preserve
-    toggles, REC lock, and review zoom HUD updates
+  - `docs/assets/play/screenshots/05-lens-selection.png`
+  - `docs/assets/play/screenshots/06-video-settings.png`
+  - all are 1440 x 2880 no-alpha PNGs captured from the physical PMA110 and tracked with Git LFS
 
 ## Device Catalog
 
