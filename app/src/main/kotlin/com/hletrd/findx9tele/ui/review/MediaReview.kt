@@ -51,6 +51,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.graphics.scale
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -96,8 +97,9 @@ private fun loadVideoFrame(context: Context, uri: Uri, maxDim: Int): ImageBitmap
         val frame = mmr.getFrameAtTime(0) ?: return@runCatching null
         val scaled = if (maxDim > 0 && maxOf(frame.width, frame.height) > maxDim) {
             val scale = maxDim.toFloat() / maxOf(frame.width, frame.height)
-            android.graphics.Bitmap.createScaledBitmap(
-                frame, (frame.width * scale).toInt().coerceAtLeast(1), (frame.height * scale).toInt().coerceAtLeast(1), true,
+            frame.scale(
+                (frame.width * scale).toInt().coerceAtLeast(1),
+                (frame.height * scale).toInt().coerceAtLeast(1),
             )
         } else frame
         scaled.asImageBitmap()

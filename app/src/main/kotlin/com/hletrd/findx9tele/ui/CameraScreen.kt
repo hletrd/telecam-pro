@@ -1244,8 +1244,8 @@ private fun ShutterRow(
     onShutter: () -> Unit,
     onSnapshot: () -> Unit,
     onToggleTeleconverter: () -> Unit,
-    teleconverterEnabled: Boolean = true,
     modifier: Modifier = Modifier,
+    teleconverterEnabled: Boolean = true,
     glyphRotation: Float = 0f,
 ) {
     Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
