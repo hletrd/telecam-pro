@@ -611,6 +611,9 @@ class CameraController(context: Context) {
                     IllegalStateException("No capture target — enable HEIF or DNG (the session may have fallen back to preview-only)"),
                 )
             }
+            if (pending != null) {
+                return@postToCamera cb.onError(IllegalStateException("Capture already in progress"))
+            }
 
             pending = Pending(jpeg != null, raw != null, cb)
 
@@ -695,6 +698,17 @@ class CameraController(context: Context) {
         if (closed) return
         closed = true
         handler.post {
+            pending?.let { p ->
+                synchronized(p) {
+                    if (!p.done) {
+                        p.done = true
+                        runCatching { p.jpeg?.close() }
+                        runCatching { p.raw?.close() }
+                        p.cb.onError(IllegalStateException("Camera closed during capture"))
+                    }
+                }
+            }
+            pending = null
             runCatching { session?.close() }
             runCatching { device?.close() }
             runCatching { jpegReader?.close() }

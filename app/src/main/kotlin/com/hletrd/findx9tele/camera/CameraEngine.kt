@@ -696,7 +696,11 @@ class CameraEngine(private val context: Context) {
                 HeifCapture.writeHeif(pfd.fileDescriptor, r); true
             } ?: false
             if (!wrote) { MediaStoreWriter.delete(context, u); onStatus?.invoke("Failed to save HEIF"); return }
-            MediaStoreWriter.publish(context, u)
+            if (!MediaStoreWriter.publish(context, u)) {
+                MediaStoreWriter.delete(context, u)
+                onStatus?.invoke("Failed to publish HEIF")
+                return
+            }
             onMediaSaved?.invoke(u)
             onStatus?.invoke("Saved")
         } catch (e: OutOfMemoryError) {
@@ -749,7 +753,11 @@ class CameraEngine(private val context: Context) {
             // Bitmap.compress strips all metadata, so stamp the exposure EXIF back before publishing
             // (best-effort — a failed EXIF write must never lose the image itself).
             runCatching { writeJpegExif(u) }
-            MediaStoreWriter.publish(context, u)
+            if (!MediaStoreWriter.publish(context, u)) {
+                MediaStoreWriter.delete(context, u)
+                onStatus?.invoke("Failed to publish JPEG")
+                return
+            }
             onMediaSaved?.invoke(u)
             onStatus?.invoke("Saved")
         } catch (e: OutOfMemoryError) {
@@ -776,7 +784,9 @@ class CameraEngine(private val context: Context) {
             val out = MediaStoreWriter.openOutputStream(context, uri)
                 ?: throw IllegalStateException("Failed to open output stream")
             out.use { DngCapture.writeDng(it, raw, chars, result, exifOrientationFor(rotationDegrees)) }
-            MediaStoreWriter.publish(context, uri)
+            if (!MediaStoreWriter.publish(context, uri)) {
+                throw IllegalStateException("Failed to publish DNG")
+            }
         } catch (t: Throwable) {
             MediaStoreWriter.delete(context, uri)
             throw t

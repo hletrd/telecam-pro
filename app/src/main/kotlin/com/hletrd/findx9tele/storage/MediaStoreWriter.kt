@@ -31,7 +31,10 @@ object MediaStoreWriter {
             delete(context, uri)
             return null
         }
-        publish(context, uri)
+        if (!publish(context, uri)) {
+            delete(context, uri)
+            return null
+        }
         return uri
     }
 
