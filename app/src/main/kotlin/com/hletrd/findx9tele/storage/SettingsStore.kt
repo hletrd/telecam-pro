@@ -46,7 +46,8 @@ data class ExtraSettings(
     val openGate: Boolean = false,
     val audioScene: AudioScene = AudioScene.STANDARD,
     val audioInputPreference: AudioInputPreference = AudioInputPreference.AUTO,
-    val fnSlots: List<FnSlot> = FnSlot.DEFAULT,
+    val photoFnSlots: List<FnSlot> = FnSlot.PHOTO_DEFAULT,
+    val videoFnSlots: List<FnSlot> = FnSlot.VIDEO_DEFAULT,
     val myMenuSlots: List<FnSlot> = FnSlot.MY_MENU_DEFAULT,
     val volumeKeyAction: HardwareKeyAction = HardwareKeyAction.SHUTTER,
     val halfPressAction: HardwareKeyAction = HardwareKeyAction.AF_ON,
@@ -155,7 +156,14 @@ class SettingsStore(context: Context) {
                 openGate = prefs.getBoolean("${prefix}openGate", ed.openGate),
                 audioScene = enumOr(prefs.getString("${prefix}audioScene", null), ed.audioScene),
                 audioInputPreference = enumOr(prefs.getString("${prefix}audioInputPreference", null), ed.audioInputPreference),
-                fnSlots = enumListOr(prefs.getString("${prefix}fnSlots", null), ed.fnSlots),
+                photoFnSlots = enumListOr(
+                    prefs.getString("${prefix}photoFnSlots", null) ?: prefs.getString("${prefix}fnSlots", null),
+                    ed.photoFnSlots,
+                ),
+                videoFnSlots = enumListOr(
+                    prefs.getString("${prefix}videoFnSlots", null),
+                    ed.videoFnSlots,
+                ),
                 myMenuSlots = enumListOr(prefs.getString("${prefix}myMenuSlots", null), ed.myMenuSlots),
                 volumeKeyAction = enumOr(prefs.getString("${prefix}volumeKeyAction", null), ed.volumeKeyAction),
                 halfPressAction = enumOr(prefs.getString("${prefix}halfPressAction", null), ed.halfPressAction),
@@ -216,7 +224,8 @@ class SettingsStore(context: Context) {
         putBoolean("${prefix}openGate", e.openGate)
         putString("${prefix}audioScene", e.audioScene.name)
         putString("${prefix}audioInputPreference", e.audioInputPreference.name)
-        putString("${prefix}fnSlots", e.fnSlots.joinToString(",") { it.name })
+        putString("${prefix}photoFnSlots", e.photoFnSlots.joinToString(",") { it.name })
+        putString("${prefix}videoFnSlots", e.videoFnSlots.joinToString(",") { it.name })
         putString("${prefix}myMenuSlots", e.myMenuSlots.joinToString(",") { it.name })
         putString("${prefix}volumeKeyAction", e.volumeKeyAction.name)
         putString("${prefix}halfPressAction", e.halfPressAction.name)

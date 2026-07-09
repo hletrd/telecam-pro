@@ -947,8 +947,8 @@ private fun FnOverlay(
     actions: CameraActions,
     onDismiss: () -> Unit,
 ) {
-    val slots = remember(state.fnSlots, state.myMenuSlots, state.recentSettingSlots) {
-        (state.fnSlots + state.myMenuSlots + state.recentSettingSlots)
+    val slots = remember(state.activeFnSlots, state.myMenuSlots, state.recentSettingSlots) {
+        (state.activeFnSlots + state.myMenuSlots + state.recentSettingSlots)
             .distinct()
             .take(12)
             .ifEmpty { FnSlot.DEFAULT }
@@ -1390,7 +1390,8 @@ private object PreviewCameraActions : CameraActions {
     override fun onLens(choice: com.hletrd.findx9tele.camera.LensChoice) = Unit
     override fun onCameraOverride(id: String?) = Unit
     override fun onToggleRememberSettings(enabled: Boolean) = Unit
-    override fun onSetFnSlots(slots: List<com.hletrd.findx9tele.camera.FnSlot>) = Unit
+    override fun onSetPhotoFnSlots(slots: List<com.hletrd.findx9tele.camera.FnSlot>) = Unit
+    override fun onSetVideoFnSlots(slots: List<com.hletrd.findx9tele.camera.FnSlot>) = Unit
     override fun onSetMyMenuSlots(slots: List<com.hletrd.findx9tele.camera.FnSlot>) = Unit
     override fun onStoreMemorySlot(slot: com.hletrd.findx9tele.camera.MemorySlot) = Unit
     override fun onRecallMemorySlot(slot: com.hletrd.findx9tele.camera.MemorySlot) = Unit

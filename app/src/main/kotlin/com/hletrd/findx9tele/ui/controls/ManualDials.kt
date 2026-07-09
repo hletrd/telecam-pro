@@ -53,6 +53,7 @@ import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.ExposureMode
 import com.hletrd.findx9tele.camera.ExposureStep
+import com.hletrd.findx9tele.camera.FrameLineType
 import com.hletrd.findx9tele.camera.FnSlot
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
@@ -186,7 +187,7 @@ private fun DialChipRow(
             .horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        state.fnSlots.forEach { slot ->
+        state.activeFnSlots.forEach { slot ->
             FnDialChip(
                 slot = slot,
                 state = state,
@@ -373,6 +374,22 @@ private fun FnDialChip(
             onClick = { actions.onToggleTeleconverter(!state.teleconverterMode) },
             onLongClick = onOpenFnMenu,
         )
+        FnSlot.OPEN_GATE -> DialChip(
+            label = "Open Gate",
+            value = if (state.openGate) "4:3" else "Off",
+            active = state.openGate,
+            enabled = state.mode == CaptureMode.VIDEO && !state.isRecording,
+            onClick = { if (state.mode == CaptureMode.VIDEO && !state.isRecording) actions.onToggleOpenGate(!state.openGate) },
+            onLongClick = onOpenFnMenu,
+        )
+        FnSlot.FRAME_LINES -> DialChip(
+            label = "Frame",
+            value = state.frameLines.label,
+            active = state.frameLines != FrameLineType.OFF,
+            enabled = true,
+            onClick = { actions.onFrameLines(nextFrameLine(state.frameLines)) },
+            onLongClick = onOpenFnMenu,
+        )
     }
 }
 
@@ -413,6 +430,13 @@ private fun nextGridType(type: GridType): GridType = when (type) {
     GridType.GOLDEN -> GridType.SQUARE
     GridType.SQUARE -> GridType.CENTER
     GridType.CENTER -> GridType.NONE
+}
+
+private fun nextFrameLine(type: FrameLineType): FrameLineType = when (type) {
+    FrameLineType.OFF -> FrameLineType.CINEMA
+    FrameLineType.CINEMA -> FrameLineType.SQUARE
+    FrameLineType.SQUARE -> FrameLineType.VERTICAL
+    FrameLineType.VERTICAL -> FrameLineType.OFF
 }
 
 /** PASM cycle order: Program → Shutter-priority → ISO-priority → Manual → (back to Program). */

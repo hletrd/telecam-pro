@@ -108,10 +108,14 @@ enum class FnSlot(val label: String) {
     GRID("Grid"),
     LEVEL("Level"),
     PUNCH_IN("Loupe"),
-    TELECONVERTER("Tele");
+    TELECONVERTER("Tele"),
+    OPEN_GATE("Open Gate"),
+    FRAME_LINES("Frame");
 
     companion object {
-        val DEFAULT = listOf(EXPOSURE_MODE, FOCUS, SHUTTER, ISO, WB, EV)
+        val PHOTO_DEFAULT = listOf(EXPOSURE_MODE, FOCUS, SHUTTER, ISO, WB, EV)
+        val VIDEO_DEFAULT = listOf(EXPOSURE_MODE, FOCUS, SHUTTER, ISO, WB, TRANSFER, STABILIZATION, AUDIO_SCENE)
+        val DEFAULT = PHOTO_DEFAULT
         val MY_MENU_DEFAULT = listOf(STABILIZATION, PEAKING, ZEBRA, DRIVE, METERING, TRANSFER)
     }
 }
@@ -408,7 +412,8 @@ data class CameraUiState(
     val deviceOrientation: Int = 0,
     val punchIn: Boolean = false,
     // Sony-style customization: Fn row, My Menu, recent changed settings and MR banks.
-    val fnSlots: List<FnSlot> = FnSlot.DEFAULT,
+    val photoFnSlots: List<FnSlot> = FnSlot.PHOTO_DEFAULT,
+    val videoFnSlots: List<FnSlot> = FnSlot.VIDEO_DEFAULT,
     val myMenuSlots: List<FnSlot> = FnSlot.MY_MENU_DEFAULT,
     val recentSettingSlots: List<FnSlot> = emptyList(),
     val activeMemorySlot: MemorySlot? = null,
@@ -448,7 +453,10 @@ data class CameraUiState(
     val lastMediaUri: android.net.Uri? = null,
     val histogramData: HistogramData? = null,
     val waveformData: WaveformData? = null,
-)
+) {
+    val activeFnSlots: List<FnSlot>
+        get() = if (mode == CaptureMode.VIDEO) videoFnSlots else photoFnSlots
+}
 
 /** Downsampled luminance + per-channel histogram (256 bins) for the viewfinder overlay. */
 data class HistogramData(

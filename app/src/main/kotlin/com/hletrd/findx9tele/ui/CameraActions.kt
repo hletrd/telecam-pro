@@ -132,7 +132,8 @@ interface CameraActions {
     // Settings
     fun onCameraOverride(id: String?)
     fun onToggleRememberSettings(enabled: Boolean)
-    fun onSetFnSlots(slots: List<FnSlot>)
+    fun onSetPhotoFnSlots(slots: List<FnSlot>)
+    fun onSetVideoFnSlots(slots: List<FnSlot>)
     fun onSetMyMenuSlots(slots: List<FnSlot>)
     fun onStoreMemorySlot(slot: MemorySlot)
     fun onRecallMemorySlot(slot: MemorySlot)

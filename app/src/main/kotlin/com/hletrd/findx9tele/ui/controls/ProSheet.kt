@@ -65,6 +65,7 @@ import com.hletrd.findx9tele.camera.AudioScene
 import com.hletrd.findx9tele.camera.AudioInputPreference
 import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CameraUiState
+import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.DriveMode
@@ -937,11 +938,14 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
         checked = state.rememberSettings,
         onCheckedChange = actions::onToggleRememberSettings,
     )
-    SectionHeader("Fn Bar")
+    SectionHeader("Photo Fn")
     Text("Up to 8.", color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
-    FnSlotToggleList(selected = state.fnSlots, onSet = actions::onSetFnSlots)
+    FnSlotEditor(selected = state.photoFnSlots, onSet = actions::onSetPhotoFnSlots)
+    SectionHeader("Video Fn")
+    Text("Up to 8.", color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
+    FnSlotEditor(selected = state.videoFnSlots, onSet = actions::onSetVideoFnSlots)
     SectionHeader("My Menu")
-    FnSlotToggleList(selected = state.myMenuSlots, onSet = actions::onSetMyMenuSlots)
+    FnSlotEditor(selected = state.myMenuSlots, onSet = actions::onSetMyMenuSlots)
     SectionHeader("Keys")
     SegmentedSelector(
         label = "Full Press",
@@ -970,18 +974,87 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
 }
 
 @Composable
-private fun FnSlotToggleList(selected: List<FnSlot>, onSet: (List<FnSlot>) -> Unit) {
-    FnSlot.entries.forEach { slot ->
-        val checked = slot in selected
+private fun FnSlotEditor(selected: List<FnSlot>, onSet: (List<FnSlot>) -> Unit) {
+    val normalized = selected.distinct().take(8)
+    if (normalized.isNotEmpty()) {
+        normalized.forEachIndexed { index, slot ->
+            FnSlotOrderRow(
+                slot = slot,
+                index = index,
+                count = normalized.size,
+                onMoveUp = {
+                    if (index > 0) onSet(normalized.toMutableList().apply {
+                        val item = removeAt(index)
+                        add(index - 1, item)
+                    })
+                },
+                onMoveDown = {
+                    if (index < normalized.lastIndex) onSet(normalized.toMutableList().apply {
+                        val item = removeAt(index)
+                        add(index + 1, item)
+                    })
+                },
+                onRemove = { onSet(normalized.filterNot { it == slot }) },
+            )
+        }
+    }
+    val available = FnSlot.entries.filterNot { it in normalized }
+    available.forEach { slot ->
         ToggleRow(
-            label = fnSlotLabel(slot),
-            checked = checked,
+            label = "Add ${fnSlotLabel(slot)}",
+            checked = false,
             onCheckedChange = { enabled ->
-                val next = if (enabled) selected + slot else selected.filterNot { it == slot }
-                onSet(next)
+                if (enabled && normalized.size < 8) onSet(normalized + slot)
             },
-            enabled = checked || selected.size < 8,
+            enabled = normalized.size < 8,
         )
+    }
+}
+
+@Composable
+private fun FnSlotOrderRow(
+    slot: FnSlot,
+    index: Int,
+    count: Int,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = "%02d".format(index + 1),
+            color = CameraColors.TextSecondary,
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.width(26.dp),
+        )
+        Text(
+            text = fnSlotLabel(slot),
+            color = CameraColors.TextPrimary,
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.weight(1f),
+        )
+        MiniTextButton(text = "Up", enabled = index > 0, onClick = onMoveUp)
+        MiniTextButton(text = "Down", enabled = index < count - 1, onClick = onMoveDown)
+        MiniTextButton(text = "Remove", enabled = true, onClick = onRemove)
+    }
+}
+
+@Composable
+private fun MiniTextButton(text: String, enabled: Boolean, onClick: () -> Unit) {
+    val fg = if (enabled) CameraColors.TextPrimary else CameraColors.TextSecondary.copy(alpha = 0.45f)
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(Color.White.copy(alpha = if (enabled) 0.09f else 0.04f))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 9.dp, vertical = 5.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text, color = fg, style = MaterialTheme.typography.labelSmall)
     }
 }
 
@@ -1006,6 +1079,8 @@ internal fun fnSlotValue(slot: FnSlot, state: CameraUiState): String {
         FnSlot.LEVEL -> if (state.level) "On" else "Off"
         FnSlot.PUNCH_IN -> if (state.punchIn) "On" else "Off"
         FnSlot.TELECONVERTER -> if (state.teleconverterMode) "300mm" else "Off"
+        FnSlot.OPEN_GATE -> if (state.openGate) "4:3" else "Off"
+        FnSlot.FRAME_LINES -> state.frameLines.label
     }
 }
 
@@ -1029,6 +1104,8 @@ internal fun performQuickFn(slot: FnSlot, state: CameraUiState, actions: CameraA
         FnSlot.LEVEL -> actions.onToggleLevel(!state.level)
         FnSlot.PUNCH_IN -> actions.onTogglePunchIn(!state.punchIn)
         FnSlot.TELECONVERTER -> actions.onToggleTeleconverter(!state.teleconverterMode)
+        FnSlot.OPEN_GATE -> if (state.mode == CaptureMode.VIDEO && !state.isRecording) actions.onToggleOpenGate(!state.openGate)
+        FnSlot.FRAME_LINES -> actions.onFrameLines(nextFrameLine(state.frameLines))
     }
 }
 
@@ -1093,6 +1170,13 @@ private fun nextGridType(type: GridType): GridType = when (type) {
     GridType.GOLDEN -> GridType.SQUARE
     GridType.SQUARE -> GridType.CENTER
     GridType.CENTER -> GridType.NONE
+}
+
+private fun nextFrameLine(type: FrameLineType): FrameLineType = when (type) {
+    FrameLineType.OFF -> FrameLineType.CINEMA
+    FrameLineType.CINEMA -> FrameLineType.SQUARE
+    FrameLineType.SQUARE -> FrameLineType.VERTICAL
+    FrameLineType.VERTICAL -> FrameLineType.OFF
 }
 
 private fun openPrivacyPolicy(context: Context) {

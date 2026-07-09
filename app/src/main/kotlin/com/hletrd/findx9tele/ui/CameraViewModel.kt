@@ -210,7 +210,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 frameLines = e.frameLines,
                 audioInputPreference = e.audioInputPreference,
                 audioRouteLabel = audioInputStatusLabel(e.audioInputPreference),
-                fnSlots = e.fnSlots,
+                photoFnSlots = e.photoFnSlots,
+                videoFnSlots = e.videoFnSlots,
                 myMenuSlots = e.myMenuSlots,
                 volumeKeyAction = e.volumeKeyAction,
                 halfPressAction = e.halfPressAction,
@@ -242,7 +243,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             openGate = s.openGate,
             audioScene = s.audioScene,
             audioInputPreference = s.audioInputPreference,
-            fnSlots = s.fnSlots,
+            photoFnSlots = s.photoFnSlots,
+            videoFnSlots = s.videoFnSlots,
             myMenuSlots = s.myMenuSlots,
             volumeKeyAction = s.volumeKeyAction,
             halfPressAction = s.halfPressAction,
@@ -797,9 +799,15 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         if (enabled) saveSettingsIfEnabled() // capture the current setup immediately
     }
 
-    override fun onSetFnSlots(slots: List<FnSlot>) {
-        val normalized = normalizedSlots(slots, FnSlot.DEFAULT)
-        _state.update { it.copy(fnSlots = normalized, activeMemorySlot = null) }
+    override fun onSetPhotoFnSlots(slots: List<FnSlot>) {
+        val normalized = normalizedSlots(slots, FnSlot.PHOTO_DEFAULT)
+        _state.update { it.copy(photoFnSlots = normalized, activeMemorySlot = null) }
+        saveSettingsIfEnabled()
+    }
+
+    override fun onSetVideoFnSlots(slots: List<FnSlot>) {
+        val normalized = normalizedSlots(slots, FnSlot.VIDEO_DEFAULT)
+        _state.update { it.copy(videoFnSlots = normalized, activeMemorySlot = null) }
         saveSettingsIfEnabled()
     }
 
