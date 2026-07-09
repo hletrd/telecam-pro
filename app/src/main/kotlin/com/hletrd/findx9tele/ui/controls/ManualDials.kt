@@ -370,8 +370,8 @@ private fun FnDialChip(
             label = "Tele",
             value = if (state.teleconverterMode) "300" else "Off",
             active = state.teleconverterMode,
-            enabled = true,
-            onClick = { actions.onToggleTeleconverter(!state.teleconverterMode) },
+            enabled = !state.isRecording,
+            onClick = { if (!state.isRecording) actions.onToggleTeleconverter(!state.teleconverterMode) },
             onLongClick = onOpenFnMenu,
         )
         FnSlot.OPEN_GATE -> DialChip(

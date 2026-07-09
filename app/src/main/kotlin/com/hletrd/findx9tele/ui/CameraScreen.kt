@@ -474,6 +474,7 @@ fun CameraScreen(
                 ModeCarousel(
                     mode = state.mode,
                     onModeChange = actions::onModeChange,
+                    enabled = !state.isRecording,
                     glyphRotation = overlayRotation,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -487,6 +488,7 @@ fun CameraScreen(
                     onShutter = onShutter,
                     onSnapshot = actions::onCapturePhoto,
                     onToggleTeleconverter = { actions.onToggleTeleconverter(!state.teleconverterMode) },
+                    teleconverterEnabled = !state.isRecording,
                     glyphRotation = overlayRotation,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -561,6 +563,7 @@ private fun TopBar(
     modifier: Modifier = Modifier,
     glyphRotation: Float = 0f,
 ) {
+    val recordingLocked = state.isRecording
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -572,15 +575,34 @@ private fun TopBar(
             // Compact circular glyphs counter-rotate to stay upright as the phone turns (iPhone-style);
             // the TELE chip is wide text, so it stays fixed to avoid poking out of its slot.
             val glyphSpin = Modifier.rotate(glyphRotation)
-            FlashButton(mode = state.controls.flash, onClick = { actions.onFlash(nextFlashMode(state.controls.flash)) }, modifier = glyphSpin)
-            TimerButton(timer = state.timer, onClick = { actions.onTimer(nextTimer(state.timer)) }, modifier = glyphSpin)
-            AspectButton(ratio = state.aspectRatio, onClick = { actions.onAspectRatio(nextAspect(state.aspectRatio)) }, modifier = glyphSpin)
+            FlashButton(
+                mode = state.controls.flash,
+                onClick = { actions.onFlash(nextFlashMode(state.controls.flash)) },
+                enabled = !recordingLocked,
+                modifier = glyphSpin,
+            )
+            TimerButton(
+                timer = state.timer,
+                onClick = { actions.onTimer(nextTimer(state.timer)) },
+                enabled = !recordingLocked,
+                modifier = glyphSpin,
+            )
+            AspectButton(
+                ratio = state.aspectRatio,
+                onClick = { actions.onAspectRatio(nextAspect(state.aspectRatio)) },
+                enabled = !recordingLocked,
+                modifier = glyphSpin,
+            )
             GridButton(
                 active = state.grid != GridType.NONE,
                 onClick = { actions.onGridType(if (state.grid == GridType.NONE) GridType.THIRDS else GridType.NONE) },
                 modifier = glyphSpin,
             )
-            TeleChip(active = state.teleconverterMode, onClick = { actions.onToggleTeleconverter(!state.teleconverterMode) })
+            TeleChip(
+                active = state.teleconverterMode,
+                enabled = !recordingLocked,
+                onClick = { actions.onToggleTeleconverter(!state.teleconverterMode) },
+            )
         }
         // Counter-rotate the settings glyph so it stays upright as the phone turns (iPhone-style).
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -618,6 +640,7 @@ private fun ChromeIconButton(
     onClick: () -> Unit,
     contentDescription: String,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
     content: @Composable BoxScope.() -> Unit,
 ) {
     Box(
@@ -628,14 +651,14 @@ private fun ChromeIconButton(
                 this.contentDescription = contentDescription
                 role = Role.Button
             }
-            .clickable(onClick = onClick),
+            .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Box(
             modifier = Modifier
                 .size(36.dp)
                 .clip(CircleShape)
-                .background(CameraColors.ChromeScrim.copy(alpha = 0.45f)),
+                .background(CameraColors.ChromeScrim.copy(alpha = if (enabled) 0.45f else 0.22f)),
             contentAlignment = Alignment.Center,
             content = content,
         )
@@ -643,13 +666,13 @@ private fun ChromeIconButton(
 }
 
 @Composable
-private fun FlashButton(mode: FlashMode, onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun FlashButton(mode: FlashMode, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
     val color = when (mode) {
         FlashMode.OFF -> CameraColors.TextSecondary
         FlashMode.TORCH -> CameraColors.Accent
         else -> CameraColors.TextPrimary
-    }
-    ChromeIconButton(onClick = onClick, contentDescription = "Flash ${flashModeLabel(mode)}", modifier = modifier) {
+    }.copy(alpha = if (enabled) 1f else 0.38f)
+    ChromeIconButton(onClick = onClick, contentDescription = "Flash ${flashModeLabel(mode)}", modifier = modifier, enabled = enabled) {
         Canvas(Modifier.size(16.dp)) {
             val bolt = Path().apply {
                 moveTo(size.width * 0.56f, 0f)
@@ -684,26 +707,26 @@ private fun FlashButton(mode: FlashMode, onClick: () -> Unit, modifier: Modifier
 }
 
 @Composable
-private fun TimerButton(timer: ShutterTimer, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    ChromeIconButton(onClick = onClick, contentDescription = "Self timer ${shutterTimerLabel(timer)}", modifier = modifier) {
+private fun TimerButton(timer: ShutterTimer, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
+    ChromeIconButton(onClick = onClick, contentDescription = "Self timer ${shutterTimerLabel(timer)}", modifier = modifier, enabled = enabled) {
         if (timer == ShutterTimer.OFF) {
             Canvas(Modifier.size(16.dp)) {
-                val color = CameraColors.TextSecondary
+                val color = CameraColors.TextSecondary.copy(alpha = if (enabled) 1f else 0.38f)
                 drawCircle(color, radius = size.minDimension / 2f, style = Stroke(width = 1.3.dp.toPx()))
                 drawLine(color, center, Offset(center.x, center.y - size.height * 0.3f), strokeWidth = 1.2.dp.toPx())
                 drawLine(color, center, Offset(center.x + size.width * 0.18f, center.y), strokeWidth = 1.2.dp.toPx())
             }
         } else {
-            Text(timer.seconds.toString(), color = CameraColors.Accent, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            Text(timer.seconds.toString(), color = CameraColors.Accent.copy(alpha = if (enabled) 1f else 0.38f), fontSize = 13.sp, fontWeight = FontWeight.Bold)
         }
     }
 }
 
 @Composable
-private fun AspectButton(ratio: AspectRatio, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    ChromeIconButton(onClick = onClick, contentDescription = "Aspect ratio ${aspectRatioLabel(ratio)}", modifier = modifier) {
+private fun AspectButton(ratio: AspectRatio, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
+    ChromeIconButton(onClick = onClick, contentDescription = "Aspect ratio ${aspectRatioLabel(ratio)}", modifier = modifier, enabled = enabled) {
         Canvas(Modifier.size(18.dp)) {
-            val color = CameraColors.TextPrimary
+            val color = CameraColors.TextPrimary.copy(alpha = if (enabled) 1f else 0.38f)
             val sw = 1.4.dp.toPx()
             when (ratio) {
                 AspectRatio.W4_3 -> drawRect(
@@ -743,9 +766,16 @@ private fun GridButton(active: Boolean, onClick: () -> Unit, modifier: Modifier 
 }
 
 @Composable
-private fun TeleChip(active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val bg = if (active) CameraColors.TextPrimary else CameraColors.ChromeScrim.copy(alpha = 0.45f)
-    val fg = if (active) Color.Black else CameraColors.TextPrimary
+private fun TeleChip(active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
+    val bg = when {
+        active && enabled -> CameraColors.TextPrimary
+        active -> CameraColors.TextPrimary.copy(alpha = 0.38f)
+        else -> CameraColors.ChromeScrim.copy(alpha = if (enabled) 0.45f else 0.22f)
+    }
+    val fg = when {
+        active -> Color.Black.copy(alpha = if (enabled) 1f else 0.55f)
+        else -> CameraColors.TextPrimary.copy(alpha = if (enabled) 1f else 0.38f)
+    }
     Box(
         modifier = modifier
             .height(36.dp)
@@ -756,7 +786,7 @@ private fun TeleChip(active: Boolean, onClick: () -> Unit, modifier: Modifier = 
                 stateDescription = if (active) "On" else "Off"
                 role = Role.Button
             }
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 12.dp),
         contentAlignment = Alignment.Center,
     ) {
@@ -930,6 +960,7 @@ private fun MemoryRecallStrip(
         MemorySlot.entries.forEach { slot ->
             val saved = slot in state.savedMemorySlots
             val active = state.activeMemorySlot == slot
+            val enabled = !state.isRecording
             val name = state.memorySlotNames[slot] ?: slot.label
             val summary = state.memorySlotSummaries[slot].orEmpty()
             val bg = when {
@@ -939,8 +970,9 @@ private fun MemoryRecallStrip(
             }
             val fg = when {
                 active -> Color.Black
-                saved -> CameraColors.TextPrimary
-                else -> CameraColors.TextSecondary
+                saved && enabled -> CameraColors.TextPrimary
+                saved -> CameraColors.TextPrimary.copy(alpha = 0.38f)
+                else -> CameraColors.TextSecondary.copy(alpha = if (enabled) 1f else 0.38f)
             }
             Text(
                 text = slot.label,
@@ -960,6 +992,7 @@ private fun MemoryRecallStrip(
                         role = Role.Button
                     }
                     .combinedClickable(
+                        enabled = enabled,
                         onClick = {
                             if (saved) actions.onRecallMemorySlot(slot) else actions.onStoreMemorySlot(slot)
                         },
@@ -1218,6 +1251,7 @@ private fun LandscapeControlDock(
             ModeCarousel(
                 mode = state.mode,
                 onModeChange = actions::onModeChange,
+                enabled = !state.isRecording,
                 glyphRotation = 0f,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -1230,6 +1264,7 @@ private fun LandscapeControlDock(
                 onShutter = onShutter,
                 onSnapshot = onSnapshot,
                 onToggleTeleconverter = onToggleTeleconverter,
+                teleconverterEnabled = !state.isRecording,
                 glyphRotation = 0f,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1245,29 +1280,46 @@ private fun ModeCarousel(
     onModeChange: (CaptureMode) -> Unit,
     modifier: Modifier = Modifier,
     glyphRotation: Float = 0f,
+    enabled: Boolean = true,
 ) {
     Row(modifier = modifier, horizontalArrangement = Arrangement.Center) {
         Row(horizontalArrangement = Arrangement.spacedBy(32.dp)) {
             // The mode labels are SHORT ("Photo"/"Video"), so — iPhone-style — they DO counter-rotate
             // to stay upright as the phone turns (unlike the wide dial pills, which would overflow their
             // fixed row slots and are kept screen-fixed). The label + its underline rotate as one unit.
-            ModeLabel(text = "Photo", active = mode == CaptureMode.PHOTO, onClick = { onModeChange(CaptureMode.PHOTO) }, modifier = Modifier.rotate(glyphRotation))
-            ModeLabel(text = "Video", active = mode == CaptureMode.VIDEO, onClick = { onModeChange(CaptureMode.VIDEO) }, modifier = Modifier.rotate(glyphRotation))
+            ModeLabel(
+                text = "Photo",
+                active = mode == CaptureMode.PHOTO,
+                enabled = enabled,
+                onClick = { onModeChange(CaptureMode.PHOTO) },
+                modifier = Modifier.rotate(glyphRotation),
+            )
+            ModeLabel(
+                text = "Video",
+                active = mode == CaptureMode.VIDEO,
+                enabled = enabled,
+                onClick = { onModeChange(CaptureMode.VIDEO) },
+                modifier = Modifier.rotate(glyphRotation),
+            )
         }
     }
 }
 
 @Composable
-private fun ModeLabel(text: String, active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun ModeLabel(text: String, active: Boolean, enabled: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     Column(
         modifier = modifier
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 6.dp, vertical = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(
             text = text,
-            color = if (active) CameraColors.TextPrimary else CameraColors.TextSecondary,
+            color = when {
+                !enabled -> CameraColors.TextSecondary.copy(alpha = 0.45f)
+                active -> CameraColors.TextPrimary
+                else -> CameraColors.TextSecondary
+            },
             fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
             fontSize = if (active) 15.sp else 14.sp,
         )
@@ -1277,7 +1329,7 @@ private fun ModeLabel(text: String, active: Boolean, onClick: () -> Unit, modifi
                 .width(18.dp)
                 .height(2.dp)
                 .background(
-                    if (active) CameraColors.TextPrimary else Color.Transparent,
+                    if (active && enabled) CameraColors.TextPrimary else Color.Transparent,
                     RoundedCornerShape(1.dp),
                 ),
         )
@@ -1295,6 +1347,7 @@ private fun ShutterRow(
     onShutter: () -> Unit,
     onSnapshot: () -> Unit,
     onToggleTeleconverter: () -> Unit,
+    teleconverterEnabled: Boolean = true,
     modifier: Modifier = Modifier,
     glyphRotation: Float = 0f,
 ) {
@@ -1309,7 +1362,7 @@ private fun ShutterRow(
             ShutterButton(mode = mode, isRecording = isRecording, onClick = onShutter)
         }
         Spacer(modifier = Modifier.weight(1f))
-        LensFlipButton(active = teleconverterOn, onClick = onToggleTeleconverter)
+        LensFlipButton(active = teleconverterOn, enabled = teleconverterEnabled, onClick = onToggleTeleconverter)
     }
 }
 
@@ -1395,9 +1448,10 @@ private fun SnapshotButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
  * chip and the pro sheet's Stabilization tab) for quick access next to the shutter.
  */
 @Composable
-private fun LensFlipButton(active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val ringColor = if (active) CameraColors.Accent else Color.White.copy(alpha = 0.35f)
-    val glyphColor = if (active) CameraColors.Accent else CameraColors.TextPrimary
+private fun LensFlipButton(active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
+    val alpha = if (enabled) 1f else 0.38f
+    val ringColor = if (active) CameraColors.Accent.copy(alpha = alpha) else Color.White.copy(alpha = 0.35f * alpha)
+    val glyphColor = if (active) CameraColors.Accent.copy(alpha = alpha) else CameraColors.TextPrimary.copy(alpha = alpha)
     Box(
         modifier = modifier
             .size(52.dp)
@@ -1409,7 +1463,7 @@ private fun LensFlipButton(active: Boolean, onClick: () -> Unit, modifier: Modif
                 stateDescription = if (active) "On" else "Off"
                 role = Role.Button
             }
-            .clickable(onClick = onClick),
+            .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Canvas(Modifier.size(26.dp)) {

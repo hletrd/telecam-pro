@@ -431,6 +431,7 @@ private fun MemoryRecallControls(state: CameraUiState, actions: CameraActions) {
             summary = if (saved) summary else "Save current setup",
             active = state.activeMemorySlot == slot,
             saved = saved,
+            locked = state.isRecording,
             onRecall = { actions.onRecallMemorySlot(slot) },
             onSave = { actions.onStoreMemorySlot(slot) },
         )
@@ -444,6 +445,7 @@ private fun MemoryPresetRow(
     summary: String,
     active: Boolean,
     saved: Boolean,
+    locked: Boolean,
     onRecall: () -> Unit,
     onSave: () -> Unit,
 ) {
@@ -453,7 +455,7 @@ private fun MemoryPresetRow(
             .clip(RoundedCornerShape(8.dp))
             .background(if (active) Color(0xFFFFD60A).copy(alpha = 0.18f) else Color.White.copy(alpha = 0.05f))
             .border(1.dp, Color.White.copy(alpha = if (active) 0.28f else 0.10f), RoundedCornerShape(8.dp))
-            .clickable(enabled = saved, onClick = onRecall)
+            .clickable(enabled = saved && !locked, onClick = onRecall)
             .padding(horizontal = 12.dp, vertical = 9.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -472,6 +474,7 @@ private fun MemoryPresetRow(
         FilterChip(
             selected = false,
             onClick = onSave,
+            enabled = !locked,
             label = { Text(if (saved) "Update" else "Save") },
             colors = pixelChipColors(),
             border = pixelChipBorder(false),

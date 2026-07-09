@@ -553,9 +553,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     // ---- Modes ----
     override fun onModeChange(mode: CaptureMode) {
         cancelCountdown()
-        // Leaving Video mode while recording would orphan the clip (the shutter's stop affordance is
-        // gone). Stop and save it first so the mode switch can't strand an in-progress recording.
-        if (_state.value.isRecording && mode != CaptureMode.VIDEO) onToggleRecording()
+        if (_state.value.isRecording && mode != _state.value.mode) {
+            showStatus("Stop REC first")
+            return
+        }
         _state.update { it.copy(mode = mode) }
         refreshProgramAppSide() // photo P is app-side (min-shutter rule), video P is HAL AE
         refreshStandbyAudioMeter()
@@ -605,6 +606,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         saveSettingsIfEnabled()
     }
     override fun onToggleTeleconverter(enabled: Boolean) {
+        if (rejectIfRecording("Stop REC first")) return
         // The teleconverter is only meaningful on the 3× periscope. Turning it ON from any other lens
         // switches to 3× (which itself bundles teleconverter mode on, one reopen); onLens keeps the
         // lens picker + TELE chips in sync. Turning it OFF just clears the afocal flip on the 3× lens.
@@ -617,6 +619,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         markChanged(FnSlot.TELECONVERTER)
     }
     override fun onLens(choice: LensChoice) {
+        if (rejectIfRecording("Stop REC first")) return
         // Bundled in the engine: resolves the lens id + flips teleconverter mode (3× on, else off)
         // in one reopen. Mirror both into UI state so the picker and the TELE chip stay in sync.
         engine.setLens(choice)
@@ -870,6 +873,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
 
     override fun onStoreMemorySlot(slot: MemorySlot) {
+        if (rejectIfRecording("Stop REC first")) return
         val snapshot = _state.value
         settingsStore.savePreset(
             slot,
