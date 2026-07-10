@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
@@ -758,21 +759,30 @@ private fun TeleChip(active: Boolean, onClick: () -> Unit, modifier: Modifier = 
         active -> Color.Black.copy(alpha = if (enabled) 1f else 0.55f)
         else -> CameraColors.TextPrimary.copy(alpha = if (enabled) 1f else 0.38f)
     }
+    // Outer box carries the click + semantics at the 48 dp minimum touch target (every sibling
+    // top-bar control already gets 48 dp); the 36 dp pill stays the VISUAL, so the layout look is
+    // unchanged while the hit area stops being the row's one undersized outlier.
     Box(
         modifier = modifier
-            .height(36.dp)
-            .clip(RoundedCornerShape(50))
-            .background(bg)
+            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
             .semantics {
                 contentDescription = "Teleconverter"
                 stateDescription = if (active) "On" else "Off"
                 role = Role.Button
             }
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 12.dp),
+            .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text("TELE", color = fg, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        Box(
+            modifier = Modifier
+                .height(36.dp)
+                .clip(RoundedCornerShape(50))
+                .background(bg)
+                .padding(horizontal = 12.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("TELE", color = fg, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        }
     }
 }
 

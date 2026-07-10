@@ -10,6 +10,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.progressSemantics
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -24,6 +25,8 @@ import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.setProgress
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -70,7 +73,7 @@ import com.hletrd.findx9tele.ui.theme.CameraColors
 import kotlin.math.roundToInt
 
 /**
- * The five quick "Fn" manual dials (focus/shutter/ISO/WB/EV) — the signature element of the
+ * The six quick "Fn" manual dials (focus/shutter/ISO/WB/EV/zoom) — the signature element of the
  * camera UI. A horizontal row of value chips sits at rest; tapping one opens a tick-ruler slider
  * above the row where the current value is always centered under a fixed indicator and the ruler
  * scrolls beneath it as the user drags. Only one dial is open at a time.
@@ -758,6 +761,16 @@ fun RulerSlider(
             .fillMaxWidth()
             .height(56.dp)
             .background(Color.Black.copy(alpha = 0.35f), RoundedCornerShape(16.dp))
+            // TalkBack: a bare Canvas is invisible to accessibility services — every manual dial
+            // rides this control, so expose it as an adjustable value with a set action.
+            .progressSemantics(value = fraction.coerceIn(0f, 1f), valueRange = 0f..1f)
+            .semantics {
+                setProgress { target ->
+                    if (!enabled) return@setProgress false
+                    onFractionChange(target.coerceIn(0f, 1f))
+                    true
+                }
+            }
             .padding(horizontal = 4.dp)
             .pointerInput(enabled, totalUnits, pxPerUnit, snap) {
                 if (!enabled) return@pointerInput

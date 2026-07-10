@@ -3,6 +3,9 @@ package com.hletrd.findx9tele.ui.controls
 import android.util.Size
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.progressSemantics
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.setProgress
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -209,6 +212,16 @@ private fun CameraSlider(
         modifier = Modifier
             .fillMaxWidth()
             .height(36.dp)
+            // TalkBack: a bare Canvas is invisible to accessibility services — this backs every
+            // settings slider, so expose it as an adjustable value with a set action.
+            .progressSemantics(value = fraction.coerceIn(0f, 1f), valueRange = 0f..1f)
+            .semantics {
+                setProgress { target ->
+                    if (!enabled) return@setProgress false
+                    onFraction(target.coerceIn(0f, 1f))
+                    true
+                }
+            }
             .pointerInput(enabled) {
                 if (!enabled) return@pointerInput
                 awaitEachGesture {
