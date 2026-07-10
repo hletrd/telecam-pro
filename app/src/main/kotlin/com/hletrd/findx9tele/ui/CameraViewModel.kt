@@ -144,7 +144,14 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // letterboxed viewfinder so it always shows the full capture field.
         engine.onPreviewAspect = { aspect -> _state.update { it.copy(previewAspect = aspect) } }
         engine.onAnalysis = { h, w ->
-            _state.update { it.copy(histogramData = h, waveformData = w) }
+            // Publish scope data into UI state only when something actually renders it (the
+            // histogram/waveform overlays or the MANUAL-mode exposure meter). App-side AE reads the
+            // callback arg directly, so with scopes hidden the ~6 Hz analysis tick no longer forces
+            // a whole-CameraUiState emission (root-recomposition churn during manual shooting).
+            val s = _state.value
+            if (s.histogram || s.waveform || s.controls.exposureMode == ExposureMode.MANUAL) {
+                _state.update { it.copy(histogramData = h, waveformData = w) }
+            }
             // Feed the app-side auto-exposure loop (SHUTTER/ISO priority). The luma array is freshly
             // allocated per callback, so it's safe to hand to the main thread. No-op in P/M.
             if (h != null) mainHandler.post { applyAutoExposure(h.luma) }
@@ -251,6 +258,12 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setAudioScene(e.audioScene)
         engine.setAudioInputPreference(e.audioInputPreference)
         engine.setVideoFrameRate(safeFrameRate)
+        // Restore the user-selected recording resolution ("Remember Settings" previously dropped it
+        // silently — the engine re-picked the largest size on every launch). The engine re-validates
+        // the request against the live caps once the camera opens and falls back to auto if the
+        // size is no longer offered (lens change, aspect mismatch with openGate).
+        val restoredVideoSize = parseVideoResolution(e.videoResolution)
+        restoredVideoSize?.let { engine.setVideoResolution(it) }
         _state.update {
             it.copy(
                 rememberSettings = rememberSettings ?: it.rememberSettings,
@@ -266,6 +279,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 videoCodec = safeCodec,
                 bitrateLevel = e.bitrateLevel,
                 videoFrameRate = safeFrameRate,
+                videoResolution = restoredVideoSize ?: it.videoResolution,
                 openGate = e.openGate,
                 recordAudio = e.recordAudio,
                 audioGain = e.audioGain,
@@ -306,6 +320,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             videoCodec = s.videoCodec,
             bitrateLevel = s.bitrateLevel,
             videoFrameRate = s.videoFrameRate,
+            videoResolution = "${s.videoResolution.width}x${s.videoResolution.height}",
             openGate = s.openGate,
             recordAudio = s.recordAudio,
             audioGain = s.audioGain,
@@ -450,8 +465,17 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         ColorTransfer.SDR -> "SDR"
     }
 
+    /** Parses a persisted "WxH" video-resolution string; null for "" or anything malformed. */
+    private fun parseVideoResolution(raw: String): Size? {
+        val parts = raw.split('x')
+        if (parts.size != 2) return null
+        val w = parts[0].toIntOrNull() ?: return null
+        val h = parts[1].toIntOrNull() ?: return null
+        return if (w > 0 && h > 0) Size(w, h) else null
+    }
+
+    // No 8K bucket: chooseVideoSize caps the recording width at 3840, so 2160-tall is the ceiling.
     private fun videoSizeSummary(size: Size): String = when {
-        size.height >= 4320 -> "8K"
         size.height >= 2160 -> "4K"
         size.height >= 1440 -> "1440p"
         size.height >= 1080 -> "1080p"
@@ -547,7 +571,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         refreshProgramAppSide()
     }
     override fun onToggleAeLock(locked: Boolean) = updateControls(FnSlot.EXPOSURE_MODE) { it.copy(aeLock = locked) }
-    override fun onAntibanding(mode: Antibanding) = updateControls { it.copy(antibanding = mode) }
+    override fun onAntibanding(mode: Antibanding) = updateControls(persist = true) { it.copy(antibanding = mode) }
     // (onFps was removed: dead API surface — controls.fps is always driven by onVideoFrameRate.)
     override fun onShutterMode(mode: ShutterMode) = updateControls(FnSlot.SHUTTER) { it.copy(shutterMode = mode) }
     override fun onShutterAngle(angle: Float) {
@@ -557,7 +581,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         }
         refreshProgramAppSide()
     }
-    override fun onExposureStep(step: ExposureStep) = updateControls { it.copy(exposureStep = step) }
+    override fun onExposureStep(step: ExposureStep) = updateControls(persist = true) { it.copy(exposureStep = step) }
 
     // ---- White balance ----
     override fun onWbMode(mode: WbMode) = updateControls(FnSlot.WB) { it.copy(wbMode = mode) }
@@ -565,7 +589,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onWbTint(tint: Int) = updateControls(FnSlot.WB) { it.copy(wbTint = tint, wbMode = WbMode.MANUAL) }
     override fun onToggleAwbLock(locked: Boolean) = updateControls(FnSlot.WB) { it.copy(awbLock = locked) }
     override fun onMeteringMode(mode: MeteringMode) = updateControls(FnSlot.METERING) { it.copy(meteringMode = mode) }
-    override fun onAfSpotSize(size: AfSpotSize) = updateControls { it.copy(afSpotSize = size) }
+    override fun onAfSpotSize(size: AfSpotSize) = updateControls(persist = true) { it.copy(afSpotSize = size) }
     override fun onCaptureCustomWb() {
         // Grey/white-card WB: freeze the AWB gains the HAL used on the latest frame (Sony Custom WB).
         val gains = engine.currentAwbGains()
@@ -578,13 +602,15 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
 
     // ---- Processing ----
-    override fun onEdge(level: ProcessingLevel) = updateControls { it.copy(edge = level) }
-    override fun onNoiseReduction(level: ProcessingLevel) = updateControls { it.copy(noiseReduction = level) }
-    override fun onColorEffect(effect: ColorEffect) = updateControls { it.copy(colorEffect = effect) }
+    override fun onEdge(level: ProcessingLevel) = updateControls(persist = true) { it.copy(edge = level) }
+    override fun onNoiseReduction(level: ProcessingLevel) = updateControls(persist = true) { it.copy(noiseReduction = level) }
+    override fun onColorEffect(effect: ColorEffect) = updateControls(persist = true) { it.copy(colorEffect = effect) }
 
     // ---- Optics / output ----
     override fun onFlash(mode: FlashMode) {
-        updateControls { it.copy(flash = mode) }
+        // persist=true: flash is the most common per-shot toggle among the slot-less setters, and a
+        // Recents swipe-kill right after toggling it silently lost the change (tracer NEW-1).
+        updateControls(persist = true) { it.copy(flash = mode) }
         refreshProgramAppSide() // AUTO/ON flash needs the HAL AE — photo P falls back off app-side
     }
     override fun onToggleOis(enabled: Boolean) = updateControls(FnSlot.STABILIZATION) { it.copy(oisEnabled = enabled) }
@@ -604,8 +630,20 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     private val zoomEaseTicker = object : Runnable {
         override fun run() {
             val target = zoomEaseTarget ?: return
-            val cur = _state.value.controls.zoomRatio
+            // Non-finite/non-positive guard: a zoomRatio of 0/NaN (e.g. a corrupted persisted value
+            // slipping past the load clamp) would make pow/ln produce NaN, and NaN comparisons are
+            // always false — the ticker would re-post itself at ~30 Hz FOREVER with a broken readout.
+            val cur = _state.value.controls.zoomRatio.takeIf { it.isFinite() && it > 0f } ?: run {
+                zoomEaseTarget = null
+                applyZoomRatio(target)
+                return
+            }
             val next = (cur * Math.pow((target / cur).toDouble(), 0.4)).toFloat()
+            if (!next.isFinite() || next <= 0f) {
+                zoomEaseTarget = null
+                applyZoomRatio(target)
+                return
+            }
             // applyZoomRatio, NOT onZoomRatio: the public setter cancels the glide (manual takeover).
             if (kotlin.math.abs(kotlin.math.ln((target / next).toDouble())) < 0.004) {
                 zoomEaseTarget = null
@@ -633,7 +671,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         val next = (_state.value.controls.zoomRatio * factor).coerceIn(range.lower, range.upper)
         onZoomRatio(next)
     }
-    override fun onJpegQuality(quality: Int) = updateControls { it.copy(jpegQuality = quality) }
+    override fun onJpegQuality(quality: Int) = updateControls(persist = true) { it.copy(jpegQuality = quality) }
 
     // ---- Modes ----
     override fun onModeChange(mode: CaptureMode) {
@@ -743,6 +781,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setVideoResolution(size)
         _state.update { it.copy(videoResolution = size, activeMemorySlot = null) }
         reconcileFrameRate()
+        // The one pro setting "Remember Settings" used to drop: a user's 1080p pick silently
+        // reverted to 4K on relaunch. Persisted like every sibling video setting.
+        scheduleSettingsSave()
     }
     override fun onVideoFrameRate(rate: VideoFrameRate) {
         if (rejectIfRecording("Stop REC first")) return
@@ -751,6 +792,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // frame duration follow the selected video rate (drop-frame rates use their rounded parent).
         val controls = _state.value.controls.copy(fps = rate.fps)
         engine.setControls(controls)
+        // Re-base any pending throttled dial apply onto the new fps: the 40 ms trailing apply would
+        // otherwise push its STALE snapshot (old fps) over this direct engine write moments later.
+        pendingControls = pendingControls?.copy(fps = rate.fps)
         _state.update { it.copy(videoFrameRate = rate, controls = controls, activeMemorySlot = null) }
         scheduleSettingsSave()
     }
@@ -777,6 +821,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     // ---- Stabilization ----
     override fun onVideoStabMode(mode: com.hletrd.findx9tele.camera.VideoStabMode) {
+        // Mid-clip the HAL would apply the new OIS/EIS profile LIVE (setVideoStabMode rebuilds the
+        // repeating request immediately) — a visible stabilization discontinuity baked into the
+        // file. Same gate as every other session-reconfiguring control.
+        if (rejectIfRecording("Stop REC first")) return
         engine.setVideoStabMode(mode)
         _state.update { it.copy(videoStabMode = mode) }
         markChanged(FnSlot.STABILIZATION)
@@ -972,19 +1020,22 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onSetPhotoFnSlots(slots: List<FnSlot>) {
         val normalized = normalizedSlots(slots, FnSlot.PHOTO_DEFAULT)
         _state.update { it.copy(photoFnSlots = normalized, activeMemorySlot = null) }
-        saveSettingsIfEnabled()
+        // Debounced: the editor's Up/Down/Add/Remove taps fired one synchronous ~60-key commit per
+        // press; a reorder burst now lands as one trailing commit (loss window ≤ 500 ms, per the
+        // documented debounce contract).
+        scheduleSettingsSave()
     }
 
     override fun onSetVideoFnSlots(slots: List<FnSlot>) {
         val normalized = normalizedSlots(slots, FnSlot.VIDEO_DEFAULT)
         _state.update { it.copy(videoFnSlots = normalized, activeMemorySlot = null) }
-        saveSettingsIfEnabled()
+        scheduleSettingsSave()
     }
 
     override fun onSetMyMenuSlots(slots: List<FnSlot>) {
         val normalized = normalizedSlots(slots, FnSlot.MY_MENU_DEFAULT)
         _state.update { it.copy(myMenuSlots = normalized, activeMemorySlot = null) }
-        saveSettingsIfEnabled()
+        scheduleSettingsSave()
     }
 
     override fun onStoreMemorySlot(slot: MemorySlot) {
@@ -1024,6 +1075,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         saveSettingsIfEnabled()
     }
 
+    override fun onReviewOpenChange(open: Boolean) {
+        _state.update { it.copy(reviewOpen = open) }
+    }
+
     override fun onDeleteLastMedia() {
         val uri = _state.value.lastMediaUri ?: return
         // Delete the WHOLE shot: the displayed HEIF/JPEG plus the DNG sibling saved by the same
@@ -1038,7 +1093,14 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         showStatus("Deleted")
     }
 
-    private fun updateControls(slot: FnSlot? = null, block: (ManualControls) -> ManualControls) {
+    // [persist] defaults to "has an Fn slot": user-facing setters WITHOUT a slot (antibanding, AF
+    // spot size, flash, JPEG quality, …) pass persist = true explicitly — they mutate persisted
+    // fields too, and a Recents swipe-kill right after (say) a flash toggle silently lost it.
+    private fun updateControls(
+        slot: FnSlot? = null,
+        persist: Boolean = slot != null,
+        block: (ManualControls) -> ManualControls,
+    ) {
         val updated = block(_state.value.controls)
         engine.setAeMetering(usesExposureAnalysis(updated))
         _state.update { it.copy(controls = updated) }
@@ -1055,7 +1117,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // class the project fixed twice for mode/lens. A USER change schedules a debounced commit;
         // the app-side AE loop's driven writes are excluded (they'd re-arm the debounce ~6×/s
         // forever) — an AE-driven value is transient by nature and restored by the loop anyway.
-        if (slot != null) scheduleSettingsSave()
+        if (persist) scheduleSettingsSave()
     }
 
     /**
@@ -1101,6 +1163,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         refreshAudioInputStatus()
         engine.resume()
         refreshStandbyAudioMeter()
+        // Re-arm the OSD tickers paused in onStop (level only if its overlay is enabled).
+        if (_state.value.level) mainHandler.post(levelTicker)
+        mainHandler.post(orientationTicker)
+        mainHandler.post(infoTicker)
     }
     fun onStop() {
         // engine.pause() finalizes any in-flight recording; keep the UI in sync so we don't return
@@ -1109,6 +1175,14 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             mainHandler.removeCallbacks(recordTicker)
             _state.update { it.copy(isRecording = false) }
         }
+        // Nothing renders while backgrounded, but these self-rescheduling tickers kept waking the
+        // main thread every 100/200 ms (and 10 s) indefinitely — pure battery/Doze cost. Paused
+        // here, re-armed in onStart. The zoom glide is abandoned too (its target is stale by resume).
+        mainHandler.removeCallbacks(levelTicker)
+        mainHandler.removeCallbacks(orientationTicker)
+        mainHandler.removeCallbacks(infoTicker)
+        zoomEaseTarget = null
+        mainHandler.removeCallbacks(zoomEaseTicker)
         saveSettingsIfEnabled() // persist on background so the next launch restores them
         engine.setStandbyAudioMonitor(false) // release the mic while backgrounded
         engine.pause()

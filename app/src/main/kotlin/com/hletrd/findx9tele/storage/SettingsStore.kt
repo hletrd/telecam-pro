@@ -43,6 +43,10 @@ data class ExtraSettings(
     val videoCodec: VideoCodec = VideoCodec.HEVC,
     val bitrateLevel: BitrateLevel = BitrateLevel.ULTRA,
     val videoFrameRate: VideoFrameRate = VideoFrameRate.DEFAULT,
+    // User-selected recording resolution as "WxH" ("" = never chosen -> the engine auto-picks the
+    // largest size for the lens). A plain string keeps ExtraSettings JVM-pure (android.util.Size
+    // getters throw on the JVM); the ViewModel parses and re-validates it against the live caps.
+    val videoResolution: String = "",
     val openGate: Boolean = false,
     val recordAudio: Boolean = true,
     val audioGain: Float = 1f,
@@ -151,7 +155,11 @@ class SettingsStore(context: Context) {
                 colorEffect = enumOr(prefs.getString("${prefix}colorEffect", null), d.colorEffect),
                 flash = enumOr(prefs.getString("${prefix}flash", null), d.flash),
                 oisEnabled = prefs.getBoolean("${prefix}oisEnabled", d.oisEnabled),
-                zoomRatio = prefs.getFloat("${prefix}zoomRatio", d.zoomRatio),
+                // Clamped: this raw float is the ONE zoom path with no UI/caps gate (caps aren't
+                // known at load time), and a non-positive/NaN value would feed the zoom ease
+                // ticker's log-space math (a 0 makes target/cur = Inf -> NaN loop).
+                zoomRatio = prefs.getFloat("${prefix}zoomRatio", d.zoomRatio)
+                    .let { if (it.isFinite()) it.coerceIn(0.1f, 100f) else d.zoomRatio },
                 jpegQuality = prefs.getInt("${prefix}jpegQuality", d.jpegQuality),
             )
             val ed = ExtraSettings()
@@ -169,6 +177,7 @@ class SettingsStore(context: Context) {
                 videoCodec = enumOr(prefs.getString("${prefix}videoCodec", null), ed.videoCodec),
                 bitrateLevel = enumOr(prefs.getString("${prefix}bitrateLevel", null), ed.bitrateLevel),
                 videoFrameRate = enumOr(prefs.getString("${prefix}videoFrameRate", null), ed.videoFrameRate),
+                videoResolution = prefs.getString("${prefix}videoResolution", null) ?: ed.videoResolution,
                 openGate = prefs.getBoolean("${prefix}openGate", ed.openGate),
                 recordAudio = prefs.getBoolean("${prefix}recordAudio", ed.recordAudio),
                 audioGain = prefs.getFloat("${prefix}audioGain", ed.audioGain),
@@ -241,6 +250,7 @@ class SettingsStore(context: Context) {
         putString("${prefix}videoCodec", e.videoCodec.name)
         putString("${prefix}bitrateLevel", e.bitrateLevel.name)
         putString("${prefix}videoFrameRate", e.videoFrameRate.name)
+        putString("${prefix}videoResolution", e.videoResolution)
         putBoolean("${prefix}openGate", e.openGate)
         putBoolean("${prefix}recordAudio", e.recordAudio)
         putFloat("${prefix}audioGain", e.audioGain)
@@ -257,10 +267,12 @@ class SettingsStore(context: Context) {
         putBoolean("${prefix}preserveTeleconverter", e.preserveTeleconverter)
     }
 
-    private inline fun <reified T : Enum<T>> enumOr(name: String?, default: T): T =
+    // internal (not private): these two carry the file's documented "degrades gracefully"
+    // contract and are pure JVM code — unit tests exercise them directly.
+    internal inline fun <reified T : Enum<T>> enumOr(name: String?, default: T): T =
         name?.let { runCatching { enumValueOf<T>(it) }.getOrNull() } ?: default
 
-    private inline fun <reified T : Enum<T>> enumListOr(raw: String?, default: List<T>): List<T> {
+    internal inline fun <reified T : Enum<T>> enumListOr(raw: String?, default: List<T>): List<T> {
         val parsed = raw
             ?.split(',')
             ?.mapNotNull { name -> runCatching { enumValueOf<T>(name) }.getOrNull() }
