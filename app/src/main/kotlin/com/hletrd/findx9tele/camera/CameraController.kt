@@ -48,9 +48,17 @@ class CameraController(context: Context) {
     private val bg = HandlerThread("camera").apply { start() }
     private val handler = Handler(bg.looper)
     // Camera2 posts its callbacks through this executor; guard the post so a framework callback that
-    // lands AFTER close() quit the looper is dropped instead of thrown — OPPO's LegacyMessageQueue
+    // lands AFTER close() quit the looper is handled instead of thrown — OPPO's LegacyMessageQueue
     // raises IllegalStateException "sending message to a dead thread" rather than returning false.
-    private val executor = Executor { cmd -> runCatching { handler.post(cmd) } }
+    // A failed post must RUN the callback inline (binder thread), not drop it: a late onOpened is
+    // the ONLY code that closes a device the OS delivered after close() — dropping it leaks the
+    // CameraDevice handle until process death (repeated keyguard cold-opens can exhaust the
+    // per-process camera budget). Every StateCallback path checks `closed` first, so the inline run
+    // just closes the leaked handle and returns.
+    private val executor = Executor { cmd ->
+        val posted = runCatching { handler.post(cmd) }.getOrDefault(false)
+        if (!posted) runCatching { cmd.run() }
+    }
 
     /**
      * Posts [block] to the camera thread, or drops it if this controller is closing/closed. On a
@@ -72,6 +80,9 @@ class CameraController(context: Context) {
     // backgrounds mid-startup — e.g. onStop behind the keyguard closes us while the session is still
     // configuring) short-circuit instead of touching an already-disconnected device.
     @Volatile private var closed = false
+    // CAS gate for close(): reachable from main (pause), setupExecutor (reopens), and the GL-start
+    // continuation (openCamera → controller?.close()), so the closed check-then-act alone can race.
+    private val closeStarted = java.util.concurrent.atomic.AtomicBoolean(false)
 
     private lateinit var selection: TeleSelection
     private lateinit var caps: CameraCaps
@@ -199,7 +210,7 @@ class CameraController(context: Context) {
         if (vendorLogMode == 0) return
         runCatching { set(logVideoModeKey, vendorLogMode) }
             .onSuccess { if (BuildConfig.DEBUG) Log.i(TAG, "vendor log.video.mode=$vendorLogMode applied") }
-            .onFailure { Log.w(TAG, "vendor log.video.mode=$vendorLogMode rejected: ${it.message}") }
+            .onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "vendor log.video.mode=$vendorLogMode rejected: ${it.message}") }
     }
 
     // The QTI vendor "extras" (Auto HDR, in-sensor zoom, ideal RAW) were all removed: Auto HDR SIGABRTs
@@ -244,11 +255,11 @@ class CameraController(context: Context) {
         if (teleconverterMode) {
             runCatching {
                 set(oplusModeKey, OPLUS_CAMERA_MODE_TELEPHOTO_HASSELBLAD)
-            }.onFailure { Log.w(TAG, "Hasselblad camera mode hint rejected: ${it.message}") }
+            }.onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "Hasselblad camera mode hint rejected: ${it.message}") }
         }
         runCatching {
             set(oplusOriginalZoomRatioKey, effectiveZoom)
-        }.onFailure { Log.w(TAG, "original zoom ratio hint rejected: ${it.message}") }
+        }.onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "original zoom ratio hint rejected: ${it.message}") }
     }
 
     /** Live-updates the HAL video stabilization mode and re-issues the repeating request. */
@@ -327,7 +338,7 @@ class CameraController(context: Context) {
                 override fun onConfigured(s: CameraCaptureSession) {
                     if (closed) { runCatching { s.close() }; return } // closed before config completed
                     session = s
-                    Log.i(TAG, "Session configured (fallback=$attempt, hlg=$useHlg, jpeg=$useJpeg, raw=$useRaw, vendorLog=$vendorLogMode)")
+                    if (BuildConfig.DEBUG) Log.i(TAG, "Session configured (fallback=$attempt, hlg=$useHlg, jpeg=$useJpeg, raw=$useRaw, vendorLog=$vendorLogMode)")
                     startPreview()
                     onReady.onReady()
                 }
@@ -338,7 +349,7 @@ class CameraController(context: Context) {
                         Log.e(TAG, "Session configure failed; fallback ladder exhausted")
                         onError.onError(IllegalStateException("session configure failed"))
                     } else {
-                        Log.w(TAG, "Session configure failed at fallback $attempt; retrying at $configAttempt")
+                        if (BuildConfig.DEBUG) Log.w(TAG, "Session configure failed at fallback $attempt; retrying at $configAttempt")
                         runCatching { configureSession(onReady, onError) }
                             .onFailure { onError.onError(it) }
                     }
@@ -356,7 +367,7 @@ class CameraController(context: Context) {
             sp.applyTeleconverterHints()
             sp.applyVendorLog()
             sessionConfig.setSessionParameters(sp.build())
-        }.onFailure { Log.w(TAG, "session params with vendor stabilization/log failed: ${it.message}") }
+        }.onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "session params with vendor stabilization/log failed: ${it.message}") }
         camera.createCaptureSession(sessionConfig)
     }
 
@@ -377,12 +388,12 @@ class CameraController(context: Context) {
                 override fun onConfigured(s: CameraCaptureSession) {
                     if (closed) { runCatching { s.close() }; return }
                     session = s
-                    Log.i(TAG, "High-speed session configured (${highSpeedFps}fps)")
+                    if (BuildConfig.DEBUG) Log.i(TAG, "High-speed session configured (${highSpeedFps}fps)")
                     startHighSpeedPreview()
                     onReady.onReady()
                 }
                 override fun onConfigureFailed(s: CameraCaptureSession) {
-                    Log.w(TAG, "High-speed session config failed at ${highSpeedFps}fps; falling back to regular session")
+                    if (BuildConfig.DEBUG) Log.w(TAG, "High-speed session config failed at ${highSpeedFps}fps; falling back to regular session")
                     highSpeedFps = 0
                     configAttempt = 0
                     runCatching { configureSession(onReady, onError) }.onFailure { onError.onError(it) }
@@ -395,9 +406,9 @@ class CameraController(context: Context) {
             sp.applyTeleconverterHints()
             sp.applyVendorLog()
             sessionConfig.setSessionParameters(sp.build())
-        }.onFailure { Log.w(TAG, "high-speed session params with vendor stabilization/log failed: ${it.message}") }
+        }.onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "high-speed session params with vendor stabilization/log failed: ${it.message}") }
         runCatching { camera.createCaptureSession(sessionConfig) }.onFailure {
-            Log.w(TAG, "createCaptureSession(HIGH_SPEED) threw; falling back: ${it.message}")
+            if (BuildConfig.DEBUG) Log.w(TAG, "createCaptureSession(HIGH_SPEED) threw; falling back: ${it.message}")
             highSpeedFps = 0
             configAttempt = 0
             runCatching { configureSession(onReady, onError) }.onFailure { e -> onError.onError(e) }
@@ -430,7 +441,7 @@ class CameraController(context: Context) {
             }
             val list = s.createHighSpeedRequestList(builder.build())
             s.setRepeatingBurst(list, null, handler)
-        }.onFailure { Log.w(TAG, "startHighSpeedPreview skipped: ${it.message}") }
+        }.onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "startHighSpeedPreview skipped: ${it.message}") }
     }
 
     /**
@@ -531,7 +542,7 @@ class CameraController(context: Context) {
             }
             afTriggerPending = false
             s.setRepeatingRequest(builder.build(), callback, handler)
-        }.onFailure { Log.w(TAG, "startPreview skipped: ${it.message}") }
+        }.onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "startPreview skipped: ${it.message}") }
     }
 
     /**
@@ -574,12 +585,11 @@ class CameraController(context: Context) {
             Triple(active.left + active.width() / 2, active.top + active.height() / 2, f)
         }
 
-        val rw = (active.width() * fraction).toInt().coerceAtLeast(1)
-        val rh = (active.height() * fraction).toInt().coerceAtLeast(1)
-        // Clamp so the rectangle stays fully inside the active array even near an edge.
-        val left = (cx - rw / 2).coerceIn(active.left, active.right - rw)
-        val top = (cy - rh / 2).coerceIn(active.top, active.bottom - rh)
-        val regions = arrayOf(MeteringRectangle(left, top, rw, rh, MeteringRectangle.METERING_WEIGHT_MAX))
+        val box = meteringRect(active.left, active.top, active.right, active.bottom, cx, cy, fraction)
+            ?: return
+        val regions = arrayOf(
+            MeteringRectangle(box[0], box[1], box[2], box[3], MeteringRectangle.METERING_WEIGHT_MAX),
+        )
         builder.set(CaptureRequest.CONTROL_AE_REGIONS, regions)
         // AF regions are only meaningful when the AF engine is running (any non-MANUAL focus mode).
         if (controls.focusMode != FocusMode.MANUAL) builder.set(CaptureRequest.CONTROL_AF_REGIONS, regions)
@@ -726,12 +736,14 @@ class CameraController(context: Context) {
     }
 
     fun close() {
-        // Idempotent: a second close() must not run — the looper is already quitting, so posting the
-        // teardown again would throw on OPPO's LegacyMessageQueue. setCameraOverride() → openCamera()
-        // both call close() on the same controller, so this path is real.
-        if (closed) return
+        // Idempotent AND atomic: a second close() must not run — the looper is already quitting, so
+        // posting the teardown again would throw on OPPO's LegacyMessageQueue. setCameraOverride() →
+        // openCamera() both call close() on the same controller, AND close() is reachable from three
+        // threads (pause() on main, reopens on setupExecutor, openCamera() from the GL continuation),
+        // so a plain `if (closed) return; closed = true` check-then-act can double-run. CAS decides.
+        if (!closeStarted.compareAndSet(false, true)) return
         closed = true
-        handler.post {
+        val teardown = Runnable {
             pending?.let { p ->
                 synchronized(p) {
                     if (!p.done) {
@@ -752,6 +764,9 @@ class CameraController(context: Context) {
             jpegReader = null
             rawReader = null
         }
+        // Same dead-thread quirk postToCamera guards against: if this instance somehow closes after
+        // its looper died (OS kill ordering), the raw post throws instead of returning false.
+        runCatching { handler.post(teardown) }
         // Quit AFTER posting cleanup so the queued teardown runs first, then the thread exits.
         // (Previously the "camera" HandlerThread leaked once per controller / override switch.)
         bg.quitSafely()
@@ -799,3 +814,32 @@ internal fun sessionAttemptPlan(
     useJpeg = attempt < 3,
     useRaw = attempt < 1 && supportsRaw && standalone,
 )
+
+/**
+ * Pure ROI math behind tap/center/spot metering, extracted (like [sessionAttemptPlan]) so the
+ * edge clamp and the fraction ceiling are unit-testable. Returns `[left, top, width, height]`
+ * fully inside the active array, or null for a degenerate array. The fraction is defensively
+ * capped: `coerceIn(min, max)` throws once the rect reaches the array size (min > max), so a
+ * future spot-size/metering fraction at or beyond ~1.0 must clamp instead of crashing every
+ * tap-to-focus.
+ */
+internal fun meteringRect(
+    activeLeft: Int,
+    activeTop: Int,
+    activeRight: Int,
+    activeBottom: Int,
+    cx: Int,
+    cy: Int,
+    fraction: Float,
+): IntArray? {
+    val aw = activeRight - activeLeft
+    val ah = activeBottom - activeTop
+    if (aw <= 0 || ah <= 0) return null
+    val f = fraction.coerceIn(0.01f, 0.9f)
+    val rw = (aw * f).toInt().coerceAtLeast(1)
+    val rh = (ah * f).toInt().coerceAtLeast(1)
+    // Clamp so the rectangle stays fully inside the active array even near an edge.
+    val left = (cx - rw / 2).coerceIn(activeLeft, activeRight - rw)
+    val top = (cy - rh / 2).coerceIn(activeTop, activeBottom - rh)
+    return intArrayOf(left, top, rw, rh)
+}
