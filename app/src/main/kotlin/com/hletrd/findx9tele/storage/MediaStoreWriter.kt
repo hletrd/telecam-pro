@@ -16,28 +16,6 @@ import java.io.OutputStream
  */
 object MediaStoreWriter {
 
-    fun savePhotoBytes(
-        context: Context,
-        displayName: String,
-        mimeType: String,
-        bytes: ByteArray,
-        subDir: String = "X9Tele",
-    ): Uri? {
-        val uri = createPendingImage(context, displayName, mimeType, subDir) ?: return null
-        val ok = runCatching {
-            openOutputStream(context, uri)?.use { it.write(bytes) } ?: return null
-        }.isSuccess
-        if (!ok) {
-            delete(context, uri)
-            return null
-        }
-        if (!publish(context, uri)) {
-            delete(context, uri)
-            return null
-        }
-        return uri
-    }
-
     /**
      * Newest still THIS APP saved (scoped storage shows an app its own contributions without any
      * read permission). Seeds the review thumbnail on a fresh launch, so "last shot" works before
@@ -120,7 +98,9 @@ object MediaStoreWriter {
      */
     fun cleanupOrphanedPending(context: Context, subDir: String = "X9Tele") {
         val selection = "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?"
-        val args = arrayOf("DCIM/$subDir%")
+        // RELATIVE_PATH values are normalized with a trailing slash ("DCIM/X9Tele/"), so anchor the
+        // pattern on it — "DCIM/X9Tele%" would also sweep a hypothetical "DCIM/X9TeleOther/".
+        val args = arrayOf("DCIM/$subDir/%")
         for (base in listOf(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
