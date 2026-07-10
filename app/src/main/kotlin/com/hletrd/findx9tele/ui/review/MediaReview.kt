@@ -311,6 +311,11 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
             // transform (MediaPlayer ignores it on TextureView output).
             val rotated = vi.rotationDeg % 180 != 0
             val aspect = if (rotated) vi.height.toFloat() / vi.width else vi.width.toFloat() / vi.height
+            // key(uri): the factory captures uri/vi once, so a NEW clip landing while review is open
+            // (e.g. a hardware-key recording finishing) must recreate the view — otherwise the stale
+            // MediaPlayer keeps looping the old file. Recreation routes through
+            // onSurfaceTextureDestroyed, which releases the old player.
+            androidx.compose.runtime.key(uri) {
             AndroidView(
                 modifier = Modifier
                     .aspectRatio(aspect.coerceAtLeast(0.01f))
@@ -338,7 +343,10 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                                     mp.setDataSource(ctx, uri)
                                     mp.setSurface(android.view.Surface(st))
                                     mp.isLooping = true
-                                    mp.setOnPreparedListener { it.start() }
+                                    // The prepared callback fires LATER, after this runCatching has
+                                    // exited — closing review during the async prepare releases the
+                                    // player, and an unguarded start() on it crashes the main thread.
+                                    mp.setOnPreparedListener { p -> runCatching { p.start() } }
                                     mp.prepareAsync()
                                 }.onFailure {
                                     runCatching { mp.release() }
@@ -359,6 +367,7 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                     }
                 },
             )
+            }
             if (!playing) {
                 // Paused indicator: a simple ▶ so it's obvious a tap resumes.
                 Canvas(Modifier.size(64.dp)) {
