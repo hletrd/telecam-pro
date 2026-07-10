@@ -5,6 +5,12 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- The entire privacy story (PRIVACY.md, Play Data Safety) rests on the MERGED manifest having
+         no network permission. tools:node="remove" makes that build-enforced instead of true-by-
+         omission: a dependency AAR whose manifest sneaks INTERNET in would be stripped, not merged. -->
+    <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" tools:node="remove" />
+
     <uses-feature android:name="android.hardware.camera.any" android:required="true" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
 
@@ -19,8 +25,9 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.FindX9TeleCamera">
 
-        <!-- After registering com.hletrd.telecampro + our signing cert on OPPO's CameraUnit developer
-             portal, paste the issued AUTH_CODE here to enable CameraUnit features:
+        <!-- After registering me.hletrd.telecampro (the applicationId — NOT the Kotlin namespace)
+             + our signing cert on OPPO's CameraUnit developer portal, paste the issued AUTH_CODE
+             here to enable CameraUnit features:
              <meta-data android:name="com.coloros.ocs.camera.AUTH_CODE" android:value="…" /> -->
 
         <activity
