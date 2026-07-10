@@ -493,20 +493,24 @@ class CameraEngine(private val context: Context) {
     }
 
     /**
-     * Switches to one of the four rear lenses AND bundles teleconverter mode: the 3× lens enables it
-     * (afocal 180° flip + gyro-EIS scaled to ~300 mm), any other lens disables it — one action, one
-     * camera reopen. Resolves the [LensChoice]'s target focal to a concrete (standalone-preferred)
-     * camera id so nothing is hardcoded. No-op mid-recording (reconfiguring under the encoder
-     * corrupts the clip); the UI also gates it.
+     * Switches to one of the four rear lenses — by default bundling teleconverter mode: the 3× lens
+     * enables it (afocal 180° flip + gyro-EIS scaled to ~300 mm), any other lens disables it — one
+     * action, one camera reopen. [teleconverterOverride] lets a caller that already knows the desired
+     * final teleconverter state (the settings-restore path, where "preserve lens" and "preserve TELE"
+     * are independent toggles — see CameraViewModel.applyLoaded) set it in the SAME reopen instead of
+     * bundling then immediately correcting it via a second [setTeleconverterMode] call, which would
+     * otherwise reopen the camera twice in a row on launch. Resolves the [LensChoice]'s target focal to
+     * a concrete (standalone-preferred) camera id so nothing is hardcoded. No-op mid-recording
+     * (reconfiguring under the encoder corrupts the clip); the UI also gates it.
      */
-    fun setLens(choice: LensChoice) {
+    fun setLens(choice: LensChoice, teleconverterOverride: Boolean = choice.isTeleconverterLens) {
         if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
         lensChoice = choice
         val id = CameraSelector2.overrideIdForFocal(manager, choice.targetEquivMm)
         if (id == null) { onStatus?.invoke("${choice.label} unavailable"); return }
         // Set the teleconverter flag BEFORE the reopen so applyStabilization() inside setCameraOverride
         // picks the right rotation + EIS focal for the new lens in the same pass.
-        teleconverterMode = choice.isTeleconverterLens
+        teleconverterMode = teleconverterOverride
         setCameraOverride(id)
     }
 

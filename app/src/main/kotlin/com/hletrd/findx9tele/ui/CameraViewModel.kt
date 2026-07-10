@@ -190,10 +190,13 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // Manual/priority modes need luma analysis even when scopes are hidden: priority AE drives
         // from it, and full manual uses it for the live exposure meter.
         engine.setAeMetering(usesExposureAnalysis(c))
-        engine.setLens(restoredLens)
+        // Pass the resolved teleconverter state directly so a "preserve lens but not TELE" restore
+        // (independent toggles, e.g. lens=3× with the converter not preserved as attached) reopens the
+        // camera once instead of setLens bundling TELE on and a separate setTeleconverterMode call
+        // immediately correcting it back off.
+        engine.setLens(restoredLens, restoredTeleconverter)
         applyEngineTransfer(e.mode, e.transfer)
         engine.setGammaAssist(e.gammaAssist)
-        engine.setTeleconverterMode(restoredTeleconverter)
         engine.setVideoStabMode(e.videoStabMode)
         engine.setAspectRatio(e.aspectRatio)
         engine.setVideoCodec(e.videoCodec)
