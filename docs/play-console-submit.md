@@ -24,7 +24,8 @@ Do not upload debug APKs or older unsigned/stale release bundles. Use the signed
 - APK signing: v2 signature valid; certificate matches the upload certificate above
 - APK alignment: 16 KiB zip alignment passed
 - Manifest: target/min SDK 36, no `INTERNET`, no `DEBUGGABLE`
-- Build gates: 87 Gradle tasks passed, including 63 unit tests and `lintRelease`
+- Build gates: 87 Gradle tasks passed, including the unit-test suite (109 tests at last count —
+  re-verify with the fresh release gate) and `lintRelease`
 - PMA110 smoke test: DNG+HEIF photo, 4K HLG/AAC video, Open Gate 4:3 video, settings
   persistence, and no crash/ANR all passed
 

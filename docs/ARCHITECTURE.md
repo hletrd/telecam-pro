@@ -158,6 +158,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | Thread / Executor | Owner | Runs |
 |---|---|---|
 | **Main (UI)** | Android framework | Compose recomposition, ViewModel StateFlow updates, lifecycle callbacks (onStart/onStop). |
+| **mainHandler tickers** (main-thread Handler) | CameraViewModel | Periodic self-reposting Runnables: recordTicker (200 ms elapsed-time readout), levelTicker (100 ms horizon roll), orientationTicker (200 ms device orientation), infoTicker (10 s battery/storage), zoomEaseTicker (glides zoomRatio toward the hardware-key target). |
 | **gl-pipeline** HandlerThread | GlPipeline | EGL operations, texture sampling, rendering, GL shader execution. |
 | **camera** HandlerThread | CameraController | Camera2 lifecycle and capture callbacks. Copies JPEG bytes while the Image is live and writes DNG synchronously. |
 | **setupExecutor** (single-thread) | CameraEngine | Camera characteristic IPCs (CameraManager.getCameraCharacteristics) at startup and on camera override. Debug capability logging. |
@@ -525,7 +526,7 @@ The fixed settings panel has nine left-rail tabs:
 
 **Quick Fn dials (ManualDials.kt):**
 
-Horizontal scrolling wheels for 4 most-frequent controls (focus, ISO, shutter, WB).
+Horizontal scrolling wheels for 6 controls (focus, shutter, ISO, white balance, EV, zoom).
 
 **Control application:**
 
@@ -570,8 +571,7 @@ See `CLAUDE.md` § **Toolchain** for complete toolchain versions and build setup
 ./gradlew :app:lintRelease :app:assembleRelease :app:bundleRelease  # signing credentials required
 ```
 
-**Test suite:** 63 tests across `AutoExposureTest`, `CameraSelector2Test`, `ExposureMathTest`,
-`FocusMappingTest`, `RotationMathTest`, and `VideoCapabilitiesTest`.
+**Test suite:** 109 tests across the 13 test classes under `app/src/test/`.
 
 **Device verification:**
 ```bash

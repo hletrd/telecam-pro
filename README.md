@@ -30,7 +30,7 @@
 - **Volume-key hardware shutter**: vibration-free release at 300 mm (photo capture / video start-stop).
 - **Directional audio (Sound Focus / Sound Stage)**: drives the device's accepted vendor audio-HAL controls; the acoustic effect still needs an off-axis real-scene A/B check.
 - **Photos**: HEIF + JPEG + RAW (DNG), any combination, with gravity-derived orientation correction.
-- **Video**: HEVC Main10 profiles for **HLG / O-Log2** plus 8-bit HEVC/AVC SDR. The stable v1 Camera2 and EGL input is SDR/8-bit, so HLG/O-Log2 is not marketed as end-to-end 10-bit capture. 4K UHD max (HEVC/AVC HW ceiling); 24/30/60 fps class + NTSC drop-frame (23.976/29.97/59.94); **Low → Max bitrate presets up to ~120 Mbps at 4K**; Open-Gate 4:3-aspect recording (2560×1920 verified on the tele); AAC 48 kHz stereo.
+- **Video**: HEVC Main10 profiles for **HLG / O-Log2** plus 8-bit HEVC/AVC SDR. The stable v1 Camera2 and EGL input is SDR/8-bit, so HLG/O-Log2 is not marketed as end-to-end 10-bit capture. 4K UHD max (HEVC/AVC HW ceiling); 24/25/30/60 fps class + NTSC drop-frame (23.976/29.97/59.94); **Low → Max bitrate presets up to ~120 Mbps at 4K**; Open-Gate 4:3-aspect recording (2560×1920 verified on the tele); AAC 48 kHz stereo.
 - **Video stabilization = HAL OIS+EIS** (the stock "super steady" path): OIS physically cuts per-frame motion blur at 300 mm (Off / Standard / Active — the in-app labels).
 - **Vendor/HAL stability**: unstable or unmuxable device paths such as Auto HDR, high-speed 120 fps,
   AV1 software encode, APV MP4 muxing, and native vendor log are excluded from the shipped UI. O-Log2
@@ -123,8 +123,7 @@ files, not just session setup logs:
 
 - ✅ **Build & gates**: `./gradlew testDebugUnitTest lintRelease assembleRelease bundleRelease`
   passes (87 Gradle tasks).
-- ✅ **Unit tests**: 63 tests across `AutoExposureTest`, `CameraSelector2Test`,
-  `ExposureMathTest`, `FocusMappingTest`, `RotationMathTest`, and `VideoCapabilitiesTest`.
+- ✅ **Unit tests**: 109 tests across the 13 test classes under `app/src/test/`.
 - ✅ **Release device smoke test on PMA110**: fresh launch starts at 1x / 23 mm with TELE off;
   Preserve Lens and Preserve TELE default on and persist independently; rapid double-shutter produces
   one valid DNG+HEIF pair; 4K HLG records HEVC Main10 at 30000/1001 with AAC; Open Gate records

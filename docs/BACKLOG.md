@@ -16,7 +16,8 @@ new hash and must update that sheet after the full release gate is repeated.
 
 ### Verified 2026-07-10
 
-- Release build, bundle, lint, and 63 unit tests passed (87 Gradle tasks).
+- Release build, bundle, lint, and 63 unit tests passed (87 Gradle tasks; suite has since grown to
+  109 tests — re-run the release gate before upload, as this doc already mandates).
 - `bundletool 1.18.3 validate`, APK v2 signing, and 16 KiB zip alignment passed.
 - Manifest has target/min SDK 36, no `INTERNET`, and no `DEBUGGABLE` flag.
 - The installed PMA110 release APK matched the local verified APK byte-for-byte.
