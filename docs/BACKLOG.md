@@ -264,18 +264,22 @@ The user explicitly wants all of these; ordered by their stated priority.
 - 🔴 **Slow-motion playback metadata**, **geotagging** (needs location permission), **custom save
   folder/filename**, **focus stacking / advanced bracketing UX**.
 
-## 4. Play-release readiness 🔴
+## 4. Play-release readiness 🟢 (verified 2026-07-10)
 
-- 🟡 Release build: signing config is wired and release bundling fails fast if
-  `keystore.properties` is missing, so an unsigned AAB cannot be mistaken for a Play-ready artifact.
-  R8/minify remains intentionally off for v1 until a full device re-verification pass.
-- 🔴 Single-device distribution strategy (device-catalog restriction or a clear store listing);
-  `minSdk 36` already excludes most devices.
-- 🟡 Data-safety form + privacy policy: policy file, app-internal link, no-network claim, and listing
-  copy are in place; Play Console form submission remains.
-- 🟡 Store assets: icon + feature graphic + listing text are present. Portrait screenshots exist but
-  are stale after the 300 mm OSD / 29.97p / Fn-MR / TELE toggle / review-zoom UI pass; retake on
-  PMA110 before Play upload. `versionCode`/`versionName` and changelog remain.
+- ✅ **Signed AAB + APK built and artifact-verified** (`bundleRelease`/`assembleRelease`/`lintRelease`
+  all green): upload-cert SHA-256 matches `docs/play-console-submit.md`
+  (`A6:D0:A0:3F:…:BC:AF`), merged manifest = CAMERA + RECORD_AUDIO only (**no INTERNET** — the OCS
+  SDK injects nothing), not debuggable. R8/minify intentionally off for v1.
+- ✅ Data-safety form answers + privacy policy + listing copy aligned with the shipped pipeline
+  (`docs/play-data-safety.md`, `docs/play-store-listing.md`; "4K DCI" corrected to 4K UHD — the
+  device Video tab offers 3840×2160 max). Console form submission itself remains (manual).
+- ✅ Store assets: icon, feature graphic, six 1440×2880 PMA110 screenshots (Git LFS) refreshed
+  2026-07-10. `versionCode=1` / `versionName=1.0` for the first upload.
+- 🔴 Manual Play Console steps remain: create app, upload AAB to internal testing, paste listing,
+  Data Safety form, device catalog restriction (CPH2841/PMA110), rollout. See
+  `docs/play-console-submit.md`.
+- 🟡 Final on-device release smoke test pending a device unlock (ColorOS holds `pm install`
+  indefinitely while locked).
 
 ## 5. Engineering hygiene 🟢/🟡
 
