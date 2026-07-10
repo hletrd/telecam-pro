@@ -1,7 +1,7 @@
 # CLAUDE.md — Find X9 Ultra Teleconverter Camera
 
 Project-level instructions for any agent working in this repo. Read this **first**, then
-`docs/BACKLOG.md` (what's left) and `docs/ARCHITECTURE.md` (how it's built). This file overrides
+`docs/BACKLOG.md` (release status and deferred work) and `docs/ARCHITECTURE.md` (how it's built). This file overrides
 default behavior; user/global `~/.claude/CLAUDE.md` still applies on top (git rules, latest-versions,
 destructive-action safety, look-up-before-answering).
 
@@ -55,11 +55,14 @@ export PATH="$JAVA_HOME/bin:$PATH"
 ## Build / deploy / verify loop
 
 ```bash
-# build + unit tests (both must pass before you claim done)
-./gradlew :app:assembleDebug :app:testDebugUnitTest
+# normal implementation gate
+./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
+
+# Play-release gate (requires local signing credentials)
+./gradlew :app:lintRelease :app:assembleRelease :app:bundleRelease
 
 # device is over wireless ADB — IP/port change between sessions, ask the user for the current one
-adb connect 172.30.50.127:<port>
+adb connect <device-ip>:<port>
 # debug installs as me.hletrd.telecampro.debug (applicationIdSuffix) — a SEPARATE app from the
 # release me.hletrd.telecampro, so runtime permissions must be granted once per package.
 adb install -r app/build/outputs/apk/debug/app-debug.apk
@@ -74,6 +77,10 @@ adb exec-out screencap -p > /tmp/shot.png
 
 `pm grant` for runtime permissions **fails on ColorOS** (`GRANT_RUNTIME_PERMISSIONS not allowed`) —
 the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once.
+
+On this multi-homed Mac, direct wireless ADB can return `No route to host` even when the phone is
+reachable. In that case, proxy the current phone port to a temporary loopback port and connect ADB to
+`127.0.0.1:<proxy-port>`. Wireless-debugging ports are session-specific; stop the proxy after use.
 
 ## Hard-won device facts (do not relearn these the hard way)
 
@@ -136,14 +143,17 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
 - **Controls apply is a THROTTLE, not a debounce.** `CameraViewModel.updateControls` applies the newest
   value at ~12 Hz *while* a gesture continues (a debounce starved: continuous pinch reset the timer so
   zoom only landed on finger-up). Keep the `applyScheduled`-flag trailing throttle.
-- **Output-file capture verified on device (2026-07-03).** Pulled + inspected real files: HEIF =
-  HEVC 4096×3072 (4:3 full sensor); DNG = valid 16-bit RAW (`OPPO PMA110`, ISO/exposure EXIF);
-  video = HEVC 4K (3840×2160) ~29.97 fps drop-frame, ~172 Mbps, AAC audio, playable. Unique
-  filenames confirmed (monotonic counter). **Capture upright-ness in a held portrait/landscape pose
-  is still unverified** (needs a lit, deliberately-held shot) — see `docs/BACKLOG.md`.
-- **Low-light AE was pinned at 1/30s.** A fixed `[30,30]` target-fps range caps exposure at 1/30s, so
-  AE can't brighten dark scenes. Auto exposure uses `CameraCaps.autoFpsRange()` (lowest floor at the
-  target max) so AE can slow the preview for a brighter live view. Manual exposure still pins fps.
+- **Release output files verified on PMA110 (2026-07-10).** A serialized rapid double-shutter test
+  produced exactly one valid DNG+HEIF pair (DNG 4080×3064, 16-bit). A 4K HLG clip was HEVC Main10
+  3840×2160 at 30000/1001 with AAC 48 kHz stereo; Open Gate produced HEVC Main10 2560×1920 4:3 at
+  30000/1001 with AAC. The release smoke test had no crash or ANR. **Saved-file uprightness in a
+  deliberately held, lit portrait/landscape pose remains a residual field check** — see
+  `docs/BACKLOG.md`.
+- **Photo and video AUTO use different target-FPS policies.** A fixed `[30,30]` range blocks photo
+  AE from extending exposure in low light, so photo AUTO uses `CameraCaps.autoFpsRange()` with the
+  lowest available floor. Video AUTO must hold the selected recording cadence: without that pin, a
+  29.97 selection produced a real 25 fps file in low light. `CameraController.pinAutoFps` is therefore
+  enabled in video mode. App-side/manual exposure also pins the selected FPS.
 - **Tap-to-focus uses `AF_MODE_AUTO`.** CONTINUOUS + a bare trigger just holds the (often wrong)
   current distance; a tapped point sets a metering region and forces a one-shot AUTO scan that LOCKS
   (`touchAfActive`, cleared on focus-mode change). AF reaches FOCUSED on device.
@@ -153,9 +163,10 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
   Only **HEVC + AVC** are offered (both HW). **AV1 was removed** (the only AV1 encoder here is SW
   `c2.android.av1.encoder` — too slow/low-res to ship). **APV** (`VideoCodec.APV`, HW
   `c2.qti.apv.encoder`) is defined but **intentionally EXCLUDED**: Android's MediaMuxer (API 36) rejects
-  APV in an MP4 container (device-verified — it errors the encoder mid-drain).
-  `VideoFrameRate` gates drop-frame/high-speed fps per resolution (8K≤30; 120 only where a high-speed
-  config exists). Resolutions come from the selected camera's `StreamConfigurationMap`.
+  APV in an MP4 container (device-verified — it errors the encoder mid-drain). Resolutions come from
+  the selected camera's `StreamConfigurationMap`, with the shipping selector capped at 3840 pixels
+  wide; PMA110 tops out at 4K UHD in the UI. Standard and NTSC drop-frame rates are gated against the
+  selected size. High-speed 120 fps is excluded because its constrained session crashes this HAL.
 - **Settings persist across launches** via `storage/SettingsStore.kt` (SharedPreferences, enums by
   name, defensive load). Gated by a "Remember Settings" toggle that **defaults ON**; saved on
   background, restored on launch (pushed to the engine pre-start). Fresh launch defaults to the 1×
@@ -186,10 +197,10 @@ the app requests CAMERA/RECORD_AUDIO itself at runtime; grant on the device once
   request+session keys. So we **no longer force video-stab OFF**: `VideoStabMode { OFF, STANDARD
   ("OIS Std"), ENHANCED ("OIS Enhanced") }` sets `CONTROL_VIDEO_STABILIZATION_MODE` on the repeating
   request (+ the vendor int mirror). **Device-verified: result metadata `ois=1`, `vstab=2` — OIS
-  physically engaged at 1/30 s, preview + 4K recording fine.** App-side gyro EIS was **removed
-  entirely** (it warps whole frames and can't de-blur; the HAL path is strictly better) — there is no
-  `GYRO` mode. The Explorer-specific `com.oplus.ois.*` / `eisrealtime` tags remain gated — but the
-  generic HAL video-stab is enough.
+  physically engaged at 1/30 s, preview + 4K recording fine.** App-side gyro EIS is **disabled**
+  (`CameraEngine` seeds `gl.setEis(false, 0f, 0f)`); its sensor helper remains for level and capture
+  orientation, but there is no user-facing `GYRO` mode. The Explorer-specific `com.oplus.ois.*` /
+  `eisrealtime` tags remain gated — but the generic HAL video-stab is enough.
 - **300 mm teleconverter OIS integration depends on OPPO CameraUnit availability (2026-07-08).**
   The 4.3× teleconverter stabilization profile appears to use CameraUnit extension parameters that
   are not exposed through raw Camera2 request/result keys. The app applies the public Camera2 overlap
@@ -242,9 +253,9 @@ MainActivity → CameraViewModel(CameraUiState/CameraActions) → CameraEngine (
 CameraEngine ├─ CameraSelector2  pick tele (closest-to-70mm, standalone; pickBest pure+tested)
              ├─ CameraController Camera2 session, fallback ladder, capture, 3A/tap-AF
              ├─ RotationMath     pure preview/capture/EXIF rotation (unit-tested)
-             ├─ GlPipeline       GL thread: afocal 180° + EIS + OETF + scopes + AE luma readback
+             ├─ GlPipeline       GL thread: afocal 180° + OETF + scopes + AE luma readback
              │    └─ FlipRenderer / EglCore / Shaders
-             ├─ GyroEis          gyro shake + gravity roll + device orientation
+             ├─ GyroEis          gravity roll + held-device orientation (GL shake warp disabled)
              ├─ AutoExposure     app-side S/ISO-priority AE loop (meters GL luma; pure+tested)
              ├─ capture/HeifCapture (pixel-rotate) + DngCapture (EXIF orient)
              ├─ video/VideoRecorder (HEVC/AVC, HLG/O-Log2/SDR) + EncoderCaps + ColorProfiles
@@ -271,7 +282,7 @@ own threads/executors.
 
 ## Pointers
 
-- `docs/BACKLOG.md` — prioritized remaining work + known-unverified items (READ THIS SECOND).
+- `docs/BACKLOG.md` — release status, manual Play steps, residual checks, and deferred work.
 - `docs/ARCHITECTURE.md` — module map, threading model, data flow, gotchas in depth.
 - `docs/superpowers/specs/2026-07-01-...md` — original design doc (intent; some details superseded
   by the as-built notes above).

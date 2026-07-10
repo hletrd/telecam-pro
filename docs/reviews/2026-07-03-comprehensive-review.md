@@ -1,5 +1,8 @@
 # Comprehensive Review — Find X9 Ultra Teleconverter Camera
 
+> **Archived snapshot (2026-07-03).** Findings reflect the code at review time and may already be
+> resolved. Use `docs/BACKLOG.md` for active work and verify any finding against the current source.
+
 **Date:** 2026-07-03 · **Scope:** whole app (~7.5k LOC Kotlin, Camera2 + Compose) ·
 **Method:** 4 parallel subsystem reviews (camera-core / GL·EIS·video / UI·storage / pro-feature-gap)
 cross-verified against a hands-on read of the record→file pipeline.

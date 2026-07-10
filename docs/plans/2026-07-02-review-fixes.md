@@ -1,5 +1,8 @@
 # Review Fix Plan — 2026-07-02
 
+> **Archived plan.** Checkbox state below is historical and is not the current backlog. See
+> `docs/BACKLOG.md` for active release work.
+
 Consolidate and deduplicate findings from 4 reviews (code-reviewer, perf-reviewer, architect, security-reviewer, `.context/reviews/`) and track resolution status. Rule: every finding is either (a) fixed or (b) deferred with recorded reason. No silent omissions.
 
 Status: ☐ not started · ◐ in progress · ☑ completed · ⏸ deferred (reason)

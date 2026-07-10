@@ -166,7 +166,7 @@ class CameraEngine(private val context: Context) {
         setupExecutor.execute { runCatching { VendorTagInspector.logAll(manager) } }
     }
 
-    /** Rotation (afocal 180° only in teleconverter mode) + gyro-EIS focal scaled to the effective FL. */
+    /** Apply afocal preview rotation and the selected HAL stabilization mode; keep GL EIS disabled. */
     private fun applyStabilization() {
         val c = caps ?: return
         // The camera SurfaceTexture transform already rotates the sampled image by the sensor
@@ -175,9 +175,8 @@ class CameraEngine(private val context: Context) {
         // that ~90° SurfaceTexture rotation swaps the displayed width/height.
         gl.setSensorOrientation(c.sensorOrientation)
         gl.setRotationDegrees(previewRotationDegrees())
-        // App-side gyro EIS was removed (unusable at 300 mm): the HAL video-stab modes own
-        // stabilization now, so GL EIS stays permanently disabled — it can never double-warp. Push
-        // the resolved HAL control mode to the live request.
+        // App-side gyro EIS is disabled (unusable at 300 mm): the HAL video-stab modes own
+        // stabilization, so GL EIS cannot double-warp. Push the resolved HAL mode to the live request.
         gl.setEis(false, 0f, 0f)
         controller?.setVideoStabMode(c.videoStabControlMode(videoStabMode))
     }
@@ -516,7 +515,7 @@ class CameraEngine(private val context: Context) {
         val id = CameraSelector2.overrideIdForFocal(manager, choice.targetEquivMm)
         if (id == null) { onStatus?.invoke("${choice.label} unavailable"); return }
         // Set the teleconverter flag BEFORE the reopen so applyStabilization() inside setCameraOverride
-        // picks the right rotation + EIS focal for the new lens in the same pass.
+        // picks the right rotation and HAL mode for the new lens in the same pass.
         teleconverterMode = teleconverterOverride
         setCameraOverride(id)
     }
@@ -544,7 +543,7 @@ class CameraEngine(private val context: Context) {
             caps = c
             onCapsReady?.invoke(c)
             // The new lens can expose different output sizes; refresh videoSize + the GL camera size so
-            // aspect (FlipRenderer "cover"), EIS focal scaling, and the encoder size match the new lens.
+            // the preview aspect (FlipRenderer "cover") and encoder size match the new lens.
             videoSize = chooseVideoSize(sel)
             onVideoSizeChosen?.invoke(videoSize)
             gl.setCameraPreviewSize(videoSize.width, videoSize.height)

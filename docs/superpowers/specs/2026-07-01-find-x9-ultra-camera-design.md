@@ -1,5 +1,8 @@
 # Find X9 Ultra Teleconverter Camera App — Design Document
 
+> **Original design snapshot.** This records intent from 2026-07-01. The as-built source,
+> `CLAUDE.md`, and `docs/ARCHITECTURE.md` take precedence where implementation diverges.
+
 - Date: 2026-07-01
 - Target device: OPPO Find X9 Ultra (single device), Android 16 (API 36)
 - Purpose: Professional camera app for 3x periscope telephoto lens + afocal teleconverter (300mm equivalent) shooting

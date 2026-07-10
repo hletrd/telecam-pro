@@ -1,5 +1,8 @@
 # Cycle 1 Fix Plan — 2026-07-03
 
+> **Archived plan.** Checkbox state below is historical and is not the current backlog. See
+> `docs/BACKLOG.md` for active release work.
+
 Derived from `.context/reviews/_aggregate.md` (20 findings). Rule: every finding is **scheduled** or **deferred with recorded reason** — nothing silently dropped. Deferrals preserve original severity and state an exit criterion (per repo `CLAUDE.md` + global git rules: GPG-signed `-S`, Conventional Commits + gitmoji, no `Co-Authored-By`, fine-grained, `pull --rebase` before push).
 
 Status: ☐ todo · ◐ in progress · ☑ done (build+lint+unit green) · ⏸ deferred
