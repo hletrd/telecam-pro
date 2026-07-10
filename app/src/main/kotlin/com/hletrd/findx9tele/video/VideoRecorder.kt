@@ -19,6 +19,7 @@ import androidx.core.content.ContextCompat
 import com.hletrd.findx9tele.camera.AudioInputPreference
 import com.hletrd.findx9tele.camera.AudioScene
 import com.hletrd.findx9tele.camera.ColorTransfer
+import com.hletrd.findx9tele.camera.RotationMath
 import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.storage.MediaStoreWriter
 import java.nio.ByteBuffer
@@ -30,8 +31,10 @@ import kotlin.math.sqrt
 /**
  * Records HEVC Main10 (Rec.2020, HLG/Log) video plus optional AAC audio into a MediaStore MP4.
  *
- * The 180° flip is already baked into the frames by [com.hletrd.findx9tele.gl.GlPipeline], which
- * renders into [inputSurface]; therefore NO MediaMuxer orientation hint is set. Video output is
+ * Orientation is a two-part scheme: the afocal 180° flip is already baked into the frame PIXELS by
+ * [com.hletrd.findx9tele.gl.GlPipeline] (which renders into [inputSurface]), and the MediaMuxer
+ * orientation hint carries ONLY the physical device tilt captured at record start
+ * ([RotationMath.videoOrientationHint]) so a landscape-held clip plays upright. Video output is
  * drained synchronously on its own thread; audio (if enabled) runs a second capture+encode thread.
  * Both write to one MediaMuxer guarded by [muxerLock]; the muxer starts once all tracks are added.
  */
@@ -104,7 +107,7 @@ class VideoRecorder(private val context: Context) {
         this.audioGain = audioGain
         this.audioScene = audioScene
         this.audioZoom = audioZoom
-        this.audioOrientation = ((orientationHint % 360) + 360) % 360
+        this.audioOrientation = RotationMath.videoOrientationHint(orientationHint)
         this.audioInputPreference = audioInputPreference
         this.onRoute = onRoute
         this.onLevel = onLevel
@@ -115,19 +118,23 @@ class VideoRecorder(private val context: Context) {
             muxer = MediaMuxer(descriptor.fileDescriptor, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
             // GL already bakes the afocal 180° into the frames; this hint adds ONLY the physical device
             // orientation (0/90/180/270) captured at record start, so a landscape-held clip plays
-            // upright. Must be set before start(). Sign is device-verify (may need (360-deg)%360).
-            runCatching { muxer?.setOrientationHint(((orientationHint % 360) + 360) % 360) }
+            // upright. Must be set before start(). Sign is device-verify (see RotationMath helper doc).
+            runCatching { muxer?.setOrientationHint(RotationMath.videoOrientationHint(orientationHint)) }
 
             val vFmt = ColorProfiles.videoFormat(codec, size.width, size.height, encoderRate, captureRate, bitRate, transfer)
             val vCodec = MediaCodec.createEncoderByType(ColorProfiles.mimeFor(codec))
+            // Assign the field BEFORE configure/createInputSurface/start: any of those can throw, and
+            // a codec held only in the local would slip past the failure cleanup below — orphaning a
+            // live HW encoder instance until process death.
+            videoCodec = vCodec
             vCodec.configure(vFmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             inputSurface = vCodec.createInputSurface()
             vCodec.start()
-            videoCodec = vCodec
         }.isSuccess
 
         if (!videoOk) {
             // Video encoder/muxer setup failed; clean up whatever got created and bail out.
+            runCatching { inputSurface?.release() }
             runCatching { videoCodec?.stop() }
             runCatching { videoCodec?.release() }
             runCatching { muxer?.release() }
@@ -172,24 +179,32 @@ class VideoRecorder(private val context: Context) {
         videoThread?.join(3000)
         audioThread?.join(3000)
 
-        if (videoThread?.isAlive == true || audioThread?.isAlive == true) {
+        // A drain thread still alive after its join timeout is wedged INSIDE the codec/muxer (e.g. a
+        // dequeueOutputBuffer that never returns). Releasing those objects out from under it races
+        // native MediaCodec/MediaMuxer state — a JVM-level catch does not stop a native SIGSEGV — so
+        // on a wedge we mark the recording failed and deliberately LEAK codec/muxer/fd instead of
+        // releasing them (rare error path; the clip is deleted below either way).
+        val drainWedged = videoThread?.isAlive == true || audioThread?.isAlive == true
+        if (drainWedged) {
             recordFailure(IllegalStateException("Encoder drain timed out"))
         }
 
         runCatching { audioRecord?.release() }
         audioRecord = null
 
-        synchronized(muxerLock) {
-            if (muxerStarted) {
-                runCatching { muxer?.stop() }.onFailure(::recordFailure)
+        if (!drainWedged) {
+            synchronized(muxerLock) {
+                if (muxerStarted) {
+                    runCatching { muxer?.stop() }.onFailure(::recordFailure)
+                }
             }
+            runCatching { videoCodec?.stop() }
+            runCatching { videoCodec?.release() }
+            runCatching { audioCodec?.stop() }
+            runCatching { audioCodec?.release() }
+            runCatching { muxer?.release() }
+            runCatching { pfd?.close() }
         }
-        runCatching { videoCodec?.stop() }
-        runCatching { videoCodec?.release() }
-        runCatching { audioCodec?.stop() }
-        runCatching { audioCodec?.release() }
-        runCatching { muxer?.release() }
-        runCatching { pfd?.close() }
 
         // A track alone is not enough: require at least one successfully muxed video sample and no
         // asynchronous codec/muxer error. Keep failed or empty recordings out of the gallery.
@@ -314,9 +329,11 @@ class VideoRecorder(private val context: Context) {
         applyAudioScene(record)
 
         val codec = MediaCodec.createEncoderByType(ColorProfiles.MIME_AAC)
+        // Field assignment BEFORE configure/start: if either throws, the caller's failure cleanup
+        // releases audioCodec — a local-only codec would leak the HW encoder instance.
+        audioCodec = codec
         codec.configure(ColorProfiles.aacFormat(audioChannelCount), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
         codec.start()
-        audioCodec = codec
 
         audioThread = thread(name = "audio-encode") {
             try {
@@ -358,8 +375,10 @@ class VideoRecorder(private val context: Context) {
                     "vendor_audiorecord_focus_zoom;vendor_audiorecord_orientation",
             )
         }.getOrNull()
-        Log.i(TAG, "audioScene=$audioScene applied (zoom=$audioZoom orient=$audioOrientation) " +
-            "trackSupport=[$support] echo=[$echo]")
+        if (com.hletrd.findx9tele.BuildConfig.DEBUG) {
+            Log.i(TAG, "audioScene=$audioScene applied (zoom=$audioZoom orient=$audioOrientation) " +
+                "trackSupport=[$support] echo=[$echo]")
+        }
     }
 
     private fun runAudio(record: AudioRecord, codec: MediaCodec) {
@@ -453,12 +472,21 @@ class VideoRecorder(private val context: Context) {
         val count = samples.remaining()
         if (count == 0) return 0f
         var sumSquares = 0.0
-        for (i in 0 until count) {
-            val amplified = (samples[i] * gain).roundToInt()
-                .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
-                .toShort()
-            samples.put(i, amplified)
-            sumSquares += amplified.toDouble() * amplified.toDouble()
+        if (gain == 1f) {
+            // Unity gain (the default): the rewrite loop is a no-op transform — skip the per-sample
+            // put() and only accumulate the RMS the level meter needs.
+            for (i in 0 until count) {
+                val v = samples[i].toDouble()
+                sumSquares += v * v
+            }
+        } else {
+            for (i in 0 until count) {
+                val amplified = (samples[i] * gain).roundToInt()
+                    .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                    .toShort()
+                samples.put(i, amplified)
+                sumSquares += amplified.toDouble() * amplified.toDouble()
+            }
         }
         return (sqrt(sumSquares / count) / 32768.0).toFloat().coerceIn(0f, 1f)
     }

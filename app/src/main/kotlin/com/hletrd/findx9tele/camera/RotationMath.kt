@@ -40,4 +40,14 @@ object RotationMath {
         270 -> ORIENTATION_ROTATE_270
         else -> ORIENTATION_NORMAL
     }
+
+    /**
+     * MediaMuxer orientation hint for a clip started at [deviceOrientation] (0/90/180/270 from
+     * gravity). The GL pipeline already bakes the afocal 180° into the recorded frames, so the hint
+     * carries ONLY the physical device tilt, normalized to [0,360). NOTE: the hint's SIGN on this
+     * device is an open Residual Field Check (docs/BACKLOG.md) — it may need `(360 - deg) % 360`;
+     * verify a held-landscape clip in BOTH directions (external gallery, not just in-app review,
+     * which re-applies the container rotation itself) before trusting it.
+     */
+    fun videoOrientationHint(deviceOrientation: Int): Int = normalize(deviceOrientation)
 }

@@ -93,7 +93,7 @@ object ColorProfiles {
         return when (codec) {
             VideoCodec.HEVC -> hevcFormat(width, height, encoderRate, captureRate, bitRate, transfer)
             VideoCodec.AVC -> avcFormat(width, height, encoderRate, captureRate, bitRate)
-            VideoCodec.APV -> apvFormat(width, height, encoderRate, captureRate, bitRate)
+            VideoCodec.APV -> apvFormat(width, height, encoderRate, captureRate, bitRate, transfer)
         }
     }
 
@@ -103,7 +103,7 @@ object ColorProfiles {
      * BT.2020 full-range so it grades like the other 10-bit paths. The QTI encoder handles the huge
      * intra bitrate; [bitRate] is already scaled up for intra by [com.hletrd.findx9tele.camera.effectiveBpp].
      */
-    private fun apvFormat(width: Int, height: Int, encoderRate: Double, captureRate: Double, bitRate: Int): MediaFormat {
+    private fun apvFormat(width: Int, height: Int, encoderRate: Double, captureRate: Double, bitRate: Int, transfer: ColorTransfer): MediaFormat {
         return MediaFormat.createVideoFormat(MIME_APV, width, height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
@@ -112,6 +112,15 @@ object ColorProfiles {
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 0)
             setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT2020)
             setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_FULL)
+            // Never leave KEY_COLOR_TRANSFER unset on a BT2020 full-range format: this QTI encoder
+            // then defaults the VUI to ST2084 (PQ) and players tone-map the footage as HDR — the
+            // exact failure documented for the HEVC LOG path. HLG keeps its id; LOG/SDR tag SDR,
+            // matching hevcFormat's per-transfer tagging.
+            setInteger(
+                MediaFormat.KEY_COLOR_TRANSFER,
+                if (transfer == ColorTransfer.HLG) MediaFormat.COLOR_TRANSFER_HLG
+                else MediaFormat.COLOR_TRANSFER_SDR_VIDEO,
+            )
         }
     }
 
