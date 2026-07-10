@@ -14,7 +14,6 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -61,6 +60,7 @@ import androidx.compose.ui.unit.dp
 import com.hletrd.findx9tele.ui.theme.CameraColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -219,9 +219,13 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
     val videoInfo by produceState<VideoInfo?>(initialValue = null, uri) {
         value = withContext(Dispatchers.IO) { loadVideoInfo(context, uri) }
     }
-    val bitmap by produceState<ImageBitmap?>(initialValue = null, uri) {
-        value = loadBitmap(context, uri, 0) ?: loadBitmap(context, uri, 3000)
-            ?: withContext(Dispatchers.IO) { loadVideoFrame(context, uri, 0) } // video poster until playback
+    // Stills decode a poster to display; a video renders a TextureView instead and never draws this
+    // bitmap. Keyed on videoInfo so once it resolves non-null the decode is skipped entirely — the
+    // old fall-through loaded a FULL-RES first frame (~33 MB at 4K) that was never shown. Stills
+    // still load full resolution (3000 px downsample fallback) for pixel-level focus checking.
+    val bitmap by produceState<ImageBitmap?>(initialValue = null, uri, videoInfo) {
+        value = if (videoInfo != null) null
+        else loadBitmap(context, uri, 0) ?: loadBitmap(context, uri, 3000)
     }
     val metadata by produceState<ReviewMetadata?>(initialValue = null, uri) {
         value = loadMetadata(context, uri)
@@ -250,17 +254,63 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
             .fillMaxSize()
             .background(Color.Black)
             .pointerInput(videoInfo != null) {
-                // One loop for pinch + pan + swipe-dismiss (detectTransformGestures has no end
-                // callback, and dismiss needs to decide on finger-up).
+                // ONE gesture loop owns pinch + pan + swipe-dismiss + tap/double-tap/long-press.
+                // Two sibling pointerInput blocks fought here exactly like CameraScreen's tap-vs-
+                // pinch conflict: the pinch/pan loop consumed EVERY change, which cancelled the
+                // sibling detectTapGestures' waitForUpOrCancellation, so video tap-to-pause almost
+                // never fired. Merged, tap-vs-pinch-vs-drag is decided on finger-up (the pattern in
+                // CameraScreen.kt's viewfinder loop) and long-press/double-tap are timed inline.
+                val isVideo = videoInfo != null
+                var lastTapUptime = 0L
                 awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false)
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val downTime = down.uptimeMillis
+                    var zoomed = false
+                    var dragged = false
+                    var maxPointers = 1
+                    var longFired = false
+                    var lastEventTime = downTime
+                    var upTime = downTime
+                    var tapPos = down.position
                     while (true) {
-                        val event = awaitPointerEvent()
-                        if (event.changes.none { it.pressed }) break
+                        // While the finger is a motionless single touch, cap the wait at the
+                        // REMAINING long-press window (a held-still finger emits no move events, so
+                        // only a timeout can fire the long-press). `remaining` shrinks with each
+                        // jitter event's timestamp, so cumulative hold time is honoured — not reset
+                        // to the full timeout on every event.
+                        val armLongPress = !isVideo && !longFired && !zoomed && !dragged && maxPointers == 1
+                        val event = if (armLongPress) {
+                            val remaining = viewConfiguration.longPressTimeoutMillis - (lastEventTime - downTime)
+                            if (remaining <= 0L) null else withTimeoutOrNull(remaining) { awaitPointerEvent() }
+                        } else {
+                            awaitPointerEvent()
+                        }
+                        if (event == null) {
+                            // Long-press (stills): a motionless hold zooms 8× to the point; a later
+                            // drag then pans (scale > 1) through the same loop.
+                            scale = 8f
+                            val center = Offset(size.width / 2f, size.height / 2f)
+                            offset = (center - down.position) * scale
+                            longFired = true
+                            continue
+                        }
+                        lastEventTime = event.changes.maxOfOrNull { it.uptimeMillis } ?: lastEventTime
+                        if (event.changes.none { it.pressed }) {
+                            val up = event.changes.firstOrNull { it.id == down.id } ?: event.changes.firstOrNull()
+                            if (up != null) {
+                                upTime = up.uptimeMillis
+                                tapPos = up.position
+                            }
+                            break
+                        }
+                        maxPointers = maxOf(maxPointers, event.changes.count { it.pressed })
                         val zoom = event.calculateZoom()
                         val pan = event.calculatePan()
                         // Pinch-zoom is a stills-only focus check; a video plays at fit size.
-                        if (videoInfo == null && zoom != 1f) scale = (scale * zoom).coerceIn(1f, 12f)
+                        if (!isVideo && zoom != 1f) {
+                            zoomed = true
+                            scale = (scale * zoom).coerceIn(1f, 12f)
+                        }
                         if (scale > 1f) {
                             offset += pan
                             dismissDrag = 0f
@@ -268,40 +318,39 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                             offset = Offset.Zero
                             dismissDrag += pan.y
                         }
+                        val cur = event.changes.firstOrNull { it.id == down.id }?.position
+                        if (cur != null && (cur - down.position).getDistance() > viewConfiguration.touchSlop) dragged = true
                         event.changes.forEach { it.consume() }
                     }
-                    if (scale <= 1f) {
+                    // A clean tap = one finger, no pinch, no drag past slop, no long-press already fired.
+                    val cleanTap = !longFired && !zoomed && !dragged && maxPointers == 1
+                    if (cleanTap) {
+                        if (isVideo) {
+                            // Single tap toggles play/pause — reliable now the consuming pinch loop
+                            // no longer starves it.
+                            playerRef.value?.let { mp ->
+                                runCatching { if (mp.isPlaying) mp.pause() else mp.start() }
+                                    .onSuccess { playing = mp.isPlaying }
+                            }
+                        } else if (down.uptimeMillis - lastTapUptime < viewConfiguration.doubleTapTimeoutMillis) {
+                            // Double tap (stills): cycle review zoom, centered on the tap. Measured
+                            // first-tap-up → second-tap-down, matching detectTapGestures.
+                            val next = nextReviewScale(scale)
+                            scale = next
+                            offset = if (next <= 1f) Offset.Zero
+                            else (Offset(size.width / 2f, size.height / 2f) - tapPos) * next
+                            lastTapUptime = 0L
+                        } else {
+                            // First tap of a potential double; a lone tap on a still does nothing.
+                            lastTapUptime = upTime
+                        }
+                        dismissDrag = 0f
+                    } else if (scale <= 1f) {
                         if (abs(dismissDrag) > size.height * 0.16f) onClose() else dismissDrag = 0f
                     } else {
                         dismissDrag = 0f
                     }
                 }
-            }
-            .pointerInput(videoInfo != null) {
-                detectTapGestures(onTap = {
-                    // Video: tap toggles play/pause (stills ignore single taps).
-                    playerRef.value?.let { mp ->
-                        runCatching { if (mp.isPlaying) mp.pause() else mp.start() }
-                            .onSuccess { playing = mp.isPlaying }
-                    }
-                }, onDoubleTap = {
-                    if (videoInfo == null) {
-                        val next = nextReviewScale(scale)
-                        scale = next
-                        offset = if (next <= 1f) {
-                            Offset.Zero
-                        } else {
-                            val center = Offset(size.width / 2f, size.height / 2f)
-                            (center - it) * next
-                        }
-                    }
-                }, onLongPress = { tap ->
-                    if (videoInfo == null) {
-                        scale = 8f
-                        val center = Offset(size.width / 2f, size.height / 2f)
-                        offset = (center - tap) * scale
-                    }
-                })
             },
         contentAlignment = Alignment.Center,
     ) {
@@ -316,6 +365,11 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
             // MediaPlayer keeps looping the old file. Recreation routes through
             // onSurfaceTextureDestroyed, which releases the old player.
             androidx.compose.runtime.key(uri) {
+            // Per-clip player handle. `playerRef` is ONE shared state across key(uri) swaps, so
+            // without an identity guard clip A's late onSurfaceTextureDestroyed could release the
+            // player clip B just installed — the two surface callbacks have no ordering guarantee.
+            // `heldPlayer` (remembered per key) lets the disposer see exactly THIS clip's player.
+            val heldPlayer = remember { mutableStateOf<android.media.MediaPlayer?>(null) }
             AndroidView(
                 modifier = Modifier
                     .aspectRatio(aspect.coerceAtLeast(0.01f))
@@ -324,6 +378,9 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                         alpha = (1f - abs(dismissDrag) / 1400f).coerceIn(0.3f, 1f),
                     ),
                 factory = { ctx ->
+                    // This view instance's OWN player (factory scope), captured by the listener so
+                    // teardown releases exactly it — never a newer clip's.
+                    var localPlayer: android.media.MediaPlayer? = null
                     android.view.TextureView(ctx).apply {
                         surfaceTextureListener = object : android.view.TextureView.SurfaceTextureListener {
                             override fun onSurfaceTextureAvailable(st: android.graphics.SurfaceTexture, w: Int, h: Int) {
@@ -338,6 +395,8 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                                     setTransform(m)
                                 }
                                 val mp = android.media.MediaPlayer()
+                                localPlayer = mp
+                                heldPlayer.value = mp
                                 playerRef.value = mp
                                 runCatching {
                                     mp.setDataSource(ctx, uri)
@@ -350,15 +409,22 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                                     mp.prepareAsync()
                                 }.onFailure {
                                     runCatching { mp.release() }
-                                    playerRef.value = null
+                                    localPlayer = null
+                                    heldPlayer.value = null
+                                    if (playerRef.value === mp) playerRef.value = null
                                 }
                             }
 
                             override fun onSurfaceTextureSizeChanged(st: android.graphics.SurfaceTexture, w: Int, h: Int) = Unit
 
                             override fun onSurfaceTextureDestroyed(st: android.graphics.SurfaceTexture): Boolean {
-                                runCatching { playerRef.value?.release() }
-                                playerRef.value = null
+                                // Release only the player THIS view created, and clear the shared ref
+                                // solely if it still points here — so A's late teardown can't kill B.
+                                val p = localPlayer
+                                runCatching { p?.release() }
+                                localPlayer = null
+                                heldPlayer.value = null
+                                if (playerRef.value === p) playerRef.value = null
                                 return true
                             }
 
@@ -367,6 +433,18 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                     }
                 },
             )
+            DisposableEffect(Unit) {
+                // Scoped INSIDE key(uri): when this clip leaves composition the disposer releases
+                // only this clip's player and clears the shared ref only if it still points here —
+                // it can never release a newer clip's player. Guards double-release with the surface
+                // callback (whichever runs first nulls heldPlayer; the other no-ops).
+                onDispose {
+                    val p = heldPlayer.value
+                    runCatching { p?.release() }
+                    heldPlayer.value = null
+                    if (playerRef.value === p) playerRef.value = null
+                }
+            }
             }
             if (!playing) {
                 // Paused indicator: a simple ▶ so it's obvious a tap resumes.
@@ -496,13 +574,6 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
         }
     }
 
-    DisposableEffect(uri) {
-        onDispose {
-            runCatching { playerRef.value?.release() }
-            playerRef.value = null
-        }
-    }
-
     if (confirmDelete) {
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
@@ -512,7 +583,11 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                 TextButton(onClick = {
                     confirmDelete = false
                     onDelete()
-                }) { Text("Delete") }
+                }) {
+                    // Destructive action reads red (same delete-red as the trash glyph); the rest of
+                    // the review chrome stays Sony-style monochrome.
+                    Text("Delete", color = Color(0xFFFF6B6B))
+                }
             },
             dismissButton = {
                 TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
