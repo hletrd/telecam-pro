@@ -102,7 +102,10 @@ object AutoExposure {
         evCompStops: Float,
     ): Pair<Int, Long>? {
         // Handheld ceiling: past ~1/10 s no amount of "P mode" saves the shot; stop trading there.
-        val slowCapNs = minOf(expMaxNs, 100_000_000L)
+        // coerceAtLeast guards the degenerate case of an exposure FLOOR above the ceiling (or an
+        // inverted range) — coerceIn(min, max) throws when min > max, and both coerceIn calls below
+        // use (expMinNs, slowCapNs). Mirrors the guard in manualAebExposuresNs.
+        val slowCapNs = minOf(expMaxNs, 100_000_000L).coerceAtLeast(expMinNs)
         val pref = preferredNs.coerceIn(expMinNs, slowCapNs)
 
         val corr = correctionStops(meanLuma(luma), evCompStops) ?: 0f
