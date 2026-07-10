@@ -614,7 +614,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     // ---- Optics / output ----
     override fun onFlash(mode: FlashMode) {
         // persist=true: flash is the most common per-shot toggle among the slot-less setters, and a
-        // Recents swipe-kill right after toggling it silently lost the change (tracer NEW-1).
+        // Recents swipe-kill right after toggling it silently lost the change.
         updateControls(persist = true) { it.copy(flash = mode) }
         refreshProgramAppSide() // AUTO/ON flash needs the HAL AE — photo P falls back off app-side
     }
