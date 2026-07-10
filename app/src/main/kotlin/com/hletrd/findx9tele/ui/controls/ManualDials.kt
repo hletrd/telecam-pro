@@ -291,7 +291,7 @@ private fun FnDialChip(
             value = state.videoStabMode.label,
             active = state.videoStabMode != VideoStabMode.OFF,
             enabled = true,
-            onClick = { actions.onVideoStabMode(nextVideoStab(state.videoStabMode)) },
+            onClick = { actions.onVideoStabMode(nextVideoStabMode(state.videoStabMode)) },
             onLongClick = onOpenFnMenu,
         )
         FnSlot.DRIVE -> DialChip(
@@ -398,71 +398,9 @@ private fun FnDialChip(
     }
 }
 
-private fun nextTransfer(t: ColorTransfer): ColorTransfer = when (t) {
-    ColorTransfer.HLG -> ColorTransfer.LOG
-    ColorTransfer.LOG -> ColorTransfer.SDR
-    ColorTransfer.SDR -> ColorTransfer.HLG
-}
-
-private fun nextVideoStab(mode: VideoStabMode): VideoStabMode = when (mode) {
-    VideoStabMode.OFF -> VideoStabMode.STANDARD
-    VideoStabMode.STANDARD -> VideoStabMode.ENHANCED
-    VideoStabMode.ENHANCED -> VideoStabMode.OFF
-}
-
-private fun nextDriveMode(mode: com.hletrd.findx9tele.camera.DriveMode): com.hletrd.findx9tele.camera.DriveMode = when (mode) {
-    com.hletrd.findx9tele.camera.DriveMode.SINGLE -> com.hletrd.findx9tele.camera.DriveMode.BURST
-    com.hletrd.findx9tele.camera.DriveMode.BURST -> com.hletrd.findx9tele.camera.DriveMode.AEB
-    com.hletrd.findx9tele.camera.DriveMode.AEB -> com.hletrd.findx9tele.camera.DriveMode.TIMELAPSE
-    com.hletrd.findx9tele.camera.DriveMode.TIMELAPSE -> com.hletrd.findx9tele.camera.DriveMode.SINGLE
-}
-
-private fun nextMeteringMode(mode: MeteringMode): MeteringMode = when (mode) {
-    MeteringMode.MATRIX -> MeteringMode.CENTER
-    MeteringMode.CENTER -> MeteringMode.SPOT
-    MeteringMode.SPOT -> MeteringMode.MATRIX
-}
-
-private fun nextAudioScene(scene: com.hletrd.findx9tele.camera.AudioScene): com.hletrd.findx9tele.camera.AudioScene = when (scene) {
-    com.hletrd.findx9tele.camera.AudioScene.STANDARD -> com.hletrd.findx9tele.camera.AudioScene.SOUND_FOCUS
-    com.hletrd.findx9tele.camera.AudioScene.SOUND_FOCUS -> com.hletrd.findx9tele.camera.AudioScene.SOUND_STAGE
-    com.hletrd.findx9tele.camera.AudioScene.SOUND_STAGE -> com.hletrd.findx9tele.camera.AudioScene.STANDARD
-}
-
-private fun nextGridType(type: GridType): GridType = when (type) {
-    GridType.NONE -> GridType.THIRDS
-    GridType.THIRDS -> GridType.GOLDEN
-    GridType.GOLDEN -> GridType.SQUARE
-    GridType.SQUARE -> GridType.CENTER
-    GridType.CENTER -> GridType.NONE
-}
-
-private fun nextFrameLine(type: FrameLineType): FrameLineType = when (type) {
-    FrameLineType.OFF -> FrameLineType.CINEMA
-    FrameLineType.CINEMA -> FrameLineType.SQUARE
-    FrameLineType.SQUARE -> FrameLineType.VERTICAL
-    FrameLineType.VERTICAL -> FrameLineType.OFF
-}
-
-private fun autoShutterText(state: CameraUiState): String {
-    val c = state.controls
-    val ns = if (c.autoExposure) state.liveExposureNs else c.exposureTimeNs
-    return ns?.let { formatShutterSpeed(it) } ?: "--"
-}
-
-private fun autoIsoText(state: CameraUiState): String {
-    val c = state.controls
-    val iso = if (c.autoExposure) state.liveIso else c.iso
-    return iso?.toString() ?: "--"
-}
-
-/** PASM cycle order: Program → Shutter-priority → ISO-priority → Manual → (back to Program). */
-private fun nextExposureMode(m: ExposureMode): ExposureMode = when (m) {
-    ExposureMode.PROGRAM -> ExposureMode.SHUTTER
-    ExposureMode.SHUTTER -> ExposureMode.ISO
-    ExposureMode.ISO -> ExposureMode.MANUAL
-    ExposureMode.MANUAL -> ExposureMode.PROGRAM
-}
+// (The next* cycle helpers and auto-exposure readout text live in ControlCycles.kt — shared with
+// ProSheet/CameraScreen so the cycle orders can't drift between surfaces. The verbatim private
+// copies that used to sit here were the drift hazard the review flagged.)
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable

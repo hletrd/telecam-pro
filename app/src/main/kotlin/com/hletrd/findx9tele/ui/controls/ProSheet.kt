@@ -1125,7 +1125,7 @@ internal fun fnSlotValue(slot: FnSlot, state: CameraUiState): String {
             else -> c.iso.toString()
         }
         FnSlot.WB -> if (c.wbMode == WbMode.MANUAL) "${c.wbKelvin}K" else wbModeLabel(c.wbMode)
-        FnSlot.EV -> "%+.1f".format(c.exposureCompensation * 0.333f)
+        FnSlot.EV -> "%+.1f".format(evCompStops(state))
         FnSlot.ZOOM -> "%.1fx".format(c.zoomRatio)
         FnSlot.STABILIZATION -> state.videoStabMode.label
         FnSlot.DRIVE -> driveModeLabel(state.driveMode)
@@ -1141,18 +1141,6 @@ internal fun fnSlotValue(slot: FnSlot, state: CameraUiState): String {
         FnSlot.OPEN_GATE -> if (state.openGate) "4:3" else "Off"
         FnSlot.FRAME_LINES -> state.frameLines.label
     }
-}
-
-private fun autoShutterText(state: CameraUiState): String {
-    val c = state.controls
-    val ns = if (c.autoExposure) state.liveExposureNs else c.exposureTimeNs
-    return ns?.let { formatShutterSpeed(it) } ?: "--"
-}
-
-private fun autoIsoText(state: CameraUiState): String {
-    val c = state.controls
-    val iso = if (c.autoExposure) state.liveIso else c.iso
-    return iso?.toString() ?: "--"
 }
 
 internal fun performQuickFn(slot: FnSlot, state: CameraUiState, actions: CameraActions) {
@@ -1180,75 +1168,8 @@ internal fun performQuickFn(slot: FnSlot, state: CameraUiState, actions: CameraA
     }
 }
 
-private fun nextExposureMode(mode: com.hletrd.findx9tele.camera.ExposureMode): com.hletrd.findx9tele.camera.ExposureMode = when (mode) {
-    com.hletrd.findx9tele.camera.ExposureMode.PROGRAM -> com.hletrd.findx9tele.camera.ExposureMode.SHUTTER
-    com.hletrd.findx9tele.camera.ExposureMode.SHUTTER -> com.hletrd.findx9tele.camera.ExposureMode.ISO
-    com.hletrd.findx9tele.camera.ExposureMode.ISO -> com.hletrd.findx9tele.camera.ExposureMode.MANUAL
-    com.hletrd.findx9tele.camera.ExposureMode.MANUAL -> com.hletrd.findx9tele.camera.ExposureMode.PROGRAM
-}
-
-private fun nextFocusMode(mode: FocusMode): FocusMode = when (mode) {
-    FocusMode.CONTINUOUS -> FocusMode.AUTO
-    FocusMode.AUTO -> FocusMode.MANUAL
-    FocusMode.MANUAL -> FocusMode.MACRO
-    FocusMode.MACRO -> FocusMode.CONTINUOUS
-}
-
-private fun nextWbMode(mode: WbMode): WbMode = when (mode) {
-    WbMode.AUTO -> WbMode.DAYLIGHT
-    WbMode.DAYLIGHT -> WbMode.CLOUDY
-    WbMode.CLOUDY -> WbMode.SHADE
-    WbMode.SHADE -> WbMode.MANUAL
-    WbMode.MANUAL -> WbMode.AUTO
-    // CUSTOM is only ENTERED via "Capture Custom WB"; the Fn cycle steps past it back to AUTO.
-    WbMode.INCANDESCENT, WbMode.FLUORESCENT, WbMode.CUSTOM -> WbMode.AUTO
-}
-
-private fun nextVideoStabMode(mode: VideoStabMode): VideoStabMode = when (mode) {
-    VideoStabMode.OFF -> VideoStabMode.STANDARD
-    VideoStabMode.STANDARD -> VideoStabMode.ENHANCED
-    VideoStabMode.ENHANCED -> VideoStabMode.OFF
-}
-
-private fun nextDriveMode(mode: DriveMode): DriveMode = when (mode) {
-    DriveMode.SINGLE -> DriveMode.BURST
-    DriveMode.BURST -> DriveMode.AEB
-    DriveMode.AEB -> DriveMode.TIMELAPSE
-    DriveMode.TIMELAPSE -> DriveMode.SINGLE
-}
-
-private fun nextMeteringMode(mode: MeteringMode): MeteringMode = when (mode) {
-    MeteringMode.MATRIX -> MeteringMode.CENTER
-    MeteringMode.CENTER -> MeteringMode.SPOT
-    MeteringMode.SPOT -> MeteringMode.MATRIX
-}
-
-private fun nextTransfer(transfer: ColorTransfer): ColorTransfer = when (transfer) {
-    ColorTransfer.HLG -> ColorTransfer.LOG
-    ColorTransfer.LOG -> ColorTransfer.SDR
-    ColorTransfer.SDR -> ColorTransfer.HLG
-}
-
-private fun nextAudioScene(scene: AudioScene): AudioScene = when (scene) {
-    AudioScene.STANDARD -> AudioScene.SOUND_FOCUS
-    AudioScene.SOUND_FOCUS -> AudioScene.SOUND_STAGE
-    AudioScene.SOUND_STAGE -> AudioScene.STANDARD
-}
-
-private fun nextGridType(type: GridType): GridType = when (type) {
-    GridType.NONE -> GridType.THIRDS
-    GridType.THIRDS -> GridType.GOLDEN
-    GridType.GOLDEN -> GridType.SQUARE
-    GridType.SQUARE -> GridType.CENTER
-    GridType.CENTER -> GridType.NONE
-}
-
-private fun nextFrameLine(type: FrameLineType): FrameLineType = when (type) {
-    FrameLineType.OFF -> FrameLineType.CINEMA
-    FrameLineType.CINEMA -> FrameLineType.SQUARE
-    FrameLineType.SQUARE -> FrameLineType.VERTICAL
-    FrameLineType.VERTICAL -> FrameLineType.OFF
-}
+// (The next* cycle helpers and auto-exposure readout text live in ControlCycles.kt — shared with
+// ManualDials/CameraScreen so the cycle orders can't drift between surfaces.)
 
 private fun openPrivacyPolicy(context: Context) {
     runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, PRIVACY_POLICY_URL.toUri())) }

@@ -54,10 +54,7 @@ import com.hletrd.findx9tele.camera.VideoFrameRate
 import com.hletrd.findx9tele.camera.WbMode
 import com.hletrd.findx9tele.focus.FocusMapping
 import com.hletrd.findx9tele.ui.theme.CameraColors
-import kotlin.math.exp
-import kotlin.math.ln
 import kotlin.math.roundToInt
-import kotlin.math.roundToLong
 
 /**
  * Shared row/building-block library for the pro settings menu ([com.hletrd.findx9tele.ui.controls.ProSheet]).
@@ -480,25 +477,8 @@ internal fun videoResolutionLabel(size: Size): String {
 }
 
 // ---------------------------------------------------------------------------
-// Exposure: ISO / Shutter helpers (shared by the exposure/color settings tab and the manual
-// shutter ruler dial)
+// Exposure: shutter/focus display helpers (shared by the exposure tab and the manual dials)
 // ---------------------------------------------------------------------------
-
-internal fun shutterNsToSlider(ns: Long, range: android.util.Range<Long>): Float {
-    if (range.lower >= range.upper) return 0f
-    val lo = ln(range.lower.toDouble())
-    val hi = ln(range.upper.toDouble())
-    val v = ln(ns.coerceIn(range.lower, range.upper).toDouble())
-    return ((v - lo) / (hi - lo)).toFloat().coerceIn(0f, 1f)
-}
-
-internal fun sliderToShutterNs(slider: Float, range: android.util.Range<Long>): Long {
-    if (range.lower >= range.upper) return range.lower
-    val lo = ln(range.lower.toDouble())
-    val hi = ln(range.upper.toDouble())
-    val v = exp(lo + slider.coerceIn(0f, 1f) * (hi - lo))
-    return v.roundToLong().coerceIn(range.lower, range.upper)
-}
 
 // Conventional shutter-speed denominators, so an exact 2^k time (e.g. 1/128 s) displays as the
 // camera-standard value a photographer expects (1/125 s).
@@ -515,7 +495,9 @@ internal fun formatShutterSpeed(ns: Long): String {
         else -> {
             val denom = 1.0 / seconds
             val nice = NICE_SHUTTER_DENOM.minByOrNull { kotlin.math.abs(it - denom) } ?: denom.roundToInt().coerceAtLeast(1)
-            "1/${nice}s"
+            // Times in [0.667 s, 1 s) have no conventional 1/x form — snapping produced the
+            // nonsensical "1/1s" (e.g. 0.75 s). Show decimal seconds there like real bodies do.
+            if (nice <= 1) "%.1fs".format(seconds) else "1/${nice}s"
         }
     }
 }
@@ -537,7 +519,8 @@ internal fun formatFocusDistance(diopters: Float): String {
 /** Transfer-function display label: what the footage IS, not just the enum name. */
 internal fun transferLabel(transfer: ColorTransfer): String = when (transfer) {
     ColorTransfer.HLG -> "HLG"
-    // LOG drives the device's native HAL log (scene-referred, genuinely flat) — not the GL O-Log2 curve.
+    // LOG = the GL-baked official O-Log2 OETF. The native HAL log key is INERT for third-party
+    // Camera2 on this device (settled 2026-07-09) — see CLAUDE.md / CameraEngine.setTransfer.
     ColorTransfer.LOG -> "O-Log"
     ColorTransfer.SDR -> "SDR"
 }
@@ -549,7 +532,10 @@ internal fun transferLabelShort(transfer: ColorTransfer): String = when (transfe
     ColorTransfer.SDR -> "SDR"
 }
 
-/** HLG / LOG / SDR transfer-function selector. Only the 10-bit HEVC path honors HLG/LOG. */
+/**
+ * HLG / LOG / SDR transfer-function selector. Only HEVC's Main10 encoder profile carries the
+ * HLG/LOG tag — the capture source stays SDR/8-bit (see CLAUDE.md; not an end-to-end 10-bit claim).
+ */
 @Composable
 fun TransferSelector(
     transfer: ColorTransfer,
