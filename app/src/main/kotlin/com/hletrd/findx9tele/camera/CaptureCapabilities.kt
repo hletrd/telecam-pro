@@ -131,10 +131,10 @@ data class CameraCaps(
                 .filter { it.width <= 7680 }
                 .distinct()
             val videoSizes = stSizes
-                .filter { it.height * 16 == it.width * 9 }
+                .filter { matchesStreamAspect(it.width, it.height, fourByThree = false) }
                 .sortedByDescending { it.width.toLong() * it.height }
             val openGateSizes = stSizes
-                .filter { it.height * 4 == it.width * 3 }
+                .filter { matchesStreamAspect(it.width, it.height, fourByThree = true) }
                 .sortedByDescending { it.width.toLong() * it.height }
 
             // High-speed (slow-motion) configs: size → max advertised fps. Read defensively — some
@@ -231,3 +231,24 @@ internal fun clampFpsBounds(ranges: List<Pair<Int, Int>>, fps: Int): Pair<Int, I
 internal fun autoFpsBounds(ranges: List<Pair<Int, Int>>, maxFps: Int): Pair<Int, Int>? =
     ranges.filter { it.second == maxFps }.minByOrNull { it.first }
         ?: clampFpsBounds(ranges, maxFps)
+
+/**
+ * THE stream-aspect rule (16:9 standard / 4:3 open-gate-and-photo), shared by [CameraCaps.read]'s
+ * list building and the engine's pre-caps fallback picker so the two can't drift apart.
+ */
+internal fun matchesStreamAspect(width: Int, height: Int, fourByThree: Boolean): Boolean =
+    if (fourByThree) height * 4 == width * 3 else height * 16 == width * 9
+
+/**
+ * Pure core of the engine's fallback stream-size selection: the largest matching-aspect size at or
+ * under [capWidth], else the largest size overall (never null for a non-empty input). Plain pairs —
+ * android.util.Size getters throw on the JVM.
+ */
+internal fun pickStreamSize(
+    sizes: List<Pair<Int, Int>>,
+    capWidth: Int,
+    fourByThree: Boolean,
+): Pair<Int, Int>? =
+    sizes.filter { (w, h) -> w <= capWidth && matchesStreamAspect(w, h, fourByThree) }
+        .maxByOrNull { (w, h) -> w.toLong() * h }
+        ?: sizes.maxByOrNull { (w, h) -> w.toLong() * h }
