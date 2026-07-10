@@ -89,8 +89,8 @@ data class CameraCaps(
 
     /** A supported target-fps range for [fps]: prefer a fixed [fps,fps] range, else one covering it. */
     fun clampFpsRange(fps: Int): Range<Int>? =
-        availableFpsRanges.firstOrNull { it.lower == fps && it.upper == fps }
-            ?: availableFpsRanges.firstOrNull { fps in it.lower..it.upper }
+        clampFpsBounds(availableFpsRanges.map { it.lower to it.upper }, fps)
+            ?.let { (lo, hi) -> availableFpsRanges.first { it.lower == lo && it.upper == hi } }
 
     /**
      * For AUTO-exposure preview: the supported `[floor, maxFps]` range with the LOWEST floor, so AE
@@ -98,8 +98,8 @@ data class CameraCaps(
      * fixed `[maxFps,maxFps]` range prevents). Falls back to a covering/fixed range.
      */
     fun autoFpsRange(maxFps: Int): Range<Int>? =
-        availableFpsRanges.filter { it.upper == maxFps }.minByOrNull { it.lower }
-            ?: clampFpsRange(maxFps)
+        autoFpsBounds(availableFpsRanges.map { it.lower to it.upper }, maxFps)
+            ?.let { (lo, hi) -> availableFpsRanges.first { it.lower == lo && it.upper == hi } }
 
     companion object {
         private const val FULL_FRAME_DIAGONAL_MM = 43.2666f
@@ -213,3 +213,21 @@ internal fun videoStabControlModeFor(videoStabModes: IntArray, mode: VideoStabMo
     val on = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON
     return if (mode == VideoStabMode.ENHANCED && videoStabModes.contains(on)) on else off
 }
+
+/**
+ * Pure core of [CameraCaps.clampFpsRange] over plain `(lower, upper)` pairs (android.util.Range
+ * getters throw "not mocked" on the JVM — same extraction pattern as [videoStabControlModeFor]):
+ * prefer an exact fixed `[fps,fps]` range, else the first range covering [fps].
+ */
+internal fun clampFpsBounds(ranges: List<Pair<Int, Int>>, fps: Int): Pair<Int, Int>? =
+    ranges.firstOrNull { it.first == fps && it.second == fps }
+        ?: ranges.firstOrNull { fps in it.first..it.second }
+
+/**
+ * Pure core of [CameraCaps.autoFpsRange]: the `[floor, maxFps]` range with the LOWEST floor so
+ * photo-AUTO AE can extend exposure in low light (the documented "AE pinned at 1/30 s" bug zone);
+ * falls back to [clampFpsBounds].
+ */
+internal fun autoFpsBounds(ranges: List<Pair<Int, Int>>, maxFps: Int): Pair<Int, Int>? =
+    ranges.filter { it.second == maxFps }.minByOrNull { it.first }
+        ?: clampFpsBounds(ranges, maxFps)
