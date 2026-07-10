@@ -109,9 +109,13 @@ To rebuild the signed AAB locally:
 export JAVA_HOME="/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home"
 export PATH="$JAVA_HOME/bin:$PATH"
 
+# The backup stores the passwords as storePassword= / keyPassword= lines — map them onto the
+# TELECAMPRO_* variables the build reads (the old snippet grepped for TELECAMPRO_* keys that do
+# not exist in the file, silently exporting nothing).
 while IFS='=' read -r key value; do
   case "$key" in
-    TELECAMPRO_STORE_PASSWORD|TELECAMPRO_KEY_PASSWORD) export "$key=$value" ;;
+    storePassword) export TELECAMPRO_STORE_PASSWORD="$value" ;;
+    keyPassword) export TELECAMPRO_KEY_PASSWORD="$value" ;;
   esac
 done < <(gpg --batch --quiet --decrypt telecampro-upload-passwords.txt.gpg)
 
