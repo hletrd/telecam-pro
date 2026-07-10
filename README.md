@@ -30,7 +30,7 @@
 - **Volume-key hardware shutter**: vibration-free release at 300 mm (photo capture / video start-stop).
 - **Directional audio (Sound Focus / Sound Stage)**: drives the device's accepted vendor audio-HAL controls; the acoustic effect still needs an off-axis real-scene A/B check.
 - **Photos**: HEIF + JPEG + RAW (DNG), any combination, with gravity-derived orientation correction.
-- **Video**: HEVC Main10 profiles for **HLG / O-Log2** plus 8-bit HEVC/AVC SDR. The stable v1 Camera2 and EGL input is SDR/8-bit, so HLG/O-Log2 is not marketed as end-to-end 10-bit capture. 4K DCI max (HEVC/AVC HW ceiling); 24/30/60 fps class + NTSC drop-frame (23.976/29.97/59.94); **Low → Max bitrate presets up to ~120 Mbps at 4K**; Open-Gate (full 4:3 sensor); AAC 48 kHz stereo.
+- **Video**: HEVC Main10 profiles for **HLG / O-Log2** plus 8-bit HEVC/AVC SDR. The stable v1 Camera2 and EGL input is SDR/8-bit, so HLG/O-Log2 is not marketed as end-to-end 10-bit capture. 4K UHD max (HEVC/AVC HW ceiling); 24/30/60 fps class + NTSC drop-frame (23.976/29.97/59.94); **Low → Max bitrate presets up to ~120 Mbps at 4K**; Open-Gate (full 4:3 sensor); AAC 48 kHz stereo.
 - **Video stabilization = HAL OIS+EIS** (the stock "super steady" path): OIS physically cuts per-frame motion blur at 300 mm (Off / OIS-Standard / OIS-Enhanced).
 - **Vendor/HAL stability**: unstable or unmuxable device paths such as Auto HDR, high-speed 120 fps,
   AV1 software encode, APV MP4 muxing, and native vendor log are excluded from the shipped UI. O-Log2

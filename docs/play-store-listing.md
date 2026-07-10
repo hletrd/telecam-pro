@@ -60,7 +60,7 @@ VIDEO
 • HEVC recording with HLG or GL-baked O-Log2 profiles, plus SDR for fast delivery.
 • Hardware OIS + EIS stabilization to cut motion blur at long focal lengths.
 • Device Sound Focus / Sound Stage controls for directional-audio recording.
-• 4K DCI, standard and NTSC drop-frame rates, up to ~120 Mbps.
+• 4K UHD, standard and NTSC drop-frame rates, up to ~120 Mbps.
 
 FRAMING AND MONITORING
 • Focus peaking, zebra, false color, grid, spirit level, punch-in loupe, histogram, waveform, and an
