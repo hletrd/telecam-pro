@@ -1047,18 +1047,9 @@ class CameraEngine(private val context: Context) {
     /** Maps a clockwise rotation (0/90/180/270) to the matching EXIF/TIFF orientation tag for DNG. */
     private fun exifOrientationFor(degrees: Int): Int = RotationMath.exifOrientationFor(degrees)
 
-    /** Returns the largest [ratioW]:[ratioH] rect centered within [src], cropped out of it. HEIF-only (see [saveHeifAsync]). */
+    /** Returns the largest [ratioW]:[ratioH] rect centered within [src], cropped out of it (HEIF + JPEG paths). */
     private fun centerCrop(src: Bitmap, ratioW: Int, ratioH: Int): Bitmap {
-        val srcW = src.width
-        val srcH = src.height
-        val heightForFullWidth = srcW * ratioH / ratioW
-        val (cropW, cropH) = if (heightForFullWidth <= srcH) {
-            srcW to heightForFullWidth
-        } else {
-            (srcH * ratioW / ratioH) to srcH
-        }
-        val x = (srcW - cropW) / 2
-        val y = (srcH - cropH) / 2
+        val (x, y, cropW, cropH) = centerCropBox(src.width, src.height, ratioW, ratioH)
         return Bitmap.createBitmap(src, x, y, cropW, cropH)
     }
 
@@ -1195,4 +1186,21 @@ class CameraEngine(private val context: Context) {
         const val MAX_CAMERA_RECOVERY_ATTEMPTS = 3
         const val CAMERA_RECOVERY_DELAY_MS = 1000L
     }
+}
+
+/** The largest ratioW:ratioH rect centered within srcW×srcH. */
+internal data class CropBox(val x: Int, val y: Int, val w: Int, val h: Int)
+
+/**
+ * Pure rect math behind the still-photo aspect crop, extracted so the 4:3/16:9 gating is
+ * unit-testable without a Bitmap (an unmocked android.jar stub on the JVM).
+ */
+internal fun centerCropBox(srcW: Int, srcH: Int, ratioW: Int, ratioH: Int): CropBox {
+    val heightForFullWidth = srcW * ratioH / ratioW
+    val (cropW, cropH) = if (heightForFullWidth <= srcH) {
+        srcW to heightForFullWidth
+    } else {
+        (srcH * ratioW / ratioH) to srcH
+    }
+    return CropBox((srcW - cropW) / 2, (srcH - cropH) / 2, cropW, cropH)
 }

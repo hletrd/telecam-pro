@@ -62,4 +62,18 @@ class RotationMathTest {
         assertEquals(350, RotationMath.normalize(-10))
         assertEquals(10, RotationMath.normalize(730))
     }
+
+    @Test
+    fun `video orientation hint passes the device tilt through, normalized`() {
+        // Pins the CURRENT mapping (hint = normalized device orientation; the afocal 180° is baked
+        // into the pixels by GL, so it must NOT appear here). The hint's SIGN on the device is an
+        // open Residual Field Check — if the field check flips it to (360-deg)%360, this test is
+        // the one place that changes with it.
+        assertEquals(0, RotationMath.videoOrientationHint(0))
+        assertEquals(90, RotationMath.videoOrientationHint(90))
+        assertEquals(180, RotationMath.videoOrientationHint(180))
+        assertEquals(270, RotationMath.videoOrientationHint(270))
+        assertEquals(270, RotationMath.videoOrientationHint(-90))
+        assertEquals(90, RotationMath.videoOrientationHint(450))
+    }
 }

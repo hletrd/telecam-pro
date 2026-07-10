@@ -457,40 +457,6 @@ class VideoRecorder(private val context: Context) {
         }
     }
 
-    /**
-     * Applies [gain] to every 16-bit PCM sample in `buf[0, byteCount)` IN PLACE (clamped to the
-     * Short range so it can't wrap), then returns the post-gain RMS level normalized to 0..1.
-     * The short view shares [buf]'s backing memory, so writes here are visible to the caller
-     * before the buffer is queued to the encoder.
-     */
-    private fun applyGainAndLevel(buf: ByteBuffer, byteCount: Int, gain: Float): Float {
-        val samples = buf.duplicate().apply {
-            order(ByteOrder.LITTLE_ENDIAN)
-            position(0)
-            limit(byteCount)
-        }.asShortBuffer()
-        val count = samples.remaining()
-        if (count == 0) return 0f
-        var sumSquares = 0.0
-        if (gain == 1f) {
-            // Unity gain (the default): the rewrite loop is a no-op transform — skip the per-sample
-            // put() and only accumulate the RMS the level meter needs.
-            for (i in 0 until count) {
-                val v = samples[i].toDouble()
-                sumSquares += v * v
-            }
-        } else {
-            for (i in 0 until count) {
-                val amplified = (samples[i] * gain).roundToInt()
-                    .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
-                    .toShort()
-                samples.put(i, amplified)
-                sumSquares += amplified.toDouble() * amplified.toDouble()
-            }
-        }
-        return (sqrt(sumSquares / count) / 32768.0).toFloat().coerceIn(0f, 1f)
-    }
-
     /** Forwards [level] to [onLevel], throttled to roughly [LEVEL_THROTTLE_NS] between calls. */
     private fun maybeEmitLevel(level: Float) {
         val now = System.nanoTime()
@@ -544,4 +510,38 @@ class VideoRecorder(private val context: Context) {
         // ~10 Hz cap on onLevel callbacks so the UI meter isn't spammed once per PCM buffer.
         const val LEVEL_THROTTLE_NS = 100_000_000L
     }
+}
+
+/**
+ * Applies [gain] to every 16-bit PCM sample in `buf[0, byteCount)` IN PLACE (clamped to the
+ * Short range so it can't wrap), then returns the post-gain RMS level normalized to 0..1.
+ * The short view shares [buf]'s backing memory, so writes here are visible to the caller
+ * before the buffer is queued to the encoder. Top-level (pure java.nio) so it is unit-testable.
+ */
+internal fun applyGainAndLevel(buf: ByteBuffer, byteCount: Int, gain: Float): Float {
+    val samples = buf.duplicate().apply {
+        order(ByteOrder.LITTLE_ENDIAN)
+        position(0)
+        limit(byteCount)
+    }.asShortBuffer()
+    val count = samples.remaining()
+    if (count == 0) return 0f
+    var sumSquares = 0.0
+    if (gain == 1f) {
+        // Unity gain (the default): the rewrite loop is a no-op transform — skip the per-sample
+        // put() and only accumulate the RMS the level meter needs.
+        for (i in 0 until count) {
+            val v = samples[i].toDouble()
+            sumSquares += v * v
+        }
+    } else {
+        for (i in 0 until count) {
+            val amplified = (samples[i] * gain).roundToInt()
+                .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                .toShort()
+            samples.put(i, amplified)
+            sumSquares += amplified.toDouble() * amplified.toDouble()
+        }
+    }
+    return (sqrt(sumSquares / count) / 32768.0).toFloat().coerceIn(0f, 1f)
 }

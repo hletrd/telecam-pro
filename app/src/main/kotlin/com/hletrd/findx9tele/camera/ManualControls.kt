@@ -342,6 +342,15 @@ const val MAX_WB_CHANNEL_GAIN = 8f
  * and each channel is capped at [MAX_WB_CHANNEL_GAIN].
  */
 fun kelvinTintToRggbGains(kelvin: Int, tint: Int): RggbChannelVector {
+    val v = kelvinTintToRggbGainValues(kelvin, tint)
+    return RggbChannelVector(v[0], v[1], v[2], v[3])
+}
+
+/**
+ * Pure core of [kelvinTintToRggbGains] as `[R, G_even, G_odd, B]` — RggbChannelVector's constructor
+ * is an unmocked android.jar stub on the JVM, so the math is only unit-testable in this form.
+ */
+internal fun kelvinTintToRggbGainValues(kelvin: Int, tint: Int): FloatArray {
     val t = (kelvin.coerceIn(1000, 40000)) / 100.0
 
     val r = if (t <= 66.0) 255.0 else (329.698727446 * Math.pow(t - 60.0, -0.1332047592)).coerceIn(0.0, 255.0)
@@ -370,7 +379,7 @@ fun kelvinTintToRggbGains(kelvin: Int, tint: Int): RggbChannelVector {
     gainR /= minGain; gainG /= minGain; gainB /= minGain
 
     val cap = MAX_WB_CHANNEL_GAIN.toDouble()
-    return RggbChannelVector(
+    return floatArrayOf(
         gainR.coerceAtMost(cap).toFloat(),
         gainG.coerceAtMost(cap).toFloat(),
         gainG.coerceAtMost(cap).toFloat(),

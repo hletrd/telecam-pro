@@ -85,13 +85,7 @@ data class CameraCaps(
      * mode falls back to OFF when unsupported. OFF requests OFF (there is no app-side EIS mode —
      * the HAL's OIS+EIS owns stabilization; see [VideoStabMode]).
      */
-    fun videoStabControlMode(mode: VideoStabMode): Int {
-        val off = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF
-        val want = mode.halControlMode ?: return off
-        if (videoStabModes.contains(want)) return want
-        val on = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON
-        return if (mode == VideoStabMode.ENHANCED && videoStabModes.contains(on)) on else off
-    }
+    fun videoStabControlMode(mode: VideoStabMode): Int = videoStabControlModeFor(videoStabModes, mode)
 
     /** A supported target-fps range for [fps]: prefer a fixed [fps,fps] range, else one covering it. */
     fun clampFpsRange(fps: Int): Range<Int>? =
@@ -205,4 +199,17 @@ data class CameraCaps(
             )
         }
     }
+}
+
+/**
+ * Pure core of [CameraCaps.videoStabControlMode] (a full CameraCaps can't be built on the JVM —
+ * Rational/Range constructors are unmocked stubs): ENHANCED falls back to ON when
+ * PREVIEW_STABILIZATION is absent, anything unsupported falls back to OFF.
+ */
+internal fun videoStabControlModeFor(videoStabModes: IntArray, mode: VideoStabMode): Int {
+    val off = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF
+    val want = mode.halControlMode ?: return off
+    if (videoStabModes.contains(want)) return want
+    val on = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_ON
+    return if (mode == VideoStabMode.ENHANCED && videoStabModes.contains(on)) on else off
 }

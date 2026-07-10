@@ -282,12 +282,18 @@ class CameraController(context: Context) {
         if (highSpeedFps > 0) { configureHighSpeed(camera, preview, onReady, onError); return }
 
         val attempt = configAttempt
-        val useHlg = tenBitHlg && caps.supportsHlg10() && attempt < 2
-        val useJpeg = attempt < 3
-        // RAW routed to a physical sub-camera of a logical multicamera crashes this QTI HAL
-        // (configureStreams: 'DataSpace override not allowed for format 0x20' -> SIGSEGV in
-        // ChiMulticameraBase::Initialize). Only enable RAW for a standalone (non-routed) camera.
-        val useRaw = attempt < 1 && caps.supportsRaw && selection.physicalId == null
+        val plan = sessionAttemptPlan(
+            attempt = attempt,
+            wantHlg = tenBitHlg && caps.supportsHlg10(),
+            supportsRaw = caps.supportsRaw,
+            // RAW routed to a physical sub-camera of a logical multicamera crashes this QTI HAL
+            // (configureStreams: 'DataSpace override not allowed for format 0x20' -> SIGSEGV in
+            // ChiMulticameraBase::Initialize). Only enable RAW for a standalone (non-routed) camera.
+            standalone = selection.physicalId == null,
+        )
+        val useHlg = plan.useHlg
+        val useJpeg = plan.useJpeg
+        val useRaw = plan.useRaw
 
         val configs = ArrayList<OutputConfiguration>()
 
@@ -774,3 +780,22 @@ class CameraController(context: Context) {
         const val OPLUS_CAMERA_MODE_TELEPHOTO_HASSELBLAD: Byte = 40
     }
 }
+
+/** What the session fallback ladder enables at a given attempt — see [CameraController]'s ladder doc. */
+internal data class SessionAttemptPlan(val useHlg: Boolean, val useJpeg: Boolean, val useRaw: Boolean)
+
+/**
+ * Pure core of the fallback ladder (attempt 0 full → 1 drop RAW → 2 also drop HLG → 3
+ * preview-only) so the HAL-crash-critical ordering is unit-testable off-device. [standalone] is the
+ * "selection.physicalId == null" RAW gate (RAW via physical routing SIGSEGVs this QTI HAL).
+ */
+internal fun sessionAttemptPlan(
+    attempt: Int,
+    wantHlg: Boolean,
+    supportsRaw: Boolean,
+    standalone: Boolean,
+): SessionAttemptPlan = SessionAttemptPlan(
+    useHlg = wantHlg && attempt < 2,
+    useJpeg = attempt < 3,
+    useRaw = attempt < 1 && supportsRaw && standalone,
+)
