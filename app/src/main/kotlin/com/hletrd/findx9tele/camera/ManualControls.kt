@@ -159,16 +159,21 @@ fun CaptureRequest.Builder.applyManualControls(
 }
 
 private fun CaptureRequest.Builder.applyFocus(c: ManualControls, caps: CameraCaps) {
-    when (c.focusMode) {
-        FocusMode.MANUAL -> if (caps.supportsManualFocus) {
-            set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
-            set(CaptureRequest.LENS_FOCUS_DISTANCE, c.focusDistanceDiopters.coerceIn(0f, caps.minFocusDistanceDiopters))
-        } else {
-            set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-        }
-        FocusMode.AUTO -> set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_AUTO)
-        FocusMode.CONTINUOUS -> set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-        FocusMode.MACRO -> set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_MACRO)
+    // Expression-position `when` so the compiler enforces exhaustiveness: a statement-position enum
+    // `when` compiles fine with a missing case and silently no-ops it — the session would keep the
+    // PREVIOUS AF mode while the UI shows the new one (the exact silent-drift trap a future 5th
+    // FocusMode would spring).
+    val afMode = when (c.focusMode) {
+        FocusMode.MANUAL ->
+            if (caps.supportsManualFocus) CameraMetadata.CONTROL_AF_MODE_OFF
+            else CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+        FocusMode.AUTO -> CameraMetadata.CONTROL_AF_MODE_AUTO
+        FocusMode.CONTINUOUS -> CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+        FocusMode.MACRO -> CameraMetadata.CONTROL_AF_MODE_MACRO
+    }
+    set(CaptureRequest.CONTROL_AF_MODE, afMode)
+    if (c.focusMode == FocusMode.MANUAL && caps.supportsManualFocus) {
+        set(CaptureRequest.LENS_FOCUS_DISTANCE, c.focusDistanceDiopters.coerceIn(0f, caps.minFocusDistanceDiopters))
     }
 }
 
@@ -282,20 +287,22 @@ private fun CaptureRequest.Builder.applyFlash(c: ManualControls, caps: CameraCap
             else -> set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_OFF)
         }
     } else {
-        when (c.flash) {
-            FlashMode.OFF -> {
-                set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
-                set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_OFF)
-            }
-            FlashMode.AUTO ->
-                set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON_AUTO_FLASH)
-            FlashMode.ON ->
-                set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON_ALWAYS_FLASH)
-            FlashMode.TORCH -> {
-                set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
-                set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_TORCH)
-            }
+        // Expression-position `when`s for compiler-enforced exhaustiveness (see applyFocus): a new
+        // FlashMode that forgets a branch here must fail the build, not silently keep the previous
+        // AE flash variant on the repeating request.
+        val aeMode = when (c.flash) {
+            FlashMode.OFF, FlashMode.TORCH -> CameraMetadata.CONTROL_AE_MODE_ON
+            FlashMode.AUTO -> CameraMetadata.CONTROL_AE_MODE_ON_AUTO_FLASH
+            FlashMode.ON -> CameraMetadata.CONTROL_AE_MODE_ON_ALWAYS_FLASH
         }
+        set(CaptureRequest.CONTROL_AE_MODE, aeMode)
+        val flashMode = when (c.flash) {
+            FlashMode.OFF -> CameraMetadata.FLASH_MODE_OFF
+            FlashMode.TORCH -> CameraMetadata.FLASH_MODE_TORCH
+            // The AE flash variants own the firing decision; FLASH_MODE stays unset for them.
+            FlashMode.AUTO, FlashMode.ON -> null
+        }
+        flashMode?.let { set(CaptureRequest.FLASH_MODE, it) }
     }
 }
 
