@@ -47,10 +47,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
@@ -75,6 +77,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import com.hletrd.findx9tele.camera.Antibanding
 import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.AutoExposure
@@ -102,6 +105,10 @@ import com.hletrd.findx9tele.ui.controls.ManualDialCluster
 import com.hletrd.findx9tele.ui.controls.ProSheet
 import com.hletrd.findx9tele.ui.controls.ProSheetTab
 import com.hletrd.findx9tele.ui.controls.aspectRatioLabel
+import com.hletrd.findx9tele.ui.controls.evCompStops
+import com.hletrd.findx9tele.ui.controls.nextAspect
+import com.hletrd.findx9tele.ui.controls.nextFlashMode
+import com.hletrd.findx9tele.ui.controls.nextTimer
 import com.hletrd.findx9tele.ui.controls.flashModeLabel
 import com.hletrd.findx9tele.ui.controls.fnSlotLabel
 import com.hletrd.findx9tele.ui.controls.fnSlotValue
@@ -166,24 +173,27 @@ fun CameraScreen(
     // Accumulate an UNWRAPPED target so the animation always takes the shortest ≤90° path.
     var overlayRotationTarget by remember { mutableFloatStateOf(state.deviceOrientation.toFloat()) }
     LaunchedEffect(state.deviceOrientation) {
-        val desired = state.deviceOrientation.toFloat()
-        var delta = (desired - overlayRotationTarget) % 360f
-        if (delta > 180f) delta -= 360f
-        if (delta < -180f) delta += 360f
-        overlayRotationTarget += delta
+        overlayRotationTarget = shortestRotationTarget(overlayRotationTarget, state.deviceOrientation.toFloat())
     }
     val overlayRotation by animateFloatAsState(targetValue = overlayRotationTarget, label = "overlayRotation")
 
     // Live zoom readout: show a bar + "N.N×" whenever the zoom ratio moves (pinch or in-sheet slider),
     // then fade it out ~1.4 s after the last change (iPhone-style). Never shown at rest.
     var zoomVisible by remember { mutableStateOf(false) }
-    LaunchedEffect(state.controls.zoomRatio) {
-        if (state.controls.zoomRatio != 1f) {
-            zoomVisible = true
-            delay(1400)
-            zoomVisible = false
-        } else {
-            zoomVisible = false
+    // snapshotFlow + collectLatest instead of keying the effect on the raw ratio: keying restarted
+    // (cancel + relaunch) a coroutine PER zoom tick — touch-sample rate during a pinch, ~30 Hz on a
+    // hardware-slide glide — pure dispatcher churn on the busiest gesture. One long-lived collector
+    // now watches the value; collectLatest restarts only the fade delay.
+    val zoomRatioState = rememberUpdatedState(state.controls.zoomRatio)
+    LaunchedEffect(Unit) {
+        snapshotFlow { zoomRatioState.value }.collectLatest { ratio ->
+            if (ratio != 1f) {
+                zoomVisible = true
+                delay(1400)
+                zoomVisible = false
+            } else {
+                zoomVisible = false
+            }
         }
     }
 
@@ -338,6 +348,9 @@ fun CameraScreen(
                     .align(Alignment.TopCenter)
                     .statusBarsPadding()
                     .padding(top = 106.dp)
+                    // Compact short label → counter-rotates like the other glyphs ("AF-ON" reads
+                    // upright in a landscape hold).
+                    .rotate(overlayRotation)
                     .clip(RoundedCornerShape(50))
                     .background(Color.Black.copy(alpha = 0.55f))
                     .padding(horizontal = 12.dp, vertical = 5.dp),
@@ -379,7 +392,13 @@ fun CameraScreen(
         }
 
         if (state.timerCountdownSec > 0) {
-            TimerCountdown(seconds = state.timerCountdownSec, modifier = Modifier.fillMaxSize())
+            // The 120 sp digit is the largest orientation-sensitive glyph on screen — a sideways
+            // "6" reads ambiguously in a landscape self-timer, so it counter-rotates too.
+            TimerCountdown(
+                seconds = state.timerCountdownSec,
+                modifier = Modifier.fillMaxSize(),
+                rotationDegrees = overlayRotation,
+            )
         }
 
         state.statusMessage?.let { message ->
@@ -494,6 +513,7 @@ fun CameraScreen(
                 onSnapshot = actions::onCapturePhoto,
                 onToggleTeleconverter = { actions.onToggleTeleconverter(!state.teleconverterMode) },
                 teleconverterEnabled = !state.isRecording,
+                cameraHealthy = state.cameraReady,
                 glyphRotation = overlayRotation,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -545,8 +565,7 @@ fun CameraScreen(
  */
 private fun Modifier.rotateLayout(degrees: Float): Modifier = this.layout { measurable, constraints ->
     val placeable = measurable.measure(constraints)
-    val norm = ((degrees % 360f) + 360f) % 360f
-    val swap = norm in 45f..135f || norm in 225f..315f
+    val swap = swapsDimensions(degrees)
     val w = if (swap) placeable.height else placeable.width
     val h = if (swap) placeable.width else placeable.height
     layout(w, h) {
@@ -618,24 +637,6 @@ private fun TopBar(
             GearButton(onClick = onOpenSheet, modifier = Modifier.rotate(glyphRotation))
         }
     }
-}
-
-private fun nextFlashMode(mode: FlashMode): FlashMode = when (mode) {
-    FlashMode.OFF -> FlashMode.AUTO
-    FlashMode.AUTO -> FlashMode.ON
-    FlashMode.ON -> FlashMode.TORCH
-    FlashMode.TORCH -> FlashMode.OFF
-}
-
-private fun nextTimer(timer: ShutterTimer): ShutterTimer = when (timer) {
-    ShutterTimer.OFF -> ShutterTimer.SEC3
-    ShutterTimer.SEC3 -> ShutterTimer.SEC10
-    ShutterTimer.SEC10 -> ShutterTimer.OFF
-}
-
-private fun nextAspect(ratio: AspectRatio): AspectRatio = when (ratio) {
-    AspectRatio.W4_3 -> AspectRatio.W16_9
-    AspectRatio.W16_9 -> AspectRatio.W4_3
 }
 
 /**
@@ -991,15 +992,14 @@ private fun MemoryRecallStrip(
                 saved -> CameraColors.TextPrimary.copy(alpha = 0.38f)
                 else -> CameraColors.TextSecondary.copy(alpha = if (enabled) 1f else 0.38f)
             }
-            Text(
-                text = slot.label,
-                color = fg,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold,
+            // TeleChip-style hit-area split: the OUTER box carries the 48 dp minimum touch target,
+            // the click and the semantics (with a labeled long-press action for TalkBack); the
+            // compact visual pill keeps its original size inside — one-handed MR taps on a braced
+            // 300 mm rig mis-hit far less without bloating the strip.
+            Box(
+                contentAlignment = Alignment.Center,
                 modifier = Modifier
-                    .rotate(glyphRotation)
-                    .clip(RoundedCornerShape(50))
-                    .background(bg)
+                    .sizeIn(minWidth = 40.dp, minHeight = 48.dp)
                     .semantics {
                         contentDescription = if (saved) {
                             "${slot.label} $name $summary"
@@ -1013,10 +1013,22 @@ private fun MemoryRecallStrip(
                         onClick = {
                             if (saved) actions.onRecallMemorySlot(slot) else actions.onStoreMemorySlot(slot)
                         },
+                        onLongClickLabel = "Save current setup to ${slot.label}",
                         onLongClick = { actions.onStoreMemorySlot(slot) },
-                    )
-                    .padding(horizontal = 11.dp, vertical = 6.dp),
-            )
+                    ),
+            ) {
+                Text(
+                    text = slot.label,
+                    color = fg,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .rotate(glyphRotation)
+                        .clip(RoundedCornerShape(50))
+                        .background(bg)
+                        .padding(horizontal = 11.dp, vertical = 6.dp),
+                )
+            }
         }
     }
 }
@@ -1145,12 +1157,11 @@ private fun FnOverlayTile(
 
 @Composable
 private fun ExposureMeter(state: CameraUiState, modifier: Modifier = Modifier) {
-    val caps = state.caps
-    val evStep = caps?.evStep?.let {
-        if (it.denominator == 0) 1f / 3f else it.numerator.toFloat() / it.denominator.toFloat()
-    } ?: (1f / 3f)
+    // evCompStops is THE shared EV-step derivation (ControlCycles.kt) — this meter used to carry a
+    // byte-identical inline copy, the exact one-copy-drifts bug that file exists to prevent.
+    val evStep = evCompStops(state)
     val compensationEv = (state.controls.exposureCompensation * evStep).coerceIn(-3f, 3f)
-    val manualEv = manualMeterEv(state)
+    val manualEv = manualMeterEv(state.controls.exposureMode, state.histogramData?.luma)
     val indicatorEv = if (state.controls.exposureMode == ExposureMode.MANUAL) manualEv else compensationEv
     val label = when {
         state.controls.exposureMode == ExposureMode.MANUAL && manualEv != null -> "M %+.1f".format(manualEv)
@@ -1190,9 +1201,11 @@ private fun ExposureMeter(state: CameraUiState, modifier: Modifier = Modifier) {
     }
 }
 
-private fun manualMeterEv(state: CameraUiState): Float? {
-    if (state.controls.exposureMode != ExposureMode.MANUAL) return null
-    val luma = state.histogramData?.luma ?: return null
+// Pure (plain enum + IntArray) and internal so the MANUAL-mode spot meter's three guard branches
+// and clamp are unit-testable — a wrong needle here misleads every manual exposure decision.
+internal fun manualMeterEv(mode: ExposureMode, luma: IntArray?): Float? {
+    if (mode != ExposureMode.MANUAL) return null
+    if (luma == null) return null
     var total = 0L
     luma.forEach { total += it }
     if (total == 0L) return null
@@ -1241,6 +1254,11 @@ private fun ModeCarousel(
 private fun ModeLabel(text: String, active: Boolean, enabled: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     Column(
         modifier = modifier
+            // The one HUD text element that had no scrim of its own: over a bright subject (sky,
+            // snow, water — normal super-tele fare) the mid-gray inactive label fell under usable
+            // contrast. Same treatment as every sibling HUD element.
+            .clip(RoundedCornerShape(50))
+            .background(Color.Black.copy(alpha = 0.36f))
             .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 6.dp, vertical = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -1282,6 +1300,7 @@ private fun ShutterRow(
     modifier: Modifier = Modifier,
     teleconverterEnabled: Boolean = true,
     glyphRotation: Float = 0f,
+    cameraHealthy: Boolean = true,
 ) {
     Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
         // Counter-rotate the review thumbnail so its image reads upright as the phone turns.
@@ -1291,7 +1310,7 @@ private fun ShutterRow(
             if (mode == CaptureMode.VIDEO && isRecording) {
                 SnapshotButton(onClick = onSnapshot)
             }
-            ShutterButton(mode = mode, isRecording = isRecording, onClick = onShutter)
+            ShutterButton(mode = mode, isRecording = isRecording, onClick = onShutter, cameraHealthy = cameraHealthy)
         }
         Spacer(modifier = Modifier.weight(1f))
         LensFlipButton(active = teleconverterOn, enabled = teleconverterEnabled, onClick = onToggleTeleconverter)
@@ -1305,6 +1324,7 @@ private fun ShutterButton(
     isRecording: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    cameraHealthy: Boolean = true,
 ) {
     // Tactile confirmation: a brief press-scale + a CONFIRM haptic so the shutter never fires "into
     // the void" (designer UX-2). Full-screen flash / thumbnail fly-in are deferred.
@@ -1316,6 +1336,10 @@ private fun ShutterButton(
         modifier = modifier
             .size(76.dp)
             .scale(shutterScale)
+            // Camera down (opening, reconfiguring, or recovery exhausted): the tap would be
+            // declined anyway — dim the button so it stops LOOKING ready in front of a black
+            // viewfinder. Still tappable: the decline path surfaces its own status message.
+            .alpha(if (cameraHealthy) 1f else 0.35f)
             .semantics {
                 contentDescription = when {
                     mode == CaptureMode.PHOTO -> "Take photo"
@@ -1507,4 +1531,27 @@ private fun CameraScreenPreview() {
     FindX9TeleTheme {
         CameraScreen(state = CameraUiState(), actions = PreviewCameraActions)
     }
+}
+
+/**
+ * Shortest-path angle unwrap for the glyph counter-rotation animation: accumulates an UNWRAPPED
+ * target so the spring always takes the <=180-degree way around (a 350->10 transition moves +20,
+ * not -340). Pure and internal — this sits in the documented already-shipped-wrong-once rotation
+ * sign zone, so the quadrant boundaries are pinned by unit tests.
+ */
+internal fun shortestRotationTarget(current: Float, desiredDegrees: Float): Float {
+    var delta = (desiredDegrees - current) % 360f
+    if (delta > 180f) delta -= 360f
+    if (delta < -180f) delta += 360f
+    return current + delta
+}
+
+/**
+ * Whether a rotateLayout at [degrees] swaps the reserved width/height (a ~90-degree/~270-degree
+ * hold). Boundary-INCLUSIVE at 45/135/225/315 — pinned by tests so a range "cleanup" can't silently
+ * un-swap a 90-degree hold.
+ */
+internal fun swapsDimensions(degrees: Float): Boolean {
+    val norm = ((degrees % 360f) + 360f) % 360f
+    return norm in 45f..135f || norm in 225f..315f
 }

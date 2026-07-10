@@ -1,14 +1,17 @@
 package com.hletrd.findx9tele.ui.controls
 
+import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.AudioScene
 import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.DriveMode
 import com.hletrd.findx9tele.camera.ExposureMode
+import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.FrameLineType
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.MeteringMode
+import com.hletrd.findx9tele.camera.ShutterTimer
 import com.hletrd.findx9tele.camera.VideoStabMode
 import com.hletrd.findx9tele.camera.WbMode
 
@@ -115,4 +118,26 @@ internal fun evCompStops(state: CameraUiState): Float {
         if (it.denominator == 0) 1f / 3f else it.numerator.toFloat() / it.denominator.toFloat()
     } ?: (1f / 3f)
     return state.controls.exposureCompensation * step
+}
+
+// The top-bar quick-tap cycles (flash / self-timer / still aspect). These lived as a second set of
+// private copies in CameraScreen — exactly the split this file's header warns about — and are now
+// in the one shared home with the Fn-dial cycles above.
+
+internal fun nextFlashMode(mode: FlashMode): FlashMode = when (mode) {
+    FlashMode.OFF -> FlashMode.AUTO
+    FlashMode.AUTO -> FlashMode.ON
+    FlashMode.ON -> FlashMode.TORCH
+    FlashMode.TORCH -> FlashMode.OFF
+}
+
+internal fun nextTimer(timer: ShutterTimer): ShutterTimer = when (timer) {
+    ShutterTimer.OFF -> ShutterTimer.SEC3
+    ShutterTimer.SEC3 -> ShutterTimer.SEC10
+    ShutterTimer.SEC10 -> ShutterTimer.OFF
+}
+
+internal fun nextAspect(ratio: AspectRatio): AspectRatio = when (ratio) {
+    AspectRatio.W4_3 -> AspectRatio.W16_9
+    AspectRatio.W16_9 -> AspectRatio.W4_3
 }
