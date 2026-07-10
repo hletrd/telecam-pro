@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -91,6 +92,7 @@ import com.hletrd.findx9tele.camera.videoBitRate
 import com.hletrd.findx9tele.video.EncoderCaps
 import com.hletrd.findx9tele.ui.CameraActions
 import com.hletrd.findx9tele.ui.theme.CameraColors
+import java.util.Locale
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
@@ -498,7 +500,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
     caps?.zoomRatioRange?.let { range ->
         LabeledSlider(
             label = "Zoom",
-            valueLabel = "%.1fx".format(state.controls.zoomRatio),
+            valueLabel = "%.1fx".format(Locale.US, state.controls.zoomRatio),
             value = state.controls.zoomRatio.coerceIn(range.lower, range.upper),
             onValueChange = actions::onZoomRatio,
             valueRange = range.lower..range.upper,
@@ -615,7 +617,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         )
         LabeledSlider(
             label = "Tint",
-            valueLabel = "%+d".format(controls.wbTint),
+            valueLabel = "%+d".format(Locale.US, controls.wbTint),
             value = controls.wbTint.toFloat().coerceIn(-50f, 50f),
             onValueChange = { actions.onWbTint(it.roundToInt()) },
             valueRange = -50f..50f,
@@ -873,7 +875,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     }
     LabeledSlider(
         label = "Gain",
-        valueLabel = "%.1fx".format(state.audioGain),
+        valueLabel = "%.1fx".format(Locale.US, state.audioGain),
         value = state.audioGain,
         onValueChange = actions::onAudioGain,
         valueRange = 0f..2f,
@@ -1076,7 +1078,7 @@ private fun FnSlotOrderRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text = "%02d".format(index + 1),
+            text = "%02d".format(Locale.US, index + 1),
             color = CameraColors.TextSecondary,
             style = MaterialTheme.typography.labelSmall,
             modifier = Modifier.width(26.dp),
@@ -1096,15 +1098,24 @@ private fun FnSlotOrderRow(
 @Composable
 private fun MiniTextButton(text: String, enabled: Boolean, onClick: () -> Unit) {
     val fg = if (enabled) CameraColors.TextPrimary else CameraColors.TextSecondary.copy(alpha = 0.45f)
+    // Outer box carries the click at a 48 dp minimum touch target; the inner pill stays the compact
+    // VISUAL (the Fn-slot editor packs Up/Down/Remove into a tight row), so the look is unchanged
+    // while the hit area meets the a11y floor — same outer-box pattern as TeleChip/DialChip.
     Box(
         modifier = Modifier
-            .clip(RoundedCornerShape(50))
-            .background(Color.White.copy(alpha = if (enabled) 0.09f else 0.04f))
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 9.dp, vertical = 5.dp),
+            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text(text, color = fg, style = MaterialTheme.typography.labelSmall)
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(50))
+                .background(Color.White.copy(alpha = if (enabled) 0.09f else 0.04f))
+                .padding(horizontal = 9.dp, vertical = 5.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(text, color = fg, style = MaterialTheme.typography.labelSmall)
+        }
     }
 }
 
@@ -1116,7 +1127,7 @@ internal fun fnSlotValue(slot: FnSlot, state: CameraUiState): String {
         FnSlot.SHUTTER -> when {
             c.exposureMode == ExposureMode.PROGRAM -> "A ${autoShutterText(state)}"
             c.autoShutterDriven -> "A ${formatShutterSpeed(c.exposureTimeNs)}"
-            c.shutterMode == ShutterMode.ANGLE -> "%.0f°".format(c.shutterAngle)
+            c.shutterMode == ShutterMode.ANGLE -> "%.0f°".format(Locale.US, c.shutterAngle)
             else -> formatShutterSpeed(c.exposureTimeNs)
         }
         FnSlot.ISO -> when {
@@ -1125,8 +1136,8 @@ internal fun fnSlotValue(slot: FnSlot, state: CameraUiState): String {
             else -> c.iso.toString()
         }
         FnSlot.WB -> if (c.wbMode == WbMode.MANUAL) "${c.wbKelvin}K" else wbModeLabel(c.wbMode)
-        FnSlot.EV -> "%+.1f".format(evCompStops(state))
-        FnSlot.ZOOM -> "%.1fx".format(c.zoomRatio)
+        FnSlot.EV -> "%+.1f".format(Locale.US, evCompStops(state))
+        FnSlot.ZOOM -> "%.1fx".format(Locale.US, c.zoomRatio)
         FnSlot.STABILIZATION -> state.videoStabMode.label
         FnSlot.DRIVE -> driveModeLabel(state.driveMode)
         FnSlot.METERING -> meteringModeLabel(c.meteringMode)

@@ -2,6 +2,7 @@ package com.hletrd.findx9tele.ui.overlays
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -12,12 +13,14 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -42,6 +45,7 @@ import com.hletrd.findx9tele.camera.videoBitRate
 import com.hletrd.findx9tele.ui.controls.transferLabelShort
 import com.hletrd.findx9tele.ui.controls.videoCodecLabelShort
 import com.hletrd.findx9tele.ui.controls.videoResolutionLabel
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -141,10 +145,10 @@ private fun DrawScope.drawCenterMark(color: Color, strokeWidth: Float) {
 }
 
 /**
- * Crop mask for non-[AspectRatio.FULL] capture ratios: dims the sensor area outside
+ * Crop mask for non-[AspectRatio.W4_3] capture ratios: dims the sensor area outside
  * [ratio]'s w:h box with semi-opaque black bars (letterboxed top/bottom or pillarboxed
  * left/right, whichever the view's own aspect requires) so the framed area is obvious in the
- * viewfinder. Draws nothing for [AspectRatio.FULL].
+ * viewfinder. Draws nothing for [AspectRatio.W4_3] (the full-sensor/no-crop default).
  */
 @Composable
 fun AspectMask(ratio: AspectRatio, modifier: Modifier = Modifier) {
@@ -170,6 +174,20 @@ fun AspectMask(ratio: AspectRatio, modifier: Modifier = Modifier) {
 }
 
 /**
+ * Deviation of the horizon gauge from the CURRENT held quadrant, normalized to (-180, 180]. Deviation
+ * is measured against the held orientation (not raw roll) because a landscape hold reads ±90° raw and
+ * would never show level, but the photographer's question is "am I square to the horizon in THIS
+ * hold" — captures auto-rotate per quadrant. Pulled out of [LevelOverlay] as a pure seam so the wrap
+ * logic (e.g. 350° roll vs a 10° hold reads as -20°, not +340°) is unit-testable off-device — the
+ * sessionAttemptPlan/centerCropBox house pattern. Upside-down (a 180° diff) maps to the inclusive
+ * +180 edge, visually identical to -180 on the symmetric gauge line.
+ */
+internal fun levelDeviationDegrees(rollDegrees: Float, deviceOrientation: Int): Float {
+    val m = ((rollDegrees - deviceOrientation) % 360f + 360f) % 360f
+    return if (m > 180f) m - 360f else m
+}
+
+/**
  * Horizon/level indicator. A static reference line marks true-horizontal; the [rollDegrees] line
  * rotates with device roll and turns YELLOW (Sony style) once within a small tolerance of level. In
  * a landscape hold the gauge stays horizontal on screen: deviation is measured against the current
@@ -178,12 +196,7 @@ fun AspectMask(ratio: AspectRatio, modifier: Modifier = Modifier) {
  */
 @Composable
 fun LevelOverlay(modifier: Modifier = Modifier, rollDegrees: Float = 0f, deviceOrientation: Int = 0) {
-    // Deviation from the CURRENT held orientation (the gravity quadrant) rather than raw roll: a
-    // landscape hold reads ±90° raw and would never show level, but the photographer's question is
-    // "am I square to the horizon in THIS hold" — captures auto-rotate per quadrant. Normalized to
-    // (-180, 180].
-    var deviation = rollDegrees - deviceOrientation
-    deviation = ((deviation + 180f) % 360f + 360f) % 360f - 180f
+    val deviation = levelDeviationDegrees(rollDegrees, deviceOrientation)
     val isLevel = abs(deviation) < 0.5f
     val indicatorColor = if (isLevel) Color(0xFFFFD60A) else Color.White
     Canvas(modifier = modifier.fillMaxSize()) {
@@ -242,7 +255,7 @@ fun RecordingIndicator(elapsedMs: Long, modifier: Modifier = Modifier) {
     val totalSeconds = elapsedMs / 1000L
     val minutes = totalSeconds / 60L
     val seconds = totalSeconds % 60L
-    val timeLabel = "%02d:%02d".format(minutes, seconds)
+    val timeLabel = "%02d:%02d".format(Locale.US, minutes, seconds)
     Row(
         modifier = modifier
             .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(50)),
@@ -306,11 +319,14 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier) {
     val focalLabel = when {
         focal <= 0f -> "--"
         state.teleconverterMode -> "${effFocal}mm TELE"
-        else -> "%.0fmm".format(focal)
+        else -> "%.0fmm".format(Locale.US, focal)
     }
     Row(
         modifier = modifier
             .background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(8.dp))
+            // Sony bodies paginate their status strip; with many concurrent tags (AEL/AWL/AFL/LOUPE/…)
+            // trailing tags would run off-screen, so scroll keeps every lock tag reachable.
+            .horizontalScroll(rememberScrollState())
             .padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -504,15 +520,20 @@ private fun DrawScope.drawWaveform(data: WaveformData) {
     }
 }
 
-/** Big centered self-timer countdown number, shown while a shutter delay is counting down. */
+/**
+ * Big centered self-timer countdown number, shown while a shutter delay is counting down.
+ * [rotationDegrees] counter-rotates the digit so it stays upright in a landscape hold (wired by the
+ * call site from the device orientation); the 0f default keeps existing callers screen-fixed.
+ */
 @Composable
-fun TimerCountdown(seconds: Int, modifier: Modifier = Modifier) {
+fun TimerCountdown(seconds: Int, modifier: Modifier = Modifier, rotationDegrees: Float = 0f) {
     if (seconds <= 0) return
     Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Text(
             text = seconds.toString(),
             color = Color.White,
             style = MaterialTheme.typography.displayLarge.copy(fontSize = 120.sp),
+            modifier = Modifier.rotate(rotationDegrees),
         )
     }
 }

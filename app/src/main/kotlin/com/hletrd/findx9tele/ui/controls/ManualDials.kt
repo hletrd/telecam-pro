@@ -25,6 +25,8 @@ import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
 import androidx.compose.foundation.rememberScrollState
@@ -70,6 +72,7 @@ import com.hletrd.findx9tele.camera.WbMode
 import com.hletrd.findx9tele.focus.FocusMapping
 import com.hletrd.findx9tele.ui.CameraActions
 import com.hletrd.findx9tele.ui.theme.CameraColors
+import java.util.Locale
 import kotlin.math.roundToInt
 
 /**
@@ -243,7 +246,7 @@ private fun FnDialChip(
             value = when {
                 controls.exposureMode == ExposureMode.PROGRAM -> "A${autoShutterText(state)}"
                 controls.autoShutterDriven -> "A${formatShutterSpeed(controls.exposureTimeNs)}"
-                controls.shutterMode == ShutterMode.ANGLE -> "%.0f°".format(controls.shutterAngle)
+                controls.shutterMode == ShutterMode.ANGLE -> "%.0f°".format(Locale.US, controls.shutterAngle)
                 else -> formatShutterSpeed(controls.exposureTimeNs)
             },
             active = openDial == DialType.SHUTTER,
@@ -273,7 +276,7 @@ private fun FnDialChip(
         )
         FnSlot.EV -> DialChip(
             label = "EV",
-            value = "%+.1f".format(controls.exposureCompensation * evStepValue),
+            value = "%+.1f".format(Locale.US, controls.exposureCompensation * evStepValue),
             active = openDial == DialType.EV,
             enabled = controls.exposureMode != ExposureMode.MANUAL,
             onClick = { onSelect(DialType.EV) },
@@ -281,7 +284,7 @@ private fun FnDialChip(
         )
         FnSlot.ZOOM -> DialChip(
             label = "Zoom",
-            value = "%.1fx".format(controls.zoomRatio),
+            value = "%.1fx".format(Locale.US, controls.zoomRatio),
             active = openDial == DialType.ZOOM,
             enabled = caps?.zoomRatioRange != null,
             onClick = { onSelect(DialType.ZOOM) },
@@ -422,34 +425,48 @@ private fun DialChip(
         enabled -> CameraColors.TextPrimary
         else -> CameraColors.TextSecondary
     }
-    Row(
+    // Outer box carries the click + a 48 dp minimum touch height: the pill's 8 dp vertical padding
+    // around 12 sp text only made it ~30 dp tall, under the a11y touch-target floor. The inner Row
+    // stays the VISUAL pill (unchanged look), so the dial row is pixel-identical while the hit area
+    // grows — the same outer-box pattern TeleChip uses in CameraScreen.
+    Box(
         modifier = modifier
-            // Fixed floor width + centered content so a chip's OWN value changes (e.g. "Auto" ↔
-            // "1/125s", "ISO 100" ↔ "ISO 12800") never resize it and shift the whole row.
-            .defaultMinSize(minWidth = 76.dp)
-            .clip(RoundedCornerShape(50))
-            .background(bg)
-            .then(
-                if (!active) Modifier.border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(50)) else Modifier,
-            )
+            .sizeIn(minHeight = 48.dp)
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(horizontal = 10.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterHorizontally),
-        verticalAlignment = Alignment.CenterVertically,
+            // TalkBack: combinedClickable surfaces the long-press only as a generic "long press"
+            // gesture, so give the action a spoken label. Touch still routes through the
+            // combinedClickable above; this names the action for screen-reader users (P4.9).
+            .semantics { onLongClick(label = "Open Fn menu") { onLongClick(); true } },
+        contentAlignment = Alignment.Center,
     ) {
-        Text(
-            label,
-            color = fg,
-            fontSize = 12.sp,
-            lineHeight = 14.sp,
-            fontWeight = FontWeight.SemiBold,
-        )
-        Text(
-            value,
-            color = fg.copy(alpha = if (active) 1f else 0.75f),
-            fontSize = 12.sp,
-            lineHeight = 14.sp,
-        )
+        Row(
+            modifier = Modifier
+                // Fixed floor width + centered content so a chip's OWN value changes (e.g. "Auto" ↔
+                // "1/125s", "ISO 100" ↔ "ISO 12800") never resize it and shift the whole row.
+                .defaultMinSize(minWidth = 76.dp)
+                .clip(RoundedCornerShape(50))
+                .background(bg)
+                .then(
+                    if (!active) Modifier.border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(50)) else Modifier,
+                )
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterHorizontally),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                label,
+                color = fg,
+                fontSize = 12.sp,
+                lineHeight = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                value,
+                color = fg.copy(alpha = if (active) 1f else 0.75f),
+                fontSize = 12.sp,
+                lineHeight = 14.sp,
+            )
+        }
     }
 }
 
@@ -509,7 +526,7 @@ private fun ShutterRuler(controls: ManualControls, caps: CameraCaps?, actions: C
         SpeedAngleToggle(mode = controls.shutterMode, enabled = enabled, onSelect = actions::onShutterMode)
         if (controls.shutterMode == ShutterMode.ANGLE) {
             val fraction = ((controls.shutterAngle - 1f) / 359f).coerceIn(0f, 1f)
-            val readout = "%.0f°  (%s)".format(controls.shutterAngle, formatShutterSpeed(controls.effectiveExposureNsForDisplay()))
+            val readout = "%.0f°  (%s)".format(Locale.US, controls.shutterAngle, formatShutterSpeed(controls.effectiveExposureNsForDisplay()))
             RulerReadout(if (controls.autoShutterDriven) "A $readout" else readout)
             RulerSlider(
                 fraction = fraction,
@@ -578,42 +595,51 @@ private fun ManualControls.effectiveExposureNsForDisplay(): Long =
 // camera user drags in familiar stops instead of a smooth continuum. Values are generated by EV from
 // an anchor and log-spaced; each ruler tick is one stop, keeping the strip short.
 
-private fun roundToSignificant(v: Double, sig: Int): Double {
+internal fun roundToSignificant(v: Double, sig: Int): Double {
     if (v <= 0.0) return v
     val digits = Math.ceil(Math.log10(v)).toInt()
     val mag = Math.pow(10.0, (sig - digits).toDouble())
     return Math.round(v * mag) / mag
 }
 
-/** ISO values [stepEv] EV apart across [range], anchored at 100, rounded to 2 significant figures so
- *  they read as conventional stops (100, 125, 160, 200, …). Hardware bounds always included. */
-private fun isoStops(range: Range<Int>, stepEv: Float): IntArray {
-    if (range.lower >= range.upper || stepEv <= 0f) return intArrayOf(range.lower)
-    val set = sortedSetOf(range.lower, range.upper)
+/** ISO values [stepEv] EV apart across [[lower], [upper]], anchored at 100, rounded to 2 significant
+ *  figures so they read as conventional stops (100, 125, 160, 200, …). Hardware bounds always
+ *  included. Plain-bounds core: android.util.Range getters throw "not mocked" on the JVM, so the
+ *  testable seam takes Int lower/upper directly (the sessionAttemptPlan/centerCropBox house pattern);
+ *  the Range overload below is a thin wrapper. */
+internal fun isoStops(lower: Int, upper: Int, stepEv: Float): IntArray {
+    if (lower >= upper || stepEv <= 0f) return intArrayOf(lower)
+    val set = sortedSetOf(lower, upper)
     val ln2 = Math.log(2.0)
-    val kLo = Math.ceil(Math.log(range.lower / 100.0) / ln2 / stepEv).toInt()
-    val kHi = Math.floor(Math.log(range.upper / 100.0) / ln2 / stepEv).toInt()
+    val kLo = Math.ceil(Math.log(lower / 100.0) / ln2 / stepEv).toInt()
+    val kHi = Math.floor(Math.log(upper / 100.0) / ln2 / stepEv).toInt()
     for (k in kLo..kHi) {
         val nice = roundToSignificant(100.0 * Math.pow(2.0, k * stepEv.toDouble()), 2).roundToInt()
-        if (nice > range.lower && nice < range.upper) set.add(nice)
+        if (nice > lower && nice < upper) set.add(nice)
     }
     return set.toIntArray()
 }
 
-/** Shutter times (ns) [stepEv] EV apart across [range], anchored at 1 s. Hardware bounds included. */
-private fun shutterStops(range: Range<Long>, stepEv: Float): LongArray {
-    if (range.lower >= range.upper || stepEv <= 0f) return longArrayOf(range.lower)
-    val set = sortedSetOf(range.lower, range.upper)
+private fun isoStops(range: Range<Int>, stepEv: Float): IntArray = isoStops(range.lower, range.upper, stepEv)
+
+/** Shutter times (ns) [stepEv] EV apart across [[lower], [upper]], anchored at 1 s. Hardware bounds
+ *  included. Plain-bounds core (Long lower/upper ns) for the same JVM-mockability reason as
+ *  [isoStops]; the Range overload below is a thin wrapper. */
+internal fun shutterStops(lower: Long, upper: Long, stepEv: Float): LongArray {
+    if (lower >= upper || stepEv <= 0f) return longArrayOf(lower)
+    val set = sortedSetOf(lower, upper)
     val ln2 = Math.log(2.0)
     val anchor = 1_000_000_000.0
-    val kLo = Math.ceil(Math.log(range.lower / anchor) / ln2 / stepEv).toInt()
-    val kHi = Math.floor(Math.log(range.upper / anchor) / ln2 / stepEv).toInt()
+    val kLo = Math.ceil(Math.log(lower / anchor) / ln2 / stepEv).toInt()
+    val kHi = Math.floor(Math.log(upper / anchor) / ln2 / stepEv).toInt()
     for (k in kLo..kHi) {
         val ns = Math.round(anchor * Math.pow(2.0, k * stepEv.toDouble()))
-        if (ns > range.lower && ns < range.upper) set.add(ns)
+        if (ns > lower && ns < upper) set.add(ns)
     }
     return set.toLongArray()
 }
+
+private fun shutterStops(range: Range<Long>, stepEv: Float): LongArray = shutterStops(range.lower, range.upper, stepEv)
 
 private fun stepMajorEvery(step: ExposureStep): Int = when (step) {
     ExposureStep.THIRD -> 3
@@ -676,7 +702,7 @@ private fun EvRuler(controls: ManualControls, caps: CameraCaps?, onEv: (Int) -> 
     val fraction = if (lo >= hi) 0f else ((controls.exposureCompensation - lo).toFloat() / (hi - lo).toFloat()).coerceIn(0f, 1f)
     val majorEvery = (1f / stepValue).roundToInt().coerceAtLeast(1)
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        RulerReadout("%+.1f EV".format(controls.exposureCompensation * stepValue))
+        RulerReadout("%+.1f EV".format(Locale.US, controls.exposureCompensation * stepValue))
         RulerSlider(
             fraction = fraction,
             onFractionChange = { f ->
@@ -698,7 +724,7 @@ private fun ZoomRuler(controls: ManualControls, caps: CameraCaps?, onZoomRatio: 
     val hi = range.upper
     val fraction = if (hi <= lo) 0f else ((controls.zoomRatio - lo) / (hi - lo)).coerceIn(0f, 1f)
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        RulerReadout("%.1f×".format(controls.zoomRatio))
+        RulerReadout("%.1f×".format(Locale.US, controls.zoomRatio))
         RulerSlider(
             fraction = fraction,
             onFractionChange = { f -> onZoomRatio((lo + f * (hi - lo)).coerceIn(lo, hi)) },

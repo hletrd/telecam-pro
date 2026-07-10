@@ -1,7 +1,9 @@
 package com.hletrd.findx9tele.ui.controls
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
+import java.util.Locale
 
 /**
  * Pins the shutter-speed readout ([formatShutterSpeed]), including the [0.667 s, 1 s) band that
@@ -10,6 +12,22 @@ import org.junit.Test
 class ShutterSpeedFormatTest {
 
     private fun ns(seconds: Double): Long = (seconds * 1_000_000_000L).toLong()
+
+    @Test
+    fun `decimal readout uses a dot under a comma-decimal default locale`() {
+        // A comma-decimal locale (German) renders "%.1f" of 0.75 as "0,8" — the pro readouts pin
+        // Locale.US so a shutter speed always reads "0.8s". Restore the prior default afterwards.
+        val prior = Locale.getDefault()
+        try {
+            Locale.setDefault(Locale.GERMANY)
+            assertEquals("0.8s", formatShutterSpeed(750_000_000L)) // decimal-seconds band
+            assertEquals("2.5s", formatShutterSpeed(2_500_000_000L)) // >=1 s decimal band
+            assertFalse("0.8s must not read 0,8s", formatShutterSpeed(750_000_000L).contains(','))
+            assertFalse("2.5s must not read 2,5s", formatShutterSpeed(2_500_000_000L).contains(','))
+        } finally {
+            Locale.setDefault(prior)
+        }
+    }
 
     @Test
     fun `fast speeds snap to conventional denominators`() {
