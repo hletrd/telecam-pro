@@ -48,6 +48,10 @@ class CameraEngine(private val context: Context) {
     @Volatile private var selection: TeleSelection? = null
     @Volatile private var caps: CameraCaps? = null
     @Volatile private var videoSize = Size(1920, 1080)
+    // The user's explicit resolution pick (from the Video tab or a settings restore); null = never
+    // chosen, auto-derive. Kept separate from videoSize so reopen paths can re-validate it against
+    // each lens's caps instead of blindly re-deriving the largest size over the user's choice.
+    @Volatile private var requestedVideoSize: Size? = null
     // What the camera preview stream (the GL SurfaceTexture) is actually sized to. In VIDEO mode it
     // must equal [videoSize] (the SurfaceTexture feeds the encoder, and the HAL fixes the stream size
     // at session config). In PHOTO mode it is the largest 4:3 stream instead, so the viewfinder shows
@@ -76,6 +80,10 @@ class CameraEngine(private val context: Context) {
     // changes clear it before their asynchronous reopen is queued so REC cannot race the teardown.
     @Volatile private var cameraReady = false
     @Volatile private var previewSurface: Surface? = null
+    // Last-known preview surface dimensions, kept alongside previewSurface so the async start
+    // continuation can bind the LIVE surface (not its captured, possibly-released parameter).
+    @Volatile private var previewSurfaceW = 0
+    @Volatile private var previewSurfaceH = 0
 
     private val gyro = com.hletrd.findx9tele.stab.GyroEis(context)
     @Volatile private var teleconverterMode = false
@@ -131,6 +139,8 @@ class CameraEngine(private val context: Context) {
 
     fun onPreviewSurfaceAvailable(surface: Surface, width: Int, height: Int) {
         previewSurface = surface // published synchronously on the calling (main) thread
+        previewSurfaceW = width
+        previewSurfaceH = height
         if (started) { gl.setPreviewOutput(surface, width, height); return }
         if (starting) return // setup already dispatched; don't launch a duplicate start
         starting = true
@@ -182,11 +192,19 @@ class CameraEngine(private val context: Context) {
                 maybeLogCameraCapabilities()
                 openCamera(input)
             }
-            gl.setPreviewOutput(surface, width, height)
+            // Publish start state BEFORE binding: a TextureView surface destroyed+recreated during
+            // the multi-IPC window above then takes the `started` fast path (which binds the fresh
+            // surface itself) instead of being dropped by the `starting` guard.
             started = true
             // Clear the dispatch guard now that started gates re-entry. Leaving it true was harmless
             // only while nothing ever reset started; don't couple those invariants.
             starting = false
+            // Bind the LIVE surface field, not the captured parameter: if the surface was destroyed
+            // during setup, the captured Surface is already released and EGL-binding it would crash
+            // the fresh GL thread (this app installs no UncaughtExceptionHandler). A destroyed-and-
+            // not-yet-recreated surface simply skips the bind — the next surface callback binds.
+            val liveSurface = previewSurface
+            if (liveSurface != null) gl.setPreviewOutput(liveSurface, previewSurfaceW, previewSurfaceH)
         }
     }
 
@@ -245,6 +263,8 @@ class CameraEngine(private val context: Context) {
     fun setFalseColor(enabled: Boolean) = gl.setFalseColor(enabled)
 
     fun onPreviewSurfaceChanged(width: Int, height: Int) {
+        previewSurfaceW = width
+        previewSurfaceH = height
         val surface = previewSurface ?: return
         gl.setPreviewOutput(surface, width, height)
     }
@@ -523,7 +543,7 @@ class CameraEngine(private val context: Context) {
     /** Preferred recording input; resolved against connected AudioDeviceInfo entries at record start. */
     fun setAudioInputPreference(p: AudioInputPreference) { audioInputPreference = p }
 
-    /** Still-photo center-crop aspect ratio; applies to HEIF only (see [saveHeifAsync]). FULL = no crop. */
+    /** Still-photo center-crop aspect ratio; applies to HEIF only (see [saveHeifAsync]). W4_3 = no crop. */
     fun setAspectRatio(a: AspectRatio) { aspectRatio = a }
 
     /**
@@ -531,6 +551,11 @@ class CameraEngine(private val context: Context) {
      * SurfaceTexture buffer and encoder all agree on the same dimensions.
      */
     fun setVideoResolution(s: Size) {
+        // Remember the user's pick so lens switches and the initial open don't silently re-derive
+        // the largest size over it — chooseVideoSize honors this request whenever the current lens
+        // still offers it (and falls back to auto when it doesn't, e.g. after an openGate aspect
+        // flip or a lens without that mode).
+        requestedVideoSize = s
         if (videoSize == s) return
         applyVideoSize(s)
     }
@@ -565,12 +590,19 @@ class CameraEngine(private val context: Context) {
     fun setLens(choice: LensChoice, teleconverterOverride: Boolean = choice.isTeleconverterLens) {
         if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
         lensChoice = choice
-        val id = CameraSelector2.overrideIdForFocal(manager, choice.targetEquivMm)
-        if (id == null) { onStatus?.invoke("${choice.label} unavailable"); return }
-        // Set the teleconverter flag BEFORE the reopen so applyStabilization() inside setCameraOverride
-        // picks the right rotation and HAL mode for the new lens in the same pass.
-        teleconverterMode = teleconverterOverride
-        setCameraOverride(id)
+        // Resolve the focal→camera-id ON setupExecutor: overrideIdForFocal enumerates every back
+        // camera (plus physical sub-ids) via getCameraCharacteristics — a dozen-plus Binder IPCs on
+        // this device — and this path used to run them on the MAIN thread for every lens tap and
+        // inside the cold-start settings restore (the same IPC burst the initial open was moved off
+        // main to avoid). The single-thread executor also keeps resolve→reopen ordered.
+        setupExecutor.execute {
+            val id = CameraSelector2.overrideIdForFocal(manager, choice.targetEquivMm)
+            if (id == null) { onStatus?.invoke("${choice.label} unavailable"); return@execute }
+            // Set the teleconverter flag BEFORE the reopen so applyStabilization() inside
+            // setCameraOverride picks the right rotation and HAL mode for the new lens in one pass.
+            teleconverterMode = teleconverterOverride
+            setCameraOverride(id)
+        }
     }
 
     fun setCameraOverride(id: String?) {
@@ -672,9 +704,7 @@ class CameraEngine(private val context: Context) {
             return
         }
         val range = c?.evRange
-        // distinct() so a narrow EV range that clamps -2/0/+2 to the same value doesn't fire duplicate
-        // identical frames (a 1-shot "bracket").
-        val steps = if (range != null) listOf(-2, 0, 2).map { it.coerceIn(range.lower, range.upper) }.distinct()
+        val steps = if (range != null) aeCompAebSteps(range.lower, range.upper)
         else listOf(original.exposureCompensation)
         fun fire(i: Int) {
             if (i >= steps.size) { ctrl.updateControls(original); return }
@@ -895,10 +925,13 @@ class CameraEngine(private val context: Context) {
             onStatus?.invoke("Finalizing previous clip")
             return false
         }
-        // The recorder owns the mic — stop the standby level tap first (its loop also self-exits on
-        // recorder != null, but be explicit and give it a beat to release the AudioRecord).
+        // The recorder owns the mic — stop the standby level tap first and wait (bounded) for its
+        // release CONFIRMATION, not just a timed thread join: the latch counts down only after
+        // AudioRecord.release() ran, so the single-mic invariant holds whenever the wait succeeds.
+        // Proceed-on-timeout stays (a wedged read must not make REC unresponsive); VideoRecorder's
+        // STATE_UNINITIALIZED guard then degrades that rare overlap to a video-only clip.
         standbyMeterWanted = false
-        standbyMeterThread?.let { runCatching { it.join(150) } }
+        standbyMeterReleased?.let { runCatching { it.await(400, java.util.concurrent.TimeUnit.MILLISECONDS) } }
         standbyMeterThread = null
         if (recorder != null) return false
         val name = fileName("VID", "mp4")
@@ -1015,17 +1048,30 @@ class CameraEngine(private val context: Context) {
             ioExecutor.execute { finishRecording(rec, pausedClipUri, pausedClipCaptureId) }
         }
         gyro.stop()
-        controller?.close()
+        // Close OFF the main thread: close() blocks until the HAL device releases (bounded 1.5 s
+        // join — see CameraController.close), and onStop already competes with other teardown work
+        // inside the ANR budget. setupExecutor serializes this close ahead of any queued/subsequent
+        // reopen, so ordering is preserved.
+        val ctrl = controller
         controller = null
+        if (ctrl != null) setupExecutor.execute { ctrl.close() }
     }
 
     /** Reopens the camera after [pause], reusing the existing GL input surface and start state. */
     fun resume() {
         paused = false
-        val input = gl.inputSurface ?: return
-        if (controller != null) return
         gyro.start()
-        openCamera(input)
+        // Serialized on setupExecutor like every other open path (the GL-start continuation,
+        // reopenForSession, setCameraOverride). resume() used to call openCamera directly on the
+        // main thread — the one remaining unserialized open: it raced a queued reopen's
+        // `controller = null` + open (both threads could observe null and double-open, contending
+        // for the HAL device) and paid the open's Binder IPCs on the UI thread.
+        setupExecutor.execute {
+            if (paused) return@execute
+            val input = gl.inputSurface ?: return@execute
+            if (controller != null) return@execute
+            openCamera(input)
+        }
     }
 
     /**
@@ -1047,6 +1093,10 @@ class CameraEngine(private val context: Context) {
     fun release() {
         cameraReady = false
         stopTimelapse()
+        // ACCEPTED main-thread teardown: onCleared() means the process is going away — the
+        // rec.stop() drain joins (up to ~3 s each, wedge-guarded) are tolerated here because there
+        // is no user-visible session left to jank, and dispatching to ioExecutor would race the
+        // executor shutdown below. pause() normally ran first, so recorder is almost always null.
         runCatching { recorder?.stop() }
         recorder = null
         gyro.stop()
@@ -1094,7 +1144,14 @@ class CameraEngine(private val context: Context) {
      * wide (this device's cameras top out at 4K/4096 for the recording surface; no camera exposes 8K
      * video here). Falls back through the caps lists so it never returns an unsupported size.
      */
-    private fun chooseVideoSize(sel: TeleSelection): Size = chooseStreamSize(sel, fourByThree = openGate)
+    private fun chooseVideoSize(sel: TeleSelection): Size {
+        val auto = chooseStreamSize(sel, fourByThree = openGate)
+        val req = requestedVideoSize ?: return auto
+        // Honor a user/restored pick only while the current caps actually offer it for the active
+        // aspect; anything else (stale persisted size, openGate flip) degrades to the auto choice.
+        val list = caps?.let { if (openGate) it.openGateVideoSizes else it.availableVideoSizes }
+        return if (list != null && req in list) req else auto
+    }
 
     /**
      * The camera preview (SurfaceTexture) stream size. VIDEO mode: identical to [videoSize] — the
@@ -1182,6 +1239,11 @@ class CameraEngine(private val context: Context) {
     // (the recorder owns the mic) or the flag drops.
     @Volatile private var standbyMeterWanted = false
     private var standbyMeterThread: Thread? = null
+    // Counts down only after the meter thread's AudioRecord is actually RELEASED (every exit path).
+    // startRecording awaits this instead of a bare Thread.join: a timed join is a wait bound, not
+    // an exit guarantee — on timeout it proceeded into VideoRecorder's own AudioRecord init while
+    // the standby tap could still hold the mic (a brief two-AudioRecord overlap).
+    @Volatile private var standbyMeterReleased: java.util.concurrent.CountDownLatch? = null
 
     fun setStandbyAudioMonitor(enabled: Boolean) {
         standbyMeterWanted = enabled
@@ -1193,36 +1255,46 @@ class CameraEngine(private val context: Context) {
         if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) !=
             android.content.pm.PackageManager.PERMISSION_GRANTED
         ) return
+        val released = java.util.concurrent.CountDownLatch(1)
+        standbyMeterReleased = released
         val t = Thread({
-            val sampleRate = 48_000
-            val minBuf = android.media.AudioRecord.getMinBufferSize(
-                sampleRate, android.media.AudioFormat.CHANNEL_IN_MONO, android.media.AudioFormat.ENCODING_PCM_16BIT,
-            )
-            if (minBuf <= 0) return@Thread
-            val rec = runCatching {
-                android.media.AudioRecord(
-                    android.media.MediaRecorder.AudioSource.CAMCORDER, sampleRate,
-                    android.media.AudioFormat.CHANNEL_IN_MONO, android.media.AudioFormat.ENCODING_PCM_16BIT, minBuf * 2,
+            try {
+                val sampleRate = 48_000
+                val minBuf = android.media.AudioRecord.getMinBufferSize(
+                    sampleRate, android.media.AudioFormat.CHANNEL_IN_MONO, android.media.AudioFormat.ENCODING_PCM_16BIT,
                 )
-            }.getOrNull() ?: return@Thread
-            if (rec.state != android.media.AudioRecord.STATE_INITIALIZED) { rec.release(); return@Thread }
-            runCatching { rec.startRecording() }.onFailure { rec.release(); return@Thread }
-            val buf = ShortArray(2048)
-            var lastEmit = 0L
-            while (standbyMeterWanted && recorder == null) {
-                val n = rec.read(buf, 0, buf.size)
-                if (n <= 0) continue
-                val now = System.nanoTime()
-                if (now - lastEmit < 100_000_000L) continue // ~10 Hz is plenty for a meter
-                lastEmit = now
-                var sum = 0.0
-                for (i in 0 until n) { val v = buf[i].toDouble(); sum += v * v }
-                val rms = kotlin.math.sqrt(sum / n) / 32767.0
-                onAudioLevel?.invoke((rms * audioGain).toFloat().coerceIn(0f, 1f))
+                if (minBuf <= 0) return@Thread
+                val rec = runCatching {
+                    android.media.AudioRecord(
+                        android.media.MediaRecorder.AudioSource.CAMCORDER, sampleRate,
+                        android.media.AudioFormat.CHANNEL_IN_MONO, android.media.AudioFormat.ENCODING_PCM_16BIT, minBuf * 2,
+                    )
+                }.getOrNull() ?: return@Thread
+                if (rec.state != android.media.AudioRecord.STATE_INITIALIZED) { rec.release(); return@Thread }
+                runCatching { rec.startRecording() }.onFailure { rec.release(); return@Thread }
+                val buf = ShortArray(2048)
+                var lastEmit = 0L
+                while (standbyMeterWanted && recorder == null) {
+                    val n = rec.read(buf, 0, buf.size)
+                    if (n <= 0) continue
+                    val now = System.nanoTime()
+                    if (now - lastEmit < 100_000_000L) continue // ~10 Hz is plenty for a meter
+                    lastEmit = now
+                    var sum = 0.0
+                    for (i in 0 until n) { val v = buf[i].toDouble(); sum += v * v }
+                    // 32768 = signed 16-bit full scale, matching VideoRecorder's recording meter so
+                    // the level bar doesn't step at the standby→recording handoff.
+                    val rms = kotlin.math.sqrt(sum / n) / 32768.0
+                    onAudioLevel?.invoke((rms * audioGain).toFloat().coerceIn(0f, 1f))
+                }
+                runCatching { rec.stop() }
+                rec.release()
+                onAudioLevel?.invoke(0f)
+            } finally {
+                // Signal "mic fully released" on EVERY exit path (incl. the early return@Thread
+                // bails, where no AudioRecord was ever held).
+                released.countDown()
             }
-            runCatching { rec.stop() }
-            rec.release()
-            onAudioLevel?.invoke(0f)
         }, "StandbyAudioMeter")
         standbyMeterThread = t
         t.start()
@@ -1251,6 +1323,15 @@ internal data class CropBox(val x: Int, val y: Int, val w: Int, val h: Int)
  * Pure rect math behind the still-photo aspect crop, extracted so the 4:3/16:9 gating is
  * unit-testable without a Bitmap (an unmocked android.jar stub on the JVM).
  */
+/**
+ * AUTO-exposure AEB compensation steps: a -2/0/+2 EV bracket clamped to the camera's EV range.
+ * distinct() so a narrow range that clamps two steps to the same value doesn't fire duplicate
+ * identical frames (a 1-shot "bracket"). Pure and top-level like [centerCropBox] so the clamp and
+ * dedupe are unit-testable (the MANUAL branch's sibling, manualAebExposuresNs, already is).
+ */
+internal fun aeCompAebSteps(lower: Int, upper: Int): List<Int> =
+    listOf(-2, 0, 2).map { it.coerceIn(lower, upper) }.distinct()
+
 internal fun centerCropBox(srcW: Int, srcH: Int, ratioW: Int, ratioH: Int): CropBox {
     val heightForFullWidth = srcW * ratioH / ratioW
     val (cropW, cropH) = if (heightForFullWidth <= srcH) {
