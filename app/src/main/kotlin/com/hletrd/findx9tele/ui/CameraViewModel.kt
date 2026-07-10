@@ -70,9 +70,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
 
     // Throttles engine.setControls() so rapid drags don't rebuild the repeating request per tick, but
-    // still apply the LATEST value at a steady ~12 Hz WHILE the gesture continues (a plain debounce
-    // starved: continuous pinch/drag kept resetting the timer, so zoom only landed after the finger
-    // lifted). First change schedules an apply; changes within the window just refresh pendingControls.
+    // still apply the LATEST value at a steady 25 Hz (every 40 ms) WHILE the gesture continues (a
+    // plain debounce starved: continuous pinch/drag kept resetting the timer, so zoom only landed
+    // after the finger lifted). First change schedules an apply; changes within the window just
+    // refresh pendingControls.
     private var pendingControls: ManualControls? = null
     private var applyScheduled = false
     private val applyControlsRunnable = Runnable {
@@ -88,6 +89,22 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     private val clearStatusRunnable = Runnable { _state.update { it.copy(statusMessage = null) } }
 
     private var reticleHideRunnable: Runnable? = null
+
+    // capture-sequence id → its DNG sibling URI (bounded history), plus the id of the currently
+    // displayed lastMediaUri. Guarded by synchronized(captureOutputs): the save callbacks land on
+    // the engine's camera/io threads while Delete runs on main.
+    private val captureOutputs = LinkedHashMap<Int, android.net.Uri>()
+    private var lastDisplayedCaptureId = 0
+
+    // Trailing debounce for persistence: every user-driven change to a PERSISTED setting schedules
+    // one synchronous commit shortly after the LAST change. This closes the Recents-swipe-kill loss
+    // window for dial/slider changes (previously only saved on onStop) WITHOUT the old failure mode
+    // of a synchronous ~60-key commit on every drag frame (the audio-gain slider did exactly that).
+    private val settingsSaveRunnable = Runnable { saveSettingsIfEnabled() }
+    private fun scheduleSettingsSave() {
+        mainHandler.removeCallbacks(settingsSaveRunnable)
+        mainHandler.postDelayed(settingsSaveRunnable, SETTINGS_SAVE_DEBOUNCE_MS)
+    }
 
     private val levelTicker = object : Runnable {
         override fun run() {
@@ -137,8 +154,21 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // Live lens focus distance for the Focus chip readout + the AF→MF handoff seed (camera
         // thread → StateFlow is thread-safe, same as the exposure readout above).
         engine.onFocusDistance = { d -> _state.update { it.copy(liveFocusDiopters = d) } }
-        // Last saved still → gallery thumbnail + in-app review (io thread → StateFlow is thread-safe).
-        engine.onMediaSaved = { uri -> _state.update { it.copy(lastMediaUri = uri) } }
+        // Last saved displayable media → gallery thumbnail + in-app review (io thread → StateFlow is
+        // thread-safe). The capture id groups it with any DNG sibling for a whole-shot Delete.
+        engine.onMediaSaved = { uri, captureId ->
+            synchronized(captureOutputs) { lastDisplayedCaptureId = captureId }
+            _state.update { it.copy(lastMediaUri = uri) }
+        }
+        // DNG sibling of a capture (never displayed): remembered so review-Delete removes it too.
+        engine.onRawSaved = { uri, captureId ->
+            synchronized(captureOutputs) {
+                captureOutputs[captureId] = uri
+                while (captureOutputs.size > CAPTURE_OUTPUT_HISTORY) {
+                    captureOutputs.remove(captureOutputs.keys.first())
+                }
+            }
+        }
         restoreSettingsIfEnabled()
         refreshProgramAppSide()
         // Seed the review thumbnail with the newest photo this app previously saved, so "last shot"
@@ -185,12 +215,23 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             else -> e.lens
         }
         val restoredTeleconverter = restoredLens == LensChoice.TELE3X && preservedTeleconverter
+        // Settings restore is the one path that bypasses the pickers' gating, so re-validate the
+        // UI-gated enum values before they reach the engine: a persisted high-speed rate would
+        // rebuild the SIGABRT-ing constrained session on next launch (FPS_120 is intentionally
+        // unselectable), and a persisted codec the device can't mux (APV) would break recording.
+        val safeFrameRate = if (e.videoFrameRate.highSpeed) ExtraSettings().videoFrameRate else e.videoFrameRate
+        val safeCodec =
+            if (com.hletrd.findx9tele.video.EncoderCaps.availableCodecs().contains(e.videoCodec)) e.videoCodec
+            else ExtraSettings().videoCodec
+        // Keep the exposure fps in lockstep with the restored video rate (mirrors onVideoFrameRate;
+        // restoring them independently let the AE/shutter-angle math run at a stale fps).
+        val cSynced = c.copy(fps = safeFrameRate.fps)
         // Push to the engine (safe pre-start: these set @Volatile fields read when the camera opens).
         engine.setVideoMode(e.mode == CaptureMode.VIDEO)
-        engine.setControls(c)
+        engine.setControls(cSynced)
         // Manual/priority modes need luma analysis even when scopes are hidden: priority AE drives
         // from it, and full manual uses it for the live exposure meter.
-        engine.setAeMetering(usesExposureAnalysis(c))
+        engine.setAeMetering(usesExposureAnalysis(cSynced))
         // Pass the resolved teleconverter state directly so a "preserve lens but not TELE" restore
         // (independent toggles, e.g. lens=3× with the converter not preserved as attached) reopens the
         // camera once instead of setLens bundling TELE on and a separate setTeleconverterMode call
@@ -200,17 +241,17 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setGammaAssist(e.gammaAssist)
         engine.setVideoStabMode(e.videoStabMode)
         engine.setAspectRatio(e.aspectRatio)
-        engine.setVideoCodec(e.videoCodec)
+        engine.setVideoCodec(safeCodec)
         engine.setBitrateLevel(e.bitrateLevel)
         engine.setOpenGate(e.openGate)
         engine.setAudioGain(e.audioGain)
         engine.setAudioScene(e.audioScene)
         engine.setAudioInputPreference(e.audioInputPreference)
-        engine.setVideoFrameRate(e.videoFrameRate)
+        engine.setVideoFrameRate(safeFrameRate)
         _state.update {
             it.copy(
                 rememberSettings = rememberSettings ?: it.rememberSettings,
-                controls = c,
+                controls = cSynced,
                 transfer = e.transfer,
                 photoFormats = PhotoFormats(e.heif, e.jpeg, e.dngRaw),
                 mode = e.mode,
@@ -219,9 +260,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 videoStabMode = e.videoStabMode,
                 aspectRatio = e.aspectRatio,
                 grid = e.grid,
-                videoCodec = e.videoCodec,
+                videoCodec = safeCodec,
                 bitrateLevel = e.bitrateLevel,
-                videoFrameRate = e.videoFrameRate,
+                videoFrameRate = safeFrameRate,
                 openGate = e.openGate,
                 recordAudio = e.recordAudio,
                 audioGain = e.audioGain,
@@ -325,19 +366,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     private fun usesExposureAnalysis(c: ManualControls): Boolean =
         c.exposureMode != ExposureMode.PROGRAM || c.programAppSide
 
-    /**
-     * PROGRAM runs app-side for STILLS — the auto min-shutter (1/focal rule) + Auto ISO a real P mode
-     * gives, which the HAL AE cannot (no min-shutter hint → 1/30 s blur at 300 mm). The HAL AE keeps
-     * video PROGRAM (its shutter conventions are frame-rate driven) and any flash-metered PROGRAM
-     * (AUTO/ON flash metering only exists with AE ON).
-     */
-    private fun programShouldRunAppSide(mode: CaptureMode, flash: FlashMode): Boolean =
-        mode == CaptureMode.PHOTO && flash != FlashMode.AUTO && flash != FlashMode.ON
-
-    /** Recomputes [ManualControls.programAppSide] after mode/flash changes, seeding a smooth handoff. */
+    /** Recomputes [ManualControls.programAppSide] after mode/flash/exposure-mode changes, seeding a smooth handoff. */
     private fun refreshProgramAppSide() {
         val live = _state.value
-        val want = programShouldRunAppSide(live.mode, live.controls.flash)
+        val want = programShouldRunAppSide(live.mode, live.controls.exposureMode, live.controls.flash)
         if (live.controls.programAppSide == want) return
         updateControls {
             if (want && it.exposureMode == ExposureMode.PROGRAM) {
@@ -356,10 +388,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
 
     /** Handheld-safe shutter target for app-side PROGRAM: the 1/(35mm-equivalent focal) rule. */
-    private fun preferredProgramShutterNs(s: CameraUiState): Long {
-        val eff = s.lens.targetEquivMm * (if (s.teleconverterMode) 300f / 70f else 1f) // afocal TC ≈ 4.286×
-        return (1_000_000_000f / eff.coerceAtLeast(1f)).toLong()
-    }
+    private fun preferredProgramShutterNs(s: CameraUiState): Long =
+        preferredProgramShutterNs(s.lens.targetEquivMm, s.teleconverterMode)
 
     private fun audioInputStatus(preference: AudioInputPreference = _state.value.audioInputPreference) =
         AudioInputInspector.status(getApplication(), preference)
@@ -475,14 +505,20 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     // ---- Exposure ----
     // Dragging the ISO dial only makes sense when the user owns ISO (ISO/MANUAL). If ISO is currently
     // auto (PROGRAM or SHUTTER), taking manual control of it drops to MANUAL.
-    override fun onIso(iso: Int) = updateControls(FnSlot.ISO) {
-        val mode = if (it.exposureMode == ExposureMode.PROGRAM || it.autoIsoDriven) ExposureMode.MANUAL else it.exposureMode
-        it.copy(iso = iso, exposureMode = mode)
+    override fun onIso(iso: Int) {
+        updateControls(FnSlot.ISO) {
+            val mode = if (it.exposureMode == ExposureMode.PROGRAM || it.autoIsoDriven) ExposureMode.MANUAL else it.exposureMode
+            it.copy(iso = iso, exposureMode = mode)
+        }
+        refreshProgramAppSide() // taking manual control can leave PROGRAM → the app-side flag follows
     }
     // Likewise for shutter: if the shutter is currently auto (PROGRAM or ISO), taking it over → MANUAL.
-    override fun onShutterNs(ns: Long) = updateControls(FnSlot.SHUTTER) {
-        val mode = if (it.exposureMode == ExposureMode.PROGRAM || it.autoShutterDriven) ExposureMode.MANUAL else it.exposureMode
-        it.copy(exposureTimeNs = ns, exposureMode = mode)
+    override fun onShutterNs(ns: Long) {
+        updateControls(FnSlot.SHUTTER) {
+            val mode = if (it.exposureMode == ExposureMode.PROGRAM || it.autoShutterDriven) ExposureMode.MANUAL else it.exposureMode
+            it.copy(exposureTimeNs = ns, exposureMode = mode)
+        }
+        refreshProgramAppSide()
     }
     override fun onExposureCompensation(ev: Int) = updateControls(FnSlot.EV) { it.copy(exposureCompensation = ev) }
     override fun onExposureMode(mode: ExposureMode) {
@@ -509,11 +545,14 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
     override fun onToggleAeLock(locked: Boolean) = updateControls(FnSlot.EXPOSURE_MODE) { it.copy(aeLock = locked) }
     override fun onAntibanding(mode: Antibanding) = updateControls { it.copy(antibanding = mode) }
-    override fun onFps(fps: Int) = updateControls { it.copy(fps = fps) }
+    // (onFps was removed: dead API surface — controls.fps is always driven by onVideoFrameRate.)
     override fun onShutterMode(mode: ShutterMode) = updateControls(FnSlot.SHUTTER) { it.copy(shutterMode = mode) }
-    override fun onShutterAngle(angle: Float) = updateControls(FnSlot.SHUTTER) {
-        val mode = if (it.exposureMode == ExposureMode.PROGRAM || it.autoShutterDriven) ExposureMode.MANUAL else it.exposureMode
-        it.copy(shutterAngle = angle, shutterMode = ShutterMode.ANGLE, exposureMode = mode)
+    override fun onShutterAngle(angle: Float) {
+        updateControls(FnSlot.SHUTTER) {
+            val mode = if (it.exposureMode == ExposureMode.PROGRAM || it.autoShutterDriven) ExposureMode.MANUAL else it.exposureMode
+            it.copy(shutterAngle = angle, shutterMode = ShutterMode.ANGLE, exposureMode = mode)
+        }
+        refreshProgramAppSide()
     }
     override fun onExposureStep(step: ExposureStep) = updateControls { it.copy(exposureStep = step) }
 
@@ -546,7 +585,14 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         refreshProgramAppSide() // AUTO/ON flash needs the HAL AE — photo P falls back off app-side
     }
     override fun onToggleOis(enabled: Boolean) = updateControls(FnSlot.STABILIZATION) { it.copy(oisEnabled = enabled) }
-    override fun onZoomRatio(ratio: Float) = updateControls(FnSlot.ZOOM) { it.copy(zoomRatio = ratio) }
+    override fun onZoomRatio(ratio: Float) {
+        // Any direct zoom input (pinch, dial, in-sheet slider) takes over from an in-flight hardware
+        // slide glide — otherwise the ~30 Hz ease ticker keeps dragging the ratio back toward its
+        // now-stale target every 33 ms, fighting the finger.
+        zoomEaseTarget = null
+        applyZoomRatio(ratio)
+    }
+    private fun applyZoomRatio(ratio: Float) = updateControls(FnSlot.ZOOM) { it.copy(zoomRatio = ratio) }
     // Hardware slide-zoom easing: the camera button emits DISCRETE key repeats (~20 Hz), and applying
     // each 1.04x jump directly reads as stutter. Instead the steps move a TARGET and a ~30 Hz ticker
     // glides the actual ratio toward it (exponential approach in log-zoom space), so the preview
@@ -557,12 +603,13 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             val target = zoomEaseTarget ?: return
             val cur = _state.value.controls.zoomRatio
             val next = (cur * Math.pow((target / cur).toDouble(), 0.4)).toFloat()
+            // applyZoomRatio, NOT onZoomRatio: the public setter cancels the glide (manual takeover).
             if (kotlin.math.abs(kotlin.math.ln((target / next).toDouble())) < 0.004) {
                 zoomEaseTarget = null
-                onZoomRatio(target)
+                applyZoomRatio(target)
                 return
             }
-            onZoomRatio(next)
+            applyZoomRatio(next)
             mainHandler.postDelayed(this, 33)
         }
     }
@@ -608,11 +655,16 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         applyEngineTransfer(_state.value.mode, transfer)
         _state.update { it.copy(transfer = transfer) }
         markChanged(FnSlot.TRANSFER)
+        scheduleSettingsSave()
     }
-    override fun onSetPhotoFormats(formats: PhotoFormats) = _state.update { it.copy(photoFormats = formats, activeMemorySlot = null) }
+    override fun onSetPhotoFormats(formats: PhotoFormats) {
+        _state.update { it.copy(photoFormats = formats, activeMemorySlot = null) }
+        scheduleSettingsSave()
+    }
     override fun onAspectRatio(ratio: AspectRatio) {
         engine.setAspectRatio(ratio)
         _state.update { it.copy(aspectRatio = ratio, activeMemorySlot = null) }
+        scheduleSettingsSave()
     }
     override fun onToggleRecordAudio(enabled: Boolean) {
         if (rejectIfRecording("Stop REC first")) return
@@ -624,13 +676,16 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         if (rejectIfRecording("Stop REC first")) return
         engine.setAudioGain(gain)
         _state.update { it.copy(audioGain = gain, activeMemorySlot = null) }
-        saveSettingsIfEnabled()
+        // Debounced, not immediate: this rides a slider, and a synchronous full-prefs commit per
+        // drag frame stuttered the main thread. The trailing save still lands within ~0.5 s.
+        scheduleSettingsSave()
     }
     override fun onAudioScene(scene: com.hletrd.findx9tele.camera.AudioScene) {
         if (rejectIfRecording("Stop REC first")) return
         engine.setAudioScene(scene)
         _state.update { it.copy(audioScene = scene) }
         markChanged(FnSlot.AUDIO_SCENE)
+        scheduleSettingsSave()
     }
     override fun onAudioInputPreference(preference: AudioInputPreference) {
         if (rejectIfRecording("Stop REC first")) return
@@ -672,11 +727,13 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setVideoCodec(codec)
         _state.update { it.copy(videoCodec = codec, activeMemorySlot = null) }
         reconcileFrameRate()
+        scheduleSettingsSave()
     }
     override fun onBitrateLevel(level: BitrateLevel) {
         if (rejectIfRecording("Stop REC first")) return
         engine.setBitrateLevel(level)
         _state.update { it.copy(bitrateLevel = level, activeMemorySlot = null) }
+        scheduleSettingsSave()
     }
     override fun onVideoResolution(size: Size) {
         if (rejectIfRecording("Stop REC first")) return
@@ -692,12 +749,14 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         val controls = _state.value.controls.copy(fps = rate.fps)
         engine.setControls(controls)
         _state.update { it.copy(videoFrameRate = rate, controls = controls, activeMemorySlot = null) }
+        scheduleSettingsSave()
     }
     override fun onToggleOpenGate(enabled: Boolean) {
         if (rejectIfRecording("Stop REC first")) return
         engine.setOpenGate(enabled)
         _state.update { it.copy(openGate = enabled, activeMemorySlot = null) }
         reconcileFrameRate()
+        scheduleSettingsSave()
     }
 
     /**
@@ -718,6 +777,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setVideoStabMode(mode)
         _state.update { it.copy(videoStabMode = mode) }
         markChanged(FnSlot.STABILIZATION)
+        scheduleSettingsSave()
     }
 
     // ---- Assists ----
@@ -772,6 +832,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onGridType(type: GridType) {
         _state.update { it.copy(grid = type) }
         markChanged(FnSlot.GRID)
+        scheduleSettingsSave()
     }
     override fun onToggleLevel(enabled: Boolean) {
         _state.update { it.copy(level = enabled) }
@@ -962,8 +1023,15 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     override fun onDeleteLastMedia() {
         val uri = _state.value.lastMediaUri ?: return
-        MediaStoreWriter.delete(getApplication(), uri)
+        // Delete the WHOLE shot: the displayed HEIF/JPEG plus the DNG sibling saved by the same
+        // shutter press (it used to survive, orphaned in the gallery). ContentResolver.delete is a
+        // Binder round-trip per file — run both off the main thread.
+        val rawSibling = synchronized(captureOutputs) { captureOutputs.remove(lastDisplayedCaptureId) }
         _state.update { it.copy(lastMediaUri = null) }
+        Thread {
+            MediaStoreWriter.delete(getApplication(), uri)
+            rawSibling?.let { MediaStoreWriter.delete(getApplication(), it) }
+        }.start()
         showStatus("Deleted")
     }
 
@@ -980,6 +1048,11 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             applyScheduled = true
             mainHandler.postDelayed(applyControlsRunnable, 40)
         }
+        // Manual-control changes used to persist only on onStop — the exact Recents-swipe-kill loss
+        // class the project fixed twice for mode/lens. A USER change schedules a debounced commit;
+        // the app-side AE loop's driven writes are excluded (they'd re-arm the debounce ~6×/s
+        // forever) — an AE-driven value is transient by nature and restored by the loop anyway.
+        if (slot != null) scheduleSettingsSave()
     }
 
     /**
@@ -995,19 +1068,23 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             if (it.denominator == 0) 1f / 3f else it.numerator.toFloat() / it.denominator.toFloat()
         }
         val evStops = c.exposureCompensation * evStep
+        val isoRange = caps.isoRange
+        val expRange = caps.exposureTimeRange
         when (c.exposureMode) {
-            ExposureMode.SHUTTER ->
-                AutoExposure.driveIso(luma, c.iso, caps.isoRange, evStops)?.let { newIso ->
+            ExposureMode.SHUTTER -> if (isoRange != null) {
+                AutoExposure.driveIso(luma, c.iso, isoRange.lower, isoRange.upper, evStops)?.let { newIso ->
                     updateControls { it.copy(iso = newIso) }
                 }
-            ExposureMode.ISO ->
-                AutoExposure.driveShutterNs(luma, c.effectiveExposureNs(), caps.exposureTimeRange, evStops)?.let { newNs ->
+            }
+            ExposureMode.ISO -> if (expRange != null) {
+                AutoExposure.driveShutterNs(luma, c.effectiveExposureNs(), expRange.lower, expRange.upper, evStops)?.let { newNs ->
                     updateControls { it.copy(exposureTimeNs = newNs) }
                 }
-            ExposureMode.PROGRAM -> if (c.programAppSide) {
+            }
+            ExposureMode.PROGRAM -> if (c.programAppSide && isoRange != null && expRange != null) {
                 AutoExposure.driveProgram(
                     luma, c.iso, c.effectiveExposureNs(), preferredProgramShutterNs(s),
-                    caps.isoRange, caps.exposureTimeRange, evStops,
+                    isoRange.lower, isoRange.upper, expRange.lower, expRange.upper, evStops,
                 )?.let { (newIso, newNs) ->
                     updateControls { it.copy(iso = newIso, exposureTimeNs = newNs) }
                 }
@@ -1044,5 +1121,30 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         const val RECENT_SETTING_LIMIT = 6
         const val FN_SLOT_LIMIT = 8
         const val HARDWARE_ZOOM_STEP = 1.15f
+        // How many recent captures keep their DNG-sibling mapping for whole-shot Delete.
+        const val CAPTURE_OUTPUT_HISTORY = 8
+        // Trailing window for the debounced settings commit (see scheduleSettingsSave).
+        const val SETTINGS_SAVE_DEBOUNCE_MS = 500L
     }
+}
+
+/**
+ * PROGRAM runs app-side for STILLS — the auto min-shutter (1/focal rule) + Auto ISO a real P mode
+ * gives, which the HAL AE cannot (no min-shutter hint → 1/30 s blur at 300 mm). The HAL AE keeps
+ * video PROGRAM (its shutter conventions are frame-rate driven) and any flash-metered PROGRAM
+ * (AUTO/ON flash metering only exists with AE ON). Requires [exposureMode] == PROGRAM so the flag
+ * means exactly what its name says — in S/ISO/M it is false, not a stale leftover. Top-level and
+ * Android-free so the P-mode routing matrix is unit-testable.
+ */
+internal fun programShouldRunAppSide(mode: CaptureMode, exposureMode: ExposureMode, flash: FlashMode): Boolean =
+    mode == CaptureMode.PHOTO && exposureMode == ExposureMode.PROGRAM &&
+        flash != FlashMode.AUTO && flash != FlashMode.ON
+
+/**
+ * Handheld-safe shutter target (ns) for app-side PROGRAM: the 1/(35mm-equivalent focal) rule at the
+ * effective focal length (native × teleconverter magnification). Pure for unit tests.
+ */
+internal fun preferredProgramShutterNs(lensEquivMm: Float, teleconverterMode: Boolean): Long {
+    val eff = lensEquivMm * (if (teleconverterMode) com.hletrd.findx9tele.camera.TELECONVERTER_MAGNIFICATION else 1f)
+    return (1_000_000_000f / eff.coerceAtLeast(1f)).toLong()
 }

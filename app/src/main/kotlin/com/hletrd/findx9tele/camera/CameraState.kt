@@ -184,11 +184,20 @@ enum class AudioInputPreference(val label: String) {
 }
 
 /**
+ * The Explorer teleconverter's angular magnification: ~300 mm effective over the native ~70 mm
+ * periscope (≈4.286×). Single source of truth — this factor feeds the HAL zoom hints, the EXIF
+ * 35 mm focal, the OSD focal readout, and the handheld-shutter rule; a corrected optic measurement
+ * must change exactly one constant.
+ */
+const val TELECONVERTER_MAGNIFICATION = 300f / 70f
+
+/**
  * The four rear lenses, addressed by their 35mm-equivalent focal length (the app resolves each to
  * the back camera whose equiv focal is closest — no hardcoded ids). [TELE3X] is the 3×/70 mm
  * periscope the Hasselblad teleconverter clamps onto; selecting it bundles teleconverter mode ON
- * (afocal 180° flip + gyro-EIS scaled to the ~300 mm effective focal), and selecting any other lens
- * turns teleconverter mode OFF, all in one action.
+ * (the afocal 180° flip — stabilization at 300 mm is the HAL's OIS+EIS via [VideoStabMode], not
+ * app-side gyro warping), and selecting any other lens turns teleconverter mode OFF, all in one
+ * action.
  */
 enum class LensChoice(val targetEquivMm: Float, val label: String) {
     ULTRAWIDE(14f, "0.6×"),
@@ -342,9 +351,10 @@ enum class AspectRatio(val w: Int, val h: Int) { W4_3(4, 3), W16_9(16, 9) }
 /**
  * Photo output formats. Any combination can be enabled at once. [heif] and [jpeg] are alternative
  * containers for the processed still (HEIF = smaller, JPEG = universal); both use the camera's
- * 8-bit JPEG ImageReader source in v1. JPEG is
- * written straight from the camera's JPEG ImageReader bytes with no HEIF re-encode. [dngRaw] adds
- * the full-frame RAW sensor file alongside either.
+ * 8-bit JPEG ImageReader source in v1 and both run the SAME processed-pixel pipeline
+ * (decode → aspect crop → afocal/device rotation → re-encode) — the mandatory 180° rotation means
+ * neither container is a straight byte passthrough. [dngRaw] adds the full-frame RAW sensor file
+ * alongside either.
  */
 data class PhotoFormats(
     val heif: Boolean = true,

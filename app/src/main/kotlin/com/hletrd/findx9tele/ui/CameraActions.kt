@@ -55,7 +55,6 @@ interface CameraActions {
     fun onToggleAutoExposure(auto: Boolean)
     fun onToggleAeLock(locked: Boolean)
     fun onAntibanding(mode: Antibanding)
-    fun onFps(fps: Int)
     fun onShutterMode(mode: ShutterMode)
     fun onShutterAngle(angle: Float)
     fun onExposureStep(step: ExposureStep)

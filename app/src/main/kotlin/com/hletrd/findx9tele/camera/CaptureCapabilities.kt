@@ -82,7 +82,8 @@ data class CameraCaps(
     /**
      * The CONTROL_VIDEO_STABILIZATION_MODE value to request for [mode], honoring what this lens
      * actually supports: ENHANCED falls back to ON when PREVIEW_STABILIZATION is absent, and any HAL
-     * mode falls back to OFF when unsupported. OFF/GYRO resolve to OFF (GYRO stabilizes in our GL).
+     * mode falls back to OFF when unsupported. OFF requests OFF (there is no app-side EIS mode —
+     * the HAL's OIS+EIS owns stabilization; see [VideoStabMode]).
      */
     fun videoStabControlMode(mode: VideoStabMode): Int {
         val off = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF
@@ -109,10 +110,20 @@ data class CameraCaps(
     companion object {
         private const val FULL_FRAME_DIAGONAL_MM = 43.2666f
 
+        /**
+         * Reads and flattens the characteristics. Throws (CameraAccessException) only when BOTH the
+         * physical and logical reads fail — a transient camera-service outage. Callers run on
+         * background executors and must guard the call; an uncaught throw there kills the process.
+         */
         fun read(manager: CameraManager, logicalId: String, physicalId: String?): CameraCaps {
             val chars: CameraCharacteristics = runCatching {
                 manager.getCameraCharacteristics(physicalId ?: logicalId)
-            }.getOrElse { manager.getCameraCharacteristics(logicalId) }
+            }.recoverCatching {
+                // The fallback read was previously unguarded inside getOrElse: a second service
+                // hiccup threw straight out of read() on the setup thread. recoverCatching keeps the
+                // failure a Result until getOrThrow, so exactly one exception surfaces to the caller.
+                manager.getCameraCharacteristics(logicalId)
+            }.getOrThrow()
 
             val caps = chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: IntArray(0)
             fun has(cap: Int) = caps.contains(cap)

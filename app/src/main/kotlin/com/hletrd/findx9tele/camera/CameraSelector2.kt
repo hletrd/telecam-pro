@@ -44,7 +44,10 @@ object CameraSelector2 {
     /** Enumerates every back-facing lens as a candidate (standalone ids + logical physical sub-cameras). */
     fun candidatesOf(manager: CameraManager): List<TeleSelection> {
         val candidates = ArrayList<TeleSelection>()
-        for (id in manager.cameraIdList) {
+        // cameraIdList throws CameraAccessException on a transient camera-service hiccup — reached on
+        // every cold start and lens switch, so degrade to "no candidates" instead of crashing.
+        val ids = runCatching { manager.cameraIdList }.getOrDefault(emptyArray())
+        for (id in ids) {
             val chars = runCatching { manager.getCameraCharacteristics(id) }.getOrNull() ?: continue
             if (chars.get(CameraCharacteristics.LENS_FACING) != CameraMetadata.LENS_FACING_BACK) continue
 

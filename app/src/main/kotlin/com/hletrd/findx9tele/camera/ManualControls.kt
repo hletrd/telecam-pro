@@ -328,9 +328,18 @@ private val ProcessingLevel.noiseMetadata: Int
     }
 
 /**
+ * Ceiling for a single WB channel gain. Unclamped, the Tanner-Helland approximation demands a
+ * ~18-19× blue gain at the UI-reachable 2000 K — far outside the ~1-8× range sensor WB gains
+ * actually span, leaving the HAL's behavior undefined. Color accuracy at the extreme presets is
+ * necessarily approximate; a bounded gain beats an out-of-range request.
+ */
+const val MAX_WB_CHANNEL_GAIN = 8f
+
+/**
  * Approximate CCT + tint -> RGGB channel gains for manual WB.
  * Kelvin uses a Tanner-Helland blackbody approximation; tint shifts the green channel
- * (-50 greener .. +50 more magenta). Gains are normalized so the smallest is 1.0 (camera minimum).
+ * (-50 greener .. +50 more magenta). Gains are normalized so the smallest is 1.0 (camera minimum)
+ * and each channel is capped at [MAX_WB_CHANNEL_GAIN].
  */
 fun kelvinTintToRggbGains(kelvin: Int, tint: Int): RggbChannelVector {
     val t = (kelvin.coerceIn(1000, 40000)) / 100.0
@@ -360,5 +369,11 @@ fun kelvinTintToRggbGains(kelvin: Int, tint: Int): RggbChannelVector {
     val minGain = minOf(gainR, gainG, gainB).coerceAtLeast(1e-3)
     gainR /= minGain; gainG /= minGain; gainB /= minGain
 
-    return RggbChannelVector(gainR.toFloat(), gainG.toFloat(), gainG.toFloat(), gainB.toFloat())
+    val cap = MAX_WB_CHANNEL_GAIN.toDouble()
+    return RggbChannelVector(
+        gainR.coerceAtMost(cap).toFloat(),
+        gainG.coerceAtMost(cap).toFloat(),
+        gainG.coerceAtMost(cap).toFloat(),
+        gainB.coerceAtMost(cap).toFloat(),
+    )
 }

@@ -1,6 +1,5 @@
 package com.hletrd.findx9tele.camera
 
-import android.util.Range
 import kotlin.math.ln
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
@@ -64,19 +63,20 @@ object AutoExposure {
         return (errorStops * GAIN).coerceIn(-MAX_STEP_STOPS, MAX_STEP_STOPS)
     }
 
+    // Bounds are plain Int/Long (not android.util.Range): Range's getters throw "not mocked" on the
+    // JVM, which made these drive functions untestable — the same discipline as sensorFrameDurationNs.
+
     /** SHUTTER priority: next ISO to hit the target at the fixed shutter, or null if converged. */
-    fun driveIso(luma: IntArray, currentIso: Int, isoRange: Range<Int>?, evCompStops: Float): Int? {
-        val range = isoRange ?: return null
+    fun driveIso(luma: IntArray, currentIso: Int, isoMin: Int, isoMax: Int, evCompStops: Float): Int? {
         val stops = correctionStops(meanLuma(luma), evCompStops) ?: return null
-        val next = (currentIso * pow2(stops)).roundToInt().coerceIn(range.lower, range.upper)
+        val next = (currentIso * pow2(stops)).roundToInt().coerceIn(isoMin, isoMax)
         return if (next == currentIso) null else next
     }
 
     /** ISO priority: next exposure time (ns) to hit the target at the fixed ISO, or null if converged. */
-    fun driveShutterNs(luma: IntArray, currentNs: Long, expRange: Range<Long>?, evCompStops: Float): Long? {
-        val range = expRange ?: return null
+    fun driveShutterNs(luma: IntArray, currentNs: Long, expMinNs: Long, expMaxNs: Long, evCompStops: Float): Long? {
         val stops = correctionStops(meanLuma(luma), evCompStops) ?: return null
-        val next = (currentNs * pow2(stops)).roundToLong().coerceIn(range.lower, range.upper)
+        val next = (currentNs * pow2(stops)).roundToLong().coerceIn(expMinNs, expMaxNs)
         return if (next == currentNs) null else next
     }
 
@@ -95,15 +95,15 @@ object AutoExposure {
         currentIso: Int,
         currentNs: Long,
         preferredNs: Long,
-        isoRange: Range<Int>?,
-        expRange: Range<Long>?,
+        isoMin: Int,
+        isoMax: Int,
+        expMinNs: Long,
+        expMaxNs: Long,
         evCompStops: Float,
     ): Pair<Int, Long>? {
-        val isoR = isoRange ?: return null
-        val expR = expRange ?: return null
         // Handheld ceiling: past ~1/10 s no amount of "P mode" saves the shot; stop trading there.
-        val slowCapNs = minOf(expR.upper, 100_000_000L)
-        val pref = preferredNs.coerceIn(expR.lower, slowCapNs)
+        val slowCapNs = minOf(expMaxNs, 100_000_000L)
+        val pref = preferredNs.coerceIn(expMinNs, slowCapNs)
 
         val corr = correctionStops(meanLuma(luma), evCompStops) ?: 0f
         // Re-center the shutter toward the preferred point by at most 1 stop this tick…
@@ -114,19 +114,19 @@ object AutoExposure {
         var newNs = (currentNs * pow2(shutterStops)).roundToLong()
         val wantIso = currentIso * pow2(isoStops)
         var newIso = wantIso.roundToInt()
-        if (wantIso > isoR.upper) {
+        if (wantIso > isoMax) {
             // Dark scene, ISO exhausted → push the remainder into a slower shutter (≤ handheld cap).
-            val overflowStops = log2((wantIso / isoR.upper).toFloat())
-            newIso = isoR.upper
+            val overflowStops = log2((wantIso / isoMax).toFloat())
+            newIso = isoMax
             newNs = (newNs * pow2(overflowStops)).roundToLong()
-        } else if (wantIso < isoR.lower) {
+        } else if (wantIso < isoMin) {
             // Bright scene at base ISO → shorten the shutter below the preferred point.
-            val overflowStops = log2((wantIso / isoR.lower).toFloat())
-            newIso = isoR.lower
+            val overflowStops = log2((wantIso / isoMin).toFloat())
+            newIso = isoMin
             newNs = (newNs * pow2(overflowStops)).roundToLong()
         }
-        newNs = newNs.coerceIn(expR.lower, slowCapNs)
-        newIso = newIso.coerceIn(isoR.lower, isoR.upper)
+        newNs = newNs.coerceIn(expMinNs, slowCapNs)
+        newIso = newIso.coerceIn(isoMin, isoMax)
         if (newIso == currentIso && newNs == currentNs) return null
         return newIso to newNs
     }

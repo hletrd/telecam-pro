@@ -1389,7 +1389,6 @@ private object PreviewCameraActions : CameraActions {
     override fun onToggleAutoExposure(auto: Boolean) = Unit
     override fun onToggleAeLock(locked: Boolean) = Unit
     override fun onAntibanding(mode: Antibanding) = Unit
-    override fun onFps(fps: Int) = Unit
     override fun onShutterMode(mode: ShutterMode) = Unit
     override fun onShutterAngle(angle: Float) = Unit
     override fun onExposureStep(step: com.hletrd.findx9tele.camera.ExposureStep) = Unit

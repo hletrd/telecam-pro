@@ -22,6 +22,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import android.view.Surface
+import com.hletrd.findx9tele.BuildConfig
 import java.util.concurrent.Executor
 
 /**
@@ -197,7 +198,7 @@ class CameraController(context: Context) {
     private fun CaptureRequest.Builder.applyVendorLog() {
         if (vendorLogMode == 0) return
         runCatching { set(logVideoModeKey, vendorLogMode) }
-            .onSuccess { Log.i(TAG, "vendor log.video.mode=$vendorLogMode applied") }
+            .onSuccess { if (BuildConfig.DEBUG) Log.i(TAG, "vendor log.video.mode=$vendorLogMode applied") }
             .onFailure { Log.w(TAG, "vendor log.video.mode=$vendorLogMode rejected: ${it.message}") }
     }
 
@@ -407,8 +408,11 @@ class CameraController(context: Context) {
             val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
                 addTarget(preview)
                 set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, android.util.Range(highSpeedFps, highSpeedFps))
-                // Our gyro EIS handles stabilization at the effective focal length; keep HAL video
-                // stabilization off, matching the regular path. OIS per the user toggle.
+                // High-speed sessions keep HAL video stabilization OFF: the constrained session type
+                // predates the OIS+EIS profiles the regular path requests, and this path is dead in
+                // shipping builds anyway (high-speed SIGABRTs this HAL; desiredHighSpeedFps()==0).
+                // If high-speed is ever revived, wire videoStabHalMode here like startPreview does.
+                // (App-side gyro EIS no longer exists — the HAL owns stabilization.)
                 set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
                 if (caps.oisAvailable) {
                     set(
@@ -493,7 +497,9 @@ class CameraController(context: Context) {
                     }
                     // Diagnostic: log what 3A is actually doing (throttled ~1/sec) so we can tell
                     // whether AE/AF are converging on the standalone tele or effectively inert.
-                    if (threeAFrame % 30 == 0) {
+                    // Debug builds only — release users don't need per-second camera telemetry
+                    // in logcat (minor capability disclosure + log spam; security review).
+                    if (BuildConfig.DEBUG && threeAFrame % 30 == 0) {
                         val ae = result.get(CaptureResult.CONTROL_AE_STATE)
                         val af = result.get(CaptureResult.CONTROL_AF_STATE)
                         val afMode = result.get(CaptureResult.CONTROL_AF_MODE)
@@ -510,7 +516,7 @@ class CameraController(context: Context) {
             // focus is held. Cancel-then-start is more reliable than a bare START when the AF engine
             // is mid-scan (common in CONTINUOUS mode).
             if (afTriggerPending && controls.focusMode != FocusMode.MANUAL) {
-                Log.i(TAG, "Touch AF: scanning region $meteringPoint")
+                if (BuildConfig.DEBUG) Log.i(TAG, "Touch AF: scanning region $meteringPoint")
                 builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_CANCEL)
                 runCatching { s.capture(builder.build(), callback, handler) }
                 builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
@@ -629,39 +635,49 @@ class CameraController(context: Context) {
 
             pending = Pending(jpeg != null, raw != null, cb)
 
-            val req = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
-                jpeg?.let { addTarget(it) }
-                raw?.let { addTarget(it) }
-                applyManualControls(controls, caps, pinAutoFps)
-                // Keep stills consistent with the session's pipeline: with the log session active the
-                // HAL processes everything scene-referred, so an unset key mid-session is undefined.
-                applyVendorLog()
-                applyTeleconverterHints()
-                applyMetering(this, controls)
-                // We rotate pixels ourselves (HEIF) / tag DNG orientation; keep JPEG upright.
-                set(CaptureRequest.JPEG_ORIENTATION, 0)
-            }
-            s.capture(req.build(), object : CameraCaptureSession.CaptureCallback() {
-                override fun onCaptureCompleted(
-                    session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult,
-                ) {
-                    pending?.let { it.result = result; tryComplete(it) }
+            // The device can disconnect between the null-checks above and the capture below (the same
+            // async-teardown window startPreview guards): createCaptureRequest/capture then throw
+            // CameraAccess/IllegalState on the camera thread — uncaught that kills the process, and
+            // the pending slot set above would wedge every later shutter press with "Capture already
+            // in progress". Surface it through the callback and clear the slot instead.
+            runCatching {
+                val req = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                    jpeg?.let { addTarget(it) }
+                    raw?.let { addTarget(it) }
+                    applyManualControls(controls, caps, pinAutoFps)
+                    // Keep stills consistent with the session's pipeline: with the log session active the
+                    // HAL processes everything scene-referred, so an unset key mid-session is undefined.
+                    applyVendorLog()
+                    applyTeleconverterHints()
+                    applyMetering(this, controls)
+                    // We rotate pixels ourselves (HEIF) / tag DNG orientation; keep JPEG upright.
+                    set(CaptureRequest.JPEG_ORIENTATION, 0)
                 }
-                override fun onCaptureFailed(session: CameraCaptureSession, request: CaptureRequest, failure: android.hardware.camera2.CaptureFailure) {
-                    val p = pending
-                    if (p != null) {
-                        // Close any already-acquired images so the ImageReader (maxImages=2) isn't
-                        // starved, and mark done so a late-arriving partial can't re-enter tryComplete.
-                        synchronized(p) {
-                            p.done = true
-                            runCatching { p.jpeg?.close() }
-                            runCatching { p.raw?.close() }
-                        }
-                        p.cb.onError(IllegalStateException("Capture failed: ${failure.reason}"))
+                s.capture(req.build(), object : CameraCaptureSession.CaptureCallback() {
+                    override fun onCaptureCompleted(
+                        session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult,
+                    ) {
+                        pending?.let { it.result = result; tryComplete(it) }
                     }
-                    pending = null
-                }
-            }, handler)
+                    override fun onCaptureFailed(session: CameraCaptureSession, request: CaptureRequest, failure: android.hardware.camera2.CaptureFailure) {
+                        val p = pending
+                        if (p != null) {
+                            // Close any already-acquired images so the ImageReader (maxImages=2) isn't
+                            // starved, and mark done so a late-arriving partial can't re-enter tryComplete.
+                            synchronized(p) {
+                                p.done = true
+                                runCatching { p.jpeg?.close() }
+                                runCatching { p.raw?.close() }
+                            }
+                            p.cb.onError(IllegalStateException("Capture failed: ${failure.reason}"))
+                        }
+                        pending = null
+                    }
+                }, handler)
+            }.onFailure { t ->
+                pending = null // nothing acquired yet — the readers only deliver after a queued capture
+                cb.onError(t)
+            }
         }
         // The controller is mid-teardown — a session-key reopen (Auto HDR / in-sensor zoom / lens / fps)
         // quit the camera thread. Route the failure through the callback so a BURST/AEB chain's onDone
@@ -755,7 +771,6 @@ class CameraController(context: Context) {
         // Max time close() waits for the camera thread to release the HAL device before a reopen.
         // Device close is normally well under this; the cap keeps a wedged close from hanging the UI.
         const val CLOSE_JOIN_TIMEOUT_MS = 1500L
-        const val TELECONVERTER_MAGNIFICATION = 300f / 70f
         const val OPLUS_CAMERA_MODE_TELEPHOTO_HASSELBLAD: Byte = 40
     }
 }

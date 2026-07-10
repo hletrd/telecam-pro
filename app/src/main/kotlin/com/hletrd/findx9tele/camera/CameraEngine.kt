@@ -38,8 +38,10 @@ class CameraEngine(private val context: Context) {
     @Volatile private var timelapseFuture: java.util.concurrent.ScheduledFuture<*>? = null
     @Volatile private var controller: CameraController? = null
     @Volatile private var recorder: VideoRecorder? = null
-    // URI of the clip currently being recorded, so stop can surface it (thumbnail/review).
+    // URI (+ capture-sequence id) of the clip currently being recorded, so stop can surface it
+    // (thumbnail/review) tagged like any other capture.
     @Volatile private var activeRecordingUri: android.net.Uri? = null
+    @Volatile private var activeRecordingCaptureId = 0
 
     // These are written from the UI thread and read on the GL thread (via the onInputReady
     // continuation), so they are @Volatile to give the JMM a visibility edge across the seam.
@@ -105,9 +107,13 @@ class CameraEngine(private val context: Context) {
     // Live lens focus distance (diopters) from the controller: the AF-resolved position shown on the
     // Focus chip and used to seed the manual slider when the user switches into MF (AF→MF handoff).
     var onFocusDistance: ((Float) -> Unit)? = null
-    // The most recently saved still (HEIF/JPEG) URI, for the gallery thumbnail + in-app review. Fired
-    // from the io thread after the file publishes.
-    var onMediaSaved: ((android.net.Uri) -> Unit)? = null
+    // The most recently saved displayable media (HEIF/JPEG/video) URI + its capture-sequence id, for
+    // the gallery thumbnail + in-app review. Fired from the io thread after the file publishes. The
+    // id groups every output of one shutter press so review-Delete can remove the whole shot.
+    var onMediaSaved: ((android.net.Uri, Int) -> Unit)? = null
+    // The DNG sibling of a capture (never displayed itself), with the same capture-sequence id as
+    // the HEIF/JPEG from that shutter press. Fired from the camera thread after the DNG publishes.
+    var onRawSaved: ((android.net.Uri, Int) -> Unit)? = null
 
     // ---- Preview surface lifecycle ----
 
@@ -129,7 +135,14 @@ class CameraEngine(private val context: Context) {
                 return@execute
             }
             selection = sel
-            val c = CameraCaps.read(manager, sel.logicalId, sel.physicalId)
+            // read() throws when the camera service is down for both id reads; without the guard the
+            // uncaught throw on this executor thread kills the process on every cold-start hiccup.
+            val c = runCatching { CameraCaps.read(manager, sel.logicalId, sel.physicalId) }.getOrNull()
+            if (c == null) {
+                onStatus?.invoke("Camera unavailable")
+                starting = false
+                return@execute
+            }
             caps = c
             onCapsReady?.invoke(c)
             videoSize = chooseVideoSize(sel)
@@ -157,6 +170,9 @@ class CameraEngine(private val context: Context) {
             }
             gl.setPreviewOutput(surface, width, height)
             started = true
+            // Clear the dispatch guard now that started gates re-entry. Leaving it true was harmless
+            // only while nothing ever reset started; don't couple those invariants.
+            starting = false
         }
     }
 
@@ -279,17 +295,16 @@ class CameraEngine(private val context: Context) {
     }
 
     /**
-     * Selects the color transfer — the single source of truth. LOG now drives the device's NATIVE
-     * HAL log (the vendor `com.oplus.log.video.mode` session key): the ISP emits a genuinely flat,
-     * scene-referred log stream, so the GL stage must PASS IT THROUGH rather than bake a second
-     * curve. Because it is a SESSION parameter, engaging/dropping native log reopens the camera
-     * ([reopenForSession] is guarded — a no-op mid-recording / before start, so the current clip's
-     * pipeline is never reconfigured underneath it). HLG/SDR keep the GL OETF path and turn native
-     * log off. [vendorLogMode] is a private field derived from [transfer]; there is no public setter.
+     * Selects the color transfer — the single source of truth. LOG = the GL-baked O-Log2 OETF (the
+     * shipping path): the encoder receives the official curve and the preview renders it flat. The
+     * device's native HAL log key (`com.oplus.log.video.mode`) is INERT for third-party Camera2
+     * (device-settled 2026-07-09 — see the body comment), so [vendorLogMode] stays OFF; the dormant
+     * native-log plumbing (pass-through + de-log shader) is kept only for a future
+     * CameraUnit-authenticated scene-referred stream.
      *
      * Changing the OETF mid-recording would tag the file with the start transfer but bake a different
      * curve into the second half, so the GL curve is only pushed when idle (the field still updates
-     * for the next recording). See docs/reviews record-pipeline #4.
+     * for the next recording; stopRecording/pause re-apply it). See docs/reviews record-pipeline #4.
      */
     fun setTransfer(t: ColorTransfer) {
         transfer = t
@@ -325,6 +340,10 @@ class CameraEngine(private val context: Context) {
 
     /** Forces the luma readback for the app-side auto-exposure loop (SHUTTER/ISO priority). */
     fun setAeMetering(enabled: Boolean) {
+        // The ViewModel calls this on EVERY control mutation (updateControls); the value only
+        // actually changes on a mode transition. Skip the redundant GL-handler post (60-120/s of
+        // no-op messages during a sustained gesture).
+        if (aeMetering == enabled) return
         aeMetering = enabled
         gl.setAeMetering(enabled)
     }
@@ -500,8 +519,9 @@ class CameraEngine(private val context: Context) {
 
     /**
      * Switches to one of the four rear lenses — by default bundling teleconverter mode: the 3× lens
-     * enables it (afocal 180° flip + gyro-EIS scaled to ~300 mm), any other lens disables it — one
-     * action, one camera reopen. [teleconverterOverride] lets a caller that already knows the desired
+     * enables it (the afocal 180° flip; stabilization at 300 mm is the HAL's OIS+EIS via
+     * [VideoStabMode], not app-side gyro warping), any other lens disables it — one action, one
+     * camera reopen. [teleconverterOverride] lets a caller that already knows the desired
      * final teleconverter state (the settings-restore path, where "preserve lens" and "preserve TELE"
      * are independent toggles — see CameraViewModel.applyLoaded) set it in the SAME reopen instead of
      * bundling then immediately correcting it via a second [setTeleconverterMode] call, which would
@@ -539,7 +559,10 @@ class CameraEngine(private val context: Context) {
             if (paused || recorder != null) return@execute
             val sel = selectCurrentLens() ?: run { onStatus?.invoke("Camera ID unavailable"); return@execute }
             selection = sel
-            val c = CameraCaps.read(manager, sel.logicalId, sel.physicalId)
+            // Same guard as the initial start: an unreadable characteristics set must degrade to a
+            // status message, not an uncaught throw on the setup thread (process death).
+            val c = runCatching { CameraCaps.read(manager, sel.logicalId, sel.physicalId) }.getOrNull()
+                ?: run { onStatus?.invoke("Camera unavailable"); return@execute }
             caps = c
             onCapsReady?.invoke(c)
             // The new lens can expose different output sizes; refresh videoSize + the GL camera size so
@@ -560,6 +583,13 @@ class CameraEngine(private val context: Context) {
     // ---- Photo ----
 
     fun capturePhoto(formats: PhotoFormats) {
+        // Same gate startRecording has: during a session-key reopen (cameraReady=false) the
+        // controller guards make a capture attempt safe but silent — give the user the status
+        // instead of a shutter press that does nothing.
+        if (!cameraReady) {
+            onStatus?.invoke("Camera reconfiguring")
+            return
+        }
         val ctrl = controller ?: return
         when (driveMode) {
             DriveMode.SINGLE -> ctrl.capturePhoto(formats.wantsProcessedStill, formats.dngRaw, photoCallback(formats))
@@ -647,9 +677,17 @@ class CameraEngine(private val context: Context) {
                 // Snapshot the orientation once, at the moment of capture, so the deferred HEIF encode
                 // and the synchronous DNG write agree on how the phone was held for this shot.
                 val rotation = captureRotationDegrees()
+                // One id per shutter press, shared by every container it produces (HEIF/JPEG/DNG), so
+                // the review UI can treat them as one shot (delete removes the DNG sibling too).
+                val captureId = captureSeq.incrementAndGet()
+                // Snapshot THIS shot's exposure from its own TotalCaptureResult: the deferred JPEG
+                // EXIF stamp used to read controller.lastIso/lastExposureNs at write time, which a
+                // settings change (or the next AEB step) can overwrite before the io thread runs.
+                val shotIso = result.get(android.hardware.camera2.CaptureResult.SENSOR_SENSITIVITY) ?: 0
+                val shotExpNs = result.get(android.hardware.camera2.CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L
                 // HEIF and JPEG both come from the single JPEG ImageReader; copy the compressed bytes
                 // out ONCE while the Image is alive, then fan out to whichever containers are enabled
-                // off the camera thread (HEIF re-encodes; JPEG is written straight through).
+                // off the camera thread (both re-encode through the same processed-pixel pipeline).
                 if (formats.heif || formats.jpeg) {
                     if (jpeg != null) {
                         val bytes = runCatching {
@@ -657,15 +695,15 @@ class CameraEngine(private val context: Context) {
                             ByteArray(buf.remaining()).also { buf.get(it) }
                         }.getOrNull()
                         if (bytes != null) {
-                            if (formats.heif) ioExecutor.execute { saveHeifAsync(bytes, rotation) }
-                            if (formats.jpeg) ioExecutor.execute { saveJpegAsync(bytes, rotation) }
+                            if (formats.heif) ioExecutor.execute { saveHeifAsync(bytes, rotation, captureId) }
+                            if (formats.jpeg) ioExecutor.execute { saveJpegAsync(bytes, rotation, shotIso, shotExpNs, captureId) }
                         } else onStatus?.invoke("Failed to save photo")
                     } else onStatus?.invoke("Failed to save photo: no JPEG")
                 }
                 if (formats.dngRaw) {
                     if (raw != null) {
                         // DngCreator needs the live raw Image → must stay synchronous in this callback.
-                        runCatching { saveDng(raw, rawChars, result, rotation) }
+                        runCatching { saveDng(raw, rawChars, result, rotation, captureId) }
                             .onSuccess { onStatus?.invoke("DNG saved") }
                             .onFailure { onStatus?.invoke("Failed to save DNG: ${it.message}") }
                     } else onStatus?.invoke("Failed to save DNG: no RAW")
@@ -682,7 +720,7 @@ class CameraEngine(private val context: Context) {
      * full-frame) → rotate 180° → write HEIF, on [ioExecutor]. Publishes only on success; deletes
      * on any failure.
      */
-    private fun saveHeifAsync(bytes: ByteArray, rotationDegrees: Int) {
+    private fun saveHeifAsync(bytes: ByteArray, rotationDegrees: Int, captureId: Int) {
         var decoded: Bitmap? = null
         var cropped: Bitmap? = null
         var rotated: Bitmap? = null
@@ -702,8 +740,12 @@ class CameraEngine(private val context: Context) {
             val u = MediaStoreWriter.createPendingImage(context, fileName("IMG", "heic"), "image/heic")
             if (u == null) { onStatus?.invoke("Failed to save HEIF"); return }
             uri = u
+            // The Setup quality slider governs BOTH still containers: HEIF here and the JPEG
+            // re-encode in saveJpegAsync (it used to silently apply only to JPEG, leaving the
+            // DEFAULT photo format pinned at the encoder's 95).
+            val quality = controls.jpegQuality.coerceIn(1, 100)
             val wrote = MediaStoreWriter.openParcelFd(context, u, "rw")?.use { pfd ->
-                HeifCapture.writeHeif(pfd.fileDescriptor, r); true
+                HeifCapture.writeHeif(pfd.fileDescriptor, r, quality); true
             } ?: false
             if (!wrote) { MediaStoreWriter.delete(context, u); onStatus?.invoke("Failed to save HEIF"); return }
             if (!MediaStoreWriter.publish(context, u)) {
@@ -711,7 +753,7 @@ class CameraEngine(private val context: Context) {
                 onStatus?.invoke("Failed to publish HEIF")
                 return
             }
-            onMediaSaved?.invoke(u)
+            onMediaSaved?.invoke(u, captureId)
             onStatus?.invoke("Saved")
         } catch (e: OutOfMemoryError) {
             uri?.let { MediaStoreWriter.delete(context, it) }
@@ -735,7 +777,7 @@ class CameraEngine(private val context: Context) {
      * [saveHeifAsync] — NOT the HEIF encoder — so JPEG and HEIF frame identically. Publishes only on
      * success; deletes on any failure.
      */
-    private fun saveJpegAsync(bytes: ByteArray, rotationDegrees: Int) {
+    private fun saveJpegAsync(bytes: ByteArray, rotationDegrees: Int, shotIso: Int, shotExpNs: Long, captureId: Int) {
         var decoded: Bitmap? = null
         var cropped: Bitmap? = null
         var rotated: Bitmap? = null
@@ -762,13 +804,13 @@ class CameraEngine(private val context: Context) {
             if (!wrote) { MediaStoreWriter.delete(context, u); onStatus?.invoke("Failed to save JPEG"); return }
             // Bitmap.compress strips all metadata, so stamp the exposure EXIF back before publishing
             // (best-effort — a failed EXIF write must never lose the image itself).
-            runCatching { writeJpegExif(u) }
+            runCatching { writeJpegExif(u, shotIso, shotExpNs) }
             if (!MediaStoreWriter.publish(context, u)) {
                 MediaStoreWriter.delete(context, u)
                 onStatus?.invoke("Failed to publish JPEG")
                 return
             }
-            onMediaSaved?.invoke(u)
+            onMediaSaved?.invoke(u, captureId)
             onStatus?.invoke("Saved")
         } catch (e: OutOfMemoryError) {
             uri?.let { MediaStoreWriter.delete(context, it) }
@@ -787,7 +829,7 @@ class CameraEngine(private val context: Context) {
     }
 
     /** Writes the RAW image as DNG synchronously (always full-frame; no [aspectRatio] crop applied). Publishes only on success; deletes then rethrows on failure. */
-    private fun saveDng(raw: Image, chars: CameraCharacteristics, result: TotalCaptureResult, rotationDegrees: Int) {
+    private fun saveDng(raw: Image, chars: CameraCharacteristics, result: TotalCaptureResult, rotationDegrees: Int, captureId: Int) {
         val uri = MediaStoreWriter.createPendingImage(context, fileName("IMG", "dng"), "image/x-adobe-dng")
             ?: throw IllegalStateException("Failed to create MediaStore entry")
         try {
@@ -797,6 +839,7 @@ class CameraEngine(private val context: Context) {
             if (!MediaStoreWriter.publish(context, uri)) {
                 throw IllegalStateException("Failed to publish DNG")
             }
+            onRawSaved?.invoke(uri, captureId)
         } catch (t: Throwable) {
             MediaStoreWriter.delete(context, uri)
             throw t
@@ -810,6 +853,13 @@ class CameraEngine(private val context: Context) {
             onStatus?.invoke("Camera reconfiguring")
             return false
         }
+        // A just-stopped clip's async teardown still owns the mic (and the encoder pipeline is being
+        // finalized) — refuse until finishRecording completes rather than starting a second recorder
+        // whose AudioRecord init would fail (silent video-only clip).
+        if (recorderTeardownInFlight) {
+            onStatus?.invoke("Finalizing previous clip")
+            return false
+        }
         // The recorder owns the mic — stop the standby level tap first (its loop also self-exits on
         // recorder != null, but be explicit and give it a beat to release the AudioRecord).
         standbyMeterWanted = false
@@ -819,6 +869,7 @@ class CameraEngine(private val context: Context) {
         val name = fileName("VID", "mp4")
         val uri = MediaStoreWriter.createPendingVideo(context, name, "video/mp4") ?: return false
         activeRecordingUri = uri
+        activeRecordingCaptureId = captureSeq.incrementAndGet()
         val size = videoSize
         val codec = videoCodec
         val rate = videoFrameRate
@@ -871,24 +922,39 @@ class CameraEngine(private val context: Context) {
         val rec = recorder ?: return
         recorder = null
         gl.setEncoderOutput(null, 0, 0)
+        // Restore the preview curve startRecording overrode: an AVC recording pushes null (SDR) into
+        // GL and nothing else re-applies the LOG/HLG preview render until the next transfer change.
+        gl.setTransfer(transfer)
         val uri = activeRecordingUri
+        val captureId = activeRecordingCaptureId
         activeRecordingUri = null
         // rec.stop() joins the video/audio drain threads (up to several seconds); run it OFF the caller
         // (main) thread to avoid an ANR. The file finalizes and the status fires from the io thread.
+        recorderTeardownInFlight = true
         ioExecutor.execute {
-            finishRecording(rec, uri)
+            finishRecording(rec, uri, captureId)
         }
     }
 
-    private fun finishRecording(rec: VideoRecorder, uri: android.net.Uri?) {
-        val result = runCatching { rec.stop() }
-            .getOrElse { VideoRecorder.StopResult(saved = false, error = it) }
-        if (result.saved && uri != null) {
-            // Surface only a fully finalized, published clip to the review UI.
-            onMediaSaved?.invoke(uri)
-            onStatus?.invoke("Video saved")
-        } else {
-            onStatus?.invoke("Video save failed")
+    // True from stop/pause dispatching the async rec.stop() until its AudioRecord is actually
+    // released: `recorder == null` alone says nothing about the mic, and the standby meter starting
+    // in that window would violate the one-AudioRecord invariant (its init would fail, or worse,
+    // steal the route from the finalizing clip).
+    @Volatile private var recorderTeardownInFlight = false
+
+    private fun finishRecording(rec: VideoRecorder, uri: android.net.Uri?, captureId: Int) {
+        try {
+            val result = runCatching { rec.stop() }
+                .getOrElse { VideoRecorder.StopResult(saved = false, error = it) }
+            if (result.saved && uri != null) {
+                // Surface only a fully finalized, published clip to the review UI.
+                onMediaSaved?.invoke(uri, captureId)
+                onStatus?.invoke("Video saved")
+            } else {
+                onStatus?.invoke("Video save failed")
+            }
+        } finally {
+            recorderTeardownInFlight = false
         }
     }
 
@@ -896,16 +962,22 @@ class CameraEngine(private val context: Context) {
     fun pause() {
         paused = true
         cameraReady = false
+        // A backgrounded timelapse can't capture anyway (controller is nulled below, so every tick
+        // no-ops) — stop it outright rather than silently resuming mid-sequence with a gap.
+        stopTimelapse()
         // Finalize an in-flight recording OFF the main thread: rec.stop() joins the drain threads (up
         // to a few seconds) and calling it inline on onStop risks an ANR. Clear the encoder EGL first
         // so GL stops drawing into the input surface before the codec releases it.
         val rec = recorder
         recorder = null
         val pausedClipUri = activeRecordingUri
+        val pausedClipCaptureId = activeRecordingCaptureId
         activeRecordingUri = null
         if (rec != null) {
             gl.setEncoderOutput(null, 0, 0)
-            ioExecutor.execute { finishRecording(rec, pausedClipUri) }
+            gl.setTransfer(transfer) // restore the preview curve startRecording overrode (AVC → null)
+            recorderTeardownInFlight = true
+            ioExecutor.execute { finishRecording(rec, pausedClipUri, pausedClipCaptureId) }
         }
         gyro.stop()
         controller?.close()
@@ -1026,12 +1098,19 @@ class CameraEngine(private val context: Context) {
     // second — or even millisecond — never collide on filename and overwrite/duplicate each other.
     private val fileSeq = java.util.concurrent.atomic.AtomicInteger(0)
 
-    /** Stamps ISO / exposure / 35mm focal / device EXIF onto a just-written JPEG (pending, rw). */
-    private fun writeJpegExif(uri: android.net.Uri) {
+    // Per-SHUTTER-PRESS counter (one id shared by every container a capture produces), so the review
+    // UI can group the HEIF/JPEG with its DNG sibling. Distinct from fileSeq, which is per FILE.
+    private val captureSeq = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /**
+     * Stamps ISO / exposure / 35mm focal / device EXIF onto a just-written JPEG (pending, rw).
+     * [iso]/[expNs] come from the shot's own TotalCaptureResult, snapshotted in the capture
+     * callback — the live controller.lastIso/lastExposureNs may already describe a LATER frame by
+     * the time this runs on the io thread.
+     */
+    private fun writeJpegExif(uri: android.net.Uri, iso: Int, expNs: Long) {
         MediaStoreWriter.openParcelFd(context, uri, "rw")?.use { pfd ->
             val exif = androidx.exifinterface.media.ExifInterface(pfd.fileDescriptor)
-            val iso = controller?.lastIso ?: 0
-            val expNs = controller?.lastExposureNs ?: 0L
             if (iso > 0) exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY, iso.toString())
             if (expNs > 0) {
                 exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_TIME, (expNs / 1_000_000_000.0).toString())
@@ -1061,7 +1140,9 @@ class CameraEngine(private val context: Context) {
         standbyMeterWanted = enabled
         if (!enabled) return
         if (standbyMeterThread?.isAlive == true) return
-        if (recorder != null) return
+        // Also refuse while a stopped recording's async teardown still owns the mic — recorder is
+        // already null then, but its AudioRecord releases only when finishRecording completes.
+        if (recorder != null || recorderTeardownInFlight) return
         if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) !=
             android.content.pm.PackageManager.PERMISSION_GRANTED
         ) return
@@ -1110,8 +1191,6 @@ class CameraEngine(private val context: Context) {
     private companion object {
         // Number of frames fired for a single BURST drive-mode shutter press.
         const val BURST_COUNT = 5
-        // 300mm / 70mm ≈ 4.286: the Explorer teleconverter's angular magnification.
-        const val TELECONVERTER_MAGNIFICATION = 300f / 70f
         // Auto-recovery from a mid-session camera HAL error/disconnect (see scheduleCameraRecovery).
         const val MAX_CAMERA_RECOVERY_ATTEMPTS = 3
         const val CAMERA_RECOVERY_DELAY_MS = 1000L
