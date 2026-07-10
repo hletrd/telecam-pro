@@ -69,10 +69,11 @@ data class ExtraSettings(
  * stored by name and restored defensively (an unknown name falls back to the field default), so a
  * schema change or a renamed enum constant degrades gracefully instead of crashing.
  */
-class SettingsStore(context: Context) {
+class SettingsStore(private val prefs: SharedPreferences) {
 
-    private val prefs: SharedPreferences =
-        context.getSharedPreferences("camera_settings", Context.MODE_PRIVATE)
+    // The SharedPreferences seam exists so the persistence contract is unit-testable with an
+    // in-memory fake (the real app uses the Context-backed secondary constructor below).
+    constructor(context: Context) : this(context.getSharedPreferences("camera_settings", Context.MODE_PRIVATE))
 
     // Default ON: photographers expect their setup to survive an app restart out of the box.
     var rememberEnabled: Boolean
@@ -267,20 +268,6 @@ class SettingsStore(context: Context) {
         putBoolean("${prefix}preserveTeleconverter", e.preserveTeleconverter)
     }
 
-    // internal (not private): these two carry the file's documented "degrades gracefully"
-    // contract and are pure JVM code — unit tests exercise them directly.
-    internal inline fun <reified T : Enum<T>> enumOr(name: String?, default: T): T =
-        name?.let { runCatching { enumValueOf<T>(it) }.getOrNull() } ?: default
-
-    internal inline fun <reified T : Enum<T>> enumListOr(raw: String?, default: List<T>): List<T> {
-        val parsed = raw
-            ?.split(',')
-            ?.mapNotNull { name -> runCatching { enumValueOf<T>(name) }.getOrNull() }
-            ?.distinct()
-            .orEmpty()
-        return parsed.ifEmpty { default }
-    }
-
     data class Loaded(val controls: ManualControls, val extras: ExtraSettings)
     data class PresetInfo(val name: String, val summary: String)
 
@@ -289,4 +276,18 @@ class SettingsStore(context: Context) {
         const val K_HAS = "hasSaved"
         fun presetPrefix(slot: MemorySlot): String = "preset_${slot.name}_"
     }
+}
+
+// Top-level (not class members): these two carry the file's documented "degrades gracefully"
+// contract and are pure JVM code — unit tests exercise them directly.
+internal inline fun <reified T : Enum<T>> enumOr(name: String?, default: T): T =
+    name?.let { runCatching { enumValueOf<T>(it) }.getOrNull() } ?: default
+
+internal inline fun <reified T : Enum<T>> enumListOr(raw: String?, default: List<T>): List<T> {
+    val parsed = raw
+        ?.split(',')
+        ?.mapNotNull { name -> runCatching { enumValueOf<T>(name) }.getOrNull() }
+        ?.distinct()
+        .orEmpty()
+    return parsed.ifEmpty { default }
 }

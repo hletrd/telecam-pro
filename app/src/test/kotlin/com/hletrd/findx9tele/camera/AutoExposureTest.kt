@@ -213,4 +213,25 @@ class AutoExposureTest {
         assertTrue("per-tick shutter slide is bounded (~0.35 stop), was $stops", stops <= 0.36)
         assertTrue("ISO counter-moves up so brightness holds", iso > 1600)
     }
+
+    // ---- cycle-2 additions ----
+
+    @Test
+    fun correction_pitchBlackMean_returnsMaxStep() {
+        // mean <= 0 (a fully-black meter) takes the "open up" branch → the per-tick cap MAX_STEP_STOPS.
+        assertEquals(0.30f, AutoExposure.correctionStops(0f, 0f)!!, 1e-6f)
+    }
+
+    @Test
+    fun driveIso_correctionRoundsBackToCurrent_returnsNull() {
+        // A real correction (bin 110 is ~0.06 stop below target, outside the deadband) but at this
+        // small ISO the rounded next value lands back on the current one → still null (no rebuild).
+        assertNull(AutoExposure.driveIso(histAt(110), currentIso = 10, isoMin = 5, isoMax = isoMax, evCompStops = 0f))
+    }
+
+    @Test
+    fun driveShutter_correctionRoundsBackToCurrent_returnsNull() {
+        // Same idea for the ISO-priority shutter drive: outside the deadband, rounds back to current.
+        assertNull(AutoExposure.driveShutterNs(histAt(110), currentNs = 10L, expMinNs = 5L, expMaxNs = expMax, evCompStops = 0f))
+    }
 }

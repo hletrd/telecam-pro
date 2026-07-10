@@ -56,4 +56,15 @@ class AudioGainTest {
         val level = applyGainAndLevel(buf, 8, 8f)
         assertTrue(level in 0f..1f)
     }
+
+    @Test
+    fun `odd byteCount is frame-safe and returns a finite level`() {
+        // A non-frame-aligned byteCount (5 bytes = 2 whole 16-bit frames + 1 trailing byte): the short
+        // view exposes only the 2 complete frames, so the third sample is never read or written.
+        val buf = pcmBuffer(1000, -1000, 2000)
+        val level = applyGainAndLevel(buf, 5, 2f)
+        assertEquals(listOf<Short>(2000, -2000, 2000), samplesOf(buf, 3).toList())
+        assertTrue(level.isFinite())
+        assertTrue(level in 0f..1f)
+    }
 }

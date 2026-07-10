@@ -53,7 +53,8 @@ internal object AudioInputInspector {
         AudioInputPreference.BLUETOOTH -> type in BLUETOOTH_INPUT_TYPES
     }
 
-    private fun typeLabel(type: Int): String = when (type) {
+    // internal (not private): opened for unit tests (plain TYPE_* int constants are JVM-safe).
+    internal fun typeLabel(type: Int): String = when (type) {
         AudioDeviceInfo.TYPE_BUILTIN_MIC -> "Phone mic"
         AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired mic"
         AudioDeviceInfo.TYPE_USB_DEVICE,
