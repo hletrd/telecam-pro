@@ -9,16 +9,17 @@ import kotlin.math.atan2
 import kotlin.math.hypot
 
 /**
- * Gyroscope-driven electronic stabilization signal.
+ * Gravity-derived device-orientation and roll provider (and the dormant gyro-EIS signal source).
  *
- * Integrates angular velocity into an absolute orientation and subtracts a low-pass "intended
- * motion" estimate, leaving only high-frequency shake. The residual angles (radians) are handed to
- * the GL pipeline, which multiplies them by the EFFECTIVE focal length (native × teleconverter
- * magnification) to get the pixel/normalized shift — that is what makes stabilization act at the
- * true 300 mm field of view rather than the lens's native ~70 mm.
+ * What SHIPS from this class is the accelerometer path: the absolute roll for the horizon level
+ * ([currentRollDegrees]) and the discrete held-orientation for capture/overlay rotation
+ * ([currentDeviceOrientation]), both with the flat/steep-angle hold guards.
  *
- * The low-pass time constant (allowing slow intentional pans) and the axis/sign mapping in the GL
- * transform are the parts that need on-device tuning; the magnitude scaling is exact.
+ * The gyroscope residual-shake integration ([currentCorrection]) fed the app-side GL EIS, which was
+ * REMOVED (frame warping cannot de-blur at 300 mm; the HAL's OIS+EIS owns stabilization — see
+ * [com.hletrd.findx9tele.camera.VideoStabMode]). The math is kept for a possible future consumer,
+ * but the gyroscope is no longer registered: integrating a 200 Hz stream nothing reads was pure
+ * CPU/battery waste. Re-enable by registering [gyroscope] in [start] again.
  */
 class GyroEis(context: Context) : SensorEventListener {
 
@@ -56,7 +57,8 @@ class GyroEis(context: Context) : SensorEventListener {
 
     fun start() {
         reset()
-        gyroscope?.let { sensorManager?.registerListener(this, it, SAMPLING_PERIOD_US) }
+        // Gyroscope deliberately NOT registered: its only consumer (app-side GL EIS) was removed,
+        // so [currentCorrection] stays zero. The accelerometer alone feeds roll + orientation.
         accelerometer?.let { sensorManager?.registerListener(this, it, SAMPLING_PERIOD_US) }
     }
 
