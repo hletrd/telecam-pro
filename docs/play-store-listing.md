@@ -101,14 +101,14 @@ Requires an OPPO Find X9 Ultra running Android 16. Target model codes: CPH2841 (
 
 ### Screenshots captured on PMA110
 
-The checked-in screenshots are 1440 x 2880, no-alpha PNGs captured from the physical PMA110 after the
-1x default-lens and separate Preserve Lens / Preserve TELE settings update. They are tracked with Git
-LFS under `docs/assets/play/screenshots/`.
+The checked-in screenshots are 1440 x 2560 (9:16), no-alpha PNGs captured from the physical PMA110
+after the 1x default-lens and separate Preserve Lens / Preserve TELE settings update. They are tracked
+with Git LFS under `docs/assets/play/screenshots/`.
 
 1. `docs/assets/play/screenshots/01-main-viewfinder.png` - main still viewfinder with 1x / 23 mm and TELE off.
 2. `docs/assets/play/screenshots/02-pro-settings.png` - Setup tab with Remember, Preserve Lens, and Preserve TELE.
 3. `docs/assets/play/screenshots/03-focus-loupe.png` - Focus controls and focus-assist settings.
-4. `docs/assets/play/screenshots/04-video-controls.png` - video viewfinder with 4K 29.97p HEVC O-Log status.
+4. `docs/assets/play/screenshots/04-video-controls.png` - video viewfinder with 4K 29.97p HEVC HLG status.
 5. `docs/assets/play/screenshots/05-lens-selection.png` - Lens tab with 0.6x / 1x / 3x / 10x selection.
 6. `docs/assets/play/screenshots/06-video-settings.png` - Video tab with codec, resolution, FPS, and bitrate.
 

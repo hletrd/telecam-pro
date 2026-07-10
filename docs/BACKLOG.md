@@ -273,13 +273,14 @@ The user explicitly wants all of these; ordered by their stated priority.
 - ✅ Data-safety form answers + privacy policy + listing copy aligned with the shipped pipeline
   (`docs/play-data-safety.md`, `docs/play-store-listing.md`; "4K DCI" corrected to 4K UHD — the
   device Video tab offers 3840×2160 max). Console form submission itself remains (manual).
-- ✅ Store assets: icon, feature graphic, six 1440×2880 PMA110 screenshots (Git LFS) refreshed
+- ✅ Store assets: icon, feature graphic, six 1440×2560 PMA110 screenshots (Git LFS) refreshed
   2026-07-10. `versionCode=1` / `versionName=1.0` for the first upload.
 - 🔴 Manual Play Console steps remain: create app, upload AAB to internal testing, paste listing,
   Data Safety form, device catalog restriction (CPH2841/PMA110), rollout. See
   `docs/play-console-submit.md`.
-- 🟡 Final on-device release smoke test pending a device unlock (ColorOS holds `pm install`
-  indefinitely while locked).
+- ✅ Final on-device release smoke test passed on PMA110: fresh 1× / TELE-off launch, independent
+  lens/TELE restore, serialized DNG+HEIC capture, 4K HLG+AAC recording at 29.97p, Open Gate 4:3,
+  and persisted Audio/Gain settings.
 
 ## 5. Engineering hygiene 🟢/🟡
 

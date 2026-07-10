@@ -60,7 +60,7 @@ Summary:
   - `docs/assets/play/screenshots/04-video-controls.png`
   - `docs/assets/play/screenshots/05-lens-selection.png`
   - `docs/assets/play/screenshots/06-video-settings.png`
-  - all are 1440 x 2880 no-alpha PNGs captured from the physical PMA110 and tracked with Git LFS
+  - all are 1440 x 2560 (9:16) no-alpha PNGs captured from the physical PMA110 and tracked with Git LFS
 
 ## Device Catalog
 
