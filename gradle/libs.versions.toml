@@ -7,7 +7,9 @@ activityCompose = "1.13.0"
 lifecycle = "2.11.0"
 composeBom = "2026.06.01"
 coroutines = "1.11.0"
-heifwriter = "1.2.0-alpha01"
+# Latest STABLE (per the always-latest-stable policy). A stable 1.1.0 exists on Google Maven —
+# the earlier "no stable 1.1.0 exists" note that justified the 1.2.0-alpha01 pin was wrong.
+heifwriter = "1.1.0"
 junit = "4.13.2"
 
 [libraries]

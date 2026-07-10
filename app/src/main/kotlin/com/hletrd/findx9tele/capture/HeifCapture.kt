@@ -14,9 +14,9 @@ object HeifCapture {
      * [bitmap] is already oriented by the caller (e.g. rotated 180deg); no rotation is applied here.
      *
      * `@SuppressLint("RestrictedApi")`: `HeifWriter` implements `AutoCloseable`, and `close()` is the
-     * intended way to release its encoder/handler thread. heifwriter 1.2.0-alpha01 annotates the
-     * inherited `WriterBase.close()` `@RestrictTo(LIBRARY_GROUP)`, so lint's `RestrictedApi` flags this
-     * call even though it is the only supported release path — a genuine alpha false-positive.
+     * intended way to release its encoder/handler thread, but the library annotates the inherited
+     * `WriterBase.close()` `@RestrictTo(LIBRARY_GROUP)` — so lint's `RestrictedApi` flags the only
+     * supported release path (a library false-positive, present in stable 1.1.0 too).
      */
     @SuppressLint("RestrictedApi")
     fun writeHeif(fd: FileDescriptor, bitmap: Bitmap, quality: Int = 95) {
