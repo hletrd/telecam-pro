@@ -300,9 +300,9 @@ fun AudioMeter(level: Float, modifier: Modifier = Modifier) {
 @Composable
 fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier) {
     val focal = state.caps?.equivalentFocalMm ?: 0f
-    // The afocal teleconverter multiplies the ~70 mm periscope by 300/70 → a ~300 mm effective focal.
+    // The afocal teleconverter multiplies the ~70 mm periscope → a ~300 mm effective focal.
     // Round to the nearest 10 mm so the readout reads a clean "300mm" rather than 296.
-    val effFocal = ((focal * (300f / 70f)) / 10f).roundToInt() * 10
+    val effFocal = ((focal * com.hletrd.findx9tele.camera.TELECONVERTER_MAGNIFICATION) / 10f).roundToInt() * 10
     val focalLabel = when {
         focal <= 0f -> "--"
         state.teleconverterMode -> "${effFocal}mm TELE"
@@ -369,6 +369,18 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier) {
                 color = Color.White,
                 style = MaterialTheme.typography.labelMedium,
             )
+        }
+        // Lock states are togglable (Fn/hardware key) but had NO on-screen indicator — a locked AE
+        // silently "ignoring" the scene reads as a broken camera. Amber tags, Sony-style, in the OSD
+        // row per UX policy ("important states belong in the OSD").
+        if (state.controls.aeLock) {
+            Text("AEL", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+        }
+        if (state.controls.awbLock) {
+            Text("AWL", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+        }
+        if (state.controls.afLock) {
+            Text("AFL", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
         }
         if (state.videoStabMode != VideoStabMode.OFF) {
             val stabTag = when (state.videoStabMode) {
@@ -461,6 +473,11 @@ private fun DrawScope.drawWaveform(data: WaveformData) {
     val colWidth = size.width / data.columns
     val rowHeight = size.height / data.rows
     val color = Color(0xFF8BFFA8) // brighter green than before for contrast against the scrim
+    // Up to columns×rows (8k+) individual drawCircle ops ran per redraw at ~6 Hz (perf review).
+    // Quantize the alpha ramp into a few buckets and batch each as ONE drawPoints call — round-cap
+    // points of the same diameter render like the old circles, in ~8 draw ops.
+    val alphaBuckets = 8
+    val points = Array(alphaBuckets) { ArrayList<Offset>() }
     for (col in 0 until data.columns) {
         val x = col * colWidth + colWidth / 2f
         for (row in 0 until data.rows) {
@@ -469,10 +486,21 @@ private fun DrawScope.drawWaveform(data: WaveformData) {
             // The old linear alpha (value/max) left low-count buckets nearly invisible. Lift them with
             // a floor + √ curve so any populated bucket paints clearly (QA: "waveform too faint").
             val norm = (value.toFloat() / maxVal).coerceIn(0f, 1f)
-            val alpha = (0.4f + 0.6f * kotlin.math.sqrt(norm)).coerceIn(0f, 1f)
-            val y = row * rowHeight + rowHeight / 2f
-            drawCircle(color = color.copy(alpha = alpha), radius = 1.6.dp.toPx(), center = Offset(x, y))
+            val bucket = (kotlin.math.sqrt(norm) * (alphaBuckets - 1)).toInt().coerceIn(0, alphaBuckets - 1)
+            points[bucket].add(Offset(x, row * rowHeight + rowHeight / 2f))
         }
+    }
+    val diameter = 3.2.dp.toPx() // stroke width == the old 1.6 dp-radius circles
+    for (bucket in 0 until alphaBuckets) {
+        if (points[bucket].isEmpty()) continue
+        val alpha = (0.4f + 0.6f * (bucket / (alphaBuckets - 1f))).coerceIn(0f, 1f)
+        drawPoints(
+            points = points[bucket],
+            pointMode = androidx.compose.ui.graphics.PointMode.Points,
+            color = color.copy(alpha = alpha),
+            strokeWidth = diameter,
+            cap = androidx.compose.ui.graphics.StrokeCap.Round,
+        )
     }
 }
 
