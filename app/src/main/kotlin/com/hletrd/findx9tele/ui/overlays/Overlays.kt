@@ -156,7 +156,12 @@ fun AspectMask(ratio: AspectRatio, modifier: Modifier = Modifier) {
     if (ratio == AspectRatio.W4_3) return // full sensor = no crop mask
     val barColor = Color.Black.copy(alpha = 0.5f)
     Canvas(modifier = modifier.fillMaxSize()) {
-        val targetAspect = ratio.w.toFloat() / ratio.h.toFloat()
+        // The mask boxes the crop AS DISPLAYED, and the ~90° sensor orientation swaps W/H on this
+        // portrait-locked screen (same rule as the engine's preview-aspect report): a 16:9 crop of
+        // the 4:3 sensor keeps the long side — vertical on screen — and narrows the short side, so
+        // inside the 3:4 viewfinder the bars land LEFT/RIGHT. The pre-letterbox code used w/h and
+        // shaded top/bottom, marking a region that was NOT what the shutter would save.
+        val targetAspect = ratio.h.toFloat() / ratio.w.toFloat()
         val viewAspect = size.width / size.height
         if (viewAspect > targetAspect) {
             // View is wider than the target box: bar off the left/right edges.
