@@ -22,9 +22,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -34,6 +36,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -42,6 +45,7 @@ import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.ui.CameraActions
 import com.hletrd.findx9tele.ui.CameraScreen
 import com.hletrd.findx9tele.ui.CameraViewModel
+import com.hletrd.findx9tele.ui.theme.CameraColors
 import com.hletrd.findx9tele.ui.theme.FindX9TeleTheme
 
 class MainActivity : ComponentActivity() {
@@ -298,7 +302,11 @@ private fun PermissionGate(
     onOpenSettings: () -> Unit,
     onOpenPrivacy: () -> Unit,
 ) {
-    Surface(modifier = Modifier.fillMaxSize()) {
+    // Styled with the app's own black-chrome palette instead of stock Material accents — this is
+    // the first screen a new user sees, and a default-blue filled button is exactly what "would
+    // look odd on a Sony camera screen" (docs/UX_POLICY.md). The primary CTA carries clearly more
+    // visual weight than the secondary Privacy link.
+    Surface(modifier = Modifier.fillMaxSize(), color = CameraColors.Background) {
         Column(
             modifier = Modifier.fillMaxSize().padding(24.dp),
             verticalArrangement = Arrangement.Center,
@@ -312,15 +320,22 @@ private fun PermissionGate(
                 },
                 textAlign = TextAlign.Center,
                 style = MaterialTheme.typography.bodyLarge,
+                color = CameraColors.TextPrimary,
             )
             Spacer(Modifier.height(16.dp))
+            val primaryColors = ButtonDefaults.buttonColors(
+                containerColor = Color.White,
+                contentColor = Color.Black,
+            )
             if (permanentlyDenied) {
-                Button(onClick = onOpenSettings) { Text("Settings") }
+                Button(onClick = onOpenSettings, colors = primaryColors) { Text("Settings") }
             } else {
-                Button(onClick = onRequest) { Text("Grant Camera") }
+                Button(onClick = onRequest, colors = primaryColors) { Text("Grant Camera") }
             }
             Spacer(Modifier.height(8.dp))
-            Button(onClick = onOpenPrivacy) { Text("Privacy") }
+            TextButton(onClick = onOpenPrivacy) {
+                Text("Privacy", color = CameraColors.TextSecondary)
+            }
         }
     }
 }
