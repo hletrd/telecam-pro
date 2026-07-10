@@ -125,9 +125,11 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
 
     // OPPO CameraUnit / OCS SDK — official OEM extension SDK for stabilization modes and related
-    // camera capabilities. Kept as an availability check for future 300 mm OIS work.
-    implementation(libs.oplus.ocs.camera)
-    implementation(libs.oplus.ocs.base)
+    // camera capabilities. debugImplementation on purpose: its ONLY consumer is the debug-source-set
+    // OcsProbe (release ships a no-op stub), so the closed-source OEM AAR must not ride in the
+    // release AAB it is never invoked from (supply-chain surface + Data-Safety accuracy).
+    debugImplementation(libs.oplus.ocs.camera)
+    debugImplementation(libs.oplus.ocs.base)
 
     testImplementation(libs.junit)
 }
