@@ -571,7 +571,7 @@ See `CLAUDE.md` § **Toolchain** for complete toolchain versions and build setup
 ./gradlew :app:lintRelease :app:assembleRelease :app:bundleRelease  # signing credentials required
 ```
 
-**Test suite:** 109 tests across the 13 test classes under `app/src/test/`.
+**Test suite:** `app/src/test/` is the source of truth (216 tests across 30 classes as of the 2026-07-10 cycle-2 pass; re-count with `./gradlew :app:testDebugUnitTest` rather than trusting this figure).
 
 **Device verification:**
 ```bash

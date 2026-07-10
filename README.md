@@ -123,7 +123,7 @@ files, not just session setup logs:
 
 - ✅ **Build & gates**: `./gradlew testDebugUnitTest lintRelease assembleRelease bundleRelease`
   passes (87 Gradle tasks).
-- ✅ **Unit tests**: 109 tests across the 13 test classes under `app/src/test/`.
+- ✅ **Unit tests**: all green — see `app/src/test/` (216 tests across 30 classes as of the 2026-07-10 cycle-2 pass; the tree is the source of truth, not this count).
 - ✅ **Release device smoke test on PMA110**: fresh launch starts at 1x / 23 mm with TELE off;
   Preserve Lens and Preserve TELE default on and persist independently; rapid double-shutter produces
   one valid DNG+HEIF pair; 4K HLG records HEVC Main10 at 30000/1001 with AAC; Open Gate records

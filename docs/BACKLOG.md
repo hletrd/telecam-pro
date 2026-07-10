@@ -17,7 +17,7 @@ new hash and must update that sheet after the full release gate is repeated.
 ### Verified 2026-07-10
 
 - Release build, bundle, lint, and 63 unit tests passed (87 Gradle tasks; suite has since grown to
-  109 tests — re-run the release gate before upload, as this doc already mandates).
+  216 tests — re-run the release gate before upload, as this doc already mandates).
 - `bundletool 1.18.3 validate`, APK v2 signing, and 16 KiB zip alignment passed.
 - Manifest has target/min SDK 36, no `INTERNET`, and no `DEBUGGABLE` flag.
 - The installed PMA110 release APK matched the local verified APK byte-for-byte.
@@ -100,9 +100,10 @@ Full citations, severities, and exit criteria: `docs/plans/2026-07-10-rpf-cycle2
 (D-1..D-18). Summary of what remains open:
 
 - **Device re-verification of the cycle-2 changes** — the PMA110 re-locked behind a secure keyguard
-  mid-cycle. Queued checks (see the plan's Progress log): letterboxed preview geometry + photo/video
-  mode-switch reopen (the task-#6 aspect fix), review-overlay hardware-key gating, resume/lens-tap
-  serialization, record start/stop under the ordered encoder teardown, tap-AF reticle colors,
+  mid-cycle. VERIFIED on device post-unlock by the orchestrator (2026-07-10): letterboxed preview
+  geometry photo 4:3 / video 9:16, photo↔video mode-switch reopens, tap-AF reticle (plus the
+  3ba28c8 AspectMask axis follow-up). STILL QUEUED: review-overlay hardware-key gating, resume/
+  lens-tap serialization under load, record start/stop under the ordered encoder teardown,
   MediaReview tap-to-pause, flat-resume capture orientation.
 - **D-1** muxer orientation-hint SIGN (already in Residual Field Checks above).
 - **D-2** confirm the Play/privacy contact mailbox is real and monitored (owner decision;
