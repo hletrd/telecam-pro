@@ -34,12 +34,4 @@ object VendorTagInspector {
 
         Log.i(TAG, "   physicalIds=${chars.physicalCameraIds}")
     }
-
-    private fun valueString(value: Any?): String = when (value) {
-        null -> "null"
-        is IntArray -> value.joinToString(prefix = "[", postfix = "]")
-        is FloatArray -> value.joinToString(prefix = "[", postfix = "]")
-        is ByteArray -> value.joinToString(prefix = "[", postfix = "]") { it.toInt().toString() }
-        else -> value.toString()
-    }
 }

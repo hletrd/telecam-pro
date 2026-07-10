@@ -180,12 +180,12 @@ class MainActivity : ComponentActivity() {
         return super.onKeyUp(keyCode, event)
     }
 
-    // The Find X9 Ultra camera-control button's capacitive gestures ride the `cs_press` sensor, and the
-    // framework DOES surface them to a focused third-party app as (non-standard OPPO) keycodes — device-
-    // verified they reach dispatchKeyEvent: a light press and each slide notch arrive as key 767/769/782.
-    // Map them: the two slide keycodes → stepped zoom in/out, the press keycode → a centre AF trigger
-    // (half-press). Handled on ACTION_DOWN and consumed. (Directions calibrated on device; swap the two
-        // slide constants if the on-device direction is wrong.)
+    // The Find X9 Ultra camera-control button's capacitive gestures ride the `cs_press` sensor. As
+    // live-verified 2026-07-09, the slide reaches a focused third-party app as the STANDARD
+    // KEYCODE_ZOOM_IN/OUT (repeating ~20 Hz) — the OPPO codes 767/769/782 seen in one earlier
+    // session are config-dependent and kept only as aliases; the light press is currently NOT
+    // delivered at all (the KEYCODE_FOCUS/782 handlers stay armed if it ever arrives). Slides →
+    // stepped zoom via the eased target; press/half-press → the configurable HardwareKeyActions.
     @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         // DEBUG: trace every non-standard key so the camera-button gestures can be re-mapped from a
@@ -271,7 +271,6 @@ class MainActivity : ComponentActivity() {
         const val KEY_CAM_SLIDE_IN = 767
         const val KEY_CAM_SLIDE_OUT = 769
         const val KEY_CAM_HALF_PRESS = 782
-        val CAMERA_BUTTON_KEYS = setOf(KEY_CAM_SLIDE_IN, KEY_CAM_SLIDE_OUT, KEY_CAM_HALF_PRESS)
         // Per-EVENT zoom multiplier: the slide repeats ~20 Hz, so ~1.04/event = a controlled
         // ~2.2x per second of continuous slide (1.15 raced 1x-10x in under two seconds).
         const val ZOOM_STEP = 1.04f
