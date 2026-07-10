@@ -93,6 +93,35 @@ Runtime CAMERA and RECORD_AUDIO permissions are granted through the app UI on Co
 AVD is suitable only for UI/crash checks; telephoto routing, RAW, color, audio, stabilization, and
 saved-file behavior require PMA110.
 
+## Deferred from review-plan-fix cycle 2 (2026-07-10 — final cycle; durable record)
+
+The review-plan-fix loop ended with cycle 2, so its deferrals live HERE, not "in the next cycle."
+Full citations, severities, and exit criteria: `docs/plans/2026-07-10-rpf-cycle2.md` § Deferred
+(D-1..D-18). Summary of what remains open:
+
+- **Device re-verification of the cycle-2 changes** — the PMA110 re-locked behind a secure keyguard
+  mid-cycle. Queued checks (see the plan's Progress log): letterboxed preview geometry + photo/video
+  mode-switch reopen (the task-#6 aspect fix), review-overlay hardware-key gating, resume/lens-tap
+  serialization, record start/stop under the ordered encoder teardown, tap-AF reticle colors,
+  MediaReview tap-to-pause, flat-resume capture orientation.
+- **D-1** muxer orientation-hint SIGN (already in Residual Field Checks above).
+- **D-2** confirm the Play/privacy contact mailbox is real and monitored (owner decision;
+  `play-store-listing.md` / `play-console-submit.md` / `PRIVACY.md` / `privacy-policy/index.html`).
+- **D-3** Shaders O-Log2 inverse-threshold discrepancy — decide with OPPO's white paper in hand;
+  do not hot-patch the shipping OETF blind.
+- **D-4** structural refactors (state triplication/applyExtras, CameraEngine split, AE-loop move,
+  CameraSession seam, caps projection out of CameraUiState, telemetry-flow split, typed engine
+  events) — MUST land before the CameraUnit / item-#4 v2 work.
+- **D-5..D-9** perf items needing device measurement (downsampled analysis readback, startRecording
+  off main, async DNG write, single-decode HEIF+JPEG, GL frame coalescing / cached request builder /
+  waveform draw reuse).
+- **D-10** MR-bank management placement (IA decision), **D-11** AE metering under LOG preview,
+  **D-12** dead backup_rules removal (needs explicit owner sign-off — file deletion),
+  **D-13** pure-env release signing gate (when CI exists), **D-14** keep-screen-on toggle (already
+  above), **D-15** FnSlot table test on next enum growth, **D-16** OPPO Maven cred relocation (with
+  the CameraUnit AUTH_CODE work), **D-17** GyroEis roll wrap transient (cosmetic), **D-18** the
+  lit-scene/human-ears residual field checks (above).
+
 ## Historical References
 
 - `docs/reviews/README.md` — tracked review-archive index and usage rules.
