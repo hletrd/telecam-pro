@@ -41,7 +41,9 @@ Two critical consequences of the afocal converter drive the entire design:
 | `CameraState.kt` | Enums (CaptureMode, ColorTransfer, FocusMode, DriveMode, etc.) and data classes (CameraUiState, ManualControls, CameraCaps) — the shared language between UI and engine. |
 | `CaptureCapabilities.kt` | Queries Camera2 characteristics for manual-sensor, RAW, 10-bit HDR, focus range, metering regions — gate-keeping capabilities. |
 | `ManualControls.kt` | Immutable snapshot of all pro capture parameters (focus, ISO, shutter, white balance, metering, processing). The ViewModel updates a copy; the Engine applies it to the repeating request. |
-| `RotationMath.kt` | Pure, unit-tested functions for preview/capture/EXIF rotation math (extracted from CameraEngine). |
+| `RotationMath.kt` | Pure, unit-tested functions for preview/capture/EXIF rotation math and the video muxer orientation hint (extracted from CameraEngine). |
+| `AutoExposure.kt` | Pure, unit-tested app-side AE math: SHUTTER/ISO-priority drive functions and the photo-P program line (`driveProgram`), metered off the GL luma histogram. |
+| `OcsProbe.kt` | Debug-source-set-only OPPO CameraUnit/OCS availability probe (release builds compile a no-op stub and do not link the OEM SDK). |
 | `VendorTagInspector.kt` | Debug-only Camera2 capability logger for device-specific request/session keys. |
 | **gl/** | |
 | `GlPipeline.kt` | Owns the GL render thread. Receives camera SurfaceTexture, renders 180°-flipped quads to preview Surface and video encoder Surface. Owns EGL context, texture, sampling buffers. Drives histogram/waveform analysis on a background executor. |
@@ -55,10 +57,11 @@ Two critical consequences of the afocal converter drive the entire design:
 | `DngCapture.kt` | Writes DNG (RAW sensor frame) using DngCreator. Sets EXIF orientation tag (cannot pixel-rotate Bayer CFA). Synchronous in the photo callback while the raw Image is live. |
 | **video/** | |
 | `VideoRecorder.kt` | MediaCodec HEVC/AVC encoder + AAC audio encoder + MediaMuxer. Drains video/audio to MP4. Video input comes from GL (already 180°-flipped); audio captured from microphone on a separate thread. Software PCM gain. |
+| `AudioInputInspector.kt` | Resolves the preferred recording input (built-in / wired / USB / BT) against connected AudioDeviceInfo entries; provides the route labels shown in the UI. |
 | `ColorProfiles.kt` | Builds MediaFormat specs for HEVC Main10 (Rec.2020 + HLG/Log) and AVC 8-bit SDR. Tags dynamic range, color space, transfer function. |
 | `EncoderCaps.kt` | Scans MediaCodecList and exposes the hardware AVC/HEVC encoders that are stable with MediaMuxer. |
 | **storage/** | |
-| `MediaStoreWriter.kt` | Scoped-storage wrapper: creates pending DCIM/Pictures entries (IS_PENDING), publishes on success, deletes on failure. Opened files backed by ParcelFileDescriptor. |
+| `MediaStoreWriter.kt` | Scoped-storage wrapper: creates pending DCIM/X9Tele entries (IS_PENDING), publishes on success, deletes on failure. Opened files backed by ParcelFileDescriptor. |
 | `SettingsStore.kt` | SharedPreferences persistence of ManualControls + ExtraSettings across launches, gated by a "Remember Settings" toggle (default ON); enums stored by name, defensive load. Lens and TELE restoration have separate default-on preserve toggles. |
 | **focus/** | |
 | `FocusMapping.kt` | Maps UI slider (0..1) to LENS_FOCUS_DISTANCE (diopters). Nonlinear to enhance resolution near infinity (√ curve and offset). Bidirectional. |
@@ -67,11 +70,13 @@ Two critical consequences of the afocal converter drive the entire design:
 | `CameraViewModel.kt` | StateFlow<CameraUiState> owner. Turns CameraActions (UI) into CameraEngine calls. Applies gesture-driven control changes with a trailing throttle. Ticks the recording timer and level overlay roll. UI-thread only. |
 | `CameraActions.kt` | Callback interface for stateless UI commands such as focus, exposure, tap AF, lens, recording, persistence, and review actions. |
 | **ui/controls/** | |
-| `ManualDials.kt` | Horizontal scrolling dials for quick access to focus, ISO, shutter, white balance — the "Fn" layer. Mapped to CameraActions. |
+| `ManualDials.kt` | Horizontal scrolling dials for quick access to focus, shutter, ISO, white balance, EV, and zoom — the "Fn" layer. Mapped to CameraActions. |
 | `ProSheet.kt` | Fixed Sony-style settings panel with a 9-tab left rail: My, Shoot, Exposure, Focus, Lens, Video, Image, Assist, and Setup. Each tab hosts controls feeding CameraActions. |
 | `ProControls.kt` | Reusable Compose controls including rulers, segmented choices, toggles, sliders, and value rows. All are two-way bound to CameraUiState. |
 | **ui/overlays/** | |
-| `Overlays.kt` | Compose overlays: reticle (tap-to-focus), histogram/waveform, grid, spirit level, peaking, zebra, punch-in zoom indicator. Stateless off CameraUiState. |
+| `Overlays.kt` | Compose overlays: reticle (tap-to-focus), histogram/waveform, grid, spirit level, peaking, zebra, punch-in zoom indicator, AE/AWB/AF lock tags. Stateless off CameraUiState. |
+| `MediaReview.kt` | In-app review of the last capture: zoomable photo viewer and a rotating video player (TextureView + MediaPlayer honoring the container rotation), with delete. |
+| `ControlCycles.kt` | Shared enum tap-cycle orders and auto-exposure readout text used by ManualDials, ProSheet, and CameraScreen (single copy — no drift). |
 | **ui/theme/** | |
 | `Theme.kt` | Material3 dark theme tuned for a Sony-style pro camera surface, typography, color palette, text field/button shapes. |
 | `MainActivity.kt` | Entry point. Requests CAMERA/RECORD_AUDIO permissions at runtime (ColorOS blocks pm grant). Hosts the Compose root and ViewModel. Lifecycle: onStart/onStop call engine pause/resume. |
@@ -161,6 +166,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | **analysisExecutor** (single-thread) | GlPipeline | Histogram/waveform computation from GL readback (per-pixel math). |
 | **audio-capture** (implicit thread) | VideoRecorder | AudioRecord polling loop and PCM-to-AAC encoding. |
 | **video-drain** (implicit thread) | VideoRecorder | MediaCodec output buffer draining and MediaMuxer writes. |
+| **StandbyAudioMeter** (thread) | CameraEngine | Levels-only AudioRecord tap while video is armed but not rolling; stops before VideoRecorder opens the mic (single-owner invariant). |
 
 **@Volatile Seams (cross-thread visibility):**
 
@@ -301,7 +307,7 @@ AF state reaches FOCUSED on device.
 **Shipping stabilization path:**
 
 Video uses the device HAL's OIS and video stabilization. `VideoStabMode` maps the UI's Off,
-OIS Standard, and OIS Enhanced choices to the supported Camera2 request mode and mirrors the device's
+"Standard", and "Active" choices to the supported Camera2 request mode and mirrors the device's
 `com.oplus.video.stabilization.mode` value. PMA110 result metadata verified `ois=1, vstab=2` for the
 enhanced path. The app does not claim Explorer-only stabilization parameters that raw Camera2 cannot
 access.
@@ -333,9 +339,11 @@ roll uses a similar confidence threshold when the phone points steeply up or dow
 **Video codec and color profiles:**
 
 Supported codecs are scanned at runtime via `EncoderCaps.kt` (MediaCodecList). Only hardware HEVC and
-AVC encoders are exposed. Bitrate presets run Low → **Max** (`BitrateLevel`), reaching the QTI HW ceiling
-(~120 Mbps at 4K, device-verified ~134 Mbps at HEVC 4K30 Max — the old High left half the headroom
-unused).
+AVC encoders are exposed. Bitrate presets run Low → **Max** (`BitrateLevel`): the REQUESTED target at
+Max computes to ~99 Mbps at 4K30 (0.40 bpp), hard-clamped at 120 Mbps (`videoBitRate`). A device
+recording measured ~134 Mbps in the file — that is VBR encoder overshoot of the ~99 Mbps target (no
+KEY_BITRATE_MODE is set), not a requested ceiling. The old High (0.16 bpp) left half the HW headroom
+unused.
 
 | Codec | Encoder profile | Color Space | Transfer | Container | Notes |
 |---|---|---|---|---|---|
@@ -355,7 +363,9 @@ recording width at 3840. PMA110 exposes 4K UHD as the largest selected 16:9 mode
 standard rates (24/25/30/60 fps) and drop-frame equivalents (23.976/29.97/59.94). The UI deliberately
 excludes 120 fps because the constrained high-speed session crashes this HAL.
 
-Open-Gate (full 4:3 sensor) is available as a recording option alongside standard crops.
+Open-Gate (4:3-aspect recording; device-verified 2560×1920 on the tele — the recording surface is
+capped at 3840 wide, so this is NOT the full 4096×3072 still readout) is available alongside the
+standard 16:9 sizes.
 
 Exact bitrate is displayed in Mbps and user-selectable per codec and resolution.
 
@@ -440,8 +450,11 @@ the JPEG ImageReader and apply the same rotation.
 
 **JPEG (still photo):**
 
-JPEG is written directly from the raw Camera2 JPEG ImageReader bytes (no re-encoding). Metadata and rotation 
-are handled via the EXIF orientation tag (same as DNG). This avoids quality loss from re-compression.
+JPEG runs the SAME processed-pixel pipeline as HEIF (`saveJpegAsync`): decode the ImageReader bytes →
+center-crop to the selected aspect → rotate (afocal 180° + device) → re-encode at
+`ManualControls.jpegQuality`. The mandatory pixel rotation means it is NOT a byte passthrough — the
+output is a second lossy JPEG generation (accepted; keeping HEIF/JPEG framing identical wins). The
+exposure EXIF is re-stamped after `Bitmap.compress` from the shot's own TotalCaptureResult.
 
 **DNG (RAW, full-frame):**
 
@@ -469,7 +482,7 @@ DNG always saves full-frame (crop not applied).
 
 ```kotlin
 createPendingImage(context, fileName, mimeType) → Uri
-// Creates entry in DCIM/Pictures with IS_PENDING = 1
+// Creates entry in DCIM/X9Tele with IS_PENDING = 1
 openParcelFd(context, uri, "rw") → ParcelFileDescriptor
 // Caller writes to the FD
 publish(context, uri)

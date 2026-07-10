@@ -12,8 +12,9 @@ import java.nio.FloatBuffer
  * Draws the camera external-OES texture to whatever GL surface is current.
  *
  * Two transforms are combined:
- *  - texture coordinates are rotated (sensor orientation + afocal 180°) about their center, then
- *    multiplied by the SurfaceTexture matrix, so the *content* is un-inverted;
+ *  - texture coordinates are rotated by [setRotationDegrees]'s afocal-180-only angle about their
+ *    center, then multiplied by the SurfaceTexture matrix (which already carries the sensor
+ *    orientation — see the field comment below), so the *content* is un-inverted;
  *  - the quad geometry is scaled (center-crop "cover") so the content aspect fills the target
  *    without distortion, for whatever target (preview view or encoder) is being drawn.
  */

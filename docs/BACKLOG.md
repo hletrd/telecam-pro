@@ -51,7 +51,14 @@ These do not require a code or metadata change unless the result exposes a defec
 - Capture a clearly upright subject while deliberately holding the phone in portrait and both
   landscape directions. Confirm HEIF display orientation and DNG EXIF orientation in saved files.
   Rotation math and flat-phone orientation retention are unit-tested; this closes the final visual
-  output check.
+  output check. Also confirm a held-landscape VIDEO clip in an external gallery (the muxer
+  orientation-hint SIGN is unverified — `RotationMath.videoOrientationHint` pins the current
+  mapping and is the one place to flip if wrong).
+- Added by the 2026-07-10 review cycle (code changed since the recorded release AAB — re-run the
+  full release gate and refresh `docs/play-console-submit.md`'s hash before upload):
+  one HEIF capture on heifwriter 1.1.0 (stable, was 1.2.0-alpha01); waveform overlay visual parity
+  after the drawPoints batching; the new OSD AE/AWB/AF lock tags + TeleChip hit-area layout on the
+  3168 px screen; a TalkBack pass over the new dial/slider semantics.
 
 ## Deferred Beyond v1
 

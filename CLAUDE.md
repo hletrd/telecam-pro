@@ -44,7 +44,7 @@ deprecated APIs, latest stable everything.
 | Compose BOM | 2026.06.01 | Material3 |
 | compileSdk / targetSdk / minSdk | 37 / 36 / 36 | compileSdk 37 required by lifecycle 2.11.0; decoupled from targetSdk 36 |
 | JDK | 21 (aarch64) | Homebrew `openjdk@21` |
-| heifwriter | 1.2.0-alpha01 | no stable 1.1.0 exists; latest per policy |
+| heifwriter | 1.1.0 | latest STABLE (the earlier "no stable 1.1.0 exists" note was wrong) |
 
 **JAVA_HOME for CLI builds** (the login shell does not export it):
 ```bash
@@ -141,8 +141,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   `val` (`== PROGRAM && !programAppSide`); the capture path treats all app-side modes identically
   (AE off, sensor values set) because the loop keeps `iso`/`exposureTimeNs` fresh.
 - **Controls apply is a THROTTLE, not a debounce.** `CameraViewModel.updateControls` applies the newest
-  value at ~12 Hz *while* a gesture continues (a debounce starved: continuous pinch reset the timer so
-  zoom only landed on finger-up). Keep the `applyScheduled`-flag trailing throttle.
+  value every 40 ms (25 Hz) *while* a gesture continues (a debounce starved: continuous pinch reset the
+  timer so zoom only landed on finger-up; the earlier 80 ms window quantized the hardware slide-zoom
+  into visible steps). Keep the `applyScheduled`-flag trailing throttle. Persistence is separate: user
+  changes schedule a 500 ms trailing debounced synchronous commit (`scheduleSettingsSave`).
 - **Release output files verified on PMA110 (2026-07-10).** A serialized rapid double-shutter test
   produced exactly one valid DNG+HEIF pair (DNG 4080×3064, 16-bit). A 4K HLG clip was HEVC Main10
   3840×2160 at 30000/1001 with AAC 48 kHz stereo; Open Gate produced HEVC Main10 2560×1920 4:3 at
@@ -195,7 +197,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   (0x8119009e) alongside the standard key, and applies the right OIS/EIS profile for the active lens. The tele advertises standard `availableVideoStabilizationModes = [0,1,2]`
   (OFF/ON/**PREVIEW_STABILIZATION**) and both `videoStabilizationMode` + the vendor int are in its
   request+session keys. So we **no longer force video-stab OFF**: `VideoStabMode { OFF, STANDARD
-  ("OIS Std"), ENHANCED ("OIS Enhanced") }` sets `CONTROL_VIDEO_STABILIZATION_MODE` on the repeating
+  ("Standard"), ENHANCED ("Active") }` sets `CONTROL_VIDEO_STABILIZATION_MODE` on the repeating
   request (+ the vendor int mirror). **Device-verified: result metadata `ois=1`, `vstab=2` — OIS
   physically engaged at 1/30 s, preview + 4K recording fine.** App-side gyro EIS is **disabled**
   (`CameraEngine` seeds `gl.setEis(false, 0f, 0f)`); its sensor helper remains for level and capture

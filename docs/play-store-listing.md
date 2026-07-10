@@ -59,7 +59,7 @@ PHOTO
 VIDEO
 • HEVC recording with HLG or GL-baked O-Log2 profiles, plus SDR for fast delivery.
 • Hardware OIS + EIS stabilization to cut motion blur at long focal lengths.
-• Device Sound Focus / Sound Stage controls for directional-audio recording.
+• Device Sound Focus / Sound Stage audio-scene controls (passed to the device's audio system).
 • 4K UHD, standard and NTSC drop-frame rates, up to ~120 Mbps.
 
 FRAMING AND MONITORING
@@ -83,9 +83,10 @@ Requires an OPPO Find X9 Ultra running Android 16. Target model codes: CPH2841 (
 ## Data Safety form answers
 
 - **Does your app collect or share any of the required user data types?** -> **No.**
-- Justification: the app declares no `INTERNET` permission and contains no analytics, ads, or
-  network-capable SDKs; camera and microphone input is used only on-device to produce files saved to
-  local storage. The OPPO CameraUnit/OCS SDK is used only for local OEM camera capability checks.
+- Justification: the app declares no `INTERNET` permission — it is technically incapable of
+  transmitting data — and contains no analytics or ads SDKs; camera and microphone input is used only
+  on-device to produce files saved to local storage. The release build bundles no OEM SDK (the OPPO
+  CameraUnit/OCS availability probe is debug-only).
 - **Is all user data encrypted in transit?** -> N/A (no data transmitted).
 - **Do you provide a way to request data deletion?** -> N/A (no data collected); users delete their own
   photos/videos via the gallery.
@@ -95,7 +96,7 @@ Requires an OPPO Find X9 Ultra running Android 16. Target model codes: CPH2841 (
 
 | Asset | Spec | Source |
 |---|---|---|
-| Hi-res app icon | 512×512 PNG, 32-bit | `docs/assets/play/icon-512.png` (generated) |
+| Hi-res app icon | 512×512 PNG, 32-bit with alpha | `docs/assets/play/icon-512.png` (generated) |
 | Feature graphic | 1024×500 PNG/JPG, no alpha | `docs/assets/play/feature-graphic.png` (generated) |
 | Phone screenshots | >=2, PNG/JPG, 320-3840 px, max side <=2x min side, no alpha | `docs/assets/play/screenshots/` |
 
