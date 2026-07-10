@@ -152,6 +152,29 @@ class AutoExposureTest {
     }
 
     @Test
+    fun program_exposureFloorAboveHandheldCap_clampsInsteadOfThrowing() {
+        // Degenerate hardware report: an exposure FLOOR above the 1/10 s handheld ceiling.
+        // coerceIn(min, max) would throw with min > max; the guard clamps the ceiling to the floor.
+        val r = AutoExposure.driveProgram(
+            histAt(115), currentIso = 400, currentNs = 200_000_000L, preferredNs = prefNs,
+            isoMin = isoMin, isoMax = isoMax,
+            expMinNs = 200_000_000L, expMaxNs = 300_000_000L, evCompStops = 0f,
+        )
+        // Whatever it decides, the shutter must sit exactly on the only legal point: the floor.
+        r?.let { (_, ns) -> assertEquals(200_000_000L, ns) }
+    }
+
+    @Test
+    fun program_invertedExposureRange_clampsInsteadOfThrowing() {
+        val r = AutoExposure.driveProgram(
+            histAt(20), currentIso = 400, currentNs = prefNs, preferredNs = prefNs,
+            isoMin = isoMin, isoMax = isoMax,
+            expMinNs = 8_000_000L, expMaxNs = 4_000_000L, evCompStops = 0f,
+        )
+        r?.let { (_, ns) -> assertEquals(8_000_000L, ns) }
+    }
+
+    @Test
     fun program_darkCeiling_neverExceedsHandheldCap() {
         // Pitch black at max ISO with a huge sensor ceiling: the shutter must respect the 1/10 s
         // handheld cap, not the sensor's 1 s upper bound.
