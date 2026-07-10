@@ -395,6 +395,9 @@ data class CameraUiState(
     // so the FULL capture field is visible — photo mode previews the 4:3 sensor, video the recording
     // stream. Default = 4:3 shown portrait (3/4), matching the fresh-launch photo mode.
     val previewAspect: Float = 3f / 4f,
+    // Live camera health: false while opening/reconfiguring/recovering (and after recovery gives
+    // up). The shutter dims on it so a dead session never hides behind a ready-looking button.
+    val cameraReady: Boolean = false,
     // True while the full-screen media-review overlay is up. Lives in UI state (not a Compose
     // local) because MainActivity's hardware-key handlers must refuse to fire the shutter under
     // the overlay — volume-up during clip review used to start a recording BEHIND it.

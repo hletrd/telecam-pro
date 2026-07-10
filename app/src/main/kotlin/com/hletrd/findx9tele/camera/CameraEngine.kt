@@ -79,6 +79,15 @@ class CameraEngine(private val context: Context) {
     // True only after the CURRENT controller has configured a working session. Session-key and lens
     // changes clear it before their asynchronous reopen is queued so REC cannot race the teardown.
     @Volatile private var cameraReady = false
+    // Camera-health signal for the UI (dim the shutter, show a persistent OSD tag while down):
+    // fires on every cameraReady flip. A silent scheduleCameraRecovery exhaustion previously left a
+    // black viewfinder behind a fully interactive-looking shutter with zero indication.
+    var onCameraReadyChange: ((Boolean) -> Unit)? = null
+
+    private fun updateCameraReady(ready: Boolean) {
+        cameraReady = ready
+        onCameraReadyChange?.invoke(ready)
+    }
     @Volatile private var previewSurface: Surface? = null
     // Last-known preview surface dimensions, kept alongside previewSurface so the async start
     // continuation can bind the LIVE surface (not its captured, possibly-released parameter).
@@ -144,6 +153,9 @@ class CameraEngine(private val context: Context) {
         if (started) { gl.setPreviewOutput(surface, width, height); return }
         if (starting) return // setup already dispatched; don't launch a duplicate start
         starting = true
+        // Cold-start feedback: several Binder IPCs + openCamera run before the first frame — say
+        // "working" so the black window is distinguishable from a hang (cleared by onReady).
+        onStatus?.invoke("Starting camera…")
 
         // CameraSelector2.select + CameraCaps.read + chooseVideoSize each issue several
         // getCameraCharacteristics IPCs (tens of ms). surfaceCreated is delivered on the MAIN
@@ -279,7 +291,7 @@ class CameraEngine(private val context: Context) {
         if (paused) return // don't grab the camera while backgrounded (queued GL continuation, etc.)
         val sel = selection ?: return
         val c = caps ?: return
-        cameraReady = false
+        updateCameraReady(false)
         controller?.close() // idempotent: closes any prior controller so two never race for the device
         val ctrl = CameraController(context)
         controller = ctrl
@@ -301,14 +313,14 @@ class CameraEngine(private val context: Context) {
             onReady = {
                 // A superseded controller can report ready after a newer reopen already replaced it.
                 if (controller === ctrl && !paused) {
-                    cameraReady = true
+                    updateCameraReady(true)
                     onStatus?.invoke(null)
                     cameraRecoveryAttempts = 0
                 }
             },
             onError = {
                 if (controller === ctrl) {
-                    cameraReady = false
+                    updateCameraReady(false)
                     onStatus?.invoke("Camera error: ${it.message}")
                     scheduleCameraRecovery()
                 }
@@ -503,7 +515,7 @@ class CameraEngine(private val context: Context) {
         // and gaps/corrupts the clip. The rate/open-gate change applies on the next recording instead.
         if (recorder != null) return
         val input = gl.inputSurface ?: return
-        cameraReady = false
+        updateCameraReady(false)
         // Run the close+reopen OFF the main thread. close() blocks until the HAL device is released
         // (bounded join) and openCamera() issues several getCameraCharacteristics/openCamera Binder
         // calls; on this HAL those can take seconds under contention, so doing it on the UI thread
@@ -527,7 +539,13 @@ class CameraEngine(private val context: Context) {
      */
     private fun scheduleCameraRecovery() {
         if (!started || paused || recorder != null) return
-        if (cameraRecoveryAttempts >= MAX_CAMERA_RECOVERY_ATTEMPTS) return
+        if (cameraRecoveryAttempts >= MAX_CAMERA_RECOVERY_ATTEMPTS) {
+            // Recovery exhausted: say so instead of silently leaving a black viewfinder behind an
+            // interactive-looking UI. cameraReady stays false, so the shutter is dimmed too; a
+            // background/foreground cycle (resume()) retries with a fresh attempt budget.
+            onStatus?.invoke("Camera failed — reopen the app")
+            return
+        }
         cameraRecoveryAttempts++
         runCatching {
             timelapseScheduler.schedule(
@@ -612,7 +630,7 @@ class CameraEngine(private val context: Context) {
         overrideId = id
         if (!started) return
         val input = gl.inputSurface ?: return // @Volatile in GlPipeline: safe cross-thread read
-        cameraReady = false
+        updateCameraReady(false)
         // Off the main thread (same reason as reopenForSession): close() blocks on the HAL device
         // release and select/read/openCamera are several Binder IPCs — on the UI thread this ANR-kills
         // the app under HAL contention. Runs on the single-thread setupExecutor so it serializes with
@@ -989,19 +1007,22 @@ class CameraEngine(private val context: Context) {
     fun stopRecording() {
         val rec = recorder ?: return
         recorder = null
-        gl.setEncoderOutput(null, 0, 0)
-        // Restore the preview curve startRecording overrode: an AVC recording pushes null (SDR) into
-        // GL and nothing else re-applies the LOG/HLG preview render until the next transfer change.
-        gl.setTransfer(transfer)
         val uri = activeRecordingUri
         val captureId = activeRecordingCaptureId
         activeRecordingUri = null
-        // rec.stop() joins the video/audio drain threads (up to several seconds); run it OFF the caller
-        // (main) thread to avoid an ANR. The file finalizes and the status fires from the io thread.
         recorderTeardownInFlight = true
-        ioExecutor.execute {
-            finishRecording(rec, uri, captureId)
+        // ORDERED teardown: finishRecording (rec.stop() → codec release; joins the drain threads up
+        // to seconds, so it stays OFF the main thread on ioExecutor) dispatches from the completion
+        // callback, which runs on the GL thread only AFTER the encoder EGL surface is actually
+        // cleared. The old fire-and-forget post had no happens-before edge with the independent
+        // ioExecutor — a queued drawFrame could still makeCurrent() the encoder surface while the
+        // codec that owns it was being released (uncaught EGL failure on the GL thread).
+        gl.setEncoderOutput(null, 0, 0) {
+            ioExecutor.execute { finishRecording(rec, uri, captureId) }
         }
+        // Restore the preview curve startRecording overrode: an AVC recording pushes null (SDR) into
+        // GL and nothing else re-applies the LOG/HLG preview render until the next transfer change.
+        gl.setTransfer(transfer)
     }
 
     // True from stop/pause dispatching the async rec.stop() until its AudioRecord is actually
@@ -1029,7 +1050,7 @@ class CameraEngine(private val context: Context) {
     /** Releases the camera + gyro for backgrounding without tearing down the GL pipeline or start state. */
     fun pause() {
         paused = true
-        cameraReady = false
+        updateCameraReady(false)
         // A backgrounded timelapse can't capture anyway (controller is nulled below, so every tick
         // no-ops) — stop it outright rather than silently resuming mid-sequence with a gap.
         stopTimelapse()
@@ -1042,10 +1063,13 @@ class CameraEngine(private val context: Context) {
         val pausedClipCaptureId = activeRecordingCaptureId
         activeRecordingUri = null
         if (rec != null) {
-            gl.setEncoderOutput(null, 0, 0)
-            gl.setTransfer(transfer) // restore the preview curve startRecording overrode (AVC → null)
             recorderTeardownInFlight = true
-            ioExecutor.execute { finishRecording(rec, pausedClipUri, pausedClipCaptureId) }
+            // Same ordered teardown as stopRecording: release the codec only after the GL thread
+            // confirmed the encoder EGL surface is cleared.
+            gl.setEncoderOutput(null, 0, 0) {
+                ioExecutor.execute { finishRecording(rec, pausedClipUri, pausedClipCaptureId) }
+            }
+            gl.setTransfer(transfer) // restore the preview curve startRecording overrode (AVC → null)
         }
         gyro.stop()
         // Close OFF the main thread: close() blocks until the HAL device releases (bounded 1.5 s
@@ -1091,7 +1115,7 @@ class CameraEngine(private val context: Context) {
     fun setPunchIn(enabled: Boolean) = gl.setPunchIn(enabled)
 
     fun release() {
-        cameraReady = false
+        updateCameraReady(false)
         stopTimelapse()
         // ACCEPTED main-thread teardown: onCleared() means the process is going away — the
         // rec.stop() drain joins (up to ~3 s each, wedge-guarded) are tolerated here because there

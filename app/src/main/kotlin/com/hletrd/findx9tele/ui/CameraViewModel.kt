@@ -143,6 +143,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // Displayed preview aspect (engine setup thread → StateFlow is thread-safe): sizes the
         // letterboxed viewfinder so it always shows the full capture field.
         engine.onPreviewAspect = { aspect -> _state.update { it.copy(previewAspect = aspect) } }
+        // Camera health (engine camera/setup threads → StateFlow is thread-safe): dims the shutter
+        // while the session is down instead of silently declining taps.
+        engine.onCameraReadyChange = { ready -> _state.update { it.copy(cameraReady = ready) } }
         engine.onAnalysis = { h, w ->
             // Publish scope data into UI state only when something actually renders it (the
             // histogram/waveform overlays or the MANUAL-mode exposure meter). App-side AE reads the
