@@ -57,7 +57,9 @@ class VideoRecorder(private val context: Context) {
     private var videoTrack = -1
     private var audioTrack = -1
     private var expectedTracks = 1
-    private var muxerStarted = false
+    // Written under muxerLock (compound check-then-start), but read by awaitMuxerStart()'s spin
+    // loop WITHOUT the lock from the other drain thread — @Volatile provides that JMM edge.
+    @Volatile private var muxerStarted = false
     private val muxerLock = Any()
 
     @Volatile private var running = false
@@ -189,10 +191,12 @@ class VideoRecorder(private val context: Context) {
             recordFailure(IllegalStateException("Encoder drain timed out"))
         }
 
-        runCatching { audioRecord?.release() }
-        audioRecord = null
-
         if (!drainWedged) {
+            // audioRecord joins the wedge-leak set: a wedged audio thread may be blocked INSIDE
+            // record.read() on this exact object (stop() above doesn't always unblock it on this
+            // HAL), and release() under a live read races native AudioRecord state the same way
+            // codec/muxer release would — so it is only released on the clean path.
+            runCatching { audioRecord?.release() }
             synchronized(muxerLock) {
                 if (muxerStarted) {
                     runCatching { muxer?.stop() }.onFailure(::recordFailure)
@@ -205,6 +209,7 @@ class VideoRecorder(private val context: Context) {
             runCatching { muxer?.release() }
             runCatching { pfd?.close() }
         }
+        audioRecord = null
 
         // A track alone is not enough: require at least one successfully muxed video sample and no
         // asynchronous codec/muxer error. Keep failed or empty recordings out of the gallery.
@@ -397,6 +402,7 @@ class VideoRecorder(private val context: Context) {
         var totalSamples = 0L
         val bytesPerFrame = 2 * audioChannelCount
         var sentEos = false
+        var eosAttempts = 0
 
         while (true) {
             if (!sentEos) {
@@ -407,11 +413,16 @@ class VideoRecorder(private val context: Context) {
                     val read = if (running && buf != null) record.read(buf, buf.capacity()) else 0
                     if (read > 0 && buf != null) {
                         // Apply gain in place and emit a throttled level update before this PCM
-                        // buffer is queued to the AAC encoder below.
-                        val level = applyGainAndLevel(buf, read, audioGain)
-                        maybeEmitLevel(level)
+                        // buffer is queued to the AAC encoder below. At unity gain the rewrite is a
+                        // no-op, so the RMS pass is skipped entirely unless a level emit is due —
+                        // ~90% of buffers otherwise computed an RMS that maybeEmitLevel discarded.
+                        val emitDue = levelEmitDue()
+                        if (audioGain != 1f || emitDue) {
+                            val level = applyGainAndLevel(buf, read, audioGain)
+                            if (emitDue) maybeEmitLevel(level)
+                        }
                     }
-                    val ptsUs = 1_000_000L * totalSamples / ColorProfiles.AUDIO_SAMPLE_RATE
+                    val ptsUs = audioPtsUs(totalSamples, ColorProfiles.AUDIO_SAMPLE_RATE)
                     if (!running) {
                         codec.queueInputBuffer(inIdx, 0, 0, ptsUs, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                         sentEos = true
@@ -421,6 +432,11 @@ class VideoRecorder(private val context: Context) {
                     } else {
                         codec.queueInputBuffer(inIdx, 0, 0, ptsUs, 0)
                     }
+                } else if (!running && ++eosAttempts >= MAX_EOS_ATTEMPTS) {
+                    // Stop was requested but the encoder has produced no free input buffer to carry
+                    // EOS for ~3 s — it is effectively wedged. Bail instead of looping until stop()'s
+                    // join gives up; stop() finalizes/fails the clip based on what was actually muxed.
+                    return
                 }
             }
 
@@ -456,6 +472,9 @@ class VideoRecorder(private val context: Context) {
             }
         }
     }
+
+    /** True when enough time has passed since the last [onLevel] emit for a new one to go out. */
+    private fun levelEmitDue(): Boolean = System.nanoTime() - lastLevelEmitNs >= LEVEL_THROTTLE_NS
 
     /** Forwards [level] to [onLevel], throttled to roughly [LEVEL_THROTTLE_NS] between calls. */
     private fun maybeEmitLevel(level: Float) {
@@ -493,13 +512,11 @@ class VideoRecorder(private val context: Context) {
         ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
 
-    private fun channelCountFor(device: AudioDeviceInfo?): Int {
-        if (device == null) return ColorProfiles.AUDIO_CHANNELS
-        val counts = device.channelCounts
-        if (counts.any { it >= ColorProfiles.AUDIO_CHANNELS }) return ColorProfiles.AUDIO_CHANNELS
-        if (counts.isEmpty() && !AudioInputInspector.isBluetoothInput(device.type)) return ColorProfiles.AUDIO_CHANNELS
-        return 1
-    }
+    private fun channelCountFor(device: AudioDeviceInfo?): Int =
+        resolveAudioChannelCount(
+            device?.channelCounts,
+            device != null && AudioInputInspector.isBluetoothInput(device.type),
+        )
 
     private fun channelMaskFor(channelCount: Int): Int =
         if (channelCount >= ColorProfiles.AUDIO_CHANNELS) AudioFormat.CHANNEL_IN_STEREO else AudioFormat.CHANNEL_IN_MONO
@@ -509,7 +526,31 @@ class VideoRecorder(private val context: Context) {
         const val TIMEOUT_US = 10_000L
         // ~10 Hz cap on onLevel callbacks so the UI meter isn't spammed once per PCM buffer.
         const val LEVEL_THROTTLE_NS = 100_000_000L
+        // ~3 s of 10 ms input-dequeue timeouts: how long the stop path keeps asking for a free
+        // input buffer to carry AAC EOS before declaring the encoder wedged and bailing.
+        const val MAX_EOS_ATTEMPTS = 300
     }
+}
+
+/**
+ * Audio presentation timestamp for a sample count at [sampleRate]. Pure integer math, top-level so
+ * it is unit-testable: 1e6 * samples / rate stays far below Long overflow even for multi-hour takes.
+ */
+internal fun audioPtsUs(totalSamples: Long, sampleRate: Int): Long =
+    1_000_000L * totalSamples / sampleRate
+
+/**
+ * Resolves the AAC channel count for a capture device: stereo when the device advertises >=2
+ * channels, stereo when it advertises nothing and is NOT Bluetooth (built-in mics report empty
+ * caps), mono otherwise (a BT headset mic with empty caps is assumed mono — asking it for stereo
+ * mismatches the channel count baked into the AAC MediaFormat). Null counts = no device selected →
+ * default stereo. Top-level (plain IntArray/Boolean) so it is unit-testable.
+ */
+internal fun resolveAudioChannelCount(channelCounts: IntArray?, isBluetooth: Boolean): Int {
+    if (channelCounts == null) return ColorProfiles.AUDIO_CHANNELS
+    if (channelCounts.any { it >= ColorProfiles.AUDIO_CHANNELS }) return ColorProfiles.AUDIO_CHANNELS
+    if (channelCounts.isEmpty() && !isBluetooth) return ColorProfiles.AUDIO_CHANNELS
+    return 1
 }
 
 /**
