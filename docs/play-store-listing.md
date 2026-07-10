@@ -42,7 +42,7 @@ OPEN SOURCE
 TELECONVERTER MODE
 • One tap selects the 3x periscope lens and enables teleconverter mode: the afocal converter flips the
   image 180 degrees, and the app corrects it in preview, photos, and video automatically.
-• Image stabilization scaled for the long effective focal length so 300 mm framing stays usable.
+• Uses the device's available Camera2 OIS and video-stabilization modes for long-lens shooting.
 
 FOUR LENSES
 • Ultra-wide, main, 3x and 10x, selected by focal length — switch instantly.

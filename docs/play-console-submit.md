@@ -14,6 +14,20 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 Do not upload debug APKs or older unsigned/stale release bundles. Use the signed AAB above.
 
+### Verified v1 artifact (2026-07-10)
+
+- AAB SHA-256:
+  `8230d82f482807e6feae4ae80d6a8052d1633bb8921f4cf6b908d8192224fe62`
+- Matching release APK SHA-256:
+  `1b2a9ba978f937f2cbcbd44e59e10ab9681156a72d8107df4485e795e9c3c190`
+- `bundletool 1.18.3 validate`: passed
+- APK signing: v2 signature valid; certificate matches the upload certificate above
+- APK alignment: 16 KiB zip alignment passed
+- Manifest: target/min SDK 36, no `INTERNET`, no `DEBUGGABLE`
+- Build gates: 87 Gradle tasks passed, including 63 unit tests and `lintRelease`
+- PMA110 smoke test: DNG+HEIF photo, 4K HLG/AAC video, Open Gate 4:3 video, settings
+  persistence, and no crash/ANR all passed
+
 The developer account was created in 2015, so the closed-test production-access requirement for new
 personal accounts created after November 13, 2023 does not apply.
 
@@ -70,6 +84,15 @@ Restrict availability to Find X9 Ultra variants:
 - China/import/tested device: `PMA110`
 
 The app requires Android 16 / API 36 and is intentionally single-device.
+
+## Manual Console Sequence
+
+1. Create the app and upload the verified AAB to Internal testing.
+2. Enter the Store Listing and Data Safety answers from this repository.
+3. Upload the icon, feature graphic, and all six phone screenshots.
+4. Restrict the device catalog to CPH2841 and PMA110 before any wider rollout.
+5. Review Play's automated checks and pre-launch report.
+6. Promote the same artifact only after the internal-test install succeeds.
 
 ## Local Signing Material
 

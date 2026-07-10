@@ -121,14 +121,21 @@ files, not just session setup logs:
 
 ## Implementation Status
 
-- ✅ **Build & gates**: `./gradlew assembleDebug testDebugUnitTest lintDebug` all pass.
-- ✅ **Unit tests**: FocusMappingTest, RotationMathTest, CameraSelector2Test, VideoCapabilitiesTest, ExposureMathTest.
-- ✅ **Device-verified on PMA110**: all 4 lenses open (standalone, no HAL crash) with RAW; teleconverter bundling; preview upright; tap-to-focus lock; AF→MF handoff; volume-key shutter; HEIF (4096×3072) + DNG + JPEG saves; HEVC 4K video incl. Max bitrate (~120 Mbps); GL O-Log2 and OIS+EIS. Directional-audio parameters are accepted by the HAL; their acoustic effect still needs the A/B check below. Release build re-verified: not debuggable, no debug capability logs, camera-reopen race fixed. Global Find X9 Ultra device code is CPH2841 per OPPO's public specs; Play device catalog should allow CPH2841 and PMA110.
-- ⏳ **Needs your eyes/ears in a real scene**: the acoustic effect of directional audio (off-axis A/B)
-  and the latest UI pass on-device in portrait/landscape — undetectable from a static desk.
-- ✅ **Play-release scaffolding**: release signing config with unsigned-bundle fail-fast, public
-  privacy policy URL, store-listing text, Data Safety answer sheet, icon + feature graphic — see the
-  Release build section above. Play screenshots are refreshed from PMA110 and tracked with Git LFS.
-  Remaining human steps: complete the Play Console listing/data-safety form and restrict availability
-  to CPH2841/PMA110.
-- 🚧 **Not started**: R8/minify (deferred — needs enum keep-rules + device re-verification). Dolby Vision (HW encoder detected, MP4 muxing non-trivial). See [`docs/BACKLOG.md`](docs/BACKLOG.md).
+- ✅ **Build & gates**: `./gradlew testDebugUnitTest lintRelease assembleRelease bundleRelease`
+  passes (87 Gradle tasks).
+- ✅ **Unit tests**: 63 tests across `AutoExposureTest`, `CameraSelector2Test`,
+  `ExposureMathTest`, `FocusMappingTest`, `RotationMathTest`, and `VideoCapabilitiesTest`.
+- ✅ **Release device smoke test on PMA110**: fresh launch starts at 1x / 23 mm with TELE off;
+  Preserve Lens and Preserve TELE default on and persist independently; rapid double-shutter produces
+  one valid DNG+HEIF pair; 4K HLG records HEVC Main10 at 30000/1001 with AAC; Open Gate records
+  2560x1920 4:3; and no crash or ANR was observed. The installed release APK matched the locally
+  verified artifact byte-for-byte and was not debuggable.
+- ✅ **UI and Play assets**: the menu hierarchy and core photo/video flows were reviewed on the
+  physical device. Six 1440x2560 PMA110 screenshots are tracked with Git LFS.
+- ⏳ **Remaining Play Console work**: upload the signed AAB, enter the listing and Data Safety answers,
+  restrict the device catalog to CPH2841/PMA110, run internal testing, and review the pre-launch report.
+  The exact operator checklist is in [`docs/play-console-submit.md`](docs/play-console-submit.md).
+- 🔎 **Residual field checks**: directional-audio off-axis acoustic A/B and held portrait/landscape
+  saved-file orientation are worth confirming in a real scene; neither changes the current build or
+  Play metadata.
+- 📌 **Deferred beyond v1**: R8/minify and Dolby Vision. See [`docs/BACKLOG.md`](docs/BACKLOG.md).
