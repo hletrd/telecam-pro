@@ -71,6 +71,7 @@ class CameraEngine(private val context: Context) {
 
     private val gyro = com.hletrd.findx9tele.stab.GyroEis(context)
     @Volatile private var teleconverterMode = false
+    @Volatile private var videoMode = false
     // HAL-native log (vendor com.oplus.log.video.mode). Session key → changing it reopens the camera.
     @Volatile private var vendorLogMode = VendorLogMode.OFF
     // Video stabilization strategy. Default ENHANCED = HAL OIS+EIS (motion-blur reduction at 300 mm).
@@ -247,6 +248,7 @@ class CameraEngine(private val context: Context) {
             vendorLogMode = vendorLogMode.halValue,
             videoStabHalMode = c.videoStabControlMode(videoStabMode),
             teleconverterMode = teleconverterMode,
+            pinAutoFps = videoMode,
             onReady = {
                 // A superseded controller can report ready after a newer reopen already replaced it.
                 if (controller === ctrl && !paused) {
@@ -270,6 +272,11 @@ class CameraEngine(private val context: Context) {
     fun setControls(c: ManualControls) {
         controls = c
         controller?.updateControls(c)
+    }
+
+    fun setVideoMode(enabled: Boolean) {
+        videoMode = enabled
+        controller?.setPinAutoFps(enabled)
     }
 
     /**

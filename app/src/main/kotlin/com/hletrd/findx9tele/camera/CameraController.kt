@@ -95,6 +95,9 @@ class CameraController(context: Context) {
     // hints this device exposes through Camera2: Hasselblad telephoto mode + effective zoom ~= 300/70.
     // These are best-effort and fully guarded.
     private var teleconverterMode = false
+    // Video preview/recording must honor the selected fps even under auto exposure. Photo preview
+    // leaves this false so AE can lower its frame rate for a brighter low-light view.
+    @Volatile private var pinAutoFps = false
     // >0 → configure a CameraConstrainedHighSpeedCaptureSession at this fps (slow-motion), feeding
     // ONLY the GL input surface (no JPEG/RAW — high-speed sessions forbid extra targets). 0 = the
     // regular tele session. Set once per open(); on a high-speed config failure it drops back to 0.
@@ -141,6 +144,7 @@ class CameraController(context: Context) {
         vendorLogMode: Int = 0,
         videoStabHalMode: Int = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF,
         teleconverterMode: Boolean = false,
+        pinAutoFps: Boolean = false,
         onReady: Ready,
         onError: ErrorCb,
     ) {
@@ -153,6 +157,7 @@ class CameraController(context: Context) {
         this.vendorLogMode = vendorLogMode
         this.videoStabHalMode = videoStabHalMode
         this.teleconverterMode = teleconverterMode
+        this.pinAutoFps = pinAutoFps
         this.rawChars = runCatching {
             manager.getCameraCharacteristics(selection.physicalId ?: selection.logicalId)
         }.getOrNull()
@@ -440,7 +445,7 @@ class CameraController(context: Context) {
         runCatching {
             val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                 addTarget(preview)
-                applyManualControls(controls, caps)
+                applyManualControls(controls, caps, pinAutoFps)
                 applyVendorLog()
                 applyVideoStab()
                 applyTeleconverterHints()
@@ -580,6 +585,13 @@ class CameraController(context: Context) {
         }
     }
 
+    /** Pins AUTO exposure to the selected fps in video mode, and restores low-light fps in photo. */
+    fun setPinAutoFps(enabled: Boolean) {
+        if (pinAutoFps == enabled) return
+        pinAutoFps = enabled
+        postToCamera { startPreview() }
+    }
+
     /**
      * Sets the tap-to-focus/meter target. [sx],[sy] are SENSOR-normalized (0..1); the caller has
      * already applied the view→sensor rotation. Arms a one-shot AF trigger and rebuilds the preview
@@ -620,7 +632,7 @@ class CameraController(context: Context) {
             val req = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
                 jpeg?.let { addTarget(it) }
                 raw?.let { addTarget(it) }
-                applyManualControls(controls, caps)
+                applyManualControls(controls, caps, pinAutoFps)
                 // Keep stills consistent with the session's pipeline: with the log session active the
                 // HAL processes everything scene-referred, so an unset key mid-session is undefined.
                 applyVendorLog()

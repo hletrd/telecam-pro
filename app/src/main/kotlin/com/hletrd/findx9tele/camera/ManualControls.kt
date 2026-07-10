@@ -132,9 +132,13 @@ fun sensorFrameDurationNs(fps: Int, exposureNs: Long, maxFrameDurationNs: Long):
  * is owned by [CameraController], which sets it on the repeating preview/video request per the
  * selected [VideoStabMode] — not here, so it isn't forced onto still captures.
  */
-fun CaptureRequest.Builder.applyManualControls(c: ManualControls, caps: CameraCaps) {
+fun CaptureRequest.Builder.applyManualControls(
+    c: ManualControls,
+    caps: CameraCaps,
+    pinAutoFps: Boolean = false,
+) {
     applyFocus(c, caps)
-    applyExposure(c, caps)
+    applyExposure(c, caps, pinAutoFps)
     applyWhiteBalance(c, caps)
     applyProcessing(c, caps)
     // Flash runs AFTER exposure: when AE is ON, the auto/always-flash variants set CONTROL_AE_MODE
@@ -168,7 +172,11 @@ private fun CaptureRequest.Builder.applyFocus(c: ManualControls, caps: CameraCap
     }
 }
 
-private fun CaptureRequest.Builder.applyExposure(c: ManualControls, caps: CameraCaps) {
+private fun CaptureRequest.Builder.applyExposure(
+    c: ManualControls,
+    caps: CameraCaps,
+    pinAutoFps: Boolean,
+) {
     if (!c.autoExposure && caps.supportsManualSensor) {
         set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
         caps.isoRange?.let { set(CaptureRequest.SENSOR_SENSITIVITY, c.iso.coerceIn(it.lower, it.upper)) }
@@ -187,10 +195,13 @@ private fun CaptureRequest.Builder.applyExposure(c: ManualControls, caps: Camera
             c.exposureCompensation.coerceIn(caps.evRange.lower, caps.evRange.upper),
         )
     }
-    // Target frame-rate range. In AUTO exposure use a low-floor range so AE can slow the preview in
-    // dim scenes for a brighter live view; in manual, pin the fps (exposure time is set directly).
-    val fpsRange = if (!c.autoExposure && caps.supportsManualSensor) caps.clampFpsRange(c.fps)
-    else caps.autoFpsRange(c.fps)
+    // Photo AUTO preview can lower fps for a brighter low-light view. Video AUTO must stay at the
+    // selected rate; otherwise a 29.97p clip can silently become 25p when AE chooses 1/25 s.
+    val fpsRange = if (pinAutoFps || (!c.autoExposure && caps.supportsManualSensor)) {
+        caps.clampFpsRange(c.fps)
+    } else {
+        caps.autoFpsRange(c.fps)
+    }
     fpsRange?.let { set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
     set(
         CaptureRequest.CONTROL_AE_ANTIBANDING_MODE,

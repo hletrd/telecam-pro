@@ -186,6 +186,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         }
         val restoredTeleconverter = restoredLens == LensChoice.TELE3X && preservedTeleconverter
         // Push to the engine (safe pre-start: these set @Volatile fields read when the camera opens).
+        engine.setVideoMode(e.mode == CaptureMode.VIDEO)
         engine.setControls(c)
         // Manual/priority modes need luma analysis even when scopes are hidden: priority AE drives
         // from it, and full manual uses it for the live exposure meter.
@@ -592,6 +593,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             return
         }
         _state.update { it.copy(mode = mode) }
+        engine.setVideoMode(mode == CaptureMode.VIDEO)
         applyEngineTransfer(mode, _state.value.transfer)
         refreshProgramAppSide() // photo P is app-side (min-shutter rule), video P is HAL AE
         refreshStandbyAudioMeter()
