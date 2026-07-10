@@ -50,33 +50,11 @@ object ColorProfiles {
             setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
             applyFrameRate(encoderRate, captureRate)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
-            when (transfer) {
-                ColorTransfer.HLG -> {
-                    setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10)
-                    setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT2020)
-                    setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
-                    setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_HLG)
-                }
-                ColorTransfer.LOG -> {
-                    setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10)
-                    setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT2020)
-                    setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_FULL)
-                    // No CICP code exists for a log curve, and leaving KEY_COLOR_TRANSFER unset let
-                    // this QTI encoder default the VUI to ST2084 (PQ) — players then tone-mapped the
-                    // O-Log2 data as HDR and crushed it (found via ffprobe on a device recording).
-                    // Tag SDR like other phone log formats: players show the flat log image as-is
-                    // and graders assign the O-Log2 IDT/LUT manually.
-                    setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
-                }
-                // SDR: 8-bit Main profile, BT.709 limited-range, standard SDR transfer — matches the
-                // untouched (no-OETF) frames the GL pipeline delivers for this setting.
-                ColorTransfer.SDR -> {
-                    setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.HEVCProfileMain)
-                    setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
-                    setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
-                    setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
-                }
-            }
+            val tags = hevcColorTagsFor(transfer)
+            tags.profile?.let { setInteger(MediaFormat.KEY_PROFILE, it) }
+            setInteger(MediaFormat.KEY_COLOR_STANDARD, tags.standard)
+            setInteger(MediaFormat.KEY_COLOR_RANGE, tags.range)
+            setInteger(MediaFormat.KEY_COLOR_TRANSFER, tags.transfer)
         }
     }
 
@@ -110,17 +88,10 @@ object ColorProfiles {
             applyFrameRate(encoderRate, captureRate)
             // All-intra: a keyframe every frame (interval 0). No inter prediction to grade around.
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 0)
-            setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT2020)
-            setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_FULL)
-            // Never leave KEY_COLOR_TRANSFER unset on a BT2020 full-range format: this QTI encoder
-            // then defaults the VUI to ST2084 (PQ) and players tone-map the footage as HDR — the
-            // exact failure documented for the HEVC LOG path. HLG keeps its id; LOG/SDR tag SDR,
-            // matching hevcFormat's per-transfer tagging.
-            setInteger(
-                MediaFormat.KEY_COLOR_TRANSFER,
-                if (transfer == ColorTransfer.HLG) MediaFormat.COLOR_TRANSFER_HLG
-                else MediaFormat.COLOR_TRANSFER_SDR_VIDEO,
-            )
+            val tags = apvColorTagsFor(transfer)
+            setInteger(MediaFormat.KEY_COLOR_STANDARD, tags.standard)
+            setInteger(MediaFormat.KEY_COLOR_RANGE, tags.range)
+            setInteger(MediaFormat.KEY_COLOR_TRANSFER, tags.transfer)
         }
     }
 
@@ -151,4 +122,72 @@ object ColorProfiles {
             setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16_384)
         }
     }
+}
+
+/**
+ * Per-transfer color metadata for a video encoder format. [profile] is the encoder profile
+ * (null where the codec's profile isn't set this way, e.g. APV). Values are the framework's
+ * compile-time int constants, so this stays JVM-unit-testable.
+ */
+internal data class VideoColorTags(
+    val profile: Int?,
+    val standard: Int,
+    val range: Int,
+    val transfer: Int,
+)
+
+/**
+ * HEVC per-transfer tagging as an EXPRESSION-position `when` with no else: a new [ColorTransfer]
+ * member fails the build here instead of silently shipping a branch that forgets
+ * KEY_COLOR_TRANSFER — leaving it unset on a BT2020 full-range format makes this QTI encoder
+ * default the VUI to ST2084 (PQ), and players then tone-map the footage as HDR and crush it
+ * (found via ffprobe on a device recording). Shared shape with [apvColorTagsFor] so the two
+ * codecs' tagging can't drift apart unnoticed.
+ */
+internal fun hevcColorTagsFor(transfer: ColorTransfer): VideoColorTags = when (transfer) {
+    ColorTransfer.HLG -> VideoColorTags(
+        profile = MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10,
+        standard = MediaFormat.COLOR_STANDARD_BT2020,
+        range = MediaFormat.COLOR_RANGE_LIMITED,
+        transfer = MediaFormat.COLOR_TRANSFER_HLG,
+    )
+    // No CICP code exists for a log curve. Tag SDR like other phone log formats: players show the
+    // flat log image as-is and graders assign the O-Log2 IDT/LUT manually. (Device ffprobe note:
+    // on this QTI encoder "SDR transfer + BT2020 full range" lands in the container as CICP 14 —
+    // bt2020-10, functionally identical to BT.709 per H.273 — NOT the literal SDR code point, and
+    // crucially not the ST2084/PQ mistag this tag exists to prevent.)
+    ColorTransfer.LOG -> VideoColorTags(
+        profile = MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10,
+        standard = MediaFormat.COLOR_STANDARD_BT2020,
+        range = MediaFormat.COLOR_RANGE_FULL,
+        transfer = MediaFormat.COLOR_TRANSFER_SDR_VIDEO,
+    )
+    // SDR: 8-bit Main profile, BT.709 limited-range, standard SDR transfer — matches the
+    // untouched (no-OETF) frames the GL pipeline delivers for this setting.
+    ColorTransfer.SDR -> VideoColorTags(
+        profile = MediaCodecInfo.CodecProfileLevel.HEVCProfileMain,
+        standard = MediaFormat.COLOR_STANDARD_BT709,
+        range = MediaFormat.COLOR_RANGE_LIMITED,
+        transfer = MediaFormat.COLOR_TRANSFER_SDR_VIDEO,
+    )
+}
+
+/**
+ * APV per-transfer tagging (BT.2020 full-range 10-bit 4:2:2 for every transfer; only the transfer
+ * id varies). Expression-position with no else for the same forgot-the-transfer protection as
+ * [hevcColorTagsFor] — APV previously duplicated that decision by hand.
+ */
+internal fun apvColorTagsFor(transfer: ColorTransfer): VideoColorTags = when (transfer) {
+    ColorTransfer.HLG -> VideoColorTags(
+        profile = null,
+        standard = MediaFormat.COLOR_STANDARD_BT2020,
+        range = MediaFormat.COLOR_RANGE_FULL,
+        transfer = MediaFormat.COLOR_TRANSFER_HLG,
+    )
+    ColorTransfer.LOG, ColorTransfer.SDR -> VideoColorTags(
+        profile = null,
+        standard = MediaFormat.COLOR_STANDARD_BT2020,
+        range = MediaFormat.COLOR_RANGE_FULL,
+        transfer = MediaFormat.COLOR_TRANSFER_SDR_VIDEO,
+    )
 }
