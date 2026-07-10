@@ -109,13 +109,12 @@ class GyroEis(context: Context) : SensorEventListener {
                 // angle of the gravity vector in the x/y plane. Lightly low-passed to kill jitter.
                 val x = event.values[0]
                 val y = event.values[1]
-                val inPlane = hypot(x, y)
 
                 // Only update the roll when there's enough in-plane gravity to actually define it.
                 // Pointing the phone straight down/up puts gravity along ±z, so x/y ≈ 0 and atan2(x,y)
                 // is pure noise — the horizon level would spin. Below the threshold we HOLD the last
                 // confident angle instead of chasing the noise (QA: "level spins when pointing down").
-                if (inPlane > LEVEL_GRAVITY_THRESHOLD) {
+                if (shouldUpdateRoll(x, y)) {
                     val rollDeg = Math.toDegrees(atan2(x, y).toDouble()).toFloat()
                     rollDegrees += ROLL_LOW_PASS_ALPHA * (rollDeg - rollDegrees)
                 }
@@ -123,9 +122,8 @@ class GyroEis(context: Context) : SensorEventListener {
                 // Only update the discrete capture orientation when the phone is clearly HELD: the
                 // in-plane gravity magnitude must exceed a threshold. When flat on a desk, x/y ≈ 0 and
                 // atan2 is noise, so we hold the last confident value (a flat shot keeps the last hold).
-                if (inPlane > FLAT_GRAVITY_THRESHOLD) {
-                    val d = Math.round(rollDegrees / 90f) * 90
-                    stableOrientation = ((d % 360) + 360) % 360
+                if (shouldUpdateOrientation(x, y)) {
+                    stableOrientation = snapToQuadrant(rollDegrees)
                 }
             }
         }
@@ -138,11 +136,17 @@ class GyroEis(context: Context) : SensorEventListener {
         angPitch = 0f; angYaw = 0f; angRoll = 0f
         smoothPitch = 0f; smoothYaw = 0f; smoothRoll = 0f
         corrPitch = 0f; corrYaw = 0f; corrRoll = 0f
-        rollDegrees = 0f
-        stableOrientation = 0
+        // rollDegrees and stableOrientation are deliberately NOT zeroed. reset() runs on BOTH start()
+        // and stop(), and those two are gravity-derived ABSOLUTE values whose documented design is
+        // "hold the last confident value" (see their field comments + CLAUDE.md). Zeroing them on
+        // pause/resume made a capture in the first frames after resume — before the accelerometer
+        // re-samples — use upright-portrait instead of the held orientation (the flat-desk DNG
+        // wrong-orientation bug class). Only the gyro-integration fields above are cleared.
     }
 
-    private companion object {
+    // internal (not private): the pure decision seams below and their unit tests reference the two
+    // gravity thresholds by name so the boundary math stays single-sourced.
+    internal companion object {
         // Sensors are registered at an explicit ~200 Hz sampling period (5000 µs) rather than
         // SENSOR_DELAY_FASTEST (~500-1000 Hz) — the GL loop only consumes the result once per
         // rendered frame (30-60 Hz), so anything faster is wasted CPU/battery with no
@@ -169,4 +173,22 @@ class GyroEis(context: Context) : SensorEventListener {
         // smoothing is unnecessary here since it only feeds a UI overlay, not EIS correction.
         const val ROLL_LOW_PASS_ALPHA = 0.2f
     }
+}
+
+// Pure decision seams behind [GyroEis.onSensorChanged], extracted so the gravity thresholds and the
+// quadrant snap are unit-testable off-device (the class itself needs a live SensorManager). Match the
+// codebase's pure-seam pattern (e.g. camera/meteringRect, camera/sessionAttemptPlan).
+
+/** True when there is enough in-plane gravity to trust the discrete held-orientation (phone HELD). */
+internal fun shouldUpdateOrientation(x: Float, y: Float): Boolean =
+    hypot(x, y) > GyroEis.FLAT_GRAVITY_THRESHOLD
+
+/** True when there is enough in-plane gravity to define the roll angle (not pointing steeply up/down). */
+internal fun shouldUpdateRoll(x: Float, y: Float): Boolean =
+    hypot(x, y) > GyroEis.LEVEL_GRAVITY_THRESHOLD
+
+/** Snap an absolute roll (deg) to the nearest 0/90/180/270 quadrant, normalized into 0..359. */
+internal fun snapToQuadrant(rollDegrees: Float): Int {
+    val d = Math.round(rollDegrees / 90f) * 90
+    return ((d % 360) + 360) % 360
 }

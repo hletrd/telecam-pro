@@ -132,15 +132,8 @@ class FlipRenderer {
 
         GLES20.glUseProgram(program)
 
-        // Content aspect as displayed after ALL rotation: the SurfaceTexture transform's sensor
-        // orientation PLUS the extra texcoord rotation. A net 90/270 swaps width/height.
-        val rotated = (sensorOrientationDeg + rotationDeg) % 180 == 90
-        val displayedAspect = if (rotated) previewH.toFloat() / previewW else previewW.toFloat() / previewH
-        val viewAspect = targetWidth.toFloat() / targetHeight.coerceAtLeast(1)
-
-        var ex = 1f
-        var ey = 1f
-        if (displayedAspect > viewAspect) ex = displayedAspect / viewAspect else ey = viewAspect / displayedAspect
+        // Center-crop "cover" scale so the content aspect fills the target without distortion.
+        val (ex, ey) = coverScale(previewW, previewH, sensorOrientationDeg, rotationDeg, targetWidth, targetHeight)
         Matrix.setIdentityM(mvp, 0)
         Matrix.scaleM(mvp, 0, ex, ey, 1f)
 
@@ -225,4 +218,28 @@ class FlipRenderer {
         check(status[0] == GLES20.GL_TRUE) { "Shader compile failed: ${GLES20.glGetShaderInfoLog(shader)}" }
         return shader
     }
+}
+
+/**
+ * Center-crop "cover" scale factors (ex, ey) for the quad geometry, extracted from [FlipRenderer.draw]
+ * as pure Float math (no GL) so the aspect logic is unit-testable. Content aspect is taken AFTER all
+ * rotation: the SurfaceTexture transform's sensor orientation PLUS the extra texcoord rotation, so a
+ * net 90/270 swaps the displayed width/height. Exactly one axis is scaled >1 to overscan the target;
+ * matching aspects return (1, 1). [targetHeight] is floored at 1 to avoid a divide-by-zero.
+ */
+internal fun coverScale(
+    previewW: Int,
+    previewH: Int,
+    sensorOrientationDeg: Int,
+    rotationDeg: Int,
+    targetWidth: Int,
+    targetHeight: Int,
+): Pair<Float, Float> {
+    val rotated = (sensorOrientationDeg + rotationDeg) % 180 == 90
+    val displayedAspect = if (rotated) previewH.toFloat() / previewW else previewW.toFloat() / previewH
+    val viewAspect = targetWidth.toFloat() / targetHeight.coerceAtLeast(1)
+    var ex = 1f
+    var ey = 1f
+    if (displayedAspect > viewAspect) ex = displayedAspect / viewAspect else ey = viewAspect / displayedAspect
+    return ex to ey
 }

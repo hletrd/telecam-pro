@@ -227,20 +227,39 @@ class GlPipeline {
         analysisCallback = cb
     }
 
-    fun setEncoderOutput(surface: Surface?, width: Int, height: Int) = post {
-        val core = egl ?: return@post
-        if (encoderEgl != EGL14.EGL_NO_SURFACE) {
-            core.releaseSurface(encoderEgl)
-            encoderEgl = EGL14.EGL_NO_SURFACE
+    /**
+     * Swap (or clear) the encoder EGL surface. [onApplied] is invoked ON THE GL THREAD once the
+     * change has actually landed, so an ordered encoder teardown (dispatch `finishRecording` only
+     * after the encoder surface is truly released) can chain off it. If the GL thread does not exist
+     * (pipeline never started / already stopped), [onApplied] runs inline right here so a caller
+     * awaiting the completion never hangs.
+     */
+    fun setEncoderOutput(surface: Surface?, width: Int, height: Int, onApplied: (() -> Unit)? = null) {
+        val h = handler
+        if (h == null) {
+            onApplied?.invoke()
+            return
         }
-        // Reset the presentation-time base whenever the encoder surface changes (record start/stop) so
-        // the next recording rebases from its own first frame.
-        encoderBaseSet = false
-        encoderBaseNs = 0L
-        if (surface != null) {
-            encoderW = width
-            encoderH = height
-            encoderEgl = core.createWindowSurface(surface)
+        h.post {
+            val core = egl
+            if (core != null) {
+                if (encoderEgl != EGL14.EGL_NO_SURFACE) {
+                    core.releaseSurface(encoderEgl)
+                    encoderEgl = EGL14.EGL_NO_SURFACE
+                }
+                // Reset the presentation-time base whenever the encoder surface changes (record
+                // start/stop) so the next recording rebases from its own first frame.
+                encoderBaseSet = false
+                encoderBaseNs = 0L
+                if (surface != null) {
+                    encoderW = width
+                    encoderH = height
+                    encoderEgl = core.createWindowSurface(surface)
+                }
+            }
+            // Signal completion AFTER the surface change is applied, on the GL thread; fires even when
+            // egl is null (nothing to apply) so an ordered-teardown caller is never left waiting.
+            onApplied?.invoke()
         }
     }
 
@@ -295,17 +314,6 @@ class GlPipeline {
         )
         core.swapBuffers(previewEgl)
 
-        // Additive scope analysis: throttled GL readback of the just-drawn preview, computed off-thread.
-        // Kept entirely defensive so it can never block or crash the preview/encoder draw below.
-        if ((analysisHistogram || analysisWaveform || analysisAe) && analysisCallback != null) {
-            // Refresh the scopes / AE meter ~6×/s (every 5th frame at 30 fps) — snappy without stalling
-            // the 4K preview on the readback. (Was every 12th ≈ 2.5×/s, which felt laggy.)
-            if (++analysisFrameCounter >= 5) {
-                analysisFrameCounter = 0
-                runAnalysisReadback(core)
-            }
-        }
-
         if (encoderEgl != EGL14.EGL_NO_SURFACE) {
             core.makeCurrent(encoderEgl)
             renderer.draw(stMatrix, encoderW, encoderH, transfer, false, false, false, sx, sy, roll, crop)
@@ -314,6 +322,20 @@ class GlPipeline {
             if (!encoderBaseSet && ts > 0L) { encoderBaseNs = ts; encoderBaseSet = true }
             core.setPresentationTime(encoderEgl, if (encoderBaseSet) ts - encoderBaseNs else 0L)
             core.swapBuffers(encoderEgl)
+        }
+
+        // Additive scope analysis: throttled GL readback of the just-drawn preview, computed off-thread.
+        // Kept entirely defensive so it can never block or crash the preview/encoder draws above.
+        // Ordered AFTER the encoder draw+swap on purpose: the full-surface glReadPixels stalls the GL
+        // thread, so running it before the encoder draw would push the readback in front of every
+        // recorded frame — encoder frame pacing beats scope latency (scopes only refresh ~6×/s anyway).
+        if ((analysisHistogram || analysisWaveform || analysisAe) && analysisCallback != null) {
+            // Refresh the scopes / AE meter ~6×/s (every 5th frame at 30 fps) — snappy without stalling
+            // the 4K preview on the readback. (Was every 12th ≈ 2.5×/s, which felt laggy.)
+            if (++analysisFrameCounter >= 5) {
+                analysisFrameCounter = 0
+                runAnalysisReadback(core)
+            }
         }
     }
 
@@ -367,60 +389,6 @@ class GlPipeline {
         }
     }
 
-    /** RGBA snapshot -> luma + per-channel 256-bin histograms, subsampled for speed (Rec.2020 luma). */
-    private fun computeHistogram(bytes: ByteArray, w: Int, h: Int): HistogramData {
-        val luma = IntArray(256)
-        val red = IntArray(256)
-        val green = IntArray(256)
-        val blue = IntArray(256)
-        val step = 6
-        var y = 0
-        while (y < h) {
-            val rowBase = y * w * 4
-            var x = 0
-            while (x < w) {
-                val i = rowBase + x * 4
-                val r = bytes[i].toInt() and 0xFF
-                val g = bytes[i + 1].toInt() and 0xFF
-                val b = bytes[i + 2].toInt() and 0xFF
-                val l = (0.2627f * r + 0.678f * g + 0.0593f * b).toInt().coerceIn(0, 255)
-                luma[l]++
-                red[r]++
-                green[g]++
-                blue[b]++
-                x += step
-            }
-            y += step
-        }
-        return HistogramData(luma, red, green, blue)
-    }
-
-    /** RGBA snapshot -> 128x64 luma waveform, subsampled; row 0 = brightest (top). */
-    private fun computeWaveform(bytes: ByteArray, w: Int, h: Int): WaveformData {
-        val columns = 128
-        val rows = 64
-        val bins = IntArray(columns * rows)
-        val step = 6
-        var y = 0
-        while (y < h) {
-            val rowBase = y * w * 4
-            var x = 0
-            while (x < w) {
-                val i = rowBase + x * 4
-                val r = bytes[i].toInt() and 0xFF
-                val g = bytes[i + 1].toInt() and 0xFF
-                val b = bytes[i + 2].toInt() and 0xFF
-                val l = (0.2627f * r + 0.678f * g + 0.0593f * b).toInt().coerceIn(0, 255)
-                val col = (x * columns / w).coerceIn(0, columns - 1)
-                val row = ((255 - l) * rows / 256).coerceIn(0, rows - 1)
-                bins[col * rows + row]++
-                x += step
-            }
-            y += step
-        }
-        return WaveformData(columns, rows, bins)
-    }
-
     fun stop() {
         analysisExecutor.shutdown()
         val h = handler ?: return
@@ -447,4 +415,62 @@ class GlPipeline {
     private inline fun post(crossinline block: () -> Unit) {
         handler?.post { block() }
     }
+}
+
+// Pure scope-analysis math, hoisted out of GlPipeline (they hold no instance state — just the RGBA
+// snapshot + dimensions) so they are unit-testable off-GL-thread, matching the codebase's pure-seam
+// pattern (e.g. camera/meteringRect, camera/centerCropBox).
+
+/** RGBA snapshot -> luma + per-channel 256-bin histograms, subsampled for speed (Rec.2020 luma). */
+internal fun computeHistogram(bytes: ByteArray, w: Int, h: Int): HistogramData {
+    val luma = IntArray(256)
+    val red = IntArray(256)
+    val green = IntArray(256)
+    val blue = IntArray(256)
+    val step = 6
+    var y = 0
+    while (y < h) {
+        val rowBase = y * w * 4
+        var x = 0
+        while (x < w) {
+            val i = rowBase + x * 4
+            val r = bytes[i].toInt() and 0xFF
+            val g = bytes[i + 1].toInt() and 0xFF
+            val b = bytes[i + 2].toInt() and 0xFF
+            val l = (0.2627f * r + 0.678f * g + 0.0593f * b).toInt().coerceIn(0, 255)
+            luma[l]++
+            red[r]++
+            green[g]++
+            blue[b]++
+            x += step
+        }
+        y += step
+    }
+    return HistogramData(luma, red, green, blue)
+}
+
+/** RGBA snapshot -> 128x64 luma waveform, subsampled; row 0 = brightest (top). */
+internal fun computeWaveform(bytes: ByteArray, w: Int, h: Int): WaveformData {
+    val columns = 128
+    val rows = 64
+    val bins = IntArray(columns * rows)
+    val step = 6
+    var y = 0
+    while (y < h) {
+        val rowBase = y * w * 4
+        var x = 0
+        while (x < w) {
+            val i = rowBase + x * 4
+            val r = bytes[i].toInt() and 0xFF
+            val g = bytes[i + 1].toInt() and 0xFF
+            val b = bytes[i + 2].toInt() and 0xFF
+            val l = (0.2627f * r + 0.678f * g + 0.0593f * b).toInt().coerceIn(0, 255)
+            val col = (x * columns / w).coerceIn(0, columns - 1)
+            val row = ((255 - l) * rows / 256).coerceIn(0, rows - 1)
+            bins[col * rows + row]++
+            x += step
+        }
+        y += step
+    }
+    return WaveformData(columns, rows, bins)
 }
