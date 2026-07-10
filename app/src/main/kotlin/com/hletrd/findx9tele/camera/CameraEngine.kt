@@ -48,6 +48,12 @@ class CameraEngine(private val context: Context) {
     @Volatile private var selection: TeleSelection? = null
     @Volatile private var caps: CameraCaps? = null
     @Volatile private var videoSize = Size(1920, 1080)
+    // What the camera preview stream (the GL SurfaceTexture) is actually sized to. In VIDEO mode it
+    // must equal [videoSize] (the SurfaceTexture feeds the encoder, and the HAL fixes the stream size
+    // at session config). In PHOTO mode it is the largest 4:3 stream instead, so the viewfinder shows
+    // the SAME field the still capture gets — a 16:9 preview stream crops the sensor vertically and
+    // silently mis-frames every photo.
+    @Volatile private var previewStreamSize = Size(1920, 1080)
     @Volatile private var videoCodec: VideoCodec = VideoCodec.HEVC
     @Volatile private var bitrateLevel: BitrateLevel = BitrateLevel.ULTRA
     @Volatile private var videoFrameRate: VideoFrameRate = VideoFrameRate.DEFAULT
@@ -94,6 +100,12 @@ class CameraEngine(private val context: Context) {
     // The auto-chosen video size for the selected lens (largest 16:9), so the UI's Video tab reflects
     // what the engine will actually encode instead of drifting from a hardcoded default.
     var onVideoSizeChosen: ((Size) -> Unit)? = null
+    // Displayed preview aspect (width/height AS SHOWN on the portrait screen — the ~90° sensor
+    // orientation already swaps the stream's W/H). The UI sizes the TextureView to this so the
+    // viewfinder letterboxes the FULL capture field instead of cover-cropping it: with a 16:9 stream
+    // on this ~19.5:9 panel the old full-screen cover cut ~40% of the frame's width, and photo mode
+    // additionally previewed a 16:9 field while capturing the full 4:3 sensor.
+    var onPreviewAspect: ((Float) -> Unit)? = null
     // Viewfinder analysis (histogram/waveform) computed on the GL thread; delivered here so the
     // ViewModel can hoist it into UI state. Either arg is null when its analysis is disabled.
     var onAnalysis: ((HistogramData?, WaveformData?) -> Unit)? = null
@@ -147,12 +159,14 @@ class CameraEngine(private val context: Context) {
             onCapsReady?.invoke(c)
             videoSize = chooseVideoSize(sel)
             onVideoSizeChosen?.invoke(videoSize)
+            previewStreamSize = choosePreviewStreamSize(sel)
+            emitPreviewAspect()
 
             // HLG10 10-bit preview + full-res JPEG/RAW crashes this HAL (configureStreams Broken pipe -32);
             // SDR preview session. 10-bit HDR preview deferred; video still tags HLG/Log in the encoder.
             val tenBit = false
             gl.start(tenBit) { input ->
-                gl.setCameraPreviewSize(videoSize.width, videoSize.height)
+                gl.setCameraPreviewSize(previewStreamSize.width, previewStreamSize.height)
                 gl.setEisProvider { gyro.currentCorrection() }
                 gl.setAnalysisCallback { h, w -> onAnalysis?.invoke(h, w) }
                 // Re-seed GL state that may have been set BEFORE the GL thread existed:
@@ -290,8 +304,21 @@ class CameraEngine(private val context: Context) {
     }
 
     fun setVideoMode(enabled: Boolean) {
+        if (videoMode == enabled) return
         videoMode = enabled
         controller?.setPinAutoFps(enabled)
+        // PHOTO previews the full 4:3 sensor field; VIDEO previews the (usually 16:9) recording
+        // stream. When the mode flip changes the stream size, the session must be recreated — the
+        // HAL fixes stream dimensions at configureStreams, so only updating the SurfaceTexture
+        // buffer would leave the producer on the old stream (same contract as applyVideoSize).
+        val sel = selection ?: return
+        val next = choosePreviewStreamSize(sel)
+        if (next != previewStreamSize) {
+            previewStreamSize = next
+            emitPreviewAspect()
+            gl.setCameraPreviewSize(next.width, next.height)
+            reopenForSession()
+        }
     }
 
     /**
@@ -511,10 +538,16 @@ class CameraEngine(private val context: Context) {
     private fun applyVideoSize(s: Size) {
         videoSize = s
         onVideoSizeChosen?.invoke(s)
-        gl.setCameraPreviewSize(s.width, s.height)
-        // Output dimensions are part of Camera2's configured stream contract. Updating only the
-        // SurfaceTexture default size leaves the producer on the old 16:9/4:3 stream.
-        reopenForSession()
+        // In PHOTO mode the preview stream stays on the 4:3 full-field size — the new recording
+        // size takes effect on the stream when the user switches to VIDEO (setVideoMode reopens).
+        if (videoMode) {
+            previewStreamSize = s
+            emitPreviewAspect()
+            gl.setCameraPreviewSize(s.width, s.height)
+            // Output dimensions are part of Camera2's configured stream contract. Updating only the
+            // SurfaceTexture default size leaves the producer on the old 16:9/4:3 stream.
+            reopenForSession()
+        }
     }
 
     /**
@@ -566,10 +599,12 @@ class CameraEngine(private val context: Context) {
             caps = c
             onCapsReady?.invoke(c)
             // The new lens can expose different output sizes; refresh videoSize + the GL camera size so
-            // the preview aspect (FlipRenderer "cover") and encoder size match the new lens.
+            // the preview stream and encoder size match the new lens (mode-aware: photo = 4:3 field).
             videoSize = chooseVideoSize(sel)
             onVideoSizeChosen?.invoke(videoSize)
-            gl.setCameraPreviewSize(videoSize.width, videoSize.height)
+            previewStreamSize = choosePreviewStreamSize(sel)
+            emitPreviewAspect()
+            gl.setCameraPreviewSize(previewStreamSize.width, previewStreamSize.height)
             applyStabilization()
             openCamera(input)
         }
@@ -1059,10 +1094,31 @@ class CameraEngine(private val context: Context) {
      * wide (this device's cameras top out at 4K/4096 for the recording surface; no camera exposes 8K
      * video here). Falls back through the caps lists so it never returns an unsupported size.
      */
-    private fun chooseVideoSize(sel: TeleSelection): Size {
+    private fun chooseVideoSize(sel: TeleSelection): Size = chooseStreamSize(sel, fourByThree = openGate)
+
+    /**
+     * The camera preview (SurfaceTexture) stream size. VIDEO mode: identical to [videoSize] — the
+     * SurfaceTexture feeds the encoder, so the two must agree. PHOTO mode: the largest 4:3 stream,
+     * so the viewfinder previews the SAME full-sensor field the still capture gets (a 16:9 stream
+     * crops the sensor vertically and mis-frames every photo).
+     */
+    private fun choosePreviewStreamSize(sel: TeleSelection): Size =
+        if (videoMode) chooseVideoSize(sel) else chooseStreamSize(sel, fourByThree = true)
+
+    /** Pushes the DISPLAYED preview aspect (post sensor-orientation W/H swap) to the UI. */
+    private fun emitPreviewAspect() {
+        val s = previewStreamSize
+        // The ~90° sensor orientation means the SurfaceTexture transform swaps the shown W/H (the
+        // afocal 180° doesn't change the swap). Same rule FlipRenderer uses for its aspect choice.
+        val swapped = ((caps?.sensorOrientation ?: 90) % 180) == 90
+        val aspect = if (swapped) s.height.toFloat() / s.width else s.width.toFloat() / s.height
+        onPreviewAspect?.invoke(aspect)
+    }
+
+    private fun chooseStreamSize(sel: TeleSelection, fourByThree: Boolean): Size {
         val c = caps
         if (c != null) {
-            val list = if (openGate) c.openGateVideoSizes else c.availableVideoSizes
+            val list = if (fourByThree) c.openGateVideoSizes else c.availableVideoSizes
             (list.firstOrNull { it.width <= 3840 } ?: list.firstOrNull())?.let { return it }
         }
         // Fallback: query directly (pre-caps or empty list).
@@ -1072,8 +1128,8 @@ class CameraEngine(private val context: Context) {
         val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             ?: return Size(1920, 1080)
         val sizes = map.getOutputSizes(SurfaceTexture::class.java) ?: return Size(1920, 1080)
-        val wantW = if (openGate) 4 else 16
-        val wantH = if (openGate) 3 else 9
+        val wantW = if (fourByThree) 4 else 16
+        val wantH = if (fourByThree) 3 else 9
         return sizes.filter { it.width <= 3840 && it.height * wantW == it.width * wantH }
             .maxByOrNull { it.width.toLong() * it.height }
             ?: sizes.maxByOrNull { it.width.toLong() * it.height }

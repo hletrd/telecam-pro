@@ -140,6 +140,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // caps/size arrive on the engine's setup thread; hop to main before touching the engine again.
         engine.onCapsReady = { caps -> _state.update { it.copy(caps = caps) }; mainHandler.post { reconcileFrameRate() } }
         engine.onVideoSizeChosen = { size -> _state.update { it.copy(videoResolution = size) }; mainHandler.post { reconcileFrameRate() } }
+        // Displayed preview aspect (engine setup thread → StateFlow is thread-safe): sizes the
+        // letterboxed viewfinder so it always shows the full capture field.
+        engine.onPreviewAspect = { aspect -> _state.update { it.copy(previewAspect = aspect) } }
         engine.onAnalysis = { h, w ->
             _state.update { it.copy(histogramData = h, waveformData = w) }
             // Feed the app-side auto-exposure loop (SHUTTER/ISO priority). The luma array is freshly

@@ -21,6 +21,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -188,103 +189,122 @@ fun CameraScreen(
             .fillMaxSize()
             .background(CameraColors.Background),
     ) {
-        AndroidView(
+        // The viewfinder is LETTERBOXED, not cover-cropped: the TextureView (plus every overlay that
+        // must align with the image frame) lives in a centered box sized to the displayed preview
+        // aspect, so the FULL capture field is always visible. Letterboxing at the Compose layer —
+        // instead of scaling down inside GL — keeps three things correct for free: the GL surface is
+        // exactly content-aspect so FlipRenderer's "cover" is a 1:1 fit (no crop), tap coordinates
+        // normalize directly to the visible frame, and the AE/scope luma readback never sees black
+        // bars (they exist only outside this box).
+        Box(
             modifier = Modifier
-                .fillMaxSize()
-                // Tap-to-focus AND pinch-to-zoom share ONE gesture loop. Two separate pointerInput
-                // blocks (detectTapGestures + detectTransformGestures) fought each other: the tap
-                // detector consumed the gesture and killed the pinch after ~2 frames, so the pinch
-                // scale never left 1.0 (device-diagnosed via ZoomDbg). Handling both in a single
-                // awaitEachGesture removes the conflict: two fingers → pinch-zoom, a clean single
-                // stationary touch → tap-focus.
-                .pointerInput(Unit) {
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        var maxPointers = 1
-                        var zoomed = false
-                        var dragged = false
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            val pressed = event.changes.count { it.pressed }
-                            if (pressed == 0) break
-                            maxPointers = maxOf(maxPointers, pressed)
-                            if (pressed >= 2) {
-                                val zoom = event.calculateZoom()
-                                if (zoom != 1f) {
-                                    zoomed = true
-                                    currentActions.value.onPinchZoom(zoom)
+                .align(Alignment.Center)
+                .aspectRatio(state.previewAspect.coerceAtLeast(0.01f)),
+        ) {
+            AndroidView(
+                modifier = Modifier
+                    .fillMaxSize()
+                    // Tap-to-focus AND pinch-to-zoom share ONE gesture loop. Two separate pointerInput
+                    // blocks (detectTapGestures + detectTransformGestures) fought each other: the tap
+                    // detector consumed the gesture and killed the pinch after ~2 frames, so the pinch
+                    // scale never left 1.0 (device-diagnosed via ZoomDbg). Handling both in a single
+                    // awaitEachGesture removes the conflict: two fingers → pinch-zoom, a clean single
+                    // stationary touch → tap-focus.
+                    .pointerInput(Unit) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            var maxPointers = 1
+                            var zoomed = false
+                            var dragged = false
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val pressed = event.changes.count { it.pressed }
+                                if (pressed == 0) break
+                                maxPointers = maxOf(maxPointers, pressed)
+                                if (pressed >= 2) {
+                                    val zoom = event.calculateZoom()
+                                    if (zoom != 1f) {
+                                        zoomed = true
+                                        currentActions.value.onPinchZoom(zoom)
+                                    }
+                                    event.changes.forEach { it.consume() }
+                                } else {
+                                    val cur = event.changes.firstOrNull { it.id == down.id }?.position
+                                    if (cur != null && (cur - down.position).getDistance() > viewConfiguration.touchSlop) {
+                                        dragged = true
+                                    }
                                 }
-                                event.changes.forEach { it.consume() }
-                            } else {
-                                val cur = event.changes.firstOrNull { it.id == down.id }?.position
-                                if (cur != null && (cur - down.position).getDistance() > viewConfiguration.touchSlop) {
-                                    dragged = true
+                            }
+                            // Only a clean single-finger tap (no second finger, no pinch, no drag) focuses.
+                            if (maxPointers == 1 && !zoomed && !dragged) {
+                                val w = size.width.toFloat()
+                                val h = size.height.toFloat()
+                                if (w > 0f && h > 0f) {
+                                    currentActions.value.onTapFocus(down.position.x / w, down.position.y / h)
                                 }
                             }
                         }
-                        // Only a clean single-finger tap (no second finger, no pinch, no drag) focuses.
-                        if (maxPointers == 1 && !zoomed && !dragged) {
-                            val w = size.width.toFloat()
-                            val h = size.height.toFloat()
-                            if (w > 0f && h > 0f) {
-                                currentActions.value.onTapFocus(down.position.x / w, down.position.y / h)
+                    },
+                factory = { context ->
+                    // TextureView (not SurfaceView): its content composites inside the view hierarchy, so
+                    // the GL preview draws over the opaque Compose background and the Compose overlays
+                    // (grid/reticle/chrome) layer on top of it. A SurfaceView's surface sits behind the
+                    // app window and would be occluded by the background — the source of the black preview.
+                    var previewSurface: Surface? = null
+                    TextureView(context).apply {
+                        surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                            override fun onSurfaceTextureAvailable(
+                                texture: SurfaceTexture,
+                                width: Int,
+                                height: Int,
+                            ) {
+                                val surface = Surface(texture)
+                                previewSurface = surface
+                                currentActions.value.onPreviewSurfaceAvailable(surface, width, height)
                             }
+
+                            override fun onSurfaceTextureSizeChanged(
+                                texture: SurfaceTexture,
+                                width: Int,
+                                height: Int,
+                            ) {
+                                currentActions.value.onPreviewSurfaceChanged(width, height)
+                            }
+
+                            override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
+                                currentActions.value.onPreviewSurfaceDestroyed()
+                                previewSurface?.release()
+                                previewSurface = null
+                                return true
+                            }
+
+                            override fun onSurfaceTextureUpdated(texture: SurfaceTexture) = Unit
                         }
                     }
                 },
-            factory = { context ->
-                // TextureView (not SurfaceView): its content composites inside the view hierarchy, so
-                // the GL preview draws over the opaque Compose background and the Compose overlays
-                // (grid/reticle/chrome) layer on top of it. A SurfaceView's surface sits behind the
-                // app window and would be occluded by the background — the source of the black preview.
-                var previewSurface: Surface? = null
-                TextureView(context).apply {
-                    surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-                        override fun onSurfaceTextureAvailable(
-                            texture: SurfaceTexture,
-                            width: Int,
-                            height: Int,
-                        ) {
-                            val surface = Surface(texture)
-                            previewSurface = surface
-                            currentActions.value.onPreviewSurfaceAvailable(surface, width, height)
-                        }
+            )
 
-                        override fun onSurfaceTextureSizeChanged(
-                            texture: SurfaceTexture,
-                            width: Int,
-                            height: Int,
-                        ) {
-                            currentActions.value.onPreviewSurfaceChanged(width, height)
-                        }
+            // Framing-coupled overlays stay INSIDE the aspect box so grid/frame-lines/crop-mask/reticle
+            // geometry maps 1:1 onto the visible image, not onto the whole screen.
+            GridOverlay(type = state.grid, modifier = Modifier.fillMaxSize())
 
-                        override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
-                            currentActions.value.onPreviewSurfaceDestroyed()
-                            previewSurface?.release()
-                            previewSurface = null
-                            return true
-                        }
+            if (state.frameLines != FrameLineType.OFF) {
+                FrameLinesOverlay(type = state.frameLines, modifier = Modifier.fillMaxSize())
+            }
 
-                        override fun onSurfaceTextureUpdated(texture: SurfaceTexture) = Unit
-                    }
-                }
-            },
-        )
+            if (state.aspectRatio != AspectRatio.W4_3) {
+                AspectMask(ratio = state.aspectRatio, modifier = Modifier.fillMaxSize())
+            }
 
-        GridOverlay(type = state.grid, modifier = Modifier.fillMaxSize())
-
-        if (state.frameLines != FrameLineType.OFF) {
-            FrameLinesOverlay(type = state.frameLines, modifier = Modifier.fillMaxSize())
+            if (state.tapPoint != null) {
+                FocusReticle(point = state.tapPoint, modifier = Modifier.fillMaxSize())
+            }
         }
 
         // Emphasized REC display (Sony FX): a thin red frame while rolling — unmissable, even in
-        // DISP-clean mode.
+        // DISP-clean mode. Screen-fixed (not content-boxed) so it stays unmissable at every aspect.
         if (state.isRecording) {
             Box(modifier = Modifier.fillMaxSize().border(3.dp, CameraColors.Record))
-        }
-
-        if (state.aspectRatio != AspectRatio.W4_3) {
-            AspectMask(ratio = state.aspectRatio, modifier = Modifier.fillMaxSize())
         }
 
         if (state.level) {
@@ -293,10 +313,6 @@ fun CameraScreen(
                 rollDegrees = state.levelRoll,
                 deviceOrientation = state.deviceOrientation,
             )
-        }
-
-        if (state.tapPoint != null) {
-            FocusReticle(point = state.tapPoint, modifier = Modifier.fillMaxSize())
         }
 
         if (!dispClean) StatusBar(

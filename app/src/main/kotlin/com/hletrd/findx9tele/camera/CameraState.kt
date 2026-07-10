@@ -387,6 +387,11 @@ data class CameraUiState(
     val audioGain: Float = 1f, // 0..2 software gain applied to recorded PCM
     val audioLevel: Float = 0f, // 0..1 live input level (RMS), for the meter
     val aspectRatio: AspectRatio = AspectRatio.W4_3,
+    // Displayed preview aspect (W/H as shown on the portrait screen; the ~90° sensor orientation
+    // already swaps the stream's W/H). The viewfinder TextureView is sized to this and letterboxed,
+    // so the FULL capture field is visible — photo mode previews the 4:3 sensor, video the recording
+    // stream. Default = 4:3 shown portrait (3/4), matching the fresh-launch photo mode.
+    val previewAspect: Float = 3f / 4f,
     // Selected rear lens. Default 1× main for a normal app launch. Selecting 3× bundles
     // teleconverter mode on; other lenses bundle it off (see [LensChoice]).
     val lens: LensChoice = LensChoice.MAIN,
