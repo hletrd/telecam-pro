@@ -103,7 +103,9 @@ class GlPipeline {
     // the GL thread overwriting a snapshot the executor is still reading.
     @Volatile
     private var analysisBusy = false
-    private val analysisExecutor = Executors.newSingleThreadExecutor()
+    // var, not val: stop() shuts it down, and a val made the whole pipeline silently single-use —
+    // a future restart would have dead scopes and app-side AE. start() recreates it when needed.
+    private var analysisExecutor = Executors.newSingleThreadExecutor()
 
     private var inited = false
     private val stMatrix = FloatArray(16)
@@ -112,6 +114,9 @@ class GlPipeline {
     fun start(tenBit: Boolean, onInputReady: (Surface) -> Unit) {
         this.tenBit = tenBit
         this.onInputReady = onInputReady
+        // A prior stop() shut the analysis executor down; a restarted pipeline needs a live one or
+        // scopes + the app-side AE loop silently never run again.
+        if (analysisExecutor.isShutdown) analysisExecutor = Executors.newSingleThreadExecutor()
         val t = HandlerThread("gl-pipeline").also { it.start() }
         thread = t
         handler = Handler(t.looper)
