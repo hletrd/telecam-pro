@@ -242,7 +242,7 @@ class VideoRecorder(private val context: Context) {
         try {
             drainVideoLoop(codec, info)
         } catch (t: Exception) {
-            Log.w(TAG, "video drain aborted (encoder error): ${t.message}")
+            if (com.hletrd.findx9tele.BuildConfig.DEBUG) Log.w(TAG, "video drain aborted (encoder error): ${t.message}")
             recordFailure(t)
         }
     }
@@ -327,7 +327,7 @@ class VideoRecorder(private val context: Context) {
             return
         }
         if (preferredDevice != null && !record.setPreferredDevice(preferredDevice)) {
-            Log.w(TAG, "preferred audio input rejected: ${AudioInputInspector.routeLabel(audioInputPreference, preferredDevice)}")
+            if (com.hletrd.findx9tele.BuildConfig.DEBUG) Log.w(TAG, "preferred audio input rejected: ${AudioInputInspector.routeLabel(audioInputPreference, preferredDevice)}")
         }
         audioChannelCount = channelCount
         audioRecord = record
@@ -344,7 +344,7 @@ class VideoRecorder(private val context: Context) {
             try {
                 runAudio(record, codec)
             } catch (t: Exception) {
-                Log.w(TAG, "audio encode aborted: ${t.message}")
+                if (com.hletrd.findx9tele.BuildConfig.DEBUG) Log.w(TAG, "audio encode aborted: ${t.message}")
                 recordFailure(t)
             }
         }
