@@ -159,7 +159,13 @@ class MainActivity : ComponentActivity() {
     // turns the media volume into a burst of beeps mid-shot; repeatCount gates auto-repeat.
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         if (isShutterKey(keyCode)) {
-            if (hasCameraPermission && event.repeatCount == 0) {
+            // NOT consumed on the PermissionGate (no camera to drive — volume keys were silently
+            // eaten there) and NOT consumed while the review overlay is up: volume-up during clip
+            // review used to start a recording BEHIND the overlay (viewfinder hidden, REC state
+            // invisible) and the completing capture then swapped the reviewed media. Under review
+            // the OS default — playback volume — is exactly what the user expects.
+            if (!hasCameraPermission || vm.state.value.reviewOpen) return super.onKeyDown(keyCode, event)
+            if (event.repeatCount == 0) {
                 val s = vm.state.value
                 if (s.mode == CaptureMode.VIDEO && !s.isRecording && s.recordAudio && !hasMicrophonePermission) {
                     vm.onToggleRecordAudio(false)
@@ -174,7 +180,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
         if (isShutterKey(keyCode)) {
+            // Always deliver the release (a press can straddle the review overlay opening — the
+            // shutter/half-press state must not wedge active), but only CONSUME the event in the
+            // same cases the DOWN was consumed.
             if (hasCameraPermission) vm.onHardwareFullKey(active = false)
+            if (!hasCameraPermission || vm.state.value.reviewOpen) return super.onKeyUp(keyCode, event)
             return true
         }
         return super.onKeyUp(keyCode, event)
@@ -194,7 +204,9 @@ class MainActivity : ComponentActivity() {
         if (BuildConfig.DEBUG && !isShutterKey(event.keyCode) && event.keyCode != KeyEvent.KEYCODE_BACK) {
             android.util.Log.i("BtnDbg", "key code=${event.keyCode} action=${event.action} perm=$hasCameraPermission")
         }
-        if (hasCameraPermission) {
+        // Review gate mirrors onKeyDown/onKeyUp: no camera gestures under the full-screen review
+        // overlay (a capacitive slide would otherwise zoom the hidden viewfinder mid-review).
+        if (hasCameraPermission && !vm.state.value.reviewOpen) {
             when (event.keyCode) {
                 // Live-captured 2026-07-09: the camera-control button's slide arrives as the STANDARD
                 // KEYCODE_ZOOM_IN/OUT (168/169), repeating ~20 Hz while the finger slides — NOT the

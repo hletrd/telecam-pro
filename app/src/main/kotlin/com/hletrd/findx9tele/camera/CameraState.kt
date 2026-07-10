@@ -215,9 +215,12 @@ enum class LensChoice(val targetEquivMm: Float, val label: String) {
  * data, before the OEM display tone mapping.
  *
  * The key is advertised in this device's `availableRequestKeys` AND `availableSessionKeys` for the
- * tele, so setting it via Camera2 is standard vendor-tag usage. Device-verified 2026-07-06: ON
- * genuinely engages the HAL log pipeline (recorded stream goes flat/low-contrast, mean luma ~half of
- * SDR, GL curve off). Values 1 and 2 produced identical output → the key is on/off here.
+ * tele, so setting it via Camera2 is standard vendor-tag usage. SUPERSEDED 2026-07-09: the key is
+ * INERT for third-party Camera2 — with it set (session parameter + every request, both
+ * TEMPLATE_PREVIEW and TEMPLATE_RECORD) the preview AND recorded clip stay display-referred 709;
+ * the earlier 2026-07-06 "genuinely engages the log pipeline" reading was the BT.2020 full-range
+ * container tag being misread as a washed look (see CameraEngine.setTransfer and CLAUDE.md). The
+ * plumbing below stays DORMANT for a future CameraUnit-authenticated scene-referred stream.
  *
  * CAVEAT: the resulting log is not a drop-in for OPPO's published O-Log2 LUT — it appears
  * scene-referred WITHOUT baked white balance (warm ambient reads warm), which a colorist neutralizes
@@ -343,7 +346,7 @@ fun videoBitRate(width: Int, height: Int, encoderRate: Double, bpp: Float, codec
 fun effectiveBpp(level: BitrateLevel, codec: VideoCodec): Float =
     if (codec == VideoCodec.APV) level.bpp * 8f else level.bpp
 
-/** Capture aspect ratio. FULL = whole sensor; others crop. w/h = 0 means full. */
+/** Capture aspect ratio. W4_3 = the sensor-native full readout (no crop); W16_9 = center crop. */
 // Only the two ratios that matter for this 4:3-native sensor: 4:3 is the full sensor readout, 16:9
 // is a center crop of it. (1:1 / portrait dropped — not meaningful for this camera.)
 enum class AspectRatio(val w: Int, val h: Int) { W4_3(4, 3), W16_9(16, 9) }
@@ -392,6 +395,10 @@ data class CameraUiState(
     // so the FULL capture field is visible — photo mode previews the 4:3 sensor, video the recording
     // stream. Default = 4:3 shown portrait (3/4), matching the fresh-launch photo mode.
     val previewAspect: Float = 3f / 4f,
+    // True while the full-screen media-review overlay is up. Lives in UI state (not a Compose
+    // local) because MainActivity's hardware-key handlers must refuse to fire the shutter under
+    // the overlay — volume-up during clip review used to start a recording BEHIND it.
+    val reviewOpen: Boolean = false,
     // Selected rear lens. Default 1× main for a normal app launch. Selecting 3× bundles
     // teleconverter mode on; other lenses bundle it off (see [LensChoice]).
     val lens: LensChoice = LensChoice.MAIN,

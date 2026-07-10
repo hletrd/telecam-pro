@@ -141,8 +141,11 @@ fun CameraScreen(
     var sheetVisible by remember { mutableStateOf(false) }
     // Sony DISP: one tap declutters the viewfinder (hides OSD/meter/scopes/MR; keeps REC + framing).
     var dispClean by remember { mutableStateOf(false) }
-    // In-app review overlay (last saved still, pinch-to-zoom for focus check).
-    var reviewOpen by remember { mutableStateOf(false) }
+    // In-app review overlay (last saved still, pinch-to-zoom for focus check). Open/closed lives in
+    // CameraUiState (state.reviewOpen) so MainActivity's hardware-key handlers can refuse to fire
+    // the shutter under the overlay. The reviewed uri is FROZEN here at open time so a timer/
+    // timelapse capture completing mid-review can't swap the image being inspected.
+    var reviewUri by remember { mutableStateOf<android.net.Uri?>(null) }
     // Remembers the last-viewed settings tab so the gear reopens where the user left off.
     var sheetInitialTab by remember { mutableStateOf(ProSheetTab.MY_MENU) }
     var fnOverlayVisible by remember { mutableStateOf(false) }
@@ -483,7 +486,10 @@ fun CameraScreen(
                 isRecording = state.isRecording,
                 teleconverterOn = state.teleconverterMode,
                 lastMediaUri = state.lastMediaUri,
-                onOpenReview = { reviewOpen = true },
+                onOpenReview = {
+                    reviewUri = state.lastMediaUri
+                    currentActions.value.onReviewOpenChange(true)
+                },
                 onShutter = onShutter,
                 onSnapshot = actions::onCapturePhoto,
                 onToggleTeleconverter = { actions.onToggleTeleconverter(!state.teleconverterMode) },
@@ -514,14 +520,18 @@ fun CameraScreen(
         )
     }
 
-    val reviewUri = state.lastMediaUri
-    if (reviewOpen && reviewUri != null) {
+    val frozenReviewUri = reviewUri
+    if (state.reviewOpen && frozenReviewUri != null) {
         MediaReviewOverlay(
-            uri = reviewUri,
-            onClose = { reviewOpen = false },
+            uri = frozenReviewUri,
+            onClose = {
+                actions.onReviewOpenChange(false)
+                reviewUri = null
+            },
             onDelete = {
                 actions.onDeleteLastMedia()
-                reviewOpen = false
+                actions.onReviewOpenChange(false)
+                reviewUri = null
             },
         )
     }
@@ -1399,6 +1409,7 @@ private fun LensFlipButton(active: Boolean, onClick: () -> Unit, modifier: Modif
 /** No-op [CameraActions] used only by [CameraScreenPreview]. */
 private object PreviewCameraActions : CameraActions {
     override fun onPreviewSurfaceAvailable(surface: Surface, width: Int, height: Int) = Unit
+    override fun onReviewOpenChange(open: Boolean) = Unit
     override fun onPreviewSurfaceChanged(width: Int, height: Int) = Unit
     override fun onPreviewSurfaceDestroyed() = Unit
 

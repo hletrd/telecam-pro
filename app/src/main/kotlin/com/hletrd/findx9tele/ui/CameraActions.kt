@@ -141,4 +141,10 @@ interface CameraActions {
     fun onVolumeKeyAction(action: HardwareKeyAction)
     fun onHalfPressAction(action: HardwareKeyAction)
     fun onDeleteLastMedia()
+
+    /**
+     * The full-screen media-review overlay opened/closed. Mirrored into CameraUiState.reviewOpen
+     * so MainActivity's hardware-key handlers can refuse to fire the shutter under the overlay.
+     */
+    fun onReviewOpenChange(open: Boolean)
 }
