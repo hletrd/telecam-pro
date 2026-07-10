@@ -97,10 +97,18 @@ object MediaStoreWriter {
      * at startup, and scoped storage only exposes our own entries. Best-effort; never throws.
      */
     fun cleanupOrphanedPending(context: Context, subDir: String = "X9Tele") {
-        val selection = "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?"
+        // Only sweep entries created BEFORE this process: the launch-time sweep runs on the setup
+        // executor while an immediate first capture creates its own pending entry on ioExecutor —
+        // without the age gate the sweep could delete that in-flight write (two-executor race on
+        // shared MediaStore state; an orphan from a prior crash is by definition older than us).
+        val processStartSecs =
+            (System.currentTimeMillis() - android.os.SystemClock.elapsedRealtime()) / 1000 +
+                android.os.Process.getStartElapsedRealtime() / 1000
+        val selection =
+            "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? AND ${MediaStore.MediaColumns.DATE_ADDED} < ?"
         // RELATIVE_PATH values are normalized with a trailing slash ("DCIM/X9Tele/"), so anchor the
         // pattern on it — "DCIM/X9Tele%" would also sweep a hypothetical "DCIM/X9TeleOther/".
-        val args = arrayOf("DCIM/$subDir/%")
+        val args = arrayOf("DCIM/$subDir/%", processStartSecs.toString())
         for (base in listOf(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
