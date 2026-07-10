@@ -31,6 +31,7 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hletrd.findx9tele.BuildConfig
+import com.hletrd.findx9tele.camera.AfIndication
 import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.CaptureMode
@@ -225,9 +226,20 @@ fun LevelOverlay(modifier: Modifier = Modifier, rollDegrees: Float = 0f, deviceO
  * 0..1 coordinates). Draws nothing while [point] is null (e.g. after the auto-hide timeout).
  */
 @Composable
-fun FocusReticle(point: Pair<Float, Float>?, modifier: Modifier = Modifier) {
+fun FocusReticle(
+    point: Pair<Float, Float>?,
+    modifier: Modifier = Modifier,
+    indication: AfIndication = AfIndication.IDLE,
+) {
     if (point == null) return
-    val color = Color(0xFFFFD60A)
+    // Sony-style AF confirmation: the bracket turns GREEN on lock and RED on a failed scan — at
+    // 300 mm this is the difference between a keeper and a soft frame the user can't judge on the
+    // small live view. Yellow = tapped/scanning (the pre-verdict states).
+    val color = when (indication) {
+        AfIndication.FOCUSED -> Color(0xFF30D158)
+        AfIndication.FAILED -> Color(0xFFFF453A)
+        AfIndication.SCANNING, AfIndication.IDLE -> Color(0xFFFFD60A)
+    }
     Canvas(modifier = modifier) {
         val cx = point.first * size.width
         val cy = point.second * size.height

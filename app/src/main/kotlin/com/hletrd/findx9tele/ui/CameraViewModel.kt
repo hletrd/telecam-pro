@@ -146,6 +146,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // Camera health (engine camera/setup threads → StateFlow is thread-safe): dims the shutter
         // while the session is down instead of silently declining taps.
         engine.onCameraReadyChange = { ready -> _state.update { it.copy(cameraReady = ready) } }
+        // AF state (camera thread → StateFlow is thread-safe): colors the tap-AF reticle.
+        engine.onAfIndication = { ind -> _state.update { it.copy(afIndication = ind) } }
         engine.onAnalysis = { h, w ->
             // Publish scope data into UI state only when something actually renders it (the
             // histogram/waveform overlays or the MANUAL-mode exposure meter). App-side AE reads the

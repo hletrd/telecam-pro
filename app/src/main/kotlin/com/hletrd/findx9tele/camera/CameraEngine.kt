@@ -84,6 +84,9 @@ class CameraEngine(private val context: Context) {
     // black viewfinder behind a fully interactive-looking shutter with zero indication.
     var onCameraReadyChange: ((Boolean) -> Unit)? = null
 
+    // AF engine state for the reticle color, mapped from the controller's raw CONTROL_AF_STATE.
+    var onAfIndication: ((AfIndication) -> Unit)? = null
+
     private fun updateCameraReady(ready: Boolean) {
         cameraReady = ready
         onCameraReadyChange?.invoke(ready)
@@ -297,6 +300,7 @@ class CameraEngine(private val context: Context) {
         controller = ctrl
         ctrl.onExposure = { iso, exp -> onExposureInfo?.invoke(iso, exp) }
         ctrl.onFocusDistance = { d -> onFocusDistance?.invoke(d) }
+        ctrl.onAfState = { hal -> onAfIndication?.invoke(AfIndication.fromHal(hal)) }
         ctrl.open(
             selection = sel,
             caps = c,
@@ -435,33 +439,10 @@ class CameraEngine(private val context: Context) {
      */
     fun setTapPoint(nx: Float, ny: Float) {
         val c = caps ?: return
-        // The tapped point is in VIEW space; metering regions are in RAW-SENSOR space. Invert the full
-        // sensor→view rotation = sensor orientation (from the SurfaceTexture transform) + the afocal
-        // 180° — NOT previewRotationDegrees (which is only the afocal part the renderer adds).
-        val total = ((c.sensorOrientation + if (teleconverterMode) 180 else 0) % 360 + 360) % 360
-        val px = nx - 0.5f
-        val py = ny - 0.5f
-        val rad = Math.toRadians(-total.toDouble())
-        val cos = Math.cos(rad).toFloat()
-        val sin = Math.sin(rad).toFloat()
-        val rx = px * cos - py * sin
-        val ry = px * sin + py * cos
-        controller?.setMeteringPoint((rx + 0.5f).coerceIn(0f, 1f), (ry + 0.5f).coerceIn(0f, 1f))
-
-        // Movable focus loupe: point the punch-in zoom at the tapped spot. The renderer rotates
-        // texcoords by previewRotationDegrees (the afocal 180° only — sensor orientation lives in the
-        // SurfaceTexture matrix, which the loupe center passes through unchanged). View space is
-        // y-DOWN while the texcoord/NDC the renderer works in is y-UP, so the vertical tap offset is
-        // flipped before applying the content rotation; then re-centered. (Verified on device: without
-        // the y-flip a top tap sent the loupe to the bottom half.)
-        val loupeRad = Math.toRadians(previewRotationDegrees().toDouble())
-        val lcos = Math.cos(loupeRad).toFloat()
-        val lsin = Math.sin(loupeRad).toFloat()
-        val ax = px
-        val ay = -py
-        val lx = ax * lcos - ay * lsin
-        val ly = ax * lsin + ay * lcos
-        gl.setPunchInCenter((lx + 0.5f).coerceIn(0f, 1f), (ly + 0.5f).coerceIn(0f, 1f))
+        val sensor = viewTapToSensorPoint(nx, ny, c.sensorOrientation, teleconverterMode)
+        controller?.setMeteringPoint(sensor.first, sensor.second)
+        val loupe = viewTapToLoupeCenter(nx, ny, previewRotationDegrees())
+        gl.setPunchInCenter(loupe.first, loupe.second)
     }
 
     // ---- Drive mode + video parameters ----
@@ -1209,11 +1190,10 @@ class CameraEngine(private val context: Context) {
         val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             ?: return Size(1920, 1080)
         val sizes = map.getOutputSizes(SurfaceTexture::class.java) ?: return Size(1920, 1080)
-        val wantW = if (fourByThree) 4 else 16
-        val wantH = if (fourByThree) 3 else 9
-        return sizes.filter { it.width <= 3840 && it.height * wantW == it.width * wantH }
-            .maxByOrNull { it.width.toLong() * it.height }
-            ?: sizes.maxByOrNull { it.width.toLong() * it.height }
+        // One selection rule with CameraCaps.read's lists (pickStreamSize) — the fallback used to
+        // re-implement the aspect/cap/largest rule inline, so a policy change had to touch both.
+        return pickStreamSize(sizes.map { it.width to it.height }, capWidth = 3840, fourByThree = fourByThree)
+            ?.let { (w, h) -> Size(w, h) }
             ?: Size(1920, 1080)
     }
 
@@ -1364,4 +1344,49 @@ internal fun centerCropBox(srcW: Int, srcH: Int, ratioW: Int, ratioH: Int): Crop
         (srcH * ratioW / ratioH) to srcH
     }
     return CropBox((srcW - cropW) / 2, (srcH - cropH) / 2, cropW, cropH)
+}
+
+/**
+ * View-normalized tap [(nx,ny), origin top-left] → RAW-SENSOR-normalized metering point. The tapped
+ * point is in VIEW space; metering regions are in RAW-SENSOR space, so the centered tap is rotated
+ * by -(sensor orientation + the teleconverter's afocal 180°) and re-centered — NOT by
+ * previewRotationDegrees (which is only the afocal part the renderer adds). NOTE: this ignores the
+ * EIS/punch-in crop and offset, so the mapping is APPROXIMATE and needs on-device calibration — the
+ * axis signs (and possibly a horizontal mirror) may need flipping once validated. Pure and
+ * top-level so the CURRENT behavior is pinned by tests: any future calibration "fix" must land as
+ * an intentional test change, not a silent sign flip.
+ */
+internal fun viewTapToSensorPoint(
+    nx: Float,
+    ny: Float,
+    sensorOrientationDeg: Int,
+    afocal180: Boolean,
+): Pair<Float, Float> {
+    val total = ((sensorOrientationDeg + if (afocal180) 180 else 0) % 360 + 360) % 360
+    val px = nx - 0.5f
+    val py = ny - 0.5f
+    val rad = Math.toRadians(-total.toDouble())
+    val cos = Math.cos(rad).toFloat()
+    val sin = Math.sin(rad).toFloat()
+    val rx = px * cos - py * sin
+    val ry = px * sin + py * cos
+    return (rx + 0.5f).coerceIn(0f, 1f) to (ry + 0.5f).coerceIn(0f, 1f)
+}
+
+/**
+ * View tap → punch-in loupe center. The renderer rotates texcoords by previewRotationDegrees (the
+ * afocal 180° only — sensor orientation lives in the SurfaceTexture matrix, which the loupe center
+ * passes through unchanged). View space is y-DOWN while the texcoord/NDC space is y-UP, so the
+ * vertical tap offset is flipped before the content rotation, then re-centered. (Verified on
+ * device: without the y-flip a top tap sent the loupe to the bottom half.)
+ */
+internal fun viewTapToLoupeCenter(nx: Float, ny: Float, previewRotationDegrees: Int): Pair<Float, Float> {
+    val rad = Math.toRadians(previewRotationDegrees.toDouble())
+    val cos = Math.cos(rad).toFloat()
+    val sin = Math.sin(rad).toFloat()
+    val ax = nx - 0.5f
+    val ay = -(ny - 0.5f)
+    val lx = ax * cos - ay * sin
+    val ly = ax * sin + ay * cos
+    return (lx + 0.5f).coerceIn(0f, 1f) to (ly + 0.5f).coerceIn(0f, 1f)
 }

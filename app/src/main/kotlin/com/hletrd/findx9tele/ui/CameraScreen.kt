@@ -310,7 +310,7 @@ fun CameraScreen(
             }
 
             if (state.tapPoint != null) {
-                FocusReticle(point = state.tapPoint, modifier = Modifier.fillMaxSize())
+                FocusReticle(point = state.tapPoint, indication = state.afIndication, modifier = Modifier.fillMaxSize())
             }
         }
 

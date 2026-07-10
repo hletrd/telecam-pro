@@ -143,7 +143,12 @@ class CameraController(context: Context) {
     // handoff so fine focus starts from AF's solution instead of a stale value. Reported on change,
     // throttled with the exposure readout.
     @Volatile var onFocusDistance: ((Float) -> Unit)? = null
+    // AF engine state for the reticle color (Sony green-on-lock / red-on-fail — at 300 mm the
+    // lock/fail distinction is the point of tap-AF). Raw CONTROL_AF_STATE int, reported ~3 Hz,
+    // change-gated like the exposure readout; the engine maps it to the UI enum.
+    @Volatile var onAfState: ((Int) -> Unit)? = null
     private var lastReportedFocus = Float.NaN
+    private var lastReportedAfState = -1
 
     @SuppressLint("MissingPermission") // caller guarantees CAMERA permission before open()
     fun open(
@@ -510,6 +515,11 @@ class CameraController(context: Context) {
                         ) {
                             lastReportedFocus = lastFocusDistance
                             onFocusDistance?.invoke(lastFocusDistance)
+                        }
+                        val afState = result.get(CaptureResult.CONTROL_AF_STATE)
+                        if (afState != null && afState != lastReportedAfState) {
+                            lastReportedAfState = afState
+                            onAfState?.invoke(afState)
                         }
                     }
                     // Diagnostic: log what 3A is actually doing (throttled ~1/sec) so we can tell

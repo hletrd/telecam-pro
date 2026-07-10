@@ -152,6 +152,30 @@ enum class WbMode { AUTO, INCANDESCENT, FLUORESCENT, DAYLIGHT, CLOUDY, SHADE, CU
 /** Measured custom white balance: raw R/G_even/G_odd/B channel gains (Camera2 RggbChannelVector). */
 data class WbGains(val r: Float, val gEven: Float, val gOdd: Float, val b: Float)
 
+/**
+ * Coarse AF-engine state for the tap-AF reticle color (Sony green-on-lock / red-on-fail). Mapped
+ * from CaptureResult.CONTROL_AF_STATE by [fromHal] — plain int constants, so the mapping is
+ * JVM-unit-testable.
+ */
+enum class AfIndication {
+    IDLE, SCANNING, FOCUSED, FAILED;
+
+    companion object {
+        fun fromHal(state: Int): AfIndication = when (state) {
+            android.hardware.camera2.CameraMetadata.CONTROL_AF_STATE_ACTIVE_SCAN,
+            android.hardware.camera2.CameraMetadata.CONTROL_AF_STATE_PASSIVE_SCAN,
+            -> SCANNING
+            android.hardware.camera2.CameraMetadata.CONTROL_AF_STATE_FOCUSED_LOCKED,
+            android.hardware.camera2.CameraMetadata.CONTROL_AF_STATE_PASSIVE_FOCUSED,
+            -> FOCUSED
+            android.hardware.camera2.CameraMetadata.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED,
+            android.hardware.camera2.CameraMetadata.CONTROL_AF_STATE_PASSIVE_UNFOCUSED,
+            -> FAILED
+            else -> IDLE
+        }
+    }
+}
+
 /** Metering pattern for auto-exposure. SPOT/CENTER use an AE region; MATRIX uses the whole frame. */
 enum class MeteringMode { MATRIX, CENTER, SPOT }
 
@@ -395,6 +419,8 @@ data class CameraUiState(
     // so the FULL capture field is visible — photo mode previews the 4:3 sensor, video the recording
     // stream. Default = 4:3 shown portrait (3/4), matching the fresh-launch photo mode.
     val previewAspect: Float = 3f / 4f,
+    // AF engine state (from CONTROL_AF_STATE) coloring the tap-AF reticle.
+    val afIndication: AfIndication = AfIndication.IDLE,
     // Live camera health: false while opening/reconfiguring/recovering (and after recovery gives
     // up). The shutter dims on it so a dead session never hides behind a ready-looking button.
     val cameraReady: Boolean = false,
