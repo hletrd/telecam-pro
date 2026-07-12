@@ -93,12 +93,14 @@ import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FnSlot
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
+import com.hletrd.findx9tele.camera.LensChoice
 import com.hletrd.findx9tele.camera.MeteringMode
 import com.hletrd.findx9tele.camera.MemorySlot
 import com.hletrd.findx9tele.camera.PhotoFormats
 import com.hletrd.findx9tele.camera.ProcessingLevel
 import com.hletrd.findx9tele.camera.ShutterMode
 import com.hletrd.findx9tele.camera.ShutterTimer
+import com.hletrd.findx9tele.camera.TELECONVERTER_MAGNIFICATION
 import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.camera.WbMode
 import com.hletrd.findx9tele.ui.controls.ManualDialCluster
@@ -428,17 +430,30 @@ fun CameraScreen(
                 .padding(top = 8.dp),
         )
 
-        // Live zoom bar, centered above the bottom cluster; fades in on pinch/slider change.
+        // Live zoom readout, centered under the TopBar; fades in on pinch/slider change. Moved off the
+        // bottom cluster (it overlapped the MR1/MR2/MR3 strip) — a top-center HUD reads clearly and
+        // stays clear of the manual dials + shutter row.
         AnimatedVisibility(
             visible = zoomVisible,
             enter = fadeIn(tween(120)),
             exit = fadeOut(tween(300)),
             modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
-                .padding(bottom = 220.dp),
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(top = 64.dp),
         ) {
-            ZoomIndicator(zoom = state.controls.zoomRatio, range = state.caps?.zoomRatioRange, numberRotation = overlayRotation)
+            // Display MAIN-relative magnification (the stock-app style: 3× at the 3× tele's native,
+            // 10× at the 10×, 13× with the TC). baseMul = opened lens equiv / main equiv (70/23 ≈ 3.04
+            // for the 3× tele); the afocal converter multiplies on top (300/70). So tele-native shows
+            // ~3.0× (TC off) / ~13.0× (TC on).
+            val baseMul = (state.caps?.equivalentFocalMm ?: 70f) / LensChoice.MAIN.targetEquivMm
+            val tcMul = if (state.teleconverterMode) TELECONVERTER_MAGNIFICATION else 1f
+            val mul = baseMul * tcMul
+            ZoomIndicator(
+                zoom = state.controls.zoomRatio * mul,
+                range = state.caps?.zoomRatioRange?.let { android.util.Range(it.lower * mul, it.upper * mul) },
+                numberRotation = overlayRotation,
+            )
         }
 
         // Exposure meter: pinned to the LEFT edge as a vertical scale (the scopes own the right).
