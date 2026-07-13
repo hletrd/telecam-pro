@@ -145,7 +145,25 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.onPreviewAspect = { aspect -> _state.update { it.copy(previewAspect = aspect) } }
         // Camera health (engine camera/setup threads → StateFlow is thread-safe): dims the shutter
         // while the session is down instead of silently declining taps.
-        engine.onCameraReadyChange = { ready -> _state.update { it.copy(cameraReady = ready) } }
+        engine.onCameraReadyChange = { ready ->
+            _state.update { it.copy(cameraReady = ready) }
+            if (ready) lensSwitching = false // pinch lens-switch reopen landed — allow the next switch
+        }
+        // DEBUG: adb-driven zoom injection to test lens switching without a real pinch (adb can't
+        // simulate a two-finger pinch on this device). Usage:
+        //   adb shell am broadcast -a me.hletrd.telecampro.DEBUG_ZOOM --ef ratio 0.5
+        if (com.hletrd.findx9tele.BuildConfig.DEBUG) {
+            app.registerReceiver(
+                object : android.content.BroadcastReceiver() {
+                    override fun onReceive(c: android.content.Context?, i: android.content.Intent?) {
+                        val ratio = i?.getFloatExtra("ratio", -1f) ?: -1f
+                        if (ratio > 0f) applyZoomRatio(ratio)
+                    }
+                },
+                android.content.IntentFilter("me.hletrd.telecampro.DEBUG_ZOOM"),
+                androidx.core.content.ContextCompat.RECEIVER_EXPORTED,
+            )
+        }
         // AF state (camera thread → StateFlow is thread-safe): colors the tap-AF reticle.
         engine.onAfIndication = { ind -> _state.update { it.copy(afIndication = ind) } }
         engine.onAnalysis = { h, w ->
@@ -626,7 +644,14 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         zoomEaseTarget = null
         applyZoomRatio(ratio)
     }
-    private fun applyZoomRatio(ratio: Float) = updateControls(FnSlot.ZOOM) { it.copy(zoomRatio = ratio) }
+    private fun applyZoomRatio(ratio: Float) {
+        updateControls(FnSlot.ZOOM) { it.copy(zoomRatio = ratio) }
+        // App-level lens switching (TC off only): if the MAIN-relative zoom crossed a lens threshold,
+        // reopen the matching standalone lens. ManualControls (focus/exposure) persist across the
+        // reopen → AF/AE carry over for a smoother handoff. [lensSwitching] debounces; the recursive
+        // call from maybeSwitchLensForZoom is guarded by that flag.
+        if (!_state.value.teleconverterMode) maybeSwitchLensForZoom(ratio)
+    }
     // Hardware slide-zoom easing: the camera button emits DISCRETE key repeats (~20 Hz), and applying
     // each 1.04x jump directly reads as stutter. Instead the steps move a TARGET and a ~30 Hz ticker
     // glides the actual ratio toward it (exponential approach in log-zoom space), so the preview
@@ -675,6 +700,41 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         val range = _state.value.caps?.zoomRatioRange ?: return
         val next = (_state.value.controls.zoomRatio * factor).coerceIn(range.lower, range.upper)
         onZoomRatio(next)
+        // (lens switching is checked inside applyZoomRatio so any zoom input — pinch, slider, debug
+        // broadcast — can trigger it.)
+    }
+
+    @Volatile private var lensSwitching = false
+
+    /** Pick the lens whose band the main-relative zoom is in, or null if it's still the current one.
+     *  Band edges (0.8 / 2.4 / 7.5) sit slightly INSIDE the lens native zooms to give hysteresis so
+     *  the zoom doesn't flap at a threshold. */
+    private fun lensForZoom(mainRelative: Float, current: LensChoice): LensChoice? {
+        val target = when {
+            mainRelative < 0.8f -> LensChoice.ULTRAWIDE
+            mainRelative < 2.4f -> LensChoice.MAIN
+            mainRelative < 7.5f -> LensChoice.TELE3X
+            else -> LensChoice.TELE10X
+        }
+        return if (target != current) target else null
+    }
+
+    private fun maybeSwitchLensForZoom(zoomRatio: Float) {
+        if (lensSwitching) return
+        val caps = _state.value.caps ?: return
+        val current = _state.value.lens
+        val baseMul = (caps.equivalentFocalMm ?: 23f) / LensChoice.MAIN.targetEquivMm
+        val mainRelative = zoomRatio * baseMul
+        val target = lensForZoom(mainRelative, current) ?: return
+        lensSwitching = true
+        // Remap the zoom to the new lens's native ratio (mainRelative / newBase). The final clamp to
+        // the new lens's zoomRatioRange happens at the Camera2 apply (after the reopen refreshes caps),
+        // so passing a value outside the old range here is safe.
+        val newBase = target.targetEquivMm / LensChoice.MAIN.targetEquivMm
+        val newZoom = (mainRelative / newBase).coerceAtLeast(1f)
+        engine.setLensOnly(target)
+        applyZoomRatio(newZoom)
+        _state.update { it.copy(lens = target) }
     }
     override fun onJpegQuality(quality: Int) = updateControls(persist = true) { it.copy(jpegQuality = quality) }
 

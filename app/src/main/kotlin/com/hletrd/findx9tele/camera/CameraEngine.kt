@@ -604,6 +604,24 @@ class CameraEngine(private val context: Context) {
         }
     }
 
+    /**
+     * Switch the physical lens WITHOUT toggling teleconverter mode — used by pinch-driven lens
+     * switching (TC off), where crossing a zoom threshold reopens the matching standalone camera.
+     * [ManualControls] (focus-distance diopters, ISO, exposure) live on this engine and are NOT reset
+     * across the reopen, so AF/AE carry over to the new lens for a smoother handoff (the focus
+     * distance is in diopters = 1/subject-distance, which is lens-independent). [setLens] (the manual
+     * picker) bundles TC for the 3× lens; this one leaves TC untouched.
+     */
+    fun setLensOnly(choice: LensChoice) {
+        if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
+        lensChoice = choice
+        setupExecutor.execute {
+            val id = CameraSelector2.overrideIdForFocal(manager, choice.targetEquivMm)
+            if (id == null) { onStatus?.invoke("${choice.label} unavailable"); return@execute }
+            setCameraOverride(id)
+        }
+    }
+
     fun setCameraOverride(id: String?) {
         // Switching the physical lens mid-recording reconfigures the camera under the encoder and
         // gaps/corrupts the clip. Refuse until recording stops; the UI also gates this.
