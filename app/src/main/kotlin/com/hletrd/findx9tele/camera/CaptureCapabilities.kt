@@ -34,6 +34,11 @@ data class CameraCaps(
     val focalLengthsMm: FloatArray,
     /** 35mm-equivalent focal length of this lens (0 if unknown). Used for tele selection + EIS. */
     val equivalentFocalMm: Float,
+    // Physical lens optics for EXIF parity with the stock camera (FocalLength 20.1 mm / FNumber
+    // f/2.2 on the 3×, per the reference sample): the ACTUAL lens focal and aperture, not the
+    // 35 mm equivalent.
+    val lensFocalLengthMm: Float,
+    val lensApertureF: Float,
     /** Native focal length expressed in image widths (f_px / sensorWidthPx). For gyro EIS scaling. */
     val nativeFocalInImageWidths: Float,
     val supportsManualSensor: Boolean,
@@ -195,6 +200,8 @@ data class CameraCaps(
                 evStep = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP) ?: Rational(1, 3),
                 focalLengthsMm = focals,
                 equivalentFocalMm = equiv,
+                lensFocalLengthMm = focalMm,
+                lensApertureF = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES)?.firstOrNull() ?: 0f,
                 nativeFocalInImageWidths = focalInImageWidths,
                 supportsManualSensor = has(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR),
                 supportsManualPostProcessing = has(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_POST_PROCESSING),

@@ -634,29 +634,63 @@ class CameraEngine(private val context: Context) {
      * a concrete (standalone-preferred) camera id so nothing is hardcoded. No-op mid-recording
      * (reconfiguring under the encoder corrupts the clip); the UI also gates it.
      */
-    fun setLens(choice: LensChoice, teleconverterOverride: Boolean = false) {
+    // Pre-TELE framing snapshot as a UNIFIED main-relative zoom (mode-independent), so turning
+    // TELE off returns the user EXACTLY where they were — lens band, ratio, focal readout — in
+    // photo AND video (user-reported: off used to pin the 3× preset, or 9.1× through a remap).
+    @Volatile private var preTeleUnifiedZoom = Float.NaN
+
+    fun setLens(
+        choice: LensChoice,
+        teleconverterOverride: Boolean = false,
+        // TELE-toggle-off only: restore the pre-TELE framing instead of jumping to [choice]'s
+        // preset. An explicit lens pick (onLens) must NOT restore — the user chose a new framing.
+        restorePreTele: Boolean = false,
+    ) {
         if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
+        val prevLens = lensChoice
         lensChoice = choice
         // Resolve the camera id ON setupExecutor (dozen-plus Binder IPCs; also orders resolve→reopen).
         setupExecutor.execute {
+            // The TC state is SESSION-scoped: the session TYPE (0x80b4, the stock TC operation mode
+            // that engages the real 300 mm OIS profile), the Hasselblad hints, and the afocal flip
+            // are all fixed at configureStreams. Flipping TELE on the SAME camera id (the video 3×
+            // band and TELE both live on standalone 4) therefore MUST still reopen — device-observed
+            // otherwise: the TC stabilization kept applying after TELE off, and turning TELE on from
+            // the video 3× lens never engaged it.
+            val teleChanged = teleconverterMode != teleconverterOverride
             if (teleconverterOverride) {
                 // Physical-converter shooting: pin the STANDALONE 3× camera — the converter clamps
                 // onto that lens, so the logical camera's seamless switching would zoom right off it.
                 // Digital 1–10× only, afocal flip on, RAW available (standalone id).
                 val id = cachedIdForFocal(LensChoice.TELE3X.targetEquivMm)
                 if (id == null) { onStatus?.invoke("3× unavailable"); return@execute }
+                if (teleChanged) {
+                    preTeleUnifiedZoom = if (videoMode) {
+                        prevLens.zoomPreset * controls.zoomRatio.coerceAtLeast(1f)
+                    } else {
+                        controls.zoomRatio
+                    }
+                }
                 teleconverterMode = true
                 controls = controls.copy(zoomRatio = 1f)
-                if (overrideId != id || controller == null) setCameraOverride(id) else applyStabilization()
+                if (overrideId != id || controller == null || teleChanged) setCameraOverride(id) else applyStabilization()
             } else {
                 // Mode-split homes (see resolveNonTeleId): PHOTO picks are ZOOM PRESETS on the
                 // logical seamless camera (no reopen); VIDEO picks reopen the matching STANDALONE
                 // lens (lens-local zoom resets to 1×).
-                val id = resolveNonTeleId(choice)
-                if (id == null) { onStatus?.invoke("${choice.label} unavailable"); return@execute }
+                val unified = if (restorePreTele && !preTeleUnifiedZoom.isNaN()) {
+                    preTeleUnifiedZoom
+                } else {
+                    choice.zoomPreset
+                }
+                preTeleUnifiedZoom = Float.NaN
+                val band = LensChoice.forZoom(unified)
+                lensChoice = band
+                val id = resolveNonTeleId(band)
+                if (id == null) { onStatus?.invoke("${band.label} unavailable"); return@execute }
                 teleconverterMode = false
-                val targetZoom = if (videoMode) 1f else choice.zoomPreset
-                if (overrideId != id || controller == null) {
+                val targetZoom = if (videoMode) (unified / band.zoomPreset).coerceAtLeast(1f) else unified
+                if (overrideId != id || controller == null || teleChanged) {
                     controls = controls.copy(zoomRatio = targetZoom)
                     setCameraOverride(id)
                 } else {
@@ -950,11 +984,10 @@ class CameraEngine(private val context: Context) {
                 // One id per shutter press, shared by every container it produces (HEIF/JPEG/DNG), so
                 // the review UI can treat them as one shot (delete removes the DNG sibling too).
                 val captureId = captureSeq.incrementAndGet()
-                // Snapshot THIS shot's exposure from its own TotalCaptureResult: the deferred JPEG
-                // EXIF stamp used to read controller.lastIso/lastExposureNs at write time, which a
-                // settings change (or the next AEB step) can overwrite before the io thread runs.
-                val shotIso = result.get(android.hardware.camera2.CaptureResult.SENSOR_SENSITIVITY) ?: 0
-                val shotExpNs = result.get(android.hardware.camera2.CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L
+                // Snapshot EVERYTHING the JPEG EXIF needs from THIS shot's own TotalCaptureResult
+                // (exposure, active physical lens, controls) — deferred io-thread writes must never
+                // read live fields a settings change or the next AEB step can overwrite.
+                val exifShot = exifShotOf(result)
                 // HEIF and JPEG both come from the single still ImageReader (HAL JPEG on standalone
                 // cameras, YUV on the logical one — see StillSnapshot). Snapshot the frame ONCE while
                 // the Image is alive (cheap copy on the camera thread), then compress + fan out to
@@ -970,7 +1003,7 @@ class CameraEngine(private val context: Context) {
                                     return@execute
                                 }
                                 if (formats.heif) saveHeifAsync(bytes, rotation, captureId)
-                                if (formats.jpeg) saveJpegAsync(bytes, rotation, shotIso, shotExpNs, captureId)
+                                if (formats.jpeg) saveJpegAsync(bytes, rotation, exifShot, captureId)
                             }
                         } else onStatus?.invoke("Failed to save photo")
                     } else onStatus?.invoke("Failed to save photo: no still image")
@@ -1052,7 +1085,7 @@ class CameraEngine(private val context: Context) {
      * [saveHeifAsync] — NOT the HEIF encoder — so JPEG and HEIF frame identically. Publishes only on
      * success; deletes on any failure.
      */
-    private fun saveJpegAsync(bytes: ByteArray, rotationDegrees: Int, shotIso: Int, shotExpNs: Long, captureId: Int) {
+    private fun saveJpegAsync(bytes: ByteArray, rotationDegrees: Int, exifShot: ExifShot, captureId: Int) {
         var decoded: Bitmap? = null
         var cropped: Bitmap? = null
         var rotated: Bitmap? = null
@@ -1079,7 +1112,7 @@ class CameraEngine(private val context: Context) {
             if (!wrote) { MediaStoreWriter.delete(context, u); onStatus?.invoke("Failed to save JPEG"); return }
             // Bitmap.compress strips all metadata, so stamp the exposure EXIF back before publishing
             // (best-effort — a failed EXIF write must never lose the image itself).
-            runCatching { writeJpegExif(u, shotIso, shotExpNs) }
+            runCatching { writeJpegExif(u, exifShot) }
             if (!MediaStoreWriter.publish(context, u)) {
                 MediaStoreWriter.delete(context, u)
                 onStatus?.invoke("Failed to publish JPEG")
@@ -1427,23 +1460,190 @@ class CameraEngine(private val context: Context) {
      * callback — the live controller.lastIso/lastExposureNs may already describe a LATER frame by
      * the time this runs on the io thread.
      */
-    private fun writeJpegExif(uri: android.net.Uri, iso: Int, expNs: Long) {
+    /**
+     * Everything the JPEG EXIF stamp needs, snapshotted AT THE SHOT (capture result + the controls
+     * and optics active for that frame). Field set mirrors the stock camera's 3× reference sample
+     * (FNumber/FocalLength/35 mm/LensModel/APEX values/metering/flash/program/zoom).
+     */
+    data class ExifShot(
+        val iso: Int,
+        val expNs: Long,
+        val lensFocalMm: Float,
+        val lensApertureF: Float,
+        val focal35mm: Int,
+        val digitalZoom: Float,
+        val evBiasStops: Float,
+        val meteringMode: MeteringMode,
+        val flashFired: Boolean,
+        val exposureProgram: Int, // EXIF: 1=manual, 2=program, 4=shutter priority
+        val manualExposure: Boolean,
+        val manualWb: Boolean,
+        val lensModel: String,
+        val takenAtMs: Long,
+    )
+
+    /**
+     * Builds the EXIF snapshot for THIS shot. On the logical camera the active PHYSICAL lens comes
+     * from the capture result (LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID) so FocalLength/FNumber/
+     * LensModel describe the lens that actually took the frame, exactly like the stock camera.
+     */
+    private fun exifShotOf(result: android.hardware.camera2.TotalCaptureResult): ExifShot {
+        val c = controls
+        val base = caps
+        // Active physical lens (logical camera) → its own optics; standalone cameras are themselves.
+        val activeId = runCatching {
+            result.get(android.hardware.camera2.CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID)
+        }.getOrNull()
+        val optics = if (activeId != null) {
+            runCatching { cachedCaps(activeId, null) }.getOrNull() ?: base
+        } else base
+        val lensFocal = optics?.lensFocalLengthMm ?: 0f
+        val lensF = optics?.lensApertureF ?: 0f
+        val lensEquiv = optics?.equivalentFocalMm ?: 0f
+        // Effective 35 mm focal: what the FRAME shows — unified zoom on the logical camera already
+        // lands on the active lens (equiv × leftover digital), TELE multiplies the converter.
+        val baseEquiv = base?.equivalentFocalMm ?: 0f
+        val eff = if (teleconverterMode) {
+            baseEquiv * c.zoomRatio.coerceAtLeast(1f) * TELECONVERTER_MAGNIFICATION
+        } else {
+            baseEquiv * c.zoomRatio.coerceAtLeast(0.01f)
+        }
+        // Digital portion of the zoom: in TELE the converter's 4.286× is OPTICAL (glass), so only
+        // the user's 1-10× ratio is digital; otherwise it's effective ÷ the active lens's equiv.
+        val digital = if (teleconverterMode) {
+            c.zoomRatio.coerceAtLeast(1f)
+        } else if (lensEquiv > 0f) {
+            (eff / lensEquiv).coerceAtLeast(1f)
+        } else 1f
+        val evStep = base?.evStep?.let {
+            if (it.denominator == 0) 1f / 3f else it.numerator.toFloat() / it.denominator
+        } ?: (1f / 3f)
+        val activeLensId = activeId ?: selection?.let { it.physicalId ?: it.logicalId }
+        val lensName = when (activeLensId) {
+            "3" -> "ultra-wide"
+            "2" -> "wide"
+            "4" -> "tele"
+            "5" -> "periscope tele"
+            else -> "tele"
+        }
+        // Marketing focal like the stock sample ("70mm", not the computed 69.4): the lens band's
+        // nominal equiv. f-stop truncated to one decimal (stock: "f/2.2" for the 2.26 aperture).
+        val marketingMm = when (activeLensId) {
+            "3" -> LensChoice.ULTRAWIDE.targetEquivMm
+            "2" -> LensChoice.MAIN.targetEquivMm
+            "4" -> LensChoice.TELE3X.targetEquivMm
+            "5" -> LensChoice.TELE10X.targetEquivMm
+            else -> lensEquiv
+        }
+        val fTrunc = kotlin.math.floor(lensF * 10f) / 10f
+        val modelLabel = "OPPO Find X9 Ultra $lensName camera " +
+            "${Math.round(marketingMm)}mm f/${"%.1f".format(java.util.Locale.US, fTrunc)}"
+        return ExifShot(
+            iso = result.get(android.hardware.camera2.CaptureResult.SENSOR_SENSITIVITY) ?: 0,
+            expNs = result.get(android.hardware.camera2.CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L,
+            lensFocalMm = lensFocal,
+            lensApertureF = lensF,
+            // TELE reads a clean "300", not 297 — same nearest-10 rounding the OSD applies.
+            focal35mm = if (teleconverterMode) (Math.round(eff / 10f) * 10) else Math.round(eff),
+            digitalZoom = digital,
+            evBiasStops = c.exposureCompensation * evStep,
+            meteringMode = c.meteringMode,
+            flashFired = result.get(android.hardware.camera2.CaptureResult.FLASH_STATE) ==
+                android.hardware.camera2.CaptureResult.FLASH_STATE_FIRED,
+            exposureProgram = when (c.exposureMode) {
+                ExposureMode.MANUAL -> 1
+                ExposureMode.SHUTTER -> 4
+                else -> 2
+            },
+            manualExposure = c.exposureMode == ExposureMode.MANUAL,
+            manualWb = c.wbMode != WbMode.AUTO,
+            lensModel = modelLabel,
+            takenAtMs = System.currentTimeMillis(),
+        )
+    }
+
+    private fun writeJpegExif(uri: android.net.Uri, shot: ExifShot) {
         MediaStoreWriter.openParcelFd(context, uri, "rw")?.use { pfd ->
             val exif = androidx.exifinterface.media.ExifInterface(pfd.fileDescriptor)
-            if (iso > 0) exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY, iso.toString())
-            if (expNs > 0) {
-                exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_TIME, (expNs / 1_000_000_000.0).toString())
-            }
-            val focal = caps?.equivalentFocalMm ?: 0f
-            val eff = if (teleconverterMode) focal * TELECONVERTER_MAGNIFICATION else focal
-            if (eff > 0f) {
-                exif.setAttribute(
-                    androidx.exifinterface.media.ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM,
-                    Math.round(eff).toString(),
+            fun set(tag: String, value: String) = exif.setAttribute(tag, value)
+
+            if (shot.iso > 0) set(androidx.exifinterface.media.ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY, shot.iso.toString())
+            if (shot.expNs > 0) {
+                val sec = shot.expNs / 1_000_000_000.0
+                set(androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_TIME, sec.toString())
+                // APEX shutter speed = -log2(t), rational, matching the stock sample (6.908 at 1/120).
+                val apex = -Math.log(sec) / Math.log(2.0)
+                set(
+                    androidx.exifinterface.media.ExifInterface.TAG_SHUTTER_SPEED_VALUE,
+                    "${Math.round(apex * 1000)}/1000",
                 )
             }
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_MAKE, android.os.Build.MANUFACTURER)
-            exif.setAttribute(androidx.exifinterface.media.ExifInterface.TAG_MODEL, android.os.Build.MODEL)
+            if (shot.lensApertureF > 0f) {
+                set(androidx.exifinterface.media.ExifInterface.TAG_F_NUMBER, shot.lensApertureF.toString())
+                // APEX aperture = 2·log2(F) (stock: 2.35 at f/2.2).
+                val apexAv = 2.0 * Math.log(shot.lensApertureF.toDouble()) / Math.log(2.0)
+                set(
+                    androidx.exifinterface.media.ExifInterface.TAG_APERTURE_VALUE,
+                    "${Math.round(apexAv * 100)}/100",
+                )
+                set(
+                    androidx.exifinterface.media.ExifInterface.TAG_MAX_APERTURE_VALUE,
+                    "${Math.round(apexAv * 100)}/100",
+                )
+            }
+            if (shot.lensFocalMm > 0f) {
+                // Real lens focal (20.1 mm on the 3×), rational millimeters like the stock sample.
+                set(
+                    androidx.exifinterface.media.ExifInterface.TAG_FOCAL_LENGTH,
+                    "${Math.round(shot.lensFocalMm * 1000)}/1000",
+                )
+            }
+            if (shot.focal35mm > 0) {
+                set(
+                    androidx.exifinterface.media.ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM,
+                    shot.focal35mm.toString(),
+                )
+            }
+            set(
+                androidx.exifinterface.media.ExifInterface.TAG_DIGITAL_ZOOM_RATIO,
+                "${Math.round(shot.digitalZoom * 10000)}/10000",
+            )
+            // EV bias in sixths, the stock sample's denominator (0/6).
+            set(
+                androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_BIAS_VALUE,
+                "${Math.round(shot.evBiasStops * 6)}/6",
+            )
+            set(
+                androidx.exifinterface.media.ExifInterface.TAG_METERING_MODE,
+                when (shot.meteringMode) {
+                    MeteringMode.MATRIX -> "5" // pattern
+                    MeteringMode.CENTER -> "2" // center-weighted (the stock default)
+                    MeteringMode.SPOT -> "3"
+                },
+            )
+            // 0x1 = fired; 0x10 = "did not fire, compulsory off" (the stock sample's value).
+            set(androidx.exifinterface.media.ExifInterface.TAG_FLASH, if (shot.flashFired) "1" else "16")
+            set(androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_PROGRAM, shot.exposureProgram.toString())
+            set(androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_MODE, if (shot.manualExposure) "1" else "0")
+            set(androidx.exifinterface.media.ExifInterface.TAG_WHITE_BALANCE, if (shot.manualWb) "1" else "0")
+            set(androidx.exifinterface.media.ExifInterface.TAG_LENS_MODEL, shot.lensModel)
+            set(androidx.exifinterface.media.ExifInterface.TAG_COLOR_SPACE, "1") // sRGB
+
+            val dt = java.text.SimpleDateFormat("yyyy:MM:dd HH:mm:ss", java.util.Locale.US)
+                .format(java.util.Date(shot.takenAtMs))
+            val offset = java.text.SimpleDateFormat("XXX", java.util.Locale.US)
+                .format(java.util.Date(shot.takenAtMs))
+            set(androidx.exifinterface.media.ExifInterface.TAG_DATETIME, dt)
+            set(androidx.exifinterface.media.ExifInterface.TAG_DATETIME_ORIGINAL, dt)
+            set(androidx.exifinterface.media.ExifInterface.TAG_DATETIME_DIGITIZED, dt)
+            set(androidx.exifinterface.media.ExifInterface.TAG_OFFSET_TIME, offset)
+            set(androidx.exifinterface.media.ExifInterface.TAG_OFFSET_TIME_ORIGINAL, offset)
+            // Pixels are rotated upright before encode — the orientation tag must say NORMAL,
+            // not the invalid 0 exifinterface leaves when the tag was never present.
+            set(androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION, "1")
+            // The stock sample writes the MARKET name, not the ro.product.model code (PMA110).
+            set(androidx.exifinterface.media.ExifInterface.TAG_MAKE, "OPPO")
+            set(androidx.exifinterface.media.ExifInterface.TAG_MODEL, "OPPO Find X9 Ultra")
             exif.saveAttributes()
         }
     }

@@ -841,24 +841,49 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onToggleTeleconverter(enabled: Boolean) {
         if (rejectIfRecording("Stop REC first")) return
         // TELE pins the STANDALONE 3× camera (the converter's host lens; digital-only zoom, afocal
-        // flip). OFF returns to the seamless logical camera at the 3× preset so framing carries
-        // over. Both are one setLens camera switch.
-        engine.setLens(com.hletrd.findx9tele.camera.LensChoice.TELE3X, enabled)
+        // flip). OFF restores the EXACT pre-TELE framing — lens band + ratio in whatever mode is
+        // active (mirrors the engine's unified-zoom snapshot; user-required round-trip fidelity).
+        engine.setLens(com.hletrd.findx9tele.camera.LensChoice.TELE3X, enabled, restorePreTele = !enabled)
         _state.update {
-            it.copy(
-                teleconverterMode = enabled,
-                lens = com.hletrd.findx9tele.camera.LensChoice.TELE3X,
-                controls = it.controls.copy(
-                    zoomRatio = if (enabled) 1f else com.hletrd.findx9tele.camera.LensChoice.TELE3X.zoomPreset,
-                ),
-            )
+            if (enabled) {
+                preTeleUnifiedZoom = if (it.mode == CaptureMode.VIDEO) {
+                    it.lens.zoomPreset * it.controls.zoomRatio.coerceAtLeast(1f)
+                } else {
+                    it.controls.zoomRatio
+                }
+                it.copy(
+                    teleconverterMode = true,
+                    lens = com.hletrd.findx9tele.camera.LensChoice.TELE3X,
+                    controls = it.controls.copy(zoomRatio = 1f),
+                )
+            } else {
+                val unified = preTeleUnifiedZoom.takeIf { z -> !z.isNaN() }
+                    ?: com.hletrd.findx9tele.camera.LensChoice.TELE3X.zoomPreset
+                preTeleUnifiedZoom = Float.NaN
+                val band = LensChoice.forZoom(unified)
+                it.copy(
+                    teleconverterMode = false,
+                    lens = band,
+                    controls = it.controls.copy(
+                        zoomRatio = if (it.mode == CaptureMode.VIDEO) {
+                            (unified / band.zoomPreset).coerceAtLeast(1f)
+                        } else {
+                            unified
+                        },
+                    ),
+                )
+            }
         }
         zoomPendingRatio = Float.NaN // preset/TC zoom overwrote the coalesced base
         markChanged(FnSlot.TELECONVERTER)
         saveSettingsIfEnabled()
     }
+    // UI mirror of the engine's pre-TELE framing snapshot (unified main-relative zoom).
+    private var preTeleUnifiedZoom = Float.NaN
+
     override fun onLens(choice: LensChoice) {
         if (rejectIfRecording("Stop REC first")) return
+        preTeleUnifiedZoom = Float.NaN // an explicit pick replaces any pre-TELE framing
         // A lens pick is a ZOOM PRESET on the logical seamless camera (no reopen, no black gap).
         // TELE stays on only when it already is AND the pick is its 3× host lens; any other pick
         // exits converter shooting back to the seamless camera.
@@ -868,7 +893,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             it.copy(
                 lens = choice,
                 teleconverterMode = keepTc,
-                controls = it.controls.copy(zoomRatio = if (keepTc) 1f else choice.zoomPreset),
+                // Same engine mirror as onToggleTeleconverter: video lens picks are lens-local (1×).
+                controls = it.controls.copy(
+                    zoomRatio = if (keepTc || it.mode == CaptureMode.VIDEO) 1f else choice.zoomPreset,
+                ),
             )
         }
         zoomPendingRatio = Float.NaN // preset/TC zoom overwrote the coalesced base

@@ -31,3 +31,7 @@ telecampro-upload-passwords.txt.gpg
 # Local agent/context scaffolding (not part of the shipped project)
 .context/
 .claude/
+
+# Local reference sample photos from the stock camera (EXIF reference only — never commit)
+IMG2*.heic
+IMG2*.jpg
