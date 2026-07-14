@@ -98,6 +98,25 @@ class CameraEngine(private val context: Context) {
     @Volatile private var previewSurfaceW = 0
     @Volatile private var previewSurfaceH = 0
 
+    // Static-per-device caches: camera characteristics and focal→id resolution never change at
+    // runtime, but re-reading them cost dozens of Binder IPCs on EVERY lens/TC/mode switch — and
+    // they used to run inside the close→open blackout window.
+    private val capsCache = java.util.concurrent.ConcurrentHashMap<String, CameraCaps>()
+    private val idForFocalCache = java.util.concurrent.ConcurrentHashMap<Float, String>()
+    @Volatile private var cachedLogicalBackId: String? = null
+
+    private fun cachedCaps(logicalId: String, physicalId: String?): CameraCaps? =
+        runCatching {
+            capsCache.getOrPut("$logicalId:$physicalId") { CameraCaps.read(manager, logicalId, physicalId) }
+        }.getOrNull()
+
+    private fun cachedIdForFocal(equivMm: Float): String? =
+        idForFocalCache[equivMm]
+            ?: CameraSelector2.overrideIdForFocal(manager, equivMm)?.also { idForFocalCache[equivMm] = it }
+
+    private fun cachedLogicalBack(): String? =
+        cachedLogicalBackId ?: cachedLogicalBack()?.also { cachedLogicalBackId = it }
+
     private val gyro = com.hletrd.findx9tele.stab.GyroEis(context)
     @Volatile private var teleconverterMode = false
     @Volatile private var videoMode = false
@@ -360,7 +379,7 @@ class CameraEngine(private val context: Context) {
                 }
             }
             val id = if (teleconverterMode) {
-                CameraSelector2.overrideIdForFocal(manager, LensChoice.TELE3X.targetEquivMm)
+                cachedIdForFocal(LensChoice.TELE3X.targetEquivMm)
             } else {
                 resolveNonTeleId(lensChoice)
             }
@@ -619,7 +638,7 @@ class CameraEngine(private val context: Context) {
                 // Physical-converter shooting: pin the STANDALONE 3× camera — the converter clamps
                 // onto that lens, so the logical camera's seamless switching would zoom right off it.
                 // Digital 1–10× only, afocal flip on, RAW available (standalone id).
-                val id = CameraSelector2.overrideIdForFocal(manager, LensChoice.TELE3X.targetEquivMm)
+                val id = cachedIdForFocal(LensChoice.TELE3X.targetEquivMm)
                 if (id == null) { onStatus?.invoke("3× unavailable"); return@execute }
                 teleconverterMode = true
                 controls = controls.copy(zoomRatio = 1f)
@@ -652,10 +671,10 @@ class CameraEngine(private val context: Context) {
      */
     private fun resolveNonTeleId(choice: LensChoice): String? =
         if (videoMode) {
-            CameraSelector2.overrideIdForFocal(manager, choice.targetEquivMm)
+            cachedIdForFocal(choice.targetEquivMm)
         } else {
-            CameraSelector2.logicalBackId(manager)
-                ?: CameraSelector2.overrideIdForFocal(manager, choice.targetEquivMm)
+            cachedLogicalBack()
+                ?: cachedIdForFocal(choice.targetEquivMm)
         }
 
     // One-time "DNG: TELE mode only" notifier; re-armed whenever the camera changes.
@@ -676,15 +695,17 @@ class CameraEngine(private val context: Context) {
         // the initial open and other reopens.
         setupExecutor.execute {
             if (paused || recorder != null) return@execute
+            // Resolve the id and read the characteristics BEFORE closing: these are dozens of
+            // Binder IPCs (~100 ms uncached) that used to sit inside the close→open blackout —
+            // the old camera keeps streaming while they run, shrinking the visible freeze.
+            val sel = selectCurrentLens() ?: run { onStatus?.invoke("Camera ID unavailable"); return@execute }
+            val c = cachedCaps(sel.logicalId, sel.physicalId)
+                ?: run { onStatus?.invoke("Camera unavailable"); return@execute }
+            if (paused || recorder != null) return@execute
             controller?.close()
             controller = null
             if (paused || recorder != null) return@execute
-            val sel = selectCurrentLens() ?: run { onStatus?.invoke("Camera ID unavailable"); return@execute }
             selection = sel
-            // Same guard as the initial start: an unreadable characteristics set must degrade to a
-            // status message, not an uncaught throw on the setup thread (process death).
-            val c = runCatching { CameraCaps.read(manager, sel.logicalId, sel.physicalId) }.getOrNull()
-                ?: run { onStatus?.invoke("Camera unavailable"); return@execute }
             caps = c
             onCapsReady?.invoke(c)
             // The new lens can expose different output sizes; refresh videoSize + the GL camera size so
@@ -702,7 +723,7 @@ class CameraEngine(private val context: Context) {
     private fun selectCurrentLens(): TeleSelection? {
         val id = overrideId
             ?: (if (!teleconverterMode) resolveNonTeleId(lensChoice) else null)
-            ?: CameraSelector2.overrideIdForFocal(manager, lensChoice.targetEquivMm)
+            ?: cachedIdForFocal(lensChoice.targetEquivMm)
             ?: return null
         return CameraSelector2.select(manager, id)
     }
@@ -725,22 +746,10 @@ class CameraEngine(private val context: Context) {
             // throttled and aimed slightly wide); the GL compensation converges to 1 as the
             // matching results arrive.
             controller?.setZoomRatio(controls.zoomRatio)
-            return
         }
-        val c = controls
-        // Only the app-side PROGRAM loop owns both knobs; S fixes shutter, ISO fixes ISO, M is manual.
-        if (c.exposureMode != ExposureMode.PROGRAM || !c.programAppSide) return
-        val isoUpper = caps?.isoRange?.upper ?: return
-        if (c.exposureTimeNs <= ZOOM_SMOOTH_EXPOSURE_NS || c.iso <= 0) return
-        val isoHeadroom = isoUpper.toDouble() / c.iso
-        val wantScale = c.exposureTimeNs.toDouble() / ZOOM_SMOOTH_EXPOSURE_NS
-        val scale = minOf(wantScale, isoHeadroom)
-        if (scale <= 1.05) return // no headroom — a dimmed preview would be worse than a slow one
-        controls = c.copy(
-            exposureTimeNs = (c.exposureTimeNs / scale).toLong(),
-            iso = (c.iso * scale).toInt().coerceAtMost(isoUpper),
-        )
-        controller?.updateControls(controls)
+        // (The low-light frame-rate help lives in applyExposure's ALWAYS-on preview exposure cap —
+        // an earlier gesture-scoped trade here mutated the real program values, so a still captured
+        // right after a zoom inherited the traded short-exposure/high-ISO pair.)
     }
 
     /**

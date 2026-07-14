@@ -93,6 +93,9 @@ enum class ExposureStep(val ev: Float, val label: String) {
 }
 
 /** Effective exposure time (ns): derived from the cine angle in ANGLE mode, else the raw speed. */
+// Preview exposure ceiling for the auto program (1/30 s → a ≥30 fps live view when ISO allows).
+private const val PREVIEW_MAX_EXPOSURE_NS = 33_333_333L
+
 fun ManualControls.effectiveExposureNs(): Long =
     if (shutterMode == ShutterMode.ANGLE && fps > 0) {
         ((shutterAngle.coerceIn(1f, 360f) / 360.0) / fps * 1_000_000_000.0).toLong()
@@ -136,9 +139,13 @@ fun CaptureRequest.Builder.applyManualControls(
     c: ManualControls,
     caps: CameraCaps,
     pinAutoFps: Boolean = false,
+    // PREVIEW requests only: cap the app-side P exposure at 1/30 s (ISO raised brightness-
+    // neutrally) so the live view never becomes a 10-15 fps slideshow in dim light; the STILL
+    // request keeps the true program exposure. See applyExposure.
+    previewExposureCap: Boolean = false,
 ) {
     applyFocus(c, caps)
-    applyExposure(c, caps, pinAutoFps)
+    applyExposure(c, caps, pinAutoFps, previewExposureCap)
     applyWhiteBalance(c, caps)
     applyProcessing(c, caps)
     // Flash runs AFTER exposure: when AE is ON, the auto/always-flash variants set CONTROL_AE_MODE
@@ -181,13 +188,31 @@ private fun CaptureRequest.Builder.applyExposure(
     c: ManualControls,
     caps: CameraCaps,
     pinAutoFps: Boolean,
+    previewExposureCap: Boolean = false,
 ) {
     if (!c.autoExposure && caps.supportsManualSensor) {
         set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
-        caps.isoRange?.let { set(CaptureRequest.SENSOR_SENSITIVITY, c.iso.coerceIn(it.lower, it.upper)) }
+        var iso = c.iso
+        var wantExposureNs = c.effectiveExposureNs()
+        // PREVIEW-only cap for the auto program (app-side P): its program line legitimately parks
+        // the STILL exposure at 1/14-1/10 s in dim light, but a preview at that exposure IS a
+        // 10-15 fps viewfinder — the user-reported "low preview fps". Trade exposure for ISO
+        // BRIGHTNESS-NEUTRALLY, bounded by ISO headroom (past the ceiling the preview honestly
+        // slows, like every camera's night view). User-owned modes (S/ISO/M) stay WYSIWYG.
+        if (previewExposureCap && c.exposureMode == ExposureMode.PROGRAM && wantExposureNs > PREVIEW_MAX_EXPOSURE_NS) {
+            val isoUpper = caps.isoRange?.upper
+            if (isoUpper != null && iso > 0) {
+                val scale = minOf(wantExposureNs.toDouble() / PREVIEW_MAX_EXPOSURE_NS, isoUpper.toDouble() / iso)
+                if (scale > 1.05) {
+                    wantExposureNs = (wantExposureNs / scale).toLong()
+                    iso = (iso * scale).toInt().coerceAtMost(isoUpper)
+                }
+            }
+        }
+        caps.isoRange?.let { set(CaptureRequest.SENSOR_SENSITIVITY, iso.coerceIn(it.lower, it.upper)) }
         val exposureNs = caps.exposureTimeRange
-            ?.let { c.effectiveExposureNs().coerceIn(it.lower, it.upper) }
-            ?: c.effectiveExposureNs()
+            ?.let { wantExposureNs.coerceIn(it.lower, it.upper) }
+            ?: wantExposureNs
         caps.exposureTimeRange?.let { set(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureNs) }
         // Frame duration must be >= the exposure (Camera2 contract). Stretch it to the exposure so a
         // shutter slower than 1/fps survives instead of being clamped to 1/fps (long-exposure/astro).

@@ -385,7 +385,10 @@ class CameraController(context: Context) {
         }
 
         val sessionConfig = SessionConfiguration(
-            SessionConfiguration.SESSION_REGULAR, configs, executor,
+            // TC mode: pass the stock app's TC operation_mode (0x80b4) as the sessionType — captured
+            // via CamX `configure_streams() operation_mode: 0x80b4` on the stock app (→ sensor mode 48,
+            // the 300mm TC OIS profile). Falls back via onConfigureFailed if the framework/HAL rejects it.
+            if (teleconverterMode) 0x80b4 else SessionConfiguration.SESSION_REGULAR, configs, executor,
             object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(s: CameraCaptureSession) {
                     if (closed) { runCatching { s.close() }; return } // closed before config completed
@@ -518,7 +521,7 @@ class CameraController(context: Context) {
         runCatching {
             val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                 addTarget(preview)
-                applyManualControls(controls, caps, pinAutoFps || smoothPreviewBoost)
+                applyManualControls(controls, caps, pinAutoFps || smoothPreviewBoost, previewExposureCap = true)
                 applyVendorLog()
                 applyVideoStab()
                 applyTeleconverterHints()
