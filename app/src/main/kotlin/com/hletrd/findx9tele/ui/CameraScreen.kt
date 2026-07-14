@@ -478,7 +478,9 @@ fun CameraScreen(
             state = state,
             modifier = Modifier
                 .align(Alignment.CenterStart)
-                .padding(start = 10.dp),
+                // 12 dp start — the ONE left inset every left-anchored element shares (status OSD,
+                // exposure meter, Fn chip row); mixed 10/12/16 insets read as misalignment.
+                .padding(start = 12.dp),
         )
 
         val onShutter = remember(state.mode) {
@@ -520,7 +522,7 @@ fun CameraScreen(
                 onRequestWhiteBalanceSheet = { openSheet(ProSheetTab.EXPOSURE) },
                 onOpenFnMenu = { fnOverlayVisible = true },
                 onDialOpenChange = { manualDialOpen = it },
-                modifier = Modifier.padding(horizontal = 16.dp),
+                modifier = Modifier.padding(horizontal = 12.dp),
             )
 
             ModeCarousel(
