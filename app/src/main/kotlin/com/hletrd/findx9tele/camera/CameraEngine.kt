@@ -115,7 +115,7 @@ class CameraEngine(private val context: Context) {
             ?: CameraSelector2.overrideIdForFocal(manager, equivMm)?.also { idForFocalCache[equivMm] = it }
 
     private fun cachedLogicalBack(): String? =
-        cachedLogicalBackId ?: cachedLogicalBack()?.also { cachedLogicalBackId = it }
+        cachedLogicalBackId ?: CameraSelector2.logicalBackId(manager)?.also { cachedLogicalBackId = it }
 
     private val gyro = com.hletrd.findx9tele.stab.GyroEis(context)
     @Volatile private var teleconverterMode = false
