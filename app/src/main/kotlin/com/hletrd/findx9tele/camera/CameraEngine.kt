@@ -307,18 +307,23 @@ class CameraEngine(private val context: Context) {
         gl.setPreviewOutput(null, 0, 0)
     }
 
+    private fun wireController(): CameraController {
+        val ctrl = CameraController(context)
+        ctrl.onExposure = { iso, exp -> onExposureInfo?.invoke(iso, exp) }
+        ctrl.onZoomResult = { rz -> gl.setHalZoom(rz) }
+        ctrl.onFocusDistance = { d -> onFocusDistance?.invoke(d) }
+        ctrl.onAfState = { hal -> onAfIndication?.invoke(AfIndication.fromHal(hal)) }
+        return ctrl
+    }
+
     private fun openCamera(input: Surface) {
         if (paused) return // don't grab the camera while backgrounded (queued GL continuation, etc.)
         val sel = selection ?: return
         val c = caps ?: return
         updateCameraReady(false)
         controller?.close() // idempotent: closes any prior controller so two never race for the device
-        val ctrl = CameraController(context)
+        val ctrl = wireController()
         controller = ctrl
-        ctrl.onExposure = { iso, exp -> onExposureInfo?.invoke(iso, exp) }
-        ctrl.onZoomResult = { rz -> gl.setHalZoom(rz) }
-        ctrl.onFocusDistance = { d -> onFocusDistance?.invoke(d) }
-        ctrl.onAfState = { hal -> onAfIndication?.invoke(AfIndication.fromHal(hal)) }
         ctrl.open(
             selection = sel,
             caps = c,
@@ -702,21 +707,73 @@ class CameraEngine(private val context: Context) {
             val c = cachedCaps(sel.logicalId, sel.physicalId)
                 ?: run { onStatus?.invoke("Camera unavailable"); return@execute }
             if (paused || recorder != null) return@execute
-            controller?.close()
-            controller = null
-            if (paused || recorder != null) return@execute
+
+            // DUAL-OPEN: open the NEXT device while the old camera keeps streaming (~120 ms of the
+            // blackout overlapped away). The preview surface still belongs to the old session, so
+            // the new session is deferred until the old controller closes. If the HAL refuses a
+            // second open (shared physical sensor / max-cameras), fall back to the sequential path.
+            // A concurrent eviction of the OLD device is harmless: `controller` is already the new
+            // one, so the old error handler's identity guard no-ops and its close() self-runs.
+            val old = controller
+            val next = wireController()
+            controller = next
+            updateCameraReady(false)
             selection = sel
             caps = c
             onCapsReady?.invoke(c)
-            // The new lens can expose different output sizes; refresh videoSize + the GL camera size so
-            // the preview stream and encoder size match the new lens (mode-aware: photo = 4:3 field).
             videoSize = chooseVideoSize(sel)
             onVideoSizeChosen?.invoke(videoSize)
             previewStreamSize = choosePreviewStreamSize(sel)
+            applyStabilization()
+
+            val deviceUp = java.util.concurrent.CountDownLatch(1)
+            val deviceOk = java.util.concurrent.atomic.AtomicBoolean(false)
+            next.open(
+                selection = sel,
+                caps = c,
+                glInputSurface = input,
+                controls = controls,
+                tenBitHlg = false, // SDR session — HLG10+RAW+JPEG crashes the HAL
+                highSpeedFps = desiredHighSpeedFps(),
+                vendorLogMode = vendorLogMode.halValue,
+                videoStabHalMode = c.videoStabControlMode(videoStabMode),
+                teleconverterMode = teleconverterMode,
+                pinAutoFps = videoMode,
+                deferSession = true,
+                onDeviceOpened = { deviceOk.set(true); deviceUp.countDown() },
+                onReady = {
+                    if (controller === next && !paused) {
+                        updateCameraReady(true)
+                        onStatus?.invoke(null)
+                        cameraRecoveryAttempts = 0
+                    }
+                },
+                onError = {
+                    deviceUp.countDown() // an open-phase failure also releases the latch (fallback)
+                    if (controller === next) {
+                        updateCameraReady(false)
+                        onStatus?.invoke("Camera error: ${it.message}")
+                        scheduleCameraRecovery()
+                    }
+                },
+            )
+            // The old camera streams through the new device's open. Bounded wait: a refusal or a
+            // wedged open must degrade to the sequential path, not hang the setup thread.
+            deviceUp.await(2, java.util.concurrent.TimeUnit.SECONDS)
+            // Update the GL stream size only now — the old camera was still producing into the
+            // shared SurfaceTexture; resizing it earlier would distort its final frames.
             emitPreviewAspect()
             gl.setCameraPreviewSize(previewStreamSize.width, previewStreamSize.height)
-            applyStabilization()
-            openCamera(input)
+            old?.close()
+            if (deviceOk.get()) {
+                next.startDeferredSession()
+            } else {
+                // Sequential fallback: the HAL refused the concurrent open.
+                next.close()
+                if (controller === next) controller = null
+                if (paused || recorder != null) return@execute
+                openCamera(input)
+            }
         }
     }
 

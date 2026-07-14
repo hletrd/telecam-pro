@@ -164,6 +164,12 @@ class CameraController(context: Context) {
         videoStabHalMode: Int = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF,
         teleconverterMode: Boolean = false,
         pinAutoFps: Boolean = false,
+        // Dual-open camera switching: open the DEVICE now (the outgoing camera keeps streaming
+        // through its ~120 ms) but hold the session until [startDeferredSession] — the preview
+        // surface belongs to the old session until it closes. onDeviceOpened fires from the camera
+        // thread once the device handle is live.
+        deferSession: Boolean = false,
+        onDeviceOpened: (() -> Unit)? = null,
         onReady: Ready,
         onError: ErrorCb,
     ) {
@@ -191,7 +197,13 @@ class CameraController(context: Context) {
                     if (closed) { runCatching { camera.close() }; return } // closed before open completed
                     device = camera
                     configAttempt = 0
-                    runCatching { configureSession(onReady, onError) }.onFailure { onError.onError(it) }
+                    if (deferSession) {
+                        deferredReady = onReady
+                        deferredError = onError
+                        onDeviceOpened?.invoke()
+                    } else {
+                        runCatching { configureSession(onReady, onError) }.onFailure { onError.onError(it) }
+                    }
                 }
                 override fun onDisconnected(camera: CameraDevice) {
                     onError.onError(IllegalStateException("Camera disconnected"))
@@ -203,6 +215,21 @@ class CameraController(context: Context) {
                 }
             })
         }.onFailure { onError.onError(it) }
+    }
+
+    // Callbacks parked by a deferSession open until the old camera releases the preview surface.
+    private var deferredReady: Ready? = null
+    private var deferredError: ErrorCb? = null
+
+    /** Second phase of a deferSession [open]: the old session is closed, the surface is free. */
+    fun startDeferredSession() {
+        postToCamera {
+            val ready = deferredReady ?: return@postToCamera
+            val err = deferredError ?: return@postToCamera
+            deferredReady = null
+            deferredError = null
+            runCatching { configureSession(ready, err) }.onFailure { err.onError(it) }
+        }
     }
 
     /**
