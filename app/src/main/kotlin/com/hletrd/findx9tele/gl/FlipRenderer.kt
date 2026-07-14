@@ -125,6 +125,10 @@ class FlipRenderer {
         // Overrides [transfer]; only ever set on the preview draw.
         delogAssist: Boolean = false,
         zebraThreshold: Float = 0.95f,
+        // Preview-only zoom compensation (requested ÷ HAL-applied): every setRepeatingRequest stalls
+        // this HAL's stream ~180 ms, so the LIVE zoom renders here as a texture crop while the HAL
+        // catches up at a throttled pace. ≥1 (can't sample beyond the frame); 1 = no-op.
+        zoomComp: Float = 1f,
     ) {
         GLES20.glViewport(0, 0, targetWidth, targetHeight)
         GLES20.glClearColor(0f, 0f, 0f, 1f)
@@ -142,7 +146,8 @@ class FlipRenderer {
         Matrix.setIdentityM(rot, 0)
         Matrix.translateM(rot, 0, centerX + stabShiftX, centerY + stabShiftY, 0f)
         Matrix.rotateM(rot, 0, rotationDeg.toFloat() + stabRollDeg, 0f, 0f, 1f)
-        Matrix.scaleM(rot, 0, 1f - crop, 1f - crop, 1f)
+        val comp = zoomComp.coerceAtLeast(1f)
+        Matrix.scaleM(rot, 0, (1f - crop) / comp, (1f - crop) / comp, 1f)
         Matrix.translateM(rot, 0, -0.5f, -0.5f, 0f)
         Matrix.multiplyMM(texMatrix, 0, stMatrix, 0, rot, 0)
 

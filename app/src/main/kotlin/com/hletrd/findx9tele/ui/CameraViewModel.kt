@@ -658,12 +658,26 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         mainHandler.postDelayed({
             zoomFlushScheduled = false
             if (!zoomPendingRatio.isNaN() && zoomPendingRatio != _state.value.controls.zoomRatio) flushZoom()
-        }, 33)
+        }, 16) // ~60 Hz: the engine throttles HAL submits itself; GL follows every flush
+    }
+
+    // Zoom-gesture lifecycle: every zoom input funnels through flushZoom, so "interacting" =
+    // first flush → 700 ms after the last one. Drives the engine's smooth-preview boost.
+    private var zoomInteracting = false
+    private val zoomInteractionEnd = Runnable {
+        zoomInteracting = false
+        engine.setZoomInteraction(false)
     }
 
     private fun flushZoom() {
         val z = zoomPendingRatio
         if (z.isNaN()) return
+        if (!zoomInteracting) {
+            zoomInteracting = true
+            engine.setZoomInteraction(true)
+        }
+        mainHandler.removeCallbacks(zoomInteractionEnd)
+        mainHandler.postDelayed(zoomInteractionEnd, 700)
         // Straight to the engine fast path (cached-builder resubmit) — updateControls would re-apply
         // the FULL control set. Chip highlight follows the zoom band only on the seamless (photo)
         // camera; video zoom is lens-local. Persistence rides the debounced settings save.

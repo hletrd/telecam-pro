@@ -136,6 +136,8 @@ class CameraController(context: Context) {
     // chose in auto mode. Reported only on change (see startPreview's repeating callback) so a steady
     // scene doesn't spam recomposition.
     @Volatile var onExposure: ((iso: Int?, exposureNs: Long?) -> Unit)? = null
+    // HAL-applied zoom from each preview result — drives the GL live-zoom compensation.
+    @Volatile var onZoomResult: ((Float) -> Unit)? = null
     private var lastReportedIso: Int? = null
     private var lastReportedExpNs: Long? = null
     // Live lens focus distance (diopters, from CaptureResult.LENS_FOCUS_DISTANCE) surfaced to the UI:
@@ -286,6 +288,7 @@ class CameraController(context: Context) {
             val b = previewBuilder
             val cb = previewCallback
             if (b == null || cb == null || highSpeedFps > 0) { startPreview(); return@postToCamera }
+            if (BuildConfig.DEBUG) Log.i(TAG, "ZoomTrace: submit=$ratio t=${android.os.SystemClock.uptimeMillis()}")
             runCatching {
                 caps.zoomRatioRange?.let { b.set(CaptureRequest.CONTROL_ZOOM_RATIO, ratio.coerceIn(it.lower, it.upper)) }
                 // Keep OPPO's logical-zoom session hint in step (it contextualizes OIS/EIS strength);
@@ -515,7 +518,7 @@ class CameraController(context: Context) {
         runCatching {
             val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                 addTarget(preview)
-                applyManualControls(controls, caps, pinAutoFps)
+                applyManualControls(controls, caps, pinAutoFps || smoothPreviewBoost)
                 applyVendorLog()
                 applyVideoStab()
                 applyTeleconverterHints()
@@ -537,6 +540,13 @@ class CameraController(context: Context) {
                 override fun onCaptureCompleted(
                     session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult,
                 ) {
+                    result.get(CaptureResult.CONTROL_ZOOM_RATIO)?.let { rz ->
+                        onZoomResult?.invoke(rz)
+                        if (BuildConfig.DEBUG && rz != lastTracedResultZoom) {
+                            lastTracedResultZoom = rz
+                            Log.i(TAG, "ZoomTrace: result=$rz t=${android.os.SystemClock.uptimeMillis()}")
+                        }
+                    }
                     result.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let { lastFocusDistance = it }
                     // Stashed for custom-WB capture (grey-card measure) and JPEG EXIF: the AWB gains
                     // and exposure the HAL actually used on the latest frame.
@@ -659,6 +669,20 @@ class CameraController(context: Context) {
             // An explicit focus-mode change ends the tap-to-focus AUTO hold and resumes the chosen mode.
             if (controls.focusMode != this.controls.focusMode) touchAfActive = false
             this.controls = controls
+            startPreview()
+        }
+    }
+
+    // While a zoom gesture is live, pin the HAL-AE fps floor so the preview doesn't idle at its
+    // low-light 10-15 fps rate — at 10 fps ANY zoom reads as jank regardless of how smoothly the
+    // ratio is applied (the stock camera keeps ~30 fps and lets ISO carry the difference).
+    private var lastTracedResultZoom = -1f
+    private var smoothPreviewBoost = false
+
+    fun setSmoothPreviewBoost(active: Boolean) {
+        postToCamera {
+            if (smoothPreviewBoost == active) return@postToCamera
+            smoothPreviewBoost = active
             startPreview()
         }
     }

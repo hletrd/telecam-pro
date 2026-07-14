@@ -297,6 +297,7 @@ class CameraEngine(private val context: Context) {
         val ctrl = CameraController(context)
         controller = ctrl
         ctrl.onExposure = { iso, exp -> onExposureInfo?.invoke(iso, exp) }
+        ctrl.onZoomResult = { rz -> gl.setHalZoom(rz) }
         ctrl.onFocusDistance = { d -> onFocusDistance?.invoke(d) }
         ctrl.onAfState = { hal -> onAfIndication?.invoke(AfIndication.fromHal(hal)) }
         ctrl.open(
@@ -707,6 +708,42 @@ class CameraEngine(private val context: Context) {
     }
 
     /**
+     * Zoom-gesture smoothness: in low light the preview legitimately idles at 10-15 fps — the
+     * app-side P loop parks exposure at up to 1/10 s (its handheld ceiling) and HAL-AE photo AUTO
+     * uses the lowest fps floor for a brighter view. At that rate ANY zoom reads as jank, no matter
+     * how smoothly the ratio is applied. While a gesture is live: pin the HAL-AE fps floor
+     * (controller boost), and for the app-side P loop trade exposure time for ISO
+     * BRIGHTNESS-NEUTRALLY — only as far as ISO headroom allows, floored at 1/30 s, so the image
+     * never dims (in this trade the frame rate simply rises as far as physics permits). On release
+     * the loop re-converges to its preferred program point on its own (≤0.35 stop/tick).
+     */
+    fun setZoomInteraction(active: Boolean) {
+        zoomInteractionActive = active
+        controller?.setSmoothPreviewBoost(active)
+        if (!active) {
+            // Gesture over: land the HAL on the EXACT requested ratio (mid-gesture submits are
+            // throttled and aimed slightly wide); the GL compensation converges to 1 as the
+            // matching results arrive.
+            controller?.setZoomRatio(controls.zoomRatio)
+            return
+        }
+        val c = controls
+        // Only the app-side PROGRAM loop owns both knobs; S fixes shutter, ISO fixes ISO, M is manual.
+        if (c.exposureMode != ExposureMode.PROGRAM || !c.programAppSide) return
+        val isoUpper = caps?.isoRange?.upper ?: return
+        if (c.exposureTimeNs <= ZOOM_SMOOTH_EXPOSURE_NS || c.iso <= 0) return
+        val isoHeadroom = isoUpper.toDouble() / c.iso
+        val wantScale = c.exposureTimeNs.toDouble() / ZOOM_SMOOTH_EXPOSURE_NS
+        val scale = minOf(wantScale, isoHeadroom)
+        if (scale <= 1.05) return // no headroom — a dimmed preview would be worse than a slow one
+        controls = c.copy(
+            exposureTimeNs = (c.exposureTimeNs / scale).toLong(),
+            iso = (c.iso * scale).toInt().coerceAtMost(isoUpper),
+        )
+        controller?.updateControls(controls)
+    }
+
+    /**
      * Zoom FAST PATH — pinch/dial ticks arrive at input rate, and routing them through the full
      * setControls → startPreview rebuild (request re-derivation, metering regions, AF-trigger arming,
      * new callback per tick) is what read as zoom lag/stutter. The controller instead mutates only
@@ -717,8 +754,26 @@ class CameraEngine(private val context: Context) {
         val r = caps?.zoomRatioRange
         val z = if (r != null) ratio.coerceIn(r.lower, r.upper) else ratio
         controls = controls.copy(zoomRatio = z)
-        controller?.setZoomRatio(z)
+        // The PREVIEW zooms instantly: GL crops the last frame to the requested ratio and
+        // self-redraws (every setRepeatingRequest stalls this HAL's stream ~180 ms — measured —
+        // so per-tick HAL submits made zoom read as ~5 fps no matter how smooth the input was).
+        gl.setZoomTarget(z)
+        // The HAL follows at a throttled pace. Mid-gesture it is aimed slightly WIDE
+        // (÷ZOOM_GESTURE_MARGIN) so the GL crop has field for instant zoom-out too; the exact
+        // value lands at gesture end (setZoomInteraction(false)).
+        val now = android.os.SystemClock.uptimeMillis()
+        val halTarget = if (zoomInteractionActive) {
+            val wide = z / ZOOM_GESTURE_MARGIN
+            if (r != null) wide.coerceIn(r.lower, r.upper) else wide
+        } else z
+        if (!zoomInteractionActive || now - lastHalZoomSubmitMs >= ZOOM_HAL_THROTTLE_MS) {
+            lastHalZoomSubmitMs = now
+            controller?.setZoomRatio(halTarget)
+        }
     }
+
+    @Volatile private var zoomInteractionActive = false
+    @Volatile private var lastHalZoomSubmitMs = 0L
 
     // ---- Photo ----
 
@@ -1402,6 +1457,18 @@ class CameraEngine(private val context: Context) {
     }
 
     private companion object {
+        // Exposure floor while a zoom gesture is live (1/30 s → ≥30 fps preview when ISO headroom allows).
+        private const val ZOOM_SMOOTH_EXPOSURE_NS = 33_333_333L
+
+        // Live-zoom HAL pacing: every setRepeatingRequest swap stalls this HAL's preview ~180 ms
+        // (measured 2026-07-14), so mid-gesture submits are spaced at least this far apart — the
+        // GL compensation renders the requested zoom in between.
+        private const val ZOOM_HAL_THROTTLE_MS = 200L
+
+        // Mid-gesture the HAL is aimed this factor WIDER than requested so the GL crop has spare
+        // field in BOTH directions (instant zoom-out within the margin). Converged at gesture end.
+        private const val ZOOM_GESTURE_MARGIN = 1.2f
+
         // Number of frames fired for a single BURST drive-mode shutter press.
         const val BURST_COUNT = 5
         // Auto-recovery from a mid-session camera HAL error/disconnect (see scheduleCameraRecovery).

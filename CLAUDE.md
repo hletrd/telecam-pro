@@ -118,6 +118,16 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   portrait playback). `resolveNonTeleId`: photo=logical/seamless, video=matching standalone;
   `setVideoMode` remaps zoom between the unified main-relative scale and the lens-local scale so
   framing carries across the mode flip.
+- **setRepeatingRequest STALLS this HAL's preview ~180 ms per swap (measured 2026-07-14) — live
+  zoom is GL-rendered.** Swapping the repeating request (zoom tick, control change, AE-OFF manual
+  values, HAL-AE alike) gaps the stream 170–250 ms; per-tick zoom submits made zoom read as ~5 fps
+  regardless of input smoothing (the true root cause behind THREE rounds of "핀치 버벅" reports).
+  Architecture: the preview renders the REQUESTED zoom instantly (FlipRenderer `zoomComp` =
+  requested ÷ HAL-reported zoom, GL self-redraws the last frame when the camera is quiet); HAL
+  submits are throttled to ≥200 ms and aimed 1.2× WIDE mid-gesture (zoom-out margin), landing on
+  the exact value at gesture end. Encoder/analysis only ever see REAL camera frames (self-redraws
+  are preview-only). Plus: in low light the app-side P loop trades exposure→ISO brightness-
+  neutrally during gestures (ISO-headroom-bounded) so the base frame rate rises.
 - **Compounding zoom inputs must base on the COALESCED pending value (2026-07-14).** Pinch factors,
   hardware-key steps, and the ease ticker all multiply "the current zoom" — but UI state lags the
   33 ms coalescing flush, so compounding against `_state` made zoom crawl between flushes then jump

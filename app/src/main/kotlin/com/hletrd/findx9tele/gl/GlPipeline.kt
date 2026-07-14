@@ -269,13 +269,48 @@ class GlPipeline {
         }
     }
 
-    private fun drawFrame() {
+    private var lastDrawMs = 0L
+
+    // Live-zoom compensation (see FlipRenderer.draw zoomComp): the UI's requested zoom vs the zoom
+    // the HAL last REPORTED applying. The preview crops the difference immediately; camera frames
+    // catch up at the HAL's own (stall-prone) pace. GL-thread confined.
+    private var zoomTarget = 1f
+    private var halZoom = 1f
+    private var lastSelfRedrawMs = 0L
+
+    /** The UI's requested zoom — redraws the LAST frame immediately so pinch follows the finger
+     *  even while the HAL stalls (~180 ms per repeating-request swap on this device). */
+    fun setZoomTarget(z: Float) = post {
+        if (zoomTarget == z) return@post
+        zoomTarget = z
+        val now = android.os.SystemClock.uptimeMillis()
+        // Self-redraw throttle: frame-available draws already repaint at camera rate; only inject
+        // extra draws when the camera is quiet, at most ~60 Hz.
+        if (now - lastDrawMs > 16 && now - lastSelfRedrawMs > 16) {
+            lastSelfRedrawMs = now
+            drawFrame(updateTex = false)
+        }
+    }
+
+    /** The zoom the HAL reported in the latest capture result (rides the matching frames). */
+    fun setHalZoom(z: Float) = post { halZoom = z }
+
+    private fun drawFrame(updateTex: Boolean = true) {
+        if (com.hletrd.findx9tele.BuildConfig.DEBUG) {
+            val now = android.os.SystemClock.uptimeMillis()
+            if (lastDrawMs != 0L && now - lastDrawMs > 50) {
+                android.util.Log.i("GlPipeline", "FrameGap: ${now - lastDrawMs} ms")
+            }
+            lastDrawMs = now
+        }
         val core = egl ?: return
         val st = surfaceTexture ?: return
         if (previewEgl == EGL14.EGL_NO_SURFACE) return
 
-        st.updateTexImage()
-        st.getTransformMatrix(stMatrix)
+        if (updateTex) {
+            st.updateTexImage()
+            st.getTransformMatrix(stMatrix)
+        }
 
         var sx = 0f
         var sy = 0f
@@ -317,8 +352,13 @@ class GlPipeline {
             stMatrix, previewW, previewH, previewTransfer, peaking, zebra, falseColor, sx, sy, roll, previewCrop, loupeX, loupeY,
             peakThreshold = peakThreshold, peakR = peakR, peakG = peakG, peakB = peakB, zebraThreshold = zebraThreshold,
             delogAssist = nativeLog && gammaAssist,
+            zoomComp = zoomTarget / halZoom.coerceAtLeast(0.01f),
         )
         core.swapBuffers(previewEgl)
+
+        // Self-redraws only refresh the PREVIEW with a new zoom crop from the last frame — the
+        // analysis meter and (critically) the encoder must only ever see REAL camera frames.
+        if (!updateTex) return
 
         if (encoderEgl != EGL14.EGL_NO_SURFACE) {
             core.makeCurrent(encoderEgl)
