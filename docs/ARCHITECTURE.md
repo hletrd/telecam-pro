@@ -303,6 +303,35 @@ AF state reaches FOCUSED on device.
 
 ---
 
+## Zoom & the Hybrid Camera Homes (2026-07-14)
+
+Which camera is open depends on MODE, not just lens (`CameraEngine.resolveNonTeleId`):
+
+| State | Camera | Zoom semantics |
+|---|---|---|
+| Photo, TC off | **Logical camera 0** (physIds 3/2/4/5) | Unified main-relative 0.6–20×; the HAL crosses physical lenses internally (seamless pinch, no reopen). Lens picks = zoom presets; chip highlight follows `LensChoice.forZoom`. |
+| Video, TC off | **Standalone lens** matching the band | Lens-local 1–10× digital; lens changes reopen. The logical camera's EIS (Standard AND Active) leaks its uncorrected warp margin (~6% of width) into the stream — preview AND recorded file — so video must not live there. |
+| TC on (any mode) | **Standalone 3× (camera 4)** | Lens-local 1–10×; afocal 180° flip; RAW/DNG available (standalone-only). |
+
+`setVideoMode` remaps the zoom value between the unified and lens-local scales so framing carries
+across a mode flip (mirrored into UI state by `onModeChange`).
+
+**Zoom application pipeline** (why it's smooth): pinch/dial events are COALESCED in the ViewModel
+(leading apply + 33 ms trailing flush of the newest value — per-event application recomposed the
+whole tree at input rate). Every compounding input (pinch factor, hardware-key step, ease ticker)
+bases itself on `currentZoomBase()` — the coalesced PENDING value, not UI state, which lags a
+flush window; compounding against the stale state made zoom crawl-then-jump. The flushed value
+takes the controller **fast path** (`CameraController.setZoomRatio`): the cached repeating-request
+builder gets only its zoom keys mutated and resubmitted — no full request re-derivation.
+
+**Stills** (`StillSnapshot`): the logical camera cannot allocate the HAL-JPEG blob (gralloc
+rejects it) and a RAW target errors the whole camera device, so logical stills arrive as
+YUV_420_888 (NV21-repacked on the camera thread, JPEG-encoded lazily on the io thread) and RAW is
+gated standalone-only. A capture watchdog fails any shot whose image never arrives (8 s) so the
+shutter can never wedge. The scopes/AE readback re-draws the clean scene into a 256×192 FBO
+(~190 KB) instead of glReadPixels on the full preview framebuffer (~33 MB at 4K — a periodic GL
+stall that read as preview stutter).
+
 ## Stabilization and Orientation
 
 **Shipping stabilization path:**

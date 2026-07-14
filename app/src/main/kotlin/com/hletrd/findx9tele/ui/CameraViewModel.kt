@@ -688,7 +688,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             // Non-finite/non-positive guard: a zoomRatio of 0/NaN (e.g. a corrupted persisted value
             // slipping past the load clamp) would make pow/ln produce NaN, and NaN comparisons are
             // always false — the ticker would re-post itself at ~30 Hz FOREVER with a broken readout.
-            val cur = _state.value.controls.zoomRatio.takeIf { it.isFinite() && it > 0f } ?: run {
+            val cur = currentZoomBase().takeIf { it.isFinite() && it > 0f } ?: run {
                 zoomEaseTarget = null
                 applyZoomRatio(target)
                 return
@@ -713,20 +713,29 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     /** One hardware zoom-key repeat: nudge the ease target and make sure the glide ticker runs. */
     fun onHardwareZoomStep(factor: Float) {
         val range = _state.value.caps?.zoomRatioRange ?: return
-        val base = zoomEaseTarget ?: _state.value.controls.zoomRatio
+        val base = zoomEaseTarget ?: currentZoomBase()
         val wasIdle = zoomEaseTarget == null
         zoomEaseTarget = (base * factor).coerceIn(range.lower, range.upper)
         if (wasIdle) mainHandler.post(zoomEaseTicker)
     }
 
     override fun onPinchZoom(factor: Float) {
-        // Pinch multiplies the current zoom ratio, clamped to the lens's advertised range; reuses the
-        // debounced onZoomRatio path so the in-sheet Zoom slider and the viewfinder pinch stay in sync.
+        // Pinch multiplies the FRESHEST zoom (the coalesced pending value, NOT UI state): state only
+        // updates at the ~33 ms flush, and compounding each input event against that stale base made
+        // the zoom crawl between flushes then jump at the boundary — the residual pinch jank.
         val range = _state.value.caps?.zoomRatioRange ?: return
-        val next = (_state.value.controls.zoomRatio * factor).coerceIn(range.lower, range.upper)
+        val next = (currentZoomBase() * factor).coerceIn(range.lower, range.upper)
         onZoomRatio(next)
-        // (lens switching is checked inside applyZoomRatio so any zoom input — pinch, slider, debug
-        // broadcast — can trigger it.)
+    }
+
+    /**
+     * The freshest zoom value: the coalesced pending ratio while a flush window is open (UI state
+     * lags it by up to ~33 ms), else the state value. Every compounding zoom input (pinch factor,
+     * hardware-key step, ease ticker) must use THIS as its base.
+     */
+    private fun currentZoomBase(): Float {
+        val pending = zoomPendingRatio
+        return if (!pending.isNaN()) pending else _state.value.controls.zoomRatio
     }
 
     override fun onJpegQuality(quality: Int) = updateControls(persist = true) { it.copy(jpegQuality = quality) }
@@ -755,6 +764,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             }
             it.copy(mode = mode, lens = lens, controls = controls)
         }
+        zoomPendingRatio = Float.NaN // the remap invalidated the coalesced base
         engine.setVideoMode(mode == CaptureMode.VIDEO)
         applyEngineTransfer(mode, _state.value.transfer)
         refreshProgramAppSide() // photo P is app-side (min-shutter rule), video P is HAL AE
@@ -829,6 +839,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 ),
             )
         }
+        zoomPendingRatio = Float.NaN // preset/TC zoom overwrote the coalesced base
         markChanged(FnSlot.TELECONVERTER)
         saveSettingsIfEnabled()
     }
@@ -846,6 +857,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 controls = it.controls.copy(zoomRatio = if (keepTc) 1f else choice.zoomPreset),
             )
         }
+        zoomPendingRatio = Float.NaN // preset/TC zoom overwrote the coalesced base
         markChanged(FnSlot.TELECONVERTER)
         saveSettingsIfEnabled()
     }

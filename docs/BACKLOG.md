@@ -29,6 +29,27 @@ new hash and must update that sheet after the full release gate is repeated.
 - Core photo/video UI, menu hierarchy, settings persistence, and Play screenshots were reviewed on
   the physical PMA110. No crash or ANR was observed.
 
+### Verified 2026-07-14 — seamless zoom + capture-pipeline session
+1. **iPhone-style seamless zoom (photo)** — logical camera 0 (zoomRatio 0.6–20, physIds 3/2/4/5),
+   pinch never reopens; lens picks = zoom presets; OSD shows the live effective focal.
+   Device-verified: zero reopens across a 0.6→10 sweep.
+2. **Video re-homed to standalone lenses** — the logical camera's EIS (Standard AND Active) leaks
+   its uncorrected warp margin (~6% of width) into the preview AND the recorded file (verified by
+   frame extraction; shows as a rainbow band at the bottom in portrait playback).
+   `resolveNonTeleId` splits camera homes by mode; `setVideoMode` remaps unified↔lens-local zoom.
+3. **Shutter could permanently wedge on the logical camera** — gralloc rejects its HAL-JPEG blob
+   (the image never arrives) and a RAW target errors the camera device ~5 s post-shot. Fixed:
+   YUV stills via `StillSnapshot`, RAW gated standalone-only (DNG = TELE mode), an 8 s capture
+   watchdog, and instant shutter-blink feedback (the physical lag is pipeline-depth ×
+   frame-duration: ~0.85 s at a 1/10 s dark-room preview, ~0.3–0.5 s in normal light).
+4. **Zoom lag/jank, three layers** — full-request rebuild per tick (→ controller fast path on a
+   cached repeating builder), per-input-event state updates at ~120 Hz (→ 33 ms coalescing;
+   compounding inputs MUST base on the coalesced pending value, not the stale UI state), and a
+   ~33 MB full-res analysis glReadPixels every 5th frame (→ 256×192 FBO re-draw, ~190 KB).
+5. **REC tally border vanished at the panel's rounded corners** — now follows the physical corner
+   radius (WindowInsets RoundedCorner API, ×1.2 squircle compensation, user-tuned on device).
+6. **UI pills** — Fn-row edge-fade scroll hint; one shared 12 dp left inset (OSD / meter / Fn row).
+
 ## Before Production
 
 These are manual Play Console operations, not repository implementation work:

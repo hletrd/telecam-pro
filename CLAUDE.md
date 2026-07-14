@@ -118,6 +118,17 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   portrait playback). `resolveNonTeleId`: photo=logical/seamless, video=matching standalone;
   `setVideoMode` remaps zoom between the unified main-relative scale and the lens-local scale so
   framing carries across the mode flip.
+- **Compounding zoom inputs must base on the COALESCED pending value (2026-07-14).** Pinch factors,
+  hardware-key steps, and the ease ticker all multiply "the current zoom" — but UI state lags the
+  33 ms coalescing flush, so compounding against `_state` made zoom crawl between flushes then jump
+  at the boundary (read as pinch jank twice before being root-caused). `currentZoomBase()` in the
+  ViewModel is the one true base; reset `zoomPendingRatio` whenever anything outside the coalescer
+  rewrites zoom (mode flip, lens preset, TC toggle).
+- **The REC tally border must follow the panel's rounded corners.** A square full-screen border's
+  corner segments fall OUTSIDE the visible display area and vanish. Read the radius from the
+  WindowInsets RoundedCorner API and scale ×1.2 — the glass corner is a continuous-curvature
+  squircle, and a circular arc at the nominal radius reads visibly tighter (user-compared on
+  device).
 - **Analysis readback is FBO-downsampled (2026-07-14).** The scopes/AE readback used to
   `glReadPixels` the FULL preview framebuffer (~33 MB at 4K) every 5th frame — a periodic GL-thread
   stall that read as preview/zoom stutter, and it metered peaking/zebra overlay pixels. It now

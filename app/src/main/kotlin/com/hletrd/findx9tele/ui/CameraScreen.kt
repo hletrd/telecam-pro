@@ -343,7 +343,10 @@ fun CameraScreen(
             val tallyRadius = remember(tallyView) {
                 val corner = tallyView.rootWindowInsets
                     ?.getRoundedCorner(android.view.RoundedCorner.POSITION_TOP_LEFT)
-                corner?.radius ?: 0
+                // The panel's corner is a CONTINUOUS-CURVATURE squircle; a circular arc at the same
+                // nominal radius reads visibly tighter than the glass (user-compared on device), so
+                // scale up ~20% to visually match the physical curve.
+                ((corner?.radius ?: 0) * 1.2f).toInt()
             }
             Box(
                 modifier = Modifier
