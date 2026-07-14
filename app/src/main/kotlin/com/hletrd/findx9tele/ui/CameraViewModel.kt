@@ -641,16 +641,35 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         zoomEaseTarget = null
         applyZoomRatio(ratio)
     }
+    // Pinch events arrive at INPUT rate (up to ~120 Hz on this panel); applying each one drove a
+    // whole-tree recomposition plus a setRepeatingRequest per event — the residual zoom jank after
+    // the fast path landed. Coalesce: apply the first event immediately (no perceived latency),
+    // then flush only the NEWEST value every ~33 ms while the gesture continues.
+    private var zoomFlushScheduled = false
+    private var zoomPendingRatio = Float.NaN
+
     private fun applyZoomRatio(ratio: Float) {
         val range = _state.value.caps?.zoomRatioRange
         val z = if (range != null) ratio.coerceIn(range.lower, range.upper) else ratio
-        // Zoom goes STRAIGHT to the engine fast path (cached-builder resubmit). Routing it through
-        // updateControls re-applied the FULL control set per pinch tick behind the 40 ms throttle —
-        // the reported zoom lag. On the logical camera the HAL crosses lenses internally, so the
-        // old per-threshold standalone reopen (maybeSwitchLensForZoom) is gone with it; only the
-        // chip highlight tracks the zoom band. Persistence rides the debounced settings save.
+        zoomPendingRatio = z
+        if (zoomFlushScheduled) return // the scheduled flush picks up this newest value
+        zoomFlushScheduled = true
+        flushZoom() // leading edge: first tick lands instantly
+        mainHandler.postDelayed({
+            zoomFlushScheduled = false
+            if (!zoomPendingRatio.isNaN() && zoomPendingRatio != _state.value.controls.zoomRatio) flushZoom()
+        }, 33)
+    }
+
+    private fun flushZoom() {
+        val z = zoomPendingRatio
+        if (z.isNaN()) return
+        // Straight to the engine fast path (cached-builder resubmit) — updateControls would re-apply
+        // the FULL control set. Chip highlight follows the zoom band only on the seamless (photo)
+        // camera; video zoom is lens-local. Persistence rides the debounced settings save.
         engine.setZoomRatio(z)
-        val lensBand = if (_state.value.teleconverterMode) _state.value.lens else LensChoice.forZoom(z)
+        val s = _state.value
+        val lensBand = if (!s.teleconverterMode && s.mode == CaptureMode.PHOTO) LensChoice.forZoom(z) else s.lens
         _state.update { it.copy(controls = it.controls.copy(zoomRatio = z), lens = lensBand) }
         // A pending throttled full-apply captured OLDER controls — refresh its zoom so it can't
         // briefly snap the ratio back when it lands.
@@ -719,7 +738,23 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             showStatus("Stop REC first")
             return
         }
-        _state.update { it.copy(mode = mode) }
+        // Mirror the engine's mode-flip zoom remap (unified main-relative ↔ lens-local; see
+        // CameraEngine.setVideoMode) so the zoom pill/dial and lens chip agree with the camera.
+        _state.update {
+            var lens = it.lens
+            var controls = it.controls
+            if (!it.teleconverterMode) {
+                if (mode == CaptureMode.VIDEO && it.mode == CaptureMode.PHOTO) {
+                    lens = LensChoice.forZoom(controls.zoomRatio)
+                    controls = controls.copy(zoomRatio = (controls.zoomRatio / lens.zoomPreset).coerceAtLeast(1f))
+                } else if (mode == CaptureMode.PHOTO && it.mode == CaptureMode.VIDEO) {
+                    controls = controls.copy(
+                        zoomRatio = (lens.zoomPreset * controls.zoomRatio.coerceAtLeast(1f)).coerceIn(0.6f, 20f),
+                    )
+                }
+            }
+            it.copy(mode = mode, lens = lens, controls = controls)
+        }
         engine.setVideoMode(mode == CaptureMode.VIDEO)
         applyEngineTransfer(mode, _state.value.transfer)
         refreshProgramAppSide() // photo P is app-side (min-shutter rule), video P is HAL AE

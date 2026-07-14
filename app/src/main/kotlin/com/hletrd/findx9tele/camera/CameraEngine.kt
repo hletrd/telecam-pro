@@ -341,17 +341,42 @@ class CameraEngine(private val context: Context) {
         if (videoMode == enabled) return
         videoMode = enabled
         controller?.setPinAutoFps(enabled)
-        // PHOTO previews the full 4:3 sensor field; VIDEO previews the (usually 16:9) recording
-        // stream. When the mode flip changes the stream size, the session must be recreated — the
-        // HAL fixes stream dimensions at configureStreams, so only updating the SurfaceTexture
-        // buffer would leave the producer on the old stream (same contract as applyVideoSize).
-        val sel = selection ?: return
-        val next = choosePreviewStreamSize(sel)
-        if (next != previewStreamSize) {
-            previewStreamSize = next
-            emitPreviewAspect()
-            gl.setCameraPreviewSize(next.width, next.height)
-            reopenForSession()
+        if (!started) return
+        // The mode flip can change the CAMERA (photo=logical seamless, video=standalone — see
+        // resolveNonTeleId) as well as the stream size. Remap the zoom between the unified
+        // main-relative scale and the lens-local scale so the framing carries across, then re-home.
+        setupExecutor.execute {
+            if (!teleconverterMode) {
+                val z = controls.zoomRatio
+                if (enabled) {
+                    val band = LensChoice.forZoom(z)
+                    lensChoice = band
+                    controls = controls.copy(zoomRatio = (z / band.zoomPreset).coerceAtLeast(1f))
+                } else {
+                    controls = controls.copy(
+                        zoomRatio = (lensChoice.zoomPreset * controls.zoomRatio.coerceAtLeast(1f)).coerceIn(0.6f, 20f),
+                    )
+                }
+            }
+            val id = if (teleconverterMode) {
+                CameraSelector2.overrideIdForFocal(manager, LensChoice.TELE3X.targetEquivMm)
+            } else {
+                resolveNonTeleId(lensChoice)
+            }
+            if (id != null && (id != overrideId || controller == null)) {
+                setCameraOverride(id) // refreshes caps, stream sizes, aspect, stabilization, reopens
+            } else {
+                // Same camera (e.g. TELE mode) — still recreate when the STREAM SIZE flips between
+                // the photo 4:3 field and the recording stream (dimensions fix at configureStreams).
+                val sel = selection ?: return@execute
+                val next = choosePreviewStreamSize(sel)
+                if (next != previewStreamSize) {
+                    previewStreamSize = next
+                    emitPreviewAspect()
+                    gl.setCameraPreviewSize(next.width, next.height)
+                    reopenForSession()
+                }
+            }
         }
     }
 
@@ -599,24 +624,38 @@ class CameraEngine(private val context: Context) {
                 controls = controls.copy(zoomRatio = 1f)
                 if (overrideId != id || controller == null) setCameraOverride(id) else applyStabilization()
             } else {
-                // Seamless home: the LOGICAL multicamera. A lens pick is a ZOOM PRESET on it — the
-                // HAL crosses the physical lenses internally at the optical ratios and fills between
-                // them digitally, so pinch sweeps 0.6→20× with no reopen and no black gap (stock-
-                // camera behavior; the per-threshold standalone reopen this replaces read as a ~1 s
-                // stutter). Falls back to the closest standalone id on devices without a logical cam.
-                val id = CameraSelector2.logicalBackId(manager)
-                    ?: CameraSelector2.overrideIdForFocal(manager, choice.targetEquivMm)
+                // Mode-split homes (see resolveNonTeleId): PHOTO picks are ZOOM PRESETS on the
+                // logical seamless camera (no reopen); VIDEO picks reopen the matching STANDALONE
+                // lens (lens-local zoom resets to 1×).
+                val id = resolveNonTeleId(choice)
                 if (id == null) { onStatus?.invoke("${choice.label} unavailable"); return@execute }
                 teleconverterMode = false
+                val targetZoom = if (videoMode) 1f else choice.zoomPreset
                 if (overrideId != id || controller == null) {
-                    controls = controls.copy(zoomRatio = choice.zoomPreset)
+                    controls = controls.copy(zoomRatio = targetZoom)
                     setCameraOverride(id)
                 } else {
-                    setZoomRatio(choice.zoomPreset)
+                    setZoomRatio(targetZoom)
                 }
             }
         }
     }
+
+    /**
+     * The non-teleconverter camera id for the CURRENT capture mode. PHOTO lives on the LOGICAL
+     * multicamera — seamless 0.6–20× pinch, stills device-verified clean. VIDEO pins the matching
+     * STANDALONE lens: the logical camera's EIS (Standard AND Active) leaks its uncorrected warp
+     * margin into the stream's left edge — device-verified 2026-07-14 in the preview AND the
+     * RECORDED file — while the standalone cameras have shipped clean stabilized video all along.
+     * Falls back to the closest standalone id on devices without a logical back camera.
+     */
+    private fun resolveNonTeleId(choice: LensChoice): String? =
+        if (videoMode) {
+            CameraSelector2.overrideIdForFocal(manager, choice.targetEquivMm)
+        } else {
+            CameraSelector2.logicalBackId(manager)
+                ?: CameraSelector2.overrideIdForFocal(manager, choice.targetEquivMm)
+        }
 
     // One-time "DNG: TELE mode only" notifier; re-armed whenever the camera changes.
     @Volatile private var dngUnavailableNotified = false
@@ -661,7 +700,7 @@ class CameraEngine(private val context: Context) {
 
     private fun selectCurrentLens(): TeleSelection? {
         val id = overrideId
-            ?: (if (!teleconverterMode) CameraSelector2.logicalBackId(manager) else null)
+            ?: (if (!teleconverterMode) resolveNonTeleId(lensChoice) else null)
             ?: CameraSelector2.overrideIdForFocal(manager, lensChoice.targetEquivMm)
             ?: return null
         return CameraSelector2.select(manager, id)

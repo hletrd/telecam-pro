@@ -50,6 +50,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.Modifier
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.ui.draw.alpha
@@ -335,7 +336,24 @@ fun CameraScreen(
         // Emphasized REC display (Sony FX): a thin red frame while rolling — unmissable, even in
         // DISP-clean mode. Screen-fixed (not content-boxed) so it stays unmissable at every aspect.
         if (state.isRecording) {
-            Box(modifier = Modifier.fillMaxSize().border(3.dp, CameraColors.Record))
+            // Tally border: follow the panel's physical rounded corners — a square border's corner
+            // segments fall OUTSIDE the visible rounded area on this display and simply vanish
+            // (user-reported). The exact radius comes from the WindowInsets RoundedCorner API.
+            val tallyView = LocalView.current
+            val tallyRadius = remember(tallyView) {
+                val corner = tallyView.rootWindowInsets
+                    ?.getRoundedCorner(android.view.RoundedCorner.POSITION_TOP_LEFT)
+                corner?.radius ?: 0
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .border(
+                        3.dp,
+                        CameraColors.Record,
+                        RoundedCornerShape(with(LocalDensity.current) { tallyRadius.toDp() }),
+                    ),
+            )
         }
 
         if (state.level) {

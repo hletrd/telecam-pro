@@ -93,6 +93,12 @@ class GlPipeline {
     private var analysisAe = false
     private var analysisCallback: ((HistogramData?, WaveformData?) -> Unit)? = null
     private var analysisFrameCounter = 0
+    // Small offscreen target for the analysis readback: the scene is re-drawn (no assist overlays)
+    // at 256×192 and read back at ~190 KB, instead of glReadPixels on the FULL preview framebuffer
+    // (a 4K preview = ~33 MB copy that stalled the GL thread every 5th frame — visible as periodic
+    // preview/zoom stutter, and it polluted the meter with peaking/zebra pixels).
+    private var analysisFbo = 0
+    private var analysisTex = 0
     private var analysisBuffer: ByteBuffer? = null
     private var analysisBytes: ByteArray? = null
     private var analysisBufferW = 0
@@ -334,7 +340,7 @@ class GlPipeline {
             // the 4K preview on the readback. (Was every 12th ≈ 2.5×/s, which felt laggy.)
             if (++analysisFrameCounter >= 5) {
                 analysisFrameCounter = 0
-                runAnalysisReadback(core)
+                runAnalysisReadback(core, previewTransfer, sx, sy, roll, previewCrop, loupeX, loupeY)
             }
         }
     }
@@ -345,7 +351,16 @@ class GlPipeline {
      * so the reused [analysisBytes] snapshot is never overwritten while the executor reads it. Fully
      * wrapped so any failure degrades to "no scopes this frame" rather than breaking rendering.
      */
-    private fun runAnalysisReadback(core: EglCore) {
+    private fun runAnalysisReadback(
+        core: EglCore,
+        transfer: ColorTransfer?,
+        sx: Float,
+        sy: Float,
+        roll: Float,
+        crop: Float,
+        centerX: Float,
+        centerY: Float,
+    ) {
         if (previewEgl == EGL14.EGL_NO_SURFACE || previewW <= 0 || previewH <= 0) return
         if (analysisBusy) return
         val cb = analysisCallback ?: return
@@ -355,8 +370,8 @@ class GlPipeline {
         val doWave = analysisWaveform
         if (!doHist && !doWave) return
         try {
-            val w = previewW
-            val h = previewH
+            val w = ANALYSIS_W
+            val h = ANALYSIS_H
             val size = w * h * 4
             if (analysisBuffer == null || analysisBufferW != w || analysisBufferH != h) {
                 analysisBuffer = ByteBuffer.allocateDirect(size).order(ByteOrder.nativeOrder())
@@ -367,8 +382,32 @@ class GlPipeline {
             val buf = analysisBuffer ?: return
             val bytes = analysisBytes ?: return
             core.makeCurrent(previewEgl)
+            if (analysisFbo == 0) {
+                val ids = IntArray(1)
+                GLES20.glGenTextures(1, ids, 0)
+                analysisTex = ids[0]
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, analysisTex)
+                GLES20.glTexImage2D(
+                    GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, w, h, 0,
+                    GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null,
+                )
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+                GLES20.glGenFramebuffers(1, ids, 0)
+                analysisFbo = ids[0]
+                GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, analysisFbo)
+                GLES20.glFramebufferTexture2D(
+                    GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, analysisTex, 0,
+                )
+            } else {
+                GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, analysisFbo)
+            }
+            // Re-draw the scene (same transform/EIS/crop as the preview, minus peaking/zebra/false-
+            // color so assist overlays never pollute the meter) into the small target and read THAT.
+            renderer.draw(stMatrix, w, h, transfer, false, false, false, sx, sy, roll, crop, centerX, centerY)
             buf.rewind()
             GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
             buf.rewind()
             buf.get(bytes, 0, size)
             analysisBusy = true
@@ -422,6 +461,10 @@ class GlPipeline {
 // pattern (e.g. camera/meteringRect, camera/centerCropBox).
 
 /** RGBA snapshot -> luma + per-channel 256-bin histograms, subsampled for speed (Rec.2020 luma). */
+// Analysis target size: plenty for a 256-bin histogram / on-screen waveform, tiny to read back.
+private const val ANALYSIS_W = 256
+private const val ANALYSIS_H = 192
+
 internal fun computeHistogram(bytes: ByteArray, w: Int, h: Int): HistogramData {
     val luma = IntArray(256)
     val red = IntArray(256)

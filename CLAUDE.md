@@ -104,11 +104,26 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   4080×3064. `StillSnapshot` repacks YUV_420_888→NV21 on the camera thread and JPEG-encodes lazily
   on the io thread; standalone cameras keep the proven HAL-JPEG path. A capture watchdog
   (`CAPTURE_WATCHDOG_MS`) fails any shot whose image never arrives so the shutter can never wedge.
-- **Seamless zoom = the logical camera (2026-07-14).** Camera 0 (`logicalMultiCamera`, physIds
-  3/2/4/5) spans zoomRatio 0.6–20 with HAL-internal lens crossing — pinch never reopens. Lens picks
-  are zoom presets; TELE pins standalone 4 (digital 1–10×) and OFF returns to logical at 3×. Zoom
-  ticks use the controller fast path (cached repeating builder, zoom keys only) — routing them
-  through the full `startPreview` rebuild read as stutter.
+- **Seamless zoom = the logical camera, PHOTO ONLY (2026-07-14).** Camera 0 (`logicalMultiCamera`,
+  physIds 3/2/4/5) spans zoomRatio 0.6–20 with HAL-internal lens crossing — pinch never reopens.
+  Lens picks are zoom presets; TELE pins standalone 4 (digital 1–10×) and OFF returns to logical at
+  3×. Zoom ticks use the controller fast path (cached repeating builder, zoom keys only) — routing
+  them through the full `startPreview` rebuild read as stutter. Pinch/zoom events are additionally
+  COALESCED in the ViewModel (leading apply + 33 ms trailing flush of the newest value) — per-event
+  application recomposed the whole tree at input rate (~120 Hz) and read as jank.
+- **VIDEO stays on the STANDALONE lenses — the logical camera's EIS leaks its warp margin
+  (2026-07-14).** With any video stabilization on (Standard AND Active), camera 0's stream carries
+  an uncorrected EIS warp band (~6% of width) on one edge — in the PREVIEW and in the RECORDED
+  FILE (device-verified frame extraction; displays as a rainbow-smear band at the bottom in
+  portrait playback). `resolveNonTeleId`: photo=logical/seamless, video=matching standalone;
+  `setVideoMode` remaps zoom between the unified main-relative scale and the lens-local scale so
+  framing carries across the mode flip.
+- **Analysis readback is FBO-downsampled (2026-07-14).** The scopes/AE readback used to
+  `glReadPixels` the FULL preview framebuffer (~33 MB at 4K) every 5th frame — a periodic GL-thread
+  stall that read as preview/zoom stutter, and it metered peaking/zebra overlay pixels. It now
+  re-draws the clean scene into a 256×192 FBO (~190 KB readback). The REC tally border follows the
+  panel's physical rounded corners via the WindowInsets RoundedCorner API (a square border's
+  corners fall outside the visible area and vanish).
 - **Session fallback ladder** in `CameraController.configureSession`: attempt 0 full → 1 drop RAW → 2
   drop HLG → 3 preview-only. Keep it; different capability combos fail on this HAL.
 - **Preview host is a `TextureView`, not `SurfaceView`.** A SurfaceView's surface sits behind the
