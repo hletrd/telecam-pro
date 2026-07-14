@@ -237,6 +237,12 @@ class CameraController(context: Context) {
     private val oplusModeKey = CaptureRequest.Key("com.oplus.camera.mode", Byte::class.javaObjectType)
     private val oplusOriginalZoomRatioKey = CaptureRequest.Key("com.oplus.original.zoomRatio", Float::class.javaObjectType)
 
+    // Cached repeating request builder + callback for the zoom fast path: [setZoomRatio] mutates
+    // ONLY the zoom keys on this builder and resubmits, instead of re-deriving the full request per
+    // pinch tick. Camera-thread confined; refreshed by every full startPreview rebuild.
+    private var previewBuilder: CaptureRequest.Builder? = null
+    private var previewCallback: CameraCaptureSession.CaptureCallback? = null
+
     /** Sets the HAL video stabilization on the preview/video repeating request: the standard mode plus the vendor mirror. */
     private fun CaptureRequest.Builder.applyVideoStab() {
         set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, videoStabHalMode)
@@ -265,6 +271,30 @@ class CameraController(context: Context) {
         runCatching {
             set(oplusOriginalZoomRatioKey, effectiveZoom)
         }.onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "original zoom ratio hint rejected: ${it.message}") }
+    }
+
+    /**
+     * Zoom-only fast path (see CameraEngine.setZoomRatio): mutate the cached repeating builder's
+     * zoom keys and resubmit — no full request re-derivation, no metering/AF churn. Falls back to a
+     * full [startPreview] rebuild when no builder is cached yet (pre-first-preview) or in
+     * constrained high-speed mode (whose repeating request is a burst list).
+     */
+    fun setZoomRatio(ratio: Float) {
+        postToCamera {
+            controls = controls.copy(zoomRatio = ratio)
+            val s = session ?: return@postToCamera
+            val b = previewBuilder
+            val cb = previewCallback
+            if (b == null || cb == null || highSpeedFps > 0) { startPreview(); return@postToCamera }
+            runCatching {
+                caps.zoomRatioRange?.let { b.set(CaptureRequest.CONTROL_ZOOM_RATIO, ratio.coerceIn(it.lower, it.upper)) }
+                // Keep OPPO's logical-zoom session hint in step (it contextualizes OIS/EIS strength);
+                // same guarded write as applyTeleconverterHints.
+                val effectiveZoom = ratio.coerceAtLeast(1f) * if (teleconverterMode) TELECONVERTER_MAGNIFICATION else 1f
+                runCatching { b.set(oplusOriginalZoomRatioKey, effectiveZoom) }
+                s.setRepeatingRequest(b.build(), cb, handler)
+            }.onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "zoom fast path failed, rebuilding: ${it.message}") }
+        }
     }
 
     /** Live-updates the HAL video stabilization mode and re-issues the repeating request. */
@@ -551,6 +581,8 @@ class CameraController(context: Context) {
                 builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
             }
             afTriggerPending = false
+            previewBuilder = builder
+            previewCallback = callback
             s.setRepeatingRequest(builder.build(), callback, handler)
         }.onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "startPreview skipped: ${it.message}") }
     }

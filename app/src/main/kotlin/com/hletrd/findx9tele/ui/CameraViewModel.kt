@@ -145,10 +145,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.onPreviewAspect = { aspect -> _state.update { it.copy(previewAspect = aspect) } }
         // Camera health (engine camera/setup threads → StateFlow is thread-safe): dims the shutter
         // while the session is down instead of silently declining taps.
-        engine.onCameraReadyChange = { ready ->
-            _state.update { it.copy(cameraReady = ready) }
-            if (ready) lensSwitching = false // pinch lens-switch reopen landed — allow the next switch
-        }
+        engine.onCameraReadyChange = { ready -> _state.update { it.copy(cameraReady = ready) } }
         // DEBUG: adb-driven zoom injection to test lens switching without a real pinch (adb can't
         // simulate a two-finger pinch on this device). Usage:
         //   adb shell am broadcast -a me.hletrd.telecampro.DEBUG_ZOOM --ef ratio 0.5
@@ -645,12 +642,21 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         applyZoomRatio(ratio)
     }
     private fun applyZoomRatio(ratio: Float) {
-        updateControls(FnSlot.ZOOM) { it.copy(zoomRatio = ratio) }
-        // App-level lens switching (TC off only): if the MAIN-relative zoom crossed a lens threshold,
-        // reopen the matching standalone lens. ManualControls (focus/exposure) persist across the
-        // reopen → AF/AE carry over for a smoother handoff. [lensSwitching] debounces; the recursive
-        // call from maybeSwitchLensForZoom is guarded by that flag.
-        if (!_state.value.teleconverterMode) maybeSwitchLensForZoom(ratio)
+        val range = _state.value.caps?.zoomRatioRange
+        val z = if (range != null) ratio.coerceIn(range.lower, range.upper) else ratio
+        // Zoom goes STRAIGHT to the engine fast path (cached-builder resubmit). Routing it through
+        // updateControls re-applied the FULL control set per pinch tick behind the 40 ms throttle —
+        // the reported zoom lag. On the logical camera the HAL crosses lenses internally, so the
+        // old per-threshold standalone reopen (maybeSwitchLensForZoom) is gone with it; only the
+        // chip highlight tracks the zoom band. Persistence rides the debounced settings save.
+        engine.setZoomRatio(z)
+        val lensBand = if (_state.value.teleconverterMode) _state.value.lens else LensChoice.forZoom(z)
+        _state.update { it.copy(controls = it.controls.copy(zoomRatio = z), lens = lensBand) }
+        // A pending throttled full-apply captured OLDER controls — refresh its zoom so it can't
+        // briefly snap the ratio back when it lands.
+        pendingControls = pendingControls?.copy(zoomRatio = z)
+        markChanged(FnSlot.ZOOM)
+        scheduleSettingsSave()
     }
     // Hardware slide-zoom easing: the camera button emits DISCRETE key repeats (~20 Hz), and applying
     // each 1.04x jump directly reads as stutter. Instead the steps move a TARGET and a ~30 Hz ticker
@@ -704,38 +710,6 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // broadcast — can trigger it.)
     }
 
-    @Volatile private var lensSwitching = false
-
-    /** Pick the lens whose band the main-relative zoom is in, or null if it's still the current one.
-     *  Band edges (0.8 / 2.4 / 7.5) sit slightly INSIDE the lens native zooms to give hysteresis so
-     *  the zoom doesn't flap at a threshold. */
-    private fun lensForZoom(mainRelative: Float, current: LensChoice): LensChoice? {
-        val target = when {
-            mainRelative < 0.8f -> LensChoice.ULTRAWIDE
-            mainRelative < 2.4f -> LensChoice.MAIN
-            mainRelative < 7.5f -> LensChoice.TELE3X
-            else -> LensChoice.TELE10X
-        }
-        return if (target != current) target else null
-    }
-
-    private fun maybeSwitchLensForZoom(zoomRatio: Float) {
-        if (lensSwitching) return
-        val caps = _state.value.caps ?: return
-        val current = _state.value.lens
-        val baseMul = (caps.equivalentFocalMm ?: 23f) / LensChoice.MAIN.targetEquivMm
-        val mainRelative = zoomRatio * baseMul
-        val target = lensForZoom(mainRelative, current) ?: return
-        lensSwitching = true
-        // Remap the zoom to the new lens's native ratio (mainRelative / newBase). The final clamp to
-        // the new lens's zoomRatioRange happens at the Camera2 apply (after the reopen refreshes caps),
-        // so passing a value outside the old range here is safe.
-        val newBase = target.targetEquivMm / LensChoice.MAIN.targetEquivMm
-        val newZoom = (mainRelative / newBase).coerceAtLeast(1f)
-        engine.setLensOnly(target)
-        applyZoomRatio(newZoom)
-        _state.update { it.copy(lens = target) }
-    }
     override fun onJpegQuality(quality: Int) = updateControls(persist = true) { it.copy(jpegQuality = quality) }
 
     // ---- Modes ----
@@ -807,24 +781,36 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
     override fun onToggleTeleconverter(enabled: Boolean) {
         if (rejectIfRecording("Stop REC first")) return
-        // The teleconverter is only meaningful on the 3× periscope. Turning it ON from any other lens
-        // switches to 3× (which itself bundles teleconverter mode on, one reopen); onLens keeps the
-        // lens picker + TELE chips in sync. Turning it OFF just clears the afocal flip on the 3× lens.
-        if (enabled && _state.value.lens != com.hletrd.findx9tele.camera.LensChoice.TELE3X) {
-            onLens(com.hletrd.findx9tele.camera.LensChoice.TELE3X)
-            return
+        // TELE pins the STANDALONE 3× camera (the converter's host lens; digital-only zoom, afocal
+        // flip). OFF returns to the seamless logical camera at the 3× preset so framing carries
+        // over. Both are one setLens camera switch.
+        engine.setLens(com.hletrd.findx9tele.camera.LensChoice.TELE3X, enabled)
+        _state.update {
+            it.copy(
+                teleconverterMode = enabled,
+                lens = com.hletrd.findx9tele.camera.LensChoice.TELE3X,
+                controls = it.controls.copy(
+                    zoomRatio = if (enabled) 1f else com.hletrd.findx9tele.camera.LensChoice.TELE3X.zoomPreset,
+                ),
+            )
         }
-        engine.setTeleconverterMode(enabled)
-        _state.update { it.copy(teleconverterMode = enabled) }
         markChanged(FnSlot.TELECONVERTER)
         saveSettingsIfEnabled()
     }
     override fun onLens(choice: LensChoice) {
         if (rejectIfRecording("Stop REC first")) return
-        // Bundled in the engine: resolves the lens id + flips teleconverter mode (3× on, else off)
-        // in one reopen. Mirror both into UI state so the picker and the TELE chip stay in sync.
-        engine.setLens(choice)
-        _state.update { it.copy(lens = choice, teleconverterMode = choice.isTeleconverterLens) }
+        // A lens pick is a ZOOM PRESET on the logical seamless camera (no reopen, no black gap).
+        // TELE stays on only when it already is AND the pick is its 3× host lens; any other pick
+        // exits converter shooting back to the seamless camera.
+        val keepTc = _state.value.teleconverterMode && choice == LensChoice.TELE3X
+        engine.setLens(choice, keepTc)
+        _state.update {
+            it.copy(
+                lens = choice,
+                teleconverterMode = keepTc,
+                controls = it.controls.copy(zoomRatio = if (keepTc) 1f else choice.zoomPreset),
+            )
+        }
         markChanged(FnSlot.TELECONVERTER)
         saveSettingsIfEnabled()
     }

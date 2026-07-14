@@ -223,13 +223,27 @@ const val TELECONVERTER_MAGNIFICATION = 300f / 70f
  * app-side gyro warping), and selecting any other lens turns teleconverter mode OFF, all in one
  * action.
  */
-enum class LensChoice(val targetEquivMm: Float, val label: String) {
-    ULTRAWIDE(14f, "0.6×"),
-    MAIN(23f, "1×"),
-    TELE3X(70f, "3×"),
-    TELE10X(230f, "10×");
+enum class LensChoice(val targetEquivMm: Float, val label: String, val zoomPreset: Float) {
+    ULTRAWIDE(14f, "0.6×", 0.6f),
+    MAIN(23f, "1×", 1f),
+    TELE3X(70f, "3×", 3f),
+    TELE10X(230f, "10×", 10f);
 
     val isTeleconverterLens: Boolean get() = this == TELE3X
+
+    companion object {
+        /**
+         * The lens band a MAIN-relative zoom sits in — which chip to highlight while a pinch sweeps
+         * the logical camera's unified 0.6–20× range (the HAL crosses the physical lenses at ~these
+         * ratios). Pure for JVM tests.
+         */
+        fun forZoom(zoom: Float): LensChoice = when {
+            zoom < 1f -> ULTRAWIDE
+            zoom < 3f -> MAIN
+            zoom < 10f -> TELE3X
+            else -> TELE10X
+        }
+    }
 }
 
 /**

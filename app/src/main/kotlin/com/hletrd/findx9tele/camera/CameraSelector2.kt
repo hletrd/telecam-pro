@@ -62,6 +62,23 @@ object CameraSelector2 {
     }
 
     /**
+     * The back LOGICAL multi-camera id (physical sub-ids present) — the seamless-zoom home. Driving
+     * CONTROL_ZOOM_RATIO on this id lets the HAL cross the physical lenses internally (0.6–20× on
+     * this device, physIds 3/2/4/5) with digital fill between the optical steps — no reopen, the
+     * stock-camera behavior. This is NOT the setPhysicalCameraId ROUTING that crashes the QTI HAL:
+     * the logical camera is opened plainly with no per-stream physical routing.
+     */
+    fun logicalBackId(manager: CameraManager): String? {
+        val ids = runCatching { manager.cameraIdList }.getOrDefault(emptyArray())
+        for (id in ids) {
+            val chars = runCatching { manager.getCameraCharacteristics(id) }.getOrNull() ?: continue
+            if (chars.get(CameraCharacteristics.LENS_FACING) != CameraMetadata.LENS_FACING_BACK) continue
+            if (chars.physicalCameraIds.isNotEmpty()) return id
+        }
+        return null
+    }
+
+    /**
      * Resolves the lens whose 35mm-equiv is closest to [targetEquivMm] to a concrete override id
      * string ("logicalId" for a standalone, "logicalId:physicalId" for a routed sub-camera). Returns
      * null when no back lens is readable. Used by the lens switcher to pick UW/main/3×/10×; prefers a

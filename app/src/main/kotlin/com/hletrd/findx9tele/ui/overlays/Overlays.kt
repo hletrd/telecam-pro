@@ -336,7 +336,10 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier) {
     val focalLabel = when {
         focal <= 0f -> "--"
         state.teleconverterMode -> "${effFocal}mm TELE"
-        else -> "%.0fmm".format(Locale.US, focal)
+        // Seamless zoom: the logical camera's equiv focal is the MAIN lens's (23 mm) and the unified
+        // zoom is main-relative, so the EFFECTIVE focal is their product — 14 mm at 0.6×, 230 mm at
+        // 10× — tracking the lens the HAL actually has active, like the TELE readout does.
+        else -> "%.0fmm".format(Locale.US, focal * state.controls.zoomRatio.coerceAtLeast(0.01f))
     }
     Row(
         modifier = modifier

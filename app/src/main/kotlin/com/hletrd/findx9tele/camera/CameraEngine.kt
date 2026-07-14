@@ -257,13 +257,10 @@ class CameraEngine(private val context: Context) {
 
     fun setTeleconverterMode(enabled: Boolean) {
         if (teleconverterMode == enabled) return
-        teleconverterMode = enabled
-        applyStabilization()
-        // The afocal 180° preview flip can update live, but OPPO's available stabilization hints
-        // (`com.oplus.camera.mode` + effective `original.zoomRatio`) are session keys. Reopen while
-        // idle so the HAL chooses the OIS/EIS profile with the 300 mm context, matching the
-        // CameraUnit path as closely as Camera2 allows.
-        reopenForSession()
+        // TELE is a CAMERA SWITCH, not just the afocal flip: ON pins the standalone 3× (the
+        // converter's host lens — digital-only zoom, session-key Hasselblad/zoom hints); OFF returns
+        // to the logical seamless-zoom camera at the 3× preset so the framing carries over.
+        setLens(LensChoice.TELE3X, enabled)
     }
 
     fun setVideoStabMode(m: VideoStabMode) {
@@ -586,39 +583,37 @@ class CameraEngine(private val context: Context) {
      * a concrete (standalone-preferred) camera id so nothing is hardcoded. No-op mid-recording
      * (reconfiguring under the encoder corrupts the clip); the UI also gates it.
      */
-    fun setLens(choice: LensChoice, teleconverterOverride: Boolean = choice.isTeleconverterLens) {
+    fun setLens(choice: LensChoice, teleconverterOverride: Boolean = false) {
         if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
         lensChoice = choice
-        // Resolve the focal→camera-id ON setupExecutor: overrideIdForFocal enumerates every back
-        // camera (plus physical sub-ids) via getCameraCharacteristics — a dozen-plus Binder IPCs on
-        // this device — and this path used to run them on the MAIN thread for every lens tap and
-        // inside the cold-start settings restore (the same IPC burst the initial open was moved off
-        // main to avoid). The single-thread executor also keeps resolve→reopen ordered.
+        // Resolve the camera id ON setupExecutor (dozen-plus Binder IPCs; also orders resolve→reopen).
         setupExecutor.execute {
-            val id = CameraSelector2.overrideIdForFocal(manager, choice.targetEquivMm)
-            if (id == null) { onStatus?.invoke("${choice.label} unavailable"); return@execute }
-            // Set the teleconverter flag BEFORE the reopen so applyStabilization() inside
-            // setCameraOverride picks the right rotation and HAL mode for the new lens in one pass.
-            teleconverterMode = teleconverterOverride
-            setCameraOverride(id)
-        }
-    }
-
-    /**
-     * Switch the physical lens WITHOUT toggling teleconverter mode — used by pinch-driven lens
-     * switching (TC off), where crossing a zoom threshold reopens the matching standalone camera.
-     * [ManualControls] (focus-distance diopters, ISO, exposure) live on this engine and are NOT reset
-     * across the reopen, so AF/AE carry over to the new lens for a smoother handoff (the focus
-     * distance is in diopters = 1/subject-distance, which is lens-independent). [setLens] (the manual
-     * picker) bundles TC for the 3× lens; this one leaves TC untouched.
-     */
-    fun setLensOnly(choice: LensChoice) {
-        if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
-        lensChoice = choice
-        setupExecutor.execute {
-            val id = CameraSelector2.overrideIdForFocal(manager, choice.targetEquivMm)
-            if (id == null) { onStatus?.invoke("${choice.label} unavailable"); return@execute }
-            setCameraOverride(id)
+            if (teleconverterOverride) {
+                // Physical-converter shooting: pin the STANDALONE 3× camera — the converter clamps
+                // onto that lens, so the logical camera's seamless switching would zoom right off it.
+                // Digital 1–10× only, afocal flip on, RAW available (standalone id).
+                val id = CameraSelector2.overrideIdForFocal(manager, LensChoice.TELE3X.targetEquivMm)
+                if (id == null) { onStatus?.invoke("3× unavailable"); return@execute }
+                teleconverterMode = true
+                controls = controls.copy(zoomRatio = 1f)
+                if (overrideId != id || controller == null) setCameraOverride(id) else applyStabilization()
+            } else {
+                // Seamless home: the LOGICAL multicamera. A lens pick is a ZOOM PRESET on it — the
+                // HAL crosses the physical lenses internally at the optical ratios and fills between
+                // them digitally, so pinch sweeps 0.6→20× with no reopen and no black gap (stock-
+                // camera behavior; the per-threshold standalone reopen this replaces read as a ~1 s
+                // stutter). Falls back to the closest standalone id on devices without a logical cam.
+                val id = CameraSelector2.logicalBackId(manager)
+                    ?: CameraSelector2.overrideIdForFocal(manager, choice.targetEquivMm)
+                if (id == null) { onStatus?.invoke("${choice.label} unavailable"); return@execute }
+                teleconverterMode = false
+                if (overrideId != id || controller == null) {
+                    controls = controls.copy(zoomRatio = choice.zoomPreset)
+                    setCameraOverride(id)
+                } else {
+                    setZoomRatio(choice.zoomPreset)
+                }
+            }
         }
     }
 
@@ -660,8 +655,25 @@ class CameraEngine(private val context: Context) {
     }
 
     private fun selectCurrentLens(): TeleSelection? {
-        val id = overrideId ?: (CameraSelector2.overrideIdForFocal(manager, lensChoice.targetEquivMm) ?: return null)
+        val id = overrideId
+            ?: (if (!teleconverterMode) CameraSelector2.logicalBackId(manager) else null)
+            ?: CameraSelector2.overrideIdForFocal(manager, lensChoice.targetEquivMm)
+            ?: return null
         return CameraSelector2.select(manager, id)
+    }
+
+    /**
+     * Zoom FAST PATH — pinch/dial ticks arrive at input rate, and routing them through the full
+     * setControls → startPreview rebuild (request re-derivation, metering regions, AF-trigger arming,
+     * new callback per tick) is what read as zoom lag/stutter. The controller instead mutates only
+     * the zoom keys on its CACHED repeating builder and resubmits. [controls] stays the source of
+     * truth so the next full rebuild carries the same value (no snap-back).
+     */
+    fun setZoomRatio(ratio: Float) {
+        val r = caps?.zoomRatioRange
+        val z = if (r != null) ratio.coerceIn(r.lower, r.upper) else ratio
+        controls = controls.copy(zoomRatio = z)
+        controller?.setZoomRatio(z)
     }
 
     // ---- Photo ----
