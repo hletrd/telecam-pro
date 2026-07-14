@@ -482,13 +482,24 @@ fun CameraScreen(
             // Display MAIN-relative magnification (the stock-app style: 3× at the 3× tele's native,
             // 10× at the 10×, 13× with the TC). baseMul = opened lens equiv / main equiv (70/23 ≈ 3.04
             // for the 3× tele); the afocal converter multiplies on top (300/70). So tele-native shows
-            // ~3.0× (TC off) / ~13.0× (TC on).
-            val baseMul = (state.caps?.equivalentFocalMm ?: 70f) / LensChoice.MAIN.targetEquivMm
-            val tcMul = if (state.teleconverterMode) TELECONVERTER_MAGNIFICATION else 1f
-            val mul = baseMul * tcMul
+            // ~3.0× (TC off) / 13–60× (TC on). TELE uses the CONSTANT display scale so the pill,
+            // the snaps (30×/60×), and the ceiling all land on the same round numbers — the
+            // caps-measured equiv (69.4 mm) would read 59.5× at the spec'd 60× ceiling.
+            val mul = if (state.teleconverterMode) {
+                com.hletrd.findx9tele.camera.TELE_DISPLAY_BASE
+            } else {
+                (state.caps?.equivalentFocalMm ?: 70f) / LensChoice.MAIN.targetEquivMm
+            }
             ZoomIndicator(
                 zoom = state.controls.zoomRatio * mul,
-                range = state.caps?.zoomRatioRange?.let { android.util.Range(it.lower * mul, it.upper * mul) },
+                range = state.caps?.zoomRatioRange?.let {
+                    val hi = if (state.teleconverterMode) {
+                        minOf(it.upper * mul, com.hletrd.findx9tele.camera.TELE_MAX_DISPLAY_ZOOM)
+                    } else {
+                        it.upper * mul
+                    }
+                    android.util.Range(it.lower * mul, hi)
+                },
                 numberRotation = overlayRotation,
             )
         }

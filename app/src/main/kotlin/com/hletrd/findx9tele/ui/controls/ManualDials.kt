@@ -135,7 +135,12 @@ fun ManualDialCluster(
                 DialType.ISO -> IsoRuler(controls = controls, caps = caps, onIso = actions::onIso)
                 DialType.WB -> WbRuler(controls = controls, onWbKelvin = actions::onWbKelvin)
                 DialType.EV -> EvRuler(controls = controls, caps = caps, onEv = actions::onExposureCompensation)
-                DialType.ZOOM -> ZoomRuler(controls = controls, caps = caps, onZoomRatio = actions::onZoomRatio)
+                DialType.ZOOM -> ZoomRuler(
+                    controls = controls,
+                    caps = caps,
+                    teleconverter = state.teleconverterMode,
+                    onZoomRatio = actions::onZoomRatio,
+                )
                 null -> Unit
             }
         }
@@ -740,16 +745,29 @@ private fun EvRuler(controls: ManualControls, caps: CameraCaps?, onEv: (Int) -> 
 }
 
 @Composable
-private fun ZoomRuler(controls: ManualControls, caps: CameraCaps?, onZoomRatio: (Float) -> Unit) {
+private fun ZoomRuler(
+    controls: ManualControls,
+    caps: CameraCaps?,
+    teleconverter: Boolean = false,
+    onZoomRatio: (Float) -> Unit,
+) {
+    // TELE reads and drags on the converter-equivalent scale (13–60×); the callback still writes
+    // the LENS-LOCAL ratio the engine owns. Other modes are 1:1.
+    val base = if (teleconverter) com.hletrd.findx9tele.camera.TELE_DISPLAY_BASE else 1f
     val range = caps?.zoomRatioRange ?: Range(1f, 1f)
-    val lo = range.lower
-    val hi = range.upper
-    val fraction = if (hi <= lo) 0f else ((controls.zoomRatio - lo) / (hi - lo)).coerceIn(0f, 1f)
+    val lo = range.lower * base
+    val hi = if (teleconverter) {
+        minOf(range.upper * base, com.hletrd.findx9tele.camera.TELE_MAX_DISPLAY_ZOOM)
+    } else {
+        range.upper
+    }
+    val display = controls.zoomRatio * base
+    val fraction = if (hi <= lo) 0f else ((display - lo) / (hi - lo)).coerceIn(0f, 1f)
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        RulerReadout("%.1f×".format(Locale.US, controls.zoomRatio))
+        RulerReadout("%.1f×".format(Locale.US, display))
         RulerSlider(
             fraction = fraction,
-            onFractionChange = { f -> onZoomRatio((lo + f * (hi - lo)).coerceIn(lo, hi)) },
+            onFractionChange = { f -> onZoomRatio(((lo + f * (hi - lo)) / base).coerceIn(range.lower, hi / base)) },
             enabled = hi > lo,
             totalUnits = 120,
             majorEvery = 12,

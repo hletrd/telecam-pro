@@ -498,12 +498,19 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         onSelect = actions::onAspectRatio,
     )
     caps?.zoomRatioRange?.let { range ->
+        // TELE shows the converter-equivalent scale (13–60×) but writes the lens-local ratio.
+        val zBase = if (state.teleconverterMode) com.hletrd.findx9tele.camera.TELE_DISPLAY_BASE else 1f
+        val zHi = if (state.teleconverterMode) {
+            minOf(range.upper * zBase, com.hletrd.findx9tele.camera.TELE_MAX_DISPLAY_ZOOM)
+        } else {
+            range.upper
+        }
         LabeledSlider(
             label = "Zoom",
-            valueLabel = "%.1fx".format(Locale.US, state.controls.zoomRatio),
-            value = state.controls.zoomRatio.coerceIn(range.lower, range.upper),
-            onValueChange = actions::onZoomRatio,
-            valueRange = range.lower..range.upper,
+            valueLabel = "%.1fx".format(Locale.US, state.controls.zoomRatio * zBase),
+            value = (state.controls.zoomRatio * zBase).coerceIn(range.lower * zBase, zHi),
+            onValueChange = { v -> actions.onZoomRatio(v / zBase) },
+            valueRange = (range.lower * zBase)..zHi,
         )
     }
     LabeledSlider(

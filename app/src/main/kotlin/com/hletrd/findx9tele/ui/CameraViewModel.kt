@@ -650,7 +650,19 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     private fun applyZoomRatio(ratio: Float) {
         val range = _state.value.caps?.zoomRatioRange
-        val z = if (range != null) ratio.coerceIn(range.lower, range.upper) else ratio
+        var z = if (range != null) ratio.coerceIn(range.lower, range.upper) else ratio
+        if (_state.value.teleconverterMode) {
+            // TELE runs on the converter-equivalent display scale (13–60×): magnetic snaps at the
+            // user-spec 30×/60× marks (±6%), ceiling at 60×.
+            val disp = z * com.hletrd.findx9tele.camera.TELE_DISPLAY_BASE
+            val snapped = com.hletrd.findx9tele.camera.TELE_ZOOM_SNAPS
+                .firstOrNull { kotlin.math.abs(disp - it) < it * 0.06f }
+            if (snapped != null) z = snapped / com.hletrd.findx9tele.camera.TELE_DISPLAY_BASE
+            z = z.coerceIn(
+                1f,
+                com.hletrd.findx9tele.camera.TELE_MAX_DISPLAY_ZOOM / com.hletrd.findx9tele.camera.TELE_DISPLAY_BASE,
+            )
+        }
         zoomPendingRatio = z
         if (zoomFlushScheduled) return // the scheduled flush picks up this newest value
         zoomFlushScheduled = true

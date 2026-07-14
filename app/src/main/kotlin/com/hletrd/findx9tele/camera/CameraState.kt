@@ -215,6 +215,12 @@ enum class AudioInputPreference(val label: String) {
  */
 const val TELECONVERTER_MAGNIFICATION = 300f / 70f
 
+// TELE mode's DISPLAY zoom scale (converter-equivalent, main-relative): local 1.0 on the 3× lens
+// with the 4.3× converter ≈ 13×. The user-spec range is 13–60× with magnetic snaps at 30× / 60×.
+val TELE_DISPLAY_BASE: Float = (LensChoice.TELE3X.targetEquivMm / LensChoice.MAIN.targetEquivMm) * TELECONVERTER_MAGNIFICATION
+const val TELE_MAX_DISPLAY_ZOOM = 60f
+val TELE_ZOOM_SNAPS = floatArrayOf(30f, 60f)
+
 /**
  * The four rear lenses, addressed by their 35mm-equivalent focal length (the app resolves each to
  * the back camera whose equiv focal is closest — no hardcoded ids). [TELE3X] is the 3×/70 mm

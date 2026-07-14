@@ -320,6 +320,7 @@ class CameraEngine(private val context: Context) {
         if (paused) return // don't grab the camera while backgrounded (queued GL continuation, etc.)
         val sel = selection ?: return
         val c = caps ?: return
+        seedGlZoom()
         updateCameraReady(false)
         controller?.close() // idempotent: closes any prior controller so two never race for the device
         val ctrl = wireController()
@@ -760,6 +761,7 @@ class CameraEngine(private val context: Context) {
             previewStreamSize = choosePreviewStreamSize(sel)
             applyStabilization()
 
+            seedGlZoom()
             val deviceUp = java.util.concurrent.CountDownLatch(1)
             val deviceOk = java.util.concurrent.atomic.AtomicBoolean(false)
             next.open(
@@ -844,6 +846,18 @@ class CameraEngine(private val context: Context) {
     }
 
     /**
+     * Re-seeds the GL live-zoom pair at a camera (re)open. A fresh session's HAL RAMPS its zoom
+     * from 1.0 to the requested ratio over several frames — with a stale GL target the compensation
+     * can't mask it, which showed as a 1×→3× flicker the instant TELE turned off. Seeding target
+     * AND hal to the requested ratio holds the last frame steady; the first real capture result
+     * then reports the HAL's true (still-ramping) zoom and the crop masks the rest of the ramp.
+     */
+    private fun seedGlZoom() {
+        gl.setZoomTarget(controls.zoomRatio)
+        gl.setHalZoom(controls.zoomRatio)
+    }
+
+    /**
      * Zoom FAST PATH — pinch/dial ticks arrive at input rate, and routing them through the full
      * setControls → startPreview rebuild (request re-derivation, metering regions, AF-trigger arming,
      * new callback per tick) is what read as zoom lag/stutter. The controller instead mutates only
@@ -852,7 +866,14 @@ class CameraEngine(private val context: Context) {
      */
     fun setZoomRatio(ratio: Float) {
         val r = caps?.zoomRatioRange
-        val z = if (r != null) ratio.coerceIn(r.lower, r.upper) else ratio
+        // TELE's zoom is capped at the 60× display ceiling (local ≈4.6 on the 3× lens): past that
+        // the digital crop is unusable at 1400 mm-equivalent anyway.
+        val hi = if (teleconverterMode) {
+            minOf(r?.upper ?: Float.MAX_VALUE, TELE_MAX_DISPLAY_ZOOM / TELE_DISPLAY_BASE)
+        } else {
+            r?.upper ?: Float.MAX_VALUE
+        }
+        val z = ratio.coerceIn(r?.lower ?: ratio, hi)
         controls = controls.copy(zoomRatio = z)
         // The PREVIEW zooms instantly: GL crops the last frame to the requested ratio and
         // self-redraws (every setRepeatingRequest stalls this HAL's stream ~180 ms — measured —
@@ -1503,8 +1524,10 @@ class CameraEngine(private val context: Context) {
         // Effective 35 mm focal: what the FRAME shows — unified zoom on the logical camera already
         // lands on the active lens (equiv × leftover digital), TELE multiplies the converter.
         val baseEquiv = base?.equivalentFocalMm ?: 0f
+        // TELE uses the NOMINAL 300 mm base so EXIF matches the OSD/pill marks exactly
+        // (13×→300, 30×→690, 60×→1380); the caps-measured 69.4 mm equiv would read 680 at 30×.
         val eff = if (teleconverterMode) {
-            baseEquiv * c.zoomRatio.coerceAtLeast(1f) * TELECONVERTER_MAGNIFICATION
+            300f * c.zoomRatio.coerceAtLeast(1f)
         } else {
             baseEquiv * c.zoomRatio.coerceAtLeast(0.01f)
         }
