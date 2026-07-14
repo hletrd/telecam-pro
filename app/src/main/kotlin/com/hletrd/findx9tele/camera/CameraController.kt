@@ -316,6 +316,11 @@ class CameraController(context: Context) {
      * Each [onConfigureFailed] advances [configAttempt] and reconfigures; once the ladder is
      * exhausted the failure is surfaced through [onError].
      */
+    // WrongConstant suppressed for the session type only: TC mode passes the STOCK APP's vendor
+    // operation_mode (0x80b4, captured from CamX configure_streams — sensor mode 48, the 300 mm TC
+    // OIS profile), which lint cannot know. The HAL rejecting it lands in onConfigureFailed and the
+    // existing fallback ladder proceeds with SESSION_REGULAR semantics.
+    @android.annotation.SuppressLint("WrongConstant")
     private fun configureSession(onReady: Ready, onError: ErrorCb) {
         val camera = device ?: return
         val preview = glSurface ?: return
