@@ -314,6 +314,22 @@ fun CameraScreen(
             if (state.tapPoint != null) {
                 FocusReticle(point = state.tapPoint, indication = state.afIndication, modifier = Modifier.fillMaxSize())
             }
+
+            // Shutter blink: a ~90 ms black flash over the image the instant the shutter fires —
+            // the still itself takes pipeline-depth × frame-duration before exposing, and with no
+            // immediate acknowledgment every press reads as lag (user-reported). Inside the aspect
+            // box so only the image area blinks, mirror-style.
+            var shutterBlink by remember { mutableStateOf(false) }
+            LaunchedEffect(state.shutterFlashTick) {
+                if (state.shutterFlashTick > 0) {
+                    shutterBlink = true
+                    kotlinx.coroutines.delay(90)
+                    shutterBlink = false
+                }
+            }
+            if (shutterBlink) {
+                Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.85f)))
+            }
         }
 
         // Emphasized REC display (Sony FX): a thin red frame while rolling — unmissable, even in

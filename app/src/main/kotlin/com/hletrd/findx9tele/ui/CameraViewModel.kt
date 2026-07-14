@@ -968,6 +968,16 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
 
     /** Backward-compatible entry for existing callers: one-shot full press. */
+    /**
+     * Fires the capture AND blinks the viewfinder immediately. The still takes pipeline-depth ×
+     * frame-duration before it even starts exposing (~0.9 s measured in low light) — with no
+     * instant acknowledgment every press reads as shutter lag or a dead button.
+     */
+    private fun fireShutterWithFeedback() {
+        _state.update { it.copy(shutterFlashTick = it.shutterFlashTick + 1) }
+        engine.capturePhoto(_state.value.photoFormats)
+    }
+
     fun onHardwareShutter() = onHardwareFullKey(active = true)
 
     override fun onHardwareHalfPress(active: Boolean) {
@@ -992,7 +1002,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onCapturePhoto() {
         if (_state.value.timerCountdownSec > 0) return // countdown already in progress; ignore re-tap
         val seconds = _state.value.timer.seconds
-        if (seconds <= 0) engine.capturePhoto(_state.value.photoFormats) else startCountdown(seconds)
+        if (seconds <= 0) fireShutterWithFeedback() else startCountdown(seconds)
     }
 
     private fun startCountdown(seconds: Int) {
@@ -1003,7 +1013,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 if (cur <= 1) {
                     _state.update { it.copy(timerCountdownSec = 0) }
                     countdownRunnable = null
-                    engine.capturePhoto(_state.value.photoFormats)
+                    fireShutterWithFeedback()
                 } else {
                     _state.update { it.copy(timerCountdownSec = cur - 1) }
                     mainHandler.postDelayed(this, 1000)

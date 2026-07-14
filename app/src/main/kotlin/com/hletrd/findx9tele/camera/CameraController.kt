@@ -336,6 +336,7 @@ class CameraController(context: Context) {
             // (configureStreams: 'DataSpace override not allowed for format 0x20' -> SIGSEGV in
             // ChiMulticameraBase::Initialize). Only enable RAW for a standalone (non-routed) camera.
             standalone = selection.physicalId == null,
+            logicalMultiCamera = caps.isLogicalMultiCamera,
         )
         val useHlg = plan.useHlg
         val useJpeg = plan.useJpeg
@@ -349,13 +350,26 @@ class CameraController(context: Context) {
         }
         configs.add(previewCfg)
 
-        if (useJpeg) caps.largestJpegSize?.let { size ->
-            val reader = ImageReader.newInstance(size.width, size.height, ImageFormat.JPEG, 2)
-            reader.setOnImageAvailableListener({ onImage(it, isRaw = false) }, handler)
-            jpegReader = reader
-            configs.add(OutputConfiguration(reader.surface).apply {
-                selection.physicalId?.let { setPhysicalCameraId(it) }
-            })
+        if (useJpeg) {
+            // The LOGICAL multicamera can't allocate the full-size JPEG blob (device-observed
+            // gralloc "SnapAlloc: ValidateDescriptor invalid" — the image never arrives and the
+            // shot dies), so stills there come as YUV and the app encodes them itself (the save
+            // pipeline re-encodes through a Bitmap either way). Standalone cameras keep the proven
+            // HAL-JPEG path.
+            val useYuv = caps.isLogicalMultiCamera
+            val size = if (useYuv) caps.largestYuvSize else caps.largestJpegSize
+            size?.let {
+                val reader = ImageReader.newInstance(
+                    it.width, it.height,
+                    if (useYuv) ImageFormat.YUV_420_888 else ImageFormat.JPEG,
+                    2,
+                )
+                reader.setOnImageAvailableListener({ r -> onImage(r, isRaw = false) }, handler)
+                jpegReader = reader
+                configs.add(OutputConfiguration(reader.surface).apply {
+                    selection.physicalId?.let { pid -> setPhysicalCameraId(pid) }
+                })
+            }
         }
 
         if (useRaw) caps.rawSize?.let { size ->
@@ -674,6 +688,9 @@ class CameraController(context: Context) {
         postToCamera { startPreview() }
     }
 
+    /** Whether the ACTIVE session has a RAW stream (standalone cameras only on this HAL). */
+    val hasRawStream: Boolean get() = rawReader != null
+
     fun capturePhoto(wantJpeg: Boolean, wantRaw: Boolean, cb: PhotoCallback) {
         val posted = postToCamera {
             // Always surface a result through the callback (even on the no-target/not-ready paths) so a
@@ -691,7 +708,25 @@ class CameraController(context: Context) {
                 return@postToCamera cb.onError(IllegalStateException("Capture already in progress"))
             }
 
-            pending = Pending(jpeg != null, raw != null, cb)
+            val newPending = Pending(jpeg != null, raw != null, cb)
+            pending = newPending
+            // Watchdog: if the HAL never delivers an image (a failed stream allocation, a dropped
+            // buffer — device-observed as gralloc "SnapAlloc invalid" on an oversized JPEG), the
+            // pending slot would otherwise stay occupied FOREVER and every later shutter press
+            // reads "Capture already in progress" — a dead shutter. Fail the shot instead.
+            handler.postDelayed({
+                val p = pending
+                if (p === newPending && !p.done) {
+                    synchronized(p) {
+                        if (p.done) return@postDelayed
+                        p.done = true
+                        runCatching { p.jpeg?.close() }
+                        runCatching { p.raw?.close() }
+                    }
+                    pending = null
+                    p.cb.onError(IllegalStateException("Capture timed out — the camera delivered no image"))
+                }
+            }, CAPTURE_WATCHDOG_MS)
 
             // The device can disconnect between the null-checks above and the capture below (the same
             // async-teardown window startPreview guards): createCaptureRequest/capture then throw
@@ -710,11 +745,29 @@ class CameraController(context: Context) {
                     applyMetering(this, controls)
                     // We rotate pixels ourselves (HEIF) / tag DNG orientation; keep JPEG upright.
                     set(CaptureRequest.JPEG_ORIENTATION, 0)
+                    // Zero-shutter-lag: with the HAL AE owning exposure the HAL may serve the still
+                    // from its ring buffer (capture start ≈ tap instead of a full pipeline drain —
+                    // measured ~0.8 s in low light). Ignored by spec when AE is OFF (manual /
+                    // app-side priority modes need the requested values on the actual frame).
+                    if (controls.autoExposure) runCatching { set(CaptureRequest.CONTROL_ENABLE_ZSL, true) }
                 }
                 s.capture(req.build(), object : CameraCaptureSession.CaptureCallback() {
+                    override fun onCaptureStarted(
+                        session: CameraCaptureSession, request: CaptureRequest, timestamp: Long, frameNumber: Long,
+                    ) {
+                        // TRUE shutter moment (sensor exposure start): queue→started is the user-felt
+                        // shutter lag; started→completed→image is HAL processing + readout.
+                        if (BuildConfig.DEBUG) pending?.let {
+                            Log.i(TAG, "ShutterLag: started +${(System.nanoTime() - it.queuedAtNs) / 1_000_000} ms")
+                        }
+                    }
+
                     override fun onCaptureCompleted(
                         session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult,
                     ) {
+                        if (BuildConfig.DEBUG) pending?.let {
+                            Log.i(TAG, "ShutterLag: completed +${(System.nanoTime() - it.queuedAtNs) / 1_000_000} ms")
+                        }
                         pending?.let { it.result = result; tryComplete(it) }
                     }
                     override fun onCaptureFailed(session: CameraCaptureSession, request: CaptureRequest, failure: android.hardware.camera2.CaptureFailure) {
@@ -763,6 +816,9 @@ class CameraController(context: Context) {
             val haveRaw = !p.wantRaw || p.raw != null
             if (!(haveResult && haveJpeg && haveRaw)) return
             p.done = true
+        }
+        if (BuildConfig.DEBUG) {
+            Log.i(TAG, "ShutterLag: images+result +${(System.nanoTime() - p.queuedAtNs) / 1_000_000} ms")
         }
         val chars = rawChars
         try {
@@ -825,10 +881,15 @@ class CameraController(context: Context) {
         var raw: Image? = null
         var result: TotalCaptureResult? = null
         var done = false
+        // Shutter-lag instrumentation (DEBUG logs only): capture-queue time on the camera thread.
+        val queuedAtNs: Long = System.nanoTime()
     }
 
     private companion object {
         const val TAG = "CameraController"
+        // Outer bound for a still to fully deliver (exposure + HAL processing + readout). Longest
+        // legitimate case ≈ 1/10 s exposure × pipeline depth + multi-frame processing ≈ 3–4 s.
+        const val CAPTURE_WATCHDOG_MS = 8_000L
         // Highest fallback index (attempt 3 = preview-only). Beyond this the session can't be built.
         const val MAX_CONFIG_ATTEMPT = 3
         // Max time close() waits for the camera thread to release the HAL device before a reopen.
@@ -851,10 +912,16 @@ internal fun sessionAttemptPlan(
     wantHlg: Boolean,
     supportsRaw: Boolean,
     standalone: Boolean,
+    logicalMultiCamera: Boolean = false,
 ): SessionAttemptPlan = SessionAttemptPlan(
     useHlg = wantHlg && attempt < 2,
     useJpeg = attempt < 3,
-    useRaw = attempt < 1 && supportsRaw && standalone,
+    // RAW is STANDALONE-camera-only on this HAL, in BOTH failure modes: routed through a physical
+    // sub-camera it rejects the stream ("DataSpace override not allowed"), and on the plain
+    // LOGICAL camera a still with the RAW target errors the whole camera device ~5 s after the
+    // shot (device-observed CAMERA_ERROR(3), 2026-07-14) — no image ever arrives. DNG therefore
+    // exists only in TELE mode (standalone 3×) and on any explicit standalone selection.
+    useRaw = attempt < 1 && supportsRaw && standalone && !logicalMultiCamera,
 )
 
 /**

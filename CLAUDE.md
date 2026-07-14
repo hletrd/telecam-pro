@@ -93,8 +93,22 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
 - **SDR/8-bit shipping session.** HLG10 preview + full-res JPEG + RAW together crash the HAL. The
   Camera2 stream and EGL config therefore stay SDR/8-bit (`tenBit = false`). HLG/Log files use HEVC
   Main10 container profiles, but v1 is not end-to-end 10-bit capture and must not be marketed as such.
-- **RAW only on the standalone camera.** RAW routed through physical sub-camera routing crashes
-  (`DataSpace override not allowed for format 0x20`). Gated to `selection.physicalId == null`.
+- **RAW only on the standalone camera — in BOTH failure modes (extended 2026-07-14).** RAW routed
+  through physical sub-camera routing crashes configure (`DataSpace override not allowed for format
+  0x20`), AND a still with the RAW target on the plain LOGICAL camera errors the whole camera device
+  ~5 s after the shot (`CAMERA_ERROR(3)`, no image ever arrives). Gated to standalone selections
+  only (`sessionAttemptPlan` `!logicalMultiCamera`); DNG therefore exists only in TELE mode.
+- **Stills on the LOGICAL camera are YUV, not HAL JPEG (2026-07-14).** gralloc rejects the ~42 MB
+  JPEG blob allocation on the plain logical session (`SnapAlloc: ValidateDescriptor invalid` — the
+  image never arrives and the shot wedges `pending`), at BOTH 4096×3072 and the logical array's own
+  4080×3064. `StillSnapshot` repacks YUV_420_888→NV21 on the camera thread and JPEG-encodes lazily
+  on the io thread; standalone cameras keep the proven HAL-JPEG path. A capture watchdog
+  (`CAPTURE_WATCHDOG_MS`) fails any shot whose image never arrives so the shutter can never wedge.
+- **Seamless zoom = the logical camera (2026-07-14).** Camera 0 (`logicalMultiCamera`, physIds
+  3/2/4/5) spans zoomRatio 0.6–20 with HAL-internal lens crossing — pinch never reopens. Lens picks
+  are zoom presets; TELE pins standalone 4 (digital 1–10×) and OFF returns to logical at 3×. Zoom
+  ticks use the controller fast path (cached repeating builder, zoom keys only) — routing them
+  through the full `startPreview` rebuild read as stutter.
 - **Session fallback ladder** in `CameraController.configureSession`: attempt 0 full → 1 drop RAW → 2
   drop HLG → 3 preview-only. Keep it; different capability combos fail on this HAL.
 - **Preview host is a `TextureView`, not `SurfaceView`.** A SurfaceView's surface sits behind the

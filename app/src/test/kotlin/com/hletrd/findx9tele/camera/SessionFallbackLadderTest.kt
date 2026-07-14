@@ -54,4 +54,14 @@ class SessionFallbackLadderTest {
     fun `HLG is never enabled when unwanted or unsupported`() {
         assertFalse(sessionAttemptPlan(attempt = 0, wantHlg = false, supportsRaw = true, standalone = true).useHlg)
     }
+
+    @Test
+    fun logicalMultiCamera_neverGetsRaw_evenAtAttempt0() {
+        // Device-observed 2026-07-14: a still with the RAW target on the plain logical camera
+        // errors the whole camera device ~5 s after the shot (CAMERA_ERROR(3)); the image never
+        // arrives. RAW is standalone-only in BOTH failure modes.
+        val p = sessionAttemptPlan(attempt = 0, wantHlg = false, supportsRaw = true, standalone = true, logicalMultiCamera = true)
+        assertFalse(p.useRaw)
+        assertTrue(p.useJpeg)
+    }
 }

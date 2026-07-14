@@ -42,6 +42,12 @@ data class CameraCaps(
     val rawSize: Size?,
     val supportedDynamicRangeProfiles: Set<Long>,
     val largestJpegSize: Size?,
+    // Largest YUV_420_888 still size within the camera's own active array. On the LOGICAL
+    // multicamera the still path uses YUV instead of JPEG: this device's gralloc rejects the
+    // ~42 MB JPEG blob allocation on the plain logical session ("SnapAlloc: ValidateDescriptor
+    // invalid" — the image never arrives and the shot dies), while YUV buffers allocate fine.
+    val largestYuvSize: Size?,
+    val isLogicalMultiCamera: Boolean,
     val oisAvailable: Boolean,
     val flashAvailable: Boolean,
     val zoomRatioRange: Range<Float>?,
@@ -124,7 +130,22 @@ data class CameraCaps(
 
             val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             val rawSize = map?.getOutputSizes(ImageFormat.RAW_SENSOR)?.maxByOrNull { it.width.toLong() * it.height }
-            val jpegSize = map?.getOutputSizes(ImageFormat.JPEG)?.maxByOrNull { it.width.toLong() * it.height }
+            // Cap stills at the camera's OWN active array: the logical multicamera's stream map also
+            // advertises the physical sub-cameras' larger JPEG sizes (4096×3072 here vs the logical
+            // array's 4080×3064), and allocating that blob on the plain logical session fails in
+            // gralloc ("SnapAlloc: ValidateDescriptor invalid") — the JPEG image then never arrives
+            // and the capture wedges. Standalone cameras are unaffected (their max JPEG == array).
+            val activeArray = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+            val jpegCandidates = map?.getOutputSizes(ImageFormat.JPEG)?.toList().orEmpty()
+            val jpegSize = jpegCandidates
+                .filter { activeArray == null || (it.width <= activeArray.width() && it.height <= activeArray.height()) }
+                .maxByOrNull { it.width.toLong() * it.height }
+                ?: jpegCandidates.maxByOrNull { it.width.toLong() * it.height }
+            val yuvCandidates = map?.getOutputSizes(ImageFormat.YUV_420_888)?.toList().orEmpty()
+            val yuvSize = yuvCandidates
+                .filter { activeArray == null || (it.width <= activeArray.width() && it.height <= activeArray.height()) }
+                .maxByOrNull { it.width.toLong() * it.height }
+                ?: yuvCandidates.maxByOrNull { it.width.toLong() * it.height }
             // SurfaceTexture output sizes (the recording/preview path). Split by aspect: 16:9 for
             // standard video, 4:3 for Open Gate (full sensor readout). Both largest-first, ≤8K wide.
             val stSizes = (map?.getOutputSizes(android.graphics.SurfaceTexture::class.java) ?: emptyArray())
@@ -181,6 +202,8 @@ data class CameraCaps(
                 rawSize = rawSize,
                 supportedDynamicRangeProfiles = dynamicProfiles,
                 largestJpegSize = jpegSize,
+                largestYuvSize = yuvSize,
+                isLogicalMultiCamera = has(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA),
                 oisAvailable = oisModes.contains(CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON),
                 flashAvailable = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true,
                 zoomRatioRange = chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE),

@@ -433,6 +433,9 @@ data class CameraUiState(
     // so the FULL capture field is visible — photo mode previews the 4:3 sensor, video the recording
     // stream. Default = 4:3 shown portrait (3/4), matching the fresh-launch photo mode.
     val previewAspect: Float = 3f / 4f,
+    // Monotonic tick per shutter press — the viewfinder blinks on change (instant feedback while
+    // the still itself takes pipeline-depth × frame-duration to even START exposing).
+    val shutterFlashTick: Int = 0,
     // AF engine state (from CONTROL_AF_STATE) coloring the tap-AF reticle.
     val afIndication: AfIndication = AfIndication.IDLE,
     // Live camera health: false while opening/reconfiguring/recovering (and after recovery gives

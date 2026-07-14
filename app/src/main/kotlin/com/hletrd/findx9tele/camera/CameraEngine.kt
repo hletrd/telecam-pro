@@ -13,6 +13,7 @@ import android.util.Size
 import android.view.Surface
 import com.hletrd.findx9tele.capture.DngCapture
 import com.hletrd.findx9tele.capture.HeifCapture
+import com.hletrd.findx9tele.capture.StillSnapshot
 import com.hletrd.findx9tele.gl.GlPipeline
 import com.hletrd.findx9tele.storage.MediaStoreWriter
 import com.hletrd.findx9tele.video.VideoRecorder
@@ -617,11 +618,15 @@ class CameraEngine(private val context: Context) {
         }
     }
 
+    // One-time "DNG: TELE mode only" notifier; re-armed whenever the camera changes.
+    @Volatile private var dngUnavailableNotified = false
+
     fun setCameraOverride(id: String?) {
         // Switching the physical lens mid-recording reconfigures the camera under the encoder and
         // gaps/corrupts the clip. Refuse until recording stops; the UI also gates this.
         if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
         overrideId = id
+        dngUnavailableNotified = false
         if (!started) return
         val input = gl.inputSurface ?: return // @Volatile in GlPipeline: safe cross-thread read
         updateCameraReady(false)
@@ -687,11 +692,22 @@ class CameraEngine(private val context: Context) {
             return
         }
         val ctrl = controller ?: return
+        // RAW is standalone-only on this HAL (both routed AND plain-logical stills kill the camera
+        // device — see sessionAttemptPlan). On the seamless-zoom logical camera the session has no
+        // RAW stream, so a DNG-enabled format quietly degrades to the processed still, with a
+        // one-time status so the user knows where their DNGs went.
+        val effFormats = if (formats.dngRaw && !ctrl.hasRawStream) {
+            if (!dngUnavailableNotified) {
+                dngUnavailableNotified = true
+                onStatus?.invoke("DNG: TELE mode only")
+            }
+            formats.copy(dngRaw = false)
+        } else formats
         when (driveMode) {
-            DriveMode.SINGLE -> ctrl.capturePhoto(formats.wantsProcessedStill, formats.dngRaw, photoCallback(formats))
-            DriveMode.BURST -> captureBurst(ctrl, formats)
-            DriveMode.AEB -> captureAeb(ctrl, formats)
-            DriveMode.TIMELAPSE -> startTimelapse(formats)
+            DriveMode.SINGLE -> ctrl.capturePhoto(effFormats.wantsProcessedStill, effFormats.dngRaw, photoCallback(effFormats))
+            DriveMode.BURST -> captureBurst(ctrl, effFormats)
+            DriveMode.AEB -> captureAeb(ctrl, effFormats)
+            DriveMode.TIMELAPSE -> startTimelapse(effFormats)
         }
     }
 
@@ -779,20 +795,25 @@ class CameraEngine(private val context: Context) {
                 // settings change (or the next AEB step) can overwrite before the io thread runs.
                 val shotIso = result.get(android.hardware.camera2.CaptureResult.SENSOR_SENSITIVITY) ?: 0
                 val shotExpNs = result.get(android.hardware.camera2.CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L
-                // HEIF and JPEG both come from the single JPEG ImageReader; copy the compressed bytes
-                // out ONCE while the Image is alive, then fan out to whichever containers are enabled
-                // off the camera thread (both re-encode through the same processed-pixel pipeline).
+                // HEIF and JPEG both come from the single still ImageReader (HAL JPEG on standalone
+                // cameras, YUV on the logical one — see StillSnapshot). Snapshot the frame ONCE while
+                // the Image is alive (cheap copy on the camera thread), then compress + fan out to
+                // whichever containers are enabled on the io thread.
                 if (formats.heif || formats.jpeg) {
                     if (jpeg != null) {
-                        val bytes = runCatching {
-                            val buf = jpeg.planes[0].buffer
-                            ByteArray(buf.remaining()).also { buf.get(it) }
-                        }.getOrNull()
-                        if (bytes != null) {
-                            if (formats.heif) ioExecutor.execute { saveHeifAsync(bytes, rotation, captureId) }
-                            if (formats.jpeg) ioExecutor.execute { saveJpegAsync(bytes, rotation, shotIso, shotExpNs, captureId) }
+                        val snap = runCatching { StillSnapshot.from(jpeg) }.getOrNull()
+                        if (snap != null) {
+                            ioExecutor.execute {
+                                val bytes = runCatching { snap.jpegBytes() }.getOrNull()
+                                if (bytes == null) {
+                                    onStatus?.invoke("Failed to save photo")
+                                    return@execute
+                                }
+                                if (formats.heif) saveHeifAsync(bytes, rotation, captureId)
+                                if (formats.jpeg) saveJpegAsync(bytes, rotation, shotIso, shotExpNs, captureId)
+                            }
                         } else onStatus?.invoke("Failed to save photo")
-                    } else onStatus?.invoke("Failed to save photo: no JPEG")
+                    } else onStatus?.invoke("Failed to save photo: no still image")
                 }
                 if (formats.dngRaw) {
                     if (raw != null) {
