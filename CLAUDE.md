@@ -253,6 +253,14 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   (`CameraEngine` seeds `gl.setEis(false, 0f, 0f)`); its sensor helper remains for level and capture
   orientation, but there is no user-facing `GYRO` mode. The Explorer-specific `com.oplus.ois.*` /
   `eisrealtime` tags remain gated — but the generic HAL video-stab is enough.
+- **TC session type 0x80b4 is ACCEPTED by the HAL (device-verified 2026-07-14) — the CameraUnit
+  bypass.** Passing the stock app's TC operation_mode (0x80b4, captured from CamX
+  `configure_streams`; stock pairs it with sensor mode 48 = the 300 mm TC OIS profile) as the
+  SessionConfiguration sessionType on the standalone 3× camera configures a FULL session
+  (fallback=0, stills+RAW alive, HEIC/DNG/4K-HEVC all verified, ois=1/vstab=2, clean 0x0 return
+  on TELE off) — no AUTH_CODE needed. Lint WrongConstant is suppressed on configureSession with
+  justification. UNVERIFIED: whether the OIS profile actually differs at 300 mm (needs a physical
+  shake A/B with the converter mounted); result metadata reads identically either way.
 - **300 mm teleconverter OIS integration depends on OPPO CameraUnit availability (2026-07-08).**
   The 4.3× teleconverter stabilization profile appears to use CameraUnit extension parameters that
   are not exposed through raw Camera2 request/result keys. The app applies the public Camera2 overlap

@@ -50,6 +50,16 @@ new hash and must update that sheet after the full release gate is repeated.
    radius (WindowInsets RoundedCorner API, ×1.2 squircle compensation, user-tuned on device).
 6. **UI pills** — Fn-row edge-fade scroll hint; one shared 12 dp left inset (OSD / meter / Fn row).
 
+### Verified 2026-07-14 (late) — 0x80b4 TC session experiment (user-landed, agent-verified)
+- The stock app's TC operation_mode **0x80b4 passes through to the HAL** as a plain
+  SessionConfiguration sessionType on the standalone 3× camera: CamX logs
+  `configure_streams() operation_mode: 0x80b4`, the session configures at fallback=0 WITH RAW,
+  stills (HEIC+DNG) and 4K HEVC recording work, and TELE off returns cleanly to 0x0. No
+  CameraUnit AUTH_CODE involved — this may be the 300 mm TC OIS profile unlock (stock pairs the
+  mode with sensor mode 48). **Residual field check:** mount the converter and A/B the shake
+  damping at 300 mm vs the previous SESSION_REGULAR build to confirm the OIS profile actually
+  differs (result metadata shows ois=1/vstab=2 either way).
+
 ## Before Production
 
 These are manual Play Console operations, not repository implementation work:
