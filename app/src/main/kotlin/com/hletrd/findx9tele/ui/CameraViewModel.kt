@@ -158,7 +158,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                     }
                 },
                 android.content.IntentFilter("me.hletrd.telecampro.DEBUG_ZOOM"),
-                androidx.core.content.ContextCompat.RECEIVER_EXPORTED,
+                android.content.Context.RECEIVER_EXPORTED,
             )
         }
         // AF state (camera thread → StateFlow is thread-safe): colors the tap-AF reticle.
