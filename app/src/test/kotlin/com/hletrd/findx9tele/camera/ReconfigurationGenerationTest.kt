@@ -252,4 +252,24 @@ class ReconfigurationGenerationTest {
         assertEquals(older, commitGeneration.get())
         assertEquals(older + 1, nextGeneration.get())
     }
+
+    @Test
+    fun `intent before GL input prevents launch route publication`() {
+        val gate = OpticsCommitGate()
+        var desiredRoute = "photo-logical"
+        var publishedRoute: String? = null
+        val launchGeneration = gate.begin { it }
+
+        val videoGeneration = gate.begin {
+            desiredRoute = "video-standalone"
+            it
+        }
+
+        assertNull(gate.commit(launchGeneration) { publishedRoute = "photo-logical" })
+        assertEquals(
+            videoGeneration,
+            gate.commit(videoGeneration) { publishedRoute = desiredRoute },
+        )
+        assertEquals("video-standalone", publishedRoute)
+    }
 }

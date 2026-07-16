@@ -79,6 +79,9 @@ class CameraEngine(private val context: Context) {
     // Set true synchronously on the calling thread once startup setup is dispatched, so a second
     // onPreviewSurfaceAvailable arriving before setup completes doesn't launch a duplicate start.
     @Volatile private var starting = false
+    // True only while the GL generation exists but has not created its camera input Surface yet.
+    // Optics intents during this window remain pending; the input callback converges on the latest.
+    @Volatile private var glInputPending = false
     // True between pause() and resume(). openCamera() honors it so a camera open queued during
     // startup (the GL onInputReady continuation) doesn't fire while the app is backgrounded — e.g.
     // launched behind the keyguard, where onStop lands right as the session would configure.
@@ -212,6 +215,7 @@ class CameraEngine(private val context: Context) {
             readyController = expectedController
             cameraRecoveryAttempts = 0
         } ?: return false
+        coldStartRetryGate.success(publicationGeneration)
         onCameraReadyChange?.invoke(true, publicationGeneration)
         return true
     }
@@ -320,6 +324,7 @@ class CameraEngine(private val context: Context) {
     // Bounded auto-recovery when the camera HAL disconnects/errors mid-session (its provider process can
     // crash). Reset on a successful open so the viewfinder self-heals instead of sitting black.
     @Volatile private var cameraRecoveryAttempts = 0
+    private val coldStartRetryGate = ColdStartRetryGate(MAX_CAMERA_RECOVERY_ATTEMPTS)
 
     // Software recording-audio gain (1f = passthrough) and the still-photo aspect-ratio crop;
     // read from the audio-encode / io-executor threads, so both are @Volatile.
@@ -373,52 +378,29 @@ class CameraEngine(private val context: Context) {
         previewSurfaceW = width
         previewSurfaceH = height
         if (started) { gl.setPreviewOutput(surface, width, height); return }
-        if (starting) return // setup already dispatched; don't launch a duplicate start
-        starting = true
-        // Cold-start feedback: several Binder IPCs + openCamera run before the first frame — say
-        // "working" so the black window is distinguishable from a hang (cleared by onReady).
+        val dispatchStart = synchronized(this) {
+            if (started || starting || paused) {
+                false
+            } else {
+                starting = true
+                true
+            }
+        }
+        if (!dispatchStart) return
+        // Cold-start feedback: GL creation + Camera2 preflight/open happen before the first frame.
         onStatus?.invoke("Starting camera…")
 
-        // CameraSelector2.select + CameraCaps.read + chooseVideoSize each issue several
-        // getCameraCharacteristics IPCs (tens of ms). surfaceCreated is delivered on the MAIN
-        // thread, so run that setup on a background thread to avoid startup jank / near-ANR.
-        // gl.start / gl.setPreviewOutput just post to the GL handler, so they're thread-safe here.
+        // Start GL before resolving a camera route. Any mode/lens/MR intent arriving before the GL
+        // input Surface exists is retained, and the input callback snapshots that latest complete
+        // desired transaction. This removes the old preflight route that could be opened under a
+        // newer generation.
         setupExecutor.execute {
-            val setupOpticsGeneration = opticsIntentGeneration.get()
-            val sel = selectCurrentLens()
-            if (sel == null) {
-                onStatus?.invoke("Camera unavailable")
-                starting = false
-                return@execute
-            }
-            selection = sel
-            // read() throws when the camera service is down for both id reads; without the guard the
-            // uncaught throw on this executor thread kills the process on every cold-start hiccup.
-            val c = runCatching { CameraCaps.read(manager, sel.logicalId, sel.physicalId) }.getOrNull()
-            if (c == null) {
-                onStatus?.invoke("Camera unavailable")
-                starting = false
-                return@execute
-            }
-            caps = c
-            val ownsSetupOptics = reconfigurationOwnsGeneration(
-                opticsIntentGeneration.get(),
-                setupOpticsGeneration,
-            )
-            if (ownsSetupOptics) {
-                reconcileControlsWithCaps(c)
-                onCapsReady?.invoke(c, setupOpticsGeneration)
-            }
-            videoSize = chooseVideoSize(sel)
-            if (ownsSetupOptics) onVideoSizeChosen?.invoke(videoSize, setupOpticsGeneration)
-            previewStreamSize = choosePreviewStreamSize(sel)
-            emitPreviewAspect(setupOpticsGeneration)
-
             // HLG10 10-bit preview + full-res JPEG/RAW crashes this HAL (configureStreams Broken pipe -32);
             // SDR preview session. 10-bit HDR preview deferred; video still tags HLG/Log in the encoder.
             val tenBit = false
-            gl.start(tenBit) { input ->
-                gl.setCameraPreviewSize(previewStreamSize.width, previewStreamSize.height)
+            glInputPending = true
+            gl.start(tenBit) { _ ->
+                glInputPending = false
                 gl.setEisProvider { gyro.currentCorrection() }
                 gl.setAnalysisCallback { h, w -> onAnalysis?.invoke(h, w) }
                 // Re-seed GL state that may have been set BEFORE the GL thread existed:
@@ -430,20 +412,21 @@ class CameraEngine(private val context: Context) {
                 gl.setAeMetering(aeMetering)
                 gl.setGammaAssist(gammaAssist)
                 applyRendererConfig()
-                applyStabilization()
                 gyro.start()
                 maybeLogCameraCapabilities()
-                openCamera(input)
+                // Capture route + token after GL input exists. If another intent begins after this
+                // snapshot, reconfigureCamera rejects this one and the newer queued task wins.
+                val desired = currentOpticsReconfiguration()
+                reconfigureCamera(desired.overrideId, desired.transaction, startup = true)
             }
-            // Publish start state BEFORE binding: a TextureView surface destroyed+recreated during
-            // the multi-IPC window above then takes the `started` fast path (which binds the fresh
-            // surface itself) instead of being dropped by the `starting` guard.
-            started = true
-            // Clear the dispatch guard now that started gates re-entry. Leaving it true was harmless
-            // only while nothing ever reset started; don't couple those invariants.
-            starting = false
+            synchronized(this) {
+                // Publish start state BEFORE binding: a TextureView surface destroyed+recreated
+                // during GL startup then takes the started fast path and binds the fresh surface.
+                started = true
+                starting = false
+            }
             // Bind the LIVE surface field, not the captured parameter: if the surface was destroyed
-            // during setup, the captured Surface is already released and EGL-binding it would crash
+            // during startup, the captured Surface is already released and EGL-binding it would crash
             // the fresh GL thread (this app installs no UncaughtExceptionHandler). A destroyed-and-
             // not-yet-recreated surface simply skips the bind — the next surface callback binds.
             val liveSurface = previewSurface
@@ -990,6 +973,48 @@ class CameraEngine(private val context: Context) {
         }
     }
 
+    /** Bounded retry for transient selection/capability failures before the first Ready session. */
+    private fun scheduleColdStartRetry(transaction: OpticsTransaction, reason: String) {
+        val canRun = started && !paused && recorder == null && gl.inputSurface != null
+        when (val failure = coldStartRetryGate.failed(
+            expectedGeneration = transaction.generation,
+            currentGeneration = opticsIntentGeneration.get(),
+            canRun = canRun,
+        )) {
+            ColdStartRetryGate.Failure.Ignore -> Unit
+            ColdStartRetryGate.Failure.Exhausted ->
+                onStatus?.invoke("Camera unavailable — retry the app")
+            is ColdStartRetryGate.Failure.Retry -> {
+                onStatus?.invoke("$reason — retrying")
+                runCatching {
+                    timelapseScheduler.schedule(
+                        {
+                            val retryable = started && !paused && recorder == null &&
+                                gl.inputSurface != null
+                            if (!coldStartRetryGate.claim(
+                                    failure.token,
+                                    opticsIntentGeneration.get(),
+                                    retryable,
+                                )
+                            ) return@schedule
+                            val desired = currentOpticsReconfiguration()
+                            reconfigureCamera(
+                                desired.overrideId,
+                                desired.transaction,
+                                startup = true,
+                            )
+                        },
+                        CAMERA_RECOVERY_DELAY_MS,
+                        java.util.concurrent.TimeUnit.MILLISECONDS,
+                    )
+                }.onFailure {
+                    coldStartRetryGate.abandon(failure.token)
+                    onStatus?.invoke("Camera unavailable")
+                }
+            }
+        }
+    }
+
     /** Software gain applied to recorded PCM audio (1f = passthrough); takes effect on the next [startRecording]. */
     fun setAudioGain(g: Float) { audioGain = g }
     /** Directional-audio scene (Sound Focus/Stage); applies on the next [startRecording]. */
@@ -1184,7 +1209,11 @@ class CameraEngine(private val context: Context) {
         reconfigureCamera(id, transaction)
     }
 
-    private fun reconfigureCamera(id: String?, transaction: OpticsTransaction) {
+    private fun reconfigureCamera(
+        id: String?,
+        transaction: OpticsTransaction,
+        startup: Boolean = false,
+    ) {
         synchronized(this) {
             if (!ownsOpticsTransaction(transaction)) return
             overrideId = id
@@ -1192,7 +1221,14 @@ class CameraEngine(private val context: Context) {
         }
         if (!started) return
         val input = gl.inputSurface ?: run {
-            rollbackOptics(transaction, "Preview unavailable; camera unchanged")
+            // An optics intent that lands between GL start and input-Surface creation is valid and
+            // remains Not-Ready. The input callback snapshots the latest generation and converges it.
+            if (glInputPending) return
+            if (startup || controller == null) {
+                scheduleColdStartRetry(transaction, "Preview unavailable")
+            } else {
+                rollbackOptics(transaction, "Preview unavailable; camera unchanged")
+            }
             return
         } // @Volatile in GlPipeline: safe cross-thread read
         updateCameraReady(false)
@@ -1203,16 +1239,25 @@ class CameraEngine(private val context: Context) {
         setupExecutor.execute {
             if (!ownsOpticsTransaction(transaction)) return@execute
             if (paused || recorder != null) return@execute
+            val recoverColdPreflight = startup || controller == null
             // Resolve the id and read the characteristics BEFORE closing: these are dozens of
             // Binder IPCs (~100 ms uncached) that used to sit inside the close→open blackout —
             // the old camera keeps streaming while they run, shrinking the visible freeze.
             val sel = selectCurrentLens() ?: run {
-                rollbackOptics(transaction, "Camera ID unavailable; camera unchanged")
+                if (recoverColdPreflight) {
+                    scheduleColdStartRetry(transaction, "Camera ID unavailable")
+                } else {
+                    rollbackOptics(transaction, "Camera ID unavailable; camera unchanged")
+                }
                 return@execute
             }
             val c = cachedCaps(sel.logicalId, sel.physicalId)
                 ?: run {
-                    rollbackOptics(transaction, "Camera unavailable; camera unchanged")
+                    if (recoverColdPreflight) {
+                        scheduleColdStartRetry(transaction, "Camera unavailable")
+                    } else {
+                        rollbackOptics(transaction, "Camera unavailable; camera unchanged")
+                    }
                     return@execute
                 }
             if (!ownsOpticsTransaction(transaction)) return@execute
@@ -1993,6 +2038,7 @@ class CameraEngine(private val context: Context) {
     /** Releases the camera + gyro for backgrounding without tearing down the GL pipeline or start state. */
     fun pause() {
         paused = true
+        coldStartRetryGate.cancel()
         invalidateCameraReady()
         // A backgrounded timelapse can't capture anyway (controller is nulled below, so every tick
         // no-ops) — stop it outright rather than silently resuming mid-sequence with a gap.
@@ -2034,7 +2080,13 @@ class CameraEngine(private val context: Context) {
     /** Reopens the camera after [pause], reusing the existing GL input surface and start state. */
     fun resume() {
         paused = false
+        coldStartRetryGate.cancel()
         gyro.start()
+        if (!started) {
+            val surface = previewSurface ?: return
+            onPreviewSurfaceAvailable(surface, previewSurfaceW, previewSurfaceH)
+            return
+        }
         // Serialized on setupExecutor like every other open path (the GL-start continuation,
         // reopenForSession, setCameraOverride). resume() used to call openCamera directly on the
         // main thread — the one remaining unserialized open: it raced a queued reopen's
@@ -2095,6 +2147,8 @@ class CameraEngine(private val context: Context) {
     fun release() {
         paused = true
         started = false
+        glInputPending = false
+        coldStartRetryGate.cancel()
         invalidateCameraReady()
         stopTimelapse()
         standbyMeterWanted = false
@@ -2548,6 +2602,73 @@ internal class OpticsCommitGate(
             terminalMutation()
             expectedGeneration
         }
+    }
+}
+
+/** Identity-safe, bounded retry ownership for pre-Ready camera preflight failures. */
+internal class ColdStartRetryGate(private val maxAttempts: Int) {
+    init {
+        require(maxAttempts > 0)
+    }
+
+    data class Token(val id: Long, val generation: Long)
+
+    sealed interface Failure {
+        data object Ignore : Failure
+        data object Exhausted : Failure
+        data class Retry(val token: Token) : Failure
+    }
+
+    private var nextId = 0L
+    private var attemptGeneration: Long? = null
+    private var attempts = 0
+    private var scheduled: Token? = null
+
+    @Synchronized
+    fun failed(
+        expectedGeneration: Long,
+        currentGeneration: Long,
+        canRun: Boolean,
+    ): Failure {
+        if (!canRun || expectedGeneration != currentGeneration) return Failure.Ignore
+        if (attemptGeneration != expectedGeneration) {
+            attemptGeneration = expectedGeneration
+            attempts = 0
+            scheduled = null
+        }
+        // The setup executor is serialized, but resume/input callbacks may observe the same failure
+        // while its retry is already scheduled. Keep one timer and one attempt owner.
+        if (scheduled != null) return Failure.Ignore
+        if (attempts >= maxAttempts) return Failure.Exhausted
+        attempts++
+        return Failure.Retry(Token(++nextId, expectedGeneration).also { scheduled = it })
+    }
+
+    @Synchronized
+    fun claim(token: Token, currentGeneration: Long, canRun: Boolean): Boolean {
+        if (!canRun || token != scheduled || token.generation != currentGeneration) return false
+        scheduled = null
+        return true
+    }
+
+    @Synchronized
+    fun abandon(token: Token) {
+        if (scheduled == token) scheduled = null
+    }
+
+    @Synchronized
+    fun success(expectedGeneration: Long) {
+        if (attemptGeneration != expectedGeneration) return
+        attempts = 0
+        attemptGeneration = null
+        scheduled = null
+    }
+
+    @Synchronized
+    fun cancel() {
+        attempts = 0
+        attemptGeneration = null
+        scheduled = null
     }
 }
 
