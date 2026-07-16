@@ -1,6 +1,6 @@
 # Privacy Policy — TeleCam Pro
 
-_Last updated: 2026-07-07_
+_Last updated: 2026-07-16_
 
 TeleCam Pro ("the app") is a camera app for the OPPO Find X9 Ultra. This policy explains what the app
 does and does not do with your information.
@@ -22,9 +22,10 @@ off the device.
 
 ## Photos and videos you capture
 
-Photos and videos are saved to your device's shared media storage (the gallery) using Android's
-MediaStore. They are yours. The app does not upload, back up, index, or transmit them anywhere. Deleting
-the app or the files removes them from the device as normal.
+Photos and videos are saved to your device's shared media storage in `DCIM/X9Tele` using Android
+MediaStore. They are yours. The app does not upload, back up, index, or transmit them anywhere.
+Uninstalling TeleCam Pro removes its private settings, but it does not remove captures from shared
+storage. Delete captures in TeleCam Pro, a gallery app, or a file manager when you want them removed.
 
 ## Data collection and sharing
 
