@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -54,14 +55,18 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.graphics.scale
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.isTraversalGroup
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.hletrd.findx9tele.ui.theme.CameraColors
@@ -348,6 +353,27 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
         playing = true
     }
 
+    fun toggleVideoPlayback(): Boolean {
+        val player = playerRef.value ?: return false
+        return runCatching {
+            if (player.isPlaying) player.pause() else player.start()
+            player.isPlaying
+        }.fold(
+            onSuccess = { isPlaying ->
+                playing = isPlaying
+                true
+            },
+            onFailure = { false },
+        )
+    }
+
+    fun setReviewScale(target: Float): Boolean {
+        scale = target.coerceIn(1f, 12f)
+        offset = Offset.Zero
+        dismissDrag = 0f
+        return true
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -355,7 +381,14 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
             .semantics {
                 paneTitle = "Media review"
                 isTraversalGroup = true
-            }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        // Keep the raw media gesture surface as a sibling behind the explicit controls. A control
+        // tap therefore cannot also bubble through this loop and toggle playback a second time.
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
             .pointerInput(mediaReady, videoInfo != null) {
                 if (!mediaReady) return@pointerInput
                 // ONE gesture loop owns pinch + pan + swipe-dismiss + tap/double-tap/long-press.
@@ -432,10 +465,7 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                         if (isVideo) {
                             // Single tap toggles play/pause — reliable now the consuming pinch loop
                             // no longer starves it.
-                            playerRef.value?.let { mp ->
-                                runCatching { if (mp.isPlaying) mp.pause() else mp.start() }
-                                    .onSuccess { playing = mp.isPlaying }
-                            }
+                            toggleVideoPlayback()
                         } else if (down.uptimeMillis - lastTapUptime < viewConfiguration.doubleTapTimeoutMillis) {
                             // Double tap (stills): cycle review zoom, centered on the tap. Measured
                             // first-tap-up → second-tap-down, matching detectTapGestures.
@@ -455,9 +485,9 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                         dismissDrag = 0f
                     }
                 }
-            },
-        contentAlignment = Alignment.Center,
-    ) {
+                },
+            contentAlignment = Alignment.Center,
+        ) {
         val vi = videoInfo
         if (vi != null) {
             // Fit the ROTATED video within the screen; the rotation hint is applied as a TextureView
@@ -485,7 +515,15 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                         .graphicsLayer(
                             translationY = dismissDrag,
                             alpha = (1f - abs(dismissDrag) / 1400f).coerceIn(0.3f, 1f),
-                        ),
+                        )
+                        .semantics {
+                            contentDescription = "Video review"
+                            stateDescription = videoPlaybackStateDescription(playing)
+                            role = Role.Button
+                            onClick(label = videoPlaybackActionLabel(playing)) {
+                                toggleVideoPlayback()
+                            }
+                        },
                     factory = { ctx ->
                         var viewHandle: VideoPlaybackHandle? = null
                         android.view.TextureView(ctx).apply {
@@ -598,7 +636,15 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                         translationX = offset.x,
                         translationY = offset.y + dismissDrag,
                         alpha = (1f - abs(dismissDrag) / 1400f).coerceIn(0.3f, 1f),
-                    ),
+                    )
+                    .semantics {
+                        stateDescription = reviewZoomStateDescription(scale)
+                        customActions = listOf(
+                            CustomAccessibilityAction("Zoom 4×") { setReviewScale(4f) },
+                            CustomAccessibilityAction("Zoom 8×") { setReviewScale(8f) },
+                            CustomAccessibilityAction("Reset zoom") { setReviewScale(1f) },
+                        )
+                    },
             )
         } else when (val current = mediaState) {
             ReviewMediaState.Loading -> Text(
@@ -624,6 +670,7 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                 }
             }
             is ReviewMediaState.Ready -> Unit
+        }
         }
         }
 
@@ -664,6 +711,37 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                     .background(Color.Black.copy(alpha = 0.55f))
                     .padding(horizontal = 12.dp, vertical = 5.dp),
             )
+        }
+
+        when {
+            videoInfo != null -> ReviewActionButton(
+                actionLabel = videoPlaybackActionLabel(playing),
+                stateLabel = videoPlaybackStateDescription(playing),
+                onClick = { toggleVideoPlayback() },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(14.dp),
+            ) {
+                PlaybackGlyph(playing = playing)
+            }
+
+            mediaState is ReviewMediaState.Ready.Still -> ReviewActionButton(
+                actionLabel = reviewZoomActionLabel(scale),
+                stateLabel = reviewZoomStateDescription(scale),
+                onClick = { setReviewScale(nextReviewScale(scale)) },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(14.dp),
+            ) {
+                Text(
+                    text = reviewZoomControlLabel(scale),
+                    color = CameraColors.TextPrimary,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
         }
 
         // Close button, top-left.
@@ -742,14 +820,94 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
     }
 }
 
-private fun nextReviewScale(current: Float): Float = when {
+@Composable
+private fun ReviewActionButton(
+    actionLabel: String,
+    stateLabel: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    Box(
+        modifier = modifier
+            .size(48.dp)
+            .clip(CircleShape)
+            .background(Color.Black.copy(alpha = 0.62f))
+            .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
+            .semantics {
+                contentDescription = actionLabel
+                stateDescription = stateLabel
+            }
+            .clickable(
+                onClickLabel = actionLabel,
+                role = Role.Button,
+                onClick = onClick,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        content()
+    }
+}
+
+@Composable
+private fun PlaybackGlyph(playing: Boolean) {
+    Canvas(Modifier.size(20.dp)) {
+        if (playing) {
+            val stroke = size.width * 0.16f
+            drawLine(
+                color = Color.White,
+                start = Offset(size.width * 0.34f, size.height * 0.24f),
+                end = Offset(size.width * 0.34f, size.height * 0.76f),
+                strokeWidth = stroke,
+            )
+            drawLine(
+                color = Color.White,
+                start = Offset(size.width * 0.66f, size.height * 0.24f),
+                end = Offset(size.width * 0.66f, size.height * 0.76f),
+                strokeWidth = stroke,
+            )
+        } else {
+            val triangle = androidx.compose.ui.graphics.Path().apply {
+                moveTo(size.width * 0.32f, size.height * 0.22f)
+                lineTo(size.width * 0.32f, size.height * 0.78f)
+                lineTo(size.width * 0.76f, size.height * 0.5f)
+                close()
+            }
+            drawPath(triangle, Color.White)
+        }
+    }
+}
+
+internal fun nextReviewScale(current: Float): Float = when {
     current < 1.5f -> 4f
     current < 6f -> 8f
     else -> 1f
 }
 
-private fun reviewScaleLabel(scale: Float): String =
-    if (scale >= 7.5f) "8×" else if (scale >= 3.5f) "4×" else "%.1f×".format(scale)
+internal fun reviewScaleLabel(scale: Float): String = when {
+    abs(scale - 1f) < 0.05f -> "1×"
+    abs(scale - 4f) < 0.05f -> "4×"
+    abs(scale - 8f) < 0.05f -> "8×"
+    else -> "%.1f×".format(java.util.Locale.ROOT, scale)
+}
+
+internal fun reviewZoomActionLabel(scale: Float): String = when (nextReviewScale(scale)) {
+    4f -> "Zoom 4×"
+    8f -> "Zoom 8×"
+    else -> "Reset zoom"
+}
+
+internal fun reviewZoomControlLabel(scale: Float): String =
+    if (nextReviewScale(scale) <= 1f) "1×" else reviewScaleLabel(nextReviewScale(scale))
+
+internal fun reviewZoomStateDescription(scale: Float): String =
+    "Magnification ${reviewScaleLabel(scale)}"
+
+internal fun videoPlaybackActionLabel(playing: Boolean): String =
+    if (playing) "Pause video" else "Play video"
+
+internal fun videoPlaybackStateDescription(playing: Boolean): String =
+    if (playing) "Playing" else "Paused"
 
 private fun formatBytes(bytes: Long): String {
     if (bytes <= 0L) return "--"
