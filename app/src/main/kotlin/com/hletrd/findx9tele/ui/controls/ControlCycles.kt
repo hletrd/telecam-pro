@@ -23,6 +23,13 @@ import com.hletrd.findx9tele.camera.WbMode
  * other EV path derived it from hardware). One copy, no drift.
  */
 
+/** Cycles only inside a route's advertised choices; a stale current value enters at the first. */
+internal fun <T> nextAvailable(current: T, available: List<T>): T {
+    if (available.isEmpty()) return current
+    val currentIndex = available.indexOf(current)
+    return available[if (currentIndex < 0) 0 else (currentIndex + 1) % available.size]
+}
+
 /** PASM cycle order: Program → Shutter-priority → ISO-priority → Manual → (back to Program). */
 internal fun nextExposureMode(mode: ExposureMode): ExposureMode = when (mode) {
     ExposureMode.PROGRAM -> ExposureMode.SHUTTER

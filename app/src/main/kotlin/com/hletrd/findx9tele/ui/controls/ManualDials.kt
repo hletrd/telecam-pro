@@ -68,6 +68,7 @@ import com.hletrd.findx9tele.camera.CameraCaps
 import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorTransfer
+import com.hletrd.findx9tele.camera.ControlAvailability
 import com.hletrd.findx9tele.camera.ExposureMode
 import com.hletrd.findx9tele.camera.ExposureStep
 import com.hletrd.findx9tele.camera.FrameLineType
@@ -80,6 +81,8 @@ import com.hletrd.findx9tele.camera.ShutterMode
 import com.hletrd.findx9tele.camera.VideoStabMode
 import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.camera.WbMode
+import com.hletrd.findx9tele.camera.controlAvailability
+import com.hletrd.findx9tele.camera.controlCapabilities
 import com.hletrd.findx9tele.focus.FocusMapping
 import com.hletrd.findx9tele.ui.CameraActions
 import com.hletrd.findx9tele.ui.theme.CameraColors
@@ -101,33 +104,21 @@ enum class DialType { FOCUS, SHUTTER, ISO, WB, EV, ZOOM }
  */
 internal fun manualDialConsumesBack(openDial: DialType?): Boolean = openDial != null
 
-/**
- * Whether a quick dial can claim manual ownership from its current automatic state. Keeping the
- * current focus/exposure mode out of this decision is intentional: the click reducer below owns the
- * AF→MF, P/ISO→S, and P/S→ISO transitions, so requiring the destination mode here would make
- * those branches unreachable.
- */
-internal fun quickManualDialEnabled(
-    type: DialType,
-    supportsManualFocus: Boolean,
-    supportsManualSensor: Boolean,
-    hasExposureTimeRange: Boolean,
-    hasIsoRange: Boolean,
-): Boolean = when (type) {
-    DialType.FOCUS -> supportsManualFocus
-    DialType.SHUTTER -> supportsManualSensor && hasExposureTimeRange
-    DialType.ISO -> supportsManualSensor && hasIsoRange
-    DialType.WB, DialType.EV, DialType.ZOOM -> true
-}
+/** Whether a ruler's exact request mode and scalar range are admitted on the active route. */
+internal fun quickManualDialEnabled(type: DialType, availability: ControlAvailability): Boolean =
+    when (type) {
+        DialType.FOCUS -> availability.manualFocusDialEnabled
+        DialType.SHUTTER -> availability.shutterDialEnabled
+        DialType.ISO -> availability.isoDialEnabled
+        DialType.WB -> availability.wbDialEnabled
+        DialType.EV -> availability.evDialEnabled
+        DialType.ZOOM -> availability.zoomDialEnabled
+    }
 
-private fun quickManualDialEnabled(type: DialType, caps: CameraCaps?): Boolean =
-    quickManualDialEnabled(
-        type = type,
-        supportsManualFocus = caps?.supportsManualFocus == true,
-        supportsManualSensor = caps?.supportsManualSensor == true,
-        hasExposureTimeRange = caps?.exposureTimeRange != null,
-        hasIsoRange = caps?.isoRange != null,
-    )
+internal fun reconcileOpenManualDial(
+    openDial: DialType?,
+    availability: ControlAvailability,
+): DialType? = openDial?.takeIf { quickManualDialEnabled(it, availability) }
 
 @Composable
 fun ManualDialCluster(
@@ -140,7 +131,15 @@ fun ManualDialCluster(
     var openDial by remember { mutableStateOf<DialType?>(null) }
     val controls = state.controls
     val caps = state.caps
+    val availability = controlAvailability(caps?.controlCapabilities(), controls)
     val dialOpen = openDial != null
+
+    // Route changes can replace the exact OFF mode/range behind an already-open ruler. Close it on
+    // the first composition with the new capability projection; normalized state remains applied.
+    LaunchedEffect(openDial, availability) {
+        val reconciled = reconcileOpenManualDial(openDial, availability)
+        if (reconciled != openDial) openDial = reconciled
+    }
 
     // This handler is composed before the full-screen sheet/Fn/review handlers, so those later
     // topmost surfaces retain priority. With no full-screen modal, Back closes the ruler instead of
@@ -220,6 +219,7 @@ fun ManualDialCluster(
             },
             actions = actions,
             onOpenFnMenu = onOpenFnMenu,
+            availability = availability,
         )
     }
 }
@@ -231,6 +231,7 @@ private fun DialChipRow(
     onSelect: (DialType) -> Unit,
     actions: CameraActions,
     onOpenFnMenu: () -> Unit,
+    availability: ControlAvailability,
     modifier: Modifier = Modifier,
 ) {
     val controls = state.controls
@@ -271,6 +272,7 @@ private fun DialChipRow(
                 onSelect = onSelect,
                 actions = actions,
                 onOpenFnMenu = onOpenFnMenu,
+                availability = availability,
             )
         }
     }
@@ -285,6 +287,7 @@ private fun FnDialChip(
     onSelect: (DialType) -> Unit,
     actions: CameraActions,
     onOpenFnMenu: () -> Unit,
+    availability: ControlAvailability,
 ) {
     val controls = state.controls
     val caps = state.caps
@@ -293,8 +296,8 @@ private fun FnDialChip(
             label = "AE",
             value = controls.exposureMode.letter,
             active = controls.exposureMode != ExposureMode.PROGRAM,
-            enabled = true,
-            onClick = { actions.onExposureMode(nextExposureMode(controls.exposureMode)) },
+            enabled = availability.exposureModes.size > 1,
+            onClick = { actions.onExposureMode(nextAvailable(controls.exposureMode, availability.exposureModes)) },
             onLongClick = onOpenFnMenu,
         )
         FnSlot.FOCUS -> DialChip(
@@ -305,7 +308,7 @@ private fun FnDialChip(
                 caps?.minFocusDistanceDiopters ?: 0f,
             ),
             active = openDial == DialType.FOCUS,
-            enabled = quickManualDialEnabled(DialType.FOCUS, caps),
+            enabled = quickManualDialEnabled(DialType.FOCUS, availability),
             onClick = { onSelect(DialType.FOCUS) },
             onLongClick = onOpenFnMenu,
         )
@@ -318,7 +321,7 @@ private fun FnDialChip(
                 else -> formatShutterSpeed(controls.exposureTimeNs)
             },
             active = openDial == DialType.SHUTTER,
-            enabled = quickManualDialEnabled(DialType.SHUTTER, caps),
+            enabled = quickManualDialEnabled(DialType.SHUTTER, availability),
             onClick = { onSelect(DialType.SHUTTER) },
             onLongClick = onOpenFnMenu,
         )
@@ -330,7 +333,7 @@ private fun FnDialChip(
                 else -> controls.iso.toString()
             },
             active = openDial == DialType.ISO,
-            enabled = quickManualDialEnabled(DialType.ISO, caps),
+            enabled = quickManualDialEnabled(DialType.ISO, availability),
             onClick = { onSelect(DialType.ISO) },
             onLongClick = onOpenFnMenu,
         )
@@ -338,7 +341,7 @@ private fun FnDialChip(
             label = "WB",
             value = if (controls.wbMode == WbMode.MANUAL) "${controls.wbKelvin}K" else wbModeLabel(controls.wbMode),
             active = openDial == DialType.WB,
-            enabled = true,
+            enabled = quickManualDialEnabled(DialType.WB, availability),
             onClick = { onSelect(DialType.WB) },
             onLongClick = onOpenFnMenu,
         )
@@ -346,7 +349,7 @@ private fun FnDialChip(
             label = "EV",
             value = "%+.1f".format(Locale.US, controls.exposureCompensation * evStepValue),
             active = openDial == DialType.EV,
-            enabled = controls.exposureMode != ExposureMode.MANUAL,
+            enabled = quickManualDialEnabled(DialType.EV, availability),
             onClick = { onSelect(DialType.EV) },
             onLongClick = onOpenFnMenu,
         )
@@ -354,7 +357,7 @@ private fun FnDialChip(
             label = "Zoom",
             value = "%.1fx".format(Locale.US, controls.zoomRatio),
             active = openDial == DialType.ZOOM,
-            enabled = caps?.zoomRatioRange != null,
+            enabled = quickManualDialEnabled(DialType.ZOOM, availability),
             onClick = { onSelect(DialType.ZOOM) },
             onLongClick = onOpenFnMenu,
         )
@@ -380,8 +383,8 @@ private fun FnDialChip(
             label = "Meter",
             value = meteringModeLabel(controls.meteringMode),
             active = controls.meteringMode != MeteringMode.MATRIX,
-            enabled = true,
-            onClick = { actions.onMeteringMode(nextMeteringMode(controls.meteringMode)) },
+            enabled = availability.meteringModes.size > 1,
+            onClick = { actions.onMeteringMode(nextAvailable(controls.meteringMode, availability.meteringModes)) },
             onLongClick = onOpenFnMenu,
         )
         FnSlot.PEAKING -> DialChip(

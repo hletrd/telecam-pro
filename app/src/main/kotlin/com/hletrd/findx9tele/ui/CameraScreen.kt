@@ -117,13 +117,15 @@ import com.hletrd.findx9tele.camera.ShutterTimer
 import com.hletrd.findx9tele.camera.TELECONVERTER_MAGNIFICATION
 import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.camera.WbMode
+import com.hletrd.findx9tele.camera.controlAvailability
+import com.hletrd.findx9tele.camera.controlCapabilities
 import com.hletrd.findx9tele.ui.controls.ManualDialCluster
 import com.hletrd.findx9tele.ui.controls.ProSheet
 import com.hletrd.findx9tele.ui.controls.ProSheetTab
 import com.hletrd.findx9tele.ui.controls.aspectRatioLabel
 import com.hletrd.findx9tele.ui.controls.exposureMeterCompensationEv
 import com.hletrd.findx9tele.ui.controls.nextAspect
-import com.hletrd.findx9tele.ui.controls.nextFlashMode
+import com.hletrd.findx9tele.ui.controls.nextAvailable
 import com.hletrd.findx9tele.ui.controls.nextTimer
 import com.hletrd.findx9tele.ui.controls.flashModeLabel
 import com.hletrd.findx9tele.ui.controls.fnSlotLabel
@@ -713,6 +715,7 @@ private fun TopBar(
     glyphRotation: Float = 0f,
 ) {
     val recordingLocked = state.isRecording
+    val availability = controlAvailability(state.caps?.controlCapabilities(), state.controls)
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -726,8 +729,8 @@ private fun TopBar(
             val glyphSpin = Modifier.rotate(glyphRotation)
             FlashButton(
                 mode = state.controls.flash,
-                onClick = { actions.onFlash(nextFlashMode(state.controls.flash)) },
-                enabled = !recordingLocked,
+                onClick = { actions.onFlash(nextAvailable(state.controls.flash, availability.flashModes)) },
+                enabled = !recordingLocked && availability.flashModes.size > 1,
                 modifier = glyphSpin,
             )
             TimerButton(

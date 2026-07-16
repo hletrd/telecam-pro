@@ -95,6 +95,8 @@ import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.camera.VideoStabMode
 import com.hletrd.findx9tele.camera.VideoFrameRate
 import com.hletrd.findx9tele.camera.WbMode
+import com.hletrd.findx9tele.camera.controlAvailability
+import com.hletrd.findx9tele.camera.controlCapabilities
 import com.hletrd.findx9tele.camera.videoBitRate
 import com.hletrd.findx9tele.video.EncoderCaps
 import com.hletrd.findx9tele.ui.CameraActions
@@ -578,6 +580,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
 private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     val controls = state.controls
     val caps = state.caps
+    val availability = controlAvailability(caps?.controlCapabilities(), controls)
     TabTitle("Exposure")
     SectionHeader("Exposure")
     // PASM-style: P (auto), S (shutter-priority, app auto-ISO), ISO (iso-priority, app auto-shutter),
@@ -585,18 +588,25 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     SegmentedSelector(
         helpKey = "Exposure Mode",
         label = "Mode",
-        options = ExposureMode.entries,
+        options = availability.exposureModes,
         selected = controls.exposureMode,
         labelFor = { it.letter },
         onSelect = actions::onExposureMode,
+        enabled = availability.exposureModes.size > 1,
     )
-    ToggleRow(label = "AE Lock", checked = controls.aeLock, onCheckedChange = actions::onToggleAeLock)
+    ToggleRow(
+        label = "AE Lock",
+        checked = controls.aeLock,
+        onCheckedChange = actions::onToggleAeLock,
+        enabled = availability.aeLockEnabled,
+    )
     SegmentedSelector(
         label = "Flicker",
-        options = Antibanding.entries,
+        options = availability.antibandingModes,
         selected = controls.antibanding,
         labelFor = ::antibandingLabel,
         onSelect = actions::onAntibanding,
+        enabled = availability.antibandingModes.size > 1,
     )
     SectionHeader("Shutter")
     SegmentedSelector(
@@ -605,6 +615,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         selected = controls.shutterMode,
         labelFor = ::shutterModeLabel,
         onSelect = actions::onShutterMode,
+        enabled = availability.shutterDialEnabled,
     )
     SegmentedSelector(
         label = "Step",
@@ -612,6 +623,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         selected = controls.exposureStep,
         labelFor = { "${it.label} EV" },
         onSelect = actions::onExposureStep,
+        enabled = availability.shutterDialEnabled,
     )
     val isoRange = caps?.isoRange ?: Range(controls.iso, controls.iso)
     SectionHeader("ISO")
@@ -621,25 +633,28 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         value = controls.iso.toFloat().coerceIn(isoRange.lower.toFloat(), isoRange.upper.toFloat()),
         onValueChange = { actions.onIso(it.roundToInt()) },
         valueRange = isoRange.lower.toFloat()..isoRange.upper.toFloat(),
-        enabled = controls.exposureMode == ExposureMode.ISO || controls.exposureMode == ExposureMode.MANUAL,
+        enabled = availability.isoDialEnabled &&
+            (controls.exposureMode == ExposureMode.ISO || controls.exposureMode == ExposureMode.MANUAL),
     )
 
     SectionHeader("Metering")
     SegmentedSelector(
         label = "Metering",
-        options = MeteringMode.entries,
+        options = availability.meteringModes,
         selected = controls.meteringMode,
         labelFor = ::meteringModeLabel,
         onSelect = actions::onMeteringMode,
+        enabled = availability.meteringModes.size > 1,
     )
 
     SectionHeader("WB")
     SegmentedSelector(
         label = "WB",
-        options = WbMode.entries,
+        options = availability.wbModes,
         selected = controls.wbMode,
         labelFor = ::wbModeLabel,
         onSelect = actions::onWbMode,
+        enabled = availability.wbModes.size > 1,
     )
     if (controls.wbMode == WbMode.MANUAL) {
         LabeledSlider(
@@ -648,6 +663,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
             value = controls.wbKelvin.toFloat().coerceIn(2000f, 10000f),
             onValueChange = { actions.onWbKelvin(it.roundToInt()) },
             valueRange = 2000f..10000f,
+            enabled = availability.wbDialEnabled,
         )
         LabeledSlider(
             label = "Tint",
@@ -655,12 +671,14 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
             value = controls.wbTint.toFloat().coerceIn(-50f, 50f),
             onValueChange = { actions.onWbTint(it.roundToInt()) },
             valueRange = -50f..50f,
+            enabled = availability.wbDialEnabled,
         )
     }
     // Sony Custom WB: frame a white/grey card and capture — freezes the AWB gains of that frame.
     FilterChip(
         selected = controls.wbMode == WbMode.CUSTOM,
         onClick = actions::onCaptureCustomWb,
+        enabled = availability.customWbCaptureEnabled,
         label = { Text("Capture Custom WB") },
         colors = pixelChipColors(),
         border = pixelChipBorder(controls.wbMode == WbMode.CUSTOM),
@@ -670,20 +688,27 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.labelSmall,
     )
-    ToggleRow(label = "AWB Lock", checked = controls.awbLock, onCheckedChange = actions::onToggleAwbLock)
+    ToggleRow(
+        label = "AWB Lock",
+        checked = controls.awbLock,
+        onCheckedChange = actions::onToggleAwbLock,
+        enabled = availability.awbLockEnabled,
+    )
 }
 
 @Composable
 private fun FocusTab(state: CameraUiState, actions: CameraActions) {
     val controls = state.controls
+    val availability = controlAvailability(state.caps?.controlCapabilities(), controls)
     TabTitle("Focus")
     SectionHeader("Autofocus")
     SegmentedSelector(
         label = "AF",
-        options = FocusMode.entries,
+        options = availability.focusModes,
         selected = controls.focusMode,
         labelFor = ::focusModeLabel,
         onSelect = actions::onFocusMode,
+        enabled = availability.focusModes.size > 1,
     )
     // Sony Focus Area: Spot S/M/L — the size of the tap-AF/metering region.
     SegmentedSelector(
@@ -692,9 +717,15 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
         selected = controls.afSpotSize,
         labelFor = { it.label },
         onSelect = actions::onAfSpotSize,
+        enabled = availability.afSpotSizeEnabled,
     )
     if (controls.focusMode != FocusMode.MANUAL) {
-        ToggleRow(label = "AF Lock", checked = controls.afLock, onCheckedChange = actions::onAfLock)
+        ToggleRow(
+            label = "AF Lock",
+            checked = controls.afLock,
+            onCheckedChange = actions::onAfLock,
+            enabled = availability.afLockEnabled,
+        )
     }
     SectionHeader("MF Assist")
     ToggleRow(label = "Peaking", checked = state.focusPeaking, onCheckedChange = actions::onTogglePeaking)
@@ -927,28 +958,32 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
 @Composable
 private fun ProcessingTab(state: CameraUiState, actions: CameraActions) {
     val controls = state.controls
+    val availability = controlAvailability(state.caps?.controlCapabilities(), controls)
     TabTitle("Image")
     SectionHeader("Processing")
     SegmentedSelector(
         label = "Sharpness",
-        options = ProcessingLevel.entries,
+        options = availability.edgeModes,
         selected = controls.edge,
         labelFor = ::processingLevelLabel,
         onSelect = actions::onEdge,
+        enabled = availability.edgeModes.size > 1,
     )
     SegmentedSelector(
         label = "NR",
-        options = ProcessingLevel.entries,
+        options = availability.noiseReductionModes,
         selected = controls.noiseReduction,
         labelFor = ::processingLevelLabel,
         onSelect = actions::onNoiseReduction,
+        enabled = availability.noiseReductionModes.size > 1,
     )
     SegmentedSelector(
         label = "Color",
-        options = ColorEffect.entries,
+        options = availability.colorEffects,
         selected = controls.colorEffect,
         labelFor = ::colorEffectLabel,
         onSelect = actions::onColorEffect,
+        enabled = availability.colorEffects.size > 1,
     )
 }
 
@@ -1196,17 +1231,28 @@ internal fun fnSlotValue(slot: FnSlot, state: CameraUiState): String {
 }
 
 internal fun performQuickFn(slot: FnSlot, state: CameraUiState, actions: CameraActions) {
+    val availability = controlAvailability(state.caps?.controlCapabilities(), state.controls)
     when (slot) {
-        FnSlot.EXPOSURE_MODE -> actions.onExposureMode(nextExposureMode(state.controls.exposureMode))
-        FnSlot.FOCUS -> actions.onFocusMode(nextFocusMode(state.controls.focusMode))
-        FnSlot.SHUTTER -> actions.onShutterMode(if (state.controls.shutterMode == ShutterMode.SPEED) ShutterMode.ANGLE else ShutterMode.SPEED)
-        FnSlot.ISO -> actions.onExposureMode(if (state.controls.exposureMode == com.hletrd.findx9tele.camera.ExposureMode.ISO) com.hletrd.findx9tele.camera.ExposureMode.PROGRAM else com.hletrd.findx9tele.camera.ExposureMode.ISO)
-        FnSlot.WB -> actions.onWbMode(nextWbMode(state.controls.wbMode))
-        FnSlot.EV -> actions.onExposureCompensation(0)
-        FnSlot.ZOOM -> actions.onZoomRatio(1f)
+        FnSlot.EXPOSURE_MODE -> actions.onExposureMode(
+            nextAvailable(state.controls.exposureMode, availability.exposureModes),
+        )
+        FnSlot.FOCUS -> actions.onFocusMode(nextAvailable(state.controls.focusMode, availability.focusModes))
+        FnSlot.SHUTTER -> if (availability.shutterDialEnabled) actions.onShutterMode(
+            if (state.controls.shutterMode == ShutterMode.SPEED) ShutterMode.ANGLE else ShutterMode.SPEED,
+        )
+        FnSlot.ISO -> actions.onExposureMode(
+            if (state.controls.exposureMode == ExposureMode.ISO) ExposureMode.PROGRAM
+            else if (ExposureMode.ISO in availability.exposureModes) ExposureMode.ISO
+            else nextAvailable(state.controls.exposureMode, availability.exposureModes),
+        )
+        FnSlot.WB -> actions.onWbMode(nextAvailable(state.controls.wbMode, availability.wbModes))
+        FnSlot.EV -> if (availability.evDialEnabled) actions.onExposureCompensation(0)
+        FnSlot.ZOOM -> if (availability.zoomDialEnabled) actions.onZoomRatio(1f)
         FnSlot.STABILIZATION -> actions.onVideoStabMode(nextVideoStabMode(state.videoStabMode))
         FnSlot.DRIVE -> actions.onDriveMode(nextDriveMode(state.driveMode))
-        FnSlot.METERING -> actions.onMeteringMode(nextMeteringMode(state.controls.meteringMode))
+        FnSlot.METERING -> actions.onMeteringMode(
+            nextAvailable(state.controls.meteringMode, availability.meteringModes),
+        )
         FnSlot.PEAKING -> actions.onTogglePeaking(!state.focusPeaking)
         FnSlot.ZEBRA -> actions.onToggleZebra(!state.zebra)
         FnSlot.TRANSFER -> actions.onTransfer(nextTransfer(state.transfer))

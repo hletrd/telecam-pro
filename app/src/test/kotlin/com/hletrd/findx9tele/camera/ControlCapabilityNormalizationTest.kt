@@ -229,6 +229,8 @@ class ControlCapabilityNormalizationTest {
     fun `AE off only route uses app side Program and preserves requested torch`() {
         val caps = CameraControlCapabilities(
             supportsManualSensor = true,
+            hasIsoRange = true,
+            hasExposureTimeRange = true,
             flashAvailable = true,
             aeModes = intArrayOf(CameraMetadata.CONTROL_AE_MODE_OFF),
         )

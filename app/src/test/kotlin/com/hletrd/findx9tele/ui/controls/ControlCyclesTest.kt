@@ -28,6 +28,18 @@ import org.junit.Test
  */
 class ControlCyclesTest {
 
+    @Test
+    fun nextAvailableNeverLeavesSparseSupport() {
+        val sparse = listOf(ExposureMode.PROGRAM, ExposureMode.MANUAL)
+        for (start in ExposureMode.entries) {
+            assertEquals(true, nextAvailable(start, sparse) in sparse)
+        }
+        assertEquals(ExposureMode.MANUAL, nextAvailable(ExposureMode.PROGRAM, sparse))
+        assertEquals(ExposureMode.PROGRAM, nextAvailable(ExposureMode.MANUAL, sparse))
+        assertEquals(ExposureMode.PROGRAM, nextAvailable(ExposureMode.SHUTTER, sparse))
+        assertEquals(ExposureMode.SHUTTER, nextAvailable(ExposureMode.SHUTTER, emptyList()))
+    }
+
     /** A tap-cycle over [members] must be a single closed permutation cycle in the given order. */
     private fun <T> assertClosedCycle(members: List<T>, next: (T) -> T) {
         for (start in members) {

@@ -113,7 +113,7 @@ internal fun ManualControls.normalizedFor(caps: CameraControlCapabilities): Manu
         fallbackOrder = listOf(FocusMode.CONTINUOUS, FocusMode.AUTO, FocusMode.MACRO, FocusMode.MANUAL),
         advertised = caps.afModes,
         metadata = FocusMode::afMetadata,
-        allowed = { it != FocusMode.MANUAL || caps.supportsManualFocus },
+        allowed = { it != FocusMode.MANUAL || caps.supportsManualFocus && caps.hasFocusDistanceRange },
     ) ?: FocusMode.CONTINUOUS
 
     val requestedWbAllowed = when (wbMode) {
@@ -143,7 +143,7 @@ internal fun ManualControls.normalizedFor(caps: CameraControlCapabilities): Manu
         ) ?: WbMode.AUTO
     }
 
-    val manualAeAvailable = caps.supportsManualSensor &&
+    val manualAeAvailable = caps.supportsManualSensor && caps.hasIsoRange && caps.hasExposureTimeRange &&
         exactAdvertisedMode(CameraMetadata.CONTROL_AE_MODE_OFF, caps.aeModes) != null
     var normalizedExposureMode = exposureMode
     var normalizedProgramAppSide = programAppSide && exposureMode == ExposureMode.PROGRAM
@@ -224,10 +224,16 @@ internal fun ManualControls.normalizedFor(caps: CameraControlCapabilities): Manu
     return copy(
         focusMode = normalizedFocus,
         afLock = afLock && normalizedFocus != FocusMode.MANUAL && caps.supportsManualFocus &&
+            caps.hasFocusDistanceRange &&
             exactAdvertisedMode(CameraMetadata.CONTROL_AF_MODE_OFF, caps.afModes) != null,
         exposureMode = normalizedExposureMode,
         programAppSide = normalizedProgramAppSide,
+        aeLock = aeLock && normalizedExposureMode == ExposureMode.PROGRAM &&
+            !normalizedProgramAppSide &&
+            exactAdvertisedMode(normalizedFlash.autoAeMetadata, caps.aeModes) != null,
         wbMode = normalizedWb,
+        awbLock = awbLock && normalizedWb == WbMode.AUTO &&
+            exactAdvertisedMode(CameraMetadata.CONTROL_AWB_MODE_AUTO, caps.awbModes) != null,
         antibanding = normalizedAntibanding,
         meteringMode = if (caps.maxAeRegions > 0) meteringMode else MeteringMode.MATRIX,
         edge = normalizedEdge,
@@ -390,7 +396,7 @@ fun CaptureRequest.Builder.applyManualControls(
     }
 }
 
-private val FocusMode.afMetadata: Int
+internal val FocusMode.afMetadata: Int
     get() = when (this) {
         FocusMode.MANUAL -> CameraMetadata.CONTROL_AF_MODE_OFF
         FocusMode.AUTO -> CameraMetadata.CONTROL_AF_MODE_AUTO
@@ -398,7 +404,7 @@ private val FocusMode.afMetadata: Int
         FocusMode.MACRO -> CameraMetadata.CONTROL_AF_MODE_MACRO
     }
 
-private val Antibanding.antibandingMetadata: Int
+internal val Antibanding.antibandingMetadata: Int
     get() = when (this) {
         Antibanding.AUTO -> CameraMetadata.CONTROL_AE_ANTIBANDING_MODE_AUTO
         Antibanding.HZ50 -> CameraMetadata.CONTROL_AE_ANTIBANDING_MODE_50HZ
@@ -406,7 +412,7 @@ private val Antibanding.antibandingMetadata: Int
         Antibanding.OFF -> CameraMetadata.CONTROL_AE_ANTIBANDING_MODE_OFF
     }
 
-private val FlashMode.autoAeMetadata: Int
+internal val FlashMode.autoAeMetadata: Int
     get() = when (this) {
         FlashMode.OFF, FlashMode.TORCH -> CameraMetadata.CONTROL_AE_MODE_ON
         FlashMode.AUTO -> CameraMetadata.CONTROL_AE_MODE_ON_AUTO_FLASH
@@ -433,9 +439,14 @@ private fun CaptureRequest.Builder.applyExposure(
     pinAutoFps: Boolean,
     previewExposureCap: Boolean = false,
 ) {
+    val isoRange = caps.isoRange
+    val exposureRange = caps.exposureTimeRange
     val manualAe = !c.autoExposure && caps.supportsManualSensor &&
+        isoRange != null && exposureRange != null &&
         exactAdvertisedMode(CameraMetadata.CONTROL_AE_MODE_OFF, caps.aeModes) != null
     if (manualAe) {
+        val admittedIsoRange = checkNotNull(isoRange)
+        val admittedExposureRange = checkNotNull(exposureRange)
         set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
         var iso = c.iso
         var wantExposureNs = c.effectiveExposureNs()
@@ -445,8 +456,8 @@ private fun CaptureRequest.Builder.applyExposure(
         // BRIGHTNESS-NEUTRALLY, bounded by ISO headroom (past the ceiling the preview honestly
         // slows, like every camera's night view). User-owned modes (S/ISO/M) stay WYSIWYG.
         if (previewExposureCap && c.exposureMode == ExposureMode.PROGRAM && wantExposureNs > PREVIEW_MAX_EXPOSURE_NS) {
-            val isoUpper = caps.isoRange?.upper
-            if (isoUpper != null && iso > 0) {
+            val isoUpper = admittedIsoRange.upper
+            if (iso > 0) {
                 val scale = minOf(wantExposureNs.toDouble() / PREVIEW_MAX_EXPOSURE_NS, isoUpper.toDouble() / iso)
                 if (scale > 1.05) {
                     wantExposureNs = (wantExposureNs / scale).toLong()
@@ -454,13 +465,16 @@ private fun CaptureRequest.Builder.applyExposure(
                 }
             }
         }
-        caps.isoRange?.let { set(CaptureRequest.SENSOR_SENSITIVITY, iso.coerceIn(it.lower, it.upper)) }
+        set(
+            CaptureRequest.SENSOR_SENSITIVITY,
+            iso.coerceIn(admittedIsoRange.lower, admittedIsoRange.upper),
+        )
         val exposureNs = clampExposureNs(
             requestedNs = wantExposureNs,
-            minNs = caps.exposureTimeRange?.lower,
-            maxNs = caps.exposureTimeRange?.upper,
+            minNs = admittedExposureRange.lower,
+            maxNs = admittedExposureRange.upper,
         )
-        caps.exposureTimeRange?.let { set(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureNs) }
+        set(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureNs)
         // Frame duration must be >= the exposure (Camera2 contract). Stretch it to the exposure so a
         // shutter slower than 1/fps survives instead of being clamped to 1/fps (long-exposure/astro).
         set(CaptureRequest.SENSOR_FRAME_DURATION, sensorFrameDurationNs(c.fps, exposureNs, caps.maxFrameDurationNs))
@@ -525,7 +539,7 @@ private fun CaptureRequest.Builder.applyWhiteBalance(c: ManualControls, caps: Ca
 }
 
 /** UI WB selection -> its exact CONTROL_AWB_MODE_* value. */
-private val WbMode.awbMetadata: Int
+internal val WbMode.awbMetadata: Int
     get() = when (this) {
         WbMode.INCANDESCENT -> CameraMetadata.CONTROL_AWB_MODE_INCANDESCENT
         WbMode.FLUORESCENT -> CameraMetadata.CONTROL_AWB_MODE_FLUORESCENT
@@ -556,6 +570,7 @@ private fun CaptureRequest.Builder.applyProcessing(c: ManualControls, caps: Came
  */
 private fun CaptureRequest.Builder.applyFlash(c: ManualControls, caps: CameraCaps) {
     val aeManual = !c.autoExposure && caps.supportsManualSensor &&
+        caps.isoRange != null && caps.exposureTimeRange != null &&
         exactAdvertisedMode(CameraMetadata.CONTROL_AE_MODE_OFF, caps.aeModes) != null
     if (aeManual) {
         if (caps.flashAvailable) {
@@ -585,7 +600,7 @@ private fun CaptureRequest.Builder.applyZoom(c: ManualControls, caps: CameraCaps
     caps.zoomRatioRange?.let { set(CaptureRequest.CONTROL_ZOOM_RATIO, c.zoomRatio.coerceIn(it.lower, it.upper)) }
 }
 
-private val ColorEffect.metadata: Int
+internal val ColorEffect.metadata: Int
     get() = when (this) {
         ColorEffect.NONE -> CameraMetadata.CONTROL_EFFECT_MODE_OFF
         ColorEffect.MONO -> CameraMetadata.CONTROL_EFFECT_MODE_MONO
@@ -595,14 +610,14 @@ private val ColorEffect.metadata: Int
         ColorEffect.POSTERIZE -> CameraMetadata.CONTROL_EFFECT_MODE_POSTERIZE
     }
 
-private val ProcessingLevel.edgeMetadata: Int
+internal val ProcessingLevel.edgeMetadata: Int
     get() = when (this) {
         ProcessingLevel.OFF -> CameraMetadata.EDGE_MODE_OFF
         ProcessingLevel.FAST -> CameraMetadata.EDGE_MODE_FAST
         ProcessingLevel.HIGH_QUALITY -> CameraMetadata.EDGE_MODE_HIGH_QUALITY
     }
 
-private val ProcessingLevel.noiseMetadata: Int
+internal val ProcessingLevel.noiseMetadata: Int
     get() = when (this) {
         ProcessingLevel.OFF -> CameraMetadata.NOISE_REDUCTION_MODE_OFF
         ProcessingLevel.FAST -> CameraMetadata.NOISE_REDUCTION_MODE_FAST
