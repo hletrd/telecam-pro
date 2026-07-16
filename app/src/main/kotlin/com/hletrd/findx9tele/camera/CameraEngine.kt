@@ -703,7 +703,7 @@ class CameraEngine(private val context: Context) {
                 )
             },
             onError = { failure ->
-                handleActiveCameraFailure(ctrl, expectedOpticsGeneration, failure)
+                handleActiveCameraFailure(ctrl, failure)
             },
         )
     }
@@ -1093,15 +1093,10 @@ class CameraEngine(private val context: Context) {
      */
     private fun handleActiveCameraFailure(
         failedController: CameraController,
-        expectedOpticsGeneration: Long,
         failure: Throwable,
     ) {
         val outcome = synchronized(this) {
-            if (controller !== failedController || !reconfigurationOwnsGeneration(
-                    opticsIntentGeneration.get(),
-                    expectedOpticsGeneration,
-                )
-            ) return
+            if (!activeCameraFailureBelongsToController(controller, failedController)) return
             val sessionGeneration = cameraSessionGeneration.incrementAndGet()
             cameraReady = false
             readyController = null
@@ -1510,7 +1505,7 @@ class CameraEngine(private val context: Context) {
                     // shared sensor; the setup task below owns that local sequential fallback.
                     // Only an error AFTER the next device opened is a real active-controller fault.
                     if (deviceOk.get()) {
-                        handleActiveCameraFailure(next, transaction.generation, failure)
+                        handleActiveCameraFailure(next, failure)
                     }
                 },
             )
@@ -2975,6 +2970,12 @@ class CameraEngine(private val context: Context) {
 /** Prevents an older asynchronous camera intent from undoing a newer user choice. */
 internal fun reconfigurationOwnsGeneration(currentGeneration: Long, expectedGeneration: Long): Boolean =
     currentGeneration == expectedGeneration
+
+/** Camera2 health callbacks remain owned for the complete installed-controller lifetime. */
+internal fun activeCameraFailureBelongsToController(
+    currentController: Any?,
+    failedController: Any,
+): Boolean = currentController === failedController
 
 /**
  * Completes a same-route transaction or schedules exactly one structural retry when the optimistic

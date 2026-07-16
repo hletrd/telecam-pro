@@ -25,6 +25,45 @@ class ReconfigurationGenerationTest {
         assertFalse(sessionReopenMayProceed(7, 7, true, paused = true, recording = false))
         assertFalse(sessionReopenMayProceed(7, 7, true, paused = false, recording = true))
     }
+
+    @Test
+    fun `current controller owns an error before same controller fast commit`() {
+        val gate = OpticsCommitGate()
+        val controller = Any()
+        val openGeneration = gate.begin { it }
+        val pendingFastCommitGeneration = gate.begin { it }
+
+        assertFalse(reconfigurationOwnsGeneration(pendingFastCommitGeneration, openGeneration))
+        assertTrue(activeCameraFailureBelongsToController(controller, controller))
+    }
+
+    @Test
+    fun `current controller still owns an error after same controller fast commit`() {
+        val gate = OpticsCommitGate()
+        val controller = Any()
+        val currentController: Any = controller
+        val openGeneration = gate.begin { it }
+        val fastCommitGeneration = gate.begin { it }
+
+        assertEquals(
+            fastCommitGeneration,
+            gate.commit(
+                expectedGeneration = fastCommitGeneration,
+                ownsTerminal = { currentController === controller },
+            ) {},
+        )
+        assertFalse(reconfigurationOwnsGeneration(fastCommitGeneration, openGeneration))
+        assertTrue(activeCameraFailureBelongsToController(currentController, controller))
+    }
+
+    @Test
+    fun `replaced controller cannot deliver a stale error`() {
+        val replacedController = Any()
+        val currentController = Any()
+
+        assertFalse(activeCameraFailureBelongsToController(currentController, replacedController))
+    }
+
     @Test
     fun `current transaction owns rollback`() {
         assertTrue(reconfigurationOwnsGeneration(currentGeneration = 7, expectedGeneration = 7))
