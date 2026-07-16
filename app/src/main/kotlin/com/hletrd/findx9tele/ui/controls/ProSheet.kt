@@ -3,7 +3,6 @@ package com.hletrd.findx9tele.ui.controls
 import android.content.Context
 import android.content.Intent
 import android.util.Range
-import android.util.Size
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -817,19 +816,25 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
 
     // Resolutions come from the SELECTED camera's real StreamConfigurationMap (4:3 when Open Gate,
     // else 16:9).
-    val resolutionOptions = when {
-        caps == null -> listOf(Size(3840, 2160), Size(1920, 1080))
-        state.openGate -> caps.openGateVideoSizes
-        else -> caps.availableVideoSizes
-    }.ifEmpty { listOf(Size(3840, 2160), Size(1920, 1080)) }
-    SegmentedSelector(
-        label = "Resolution",
-        options = resolutionOptions,
-        selected = state.videoResolution,
-        labelFor = ::videoResolutionLabel,
-        onSelect = actions::onVideoResolution,
-        enabled = recordingMutable,
-    )
+    val resolutionOptions = caps?.let {
+        if (state.openGate) it.openGateVideoSizes else it.availableVideoSizes
+    }.orEmpty()
+    if (resolutionOptions.isEmpty()) {
+        Text(
+            "Resolution unavailable for this camera.",
+            color = CameraColors.Record,
+            style = MaterialTheme.typography.labelSmall,
+        )
+    } else {
+        SegmentedSelector(
+            label = "Resolution",
+            options = resolutionOptions,
+            selected = state.videoResolution,
+            labelFor = ::videoResolutionLabel,
+            onSelect = actions::onVideoResolution,
+            enabled = recordingMutable,
+        )
+    }
 
     // Frame rates gated per-resolution by real caps: normal rates need the camera to advertise the
     // integer fps (24/30/60 here); 120 needs a matching high-speed config; drop-frame variants

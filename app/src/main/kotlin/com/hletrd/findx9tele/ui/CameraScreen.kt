@@ -4,6 +4,7 @@ import android.graphics.SurfaceTexture
 import android.view.HapticFeedbackConstants
 import android.view.Surface
 import android.view.TextureView
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -1141,6 +1142,7 @@ private fun FnOverlay(
     actions: CameraActions,
     onDismiss: () -> Unit,
 ) {
+    BackHandler(onBack = onDismiss)
     val slots = remember(state.activeFnSlots, state.myMenuSlots, state.recentSettingSlots) {
         (state.activeFnSlots + state.myMenuSlots + state.recentSettingSlots)
             .distinct()
@@ -1372,37 +1374,43 @@ private fun ModeCarousel(
 
 @Composable
 private fun ModeLabel(text: String, active: Boolean, enabled: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    Column(
+    Box(
         modifier = modifier
-            // The one HUD text element that had no scrim of its own: over a bright subject (sky,
-            // snow, water — normal super-tele fare) the mid-gray inactive label fell under usable
-            // contrast. Same treatment as every sibling HUD element.
-            .clip(RoundedCornerShape(50))
-            .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
-            .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 6.dp, vertical = 2.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
+            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = text,
-            color = when {
-                !enabled -> CameraColors.TextSecondary.copy(alpha = 0.45f)
-                active -> CameraColors.TextPrimary
-                else -> CameraColors.TextSecondary
-            },
-            fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
-            fontSize = if (active) 15.sp else 14.sp,
-        )
-        Spacer(modifier = Modifier.height(4.dp))
-        Box(
+        Column(
             modifier = Modifier
-                .width(18.dp)
-                .height(2.dp)
-                .background(
-                    if (active && enabled) CameraColors.TextPrimary else Color.Transparent,
-                    RoundedCornerShape(1.dp),
-                ),
-        )
+                // The one HUD text element that had no scrim of its own: over a bright subject (sky,
+                // snow, water — normal super-tele fare) the mid-gray inactive label fell under usable
+                // contrast. Same treatment as every sibling HUD element.
+                .clip(RoundedCornerShape(50))
+                .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
+                .padding(horizontal = 6.dp, vertical = 2.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                text = text,
+                color = when {
+                    !enabled -> CameraColors.TextSecondary.copy(alpha = 0.45f)
+                    active -> CameraColors.TextPrimary
+                    else -> CameraColors.TextSecondary
+                },
+                fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                fontSize = if (active) 15.sp else 14.sp,
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Box(
+                modifier = Modifier
+                    .width(18.dp)
+                    .height(2.dp)
+                    .background(
+                        if (active && enabled) CameraColors.TextPrimary else Color.Transparent,
+                        RoundedCornerShape(1.dp),
+                    ),
+            )
+        }
     }
 }
 

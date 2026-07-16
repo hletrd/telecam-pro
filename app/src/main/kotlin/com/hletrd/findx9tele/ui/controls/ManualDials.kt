@@ -90,6 +90,34 @@ import kotlin.math.roundToInt
  */
 enum class DialType { FOCUS, SHUTTER, ISO, WB, EV, ZOOM }
 
+/**
+ * Whether a quick dial can claim manual ownership from its current automatic state. Keeping the
+ * current focus/exposure mode out of this decision is intentional: the click reducer below owns the
+ * AF→MF, P/ISO→S, and P/S→ISO transitions, so requiring the destination mode here would make
+ * those branches unreachable.
+ */
+internal fun quickManualDialEnabled(
+    type: DialType,
+    supportsManualFocus: Boolean,
+    supportsManualSensor: Boolean,
+    hasExposureTimeRange: Boolean,
+    hasIsoRange: Boolean,
+): Boolean = when (type) {
+    DialType.FOCUS -> supportsManualFocus
+    DialType.SHUTTER -> supportsManualSensor && hasExposureTimeRange
+    DialType.ISO -> supportsManualSensor && hasIsoRange
+    DialType.WB, DialType.EV, DialType.ZOOM -> true
+}
+
+private fun quickManualDialEnabled(type: DialType, caps: CameraCaps?): Boolean =
+    quickManualDialEnabled(
+        type = type,
+        supportsManualFocus = caps?.supportsManualFocus == true,
+        supportsManualSensor = caps?.supportsManualSensor == true,
+        hasExposureTimeRange = caps?.exposureTimeRange != null,
+        hasIsoRange = caps?.isoRange != null,
+    )
+
 @Composable
 fun ManualDialCluster(
     state: CameraUiState,
@@ -266,7 +294,7 @@ private fun FnDialChip(
                 caps?.minFocusDistanceDiopters ?: 0f,
             ),
             active = openDial == DialType.FOCUS,
-            enabled = controls.focusMode == FocusMode.MANUAL && (caps?.supportsManualFocus ?: false),
+            enabled = quickManualDialEnabled(DialType.FOCUS, caps),
             onClick = { onSelect(DialType.FOCUS) },
             onLongClick = onOpenFnMenu,
         )
@@ -279,7 +307,7 @@ private fun FnDialChip(
                 else -> formatShutterSpeed(controls.exposureTimeNs)
             },
             active = openDial == DialType.SHUTTER,
-            enabled = controls.exposureMode == ExposureMode.SHUTTER || controls.exposureMode == ExposureMode.MANUAL,
+            enabled = quickManualDialEnabled(DialType.SHUTTER, caps),
             onClick = { onSelect(DialType.SHUTTER) },
             onLongClick = onOpenFnMenu,
         )
@@ -291,7 +319,7 @@ private fun FnDialChip(
                 else -> controls.iso.toString()
             },
             active = openDial == DialType.ISO,
-            enabled = controls.exposureMode == ExposureMode.ISO || controls.exposureMode == ExposureMode.MANUAL,
+            enabled = quickManualDialEnabled(DialType.ISO, caps),
             onClick = { onSelect(DialType.ISO) },
             onLongClick = onOpenFnMenu,
         )
