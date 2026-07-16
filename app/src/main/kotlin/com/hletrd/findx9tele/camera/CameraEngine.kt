@@ -88,6 +88,7 @@ class CameraEngine(private val context: Context) {
     @Volatile private var cameraReady = false
     @Volatile private var readyController: CameraController? = null
     private val opticsIntentGeneration = java.util.concurrent.atomic.AtomicLong(0)
+    private val opticsCommitGate = OpticsCommitGate(opticsIntentGeneration, this)
     // Camera-health signal for the UI (dim the shutter, show a persistent OSD tag while down):
     // fires on every cameraReady flip. A silent scheduleCameraRecovery exhaustion previously left a
     // black viewfinder behind a fully interactive-looking shutter with zero indication.
@@ -156,23 +157,41 @@ class CameraEngine(private val context: Context) {
         ready = cameraReady,
     )
 
-    @Synchronized
     private fun <T> beginOpticsTransaction(publishDesiredOptics: () -> T): Pair<OpticsTransaction, T> {
-        // A second tap can arrive while the first switch is still preflighting. Both must roll back
-        // to the last Ready state, never to the first tap's unaccepted intermediate fields.
-        val before = selectRollbackBaseline(cameraReady, currentOpticsSnapshot(), opticsRollbackBaseline)
-        opticsRollbackBaseline = before
-        val transaction = OpticsTransaction(opticsIntentGeneration.incrementAndGet(), before)
-        // Generation and its complete desired packet share this monitor. Resume cannot capture the
-        // new token between increment and publication and then reconfigure the outgoing optics.
-        return transaction to publishDesiredOptics()
+        return opticsCommitGate.begin { generation ->
+            // A second tap can arrive while the first switch is still preflighting. Both must roll
+            // back to the last Ready state, never to the first tap's unaccepted intermediate fields.
+            val before = selectRollbackBaseline(cameraReady, currentOpticsSnapshot(), opticsRollbackBaseline)
+            opticsRollbackBaseline = before
+            val transaction = OpticsTransaction(generation, before)
+            // Generation and its complete desired packet share the commit gate's monitor. Resume
+            // cannot capture the new token between increment and desired-state publication.
+            transaction to publishDesiredOptics()
+        }
     }
 
-    @Synchronized
-    private fun acceptOptics(expectedGeneration: Long) {
-        if (reconfigurationOwnsGeneration(opticsIntentGeneration.get(), expectedGeneration)) {
+    /**
+     * Accepts an optics result only if its generation and controller still own the engine at the
+     * exact terminal mutation boundary. The callback payload is captured in that same commit; a
+     * later intent therefore receives the old generation and can reject it instead of having an
+     * obsolete controller mislabeled with the new global generation.
+     */
+    private fun commitOpticsReady(
+        expectedGeneration: Long,
+        expectedController: CameraController,
+        terminalMutation: () -> Unit = {},
+    ): Boolean {
+        val publicationGeneration = opticsCommitGate.commit(
+            expectedGeneration = expectedGeneration,
+            ownsTerminal = { controller === expectedController && !paused },
+        ) {
+            terminalMutation()
             opticsRollbackBaseline = null
-        }
+            cameraReady = true
+            readyController = expectedController
+        } ?: return false
+        onCameraReadyChange?.invoke(true, publicationGeneration)
+        return true
     }
 
     private fun ownsOpticsTransaction(transaction: OpticsTransaction): Boolean =
@@ -493,7 +512,29 @@ class CameraEngine(private val context: Context) {
         invalidateCameraReady()
         controller?.close() // idempotent: closes any prior controller so two never race for the device
         val ctrl = wireController()
-        controller = ctrl
+        val installed = synchronized(this) {
+            if (paused || !reconfigurationOwnsGeneration(
+                    opticsIntentGeneration.get(),
+                    expectedOpticsGeneration,
+                )
+            ) {
+                false
+            } else {
+                // Controller replacement shares the terminal-commit monitor, so an obsolete
+                // callback cannot pass identity and publish Ready across this assignment.
+                controller = ctrl
+                cameraReady = false
+                readyController = null
+                true
+            }
+        }
+        if (!installed) {
+            ctrl.close()
+            return
+        }
+        // Re-assert the atomic install state in case the outgoing controller reported Ready after
+        // the earlier invalidation but before replacement acquired the monitor.
+        onCameraReadyChange?.invoke(false, expectedOpticsGeneration)
         ctrl.open(
             selection = sel,
             caps = c,
@@ -508,12 +549,9 @@ class CameraEngine(private val context: Context) {
             teleconverterMode = teleconverterMode,
             pinAutoFps = videoMode,
             onReady = {
-                // A superseded controller can report ready after a newer reopen already replaced it.
-                if (controller === ctrl && !paused &&
-                    reconfigurationOwnsGeneration(opticsIntentGeneration.get(), expectedOpticsGeneration)
-                ) {
-                    acceptOptics(expectedOpticsGeneration)
-                    updateCameraReady(true)
+                // Generation, controller identity, rollback acceptance, and Ready publication are
+                // one commit. A superseding intent cannot land between the check and publication.
+                if (commitOpticsReady(expectedOpticsGeneration, ctrl)) {
                     onStatus?.invoke(null)
                     cameraRecoveryAttempts = 0
                 }
@@ -612,9 +650,10 @@ class CameraEngine(private val context: Context) {
                 ) {
                     // Same camera and same configured stream: the intent only changed request-side
                     // mode semantics, so the existing session is still the ready session.
-                    overrideId = id
-                    acceptOptics(transaction.generation)
-                    updateCameraReady(true)
+                    val expectedController = controller ?: return@execute
+                    commitOpticsReady(transaction.generation, expectedController) {
+                        overrideId = id
+                    }
                 } else {
                     reconfigureCamera(id, transaction)
                 }
@@ -669,10 +708,14 @@ class CameraEngine(private val context: Context) {
             if (structuralChange) {
                 reconfigureCamera(id, transaction)
             } else {
-                setZoomRatio(resolvedControls.zoomRatio)
-                overrideId = id
-                acceptOptics(transaction.generation)
-                updateCameraReady(true)
+                val expectedController = controller ?: return@execute
+                commitOpticsReady(transaction.generation, expectedController) {
+                    // Enqueue the old generation's request-side work while the commit monitor is
+                    // held. A newer begin cannot enqueue its packet until after this one, preserving
+                    // controller/GL handler order as well as engine-field ownership.
+                    setZoomRatio(resolvedControls.zoomRatio)
+                    overrideId = id
+                }
             }
         }
     }
@@ -876,8 +919,12 @@ class CameraEngine(private val context: Context) {
                 reconfigureCamera(overrideId, transaction)
                 return@execute
             }
-            controller?.close()
-            controller = null
+            val closing = synchronized(this) {
+                val current = controller
+                controller = null
+                current
+            }
+            closing?.close()
             if (paused || recorder != null) return@execute
             openCamera(input)
         }
@@ -1034,10 +1081,11 @@ class CameraEngine(private val context: Context) {
                 if (beforeCameraId != id || controller == null || teleChanged) {
                     reconfigureCamera(id, transaction)
                 } else if (transaction.before.ready && readyController === controller) {
-                    overrideId = id
-                    applyStabilization()
-                    acceptOptics(transaction.generation)
-                    updateCameraReady(true)
+                    val expectedController = controller ?: return@execute
+                    commitOpticsReady(transaction.generation, expectedController) {
+                        overrideId = id
+                        applyStabilization()
+                    }
                 } else {
                     reconfigureCamera(id, transaction)
                 }
@@ -1054,10 +1102,11 @@ class CameraEngine(private val context: Context) {
                 if (beforeCameraId != id || controller == null || teleChanged) {
                     reconfigureCamera(id, transaction)
                 } else if (transaction.before.ready && readyController === controller) {
-                    setZoomRatio(resolved.controls.zoomRatio)
-                    overrideId = id
-                    acceptOptics(transaction.generation)
-                    updateCameraReady(true)
+                    val expectedController = controller ?: return@execute
+                    commitOpticsReady(transaction.generation, expectedController) {
+                        setZoomRatio(resolved.controls.zoomRatio)
+                        overrideId = id
+                    }
                 } else {
                     reconfigureCamera(id, transaction)
                 }
@@ -1170,9 +1219,7 @@ class CameraEngine(private val context: Context) {
                 deferSession = true,
                 onDeviceOpened = { deviceOk.set(true); deviceUp.countDown() },
                 onReady = {
-                    if (controller === next && !paused && ownsOpticsTransaction(transaction)) {
-                        acceptOptics(transaction.generation)
-                        updateCameraReady(true)
+                    if (commitOpticsReady(transaction.generation, next)) {
                         onStatus?.invoke(null)
                         cameraRecoveryAttempts = 0
                     }
@@ -1197,19 +1244,23 @@ class CameraEngine(private val context: Context) {
             // start a deferred session from an obsolete device; release every local handle.
             if (!ownsOpticsTransaction(transaction)) {
                 next.close()
-                if (controller === next) {
-                    controller = old
-                    selection = transaction.before.selection
-                    caps = transaction.before.caps
-                    videoSize = transaction.before.videoSize
-                    previewStreamSize = transaction.before.previewStreamSize
+                synchronized(this) {
+                    if (controller === next) {
+                        controller = old
+                        selection = transaction.before.selection
+                        caps = transaction.before.caps
+                        videoSize = transaction.before.videoSize
+                        previewStreamSize = transaction.before.previewStreamSize
+                    }
                 }
                 return@execute
             }
             if (paused || recorder != null || controller !== next) {
                 next.close()
                 old?.close()
-                if (controller === next) controller = null
+                synchronized(this) {
+                    if (controller === next) controller = null
+                }
                 return@execute
             }
             // Candidate caps/sizes become externally visible only after the blocking dual-open
@@ -1228,7 +1279,9 @@ class CameraEngine(private val context: Context) {
             } else {
                 // Sequential fallback: the HAL refused the concurrent open.
                 next.close()
-                if (controller === next) controller = null
+                synchronized(this) {
+                    if (controller === next) controller = null
+                }
                 if (paused || recorder != null) return@execute
                 openCamera(input, transaction)
             }
@@ -1927,8 +1980,11 @@ class CameraEngine(private val context: Context) {
         // join — see CameraController.close), and onStop already competes with other teardown work
         // inside the ANR budget. setupExecutor serializes this close ahead of any queued/subsequent
         // reopen, so ordering is preserved.
-        val ctrl = controller
-        controller = null
+        val ctrl = synchronized(this) {
+            val current = controller
+            controller = null
+            current
+        }
         if (ctrl != null) setupExecutor.execute { ctrl.close() }
     }
 
@@ -2015,8 +2071,12 @@ class CameraEngine(private val context: Context) {
             runCatching { it.await(RECORDER_FINALIZE_RELEASE_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS) }
         }
         gyro.stop()
-        controller?.close()
-        controller = null
+        val ctrl = synchronized(this) {
+            val current = controller
+            controller = null
+            current
+        }
+        ctrl?.close()
         gl.stop()
         starting = false
         setupExecutor.shutdown()
@@ -2419,6 +2479,34 @@ class CameraEngine(private val context: Context) {
 /** Prevents an older asynchronous camera intent from undoing a newer user choice. */
 internal fun reconfigurationOwnsGeneration(currentGeneration: Long, expectedGeneration: Long): Boolean =
     currentGeneration == expectedGeneration
+
+/**
+ * Serializes optics intent publication and terminal acceptance on one monitor. Production supplies
+ * the engine monitor so desired fields, controller identity, rollback acceptance, and Ready state
+ * share the same boundary; host tests can supply an isolated monitor and force exact interleavings.
+ */
+internal class OpticsCommitGate(
+    private val generation: java.util.concurrent.atomic.AtomicLong =
+        java.util.concurrent.atomic.AtomicLong(0),
+    private val monitor: Any = Any(),
+) {
+    fun <T> begin(publishDesired: (generation: Long) -> T): T = synchronized(monitor) {
+        publishDesired(generation.incrementAndGet())
+    }
+
+    fun commit(
+        expectedGeneration: Long,
+        ownsTerminal: () -> Boolean = { true },
+        terminalMutation: () -> Unit,
+    ): Long? = synchronized(monitor) {
+        if (!reconfigurationOwnsGeneration(generation.get(), expectedGeneration) || !ownsTerminal()) {
+            null
+        } else {
+            terminalMutation()
+            expectedGeneration
+        }
+    }
+}
 
 /** A Ready callback may publish only while both its generation and engine-ready bit remain current. */
 internal fun cameraReadyPublicationIsCurrent(

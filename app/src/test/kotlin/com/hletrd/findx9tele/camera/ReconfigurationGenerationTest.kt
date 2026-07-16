@@ -5,6 +5,11 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.concurrent.thread
 
 class ReconfigurationGenerationTest {
     @Test
@@ -120,5 +125,61 @@ class ReconfigurationGenerationTest {
         assertTrue(cameraReadyPublicationIsCurrent(42L, 42L, cameraReady = true))
         assertFalse(cameraReadyPublicationIsCurrent(43L, 42L, cameraReady = true))
         assertFalse(cameraReadyPublicationIsCurrent(42L, 42L, cameraReady = false))
+    }
+
+    @Test
+    fun `terminal commit rejects an older generation after its early check`() {
+        val gate = OpticsCommitGate()
+        val older = gate.begin { it }
+        val earlyCheckComplete = CountDownLatch(1)
+        val releaseOldCompletion = CountDownLatch(1)
+        val attempted = AtomicBoolean(false)
+        val result = AtomicReference<Long?>()
+        val mutated = AtomicBoolean(false)
+
+        val oldCompletion = thread(start = true, name = "old-optics-completion") {
+            assertTrue(reconfigurationOwnsGeneration(older, older))
+            earlyCheckComplete.countDown()
+            assertTrue(releaseOldCompletion.await(1, TimeUnit.SECONDS))
+            attempted.set(true)
+            result.set(gate.commit(older) { mutated.set(true) })
+        }
+
+        assertTrue(earlyCheckComplete.await(1, TimeUnit.SECONDS))
+        val newer = gate.begin { it }
+        releaseOldCompletion.countDown()
+        oldCompletion.join(1_000)
+
+        assertFalse(oldCompletion.isAlive)
+        assertTrue(attempted.get())
+        assertTrue(newer > older)
+        assertNull(result.get())
+        assertFalse(mutated.get())
+    }
+
+    @Test
+    fun `terminal commit requires the expected controller identity`() {
+        val gate = OpticsCommitGate()
+        val generation = gate.begin { it }
+        val controllerA = Any()
+        val controllerB = Any()
+        var currentController: Any = controllerB
+        var mutations = 0
+
+        assertNull(
+            gate.commit(
+                expectedGeneration = generation,
+                ownsTerminal = { currentController === controllerA },
+            ) { mutations++ },
+        )
+        currentController = controllerA
+        assertEquals(
+            generation,
+            gate.commit(
+                expectedGeneration = generation,
+                ownsTerminal = { currentController === controllerA },
+            ) { mutations++ },
+        )
+        assertEquals(1, mutations)
     }
 }
