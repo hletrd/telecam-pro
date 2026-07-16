@@ -439,11 +439,13 @@ class CameraEngine(private val context: Context) {
                 gl.setGammaAssist(gammaAssist)
                 applyRendererConfig()
                 gyro.start()
-                maybeLogCameraCapabilities()
                 // Capture route + token after GL input exists. If another intent begins after this
                 // snapshot, reconfigureCamera rejects this one and the newer queued task wins.
                 val desired = currentOpticsReconfiguration()
                 reconfigureCamera(desired.overrideId, desired.transaction, startup = true)
+                // Both operations use setupExecutor; enqueue diagnostics only after the initial
+                // route/open task so debug builds do not put a full camera walk on the startup path.
+                maybeLogCameraCapabilities()
             }
             synchronized(this) {
                 // Publish start state BEFORE binding: a TextureView surface destroyed+recreated
@@ -460,7 +462,7 @@ class CameraEngine(private val context: Context) {
         }
     }
 
-    /** Debug-only Camera2 capability log, run off the GL thread so it never delays openCamera / first frame. */
+    /** Debug-only Camera2 capability log, queued behind initial camera route/open work. */
     private fun maybeLogCameraCapabilities() {
         if (!com.hletrd.findx9tele.BuildConfig.DEBUG) return
         setupExecutor.execute { runCatching { VendorTagInspector.logAll(manager) } }
