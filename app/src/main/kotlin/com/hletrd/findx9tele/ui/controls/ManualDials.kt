@@ -115,6 +115,16 @@ internal fun quickManualDialEnabled(type: DialType, availability: ControlAvailab
         DialType.ZOOM -> availability.zoomDialEnabled
     }
 
+/** WB presets navigate to the sheet; only MANUAL enters the numeric Kelvin ruler. */
+internal fun whiteBalanceFnChipEnabled(
+    mode: WbMode,
+    availability: ControlAvailability,
+): Boolean = if (mode == WbMode.MANUAL) {
+    availability.wbDialEnabled
+} else {
+    availability.wbModes.size > 1
+}
+
 internal fun reconcileOpenManualDial(
     openDial: DialType?,
     availability: ControlAvailability,
@@ -341,7 +351,7 @@ private fun FnDialChip(
             label = "WB",
             value = if (controls.wbMode == WbMode.MANUAL) "${controls.wbKelvin}K" else wbModeLabel(controls.wbMode),
             active = openDial == DialType.WB,
-            enabled = quickManualDialEnabled(DialType.WB, availability),
+            enabled = whiteBalanceFnChipEnabled(controls.wbMode, availability),
             onClick = { onSelect(DialType.WB) },
             onLongClick = onOpenFnMenu,
         )

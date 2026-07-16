@@ -3,7 +3,9 @@ package com.hletrd.findx9tele.ui.controls
 import android.hardware.camera2.CameraMetadata
 import com.hletrd.findx9tele.camera.CameraControlCapabilities
 import com.hletrd.findx9tele.camera.ManualControls
+import com.hletrd.findx9tele.camera.WbMode
 import com.hletrd.findx9tele.camera.controlAvailability
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -57,6 +59,75 @@ class QuickManualDialEnablementTest {
         assertTrue(enabled(DialType.WB, manualPost = true, awbOff = true))
         assertFalse(enabled(DialType.WB, manualPost = false, awbOff = true))
         assertFalse(enabled(DialType.WB, manualPost = true, awbOff = false))
+    }
+
+    @Test
+    fun `white balance Fn admission separates preset navigation from manual ruler`() {
+        data class Case(
+            val label: String,
+            val mode: WbMode,
+            val caps: CameraControlCapabilities?,
+            val chipEnabled: Boolean,
+            val rulerEnabled: Boolean,
+        )
+
+        val manualCaps = CameraControlCapabilities(
+            supportsManualPostProcessing = true,
+            awbModes = intArrayOf(CameraMetadata.CONTROL_AWB_MODE_OFF),
+        )
+        val cases = listOf(
+            Case(
+                label = "preset-only",
+                mode = WbMode.AUTO,
+                caps = CameraControlCapabilities(
+                    awbModes = intArrayOf(
+                        CameraMetadata.CONTROL_AWB_MODE_AUTO,
+                        CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT,
+                    ),
+                ),
+                chipEnabled = true,
+                rulerEnabled = false,
+            ),
+            Case("manual-only", WbMode.MANUAL, manualCaps, chipEnabled = true, rulerEnabled = true),
+            Case(
+                label = "mixed",
+                mode = WbMode.AUTO,
+                caps = CameraControlCapabilities(
+                    supportsManualPostProcessing = true,
+                    awbModes = intArrayOf(
+                        CameraMetadata.CONTROL_AWB_MODE_AUTO,
+                        CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT,
+                        CameraMetadata.CONTROL_AWB_MODE_OFF,
+                    ),
+                ),
+                chipEnabled = true,
+                rulerEnabled = true,
+            ),
+            Case(
+                label = "singleton",
+                mode = WbMode.AUTO,
+                caps = CameraControlCapabilities(
+                    awbModes = intArrayOf(CameraMetadata.CONTROL_AWB_MODE_AUTO),
+                ),
+                chipEnabled = false,
+                rulerEnabled = false,
+            ),
+            Case("caps-unavailable", WbMode.AUTO, null, chipEnabled = false, rulerEnabled = false),
+        )
+
+        cases.forEach { case ->
+            val availability = controlAvailability(case.caps, ManualControls(wbMode = case.mode))
+            assertEquals(
+                "${case.label} chip",
+                case.chipEnabled,
+                whiteBalanceFnChipEnabled(case.mode, availability),
+            )
+            assertEquals(
+                "${case.label} ruler",
+                case.rulerEnabled,
+                quickManualDialEnabled(DialType.WB, availability),
+            )
+        }
     }
 
     @Test
