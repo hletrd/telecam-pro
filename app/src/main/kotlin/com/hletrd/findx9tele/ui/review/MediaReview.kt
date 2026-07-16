@@ -80,8 +80,44 @@ import kotlin.math.roundToInt
 /**
  * In-app review of the last saved photo or video. Stills support high-magnification focus checks;
  * videos use a bounded thumbnail plus an identity-owned TextureView/MediaPlayer playback surface.
- * DNG remains outside the quick-review decoder.
+ * RAW/DNG captures use a truthful metadata placeholder and deliberately never enter a pixel decoder.
  */
+
+internal enum class ReviewMediaKind {
+    STILL,
+    VIDEO,
+    RAW,
+}
+
+private val rawMimeTypes = setOf(
+    "image/x-adobe-dng",
+    "image/dng",
+    "application/x-adobe-dng",
+)
+
+/** Pure MIME classifier shared by thumbnail and fullscreen review. */
+internal fun reviewMediaKind(mimeType: String?): ReviewMediaKind {
+    val normalized = mimeType
+        ?.substringBefore(';')
+        ?.trim()
+        ?.lowercase(java.util.Locale.ROOT)
+    return when {
+        normalized in rawMimeTypes -> ReviewMediaKind.RAW
+        normalized?.startsWith("video/") == true -> ReviewMediaKind.VIDEO
+        else -> ReviewMediaKind.STILL
+    }
+}
+
+internal fun galleryReviewContentDescription(
+    hasMedia: Boolean,
+    kind: ReviewMediaKind?,
+): String = when {
+    !hasMedia -> "No capture to review"
+    kind == ReviewMediaKind.RAW -> "Review last RAW capture"
+    kind == ReviewMediaKind.VIDEO -> "Review last video"
+    kind == ReviewMediaKind.STILL -> "Review last photo"
+    else -> "Review last capture"
+}
 
 /** Rotation + dimensions of a video, for sizing/orienting the in-review player. */
 private data class VideoInfo(val rotationDeg: Int, val width: Int, val height: Int)
@@ -126,6 +162,7 @@ private sealed interface ReviewMediaState {
     sealed interface Ready : ReviewMediaState {
         data class Still(val bitmap: ImageBitmap) : Ready
         data class Video(val info: VideoInfo) : Ready
+        data object Raw : Ready
     }
     data class Error(val message: String) : ReviewMediaState
 }
@@ -215,16 +252,20 @@ private suspend fun loadReviewMedia(context: Context, uri: Uri): ReviewMediaStat
     val mimeType = withContext(Dispatchers.IO) {
         runCatching { context.contentResolver.getType(uri) }.getOrNull()
     }
-    return if (mimeType?.startsWith("video/") == true) {
-        withContext(Dispatchers.IO) { loadVideoInfo(context, uri) }
-            ?.let { ReviewMediaState.Ready.Video(it) }
-            ?: ReviewMediaState.Error("Unable to open this video.")
-    } else {
-        // A capped first decode avoids a 50 MP ARGB allocation (~200 MB) before Compose/GPU copies.
-        // The resulting 3000 px preview still carries ample detail for the existing 4×/8× focus check.
-        loadBitmap(context, uri, REVIEW_PREVIEW_MAX_DIM)
-            ?.let { ReviewMediaState.Ready.Still(it) }
-            ?: ReviewMediaState.Error("Unable to open this image.")
+    return when (reviewMediaKind(mimeType)) {
+        ReviewMediaKind.RAW -> ReviewMediaState.Ready.Raw
+        ReviewMediaKind.VIDEO -> {
+            withContext(Dispatchers.IO) { loadVideoInfo(context, uri) }
+                ?.let { ReviewMediaState.Ready.Video(it) }
+                ?: ReviewMediaState.Error("Unable to open this video.")
+        }
+        ReviewMediaKind.STILL -> {
+            // A capped first decode avoids a 50 MP ARGB allocation (~200 MB) before Compose/GPU copies.
+            // The resulting 3000 px preview still carries ample detail for the existing 4×/8× focus check.
+            loadBitmap(context, uri, REVIEW_PREVIEW_MAX_DIM)
+                ?.let { ReviewMediaState.Ready.Still(it) }
+                ?: ReviewMediaState.Error("Unable to open this image.")
+        }
     }
 }
 
@@ -275,12 +316,32 @@ private suspend fun loadMetadata(context: Context, uri: Uri): ReviewMetadata? =
         }.getOrNull()
     }
 
-/** Tappable thumbnail of the last saved photo or video; a placeholder frame until one exists. */
+private data class GalleryThumbContent(
+    val kind: ReviewMediaKind? = null,
+    val bitmap: ImageBitmap? = null,
+)
+
+/** Tappable thumbnail of the last capture; RAW uses a labeled tile rather than a fake/failed image. */
 @Composable
 fun GalleryThumb(uri: Uri?, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    val thumb by produceState<ImageBitmap?>(initialValue = null, uri) {
-        value = uri?.let { loadBitmap(context, it, 240) ?: withContext(Dispatchers.IO) { loadVideoFrame(context, it, 240) } }
+    val content by produceState(initialValue = GalleryThumbContent(), uri) {
+        // produceState retains its state holder across key changes; clear the outgoing capture before
+        // resolving the new MIME so a RAW tile/old bitmap is never briefly labeled as the new owner.
+        value = GalleryThumbContent()
+        if (uri == null) {
+            return@produceState
+        }
+        val mimeType = withContext(Dispatchers.IO) {
+            runCatching { context.contentResolver.getType(uri) }.getOrNull()
+        }
+        val kind = reviewMediaKind(mimeType)
+        val bitmap = when (kind) {
+            ReviewMediaKind.RAW -> null
+            ReviewMediaKind.VIDEO -> withContext(Dispatchers.IO) { loadVideoFrame(context, uri, 240) }
+            ReviewMediaKind.STILL -> loadBitmap(context, uri, 240)
+        }
+        value = GalleryThumbContent(kind, bitmap)
     }
     Box(
         modifier = modifier
@@ -289,13 +350,13 @@ fun GalleryThumb(uri: Uri?, onClick: () -> Unit, modifier: Modifier = Modifier) 
             .background(CameraColors.Pill)
             .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(14.dp))
             .semantics {
-                contentDescription = if (uri != null) "Review last shot" else "No shot to review"
+                contentDescription = galleryReviewContentDescription(uri != null, content.kind)
                 role = Role.Button
             }
             .clickable(enabled = uri != null, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        val t = thumb
+        val t = content.bitmap
         if (t != null) {
             Image(
                 bitmap = t,
@@ -305,6 +366,20 @@ fun GalleryThumb(uri: Uri?, onClick: () -> Unit, modifier: Modifier = Modifier) 
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
             )
+        } else if (content.kind == ReviewMediaKind.RAW) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = "RAW",
+                    color = CameraColors.TextPrimary,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    text = "DNG",
+                    color = CameraColors.TextSecondary,
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
         } else {
             Canvas(Modifier.size(22.dp)) {
                 val color = CameraColors.TextSecondary
@@ -328,8 +403,11 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
         mediaState = loadReviewMedia(context, uri)
     }
     val videoInfo = (mediaState as? ReviewMediaState.Ready.Video)?.info
-    val mediaReady = mediaState is ReviewMediaState.Ready
+    val gestureMediaReady =
+        mediaState is ReviewMediaState.Ready.Still || mediaState is ReviewMediaState.Ready.Video
+    val rawReady = mediaState is ReviewMediaState.Ready.Raw
     val metadata by produceState<ReviewMetadata?>(initialValue = null, uri) {
+        value = null
         value = loadMetadata(context, uri)
     }
     var scale by remember { mutableFloatStateOf(1f) }
@@ -379,7 +457,7 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
             .fillMaxSize()
             .background(Color.Black)
             .semantics {
-                paneTitle = "Media review"
+                paneTitle = if (rawReady) "RAW capture review" else "Media review"
                 isTraversalGroup = true
             },
         contentAlignment = Alignment.Center,
@@ -389,8 +467,8 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
         Box(
             modifier = Modifier
                 .fillMaxSize()
-            .pointerInput(mediaReady, videoInfo != null) {
-                if (!mediaReady) return@pointerInput
+            .pointerInput(gestureMediaReady, videoInfo != null) {
+                if (!gestureMediaReady) return@pointerInput
                 // ONE gesture loop owns pinch + pan + swipe-dismiss + tap/double-tap/long-press.
                 // Two sibling pointerInput blocks fought here exactly like CameraScreen's tap-vs-
                 // pinch conflict: the pinch/pan loop consumed EVERY change, which cancelled the
@@ -626,7 +704,7 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
         if (still != null) {
             Image(
                 bitmap = still.bitmap,
-                contentDescription = "Review",
+                contentDescription = "Photo review",
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
                     .fillMaxSize()
@@ -646,6 +724,8 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                         )
                     },
             )
+        } else if (rawReady) {
+            RawReviewPlaceholder(Modifier.fillMaxSize())
         } else when (val current = mediaState) {
             ReviewMediaState.Loading -> Text(
                 "Loading review…",
@@ -687,7 +767,7 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
             ) {
                 Text(meta.name, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
                 Text(
-                    "${meta.width}×${meta.height} · ${formatBytes(meta.sizeBytes)}",
+                    reviewMetadataLine(rawReady, meta.width, meta.height, meta.sizeBytes),
                     color = CameraColors.TextSecondary,
                     style = MaterialTheme.typography.labelSmall,
                 )
@@ -697,7 +777,7 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
             }
         }
 
-        if (videoInfo == null && scale > 1.05f) {
+        if (mediaState is ReviewMediaState.Ready.Still && scale > 1.05f) {
             Text(
                 text = reviewScaleLabel(scale),
                 color = CameraColors.TextPrimary,
@@ -772,7 +852,7 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                 .clip(CircleShape)
                 .background(Color.Black.copy(alpha = 0.5f))
                 .semantics {
-                    contentDescription = "Delete shot"
+                    contentDescription = if (rawReady) "Delete RAW capture" else "Delete capture"
                     role = Role.Button
                 }
                 .clickable { confirmDelete = true },
@@ -801,8 +881,8 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
     if (confirmDelete) {
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
-            title = { Text("Delete shot?") },
-            text = { Text("Delete from device.") },
+            title = { Text(if (rawReady) "Delete RAW capture?" else "Delete capture?") },
+            text = { Text("Delete this capture and all saved formats from device.") },
             confirmButton = {
                 TextButton(onClick = {
                     confirmDelete = false
@@ -816,6 +896,38 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
             dismissButton = {
                 TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
             },
+        )
+    }
+}
+
+@Composable
+private fun RawReviewPlaceholder(modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier
+            .padding(48.dp)
+            .semantics(mergeDescendants = true) {
+                contentDescription = "RAW DNG capture"
+                stateDescription = "Pixel preview unavailable"
+            },
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text(
+            text = "RAW",
+            color = CameraColors.TextPrimary,
+            style = MaterialTheme.typography.displaySmall,
+            fontWeight = FontWeight.Bold,
+        )
+        Text(
+            text = "DNG",
+            color = CameraColors.TextSecondary,
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Text(
+            text = "Pixel preview unavailable",
+            color = CameraColors.TextSecondary,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(top = 12.dp),
         )
     }
 }
@@ -908,6 +1020,13 @@ internal fun videoPlaybackActionLabel(playing: Boolean): String =
 
 internal fun videoPlaybackStateDescription(playing: Boolean): String =
     if (playing) "Playing" else "Paused"
+
+internal fun reviewMetadataLine(raw: Boolean, width: Int, height: Int, sizeBytes: Long): String =
+    buildList {
+        if (raw) add("RAW")
+        if (width > 0 && height > 0) add("${width}×${height}")
+        add(formatBytes(sizeBytes))
+    }.joinToString(" · ")
 
 private fun formatBytes(bytes: Long): String {
     if (bytes <= 0L) return "--"

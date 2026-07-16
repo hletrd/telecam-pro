@@ -7,6 +7,38 @@ import org.junit.Test
 class MediaReviewSizingTest {
 
     @Test
+    fun `DNG MIME aliases classify as raw without pixel decoding`() {
+        assertEquals(ReviewMediaKind.RAW, reviewMediaKind("image/x-adobe-dng"))
+        assertEquals(ReviewMediaKind.RAW, reviewMediaKind("IMAGE/DNG"))
+        assertEquals(ReviewMediaKind.RAW, reviewMediaKind("application/x-adobe-dng; version=1"))
+    }
+
+    @Test
+    fun `video and ordinary image MIME types retain their review kinds`() {
+        assertEquals(ReviewMediaKind.VIDEO, reviewMediaKind("video/mp4"))
+        assertEquals(ReviewMediaKind.STILL, reviewMediaKind("image/heic"))
+        assertEquals(ReviewMediaKind.STILL, reviewMediaKind(null))
+    }
+
+    @Test
+    fun `gallery semantics truthfully identify raw photo and video owners`() {
+        assertEquals("No capture to review", galleryReviewContentDescription(false, null))
+        assertEquals("Review last capture", galleryReviewContentDescription(true, null))
+        assertEquals("Review last RAW capture", galleryReviewContentDescription(true, ReviewMediaKind.RAW))
+        assertEquals("Review last photo", galleryReviewContentDescription(true, ReviewMediaKind.STILL))
+        assertEquals("Review last video", galleryReviewContentDescription(true, ReviewMediaKind.VIDEO))
+    }
+
+    @Test
+    fun `raw metadata stays truthful when dimensions are unavailable`() {
+        assertEquals("RAW · 1.0 MB", reviewMetadataLine(raw = true, width = 0, height = 0, sizeBytes = 1024L * 1024L))
+        assertEquals(
+            "RAW · 8192×6144 · 2.0 MB",
+            reviewMetadataLine(raw = true, width = 8192, height = 6144, sizeBytes = 2L * 1024L * 1024L),
+        )
+    }
+
+    @Test
     fun `still zoom cycle exposes the next visible action`() {
         assertEquals(4f, nextReviewScale(1f))
         assertEquals("Zoom 4×", reviewZoomActionLabel(1f))

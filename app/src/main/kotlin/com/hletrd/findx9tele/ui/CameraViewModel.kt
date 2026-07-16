@@ -330,19 +330,16 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // Live lens focus distance for the Focus chip readout + the AF→MF handoff seed (camera
         // thread → StateFlow is thread-safe, same as the exposure readout above).
         engine.onFocusDistance = { d -> _state.update { it.copy(liveFocusDiopters = d) } }
-        // Last saved displayable media → gallery thumbnail + in-app review (io thread → StateFlow is
-        // thread-safe). The capture id groups it with any DNG sibling for a whole-shot Delete.
+        // Every successful processed/video output participates in capture-id-ordered review
+        // ownership. It upgrades a RAW placeholder for the same capture, but cannot displace a newer
+        // capture whose callback arrived first.
         engine.onMediaSaved = { uri, captureId ->
-            if (captureOutputs.record(captureId, uri)) {
-                deleteLateCaptureOutput(uri)
-            } else {
-                _state.update { it.copy(lastMediaUri = uri) }
-            }
+            recordCaptureOutput(uri, captureId, CaptureOutputKind.DISPLAYABLE)
         }
-        // DNG sibling of a capture (never displayed): owned by the same tracker and deleted
-        // immediately when it arrives after that capture was tombstoned in review.
+        // RAW-only is still a successful capture: a newer DNG owns a truthful RAW review tile until a
+        // processed sibling upgrades it. A late RAW never displaces a processed/newer owner.
         engine.onRawSaved = { uri, captureId ->
-            if (captureOutputs.record(captureId, uri)) deleteLateCaptureOutput(uri)
+            recordCaptureOutput(uri, captureId, CaptureOutputKind.RAW)
         }
         restoreSettingsIfEnabled()
         refreshProgramAppSide()
@@ -1525,11 +1522,28 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // Freeze ownership and tombstone the id BEFORE the Binder calls. Any slower HEIF/JPEG/DNG
         // callback for the shot is then rejected and deleted instead of replacing the thumbnail.
         val outputs = captureOutputs.takeForDelete(uri)
-        _state.update { if (it.lastMediaUri == uri) it.copy(lastMediaUri = null) else it }
+        // The open overlay can still hold the RAW URI after a processed sibling upgraded the
+        // thumbnail. Clear whichever sibling currently owns review, not only the tapped URI.
+        _state.update { if (it.lastMediaUri in outputs) it.copy(lastMediaUri = null) else it }
         Thread {
             val allDeleted = outputs.map { MediaStoreWriter.delete(getApplication(), it) }.all { it }
             mainHandler.post { showStatus(if (allDeleted) "Deleted" else "Could not delete every shot file") }
         }.start()
+    }
+
+    private fun recordCaptureOutput(uri: Uri, captureId: Int, kind: CaptureOutputKind) {
+        when (captureOutputs.record(captureId, uri, kind)) {
+            CaptureOutputDecision.DELETE -> deleteLateCaptureOutput(uri)
+            CaptureOutputDecision.TRACK_ONLY -> Unit
+            CaptureOutputDecision.REVIEW -> {
+                // Callbacks arrive on independent camera/io/recorder threads. Recheck inside the
+                // StateFlow CAS transform so a newer selection cannot be overwritten by an older
+                // callback that was descheduled between tracker admission and UI publication.
+                _state.update {
+                    if (captureOutputs.isCurrentReviewOutput(uri)) it.copy(lastMediaUri = uri) else it
+                }
+            }
+        }
     }
 
     private fun deleteLateCaptureOutput(uri: Uri) {
