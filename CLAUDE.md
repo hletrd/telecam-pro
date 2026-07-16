@@ -292,10 +292,20 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   LOG transfer, AE metering, and gamma assist are re-seeded there; renderer-only assists live in one
   `RendererConfigStore` snapshot and the complete snapshot is replayed for every GL generation. Symptom when
   missed: "works only after the first recording pushes it" (the LOG-preview bug).
+- **Cold startup is GL-first and latest-intent owned.** Start the GL generation before blocking
+  Camera2 selection/capability preflight; when its input arrives, resolve the latest desired optics
+  generation. A stale startup result must never roll back or publish over a newer route, and transient
+  preflight failure uses the bounded retry gate while the preview surface remains live.
+- **Ready binds controller and generation atomically.** Every optics intent publishes Not-Ready with
+  its desired generation. Only the synchronized terminal commit may install the Ready controller and
+  Ready bit, after rechecking generation, controller identity, pause state, and (for same-camera work)
+  session generation. Never split those ownership checks from Ready publication.
 - **Exactly one owner of the mic.** The Sony-style standby audio meter is a levels-only `AudioRecord`
-  tap that runs while video is ARMED but not rolling; `startRecording` stops it (flag + short join)
-  BEFORE `VideoRecorder` opens its own AudioRecord, and it stays off outside video mode / while
-  backgrounded. Never add a second concurrent AudioRecord.
+  tap that runs while video is ARMED but not rolling. Its synchronized ownership gate reserves one
+  immutable owner and release latch before thread start. REC must claim the handoff and observe that
+  exact release before `VideoRecorder` opens AudioRecord; on timeout it refuses the attempt. Internal
+  restart paths only recheck current intent, so they cannot overwrite a newer disable/background
+  transition. Never add a second concurrent AudioRecord.
 - **`Bitmap.compress` strips ALL metadata — stamp JPEG EXIF back after writing.** `writeJpegExif`
   (androidx.exifinterface, "rw" pending FD, before publish) re-adds ISO / exposure / 35mm focal /
   make/model from the controller's latest capture result. HEIFs are currently NOT stamped (heifwriter

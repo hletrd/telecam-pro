@@ -35,7 +35,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | Package / File | Single Responsibility |
 |---|---|
 | **camera/** | |
-| `CameraEngine.kt` | Facade orchestrating Camera2, GL, capture encoders, video recorder, sensors, and storage. Serializes camera reconfiguration, owns asynchronous save/finalization lanes, and publishes cross-thread state explicitly. |
+| `CameraEngine.kt` | Facade orchestrating Camera2, GL, capture encoders, video recorder, sensors, and storage. Serializes camera reconfiguration, owns asynchronous save/finalization lanes, and publishes cross-thread state through volatile seams plus synchronized ownership gates. |
 | `CameraController.kt` | Camera2 session lifecycle, request building, and fallback plans across stream sets and session operation modes. Callback-driven, runs on a camera HandlerThread. |
 | `CameraSelector2.kt` | Detects the telephoto physical lens: finds the camera with focal length closest to 70 mm, prefers standalone ID over physical sub-camera routing. |
 | `CameraState.kt` | Enums plus `CameraUiState`/`CameraCaps` — the shared UI, capability, and runtime language. |
@@ -106,8 +106,8 @@ Two critical consequences of the afocal converter drive the entire design:
         ┌──────────────────────────────────────────┐
         │        CameraEngine (Facade)             │
         │  Orchestrates components' background     │
-        │  threads; cross-thread @Volatile seams   │
-        │  (selection, caps, controls, transfer…) │
+        │  threads; volatile visibility seams +   │
+        │  atomic ownership gates                 │
         └──┬───────┬────────────┬──────────┬───────┘
            │       │            │          │
     ┌──────▼─┐ ┌──▼───────┐ ┌─▼────────┐ │
@@ -164,21 +164,23 @@ Two critical consequences of the afocal converter drive the entire design:
 | **mainHandler work** (main-thread Handler) | CameraViewModel | Lifecycle-owned periodic record/level/orientation/info updates, bounded zoom easing, and transient countdown/reticle work. `onStart` owns recurring registration and `onStop` removes it. |
 | **gl-pipeline** HandlerThread | GlPipeline | EGL operations, texture sampling, rendering, GL shader execution. |
 | **camera** HandlerThread | CameraController | Camera2 lifecycle and capture callbacks. Copies JPEG/YUV data while the Image is live and writes DNG synchronously while the RAW Image is valid. |
-| **setupExecutor** (single-thread) | CameraEngine | Startup capability IPC plus serialized mode/lens/session reconfiguration and recovery work. |
+| **setupExecutor** (single-thread) | CameraEngine | Post-GL-input Camera2 route/capability preflight plus serialized, generation-owned mode/lens/session reconfiguration and bounded recovery work. |
 | **ioExecutor** (single-thread) | CameraEngine | Deferred processed-still decoding, crop/rotation, HEIF/JPEG encoding, and publication. |
 | **recording-finalization executor** (single-thread) | CameraEngine | Dedicated, rejection-safe recorder stop/muxer finalization so still encoding cannot delay clip completion. Release waits a bounded interval for this lane before GL/executor teardown. |
 | **timelapseScheduler** (scheduled) | CameraEngine | Interval-driven timelapse capture trigger every N seconds. |
 | **analysisExecutor** (single-thread) | GlPipeline | Histogram/waveform computation from GL readback (per-pixel math). |
 | **audio-capture** (implicit thread) | VideoRecorder | AudioRecord polling loop and PCM-to-AAC encoding. |
 | **video-drain** (implicit thread) | VideoRecorder | MediaCodec output buffer draining and MediaMuxer writes. |
-| **StandbyAudioMeter** (thread) | CameraEngine | Levels-only AudioRecord tap while video is armed but not rolling; stops before VideoRecorder opens the mic (single-owner invariant). |
+| **StandbyAudioMeter** (thread) | CameraEngine | Levels-only AudioRecord tap while video is armed but not rolling. A synchronized ownership gate reserves one immutable owner/release latch before thread start; REC opens the mic only after that exact owner releases. |
 
-**@Volatile Seams (cross-thread visibility):**
+**Cross-thread visibility and ownership seams:**
 
 Engine state published across worker boundaries:
 - CameraEngine publishes mutable runtime configuration such as selection, capabilities, controls,
   video format, transfer, lens/TELE mode, stabilization mode, audio, and aspect ratio through
-  `@Volatile` fields. Treat the declarations in `CameraEngine.kt` as the authoritative list.
+  `@Volatile` fields. Multi-field ownership transitions use the synchronized gates described below;
+  a set of independently volatile fields is not treated as an atomic transaction. Treat the
+  declarations in `CameraEngine.kt` as the authoritative visibility list.
 - `GlPipeline.inputSurface` — published once after EGL texture creation, then read (safely) on setup thread.
 
 Accessed from camera + UI threads:
@@ -188,13 +190,28 @@ Accessed from GL + audio/video threads:
 - `VideoRecorder.running`, `inputSurface` — coordination flags and surface for encoder setup.
 
 **Race-safety patterns:**
-- **setupExecutor serialization**: Camera selection/capability reads and mode/lens/recovery intents happen
-  off the main thread in one ordered lane; results are published back through explicit volatile/callback seams.
-- **Lifecycle guards**: `CameraEngine.paused` flag prevents camera open during app backgrounding (onStop → pause() sets flag, GL's queued openCamera checks it). `CameraController.closed` flag gates late-arriving open callbacks.
+- **setupExecutor serialization**: desired optics intents publish synchronously through the engine
+  ownership monitor. The executor performs blocking selection/capability preflight and applies the
+  current generation's mode/lens/recovery work in one ordered lane.
+- **Optics transaction commit**: `OpticsCommitGate` publishes desired generation plus Not-Ready
+  together. Ready can return only through the same monitor after the expected generation, controller
+  identity, pause state, and same-camera session generation still match; rollback clearing, the Ready
+  bit, and the Ready controller commit as one state. External callbacks run after unlocking.
+- **Cold startup convergence**: GL input ownership is established before blocking Camera2 preflight.
+  The input callback snapshots the latest desired route, stale generations cannot publish, and a bounded
+  `ColdStartRetryGate` lets a transient selection/capability failure recover without recreating the
+  preview surface.
+- **Lifecycle guards**: `CameraEngine.paused` prevents reconfigure/open work during app backgrounding
+  (onStop → pause(); every queued boundary rechecks ownership). `CameraController.closed` gates
+  late-arriving open callbacks.
 - **Photo callback**: Image objects are valid only during `CameraController.PhotoCallback.onPhoto()`.
   Processed JPEG/YUV data is copied into owned memory synchronously and encoded later on `ioExecutor`;
   DNG is written synchronously while its RAW Image is still live.
 - **Recording**: VideoRecorder owns its video/audio threads and muxer lock; GL just writes frames to the input Surface (thread-safe by the Surface contract).
+- **Microphone admission**: `StandbyMeterOwnership` keeps reservation, intent, owner identity, and
+  release-latch handoff on one monitor. Late meter threads recheck ownership before opening
+  AudioRecord; REC fails a bounded release wait instead of creating a second owner; finalizer retries
+  recheck current intent and cannot override a newer disable or background transition.
 
 ---
 
