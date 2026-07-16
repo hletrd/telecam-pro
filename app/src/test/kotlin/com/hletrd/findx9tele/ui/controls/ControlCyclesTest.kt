@@ -199,4 +199,49 @@ class ControlCyclesTest {
         assertEquals(1f, evCompStops(CameraUiState(controls = ManualControls(exposureCompensation = 3))), 1e-6f)
         assertEquals(0f, evCompStops(CameraUiState()), 1e-6f)
     }
+
+    @Test
+    fun exposureMeterCompensationEv_usesAlreadyScaledSignedStopsOnce() {
+        assertEquals(
+            1f,
+            exposureMeterCompensationEv(
+                CameraUiState(controls = ManualControls(exposureCompensation = 3)),
+            ),
+            1e-6f,
+        )
+        assertEquals(
+            -1f / 3f,
+            exposureMeterCompensationEv(
+                CameraUiState(controls = ManualControls(exposureCompensation = -1)),
+            ),
+            1e-6f,
+        )
+        assertEquals(0f, exposureMeterCompensationEv(CameraUiState()), 1e-6f)
+    }
+
+    @Test
+    fun exposureCompensationStops_honorsNonThirdHardwareStepAndMeterClamp() {
+        assertEquals(
+            1f,
+            exposureCompensationStops(index = 2, stepNumerator = 1, stepDenominator = 2),
+            1e-6f,
+        )
+        assertEquals(
+            -1.5f,
+            exposureCompensationStops(index = -3, stepNumerator = 1, stepDenominator = 2),
+            1e-6f,
+        )
+        assertEquals(
+            4f,
+            exposureCompensationStops(index = 12, stepNumerator = null, stepDenominator = null),
+            1e-6f,
+        )
+        assertEquals(
+            3f,
+            exposureMeterCompensationEv(
+                CameraUiState(controls = ManualControls(exposureCompensation = 12)),
+            ),
+            1e-6f,
+        )
+    }
 }

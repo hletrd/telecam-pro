@@ -114,11 +114,31 @@ internal fun autoIsoText(state: CameraUiState): String {
  * ruler. Never hardcode 0.333: a device advertising a 1/2 step would silently misreport EV.
  */
 internal fun evCompStops(state: CameraUiState): Float {
-    val step = state.caps?.evStep?.let {
-        if (it.denominator == 0) 1f / 3f else it.numerator.toFloat() / it.denominator.toFloat()
-    } ?: (1f / 3f)
-    return state.controls.exposureCompensation * step
+    val hardwareStep = state.caps?.evStep
+    return exposureCompensationStops(
+        index = state.controls.exposureCompensation,
+        stepNumerator = hardwareStep?.numerator,
+        stepDenominator = hardwareStep?.denominator,
+    )
 }
+
+/** Pure Camera2 compensation-index conversion, including malformed/missing-step fallback. */
+internal fun exposureCompensationStops(
+    index: Int,
+    stepNumerator: Int?,
+    stepDenominator: Int?,
+): Float {
+    val step = if (stepNumerator != null && stepDenominator != null && stepDenominator != 0) {
+        stepNumerator.toFloat() / stepDenominator.toFloat()
+    } else {
+        1f / 3f
+    }
+    return index * step
+}
+
+/** Final signed value used by the dedicated ±3 EV meter; [evCompStops] is already fully scaled. */
+internal fun exposureMeterCompensationEv(state: CameraUiState): Float =
+    evCompStops(state).coerceIn(-3f, 3f)
 
 // The top-bar quick-tap cycles (flash / self-timer / still aspect). These lived as a second set of
 // private copies in CameraScreen — exactly the split this file's header warns about — and are now

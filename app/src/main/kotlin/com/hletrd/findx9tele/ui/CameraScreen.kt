@@ -119,7 +119,7 @@ import com.hletrd.findx9tele.ui.controls.ManualDialCluster
 import com.hletrd.findx9tele.ui.controls.ProSheet
 import com.hletrd.findx9tele.ui.controls.ProSheetTab
 import com.hletrd.findx9tele.ui.controls.aspectRatioLabel
-import com.hletrd.findx9tele.ui.controls.evCompStops
+import com.hletrd.findx9tele.ui.controls.exposureMeterCompensationEv
 import com.hletrd.findx9tele.ui.controls.nextAspect
 import com.hletrd.findx9tele.ui.controls.nextFlashMode
 import com.hletrd.findx9tele.ui.controls.nextTimer
@@ -1291,10 +1291,9 @@ private fun quickFnEnabled(slot: FnSlot, state: CameraUiState): Boolean = when (
 
 @Composable
 private fun ExposureMeter(state: CameraUiState, modifier: Modifier = Modifier) {
-    // evCompStops is THE shared EV-step derivation (ControlCycles.kt) — this meter used to carry a
-    // byte-identical inline copy, the exact one-copy-drifts bug that file exists to prevent.
-    val evStep = evCompStops(state)
-    val compensationEv = (state.controls.exposureCompensation * evStep).coerceIn(-3f, 3f)
+    // The shared helper returns the final signed stop amount. Do not multiply by the raw Camera2
+    // compensation index again: that double-scaled positive values and reversed negative signs.
+    val compensationEv = exposureMeterCompensationEv(state)
     val manualEv = manualMeterEv(state.controls.exposureMode, state.histogramData?.luma)
     val indicatorEv = if (state.controls.exposureMode == ExposureMode.MANUAL) manualEv else compensationEv
     val label = when {
