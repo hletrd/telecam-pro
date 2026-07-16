@@ -85,17 +85,139 @@ class CameraEngine(private val context: Context) {
     // True only after the CURRENT controller has configured a working session. Session-key and lens
     // changes clear it before their asynchronous reopen is queued so REC cannot race the teardown.
     @Volatile private var cameraReady = false
+    @Volatile private var readyController: CameraController? = null
+    private val opticsIntentGeneration = java.util.concurrent.atomic.AtomicLong(0)
     // Camera-health signal for the UI (dim the shutter, show a persistent OSD tag while down):
     // fires on every cameraReady flip. A silent scheduleCameraRecovery exhaustion previously left a
     // black viewfinder behind a fully interactive-looking shutter with zero indication.
     var onCameraReadyChange: ((Boolean) -> Unit)? = null
+    /** Restores UI optics when a current-generation camera switch fails before closing the old one. */
+    var onOpticsRollback: ((CaptureMode, LensChoice, Boolean, ManualControls, String?, generation: Long) -> Unit)? = null
 
     // AF engine state for the reticle color, mapped from the controller's raw CONTROL_AF_STATE.
     var onAfIndication: ((AfIndication) -> Unit)? = null
 
     private fun updateCameraReady(ready: Boolean) {
         cameraReady = ready
+        if (ready) readyController = controller
         onCameraReadyChange?.invoke(ready)
+    }
+
+    private fun invalidateCameraReady() {
+        readyController = null
+        updateCameraReady(false)
+    }
+
+    private fun reconcileControlsWithCaps(cameraCaps: CameraCaps) {
+        val range = cameraCaps.zoomRatioRange
+        val zoom = reconcileZoomWithCaps(
+            mode = if (videoMode) CaptureMode.VIDEO else CaptureMode.PHOTO,
+            teleconverter = teleconverterMode,
+            zoomRatio = controls.zoomRatio,
+            capsLower = range?.lower,
+            capsUpper = range?.upper,
+        )
+        controls = controls.copy(zoomRatio = zoom)
+        if (!videoMode && !teleconverterMode) lensChoice = LensChoice.forZoom(zoom)
+        seedGlZoom()
+    }
+
+    private data class OpticsSnapshot(
+        val videoMode: Boolean,
+        val lens: LensChoice,
+        val teleconverter: Boolean,
+        val controls: ManualControls,
+        val overrideId: String?,
+        val selection: TeleSelection?,
+        val caps: CameraCaps?,
+        val videoSize: Size,
+        val previewStreamSize: Size,
+        val preTeleUnifiedZoom: Float,
+        val ready: Boolean,
+    )
+
+    private data class OpticsTransaction(val generation: Long, val before: OpticsSnapshot)
+
+    @Volatile private var opticsRollbackBaseline: OpticsSnapshot? = null
+
+    private fun currentOpticsSnapshot(): OpticsSnapshot = OpticsSnapshot(
+        videoMode = videoMode,
+        lens = lensChoice,
+        teleconverter = teleconverterMode,
+        controls = controls,
+        overrideId = overrideId,
+        selection = selection,
+        caps = caps,
+        videoSize = videoSize,
+        previewStreamSize = previewStreamSize,
+        preTeleUnifiedZoom = preTeleUnifiedZoom,
+        ready = cameraReady,
+    )
+
+    @Synchronized
+    private fun beginOpticsTransaction(): OpticsTransaction {
+        // A second tap can arrive while the first switch is still preflighting. Both must roll back
+        // to the last Ready state, never to the first tap's unaccepted intermediate fields.
+        val before = selectRollbackBaseline(cameraReady, currentOpticsSnapshot(), opticsRollbackBaseline)
+        opticsRollbackBaseline = before
+        return OpticsTransaction(opticsIntentGeneration.incrementAndGet(), before)
+    }
+
+    @Synchronized
+    private fun acceptOptics(expectedGeneration: Long) {
+        if (reconfigurationOwnsGeneration(opticsIntentGeneration.get(), expectedGeneration)) {
+            opticsRollbackBaseline = null
+        }
+    }
+
+    private fun ownsOpticsTransaction(transaction: OpticsTransaction): Boolean =
+        reconfigurationOwnsGeneration(opticsIntentGeneration.get(), transaction.generation)
+
+    @Synchronized
+    private fun rollbackOptics(transaction: OpticsTransaction, message: String) {
+        val before = transaction.before
+        val restored = rollbackOpticsState(
+            currentGeneration = opticsIntentGeneration.get(),
+            expectedGeneration = transaction.generation,
+            snapshot = OpticsIntentState(
+                mode = if (before.videoMode) CaptureMode.VIDEO else CaptureMode.PHOTO,
+                lens = before.lens,
+                teleconverter = before.teleconverter,
+                controls = before.controls,
+                overrideId = before.overrideId,
+            ),
+        ) ?: return
+        opticsRollbackBaseline = null
+        videoMode = restored.mode == CaptureMode.VIDEO
+        lensChoice = restored.lens
+        teleconverterMode = restored.teleconverter
+        controls = restored.controls
+        overrideId = restored.overrideId
+        selection = before.selection
+        caps = before.caps
+        videoSize = before.videoSize
+        previewStreamSize = before.previewStreamSize
+        preTeleUnifiedZoom = before.preTeleUnifiedZoom
+        controller?.setPinAutoFps(before.videoMode)
+        controller?.updateControls(before.controls)
+        // Queue the exact UI optics first. Caps reconciliation follows it on main and is tagged with
+        // this generation, so it cannot clamp the failed candidate or a newer user intent.
+        onOpticsRollback?.invoke(
+            restored.mode,
+            restored.lens,
+            restored.teleconverter,
+            restored.controls,
+            restored.overrideId,
+            transaction.generation,
+        )
+        before.caps?.let { onCapsReady?.invoke(it, transaction.generation) }
+        onVideoSizeChosen?.invoke(before.videoSize, transaction.generation)
+        emitPreviewAspect(transaction.generation)
+        gl.setCameraPreviewSize(before.previewStreamSize.width, before.previewStreamSize.height)
+        seedGlZoom()
+        applyStabilization()
+        updateCameraReady(before.ready && readyController === controller && !paused)
+        onStatus?.invoke(message)
     }
     @Volatile private var previewSurface: Surface? = null
     // Last-known preview surface dimensions, kept alongside previewSurface so the async start
@@ -141,18 +263,22 @@ class CameraEngine(private val context: Context) {
     @Volatile private var audioScene = AudioScene.STANDARD
     @Volatile private var audioInputPreference = AudioInputPreference.AUTO
     @Volatile private var aspectRatio = AspectRatio.W4_3
+    // Desired GL-only assists outlive the handler/EGL generation. Settings restore calls these
+    // setters before gl.start(), where handler posts are intentionally unavailable, so every new
+    // generation replays this complete snapshot before the first camera frame.
+    private val rendererConfig = RendererConfigStore()
 
     var onStatus: ((String?) -> Unit)? = null
-    var onCapsReady: ((CameraCaps) -> Unit)? = null
+    var onCapsReady: ((CameraCaps, generation: Long) -> Unit)? = null
     // The auto-chosen video size for the selected lens (largest 16:9), so the UI's Video tab reflects
     // what the engine will actually encode instead of drifting from a hardcoded default.
-    var onVideoSizeChosen: ((Size) -> Unit)? = null
+    var onVideoSizeChosen: ((Size, generation: Long?) -> Unit)? = null
     // Displayed preview aspect (width/height AS SHOWN on the portrait screen — the ~90° sensor
     // orientation already swaps the stream's W/H). The UI sizes the TextureView to this so the
     // viewfinder letterboxes the FULL capture field instead of cover-cropping it: with a 16:9 stream
     // on this ~19.5:9 panel the old full-screen cover cut ~40% of the frame's width, and photo mode
     // additionally previewed a 16:9 field while capturing the full 4:3 sensor.
-    var onPreviewAspect: ((Float) -> Unit)? = null
+    var onPreviewAspect: ((Float, generation: Long) -> Unit)? = null
     // Viewfinder analysis (histogram/waveform) computed on the GL thread; delivered here so the
     // ViewModel can hoist it into UI state. Either arg is null when its analysis is disabled.
     var onAnalysis: ((HistogramData?, WaveformData?) -> Unit)? = null
@@ -194,6 +320,7 @@ class CameraEngine(private val context: Context) {
         // thread, so run that setup on a background thread to avoid startup jank / near-ANR.
         // gl.start / gl.setPreviewOutput just post to the GL handler, so they're thread-safe here.
         setupExecutor.execute {
+            val setupOpticsGeneration = opticsIntentGeneration.get()
             val sel = selectCurrentLens()
             if (sel == null) {
                 onStatus?.invoke("Camera unavailable")
@@ -210,11 +337,18 @@ class CameraEngine(private val context: Context) {
                 return@execute
             }
             caps = c
-            onCapsReady?.invoke(c)
+            val ownsSetupOptics = reconfigurationOwnsGeneration(
+                opticsIntentGeneration.get(),
+                setupOpticsGeneration,
+            )
+            if (ownsSetupOptics) {
+                reconcileControlsWithCaps(c)
+                onCapsReady?.invoke(c, setupOpticsGeneration)
+            }
             videoSize = chooseVideoSize(sel)
-            onVideoSizeChosen?.invoke(videoSize)
+            if (ownsSetupOptics) onVideoSizeChosen?.invoke(videoSize, setupOpticsGeneration)
             previewStreamSize = choosePreviewStreamSize(sel)
-            emitPreviewAspect()
+            emitPreviewAspect(setupOpticsGeneration)
 
             // HLG10 10-bit preview + full-res JPEG/RAW crashes this HAL (configureStreams Broken pipe -32);
             // SDR preview session. 10-bit HDR preview deferred; video still tags HLG/Log in the encoder.
@@ -231,6 +365,7 @@ class CameraEngine(private val context: Context) {
                 gl.setTransfer(transfer)
                 gl.setAeMetering(aeMetering)
                 gl.setGammaAssist(gammaAssist)
+                applyRendererConfig()
                 applyStabilization()
                 gyro.start()
                 maybeLogCameraCapabilities()
@@ -301,7 +436,10 @@ class CameraEngine(private val context: Context) {
         // time, so recreate the session when the user changes the stabilization class.
         reopenForSession()
     }
-    fun setFalseColor(enabled: Boolean) = gl.setFalseColor(enabled)
+    fun setFalseColor(enabled: Boolean) {
+        rendererConfig.update { it.copy(falseColor = enabled) }
+        gl.setFalseColor(enabled)
+    }
 
     fun onPreviewSurfaceChanged(width: Int, height: Int) {
         previewSurfaceW = width
@@ -325,12 +463,14 @@ class CameraEngine(private val context: Context) {
         return ctrl
     }
 
-    private fun openCamera(input: Surface) {
+    private fun openCamera(input: Surface, transaction: OpticsTransaction? = null) {
         if (paused) return // don't grab the camera while backgrounded (queued GL continuation, etc.)
+        val expectedOpticsGeneration = transaction?.generation ?: opticsIntentGeneration.get()
+        if (!reconfigurationOwnsGeneration(opticsIntentGeneration.get(), expectedOpticsGeneration)) return
         val sel = selection ?: return
         val c = caps ?: return
         seedGlZoom()
-        updateCameraReady(false)
+        invalidateCameraReady()
         controller?.close() // idempotent: closes any prior controller so two never race for the device
         val ctrl = wireController()
         controller = ctrl
@@ -349,15 +489,20 @@ class CameraEngine(private val context: Context) {
             pinAutoFps = videoMode,
             onReady = {
                 // A superseded controller can report ready after a newer reopen already replaced it.
-                if (controller === ctrl && !paused) {
+                if (controller === ctrl && !paused &&
+                    reconfigurationOwnsGeneration(opticsIntentGeneration.get(), expectedOpticsGeneration)
+                ) {
+                    acceptOptics(expectedOpticsGeneration)
                     updateCameraReady(true)
                     onStatus?.invoke(null)
                     cameraRecoveryAttempts = 0
                 }
             },
             onError = {
-                if (controller === ctrl) {
-                    updateCameraReady(false)
+                if (controller === ctrl &&
+                    reconfigurationOwnsGeneration(opticsIntentGeneration.get(), expectedOpticsGeneration)
+                ) {
+                    invalidateCameraReady()
                     onStatus?.invoke("Camera error: ${it.message}")
                     scheduleCameraRecovery(ctrl)
                 }
@@ -372,9 +517,20 @@ class CameraEngine(private val context: Context) {
         controller?.updateControls(c)
     }
 
-    fun setVideoMode(enabled: Boolean) {
-        if (videoMode == enabled) return
+    fun isOpticsGenerationCurrent(generation: Long): Boolean =
+        reconfigurationOwnsGeneration(opticsIntentGeneration.get(), generation)
+
+    fun setVideoMode(enabled: Boolean, resolvedLens: LensChoice, resolvedControls: ManualControls) {
+        // Publish one already-resolved optics packet before queuing any reconfiguration. Keeping the
+        // UI and engine remaps separate let a delayed full-controls apply race this method and made
+        // Photo/Video transitions depend on executor timing.
+        val changed = videoMode != enabled
+        val transaction = if (changed) beginOpticsTransaction() else null
         videoMode = enabled
+        lensChoice = resolvedLens
+        controls = resolvedControls
+        controller?.updateControls(resolvedControls)
+        if (!changed) return
         val intentGeneration = modeIntentGeneration.incrementAndGet()
         controller?.setPinAutoFps(enabled)
         if (!started) return
@@ -382,33 +538,26 @@ class CameraEngine(private val context: Context) {
         // arming, so it cannot start against the old ready session while the reopen is merely queued.
         updateCameraReady(false)
         // The mode flip can change the CAMERA (photo=logical seamless, video=standalone — see
-        // resolveNonTeleId) as well as the stream size. Remap the zoom between the unified
-        // main-relative scale and the lens-local scale so the framing carries across, then re-home.
+        // resolveNonTeleId) as well as the stream size. The caller has already remapped zoom and
+        // lens together; this task only applies that immutable intent.
         setupExecutor.execute {
             if (videoMode != enabled || modeIntentGeneration.get() != intentGeneration) return@execute
-            if (paused || recorder != null) {
-                if (!paused && controller != null) updateCameraReady(true)
+            if (paused) return@execute
+            if (recorder != null) {
+                transaction?.let { rollbackOptics(it, "Stop REC first; mode unchanged") }
                 return@execute
-            }
-            if (!teleconverterMode) {
-                val z = controls.zoomRatio
-                if (enabled) {
-                    val band = LensChoice.forZoom(z)
-                    lensChoice = band
-                    controls = controls.copy(zoomRatio = (z / band.zoomPreset).coerceAtLeast(1f))
-                } else {
-                    controls = controls.copy(
-                        zoomRatio = (lensChoice.zoomPreset * controls.zoomRatio.coerceAtLeast(1f)).coerceIn(0.6f, 20f),
-                    )
-                }
             }
             val id = if (teleconverterMode) {
                 cachedIdForFocal(LensChoice.TELE3X.targetEquivMm)
             } else {
                 resolveNonTeleId(lensChoice)
             }
-            if (id != null && (id != overrideId || controller == null)) {
-                setCameraOverride(id) // refreshes caps, stream sizes, aspect, stabilization, reopens
+            if (id == null) {
+                transaction?.let { rollbackOptics(it, "Camera unavailable; mode unchanged") }
+                return@execute
+            }
+            if (id != overrideId || controller == null) {
+                reconfigureCamera(id, transaction) // refreshes caps, stream sizes, aspect, stabilization, reopens
             } else {
                 // Same camera (e.g. TELE mode) — still recreate when the STREAM SIZE flips between
                 // the photo 4:3 field and the recording stream (dimensions fix at configureStreams).
@@ -416,14 +565,69 @@ class CameraEngine(private val context: Context) {
                 val next = choosePreviewStreamSize(sel)
                 if (next != previewStreamSize) {
                     previewStreamSize = next
-                    emitPreviewAspect()
+                    transaction?.let { emitPreviewAspect(it.generation) }
                     gl.setCameraPreviewSize(next.width, next.height)
                     reopenForSession()
-                } else if (controller != null && !paused) {
+                } else if (controller != null && transaction?.before?.ready == true &&
+                    readyController === controller && !paused
+                ) {
                     // Same camera and same configured stream: the intent only changed request-side
                     // mode semantics, so the existing session is still the ready session.
+                    acceptOptics(transaction.generation)
                     updateCameraReady(true)
+                } else {
+                    reconfigureCamera(id, transaction)
                 }
+            }
+        }
+    }
+
+    /** Applies settings/MR optics as one transaction so mode and lens cannot supersede each other. */
+    fun setResolvedOptics(
+        enabledVideo: Boolean,
+        resolvedLens: LensChoice,
+        resolvedTeleconverter: Boolean,
+        resolvedControls: ManualControls,
+    ) {
+        if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
+        val transaction = beginOpticsTransaction()
+        val modeGeneration = modeIntentGeneration.incrementAndGet()
+        val lensGeneration = lensIntentGeneration.incrementAndGet()
+        videoMode = enabledVideo
+        lensChoice = resolvedLens
+        teleconverterMode = resolvedTeleconverter
+        controls = resolvedControls
+        preTeleUnifiedZoom = Float.NaN
+        controller?.setPinAutoFps(enabledVideo)
+        controller?.updateControls(resolvedControls)
+        if (!started) return
+        updateCameraReady(false)
+        setupExecutor.execute {
+            if (!ownsOpticsTransaction(transaction) ||
+                modeIntentGeneration.get() != modeGeneration ||
+                lensIntentGeneration.get() != lensGeneration
+            ) return@execute
+            if (paused || recorder != null) return@execute
+            val id = if (resolvedTeleconverter) {
+                cachedIdForFocal(LensChoice.TELE3X.targetEquivMm)
+            } else {
+                resolveNonTeleId(resolvedLens)
+            }
+            if (id == null) {
+                rollbackOptics(transaction, "Camera unavailable; recalled optics unchanged")
+                return@execute
+            }
+            val before = transaction.before
+            val structuralChange = before.videoMode != enabledVideo ||
+                before.lens != resolvedLens ||
+                before.teleconverter != resolvedTeleconverter ||
+                overrideId != id || controller == null || !before.ready || readyController !== controller
+            if (structuralChange) {
+                reconfigureCamera(id, transaction)
+            } else {
+                setZoomRatio(resolvedControls.zoomRatio)
+                acceptOptics(transaction.generation)
+                updateCameraReady(true)
             }
         }
     }
@@ -457,20 +661,53 @@ class CameraEngine(private val context: Context) {
         if (wasNativeLog) reopenForSession()
         if (recorder == null) gl.setTransfer(t)
     }
-    fun setPeaking(enabled: Boolean) = gl.setPeaking(enabled)
-    fun setZebra(enabled: Boolean) = gl.setZebra(enabled)
+    fun setPeaking(enabled: Boolean) {
+        rendererConfig.update { it.copy(peaking = enabled) }
+        gl.setPeaking(enabled)
+    }
+    fun setZebra(enabled: Boolean) {
+        rendererConfig.update { it.copy(zebra = enabled) }
+        gl.setZebra(enabled)
+    }
 
     // Adjustable peaking (sensitivity + color) and zebra (%): threshold and color are combined into
     // one GL call, so either change re-applies both from the current level/color.
-    @Volatile private var peakingLevel = PeakingLevel.MEDIUM
-    @Volatile private var peakingColor = PeakingColor.MAGENTA
-    private fun applyPeaking() = gl.setPeakingParams(peakingLevel.threshold, peakingColor.r, peakingColor.g, peakingColor.b)
-    fun setPeakingLevel(l: PeakingLevel) { peakingLevel = l; applyPeaking() }
-    fun setPeakingColor(c: PeakingColor) { peakingColor = c; applyPeaking() }
-    fun setZebraLevel(z: ZebraLevel) = gl.setZebraThreshold(z.threshold)
+    private fun applyPeaking(config: RendererConfig = rendererConfig.snapshot()) =
+        gl.setPeakingParams(
+            config.peakingLevel.threshold,
+            config.peakingColor.r,
+            config.peakingColor.g,
+            config.peakingColor.b,
+        )
+    fun setPeakingLevel(l: PeakingLevel) {
+        val config = rendererConfig.update { it.copy(peakingLevel = l) }
+        applyPeaking(config)
+    }
+    fun setPeakingColor(c: PeakingColor) {
+        val config = rendererConfig.update { it.copy(peakingColor = c) }
+        applyPeaking(config)
+    }
+    fun setZebraLevel(z: ZebraLevel) {
+        rendererConfig.update { it.copy(zebraLevel = z) }
+        gl.setZebraThreshold(z.threshold)
+    }
 
     /** Enables/disables GL-thread histogram and/or waveform computation feeding [onAnalysis]. */
-    fun setAnalysis(histogram: Boolean, waveform: Boolean) = gl.setAnalysisEnabled(histogram, waveform)
+    fun setAnalysis(histogram: Boolean, waveform: Boolean) {
+        rendererConfig.update { it.copy(histogram = histogram, waveform = waveform) }
+        gl.setAnalysisEnabled(histogram, waveform)
+    }
+
+    /** Replays all desired handler-backed assists into the current GL generation, in order. */
+    private fun applyRendererConfig(config: RendererConfig = rendererConfig.snapshot()) {
+        gl.setPeaking(config.peaking)
+        applyPeaking(config)
+        gl.setZebra(config.zebra)
+        gl.setZebraThreshold(config.zebraLevel.threshold)
+        gl.setFalseColor(config.falseColor)
+        gl.setAnalysisEnabled(config.histogram, config.waveform)
+        gl.setPunchIn(config.punchIn)
+    }
 
     /** Forces the luma readback for the app-side auto-exposure loop (SHUTTER/ISO priority). */
     fun setAeMetering(enabled: Boolean) {
@@ -624,26 +861,32 @@ class CameraEngine(private val context: Context) {
     /** Preferred recording input; resolved against connected AudioDeviceInfo entries at record start. */
     fun setAudioInputPreference(p: AudioInputPreference) { audioInputPreference = p }
 
-    /** Still-photo center-crop aspect ratio; applies to HEIF only (see [saveHeifAsync]). W4_3 = no crop. */
+    /** Still-photo center-crop aspect ratio; applies to HEIF and JPEG. W4_3 = no crop. */
     fun setAspectRatio(a: AspectRatio) { aspectRatio = a }
 
     /**
      * Selects the video capture resolution and recreates the Camera2 session so the producer stream,
      * SurfaceTexture buffer and encoder all agree on the same dimensions.
      */
-    fun setVideoResolution(s: Size) {
+    fun setVideoResolution(s: Size): Boolean {
+        val offered = caps?.let { if (openGate) it.openGateVideoSizes else it.availableVideoSizes }
+        if (offered != null && s !in offered) {
+            onStatus?.invoke("Resolution unavailable on this camera")
+            return false
+        }
         // Remember the user's pick so lens switches and the initial open don't silently re-derive
         // the largest size over it — chooseVideoSize honors this request whenever the current lens
         // still offers it (and falls back to auto when it doesn't, e.g. after an openGate aspect
         // flip or a lens without that mode).
         requestedVideoSize = s
-        if (videoSize == s) return
+        if (videoSize == s) return true
         applyVideoSize(s)
+        return true
     }
 
     private fun applyVideoSize(s: Size) {
         videoSize = s
-        onVideoSizeChosen?.invoke(s)
+        onVideoSizeChosen?.invoke(s, null)
         // In PHOTO mode the preview stream stays on the 4:3 full-field size — the new recording
         // size takes effect on the stream when the user switches to VIDEO (setVideoMode reopens).
         if (videoMode) {
@@ -660,11 +903,8 @@ class CameraEngine(private val context: Context) {
      * Switches to one of the four rear lenses — by default bundling teleconverter mode: the 3× lens
      * enables it (the afocal 180° flip; stabilization at 300 mm is the HAL's OIS+EIS via
      * [VideoStabMode], not app-side gyro warping), any other lens disables it — one action, one
-     * camera reopen. [teleconverterOverride] lets a caller that already knows the desired
-     * final teleconverter state (the settings-restore path, where "preserve lens" and "preserve TELE"
-     * are independent toggles — see CameraViewModel.applyLoaded) set it in the SAME reopen instead of
-     * bundling then immediately correcting it via a second [setTeleconverterMode] call, which would
-     * otherwise reopen the camera twice in a row on launch. Resolves the [LensChoice]'s target focal to
+     * camera reopen. [teleconverterOverride] lets TELE toggles retain or detach the converter in the
+     * same reopen. Resolves the [LensChoice]'s target focal to
      * a concrete (standalone-preferred) camera id so nothing is hardcoded. No-op mid-recording
      * (reconfiguring under the encoder corrupts the clip); the UI also gates it.
      */
@@ -679,11 +919,9 @@ class CameraEngine(private val context: Context) {
         // TELE-toggle-off only: restore the pre-TELE framing instead of jumping to [choice]'s
         // preset. An explicit lens pick (onLens) must NOT restore — the user chose a new framing.
         restorePreTele: Boolean = false,
-        // Settings/MR restore only: preserve the exact saved zoom instead of applying a picker home.
-        // Photo values are unified main-relative; video and TELE values are lens-local.
-        restoredZoomRatio: Float? = null,
     ) {
         if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
+        val transaction = beginOpticsTransaction()
         val intentGeneration = lensIntentGeneration.incrementAndGet()
         val prevLens = lensChoice
         lensChoice = choice
@@ -703,54 +941,58 @@ class CameraEngine(private val context: Context) {
                 // onto that lens, so the logical camera's seamless switching would zoom right off it.
                 // Digital 1–10× only, afocal flip on, RAW available (standalone id).
                 val id = cachedIdForFocal(LensChoice.TELE3X.targetEquivMm)
-                if (id == null) { onStatus?.invoke("3× unavailable"); return@execute }
-                if (teleChanged && restoredZoomRatio == null) {
+                if (id == null) {
+                    rollbackOptics(transaction, "3× unavailable; lens unchanged")
+                    return@execute
+                }
+                if (teleChanged) {
                     preTeleUnifiedZoom = if (videoMode) {
                         prevLens.zoomPreset * controls.zoomRatio.coerceAtLeast(1f)
                     } else {
                         controls.zoomRatio
                     }
                 }
-                if (restoredZoomRatio != null) preTeleUnifiedZoom = Float.NaN
                 teleconverterMode = true
-                controls = controls.copy(
-                    zoomRatio = restoredZoomRatio
-                        ?.coerceIn(1f, TELE_MAX_DISPLAY_ZOOM / TELE_DISPLAY_BASE)
-                        ?: 1f,
-                )
+                controls = controls.copy(zoomRatio = 1f)
                 if (overrideId != id || controller == null || teleChanged) {
-                    setCameraOverride(id)
-                } else {
+                    reconfigureCamera(id, transaction)
+                } else if (transaction.before.ready && readyController === controller) {
                     applyStabilization()
+                    acceptOptics(transaction.generation)
                     updateCameraReady(true)
+                } else {
+                    reconfigureCamera(id, transaction)
                 }
             } else {
                 // Mode-split homes (see resolveNonTeleId): PHOTO picks are ZOOM PRESETS on the
                 // logical seamless camera (no reopen); VIDEO picks reopen the matching STANDALONE
                 // lens (lens-local zoom resets to 1×).
                 val unified = when {
-                    restoredZoomRatio != null && videoMode -> choice.zoomPreset * restoredZoomRatio.coerceAtLeast(1f)
-                    restoredZoomRatio != null -> restoredZoomRatio
                     restorePreTele && !preTeleUnifiedZoom.isNaN() -> preTeleUnifiedZoom
                     else -> choice.zoomPreset
                 }
                 preTeleUnifiedZoom = Float.NaN
-                val band = if (restoredZoomRatio != null && videoMode) choice else LensChoice.forZoom(unified)
+                val band = LensChoice.forZoom(unified)
                 lensChoice = band
                 val id = resolveNonTeleId(band)
-                if (id == null) { onStatus?.invoke("${band.label} unavailable"); return@execute }
+                if (id == null) {
+                    rollbackOptics(transaction, "${band.label} unavailable; lens unchanged")
+                    return@execute
+                }
                 teleconverterMode = false
                 val targetZoom = when {
-                    restoredZoomRatio != null -> restoredZoomRatio
                     videoMode -> (unified / band.zoomPreset).coerceAtLeast(1f)
                     else -> unified
                 }
                 if (overrideId != id || controller == null || teleChanged) {
                     controls = controls.copy(zoomRatio = targetZoom)
-                    setCameraOverride(id)
-                } else {
+                    reconfigureCamera(id, transaction)
+                } else if (transaction.before.ready && readyController === controller) {
                     setZoomRatio(targetZoom)
+                    acceptOptics(transaction.generation)
                     updateCameraReady(true)
+                } else {
+                    reconfigureCamera(id, transaction)
                 }
             }
         }
@@ -779,10 +1021,20 @@ class CameraEngine(private val context: Context) {
         // Switching the physical lens mid-recording reconfigures the camera under the encoder and
         // gaps/corrupts the clip. Refuse until recording stops; the UI also gates this.
         if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
-        overrideId = id
-        dngUnavailableNotified = false
+        reconfigureCamera(id, beginOpticsTransaction())
+    }
+
+    private fun reconfigureCamera(id: String?, transaction: OpticsTransaction?) {
+        synchronized(this) {
+            if (transaction != null && !ownsOpticsTransaction(transaction)) return
+            overrideId = id
+            dngUnavailableNotified = false
+        }
         if (!started) return
-        val input = gl.inputSurface ?: return // @Volatile in GlPipeline: safe cross-thread read
+        val input = gl.inputSurface ?: run {
+            transaction?.let { rollbackOptics(it, "Preview unavailable; camera unchanged") }
+            return
+        } // @Volatile in GlPipeline: safe cross-thread read
         updateCameraReady(false)
         // Off the main thread (same reason as reopenForSession): close() blocks on the HAL device
         // release and select/read/openCamera are several Binder IPCs — on the UI thread this ANR-kills
@@ -793,9 +1045,16 @@ class CameraEngine(private val context: Context) {
             // Resolve the id and read the characteristics BEFORE closing: these are dozens of
             // Binder IPCs (~100 ms uncached) that used to sit inside the close→open blackout —
             // the old camera keeps streaming while they run, shrinking the visible freeze.
-            val sel = selectCurrentLens() ?: run { onStatus?.invoke("Camera ID unavailable"); return@execute }
+            val sel = selectCurrentLens() ?: run {
+                transaction?.let { rollbackOptics(it, "Camera ID unavailable; camera unchanged") }
+                return@execute
+            }
             val c = cachedCaps(sel.logicalId, sel.physicalId)
-                ?: run { onStatus?.invoke("Camera unavailable"); return@execute }
+                ?: run {
+                    transaction?.let { rollbackOptics(it, "Camera unavailable; camera unchanged") }
+                    return@execute
+                }
+            if (transaction != null && !ownsOpticsTransaction(transaction)) return@execute
             if (paused || recorder != null) return@execute
 
             // DUAL-OPEN: open the NEXT device while the old camera keeps streaming (~120 ms of the
@@ -806,15 +1065,24 @@ class CameraEngine(private val context: Context) {
             // one, so the old error handler's identity guard no-ops and its close() self-runs.
             val old = controller
             val next = wireController()
-            controller = next
-            updateCameraReady(false)
-            selection = sel
-            caps = c
-            onCapsReady?.invoke(c)
-            videoSize = chooseVideoSize(sel)
-            onVideoSizeChosen?.invoke(videoSize)
-            previewStreamSize = choosePreviewStreamSize(sel)
-            applyStabilization()
+            val candidatePublished = synchronized(this) {
+                if (transaction != null && !ownsOpticsTransaction(transaction)) {
+                    false
+                } else {
+                    controller = next
+                    updateCameraReady(false)
+                    selection = sel
+                    caps = c
+                    reconcileControlsWithCaps(c)
+                    videoSize = chooseVideoSize(sel)
+                    previewStreamSize = choosePreviewStreamSize(sel)
+                    true
+                }
+            }
+            if (!candidatePublished) {
+                next.close()
+                return@execute
+            }
 
             seedGlZoom()
             val deviceUp = java.util.concurrent.CountDownLatch(1)
@@ -833,7 +1101,10 @@ class CameraEngine(private val context: Context) {
                 deferSession = true,
                 onDeviceOpened = { deviceOk.set(true); deviceUp.countDown() },
                 onReady = {
-                    if (controller === next && !paused) {
+                    if (controller === next && !paused &&
+                        (transaction == null || ownsOpticsTransaction(transaction))
+                    ) {
+                        transaction?.let { acceptOptics(it.generation) }
                         updateCameraReady(true)
                         onStatus?.invoke(null)
                         cameraRecoveryAttempts = 0
@@ -844,8 +1115,10 @@ class CameraEngine(private val context: Context) {
                     // A concurrent-open refusal is expected on devices that cannot dual-open a
                     // shared sensor; the setup task below owns that local sequential fallback.
                     // Only an error AFTER the next device opened is a real active-controller fault.
-                    if (deviceOk.get() && controller === next) {
-                        updateCameraReady(false)
+                    if (deviceOk.get() && controller === next &&
+                        (transaction == null || ownsOpticsTransaction(transaction))
+                    ) {
+                        invalidateCameraReady()
                         onStatus?.invoke("Camera error: ${it.message}")
                         scheduleCameraRecovery(next)
                     }
@@ -857,15 +1130,32 @@ class CameraEngine(private val context: Context) {
             // The blocking wait is an ownership boundary: pause, REC, or a newer reopen may have
             // superseded this attempt while the setup thread was parked. Do not publish sizes or
             // start a deferred session from an obsolete device; release every local handle.
+            if (transaction != null && !ownsOpticsTransaction(transaction)) {
+                next.close()
+                if (controller === next) {
+                    controller = old
+                    selection = transaction.before.selection
+                    caps = transaction.before.caps
+                    videoSize = transaction.before.videoSize
+                    previewStreamSize = transaction.before.previewStreamSize
+                }
+                return@execute
+            }
             if (paused || recorder != null || controller !== next) {
                 next.close()
                 old?.close()
                 if (controller === next) controller = null
                 return@execute
             }
+            // Candidate caps/sizes become externally visible only after the blocking dual-open
+            // boundary confirms this generation still owns the user's intent.
+            val deliveredGeneration = transaction?.generation ?: opticsIntentGeneration.get()
+            onCapsReady?.invoke(c, deliveredGeneration)
+            onVideoSizeChosen?.invoke(videoSize, deliveredGeneration)
+            applyStabilization()
             // Update the GL stream size only now — the old camera was still producing into the
             // shared SurfaceTexture; resizing it earlier would distort its final frames.
-            emitPreviewAspect()
+            emitPreviewAspect(deliveredGeneration)
             gl.setCameraPreviewSize(previewStreamSize.width, previewStreamSize.height)
             old?.close()
             if (deviceOk.get()) {
@@ -875,7 +1165,7 @@ class CameraEngine(private val context: Context) {
                 next.close()
                 if (controller === next) controller = null
                 if (paused || recorder != null) return@execute
-                openCamera(input)
+                openCamera(input, transaction)
             }
         }
     }
@@ -1514,7 +1804,7 @@ class CameraEngine(private val context: Context) {
     /** Releases the camera + gyro for backgrounding without tearing down the GL pipeline or start state. */
     fun pause() {
         paused = true
-        updateCameraReady(false)
+        invalidateCameraReady()
         // A backgrounded timelapse can't capture anyway (controller is nulled below, so every tick
         // no-ops) — stop it outright rather than silently resuming mid-sequence with a gap.
         stopTimelapse()
@@ -1580,12 +1870,34 @@ class CameraEngine(private val context: Context) {
     /** Discrete physical device orientation (0/90/180/270) from gravity, for auto-rotating overlays. */
     fun currentDeviceOrientation(): Int = gyro.currentDeviceOrientation()
 
-    fun setPunchIn(enabled: Boolean) = gl.setPunchIn(enabled)
+    fun setPunchIn(enabled: Boolean) {
+        rendererConfig.update { it.copy(punchIn = enabled) }
+        gl.setPunchIn(enabled)
+    }
+
+    /** Breaks the engine→ViewModel callback graph before asynchronous owner teardown begins. */
+    fun detachCallbacks() {
+        onCameraReadyChange = null
+        onOpticsRollback = null
+        onAfIndication = null
+        onStatus = null
+        onCapsReady = null
+        onVideoSizeChosen = null
+        onPreviewAspect = null
+        onAnalysis = null
+        onAudioLevel = null
+        onAudioRoute = null
+        onRecordingTerminated = null
+        onExposureInfo = null
+        onFocusDistance = null
+        onMediaSaved = null
+        onRawSaved = null
+    }
 
     fun release() {
         paused = true
         started = false
-        updateCameraReady(false)
+        invalidateCameraReady()
         stopTimelapse()
         standbyMeterWanted = false
         // Preserve the same GL-detach-before-codec-release order during ViewModel teardown. Await
@@ -1667,13 +1979,13 @@ class CameraEngine(private val context: Context) {
         if (videoMode) chooseVideoSize(sel) else chooseStreamSize(sel, fourByThree = true)
 
     /** Pushes the DISPLAYED preview aspect (post sensor-orientation W/H swap) to the UI. */
-    private fun emitPreviewAspect() {
+    private fun emitPreviewAspect(generation: Long = opticsIntentGeneration.get()) {
         val s = previewStreamSize
         // The ~90° sensor orientation means the SurfaceTexture transform swaps the shown W/H (the
         // afocal 180° doesn't change the swap). Same rule FlipRenderer uses for its aspect choice.
         val swapped = ((caps?.sensorOrientation ?: 90) % 180) == 90
         val aspect = if (swapped) s.height.toFloat() / s.width else s.width.toFloat() / s.height
-        onPreviewAspect?.invoke(aspect)
+        onPreviewAspect?.invoke(aspect, generation)
     }
 
     private fun chooseStreamSize(sel: TeleSelection, fourByThree: Boolean): Size {
@@ -2004,6 +2316,31 @@ class CameraEngine(private val context: Context) {
         const val RECORDER_FINALIZE_RELEASE_TIMEOUT_MS = 7_000L
     }
 }
+
+/** Prevents an older asynchronous camera intent from undoing a newer user choice. */
+internal fun reconfigurationOwnsGeneration(currentGeneration: Long, expectedGeneration: Long): Boolean =
+    currentGeneration == expectedGeneration
+
+internal data class OpticsIntentState(
+    val mode: CaptureMode,
+    val lens: LensChoice,
+    val teleconverter: Boolean,
+    val controls: ManualControls,
+    val overrideId: String?,
+)
+
+/** Returns the exact pre-intent optics only while that intent still owns the current generation. */
+internal fun rollbackOpticsState(
+    currentGeneration: Long,
+    expectedGeneration: Long,
+    snapshot: OpticsIntentState,
+): OpticsIntentState? = snapshot.takeIf {
+    reconfigurationOwnsGeneration(currentGeneration, expectedGeneration)
+}
+
+/** Rapid intents share the last Ready baseline instead of snapshotting an in-flight candidate. */
+internal fun <T> selectRollbackBaseline(cameraReady: Boolean, current: T, pendingBaseline: T?): T =
+    if (cameraReady) current else pendingBaseline ?: current
 
 /** The largest ratioW:ratioH rect centered within srcW×srcH. */
 internal data class CropBox(val x: Int, val y: Int, val w: Int, val h: Int)

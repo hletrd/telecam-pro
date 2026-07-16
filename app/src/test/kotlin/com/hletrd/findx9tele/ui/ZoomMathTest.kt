@@ -1,7 +1,9 @@
 package com.hletrd.findx9tele.ui
 
+import com.hletrd.findx9tele.camera.reconcileZoomWithCaps
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.LensChoice
+import com.hletrd.findx9tele.camera.ManualControls
 import com.hletrd.findx9tele.camera.TELE_DISPLAY_BASE
 import com.hletrd.findx9tele.camera.TELE_MAX_DISPLAY_ZOOM
 import org.junit.Assert.assertEquals
@@ -53,10 +55,82 @@ class ZoomMathTest {
         assertEquals(2.25f, restored.zoomRatio, 0f)
     }
 
+    @Test fun `video restore clamps legacy local zoom to 10x`() {
+        val restored = restoredOptics(CaptureMode.VIDEO, LensChoice.TELE3X, false, 20f)
+        assertEquals(LensChoice.TELE3X, restored.lens)
+        assertEquals(10f, restored.zoomRatio, 0f)
+    }
+
+    @Test fun `non-finite restore falls back to a valid mode representation`() {
+        assertEquals(
+            1f,
+            restoredOptics(CaptureMode.VIDEO, LensChoice.TELE10X, false, Float.NaN).zoomRatio,
+            0f,
+        )
+        assertEquals(
+            LensChoice.TELE3X.zoomPreset,
+            restoredOptics(CaptureMode.PHOTO, LensChoice.TELE3X, false, Float.POSITIVE_INFINITY).zoomRatio,
+            0f,
+        )
+    }
+
     @Test fun `tele restore clamps local zoom to converter display ceiling`() {
         val restored = restoredOptics(CaptureMode.PHOTO, LensChoice.MAIN, true, 9f)
         assertEquals(LensChoice.TELE3X, restored.lens)
         assertTrue(restored.teleconverter)
         assertEquals(60f, restored.zoomRatio * TELE_DISPLAY_BASE, 0.001f)
+    }
+
+    @Test fun `photo to video remap selects lens band and local zoom`() {
+        val remapped = remapModeOptics(
+            fromMode = CaptureMode.PHOTO,
+            toMode = CaptureMode.VIDEO,
+            lens = LensChoice.MAIN,
+            teleconverter = false,
+            controls = ManualControls(zoomRatio = 10f),
+        )
+
+        assertEquals(LensChoice.TELE10X, remapped.lens)
+        assertEquals(1f, remapped.controls.zoomRatio, 0f)
+    }
+
+    @Test fun `video to photo remap restores unified framing`() {
+        val remapped = remapModeOptics(
+            fromMode = CaptureMode.VIDEO,
+            toMode = CaptureMode.PHOTO,
+            lens = LensChoice.TELE10X,
+            teleconverter = false,
+            controls = ManualControls(zoomRatio = 2f),
+        )
+
+        assertEquals(LensChoice.TELE10X, remapped.lens)
+        assertEquals(20f, remapped.controls.zoomRatio, 0f)
+    }
+
+    @Test fun `tele mode transition keeps local optics unchanged`() {
+        val controls = ManualControls(zoomRatio = 2.5f)
+        val remapped = remapModeOptics(
+            fromMode = CaptureMode.PHOTO,
+            toMode = CaptureMode.VIDEO,
+            lens = LensChoice.TELE3X,
+            teleconverter = true,
+            controls = controls,
+        )
+
+        assertEquals(LensChoice.TELE3X, remapped.lens)
+        assertEquals(controls, remapped.controls)
+    }
+
+    @Test fun `live caps reconcile mode contract and narrower camera range`() {
+        assertEquals(
+            8f,
+            reconcileZoomWithCaps(CaptureMode.VIDEO, false, 10f, 1f, 8f),
+            0f,
+        )
+        assertEquals(
+            0.8f,
+            reconcileZoomWithCaps(CaptureMode.PHOTO, false, 0.6f, 0.8f, 20f),
+            0f,
+        )
     }
 }

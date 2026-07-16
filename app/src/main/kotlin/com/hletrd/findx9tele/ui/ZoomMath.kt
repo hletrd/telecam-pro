@@ -2,6 +2,7 @@ package com.hletrd.findx9tele.ui
 
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.LensChoice
+import com.hletrd.findx9tele.camera.ManualControls
 import com.hletrd.findx9tele.camera.TELE_DISPLAY_BASE
 import com.hletrd.findx9tele.camera.TELE_MAX_DISPLAY_ZOOM
 import com.hletrd.findx9tele.camera.TELE_ZOOM_SNAPS
@@ -61,6 +62,42 @@ internal data class RestoredOptics(
     val zoomRatio: Float,
 )
 
+internal data class ModeOptics(
+    val lens: LensChoice,
+    val controls: ManualControls,
+)
+
+/**
+ * Resolves one Photo/Video transition. Photo zoom is unified/main-relative; non-TELE Video zoom is
+ * local to the selected standalone lens. TELE is local in both modes and therefore stays unchanged.
+ */
+internal fun remapModeOptics(
+    fromMode: CaptureMode,
+    toMode: CaptureMode,
+    lens: LensChoice,
+    teleconverter: Boolean,
+    controls: ManualControls,
+): ModeOptics {
+    if (fromMode == toMode || teleconverter) return ModeOptics(lens, controls)
+    return if (toMode == CaptureMode.VIDEO) {
+        val band = LensChoice.forZoom(controls.zoomRatio)
+        ModeOptics(
+            lens = band,
+            controls = controls.copy(
+                zoomRatio = (controls.zoomRatio / band.zoomPreset).coerceIn(1f, MAX_VIDEO_LOCAL_ZOOM),
+            ),
+        )
+    } else {
+        ModeOptics(
+            lens = lens,
+            controls = controls.copy(
+                zoomRatio = (lens.zoomPreset * controls.zoomRatio.coerceAtLeast(1f))
+                    .coerceIn(MIN_PHOTO_ZOOM, MAX_PHOTO_UNIFIED_ZOOM),
+            ),
+        )
+    }
+}
+
 /** Resolves the exact lens-local/unified zoom representation used by both engine and UI restore. */
 internal fun restoredOptics(
     mode: CaptureMode,
@@ -68,17 +105,21 @@ internal fun restoredOptics(
     teleconverter: Boolean,
     savedZoomRatio: Float,
 ): RestoredOptics {
+    val safeZoom = savedZoomRatio.takeIf { it.isFinite() } ?: when {
+        teleconverter || mode == CaptureMode.VIDEO -> 1f
+        else -> requestedLens.zoomPreset
+    }
     if (teleconverter) {
         return RestoredOptics(
             lens = LensChoice.TELE3X,
             teleconverter = true,
-            zoomRatio = savedZoomRatio.coerceIn(1f, TELE_MAX_DISPLAY_ZOOM / TELE_DISPLAY_BASE),
+            zoomRatio = safeZoom.coerceIn(1f, TELE_MAX_DISPLAY_ZOOM / TELE_DISPLAY_BASE),
         )
     }
     return if (mode == CaptureMode.VIDEO) {
-        RestoredOptics(requestedLens, false, savedZoomRatio.coerceIn(1f, MAX_NON_TELE_ZOOM))
+        RestoredOptics(requestedLens, false, safeZoom.coerceIn(1f, MAX_VIDEO_LOCAL_ZOOM))
     } else {
-        val unified = savedZoomRatio.coerceIn(MIN_PHOTO_ZOOM, MAX_NON_TELE_ZOOM)
+        val unified = safeZoom.coerceIn(MIN_PHOTO_ZOOM, MAX_PHOTO_UNIFIED_ZOOM)
         RestoredOptics(LensChoice.forZoom(unified), false, unified)
     }
 }
@@ -86,4 +127,5 @@ internal fun restoredOptics(
 private const val SNAP_FRACTION = 0.06f
 private const val SNAP_EPSILON = 0.001f
 private const val MIN_PHOTO_ZOOM = 0.6f
-private const val MAX_NON_TELE_ZOOM = 20f
+private const val MAX_PHOTO_UNIFIED_ZOOM = 20f
+private const val MAX_VIDEO_LOCAL_ZOOM = 10f

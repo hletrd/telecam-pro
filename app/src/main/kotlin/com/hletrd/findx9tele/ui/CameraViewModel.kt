@@ -12,6 +12,7 @@ import com.hletrd.findx9tele.camera.Antibanding
 import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.AudioInputPreference
 import com.hletrd.findx9tele.camera.BitrateLevel
+import com.hletrd.findx9tele.camera.CameraCaps
 import com.hletrd.findx9tele.camera.CameraEngine
 import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.CaptureMode
@@ -38,6 +39,7 @@ import com.hletrd.findx9tele.camera.PeakingLevel
 import com.hletrd.findx9tele.camera.PhotoFormats
 import com.hletrd.findx9tele.camera.normalizedFor
 import com.hletrd.findx9tele.camera.ProcessingLevel
+import com.hletrd.findx9tele.camera.reconcileZoomWithCaps
 import com.hletrd.findx9tele.camera.ShutterMode
 import com.hletrd.findx9tele.camera.ShutterTimer
 import com.hletrd.findx9tele.camera.VideoCodec
@@ -142,15 +144,53 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             mainHandler.removeCallbacks(clearStatusRunnable)
             if (msg != null) mainHandler.postDelayed(clearStatusRunnable, 2000)
         }
-        // caps/size arrive on the engine's setup thread; hop to main before touching the engine again.
-        engine.onCapsReady = { caps -> _state.update { it.copy(caps = caps) }; mainHandler.post { reconcileFrameRate() } }
-        engine.onVideoSizeChosen = { size -> _state.update { it.copy(videoResolution = size) }; mainHandler.post { reconcileFrameRate() } }
+        // Caps arrive on the setup thread. Reconcile restored/schema-normalized zoom against the
+        // selected camera's authoritative range on main before any delayed input can reuse it.
+        engine.onCapsReady = { caps, generation ->
+            mainHandler.post {
+                if (!engine.isOpticsGenerationCurrent(generation)) return@post
+                reconcileZoomToCaps(caps)
+                reconcileFrameRate()
+            }
+        }
+        engine.onVideoSizeChosen = { size, generation ->
+            mainHandler.post {
+                if (generation != null && !engine.isOpticsGenerationCurrent(generation)) return@post
+                _state.update { it.copy(videoResolution = size) }
+                reconcileFrameRate()
+            }
+        }
         // Displayed preview aspect (engine setup thread → StateFlow is thread-safe): sizes the
         // letterboxed viewfinder so it always shows the full capture field.
-        engine.onPreviewAspect = { aspect -> _state.update { it.copy(previewAspect = aspect) } }
+        engine.onPreviewAspect = { aspect, generation ->
+            mainHandler.post {
+                if (!engine.isOpticsGenerationCurrent(generation)) return@post
+                _state.update { it.copy(previewAspect = aspect) }
+            }
+        }
         // Camera health (engine camera/setup threads → StateFlow is thread-safe): dims the shutter
         // while the session is down instead of silently declining taps.
         engine.onCameraReadyChange = { ready -> _state.update { it.copy(cameraReady = ready) } }
+        engine.onOpticsRollback = { mode, lens, teleconverter, controls, overrideId, generation ->
+            mainHandler.post {
+                if (!engine.isOpticsGenerationCurrent(generation)) return@post
+                mainHandler.removeCallbacks(applyControlsRunnable)
+                applyScheduled = false
+                pendingControls = null
+                zoomPendingRatio = Float.NaN
+                _state.update {
+                    it.copy(
+                        mode = mode,
+                        lens = lens,
+                        teleconverterMode = teleconverter,
+                        controls = controls,
+                        cameraOverrideId = overrideId,
+                        photoFormats = it.photoFormats.normalizedFor(teleconverter),
+                    )
+                }
+                refreshProgramAppSide()
+            }
+        }
         // DEBUG-only app-local zoom injection hook. Keep a receiver reference so ViewModel teardown
         // unregisters it; NOT_EXPORTED prevents arbitrary apps/shell broadcasts from controlling
         // camera framing while the process is alive.
@@ -289,16 +329,15 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         val restoredTeleconverter = restoredOptics.teleconverter
         val cSynced = c.copy(fps = safeFrameRate.fps, zoomRatio = restoredOptics.zoomRatio)
         // Push to the engine (safe pre-start: these set @Volatile fields read when the camera opens).
-        engine.setVideoMode(e.mode == CaptureMode.VIDEO)
-        engine.setControls(cSynced)
+        engine.setResolvedOptics(
+            enabledVideo = e.mode == CaptureMode.VIDEO,
+            resolvedLens = restoredLens,
+            resolvedTeleconverter = restoredTeleconverter,
+            resolvedControls = cSynced,
+        )
         // Manual/priority modes need luma analysis even when scopes are hidden: priority AE drives
         // from it, and full manual uses it for the live exposure meter.
         engine.setAeMetering(usesExposureAnalysis(cSynced))
-        // Pass the resolved teleconverter state directly so a "preserve lens but not TELE" restore
-        // (independent toggles, e.g. lens=3× with the converter not preserved as attached) reopens the
-        // camera once instead of setLens bundling TELE on and a separate setTeleconverterMode call
-        // immediately correcting it back off.
-        engine.setLens(restoredLens, restoredTeleconverter, restoredZoomRatio = cSynced.zoomRatio)
         applyEngineTransfer(e.mode, e.transfer)
         engine.setGammaAssist(e.gammaAssist)
         engine.setVideoStabMode(e.videoStabMode)
@@ -849,25 +888,24 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             showStatus("Stop REC first")
             return
         }
-        // Mirror the engine's mode-flip zoom remap (unified main-relative ↔ lens-local; see
-        // CameraEngine.setVideoMode) so the zoom pill/dial and lens chip agree with the camera.
+        // Invalidate any delayed full-controls packet before resolving the transition; otherwise it
+        // can overwrite the new mode's lens-local/unified zoom after the reconfigure is queued.
+        mainHandler.removeCallbacks(applyControlsRunnable)
+        applyScheduled = false
+        pendingControls = null
+        val before = _state.value
+        val optics = remapModeOptics(
+            fromMode = before.mode,
+            toMode = mode,
+            lens = before.lens,
+            teleconverter = before.teleconverterMode,
+            controls = before.controls,
+        )
         _state.update {
-            var lens = it.lens
-            var controls = it.controls
-            if (!it.teleconverterMode) {
-                if (mode == CaptureMode.VIDEO && it.mode == CaptureMode.PHOTO) {
-                    lens = LensChoice.forZoom(controls.zoomRatio)
-                    controls = controls.copy(zoomRatio = (controls.zoomRatio / lens.zoomPreset).coerceAtLeast(1f))
-                } else if (mode == CaptureMode.PHOTO && it.mode == CaptureMode.VIDEO) {
-                    controls = controls.copy(
-                        zoomRatio = (lens.zoomPreset * controls.zoomRatio.coerceAtLeast(1f)).coerceIn(0.6f, 20f),
-                    )
-                }
-            }
-            it.copy(mode = mode, lens = lens, controls = controls)
+            it.copy(mode = mode, lens = optics.lens, controls = optics.controls)
         }
         zoomPendingRatio = Float.NaN // the remap invalidated the coalesced base
-        engine.setVideoMode(mode == CaptureMode.VIDEO)
+        engine.setVideoMode(mode == CaptureMode.VIDEO, optics.lens, optics.controls)
         applyEngineTransfer(mode, _state.value.transfer)
         refreshProgramAppSide() // photo P is app-side (min-shutter rule), video P is HAL AE
         refreshStandbyAudioMeter()
@@ -1015,7 +1053,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
     override fun onVideoResolution(size: Size) {
         if (rejectIfRecording("Stop REC first")) return
-        engine.setVideoResolution(size)
+        if (!engine.setVideoResolution(size)) return
         _state.update { it.copy(videoResolution = size, activeMemorySlot = null) }
         reconcileFrameRate()
         // The one pro setting "Remember Settings" used to drop: a user's 1080p pick silently
@@ -1054,6 +1092,31 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         if (s.videoFrameRate in allowed) return
         val replacement = allowed.minByOrNull { kotlin.math.abs(it.fps - s.videoFrameRate.fps) } ?: return
         onVideoFrameRate(replacement)
+    }
+
+    private fun reconcileZoomToCaps(caps: CameraCaps) {
+        val current = _state.value
+        val range = caps.zoomRatioRange
+        val resolved = reconcileZoomWithCaps(
+            mode = current.mode,
+            teleconverter = current.teleconverterMode,
+            zoomRatio = current.controls.zoomRatio,
+            capsLower = range?.lower,
+            capsUpper = range?.upper,
+        )
+        val lens = if (current.mode == CaptureMode.PHOTO && !current.teleconverterMode) {
+            LensChoice.forZoom(resolved)
+        } else {
+            current.lens
+        }
+        _state.update {
+            it.copy(caps = caps, lens = lens, controls = it.controls.copy(zoomRatio = resolved))
+        }
+        if (resolved != current.controls.zoomRatio) {
+            engine.setZoomRatio(resolved)
+            if (!zoomPendingRatio.isNaN()) zoomPendingRatio = resolved
+            pendingControls = pendingControls?.copy(zoomRatio = resolved)
+        }
     }
 
     // ---- Stabilization ----
@@ -1467,7 +1530,16 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         mainHandler.removeCallbacksAndMessages(null)
         debugZoomReceiver?.let { receiver -> runCatching { getApplication<Application>().unregisterReceiver(receiver) } }
         debugZoomReceiver = null
-        engine.release()
+        engine.detachCallbacks()
+        // Ordered camera/codec/GL release contains bounded joins and can legitimately take seconds.
+        // ViewModel teardown runs on main, so transfer ownership to a dedicated non-daemon thread.
+        val ownedEngine = engine
+        runCatching {
+            Thread({ ownedEngine.release() }, "camera-engine-release").start()
+        }.onFailure {
+            // Thread creation failure is exceptional; preserve resource correctness as the fallback.
+            ownedEngine.release()
+        }
         // ViewModel.onCleared() is @EmptySuper (empty base impl) — do not call super (lint EmptySuperCall).
     }
 
