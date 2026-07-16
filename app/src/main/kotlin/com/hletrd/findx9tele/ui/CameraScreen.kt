@@ -622,9 +622,15 @@ fun CameraScreen(
                 teleconverterOn = state.teleconverterMode,
                 lastMediaUri = state.lastMediaUri,
                 onOpenReview = {
-                    reviewUri = state.lastMediaUri
-                    reviewDeleteScope = state.lastMediaDeleteScope
-                    currentActions.value.onReviewOpenChange(true)
+                    state.lastMediaUri?.let { uri ->
+                        val familyPinned = currentActions.value.onReviewOpenChange(true, uri)
+                        reviewUri = uri
+                        reviewDeleteScope = if (familyPinned) {
+                            state.lastMediaDeleteScope
+                        } else {
+                            MediaDeleteScope.FILE_ONLY
+                        }
+                    }
                 },
                 onShutter = onShutter,
                 onSnapshot = actions::onCapturePhoto,
@@ -665,12 +671,12 @@ fun CameraScreen(
             uri = frozenReviewUri,
             deleteScope = reviewDeleteScope,
             onClose = {
-                actions.onReviewOpenChange(false)
+                actions.onReviewOpenChange(false, frozenReviewUri)
                 reviewUri = null
             },
             onDelete = {
                 actions.onDeleteLastMedia(frozenReviewUri)
-                actions.onReviewOpenChange(false)
+                actions.onReviewOpenChange(false, frozenReviewUri)
                 reviewUri = null
             },
         )
@@ -1598,7 +1604,7 @@ private fun LensFlipButton(active: Boolean, onClick: () -> Unit, modifier: Modif
 /** No-op [CameraActions] used only by [CameraScreenPreview]. */
 private object PreviewCameraActions : CameraActions {
     override fun onPreviewSurfaceAvailable(surface: Surface, width: Int, height: Int) = Unit
-    override fun onReviewOpenChange(open: Boolean) = Unit
+    override fun onReviewOpenChange(open: Boolean, uri: android.net.Uri): Boolean = false
     override fun onCameraInputBlockedChange(blocked: Boolean) = Unit
     override fun onPreviewSurfaceChanged(width: Int, height: Int) = Unit
     override fun onPreviewSurfaceDestroyed() = Unit

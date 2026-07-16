@@ -111,6 +111,69 @@ class CaptureOutputTrackerTest {
     }
 
     @Test
+    fun openReviewPin_survivesProductionLimitWhileLiveCapturesAdvance() {
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 8)
+        tracker.record(1, "frozen.heic", CaptureOutputKind.DISPLAYABLE)
+        tracker.record(1, "frozen.dng", CaptureOutputKind.RAW)
+        assertTrue(tracker.pinForReview("frozen.heic"))
+
+        for (captureId in 2..12) {
+            tracker.record(captureId, "$captureId.heic", CaptureOutputKind.DISPLAYABLE)
+        }
+
+        assertTrue(tracker.isCurrentReviewOutput("12.heic"))
+        assertEquals(
+            setOf("frozen.heic", "frozen.dng"),
+            tracker.takeForDelete("frozen.heic"),
+        )
+    }
+
+    @Test
+    fun releasingPin_trimsTheOldFamilyBackOutOfOrdinaryHistory() {
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 1)
+        tracker.record(1, "old.heic", CaptureOutputKind.DISPLAYABLE)
+        assertTrue(tracker.pinForReview("old.heic"))
+        tracker.record(2, "new.heic", CaptureOutputKind.DISPLAYABLE)
+
+        tracker.releaseReviewPin("old.heic")
+
+        assertFalse(tracker.pinForReview("old.heic"))
+        assertEquals(setOf("old.heic"), tracker.takeForDelete("old.heic"))
+    }
+
+    @Test
+    fun replacingPin_ignoresAStaleCloseAndKeepsTheReplacement() {
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 1)
+        tracker.record(1, "first.heic", CaptureOutputKind.DISPLAYABLE)
+        assertTrue(tracker.pinForReview("first.heic"))
+        tracker.record(2, "second.heic", CaptureOutputKind.DISPLAYABLE)
+        assertTrue(tracker.pinForReview("second.heic"))
+
+        tracker.releaseReviewPin("first.heic")
+        tracker.record(3, "third.heic", CaptureOutputKind.DISPLAYABLE)
+        tracker.record(4, "fourth.heic", CaptureOutputKind.DISPLAYABLE)
+
+        assertEquals(setOf("second.heic"), tracker.takeForDelete("second.heic"))
+        assertFalse(tracker.pinForReview("first.heic"))
+    }
+
+    @Test
+    fun deletingPinnedFamily_consumesPinAndTombstonesLateSibling() {
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 1)
+        tracker.record(7, "shot.heic", CaptureOutputKind.DISPLAYABLE)
+        tracker.record(7, "shot.dng", CaptureOutputKind.RAW)
+        assertTrue(tracker.pinForReview("shot.heic"))
+
+        assertEquals(setOf("shot.heic", "shot.dng"), tracker.takeForDelete("shot.heic"))
+        assertEquals(
+            CaptureOutputDecision.DELETE,
+            tracker.record(7, "late.jpg", CaptureOutputKind.DISPLAYABLE),
+        )
+        tracker.releaseReviewPin("shot.heic")
+        assertFalse(tracker.pinForReview("shot.heic"))
+    }
+
+    @Test
     fun newerRawOnlyCapture_ownsReview() {
         val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
         tracker.record(3, "older.heic", CaptureOutputKind.DISPLAYABLE)

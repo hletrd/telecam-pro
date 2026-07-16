@@ -144,9 +144,10 @@ interface CameraActions {
     fun onDeleteLastMedia(uri: android.net.Uri)
 
     /**
-     * The full-screen media-review overlay opened/closed. [onCameraInputBlockedChange] owns the
-     * broader hardware-input gate shared with settings and Fn modals.
+     * The full-screen media-review overlay opened/closed for its frozen [uri]. Returns true only
+     * when opening pinned that exact capture family; the UI must otherwise use file-only copy.
+     * [onCameraInputBlockedChange] owns the broader gate shared with settings and Fn modals.
      */
-    fun onReviewOpenChange(open: Boolean)
+    fun onReviewOpenChange(open: Boolean, uri: android.net.Uri): Boolean
     fun onCameraInputBlockedChange(blocked: Boolean)
 }

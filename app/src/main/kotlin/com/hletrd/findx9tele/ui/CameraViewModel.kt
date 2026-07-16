@@ -1541,7 +1541,15 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         saveSettingsIfEnabled()
     }
 
-    override fun onReviewOpenChange(open: Boolean) {
+    override fun onReviewOpenChange(open: Boolean, uri: Uri): Boolean {
+        // Pin before publishing the modal state: a concurrent capture callback may trim ordinary
+        // history, but it cannot evict the exact family the confirmation copy now describes.
+        val familyPinned = if (open) {
+            captureOutputs.pinForReview(uri)
+        } else {
+            captureOutputs.releaseReviewPin(uri)
+            false
+        }
         _state.update {
             it.copy(
                 reviewOpen = open,
@@ -1550,6 +1558,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 cameraInputBlocked = if (open) true else it.cameraInputBlocked,
             )
         }
+        return familyPinned
     }
 
     override fun onCameraInputBlockedChange(blocked: Boolean) {

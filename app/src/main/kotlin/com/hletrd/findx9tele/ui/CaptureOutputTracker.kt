@@ -39,6 +39,8 @@ internal class CaptureOutputTracker<T>(
     private var reviewCaptureId: Int? = null
     private var reviewOutput: T? = null
     private var reviewKind: CaptureOutputKind? = null
+    private var pinnedReviewCaptureId: Int? = null
+    private var pinnedReviewOutput: T? = null
 
     /**
      * Seeds a fully reconstructed prior-process family without letting it outrank live callbacks.
@@ -109,10 +111,39 @@ internal class CaptureOutputTracker<T>(
     @Synchronized
     fun isCurrentReviewOutput(output: T): Boolean = reviewOutput == output
 
+    /**
+     * Replaces the open-review pin with the exact family that owns [output]. A failed replacement
+     * releases the old pin and returns false so callers can truthfully fall back to file-only copy.
+     */
+    @Synchronized
+    fun pinForReview(output: T): Boolean {
+        val captureId = captureByOutput[output]
+            ?.takeIf { output in outputsByCapture[it].orEmpty() }
+        pinnedReviewCaptureId = captureId
+        pinnedReviewOutput = output.takeIf { captureId != null }
+        trimCaptures()
+        return captureId != null
+    }
+
+    /** Releases only the matching overlay's pin; a stale close cannot release a replacement pin. */
+    @Synchronized
+    fun releaseReviewPin(output: T) {
+        if (pinnedReviewOutput != output) return
+        pinnedReviewCaptureId = null
+        pinnedReviewOutput = null
+        trimCaptures()
+    }
+
     /** Freezes all currently-known siblings and tombstones their capture before async deletion. */
     @Synchronized
     fun takeForDelete(output: T): Set<T> {
-        val captureId = captureByOutput[output] ?: return setOf(output)
+        val captureId = pinnedReviewCaptureId.takeIf { pinnedReviewOutput == output }
+            ?: captureByOutput[output]
+            ?: return setOf(output)
+        if (pinnedReviewCaptureId == captureId) {
+            pinnedReviewCaptureId = null
+            pinnedReviewOutput = null
+        }
         tombstones.remove(captureId)
         tombstones.add(captureId)
         while (tombstones.size > maxTombstones.coerceAtLeast(1)) {
@@ -130,10 +161,15 @@ internal class CaptureOutputTracker<T>(
 
     @Synchronized
     private fun trimCaptures() {
-        while (outputsByCapture.size > maxCaptureHistory.coerceAtLeast(1)) {
+        val ordinaryLimit = maxCaptureHistory.coerceAtLeast(1)
+        while (outputsByCapture.keys.count { it != pinnedReviewCaptureId } > ordinaryLimit) {
             // Callback order can differ from capture order (DNG and processed encoders use different
-            // workers), so evict by monotonic id rather than LinkedHashMap insertion order.
-            val oldestCaptureId = outputsByCapture.keys.minOrNull() ?: return
+            // workers), so evict by monotonic id rather than LinkedHashMap insertion order. The one
+            // open family is bounded separately and never consumes ordinary timelapse history.
+            val oldestCaptureId = outputsByCapture.keys
+                .asSequence()
+                .filter { it != pinnedReviewCaptureId }
+                .minOrNull() ?: return
             val evicted = outputsByCapture.remove(oldestCaptureId).orEmpty()
             evicted.forEach(captureByOutput::remove)
         }
