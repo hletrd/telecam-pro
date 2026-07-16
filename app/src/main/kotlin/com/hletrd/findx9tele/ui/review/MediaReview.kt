@@ -37,6 +37,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -403,7 +404,7 @@ fun MediaReviewOverlay(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    var loadAttempt by remember(uri) { mutableStateOf(0) }
+    var loadAttempt by remember(uri) { mutableIntStateOf(0) }
     var mediaState by remember(uri) { mutableStateOf<ReviewMediaState>(ReviewMediaState.Loading) }
     LaunchedEffect(uri, loadAttempt) {
         mediaState = ReviewMediaState.Loading
