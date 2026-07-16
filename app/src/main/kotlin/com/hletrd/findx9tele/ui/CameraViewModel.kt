@@ -808,7 +808,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     // Pinch events arrive at INPUT rate (up to ~120 Hz on this panel); applying each one drove a
     // whole-tree recomposition plus a setRepeatingRequest per event — the residual zoom jank after
     // the fast path landed. Coalesce: apply the first event immediately (no perceived latency),
-    // then flush only the NEWEST value every ~33 ms while the gesture continues.
+    // then flush only the NEWEST value every 16 ms (~60 Hz) while the gesture continues.
     private var zoomFlushScheduled = false
     private var zoomPendingRatio = Float.NaN
 
@@ -909,7 +909,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     override fun onPinchZoom(factor: Float) {
         // Pinch multiplies the FRESHEST zoom (the coalesced pending value, NOT UI state): state only
-        // updates at the ~33 ms flush, and compounding each input event against that stale base made
+        // updates at the 16 ms flush, and compounding each input event against that stale base made
         // the zoom crawl between flushes then jump at the boundary — the residual pinch jank.
         val range = _state.value.caps?.zoomRatioRange ?: return
         val next = (currentZoomBase() * factor).coerceIn(range.lower, range.upper)
@@ -918,7 +918,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     /**
      * The freshest zoom value: the coalesced pending ratio while a flush window is open (UI state
-     * lags it by up to ~33 ms), else the state value. Every compounding zoom input (pinch factor,
+     * lags it by up to 16 ms), else the state value. Every compounding zoom input (pinch factor,
      * hardware-key step, ease ticker) must use THIS as its base.
      */
     private fun currentZoomBase(): Float {

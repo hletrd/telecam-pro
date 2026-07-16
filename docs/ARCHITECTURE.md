@@ -321,12 +321,15 @@ Which camera is open depends on MODE, not just lens (`CameraEngine.resolveNonTel
 across a mode flip (mirrored into UI state by `onModeChange`).
 
 **Zoom application pipeline** (why it's smooth): pinch/dial events are COALESCED in the ViewModel
-(leading apply + 33 ms trailing flush of the newest value — per-event application recomposed the
+(leading apply + 16 ms trailing flush of the newest value, ~60 Hz — per-event application recomposed the
 whole tree at input rate). Every compounding input (pinch factor, hardware-key step, ease ticker)
 bases itself on `currentZoomBase()` — the coalesced PENDING value, not UI state, which lags a
 flush window; compounding against the stale state made zoom crawl-then-jump. The flushed value
 takes the controller **fast path** (`CameraController.setZoomRatio`): the cached repeating-request
 builder gets only its zoom keys mutated and resubmitted — no full request re-derivation.
+
+This zoom coalescer is separate from the general `ManualControls` packet throttle, which applies the
+newest full-control snapshot every 40 ms (25 Hz) during continuous dial input.
 
 **Stills** (`StillSnapshot`): the logical camera cannot allocate the HAL-JPEG blob (gralloc
 rejects it) and a RAW target errors the whole camera device, so logical stills arrive as

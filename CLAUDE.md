@@ -109,7 +109,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   Lens picks are zoom presets; TELE pins standalone 4 (digital 1–10×) and OFF returns to logical at
   3×. Zoom ticks use the controller fast path (cached repeating builder, zoom keys only) — routing
   them through the full `startPreview` rebuild read as stutter. Pinch/zoom events are additionally
-  COALESCED in the ViewModel (leading apply + 33 ms trailing flush of the newest value) — per-event
+  COALESCED in the ViewModel (leading apply + 16 ms trailing flush of the newest value, ~60 Hz) — per-event
   application recomposed the whole tree at input rate (~120 Hz) and read as jank.
 - **VIDEO stays on the STANDALONE lenses — the logical camera's EIS leaks its warp margin
   (2026-07-14).** With any video stabilization on (Standard AND Active), camera 0's stream carries
@@ -130,7 +130,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   neutrally during gestures (ISO-headroom-bounded) so the base frame rate rises.
 - **Compounding zoom inputs must base on the COALESCED pending value (2026-07-14).** Pinch factors,
   hardware-key steps, and the ease ticker all multiply "the current zoom" — but UI state lags the
-  33 ms coalescing flush, so compounding against `_state` made zoom crawl between flushes then jump
+  16 ms coalescing flush, so compounding against `_state` made zoom crawl between flushes then jump
   at the boundary (read as pinch jank twice before being root-caused). `currentZoomBase()` in the
   ViewModel is the one true base; reset `zoomPendingRatio` whenever anything outside the coalescer
   rewrites zoom (mode flip, lens preset, TC toggle).

@@ -29,8 +29,10 @@ import java.util.concurrent.Executor
  * Camera2 session for the selected rear camera. The GL input surface receives the repeating preview
  * stream; processed stills use logical-camera YUV or standalone JPEG, and RAW is standalone-only.
  *
- * Camera callbacks run on a dedicated HandlerThread. [PhotoCallback] hands image ownership to the
- * engine, which snapshots/encodes off the camera thread before the Images are closed.
+ * Camera callbacks run on a dedicated HandlerThread. [PhotoCallback] snapshots processed JPEG/YUV
+ * data into engine-owned memory while each Image is live, then encoding/saving can continue on the
+ * I/O executor after it closes. RAW is the deliberate exception: DNG writing consumes the live RAW
+ * Image synchronously inside the callback.
  */
 class CameraController(context: Context) {
 

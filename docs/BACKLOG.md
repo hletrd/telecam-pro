@@ -44,7 +44,7 @@ new hash and must update that sheet after the full release gate is repeated.
    watchdog, and instant shutter-blink feedback (the physical lag is pipeline-depth ×
    frame-duration: ~0.85 s at a 1/10 s dark-room preview, ~0.3–0.5 s in normal light).
 4. **Zoom lag/jank, three layers** — full-request rebuild per tick (→ controller fast path on a
-   cached repeating builder), per-input-event state updates at ~120 Hz (→ 33 ms coalescing;
+   cached repeating builder), per-input-event state updates at ~120 Hz (→ 16 ms/~60 Hz coalescing;
    compounding inputs MUST base on the coalesced pending value, not the stale UI state), and a
    ~33 MB full-res analysis glReadPixels every 5th frame (→ aspect-matched FBO, ≤256 px long edge).
 5. **REC tally border vanished at the panel's rounded corners** — now follows the physical corner
