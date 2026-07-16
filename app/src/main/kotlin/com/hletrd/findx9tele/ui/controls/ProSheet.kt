@@ -243,10 +243,10 @@ internal fun ProSheet(
 
 @Composable
 private fun CloseButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
-    // 44 dp touch target; 32 dp visual pill.
+    // 48 dp touch target; 32 dp visual pill.
     Box(
         modifier = modifier
-            .size(44.dp)
+            .size(48.dp)
             .semantics {
                 contentDescription = "Close settings"
                 role = Role.Button

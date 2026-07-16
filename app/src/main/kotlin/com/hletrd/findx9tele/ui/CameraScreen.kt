@@ -1202,20 +1202,25 @@ private fun FnOverlay(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text("Fn", color = CameraColors.TextPrimary, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-                Text(
-                    "Close",
-                    color = CameraColors.TextSecondary,
-                    style = MaterialTheme.typography.labelMedium,
+                Box(
                     modifier = Modifier
                         .focusRequester(closeFocusRequester)
+                        .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
                         .clip(RoundedCornerShape(50))
                         .semantics {
                             contentDescription = "Close function menu"
                             role = Role.Button
                         }
-                        .clickable(onClick = onDismiss)
-                        .padding(horizontal = 10.dp, vertical = 5.dp),
-                )
+                        .clickable(onClick = onDismiss),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "Close",
+                        color = CameraColors.TextSecondary,
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                    )
+                }
             }
             slots.chunked(3).forEach { rowSlots ->
                 Row(

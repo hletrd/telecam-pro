@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -227,7 +228,9 @@ private fun CameraSlider(
     Canvas(
         modifier = Modifier
             .fillMaxWidth()
-            .height(36.dp)
+            // The track remains visually compact around the centre line, but the pointer and
+            // adjustable-semantics node must meet the app-wide 48 dp interaction floor.
+            .height(48.dp)
             // TalkBack: a bare Canvas is invisible to accessibility services — this backs every
             // settings slider, so expose it as an adjustable value with a set action.
             .progressSemantics(value = fraction.coerceIn(0f, 1f), valueRange = 0f..1f)
@@ -354,7 +357,15 @@ internal fun LabelValueRow(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+            .then(
+                if (onClick != null) {
+                    Modifier
+                        .sizeIn(minHeight = 48.dp)
+                        .clickable(onClick = onClick)
+                } else {
+                    Modifier
+                },
+            ),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {

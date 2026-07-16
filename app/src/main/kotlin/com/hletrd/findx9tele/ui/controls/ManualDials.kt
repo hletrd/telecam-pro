@@ -18,6 +18,8 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
@@ -34,6 +36,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.semantics.stateDescription
@@ -636,26 +639,40 @@ private fun ShutterRuler(controls: ManualControls, caps: CameraCaps?, actions: C
 /** Small Speed⇄Angle segmented switch on the shutter ruler (also mirrored in the settings sheet). */
 @Composable
 private fun SpeedAngleToggle(mode: ShutterMode, enabled: Boolean, onSelect: (ShutterMode) -> Unit) {
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    Row(
+        modifier = Modifier.selectableGroup(),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
         ShutterMode.entries.forEach { m ->
             val on = mode == m
             Box(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(50))
-                    .background(if (on) CameraColors.ManualActive else CameraColors.Pill.copy(alpha = 0.7f))
-                    .clickable(enabled = enabled) { onSelect(m) }
-                    .padding(horizontal = 14.dp, vertical = 5.dp),
+                    .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                    .selectable(
+                        selected = on,
+                        enabled = enabled,
+                        role = Role.RadioButton,
+                        onClick = { onSelect(m) },
+                    ),
+                contentAlignment = Alignment.Center,
             ) {
-                Text(
-                    text = if (m == ShutterMode.SPEED) "Speed" else "Angle",
-                    color = when {
-                        on -> Color.Black
-                        enabled -> CameraColors.TextPrimary
-                        else -> CameraColors.TextSecondary
-                    },
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                )
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(if (on) CameraColors.ManualActive else CameraColors.Pill.copy(alpha = 0.7f))
+                        .padding(horizontal = 14.dp, vertical = 5.dp),
+                ) {
+                    Text(
+                        text = if (m == ShutterMode.SPEED) "Speed" else "Angle",
+                        color = when {
+                            on -> Color.Black
+                            enabled -> CameraColors.TextPrimary
+                            else -> CameraColors.TextSecondary
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
             }
         }
     }
