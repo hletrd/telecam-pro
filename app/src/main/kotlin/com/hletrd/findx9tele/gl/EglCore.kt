@@ -64,34 +64,87 @@ class EglCore(sharedContext: EGLContext = EGL14.EGL_NO_CONTEXT, tenBit: Boolean 
     }
 
     fun makeCurrent(eglSurface: EGLSurface) {
-        check(EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)) { "eglMakeCurrent failed" }
+        checkEglResult(
+            EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext),
+            "eglMakeCurrent",
+        )
     }
 
     fun makeNothingCurrent() {
-        EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
+        checkEglResult(
+            EGL14.eglMakeCurrent(
+                eglDisplay,
+                EGL14.EGL_NO_SURFACE,
+                EGL14.EGL_NO_SURFACE,
+                EGL14.EGL_NO_CONTEXT,
+            ),
+            "eglMakeCurrent(none)",
+        )
     }
 
-    fun swapBuffers(eglSurface: EGLSurface): Boolean = EGL14.eglSwapBuffers(eglDisplay, eglSurface)
+    fun swapBuffers(eglSurface: EGLSurface) {
+        checkEglResult(EGL14.eglSwapBuffers(eglDisplay, eglSurface), "eglSwapBuffers")
+    }
 
     fun setPresentationTime(eglSurface: EGLSurface, nsecs: Long) {
-        EGLExt.eglPresentationTimeANDROID(eglDisplay, eglSurface, nsecs)
+        checkEglResult(
+            EGLExt.eglPresentationTimeANDROID(eglDisplay, eglSurface, nsecs),
+            "eglPresentationTimeANDROID",
+        )
     }
 
     fun releaseSurface(eglSurface: EGLSurface) {
-        if (eglSurface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(eglDisplay, eglSurface)
+        if (eglSurface != EGL14.EGL_NO_SURFACE) {
+            checkEglResult(EGL14.eglDestroySurface(eglDisplay, eglSurface), "eglDestroySurface")
+        }
+    }
+
+    /**
+     * Relinquishes every surface/context currently owned by this thread. The checked
+     * [EGL14.eglReleaseThread] fallback is intentionally separate from display teardown so callers
+     * can use successful return as the native-window ownership boundary.
+     */
+    fun releaseCurrentOwnership() {
+        if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
+            // A broken output can make the ordinary no-surface transition fail. eglReleaseThread
+            // still relinquishes this thread's current context before context/display teardown.
+            val ordinaryUnbind = runCatching { makeNothingCurrent() }
+            if (ordinaryUnbind.isFailure) {
+                checkEglResult(EGL14.eglReleaseThread(), "eglReleaseThread(unbind)")
+            }
+        }
+    }
+
+    /** Attempts every terminal cleanup stage; true means the EGLDisplay itself was terminated. */
+    fun releaseAfterCurrentOwnership(): Boolean {
+        if (eglDisplay == EGL14.EGL_NO_DISPLAY) return true
+        runCatching {
+            checkEglResult(EGL14.eglDestroyContext(eglDisplay, eglContext), "eglDestroyContext")
+        }
+        runCatching { checkEglResult(EGL14.eglReleaseThread(), "eglReleaseThread") }
+        return runCatching {
+            checkEglResult(EGL14.eglTerminate(eglDisplay), "eglTerminate")
+        }.isSuccess
     }
 
     fun release() {
-        if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
-            makeNothingCurrent()
-            EGL14.eglDestroyContext(eglDisplay, eglContext)
-            EGL14.eglReleaseThread()
-            EGL14.eglTerminate(eglDisplay)
-        }
+        releaseCurrentOwnership()
+        check(releaseAfterCurrentOwnership()) { "EGL display release failed" }
     }
 
     private fun checkEglError(op: String) {
         val err = EGL14.eglGetError()
         check(err == EGL14.EGL_SUCCESS) { "$op: EGL error 0x${Integer.toHexString(err)}" }
     }
+
+    private fun checkEglResult(success: Boolean, op: String) {
+        requireEglSuccess(success, op, EGL14::eglGetError)
+    }
+}
+
+/** Consumes the failing EGL error immediately so it cannot poison a later checked operation. */
+internal fun requireEglSuccess(success: Boolean, op: String, getError: () -> Int) {
+    if (success) return
+    val errorCode = getError()
+    error("$op: EGL error 0x${Integer.toHexString(errorCode)}")
 }

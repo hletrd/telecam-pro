@@ -12,6 +12,7 @@ import com.hletrd.findx9tele.camera.HistogramData
 import com.hletrd.findx9tele.camera.WaveformData
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.CancellationException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
@@ -32,7 +33,9 @@ class GlPipeline {
 
     private var thread: HandlerThread? = null
     private var handler: Handler? = null
+    private var resourceReleaseHub: ResourceReleaseHub? = null
     private var egl: EglCore? = null
+    private var unsafeOutputAbandoned = false
     private val renderer = FlipRenderer()
 
     private var surfaceTexture: SurfaceTexture? = null
@@ -43,6 +46,10 @@ class GlPipeline {
 
     private var previewEgl: EGLSurface = EGL14.EGL_NO_SURFACE
     private var encoderEgl: EGLSurface = EGL14.EGL_NO_SURFACE
+    // Failed provisional-output cleanup retains its only EGL handle here. These handles are never
+    // drawn; every checked detach/reset drains them before authorizing native producer teardown.
+    private val orphanedEglOutputs = RetainedOutputs<EGLSurface>()
+    private var encoderSignal: EncoderOutputSignal? = null
     private var previewSurface: Surface? = null
     // Surface lifecycle callbacks can invalidate a native window before an older GL task runs.
     // Bump this synchronously on the caller thread so queued binds can reject stale ownership.
@@ -135,6 +142,8 @@ class GlPipeline {
         if (analysisExecutor.isShutdown) analysisExecutor = Executors.newSingleThreadExecutor()
         val t = HandlerThread("gl-pipeline").also { it.start() }
         thread = t
+        resourceReleaseHub = ResourceReleaseHub()
+        unsafeOutputAbandoned = false
         handler = Handler(t.looper)
         post { egl = EglCore(tenBit = tenBit) }
     }
@@ -169,6 +178,7 @@ class GlPipeline {
         clearPreviewOutput(core)
         if (generation != previewOutputGeneration.get()) return
         var candidate = EGL14.EGL_NO_SURFACE
+        var primaryFailure: Throwable? = null
         try {
             candidate = core.createWindowSurface(surface)
             if (generation != previewOutputGeneration.get()) return
@@ -194,20 +204,55 @@ class GlPipeline {
                 runCatching { onInputReady?.invoke(input) }
             }
         } catch (failure: Throwable) {
-            clearPreviewOutput(core)
+            primaryFailure = failure
+            runCatching { clearPreviewOutput(core) }
+                .exceptionOrNull()
+                ?.let(failure::addSuppressed)
             throw failure
         } finally {
             if (candidate != EGL14.EGL_NO_SURFACE) {
-                runCatching { core.releaseSurface(candidate) }
+                // A stale generation can be discovered after candidate makeCurrent(). Explicitly
+                // unbind before destroy: EGL defers destruction of a current surface, so destroy
+                // alone would leave the released TextureView window natively owned.
+                try {
+                    detachEglOutput(
+                        hasFallback = false,
+                        makeFallbackCurrent = {},
+                        makeNothingCurrent = core::releaseCurrentOwnership,
+                        destroy = { core.releaseSurface(candidate) },
+                    )
+                } catch (cleanupFailure: Throwable) {
+                    orphanedEglOutputs.retain(candidate)
+                    primaryFailure?.addSuppressed(cleanupFailure) ?: throw cleanupFailure
+                }
             }
         }
     }
 
     private fun clearPreviewOutput(core: EglCore) {
+        clearOrphanedOutputs(core)
         val owned = previewEgl
+        if (owned != EGL14.EGL_NO_SURFACE) {
+            detachEglOutput(
+                hasFallback = false,
+                makeFallbackCurrent = {},
+                makeNothingCurrent = core::releaseCurrentOwnership,
+                destroy = { core.releaseSurface(owned) },
+            )
+        }
         previewEgl = EGL14.EGL_NO_SURFACE
         previewSurface = null
-        if (owned != EGL14.EGL_NO_SURFACE) runCatching { core.releaseSurface(owned) }
+    }
+
+    private fun clearOrphanedOutputs(core: EglCore) {
+        orphanedEglOutputs.releaseAll { orphan ->
+            detachEglOutput(
+                hasFallback = previewEgl != EGL14.EGL_NO_SURFACE,
+                makeFallbackCurrent = { core.makeCurrent(previewEgl) },
+                makeNothingCurrent = core::releaseCurrentOwnership,
+                destroy = { core.releaseSurface(orphan) },
+            )
+        }
     }
 
     /** Camera output resolution feeding the SurfaceTexture; controls aspect + peaking texel size. */
@@ -279,6 +324,7 @@ class GlPipeline {
         surface: Surface?,
         width: Int,
         height: Int,
+        onRuntimeFailure: ((Throwable) -> Unit)? = null,
         onApplied: ((Result<Unit>) -> Unit)? = null,
     ) {
         val h = handler
@@ -289,28 +335,140 @@ class GlPipeline {
             runCatching { onApplied?.invoke(result) }
             return
         }
+        if (surface == null) {
+            dispatchWithResult(
+                post = { task -> h.post(task) },
+                block = {
+                    val core = egl
+                    if (core != null) {
+                        clearEncoderOutput(
+                            core,
+                            CancellationException("Encoder output detached before its first frame"),
+                        )
+                    } else {
+                        encoderSignal?.cancel(
+                            CancellationException("EGL context stopped before encoder detach"),
+                        )
+                        encoderSignal = null
+                        encoderEgl = EGL14.EGL_NO_SURFACE
+                    }
+                    resetEncoderTimestampBase()
+                },
+                onComplete = { result -> onApplied?.invoke(result) },
+            )
+            return
+        }
+
+        val signal = EncoderOutputSignal(
+            onAttached = { result -> onApplied?.invoke(result) },
+            onRuntimeFailure = { failure -> onRuntimeFailure?.invoke(failure) },
+        )
         dispatchWithResult(
             post = { task -> h.post(task) },
             block = {
-                val core = egl
-                val owned = encoderEgl
-                encoderEgl = EGL14.EGL_NO_SURFACE
-                if (owned != EGL14.EGL_NO_SURFACE && core != null) {
-                    runCatching { core.releaseSurface(owned) }
-                }
-                // Reset the presentation-time base whenever the encoder surface changes (record
-                // start/stop) so the next recording rebases from its own first frame.
-                encoderBaseSet = false
-                encoderBaseNs = 0L
-                if (surface != null) {
-                    checkNotNull(core) { "EGL context is not ready" }
-                    encoderW = width
-                    encoderH = height
-                    encoderEgl = core.createWindowSurface(surface)
-                }
+                val core = checkNotNull(egl) { "EGL context is not ready" }
+                clearEncoderOutput(
+                    core,
+                    CancellationException("Encoder output replaced before its first frame"),
+                )
+                resetEncoderTimestampBase()
+                // eglCreateWindowSurface proves allocation only. Bind the candidate now so a dead
+                // codec/native window fails inside this result boundary, then restore preview (or
+                // no current output) before publishing ownership.
+                val candidate = prepareEglOutput(
+                    create = { core.createWindowSurface(surface) },
+                    makeCandidateCurrent = core::makeCurrent,
+                    restoreCurrent = { restorePreviewOrNothing(core) },
+                    discardCandidate = { failedCandidate ->
+                        // Candidate may be current when bind succeeded but preview restoration
+                        // failed. Unbind before destroying it while preserving the primary failure.
+                        try {
+                            detachEglOutput(
+                                hasFallback = false,
+                                makeFallbackCurrent = {},
+                                makeNothingCurrent = core::releaseCurrentOwnership,
+                                destroy = { core.releaseSurface(failedCandidate) },
+                            )
+                        } catch (cleanupFailure: Throwable) {
+                            orphanedEglOutputs.retain(failedCandidate)
+                            throw cleanupFailure
+                        }
+                    },
+                )
+                encoderW = width
+                encoderH = height
+                encoderEgl = candidate
+                encoderSignal = signal
+                scheduleCheckedDelay(
+                    postDelayed = { task, delayMs -> h.postDelayed(task, delayMs) },
+                    delayMs = ENCODER_FIRST_FRAME_TIMEOUT_MS,
+                    action = {
+                        if (encoderSignal === signal && signal.isPending()) {
+                            failEncoderOutput(
+                                core,
+                                signal,
+                                IllegalStateException("Encoder produced no frame before timeout"),
+                            )
+                        }
+                    },
+                )
             },
-            onComplete = { result -> onApplied?.invoke(result) },
+            // Setup success remains pending until drawFrame presents the first real camera frame.
+            // Rejection or any candidate-stage exception is still delivered exactly once inline.
+            onComplete = { result -> result.exceptionOrNull()?.let(signal::fail) },
         )
+    }
+
+    private fun resetEncoderTimestampBase() {
+        // Each output owns an independent sensor-clock rebase.
+        encoderBaseSet = false
+        encoderBaseNs = 0L
+    }
+
+    /** Releases the current encoder EGLSurface before resolving its pending attachment. */
+    private fun clearEncoderOutput(
+        core: EglCore,
+        pendingCause: Throwable,
+        cancelSignal: Boolean = true,
+    ) {
+        clearOrphanedOutputs(core)
+        val owned = encoderEgl
+        val signal = encoderSignal
+        if (owned != EGL14.EGL_NO_SURFACE) {
+            detachEglOutput(
+                hasFallback = previewEgl != EGL14.EGL_NO_SURFACE,
+                makeFallbackCurrent = { core.makeCurrent(previewEgl) },
+                makeNothingCurrent = core::releaseCurrentOwnership,
+                destroy = { core.releaseSurface(owned) },
+            )
+        }
+        encoderEgl = EGL14.EGL_NO_SURFACE
+        encoderSignal = null
+        if (cancelSignal) signal?.cancel(pendingCause)
+    }
+
+    /** Contains a real-frame encoder failure, then reports it through the matching recorder owner. */
+    private fun failEncoderOutput(core: EglCore, signal: EncoderOutputSignal, failure: Throwable) {
+        if (encoderSignal !== signal) return
+        val detachFailure = runCatching {
+            clearEncoderOutput(core, failure, cancelSignal = false)
+            resetEncoderTimestampBase()
+        }.exceptionOrNull()
+        signal.fail(detachFailure ?: failure)
+    }
+
+    /** Restores the viewfinder target; a failed restore still makes nothing current before escaping. */
+    private fun restorePreviewOrNothing(core: EglCore) {
+        if (previewEgl == EGL14.EGL_NO_SURFACE) {
+            core.makeNothingCurrent()
+            return
+        }
+        try {
+            core.makeCurrent(previewEgl)
+        } catch (failure: Throwable) {
+            runCatching { core.releaseCurrentOwnership() }
+            throw failure
+        }
     }
 
     private var lastDrawMs = 0L
@@ -394,27 +552,49 @@ class GlPipeline {
         // gets the curve). HLG/SDR keep the natural SDR preview. delogAssist stays dormant: it is only
         // for a true scene-referred (native/CameraUnit) stream, which third-party Camera2 cannot get.
         val previewTransfer = if (transfer == ColorTransfer.LOG && !gammaAssist) ColorTransfer.LOG else null
-        core.makeCurrent(previewEgl)
-        renderer.draw(
-            stMatrix, previewW, previewH, previewTransfer, peaking, zebra, falseColor, sx, sy, roll, previewCrop, loupeX, loupeY,
-            peakThreshold = peakThreshold, peakR = peakR, peakG = peakG, peakB = peakB, zebraThreshold = zebraThreshold,
-            delogAssist = nativeLog && gammaAssist,
-            zoomComp = zoomTarget / halZoom.coerceAtLeast(0.01f),
-        )
-        core.swapBuffers(previewEgl)
+        val previewFailure = runCatching {
+            core.makeCurrent(previewEgl)
+            renderer.draw(
+                stMatrix, previewW, previewH, previewTransfer, peaking, zebra, falseColor, sx, sy, roll, previewCrop, loupeX, loupeY,
+                peakThreshold = peakThreshold, peakR = peakR, peakG = peakG, peakB = peakB, zebraThreshold = zebraThreshold,
+                delogAssist = nativeLog && gammaAssist,
+                zoomComp = zoomTarget / halZoom.coerceAtLeast(0.01f),
+            )
+            core.swapBuffers(previewEgl)
+        }.exceptionOrNull()
+        if (previewFailure != null) {
+            // A released TextureView/native window is contained on the GL owner. Keep any failed
+            // detach handle owned for the next lifecycle transition or terminal reset.
+            runCatching { clearPreviewOutput(core) }
+            return
+        }
 
         // Self-redraws only refresh the PREVIEW with a new zoom crop from the last frame — the
         // analysis meter and (critically) the encoder must only ever see REAL camera frames.
         if (!updateTex) return
 
-        if (encoderEgl != EGL14.EGL_NO_SURFACE) {
-            core.makeCurrent(encoderEgl)
-            renderer.draw(stMatrix, encoderW, encoderH, transfer, false, false, false, sx, sy, roll, crop)
-            // Rebase to the first recorded frame so video PTS starts near 0 like the audio track.
-            val ts = st.timestamp
-            if (!encoderBaseSet && ts > 0L) { encoderBaseNs = ts; encoderBaseSet = true }
-            core.setPresentationTime(encoderEgl, if (encoderBaseSet) ts - encoderBaseNs else 0L)
-            core.swapBuffers(encoderEgl)
+        val ownedEncoder = encoderEgl
+        val ownedSignal = encoderSignal
+        if (ownedEncoder != EGL14.EGL_NO_SURFACE && ownedSignal?.isActive() == true) {
+            try {
+                core.makeCurrent(ownedEncoder)
+                renderer.draw(stMatrix, encoderW, encoderH, transfer, false, false, false, sx, sy, roll, crop)
+                // Rebase to the first recorded frame so video PTS starts near 0 like the audio track.
+                val ts = st.timestamp
+                if (!encoderBaseSet && ts > 0L) { encoderBaseNs = ts; encoderBaseSet = true }
+                core.setPresentationTime(ownedEncoder, if (encoderBaseSet) ts - encoderBaseNs else 0L)
+                core.swapBuffers(ownedEncoder)
+                // Never leave the codec window current between frames. Apart from making detach
+                // truthful, this ensures a stop triggered by the ready callback is queued only
+                // after EGL has relinquished the native producer.
+                restorePreviewOrNothing(core)
+                ownedSignal.ready()
+            } catch (failure: Throwable) {
+                // Encoder output is optional to preview. Contain every runtime EGL/renderer error,
+                // detach this exact output, and converge the identity-owned recorder instead of
+                // letting an uncaught HandlerThread exception kill the process.
+                failEncoderOutput(core, ownedSignal, failure)
+            }
         }
 
         // Additive scope analysis: throttled GL readback of the just-drawn preview, computed off-thread.
@@ -524,10 +704,14 @@ class GlPipeline {
         }
     }
 
-    fun stop(onStopped: (() -> Unit)? = null) {
+    fun stop(
+        onStopped: (() -> Unit)? = null,
+        onResourcesReleased: (() -> Unit)? = null,
+    ) {
         analysisExecutor.shutdown()
         val ownedThread = thread
         val ownedHandler = handler
+        val ownedReleaseHub = resourceReleaseHub
         val completed = CountDownLatch(1)
         val completion = OnceAction {
             try {
@@ -536,11 +720,31 @@ class GlPipeline {
                 completed.countDown()
             }
         }
+        // Every stop caller for one GL generation shares this strict signal. Unlike the bounded stop
+        // notification, it fires only after checked EGL release, including callers whose cleanup
+        // Runnable loses a race to another stop for the same thread.
+        val localResourceRelease = OnceAction { onResourcesReleased?.invoke() }
+        ownedReleaseHub?.subscribe { localResourceRelease.run() }
+        fun releaseGenerationResources(): Boolean {
+            if (ownedReleaseHub != null) {
+                return ownedReleaseHub.runCleanup(::releaseGlResources)
+            }
+            val released = runCatching { releaseGlResources() }.getOrDefault(false)
+            if (released) localResourceRelease.run()
+            return released
+        }
 
         if (ownedThread == null || ownedHandler == null) {
+            val safeToCleanHere = ownedThread == null || !ownedThread.isAlive
+            if (!safeToCleanHere) {
+                completion.run()
+                return
+            }
+            releaseGenerationResources()
             completion.run()
             if (thread === ownedThread) thread = null
             if (handler === ownedHandler) handler = null
+            if (resourceReleaseHub === ownedReleaseHub) resourceReleaseHub = null
             return
         }
 
@@ -548,12 +752,13 @@ class GlPipeline {
         // ourselves and then deadlocking while waiting for that queued task on the same thread.
         if (Thread.currentThread() === ownedThread) {
             try {
-                releaseGlResources()
+                releaseGenerationResources()
             } finally {
                 completion.run()
                 runCatching { ownedThread.quitSafely() }
                 if (thread === ownedThread) thread = null
                 if (handler === ownedHandler) handler = null
+                if (resourceReleaseHub === ownedReleaseHub) resourceReleaseHub = null
             }
             return
         }
@@ -562,7 +767,9 @@ class GlPipeline {
             try {
                 // If a bounded stop timed out and a new generation has since started, this old
                 // Runnable must not tear down the replacement generation's EGL state.
-                if (thread === ownedThread) releaseGlResources()
+                if (thread === ownedThread) {
+                    releaseGenerationResources()
+                }
             } finally {
                 completion.run()
                 // Clear ownership only from the generation that actually performed cleanup. A
@@ -570,6 +777,7 @@ class GlPipeline {
                 // cleanup can still recognize and release its own generation.
                 if (thread === ownedThread) thread = null
                 if (handler === ownedHandler) handler = null
+                if (resourceReleaseHub === ownedReleaseHub) resourceReleaseHub = null
             }
         }
         val accepted = runCatching { ownedHandler.post(cleanup) }.getOrDefault(false)
@@ -590,7 +798,7 @@ class GlPipeline {
         if (threadExited && !cleanupCompleted) {
             // The task was rejected, or the looper died after accepting it. With the owned thread
             // now gone no GL work can race this caller-side fallback cleanup.
-            runCatching { releaseGlResources() }
+            releaseGenerationResources()
         }
         // A wedged GL thread may outlive the bounded wait. Deliver completion once so release cannot
         // hang indefinitely; the late cleanup Runnable (if accepted) will observe the same one-shot.
@@ -598,12 +806,15 @@ class GlPipeline {
         if (threadExited) {
             if (thread === ownedThread) thread = null
             if (handler === ownedHandler) handler = null
+            if (resourceReleaseHub === ownedReleaseHub) resourceReleaseHub = null
         }
     }
 
     /** Releases all GL-owned resources. Runs on the GL thread, or after that thread has exited. */
-    private fun releaseGlResources() {
+    private fun releaseGlResources(): Boolean {
         val core = egl
+        var outputsReleased = core == null && encoderEgl == EGL14.EGL_NO_SURFACE &&
+            !unsafeOutputAbandoned
         if (core != null) {
             // Caller-thread fallback needs to make the context current before deleting renderer/FBO
             // objects. The normal GL-thread path also benefits from not relying on whichever output
@@ -621,9 +832,23 @@ class GlPipeline {
                 if (analysisTex != 0) GLES20.glDeleteTextures(1, intArrayOf(analysisTex), 0)
                 renderer.release()
             }
-            if (encoderEgl != EGL14.EGL_NO_SURFACE) runCatching { core.releaseSurface(encoderEgl) }
-            if (previewEgl != EGL14.EGL_NO_SURFACE) runCatching { core.releaseSurface(previewEgl) }
-            runCatching { core.release() }
+            // Surface destruction is not an unbind in EGL. Relinquish every native window before
+            // destroying either handle so stop completion is a real ownership boundary.
+            val currentOwnershipReleased = runCatching { core.releaseCurrentOwnership() }.isSuccess
+            if (currentOwnershipReleased) {
+                val encoderReleased = encoderEgl == EGL14.EGL_NO_SURFACE ||
+                    runCatching { core.releaseSurface(encoderEgl) }.isSuccess
+                val previewReleased = previewEgl == EGL14.EGL_NO_SURFACE ||
+                    runCatching { core.releaseSurface(previewEgl) }.isSuccess
+                val orphansReleased = orphanedEglOutputs.releaseAllBestEffort(core::releaseSurface)
+                val displayTerminated = core.releaseAfterCurrentOwnership()
+                val surfacesDestroyed = encoderReleased && previewReleased && orphansReleased
+                outputsReleased = outputReleaseProven(
+                    currentOwnershipReleased = true,
+                    surfacesDestroyed = surfacesDestroyed,
+                    displayTerminated = displayTerminated,
+                )
+            }
         } else {
             runCatching { surfaceTexture?.release() }
             runCatching { inputSurface?.release() }
@@ -633,16 +858,20 @@ class GlPipeline {
         previewSurface = null
         previewEgl = EGL14.EGL_NO_SURFACE
         encoderEgl = EGL14.EGL_NO_SURFACE
+        orphanedEglOutputs.abandon()
+        encoderSignal?.cancel(CancellationException("GL pipeline stopped before encoder ready"))
+        encoderSignal = null
         analysisFbo = 0
         analysisTex = 0
         analysisTextureW = 0
         analysisTextureH = 0
         analysisBusy = false
-        encoderBaseSet = false
-        encoderBaseNs = 0L
+        resetEncoderTimestampBase()
         lastDrawMs = 0L
         egl = null
         inited = false
+        if (!outputsReleased) unsafeOutputAbandoned = true
+        return outputsReleased
     }
 
     private inline fun post(crossinline block: () -> Unit) {
@@ -651,6 +880,7 @@ class GlPipeline {
 
     private companion object {
         const val STOP_TIMEOUT_MS = 1_500L
+        const val ENCODER_FIRST_FRAME_TIMEOUT_MS = 2_000L
     }
 }
 
@@ -670,6 +900,125 @@ internal fun analysisTargetSize(width: Int, height: Int, maxLongEdge: Int = 256)
     }
 }
 
+/**
+ * Moves EGL current ownership away from an outgoing surface before destroying it. If the preferred
+ * fallback is stale, making nothing current is still a valid verified unbind; destruction never
+ * runs when both transitions fail. Kept Android-free so the native lifetime order is unit-testable.
+ */
+internal fun detachEglOutput(
+    hasFallback: Boolean,
+    makeFallbackCurrent: () -> Unit,
+    makeNothingCurrent: () -> Unit,
+    destroy: () -> Unit,
+) {
+    if (hasFallback) {
+        try {
+            makeFallbackCurrent()
+        } catch (_: Throwable) {
+            makeNothingCurrent()
+        }
+    } else {
+        makeNothingCurrent()
+    }
+    destroy()
+}
+
+/** Checked create/bind/restore transaction for a candidate output, with primary-error retention. */
+internal fun <T> prepareEglOutput(
+    create: () -> T,
+    makeCandidateCurrent: (T) -> Unit,
+    restoreCurrent: () -> Unit,
+    discardCandidate: (T) -> Unit,
+): T {
+    val candidate = create()
+    try {
+        makeCandidateCurrent(candidate)
+        restoreCurrent()
+        return candidate
+    } catch (failure: Throwable) {
+        runCatching { discardCandidate(candidate) }
+            .exceptionOrNull()
+            ?.let(failure::addSuppressed)
+        throw failure
+    }
+}
+
+/** A missing timeout task would leave recorder admission pending forever, so rejection is fatal. */
+internal fun scheduleCheckedDelay(
+    postDelayed: (Runnable, Long) -> Boolean,
+    delayMs: Long,
+    action: () -> Unit,
+) {
+    check(postDelayed(Runnable(action), delayMs)) { "Delayed GL task rejected" }
+}
+
+/** Codec teardown needs a verified unbind plus either destroyed outputs or terminal EGL display. */
+internal fun outputReleaseProven(
+    currentOwnershipReleased: Boolean,
+    surfacesDestroyed: Boolean,
+    displayTerminated: Boolean,
+): Boolean = currentOwnershipReleased && (surfacesDestroyed || displayTerminated)
+
+/**
+ * Exactly-once bridge from one encoder output generation to recorder ownership. Allocation/bind is
+ * still [State.PENDING]; the first real swap publishes [State.READY]. A failure before READY is an
+ * attachment result, while a later failure is a runtime recorder failure. Normal detach cancels a
+ * pending result but never manufactures a runtime failure for a recorder the caller already claimed.
+ */
+internal class EncoderOutputSignal(
+    private val onAttached: (Result<Unit>) -> Unit,
+    private val onRuntimeFailure: (Throwable) -> Unit,
+) {
+    private enum class State { PENDING, READY, TERMINAL }
+
+    private var state = State.PENDING
+
+    @Synchronized
+    fun isPending(): Boolean = state == State.PENDING
+
+    @Synchronized
+    fun isActive(): Boolean = state != State.TERMINAL
+
+    fun ready(): Boolean {
+        val deliver = synchronized(this) {
+            if (state != State.PENDING) false else {
+                state = State.READY
+                true
+            }
+        }
+        if (deliver) runCatching { onAttached(Result.success(Unit)) }
+        return deliver
+    }
+
+    fun fail(failure: Throwable): Boolean {
+        val wasPending = synchronized(this) {
+            when (state) {
+                State.PENDING -> true.also { state = State.TERMINAL }
+                State.READY -> false.also { state = State.TERMINAL }
+                State.TERMINAL -> return false
+            }
+        }
+        if (wasPending) {
+            runCatching { onAttached(Result.failure(failure)) }
+        } else {
+            runCatching { onRuntimeFailure(failure) }
+        }
+        return true
+    }
+
+    fun cancel(cause: Throwable): Boolean {
+        val wasPending = synchronized(this) {
+            when (state) {
+                State.PENDING -> true.also { state = State.TERMINAL }
+                State.READY -> false.also { state = State.TERMINAL }
+                State.TERMINAL -> return false
+            }
+        }
+        if (wasPending) runCatching { onAttached(Result.failure(cause)) }
+        return true
+    }
+}
+
 /** Executes [callback] at most once across racing GL/caller threads. Callback failures are sealed. */
 internal class OnceAction(private val callback: () -> Unit) {
     private val delivered = AtomicBoolean(false)
@@ -678,6 +1027,76 @@ internal class OnceAction(private val callback: () -> Unit) {
         if (!delivered.compareAndSet(false, true)) return false
         runCatching(callback)
         return true
+    }
+}
+
+/** Owns provisional native outputs until their checked destruction succeeds or shutdown abandons. */
+internal class RetainedOutputs<T> {
+    private val values = mutableListOf<T>()
+
+    fun retain(value: T) {
+        values += value
+    }
+
+    fun releaseAll(release: (T) -> Unit) {
+        while (values.isNotEmpty()) {
+            release(values.first())
+            values.removeAt(0)
+        }
+    }
+
+    fun releaseAllBestEffort(release: (T) -> Unit): Boolean {
+        val results = values.map { value -> runCatching { release(value) }.isSuccess }
+        values.clear()
+        return results.all { it }
+    }
+
+    fun abandon() {
+        values.clear()
+    }
+}
+
+/** Shared, exactly-once native-resource boundary for every stop caller in one GL generation. */
+internal class ResourceReleaseHub {
+    private var released = false
+    private var cleanupClaimed = false
+    private val listeners = mutableListOf<() -> Unit>()
+
+    fun subscribe(listener: () -> Unit) {
+        val deliverNow = synchronized(this) {
+            if (released) {
+                true
+            } else {
+                listeners += listener
+                false
+            }
+        }
+        if (deliverNow) runCatching(listener)
+    }
+
+    fun release(): Boolean {
+        val pending = synchronized(this) {
+            if (released) return false
+            released = true
+            listeners.toList().also { listeners.clear() }
+        }
+        pending.forEach { runCatching(it) }
+        return true
+    }
+
+    /** At most one stop caller may mutate a generation's EGL state, including fallback cleanup. */
+    fun runCleanup(cleanup: () -> Boolean): Boolean {
+        val claimed = synchronized(this) {
+            when {
+                released -> return true
+                cleanupClaimed -> false
+                else -> true.also { cleanupClaimed = true }
+            }
+        }
+        if (!claimed) return false
+        val success = runCatching(cleanup).getOrDefault(false)
+        if (success) release()
+        return success
     }
 }
 

@@ -2183,6 +2183,12 @@ class CameraEngine(private val context: Context) {
         val earlyFailure = java.util.concurrent.atomic.AtomicReference<Throwable?>()
         val encoderAttachResult = java.util.concurrent.atomic.AtomicReference<Result<Unit>?>()
         val encoderAttachDelivered = java.util.concurrent.atomic.AtomicBoolean(false)
+        val reportRecorderFailure: (Throwable) -> Unit = { failure ->
+            // Both codec-drain and GL-output failures can beat recorder publication. Retain the
+            // first one, then replay through the same identity-owned claim after admission.
+            earlyFailure.compareAndSet(null, failure)
+            handleUnexpectedRecorderFailure(rec, uri, recordingCaptureId, failure)
+        }
         fun deliverEncoderAttach(result: Result<Unit>) {
             val owned = synchronized(recorderOwnershipLock) { recorder === rec }
             if (!owned || !encoderAttachDelivered.compareAndSet(false, true)) return
@@ -2202,10 +2208,7 @@ class CameraEngine(private val context: Context) {
             audioScene, controls.zoomRatio, audioInputPreference,
             onRoute = { route -> onAudioRoute?.invoke(route) },
             onLevel = { lvl -> onAudioLevel?.invoke(lvl) },
-            onFailure = { failure ->
-                earlyFailure.compareAndSet(null, failure)
-                handleUnexpectedRecorderFailure(rec, uri, recordingCaptureId, failure)
-            },
+            onFailure = reportRecorderFailure,
         )
         if (surface == null) {
             // Encoder/muxer failed to configure; drop the pending MediaStore row we created so it
@@ -2217,7 +2220,12 @@ class CameraEngine(private val context: Context) {
         gl.setTransfer(glTransfer)
         // Queue EGL attach before publishing recorder ownership. Any failure is retained and replayed
         // after admission, while stop/failure detach is necessarily queued behind this attach.
-        gl.setEncoderOutput(surface, size.width, size.height) { result ->
+        gl.setEncoderOutput(
+            surface,
+            size.width,
+            size.height,
+            onRuntimeFailure = reportRecorderFailure,
+        ) { result ->
             // GlPipeline guarantees exactly-once result delivery, so a plain atomic publication is
             // sufficient and avoids identity-CAS semantics on Kotlin's boxed Result value class.
             encoderAttachResult.set(result)
@@ -2314,8 +2322,8 @@ class CameraEngine(private val context: Context) {
         val completed = java.util.concurrent.CountDownLatch(1)
         recorderFinalizationLatch = completed
         val dispatched = java.util.concurrent.atomic.AtomicBoolean(false)
-        gl.setEncoderOutput(null, 0, 0) {
-            if (!dispatched.compareAndSet(false, true)) return@setEncoderOutput
+        val dispatchFinalization: () -> Unit = dispatch@{
+            if (!dispatched.compareAndSet(false, true)) return@dispatch
             val task = Runnable {
                 try {
                     finishRecording(rec, uri, captureId)
@@ -2329,6 +2337,54 @@ class CameraEngine(private val context: Context) {
                 runCatching { Thread(task, "record-finalize-fallback").start() }
                     .onFailure { task.run() }
             }
+        }
+        gl.setEncoderOutput(null, 0, 0) { result ->
+            result.fold(
+                onSuccess = { dispatchFinalization() },
+                onFailure = { failure ->
+                    // A failed unbind/destroy result is NOT permission to release MediaCodec. Reset
+                    // the EGL owner first; only the strict checked resource-release signal (not the
+                    // bounded stop notification) can become the fallback finalization boundary.
+                    recoverFromEncoderDetachFailure(failure, dispatchFinalization)
+                },
+            )
+        }
+    }
+
+    /** Terminal EGL reset used only when the checked encoder detach transition itself fails. */
+    private fun recoverFromEncoderDetachFailure(failure: Throwable, onReleased: () -> Unit) {
+        onStatus?.invoke("Renderer reset: ${failure.message ?: "encoder detach failed"}")
+        invalidateCameraReady()
+        val failedController = synchronized(this) {
+            val current = controller
+            controller = null
+            current
+        }
+        val reset = Runnable {
+            failedController?.close()
+            gl.stop(onResourcesReleased = afterResourcesReleased(onReleased))
+        }
+        if (runCatching { setupExecutor.execute(reset) }.isFailure) {
+            // Release may already own the setup executor. A fresh helper keeps CameraController.close
+            // off the GL callback thread while preserving stop-before-codec-finalize ordering.
+            runCatching { Thread(reset, "egl-reset-fallback").start() }
+                .onFailure {
+                    runCatching { failedController?.close() }
+                    gl.stop(onResourcesReleased = afterResourcesReleased(onReleased))
+                }
+        }
+    }
+
+    private fun afterResourcesReleased(onReleased: () -> Unit): () -> Unit = {
+        synchronized(this) {
+            started = false
+            starting = false
+            glInputPending = false
+        }
+        onReleased()
+        val liveSurface = previewSurface
+        if (!paused && terminalAcquisitionGate.isOpen() && liveSurface != null) {
+            onPreviewSurfaceAvailable(liveSurface, previewSurfaceW, previewSurfaceH)
         }
     }
 
