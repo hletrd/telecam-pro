@@ -30,4 +30,40 @@ class CaptureCapabilitiesTest {
         assertEquals(off, videoStabControlModeFor(intArrayOf(off), VideoStabMode.ENHANCED))
         assertEquals(off, videoStabControlModeFor(IntArray(0), VideoStabMode.STANDARD))
     }
+
+    @Test
+    fun `physical lens EXIF uses the prefetched cache entry`() {
+        val fallback = LensExifMetadata(6.5f, 1.5f, 23f)
+        val tele = LensExifMetadata(20.1f, 2.26f, 69.4f)
+
+        assertEquals(
+            tele,
+            resolveLensExifMetadata("4", mapOf("4" to tele), fallback),
+        )
+    }
+
+    @Test
+    fun `physical lens EXIF cache miss uses route metadata without a service resolver`() {
+        val fallback = LensExifMetadata(6.5f, 1.5f, 23f)
+
+        assertEquals(
+            fallback,
+            resolveLensExifMetadata("missing", emptyMap(), fallback),
+        )
+        assertEquals(fallback, resolveLensExifMetadata(null, emptyMap(), fallback))
+    }
+
+    @Test
+    fun `lens EXIF metadata derives full-frame equivalent focal length`() {
+        val metadata = lensExifMetadataOf(
+            focalLengthMm = 20.1f,
+            apertureF = 2.26f,
+            sensorWidthMm = 12.0f,
+            sensorHeightMm = 9.0f,
+        )
+
+        assertEquals(20.1f, metadata.focalLengthMm, 0.0001f)
+        assertEquals(2.26f, metadata.apertureF, 0.0001f)
+        assertEquals(57.977f, metadata.equivalentFocalMm, 0.001f)
+    }
 }

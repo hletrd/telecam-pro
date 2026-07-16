@@ -8,6 +8,57 @@ import android.hardware.camera2.params.DynamicRangeProfiles
 import android.util.Range
 import android.util.Rational
 import android.util.Size
+import kotlin.math.hypot
+
+private const val FULL_FRAME_DIAGONAL_MM = 43.2666f
+
+/** Immutable optics subset safe to cache before a still callback needs physical-lens EXIF. */
+internal data class LensExifMetadata(
+    val focalLengthMm: Float,
+    val apertureF: Float,
+    val equivalentFocalMm: Float,
+)
+
+/** Pure lens-metadata calculation shared by broad capability reads and lightweight EXIF prefetch. */
+internal fun lensExifMetadataOf(
+    focalLengthMm: Float,
+    apertureF: Float,
+    sensorWidthMm: Float,
+    sensorHeightMm: Float,
+): LensExifMetadata {
+    val diagonalMm = hypot(sensorWidthMm, sensorHeightMm)
+    val equivalentFocalMm = if (diagonalMm > 0f && focalLengthMm > 0f) {
+        focalLengthMm * FULL_FRAME_DIAGONAL_MM / diagonalMm
+    } else {
+        0f
+    }
+    return LensExifMetadata(focalLengthMm, apertureF, equivalentFocalMm)
+}
+
+/**
+ * Reads only the three immutable values needed for EXIF. Callers must run this on setup work, never
+ * the Camera2 callback handler; failures are a cache miss and use the selected-route fallback.
+ */
+internal fun readLensExifMetadata(manager: CameraManager, cameraId: String): LensExifMetadata? =
+    runCatching {
+        val chars = manager.getCameraCharacteristics(cameraId)
+        val physical = chars.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
+        lensExifMetadataOf(
+            focalLengthMm = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                ?.firstOrNull() ?: 0f,
+            apertureF = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES)
+                ?.firstOrNull() ?: 0f,
+            sensorWidthMm = physical?.width ?: 0f,
+            sensorHeightMm = physical?.height ?: 0f,
+        )
+    }.getOrNull()
+
+/** Cache-only physical-lens lookup for a live still callback. */
+internal fun resolveLensExifMetadata(
+    activePhysicalId: String?,
+    cachedByCameraId: Map<String, LensExifMetadata>,
+    routeFallback: LensExifMetadata?,
+): LensExifMetadata? = activePhysicalId?.let(cachedByCameraId::get) ?: routeFallback
 
 /**
  * Flattened, hardware-derived capabilities for the selected (tele) camera. Read once on open;
@@ -83,6 +134,9 @@ data class CameraCaps(
     fun supportsHlg10(): Boolean = supportedDynamicRangeProfiles.contains(DynamicRangeProfiles.HLG10)
     fun hasEffect(mode: Int): Boolean = effectModes.contains(mode)
 
+    internal fun lensExifMetadata(): LensExifMetadata =
+        LensExifMetadata(lensFocalLengthMm, lensApertureF, equivalentFocalMm)
+
     /** Distinct fixed frame rates whose advertised lower and upper bounds are equal, sorted. */
     val availableFps: List<Int>
         get() = fixedFpsValues(availableFpsRanges.map { it.lower to it.upper })
@@ -114,8 +168,6 @@ data class CameraCaps(
             ?.let { (lo, hi) -> availableFpsRanges.first { it.lower == lo && it.upper == hi } }
 
     companion object {
-        private const val FULL_FRAME_DIAGONAL_MM = 43.2666f
-
         /**
          * Reads and flattens the characteristics. Throws (CameraAccessException) only when BOTH the
          * physical and logical reads fail — a transient camera-service outage. Callers run on
@@ -178,10 +230,15 @@ data class CameraCaps(
                     ?: setOf(DynamicRangeProfiles.STANDARD)
 
             val focals = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS) ?: FloatArray(0)
-            val focalMm = focals.firstOrNull() ?: 0f
             val physical = chars.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
-            val diagMm = physical?.let { kotlin.math.hypot(it.width, it.height) } ?: 0f
-            val equiv = if (diagMm > 0f && focalMm > 0f) focalMm * FULL_FRAME_DIAGONAL_MM / diagMm else 0f
+            val lensExif = lensExifMetadataOf(
+                focalLengthMm = focals.firstOrNull() ?: 0f,
+                apertureF = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES)
+                    ?.firstOrNull() ?: 0f,
+                sensorWidthMm = physical?.width ?: 0f,
+                sensorHeightMm = physical?.height ?: 0f,
+            )
+            val focalMm = lensExif.focalLengthMm
             val focalInImageWidths = if (physical != null && physical.width > 0f && focalMm > 0f) {
                 focalMm / physical.width
             } else 0f
@@ -200,9 +257,9 @@ data class CameraCaps(
                 evRange = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE) ?: Range(0, 0),
                 evStep = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP) ?: Rational(1, 3),
                 focalLengthsMm = focals,
-                equivalentFocalMm = equiv,
+                equivalentFocalMm = lensExif.equivalentFocalMm,
                 lensFocalLengthMm = focalMm,
-                lensApertureF = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_APERTURES)?.firstOrNull() ?: 0f,
+                lensApertureF = lensExif.apertureF,
                 nativeFocalInImageWidths = focalInImageWidths,
                 supportsManualSensor = has(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR),
                 supportsManualPostProcessing = has(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_POST_PROCESSING),

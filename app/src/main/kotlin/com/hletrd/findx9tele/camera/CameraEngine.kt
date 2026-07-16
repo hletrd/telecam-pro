@@ -323,13 +323,32 @@ class CameraEngine(private val context: Context) {
     // runtime, but re-reading them cost dozens of Binder IPCs on EVERY lens/TC/mode switch — and
     // they used to run inside the close→open blackout window.
     private val capsCache = java.util.concurrent.ConcurrentHashMap<String, CameraCaps>()
+    private val lensExifCache = java.util.concurrent.ConcurrentHashMap<String, LensExifMetadata>()
     private val idForFocalCache = java.util.concurrent.ConcurrentHashMap<Float, String>()
     @Volatile private var cachedLogicalBackId: String? = null
 
     private fun cachedCaps(logicalId: String, physicalId: String?): CameraCaps? =
         runCatching {
             capsCache.getOrPut("$logicalId:$physicalId") { CameraCaps.read(manager, logicalId, physicalId) }
-        }.getOrNull()
+        }.getOrNull()?.also { cameraCaps ->
+            lensExifCache.putIfAbsent(physicalId ?: logicalId, cameraCaps.lensExifMetadata())
+        }
+
+    /** Populates logical-member optics on setupExecutor before Camera2 can deliver a still. */
+    private fun prefetchLensExifMetadata(selection: TeleSelection, selectedCaps: CameraCaps) {
+        val selectedId = selection.physicalId ?: selection.logicalId
+        lensExifCache.putIfAbsent(selectedId, selectedCaps.lensExifMetadata())
+        val memberIds = runCatching {
+            manager.getCameraCharacteristics(selection.logicalId).physicalCameraIds
+        }.getOrDefault(emptySet())
+        for (cameraId in memberIds) {
+            if (!lensExifCache.containsKey(cameraId)) {
+                readLensExifMetadata(manager, cameraId)?.let {
+                    lensExifCache.putIfAbsent(cameraId, it)
+                }
+            }
+        }
+    }
 
     private fun cachedIdForFocal(equivMm: Float): String? =
         idForFocalCache[equivMm]
@@ -1279,6 +1298,11 @@ class CameraEngine(private val context: Context) {
                 }
             if (!ownsOpticsTransaction(transaction)) return@execute
             if (paused || recorder != null) return@execute
+            // This lightweight physical-member walk happens on setupExecutor while the old camera
+            // is still streaming. The still callback remains cache-only even on the first lens hit.
+            prefetchLensExifMetadata(sel, c)
+            if (!ownsOpticsTransaction(transaction)) return@execute
+            if (paused || recorder != null) return@execute
 
             // DUAL-OPEN: open the NEXT device while the old camera keeps streaming (~120 ms of the
             // blackout overlapped away). The preview surface still belongs to the old session, so
@@ -1690,17 +1714,23 @@ class CameraEngine(private val context: Context) {
                 takenAtMs: Long,
             ) {
                 val spec = requestSpec.copy(takenAtMs = takenAtMs)
+                // Copy the live Image first so the ImageReader slot and Camera2 handler are held for
+                // the shortest possible interval; EXIF composition below performs cache-only reads.
+                val processedSnapshot = if (formats.wantsProcessedStill && jpeg != null) {
+                    runCatching { StillSnapshot.from(jpeg) }.getOrNull()
+                } else {
+                    null
+                }
                 val exifShot = exifShotOf(result, spec)
                 var processedQueued = false
 
                 if (formats.wantsProcessedStill) {
                     if (jpeg != null) {
-                        val snap = runCatching { StillSnapshot.from(jpeg) }.getOrNull()
-                        if (snap != null) {
+                        if (processedSnapshot != null) {
                             val queued = runCatching {
                                 ioExecutor.execute {
                                     try {
-                                        val bytes = runCatching { snap.jpegBytes() }.getOrNull()
+                                        val bytes = runCatching { processedSnapshot.jpegBytes() }.getOrNull()
                                         if (bytes == null) {
                                             onStatus?.invoke("Failed to save photo")
                                         } else {
@@ -2356,11 +2386,11 @@ class CameraEngine(private val context: Context) {
         val activeId = runCatching {
             result.get(android.hardware.camera2.CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID)
         }.getOrNull()
-        val optics = if (activeId != null) {
-            runCatching { cachedCaps(activeId, null) }.getOrNull() ?: base
-        } else base
-        val lensFocal = optics?.lensFocalLengthMm ?: 0f
-        val lensF = optics?.lensApertureF ?: 0f
+        // Deliberately cache-only: CameraManager/CameraCaps.read on this callback would hold the
+        // live Image and serialize CameraService IPC with capture-result/image delivery.
+        val optics = resolveLensExifMetadata(activeId, lensExifCache, base?.lensExifMetadata())
+        val lensFocal = optics?.focalLengthMm ?: 0f
+        val lensF = optics?.apertureF ?: 0f
         val lensEquiv = optics?.equivalentFocalMm ?: 0f
         // Effective 35 mm focal: what the FRAME shows — unified zoom on the logical camera already
         // lands on the active lens (equiv × leftover digital), TELE multiplies the converter.
