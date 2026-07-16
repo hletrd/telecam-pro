@@ -5,7 +5,7 @@
 <h1>TeleCam Pro</h1>
 
 <p><b>Professional manual camera for the OPPO Find X9 Ultra periscope telephoto and 300&nbsp;mm afocal teleconverters</b><br/>
-4-lens switcher, afocal 180° flip, HAL OIS+EIS, HLG / O-Log2, directional audio</p>
+4-lens switcher, afocal 180° flip, HAL OIS+EIS, SDR-to-HLG / O-Log2 profiles, directional audio</p>
 
 <p>
 <img src="https://img.shields.io/badge/Android-16%20(API%2036)-3DDC84?logo=android&logoColor=white" alt="Android 16" />
@@ -26,13 +26,25 @@
   over the viewfinder. See [`docs/UX_POLICY.md`](docs/UX_POLICY.md).
 - **Seamless zoom (photo)**: pinch sweeps **0.6×→20×** across all four lenses (UW 14 mm / main 23 mm / 3× 70 mm / 10× 230 mm) in one session on the logical multicamera — the HAL crosses the optics at their native ratios and fills between them digitally, iPhone-style; lens buttons are zoom presets, and the OSD reads the live effective focal. Video pins the matching standalone lens (the logical camera's EIS leaks a warp band into recordings — device-isolated), with lens-local digital zoom. The TELE toggle pins the standalone 3× for converter shooting.
 - **Afocal 180° flip**: The teleconverter is afocal, so images arrive flipped 180° → preview/photos/videos all corrected (GL texcoord rotation for preview, pixel rotation for HEIF/JPEG, EXIF tag for DNG).
-- **Full manual control**: Focus (nonlinear slider tuned near infinity), ISO, shutter (speed or cine angle), WB (presets + Kelvin/tint), EV, metering, drive modes (single/burst/AEB/timelapse). Stop-snapping dials with haptic detents; AF→MF handoff seeds the manual slider from AF's live lens position.
+- **Full manual control**: Focus (nonlinear slider tuned near infinity), ISO, shutter (speed or cine
+  angle), WB (presets + Kelvin/tint), EV, metering, drive modes (single/burst/AEB/timelapse).
+  Stop-snapping dials have haptic detents; AF→MF handoff seeds the manual slider from AF's live lens
+  position. Restored and live choices are normalized to the exact modes the selected camera advertises;
+  AE/AF regions are sent only when that camera reports region support.
 - **Volume-key hardware shutter**: vibration-free release at 300 mm (photo capture / video start-stop).
 - **Directional audio (Sound Focus / Sound Stage)**: drives the device's accepted vendor audio-HAL controls; the acoustic effect still needs an off-axis real-scene A/B check.
 - **Photos**: HEIF and JPEG can be selected separately or together in photo mode. RAW (DNG) is
   additionally available only in TELE mode on the eligible standalone 3× camera; supported outputs
-  can be combined. All saved formats carry gravity-derived orientation correction.
-- **Video**: HEVC Main10 profiles for **HLG / O-Log2** plus 8-bit HEVC/AVC SDR. The stable v1 Camera2 and EGL input is SDR/8-bit, so HLG/O-Log2 is not marketed as end-to-end 10-bit capture. 4K UHD max (HEVC/AVC HW ceiling); 24/25/30/60 fps class + NTSC drop-frame (23.976/29.97/59.94); **Low → Max bitrate presets up to ~120 Mbps at 4K**; Open-Gate 4:3-aspect recording (2560×1920 verified on the tele); AAC 48 kHz stereo.
+  can be combined. A DNG-only result gets a truthful RAW review tile; a processed sibling from the
+  same capture upgrades it, and Delete removes every known sibling. All saved formats carry
+  gravity-derived orientation correction.
+- **Video**: HEVC Main10 profiles for **HLG / O-Log2** plus 8-bit HEVC/AVC SDR. HLG uses the
+  display-referred SDR-to-HLG mapping from ITU-R BT.2408-9 (SDR reference white → 75% HLG); it
+  cannot recover highlights already removed by the ISP's SDR tone mapping. The stable v1 Camera2 and
+  EGL input is SDR/8-bit, so neither HLG nor O-Log2 is marketed as end-to-end 10-bit capture. 4K UHD
+  max (HEVC/AVC HW ceiling); 24/25/30/60 fps class + NTSC drop-frame
+  (23.976/29.97/59.94); **Low → Max bitrate presets up to ~120 Mbps at 4K**; Open-Gate
+  4:3-aspect recording (2560×1920 verified on the tele); AAC 48 kHz stereo.
 - **Video stabilization = HAL OIS+EIS** (the stock "super steady" path): OIS physically cuts per-frame motion blur at 300 mm (Off / Standard / Active — the in-app labels).
 - **Vendor/HAL stability**: unstable or unmuxable device paths such as Auto HDR, high-speed 120 fps,
   AV1 software encode, APV MP4 muxing, and native vendor log are excluded from the shipped UI. O-Log2
@@ -72,7 +84,9 @@ See [`CLAUDE.md`](CLAUDE.md) § **Toolchain** for pinned versions and build setu
 ```
 
 Requires JDK 21, Android SDK Platform 37, and SDK Build Tools 36.0.0. The app still targets and requires
-API 36 at runtime. Design document: [`docs/superpowers/specs/2026-07-01-find-x9-ultra-camera-design.md`](docs/superpowers/specs/2026-07-01-find-x9-ultra-camera-design.md)
+API 36 at runtime. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) is the current as-built design
+authority. The [`2026-07-01 specification`](docs/superpowers/specs/2026-07-01-find-x9-ultra-camera-design.md)
+is a preserved historical snapshot and is superseded wherever it differs; it is not the current design.
 
 ### Release build (Google Play)
 
@@ -112,9 +126,10 @@ password variables before rebuilding release bundles.
 ## Device camera capabilities
 
 Beyond the standard Camera2 surface, the device advertises extra session/request capabilities for its
-camera pipeline, and several are available to third-party apps on the tele. TeleCam Pro uses the
-capabilities that are available through public Camera2/SDK surfaces and verifies them through saved
-files, not just session setup logs:
+camera pipeline, and several are available to third-party apps on the tele. TeleCam Pro submits only
+exact advertised values, normalizes the visible controls to those values, and suppresses AE/AF regions
+when the corresponding advertised maximum is zero. Device behavior is verified through saved files,
+not just session setup logs:
 
 | Feature | Key | Status |
 |---|---|---|
@@ -139,7 +154,7 @@ files, not just session setup logs:
 - ⏳ **Remaining Play Console work**: upload the signed AAB, enter the listing and Data Safety answers,
   restrict the device catalog to CPH2841/PMA110, run internal testing, and review the pre-launch report.
   The exact operator checklist is in [`docs/play-console-submit.md`](docs/play-console-submit.md).
-- 🔎 **Residual field checks**: directional-audio off-axis acoustic A/B and held portrait/landscape
-  saved-file orientation are worth confirming in a real scene; neither changes the current build or
-  Play metadata.
+- 🔎 **Residual field checks**: directional-audio off-axis acoustic A/B, held portrait/landscape
+  saved-file orientation, and post-mapping HLG appearance on a real HDR display are worth confirming;
+  none changes the current build or Play metadata.
 - 📌 **Deferred beyond v1**: R8/minify and Dolby Vision. See [`docs/BACKLOG.md`](docs/BACKLOG.md).

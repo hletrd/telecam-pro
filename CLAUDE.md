@@ -1,7 +1,8 @@
 # CLAUDE.md — Find X9 Ultra Teleconverter Camera
 
 Project-level instructions for any agent working in this repo. Read this **first**, then
-`docs/BACKLOG.md` (release status and deferred work) and `docs/ARCHITECTURE.md` (how it's built). This file overrides
+`docs/BACKLOG.md` (release status and deferred work) and `docs/ARCHITECTURE.md` (the current as-built
+design authority). This file overrides
 default behavior; user/global `~/.claude/CLAUDE.md` still applies on top (git rules, latest-versions,
 destructive-action safety, look-up-before-answering).
 
@@ -93,11 +94,22 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
 - **SDR/8-bit shipping session.** HLG10 preview + full-res JPEG + RAW together crash the HAL. The
   Camera2 stream and EGL config therefore stay SDR/8-bit (`tenBit = false`). HLG/Log files use HEVC
   Main10 container profiles, but v1 is not end-to-end 10-bit capture and must not be marketed as such.
+- **HLG is a display-referred SDR-to-HLG mapping, not recovered HDR.** `Shaders.kt` follows the
+  simplified ITU-R BT.2408-9 §5.1.3.4 order: BT.1886 2.4 decode, linear BT.709→BT.2020, explicit
+  inverse-OOTF/reference-white scaling (100% SDR → 75% HLG), then the BT.2100 HLG OETF. The ISP has
+  already tone-mapped the SDR Camera2 source, so clipped/rolled-off highlights cannot be recovered.
+  Host tests pin the CPU reference and shader order; playback appearance remains a real HDR-display
+  verification item and does not turn this into an end-to-end 10-bit claim.
 - **RAW only on the standalone camera — in BOTH failure modes (extended 2026-07-14).** RAW routed
   through physical sub-camera routing crashes configure (`DataSpace override not allowed for format
   0x20`), AND a still with the RAW target on the plain LOGICAL camera errors the whole camera device
   ~5 s after the shot (`CAMERA_ERROR(3)`, no image ever arrives). Gated to standalone selections
   only (`sessionAttemptPlan` `!logicalMultiCamera`); DNG therefore exists only in TELE mode.
+- **Last-capture review is owned by monotonic capture id, then displayability.** A newer RAW-only
+  success replaces an older thumbnail with a truthful DNG metadata placeholder. A processed sibling
+  for that same capture upgrades the placeholder; a late RAW sibling never displaces its processed
+  peer or a newer capture. Delete freezes and tombstones the whole capture before asynchronous
+  MediaStore deletion, removes every known sibling, and immediately deletes any late sibling callback.
 - **Stills on the LOGICAL camera are YUV, not HAL JPEG (2026-07-14).** gralloc rejects the ~42 MB
   JPEG blob allocation on the plain logical session (`SnapAlloc: ValidateDescriptor invalid` — the
   image never arrives and the shot wedges `pending`), at BOTH 4096×3072 and the logical array's own
@@ -312,12 +324,35 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   reconfiguration only while its optics intent is still current; superseded work is a no-op. Every
   Ready/Not-Ready publication has a monotonic sequence, and the ViewModel rechecks that sequence inside
   its StateFlow reducer so an older Ready event cannot overwrite newer Not-Ready state.
-- **REC readiness comes from encoder EGL attachment, not `VideoRecorder.start()` returning.** Queue
-  attach before recorder publication and consume its exactly-once `Result`. Recording admission
+- **Camera-health errors belong to the installed controller identity, not an optics generation.** A
+  still-installed controller retains its error/disconnect authority across same-controller fast
+  commits and pending optics generations. A replaced controller's late callback is inert. An owned
+  fault advances the session generation, invalidates Ready and accepted outputs, claims any recorder,
+  then reports and schedules bounded recovery exactly once.
+- **EGL output release is checked unbind → destroy.** Move current ownership to a surviving preview
+  output or to no surface before destroying an outgoing preview/encoder EGLSurface. Codec teardown
+  requires verified current-ownership release plus either destroyed outputs or checked terminal EGL
+  display teardown; never report successful completion without that proof. Encoder replacement,
+  failure, stop, and final GL release use the same order, with terminal EGL reset as the fallback when
+  an individual output cannot be proven destroyed.
+- **REC readiness comes from the first successful real encoder swap, not surface allocation or
+  `VideoRecorder.start()` returning.** Candidate create/bind/restore remains pending until a real
+  camera frame draws, presents, swaps, and restores preview ownership. Queue attach before recorder
+  publication and consume its exactly-once `Result`. Recording admission
   snapshots the accepted Camera2 controller/session before mic handoff and atomically rechecks it at
   publication. Until attach succeeds the UI is stoppable/locked but shows no tally or timer. An owned
   Camera2 failure claims and ordered-finalizes the recorder before recovery; do not let camera errors
   leave phantom REC/audio/UI state.
+- **The MediaCodec input Surface has exactly one release owner.** `VideoRecorder` releases it on every
+  partial setup failure and, on clean stop, only after the engine's checked EGL detach has completed;
+  Surface release precedes codec release and ownership clearing, and repeated cleanup is a no-op. If a
+  drain thread remains alive after its timeout, deliberately abandon the native graph: do not call
+  `Surface.release`, codec/muxer release, or fd close while that thread may still be inside native code.
+- **Camera2 control values are capability-normalized before UI and request publication.** Focus, WB,
+  AE/flash, antibanding, edge, noise reduction, effect, and metering choices resolve to exact advertised
+  values. Apply AE and AF metering regions independently only when each advertised maximum is positive;
+  a zero maximum means omit that request key. Restored settings and every live update must show the
+  value the selected camera can actually apply.
 - **Exactly one owner of the mic.** The Sony-style standby audio meter is a levels-only `AudioRecord`
   tap that runs while video is ARMED but not rolling. Its synchronized ownership gate reserves one
   immutable owner and release latch before thread start. REC must claim the handoff and observe that
@@ -354,16 +389,16 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
 ```
 MainActivity → CameraViewModel(CameraUiState/CameraActions) → CameraEngine (facade)
 CameraEngine ├─ CameraSelector2  pick tele (closest-to-70mm, standalone; pickBest pure+tested)
-             ├─ CameraController Camera2 session, fallback ladder, capture, 3A/tap-AF
+             ├─ CameraController Camera2 session, capability-safe requests, fallback, capture/3A
              ├─ RotationMath     pure preview/capture/EXIF rotation (unit-tested)
-             ├─ GlPipeline       GL thread: afocal 180° + OETF + scopes + AE luma readback
-             │    └─ FlipRenderer / EglCore / Shaders
+             ├─ GlPipeline       checked EGL ownership + afocal 180° + color + scopes/AE luma
+             │    └─ FlipRenderer / EglCore / Shaders / SdrToHlgMapping
              ├─ GyroEis          gravity roll + held-device orientation (GL shake warp disabled)
              ├─ AutoExposure     app-side S/ISO-priority AE loop (meters GL luma; pure+tested)
              ├─ capture/HeifCapture (pixel-rotate) + DngCapture (EXIF orient)
-             ├─ video/VideoRecorder (HEVC/AVC, HLG/O-Log2/SDR) + EncoderCaps + ColorProfiles
+             ├─ video/VideoRecorder (exactly-once input Surface; HEVC/AVC + AAC/muxer)
              └─ storage/MediaStoreWriter (scoped, IS_PENDING) + SettingsStore (persist)
-UI: CameraScreen (Sony-style pro surface) + controls/{ManualDials,ProSheet,ProControls} + overlays/*
+UI: CameraScreen + CaptureOutputTracker (capture-level review/delete) + controls/* + overlays/*
 ```
 
 Data flow is unidirectional: Compose UI is stateless off `CameraUiState`; every interaction goes
@@ -386,7 +421,8 @@ own threads/executors.
 ## Pointers
 
 - `docs/BACKLOG.md` — release status, manual Play steps, residual checks, and deferred work.
-- `docs/ARCHITECTURE.md` — module map, threading model, data flow, gotchas in depth.
-- `docs/superpowers/specs/2026-07-01-...md` — original design doc (intent; some details superseded
-  by the as-built notes above).
+- `docs/ARCHITECTURE.md` — **current as-built design authority**: module map, threading, ownership,
+  data flow, and gotchas in depth.
+- `docs/superpowers/specs/2026-07-01-...md` — preserved historical design snapshot. It is superseded
+  wherever it differs from the current architecture/code and must not be treated as current authority.
 - `.context/reviews/` — architecture/code/perf/security review notes (findings already addressed).

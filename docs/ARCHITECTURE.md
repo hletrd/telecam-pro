@@ -1,5 +1,9 @@
 # TeleCam Pro — Architecture
 
+> **Current design authority.** This document describes the as-built system. The preserved
+> `docs/superpowers/specs/2026-07-01-find-x9-ultra-camera-design.md` snapshot is historical and
+> superseded wherever it differs; do not use it as the current implementation contract.
+
 **Table of Contents**
 1. [Overview](#overview)
 2. [Module Map](#module-map)
@@ -17,7 +21,7 @@
 
 ## Overview
 
-A professional single-device camera app for the **OPPO Find X9 Ultra** (Android 16 / API 36) that uses Camera2 to control the rear 3× periscope telephoto lens through a **Hasselblad "Earth Explorer" afocal 300 mm teleconverter** (≈4.286× magnification: 300 mm ÷ 70 mm). The app captures processed HEIF/JPEG stills, plus RAW/DNG when TELE uses a RAW-capable standalone 3× camera, and HEVC video with HLG, O-Log2, or SDR profiles. For HAL stability, the shipping Camera2 and EGL input path is SDR/8-bit; HLG/O-Log2 uses an HEVC Main10 container profile but is not an end-to-end 10-bit source pipeline.
+A professional single-device camera app for the **OPPO Find X9 Ultra** (Android 16 / API 36) that uses Camera2 to control the rear 3× periscope telephoto lens through a **Hasselblad "Earth Explorer" afocal 300 mm teleconverter** (≈4.286× magnification: 300 mm ÷ 70 mm). The app captures processed HEIF/JPEG stills, plus RAW/DNG when TELE uses a RAW-capable standalone 3× camera, and HEVC video with HLG, O-Log2, or SDR profiles. For HAL stability, the shipping Camera2 and EGL input path is display-referred SDR/8-bit. HLG maps that SDR signal according to ITU-R BT.2408-9 and cannot recover ISP-removed highlights; HLG/O-Log2 uses an HEVC Main10 container profile but is not an end-to-end 10-bit source pipeline.
 
 The UI/UX reference is **Sony Alpha / Sony Xperia Pro camera operation**. Use Fn access, My Menu, MR
 banks, PASM-style exposure, compact OSD, peaking, zebra, histogram, waveform, and review zoom. Keep
@@ -36,27 +40,27 @@ Two critical consequences of the afocal converter drive the entire design:
 |---|---|
 | **camera/** | |
 | `CameraEngine.kt` | Facade orchestrating Camera2, GL, capture encoders, video recorder, sensors, and storage. Serializes camera reconfiguration, owns asynchronous save/finalization lanes, and publishes cross-thread state through volatile seams plus synchronized ownership gates. |
-| `CameraController.kt` | Camera2 session lifecycle, request building, and fallback plans across stream sets and session operation modes. Callback-driven, runs on a camera HandlerThread. |
+| `CameraController.kt` | Camera2 session lifecycle, capability-safe request building, and fallback plans across stream sets and session operation modes. Sets a mode only when its exact value is advertised and applies AE/AF regions independently only when each maximum region count is positive. Callback-driven, runs on a camera HandlerThread. |
 | `CameraSelector2.kt` | Detects the telephoto physical lens: finds the camera with focal length closest to 70 mm, prefers standalone ID over physical sub-camera routing. |
-| `CameraState.kt` | Enums plus `CameraUiState`/`CameraCaps` — the shared UI, capability, and runtime language. |
-| `CaptureCapabilities.kt` | Queries Camera2 characteristics for manual-sensor, RAW, 10-bit HDR, focus range, metering regions — gate-keeping capabilities. |
-| `ManualControls.kt` | Immutable snapshot of all pro capture parameters (focus, ISO, shutter, white balance, metering, processing). The ViewModel updates a copy; the Engine applies it to the repeating request. |
+| `CameraState.kt` | Enums plus `CameraUiState` — the shared UI and runtime-state language. |
+| `CaptureCapabilities.kt` | Flattens Camera2 characteristics into exact advertised mode sets plus maximum AE/AF region counts, alongside manual-sensor, RAW, HDR, focus, and stream capabilities. |
+| `ManualControls.kt` | Immutable snapshot of all pro capture parameters (focus, ISO, shutter, white balance, metering, processing). Restored/current values are normalized to the selected camera before the ViewModel publishes them and the Engine builds requests. |
 | `RotationMath.kt` | Pure, unit-tested functions for preview/capture/EXIF rotation math and the video muxer orientation hint (extracted from CameraEngine). |
 | `AutoExposure.kt` | Pure, unit-tested app-side AE math: SHUTTER/ISO-priority drive functions and the photo-P program line (`driveProgram`), metered off the GL luma histogram. |
 | `OcsProbe.kt` | Debug-source-set-only OPPO CameraUnit/OCS availability probe (release builds compile a no-op stub and do not link the OEM SDK). |
 | `VendorTagInspector.kt` | Debug-only Camera2 capability logger for device-specific request/session keys. |
 | **gl/** | |
-| `GlPipeline.kt` | Owns the GL render thread. Receives camera SurfaceTexture, renders 180°-flipped quads to preview Surface and video encoder Surface. Preview windows carry caller-thread invalidation generations; encoder attachment returns an exactly-once `Result<Unit>`. Owns EGL context, texture, sampling buffers. Drives histogram/waveform analysis on a background executor. `CameraEngine` owns a complete `RendererConfigStore` snapshot and replays it after every `gl.start`, so pre-start restore and GL restarts retain all assists. |
-| `FlipRenderer.kt` | Low-level OpenGL ES fullscreen quad renderer with texture-coordinate rotation (inverse of image rotation) to flip the 180° afocal image. Applies OETF (HLG / Log) in the fragment shader. Handles focus peaking (edge detection) and zebra (exposure clipping). |
-| `EglCore.kt` | EGL/GLES setup: context creation and surface binding. Supports a 10-bit config, while v1 deliberately starts the stable 8-bit config. |
-| `Shaders.kt` | Fragment/vertex shader source code. OETF (HLG, Log) application; peaking/zebra compositing; punch-in zoom. |
+| `GlPipeline.kt` | Owns the GL render thread and checked preview/encoder EGLSurface lifetimes. Outgoing outputs are unbound before destruction; encoder readiness is published only after the first real frame swaps successfully. Preview windows carry invalidation generations and encoder attachment/runtime failures are identity-owned and exactly once. Also owns texture/sampling buffers and drives background scope analysis. `CameraEngine` replays its complete `RendererConfigStore` after every `gl.start`. |
+| `FlipRenderer.kt` | Low-level OpenGL ES fullscreen quad renderer with texture-coordinate rotation (inverse of image rotation) to flip the 180° afocal image. Applies the SDR-to-HLG mapping or O-Log2 encoding in the fragment shader and handles focus peaking/zebra. |
+| `EglCore.kt` | Checked EGL/GLES setup, binding, presentation, buffer swap, unbind, surface destruction, and display teardown. Supports a 10-bit config, while v1 deliberately starts the stable 8-bit config. |
+| `Shaders.kt` / `SdrToHlgMapping.kt` | Shader source plus Android-free reference constants for the BT.2408-9 display-referred SDR-to-HLG sequence; also owns O-Log2, peaking/zebra, and punch-in shader paths. |
 | **stab/** | |
 | `GyroEis.kt` | Sensor helper for gravity-derived device orientation and the horizon overlay. It retains residual-shake math, but the shipping GL path disables app-side EIS in favor of HAL OIS+EIS. |
 | **capture/** | |
 | `HeifCapture.kt` | Encodes HEIF from a Bitmap after crop and `captureRotationDegrees()` pixel rotation. Writes via the ioExecutor off the camera thread. |
 | `DngCapture.kt` | Writes DNG (RAW sensor frame) using DngCreator. Sets EXIF orientation tag (cannot pixel-rotate Bayer CFA). Synchronous in the photo callback while the raw Image is live. |
 | **video/** | |
-| `VideoRecorder.kt` | MediaCodec HEVC/AVC encoder + AAC audio encoder + MediaMuxer. Drains video/audio to MP4. Video input comes from GL (already 180°-flipped); audio captured from microphone on a separate thread. Software PCM gain. |
+| `VideoRecorder.kt` | MediaCodec HEVC/AVC encoder + AAC audio encoder + MediaMuxer. Exactly-once owner of the codec input Surface: clean release follows verified EGL detach and partial setup also releases; a still-live drain takes the documented no-release abandon path. Video input comes from GL already flipped; audio runs separately with software PCM gain. |
 | `AudioInputInspector.kt` | Resolves the preferred recording input (built-in / wired / USB / BT) against connected AudioDeviceInfo entries; provides the route labels shown in the UI. |
 | `ColorProfiles.kt` | Builds MediaFormat specs for HEVC Main10 (Rec.2020 + HLG/Log) and AVC 8-bit SDR. Tags dynamic range, color space, transfer function. |
 | `EncoderCaps.kt` | Scans MediaCodecList and exposes the hardware AVC/HEVC encoders that are stable with MediaMuxer. |
@@ -67,7 +71,8 @@ Two critical consequences of the afocal converter drive the entire design:
 | `FocusMapping.kt` | Maps UI slider (0..1) to LENS_FOCUS_DISTANCE (diopters). Nonlinear to enhance resolution near infinity (√ curve and offset). Bidirectional. |
 | **ui/** | |
 | `CameraScreen.kt` | Compose root layout: preview TextureView, shutter button, mode toggle, gallery thumbnail, fixed settings panel, and capture overlays. Stateless, reads CameraUiState. |
-| `CameraViewModel.kt` | StateFlow<CameraUiState> owner. Turns CameraActions (UI) into CameraEngine calls. Applies gesture-driven control changes with a trailing throttle. Ticks the recording timer and level overlay roll. UI-thread only. |
+| `CameraViewModel.kt` | StateFlow<CameraUiState> owner. Turns CameraActions into CameraEngine calls, publishes capability-normalized controls, applies gesture changes with a trailing throttle, and coordinates capture-id review ownership. |
+| `CaptureOutputTracker.kt` | Bounded, synchronized ownership map for monotonic capture ids and every processed/RAW sibling. Selects the truthful review owner, upgrades RAW placeholders, and tombstones whole captures before deletion. |
 | `CameraActions.kt` | Callback interface for stateless UI commands such as focus, exposure, tap AF, lens, recording, persistence, and review actions. |
 | **ui/controls/** | |
 | `ManualDials.kt` | Horizontal scrolling dials for quick access to focus, shutter, ISO, white balance, EV, and zoom — the "Fn" layer. Mapped to CameraActions. |
@@ -75,7 +80,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `ProControls.kt` | Reusable Compose controls including rulers, segmented choices, toggles, sliders, and value rows. All are two-way bound to CameraUiState. |
 | **ui/overlays/** | |
 | `Overlays.kt` | Compose overlays: reticle (tap-to-focus), histogram/waveform, grid, spirit level, peaking, zebra, punch-in zoom indicator, AE/AWB/AF lock tags. Stateless off CameraUiState. |
-| `MediaReview.kt` | In-app review of the last capture: zoomable photo viewer and a rotating video player (TextureView + MediaPlayer honoring the container rotation), with delete plus visible semantic Play/Pause and zoom-cycle controls. |
+| `MediaReview.kt` | In-app review of the last capture: zoomable processed photos, rotating video playback, and a truthful non-decoding RAW/DNG metadata tile. Delete is capture-level; visible semantic Play/Pause and zoom-cycle controls remain available where applicable. |
 | `ControlCycles.kt` | Shared enum tap-cycle orders and auto-exposure readout text used by ManualDials, ProSheet, and CameraScreen (single copy — no drift). |
 | **ui/theme/** | |
 | `Theme.kt` | Material3 dark theme tuned for a Sony-style pro camera surface, typography, color palette, text field/button shapes. |
@@ -212,8 +217,18 @@ Accessed from GL + audio/video threads:
   for an in-flight acquisition and owns that generation's stop, or prevents the acquisition entirely.
 - **Output-surface ownership**: every preview bind/detach synchronously increments a generation before
   it queues GL work. A stale native window is rejected before EGL mutation, and EGL failures converge
-  to a detached preview instead of escaping the looper. Encoder attach/detach uses an exactly-once
-  result dispatcher; a dead handler, absent EGL context, or EGL failure is never reported as success.
+  to a detached preview instead of escaping the looper. Every outgoing EGLSurface first binds a
+  surviving preview or makes nothing current, then destroys the surface. Codec teardown requires
+  verified current-ownership release plus either destroyed outputs or checked terminal EGL display
+  teardown; an individual destroy failure cannot authorize successful completion by itself. Encoder
+  create/bind/restore remains pending until the first real camera frame presents and swaps
+  successfully. Before that point failure completes attachment; afterward failure belongs to the
+  active recorder. Normal detach cancels a pending attach without manufacturing a runtime fault.
+- **Controller-health ownership**: Camera2 error/disconnect callbacks are authorized by installed
+  controller identity for that controller's complete lifetime, not by the optics generation captured
+  when it opened. The same controller remains authoritative through fast commits; callbacks from a
+  replaced controller are inert. An owned failure atomically invalidates Ready/outputs, advances the
+  session generation, claims any recorder, reports termination, and enters bounded recovery.
 - **Lifecycle guards**: `CameraEngine.paused` prevents reconfigure/open work during app backgrounding
   (onStop → pause(); every queued boundary rechecks ownership). `CameraController.closed` gates
   late-arriving open callbacks.
@@ -228,12 +243,20 @@ Accessed from GL + audio/video threads:
   prefetched on `setupExecutor`, so callback resolution is cache-only and falls back to selected-route
   metadata without a CameraService lookup.
 - **Recording admission and failure**: VideoRecorder owns its video/audio threads and muxer lock; GL
-  writes frames to the input Surface. REC snapshots the accepted controller/session, rechecks it after
-  mic handoff, and publishes recorder ownership atomically against camera failure. Encoder attach is
-  queued before publication; UI remains in a stoppable `isRecordingStarting` state until the owned
-  attach succeeds, so tally/timer never imply a phantom recording. An active Camera2 failure claims
-  the matching recorder, orders GL detach before finalization, reports termination, then permits
-  bounded camera recovery.
+  writes frames to its exactly-once-owned codec input Surface. REC snapshots the accepted
+  controller/session, rechecks it after mic handoff, and publishes recorder ownership atomically
+  against camera failure. Encoder attach is queued before publication; UI remains in a stoppable
+  `isRecordingStarting` state until the first
+  successful real encoder swap, so tally/timer never imply a phantom recording. Clean finalization
+  releases the Surface only after checked EGL unbind/destroy, before codec release/ownership clear;
+  partial setup also releases exactly once. A timed-out live drain deliberately abandons Surface,
+  codec, muxer, and fd native resources rather than racing release against native code. An active
+  Camera2 failure claims the matching recorder, orders GL detach before finalization, reports
+  termination, then permits bounded camera recovery.
+- **Capability-safe controls**: restored and live control snapshots are normalized against the exact
+  mode arrays for the selected camera before UI and engine publication. Request builders set only an
+  advertised value; AE and AF regions are gated independently by their maximum region counts, so a
+  zero-region camera omits that key rather than sending an unsupported rectangle.
 - **Microphone admission**: `StandbyMeterOwnership` keeps reservation, intent, owner identity, and
   release-latch handoff on one monitor. Late meter threads recheck ownership before opening
   AudioRecord; REC fails a bounded release wait instead of creating a second owner; finalizer retries
@@ -485,9 +508,14 @@ EGL_RECORDABLE_ANDROID = EGL_TRUE
 ```
 
 Color-profile rendering happens in the fragment shader:
-- **Input**: normalized [0, 1] RGBA from camera SurfaceTexture sampling.
-- **OETF** (Opto-Electronic Transfer Function):
-  - **HLG (Hybrid Log-Gamma)**: Rec.2100 standard. Applied in shader; supports HDR playback.
+- **Input**: normalized [0, 1] display-referred SDR RGBA from camera SurfaceTexture sampling.
+- **Transfer mapping / OETF**:
+  - **HLG (Hybrid Log-Gamma)**: simplified display-referred SDR-to-HLG mapping from ITU-R
+    BT.2408-9 §5.1.3.4: BT.1886 2.4 decode → linear BT.709-to-BT.2020 conversion → normalized
+    inverse-OOTF/reference-white scale → BT.2100 HLG OETF. SDR reference white maps to 75% HLG.
+    This preserves a valid HLG signal but cannot recover highlights removed by the ISP's SDR tone map.
+    CPU/shader anchors are host-tested; final appearance after this mapping still requires playback on
+    a real HDR display and is not inferred from compilation or container tags.
   - **O-Log2 (LOG)**: OPPO's official O-Log2 curve (white-paper constants), applied after γ2.2
     linearization of the SDR stream + Rec.709→BT.2020 matrix (O-Gamut). Grades with OPPO's public
     O-Log2 LUTs; no above-white headroom (HAL-native log is vendor-gated — see CLAUDE.md).
@@ -497,8 +525,12 @@ Color-profile rendering happens in the fragment shader:
 **Fragment shader (Shaders.kt):**
 ```glsl
 // Pseudocode
-vec3 color = texture(camera, uv).rgb;  // Linear [0, 1]
-color = applyOetf(color, transfer);    // HLG or Log curve
+vec3 color = texture(camera, uv).rgb;  // display-referred SDR [0, 1]
+if (transfer == HLG) {
+    color = hlgOetf(inverseHlgOotf(toBt2020(bt1886Decode(color)) * referenceWhiteScale));
+} else if (transfer == LOG) {
+    color = olog2(toBt2020(gamma22Decode(color)));
+}
 // v1 output precision remains 8-bit for HAL stability
 ```
 
@@ -560,6 +592,18 @@ does not query CameraService and copies the processed Image before resolving it.
    - DngCreator sets EXIF orientation tag (cannot rotate Bayer pixels).
 3. MediaStore: create pending → write → publish.
 
+**Last-capture review ownership:**
+
+Every photo/video start receives a monotonic capture id for the engine lifetime. `CaptureOutputTracker`
+groups every HEIF/JPEG/DNG/video URI by that id and orders review ownership by newest id first, then by
+displayability within one capture. A newer DNG-only completion therefore owns a truthful RAW metadata
+placeholder instead of leaving an older thumbnail visible. A processed sibling from the same capture
+upgrades the placeholder; RAW arriving after processed, or any output from an older capture, is tracked
+for deletion but cannot displace the review owner. Delete tombstones the capture before asynchronous
+MediaStore calls, removes all currently known siblings, and immediately deletes a late sibling callback,
+so a deleted capture cannot resurrect itself. RAW remains metadata-only in review; no Bayer decoding is
+implied.
+
 **Aspect ratio (processed stills):**
 
 ```kotlin
@@ -596,7 +640,9 @@ On failure (OOM, disk full, etc.), the pending entry is deleted → no partial f
 **Overview:**
 Core Camera2 capture parameters are housed in the immutable `ManualControls` data class. The ViewModel
 copies it with updated fields on each interaction and re-applies it through
-`CameraEngine.setControls()`. Capture-mode, video, assist, hardware-key, and persistence options live
+`CameraEngine.setControls()`. Restored and live controls are normalized to exact advertised modes before
+the ViewModel publishes them; AE/AF regions are omitted independently when the corresponding maximum
+count is zero. Capture-mode, video, assist, hardware-key, and persistence options live
 in `CameraUiState`/`ExtraSettings` rather than being forced into `ManualControls`.
 
 Settings are persisted across app launches via `SettingsStore.kt` (SharedPreferences), gated by a 
@@ -698,5 +744,6 @@ adb -s "$ANDROID_SERIAL" shell am start -n "$PACKAGE/$ACTIVITY"
 ## See Also
 
 - `docs/BACKLOG.md` — release status, manual Play steps, residual checks, and deferred work.
-- `docs/superpowers/specs/2026-07-01-find-x9-ultra-camera-design.md` — original design doc (intent; superseded by actual code where it diverges).
+- `docs/superpowers/specs/2026-07-01-find-x9-ultra-camera-design.md` — preserved historical design
+  snapshot; superseded by this current architecture/code wherever it differs.
 - `CLAUDE.md` § **Hard-won device facts** — HAL crash workarounds and their signatures.
