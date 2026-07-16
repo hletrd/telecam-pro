@@ -1884,14 +1884,27 @@ class CameraEngine(private val context: Context) {
         // The recorder owns the mic — stop the standby level tap first and wait (bounded) for its
         // release CONFIRMATION, not just a timed thread join: the latch counts down only after
         // AudioRecord.release() ran, so the single-mic invariant holds whenever the wait succeeds.
-        // Proceed-on-timeout stays (a wedged read must not make REC unresponsive); VideoRecorder's
-        // STATE_UNINITIALIZED guard then degrades that rare overlap to a video-only clip.
-        standbyMeterWanted = false
-        standbyMeterReleased?.let { runCatching { it.await(400, java.util.concurrent.TimeUnit.MILLISECONDS) } }
-        standbyMeterThread = null
-        if (recorder != null) return false
+        // A timed-out owner remains the mic owner: fail this REC attempt rather than letting a late
+        // meter thread acquire AudioRecord after recorder admission and recreating dual ownership.
+        val audioClaim = standbyMeterOwnership.beginRecording()
+        if (!audioClaim.admitted) return false
+        val meterReleased = audioClaim.release?.let {
+            runCatching { it.await(400, java.util.concurrent.TimeUnit.MILLISECONDS) }.getOrDefault(false)
+        } ?: true
+        if (!meterReleased) {
+            abortRecordingStart()
+            onStatus?.invoke("Audio meter is stopping")
+            return false
+        }
+        if (recorder != null) {
+            abortRecordingStart()
+            return false
+        }
         val name = fileName("VID", "mp4")
-        val uri = MediaStoreWriter.createPendingVideo(context, name, "video/mp4") ?: return false
+        val uri = MediaStoreWriter.createPendingVideo(context, name, "video/mp4") ?: run {
+            abortRecordingStart()
+            return false
+        }
         activeRecordingUri = uri
         activeRecordingCaptureId = captureSeq.incrementAndGet()
         val recordingCaptureId = activeRecordingCaptureId
@@ -1940,6 +1953,8 @@ class CameraEngine(private val context: Context) {
             // Encoder/muxer failed to configure; drop the pending MediaStore row we created so it
             // doesn't linger as a 0-byte orphan (VideoRecorder.start already released its own half).
             MediaStoreWriter.delete(context, uri)
+            if (activeRecordingUri == uri) activeRecordingUri = null
+            abortRecordingStart()
             onStatus?.invoke("REC failed"); return false
         }
         gl.setTransfer(glTransfer)
@@ -1950,6 +1965,11 @@ class CameraEngine(private val context: Context) {
         earlyFailure.get()?.let { handleUnexpectedRecorderFailure(rec, uri, recordingCaptureId, it) }
         if (recorder !== rec) return false
         return true
+    }
+
+    private fun abortRecordingStart() {
+        standbyMeterOwnership.abortRecording()
+        if (!paused) startStandbyAudioMonitor(updateIntent = false)
     }
 
     fun stopRecording() {
@@ -2037,7 +2057,8 @@ class CameraEngine(private val context: Context) {
             }
         } finally {
             recorderTeardownInFlight = false
-            if (standbyMeterWanted && !paused) setStandbyAudioMonitor(true)
+            standbyMeterOwnership.finishRecording()
+            if (!paused) startStandbyAudioMonitor(updateIntent = false)
         }
     }
 
@@ -2045,6 +2066,7 @@ class CameraEngine(private val context: Context) {
     fun pause() {
         paused = true
         coldStartRetryGate.cancel()
+        standbyMeterOwnership.disable()
         invalidateCameraReady()
         // A backgrounded timelapse can't capture anyway (controller is nulled below, so every tick
         // no-ops) — stop it outright rather than silently resuming mid-sequence with a gap.
@@ -2157,7 +2179,7 @@ class CameraEngine(private val context: Context) {
         coldStartRetryGate.cancel()
         invalidateCameraReady()
         stopTimelapse()
-        standbyMeterWanted = false
+        standbyMeterOwnership.disable()
         // Preserve the same GL-detach-before-codec-release order during ViewModel teardown. Await
         // the exactly-once finalization latch before dropping GL/executor ownership; pause() usually
         // started this already, while the direct branch covers unusual unbalanced lifecycle exits.
@@ -2486,29 +2508,43 @@ class CameraEngine(private val context: Context) {
     // A levels-only mic tap that feeds [onAudioLevel] while video mode is ARMED but not recording,
     // so input levels are visible before rolling. Stops itself the moment a real recording starts
     // (the recorder owns the mic) or the flag drops.
-    @Volatile private var standbyMeterWanted = false
-    private var standbyMeterThread: Thread? = null
-    // Counts down only after the meter thread's AudioRecord is actually RELEASED (every exit path).
-    // startRecording awaits this instead of a bare Thread.join: a timed join is a wait bound, not
-    // an exit guarantee — on timeout it proceeded into VideoRecorder's own AudioRecord init while
-    // the standby tap could still hold the mic (a brief two-AudioRecord overlap).
-    @Volatile private var standbyMeterReleased: java.util.concurrent.CountDownLatch? = null
+    private val standbyMeterOwnership =
+        StandbyMeterOwnership<java.util.concurrent.CountDownLatch>()
 
     fun setStandbyAudioMonitor(enabled: Boolean) {
-        standbyMeterWanted = enabled
-        if (!enabled) return
-        if (paused) return
-        if (standbyMeterThread?.isAlive == true) return
-        // Also refuse while a stopped recording's async teardown still owns the mic — recorder is
-        // already null then, but its AudioRecord releases only when finishRecording completes.
-        if (recorder != null || recorderTeardownInFlight) return
-        if (context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) !=
+        if (!enabled) {
+            standbyMeterOwnership.disable()
+            return
+        }
+        startStandbyAudioMonitor(updateIntent = true)
+    }
+
+    /** Starts only if the latest intent still wants metering; internal retries never re-enable it. */
+    private fun startStandbyAudioMonitor(updateIntent: Boolean) {
+        val canStart = !paused && recorder == null && !recorderTeardownInFlight &&
+            context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
             android.content.pm.PackageManager.PERMISSION_GRANTED
-        ) return
-        val released = java.util.concurrent.CountDownLatch(1)
-        standbyMeterReleased = released
+        // reserve publishes the immutable owner + release latch before Thread.start. Concurrent UI
+        // refresh/finalizer calls therefore see one owner, and REC can await that exact generation.
+        val createRelease = { java.util.concurrent.CountDownLatch(1) }
+        val owner = if (updateIntent) {
+            standbyMeterOwnership.reserve(
+                enabled = true,
+                canStart = canStart,
+                createRelease = createRelease,
+            )
+        } else {
+            standbyMeterOwnership.reserveCurrentWanted(
+                canStart = canStart,
+                createRelease = createRelease,
+            )
+        } ?: return
         val t = Thread({
+            var audioRecord: android.media.AudioRecord? = null
             try {
+                // Reservation does not imply start admission: REC may have claimed ownership while
+                // this thread was waiting to run.
+                if (!standbyMeterOwnership.ownsAndWants(owner)) return@Thread
                 val sampleRate = 48_000
                 val minBuf = android.media.AudioRecord.getMinBufferSize(
                     sampleRate, android.media.AudioFormat.CHANNEL_IN_MONO, android.media.AudioFormat.ENCODING_PCM_16BIT,
@@ -2520,11 +2556,13 @@ class CameraEngine(private val context: Context) {
                         android.media.AudioFormat.CHANNEL_IN_MONO, android.media.AudioFormat.ENCODING_PCM_16BIT, minBuf * 2,
                     )
                 }.getOrNull() ?: return@Thread
-                if (rec.state != android.media.AudioRecord.STATE_INITIALIZED) { rec.release(); return@Thread }
-                runCatching { rec.startRecording() }.onFailure { rec.release(); return@Thread }
+                audioRecord = rec
+                if (rec.state != android.media.AudioRecord.STATE_INITIALIZED) return@Thread
+                if (!standbyMeterOwnership.ownsAndWants(owner)) return@Thread
+                if (runCatching { rec.startRecording() }.isFailure) return@Thread
                 val buf = ShortArray(2048)
                 var lastEmit = 0L
-                while (standbyMeterWanted && recorder == null) {
+                while (standbyMeterOwnership.ownsAndWants(owner) && recorder == null) {
                     val n = rec.read(buf, 0, buf.size)
                     if (n <= 0) continue
                     val now = System.nanoTime()
@@ -2537,17 +2575,24 @@ class CameraEngine(private val context: Context) {
                     val rms = kotlin.math.sqrt(sum / n) / 32768.0
                     onAudioLevel?.invoke((rms * audioGain).toFloat().coerceIn(0f, 1f))
                 }
-                runCatching { rec.stop() }
-                rec.release()
-                onAudioLevel?.invoke(0f)
             } finally {
                 // Signal "mic fully released" on EVERY exit path (incl. the early return@Thread
-                // bails, where no AudioRecord was ever held).
-                released.countDown()
+                // bails and read failures) before publishing the release latch.
+                audioRecord?.let { rec ->
+                    runCatching { rec.stop() }
+                    runCatching { rec.release() }
+                }
+                val completion = standbyMeterOwnership.complete(owner)
+                owner.release.countDown()
+                runCatching { onAudioLevel?.invoke(0f) }
+                if (completion.retryPending && !paused) startStandbyAudioMonitor(updateIntent = false)
             }
         }, "StandbyAudioMeter")
-        standbyMeterThread = t
-        t.start()
+        runCatching { t.start() }.onFailure {
+            val completion = standbyMeterOwnership.complete(owner)
+            owner.release.countDown()
+            if (completion.retryPending && !paused) startStandbyAudioMonitor(updateIntent = false)
+        }
     }
 
     private fun fileName(prefix: String, ext: String): String {
@@ -2675,6 +2720,94 @@ internal class ColdStartRetryGate(private val maxAttempts: Int) {
         attempts = 0
         attemptGeneration = null
         scheduled = null
+    }
+}
+
+/**
+ * Single-owner admission for the standby AudioRecord and the recording handoff. The release object
+ * is generic so the JVM suite can prove ownership without Android audio classes.
+ */
+internal class StandbyMeterOwnership<R> {
+    data class Owner<R>(val id: Long, val release: R)
+    data class RecordingClaim<R>(val admitted: Boolean, val release: R?)
+    data class Completion(val completed: Boolean, val retryPending: Boolean)
+
+    private var nextId = 0L
+    private var wanted = false
+    private var active: Owner<R>? = null
+    private var recordingClaimed = false
+    private var restoreWantedOnAbort = false
+    private var wantedChangedSinceClaim = false
+    private var restartAfterActive = false
+
+    @Synchronized
+    fun reserve(enabled: Boolean, canStart: Boolean, createRelease: () -> R): Owner<R>? {
+        if (recordingClaimed) wantedChangedSinceClaim = true
+        wanted = enabled
+        return reserveWantedLocked(canStart, createRelease)
+    }
+
+    /** Internal restart path: observes current intent without changing it. */
+    @Synchronized
+    fun reserveCurrentWanted(canStart: Boolean, createRelease: () -> R): Owner<R>? =
+        reserveWantedLocked(canStart, createRelease)
+
+    private fun reserveWantedLocked(canStart: Boolean, createRelease: () -> R): Owner<R>? {
+        if (!wanted || !canStart || recordingClaimed) return null
+        if (active != null) {
+            restartAfterActive = true
+            return null
+        }
+        restartAfterActive = false
+        return Owner(++nextId, createRelease()).also { active = it }
+    }
+
+    @Synchronized
+    fun disable(): R? {
+        if (recordingClaimed) wantedChangedSinceClaim = true
+        wanted = false
+        restartAfterActive = false
+        return active?.release
+    }
+
+    @Synchronized
+    fun ownsAndWants(owner: Owner<R>): Boolean = wanted && active?.id == owner.id
+
+    @Synchronized
+    fun complete(owner: Owner<R>): Completion {
+        if (active?.id != owner.id) return Completion(completed = false, retryPending = false)
+        active = null
+        val retryPending = restartAfterActive && wanted && !recordingClaimed
+        restartAfterActive = false
+        return Completion(completed = true, retryPending = retryPending)
+    }
+
+    /** Claims the recording transition before any recorder object exists, blocking new meters. */
+    @Synchronized
+    fun beginRecording(): RecordingClaim<R> {
+        if (recordingClaimed) return RecordingClaim(admitted = false, release = null)
+        recordingClaimed = true
+        restoreWantedOnAbort = wanted
+        wantedChangedSinceClaim = false
+        wanted = false
+        restartAfterActive = false
+        return RecordingClaim(admitted = true, release = active?.release)
+    }
+
+    @Synchronized
+    fun abortRecording() {
+        if (!wantedChangedSinceClaim) wanted = restoreWantedOnAbort
+        recordingClaimed = false
+        restoreWantedOnAbort = false
+        wantedChangedSinceClaim = false
+    }
+
+    /** Releases recorder admission after its AudioRecord teardown; intent is rechecked separately. */
+    @Synchronized
+    fun finishRecording() {
+        recordingClaimed = false
+        restoreWantedOnAbort = false
+        wantedChangedSinceClaim = false
     }
 }
 
