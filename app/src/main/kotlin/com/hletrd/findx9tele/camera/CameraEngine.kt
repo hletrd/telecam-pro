@@ -827,7 +827,7 @@ class CameraEngine(private val context: Context) {
     /** Reopen the camera (if started) so the session type tracks [desiredHighSpeedFps]. */
     private fun reopenForSession(
         expectedController: CameraController? = null,
-        transaction: OpticsTransaction? = null,
+        transaction: OpticsTransaction? = pendingOpticsTransaction(),
     ) {
         if (!started || paused) return
         if (transaction != null && !ownsOpticsTransaction(transaction)) return
@@ -846,11 +846,17 @@ class CameraEngine(private val context: Context) {
             if (expectedController != null && controller !== expectedController) return@execute
             // REC may have started after this reopen was queued. Never close a live recording stream.
             if (paused || recorder != null) return@execute
+            if (transaction != null) {
+                // Settings/MR applies session-scoped options immediately after queuing its optics
+                // packet. Reopening the current selection here could accept the outgoing camera as
+                // Ready for that new generation; re-resolve the complete desired packet instead.
+                reconfigureCamera(overrideId, transaction)
+                return@execute
+            }
             controller?.close()
             controller = null
-            if (transaction != null && !ownsOpticsTransaction(transaction)) return@execute
             if (paused || recorder != null) return@execute
-            openCamera(input, transaction)
+            openCamera(input)
         }
     }
 
