@@ -27,6 +27,8 @@ import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
@@ -124,6 +126,11 @@ internal enum class ProSheetTab(val label: String) {
     ASSISTS("Assist"),
     ADVANCED("Setup"),
 }
+
+internal data class ProSheetTabSelection(val tab: ProSheetTab, val selected: Boolean)
+
+internal fun proSheetTabSelection(selected: ProSheetTab): List<ProSheetTabSelection> =
+    ProSheetTab.entries.map { ProSheetTabSelection(it, it == selected) }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -282,11 +289,16 @@ private fun TabRail(selected: ProSheetTab, onSelect: (ProSheetTab) -> Unit, modi
         modifier = modifier
             .width(76.dp)
             .fillMaxHeight()
+            .selectableGroup()
             .verticalScroll(rememberScrollState())
             .padding(vertical = 4.dp),
     ) {
-        ProSheetTab.entries.forEach { tab ->
-            TabRailItem(tab = tab, selected = tab == selected, onClick = { onSelect(tab) })
+        proSheetTabSelection(selected).forEach { item ->
+            TabRailItem(
+                tab = item.tab,
+                selected = item.selected,
+                onClick = { onSelect(item.tab) },
+            )
         }
     }
 }
@@ -298,7 +310,7 @@ private fun TabRailItem(tab: ProSheetTab, selected: Boolean, onClick: () -> Unit
         modifier = modifier
             .fillMaxWidth()
             .background(if (selected) Color.White.copy(alpha = 0.10f) else Color.Transparent)
-            .clickable(onClick = onClick)
+            .selectable(selected = selected, role = Role.Tab, onClick = onClick)
             .padding(vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
