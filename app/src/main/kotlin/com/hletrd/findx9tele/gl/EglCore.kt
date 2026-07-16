@@ -10,7 +10,7 @@ import android.view.Surface
 
 /**
  * Minimal EGL 1.4 wrapper for an offscreen/onscreen GL ES 2 context that can render into both a
- * SurfaceView (preview) and a MediaCodec input Surface (recordable).
+ * TextureView-owned preview Surface and a MediaCodec input Surface (recordable).
  *
  * @param tenBit request an RGBA1010102 config for 10-bit HDR video. Falls back to 8-bit if the
  *               device has no matching recordable config. True end-to-end HDR (BT.2020/HLG surface
