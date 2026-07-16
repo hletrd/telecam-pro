@@ -11,7 +11,7 @@ import com.hletrd.findx9tele.camera.VideoCodec
  * - HEVC: Main10 profile tagged Rec.2020, except SDR which is Main (8-bit) BT.709.
  *   - HLG: tagged with the HLG transfer so HDR players render it directly.
  *   - LOG: our GL pipeline bakes a flat log curve; there is no standard "log" transfer id, so the
- *          stream is tagged BT.2020 full-range with transfer left unspecified (grade manually).
+ *          stream is tagged BT.2020 full-range with an explicit SDR-class transfer (grade manually).
  *   - SDR: plain Rec.709/SDR — the GL pipeline applies no curve (camera frames are already SDR),
  *          for footage that plays correctly everywhere with zero grading.
  *
