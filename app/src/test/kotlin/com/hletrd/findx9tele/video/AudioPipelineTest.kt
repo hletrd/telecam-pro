@@ -56,4 +56,9 @@ class AudioPipelineTest {
         assertEquals(1, resolveAudioChannelCount(intArrayOf(1), isBluetooth = false))
         assertEquals(1, resolveAudioChannelCount(intArrayOf(1), isBluetooth = true))
     }
+
+    @Test
+    fun audioSetupFailure_reportsUnavailableRoute() {
+        assertEquals("USB unavailable", audioUnavailableLabel("USB"))
+    }
 }

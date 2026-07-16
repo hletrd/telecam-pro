@@ -162,6 +162,7 @@ class VideoRecorder(private val context: Context) {
             runCatching { startAudio() }.onFailure {
                 // Audio setup failed after video was already configured; degrade to video-only
                 // instead of aborting the whole recording.
+                onRoute?.invoke(audioUnavailableLabel(audioInputPreference.label))
                 runCatching { audioRecord?.release() }
                 runCatching { audioCodec?.stop() }
                 runCatching { audioCodec?.release() }
@@ -302,7 +303,7 @@ class VideoRecorder(private val context: Context) {
         }
         if (minBuf <= 0) {
             expectedTracks = 1
-            onRoute?.invoke("${audioInputPreference.label} unavailable")
+            onRoute?.invoke(audioUnavailableLabel(audioInputPreference.label))
             return
         }
         val audioFormat = AudioFormat.Builder()
@@ -319,7 +320,7 @@ class VideoRecorder(private val context: Context) {
                 .build()
         }.getOrNull() ?: run {
             expectedTracks = 1
-            onRoute?.invoke("${audioInputPreference.label} unavailable")
+            onRoute?.invoke(audioUnavailableLabel(audioInputPreference.label))
             return
         }
         // An AudioRecord that failed to initialize (busy mic, unsupported config) is left in
@@ -328,7 +329,7 @@ class VideoRecorder(private val context: Context) {
         if (record.state != AudioRecord.STATE_INITIALIZED) {
             runCatching { record.release() }
             expectedTracks = 1
-            onRoute?.invoke("${audioInputPreference.label} unavailable")
+            onRoute?.invoke(audioUnavailableLabel(audioInputPreference.label))
             return
         }
         if (preferredDevice != null && !record.setPreferredDevice(preferredDevice)) {
@@ -395,7 +396,7 @@ class VideoRecorder(private val context: Context) {
         // Guard startRecording() too: if the mic is grabbed between init and here it throws, and an
         // uncaught throw on this thread would crash the app — bail to video-only instead.
         if (runCatching { record.startRecording() }.isFailure) {
-            onRoute?.invoke("${audioInputPreference.label} unavailable")
+            onRoute?.invoke(audioUnavailableLabel(audioInputPreference.label))
             synchronized(muxerLock) {
                 expectedTracks = 1
                 maybeStartMuxer()
@@ -578,6 +579,9 @@ internal fun resolveAudioChannelCount(channelCounts: IntArray?, isBluetooth: Boo
     if (channelCounts.isEmpty() && !isBluetooth) return ColorProfiles.AUDIO_CHANNELS
     return 1
 }
+
+/** Stable operator-facing route state for every audio setup degradation path. */
+internal fun audioUnavailableLabel(preferenceLabel: String): String = "$preferenceLabel unavailable"
 
 /**
  * Applies [gain] to every 16-bit PCM sample in `buf[0, byteCount)` IN PLACE (clamped to the
