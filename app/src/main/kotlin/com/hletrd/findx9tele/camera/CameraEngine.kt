@@ -156,12 +156,15 @@ class CameraEngine(private val context: Context) {
     )
 
     @Synchronized
-    private fun beginOpticsTransaction(): OpticsTransaction {
+    private fun <T> beginOpticsTransaction(publishDesiredOptics: () -> T): Pair<OpticsTransaction, T> {
         // A second tap can arrive while the first switch is still preflighting. Both must roll back
         // to the last Ready state, never to the first tap's unaccepted intermediate fields.
         val before = selectRollbackBaseline(cameraReady, currentOpticsSnapshot(), opticsRollbackBaseline)
         opticsRollbackBaseline = before
-        return OpticsTransaction(opticsIntentGeneration.incrementAndGet(), before)
+        val transaction = OpticsTransaction(opticsIntentGeneration.incrementAndGet(), before)
+        // Generation and its complete desired packet share this monitor. Resume cannot capture the
+        // new token between increment and publication and then reconfigure the outgoing optics.
+        return transaction to publishDesiredOptics()
     }
 
     @Synchronized
@@ -542,13 +545,22 @@ class CameraEngine(private val context: Context) {
         // UI and engine remaps separate let a delayed full-controls apply race this method and made
         // Photo/Video transitions depend on executor timing.
         val changed = videoMode != enabled
-        val transaction = if (changed) beginOpticsTransaction() else null
-        videoMode = enabled
-        lensChoice = resolvedLens
-        controls = resolvedControls
-        // A mode intent owns automatic camera routing. Clear the previous resolved id now so a pause
-        // before its setup task cannot make resume treat the outgoing camera as an explicit override.
-        if (changed) overrideId = null
+        val transaction = if (changed) {
+            beginOpticsTransaction {
+                videoMode = enabled
+                lensChoice = resolvedLens
+                controls = resolvedControls
+                // A mode intent owns automatic routing. Clear the resolved outgoing id atomically.
+                overrideId = null
+            }.first
+        } else {
+            synchronized(this) {
+                videoMode = enabled
+                lensChoice = resolvedLens
+                controls = resolvedControls
+            }
+            null
+        }
         controller?.updateControls(resolvedControls)
         if (!changed) return
         val intentGeneration = modeIntentGeneration.incrementAndGet()
@@ -614,17 +626,17 @@ class CameraEngine(private val context: Context) {
         resolvedControls: ManualControls,
     ) {
         if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
-        val transaction = beginOpticsTransaction()
+        val transaction = beginOpticsTransaction {
+            videoMode = enabledVideo
+            lensChoice = resolvedLens
+            teleconverterMode = resolvedTeleconverter
+            controls = resolvedControls
+            preTeleUnifiedZoom = Float.NaN
+            // Settings/MR replaces automatic routing; the snapshot retains an override for rollback.
+            overrideId = null
+        }.first
         val modeGeneration = modeIntentGeneration.incrementAndGet()
         val lensGeneration = lensIntentGeneration.incrementAndGet()
-        videoMode = enabledVideo
-        lensChoice = resolvedLens
-        teleconverterMode = resolvedTeleconverter
-        controls = resolvedControls
-        preTeleUnifiedZoom = Float.NaN
-        // Settings/MR optics likewise replace automatic routing; the transaction snapshot retains an
-        // explicit prior override for rollback, but resume must never reuse it as the desired camera.
-        overrideId = null
         controller?.setPinAutoFps(enabledVideo)
         controller?.updateControls(resolvedControls)
         if (!started) return
@@ -972,26 +984,26 @@ class CameraEngine(private val context: Context) {
         restorePreTele: Boolean = false,
     ) {
         if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
-        val transaction = beginOpticsTransaction()
         val intentGeneration = lensIntentGeneration.incrementAndGet()
-        val resolved = resolveLensOpticsIntent(
-            mode = if (videoMode) CaptureMode.VIDEO else CaptureMode.PHOTO,
-            currentLens = lensChoice,
-            currentTeleconverter = teleconverterMode,
-            currentControls = controls,
-            currentPreTeleUnifiedZoom = preTeleUnifiedZoom,
-            requestedLens = choice,
-            requestedTeleconverter = teleconverterOverride,
-            restorePreTele = restorePreTele,
-        )
-        // Publish the COMPLETE desired packet before dispatch. If pause wins, resume can reconstruct
-        // the target session from these fields instead of accepting stale selection/caps for a
-        // partially published lens choice.
-        lensChoice = resolved.lens
-        teleconverterMode = resolved.teleconverter
-        controls = resolved.controls
-        preTeleUnifiedZoom = resolved.preTeleUnifiedZoom
-        overrideId = null
+        val (transaction, resolved) = beginOpticsTransaction {
+            val intent = resolveLensOpticsIntent(
+                mode = if (videoMode) CaptureMode.VIDEO else CaptureMode.PHOTO,
+                currentLens = lensChoice,
+                currentTeleconverter = teleconverterMode,
+                currentControls = controls,
+                currentPreTeleUnifiedZoom = preTeleUnifiedZoom,
+                requestedLens = choice,
+                requestedTeleconverter = teleconverterOverride,
+                restorePreTele = restorePreTele,
+            )
+            // Publish the COMPLETE desired packet under the same monitor as its generation.
+            lensChoice = intent.lens
+            teleconverterMode = intent.teleconverter
+            controls = intent.controls
+            preTeleUnifiedZoom = intent.preTeleUnifiedZoom
+            overrideId = null
+            intent
+        }
         if (started) updateCameraReady(false)
         // Resolve the camera id ON setupExecutor (dozen-plus Binder IPCs; also orders resolve→reopen).
         setupExecutor.execute {
@@ -1072,7 +1084,8 @@ class CameraEngine(private val context: Context) {
         // Switching the physical lens mid-recording reconfigures the camera under the encoder and
         // gaps/corrupts the clip. Refuse until recording stops; the UI also gates this.
         if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
-        reconfigureCamera(id, beginOpticsTransaction())
+        val transaction = beginOpticsTransaction { overrideId = id }.first
+        reconfigureCamera(id, transaction)
     }
 
     private fun reconfigureCamera(id: String?, transaction: OpticsTransaction) {
