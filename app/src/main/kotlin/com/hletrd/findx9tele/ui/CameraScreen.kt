@@ -369,7 +369,7 @@ fun CameraScreen(
 
         // Emphasized REC display (Sony FX): a thin red frame while rolling — unmissable, even in
         // DISP-clean mode. Screen-fixed (not content-boxed) so it stays unmissable at every aspect.
-        if (state.isRecording) {
+        if (state.isRecording && !state.isRecordingStarting) {
             // Tally border: follow the panel's physical rounded corners — a square border's corner
             // segments fall OUTSIDE the visible rounded area on this display and simply vanish
             // (user-reported). The exact radius comes from the WindowInsets RoundedCorner API.
@@ -448,7 +448,7 @@ fun CameraScreen(
             if (!dispClean) {
                 StatusInfoPill(state = state, modifier = Modifier.rotateLayout(overlayRotation))
             }
-            if (state.isRecording) {
+            if (state.isRecording && !state.isRecordingStarting) {
                 RecordingIndicator(elapsedMs = state.recordElapsedMs, modifier = Modifier.rotateLayout(overlayRotation))
             }
             // Sony-style standby metering: input levels are visible while video is ARMED,

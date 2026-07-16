@@ -298,6 +298,16 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         }
         engine.onAudioLevel = { lvl -> _state.update { it.copy(audioLevel = lvl) } }
         engine.onAudioRoute = { route -> _state.update { it.copy(audioRouteLabel = route) } }
+        engine.onRecordingStarted = {
+            mainHandler.post {
+                val current = _state.value
+                if (!current.isRecording || !current.isRecordingStarting) return@post
+                recordStartMs = SystemClock.elapsedRealtime()
+                mainHandler.removeCallbacks(recordTicker)
+                _state.update { it.copy(isRecordingStarting = false, recordElapsedMs = 0) }
+                mainHandler.post(recordTicker)
+            }
+        }
         engine.onRecordingTerminated = {
             // Codec/muxer failures originate on recorder drain threads. End REC state on main
             // immediately; finalization continues on the engine's dedicated executor.
@@ -306,6 +316,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 _state.update {
                     it.copy(
                         isRecording = false,
+                        isRecordingStarting = false,
                         recordElapsedMs = 0,
                         audioRouteLabel = audioInputStatusLabel(it.audioInputPreference),
                     )
@@ -1382,22 +1393,33 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         if (_state.value.isRecording) {
             engine.stopRecording()
             mainHandler.removeCallbacks(recordTicker)
-            _state.update { it.copy(isRecording = false, audioRouteLabel = audioInputStatusLabel(it.audioInputPreference)) }
+            _state.update {
+                it.copy(
+                    isRecording = false,
+                    isRecordingStarting = false,
+                    recordElapsedMs = 0,
+                    audioRouteLabel = audioInputStatusLabel(it.audioInputPreference),
+                )
+            }
         } else {
             val s = _state.value
             val inputStatus = audioInputStatus(s.audioInputPreference)
-            if (s.recordAudio) {
-                _state.update { it.copy(audioRouteLabel = inputStatus.label) }
-                if (!inputStatus.available) showStatus("${inputStatus.label}; using default")
+            _state.update {
+                it.copy(audioRouteLabel = if (s.recordAudio) "Starting..." else "Off")
             }
-            if (!engine.startRecording(s.recordAudio)) return
-            recordStartMs = SystemClock.elapsedRealtime()
-            mainHandler.post(recordTicker)
+            if (s.recordAudio && !inputStatus.available) {
+                showStatus("${inputStatus.label}; using default")
+            }
+            if (!engine.startRecording(s.recordAudio)) {
+                _state.update { it.copy(audioRouteLabel = audioInputStatusLabel(it.audioInputPreference)) }
+                refreshStandbyAudioMeter()
+                return
+            }
             _state.update {
                 it.copy(
                     isRecording = true,
+                    isRecordingStarting = true,
                     recordElapsedMs = 0,
-                    audioRouteLabel = if (it.recordAudio) "Starting..." else "Off",
                 )
             }
         }
@@ -1606,7 +1628,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // to a phantom "recording" state with the timer still ticking.
         if (_state.value.isRecording) {
             mainHandler.removeCallbacks(recordTicker)
-            _state.update { it.copy(isRecording = false) }
+            _state.update { it.copy(isRecording = false, isRecordingStarting = false, recordElapsedMs = 0) }
         }
         // Nothing renders while backgrounded, but these self-rescheduling tickers kept waking the
         // main thread every 100/200 ms (and 10 s) indefinitely — pure battery/Doze cost. Paused

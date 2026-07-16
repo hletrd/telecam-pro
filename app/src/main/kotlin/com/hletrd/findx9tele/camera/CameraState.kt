@@ -584,6 +584,9 @@ data class CameraUiState(
     val liveFocusDiopters: Float? = null,
     // Runtime
     val isRecording: Boolean = false,
+    // Recorder admission succeeded but the encoder input has not yet attached to EGL. Controls stay
+    // locked and the shutter remains a stop action, while tally/timer wait for genuine readiness.
+    val isRecordingStarting: Boolean = false,
     val recordElapsedMs: Long = 0L,
     val timerCountdownSec: Int = 0,
     val caps: CameraCaps? = null,
