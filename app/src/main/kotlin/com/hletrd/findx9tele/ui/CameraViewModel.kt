@@ -41,6 +41,7 @@ import com.hletrd.findx9tele.camera.PeakingLevel
 import com.hletrd.findx9tele.camera.PhotoFormats
 import com.hletrd.findx9tele.camera.PendingControlsDisposition
 import com.hletrd.findx9tele.camera.acceptedOpticsAuxState
+import com.hletrd.findx9tele.camera.controlAvailability
 import com.hletrd.findx9tele.camera.controlCapabilities
 import com.hletrd.findx9tele.camera.normalizeControlsForRoute
 import com.hletrd.findx9tele.camera.normalizedFor
@@ -118,6 +119,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     private var countdownRunnable: Runnable? = null
     private var lifecycleStarted = false
     private var debugZoomReceiver: android.content.BroadcastReceiver? = null
+    // Main-thread token for the one-shot Custom-WB sample. Any newer WB action makes an older
+    // controller callback inert before it can publish gains or a stale status message.
+    private var customWbSampleGeneration = 0L
 
     // Auto-dismisses the transient status toast ("Saved" / "Video saved" / errors) so it doesn't hang
     // on screen forever (QA: "video saved" stuck). Each new message re-arms the 2 s timer.
@@ -833,21 +837,48 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onExposureStep(step: ExposureStep) = updateControls(persist = true) { it.copy(exposureStep = step) }
 
     // ---- White balance ----
-    override fun onWbMode(mode: WbMode) = updateControls(FnSlot.WB) { it.copy(wbMode = mode) }
-    override fun onWbKelvin(kelvin: Int) = updateControls(FnSlot.WB) { it.copy(wbKelvin = kelvin, wbMode = WbMode.MANUAL) }
-    override fun onWbTint(tint: Int) = updateControls(FnSlot.WB) { it.copy(wbTint = tint, wbMode = WbMode.MANUAL) }
-    override fun onToggleAwbLock(locked: Boolean) = updateControls(FnSlot.WB) { it.copy(awbLock = locked) }
+    override fun onWbMode(mode: WbMode) {
+        customWbSampleGeneration++
+        updateControls(FnSlot.WB) { it.copy(wbMode = mode) }
+    }
+    override fun onWbKelvin(kelvin: Int) {
+        customWbSampleGeneration++
+        updateControls(FnSlot.WB) { it.copy(wbKelvin = kelvin, wbMode = WbMode.MANUAL) }
+    }
+    override fun onWbTint(tint: Int) {
+        customWbSampleGeneration++
+        updateControls(FnSlot.WB) { it.copy(wbTint = tint, wbMode = WbMode.MANUAL) }
+    }
+    override fun onToggleAwbLock(locked: Boolean) {
+        customWbSampleGeneration++
+        updateControls(FnSlot.WB) { it.copy(awbLock = locked) }
+    }
     override fun onMeteringMode(mode: MeteringMode) = updateControls(FnSlot.METERING) { it.copy(meteringMode = mode) }
     override fun onAfSpotSize(size: AfSpotSize) = updateControls(persist = true) { it.copy(afSpotSize = size) }
     override fun onCaptureCustomWb() {
-        // Grey/white-card WB: freeze the AWB gains the HAL used on the latest frame (Sony Custom WB).
-        val gains = engine.currentAwbGains()
-        if (gains == null) {
-            showStatus("No WB sample yet")
+        val current = _state.value
+        val availability = controlAvailability(current.caps?.controlCapabilities(), current.controls)
+        if (!availability.customWbCaptureEnabled) {
+            showStatus("Use Auto WB with AWB Lock off")
             return
         }
-        updateControls(FnSlot.WB) { it.copy(wbMode = WbMode.CUSTOM, customWbGains = gains) }
-        showStatus("Custom WB set")
+        // Land a just-selected AUTO/unlocked packet before the controller registers its tagged
+        // request. Both posts share the camera handler, so the sample cannot race stale manual gains.
+        drainPendingControls()
+        val generation = ++customWbSampleGeneration
+        engine.requestCustomWbSample { gains ->
+            mainHandler.post {
+                if (generation != customWbSampleGeneration) return@post
+                if (gains == null) {
+                    showStatus("Custom WB not measured")
+                    return@post
+                }
+                updateControls(FnSlot.WB) {
+                    it.copy(wbMode = WbMode.CUSTOM, customWbGains = gains)
+                }
+                showStatus("Custom WB set")
+            }
+        }
     }
 
     // ---- Processing ----
@@ -1699,6 +1730,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     fun onStop() {
         if (!lifecycleStarted) return
         lifecycleStarted = false
+        customWbSampleGeneration++
         cancelCountdown()
         // engine.pause() finalizes any in-flight recording; keep the UI in sync so we don't return
         // to a phantom "recording" state with the timer still ticking.

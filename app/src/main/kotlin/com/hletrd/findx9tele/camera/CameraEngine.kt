@@ -1148,9 +1148,30 @@ class CameraEngine(private val context: Context) {
 
     @Volatile private var gammaAssist = false
 
-    /** AWB gains of the latest frame, for custom (grey-card) WB capture. Null until 3A runs. */
-    fun currentAwbGains(): WbGains? =
-        controller?.lastAwbGains?.let { WbGains(it.red, it.greenEven, it.greenOdd, it.blue) }
+    /**
+     * Requests a fresh, converged grey-card sample from the current unlocked-AUTO request owner.
+     * Controller or optics replacement makes the callback inert instead of applying another
+     * route's cached gains as Custom WB.
+     */
+    fun requestCustomWbSample(onResult: (WbGains?) -> Unit) {
+        val ownedController = controller
+        val ownedGeneration = opticsIntentGeneration.get()
+        if (ownedController == null || paused || controls.wbMode != WbMode.AUTO || controls.awbLock) {
+            runCatching { onResult(null) }
+            return
+        }
+        ownedController.requestCustomWbSample { gains ->
+            val ownerCurrent = synchronized(this) {
+                controller === ownedController &&
+                    opticsIntentGeneration.get() == ownedGeneration &&
+                    !paused && controls.wbMode == WbMode.AUTO && !controls.awbLock
+            }
+            val sample = gains?.takeIf { ownerCurrent }?.let {
+                WbGains(it.red, it.greenEven, it.greenOdd, it.blue)
+            }
+            runCatching { onResult(sample) }
+        }
+    }
 
     // Remembered so the GL-start callback can re-seed it: setAeMetering can arrive from settings
     // restore BEFORE the GL thread exists, where GlPipeline.post silently drops it.

@@ -151,6 +151,7 @@ class ControlAvailabilityTest {
         assertFalse(manual.afLockEnabled)
         assertFalse(manual.aeLockEnabled)
         assertFalse(manual.awbLockEnabled)
+        assertFalse(manual.customWbCaptureEnabled)
         assertEquals(listOf(FlashMode.OFF, FlashMode.TORCH), manual.flashModes)
         manual.flashModes.forEach { mode ->
             assertEquals(
@@ -160,6 +161,33 @@ class ControlAvailabilityTest {
                     .flash,
             )
         }
+    }
+
+    @Test
+    fun `custom white balance requires unlocked auto metering`() {
+        val caps = fullCaps()
+
+        assertTrue(controlAvailability(caps, ManualControls()).customWbCaptureEnabled)
+        assertFalse(
+            controlAvailability(caps, ManualControls(awbLock = true)).customWbCaptureEnabled,
+        )
+        assertFalse(
+            controlAvailability(caps, ManualControls(wbMode = WbMode.DAYLIGHT))
+                .customWbCaptureEnabled,
+        )
+        assertFalse(
+            controlAvailability(caps, ManualControls(wbMode = WbMode.MANUAL))
+                .customWbCaptureEnabled,
+        )
+        assertFalse(
+            controlAvailability(
+                caps,
+                ManualControls(
+                    wbMode = WbMode.CUSTOM,
+                    customWbGains = WbGains(2f, 1f, 1f, 3f),
+                ),
+            ).customWbCaptureEnabled,
+        )
     }
 
     private fun fullCaps() = CameraControlCapabilities(

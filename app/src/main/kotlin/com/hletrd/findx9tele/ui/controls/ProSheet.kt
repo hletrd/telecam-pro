@@ -696,7 +696,11 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         border = pixelChipBorder(controls.wbMode == WbMode.CUSTOM),
     )
     Text(
-        "Frame a white or grey card, then tap.",
+        if (availability.customWbCaptureEnabled) {
+            "Frame a white or grey card, then tap."
+        } else {
+            "Select Auto WB and turn AWB Lock off to measure."
+        },
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.labelSmall,
     )

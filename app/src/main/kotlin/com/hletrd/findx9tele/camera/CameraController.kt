@@ -285,6 +285,8 @@ class CameraController(context: Context) {
     // pinch tick. Camera-thread confined; refreshed by every full startPreview rebuild.
     private var previewBuilder: CaptureRequest.Builder? = null
     private var previewCallback: CameraCaptureSession.CaptureCallback? = null
+    private var customWbSampleSequence = 0L
+    private var pendingCustomWbSample: PendingCustomWbSample? = null
 
     /** Sets the HAL video stabilization on the preview/video repeating request: the standard mode plus the vendor mirror. */
     private fun CaptureRequest.Builder.applyVideoStab() {
@@ -602,6 +604,7 @@ class CameraController(context: Context) {
                 applyVideoStab()
                 applyTeleconverterHints()
                 applyMetering(this, controls)
+                pendingCustomWbSample?.let { setTag(it.tag) }
                 // Tap-to-focus: force AF_MODE_AUTO for a one-shot region scan that LOCKS on the tapped
                 // spot (CONTINUOUS + a bare trigger just holds the current, often-wrong, distance). The
                 // region is set by applyMetering above; the trigger below drives the scan.
@@ -629,9 +632,22 @@ class CameraController(context: Context) {
                         }
                     }
                     result.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let { lastFocusDistance = it }
-                    // Stashed for custom-WB capture (grey-card measure) and JPEG EXIF: the AWB gains
-                    // and exposure the HAL actually used on the latest frame.
-                    result.get(CaptureResult.COLOR_CORRECTION_GAINS)?.let { lastAwbGains = it }
+                    // Custom WB deliberately does not retain or read a cached value: it owns a
+                    // fresh tagged unlocked-AUTO request and accepts only its converged result.
+                    val awbGains = result.get(CaptureResult.COLOR_CORRECTION_GAINS)
+                    pendingCustomWbSample?.let { sample ->
+                        if (customWbResultBelongsToRequest(
+                                expectedTag = sample.tag,
+                                resultTag = request.tag,
+                                awbMode = request.get(CaptureRequest.CONTROL_AWB_MODE),
+                                awbLocked = request.get(CaptureRequest.CONTROL_AWB_LOCK),
+                                awbState = result.get(CaptureResult.CONTROL_AWB_STATE),
+                                gainsAvailable = awbGains != null,
+                            )
+                        ) {
+                            finishCustomWbSample(sample.id, awbGains)
+                        }
+                    }
                     result.get(CaptureResult.SENSOR_SENSITIVITY)?.let { lastIso = it }
                     result.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let { lastExposureNs = it }
                     threeAFrame++
@@ -708,13 +724,53 @@ class CameraController(context: Context) {
      *   SPOT   → one center rectangle covering 12%, at METERING_WEIGHT_MAX.
      * No-op when the active array is unavailable, so it degrades to full-frame metering.
      */
-    /** Latest-frame AWB gains / exposure, for custom-WB capture and JPEG EXIF. */
-    @Volatile var lastAwbGains: android.hardware.camera2.params.RggbChannelVector? = null
-        private set
+    /** Latest-frame exposure, surfaced to the live UI and still-capture metadata. */
     @Volatile var lastIso: Int = 0
         private set
     @Volatile var lastExposureNs: Long = 0L
         private set
+
+    /**
+     * Owns one fresh grey-card measurement. Rebuilding the repeating request with [PendingCustomWbSample.tag]
+     * makes callbacks from frames already in flight ineligible; only a later unlocked-AUTO,
+     * AWB-converged result from this request can complete the sample.
+     */
+    fun requestCustomWbSample(
+        onResult: (android.hardware.camera2.params.RggbChannelVector?) -> Unit,
+    ) {
+        val posted = postToCamera {
+            pendingCustomWbSample?.let { finishCustomWbSample(it.id, null) }
+            if (device == null || session == null || !::caps.isInitialized ||
+                !controlAvailability(caps.controlCapabilities(), controls).customWbCaptureEnabled
+            ) {
+                runCatching { onResult(null) }
+                return@postToCamera
+            }
+            val id = ++customWbSampleSequence
+            val tag = CustomWbSampleTag(id)
+            val timeout = Runnable { finishCustomWbSample(id, null) }
+            pendingCustomWbSample = PendingCustomWbSample(id, tag, timeout, onResult)
+            if (!startPreview()) {
+                finishCustomWbSample(id, null)
+                return@postToCamera
+            }
+            if (!handler.postDelayed(timeout, CUSTOM_WB_SAMPLE_TIMEOUT_MS)) {
+                finishCustomWbSample(id, null)
+            }
+        }
+        if (!posted) runCatching { onResult(null) }
+    }
+
+    private fun finishCustomWbSample(
+        expectedId: Long,
+        gains: android.hardware.camera2.params.RggbChannelVector?,
+    ): Boolean {
+        val sample = pendingCustomWbSample?.takeIf { it.id == expectedId } ?: return false
+        pendingCustomWbSample = null
+        handler.removeCallbacks(sample.timeout)
+        runCatching { sample.onResult(gains) }
+        return true
+    }
 
     private fun applyMetering(builder: CaptureRequest.Builder, controls: ManualControls) {
         val targets = meteringRegionTargets(caps.maxAeRegions, caps.maxAfRegions, controls.focusMode)
@@ -753,6 +809,9 @@ class CameraController(context: Context) {
         // camera thread, so doing the mutation here keeps it single-threaded (no lost-update race).
         postToCamera {
             val normalized = controls.normalizedFor(caps)
+            if (normalized.wbMode != WbMode.AUTO || normalized.awbLock) {
+                pendingCustomWbSample?.let { finishCustomWbSample(it.id, null) }
+            }
             // An explicit focus-mode change ends the tap-to-focus AUTO hold and resumes the chosen mode.
             if (normalized.focusMode != this.controls.focusMode) touchAfActive = false
             this.controls = normalized
@@ -1009,6 +1068,7 @@ class CameraController(context: Context) {
         if (!closeStarted.compareAndSet(false, true)) return
         closed = true
         val teardown = Runnable {
+            pendingCustomWbSample?.let { finishCustomWbSample(it.id, null) }
             pending?.let { p ->
                 synchronized(p) {
                     if (!p.done) {
@@ -1055,8 +1115,16 @@ class CameraController(context: Context) {
         val queuedAtNs: Long = System.nanoTime()
     }
 
+    private data class PendingCustomWbSample(
+        val id: Long,
+        val tag: CustomWbSampleTag,
+        val timeout: Runnable,
+        val onResult: (android.hardware.camera2.params.RggbChannelVector?) -> Unit,
+    )
+
     private companion object {
         const val TAG = "CameraController"
+        const val CUSTOM_WB_SAMPLE_TIMEOUT_MS = 2_000L
         // Highest fallback index (attempt 3 = preview-only). Beyond this the session can't be built.
         const val MAX_CONFIG_ATTEMPT = 3
         // TELE tries the same four stream plans once with vendor operation mode 0x80b4 and once
@@ -1081,6 +1149,22 @@ internal enum class SessionStartDelivery { READY, ERROR }
 /** Configured is not Ready until the initial repeating request was accepted. */
 internal fun sessionStartDelivery(repeatingRequestAccepted: Boolean): SessionStartDelivery =
     if (repeatingRequestAccepted) SessionStartDelivery.READY else SessionStartDelivery.ERROR
+
+internal data class CustomWbSampleTag(val id: Long)
+
+/** A Custom-WB result must be fresh, unlocked AUTO, and converged for the exact tagged request. */
+internal fun customWbResultBelongsToRequest(
+    expectedTag: CustomWbSampleTag,
+    resultTag: Any?,
+    awbMode: Int?,
+    awbLocked: Boolean?,
+    awbState: Int?,
+    gainsAvailable: Boolean,
+): Boolean = resultTag === expectedTag &&
+    awbMode == CameraMetadata.CONTROL_AWB_MODE_AUTO &&
+    awbLocked != true &&
+    awbState == CaptureResult.CONTROL_AWB_STATE_CONVERGED &&
+    gainsAvailable
 
 /** Accepted-output truth comes from created readers, not the fallback plan that requested them. */
 internal fun acceptedPhotoSessionOutputs(

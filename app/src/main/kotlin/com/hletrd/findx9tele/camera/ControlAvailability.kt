@@ -140,7 +140,11 @@ internal fun controlAvailability(
             !normalized.programAppSide && caps.aeModes.has(normalized.flash.autoAeMetadata),
         awbLockEnabled = normalized.wbMode == WbMode.AUTO &&
             caps.awbModes.has(CameraMetadata.CONTROL_AWB_MODE_AUTO),
-        customWbCaptureEnabled = manualWbAvailable,
+        // A grey-card sample must come from the HAL's live, unlocked AUTO path. Manual/preset/
+        // locked results merely echo already-requested gains and cannot truthfully be relabeled as
+        // a new measurement, even though AWB_OFF is available for applying the captured gains.
+        customWbCaptureEnabled = manualWbAvailable && normalized.wbMode == WbMode.AUTO &&
+            !normalized.awbLock && caps.awbModes.has(CameraMetadata.CONTROL_AWB_MODE_AUTO),
     )
 }
 
