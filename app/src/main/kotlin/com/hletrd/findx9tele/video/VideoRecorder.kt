@@ -52,8 +52,10 @@ class VideoRecorder(private val context: Context) {
     private var pfd: ParcelFileDescriptor? = null
     private var uri: Uri? = null
 
-    var inputSurface: Surface? = null
-        private set
+    private val inputSurfaceOwner = ExactlyOnceResourceOwner<Surface>()
+
+    val inputSurface: Surface?
+        get() = inputSurfaceOwner.get()
 
     private var videoTrack = -1
     private var audioTrack = -1
@@ -134,21 +136,27 @@ class VideoRecorder(private val context: Context) {
             // live HW encoder instance until process death.
             videoCodec = vCodec
             vCodec.configure(vFmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-            inputSurface = vCodec.createInputSurface()
+            inputSurfaceOwner.install(vCodec.createInputSurface())
             vCodec.start()
         }.isSuccess
 
         if (!videoOk) {
-            // Video encoder/muxer setup failed; clean up whatever got created and bail out.
-            runCatching { inputSurface?.release() }
-            runCatching { videoCodec?.stop() }
-            runCatching { videoCodec?.release() }
+            // Video encoder/muxer setup failed before the Surface could leave this recorder. Release
+            // its exactly-once owner first, then tear down the codec that created the native window.
+            runCatching {
+                inputSurfaceOwner.releaseThen(
+                    releaser = Surface::release,
+                    afterRelease = {
+                        runCatching { videoCodec?.stop() }
+                        runCatching { videoCodec?.release() }
+                    },
+                )
+            }
             runCatching { muxer?.release() }
             runCatching { pfd?.close() }
             videoCodec = null
             muxer = null
             pfd = null
-            inputSurface = null
             return null
         }
 
@@ -194,6 +202,12 @@ class VideoRecorder(private val context: Context) {
         val drainWedged = videoThread?.isAlive == true || audioThread?.isAlive == true
         if (drainWedged) {
             recordFailure(IllegalStateException("Encoder drain timed out"))
+            // DELIBERATE NATIVE-RESOURCE ABANDON: a live drain may still be executing inside this
+            // codec's native graph. Surface.release(), MediaCodec.release(), MediaMuxer.release(),
+            // or fd close could race that thread and SIGSEGV the process, so drop Java ownership
+            // without invoking any release callback. Process death is the only safe reclamation for
+            // this rare terminal path; the pending clip is still deleted below.
+            inputSurfaceOwner.abandon()
         }
 
         if (!drainWedged) {
@@ -207,8 +221,18 @@ class VideoRecorder(private val context: Context) {
                     runCatching { muxer?.stop() }.onFailure(::recordFailure)
                 }
             }
-            runCatching { videoCodec?.stop() }
-            runCatching { videoCodec?.release() }
+            // CameraEngine calls stop() only after GlPipeline's checked EGL detach callback. The
+            // codec input Surface can therefore be released now, exactly once, before codec cleanup
+            // and before videoCodec ownership is cleared below.
+            runCatching {
+                inputSurfaceOwner.releaseThen(
+                    releaser = Surface::release,
+                    afterRelease = {
+                        runCatching { videoCodec?.stop() }
+                        runCatching { videoCodec?.release() }
+                    },
+                )
+            }
             runCatching { audioCodec?.stop() }
             runCatching { audioCodec?.release() }
             runCatching { muxer?.release() }
@@ -227,7 +251,6 @@ class VideoRecorder(private val context: Context) {
         audioCodec = null
         muxer = null
         pfd = null
-        inputSurface = null
         videoTrack = -1
         audioTrack = -1
         muxerStarted = false
@@ -556,6 +579,52 @@ internal class FirstFailureSignal {
         if (!causeRef.compareAndSet(null, cause)) return false
         runCatching { onFirst(cause) }
         return true
+    }
+}
+
+/**
+ * Pure exactly-once owner for a native resource whose release must be ordered against another owner.
+ * The value is atomically removed before [release] invokes external cleanup, so a throwing releaser
+ * still cannot cause duplicate native release. [abandon] is the explicit no-release terminal path.
+ */
+internal class ExactlyOnceResourceOwner<T : Any> {
+    private var value: T? = null
+
+    @Synchronized
+    fun install(resource: T) {
+        check(value == null) { "Resource owner already has a value" }
+        value = resource
+    }
+
+    @Synchronized
+    fun get(): T? = value
+
+    fun release(releaser: (T) -> Unit): Boolean {
+        val owned = synchronized(this) {
+            val current = value ?: return false
+            value = null
+            current
+        }
+        releaser(owned)
+        return true
+    }
+
+    /** Runs [afterRelease] even when no value exists or [releaser] throws, while preserving order. */
+    fun releaseThen(releaser: (T) -> Unit, afterRelease: () -> Unit): Boolean =
+        try {
+            release(releaser)
+        } finally {
+            afterRelease()
+        }
+
+    /** Drops ownership without touching the native resource; used only when another thread is live. */
+    fun abandon(): Boolean = synchronized(this) {
+        if (value == null) {
+            false
+        } else {
+            value = null
+            true
+        }
     }
 }
 
