@@ -14,8 +14,10 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Owns the GL render thread. The camera renders into [inputSurface] (an external SurfaceTexture);
@@ -42,6 +44,9 @@ class GlPipeline {
     private var previewEgl: EGLSurface = EGL14.EGL_NO_SURFACE
     private var encoderEgl: EGLSurface = EGL14.EGL_NO_SURFACE
     private var previewSurface: Surface? = null
+    // Surface lifecycle callbacks can invalidate a native window before an older GL task runs.
+    // Bump this synchronously on the caller thread so queued binds can reject stale ownership.
+    private val previewOutputGeneration = AtomicLong(0L)
 
     private var previewW = 0
     private var previewH = 0
@@ -134,48 +139,75 @@ class GlPipeline {
         post { egl = EglCore(tenBit = tenBit) }
     }
 
-    fun setPreviewOutput(surface: Surface?, width: Int, height: Int) = post {
-        val core = egl ?: return@post
+    fun setPreviewOutput(surface: Surface?, width: Int, height: Int) {
+        val generation = previewOutputGeneration.incrementAndGet()
+        val h = handler ?: return
+        dispatchWithResult(
+            post = { task -> h.post(task) },
+            block = { applyPreviewOutput(generation, surface, width, height) },
+            // EGL/native-window failures are contained on the GL thread. applyPreviewOutput clears
+            // partial state before rethrowing, so a stale or already-released Surface cannot escape
+            // through the looper and crash the process.
+            onComplete = {},
+        )
+    }
+
+    private fun applyPreviewOutput(generation: Long, surface: Surface?, width: Int, height: Int) {
+        if (generation != previewOutputGeneration.get()) return
+        val core = egl ?: return
         if (surface == null) {
-            if (previewEgl != EGL14.EGL_NO_SURFACE) {
-                core.releaseSurface(previewEgl)
-                previewEgl = EGL14.EGL_NO_SURFACE
-            }
-            previewSurface = null
-            return@post
+            clearPreviewOutput(core)
+            return
         }
         // The TextureView host can deliver available-then-size-changed back-to-back on the same
         // native window; if it's the same surface already bound at the same size, there is nothing
         // to do — recreating the EGLSurface on a still-live native window throws EGL_BAD_ALLOC.
         if (surface === previewSurface && previewEgl != EGL14.EGL_NO_SURFACE &&
             width == previewW && height == previewH
-        ) {
+        ) return
+
+        clearPreviewOutput(core)
+        if (generation != previewOutputGeneration.get()) return
+        var candidate = EGL14.EGL_NO_SURFACE
+        try {
+            candidate = core.createWindowSurface(surface)
+            if (generation != previewOutputGeneration.get()) return
+            core.makeCurrent(candidate)
+            if (generation != previewOutputGeneration.get()) return
+
             previewW = width
             previewH = height
-            return@post
+            previewSurface = surface
+            previewEgl = candidate
+            candidate = EGL14.EGL_NO_SURFACE
+            if (!inited) {
+                val texId = renderer.init()
+                val st = SurfaceTexture(texId)
+                st.setDefaultBufferSize(cameraW, cameraH)
+                // The listener already runs on the GL handler thread; call drawFrame() directly
+                // instead of re-posting a fresh Runnable every frame.
+                st.setOnFrameAvailableListener({ drawFrame() }, handler)
+                surfaceTexture = st
+                val input = Surface(st)
+                inputSurface = input
+                inited = true
+                runCatching { onInputReady?.invoke(input) }
+            }
+        } catch (failure: Throwable) {
+            clearPreviewOutput(core)
+            throw failure
+        } finally {
+            if (candidate != EGL14.EGL_NO_SURFACE) {
+                runCatching { core.releaseSurface(candidate) }
+            }
         }
-        if (previewEgl != EGL14.EGL_NO_SURFACE) {
-            core.releaseSurface(previewEgl)
-            previewEgl = EGL14.EGL_NO_SURFACE
-        }
-        previewW = width
-        previewH = height
-        previewSurface = surface
-        previewEgl = core.createWindowSurface(surface)
-        core.makeCurrent(previewEgl)
-        if (!inited) {
-            val texId = renderer.init()
-            val st = SurfaceTexture(texId)
-            st.setDefaultBufferSize(cameraW, cameraH)
-            // The listener already runs on the GL handler thread; call drawFrame() directly instead
-            // of re-posting a fresh Runnable every frame.
-            st.setOnFrameAvailableListener({ drawFrame() }, handler)
-            surfaceTexture = st
-            val input = Surface(st)
-            inputSurface = input
-            inited = true
-            onInputReady?.invoke(input)
-        }
+    }
+
+    private fun clearPreviewOutput(core: EglCore) {
+        val owned = previewEgl
+        previewEgl = EGL14.EGL_NO_SURFACE
+        previewSurface = null
+        if (owned != EGL14.EGL_NO_SURFACE) runCatching { core.releaseSurface(owned) }
     }
 
     /** Camera output resolution feeding the SurfaceTexture; controls aspect + peaking texel size. */
@@ -239,42 +271,45 @@ class GlPipeline {
     }
 
     /**
-     * Swap (or clear) the encoder EGL surface. [onApplied] is invoked ON THE GL THREAD once the
-     * change has actually landed, so an ordered encoder teardown (dispatch `finishRecording` only
-     * after the encoder surface is truly released) can chain off it. If the GL thread does not exist
-     * (pipeline never started / already stopped), [onApplied] runs inline right here so a caller
-     * awaiting the completion never hangs.
+     * Swap (or clear) the encoder EGL surface. [onApplied] receives the applied result ON THE GL
+     * THREAD. A rejected/dead GL thread delivers failure inline so callers cannot mistake a queued
+     * attach failure for a ready recorder or strand an ordered teardown waiter.
      */
-    fun setEncoderOutput(surface: Surface?, width: Int, height: Int, onApplied: (() -> Unit)? = null) {
+    fun setEncoderOutput(
+        surface: Surface?,
+        width: Int,
+        height: Int,
+        onApplied: ((Result<Unit>) -> Unit)? = null,
+    ) {
         val h = handler
         if (h == null) {
-            OnceAction { onApplied?.invoke() }.run()
+            val result = if (surface == null) Result.success(Unit) else Result.failure(
+                IllegalStateException("GL pipeline is not running"),
+            )
+            runCatching { onApplied?.invoke(result) }
             return
         }
-        postWithCompletion(
+        dispatchWithResult(
             post = { task -> h.post(task) },
             block = {
                 val core = egl
-                if (core != null) {
-                    if (encoderEgl != EGL14.EGL_NO_SURFACE) {
-                        core.releaseSurface(encoderEgl)
-                        encoderEgl = EGL14.EGL_NO_SURFACE
-                    }
-                    // Reset the presentation-time base whenever the encoder surface changes (record
-                    // start/stop) so the next recording rebases from its own first frame.
-                    encoderBaseSet = false
-                    encoderBaseNs = 0L
-                    if (surface != null) {
-                        encoderW = width
-                        encoderH = height
-                        encoderEgl = core.createWindowSurface(surface)
-                    }
+                val owned = encoderEgl
+                encoderEgl = EGL14.EGL_NO_SURFACE
+                if (owned != EGL14.EGL_NO_SURFACE && core != null) {
+                    runCatching { core.releaseSurface(owned) }
+                }
+                // Reset the presentation-time base whenever the encoder surface changes (record
+                // start/stop) so the next recording rebases from its own first frame.
+                encoderBaseSet = false
+                encoderBaseNs = 0L
+                if (surface != null) {
+                    checkNotNull(core) { "EGL context is not ready" }
+                    encoderW = width
+                    encoderH = height
+                    encoderEgl = core.createWindowSurface(surface)
                 }
             },
-            // Signal completion AFTER the surface change is applied, on the GL thread. A dead/
-            // quitting looper rejects Handler.post; postWithCompletion then invokes this inline so
-            // an ordered recorder teardown can never wait forever. Delivery remains exactly once.
-            onComplete = { onApplied?.invoke() },
+            onComplete = { result -> onApplied?.invoke(result) },
         )
     }
 
@@ -647,25 +682,30 @@ internal class OnceAction(private val callback: () -> Unit) {
 }
 
 /**
- * Posts [block] and delivers [onComplete] exactly once after it runs. If [post] rejects or throws,
- * completion runs inline so native-teardown waiters cannot be stranded on a dead looper.
+ * Posts [block] and delivers its [Result] exactly once after it runs. If [post] rejects or throws,
+ * failure runs inline so native-teardown waiters cannot be stranded on a dead looper. Work failures
+ * are contained in the result and never escape through the target looper.
  */
-internal fun postWithCompletion(
+internal fun dispatchWithResult(
     post: (Runnable) -> Boolean,
     block: () -> Unit,
-    onComplete: () -> Unit,
+    onComplete: (Result<Unit>) -> Unit,
 ): Boolean {
-    val completion = OnceAction(onComplete)
-    val task = Runnable {
-        try {
-            block()
-        } finally {
-            completion.run()
-        }
+    val delivered = AtomicBoolean(false)
+    fun deliver(result: Result<Unit>) {
+        if (delivered.compareAndSet(false, true)) runCatching { onComplete(result) }
     }
-    val accepted = runCatching { post(task) }.getOrDefault(false)
-    if (!accepted) completion.run()
-    return accepted
+    val task = Runnable {
+        deliver(runCatching(block))
+    }
+    return try {
+        val accepted = post(task)
+        if (!accepted) deliver(Result.failure(RejectedExecutionException("Task rejected")))
+        accepted
+    } catch (failure: Throwable) {
+        deliver(Result.failure(failure))
+        false
+    }
 }
 
 // Pure scope-analysis math, hoisted out of GlPipeline (they hold no instance state — just the RGBA

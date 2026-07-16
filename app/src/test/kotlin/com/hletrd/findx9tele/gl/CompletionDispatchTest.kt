@@ -12,64 +12,68 @@ class CompletionDispatchTest {
     fun `accepted post completes after task exactly once`() {
         lateinit var queued: Runnable
         val work = AtomicInteger()
-        val completions = AtomicInteger()
+        val completions = mutableListOf<Result<Unit>>()
 
-        val accepted = postWithCompletion(
+        val accepted = dispatchWithResult(
             post = { queued = it; true },
             block = { work.incrementAndGet() },
-            onComplete = { completions.incrementAndGet() },
+            onComplete = { completions += it },
         )
 
         assertTrue(accepted)
         assertEquals(0, work.get())
-        assertEquals(0, completions.get())
+        assertEquals(0, completions.size)
         queued.run()
         queued.run() // Defensive duplicate execution still cannot duplicate completion delivery.
         assertEquals(2, work.get())
-        assertEquals(1, completions.get())
+        assertEquals(1, completions.size)
+        assertTrue(completions.single().isSuccess)
     }
 
     @Test
     fun `rejected post completes inline without running task`() {
         val work = AtomicInteger()
-        val completions = AtomicInteger()
+        val completions = mutableListOf<Result<Unit>>()
 
-        val accepted = postWithCompletion(
+        val accepted = dispatchWithResult(
             post = { false },
             block = { work.incrementAndGet() },
-            onComplete = { completions.incrementAndGet() },
+            onComplete = { completions += it },
         )
 
         assertFalse(accepted)
         assertEquals(0, work.get())
-        assertEquals(1, completions.get())
+        assertEquals(1, completions.size)
+        assertTrue(completions.single().isFailure)
     }
 
     @Test
     fun `throwing post completes inline exactly once`() {
-        val completions = AtomicInteger()
+        val completions = mutableListOf<Result<Unit>>()
 
-        val accepted = postWithCompletion(
+        val accepted = dispatchWithResult(
             post = { throw IllegalStateException("dead looper") },
             block = { error("must not run") },
-            onComplete = { completions.incrementAndGet() },
+            onComplete = { completions += it },
         )
 
         assertFalse(accepted)
-        assertEquals(1, completions.get())
+        assertEquals(1, completions.size)
+        assertEquals("dead looper", completions.single().exceptionOrNull()?.message)
     }
 
     @Test
     fun `task failure still completes once`() {
         lateinit var queued: Runnable
-        val completions = AtomicInteger()
-        postWithCompletion(
+        val completions = mutableListOf<Result<Unit>>()
+        dispatchWithResult(
             post = { queued = it; true },
             block = { throw IllegalArgumentException("EGL") },
-            onComplete = { completions.incrementAndGet() },
+            onComplete = { completions += it },
         )
 
-        runCatching { queued.run() }
-        assertEquals(1, completions.get())
+        queued.run()
+        assertEquals(1, completions.size)
+        assertEquals("EGL", completions.single().exceptionOrNull()?.message)
     }
 }
