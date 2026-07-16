@@ -182,4 +182,74 @@ class ReconfigurationGenerationTest {
         )
         assertEquals(1, mutations)
     }
+
+    @Test
+    fun `same camera fast commit rejects a session invalidated after intent start`() {
+        val gate = OpticsCommitGate()
+        val generation = gate.begin { it }
+        val expectedController = Any()
+        var currentController: Any = expectedController
+        val expectedSessionGeneration = 9L
+        var currentSessionGeneration = expectedSessionGeneration
+        var mutations = 0
+
+        currentSessionGeneration++
+
+        assertNull(
+            gate.commit(
+                expectedGeneration = generation,
+                ownsTerminal = {
+                    currentController === expectedController &&
+                        currentSessionGeneration == expectedSessionGeneration
+                },
+            ) { mutations++ },
+        )
+        assertEquals(0, mutations)
+    }
+
+    @Test
+    fun `new intent waits until terminal mutation and callback generation are captured`() {
+        val gate = OpticsCommitGate()
+        val older = gate.begin { it }
+        val terminalEntered = CountDownLatch(1)
+        val releaseTerminal = CountDownLatch(1)
+        val beginAttempted = CountDownLatch(1)
+        val beginCompleted = CountDownLatch(1)
+        val terminalState = AtomicReference("pending")
+        val commitGeneration = AtomicReference<Long?>()
+        val nextGeneration = AtomicReference<Long?>()
+
+        val completion = thread(start = true, name = "owned-optics-commit") {
+            commitGeneration.set(
+                gate.commit(older) {
+                    terminalState.set("mutating")
+                    terminalEntered.countDown()
+                    assertTrue(releaseTerminal.await(1, TimeUnit.SECONDS))
+                    terminalState.set("committed")
+                },
+            )
+        }
+        assertTrue(terminalEntered.await(1, TimeUnit.SECONDS))
+
+        val newerIntent = thread(start = true, name = "new-optics-intent") {
+            beginAttempted.countDown()
+            nextGeneration.set(gate.begin {
+                assertEquals("committed", terminalState.get())
+                it
+            })
+            beginCompleted.countDown()
+        }
+        assertTrue(beginAttempted.await(1, TimeUnit.SECONDS))
+        assertFalse(beginCompleted.await(100, TimeUnit.MILLISECONDS))
+
+        releaseTerminal.countDown()
+        assertTrue(beginCompleted.await(1, TimeUnit.SECONDS))
+        completion.join(1_000)
+        newerIntent.join(1_000)
+
+        assertFalse(completion.isAlive)
+        assertFalse(newerIntent.isAlive)
+        assertEquals(older, commitGeneration.get())
+        assertEquals(older + 1, nextGeneration.get())
+    }
 }
