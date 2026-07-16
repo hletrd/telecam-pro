@@ -179,6 +179,13 @@ class CameraEngine(private val context: Context) {
     private fun pendingOpticsTransaction(): OpticsTransaction? =
         opticsRollbackBaseline?.let { OpticsTransaction(opticsIntentGeneration.get(), it) }
 
+    /** Ownership token for resume even when no unaccepted intent needs a rollback baseline. */
+    @Synchronized
+    private fun currentOpticsTransaction(): OpticsTransaction = OpticsTransaction(
+        generation = opticsIntentGeneration.get(),
+        before = selectRollbackBaseline(cameraReady, currentOpticsSnapshot(), opticsRollbackBaseline),
+    )
+
     @Synchronized
     private fun rollbackOptics(transaction: OpticsTransaction, message: String) {
         val before = transaction.before
@@ -1068,15 +1075,15 @@ class CameraEngine(private val context: Context) {
         reconfigureCamera(id, beginOpticsTransaction())
     }
 
-    private fun reconfigureCamera(id: String?, transaction: OpticsTransaction?) {
+    private fun reconfigureCamera(id: String?, transaction: OpticsTransaction) {
         synchronized(this) {
-            if (transaction != null && !ownsOpticsTransaction(transaction)) return
+            if (!ownsOpticsTransaction(transaction)) return
             overrideId = id
             dngUnavailableNotified = false
         }
         if (!started) return
         val input = gl.inputSurface ?: run {
-            transaction?.let { rollbackOptics(it, "Preview unavailable; camera unchanged") }
+            rollbackOptics(transaction, "Preview unavailable; camera unchanged")
             return
         } // @Volatile in GlPipeline: safe cross-thread read
         updateCameraReady(false)
@@ -1085,21 +1092,21 @@ class CameraEngine(private val context: Context) {
         // the app under HAL contention. Runs on the single-thread setupExecutor so it serializes with
         // the initial open and other reopens.
         setupExecutor.execute {
-            if (transaction != null && !ownsOpticsTransaction(transaction)) return@execute
+            if (!ownsOpticsTransaction(transaction)) return@execute
             if (paused || recorder != null) return@execute
             // Resolve the id and read the characteristics BEFORE closing: these are dozens of
             // Binder IPCs (~100 ms uncached) that used to sit inside the close→open blackout —
             // the old camera keeps streaming while they run, shrinking the visible freeze.
             val sel = selectCurrentLens() ?: run {
-                transaction?.let { rollbackOptics(it, "Camera ID unavailable; camera unchanged") }
+                rollbackOptics(transaction, "Camera ID unavailable; camera unchanged")
                 return@execute
             }
             val c = cachedCaps(sel.logicalId, sel.physicalId)
                 ?: run {
-                    transaction?.let { rollbackOptics(it, "Camera unavailable; camera unchanged") }
+                    rollbackOptics(transaction, "Camera unavailable; camera unchanged")
                     return@execute
                 }
-            if (transaction != null && !ownsOpticsTransaction(transaction)) return@execute
+            if (!ownsOpticsTransaction(transaction)) return@execute
             if (paused || recorder != null) return@execute
 
             // DUAL-OPEN: open the NEXT device while the old camera keeps streaming (~120 ms of the
@@ -1111,7 +1118,7 @@ class CameraEngine(private val context: Context) {
             val old = controller
             val next = wireController()
             val candidatePublished = synchronized(this) {
-                if (transaction != null && !ownsOpticsTransaction(transaction)) {
+                if (!ownsOpticsTransaction(transaction)) {
                     false
                 } else {
                     controller = next
@@ -1146,10 +1153,8 @@ class CameraEngine(private val context: Context) {
                 deferSession = true,
                 onDeviceOpened = { deviceOk.set(true); deviceUp.countDown() },
                 onReady = {
-                    if (controller === next && !paused &&
-                        (transaction == null || ownsOpticsTransaction(transaction))
-                    ) {
-                        transaction?.let { acceptOptics(it.generation) }
+                    if (controller === next && !paused && ownsOpticsTransaction(transaction)) {
+                        acceptOptics(transaction.generation)
                         updateCameraReady(true)
                         onStatus?.invoke(null)
                         cameraRecoveryAttempts = 0
@@ -1160,9 +1165,7 @@ class CameraEngine(private val context: Context) {
                     // A concurrent-open refusal is expected on devices that cannot dual-open a
                     // shared sensor; the setup task below owns that local sequential fallback.
                     // Only an error AFTER the next device opened is a real active-controller fault.
-                    if (deviceOk.get() && controller === next &&
-                        (transaction == null || ownsOpticsTransaction(transaction))
-                    ) {
+                    if (deviceOk.get() && controller === next && ownsOpticsTransaction(transaction)) {
                         invalidateCameraReady()
                         onStatus?.invoke("Camera error: ${it.message}")
                         scheduleCameraRecovery(next)
@@ -1175,7 +1178,7 @@ class CameraEngine(private val context: Context) {
             // The blocking wait is an ownership boundary: pause, REC, or a newer reopen may have
             // superseded this attempt while the setup thread was parked. Do not publish sizes or
             // start a deferred session from an obsolete device; release every local handle.
-            if (transaction != null && !ownsOpticsTransaction(transaction)) {
+            if (!ownsOpticsTransaction(transaction)) {
                 next.close()
                 if (controller === next) {
                     controller = old
@@ -1194,7 +1197,7 @@ class CameraEngine(private val context: Context) {
             }
             // Candidate caps/sizes become externally visible only after the blocking dual-open
             // boundary confirms this generation still owns the user's intent.
-            val deliveredGeneration = transaction?.generation ?: opticsIntentGeneration.get()
+            val deliveredGeneration = transaction.generation
             onCapsReady?.invoke(c, deliveredGeneration)
             onVideoSizeChosen?.invoke(videoSize, deliveredGeneration)
             applyStabilization()
@@ -1927,7 +1930,10 @@ class CameraEngine(private val context: Context) {
             // Re-resolve selection/caps/stream geometry from CURRENT desired fields. openCamera(input)
             // reused the pre-pause selection and could mark a new mode/lens generation Ready on the
             // outgoing camera when its queued intent had observed paused and returned.
-            reconfigureCamera(overrideId, pendingOpticsTransaction())
+            // Resume always carries an ownership token. Without one, a lens/TELE tap during the
+            // dual-open wait could let this older attempt publish outgoing caps/Ready under the
+            // newer generation even when there was no pre-pause rollback baseline.
+            reconfigureCamera(overrideId, currentOpticsTransaction())
         }
     }
 
