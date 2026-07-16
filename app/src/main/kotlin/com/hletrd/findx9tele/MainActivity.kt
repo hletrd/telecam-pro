@@ -80,10 +80,12 @@ class MainActivity : ComponentActivity() {
                 val state by vm.state.collectAsState()
 
                 val cameraLauncher = rememberLauncherForActivityResult(
-                    ActivityResultContracts.RequestPermission(),
-                ) { result ->
+                    ActivityResultContracts.RequestMultiplePermissions(),
+                ) { results ->
+                    // An empty map is a canceled/interrupted request, not a denial. Preserve history
+                    // so a fresh install is never mislabeled as permanently denied.
+                    recordCameraPermissionResult(results[Manifest.permission.CAMERA])
                     refreshPermissionState()
-                    if (!result) updateCameraPermanentDenial()
                 }
                 val microphoneLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission(),
@@ -104,7 +106,9 @@ class MainActivity : ComponentActivity() {
                 }
 
                 LaunchedEffect(Unit) {
-                    if (!hasCameraPermission) cameraLauncher.launch(Manifest.permission.CAMERA)
+                    if (!hasCameraPermission && !cameraPermanentlyDenied) {
+                        cameraLauncher.launch(arrayOf(Manifest.permission.CAMERA))
+                    }
                 }
 
                 if (hasCameraPermission) {
@@ -134,7 +138,7 @@ class MainActivity : ComponentActivity() {
                 } else {
                     PermissionGate(
                         permanentlyDenied = cameraPermanentlyDenied,
-                        onRequest = { cameraLauncher.launch(Manifest.permission.CAMERA) },
+                        onRequest = { cameraLauncher.launch(arrayOf(Manifest.permission.CAMERA)) },
                         onOpenSettings = ::openAppSettings,
                         onOpenPrivacy = ::openPrivacyPolicy,
                     )
@@ -182,13 +186,15 @@ class MainActivity : ComponentActivity() {
                 edge = if (event.repeatCount == 0) CameraKeyEdge.DOWN else CameraKeyEdge.REPEAT,
             )
             if (decision.start) {
-                ownedShutterKeys += keyCode
-                val s = vm.state.value
-                if (s.mode == CaptureMode.VIDEO && !s.isRecording && s.recordAudio && !hasMicrophonePermission) {
-                    vm.onToggleRecordAudio(false)
-                    vm.onAppStatus("Recording without audio")
+                val activeTransition = updateAggregateCameraKeyOwnership(ownedShutterKeys, keyCode, ownedAfter = true)
+                if (activeTransition == true) {
+                    val s = vm.state.value
+                    if (s.mode == CaptureMode.VIDEO && !s.isRecording && s.recordAudio && !hasMicrophonePermission) {
+                        vm.onToggleRecordAudio(false)
+                        vm.onAppStatus("Recording without audio")
+                    }
                 }
-                vm.onHardwareFullKey(active = ownedShutterKeys.isNotEmpty())
+                activeTransition?.let { vm.onHardwareFullKey(active = it) }
             }
             return if (decision.consume) true else super.onKeyDown(keyCode, event)
         }
@@ -204,8 +210,8 @@ class MainActivity : ComponentActivity() {
                 edge = CameraKeyEdge.UP,
             )
             if (decision.release) {
-                ownedShutterKeys -= keyCode
-                vm.onHardwareFullKey(active = ownedShutterKeys.isNotEmpty())
+                updateAggregateCameraKeyOwnership(ownedShutterKeys, keyCode, ownedAfter = false)
+                    ?.let { vm.onHardwareFullKey(active = it) }
             }
             return if (decision.consume) true else super.onKeyUp(keyCode, event)
         }
@@ -241,12 +247,12 @@ class MainActivity : ComponentActivity() {
                     edge = edge,
                 )
                 if (decision.start) {
-                    ownedHalfPressKeys += event.keyCode
-                    vm.onHardwareHalfPress(ownedHalfPressKeys.isNotEmpty())
+                    updateAggregateCameraKeyOwnership(ownedHalfPressKeys, event.keyCode, ownedAfter = true)
+                        ?.let(vm::onHardwareHalfPress)
                 }
                 if (decision.release) {
-                    ownedHalfPressKeys -= event.keyCode
-                    vm.onHardwareHalfPress(ownedHalfPressKeys.isNotEmpty())
+                    updateAggregateCameraKeyOwnership(ownedHalfPressKeys, event.keyCode, ownedAfter = false)
+                        ?.let(vm::onHardwareHalfPress)
                 }
                 if (decision.consume) return true
             }
@@ -292,12 +298,26 @@ class MainActivity : ComponentActivity() {
     private fun refreshPermissionState() {
         hasCameraPermission = hasPermission(Manifest.permission.CAMERA)
         hasMicrophonePermission = hasPermission(Manifest.permission.RECORD_AUDIO)
-        if (!hasCameraPermission) updateCameraPermanentDenial()
+        val requestedBefore = permissionPreferences.getBoolean(CAMERA_REQUESTED_BEFORE_KEY, false)
+        if (hasCameraPermission && requestedBefore) {
+            // A Settings grant (or a later runtime grant) starts a fresh denial history. This also
+            // prevents a future Android auto-reset from inheriting an obsolete pre-grant denial.
+            permissionPreferences.edit().putBoolean(CAMERA_REQUESTED_BEFORE_KEY, false).apply()
+        }
+        cameraPermanentlyDenied = classifyCameraPermission(
+            granted = hasCameraPermission,
+            requestedBefore = requestedBefore && !hasCameraPermission,
+            shouldShowRationale = !hasCameraPermission &&
+                shouldShowRequestPermissionRationale(Manifest.permission.CAMERA),
+        ) == CameraPermissionDisposition.SETTINGS_REQUIRED
     }
 
-    private fun updateCameraPermanentDenial() {
-        cameraPermanentlyDenied = !hasPermission(Manifest.permission.CAMERA) &&
-            !shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)
+    private fun recordCameraPermissionResult(result: Boolean?) {
+        val requestedBefore = permissionPreferences.getBoolean(CAMERA_REQUESTED_BEFORE_KEY, false)
+        val updated = updatedCameraPermissionRequestHistory(requestedBefore, result)
+        if (updated != requestedBefore) {
+            permissionPreferences.edit().putBoolean(CAMERA_REQUESTED_BEFORE_KEY, updated).apply()
+        }
     }
 
     private fun hasPermission(permission: String): Boolean =
@@ -315,6 +335,8 @@ class MainActivity : ComponentActivity() {
 
     private companion object {
         const val PRIVACY_POLICY_URL = "https://hletrd.github.io/telecam-pro/privacy-policy/"
+        const val PERMISSION_PREFS_NAME = "permission_state"
+        const val CAMERA_REQUESTED_BEFORE_KEY = "camera_requested_before"
 
         // Non-standard OPPO keycodes the Find X9 Ultra camera-control button delivers to the focused app
         // (device-captured via a dispatchKeyEvent log). Two are slide notches, one is the light-press.
@@ -325,6 +347,10 @@ class MainActivity : ComponentActivity() {
         // Per-EVENT zoom multiplier: the slide repeats ~20 Hz, so ~1.04/event = a controlled
         // ~2.2x per second of continuous slide (1.15 raced 1x-10x in under two seconds).
         const val ZOOM_STEP = 1.04f
+    }
+
+    private val permissionPreferences by lazy {
+        getSharedPreferences(PERMISSION_PREFS_NAME, MODE_PRIVATE)
     }
 
     private enum class PendingAudioAction { ENABLE_AUDIO, START_RECORDING }

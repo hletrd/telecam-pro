@@ -1,6 +1,8 @@
 package com.hletrd.findx9tele
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -70,5 +72,26 @@ class HardwareInputPolicyTest {
             assertFalse(decision.release)
             assertFalse(decision.ownAfter)
         }
+    }
+
+    @Test
+    fun overlappingKeysEmitOnlyAggregateActiveAndInactiveTransitions() {
+        val owned = mutableSetOf<Int>()
+
+        assertEquals(true, updateAggregateCameraKeyOwnership(owned, keyCode = 24, ownedAfter = true))
+        assertNull(updateAggregateCameraKeyOwnership(owned, keyCode = 25, ownedAfter = true))
+        assertNull(updateAggregateCameraKeyOwnership(owned, keyCode = 24, ownedAfter = false))
+        assertEquals(false, updateAggregateCameraKeyOwnership(owned, keyCode = 25, ownedAfter = false))
+        assertTrue(owned.isEmpty())
+    }
+
+    @Test
+    fun duplicateOwnershipUpdatesAreIdempotent() {
+        val owned = mutableSetOf<Int>()
+
+        assertEquals(true, updateAggregateCameraKeyOwnership(owned, keyCode = 27, ownedAfter = true))
+        assertNull(updateAggregateCameraKeyOwnership(owned, keyCode = 27, ownedAfter = true))
+        assertEquals(false, updateAggregateCameraKeyOwnership(owned, keyCode = 27, ownedAfter = false))
+        assertNull(updateAggregateCameraKeyOwnership(owned, keyCode = 27, ownedAfter = false))
     }
 }
