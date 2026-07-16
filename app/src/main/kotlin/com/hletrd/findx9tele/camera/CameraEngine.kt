@@ -173,6 +173,11 @@ class CameraEngine(private val context: Context) {
     private fun ownsOpticsTransaction(transaction: OpticsTransaction): Boolean =
         reconfigurationOwnsGeneration(opticsIntentGeneration.get(), transaction.generation)
 
+    /** The still-current desired transaction, retained across pause until a fresh session accepts it. */
+    @Synchronized
+    private fun pendingOpticsTransaction(): OpticsTransaction? =
+        opticsRollbackBaseline?.let { OpticsTransaction(opticsIntentGeneration.get(), it) }
+
     @Synchronized
     private fun rollbackOptics(transaction: OpticsTransaction, message: String) {
         val before = transaction.before
@@ -529,6 +534,9 @@ class CameraEngine(private val context: Context) {
         videoMode = enabled
         lensChoice = resolvedLens
         controls = resolvedControls
+        // A mode intent owns automatic camera routing. Clear the previous resolved id now so a pause
+        // before its setup task cannot make resume treat the outgoing camera as an explicit override.
+        if (changed) overrideId = null
         controller?.updateControls(resolvedControls)
         if (!changed) return
         val intentGeneration = modeIntentGeneration.incrementAndGet()
@@ -541,10 +549,12 @@ class CameraEngine(private val context: Context) {
         // resolveNonTeleId) as well as the stream size. The caller has already remapped zoom and
         // lens together; this task only applies that immutable intent.
         setupExecutor.execute {
-            if (videoMode != enabled || modeIntentGeneration.get() != intentGeneration) return@execute
+            if (transaction == null || !ownsOpticsTransaction(transaction) ||
+                videoMode != enabled || modeIntentGeneration.get() != intentGeneration
+            ) return@execute
             if (paused) return@execute
             if (recorder != null) {
-                transaction?.let { rollbackOptics(it, "Stop REC first; mode unchanged") }
+                rollbackOptics(transaction, "Stop REC first; mode unchanged")
                 return@execute
             }
             val id = if (teleconverterMode) {
@@ -553,10 +563,11 @@ class CameraEngine(private val context: Context) {
                 resolveNonTeleId(lensChoice)
             }
             if (id == null) {
-                transaction?.let { rollbackOptics(it, "Camera unavailable; mode unchanged") }
+                rollbackOptics(transaction, "Camera unavailable; mode unchanged")
                 return@execute
             }
-            if (id != overrideId || controller == null) {
+            val beforeCameraId = transaction.before.selection?.let { it.physicalId ?: it.logicalId }
+            if (id != beforeCameraId || controller == null) {
                 reconfigureCamera(id, transaction) // refreshes caps, stream sizes, aspect, stabilization, reopens
             } else {
                 // Same camera (e.g. TELE mode) — still recreate when the STREAM SIZE flips between
@@ -565,14 +576,15 @@ class CameraEngine(private val context: Context) {
                 val next = choosePreviewStreamSize(sel)
                 if (next != previewStreamSize) {
                     previewStreamSize = next
-                    transaction?.let { emitPreviewAspect(it.generation) }
+                    emitPreviewAspect(transaction.generation)
                     gl.setCameraPreviewSize(next.width, next.height)
-                    reopenForSession()
-                } else if (controller != null && transaction?.before?.ready == true &&
+                    reopenForSession(transaction = transaction)
+                } else if (controller != null && transaction.before.ready &&
                     readyController === controller && !paused
                 ) {
                     // Same camera and same configured stream: the intent only changed request-side
                     // mode semantics, so the existing session is still the ready session.
+                    overrideId = id
                     acceptOptics(transaction.generation)
                     updateCameraReady(true)
                 } else {
@@ -598,6 +610,9 @@ class CameraEngine(private val context: Context) {
         teleconverterMode = resolvedTeleconverter
         controls = resolvedControls
         preTeleUnifiedZoom = Float.NaN
+        // Settings/MR optics likewise replace automatic routing; the transaction snapshot retains an
+        // explicit prior override for rollback, but resume must never reuse it as the desired camera.
+        overrideId = null
         controller?.setPinAutoFps(enabledVideo)
         controller?.updateControls(resolvedControls)
         if (!started) return
@@ -618,14 +633,16 @@ class CameraEngine(private val context: Context) {
                 return@execute
             }
             val before = transaction.before
+            val beforeCameraId = before.selection?.let { it.physicalId ?: it.logicalId }
             val structuralChange = before.videoMode != enabledVideo ||
                 before.lens != resolvedLens ||
                 before.teleconverter != resolvedTeleconverter ||
-                overrideId != id || controller == null || !before.ready || readyController !== controller
+                beforeCameraId != id || controller == null || !before.ready || readyController !== controller
             if (structuralChange) {
                 reconfigureCamera(id, transaction)
             } else {
                 setZoomRatio(resolvedControls.zoomRatio)
+                overrideId = id
                 acceptOptics(transaction.generation)
                 updateCameraReady(true)
             }
@@ -803,8 +820,12 @@ class CameraEngine(private val context: Context) {
     }
 
     /** Reopen the camera (if started) so the session type tracks [desiredHighSpeedFps]. */
-    private fun reopenForSession(expectedController: CameraController? = null) {
+    private fun reopenForSession(
+        expectedController: CameraController? = null,
+        transaction: OpticsTransaction? = null,
+    ) {
         if (!started || paused) return
+        if (transaction != null && !ownsOpticsTransaction(transaction)) return
         // Never tear the camera down under an active recording — it strands the encoder input surface
         // and gaps/corrupts the clip. The rate/open-gate change applies on the next recording instead.
         if (recorder != null) return
@@ -816,13 +837,15 @@ class CameraEngine(private val context: Context) {
         // (vendor-feature toggles are main-thread ViewModel calls) exceeds the 5s ANR watchdog and the
         // OS kills the app. setupExecutor is single-threaded, so reopens also serialize cleanly.
         setupExecutor.execute {
+            if (transaction != null && !ownsOpticsTransaction(transaction)) return@execute
             if (expectedController != null && controller !== expectedController) return@execute
             // REC may have started after this reopen was queued. Never close a live recording stream.
             if (paused || recorder != null) return@execute
             controller?.close()
             controller = null
+            if (transaction != null && !ownsOpticsTransaction(transaction)) return@execute
             if (paused || recorder != null) return@execute
-            openCamera(input)
+            openCamera(input, transaction)
         }
     }
 
@@ -923,20 +946,38 @@ class CameraEngine(private val context: Context) {
         if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
         val transaction = beginOpticsTransaction()
         val intentGeneration = lensIntentGeneration.incrementAndGet()
-        val prevLens = lensChoice
-        lensChoice = choice
+        val resolved = resolveLensOpticsIntent(
+            mode = if (videoMode) CaptureMode.VIDEO else CaptureMode.PHOTO,
+            currentLens = lensChoice,
+            currentTeleconverter = teleconverterMode,
+            currentControls = controls,
+            currentPreTeleUnifiedZoom = preTeleUnifiedZoom,
+            requestedLens = choice,
+            requestedTeleconverter = teleconverterOverride,
+            restorePreTele = restorePreTele,
+        )
+        // Publish the COMPLETE desired packet before dispatch. If pause wins, resume can reconstruct
+        // the target session from these fields instead of accepting stale selection/caps for a
+        // partially published lens choice.
+        lensChoice = resolved.lens
+        teleconverterMode = resolved.teleconverter
+        controls = resolved.controls
+        preTeleUnifiedZoom = resolved.preTeleUnifiedZoom
+        overrideId = null
         if (started) updateCameraReady(false)
         // Resolve the camera id ON setupExecutor (dozen-plus Binder IPCs; also orders resolve→reopen).
         setupExecutor.execute {
-            if (lensIntentGeneration.get() != intentGeneration || paused || recorder != null) return@execute
+            if (!ownsOpticsTransaction(transaction) ||
+                lensIntentGeneration.get() != intentGeneration || paused || recorder != null
+            ) return@execute
             // The TC state is SESSION-scoped: the session TYPE (0x80b4, the stock TC operation mode
             // that engages the real 300 mm OIS profile), the Hasselblad hints, and the afocal flip
             // are all fixed at configureStreams. Flipping TELE on the SAME camera id (the video 3×
             // band and TELE both live on standalone 4) therefore MUST still reopen — device-observed
             // otherwise: the TC stabilization kept applying after TELE off, and turning TELE on from
             // the video 3× lens never engaged it.
-            val teleChanged = teleconverterMode != teleconverterOverride
-            if (teleconverterOverride) {
+            val teleChanged = transaction.before.teleconverter != resolved.teleconverter
+            if (resolved.teleconverter) {
                 // Physical-converter shooting: pin the STANDALONE 3× camera — the converter clamps
                 // onto that lens, so the logical camera's seamless switching would zoom right off it.
                 // Digital 1–10× only, afocal flip on, RAW available (standalone id).
@@ -945,18 +986,11 @@ class CameraEngine(private val context: Context) {
                     rollbackOptics(transaction, "3× unavailable; lens unchanged")
                     return@execute
                 }
-                if (teleChanged) {
-                    preTeleUnifiedZoom = if (videoMode) {
-                        prevLens.zoomPreset * controls.zoomRatio.coerceAtLeast(1f)
-                    } else {
-                        controls.zoomRatio
-                    }
-                }
-                teleconverterMode = true
-                controls = controls.copy(zoomRatio = 1f)
-                if (overrideId != id || controller == null || teleChanged) {
+                val beforeCameraId = transaction.before.selection?.let { it.physicalId ?: it.logicalId }
+                if (beforeCameraId != id || controller == null || teleChanged) {
                     reconfigureCamera(id, transaction)
                 } else if (transaction.before.ready && readyController === controller) {
+                    overrideId = id
                     applyStabilization()
                     acceptOptics(transaction.generation)
                     updateCameraReady(true)
@@ -967,28 +1001,17 @@ class CameraEngine(private val context: Context) {
                 // Mode-split homes (see resolveNonTeleId): PHOTO picks are ZOOM PRESETS on the
                 // logical seamless camera (no reopen); VIDEO picks reopen the matching STANDALONE
                 // lens (lens-local zoom resets to 1×).
-                val unified = when {
-                    restorePreTele && !preTeleUnifiedZoom.isNaN() -> preTeleUnifiedZoom
-                    else -> choice.zoomPreset
-                }
-                preTeleUnifiedZoom = Float.NaN
-                val band = LensChoice.forZoom(unified)
-                lensChoice = band
-                val id = resolveNonTeleId(band)
+                val id = resolveNonTeleId(resolved.lens)
                 if (id == null) {
-                    rollbackOptics(transaction, "${band.label} unavailable; lens unchanged")
+                    rollbackOptics(transaction, "${resolved.lens.label} unavailable; lens unchanged")
                     return@execute
                 }
-                teleconverterMode = false
-                val targetZoom = when {
-                    videoMode -> (unified / band.zoomPreset).coerceAtLeast(1f)
-                    else -> unified
-                }
-                if (overrideId != id || controller == null || teleChanged) {
-                    controls = controls.copy(zoomRatio = targetZoom)
+                val beforeCameraId = transaction.before.selection?.let { it.physicalId ?: it.logicalId }
+                if (beforeCameraId != id || controller == null || teleChanged) {
                     reconfigureCamera(id, transaction)
                 } else if (transaction.before.ready && readyController === controller) {
-                    setZoomRatio(targetZoom)
+                    setZoomRatio(resolved.controls.zoomRatio)
+                    overrideId = id
                     acceptOptics(transaction.generation)
                     updateCameraReady(true)
                 } else {
@@ -1041,6 +1064,7 @@ class CameraEngine(private val context: Context) {
         // the app under HAL contention. Runs on the single-thread setupExecutor so it serializes with
         // the initial open and other reopens.
         setupExecutor.execute {
+            if (transaction != null && !ownsOpticsTransaction(transaction)) return@execute
             if (paused || recorder != null) return@execute
             // Resolve the id and read the characteristics BEFORE closing: these are dozens of
             // Binder IPCs (~100 ms uncached) that used to sit inside the close→open blackout —
@@ -1850,9 +1874,11 @@ class CameraEngine(private val context: Context) {
         // for the HAL device) and paid the open's Binder IPCs on the UI thread.
         setupExecutor.execute {
             if (paused) return@execute
-            val input = gl.inputSurface ?: return@execute
             if (controller != null) return@execute
-            openCamera(input)
+            // Re-resolve selection/caps/stream geometry from CURRENT desired fields. openCamera(input)
+            // reused the pre-pause selection and could mark a new mode/lens generation Ready on the
+            // outgoing camera when its queued intent had observed paused and returned.
+            reconfigureCamera(overrideId, pendingOpticsTransaction())
         }
     }
 
@@ -2341,6 +2367,58 @@ internal fun rollbackOpticsState(
 /** Rapid intents share the last Ready baseline instead of snapshotting an in-flight candidate. */
 internal fun <T> selectRollbackBaseline(cameraReady: Boolean, current: T, pendingBaseline: T?): T =
     if (cameraReady) current else pendingBaseline ?: current
+
+/** Complete synchronous lens/TELE intent retained even when its async camera preflight is paused. */
+internal data class ResolvedLensOpticsIntent(
+    val lens: LensChoice,
+    val teleconverter: Boolean,
+    val controls: ManualControls,
+    val preTeleUnifiedZoom: Float,
+)
+
+internal fun resolveLensOpticsIntent(
+    mode: CaptureMode,
+    currentLens: LensChoice,
+    currentTeleconverter: Boolean,
+    currentControls: ManualControls,
+    currentPreTeleUnifiedZoom: Float,
+    requestedLens: LensChoice,
+    requestedTeleconverter: Boolean,
+    restorePreTele: Boolean,
+): ResolvedLensOpticsIntent {
+    if (requestedTeleconverter) {
+        val baseline = if (currentTeleconverter) {
+            currentPreTeleUnifiedZoom
+        } else if (mode == CaptureMode.VIDEO) {
+            currentLens.zoomPreset * currentControls.zoomRatio.coerceAtLeast(1f)
+        } else {
+            currentControls.zoomRatio
+        }
+        return ResolvedLensOpticsIntent(
+            lens = LensChoice.TELE3X,
+            teleconverter = true,
+            controls = currentControls.copy(zoomRatio = 1f),
+            preTeleUnifiedZoom = baseline,
+        )
+    }
+
+    val unified = currentPreTeleUnifiedZoom
+        .takeIf { restorePreTele && it.isFinite() && it > 0f }
+        ?: requestedLens.zoomPreset
+    val band = LensChoice.forZoom(unified)
+    return ResolvedLensOpticsIntent(
+        lens = band,
+        teleconverter = false,
+        controls = currentControls.copy(
+            zoomRatio = if (mode == CaptureMode.VIDEO) {
+                (unified / band.zoomPreset).coerceAtLeast(1f)
+            } else {
+                unified
+            },
+        ),
+        preTeleUnifiedZoom = Float.NaN,
+    )
+}
 
 /** The largest ratioW:ratioH rect centered within srcW×srcH. */
 internal data class CropBox(val x: Int, val y: Int, val w: Int, val h: Int)

@@ -64,4 +64,54 @@ class ReconfigurationGenerationTest {
             selectRollbackBaseline(cameraReady = true, current = current, pendingBaseline = stale),
         )
     }
+
+    @Test
+    fun `tele intent is complete before asynchronous preflight`() {
+        val current = ManualControls(iso = 800, zoomRatio = 8f)
+
+        val resolved = resolveLensOpticsIntent(
+            mode = CaptureMode.PHOTO,
+            currentLens = LensChoice.TELE3X,
+            currentTeleconverter = false,
+            currentControls = current,
+            currentPreTeleUnifiedZoom = Float.NaN,
+            requestedLens = LensChoice.TELE3X,
+            requestedTeleconverter = true,
+            restorePreTele = false,
+        )
+
+        assertEquals(LensChoice.TELE3X, resolved.lens)
+        assertTrue(resolved.teleconverter)
+        assertEquals(1f, resolved.controls.zoomRatio)
+        assertEquals(8f, resolved.preTeleUnifiedZoom)
+        assertEquals(800, resolved.controls.iso)
+    }
+
+    @Test
+    fun `tele exit restores exact video framing as a complete packet`() {
+        val resolved = resolveLensOpticsIntent(
+            mode = CaptureMode.VIDEO,
+            currentLens = LensChoice.TELE3X,
+            currentTeleconverter = true,
+            currentControls = ManualControls(zoomRatio = 2f),
+            currentPreTeleUnifiedZoom = 12f,
+            requestedLens = LensChoice.TELE3X,
+            requestedTeleconverter = false,
+            restorePreTele = true,
+        )
+
+        assertEquals(LensChoice.TELE10X, resolved.lens)
+        assertFalse(resolved.teleconverter)
+        assertEquals(1.2f, resolved.controls.zoomRatio, 0.0001f)
+        assertTrue(resolved.preTeleUnifiedZoom.isNaN())
+    }
+
+    @Test
+    fun `superseding generation rejects the older complete intent`() {
+        val older = 41L
+        val newer = 42L
+
+        assertFalse(reconfigurationOwnsGeneration(newer, older))
+        assertTrue(reconfigurationOwnsGeneration(newer, newer))
+    }
 }
