@@ -54,7 +54,9 @@ FULL MANUAL CONTROL
 • Volume keys as a vibration-free hardware shutter.
 
 PHOTO
-• HEIF, JPEG, and RAW (DNG) in any combination, with device-orientation-aware rotation.
+• HEIF and JPEG can be selected separately or together. RAW (DNG) is available only in TELE mode on
+  the eligible standalone 3x camera; supported outputs can be combined. Saved formats use
+  device-orientation-aware rotation.
 
 VIDEO
 • HEVC recording with HLG or GL-baked O-Log2 profiles, plus SDR for fast delivery.

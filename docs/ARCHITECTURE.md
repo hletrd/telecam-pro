@@ -17,7 +17,7 @@
 
 ## Overview
 
-A professional single-device camera app for the **OPPO Find X9 Ultra** (Android 16 / API 36) that uses Camera2 to control the rear 3× periscope telephoto lens through a **Hasselblad "Earth Explorer" afocal 300 mm teleconverter** (≈4.286× magnification: 300 mm ÷ 70 mm). The app captures high-quality stills (HEIF + RAW/DNG) and HEVC video with HLG, O-Log2, or SDR profiles. For HAL stability, the shipping Camera2 and EGL input path is SDR/8-bit; HLG/O-Log2 uses an HEVC Main10 container profile but is not an end-to-end 10-bit source pipeline.
+A professional single-device camera app for the **OPPO Find X9 Ultra** (Android 16 / API 36) that uses Camera2 to control the rear 3× periscope telephoto lens through a **Hasselblad "Earth Explorer" afocal 300 mm teleconverter** (≈4.286× magnification: 300 mm ÷ 70 mm). The app captures processed HEIF/JPEG stills, plus RAW/DNG when TELE uses a RAW-capable standalone 3× camera, and HEVC video with HLG, O-Log2, or SDR profiles. For HAL stability, the shipping Camera2 and EGL input path is SDR/8-bit; HLG/O-Log2 uses an HEVC Main10 container profile but is not an end-to-end 10-bit source pipeline.
 
 The UI/UX reference is **Sony Alpha / Sony Xperia Pro camera operation**. Use Fn access, My Menu, MR
 banks, PASM-style exposure, compact OSD, peaking, zebra, histogram, waveform, and review zoom. Keep
@@ -35,10 +35,10 @@ Two critical consequences of the afocal converter drive the entire design:
 | Package / File | Single Responsibility |
 |---|---|
 | **camera/** | |
-| `CameraEngine.kt` | Facade orchestrating Camera2, GL, capture encoders, video recorder, sensors, and storage. Unidirectional data flow with explicit cross-thread state publication. |
-| `CameraController.kt` | Camera2 session lifecycle, request building, fallback ladder for stream configurations. Callback-driven, runs on a camera HandlerThread. |
+| `CameraEngine.kt` | Facade orchestrating Camera2, GL, capture encoders, video recorder, sensors, and storage. Serializes camera reconfiguration, owns asynchronous save/finalization lanes, and publishes cross-thread state explicitly. |
+| `CameraController.kt` | Camera2 session lifecycle, request building, and fallback plans across stream sets and session operation modes. Callback-driven, runs on a camera HandlerThread. |
 | `CameraSelector2.kt` | Detects the telephoto physical lens: finds the camera with focal length closest to 70 mm, prefers standalone ID over physical sub-camera routing. |
-| `CameraState.kt` | Enums (CaptureMode, ColorTransfer, FocusMode, DriveMode, etc.) and data classes (CameraUiState, ManualControls, CameraCaps) — the shared language between UI and engine. |
+| `CameraState.kt` | Enums plus `CameraUiState`/`CameraCaps` — the shared UI, capability, and runtime language. |
 | `CaptureCapabilities.kt` | Queries Camera2 characteristics for manual-sensor, RAW, 10-bit HDR, focus range, metering regions — gate-keeping capabilities. |
 | `ManualControls.kt` | Immutable snapshot of all pro capture parameters (focus, ISO, shutter, white balance, metering, processing). The ViewModel updates a copy; the Engine applies it to the repeating request. |
 | `RotationMath.kt` | Pure, unit-tested functions for preview/capture/EXIF rotation math and the video muxer orientation hint (extracted from CameraEngine). |
@@ -138,14 +138,17 @@ Two critical consequences of the afocal converter drive the entire design:
    - **Preview Surface** (TextureView on main thread) → live on-screen.
    - **Encoder Surface** (MediaCodec input, if recording) → encoded into MP4.
 
-**Still-photo journey (HEIF):**
-1. Camera2 → JPEG ImageReader → photoCallback on camera thread.
-2. JPEG bytes copied out of Image (which is valid only during callback).
-3. ioExecutor: decode JPEG → Bitmap → center-crop (if AspectRatio is W16_9; W4_3 is the full-sensor, no-crop default) → Matrix.postRotate by `captureRotationDegrees()` (afocal 180° + sensor + device orientation) for pixel-level rotation → encode HEIF (or write JPEG straight from the ImageReader bytes).
-4. MediaStore: create pending, write, publish on success; delete on failure.
+**Still-photo journey (processed HEIF/JPEG):**
+1. Camera2 → processed ImageReader: logical-camera photo sessions use `YUV_420_888`; standalone
+   sessions use the HAL JPEG stream.
+2. The camera callback copies the short-lived `Image` into owned JPEG bytes or an owned YUV snapshot.
+3. `ioExecutor` produces a Bitmap, center-crops 16:9 when selected, and pixel-rotates for sensor,
+   device orientation, and the afocal 180° correction. It then encodes each requested HEIF/JPEG output;
+   JPEG is re-encoded at the shot's frozen quality setting and is never a byte passthrough.
+4. MediaStore creates each output as pending, publishes on success, and deletes it on failure.
 
 **Still-photo journey (DNG/RAW):**
-1. Camera2 → RAW_SENSOR ImageReader → photoCallback on camera thread.
+1. An eligible TELE/standalone Camera2 session → RAW_SENSOR ImageReader → photoCallback on camera thread.
 2. Synchronously (Image still live): DngCreator.writeDng → map `captureRotationDegrees()` to the corresponding EXIF orientation tag → MediaStore write.
 3. Cannot pixel-rotate Bayer CFA; EXIF tag is auto-applied by RAW renderers.
 
@@ -158,11 +161,12 @@ Two critical consequences of the afocal converter drive the entire design:
 | Thread / Executor | Owner | Runs |
 |---|---|---|
 | **Main (UI)** | Android framework | Compose recomposition, ViewModel StateFlow updates, lifecycle callbacks (onStart/onStop). |
-| **mainHandler tickers** (main-thread Handler) | CameraViewModel | Periodic self-reposting Runnables: recordTicker (200 ms elapsed-time readout), levelTicker (100 ms horizon roll), orientationTicker (200 ms device orientation), infoTicker (10 s battery/storage), zoomEaseTicker (glides zoomRatio toward the hardware-key target). |
+| **mainHandler work** (main-thread Handler) | CameraViewModel | Lifecycle-owned periodic record/level/orientation/info updates, bounded zoom easing, and transient countdown/reticle work. `onStart` owns recurring registration and `onStop` removes it. |
 | **gl-pipeline** HandlerThread | GlPipeline | EGL operations, texture sampling, rendering, GL shader execution. |
-| **camera** HandlerThread | CameraController | Camera2 lifecycle and capture callbacks. Copies JPEG bytes while the Image is live and writes DNG synchronously. |
-| **setupExecutor** (single-thread) | CameraEngine | Camera characteristic IPCs (CameraManager.getCameraCharacteristics) at startup and on camera override. Debug capability logging. |
-| **ioExecutor** (single-thread) | CameraEngine | Deferred HEIF encoding (decode JPEG, center-crop, rotate, encode) off the camera thread to avoid OOM + stall. |
+| **camera** HandlerThread | CameraController | Camera2 lifecycle and capture callbacks. Copies JPEG/YUV data while the Image is live and writes DNG synchronously while the RAW Image is valid. |
+| **setupExecutor** (single-thread) | CameraEngine | Startup capability IPC plus serialized mode/lens/session reconfiguration and recovery work. |
+| **ioExecutor** (single-thread) | CameraEngine | Deferred processed-still decoding, crop/rotation, HEIF/JPEG encoding, and publication. |
+| **recording-finalization executor** (single-thread) | CameraEngine | Dedicated, rejection-safe recorder stop/muxer finalization so still encoding cannot delay clip completion. Release waits a bounded interval for this lane before GL/executor teardown. |
 | **timelapseScheduler** (scheduled) | CameraEngine | Interval-driven timelapse capture trigger every N seconds. |
 | **analysisExecutor** (single-thread) | GlPipeline | Histogram/waveform computation from GL readback (per-pixel math). |
 | **audio-capture** (implicit thread) | VideoRecorder | AudioRecord polling loop and PCM-to-AAC encoding. |
@@ -184,9 +188,12 @@ Accessed from GL + audio/video threads:
 - `VideoRecorder.running`, `inputSurface` — coordination flags and surface for encoder setup.
 
 **Race-safety patterns:**
-- **setupExecutor dispatch**: Camera selection and capability reads happen off the main thread to avoid jank; results published back to the engine as @Volatile fields, visible to GL + camera threads.
+- **setupExecutor serialization**: Camera selection/capability reads and mode/lens/recovery intents happen
+  off the main thread in one ordered lane; results are published back through explicit volatile/callback seams.
 - **Lifecycle guards**: `CameraEngine.paused` flag prevents camera open during app backgrounding (onStop → pause() sets flag, GL's queued openCamera checks it). `CameraController.closed` flag gates late-arriving open callbacks.
-- **Photo callback**: Image objects valid only during `CameraController.PhotoCallback.onPhoto()`. JPEG bytes copied out synchronously; HEIF encoding deferred to ioExecutor. DNG written synchronously (Image still live).
+- **Photo callback**: Image objects are valid only during `CameraController.PhotoCallback.onPhoto()`.
+  Processed JPEG/YUV data is copied into owned memory synchronously and encoded later on `ioExecutor`;
+  DNG is written synchronously while its RAW Image is still live.
 - **Recording**: VideoRecorder owns its video/audio threads and muxer lock; GL just writes frames to the input Surface (thread-safe by the Surface contract).
 
 ---
@@ -266,27 +273,23 @@ All rotation math (preview, capture, EXIF orientation mapping) is pure and unit-
 - Returns both logical ID (for opening) and physical ID (if it's a sub-camera of a logical multicamera).
 - **Key insight**: Prefer **physicalId == null** (standalone camera) over routing to a physical sub-camera via setPhysicalCameraId(). Routing crashes the QTI HAL.
 
-**Session fallback ladder (CameraController.configureSession):**
+**Shipping session fallback plan (`CameraController.configureSession`):**
 
-Attempt 0 (full): preview (HLG10 if supported) + JPEG + RAW
-→ Attempt 1 (drop RAW): preview + JPEG
-→ Attempt 2 (drop HLG10): preview (SDR) + JPEG
-→ Attempt 3 (preview-only): preview only
+The Camera2 input is deliberately SDR/8-bit (`tenBitHlg=false`). HLG/O-Log2 is applied later in GL and
+tagged in the encoder container; the historical HLG10 input-stream branch remains dormant and must not
+be described as the shipping source pipeline.
 
-Each onConfigureFailed increments configAttempt and retries. Once exhausted, failure is surfaced to the app.
+- A logical photo session uses preview + `YUV_420_888` processed stills. It never requests RAW because
+  RAW and the logical-camera still configuration destabilize this HAL.
+- A standalone session starts with preview + HAL JPEG and adds RAW only when the camera advertises it
+  and the current TELE capture is eligible. Fallback drops RAW before dropping the processed-still stream,
+  and preview-only is the final stream plan.
+- TELE first tries the stock-camera operation mode `0x80b4`. If every compatible stream plan is rejected,
+  the same plans are retried with `SESSION_REGULAR`. Non-TELE sessions use `SESSION_REGULAR` directly.
+- Only after both the stream and operation-mode plans are exhausted is failure surfaced to the engine.
 
-**Why the ladder:**
-- HLG10 10-bit preview + full-res JPEG + RAW together crash ChiMulticameraBase::configureStreams (`Broken pipe -32` / SIGSEGV).
-- RAW routed through a physical sub-camera's setPhysicalCameraId() crashes (`DataSpace override not allowed for format 0x20`). Only enable RAW for standalone (physicalId == null) cameras.
-- Some HAL configs demand dropping one stream to allow another.
-
-**Result in code:**
-
-```kotlin
-val useHlg = tenBitHlg && caps.supportsHlg10() && attempt < 2  // Drop HLG at attempt 2
-val useJpeg = attempt < 3  // Drop JPEG at attempt 3
-val useRaw = attempt < 1 && caps.supportsRaw && selection.physicalId == null  // Only attempt 0
-```
+This ordering preserves a processed capture whenever possible, keeps unsupported DNG out of logical
+sessions, and avoids implying that a Main10 container originated as a 10-bit Camera2 preview stream.
 
 **Auto-exposure frame-rate policy:**
 
@@ -311,7 +314,7 @@ Which camera is open depends on MODE, not just lens (`CameraEngine.resolveNonTel
 |---|---|---|
 | Photo, TC off | **Logical camera 0** (physIds 3/2/4/5) | Unified main-relative 0.6–20×; the HAL crosses physical lenses internally (seamless pinch, no reopen). Lens picks = zoom presets; chip highlight follows `LensChoice.forZoom`. |
 | Video, TC off | **Standalone lens** matching the band | Lens-local 1–10× digital; lens changes reopen. The logical camera's EIS (Standard AND Active) leaks its uncorrected warp margin (~6% of width) into the stream — preview AND recorded file — so video must not live there. |
-| TC on (any mode) | **Standalone 3× (camera 4)** | Lens-local 1–10×; afocal 180° flip; RAW/DNG available (standalone-only). |
+| TC on (any mode) | **Standalone 3× (camera 4)** | Lens-local 1–10×; afocal 180° flip; RAW/DNG is offered only when that standalone session advertises RAW. |
 
 `setVideoMode` remaps the zoom value between the unified and lens-local scales so framing carries
 across a mode flip (mirrored into UI state by `onModeChange`).
@@ -464,15 +467,17 @@ Captured via AudioRecord on a separate thread. Software PCM gain applied (user-s
 
 **Photo formats:**
 
-Users can select HEIF or JPEG for still captures (not mutually exclusive). Both capture paths start from 
-the JPEG ImageReader and apply the same rotation.
+HEIF and JPEG are processed outputs and can be selected separately or together. DNG can be selected
+alone or combined only for an eligible RAW-capable TELE/standalone session; logical photo sessions
+normalize it off. The UI prevents an empty effective output set, and the engine retains a defensive
+capability check.
 
 **HEIF (still photo):**
 
-1. Camera2 → JPEG ImageReader (full resolution).
-2. photoCallback on camera thread: copy JPEG bytes out (Image valid only during callback).
+1. Camera2 → logical `YUV_420_888` or standalone JPEG ImageReader (full resolution).
+2. photoCallback on camera thread: copy the short-lived Image into owned YUV/JPEG data.
 3. ioExecutor (off-camera thread):
-   - Decode JPEG → Bitmap.
+   - Convert/decode the owned input → Bitmap.
    - Center-crop (if AspectRatio != W4_3).
    - Matrix.postRotate(captureRotationDegrees) → new Bitmap.
    - HeifCapture.writeHeif(ParcelFileDescriptor, Bitmap) → HEIF-encoded bytes.
@@ -494,7 +499,7 @@ exposure EXIF is re-stamped after `Bitmap.compress` from the shot's own TotalCap
    - DngCreator sets EXIF orientation tag (cannot rotate Bayer pixels).
 3. MediaStore: create pending → write → publish.
 
-**Aspect ratio (HEIF only):**
+**Aspect ratio (processed stills):**
 
 ```kotlin
 data class AspectRatio(val w: Int, val h: Int) {
@@ -544,24 +549,30 @@ are stored by name for forward compatibility, and loads are defensive (unknown v
 The fixed settings panel has nine left-rail tabs:
 
 1. **My** — operator-selected shortcuts.
-2. **Shoot** — capture mode, drive/timer, still format, and framing choices.
-3. **Exposure** — PASM-like mode, ISO/shutter, EV, metering, WB, and related locks.
-4. **Focus** — AF/MF mode, focus distance, tap-AF spot, and focus assistance.
-5. **Lens** — 0.6x/1x/3x/10x selection, TELE mode, stabilization, and zoom.
+2. **Shooting** — HEIF/JPEG/DNG selection, aspect, zoom, JPEG quality, drive/interval, self-timer,
+   and MR save/recall.
+3. **Exposure** — PASM-like mode, AE lock, flicker, shutter mode/step, ISO, metering, WB/custom WB,
+   and AWB lock. EV remains on the quick Fn surface.
+4. **Focus** — AF/MF mode, tap-AF spot size/lock, and peaking level/color. Manual focus distance
+   remains on the quick Fn dial rather than this tab.
+5. **Lens** — 0.6x/1x/3x/10x selection, TELE mode, stabilization mode, and OIS.
 6. **Video** — codec, transfer, resolution, FPS, bitrate, Open Gate, and audio.
-7. **Image** — JPEG quality and device processing controls.
-8. **Assist** — peaking, zebra, scopes, grid, level, and frame lines.
-9. **Setup** — persistence, hardware controls, and app-level preferences.
+7. **Image** — edge sharpness, noise reduction, and color-effect processing.
+8. **Assist** — gamma display assist, frame lines, zebra, false color, scopes, grid, level, and punch-in.
+9. **Setup** — privacy, persistence, Fn/My Menu customization, hardware-key assignments, and the
+   diagnostic camera override reset when one is active.
 
-**Quick Fn dials (ManualDials.kt):**
+**Quick Fn controls (ManualDials.kt):**
 
-Horizontal scrolling wheels for 6 controls (focus, shutter, ISO, white balance, EV, zoom).
+Photo and video have separate configurable Fn bars with up to eight slots. The photo default exposes
+exposure mode, focus, shutter, ISO, WB, and EV; the video default adds gamma, stabilization, and audio
+scene choices. Numeric focus/shutter/ISO/WB/EV/zoom controls use the compact dial/ruler surface.
 
 **Control application:**
 
 ```kotlin
-// ViewModel.onIso(iso)
-updateControls { it.copy(iso = iso, autoExposure = false) }
+// ViewModel.onIso(iso), simplified: taking ownership of an auto-driven ISO enters Manual.
+updateControls { it.copy(iso = iso, exposureMode = ExposureMode.MANUAL) }
 // → engine.setControls(updated)
 // → CameraController.updateControls(updated)
 // → CameraController builds new CaptureRequest, applies ManualControls via applyManualControls()
@@ -589,8 +600,9 @@ All values clamped to hardware ranges (CameraCaps gates what's supported).
 See `CLAUDE.md` § **Toolchain** for complete toolchain versions and build setup details.
 
 **Quick reference:**
-- Kotlin / Compose compiler 2.4.0, AGP 9.2.1, Gradle 9.6.1
-- compileSdk 37 / targetSdk 36 / minSdk 36 (API 36 is Android 16)
+- Kotlin / Compose compiler 2.4.10, AGP 9.3.0, Gradle 9.6.1
+- Android SDK Platform / compileSdk 37; targetSdk 36 / minSdk 36 (API 36 is Android 16)
+- SDK Build Tools 36.0.0 (the AGP 9.3 default); compile and runtime API levels are intentionally decoupled
 - JDK 21 required; set JAVA_HOME for CLI builds
 - Compose BOM 2026.06.01
 
@@ -600,13 +612,22 @@ See `CLAUDE.md` § **Toolchain** for complete toolchain versions and build setup
 ./gradlew :app:lintRelease :app:assembleRelease :app:bundleRelease  # signing credentials required
 ```
 
-**Test suite:** `app/src/test/` is the source of truth (216 tests across 30 classes as of the 2026-07-10 cycle-2 pass; re-count with `./gradlew :app:testDebugUnitTest` rather than trusting this figure).
+**Test suite:** `app/src/test/` is the source of truth. Run `./gradlew :app:testDebugUnitTest` for the
+current result; do not copy a mutable test/class count into documentation.
+
+**Tracked QA behavior contract:** The ignored local `.claude/agents/qa-adversary.md` runbook implements
+this contract. A device run must receive the current session's `ANDROID_SERIAL`, derive application id
+and launch activity from the built APK, and respect any no-deployment directive. Default photo starts on
+the logical back camera at 1× / 23 mm with TELE off; TELE pins the standalone 3× camera; captures publish
+through MediaStore under `DCIM/X9Tele`; exposure modes are P, S, ISO, and M; and the settings rail has the
+nine tabs documented above. A host-only run reports device behavior as not run, never as passed or failed.
 
 **Device verification:**
 ```bash
-adb connect <device-ip>:<port>
-adb install -r app/build/outputs/apk/debug/app-debug.apk
-adb shell am start -n me.hletrd.telecampro.debug/com.hletrd.findx9tele.MainActivity
+export ANDROID_SERIAL=<current-authorized-session-serial>
+adb -s "$ANDROID_SERIAL" install -r app/build/outputs/apk/debug/app-debug.apk
+# Derive PACKAGE and ACTIVITY from the APK as documented in .claude/agents/qa-adversary.md.
+adb -s "$ANDROID_SERIAL" shell am start -n "$PACKAGE/$ACTIVITY"
 ```
 
 **Permissions:** CAMERA + RECORD_AUDIO requested at runtime (ColorOS blocks pm grant; user grants on device once).

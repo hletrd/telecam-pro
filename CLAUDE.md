@@ -38,8 +38,8 @@ deprecated APIs, latest stable everything.
 
 | Component | Version | Notes |
 |---|---|---|
-| AGP | 9.2.1 | **Kotlin is built-in** — do NOT apply `org.jetbrains.kotlin.android` |
-| Kotlin | 2.4.0 | Compose compiler plugin version; AGP supplies Kotlin Android support |
+| AGP | 9.3.0 | **Kotlin is built-in** — do NOT apply `org.jetbrains.kotlin.android` |
+| Kotlin | 2.4.10 | Compose compiler plugin version; AGP supplies Kotlin Android support |
 | Gradle | 9.6.1 | wrapper |
 | Compose BOM | 2026.06.01 | Material3 |
 | compileSdk / targetSdk / minSdk | 37 / 36 / 36 | compileSdk 37 required by lifecycle 2.11.0; decoupled from targetSdk 36 |

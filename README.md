@@ -9,7 +9,7 @@
 
 <p>
 <img src="https://img.shields.io/badge/Android-16%20(API%2036)-3DDC84?logo=android&logoColor=white" alt="Android 16" />
-<img src="https://img.shields.io/badge/Kotlin-2.4-7F52FF?logo=kotlin&logoColor=white" alt="Kotlin" />
+<img src="https://img.shields.io/badge/Kotlin-2.4.10-7F52FF?logo=kotlin&logoColor=white" alt="Kotlin" />
 <img src="https://img.shields.io/badge/Jetpack%20Compose-2026.06-4285F4?logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
 <img src="https://img.shields.io/badge/Camera2-Pro%20manual-FF7043" alt="Camera2" />
 <img src="https://img.shields.io/badge/Gradle-9.6.1-02303A?logo=gradle&logoColor=white" alt="Gradle" />
@@ -29,7 +29,9 @@
 - **Full manual control**: Focus (nonlinear slider tuned near infinity), ISO, shutter (speed or cine angle), WB (presets + Kelvin/tint), EV, metering, drive modes (single/burst/AEB/timelapse). Stop-snapping dials with haptic detents; AF→MF handoff seeds the manual slider from AF's live lens position.
 - **Volume-key hardware shutter**: vibration-free release at 300 mm (photo capture / video start-stop).
 - **Directional audio (Sound Focus / Sound Stage)**: drives the device's accepted vendor audio-HAL controls; the acoustic effect still needs an off-axis real-scene A/B check.
-- **Photos**: HEIF + JPEG + RAW (DNG), any combination, with gravity-derived orientation correction.
+- **Photos**: HEIF and JPEG can be selected separately or together in photo mode. RAW (DNG) is
+  additionally available only in TELE mode on the eligible standalone 3× camera; supported outputs
+  can be combined. All saved formats carry gravity-derived orientation correction.
 - **Video**: HEVC Main10 profiles for **HLG / O-Log2** plus 8-bit HEVC/AVC SDR. The stable v1 Camera2 and EGL input is SDR/8-bit, so HLG/O-Log2 is not marketed as end-to-end 10-bit capture. 4K UHD max (HEVC/AVC HW ceiling); 24/25/30/60 fps class + NTSC drop-frame (23.976/29.97/59.94); **Low → Max bitrate presets up to ~120 Mbps at 4K**; Open-Gate 4:3-aspect recording (2560×1920 verified on the tele); AAC 48 kHz stereo.
 - **Video stabilization = HAL OIS+EIS** (the stock "super steady" path): OIS physically cuts per-frame motion blur at 300 mm (Off / Standard / Active — the in-app labels).
 - **Vendor/HAL stability**: unstable or unmuxable device paths such as Auto HDR, high-speed 120 fps,
@@ -52,14 +54,15 @@ See [`CLAUDE.md`](CLAUDE.md) § **Toolchain** for pinned versions and build setu
 
 | Component | Version |
 |---|---|
-| AGP | 9.2.1 |
+| AGP | 9.3.0 |
 | Gradle | 9.6.1 |
-| Kotlin / Compose compiler | 2.4.0 |
+| Kotlin / Compose compiler | 2.4.10 |
 | Compose BOM | 2026.06.01 |
 | compileSdk / targetSdk / minSdk | 37 / 36 / 36 |
 | JDK | 21 (aarch64) |
 
-> compileSdk 37 satisfies the latest AndroidX (lifecycle 2.11.0); targetSdk/minSdk 36 target Android 16. AGP 9 has Kotlin built-in; the `kotlin.android` plugin is not applied.
+> Android SDK Platform 37 is required to compile the app. The runtime target and minimum remain API 36
+> (Android 16). AGP 9 has Kotlin built in; the `kotlin.android` plugin is not applied.
 
 ## Build
 
@@ -68,7 +71,8 @@ See [`CLAUDE.md`](CLAUDE.md) § **Toolchain** for pinned versions and build setu
 ./gradlew installDebug          # install to device
 ```
 
-Requires JDK 21 + Android SDK (API 36, build-tools 36.0.0). Design document: [`docs/superpowers/specs/2026-07-01-find-x9-ultra-camera-design.md`](docs/superpowers/specs/2026-07-01-find-x9-ultra-camera-design.md)
+Requires JDK 21, Android SDK Platform 37, and SDK Build Tools 36.0.0. The app still targets and requires
+API 36 at runtime. Design document: [`docs/superpowers/specs/2026-07-01-find-x9-ultra-camera-design.md`](docs/superpowers/specs/2026-07-01-find-x9-ultra-camera-design.md)
 
 ### Release build (Google Play)
 
@@ -121,12 +125,13 @@ files, not just session setup logs:
 
 ## Implementation Status
 
-- ✅ **Build & gates**: `./gradlew testDebugUnitTest lintRelease assembleRelease bundleRelease`
-  passes (87 Gradle tasks).
-- ✅ **Unit tests**: all green — see `app/src/test/` (216 tests across 30 classes as of the 2026-07-10 cycle-2 pass; the tree is the source of truth, not this count).
+- ✅ **Build & gates**: `./gradlew testDebugUnitTest lintRelease assembleRelease bundleRelease` passes.
+- ✅ **Unit tests**: `app/src/test/` is the suite source of truth; rerun
+  `./gradlew :app:testDebugUnitTest` for the current result instead of relying on a copied count.
 - ✅ **Release device smoke test on PMA110**: fresh launch starts at 1x / 23 mm with TELE off;
-  Preserve Lens and Preserve TELE default on and persist independently; rapid double-shutter produces
-  one valid DNG+HEIF pair; 4K HLG records HEVC Main10 at 30000/1001 with AAC; Open Gate records
+  Preserve Lens and Preserve TELE default on and persist independently; rapid double-shutter in an
+  eligible TELE session produces one valid DNG+HEIF pair; 4K HLG records HEVC Main10 at 30000/1001
+  with AAC; Open Gate records
   2560x1920 4:3; and no crash or ANR was observed. The installed release APK matched the locally
   verified artifact byte-for-byte and was not debuggable.
 - ✅ **UI and Play assets**: the menu hierarchy and core photo/video flows were reviewed on the
