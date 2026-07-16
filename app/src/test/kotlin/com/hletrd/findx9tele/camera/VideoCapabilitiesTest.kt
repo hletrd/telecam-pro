@@ -17,6 +17,42 @@ class VideoCapabilitiesTest {
     private val teleNormalFps = setOf(10, 15, 22, 24, 30, 60)
 
     @Test
+    fun variableOnlyAeRangeDoesNotExposeItsUpperBoundAsFixedVideo() {
+        val fixed = fixedFpsValues(listOf(15 to 30))
+        val rates = VideoFrameRate.availableFor(
+            fixed.toSet(),
+            highSpeedMaxFps = 0,
+            width = 3840,
+            height = 2160,
+            codec = VideoCodec.HEVC,
+        )
+
+        assertFalse(rates.contains(VideoFrameRate.FPS_29_97))
+        assertFalse(rates.contains(VideoFrameRate.FPS_30))
+    }
+
+    @Test
+    fun mixedAeRangesExposeOnlyExact24_30_60Parents() {
+        val fixed = fixedFpsValues(
+            listOf(15 to 30, 24 to 24, 24 to 60, 30 to 30, 60 to 60),
+        )
+        val rates = VideoFrameRate.availableFor(
+            fixed.toSet(),
+            highSpeedMaxFps = 0,
+            width = 3840,
+            height = 2160,
+            codec = VideoCodec.HEVC,
+        )
+
+        assertEquals(listOf(24, 30, 60), fixed)
+        assertTrue(rates.contains(VideoFrameRate.FPS_23_976))
+        assertTrue(rates.contains(VideoFrameRate.FPS_30))
+        assertTrue(rates.contains(VideoFrameRate.FPS_60))
+        assertFalse(rates.contains(VideoFrameRate.FPS_25))
+        assertFalse(rates.contains(VideoFrameRate.FPS_50))
+    }
+
+    @Test
     fun `4K on the tele offers drop-frame + integer rates up to 60, but never 120 high-speed`() {
         val rates = VideoFrameRate.availableFor(teleNormalFps, highSpeedMaxFps = 120, width = 3840, height = 2160, codec = VideoCodec.HEVC)
         assertTrue(rates.contains(VideoFrameRate.FPS_23_976))

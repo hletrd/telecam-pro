@@ -5,16 +5,17 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * Pins the target-fps range selection ([clampFpsBounds]/[autoFpsBounds]) — the documented
+ * Pins the target-fps range selection ([fixedFpsBounds]/[autoFpsBounds]) — the documented
  * low-light-AE bug zone: photo AUTO must get the LOWEST available floor so AE can extend exposure
- * in the dark, while manual/video paths prefer an exact fixed range (a fixed [30,30] previously
+ * in the dark, while manual/video paths require an exact fixed range (a fixed [30,30] previously
  * pinned AE at 1/30 s).
  */
 class FpsBoundsTest {
 
-    // A realistic advertised set: fixed 30/60 plus variable floors.
+    // A realistic advertised set: fixed 24/30/60 plus variable floors.
     private val ranges = listOf(
         15 to 30,
+        24 to 24,
         30 to 30,
         24 to 60,
         60 to 60,
@@ -22,20 +23,22 @@ class FpsBoundsTest {
     )
 
     @Test
-    fun clamp_prefersExactFixedRange() {
-        assertEquals(30 to 30, clampFpsBounds(ranges, 30))
-        assertEquals(60 to 60, clampFpsBounds(ranges, 60))
+    fun fixedPin_returnsOnlyExactRanges() {
+        assertEquals(24 to 24, fixedFpsBounds(ranges, 24))
+        assertEquals(30 to 30, fixedFpsBounds(ranges, 30))
+        assertEquals(60 to 60, fixedFpsBounds(ranges, 60))
     }
 
     @Test
-    fun clamp_fallsBackToCoveringRange() {
-        // No fixed [24,24]; the first range covering 24 wins (declaration order).
-        assertEquals(15 to 30, clampFpsBounds(ranges, 24))
+    fun variableOnlyRange_isNotAFixedCapabilityOrPin() {
+        val variableOnly = listOf(15 to 30)
+        assertEquals(emptyList<Int>(), fixedFpsValues(variableOnly))
+        assertNull(fixedFpsBounds(variableOnly, 30))
     }
 
     @Test
-    fun clamp_unmatchable_returnsNull() {
-        assertNull(clampFpsBounds(ranges, 120))
+    fun mixedRanges_exposeOnlySortedDistinctExactRates() {
+        assertEquals(listOf(24, 30, 60), fixedFpsValues(ranges + listOf(30 to 30)))
     }
 
     @Test
@@ -45,8 +48,8 @@ class FpsBoundsTest {
     }
 
     @Test
-    fun auto_fallsBackToClampWhenNoMatchingCeiling() {
-        assertEquals(15 to 30, autoFpsBounds(ranges, 24))
+    fun auto_fallsBackToCoveringRangeWhenNoMatchingCeiling() {
+        assertEquals(15 to 30, autoFpsBounds(listOf(15 to 30), 24))
         assertNull(autoFpsBounds(ranges, 120))
     }
 }

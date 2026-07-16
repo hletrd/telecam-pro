@@ -83,9 +83,9 @@ data class CameraCaps(
     fun supportsHlg10(): Boolean = supportedDynamicRangeProfiles.contains(DynamicRangeProfiles.HLG10)
     fun hasEffect(mode: Int): Boolean = effectModes.contains(mode)
 
-    /** Distinct fixed frame rates the device advertises (upper bound of each fps range), sorted. */
+    /** Distinct fixed frame rates whose advertised lower and upper bounds are equal, sorted. */
     val availableFps: List<Int>
-        get() = availableFpsRanges.map { it.upper }.distinct().sorted()
+        get() = fixedFpsValues(availableFpsRanges.map { it.lower to it.upper })
 
     /** Max high-speed fps advertised for [size] (0 if the camera exposes no high-speed config for it). */
     fun highSpeedFpsFor(size: Size): Int = highSpeedConfigs[size] ?: 0
@@ -98,15 +98,16 @@ data class CameraCaps(
      */
     fun videoStabControlMode(mode: VideoStabMode): Int = videoStabControlModeFor(videoStabModes, mode)
 
-    /** A supported target-fps range for [fps]: prefer a fixed [fps,fps] range, else one covering it. */
-    fun clampFpsRange(fps: Int): Range<Int>? =
-        clampFpsBounds(availableFpsRanges.map { it.lower to it.upper }, fps)
+    /** The exact fixed target range, or null when the camera cannot pin both bounds to [fps]. */
+    fun fixedFpsRange(fps: Int): Range<Int>? =
+        fixedFpsBounds(availableFpsRanges.map { it.lower to it.upper }, fps)
             ?.let { (lo, hi) -> availableFpsRanges.first { it.lower == lo && it.upper == hi } }
 
     /**
      * For AUTO-exposure preview: the supported `[floor, maxFps]` range with the LOWEST floor, so AE
      * can drop the frame rate in low light and expose longer (a brighter live view — the behavior a
-     * fixed `[maxFps,maxFps]` range prevents). Falls back to a covering/fixed range.
+     * range with both bounds at [maxFps] prevents). Falls back to a variable range covering [maxFps];
+     * video/manual pinning never uses that fallback.
      */
     fun autoFpsRange(maxFps: Int): Range<Int>? =
         autoFpsBounds(availableFpsRanges.map { it.lower to it.upper }, maxFps)
@@ -245,22 +246,30 @@ internal fun videoStabControlModeFor(videoStabModes: IntArray, mode: VideoStabMo
 }
 
 /**
- * Pure core of [CameraCaps.clampFpsRange] over plain `(lower, upper)` pairs (android.util.Range
- * getters throw "not mocked" on the JVM — same extraction pattern as [videoStabControlModeFor]):
- * prefer an exact fixed `[fps,fps]` range, else the first range covering [fps].
+ * Extracts sorted distinct fixed rates from plain lower/upper pairs. Android Range getters throw
+ * "not mocked" on the JVM, so both capability flattening and tests share this Android-free core.
  */
-internal fun clampFpsBounds(ranges: List<Pair<Int, Int>>, fps: Int): Pair<Int, Int>? =
+internal fun fixedFpsValues(ranges: List<Pair<Int, Int>>): List<Int> =
+    ranges.asSequence()
+        .filter { (lower, upper) -> lower == upper }
+        .map { it.first }
+        .distinct()
+        .sorted()
+        .toList()
+
+/** Pure exact-range core of [CameraCaps.fixedFpsRange], kept Android-free for JVM tests. */
+internal fun fixedFpsBounds(ranges: List<Pair<Int, Int>>, fps: Int): Pair<Int, Int>? =
     ranges.firstOrNull { it.first == fps && it.second == fps }
-        ?: ranges.firstOrNull { fps in it.first..it.second }
 
 /**
  * Pure core of [CameraCaps.autoFpsRange]: the `[floor, maxFps]` range with the LOWEST floor so
  * photo-AUTO AE can extend exposure in low light (the documented "AE pinned at 1/30 s" bug zone);
- * falls back to [clampFpsBounds].
+ * falls back to the first variable range covering [maxFps]. This covering fallback belongs only to
+ * photo AUTO; fixed video/manual requests use [fixedFpsBounds].
  */
 internal fun autoFpsBounds(ranges: List<Pair<Int, Int>>, maxFps: Int): Pair<Int, Int>? =
     ranges.filter { it.second == maxFps }.minByOrNull { it.first }
-        ?: clampFpsBounds(ranges, maxFps)
+        ?: ranges.firstOrNull { maxFps in it.first..it.second }
 
 /**
  * THE stream-aspect rule (16:9 standard / 4:3 open-gate-and-photo), shared by [CameraCaps.read]'s

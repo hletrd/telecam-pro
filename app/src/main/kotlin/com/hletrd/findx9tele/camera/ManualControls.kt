@@ -228,7 +228,7 @@ private fun CaptureRequest.Builder.applyExposure(
     // Photo AUTO preview can lower fps for a brighter low-light view. Video AUTO must stay at the
     // selected rate; otherwise a 29.97p clip can silently become 25p when AE chooses 1/25 s.
     val fpsRange = if (pinAutoFps || (!c.autoExposure && caps.supportsManualSensor)) {
-        caps.clampFpsRange(c.fps)
+        caps.fixedFpsRange(c.fps)
     } else {
         caps.autoFpsRange(c.fps)
     }
