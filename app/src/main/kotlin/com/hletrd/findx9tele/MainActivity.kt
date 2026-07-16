@@ -40,6 +40,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
 import androidx.core.net.toUri
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.ui.CameraActions
@@ -302,7 +303,7 @@ class MainActivity : ComponentActivity() {
         if (hasCameraPermission && requestedBefore) {
             // A Settings grant (or a later runtime grant) starts a fresh denial history. This also
             // prevents a future Android auto-reset from inheriting an obsolete pre-grant denial.
-            permissionPreferences.edit().putBoolean(CAMERA_REQUESTED_BEFORE_KEY, false).apply()
+            permissionPreferences.edit { putBoolean(CAMERA_REQUESTED_BEFORE_KEY, false) }
         }
         cameraPermanentlyDenied = classifyCameraPermission(
             granted = hasCameraPermission,
@@ -316,7 +317,7 @@ class MainActivity : ComponentActivity() {
         val requestedBefore = permissionPreferences.getBoolean(CAMERA_REQUESTED_BEFORE_KEY, false)
         val updated = updatedCameraPermissionRequestHistory(requestedBefore, result)
         if (updated != requestedBefore) {
-            permissionPreferences.edit().putBoolean(CAMERA_REQUESTED_BEFORE_KEY, updated).apply()
+            permissionPreferences.edit { putBoolean(CAMERA_REQUESTED_BEFORE_KEY, updated) }
         }
     }
 
