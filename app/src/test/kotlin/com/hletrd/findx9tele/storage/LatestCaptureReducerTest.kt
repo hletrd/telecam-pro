@@ -186,6 +186,88 @@ class LatestCaptureReducerTest {
         assertNull(restoreLatestCapture<String>(emptyList()))
     }
 
+    @Test
+    fun `successful image and video query rows are merged before ordering`() {
+        val oldPhoto = familyRow("old.heic", stillKey(at = 1_000L, sequence = 1L), "heic", id = 80L)
+        val newVideo = familyRow(
+            output = "new.mp4",
+            key = videoKey(at = 2_000L, sequence = 2L),
+            extension = "mp4",
+            id = 2L,
+            mime = "video/mp4",
+        )
+
+        val restored = restoreLatestCaptureFromQueryResults(
+            imageRows = Result.success(listOf(oldPhoto)),
+            videoRows = Result.success(listOf(newVideo)),
+        )
+
+        assertEquals("new.mp4", restored?.preferred?.output)
+    }
+
+    @Test
+    fun `image rows survive a video collection query failure`() {
+        val photo = familyRow("photo.heic", stillKey(at = 3_000L, sequence = 3L), "heic", id = 3L)
+
+        val restored = restoreLatestCaptureFromQueryResults(
+            imageRows = Result.success(listOf(photo)),
+            videoRows = Result.failure(IllegalStateException("video provider unavailable")),
+        )
+
+        assertEquals("photo.heic", restored?.preferred?.output)
+    }
+
+    @Test
+    fun `video rows survive an image collection query failure`() {
+        val video = familyRow(
+            output = "video.mp4",
+            key = videoKey(at = 4_000L, sequence = 4L),
+            extension = "mp4",
+            id = 4L,
+            mime = "video/mp4",
+        )
+
+        val restored = restoreLatestCaptureFromQueryResults(
+            imageRows = Result.failure(IllegalStateException("image provider unavailable")),
+            videoRows = Result.success(listOf(video)),
+        )
+
+        assertEquals("video.mp4", restored?.preferred?.output)
+    }
+
+    @Test
+    fun `failed or empty collection queries have no restored owner`() {
+        val failure = Result.failure<List<StoredMediaRow<String>>>(IllegalStateException("provider unavailable"))
+
+        assertNull(restoreLatestCaptureFromQueryResults(failure, failure))
+        assertNull(restoreLatestCaptureFromQueryResults(Result.success(emptyList()), failure))
+    }
+
+    @Test
+    fun `merged query results retain canonical winning family`() {
+        val key = stillKey(at = 5_000L, sequence = 5L)
+        val olderVideo = familyRow(
+            output = "older.mp4",
+            key = videoKey(at = 4_000L, sequence = 9L),
+            extension = "mp4",
+            id = 9L,
+            mime = "video/mp4",
+        )
+        val imageRows = listOf(
+            familyRow("raw.dng", key, "dng", id = 6L, mime = "image/dng"),
+            familyRow("photo.heic", key, "heic", id = 5L),
+        )
+
+        val restored = restoreLatestCaptureFromQueryResults(
+            imageRows = Result.success(imageRows),
+            videoRows = Result.success(listOf(olderVideo)),
+        )
+
+        assertEquals(key, restored?.familyKey)
+        assertEquals("photo.heic", restored?.preferred?.output)
+        assertEquals(RestoredDeleteScope.CAPTURE_FAMILY, restored?.deleteScope)
+    }
+
     private fun stillKey(at: Long, sequence: Long) =
         CaptureFamilyKey(CaptureFamilyMedia.STILL, at, sequence)
 

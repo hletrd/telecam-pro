@@ -35,14 +35,16 @@ object MediaStoreWriter {
             base = MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
             collection = StoredMediaCollection.IMAGE,
             subDir = subDir,
-        ).getOrNull() ?: return null
+        )
         val videoRows = queryOwnedPublished(
             context = context,
             base = MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
             collection = StoredMediaCollection.VIDEO,
             subDir = subDir,
-        ).getOrNull() ?: return null
-        val initial = restoreLatestCapture(imageRows + videoRows) ?: return null
+        )
+        // Media providers can fault one collection independently. Preserve every successful result
+        // so a transient Images failure cannot hide the latest video (or vice versa).
+        val initial = restoreLatestCaptureFromQueryResults(imageRows, videoRows) ?: return null
         val familyKey = initial.familyKey ?: return initial
 
         // The broad queries find the winner. One exact, bounded follow-up prevents their row limits

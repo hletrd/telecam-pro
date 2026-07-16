@@ -169,6 +169,21 @@ internal fun <T> restoreLatestCapture(rows: Iterable<StoredMediaRow<T>>): Restor
     )
 }
 
+/**
+ * Merges the independent Images and Video query results without making either collection a
+ * prerequisite. Rows from every successful query participate in one canonical capture reduction;
+ * a failed collection contributes no rows, and null means the available union had no usable owner.
+ */
+internal fun <T> restoreLatestCaptureFromQueryResults(
+    imageRows: Result<List<StoredMediaRow<T>>>,
+    videoRows: Result<List<StoredMediaRow<T>>>,
+): RestoredCapture<T>? = restoreLatestCapture(
+    buildList {
+        imageRows.getOrNull()?.let(::addAll)
+        videoRows.getOrNull()?.let(::addAll)
+    },
+)
+
 private fun CaptureFamilyMedia.matches(collection: StoredMediaCollection): Boolean = when (this) {
     CaptureFamilyMedia.STILL -> collection == StoredMediaCollection.IMAGE
     CaptureFamilyMedia.VIDEO -> collection == StoredMediaCollection.VIDEO
