@@ -68,6 +68,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.isTraversalGroup
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.paneTitle
@@ -624,7 +625,9 @@ fun CameraScreen(
                 onSnapshot = actions::onCapturePhoto,
                 onToggleTeleconverter = { actions.onToggleTeleconverter(!state.teleconverterMode) },
                 teleconverterEnabled = !state.isRecording,
-                cameraHealthy = state.cameraReady,
+                cameraHealthy = state.primaryShutterHealthy,
+                shutterEnabled = state.primaryShutterEnabled,
+                stillCaptureAvailable = state.stillCaptureReady,
                 glyphRotation = overlayRotation,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1445,6 +1448,8 @@ private fun ShutterRow(
     teleconverterEnabled: Boolean = true,
     glyphRotation: Float = 0f,
     cameraHealthy: Boolean = true,
+    shutterEnabled: Boolean = true,
+    stillCaptureAvailable: Boolean = true,
 ) {
     Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
         // Counter-rotate the review thumbnail so its image reads upright as the phone turns.
@@ -1452,9 +1457,15 @@ private fun ShutterRow(
         Spacer(modifier = Modifier.weight(1f))
         Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
             if (mode == CaptureMode.VIDEO && isRecording) {
-                SnapshotButton(onClick = onSnapshot)
+                SnapshotButton(onClick = onSnapshot, enabled = stillCaptureAvailable)
             }
-            ShutterButton(mode = mode, isRecording = isRecording, onClick = onShutter, cameraHealthy = cameraHealthy)
+            ShutterButton(
+                mode = mode,
+                isRecording = isRecording,
+                onClick = onShutter,
+                cameraHealthy = cameraHealthy,
+                enabled = shutterEnabled,
+            )
         }
         Spacer(modifier = Modifier.weight(1f))
         LensFlipButton(active = teleconverterOn, enabled = teleconverterEnabled, onClick = onToggleTeleconverter)
@@ -1469,6 +1480,7 @@ private fun ShutterButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     cameraHealthy: Boolean = true,
+    enabled: Boolean = true,
 ) {
     // Tactile confirmation: a brief press-scale + a CONFIRM haptic so the shutter never fires "into
     // the void" (designer UX-2). Full-screen flash / thumbnail fly-in are deferred.
@@ -1491,8 +1503,9 @@ private fun ShutterButton(
                     else -> "Start recording"
                 }
                 role = Role.Button
+                if (!enabled) disabled()
             }
-            .clickable(interactionSource = interaction, indication = null) {
+            .clickable(enabled = enabled, interactionSource = interaction, indication = null) {
                 view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
                 onClick()
             },
@@ -1520,16 +1533,17 @@ private fun ShutterButton(
  * recording.
  */
 @Composable
-private fun SnapshotButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun SnapshotButton(onClick: () -> Unit, enabled: Boolean, modifier: Modifier = Modifier) {
     // 48 dp touch target, 36 dp visual dot.
     Box(
         modifier = modifier
             .size(48.dp)
+            .alpha(if (enabled) 1f else 0.35f)
             .semantics {
                 contentDescription = "Take photo while recording"
                 role = Role.Button
             }
-            .clickable(onClick = onClick),
+            .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Canvas(modifier = Modifier.size(36.dp)) {

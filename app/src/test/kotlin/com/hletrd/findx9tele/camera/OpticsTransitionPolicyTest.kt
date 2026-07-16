@@ -33,7 +33,7 @@ class OpticsTransitionPolicyTest {
 
         val rolledBack = acceptedOpticsAuxState(
             teleconverter = true,
-            rawAvailable = true,
+            photoOutputs = PhotoSessionOutputs(processed = true, raw = true),
             preTeleUnifiedZoom = 8f,
             photoFormats = formats,
         )
@@ -46,13 +46,25 @@ class OpticsTransitionPolicyTest {
     fun `accepted non tele camera clears return framing and unavailable raw`() {
         val accepted = acceptedOpticsAuxState(
             teleconverter = false,
-            rawAvailable = false,
+            photoOutputs = PhotoSessionOutputs(processed = true),
             preTeleUnifiedZoom = 8f,
             photoFormats = PhotoFormats(heif = true, jpeg = false, dngRaw = true),
         )
 
         assertTrue(accepted.preTeleUnifiedZoom.isNaN())
         assertFalse(accepted.photoFormats.dngRaw)
+    }
+
+    @Test
+    fun `accepted preview-only session does not invent heif`() {
+        val accepted = acceptedOpticsAuxState(
+            teleconverter = false,
+            photoOutputs = PhotoSessionOutputs(),
+            preTeleUnifiedZoom = 8f,
+            photoFormats = PhotoFormats(heif = false, jpeg = false, dngRaw = true),
+        )
+
+        assertEquals(PhotoFormats(heif = false, jpeg = false, dngRaw = false), accepted.photoFormats)
     }
 
     @Test

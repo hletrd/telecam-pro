@@ -513,13 +513,8 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
     SectionHeader("Format")
     PhotoFormatToggles(
         formats = state.photoFormats,
-        rawAvailable = state.teleconverterMode ||
-            (
-                state.cameraOverrideId != null &&
-                    state.caps?.supportsRaw == true &&
-                    state.caps.physicalId == null &&
-                    !state.caps.isLogicalMultiCamera
-                ),
+        processedAvailable = state.photoSessionOutputs.processed,
+        rawAvailable = state.photoSessionOutputs.raw,
         onSetPhotoFormats = actions::onSetPhotoFormats,
     )
     SegmentedSelector(

@@ -14,6 +14,7 @@ import com.hletrd.findx9tele.camera.AudioInputPreference
 import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CameraCaps
 import com.hletrd.findx9tele.camera.CameraEngine
+import com.hletrd.findx9tele.camera.CameraReadyPublicationGate
 import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorEffect
@@ -41,6 +42,7 @@ import com.hletrd.findx9tele.camera.PendingControlsDisposition
 import com.hletrd.findx9tele.camera.acceptedOpticsAuxState
 import com.hletrd.findx9tele.camera.normalizedFor
 import com.hletrd.findx9tele.camera.pendingControlsForTransition
+import com.hletrd.findx9tele.camera.withDefaultIfEmpty
 import com.hletrd.findx9tele.camera.ProcessingLevel
 import com.hletrd.findx9tele.camera.reconcileZoomWithCaps
 import com.hletrd.findx9tele.camera.ShutterMode
@@ -63,6 +65,7 @@ import kotlinx.coroutines.flow.update
 class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     private val engine = CameraEngine(app)
+    private val cameraReadyPublicationGate = CameraReadyPublicationGate()
     private val settingsStore = SettingsStore(app)
     private val _state = MutableStateFlow(CameraUiState())
     val state: StateFlow<CameraUiState> = _state.asStateFlow()
@@ -192,29 +195,53 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         }
         // Camera health (engine camera/setup threads → StateFlow is thread-safe): dims the shutter
         // while the session is down instead of silently declining taps.
-        engine.onCameraReadyChange = { ready, generation ->
-            if (!ready) {
-                // False is immediately authoritative and carries no auxiliary state mutation.
-                _state.update { it.copy(cameraReady = false) }
+        engine.onCameraReadyChange = readyChange@{ publication ->
+            if (!cameraReadyPublicationGate.observe(publication)) return@readyChange
+            if (!publication.ready) {
+                // False is immediately authoritative. Preserve requested formats during the
+                // transition, but clear accepted reader truth until a new owned Ready arrives.
+                _state.update {
+                    if (cameraReadyPublicationGate.owns(publication)) {
+                        it.copy(cameraReady = false, photoSessionOutputs = publication.photoOutputs)
+                    } else {
+                        it
+                    }
+                }
             } else {
                 mainHandler.post {
                     // A newer optics intent or pause/session reopen can land while this camera-thread
-                    // callback is queued for main. Never publish stale Ready or normalize its RAW state.
-                    if (!engine.isCameraReadyForOpticsGeneration(generation)) return@post
+                    // callback is queued for main. Both generations bind its output snapshot.
+                    if (!engine.isCameraReadyPublicationCurrent(publication)) return@post
+                    var formatStatus: String? = null
                     _state.update { current ->
+                        if (!cameraReadyPublicationGate.owns(publication)) return@update current
                         // RAW truth and the pre-TELE return baseline change only when a camera intent
                         // is accepted. Optimistic normalization made a failed TELE-off irreversible.
                         val accepted = acceptedOpticsAuxState(
                             teleconverter = current.teleconverterMode,
-                            rawAvailable = rawAvailable(current),
+                            photoOutputs = publication.photoOutputs,
                             preTeleUnifiedZoom = preTeleUnifiedZoom,
                             photoFormats = current.photoFormats,
                         )
                         preTeleUnifiedZoom = accepted.preTeleUnifiedZoom
+                        formatStatus = when {
+                            !publication.photoOutputs.hasStillTarget ->
+                                "Still capture unavailable in current session"
+                            current.photoFormats.wantsProcessedStill &&
+                                !accepted.photoFormats.wantsProcessedStill && accepted.photoFormats.dngRaw ->
+                                "Processed still unavailable; using DNG"
+                            current.photoFormats.dngRaw && !accepted.photoFormats.dngRaw ->
+                                "RAW unavailable in current session"
+                            else -> null
+                        }
                         current.copy(
                             cameraReady = true,
+                            photoSessionOutputs = publication.photoOutputs,
                             photoFormats = accepted.photoFormats,
                         )
+                    }
+                    if (cameraReadyPublicationGate.owns(publication)) {
+                        formatStatus?.let(::showStatus)
                     }
                 }
             }
@@ -422,7 +449,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 rememberSettings = rememberSettings ?: it.rememberSettings,
                 controls = cSynced,
                 transfer = e.transfer,
-                photoFormats = PhotoFormats(e.heif, e.jpeg, e.dngRaw).normalizedFor(restoredTeleconverter),
+                photoFormats = PhotoFormats(e.heif, e.jpeg, e.dngRaw).withDefaultIfEmpty(),
                 mode = e.mode,
                 lens = restoredLens,
                 teleconverterMode = restoredTeleconverter,
@@ -974,16 +1001,14 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
     override fun onSetPhotoFormats(formats: PhotoFormats) {
         val s = _state.value
-        _state.update { it.copy(photoFormats = formats.normalizedFor(rawAvailable(s)), activeMemorySlot = null) }
+        _state.update {
+            it.copy(
+                photoFormats = formats.normalizedFor(s.photoSessionOutputs),
+                activeMemorySlot = null,
+            )
+        }
         scheduleSettingsSave()
     }
-
-    private fun rawAvailable(s: CameraUiState): Boolean = s.teleconverterMode || (
-        s.cameraOverrideId != null &&
-            s.caps?.supportsRaw == true &&
-            s.caps.physicalId == null &&
-            !s.caps.isLogicalMultiCamera
-        )
     override fun onAspectRatio(ratio: AspectRatio) {
         engine.setAspectRatio(ratio)
         _state.update { it.copy(aspectRatio = ratio, activeMemorySlot = null) }
@@ -1287,8 +1312,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
      * instant acknowledgment every press reads as shutter lag or a dead button.
      */
     private fun fireShutterWithFeedback() {
-        _state.update { it.copy(shutterFlashTick = it.shutterFlashTick + 1) }
-        engine.capturePhoto(_state.value.photoFormats)
+        val formats = _state.value.photoFormats
+        if (engine.capturePhoto(formats)) {
+            _state.update { it.copy(shutterFlashTick = it.shutterFlashTick + 1) }
+        }
     }
 
     fun onHardwareShutter() = onHardwareFullKey(active = true)
@@ -1314,7 +1341,14 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     override fun onCapturePhoto() {
         if (_state.value.timerCountdownSec > 0) return // countdown already in progress; ignore re-tap
-        val seconds = _state.value.timer.seconds
+        val state = _state.value
+        if (!state.stillCaptureReady) {
+            // Surface the engine's authoritative session status now; never run a known-impossible
+            // 2/5/10-second countdown for a preview-only accepted session.
+            fireShutterWithFeedback()
+            return
+        }
+        val seconds = state.timer.seconds
         if (seconds <= 0) fireShutterWithFeedback() else startCountdown(seconds)
     }
 

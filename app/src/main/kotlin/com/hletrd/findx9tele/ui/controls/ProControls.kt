@@ -618,9 +618,11 @@ fun TransferSelector(
 fun PhotoFormatToggles(
     formats: PhotoFormats,
     onSetPhotoFormats: (PhotoFormats) -> Unit,
+    processedAvailable: Boolean,
     rawAvailable: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    val processedSelected = processedAvailable && formats.wantsProcessedStill
     val rawSelected = rawAvailable && formats.dngRaw
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text("Output", color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
@@ -628,7 +630,7 @@ fun PhotoFormatToggles(
             FilterChip(
                 selected = formats.heif,
                 onClick = { onSetPhotoFormats(formats.copy(heif = !formats.heif)) },
-                enabled = !formats.heif || formats.jpeg || rawSelected,
+                enabled = processedAvailable && (!formats.heif || formats.jpeg || rawSelected),
                 label = { Text("HEIF") },
                 colors = pixelChipColors(),
                 border = pixelChipBorder(formats.heif),
@@ -636,7 +638,7 @@ fun PhotoFormatToggles(
             FilterChip(
                 selected = formats.jpeg,
                 onClick = { onSetPhotoFormats(formats.copy(jpeg = !formats.jpeg)) },
-                enabled = !formats.jpeg || formats.heif || rawSelected,
+                enabled = processedAvailable && (!formats.jpeg || formats.heif || rawSelected),
                 label = { Text("JPEG") },
                 colors = pixelChipColors(),
                 border = pixelChipBorder(formats.jpeg),
@@ -644,15 +646,27 @@ fun PhotoFormatToggles(
             FilterChip(
                 selected = formats.dngRaw,
                 onClick = { onSetPhotoFormats(formats.copy(dngRaw = !formats.dngRaw)) },
-                enabled = rawAvailable && (!formats.dngRaw || formats.wantsProcessedStill),
-                label = { Text(if (rawAvailable) "DNG" else "DNG · TELE only") },
+                enabled = rawAvailable && (!formats.dngRaw || processedSelected),
+                label = { Text("DNG") },
                 colors = pixelChipColors(),
                 border = pixelChipBorder(formats.dngRaw),
             )
         }
-        if (!rawAvailable) {
+        if (!processedAvailable && !rawAvailable) {
             Text(
-                "RAW is available in TELE or an eligible standalone camera session.",
+                "Still capture is unavailable in the current camera session.",
+                color = CameraColors.TextSecondary,
+                style = MaterialTheme.typography.labelSmall,
+            )
+        } else if (!rawAvailable) {
+            Text(
+                "RAW is unavailable in the current camera session.",
+                color = CameraColors.TextSecondary,
+                style = MaterialTheme.typography.labelSmall,
+            )
+        } else if (!processedAvailable) {
+            Text(
+                "Processed stills are unavailable; this session captures DNG only.",
                 color = CameraColors.TextSecondary,
                 style = MaterialTheme.typography.labelSmall,
             )

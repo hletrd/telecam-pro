@@ -22,12 +22,12 @@ internal data class AcceptedOpticsAuxState(
 /** Auxiliary UI state changes only when the desired camera transaction reaches Ready. */
 internal fun acceptedOpticsAuxState(
     teleconverter: Boolean,
-    rawAvailable: Boolean,
+    photoOutputs: PhotoSessionOutputs,
     preTeleUnifiedZoom: Float,
     photoFormats: PhotoFormats,
 ): AcceptedOpticsAuxState = AcceptedOpticsAuxState(
     preTeleUnifiedZoom = if (teleconverter) preTeleUnifiedZoom else Float.NaN,
-    photoFormats = photoFormats.normalizedFor(rawAvailable),
+    photoFormats = photoFormats.normalizedFor(photoOutputs),
 )
 
 internal enum class VideoSizeRequestSource { INTERACTIVE, RECALL }

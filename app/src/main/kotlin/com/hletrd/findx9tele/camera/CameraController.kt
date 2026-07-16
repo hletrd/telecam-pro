@@ -36,7 +36,7 @@ import java.util.concurrent.Executor
  */
 class CameraController(context: Context) {
 
-    fun interface Ready { fun onReady() }
+    fun interface Ready { fun onReady(outputs: PhotoSessionOutputs) }
     fun interface ErrorCb { fun onError(t: Throwable) }
 
     interface PhotoCallback {
@@ -449,7 +449,12 @@ class CameraController(context: Context) {
                     session = s
                     if (BuildConfig.DEBUG) Log.i(TAG, "Session configured (fallback=$attempt, hlg=$useHlg, jpeg=$useJpeg, raw=$useRaw, vendorLog=$vendorLogMode)")
                     when (sessionStartDelivery(startPreview())) {
-                        SessionStartDelivery.READY -> onReady.onReady()
+                        SessionStartDelivery.READY -> onReady.onReady(
+                            acceptedPhotoSessionOutputs(
+                                processedReaderPresent = jpegReader != null,
+                                rawReaderPresent = rawReader != null,
+                            ),
+                        )
                         SessionStartDelivery.ERROR ->
                             onError.onError(IllegalStateException("repeating preview request failed"))
                     }
@@ -503,7 +508,7 @@ class CameraController(context: Context) {
                     session = s
                     if (BuildConfig.DEBUG) Log.i(TAG, "High-speed session configured (${highSpeedFps}fps)")
                     when (sessionStartDelivery(startHighSpeedPreview())) {
-                        SessionStartDelivery.READY -> onReady.onReady()
+                        SessionStartDelivery.READY -> onReady.onReady(PhotoSessionOutputs())
                         SessionStartDelivery.ERROR ->
                             onError.onError(IllegalStateException("high-speed repeating request failed"))
                     }
@@ -786,9 +791,6 @@ class CameraController(context: Context) {
         postToCamera { startPreview() }
     }
 
-    /** Whether the ACTIVE session has a RAW stream (standalone cameras only on this HAL). */
-    val hasRawStream: Boolean get() = rawReader != null
-
     fun capturePhoto(wantJpeg: Boolean, wantRaw: Boolean, cb: PhotoCallback) {
         val posted = postToCamera {
             // Always surface a result through the callback (even on the no-target/not-ready paths) so a
@@ -796,7 +798,7 @@ class CameraController(context: Context) {
             val camera = device ?: return@postToCamera cb.onError(IllegalStateException("Camera not ready"))
             val s = session ?: return@postToCamera cb.onError(IllegalStateException("Camera session not ready"))
             val jpeg = jpegReader?.surface?.takeIf { wantJpeg }
-            val raw = rawReader?.surface?.takeIf { wantRaw && caps.supportsRaw }
+            val raw = rawReader?.surface?.takeIf { wantRaw }
             if (jpeg == null && raw == null) {
                 return@postToCamera cb.onError(
                     IllegalStateException("No capture target — enable HEIF, JPEG, or DNG (the session may have fallen back to preview-only)"),
@@ -1062,6 +1064,15 @@ internal enum class SessionStartDelivery { READY, ERROR }
 /** Configured is not Ready until the initial repeating request was accepted. */
 internal fun sessionStartDelivery(repeatingRequestAccepted: Boolean): SessionStartDelivery =
     if (repeatingRequestAccepted) SessionStartDelivery.READY else SessionStartDelivery.ERROR
+
+/** Accepted-output truth comes from created readers, not the fallback plan that requested them. */
+internal fun acceptedPhotoSessionOutputs(
+    processedReaderPresent: Boolean,
+    rawReaderPresent: Boolean,
+): PhotoSessionOutputs = PhotoSessionOutputs(
+    processed = processedReaderPresent,
+    raw = rawReaderPresent,
+)
 
 /** What the session fallback ladder enables at a given attempt — see [CameraController]'s ladder doc. */
 internal data class SessionAttemptPlan(

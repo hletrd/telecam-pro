@@ -90,29 +90,48 @@ class CameraEngine(private val context: Context) {
     // changes clear it before their asynchronous reopen is queued so REC cannot race the teardown.
     @Volatile private var cameraReady = false
     @Volatile private var readyController: CameraController? = null
+    @Volatile private var acceptedCameraSession: AcceptedCameraSession? = null
     private val cameraSessionGeneration = java.util.concurrent.atomic.AtomicLong(0)
+    private val cameraReadyPublicationSequence = java.util.concurrent.atomic.AtomicLong(0)
     private val opticsIntentGeneration = java.util.concurrent.atomic.AtomicLong(0)
     private val opticsCommitGate = OpticsCommitGate(opticsIntentGeneration, this)
     // Camera-health signal for the UI (dim the shutter, show a persistent OSD tag while down):
     // fires on every cameraReady flip. A silent scheduleCameraRecovery exhaustion previously left a
     // black viewfinder behind a fully interactive-looking shutter with zero indication.
-    var onCameraReadyChange: ((ready: Boolean, generation: Long) -> Unit)? = null
+    var onCameraReadyChange: ((CameraReadyPublication) -> Unit)? = null
     /** Restores UI optics when a current-generation camera switch fails before closing the old one. */
     var onOpticsRollback: ((CaptureMode, LensChoice, Boolean, ManualControls, String?, generation: Long) -> Unit)? = null
 
     // AF engine state for the reticle color, mapped from the controller's raw CONTROL_AF_STATE.
     var onAfIndication: ((AfIndication) -> Unit)? = null
 
-    private fun updateCameraReady(ready: Boolean) {
-        if (!ready) cameraSessionGeneration.incrementAndGet()
-        cameraReady = ready
-        if (ready) readyController = controller
-        onCameraReadyChange?.invoke(ready, opticsIntentGeneration.get())
-    }
+    /** Captures callback ordering while the caller still owns the engine monitor/state mutation. */
+    private fun nextCameraReadyPublication(
+        ready: Boolean,
+        opticsGeneration: Long,
+        sessionGeneration: Long,
+        photoOutputs: PhotoSessionOutputs = PhotoSessionOutputs(),
+    ): CameraReadyPublication = CameraReadyPublication(
+        sequence = cameraReadyPublicationSequence.incrementAndGet(),
+        ready = ready,
+        opticsGeneration = opticsGeneration,
+        sessionGeneration = sessionGeneration,
+        photoOutputs = photoOutputs,
+    )
 
     private fun invalidateCameraReady() {
-        readyController = null
-        updateCameraReady(false)
+        val publication = synchronized(this) {
+            val sessionGeneration = cameraSessionGeneration.incrementAndGet()
+            cameraReady = false
+            readyController = null
+            acceptedCameraSession = null
+            nextCameraReadyPublication(
+                ready = false,
+                opticsGeneration = opticsIntentGeneration.get(),
+                sessionGeneration = sessionGeneration,
+            )
+        }
+        onCameraReadyChange?.invoke(publication)
     }
 
     private fun reconcileControlsWithCaps(cameraCaps: CameraCaps) {
@@ -143,6 +162,13 @@ class CameraEngine(private val context: Context) {
         val ready: Boolean,
         val readyController: CameraController?,
         val sessionGeneration: Long,
+        val photoSessionOutputs: PhotoSessionOutputs,
+    )
+
+    private data class AcceptedCameraSession(
+        val controller: CameraController,
+        val sessionGeneration: Long,
+        val outputs: PhotoSessionOutputs,
     )
 
     private data class OpticsTransaction(val generation: Long, val before: OpticsSnapshot)
@@ -164,10 +190,11 @@ class CameraEngine(private val context: Context) {
         ready = cameraReady,
         readyController = readyController,
         sessionGeneration = cameraSessionGeneration.get(),
+        photoSessionOutputs = acceptedCameraSession?.outputs ?: PhotoSessionOutputs(),
     )
 
     private fun <T> beginOpticsTransaction(publishDesiredOptics: () -> T): Pair<OpticsTransaction, T> {
-        val (result, publicationGeneration) = opticsCommitGate.begin { generation ->
+        val (result, publication) = opticsCommitGate.begin { generation ->
             // A second tap can arrive while the first switch is still preflighting. Both must roll
             // back to the last Ready state, never to the first tap's unaccepted intermediate fields.
             val before = selectRollbackBaseline(cameraReady, currentOpticsSnapshot(), opticsRollbackBaseline)
@@ -180,9 +207,14 @@ class CameraEngine(private val context: Context) {
             // fields while the outgoing controller still presents itself as Ready.
             cameraReady = false
             readyController = null
-            (transaction to desired) to generation
+            acceptedCameraSession = null
+            (transaction to desired) to nextCameraReadyPublication(
+                ready = false,
+                opticsGeneration = generation,
+                sessionGeneration = cameraSessionGeneration.get(),
+            )
         }
-        onCameraReadyChange?.invoke(false, publicationGeneration)
+        onCameraReadyChange?.invoke(publication)
         return result
     }
 
@@ -195,28 +227,41 @@ class CameraEngine(private val context: Context) {
     private fun commitOpticsReady(
         expectedGeneration: Long,
         expectedController: CameraController,
-        expectedSessionGeneration: Long? = null,
+        photoOutputs: PhotoSessionOutputs,
+        expectedSessionGeneration: Long,
         terminalMutation: () -> Unit = {},
     ): Boolean {
         // terminalMutation must only update engine fields or enqueue non-blocking GL/controller
         // handler work. Never perform Binder IPC, close resources, or invoke external callbacks
         // while the optics monitor is held.
+        var publication: CameraReadyPublication? = null
         val publicationGeneration = opticsCommitGate.commit(
             expectedGeneration = expectedGeneration,
             ownsTerminal = {
                 controller === expectedController && !paused &&
-                    (expectedSessionGeneration == null ||
-                        cameraSessionGeneration.get() == expectedSessionGeneration)
+                    cameraSessionGeneration.get() == expectedSessionGeneration
             },
         ) {
             terminalMutation()
             opticsRollbackBaseline = null
             cameraReady = true
             readyController = expectedController
+            val sessionGeneration = cameraSessionGeneration.get()
+            acceptedCameraSession = AcceptedCameraSession(
+                controller = expectedController,
+                sessionGeneration = sessionGeneration,
+                outputs = photoOutputs,
+            )
+            publication = nextCameraReadyPublication(
+                ready = true,
+                opticsGeneration = expectedGeneration,
+                sessionGeneration = sessionGeneration,
+                photoOutputs = photoOutputs,
+            )
             cameraRecoveryAttempts = 0
         } ?: return false
         coldStartRetryGate.success(publicationGeneration)
-        onCameraReadyChange?.invoke(true, publicationGeneration)
+        onCameraReadyChange?.invoke(checkNotNull(publication))
         return true
     }
 
@@ -236,6 +281,7 @@ class CameraEngine(private val context: Context) {
                 commitOpticsReady(
                     transaction.generation,
                     expectedController,
+                    transaction.before.photoSessionOutputs,
                     transaction.before.sessionGeneration,
                     terminalMutation,
                 )
@@ -307,10 +353,35 @@ class CameraEngine(private val context: Context) {
         gl.setCameraPreviewSize(before.previewStreamSize.width, before.previewStreamSize.height)
         seedGlZoom()
         applyStabilization()
-        updateCameraReady(
-            before.ready && before.readyController === controller && !paused &&
-                before.sessionGeneration == cameraSessionGeneration.get(),
-        )
+        val restoreReady = before.ready && before.readyController === controller && !paused &&
+            before.sessionGeneration == cameraSessionGeneration.get()
+        val readyPublication = if (restoreReady) {
+            val restoredController = checkNotNull(controller)
+            cameraReady = true
+            readyController = restoredController
+            acceptedCameraSession = AcceptedCameraSession(
+                controller = restoredController,
+                sessionGeneration = before.sessionGeneration,
+                outputs = before.photoSessionOutputs,
+            )
+            nextCameraReadyPublication(
+                ready = true,
+                opticsGeneration = transaction.generation,
+                sessionGeneration = before.sessionGeneration,
+                photoOutputs = before.photoSessionOutputs,
+            )
+        } else {
+            val sessionGeneration = cameraSessionGeneration.incrementAndGet()
+            cameraReady = false
+            readyController = null
+            acceptedCameraSession = null
+            nextCameraReadyPublication(
+                ready = false,
+                opticsGeneration = transaction.generation,
+                sessionGeneration = sessionGeneration,
+            )
+        }
+        onCameraReadyChange?.invoke(readyPublication)
         onStatus?.invoke(message)
     }
     @Volatile private var previewSurface: Surface? = null
@@ -567,30 +638,35 @@ class CameraEngine(private val context: Context) {
         invalidateCameraReady()
         controller?.close() // idempotent: closes any prior controller so two never race for the device
         val ctrl = wireController()
-        val installed = synchronized(this) {
+        val installedPublication = synchronized(this) {
             if (paused || !reconfigurationOwnsGeneration(
                     opticsIntentGeneration.get(),
                     expectedOpticsGeneration,
                 )
             ) {
-                false
+                null
             } else {
                 // Controller replacement shares the terminal-commit monitor, so an obsolete
                 // callback cannot pass identity and publish Ready across this assignment.
                 controller = ctrl
                 cameraReady = false
                 readyController = null
-                cameraSessionGeneration.incrementAndGet()
-                true
+                acceptedCameraSession = null
+                val sessionGeneration = cameraSessionGeneration.incrementAndGet()
+                nextCameraReadyPublication(
+                    ready = false,
+                    opticsGeneration = expectedOpticsGeneration,
+                    sessionGeneration = sessionGeneration,
+                )
             }
         }
-        if (!installed) {
+        if (installedPublication == null) {
             ctrl.close()
             return
         }
         // Re-assert the atomic install state in case the outgoing controller reported Ready after
         // the earlier invalidation but before replacement acquired the monitor.
-        onCameraReadyChange?.invoke(false, expectedOpticsGeneration)
+        onCameraReadyChange?.invoke(installedPublication)
         ctrl.open(
             selection = sel,
             caps = c,
@@ -604,12 +680,17 @@ class CameraEngine(private val context: Context) {
             videoStabHalMode = c.videoStabControlMode(videoStabMode),
             teleconverterMode = teleconverterMode,
             pinAutoFps = videoMode,
-            onReady = {
+            onReady = { outputs ->
                 // Generation, controller identity, rollback acceptance, and Ready publication are
                 // one commit. A superseding intent cannot land between the check and publication.
                 // Status messages auto-expire in the ViewModel; an untagged old success must not
                 // clear a newer transaction's message after the owned commit.
-                commitOpticsReady(expectedOpticsGeneration, ctrl)
+                commitOpticsReady(
+                    expectedGeneration = expectedOpticsGeneration,
+                    expectedController = ctrl,
+                    photoOutputs = outputs,
+                    expectedSessionGeneration = installedPublication.sessionGeneration,
+                )
             },
             onError = {
                 if (controller === ctrl &&
@@ -634,8 +715,14 @@ class CameraEngine(private val context: Context) {
         reconfigurationOwnsGeneration(opticsIntentGeneration.get(), generation)
 
     /** Rechecks a queued UI Ready publication after it crosses onto the main thread. */
-    fun isCameraReadyForOpticsGeneration(generation: Long): Boolean =
-        cameraReadyPublicationIsCurrent(opticsIntentGeneration.get(), generation, cameraReady)
+    fun isCameraReadyPublicationCurrent(publication: CameraReadyPublication): Boolean =
+        cameraReadyPublicationIsCurrent(
+            currentOpticsGeneration = opticsIntentGeneration.get(),
+            expectedOpticsGeneration = publication.opticsGeneration,
+            currentSessionGeneration = cameraSessionGeneration.get(),
+            expectedSessionGeneration = publication.sessionGeneration,
+            cameraReady = cameraReady,
+        )
 
     fun setVideoMode(enabled: Boolean, resolvedLens: LensChoice, resolvedControls: ManualControls) {
         // Publish one already-resolved optics packet before queuing any reconfiguration. Keeping the
@@ -960,7 +1047,7 @@ class CameraEngine(private val context: Context) {
         // and gaps/corrupts the clip. The rate/open-gate change applies on the next recording instead.
         if (recorder != null) return
         val input = gl.inputSurface ?: return
-        updateCameraReady(false)
+        invalidateCameraReady()
         // Run the close+reopen OFF the main thread. close() blocks until the HAL device is released
         // (bounded join) and openCamera() issues several getCameraCharacteristics/openCamera Binder
         // calls; on this HAL those can take seconds under contention, so doing it on the UI thread
@@ -1234,9 +1321,6 @@ class CameraEngine(private val context: Context) {
                 ?: cachedIdForFocal(choice.targetEquivMm)
         }
 
-    // One-time "DNG: TELE mode only" notifier; re-armed whenever the camera changes.
-    @Volatile private var dngUnavailableNotified = false
-
     fun setCameraOverride(id: String?) {
         // Switching the physical lens mid-recording reconfigures the camera under the encoder and
         // gaps/corrupts the clip. Refuse until recording stops; the UI also gates this.
@@ -1253,7 +1337,6 @@ class CameraEngine(private val context: Context) {
         synchronized(this) {
             if (!ownsOpticsTransaction(transaction)) return
             overrideId = id
-            dngUnavailableNotified = false
         }
         if (!started) return
         val input = gl.inputSurface ?: run {
@@ -1267,7 +1350,7 @@ class CameraEngine(private val context: Context) {
             }
             return
         } // @Volatile in GlPipeline: safe cross-thread read
-        updateCameraReady(false)
+        invalidateCameraReady()
         // Off the main thread (same reason as reopenForSession): close() blocks on the HAL device
         // release and select/read/openCamera are several Binder IPCs — on the UI thread this ANR-kills
         // the app under HAL contention. Runs on the single-thread setupExecutor so it serializes with
@@ -1312,27 +1395,32 @@ class CameraEngine(private val context: Context) {
             // one, so the old error handler's identity guard no-ops and its close() self-runs.
             val old = controller
             val next = wireController()
-            val candidatePublished = synchronized(this) {
+            val candidatePublication = synchronized(this) {
                 if (!ownsOpticsTransaction(transaction)) {
-                    false
+                    null
                 } else {
                     controller = next
                     cameraReady = false
                     readyController = null
-                    cameraSessionGeneration.incrementAndGet()
+                    acceptedCameraSession = null
+                    val sessionGeneration = cameraSessionGeneration.incrementAndGet()
                     selection = sel
                     caps = c
                     reconcileControlsWithCaps(c)
                     videoSize = chooseVideoSize(sel)
                     previewStreamSize = choosePreviewStreamSize(sel)
-                    true
+                    nextCameraReadyPublication(
+                        ready = false,
+                        opticsGeneration = transaction.generation,
+                        sessionGeneration = sessionGeneration,
+                    )
                 }
             }
-            if (!candidatePublished) {
+            if (candidatePublication == null) {
                 next.close()
                 return@execute
             }
-            onCameraReadyChange?.invoke(false, transaction.generation)
+            onCameraReadyChange?.invoke(candidatePublication)
 
             seedGlZoom()
             val deviceUp = java.util.concurrent.CountDownLatch(1)
@@ -1350,8 +1438,13 @@ class CameraEngine(private val context: Context) {
                 pinAutoFps = videoMode,
                 deferSession = true,
                 onDeviceOpened = { deviceOk.set(true); deviceUp.countDown() },
-                onReady = {
-                    commitOpticsReady(transaction.generation, next)
+                onReady = { outputs ->
+                    commitOpticsReady(
+                        expectedGeneration = transaction.generation,
+                        expectedController = next,
+                        photoOutputs = outputs,
+                        expectedSessionGeneration = candidatePublication.sessionGeneration,
+                    )
                 },
                 onError = {
                     deviceUp.countDown() // an open-phase failure also releases the latch (fallback)
@@ -1502,36 +1595,50 @@ class CameraEngine(private val context: Context) {
 
     // ---- Photo ----
 
-    fun capturePhoto(formats: PhotoFormats) {
+    private fun currentAcceptedCameraSession(): AcceptedCameraSession? {
+        val accepted = acceptedCameraSession ?: return null
+        return accepted.takeIf {
+            cameraReady && !paused && controller === it.controller &&
+                cameraSessionGeneration.get() == it.sessionGeneration
+        }
+    }
+
+    private fun acceptedSessionIsCurrent(accepted: AcceptedCameraSession): Boolean =
+        acceptedCameraSession === accepted && currentAcceptedCameraSession() === accepted
+
+    /** Returns true only when this press was admitted to a real still target. */
+    fun capturePhoto(formats: PhotoFormats): Boolean {
         // Same gate startRecording has: during a session-key reopen (cameraReady=false) the
         // controller guards make a capture attempt safe but silent — give the user the status
         // instead of a shutter press that does nothing.
-        if (!cameraReady) {
+        val accepted = currentAcceptedCameraSession()
+        if (accepted == null) {
             onStatus?.invoke("Camera reconfiguring")
-            return
+            return false
         }
-        val ctrl = controller ?: return
-        // RAW is standalone-only on this HAL (both routed AND plain-logical stills kill the camera
-        // device — see sessionAttemptPlan). On the seamless-zoom logical camera the session has no
-        // RAW stream, so a DNG-enabled format quietly degrades to the processed still, with a
-        // one-time status so the user knows where their DNGs went.
-        val effFormats = if (formats.dngRaw && !ctrl.hasRawStream) {
-            if (!dngUnavailableNotified) {
-                dngUnavailableNotified = true
-                onStatus?.invoke("DNG: TELE mode only")
-            }
-            formats.copy(dngRaw = false)
-        } else formats
+        val effFormats = formats.normalizedFor(accepted.outputs)
+        if (!effFormats.wantsProcessedStill && !effFormats.dngRaw) {
+            onStatus?.invoke("Still capture unavailable in current session")
+            return false
+        }
+        when {
+            formats.wantsProcessedStill && !effFormats.wantsProcessedStill && effFormats.dngRaw ->
+                onStatus?.invoke("Processed still unavailable; capturing DNG")
+            formats.dngRaw && !effFormats.dngRaw ->
+                onStatus?.invoke("RAW unavailable in current session")
+        }
+        val ctrl = accepted.controller
         when (driveMode) {
             DriveMode.SINGLE -> ctrl.capturePhoto(
                 effFormats.wantsProcessedStill,
                 effFormats.dngRaw,
                 photoCallback(effFormats, controls),
             )
-            DriveMode.BURST -> captureBurst(ctrl, effFormats)
-            DriveMode.AEB -> captureAeb(ctrl, effFormats)
-            DriveMode.TIMELAPSE -> startTimelapse(effFormats)
+            DriveMode.BURST -> captureBurst(accepted, effFormats)
+            DriveMode.AEB -> captureAeb(accepted, effFormats)
+            DriveMode.TIMELAPSE -> startTimelapse(formats)
         }
+        return true
     }
 
     /**
@@ -1539,10 +1646,10 @@ class CameraEngine(private val context: Context) {
      * tracks a single in-flight capture (one `pending` slot), so shots are chained rather than fired
      * in a tight loop, which would clobber that slot while a capture is still resolving its images.
      */
-    private fun captureBurst(ctrl: CameraController, formats: PhotoFormats) {
+    private fun captureBurst(accepted: AcceptedCameraSession, formats: PhotoFormats) {
         fun fire(shot: Int) {
-            if (shot >= BURST_COUNT) return
-            ctrl.capturePhoto(
+            if (shot >= BURST_COUNT || !acceptedSessionIsCurrent(accepted)) return
+            accepted.controller.capturePhoto(
                 formats.wantsProcessedStill,
                 formats.dngRaw,
                 photoCallback(formats, controls) { fire(shot + 1) },
@@ -1559,7 +1666,8 @@ class CameraEngine(private val context: Context) {
      * [manualAebExposuresNs]). Either way the original controls are restored when the bracket
      * finishes, and shots are chained for the same single-`pending` reason as BURST.
      */
-    private fun captureAeb(ctrl: CameraController, formats: PhotoFormats) {
+    private fun captureAeb(accepted: AcceptedCameraSession, formats: PhotoFormats) {
+        val ctrl = accepted.controller
         val c = caps
         val original = controls
         if (!original.autoExposure && c?.supportsManualSensor == true) {
@@ -1567,6 +1675,10 @@ class CameraEngine(private val context: Context) {
             val range = c.exposureTimeRange
             val steps = manualAebExposuresNs(base, range?.lower ?: base, range?.upper ?: base)
             fun fire(i: Int) {
+                if (!acceptedSessionIsCurrent(accepted)) {
+                    ctrl.updateControls(controls)
+                    return
+                }
                 if (i >= steps.size) { ctrl.updateControls(controls); return }
                 // SPEED override so the bracketed time applies even when the user dials ANGLE.
                 val stepControls = manualAebStepControls(controls, steps[i])
@@ -1589,6 +1701,10 @@ class CameraEngine(private val context: Context) {
         }
         else listOf(original.exposureCompensation)
         fun fire(i: Int) {
+            if (!acceptedSessionIsCurrent(accepted)) {
+                ctrl.updateControls(controls)
+                return
+            }
             if (i >= steps.size) { ctrl.updateControls(controls); return }
             val stepControls = autoAebStepControls(controls, steps[i])
             ctrl.updateControls(stepControls)
@@ -1606,7 +1722,7 @@ class CameraEngine(private val context: Context) {
      * [photoCallback]'s exactly-once completion, so full-resolution snapshots cannot accumulate on
      * [ioExecutor] when encoding/storage is slower than [intervalSec].
      */
-    private fun startTimelapse(formats: PhotoFormats) {
+    private fun startTimelapse(requestedFormats: PhotoFormats) {
         stopTimelapse()
         val period = intervalSec.coerceAtLeast(1).toLong()
         val generation = timelapseRun.restart()
@@ -1617,12 +1733,18 @@ class CameraEngine(private val context: Context) {
                     timelapseScheduler.schedule(
                         {
                             if (!timelapseRun.owns(generation)) return@schedule
-                            val ctrl = controller
-                            if (ctrl == null || paused || driveMode != DriveMode.TIMELAPSE) {
+                            val accepted = currentAcceptedCameraSession()
+                            if (accepted == null || driveMode != DriveMode.TIMELAPSE) {
                                 if (!paused && driveMode == DriveMode.TIMELAPSE) schedule(period)
                                 return@schedule
                             }
-                            ctrl.capturePhoto(
+                            val formats = requestedFormats.normalizedFor(accepted.outputs)
+                            if (!formats.wantsProcessedStill && !formats.dngRaw) {
+                                onStatus?.invoke("Still capture unavailable in current session")
+                                stopTimelapse()
+                                return@schedule
+                            }
+                            accepted.controller.capturePhoto(
                                 formats.wantsProcessedStill,
                                 formats.dngRaw,
                                 photoCallback(formats, controls) {
@@ -2867,12 +2989,16 @@ internal class StandbyMeterOwnership<R> {
     }
 }
 
-/** A Ready callback may publish only while both its generation and engine-ready bit remain current. */
+/** A Ready callback may publish only while optics, session, and the engine-ready bit remain current. */
 internal fun cameraReadyPublicationIsCurrent(
-    currentGeneration: Long,
-    expectedGeneration: Long,
+    currentOpticsGeneration: Long,
+    expectedOpticsGeneration: Long,
+    currentSessionGeneration: Long,
+    expectedSessionGeneration: Long,
     cameraReady: Boolean,
-): Boolean = cameraReady && reconfigurationOwnsGeneration(currentGeneration, expectedGeneration)
+): Boolean = cameraReady &&
+    reconfigurationOwnsGeneration(currentOpticsGeneration, expectedOpticsGeneration) &&
+    currentSessionGeneration == expectedSessionGeneration
 
 internal data class OpticsIntentState(
     val mode: CaptureMode,

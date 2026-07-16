@@ -122,9 +122,59 @@ class ReconfigurationGenerationTest {
 
     @Test
     fun `queued ready publication is rejected after supersession or pause`() {
-        assertTrue(cameraReadyPublicationIsCurrent(42L, 42L, cameraReady = true))
-        assertFalse(cameraReadyPublicationIsCurrent(43L, 42L, cameraReady = true))
-        assertFalse(cameraReadyPublicationIsCurrent(42L, 42L, cameraReady = false))
+        assertTrue(cameraReadyPublicationIsCurrent(42L, 42L, 9L, 9L, cameraReady = true))
+        assertFalse(cameraReadyPublicationIsCurrent(43L, 42L, 9L, 9L, cameraReady = true))
+        assertFalse(cameraReadyPublicationIsCurrent(42L, 42L, 9L, 9L, cameraReady = false))
+    }
+
+    @Test
+    fun `queued ready from a replaced session is rejected with unchanged optics`() {
+        assertFalse(
+            cameraReadyPublicationIsCurrent(
+                currentOpticsGeneration = 42L,
+                expectedOpticsGeneration = 42L,
+                currentSessionGeneration = 10L,
+                expectedSessionGeneration = 9L,
+                cameraReady = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `newer not-ready publication prevents an older ready reducer commit`() {
+        val gate = CameraReadyPublicationGate()
+        val ready = CameraReadyPublication(
+            sequence = 1L,
+            ready = true,
+            opticsGeneration = 42L,
+            sessionGeneration = 9L,
+            photoOutputs = PhotoSessionOutputs(processed = true, raw = true),
+        )
+        val notReady = CameraReadyPublication(
+            sequence = 2L,
+            ready = false,
+            opticsGeneration = 42L,
+            sessionGeneration = 10L,
+        )
+        val readyPassedEarlyCheck = CountDownLatch(1)
+        val releaseReadyReducer = CountDownLatch(1)
+        val staleReadyApplied = AtomicBoolean(false)
+
+        assertTrue(gate.observe(ready))
+        val reducer = thread(start = true, name = "queued-ready-reducer") {
+            readyPassedEarlyCheck.countDown()
+            assertTrue(releaseReadyReducer.await(1, TimeUnit.SECONDS))
+            staleReadyApplied.set(gate.owns(ready))
+        }
+
+        assertTrue(readyPassedEarlyCheck.await(1, TimeUnit.SECONDS))
+        assertTrue(gate.observe(notReady))
+        releaseReadyReducer.countDown()
+        reducer.join(1_000)
+
+        assertFalse(reducer.isAlive)
+        assertFalse(staleReadyApplied.get())
+        assertTrue(gate.owns(notReady))
     }
 
     @Test

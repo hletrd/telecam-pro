@@ -99,4 +99,26 @@ class SessionFallbackLadderTest {
         assertFalse(regular.useJpeg)
         assertFalse(regular.useVendorOperationMode)
     }
+
+    @Test
+    fun `accepted reader set reports actual still outputs`() {
+        assertEquals(
+            PhotoSessionOutputs(processed = true, raw = true),
+            acceptedPhotoSessionOutputs(processedReaderPresent = true, rawReaderPresent = true),
+        )
+        assertEquals(
+            PhotoSessionOutputs(processed = true, raw = false),
+            acceptedPhotoSessionOutputs(processedReaderPresent = true, rawReaderPresent = false),
+        )
+        assertEquals(
+            PhotoSessionOutputs(processed = false, raw = true),
+            acceptedPhotoSessionOutputs(processedReaderPresent = false, rawReaderPresent = true),
+        )
+        assertFalse(
+            acceptedPhotoSessionOutputs(
+                processedReaderPresent = false,
+                rawReaderPresent = false,
+            ).hasStillTarget,
+        )
+    }
 }

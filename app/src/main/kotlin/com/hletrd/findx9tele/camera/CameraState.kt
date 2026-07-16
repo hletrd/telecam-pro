@@ -421,10 +421,55 @@ data class PhotoFormats(
     val wantsProcessedStill: Boolean get() = heif || jpeg
 }
 
-/** Keeps capture state representable: unsupported RAW is removed and at least one output remains. */
-internal fun PhotoFormats.normalizedFor(rawAvailable: Boolean): PhotoFormats {
-    val supported = if (rawAvailable) this else copy(dngRaw = false)
-    return if (supported.wantsProcessedStill || supported.dngRaw) supported else supported.copy(heif = true)
+/** Actual still readers present in one accepted Camera2 session. */
+data class PhotoSessionOutputs(
+    val processed: Boolean = false,
+    val raw: Boolean = false,
+) {
+    val hasStillTarget: Boolean get() = processed || raw
+}
+
+/** One owner-bound engine publication; Ready is valid only while both generations still match. */
+data class CameraReadyPublication(
+    val sequence: Long,
+    val ready: Boolean,
+    val opticsGeneration: Long,
+    val sessionGeneration: Long,
+    val photoOutputs: PhotoSessionOutputs = PhotoSessionOutputs(),
+)
+
+/** Latest-event identity gate for callbacks delivered across camera/setup/main threads. */
+internal class CameraReadyPublicationGate {
+    private val latestSequence = java.util.concurrent.atomic.AtomicLong(0)
+
+    fun observe(publication: CameraReadyPublication): Boolean =
+        latestSequence.accumulateAndGet(publication.sequence, ::maxOf) == publication.sequence
+
+    fun owns(publication: CameraReadyPublication): Boolean =
+        latestSequence.get() == publication.sequence
+}
+
+/** Keeps a persisted/pre-session request non-empty without guessing which session outputs exist. */
+internal fun PhotoFormats.withDefaultIfEmpty(): PhotoFormats =
+    if (wantsProcessedStill || dngRaw) this else copy(heif = true)
+
+/**
+ * Resolves a request against readers that actually survived session fallback. Available requested
+ * outputs win; otherwise prefer processed HEIF, then RAW-only DNG, and represent preview-only as an
+ * empty set instead of inventing an unavailable capture target.
+ */
+internal fun PhotoFormats.normalizedFor(outputs: PhotoSessionOutputs): PhotoFormats {
+    val supported = PhotoFormats(
+        heif = heif && outputs.processed,
+        jpeg = jpeg && outputs.processed,
+        dngRaw = dngRaw && outputs.raw,
+    )
+    if (supported.wantsProcessedStill || supported.dngRaw) return supported
+    return when {
+        outputs.processed -> PhotoFormats(heif = true)
+        outputs.raw -> PhotoFormats(heif = false, dngRaw = true)
+        else -> PhotoFormats(heif = false, jpeg = false, dngRaw = false)
+    }
 }
 
 /**
@@ -436,6 +481,9 @@ data class CameraUiState(
     val controls: ManualControls = ManualControls(),
     val transfer: ColorTransfer = ColorTransfer.HLG,
     val photoFormats: PhotoFormats = PhotoFormats(),
+    // Reader truth from the accepted session, never inferred from route capabilities. Cleared while
+    // opening/reconfiguring so stale fallback outputs cannot admit a capture.
+    val photoSessionOutputs: PhotoSessionOutputs = PhotoSessionOutputs(),
     val recordAudio: Boolean = true,
     // Directional audio (Sound Focus / Sound Stage) via device audio-HAL params.
     val audioScene: AudioScene = AudioScene.STANDARD,
@@ -548,6 +596,16 @@ data class CameraUiState(
 ) {
     val activeFnSlots: List<FnSlot>
         get() = if (mode == CaptureMode.VIDEO) videoFnSlots else photoFnSlots
+    val stillCaptureReady: Boolean
+        get() = cameraReady && photoSessionOutputs.hasStillTarget
+    val primaryShutterHealthy: Boolean
+        get() = cameraReady && (mode == CaptureMode.VIDEO || photoSessionOutputs.hasStillTarget)
+    val primaryShutterEnabled: Boolean
+        get() = when {
+            mode == CaptureMode.PHOTO -> stillCaptureReady
+            isRecording -> true // stopping REC must survive a concurrent camera-health transition
+            else -> cameraReady
+        }
 }
 
 /** Downsampled luminance + per-channel histogram (256 bins) for the viewfinder overlay. */
