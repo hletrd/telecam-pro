@@ -92,6 +92,10 @@ class CameraEngine(private val context: Context) {
     // True only after the CURRENT controller has configured a working session. Session-key and lens
     // changes clear it before their asynchronous reopen is queued so REC cannot race the teardown.
     @Volatile private var cameraReady = false
+    // Preview EGL health participates in the externally visible Ready contract. The accepted
+    // Camera2 session remains owned across a preview-only failure so a bounded rebind can restore
+    // admission without needlessly reopening the device or starving an active encoder.
+    @Volatile private var previewReady = false
     @Volatile private var readyController: CameraController? = null
     @Volatile private var acceptedCameraSession: AcceptedCameraSession? = null
     private val cameraSessionGeneration = java.util.concurrent.atomic.AtomicLong(0)
@@ -254,16 +258,17 @@ class CameraEngine(private val context: Context) {
         ) {
             terminalMutation()
             opticsRollbackBaseline = null
-            cameraReady = true
-            readyController = expectedController
             val sessionGeneration = cameraSessionGeneration.get()
             acceptedCameraSession = AcceptedCameraSession(
                 controller = expectedController,
                 sessionGeneration = sessionGeneration,
                 outputs = photoOutputs,
             )
+            val effectiveReady = previewReady
+            cameraReady = effectiveReady
+            readyController = expectedController.takeIf { effectiveReady }
             publication = nextCameraReadyPublication(
-                ready = true,
+                ready = effectiveReady,
                 opticsGeneration = expectedGeneration,
                 sessionGeneration = sessionGeneration,
                 photoOutputs = photoOutputs,
@@ -358,19 +363,20 @@ class CameraEngine(private val context: Context) {
         gl.setCameraPreviewSize(before.previewStreamSize.width, before.previewStreamSize.height)
         seedGlZoom()
         applyStabilization()
-        val restoreReady = before.ready && before.readyController === controller && !paused &&
+        val restoreSession = before.ready && before.readyController === controller && !paused &&
             before.sessionGeneration == cameraSessionGeneration.get()
-        val readyPublication = if (restoreReady) {
+        val readyPublication = if (restoreSession) {
             val restoredController = checkNotNull(controller)
-            cameraReady = true
-            readyController = restoredController
             acceptedCameraSession = AcceptedCameraSession(
                 controller = restoredController,
                 sessionGeneration = before.sessionGeneration,
                 outputs = before.photoSessionOutputs,
             )
+            val effectiveReady = previewReady
+            cameraReady = effectiveReady
+            readyController = restoredController.takeIf { effectiveReady }
             nextCameraReadyPublication(
-                ready = true,
+                ready = effectiveReady,
                 opticsGeneration = transaction.generation,
                 sessionGeneration = before.sessionGeneration,
                 photoOutputs = before.photoSessionOutputs,
@@ -394,6 +400,8 @@ class CameraEngine(private val context: Context) {
     // continuation can bind the LIVE surface (not its captured, possibly-released parameter).
     @Volatile private var previewSurfaceW = 0
     @Volatile private var previewSurfaceH = 0
+    private val previewSurfaceGeneration = java.util.concurrent.atomic.AtomicLong(0)
+    private var previewRecoveryAttempts = 0
 
     // Static-per-device caches: camera characteristics and focal→id resolution never change at
     // runtime, but re-reading them cost dozens of Binder IPCs on EVERY lens/TC/mode switch — and
@@ -497,10 +505,15 @@ class CameraEngine(private val context: Context) {
     // ---- Preview surface lifecycle ----
 
     fun onPreviewSurfaceAvailable(surface: Surface, width: Int, height: Int) {
+        val surfaceGeneration = previewSurfaceGeneration.incrementAndGet()
         previewSurface = surface // published synchronously on the calling (main) thread
         previewSurfaceW = width
         previewSurfaceH = height
-        if (started) { gl.setPreviewOutput(surface, width, height); return }
+        markPreviewPending(surface, surfaceGeneration)
+        if (started) {
+            bindPreviewSurface(surface, width, height, surfaceGeneration)
+            return
+        }
         val dispatchStart = synchronized(this) {
             if (started || starting || paused) {
                 false
@@ -556,7 +569,12 @@ class CameraEngine(private val context: Context) {
                 // recreated surface simply skips this bind and the next callback supplies the owner.
                 val liveSurface = previewSurface
                 if (liveSurface != null) {
-                    gl.setPreviewOutput(liveSurface, previewSurfaceW, previewSurfaceH)
+                    bindPreviewSurface(
+                        surface = liveSurface,
+                        width = previewSurfaceW,
+                        height = previewSurfaceH,
+                        surfaceGeneration = previewSurfaceGeneration.get(),
+                    )
                 }
             } }.getOrDefault(false)
             if (!acquired) synchronized(this) { starting = false }
@@ -621,13 +639,146 @@ class CameraEngine(private val context: Context) {
         previewSurfaceW = width
         previewSurfaceH = height
         val surface = previewSurface ?: return
-        gl.setPreviewOutput(surface, width, height)
+        val surfaceGeneration = previewSurfaceGeneration.incrementAndGet()
+        markPreviewPending(surface, surfaceGeneration)
+        bindPreviewSurface(surface, width, height, surfaceGeneration)
     }
 
     fun onPreviewSurfaceDestroyed() {
         // Portrait is locked, so this is app teardown; keep the GL context but drop the output.
+        val surfaceGeneration = previewSurfaceGeneration.incrementAndGet()
+        val outgoing = previewSurface
         previewSurface = null
+        if (outgoing != null) markPreviewPending(outgoing, surfaceGeneration, requireCurrentSurface = false)
         gl.setPreviewOutput(null, 0, 0)
+    }
+
+    private fun bindPreviewSurface(
+        surface: Surface,
+        width: Int,
+        height: Int,
+        surfaceGeneration: Long,
+    ) {
+        gl.setPreviewOutput(
+            surface = surface,
+            width = width,
+            height = height,
+            onReady = { handlePreviewReady(surface, surfaceGeneration) },
+            onFailure = { failure -> handlePreviewFailure(surface, surfaceGeneration, failure) },
+        )
+    }
+
+    /** Makes the UI/shutter truthful while a replacement TextureView output is not yet bound. */
+    private fun markPreviewPending(
+        surface: Surface,
+        surfaceGeneration: Long,
+        requireCurrentSurface: Boolean = true,
+    ) {
+        val publication = synchronized(this) {
+            if (surfaceGeneration != previewSurfaceGeneration.get()) return@synchronized null
+            if (requireCurrentSurface && previewSurface !== surface) return@synchronized null
+            previewReady = false
+            previewRecoveryAttempts = 0
+            if (!cameraReady) return@synchronized null
+            cameraReady = false
+            readyController = null
+            val accepted = acceptedCameraSession
+            nextCameraReadyPublication(
+                ready = false,
+                opticsGeneration = opticsIntentGeneration.get(),
+                sessionGeneration = accepted?.sessionGeneration ?: cameraSessionGeneration.get(),
+                photoOutputs = accepted?.outputs ?: PhotoSessionOutputs(),
+            )
+        }
+        publication?.let { onCameraReadyChange?.invoke(it) }
+    }
+
+    private fun handlePreviewReady(surface: Surface, surfaceGeneration: Long) {
+        val publication = synchronized(this) {
+            if (surfaceGeneration != previewSurfaceGeneration.get() || previewSurface !== surface) {
+                return@synchronized null
+            }
+            val wasReady = previewReady && cameraReady
+            previewReady = true
+            previewRecoveryAttempts = 0
+            val accepted = acceptedCameraSession?.takeIf {
+                !paused && controller === it.controller &&
+                    cameraSessionGeneration.get() == it.sessionGeneration
+            } ?: return@synchronized null
+            cameraReady = true
+            readyController = accepted.controller
+            if (wasReady) return@synchronized null
+            nextCameraReadyPublication(
+                ready = true,
+                opticsGeneration = opticsIntentGeneration.get(),
+                sessionGeneration = accepted.sessionGeneration,
+                photoOutputs = accepted.outputs,
+            )
+        }
+        publication?.let { onCameraReadyChange?.invoke(it) }
+    }
+
+    private fun handlePreviewFailure(
+        surface: Surface,
+        surfaceGeneration: Long,
+        failure: Throwable,
+    ) {
+        val outcome = synchronized(this) {
+            val ownerCurrent = surfaceGeneration == previewSurfaceGeneration.get() && previewSurface === surface
+            val decision = previewRecoveryDecision(
+                ownerCurrent = ownerCurrent,
+                started = started,
+                paused = paused,
+                nextAttempt = previewRecoveryAttempts + 1,
+                maxAttempts = MAX_PREVIEW_RECOVERY_ATTEMPTS,
+            )
+            if (decision == PreviewRecoveryDecision.IGNORE) return@synchronized null
+            previewReady = false
+            val wasCameraReady = cameraReady
+            cameraReady = false
+            readyController = null
+            previewRecoveryAttempts++
+            val accepted = acceptedCameraSession
+            val publication = if (wasCameraReady) {
+                nextCameraReadyPublication(
+                    ready = false,
+                    opticsGeneration = opticsIntentGeneration.get(),
+                    sessionGeneration = accepted?.sessionGeneration ?: cameraSessionGeneration.get(),
+                    photoOutputs = accepted?.outputs ?: PhotoSessionOutputs(),
+                )
+            } else {
+                null
+            }
+            decision to publication
+        } ?: return
+
+        outcome.second?.let { onCameraReadyChange?.invoke(it) }
+        when (outcome.first) {
+            PreviewRecoveryDecision.IGNORE -> Unit
+            PreviewRecoveryDecision.EXHAUSTED ->
+                onStatus?.invoke("Preview failed — reopen the app")
+            PreviewRecoveryDecision.RETRY -> {
+                onStatus?.invoke("Preview interrupted — recovering")
+                runCatching {
+                    timelapseScheduler.schedule(
+                        {
+                            if (surfaceGeneration == previewSurfaceGeneration.get() &&
+                                previewSurface === surface && started && !paused
+                            ) {
+                                bindPreviewSurface(surface, previewSurfaceW, previewSurfaceH, surfaceGeneration)
+                            }
+                        },
+                        PREVIEW_RECOVERY_DELAY_MS,
+                        java.util.concurrent.TimeUnit.MILLISECONDS,
+                    )
+                }.onFailure {
+                    onStatus?.invoke("Preview failed — reopen the app")
+                }
+            }
+        }
+        if (com.hletrd.findx9tele.BuildConfig.DEBUG) {
+            android.util.Log.w("CameraEngine", "Preview EGL failure", failure)
+        }
     }
 
     private fun wireController(): CameraController {
@@ -2965,8 +3116,25 @@ class CameraEngine(private val context: Context) {
         // Auto-recovery from a mid-session camera HAL error/disconnect (see scheduleCameraRecovery).
         const val MAX_CAMERA_RECOVERY_ATTEMPTS = 3
         const val CAMERA_RECOVERY_DELAY_MS = 1000L
+        const val MAX_PREVIEW_RECOVERY_ATTEMPTS = 3
+        const val PREVIEW_RECOVERY_DELAY_MS = 200L
         const val RECORDER_FINALIZE_RELEASE_TIMEOUT_MS = 7_000L
     }
+}
+
+/** Bounded preview-output recovery decision for one identity-owned TextureView generation. */
+internal enum class PreviewRecoveryDecision { IGNORE, RETRY, EXHAUSTED }
+
+internal fun previewRecoveryDecision(
+    ownerCurrent: Boolean,
+    started: Boolean,
+    paused: Boolean,
+    nextAttempt: Int,
+    maxAttempts: Int,
+): PreviewRecoveryDecision = when {
+    !ownerCurrent || !started || paused -> PreviewRecoveryDecision.IGNORE
+    nextAttempt <= maxAttempts.coerceAtLeast(0) -> PreviewRecoveryDecision.RETRY
+    else -> PreviewRecoveryDecision.EXHAUSTED
 }
 
 /** Prevents an older asynchronous camera intent from undoing a newer user choice. */

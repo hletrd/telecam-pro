@@ -50,6 +50,7 @@ class GlPipeline {
     // drawn; every checked detach/reset drains them before authorizing native producer teardown.
     private val orphanedEglOutputs = RetainedOutputs<EGLSurface>()
     private var encoderSignal: EncoderOutputSignal? = null
+    private var previewSignal: PreviewOutputSignal? = null
     private var previewSurface: Surface? = null
     // Surface lifecycle callbacks can invalidate a native window before an older GL task runs.
     // Bump this synchronously on the caller thread so queued binds can reject stale ownership.
@@ -98,37 +99,46 @@ class GlPipeline {
     private var eisProvider: (() -> FloatArray)? = null
 
     // Real-time scope analysis (histogram + waveform) via GL readback. The glReadPixels call runs on
-    // the GL thread and is throttled; the per-pixel compute is dispatched to [analysisExecutor] so it
-    // never stalls rendering. Perf note: reading back at full preview resolution every ~12th frame is
-    // a tradeoff (GPU->CPU stall + copy) that should be profiled/tuned on device.
+    // the GL thread and is throttled; the per-pixel compute is dispatched to its generation-owned
+    // executor so it never stalls rendering. Perf note: reading back at full preview resolution
+    // every ~12th frame is a tradeoff (GPU->CPU stall + copy) that should be profiled on device.
     private var analysisHistogram = false
     private var analysisWaveform = false
     // Force the luma readback on (independent of the user's scope toggles) so the app-side
     // auto-exposure loop in SHUTTER/ISO-priority always has fresh luma to meter from.
     private var analysisAe = false
     private var analysisCallback: ((HistogramData?, WaveformData?) -> Unit)? = null
-    private var analysisFrameCounter = 0
-    // Small offscreen target for the analysis readback: the scene is re-drawn (no assist overlays)
-    // at the preview's aspect ratio with a 256 px long edge, instead of glReadPixels on the FULL preview framebuffer
-    // (a 4K preview = ~33 MB copy that stalled the GL thread every 5th frame — visible as periodic
-    // preview/zoom stutter, and it polluted the meter with peaking/zebra pixels).
-    private var analysisFbo = 0
-    private var analysisTex = 0
-    private var analysisBuffer: ByteBuffer? = null
-    private var analysisBytes: ByteArray? = null
-    private var analysisBufferW = 0
-    private var analysisBufferH = 0
-    private var analysisTextureW = 0
-    private var analysisTextureH = 0
+    // One immutable owner per GL generation. Buffer/FBO storage and the single-in-flight guard never
+    // cross a restart, so a retired analysis task cannot read replacement pixels, publish stale AE,
+    // or clear the replacement generation's guard from its finally block.
+    private class AnalysisGeneration {
+        val owner = AnalysisGenerationOwner()
+        val executor = Executors.newSingleThreadExecutor()
+        var frameCounter = 0
+        var fbo = 0
+        var texture = 0
+        var buffer: ByteBuffer? = null
+        var bytes: ByteArray? = null
+        var bufferW = 0
+        var bufferH = 0
+        var textureW = 0
+        var textureH = 0
 
-    // Guards single-in-flight analysis: only the GL thread sets it true (before dispatch), only the
-    // executor sets it false (when done). This lets [analysisBytes] be reused across readbacks without
-    // the GL thread overwriting a snapshot the executor is still reading.
+        fun retire() {
+            owner.retire()
+            executor.shutdown()
+        }
+
+        fun clearSnapshots() {
+            buffer = null
+            bytes = null
+            bufferW = 0
+            bufferH = 0
+        }
+    }
+
     @Volatile
-    private var analysisBusy = false
-    // var, not val: stop() shuts it down, and a val made the whole pipeline silently single-use —
-    // a future restart would have dead scopes and app-side AE. start() recreates it when needed.
-    private var analysisExecutor = Executors.newSingleThreadExecutor()
+    private var analysisGeneration: AnalysisGeneration? = null
 
     private var inited = false
     private val stMatrix = FloatArray(16)
@@ -137,9 +147,8 @@ class GlPipeline {
     fun start(tenBit: Boolean, onInputReady: (Surface) -> Unit) {
         this.tenBit = tenBit
         this.onInputReady = onInputReady
-        // A prior stop() shut the analysis executor down; a restarted pipeline needs a live one or
-        // scopes + the app-side AE loop silently never run again.
-        if (analysisExecutor.isShutdown) analysisExecutor = Executors.newSingleThreadExecutor()
+        analysisGeneration?.retire()
+        analysisGeneration = AnalysisGeneration()
         val t = HandlerThread("gl-pipeline").also { it.start() }
         thread = t
         resourceReleaseHub = ResourceReleaseHub()
@@ -148,42 +157,84 @@ class GlPipeline {
         post { egl = EglCore(tenBit = tenBit) }
     }
 
-    fun setPreviewOutput(surface: Surface?, width: Int, height: Int) {
+    fun setPreviewOutput(
+        surface: Surface?,
+        width: Int,
+        height: Int,
+        onReady: (() -> Unit)? = null,
+        onFailure: ((Throwable) -> Unit)? = null,
+    ) {
         val generation = previewOutputGeneration.incrementAndGet()
-        val h = handler ?: return
+        val signal = PreviewOutputSignal(
+            onReady = { onReady?.invoke() },
+            onFailure = { failure -> onFailure?.invoke(failure) },
+        )
+        val h = handler
+        if (h == null) {
+            if (surface != null) signal.fail(IllegalStateException("GL pipeline is not running"))
+            return
+        }
+        var applied = false
         dispatchWithResult(
             post = { task -> h.post(task) },
-            block = { applyPreviewOutput(generation, surface, width, height) },
+            block = {
+                applied = applyPreviewOutput(
+                    generation = generation,
+                    surface = surface,
+                    width = width,
+                    height = height,
+                    signal = signal.takeIf { surface != null },
+                )
+            },
             // EGL/native-window failures are contained on the GL thread. applyPreviewOutput clears
             // partial state before rethrowing, so a stale or already-released Surface cannot escape
             // through the looper and crash the process.
-            onComplete = {},
+            onComplete = { result ->
+                result.fold(
+                    onSuccess = { if (applied && surface != null) signal.ready() },
+                    onFailure = { failure -> if (surface != null) signal.fail(failure) },
+                )
+            },
         )
     }
 
-    private fun applyPreviewOutput(generation: Long, surface: Surface?, width: Int, height: Int) {
-        if (generation != previewOutputGeneration.get()) return
-        val core = egl ?: return
+    private fun applyPreviewOutput(
+        generation: Long,
+        surface: Surface?,
+        width: Int,
+        height: Int,
+        signal: PreviewOutputSignal?,
+    ): Boolean {
+        if (generation != previewOutputGeneration.get()) return false
+        val core = egl
+        if (core == null) {
+            if (surface == null) return false
+            throw IllegalStateException("GL context is unavailable for preview output")
+        }
         if (surface == null) {
             clearPreviewOutput(core)
-            return
+            return true
         }
         // The TextureView host can deliver available-then-size-changed back-to-back on the same
         // native window; if it's the same surface already bound at the same size, there is nothing
         // to do — recreating the EGLSurface on a still-live native window throws EGL_BAD_ALLOC.
         if (surface === previewSurface && previewEgl != EGL14.EGL_NO_SURFACE &&
             width == previewW && height == previewH
-        ) return
+        ) {
+            previewSignal?.cancel()
+            previewSignal = signal
+            return true
+        }
 
         clearPreviewOutput(core)
-        if (generation != previewOutputGeneration.get()) return
+        if (generation != previewOutputGeneration.get()) return false
         var candidate = EGL14.EGL_NO_SURFACE
         var primaryFailure: Throwable? = null
         try {
             candidate = core.createWindowSurface(surface)
-            if (generation != previewOutputGeneration.get()) return
+            if (generation != previewOutputGeneration.get()) return false
             core.makeCurrent(candidate)
-            if (generation != previewOutputGeneration.get()) return
+            if (generation != previewOutputGeneration.get()) return false
 
             previewW = width
             previewH = height
@@ -203,6 +254,11 @@ class GlPipeline {
                 inited = true
                 runCatching { onInputReady?.invoke(input) }
             }
+            // Do not install the health owner until renderer/input initialization has succeeded.
+            // Otherwise catch/clear would cancel this pending signal before onComplete can report
+            // the initialization failure to CameraEngine.
+            previewSignal = signal
+            return true
         } catch (failure: Throwable) {
             primaryFailure = failure
             runCatching { clearPreviewOutput(core) }
@@ -242,6 +298,8 @@ class GlPipeline {
         }
         previewEgl = EGL14.EGL_NO_SURFACE
         previewSurface = null
+        previewSignal?.cancel()
+        previewSignal = null
     }
 
     private fun clearOrphanedOutputs(core: EglCore) {
@@ -310,7 +368,7 @@ class GlPipeline {
     /** Force the luma readback for app-side AE (SHUTTER/ISO priority), independent of scope toggles. */
     fun setAeMetering(enabled: Boolean) = post { analysisAe = enabled }
 
-    /** Sink for computed scopes; invoked on the [analysisExecutor] thread, not the GL thread. */
+    /** Sink for computed scopes; invoked on the current analysis generation's executor, not GL. */
     fun setAnalysisCallback(cb: ((HistogramData?, WaveformData?) -> Unit)?) = post {
         analysisCallback = cb
     }
@@ -510,7 +568,9 @@ class GlPipeline {
         lastDrawMs = now
         val core = egl ?: return
         val st = surfaceTexture ?: return
-        if (previewEgl == EGL14.EGL_NO_SURFACE) return
+        // A real camera frame feeds two sibling outputs. Preview loss must not prevent texture
+        // acquisition or starve an otherwise healthy encoder surface.
+        if (!updateTex && previewEgl == EGL14.EGL_NO_SURFACE) return
 
         if (updateTex) {
             st.updateTexImage()
@@ -552,21 +612,25 @@ class GlPipeline {
         // gets the curve). HLG/SDR keep the natural SDR preview. delogAssist stays dormant: it is only
         // for a true scene-referred (native/CameraUnit) stream, which third-party Camera2 cannot get.
         val previewTransfer = if (transfer == ColorTransfer.LOG && !gammaAssist) ColorTransfer.LOG else null
-        val previewFailure = runCatching {
-            core.makeCurrent(previewEgl)
-            renderer.draw(
-                stMatrix, previewW, previewH, previewTransfer, peaking, zebra, falseColor, sx, sy, roll, previewCrop, loupeX, loupeY,
-                peakThreshold = peakThreshold, peakR = peakR, peakG = peakG, peakB = peakB, zebraThreshold = zebraThreshold,
-                delogAssist = nativeLog && gammaAssist,
-                zoomComp = zoomTarget / halZoom.coerceAtLeast(0.01f),
-            )
-            core.swapBuffers(previewEgl)
-        }.exceptionOrNull()
-        if (previewFailure != null) {
-            // A released TextureView/native window is contained on the GL owner. Keep any failed
-            // detach handle owned for the next lifecycle transition or terminal reset.
-            runCatching { clearPreviewOutput(core) }
-            return
+        val ownedPreview = previewEgl
+        val ownedPreviewSignal = previewSignal
+        if (ownedPreview != EGL14.EGL_NO_SURFACE) {
+            val previewFailure = runCatching {
+                core.makeCurrent(ownedPreview)
+                renderer.draw(
+                    stMatrix, previewW, previewH, previewTransfer, peaking, zebra, falseColor, sx, sy, roll, previewCrop, loupeX, loupeY,
+                    peakThreshold = peakThreshold, peakR = peakR, peakG = peakG, peakB = peakB, zebraThreshold = zebraThreshold,
+                    delogAssist = nativeLog && gammaAssist,
+                    zoomComp = zoomTarget / halZoom.coerceAtLeast(0.01f),
+                )
+                core.swapBuffers(ownedPreview)
+            }.exceptionOrNull()
+            if (previewFailure != null) {
+                // Publish the identity-owned failure once, then detach the broken preview. Keep
+                // processing a real frame below so active recording remains truthful and live.
+                ownedPreviewSignal?.fail(previewFailure)
+                runCatching { clearPreviewOutput(core) }
+            }
         }
 
         // Self-redraws only refresh the PREVIEW with a new zoom crop from the last frame — the
@@ -602,25 +666,37 @@ class GlPipeline {
         // Ordered AFTER the encoder draw+swap on purpose: the full-surface glReadPixels stalls the GL
         // thread, so running it before the encoder draw would push the readback in front of every
         // recorded frame — encoder frame pacing beats scope latency (scopes only refresh ~6×/s anyway).
-        if ((analysisHistogram || analysisWaveform || analysisAe) && analysisCallback != null) {
+        val analysis = analysisGeneration
+        if (analysis != null && (analysisHistogram || analysisWaveform || analysisAe) && analysisCallback != null) {
             // Refresh the scopes / AE meter ~6×/s (every 5th frame at 30 fps) — snappy without stalling
             // the 4K preview on the readback. (Was every 12th ≈ 2.5×/s, which felt laggy.)
-            if (++analysisFrameCounter >= 5) {
-                analysisFrameCounter = 0
+            if (++analysis.frameCounter >= 5) {
+                analysis.frameCounter = 0
                 // Scopes and app-side AE observe capture framing, never the preview-only focus loupe.
                 val frame = analysisFrame(crop)
-                runAnalysisReadback(core, previewTransfer, sx, sy, roll, frame.crop, frame.centerX, frame.centerY)
+                runAnalysisReadback(
+                    generation = analysis,
+                    core = core,
+                    transfer = previewTransfer,
+                    sx = sx,
+                    sy = sy,
+                    roll = roll,
+                    crop = frame.crop,
+                    centerX = frame.centerX,
+                    centerY = frame.centerY,
+                )
             }
         }
     }
 
     /**
      * Redraws capture framing into a bounded offscreen framebuffer and dispatches its pixels to
-     * [analysisExecutor]. Runs on the GL thread; [analysisBusy] ensures only one readback is in flight
-     * so the reused [analysisBytes] snapshot is never overwritten while the executor reads it. Fully
-     * wrapped so any failure degrades to "no scopes this frame" rather than breaking rendering.
+     * the generation-owned executor. Runs on the GL thread; the generation owner ensures only one
+     * readback is in flight so its byte snapshot is never overwritten while the executor reads it.
+     * Fully wrapped so any failure degrades to "no scopes this frame" rather than breaking rendering.
      */
     private fun runAnalysisReadback(
+        generation: AnalysisGeneration,
         core: EglCore,
         transfer: ColorTransfer?,
         sx: Float,
@@ -631,51 +707,51 @@ class GlPipeline {
         centerY: Float,
     ) {
         if (previewEgl == EGL14.EGL_NO_SURFACE || previewW <= 0 || previewH <= 0) return
-        if (analysisBusy) return
         val cb = analysisCallback ?: return
         // AE metering needs the luma histogram; compute it whenever AE is active even if the user's
         // histogram overlay is off (the callback consumer picks luma out and ignores the rest).
         val doHist = analysisHistogram || analysisAe
         val doWave = analysisWaveform
         if (!doHist && !doWave) return
+        if (!generation.owner.tryAcquire()) return
         try {
             val target = analysisTargetSize(previewW, previewH)
             val w = target.width
             val h = target.height
             val size = w * h * 4
-            if (analysisBuffer == null || analysisBufferW != w || analysisBufferH != h) {
-                analysisBuffer = ByteBuffer.allocateDirect(size).order(ByteOrder.nativeOrder())
-                analysisBytes = ByteArray(size)
-                analysisBufferW = w
-                analysisBufferH = h
+            if (generation.buffer == null || generation.bufferW != w || generation.bufferH != h) {
+                generation.buffer = ByteBuffer.allocateDirect(size).order(ByteOrder.nativeOrder())
+                generation.bytes = ByteArray(size)
+                generation.bufferW = w
+                generation.bufferH = h
             }
-            val buf = analysisBuffer ?: return
-            val bytes = analysisBytes ?: return
+            val buf = checkNotNull(generation.buffer)
+            val bytes = checkNotNull(generation.bytes)
             core.makeCurrent(previewEgl)
-            if (analysisFbo == 0) {
+            if (generation.fbo == 0) {
                 val ids = IntArray(1)
                 GLES20.glGenTextures(1, ids, 0)
-                analysisTex = ids[0]
-                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, analysisTex)
+                generation.texture = ids[0]
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, generation.texture)
                 GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
                 GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
                 GLES20.glGenFramebuffers(1, ids, 0)
-                analysisFbo = ids[0]
-                GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, analysisFbo)
+                generation.fbo = ids[0]
+                GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, generation.fbo)
                 GLES20.glFramebufferTexture2D(
-                    GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, analysisTex, 0,
+                    GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, generation.texture, 0,
                 )
             } else {
-                GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, analysisFbo)
+                GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, generation.fbo)
             }
-            if (analysisTextureW != w || analysisTextureH != h) {
-                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, analysisTex)
+            if (generation.textureW != w || generation.textureH != h) {
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, generation.texture)
                 GLES20.glTexImage2D(
                     GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, w, h, 0,
                     GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null,
                 )
-                analysisTextureW = w
-                analysisTextureH = h
+                generation.textureW = w
+                generation.textureH = h
             }
             // Re-draw the scene (same transform/EIS/crop as the preview, minus peaking/zebra/false-
             // color so assist overlays never pollute the meter) into the small target and read THAT.
@@ -685,22 +761,23 @@ class GlPipeline {
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
             buf.rewind()
             buf.get(bytes, 0, size)
-            analysisBusy = true
-            analysisExecutor.execute {
+            generation.executor.execute {
                 try {
                     val hist = if (doHist) computeHistogram(bytes, w, h) else null
                     val wave = if (doWave) computeWaveform(bytes, w, h) else null
-                    cb.invoke(hist, wave)
+                    if (generation.owner.mayPublish() && analysisGeneration === generation) {
+                        cb.invoke(hist, wave)
+                    }
                 } catch (_: Throwable) {
                     // Analysis is best-effort; swallow so a bad frame never surfaces to the UI.
                 } finally {
-                    analysisBusy = false
+                    generation.owner.release()
                 }
             }
         } catch (_: Throwable) {
             // Readback/dispatch failed (e.g. rejected after shutdown); reset the guard and move on.
             runCatching { GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0) }
-            analysisBusy = false
+            generation.owner.release()
         }
     }
 
@@ -708,7 +785,8 @@ class GlPipeline {
         onStopped: (() -> Unit)? = null,
         onResourcesReleased: (() -> Unit)? = null,
     ) {
-        analysisExecutor.shutdown()
+        val ownedAnalysis = analysisGeneration
+        ownedAnalysis?.retire()
         val ownedThread = thread
         val ownedHandler = handler
         val ownedReleaseHub = resourceReleaseHub
@@ -727,9 +805,9 @@ class GlPipeline {
         ownedReleaseHub?.subscribe { localResourceRelease.run() }
         fun releaseGenerationResources(): Boolean {
             if (ownedReleaseHub != null) {
-                return ownedReleaseHub.runCleanup(::releaseGlResources)
+                return ownedReleaseHub.runCleanup { releaseGlResources(ownedAnalysis) }
             }
-            val released = runCatching { releaseGlResources() }.getOrDefault(false)
+            val released = runCatching { releaseGlResources(ownedAnalysis) }.getOrDefault(false)
             if (released) localResourceRelease.run()
             return released
         }
@@ -811,7 +889,7 @@ class GlPipeline {
     }
 
     /** Releases all GL-owned resources. Runs on the GL thread, or after that thread has exited. */
-    private fun releaseGlResources(): Boolean {
+    private fun releaseGlResources(ownedAnalysis: AnalysisGeneration?): Boolean {
         val core = egl
         var outputsReleased = core == null && encoderEgl == EGL14.EGL_NO_SURFACE &&
             !unsafeOutputAbandoned
@@ -828,8 +906,14 @@ class GlPipeline {
             runCatching { surfaceTexture?.release() }
             runCatching { inputSurface?.release() }
             runCatching {
-                if (analysisFbo != 0) GLES20.glDeleteFramebuffers(1, intArrayOf(analysisFbo), 0)
-                if (analysisTex != 0) GLES20.glDeleteTextures(1, intArrayOf(analysisTex), 0)
+                ownedAnalysis?.let { analysis ->
+                    if (analysis.fbo != 0) {
+                        GLES20.glDeleteFramebuffers(1, intArrayOf(analysis.fbo), 0)
+                    }
+                    if (analysis.texture != 0) {
+                        GLES20.glDeleteTextures(1, intArrayOf(analysis.texture), 0)
+                    }
+                }
                 renderer.release()
             }
             // Surface destruction is not an unbind in EGL. Relinquish every native window before
@@ -859,13 +943,18 @@ class GlPipeline {
         previewEgl = EGL14.EGL_NO_SURFACE
         encoderEgl = EGL14.EGL_NO_SURFACE
         orphanedEglOutputs.abandon()
+        previewSignal?.cancel()
+        previewSignal = null
         encoderSignal?.cancel(CancellationException("GL pipeline stopped before encoder ready"))
         encoderSignal = null
-        analysisFbo = 0
-        analysisTex = 0
-        analysisTextureW = 0
-        analysisTextureH = 0
-        analysisBusy = false
+        ownedAnalysis?.apply {
+            fbo = 0
+            texture = 0
+            textureW = 0
+            textureH = 0
+            clearSnapshots()
+        }
+        if (analysisGeneration === ownedAnalysis) analysisGeneration = null
         resetEncoderTimestampBase()
         lastDrawMs = 0L
         egl = null
@@ -1017,6 +1106,74 @@ internal class EncoderOutputSignal(
         if (wasPending) runCatching { onAttached(Result.failure(cause)) }
         return true
     }
+}
+
+/** Exactly-once health bridge for one TextureView/EGL preview-output generation. */
+internal class PreviewOutputSignal(
+    private val onReady: () -> Unit,
+    private val onFailure: (Throwable) -> Unit,
+) {
+    private enum class State { PENDING, READY, TERMINAL }
+
+    private var state = State.PENDING
+
+    fun ready(): Boolean {
+        val deliver = synchronized(this) {
+            if (state != State.PENDING) false else {
+                state = State.READY
+                true
+            }
+        }
+        if (deliver) runCatching(onReady)
+        return deliver
+    }
+
+    fun fail(failure: Throwable): Boolean {
+        val deliver = synchronized(this) {
+            if (state == State.TERMINAL) false else {
+                state = State.TERMINAL
+                true
+            }
+        }
+        if (deliver) runCatching { onFailure(failure) }
+        return deliver
+    }
+
+    fun cancel(): Boolean = synchronized(this) {
+        if (state == State.TERMINAL) false else {
+            state = State.TERMINAL
+            true
+        }
+    }
+}
+
+/**
+ * Single-in-flight gate owned by one immutable analysis generation. Retirement is synchronous;
+ * work that lost the race cannot publish, and its release can only mutate this owner's guard.
+ */
+internal class AnalysisGenerationOwner {
+    private val retired = AtomicBoolean(false)
+    private val busy = AtomicBoolean(false)
+
+    fun tryAcquire(): Boolean {
+        if (retired.get() || !busy.compareAndSet(false, true)) return false
+        if (!retired.get()) return true
+        busy.compareAndSet(true, false)
+        return false
+    }
+
+    fun retire() {
+        retired.set(true)
+        busy.set(false)
+    }
+
+    fun mayPublish(): Boolean = !retired.get()
+
+    fun release() {
+        busy.compareAndSet(true, false)
+    }
+
+    fun isBusy(): Boolean = busy.get()
 }
 
 /** Executes [callback] at most once across racing GL/caller threads. Callback failures are sealed. */

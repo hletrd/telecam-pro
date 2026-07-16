@@ -374,6 +374,40 @@ class CompletionDispatchTest {
     }
 
     @Test
+    fun `preview output publishes ready then reports one owned failure`() {
+        val ready = AtomicInteger()
+        val failures = mutableListOf<Throwable>()
+        val signal = PreviewOutputSignal(
+            onReady = { ready.incrementAndGet() },
+            onFailure = failures::add,
+        )
+
+        assertTrue(signal.ready())
+        assertFalse(signal.ready())
+        assertTrue(signal.fail(IllegalStateException("swap")))
+        assertFalse(signal.fail(IllegalStateException("duplicate")))
+
+        assertEquals(1, ready.get())
+        assertEquals(listOf("swap"), failures.map { it.message })
+    }
+
+    @Test
+    fun `cancelled preview output cannot report a stale replacement failure`() {
+        val ready = AtomicInteger()
+        val failures = AtomicInteger()
+        val signal = PreviewOutputSignal(
+            onReady = { ready.incrementAndGet() },
+            onFailure = { failures.incrementAndGet() },
+        )
+
+        assertTrue(signal.cancel())
+        assertFalse(signal.ready())
+        assertFalse(signal.fail(IllegalStateException("stale")))
+        assertEquals(0, ready.get())
+        assertEquals(0, failures.get())
+    }
+
+    @Test
     fun `bounded stop does not notify shared release subscribers`() {
         val releases = mutableListOf<String>()
         val boundary = ResourceReleaseHub()

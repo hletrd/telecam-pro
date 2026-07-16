@@ -14,6 +14,48 @@ import kotlin.concurrent.thread
 class ReconfigurationGenerationTest {
 
     @Test
+    fun `preview recovery retries only a live current surface generation`() {
+        assertEquals(
+            PreviewRecoveryDecision.RETRY,
+            previewRecoveryDecision(
+                ownerCurrent = true,
+                started = true,
+                paused = false,
+                nextAttempt = 1,
+                maxAttempts = 3,
+            ),
+        )
+        assertEquals(
+            PreviewRecoveryDecision.RETRY,
+            previewRecoveryDecision(true, true, false, nextAttempt = 3, maxAttempts = 3),
+        )
+    }
+
+    @Test
+    fun `preview recovery ignores stale stopped and paused owners`() {
+        assertEquals(
+            PreviewRecoveryDecision.IGNORE,
+            previewRecoveryDecision(false, true, false, nextAttempt = 1, maxAttempts = 3),
+        )
+        assertEquals(
+            PreviewRecoveryDecision.IGNORE,
+            previewRecoveryDecision(true, false, false, nextAttempt = 1, maxAttempts = 3),
+        )
+        assertEquals(
+            PreviewRecoveryDecision.IGNORE,
+            previewRecoveryDecision(true, true, true, nextAttempt = 1, maxAttempts = 3),
+        )
+    }
+
+    @Test
+    fun `preview recovery reports exhaustion after its bounded budget`() {
+        assertEquals(
+            PreviewRecoveryDecision.EXHAUSTED,
+            previewRecoveryDecision(true, true, false, nextAttempt = 4, maxAttempts = 3),
+        )
+    }
+
+    @Test
     fun `session reopen requires owned desired generation`() {
         assertTrue(sessionReopenMayProceed(7, 7, true, paused = false, recording = false))
         assertFalse(sessionReopenMayProceed(8, 7, true, paused = false, recording = false))
