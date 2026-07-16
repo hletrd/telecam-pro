@@ -40,6 +40,7 @@ class CameraEngine(private val context: Context) {
     // Drives interval (timelapse) capture off the camera/UI threads.
     private val timelapseScheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor()
     @Volatile private var timelapseFuture: java.util.concurrent.ScheduledFuture<*>? = null
+    private val timelapseRun = CaptureSequenceGeneration()
     @Volatile private var controller: CameraController? = null
     @Volatile private var recorder: VideoRecorder? = null
     private val recorderOwnershipLock = Any()
@@ -1354,9 +1355,9 @@ class CameraEngine(private val context: Context) {
             val range = c.exposureTimeRange
             val steps = manualAebExposuresNs(base, range?.lower ?: base, range?.upper ?: base)
             fun fire(i: Int) {
-                if (i >= steps.size) { ctrl.updateControls(original); return }
+                if (i >= steps.size) { ctrl.updateControls(controls); return }
                 // SPEED override so the bracketed time applies even when the user dials ANGLE.
-                val stepControls = original.copy(shutterMode = ShutterMode.SPEED, exposureTimeNs = steps[i])
+                val stepControls = manualAebStepControls(controls, steps[i])
                 ctrl.updateControls(stepControls)
                 ctrl.capturePhoto(
                     formats.wantsProcessedStill,
@@ -1376,8 +1377,8 @@ class CameraEngine(private val context: Context) {
         }
         else listOf(original.exposureCompensation)
         fun fire(i: Int) {
-            if (i >= steps.size) { ctrl.updateControls(original); return }
-            val stepControls = original.copy(exposureCompensation = steps[i])
+            if (i >= steps.size) { ctrl.updateControls(controls); return }
+            val stepControls = autoAebStepControls(controls, steps[i])
             ctrl.updateControls(stepControls)
             ctrl.capturePhoto(
                 formats.wantsProcessedStill,
@@ -1389,22 +1390,50 @@ class CameraEngine(private val context: Context) {
     }
 
     /**
-     * TIMELAPSE: repeats a single capture every [intervalSec] seconds on [timelapseScheduler] until
-     * [stopTimelapse] (called on a drive-mode change away from TIMELAPSE, and in [release]).
+     * TIMELAPSE: one capture + processed save at a time. The next interval starts only after
+     * [photoCallback]'s exactly-once completion, so full-resolution snapshots cannot accumulate on
+     * [ioExecutor] when encoding/storage is slower than [intervalSec].
      */
     private fun startTimelapse(formats: PhotoFormats) {
         stopTimelapse()
         val period = intervalSec.coerceAtLeast(1).toLong()
-        timelapseFuture = timelapseScheduler.scheduleWithFixedDelay({
-            controller?.capturePhoto(
-                formats.wantsProcessedStill,
-                formats.dngRaw,
-                photoCallback(formats, controls),
-            )
-        }, 0, period, java.util.concurrent.TimeUnit.SECONDS)
+        val generation = timelapseRun.restart()
+        val sequence = object {
+            fun schedule(delaySeconds: Long) {
+                if (!timelapseRun.owns(generation)) return
+                val future = runCatching {
+                    timelapseScheduler.schedule(
+                        {
+                            if (!timelapseRun.owns(generation)) return@schedule
+                            val ctrl = controller
+                            if (ctrl == null || paused || driveMode != DriveMode.TIMELAPSE) {
+                                if (!paused && driveMode == DriveMode.TIMELAPSE) schedule(period)
+                                return@schedule
+                            }
+                            ctrl.capturePhoto(
+                                formats.wantsProcessedStill,
+                                formats.dngRaw,
+                                photoCallback(formats, controls) {
+                                    if (timelapseRun.owns(generation)) schedule(period)
+                                },
+                            )
+                        },
+                        delaySeconds,
+                        java.util.concurrent.TimeUnit.SECONDS,
+                    )
+                }.getOrNull() ?: return
+                if (timelapseRun.owns(generation)) {
+                    timelapseFuture = future
+                } else {
+                    future.cancel(false)
+                }
+            }
+        }
+        sequence.schedule(0)
     }
 
     fun stopTimelapse() {
+        timelapseRun.stop()
         timelapseFuture?.cancel(false)
         timelapseFuture = null
     }
@@ -2377,6 +2406,23 @@ internal fun rollbackOpticsState(
 /** Rapid intents share the last Ready baseline instead of snapshotting an in-flight candidate. */
 internal fun <T> selectRollbackBaseline(cameraReady: Boolean, current: T, pendingBaseline: T?): T =
     if (cameraReady) current else pendingBaseline ?: current
+
+/** Thread-safe ownership token for completion-paced capture sequences. */
+internal class CaptureSequenceGeneration {
+    private val current = java.util.concurrent.atomic.AtomicLong(0)
+
+    fun restart(): Long = current.incrementAndGet()
+    fun stop() { current.incrementAndGet() }
+    fun owns(generation: Long): Boolean = current.get() == generation
+}
+
+/** Merge only the manual bracket field into the freshest live controls. */
+internal fun manualAebStepControls(latest: ManualControls, exposureTimeNs: Long): ManualControls =
+    latest.copy(shutterMode = ShutterMode.SPEED, exposureTimeNs = exposureTimeNs)
+
+/** Merge only the auto bracket field into the freshest live controls. */
+internal fun autoAebStepControls(latest: ManualControls, exposureCompensation: Int): ManualControls =
+    latest.copy(exposureCompensation = exposureCompensation)
 
 /** Complete synchronous lens/TELE intent retained even when its async camera preflight is paused. */
 internal data class ResolvedLensOpticsIntent(
