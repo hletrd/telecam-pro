@@ -2,8 +2,11 @@ package com.hletrd.findx9tele.ui.review
 
 import android.content.Context
 import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.provider.MediaStore
+import android.view.Surface
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -70,14 +73,48 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 
 /**
- * In-app review of the last saved still — the piece that makes manual focus at 300 mm usable, since
- * you can pinch to 100 %+ and confirm the shot nailed focus before the subject moves, without leaving
- * for the system gallery. Stills only (HEIF/JPEG); DNG/video aren't decoded for the quick check.
+ * In-app review of the last saved photo or video. Stills support high-magnification focus checks;
+ * videos use a bounded thumbnail plus an identity-owned TextureView/MediaPlayer playback surface.
+ * DNG remains outside the quick-review decoder.
  */
 
-/** Decodes [uri] downsampled so its longest side is ~[maxDim] px (<=0 = full resolution). */
 /** Rotation + dimensions of a video, for sizing/orienting the in-review player. */
 private data class VideoInfo(val rotationDeg: Int, val width: Int, val height: Int)
+
+/** Positive decoder target whose longest side never exceeds the requested bound. */
+internal data class BoundedVideoFrameSize(val width: Int, val height: Int)
+
+internal fun boundedVideoFrameSize(width: Int, height: Int, maxDim: Int): BoundedVideoFrameSize? {
+    if (width <= 0 || height <= 0 || maxDim <= 0) return null
+    val longest = maxOf(width, height)
+    if (longest <= maxDim) return BoundedVideoFrameSize(width, height)
+    return if (width >= height) {
+        BoundedVideoFrameSize(
+            width = maxDim,
+            height = (height.toLong() * maxDim / width).toInt().coerceAtLeast(1),
+        )
+    } else {
+        BoundedVideoFrameSize(
+            width = (width.toLong() * maxDim / height).toInt().coerceAtLeast(1),
+            height = maxDim,
+        )
+    }
+}
+
+/** A MediaPlayer and the caller-owned Surface passed to it; both share one release generation. */
+private class VideoPlaybackHandle(
+    val player: android.media.MediaPlayer,
+    val surface: Surface,
+) {
+    private var released = false
+
+    fun release() {
+        if (released) return
+        released = true
+        runCatching { player.release() }
+        runCatching { surface.release() }
+    }
+}
 
 private sealed interface ReviewMediaState {
     data object Loading : ReviewMediaState
@@ -92,12 +129,12 @@ private const val REVIEW_PREVIEW_MAX_DIM = 3000
 
 private fun loadVideoInfo(context: Context, uri: Uri): VideoInfo? = runCatching {
     if (context.contentResolver.getType(uri)?.startsWith("video/") != true) return@runCatching null
-    val mmr = android.media.MediaMetadataRetriever()
+    val mmr = MediaMetadataRetriever()
     try {
         mmr.setDataSource(context, uri)
-        val rot = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
-        val w = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
-        val h = mmr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+        val rot = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+        val w = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+        val h = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
         if (w > 0 && h > 0) VideoInfo(rot, w, h) else null
     } finally {
         runCatching { mmr.release() }
@@ -106,18 +143,47 @@ private fun loadVideoInfo(context: Context, uri: Uri): VideoInfo? = runCatching 
 
 /** First frame of a video, for the thumbnail/review of a just-recorded clip (BitmapFactory can't). */
 private fun loadVideoFrame(context: Context, uri: Uri, maxDim: Int): ImageBitmap? = runCatching {
-    val mmr = android.media.MediaMetadataRetriever()
+    val mmr = MediaMetadataRetriever()
     try {
         mmr.setDataSource(context, uri)
-        val frame = mmr.getFrameAtTime(0) ?: return@runCatching null
-        val scaled = if (maxDim > 0 && maxOf(frame.width, frame.height) > maxDim) {
-            val scale = maxDim.toFloat() / maxOf(frame.width, frame.height)
-            frame.scale(
-                (frame.width * scale).toInt().coerceAtLeast(1),
-                (frame.height * scale).toInt().coerceAtLeast(1),
-            )
-        } else frame
-        scaled.asImageBitmap()
+        val metadataTarget = boundedVideoFrameSize(
+            width = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0,
+            height = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0,
+            maxDim = maxDim,
+        )
+        metadataTarget?.let { target ->
+            runCatching {
+                mmr.getScaledFrameAtTime(
+                    0,
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                    target.width,
+                    target.height,
+                )
+            }.getOrNull()?.let { return@runCatching it.asImageBitmap() }
+        }
+
+        // Invalid/missing metadata or decoder-specific scaled-frame failure: decode once, then
+        // preserve the same bound and promptly recycle the distinct full-size source bitmap.
+        val source = mmr.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            ?: return@runCatching null
+        val fallbackTarget = boundedVideoFrameSize(source.width, source.height, maxDim)
+        if (fallbackTarget == null ||
+            (fallbackTarget.width == source.width && fallbackTarget.height == source.height)
+        ) {
+            source.asImageBitmap()
+        } else {
+            val scaled = try {
+                source.scale(fallbackTarget.width, fallbackTarget.height)
+            } catch (error: Throwable) {
+                source.recycle()
+                throw error
+            }
+            try {
+                scaled.asImageBitmap()
+            } finally {
+                if (scaled !== source) source.recycle()
+            }
+        }
     } finally {
         runCatching { mmr.release() }
     }
@@ -204,7 +270,7 @@ private suspend fun loadMetadata(context: Context, uri: Uri): ReviewMetadata? =
         }.getOrNull()
     }
 
-/** Tappable thumbnail of the last saved still; a placeholder frame until one exists. */
+/** Tappable thumbnail of the last saved photo or video; a placeholder frame until one exists. */
 @Composable
 fun GalleryThumb(uri: Uri?, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val context = LocalContext.current
@@ -242,8 +308,8 @@ fun GalleryThumb(uri: Uri?, onClick: () -> Unit, modifier: Modifier = Modifier) 
 }
 
 /**
- * Fullscreen pinch-to-zoom review of [uri]. The initial still decode is bounded so opening a
- * high-resolution capture cannot require a full-size ARGB allocation.
+ * Fullscreen review of [uri]. Still decoding and video thumbnails are bounded so opening a
+ * high-resolution capture cannot require an avoidable full-size ARGB allocation.
  */
 @Composable
 fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modifier: Modifier = Modifier) {
@@ -262,6 +328,8 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     var confirmDelete by remember { mutableStateOf(false) }
+    BackHandler(enabled = confirmDelete) { confirmDelete = false }
+    BackHandler(enabled = !confirmDelete, onBack = onClose)
     // In-review playback (videos): a TextureView + MediaPlayer — NOT VideoView, whose SurfaceView
     // sits behind the window and is occluded by this overlay's opaque black background (the same
     // trap the camera preview hit). Tap toggles play/pause; the clip loops.
@@ -397,97 +465,108 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
             // key(uri): the factory captures uri/vi once, so a NEW clip landing while review is open
             // (e.g. a hardware-key recording finishing) must recreate the view — otherwise the stale
             // MediaPlayer keeps looping the old file. Recreation routes through
-            // onSurfaceTextureDestroyed, which releases the old player.
+            // onSurfaceTextureDestroyed, which releases the old playback generation.
             androidx.compose.runtime.key(uri) {
-            // Per-clip player handle. `playerRef` is ONE shared state across key(uri) swaps, so
-            // without an identity guard clip A's late onSurfaceTextureDestroyed could release the
-            // player clip B just installed — the two surface callbacks have no ordering guarantee.
-            // `heldPlayer` (remembered per key) lets the disposer see exactly THIS clip's player.
-            val heldPlayer = remember { mutableStateOf<android.media.MediaPlayer?>(null) }
-            AndroidView(
-                modifier = Modifier
-                    .aspectRatio(aspect.coerceAtLeast(0.01f))
-                    .graphicsLayer(
-                        translationY = dismissDrag,
-                        alpha = (1f - abs(dismissDrag) / 1400f).coerceIn(0.3f, 1f),
-                    ),
-                factory = { ctx ->
-                    // This view instance's OWN player (factory scope), captured by the listener so
-                    // teardown releases exactly it — never a newer clip's.
-                    var localPlayer: android.media.MediaPlayer? = null
-                    android.view.TextureView(ctx).apply {
-                        surfaceTextureListener = object : android.view.TextureView.SurfaceTextureListener {
-                            override fun onSurfaceTextureAvailable(st: android.graphics.SurfaceTexture, w: Int, h: Int) {
-                                // Undo the default stretch and apply the container rotation so a
-                                // landscape-held clip plays upright and undistorted.
-                                if (vi.rotationDeg != 0) {
-                                    val m = android.graphics.Matrix()
-                                    val cx = w / 2f
-                                    val cy = h / 2f
-                                    m.postRotate(vi.rotationDeg.toFloat(), cx, cy)
-                                    if (rotated) m.postScale(w.toFloat() / h, h.toFloat() / w, cx, cy)
-                                    setTransform(m)
-                                }
-                                val mp = android.media.MediaPlayer()
-                                localPlayer = mp
-                                heldPlayer.value = mp
-                                playerRef.value = mp
-                                runCatching {
-                                    mp.setDataSource(ctx, uri)
-                                    mp.setSurface(android.view.Surface(st))
-                                    mp.isLooping = true
-                                    // The prepared callback fires LATER, after this runCatching has
-                                    // exited — closing review during the async prepare releases the
-                                    // player, and an unguarded start() on it crashes the main thread.
-                                    mp.setOnPreparedListener { p ->
-                                        runCatching { p.start() }
-                                            .onFailure { mediaState = ReviewMediaState.Error("Unable to play this video.") }
+                // `playerRef` is shared across key(uri) swaps, while this handle is per clip. A
+                // single identity guard therefore owns BOTH the MediaPlayer and caller-created
+                // Surface, preventing clip A's late teardown from releasing clip B's generation.
+                val heldPlayback = remember { mutableStateOf<VideoPlaybackHandle?>(null) }
+                fun releaseIfOwned(handle: VideoPlaybackHandle) {
+                    if (heldPlayback.value !== handle) return
+                    heldPlayback.value = null
+                    if (playerRef.value === handle.player) playerRef.value = null
+                    handle.release()
+                }
+                AndroidView(
+                    modifier = Modifier
+                        .aspectRatio(aspect.coerceAtLeast(0.01f))
+                        .graphicsLayer(
+                            translationY = dismissDrag,
+                            alpha = (1f - abs(dismissDrag) / 1400f).coerceIn(0.3f, 1f),
+                        ),
+                    factory = { ctx ->
+                        var viewHandle: VideoPlaybackHandle? = null
+                        android.view.TextureView(ctx).apply {
+                            surfaceTextureListener = object : android.view.TextureView.SurfaceTextureListener {
+                                override fun onSurfaceTextureAvailable(st: android.graphics.SurfaceTexture, w: Int, h: Int) {
+                                    // Undo the default stretch and apply the container rotation so a
+                                    // landscape-held clip plays upright and undistorted.
+                                    if (vi.rotationDeg != 0) {
+                                        val m = android.graphics.Matrix()
+                                        val cx = w / 2f
+                                        val cy = h / 2f
+                                        m.postRotate(vi.rotationDeg.toFloat(), cx, cy)
+                                        if (rotated) m.postScale(w.toFloat() / h, h.toFloat() / w, cx, cy)
+                                        setTransform(m)
                                     }
-                                    mp.setOnErrorListener { _, _, _ ->
+
+                                    viewHandle?.let(::releaseIfOwned)
+                                    val mp = android.media.MediaPlayer()
+                                    val playbackSurface = try {
+                                        Surface(st)
+                                    } catch (_: Throwable) {
+                                        runCatching { mp.release() }
                                         playing = false
                                         mediaState = ReviewMediaState.Error("Unable to play this video.")
-                                        true
+                                        return
                                     }
-                                    mp.prepareAsync()
-                                }.onFailure {
-                                    runCatching { mp.release() }
-                                    localPlayer = null
-                                    heldPlayer.value = null
-                                    if (playerRef.value === mp) playerRef.value = null
-                                    mediaState = ReviewMediaState.Error("Unable to play this video.")
+                                    val handle = VideoPlaybackHandle(mp, playbackSurface)
+                                    viewHandle = handle
+                                    heldPlayback.value = handle
+                                    playerRef.value = mp
+
+                                    fun failPlayback() {
+                                        if (heldPlayback.value !== handle) return
+                                        if (viewHandle === handle) viewHandle = null
+                                        releaseIfOwned(handle)
+                                        playing = false
+                                        mediaState = ReviewMediaState.Error("Unable to play this video.")
+                                    }
+
+                                    runCatching {
+                                        mp.setDataSource(ctx, uri)
+                                        mp.setSurface(playbackSurface)
+                                        mp.isLooping = true
+                                        // Async callbacks may arrive after teardown; identity gates
+                                        // keep them from starting or releasing a replacement player.
+                                        mp.setOnPreparedListener { p ->
+                                            if (heldPlayback.value !== handle) return@setOnPreparedListener
+                                            runCatching { p.start() }
+                                                .onSuccess { playing = true }
+                                                .onFailure { failPlayback() }
+                                        }
+                                        mp.setOnErrorListener { _, _, _ ->
+                                            failPlayback()
+                                            true
+                                        }
+                                        mp.prepareAsync()
+                                    }.onFailure { failPlayback() }
                                 }
+
+                                override fun onSurfaceTextureSizeChanged(
+                                    st: android.graphics.SurfaceTexture,
+                                    w: Int,
+                                    h: Int,
+                                ) = Unit
+
+                                override fun onSurfaceTextureDestroyed(st: android.graphics.SurfaceTexture): Boolean {
+                                    viewHandle?.let { handle ->
+                                        viewHandle = null
+                                        releaseIfOwned(handle)
+                                    }
+                                    return true
+                                }
+
+                                override fun onSurfaceTextureUpdated(st: android.graphics.SurfaceTexture) = Unit
                             }
-
-                            override fun onSurfaceTextureSizeChanged(st: android.graphics.SurfaceTexture, w: Int, h: Int) = Unit
-
-                            override fun onSurfaceTextureDestroyed(st: android.graphics.SurfaceTexture): Boolean {
-                                // Release only the player THIS view created, and clear the shared ref
-                                // solely if it still points here — so A's late teardown can't kill B.
-                                val p = localPlayer
-                                runCatching { p?.release() }
-                                localPlayer = null
-                                heldPlayer.value = null
-                                if (playerRef.value === p) playerRef.value = null
-                                return true
-                            }
-
-                            override fun onSurfaceTextureUpdated(st: android.graphics.SurfaceTexture) = Unit
                         }
+                    },
+                )
+                DisposableEffect(Unit) {
+                    onDispose {
+                        heldPlayback.value?.let(::releaseIfOwned)
                     }
-                },
-            )
-            DisposableEffect(Unit) {
-                // Scoped INSIDE key(uri): when this clip leaves composition the disposer releases
-                // only this clip's player and clears the shared ref only if it still points here —
-                // it can never release a newer clip's player. Guards double-release with the surface
-                // callback (whichever runs first nulls heldPlayer; the other no-ops).
-                onDispose {
-                    val p = heldPlayer.value
-                    runCatching { p?.release() }
-                    heldPlayer.value = null
-                    if (playerRef.value === p) playerRef.value = null
                 }
-            }
             }
             if (!playing) {
                 // Paused indicator: a simple ▶ so it's obvious a tap resumes.
