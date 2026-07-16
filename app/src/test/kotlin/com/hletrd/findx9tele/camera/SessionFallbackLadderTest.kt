@@ -66,7 +66,7 @@ class SessionFallbackLadderTest {
     }
 
     @Test
-    fun teleconverter_retriesSameStreamLadderWithRegularOperationMode() {
+    fun `teleconverter tries regular full session before preview-only`() {
         val vendor = sessionAttemptPlan(
             attempt = 0,
             wantHlg = true,
@@ -75,7 +75,7 @@ class SessionFallbackLadderTest {
             teleconverterMode = true,
         )
         val regular = sessionAttemptPlan(
-            attempt = 4,
+            attempt = 3,
             wantHlg = true,
             supportsRaw = true,
             standalone = true,
@@ -85,5 +85,18 @@ class SessionFallbackLadderTest {
         assertTrue(vendor.useVendorOperationMode)
         assertFalse(regular.useVendorOperationMode)
         assertEquals(vendor.copy(useVendorOperationMode = false), regular)
+        assertTrue(regular.useJpeg)
+        assertTrue(regular.useRaw)
+    }
+
+    @Test
+    fun `teleconverter reserves both preview-only attempts for last`() {
+        val vendor = sessionAttemptPlan(6, true, true, true, teleconverterMode = true)
+        val regular = sessionAttemptPlan(7, true, true, true, teleconverterMode = true)
+
+        assertFalse(vendor.useJpeg)
+        assertTrue(vendor.useVendorOperationMode)
+        assertFalse(regular.useJpeg)
+        assertFalse(regular.useVendorOperationMode)
     }
 }

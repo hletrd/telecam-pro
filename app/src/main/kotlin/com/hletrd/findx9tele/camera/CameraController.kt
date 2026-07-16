@@ -26,12 +26,11 @@ import com.hletrd.findx9tele.BuildConfig
 import java.util.concurrent.Executor
 
 /**
- * Camera2 session for the tele lens. The GL input surface receives the repeating preview stream
- * (optionally 10-bit HLG for video); still capture targets a JPEG and a RAW ImageReader. When the
- * tele is a physical sub-camera, every output is routed to it via setPhysicalCameraId().
+ * Camera2 session for the selected rear camera. The GL input surface receives the repeating preview
+ * stream; processed stills use logical-camera YUV or standalone JPEG, and RAW is standalone-only.
  *
- * Camera callbacks run on a dedicated HandlerThread. Photo encoding happens inside [PhotoCallback]
- * (synchronously) before the Images are closed.
+ * Camera callbacks run on a dedicated HandlerThread. [PhotoCallback] hands image ownership to the
+ * engine, which snapshots/encodes off the camera thread before the Images are closed.
  */
 class CameraController(context: Context) {
 
@@ -228,14 +227,21 @@ class CameraController(context: Context) {
     private var deferredError: ErrorCb? = null
 
     /** Second phase of a deferSession [open]: the old session is closed, the surface is free. */
-    fun startDeferredSession() {
-        postToCamera {
-            val ready = deferredReady ?: return@postToCamera
-            val err = deferredError ?: return@postToCamera
+    fun startDeferredSession(): Boolean {
+        val ready = deferredReady ?: return false
+        val err = deferredError ?: return false
+        val accepted = postToCamera {
+            if (deferredReady !== ready || deferredError !== err) return@postToCamera
             deferredReady = null
             deferredError = null
             runCatching { configureSession(ready, err) }.onFailure { err.onError(it) }
         }
+        if (!accepted) {
+            deferredReady = null
+            deferredError = null
+            err.onError(IllegalStateException("camera thread unavailable before deferred session"))
+        }
+        return accepted
     }
 
     /**
@@ -360,8 +366,8 @@ class CameraController(context: Context) {
     // existing fallback ladder proceeds with SESSION_REGULAR semantics.
     @android.annotation.SuppressLint("WrongConstant")
     private fun configureSession(onReady: Ready, onError: ErrorCb) {
-        val camera = device ?: return
-        val preview = glSurface ?: return
+        val camera = device ?: return onError.onError(IllegalStateException("camera device unavailable"))
+        val preview = glSurface ?: return onError.onError(IllegalStateException("preview surface unavailable"))
 
         // Discard any readers built by a previous (failed) attempt before rebuilding.
         runCatching { jpegReader?.close() }
@@ -440,8 +446,11 @@ class CameraController(context: Context) {
                     if (closed) { runCatching { s.close() }; return } // closed before config completed
                     session = s
                     if (BuildConfig.DEBUG) Log.i(TAG, "Session configured (fallback=$attempt, hlg=$useHlg, jpeg=$useJpeg, raw=$useRaw, vendorLog=$vendorLogMode)")
-                    startPreview()
-                    onReady.onReady()
+                    when (sessionStartDelivery(startPreview())) {
+                        SessionStartDelivery.READY -> onReady.onReady()
+                        SessionStartDelivery.ERROR ->
+                            onError.onError(IllegalStateException("repeating preview request failed"))
+                    }
                 }
                 override fun onConfigureFailed(s: CameraCaptureSession) {
                     // Advance the fallback ladder and retry; give up once it is exhausted.
@@ -491,8 +500,11 @@ class CameraController(context: Context) {
                     if (closed) { runCatching { s.close() }; return }
                     session = s
                     if (BuildConfig.DEBUG) Log.i(TAG, "High-speed session configured (${highSpeedFps}fps)")
-                    startHighSpeedPreview()
-                    onReady.onReady()
+                    when (sessionStartDelivery(startHighSpeedPreview())) {
+                        SessionStartDelivery.READY -> onReady.onReady()
+                        SessionStartDelivery.ERROR ->
+                            onError.onError(IllegalStateException("high-speed repeating request failed"))
+                    }
                 }
                 override fun onConfigureFailed(s: CameraCaptureSession) {
                     if (BuildConfig.DEBUG) Log.w(TAG, "High-speed session config failed at ${highSpeedFps}fps; falling back to regular session")
@@ -518,12 +530,12 @@ class CameraController(context: Context) {
     }
 
     /** Issues the high-speed repeating burst (one request expanded to N by the HAL) at [highSpeedFps]. */
-    private fun startHighSpeedPreview() {
-        if (closed) return
-        val camera = device ?: return
-        val preview = glSurface ?: return
-        val s = session as? CameraConstrainedHighSpeedCaptureSession ?: return
-        runCatching {
+    private fun startHighSpeedPreview(): Boolean {
+        if (closed) return false
+        val camera = device ?: return false
+        val preview = glSurface ?: return false
+        val s = session as? CameraConstrainedHighSpeedCaptureSession ?: return false
+        return runCatching {
             val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
                 addTarget(preview)
                 set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, android.util.Range(highSpeedFps, highSpeedFps))
@@ -543,7 +555,11 @@ class CameraController(context: Context) {
             }
             val list = s.createHighSpeedRequestList(builder.build())
             s.setRepeatingBurst(list, null, handler)
-        }.onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "startHighSpeedPreview skipped: ${it.message}") }
+            true
+        }.getOrElse {
+            if (BuildConfig.DEBUG) Log.w(TAG, "startHighSpeedPreview skipped: ${it.message}")
+            false
+        }
     }
 
     /**
@@ -553,19 +569,19 @@ class CameraController(context: Context) {
      * tapped region; the trigger is then cleared (IDLE) and the repeating request continues to hold
      * that result. All calls guard nulls so a torn-down session is a no-op.
      */
-    private fun startPreview() {
-        if (closed) return
+    private fun startPreview(): Boolean {
+        if (closed) return false
         // In high-speed mode the session is a constrained high-speed one; its repeating request must
         // be a burst list, so route there instead of the regular single-request path below.
-        if (highSpeedFps > 0) { startHighSpeedPreview(); return }
-        val camera = device ?: return
-        val preview = glSurface ?: return
-        val s = session ?: return
+        if (highSpeedFps > 0) return startHighSpeedPreview()
+        val camera = device ?: return false
+        val preview = glSurface ?: return false
+        val s = session ?: return false
         // The device can be disconnected asynchronously (app backgrounded, another client, HAL) between
         // session config and here; createCaptureRequest/setRepeatingRequest then throw CameraAccess/
         // IllegalState. Guard the whole build+submit so a torn-down session degrades to "no preview
         // this cycle" instead of crashing the camera thread.
-        runCatching {
+        return runCatching {
             val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                 addTarget(preview)
                 applyManualControls(controls, caps, pinAutoFps || smoothPreviewBoost, previewExposureCap = true)
@@ -658,7 +674,11 @@ class CameraController(context: Context) {
             previewBuilder = builder
             previewCallback = callback
             s.setRepeatingRequest(builder.build(), callback, handler)
-        }.onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "startPreview skipped: ${it.message}") }
+            true
+        }.getOrElse {
+            if (BuildConfig.DEBUG) Log.w(TAG, "startPreview skipped: ${it.message}")
+            false
+        }
     }
 
     /**
@@ -1035,6 +1055,12 @@ internal fun captureTokenIsCurrent(current: Any?, expected: Any): Boolean = curr
 internal fun timestampBelongsToCapture(expectedTimestampNs: Long, actualTimestampNs: Long): Boolean =
     expectedTimestampNs == actualTimestampNs
 
+internal enum class SessionStartDelivery { READY, ERROR }
+
+/** Configured is not Ready until the initial repeating request was accepted. */
+internal fun sessionStartDelivery(repeatingRequestAccepted: Boolean): SessionStartDelivery =
+    if (repeatingRequestAccepted) SessionStartDelivery.READY else SessionStartDelivery.ERROR
+
 /** What the session fallback ladder enables at a given attempt — see [CameraController]'s ladder doc. */
 internal data class SessionAttemptPlan(
     val useHlg: Boolean,
@@ -1045,8 +1071,8 @@ internal data class SessionAttemptPlan(
 
 /**
  * Pure core of the fallback ladder (full → drop RAW → drop HLG → preview-only) so the
- * HAL-crash-critical ordering is unit-testable off-device. TELE repeats those four stream plans
- * with regular operation mode after trying vendor 0x80b4. [standalone] is the
+ * HAL-crash-critical ordering is unit-testable off-device. TELE tries both operation modes with
+ * capture streams before either preview-only last resort. [standalone] is the
  * `selection.physicalId == null` RAW gate (RAW via physical routing SIGSEGVs this QTI HAL).
  */
 internal fun sessionAttemptPlan(
@@ -1057,7 +1083,20 @@ internal fun sessionAttemptPlan(
     logicalMultiCamera: Boolean = false,
     teleconverterMode: Boolean = false,
 ): SessionAttemptPlan {
-    val streamAttempt = if (teleconverterMode) attempt % 4 else attempt
+    val (streamAttempt, vendorMode) = if (teleconverterMode) {
+        when (attempt) {
+            0 -> 0 to true
+            1 -> 1 to true
+            2 -> 2 to true
+            3 -> 0 to false
+            4 -> 1 to false
+            5 -> 2 to false
+            6 -> 3 to true
+            else -> 3 to false
+        }
+    } else {
+        attempt to false
+    }
     return SessionAttemptPlan(
     useHlg = wantHlg && streamAttempt < 2,
     useJpeg = streamAttempt < 3,
@@ -1067,7 +1106,7 @@ internal fun sessionAttemptPlan(
     // shot (device-observed CAMERA_ERROR(3), 2026-07-14) — no image ever arrives. DNG therefore
     // exists only in TELE mode (standalone 3×) and on any explicit standalone selection.
     useRaw = streamAttempt < 1 && supportsRaw && standalone && !logicalMultiCamera,
-    useVendorOperationMode = teleconverterMode && attempt < 4,
+    useVendorOperationMode = vendorMode,
     )
 }
 
