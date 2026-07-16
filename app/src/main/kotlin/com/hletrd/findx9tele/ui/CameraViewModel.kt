@@ -41,11 +41,12 @@ import com.hletrd.findx9tele.camera.PeakingLevel
 import com.hletrd.findx9tele.camera.PhotoFormats
 import com.hletrd.findx9tele.camera.PendingControlsDisposition
 import com.hletrd.findx9tele.camera.acceptedOpticsAuxState
+import com.hletrd.findx9tele.camera.controlCapabilities
+import com.hletrd.findx9tele.camera.normalizeControlsForRoute
 import com.hletrd.findx9tele.camera.normalizedFor
 import com.hletrd.findx9tele.camera.pendingControlsForTransition
 import com.hletrd.findx9tele.camera.withDefaultIfEmpty
 import com.hletrd.findx9tele.camera.ProcessingLevel
-import com.hletrd.findx9tele.camera.reconcileZoomWithCaps
 import com.hletrd.findx9tele.camera.ShutterMode
 import com.hletrd.findx9tele.camera.ShutterTimer
 import com.hletrd.findx9tele.camera.VideoCodec
@@ -1204,29 +1205,37 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     private fun reconcileZoomToCaps(caps: CameraCaps) {
         val current = _state.value
-        val capabilityControls = current.controls.normalizedFor(caps)
         val range = caps.zoomRatioRange
-        val resolved = reconcileZoomWithCaps(
+        val normalizedControls = normalizeControlsForRoute(
+            requested = current.controls,
+            capabilities = caps.controlCapabilities(),
             mode = current.mode,
             teleconverter = current.teleconverterMode,
-            zoomRatio = capabilityControls.zoomRatio,
             capsLower = range?.lower,
             capsUpper = range?.upper,
         )
-        val normalizedControls = capabilityControls.copy(zoomRatio = resolved)
         val lens = if (current.mode == CaptureMode.PHOTO && !current.teleconverterMode) {
-            LensChoice.forZoom(resolved)
+            LensChoice.forZoom(normalizedControls.zoomRatio)
         } else {
             current.lens
         }
         _state.update {
             it.copy(caps = caps, lens = lens, controls = normalizedControls)
         }
-        pendingControls = pendingControls?.normalizedFor(caps)?.copy(zoomRatio = resolved)
+        pendingControls = pendingControls?.let { pending ->
+            normalizeControlsForRoute(
+                requested = pending,
+                capabilities = caps.controlCapabilities(),
+                mode = current.mode,
+                teleconverter = current.teleconverterMode,
+                capsLower = range?.lower,
+                capsUpper = range?.upper,
+            )
+        }
         if (normalizedControls != current.controls) {
             engine.setAeMetering(usesExposureAnalysis(normalizedControls))
             engine.setControls(normalizedControls)
-            if (!zoomPendingRatio.isNaN()) zoomPendingRatio = resolved
+            if (!zoomPendingRatio.isNaN()) zoomPendingRatio = normalizedControls.zoomRatio
         }
     }
 

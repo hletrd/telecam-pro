@@ -57,3 +57,24 @@ internal fun reconcileZoomWithCaps(
     val upper = min(contractUpper, liveUpper)
     return if (lower <= upper) safe.coerceIn(lower, upper) else safe
 }
+
+/** One complete capability + route normalization boundary for recalled/live control packets. */
+internal fun normalizeControlsForRoute(
+    requested: ManualControls,
+    capabilities: CameraControlCapabilities,
+    mode: CaptureMode,
+    teleconverter: Boolean,
+    capsLower: Float?,
+    capsUpper: Float?,
+): ManualControls {
+    val capabilityControls = requested.normalizedFor(capabilities)
+    return capabilityControls.copy(
+        zoomRatio = reconcileZoomWithCaps(
+            mode = mode,
+            teleconverter = teleconverter,
+            zoomRatio = capabilityControls.zoomRatio,
+            capsLower = capsLower,
+            capsUpper = capsUpper,
+        ),
+    )
+}

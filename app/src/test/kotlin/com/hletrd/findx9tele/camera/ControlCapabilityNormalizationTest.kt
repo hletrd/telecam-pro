@@ -10,6 +10,69 @@ import org.junit.Test
 class ControlCapabilityNormalizationTest {
 
     @Test
+    fun `route normalization makes a sparse fast recall stable before ready`() {
+        val caps = CameraControlCapabilities(
+            supportsManualFocus = false,
+            supportsManualSensor = false,
+            supportsManualPostProcessing = false,
+            flashAvailable = true,
+            afModes = intArrayOf(CameraMetadata.CONTROL_AF_MODE_AUTO),
+            awbModes = intArrayOf(CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT),
+            aeModes = intArrayOf(CameraMetadata.CONTROL_AE_MODE_ON),
+            maxAeRegions = 0,
+            antibandingModes = intArrayOf(CameraMetadata.CONTROL_AE_ANTIBANDING_MODE_60HZ),
+            effectModes = intArrayOf(CameraMetadata.CONTROL_EFFECT_MODE_MONO),
+            edgeModes = intArrayOf(CameraMetadata.EDGE_MODE_FAST),
+            noiseReductionModes = intArrayOf(CameraMetadata.NOISE_REDUCTION_MODE_HIGH_QUALITY),
+        )
+        val recalled = ManualControls(
+            focusMode = FocusMode.MANUAL,
+            afLock = true,
+            exposureMode = ExposureMode.MANUAL,
+            wbMode = WbMode.MANUAL,
+            flash = FlashMode.ON,
+            antibanding = Antibanding.AUTO,
+            meteringMode = MeteringMode.SPOT,
+            edge = ProcessingLevel.OFF,
+            noiseReduction = ProcessingLevel.OFF,
+            colorEffect = ColorEffect.SEPIA,
+            zoomRatio = 19f,
+        )
+
+        val normalized = normalizeControlsForRoute(
+            requested = recalled,
+            capabilities = caps,
+            mode = CaptureMode.PHOTO,
+            teleconverter = false,
+            capsLower = 1f,
+            capsUpper = 8f,
+        )
+
+        assertEquals(FocusMode.AUTO, normalized.focusMode)
+        assertFalse(normalized.afLock)
+        assertEquals(ExposureMode.PROGRAM, normalized.exposureMode)
+        assertEquals(WbMode.DAYLIGHT, normalized.wbMode)
+        assertEquals(FlashMode.OFF, normalized.flash)
+        assertEquals(Antibanding.HZ60, normalized.antibanding)
+        assertEquals(MeteringMode.MATRIX, normalized.meteringMode)
+        assertEquals(ProcessingLevel.FAST, normalized.edge)
+        assertEquals(ProcessingLevel.HIGH_QUALITY, normalized.noiseReduction)
+        assertEquals(ColorEffect.MONO, normalized.colorEffect)
+        assertEquals(8f, normalized.zoomRatio)
+        assertEquals(
+            normalized,
+            normalizeControlsForRoute(
+                requested = normalized,
+                capabilities = caps,
+                mode = CaptureMode.PHOTO,
+                teleconverter = false,
+                capsLower = 1f,
+                capsUpper = 8f,
+            ),
+        )
+    }
+
+    @Test
     fun `sparse arrays retain every exactly advertised requested mode`() {
         val caps = CameraControlCapabilities(
             supportsManualFocus = true,

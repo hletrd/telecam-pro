@@ -141,17 +141,16 @@ class CameraEngine(private val context: Context) {
     }
 
     private fun reconcileControlsWithCaps(cameraCaps: CameraCaps) {
-        val capabilityControls = controls.normalizedFor(cameraCaps)
         val range = cameraCaps.zoomRatioRange
-        val zoom = reconcileZoomWithCaps(
+        controls = normalizeControlsForRoute(
+            requested = controls,
+            capabilities = cameraCaps.controlCapabilities(),
             mode = if (videoMode) CaptureMode.VIDEO else CaptureMode.PHOTO,
             teleconverter = teleconverterMode,
-            zoomRatio = capabilityControls.zoomRatio,
             capsLower = range?.lower,
             capsUpper = range?.upper,
         )
-        controls = capabilityControls.copy(zoomRatio = zoom)
-        if (!videoMode && !teleconverterMode) lensChoice = LensChoice.forZoom(zoom)
+        if (!videoMode && !teleconverterMode) lensChoice = LensChoice.forZoom(controls.zoomRatio)
         seedGlZoom()
     }
 
@@ -243,6 +242,7 @@ class CameraEngine(private val context: Context) {
         photoOutputs: PhotoSessionOutputs,
         expectedSessionGeneration: Long,
         terminalMutation: () -> Unit = {},
+        beforeReadyPublication: ((generation: Long) -> Unit)? = null,
     ): Boolean {
         // terminalMutation must only update engine fields or enqueue non-blocking GL/controller
         // handler work. Never perform Binder IPC, close resources, or invoke external callbacks
@@ -275,6 +275,9 @@ class CameraEngine(private val context: Context) {
             cameraRecoveryAttempts = 0
         } ?: return false
         coldStartRetryGate.success(publicationGeneration)
+        // Reconciled caps/controls must enter the caller's main queue before Ready. Callback failure
+        // is sealed so UI plumbing cannot strand an otherwise accepted Camera2 session Not-Ready.
+        runCatching { beforeReadyPublication?.invoke(publicationGeneration) }
         onCameraReadyChange?.invoke(checkNotNull(publication))
         return true
     }
@@ -288,6 +291,7 @@ class CameraEngine(private val context: Context) {
         transaction: OpticsTransaction,
         cameraId: String,
         expectedController: CameraController,
+        beforeReadyPublication: ((generation: Long) -> Unit)? = null,
         terminalMutation: () -> Unit,
     ) {
         convergeFastPathCommit(
@@ -296,8 +300,9 @@ class CameraEngine(private val context: Context) {
                     transaction.generation,
                     expectedController,
                     transaction.before.photoSessionOutputs,
-                    transaction.before.sessionGeneration,
-                    terminalMutation,
+                    expectedSessionGeneration = transaction.before.sessionGeneration,
+                    terminalMutation = terminalMutation,
+                    beforeReadyPublication = beforeReadyPublication,
                 )
             },
             ownsTransaction = { ownsOpticsTransaction(transaction) },
@@ -978,7 +983,6 @@ class CameraEngine(private val context: Context) {
         val modeGeneration = modeIntentGeneration.incrementAndGet()
         val lensGeneration = lensIntentGeneration.incrementAndGet()
         controller?.setPinAutoFps(enabledVideo)
-        controller?.updateControls(resolvedControls)
         if (!started) return
         setupExecutor.execute {
             if (!ownsOpticsTransaction(transaction) ||
@@ -1012,13 +1016,36 @@ class CameraEngine(private val context: Context) {
                 reconfigureCamera(id, transaction)
             } else {
                 val expectedController = controller ?: return@execute
-                commitFastPathOrReconfigure(transaction, id, expectedController) {
-                    // Enqueue the old generation's request-side work while the commit monitor is
-                    // held. A newer begin cannot enqueue its packet until after this one, preserving
-                    // controller/GL handler order as well as engine-field ownership.
-                    setZoomRatio(resolvedControls.zoomRatio)
-                    overrideId = id
+                val routeCaps = caps ?: run {
+                    reconfigureCamera(id, transaction)
+                    return@execute
                 }
+                val range = routeCaps.zoomRatioRange
+                val normalizedControls = normalizeControlsForRoute(
+                    requested = resolvedControls,
+                    capabilities = routeCaps.controlCapabilities(),
+                    mode = if (enabledVideo) CaptureMode.VIDEO else CaptureMode.PHOTO,
+                    teleconverter = resolvedTeleconverter,
+                    capsLower = range?.lower,
+                    capsUpper = range?.upper,
+                )
+                commitFastPathOrReconfigure(
+                    transaction = transaction,
+                    cameraId = id,
+                    expectedController = expectedController,
+                    terminalMutation = {
+                        // Enqueue the owned normalized packet while the commit monitor is held. A
+                        // newer begin cannot enqueue its packet first or publish raw recalled state.
+                        controls = normalizedControls
+                        if (!enabledVideo && !resolvedTeleconverter) {
+                            lensChoice = LensChoice.forZoom(normalizedControls.zoomRatio)
+                        }
+                        seedGlZoom()
+                        expectedController.updateControls(normalizedControls)
+                        overrideId = id
+                    },
+                    beforeReadyPublication = { generation -> onCapsReady?.invoke(routeCaps, generation) },
+                )
             }
         }
     }
