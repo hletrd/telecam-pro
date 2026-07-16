@@ -37,6 +37,66 @@ class CaptureOutputTrackerTest {
     }
 
     @Test
+    fun reconstructedPriorFamily_deletesEverySeededSibling() {
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
+        val outputs = listOf(
+            PriorCaptureOutput("shot.heic", CaptureOutputKind.DISPLAYABLE),
+            PriorCaptureOutput("shot.jpg", CaptureOutputKind.DISPLAYABLE),
+            PriorCaptureOutput("shot.dng", CaptureOutputKind.RAW),
+        )
+
+        assertTrue(tracker.seedPriorCapture(outputs, preferredOutput = "shot.heic"))
+        assertTrue(tracker.isCurrentReviewOutput("shot.heic"))
+        assertEquals(setOf("shot.heic", "shot.jpg", "shot.dng"), tracker.takeForDelete("shot.heic"))
+    }
+
+    @Test
+    fun firstLiveCapture_alwaysSupersedesPriorProcessSeed() {
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
+        tracker.seedPriorCapture(
+            listOf(PriorCaptureOutput("seed.dng", CaptureOutputKind.RAW)),
+            preferredOutput = "seed.dng",
+        )
+
+        assertEquals(
+            CaptureOutputDecision.REVIEW,
+            tracker.record(0, "live.dng", CaptureOutputKind.RAW),
+        )
+        assertTrue(tracker.isCurrentReviewOutput("live.dng"))
+    }
+
+    @Test
+    fun lateRestoreSeed_neverDisplacesAlreadyPublishedLiveCapture() {
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
+        tracker.record(1, "live.heic", CaptureOutputKind.DISPLAYABLE)
+
+        assertFalse(
+            tracker.seedPriorCapture(
+                listOf(PriorCaptureOutput("seed.heic", CaptureOutputKind.DISPLAYABLE)),
+                preferredOutput = "seed.heic",
+            ),
+        )
+        assertTrue(tracker.isCurrentReviewOutput("live.heic"))
+    }
+
+    @Test
+    fun partialFamilyDelete_hasEveryKnownFailureVisibleToTheCaller() {
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
+        tracker.seedPriorCapture(
+            listOf(
+                PriorCaptureOutput("shot.heic", CaptureOutputKind.DISPLAYABLE),
+                PriorCaptureOutput("shot.dng", CaptureOutputKind.RAW),
+            ),
+            preferredOutput = "shot.heic",
+        )
+        val attempted = tracker.takeForDelete("shot.heic")
+        val results = attempted.associateWith { it != "shot.dng" }
+
+        assertEquals(setOf("shot.heic", "shot.dng"), attempted)
+        assertFalse(results.values.all { it })
+    }
+
+    @Test
     fun boundedHistory_evictsOldReverseMapping() {
         val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 1)
         tracker.record(1, "old.heic", CaptureOutputKind.DISPLAYABLE)

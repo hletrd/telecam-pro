@@ -69,6 +69,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.hletrd.findx9tele.camera.MediaDeleteScope
 import com.hletrd.findx9tele.ui.theme.CameraColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -394,7 +395,13 @@ fun GalleryThumb(uri: Uri?, onClick: () -> Unit, modifier: Modifier = Modifier) 
  * high-resolution capture cannot require an avoidable full-size ARGB allocation.
  */
 @Composable
-fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modifier: Modifier = Modifier) {
+fun MediaReviewOverlay(
+    uri: Uri,
+    deleteScope: MediaDeleteScope,
+    onClose: () -> Unit,
+    onDelete: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val context = LocalContext.current
     var loadAttempt by remember(uri) { mutableStateOf(0) }
     var mediaState by remember(uri) { mutableStateOf<ReviewMediaState>(ReviewMediaState.Loading) }
@@ -406,6 +413,7 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
     val gestureMediaReady =
         mediaState is ReviewMediaState.Ready.Still || mediaState is ReviewMediaState.Ready.Video
     val rawReady = mediaState is ReviewMediaState.Ready.Raw
+    val deleteCopy = mediaDeleteConfirmationCopy(deleteScope, rawReady)
     val metadata by produceState<ReviewMetadata?>(initialValue = null, uri) {
         value = null
         value = loadMetadata(context, uri)
@@ -852,7 +860,7 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                 .clip(CircleShape)
                 .background(Color.Black.copy(alpha = 0.5f))
                 .semantics {
-                    contentDescription = if (rawReady) "Delete RAW capture" else "Delete capture"
+                    contentDescription = deleteCopy.title.removeSuffix("?")
                     role = Role.Button
                 }
                 .clickable { confirmDelete = true },
@@ -881,8 +889,8 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
     if (confirmDelete) {
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
-            title = { Text(if (rawReady) "Delete RAW capture?" else "Delete capture?") },
-            text = { Text("Delete this capture and all saved formats from device.") },
+            title = { Text(deleteCopy.title) },
+            text = { Text(deleteCopy.body) },
             confirmButton = {
                 TextButton(onClick = {
                     confirmDelete = false
@@ -898,6 +906,22 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
             },
         )
     }
+}
+
+internal data class MediaDeleteConfirmationCopy(val title: String, val body: String)
+
+internal fun mediaDeleteConfirmationCopy(
+    scope: MediaDeleteScope,
+    raw: Boolean,
+): MediaDeleteConfirmationCopy = when (scope) {
+    MediaDeleteScope.CAPTURE_FAMILY -> MediaDeleteConfirmationCopy(
+        title = if (raw) "Delete RAW capture?" else "Delete capture?",
+        body = "Delete this capture and all saved formats from device.",
+    )
+    MediaDeleteScope.FILE_ONLY -> MediaDeleteConfirmationCopy(
+        title = if (raw) "Delete RAW file?" else "Delete file?",
+        body = "Delete this file from device.",
+    )
 }
 
 @Composable

@@ -1,10 +1,29 @@
 package com.hletrd.findx9tele.ui.review
 
+import com.hletrd.findx9tele.camera.MediaDeleteScope
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
 class MediaReviewSizingTest {
+
+    @Test
+    fun `delete confirmation promises siblings only for a proven capture family`() {
+        assertEquals(
+            MediaDeleteConfirmationCopy(
+                title = "Delete capture?",
+                body = "Delete this capture and all saved formats from device.",
+            ),
+            mediaDeleteConfirmationCopy(MediaDeleteScope.CAPTURE_FAMILY, raw = false),
+        )
+        assertEquals(
+            MediaDeleteConfirmationCopy(
+                title = "Delete RAW file?",
+                body = "Delete this file from device.",
+            ),
+            mediaDeleteConfirmationCopy(MediaDeleteScope.FILE_ONLY, raw = true),
+        )
+    }
 
     @Test
     fun `DNG MIME aliases classify as raw without pixel decoding`() {

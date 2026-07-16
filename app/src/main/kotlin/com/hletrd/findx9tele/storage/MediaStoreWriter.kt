@@ -16,27 +16,140 @@ import java.io.OutputStream
  */
 object MediaStoreWriter {
 
+    private const val MAX_RESTORE_ROWS_PER_COLLECTION = 64
+    private const val MAX_FAMILY_ROWS = 8
+
     /**
-     * Newest still THIS APP saved (scoped storage shows an app its own contributions without any
-     * read permission). Seeds the review thumbnail on a fresh launch, so "last shot" works before
-     * the first capture of the session. DNGs are skipped — BitmapFactory can't decode them, and the
-     * HEIF/JPEG sibling of the same capture is always newer or equal.
+     * Reconstructs the newest published capture THIS APP saved under its own folder.
+     *
+     * Images and Video are separate MediaStore collections, so each query is bounded and the pure
+     * reducer compares their results. Versioned filenames prove sibling identity; legacy files stay
+     * one-file delete scopes instead of being grouped by timestamp proximity.
      */
-    fun latestOwnImage(context: Context): Uri? = runCatching {
-        val base = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+    internal fun latestOwnCapture(
+        context: Context,
+        subDir: String = "X9Tele",
+    ): RestoredCapture<Uri>? {
+        val imageRows = queryOwnedPublished(
+            context = context,
+            base = MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            collection = StoredMediaCollection.IMAGE,
+            subDir = subDir,
+        ).getOrNull() ?: return null
+        val videoRows = queryOwnedPublished(
+            context = context,
+            base = MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+            collection = StoredMediaCollection.VIDEO,
+            subDir = subDir,
+        ).getOrNull() ?: return null
+        val initial = restoreLatestCapture(imageRows + videoRows) ?: return null
+        val familyKey = initial.familyKey ?: return initial
+
+        // The broad queries find the winner. One exact, bounded follow-up prevents their row limits
+        // from ever omitting an older sibling of that winning family from whole-capture deletion.
+        val familyCollection = when (familyKey.media) {
+            CaptureFamilyMedia.STILL -> StoredMediaCollection.IMAGE
+            CaptureFamilyMedia.VIDEO -> StoredMediaCollection.VIDEO
+        }
+        val familyBase = when (familyCollection) {
+            StoredMediaCollection.IMAGE -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            StoredMediaCollection.VIDEO -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        }
+        return queryOwnedPublished(
+            context = context,
+            base = familyBase,
+            collection = familyCollection,
+            subDir = subDir,
+            displayNames = familyKey.knownOutputDisplayNames(),
+            limit = MAX_FAMILY_ROWS,
+        ).fold(
+            onSuccess = { exactRows -> restoreLatestCapture(exactRows) },
+            // A failed family expansion cannot safely promise capture-level deletion. Retain only
+            // the already-resolved review file and make the fallback contract explicit.
+            onFailure = {
+                RestoredCapture(
+                    preferred = initial.preferred,
+                    outputs = listOf(initial.preferred),
+                    familyKey = null,
+                    deleteScope = RestoredDeleteScope.FILE_ONLY,
+                )
+            },
+        )
+    }
+
+    private fun queryOwnedPublished(
+        context: Context,
+        base: Uri,
+        collection: StoredMediaCollection,
+        subDir: String,
+        displayNames: List<String>? = null,
+        limit: Int = MAX_RESTORE_ROWS_PER_COLLECTION,
+    ): Result<List<StoredMediaRow<Uri>>> = runCatching {
+        val projection = arrayOf(
+            MediaStore.MediaColumns._ID,
+            MediaStore.MediaColumns.DISPLAY_NAME,
+            MediaStore.MediaColumns.MIME_TYPE,
+            MediaStore.MediaColumns.DATE_TAKEN,
+            MediaStore.MediaColumns.DATE_ADDED,
+            MediaStore.MediaColumns.DATE_MODIFIED,
+            MediaStore.MediaColumns.IS_PENDING,
+        )
         val queryArgs = Bundle().apply {
+            val nameSelection = displayNames
+                ?.takeIf { it.isNotEmpty() }
+                ?.joinToString(prefix = " AND ${MediaStore.MediaColumns.DISPLAY_NAME} IN (", postfix = ")") { "?" }
+                .orEmpty()
             putString(
                 ContentResolver.QUERY_ARG_SQL_SELECTION,
-                "${MediaStore.MediaColumns.MIME_TYPE} != ?",
+                "${MediaStore.MediaColumns.RELATIVE_PATH} = ? AND " +
+                    "${MediaStore.MediaColumns.IS_PENDING} = ? AND " +
+                    "${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} = ?" + nameSelection,
             )
-            putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, arrayOf("image/x-adobe-dng"))
-            putString(ContentResolver.QUERY_ARG_SQL_SORT_ORDER, "${MediaStore.MediaColumns.DATE_ADDED} DESC")
-            putInt(ContentResolver.QUERY_ARG_LIMIT, 1)
+            putStringArray(
+                ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS,
+                buildList {
+                    add("DCIM/$subDir/")
+                    add("0")
+                    add(context.packageName)
+                    displayNames?.let(::addAll)
+                }.toTypedArray(),
+            )
+            putString(
+                ContentResolver.QUERY_ARG_SQL_SORT_ORDER,
+                "${MediaStore.MediaColumns.DATE_TAKEN} DESC, " +
+                    "${MediaStore.MediaColumns.DATE_ADDED} DESC, " +
+                    "${MediaStore.MediaColumns._ID} DESC",
+            )
+            putInt(ContentResolver.QUERY_ARG_LIMIT, limit)
         }
-        context.contentResolver.query(base, arrayOf(MediaStore.MediaColumns._ID), queryArgs, null)?.use { cursor ->
-            if (cursor.moveToFirst()) ContentUris.withAppendedId(base, cursor.getLong(0)) else null
-        }
-    }.getOrNull()
+        context.contentResolver.query(base, projection, queryArgs, null)?.use { cursor ->
+            val idColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+            val nameColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+            val mimeColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE)
+            val takenColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_TAKEN)
+            val addedColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED)
+            val modifiedColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED)
+            val pendingColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.IS_PENDING)
+            buildList {
+                while (cursor.moveToNext()) {
+                    val id = cursor.getLong(idColumn)
+                    add(
+                        StoredMediaRow(
+                            output = ContentUris.withAppendedId(base, id),
+                            collection = collection,
+                            rowId = id,
+                            displayName = cursor.getString(nameColumn),
+                            mimeType = cursor.getString(mimeColumn),
+                            dateTakenEpochMillis = if (cursor.isNull(takenColumn)) null else cursor.getLong(takenColumn),
+                            dateAddedEpochSeconds = cursor.getLong(addedColumn),
+                            dateModifiedEpochSeconds = cursor.getLong(modifiedColumn),
+                            isPending = cursor.getInt(pendingColumn) != 0,
+                        ),
+                    )
+                }
+            }
+        }.orEmpty()
+    }
 
     fun createPendingImage(
         context: Context,
@@ -49,6 +162,9 @@ object MediaStoreWriter {
             put(MediaStore.Images.Media.MIME_TYPE, mimeType)
             put(MediaStore.Images.Media.RELATIVE_PATH, "DCIM/$subDir")
             put(MediaStore.Images.Media.IS_PENDING, 1)
+            CaptureFamilyKey.parse(displayName)?.familyKey?.capturedAtEpochMillis?.let {
+                put(MediaStore.Images.Media.DATE_TAKEN, it)
+            }
         }
         return runCatching {
             context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
@@ -66,6 +182,9 @@ object MediaStoreWriter {
             put(MediaStore.Video.Media.MIME_TYPE, mimeType)
             put(MediaStore.Video.Media.RELATIVE_PATH, "DCIM/$subDir")
             put(MediaStore.Video.Media.IS_PENDING, 1)
+            CaptureFamilyKey.parse(displayName)?.familyKey?.capturedAtEpochMillis?.let {
+                put(MediaStore.Video.Media.DATE_TAKEN, it)
+            }
         }
         return runCatching {
             context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)

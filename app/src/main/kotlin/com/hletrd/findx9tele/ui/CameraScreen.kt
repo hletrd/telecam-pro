@@ -107,6 +107,7 @@ import com.hletrd.findx9tele.camera.FnSlot
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.LensChoice
+import com.hletrd.findx9tele.camera.MediaDeleteScope
 import com.hletrd.findx9tele.camera.MeteringMode
 import com.hletrd.findx9tele.camera.MemorySlot
 import com.hletrd.findx9tele.camera.PhotoFormats
@@ -169,6 +170,7 @@ fun CameraScreen(
     // the shutter under the overlay. The reviewed uri is FROZEN here at open time so a timer/
     // timelapse capture completing mid-review can't swap the image being inspected.
     var reviewUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var reviewDeleteScope by remember { mutableStateOf(MediaDeleteScope.FILE_ONLY) }
     // Remembers the last-viewed settings tab so the gear reopens where the user left off.
     var sheetInitialTab by remember { mutableStateOf(ProSheetTab.MY_MENU) }
     var fnOverlayVisible by remember { mutableStateOf(false) }
@@ -619,6 +621,7 @@ fun CameraScreen(
                 lastMediaUri = state.lastMediaUri,
                 onOpenReview = {
                     reviewUri = state.lastMediaUri
+                    reviewDeleteScope = state.lastMediaDeleteScope
                     currentActions.value.onReviewOpenChange(true)
                 },
                 onShutter = onShutter,
@@ -658,6 +661,7 @@ fun CameraScreen(
     if (state.reviewOpen && frozenReviewUri != null) {
         MediaReviewOverlay(
             uri = frozenReviewUri,
+            deleteScope = reviewDeleteScope,
             onClose = {
                 actions.onReviewOpenChange(false)
                 reviewUri = null

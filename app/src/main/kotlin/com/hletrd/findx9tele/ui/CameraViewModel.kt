@@ -33,6 +33,7 @@ import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.HardwareKeyAction
 import com.hletrd.findx9tele.camera.LensChoice
 import com.hletrd.findx9tele.camera.ManualControls
+import com.hletrd.findx9tele.camera.MediaDeleteScope
 import com.hletrd.findx9tele.camera.MeteringMode
 import com.hletrd.findx9tele.camera.MemorySlot
 import com.hletrd.findx9tele.camera.PeakingColor
@@ -54,7 +55,9 @@ import com.hletrd.findx9tele.camera.ZebraLevel
 import com.hletrd.findx9tele.focus.FocusMapping
 import com.hletrd.findx9tele.storage.ExtraSettings
 import com.hletrd.findx9tele.storage.MediaStoreWriter
+import com.hletrd.findx9tele.storage.RestoredDeleteScope
 import com.hletrd.findx9tele.storage.SettingsStore
+import com.hletrd.findx9tele.storage.StoredMediaOutputKind
 import com.hletrd.findx9tele.video.AudioInputInspector
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -343,11 +346,32 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         }
         restoreSettingsIfEnabled()
         refreshProgramAppSide()
-        // Seed the review thumbnail with the newest photo this app previously saved, so "last shot"
-        // works on a fresh launch instead of only after the first capture of the session (feedback).
+        // Restore the newest photo, RAW-only shot, or video and seed all proven siblings before
+        // publishing review. Legacy filenames stay one-file delete scopes.
         Thread {
-            val seeded = com.hletrd.findx9tele.storage.MediaStoreWriter.latestOwnImage(getApplication())
-            if (seeded != null) _state.update { if (it.lastMediaUri == null) it.copy(lastMediaUri = seeded) else it }
+            val restored = MediaStoreWriter.latestOwnCapture(getApplication()) ?: return@Thread
+            val priorOutputs = restored.outputs.map { output ->
+                PriorCaptureOutput(
+                    output = output.output,
+                    kind = when (output.kind) {
+                        StoredMediaOutputKind.DISPLAYABLE -> CaptureOutputKind.DISPLAYABLE
+                        StoredMediaOutputKind.RAW -> CaptureOutputKind.RAW
+                    },
+                )
+            }
+            val preferred = restored.preferred.output
+            if (!captureOutputs.seedPriorCapture(priorOutputs, preferred)) return@Thread
+            val deleteScope = when (restored.deleteScope) {
+                RestoredDeleteScope.CAPTURE_FAMILY -> MediaDeleteScope.CAPTURE_FAMILY
+                RestoredDeleteScope.FILE_ONLY -> MediaDeleteScope.FILE_ONLY
+            }
+            _state.update {
+                if (it.lastMediaUri == null && captureOutputs.isCurrentReviewOutput(preferred)) {
+                    it.copy(lastMediaUri = preferred, lastMediaDeleteScope = deleteScope)
+                } else {
+                    it
+                }
+            }
         }.start()
         refreshMemorySlotInfo()
         // Sweep any pending media orphaned by a prior crash/force-kill (record stop never ran).
@@ -1529,10 +1553,16 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         val outputs = captureOutputs.takeForDelete(uri)
         // The open overlay can still hold the RAW URI after a processed sibling upgraded the
         // thumbnail. Clear whichever sibling currently owns review, not only the tapped URI.
-        _state.update { if (it.lastMediaUri in outputs) it.copy(lastMediaUri = null) else it }
+        _state.update {
+            if (it.lastMediaUri in outputs) {
+                it.copy(lastMediaUri = null, lastMediaDeleteScope = MediaDeleteScope.FILE_ONLY)
+            } else {
+                it
+            }
+        }
         Thread {
             val allDeleted = outputs.map { MediaStoreWriter.delete(getApplication(), it) }.all { it }
-            mainHandler.post { showStatus(if (allDeleted) "Deleted" else "Could not delete every shot file") }
+            mainHandler.post { showStatus(if (allDeleted) "Deleted" else "Could not delete media") }
         }.start()
     }
 
@@ -1545,7 +1575,14 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 // StateFlow CAS transform so a newer selection cannot be overwritten by an older
                 // callback that was descheduled between tracker admission and UI publication.
                 _state.update {
-                    if (captureOutputs.isCurrentReviewOutput(uri)) it.copy(lastMediaUri = uri) else it
+                    if (captureOutputs.isCurrentReviewOutput(uri)) {
+                        it.copy(
+                            lastMediaUri = uri,
+                            lastMediaDeleteScope = MediaDeleteScope.CAPTURE_FAMILY,
+                        )
+                    } else {
+                        it
+                    }
                 }
             }
         }

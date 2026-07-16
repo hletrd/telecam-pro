@@ -16,6 +16,11 @@ internal enum class CaptureOutputDecision {
     REVIEW,
 }
 
+internal data class PriorCaptureOutput<T>(
+    val output: T,
+    val kind: CaptureOutputKind,
+)
+
 /**
  * Bounded ownership map for every file emitted by one capture. Deleted capture ids are tombstoned
  * so a slower sibling that arrives after review deletion is rejected immediately.
@@ -34,6 +39,43 @@ internal class CaptureOutputTracker<T>(
     private var reviewCaptureId: Int? = null
     private var reviewOutput: T? = null
     private var reviewKind: CaptureOutputKind? = null
+
+    /**
+     * Seeds a fully reconstructed prior-process family without letting it outrank live callbacks.
+     * Returns true only when [preferredOutput] became the current review owner.
+     */
+    @Synchronized
+    fun seedPriorCapture(
+        outputs: Collection<PriorCaptureOutput<T>>,
+        preferredOutput: T,
+    ): Boolean {
+        if (PRIOR_PROCESS_CAPTURE_ID in tombstones) return false
+        val distinct = LinkedHashMap<T, CaptureOutputKind>()
+        outputs.forEach { seeded -> distinct.putIfAbsent(seeded.output, seeded.kind) }
+        val preferredKind = distinct[preferredOutput] ?: return false
+
+        val accepted = distinct.filterKeys { output ->
+            captureByOutput[output].let { it == null || it == PRIOR_PROCESS_CAPTURE_ID }
+        }
+        if (preferredOutput !in accepted) return false
+
+        // A launch seed is expected once, but replacement is deterministic and cannot merge two
+        // prior families if a caller retries restoration.
+        outputsByCapture.remove(PRIOR_PROCESS_CAPTURE_ID).orEmpty().forEach { output ->
+            if (captureByOutput[output] == PRIOR_PROCESS_CAPTURE_ID) captureByOutput.remove(output)
+        }
+        outputsByCapture[PRIOR_PROCESS_CAPTURE_ID] = LinkedHashSet(accepted.keys)
+        accepted.keys.forEach { captureByOutput[it] = PRIOR_PROCESS_CAPTURE_ID }
+        trimCaptures()
+        if (PRIOR_PROCESS_CAPTURE_ID !in outputsByCapture) return false
+
+        if (reviewCaptureId == null || reviewCaptureId == PRIOR_PROCESS_CAPTURE_ID) {
+            reviewCaptureId = PRIOR_PROCESS_CAPTURE_ID
+            reviewOutput = preferredOutput
+            reviewKind = preferredKind
+        }
+        return reviewCaptureId == PRIOR_PROCESS_CAPTURE_ID && reviewOutput == preferredOutput
+    }
 
     /** Records [output] and returns its deletion/review ownership decision. */
     @Synchronized
@@ -95,5 +137,10 @@ internal class CaptureOutputTracker<T>(
             val evicted = outputsByCapture.remove(oldestCaptureId).orEmpty()
             evicted.forEach(captureByOutput::remove)
         }
+    }
+
+    private companion object {
+        /** All live engine capture ids are non-negative, so even capture 0 supersedes this seed. */
+        const val PRIOR_PROCESS_CAPTURE_ID = Int.MIN_VALUE
     }
 }

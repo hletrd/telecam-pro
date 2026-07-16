@@ -5,6 +5,9 @@ import android.util.Size
 /** Photo vs video capture mode. */
 enum class CaptureMode { PHOTO, VIDEO }
 
+/** Truthful scope promised by the media-review delete confirmation. */
+enum class MediaDeleteScope { CAPTURE_FAMILY, FILE_ONLY }
+
 /**
  * Video transfer function. HLG = HDR-viewable; LOG = flat, for grading (our GL applies the curve);
  * SDR = plain Rec.709 with no GL curve — HEVC Main 8-bit, for footage that needs zero grading.
@@ -592,8 +595,10 @@ data class CameraUiState(
     val caps: CameraCaps? = null,
     val cameraOverrideId: String? = null,
     val statusMessage: String? = null,
-    // The most recently saved displayable medium (HEIF/JPEG/video) — thumbnail + in-app review.
+    // The newest saved capture owner (HEIF/JPEG/video, or RAW when no displayable sibling exists).
     val lastMediaUri: android.net.Uri? = null,
+    // Canonical live/restored families can delete every known sibling; legacy filenames cannot.
+    val lastMediaDeleteScope: MediaDeleteScope = MediaDeleteScope.FILE_ONLY,
     val histogramData: HistogramData? = null,
     val waveformData: WaveformData? = null,
 ) {

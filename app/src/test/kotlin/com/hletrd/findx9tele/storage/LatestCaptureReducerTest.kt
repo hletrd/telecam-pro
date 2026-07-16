@@ -1,0 +1,238 @@
+package com.hletrd.findx9tele.storage
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Test
+
+class LatestCaptureReducerTest {
+
+    @Test
+    fun `newer video wins over an older photo across collections`() {
+        val oldPhoto = familyRow("old.heic", stillKey(at = 1_000L, sequence = 1L), "heic", id = 80L)
+        val newVideo = familyRow(
+            output = "new.mp4",
+            key = videoKey(at = 2_000L, sequence = 2L),
+            extension = "mp4",
+            id = 2L,
+            mime = "video/mp4",
+        )
+
+        val restored = restoreLatestCapture(listOf(newVideo, oldPhoto))
+
+        assertEquals("new.mp4", restored?.preferred?.output)
+        assertEquals(CaptureFamilyMedia.VIDEO, restored?.familyKey?.media)
+    }
+
+    @Test
+    fun `newer raw-only capture wins over an older displayable photo`() {
+        val oldPhoto = familyRow("old.heic", stillKey(at = 1_000L, sequence = 1L), "heic", id = 1L)
+        val newRaw = familyRow(
+            output = "new.dng",
+            key = stillKey(at = 2_000L, sequence = 2L),
+            extension = "dng",
+            id = 2L,
+            mime = "image/x-adobe-dng",
+        )
+
+        val restored = restoreLatestCapture(listOf(oldPhoto, newRaw))
+
+        assertEquals("new.dng", restored?.preferred?.output)
+        assertEquals(StoredMediaOutputKind.RAW, restored?.preferred?.kind)
+    }
+
+    @Test
+    fun `displayable output is preferred only within the winning exact family`() {
+        val key = stillKey(at = 3_000L, sequence = 9L)
+        val rows = listOf(
+            familyRow("raw", key, "dng", id = 13L, mime = "image/dng"),
+            familyRow("jpeg", key, "jpg", id = 12L, mime = "image/jpeg"),
+            familyRow("heic", key, "heic", id = 11L, mime = "image/heic"),
+        )
+
+        val restored = restoreLatestCapture(rows)
+
+        assertEquals("heic", restored?.preferred?.output)
+        assertEquals(listOf("heic", "jpeg", "raw"), restored?.outputs?.map { it.output })
+        assertEquals(key, restored?.familyKey)
+        assertEquals(RestoredDeleteScope.CAPTURE_FAMILY, restored?.deleteScope)
+    }
+
+    @Test
+    fun `timestamp ties use the admission sequence before displayability`() {
+        val olderDisplayable = familyRow(
+            "photo.heic",
+            stillKey(at = 4_000L, sequence = 20L),
+            "heic",
+            id = 99L,
+        )
+        val newerRaw = familyRow(
+            "raw.dng",
+            stillKey(at = 4_000L, sequence = 21L),
+            "dng",
+            id = 1L,
+            mime = "image/x-adobe-dng",
+        )
+
+        val restored = restoreLatestCapture(listOf(olderDisplayable, newerRaw))
+
+        assertEquals("raw.dng", restored?.preferred?.output)
+    }
+
+    @Test
+    fun `every review-supported DNG MIME alias restores as raw`() {
+        val aliases = listOf(
+            "image/x-adobe-dng",
+            "IMAGE/DNG",
+            "application/x-adobe-dng; version=1",
+        )
+
+        aliases.forEachIndexed { index, mime ->
+            val row = familyRow(
+                output = "raw-$index",
+                key = stillKey(at = 5_000L + index, sequence = index.toLong()),
+                extension = "dng",
+                id = index.toLong(),
+                mime = mime,
+            )
+            assertEquals(StoredMediaOutputKind.RAW, restoreLatestCapture(listOf(row))?.preferred?.kind)
+        }
+    }
+
+    @Test
+    fun `pending and disappeared rows cannot own restored review`() {
+        val visible = familyRow("visible.heic", stillKey(6_000L, 1L), "heic", id = 1L)
+        val pending = familyRow(
+            "pending.mp4",
+            videoKey(9_000L, 2L),
+            "mp4",
+            id = 2L,
+            mime = "video/mp4",
+            pending = true,
+        )
+        val deleted = familyRow(
+            "deleted.dng",
+            stillKey(10_000L, 3L),
+            "dng",
+            id = 3L,
+            mime = "image/x-adobe-dng",
+            present = false,
+        )
+
+        val restored = restoreLatestCapture(listOf(pending, deleted, visible))
+
+        assertEquals("visible.heic", restored?.preferred?.output)
+        assertNull(restoreLatestCapture(listOf(pending, deleted)))
+    }
+
+    @Test
+    fun `legacy burst files never group by timestamp proximity`() {
+        val first = legacyRow(
+            output = "burst-a",
+            name = "IMG_TELECAM_20260716_120000_000_001.heic",
+            id = 41L,
+            takenAt = 7_000L,
+        )
+        val second = legacyRow(
+            output = "burst-b",
+            name = "IMG_TELECAM_20260716_120000_001_002.dng",
+            id = 42L,
+            takenAt = 7_000L,
+            mime = "image/x-adobe-dng",
+        )
+
+        val restored = restoreLatestCapture(listOf(first, second))
+
+        assertEquals("burst-b", restored?.preferred?.output)
+        assertEquals(listOf("burst-b"), restored?.outputs?.map { it.output })
+        assertEquals(RestoredDeleteScope.FILE_ONLY, restored?.deleteScope)
+        assertNull(restored?.familyKey)
+    }
+
+    @Test
+    fun `a proven family with only one extant sibling retains capture scope`() {
+        val row = familyRow(
+            output = "only.dng",
+            key = stillKey(8_000L, 1L),
+            extension = "dng",
+            id = 1L,
+            mime = "application/x-adobe-dng",
+        )
+
+        val restored = restoreLatestCapture(listOf(row))
+
+        assertEquals(listOf("only.dng"), restored?.outputs?.map { it.output })
+        assertEquals(RestoredDeleteScope.CAPTURE_FAMILY, restored?.deleteScope)
+    }
+
+    @Test
+    fun `collection-mismatched canonical name falls back to one file`() {
+        val imageNameOnVideoRow = StoredMediaRow(
+            output = "odd-row",
+            collection = StoredMediaCollection.VIDEO,
+            rowId = 7L,
+            displayName = stillKey(9_000L, 1L).displayName("heic"),
+            mimeType = "video/mp4",
+            dateTakenEpochMillis = 9_000L,
+            dateAddedEpochSeconds = 9L,
+            dateModifiedEpochSeconds = 9L,
+            isPending = false,
+        )
+
+        assertEquals(RestoredDeleteScope.FILE_ONLY, restoreLatestCapture(listOf(imageNameOnVideoRow))?.deleteScope)
+    }
+
+    @Test
+    fun `empty store has no restored owner`() {
+        assertNull(restoreLatestCapture<String>(emptyList()))
+    }
+
+    private fun stillKey(at: Long, sequence: Long) =
+        CaptureFamilyKey(CaptureFamilyMedia.STILL, at, sequence)
+
+    private fun videoKey(at: Long, sequence: Long) =
+        CaptureFamilyKey(CaptureFamilyMedia.VIDEO, at, sequence)
+
+    private fun familyRow(
+        output: String,
+        key: CaptureFamilyKey,
+        extension: String,
+        id: Long,
+        mime: String = "image/heic",
+        pending: Boolean = false,
+        present: Boolean = true,
+    ) = StoredMediaRow(
+        output = output,
+        collection = if (key.media == CaptureFamilyMedia.STILL) {
+            StoredMediaCollection.IMAGE
+        } else {
+            StoredMediaCollection.VIDEO
+        },
+        rowId = id,
+        displayName = key.displayName(extension),
+        mimeType = mime,
+        // Deliberately noisy: canonical family order must come from its durable key.
+        dateTakenEpochMillis = key.capturedAtEpochMillis + 100_000L,
+        dateAddedEpochSeconds = key.capturedAtEpochMillis / 1_000L,
+        dateModifiedEpochSeconds = key.capturedAtEpochMillis / 1_000L,
+        isPending = pending,
+        isPresent = present,
+    )
+
+    private fun legacyRow(
+        output: String,
+        name: String,
+        id: Long,
+        takenAt: Long,
+        mime: String = "image/heic",
+    ) = StoredMediaRow(
+        output = output,
+        collection = StoredMediaCollection.IMAGE,
+        rowId = id,
+        displayName = name,
+        mimeType = mime,
+        dateTakenEpochMillis = takenAt,
+        dateAddedEpochSeconds = takenAt / 1_000L,
+        dateModifiedEpochSeconds = takenAt / 1_000L,
+        isPending = false,
+    )
+}

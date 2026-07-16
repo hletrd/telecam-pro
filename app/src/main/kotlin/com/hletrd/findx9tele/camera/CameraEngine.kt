@@ -15,11 +15,10 @@ import com.hletrd.findx9tele.capture.DngCapture
 import com.hletrd.findx9tele.capture.HeifCapture
 import com.hletrd.findx9tele.capture.StillSnapshot
 import com.hletrd.findx9tele.gl.GlPipeline
+import com.hletrd.findx9tele.storage.CaptureFamilyKey
+import com.hletrd.findx9tele.storage.CaptureFamilyMedia
 import com.hletrd.findx9tele.storage.MediaStoreWriter
 import com.hletrd.findx9tele.video.VideoRecorder
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 /**
  * Facade tying Camera2 + GL(180° flip) + capture encoders + video recorder + MediaStore together.
@@ -1986,6 +1985,7 @@ class CameraEngine(private val context: Context) {
         val jpegQuality: Int,
         val rotationDegrees: Int,
         val captureId: Int,
+        val familyKey: CaptureFamilyKey,
         val requestedAtMs: Long,
         val takenAtMs: Long,
     )
@@ -1994,6 +1994,7 @@ class CameraEngine(private val context: Context) {
         val shotCaps = caps
         val shotTeleconverter = teleconverterMode
         val requestedAtMs = System.currentTimeMillis()
+        val captureId = captureSeq.incrementAndGet()
         val rotation = shotCaps?.let {
             RotationMath.captureRotationDegrees(
                 it.sensorOrientation,
@@ -2009,7 +2010,12 @@ class CameraEngine(private val context: Context) {
             aspectRatio = aspectRatio,
             jpegQuality = shotControls.jpegQuality.coerceIn(1, 100),
             rotationDegrees = rotation,
-            captureId = captureSeq.incrementAndGet(),
+            captureId = captureId,
+            familyKey = CaptureFamilyKey(
+                media = CaptureFamilyMedia.STILL,
+                capturedAtEpochMillis = requestedAtMs,
+                sequence = captureId.toLong(),
+            ),
             requestedAtMs = requestedAtMs,
             takenAtMs = requestedAtMs,
         )
@@ -2081,7 +2087,7 @@ class CameraEngine(private val context: Context) {
                 if (formats.dngRaw) {
                     if (raw != null) {
                         // DngCreator needs the live raw Image → must stay synchronous in this callback.
-                        runCatching { saveDng(raw, rawChars, result, spec.rotationDegrees, spec.captureId) }
+                        runCatching { saveDng(raw, rawChars, result, spec) }
                             .onSuccess { onStatus?.invoke("DNG saved") }
                             .onFailure { onStatus?.invoke("Failed to save DNG: ${it.message}") }
                     } else {
@@ -2121,7 +2127,11 @@ class CameraEngine(private val context: Context) {
             } else d
             val r = rotateBitmap(base, spec.rotationDegrees)
             rotated = r
-            val u = MediaStoreWriter.createPendingImage(context, fileName("IMG", "heic"), "image/heic")
+            val u = MediaStoreWriter.createPendingImage(
+                context,
+                spec.familyKey.displayName("heic"),
+                "image/heic",
+            )
             if (u == null) { onStatus?.invoke("Failed to save HEIF"); return }
             uri = u
             // The Setup quality slider governs BOTH still containers: HEIF here and the JPEG
@@ -2178,7 +2188,11 @@ class CameraEngine(private val context: Context) {
             } else d
             val r = rotateBitmap(base, spec.rotationDegrees)
             rotated = r
-            val u = MediaStoreWriter.createPendingImage(context, fileName("IMG", "jpg"), "image/jpeg")
+            val u = MediaStoreWriter.createPendingImage(
+                context,
+                spec.familyKey.displayName("jpg"),
+                "image/jpeg",
+            )
             if (u == null) { onStatus?.invoke("Failed to save JPEG"); return }
             uri = u
             val quality = spec.jpegQuality
@@ -2213,17 +2227,28 @@ class CameraEngine(private val context: Context) {
     }
 
     /** Writes the RAW image as DNG synchronously (always full-frame; no [aspectRatio] crop applied). Publishes only on success; deletes then rethrows on failure. */
-    private fun saveDng(raw: Image, chars: CameraCharacteristics, result: TotalCaptureResult, rotationDegrees: Int, captureId: Int) {
-        val uri = MediaStoreWriter.createPendingImage(context, fileName("IMG", "dng"), "image/x-adobe-dng")
+    private fun saveDng(
+        raw: Image,
+        chars: CameraCharacteristics,
+        result: TotalCaptureResult,
+        spec: ShotSpec,
+    ) {
+        val uri = MediaStoreWriter.createPendingImage(
+            context,
+            spec.familyKey.displayName("dng"),
+            "image/x-adobe-dng",
+        )
             ?: throw IllegalStateException("Failed to create MediaStore entry")
         try {
             val out = MediaStoreWriter.openOutputStream(context, uri)
                 ?: throw IllegalStateException("Failed to open output stream")
-            out.use { DngCapture.writeDng(it, raw, chars, result, exifOrientationFor(rotationDegrees)) }
+            out.use {
+                DngCapture.writeDng(it, raw, chars, result, exifOrientationFor(spec.rotationDegrees))
+            }
             if (!MediaStoreWriter.publish(context, uri)) {
                 throw IllegalStateException("Failed to publish DNG")
             }
-            onRawSaved?.invoke(uri, captureId)
+            onRawSaved?.invoke(uri, spec.captureId)
         } catch (t: Throwable) {
             MediaStoreWriter.delete(context, uri)
             throw t
@@ -2296,12 +2321,17 @@ class CameraEngine(private val context: Context) {
             onStatus?.invoke("Camera reconfiguring")
             return false
         }
-        val name = fileName("VID", "mp4")
+        val recordingCaptureId = captureSeq.incrementAndGet()
+        val familyKey = CaptureFamilyKey(
+            media = CaptureFamilyMedia.VIDEO,
+            capturedAtEpochMillis = System.currentTimeMillis(),
+            sequence = recordingCaptureId.toLong(),
+        )
+        val name = familyKey.displayName("mp4")
         val uri = MediaStoreWriter.createPendingVideo(context, name, "video/mp4") ?: run {
             abortRecordingStart()
             return false
         }
-        val recordingCaptureId = captureSeq.incrementAndGet()
         val size = videoSize
         val codec = videoCodec
         val rate = videoFrameRate
@@ -2793,12 +2823,8 @@ class CameraEngine(private val context: Context) {
     private fun bitRateFor(size: Size, rate: VideoFrameRate): Int =
         videoBitRate(size.width, size.height, rate.encoderRate, effectiveBpp(bitrateLevel, videoCodec), videoCodec)
 
-    // Monotonic per-session counter so rapid captures (BURST/AEB/timelapse) that land within the same
-    // second — or even millisecond — never collide on filename and overwrite/duplicate each other.
-    private val fileSeq = java.util.concurrent.atomic.AtomicInteger(0)
-
     // Per-SHUTTER-PRESS counter (one id shared by every container a capture produces), so the review
-    // UI can group the HEIF/JPEG with its DNG sibling. Distinct from fileSeq, which is per FILE.
+    // UI and durable filename can group the HEIF/JPEG with its DNG sibling.
     private val captureSeq = java.util.concurrent.atomic.AtomicInteger(0)
 
     /**
@@ -3089,13 +3115,6 @@ class CameraEngine(private val context: Context) {
             owner.release.countDown()
             if (completion.retryPending && !paused) startStandbyAudioMonitor(updateIntent = false)
         }
-    }
-
-    private fun fileName(prefix: String, ext: String): String {
-        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
-        val seq = fileSeq.getAndIncrement() % 1000
-        // TELECAM = the app name (TeleCam Pro); files read IMG_TELECAM_… / VID_TELECAM_… in galleries.
-        return "%s_TELECAM_%s_%03d.%s".format(prefix, stamp, seq, ext)
     }
 
     private companion object {
