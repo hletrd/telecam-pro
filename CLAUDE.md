@@ -110,6 +110,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   for that same capture upgrades the placeholder; a late RAW sibling never displaces its processed
   peer or a newer capture. Delete freezes and tombstones the whole capture before asynchronous
   MediaStore deletion, removes every known sibling, and immediately deletes any late sibling callback.
+  Across process restarts, every new capture's HEIF/JPEG/DNG outputs share one versioned timestamped
+  filename key (video owns one-file family); a bounded Images+Video query reconstructs the newest exact
+  family and seeds it below live ids. Legacy filenames are never proximity-grouped and expose truthful
+  file-only delete copy.
 - **Stills on the LOGICAL camera are YUV, not HAL JPEG (2026-07-14).** gralloc rejects the ~42 MB
   JPEG blob allocation on the plain logical session (`SnapAlloc: ValidateDescriptor invalid` — the
   image never arrives and the shot wedges `pending`), at BOTH 4096×3072 and the logical array's own
@@ -157,7 +161,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   re-draws capture/EIS framing into an aspect-matched FBO whose long edge is at most 256 px
   (≤256 KiB RGBA readback). Preview-only punch-in/loupe framing never enters scopes or AE. The REC tally border follows the
   panel's physical rounded corners via the WindowInsets RoundedCorner API (a square border's
-  corners fall outside the visible area and vanish).
+  corners fall outside the visible area and vanish). The executor, single-flight gate, FBO/buffer,
+  byte snapshot, and callback authority are owned by one GL generation; stop retires that owner before
+  shutdown, so old work cannot publish or clear a replacement generation's busy gate.
 - **Session fallback ladder** in `CameraController.configureSession`: non-TELE is full → drop RAW →
   drop HLG → preview-only. TELE tries vendor full/degraded plans, then regular full/degraded plans,
   and reserves both preview-only variants for last. Keep it; different capability combos fail on this HAL.
@@ -170,7 +176,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
 - **Lifecycle races crash the camera.** Launching behind the keyguard delivers `onStop` mid-session-
   config → device disconnects → `createCaptureRequest` throws `CAMERA_DISCONNECTED`. Guarded by a
   `closed` flag + `runCatching` in `CameraController`, and a `paused` flag in `CameraEngine` (never
-  open the camera while backgrounded). `TerminalAcquisitionGate` closes before release's final
+  open the camera while backgrounded). The exact lifecycle chain is `MainActivity.onStart` →
+  `CameraViewModel.onStart` → `engine.resume`, and `MainActivity.onStop` → `CameraViewModel.onStop` →
+  `engine.pause`. `TerminalAcquisitionGate` closes before release's final
   `gl.stop`, so queued cold start cannot resurrect a GL generation afterward. Preview-window tasks
   also carry synchronous invalidation generations; stale/released native windows cannot bind later.
 - **Sensor orientation = 90; activity is portrait-locked; preview verified upright on device.** The
@@ -335,6 +343,11 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   display teardown; never report successful completion without that proof. Encoder replacement,
   failure, stop, and final GL release use the same order, with terminal EGL reset as the fallback when
   an individual output cannot be proven destroyed.
+- **Preview EGL health is part of Camera Ready.** Preview create/bind/init and runtime draw/swap
+  failures complete one Surface/generation-owned signal. The Engine accepts only the current owner,
+  publishes Not-Ready, and retries the same surface at most three times before terminal status; a
+  stale replacement failure is inert. Acquire each real camera texture before the optional preview
+  and encoder branches so preview loss cannot silently freeze an otherwise healthy active recording.
 - **REC readiness comes from the first successful real encoder swap, not surface allocation or
   `VideoRecorder.start()` returning.** Candidate create/bind/restore remains pending until a real
   camera frame draws, presents, swaps, and restores preview ownership. Queue attach before recorder
@@ -351,8 +364,15 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
 - **Camera2 control values are capability-normalized before UI and request publication.** Focus, WB,
   AE/flash, antibanding, edge, noise reduction, effect, and metering choices resolve to exact advertised
   values. Apply AE and AF metering regions independently only when each advertised maximum is positive;
-  a zero maximum means omit that request key. Restored settings and every live update must show the
-  value the selected camera can actually apply.
+  a zero maximum means omit that request key. Same-route settings/MR recall must normalize one complete
+  packet against the installed route before its terminal commit and publish caps reconciliation before
+  Ready; structural recall waits for target-route caps, never outgoing caps. Restored settings and every
+  live update must show the value the selected camera can actually apply.
+- **Settings, Fn cycles, and quick rulers share one capability projection.** Build visible choices and
+  entry flags from the exact AE/AF/AWB, antibanding, edge, noise-reduction, effect, flash, manual/range,
+  and AE/AF-region facts used by request normalization. Filter ProSheet choices, cycle only inside the
+  projected lists, and require exact OFF modes/ranges before opening a manual ruler. If a route change
+  invalidates an open ruler, close it and retain the normalized applied value.
 - **Exactly one owner of the mic.** The Sony-style standby audio meter is a levels-only `AudioRecord`
   tap that runs while video is ARMED but not rolling. Its synchronized ownership gate reserves one
   immutable owner and release latch before thread start. REC must claim the handoff and observe that

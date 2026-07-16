@@ -502,8 +502,8 @@ class CameraEngine(private val context: Context) {
     // the gallery thumbnail + in-app review. Fired from the io thread after the file publishes. The
     // id groups every output of one shutter press so review-Delete can remove the whole shot.
     var onMediaSaved: ((android.net.Uri, Int) -> Unit)? = null
-    // The DNG sibling of a capture (never displayed itself), with the same capture-sequence id as
-    // the HEIF/JPEG from that shutter press. Fired from the camera thread after the DNG publishes.
+    // A DNG output with the same capture-sequence id as its HEIF/JPEG siblings. A RAW-only capture
+    // may own the review metadata tile until a processed sibling upgrades it. Fired after publish.
     var onRawSaved: ((android.net.Uri, Int) -> Unit)? = null
 
     // ---- Preview surface lifecycle ----

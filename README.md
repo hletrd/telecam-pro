@@ -29,14 +29,18 @@
 - **Full manual control**: Focus (nonlinear slider tuned near infinity), ISO, shutter (speed or cine
   angle), WB (presets + Kelvin/tint), EV, metering, drive modes (single/burst/AEB/timelapse).
   Stop-snapping dials have haptic detents; AF→MF handoff seeds the manual slider from AF's live lens
-  position. Restored and live choices are normalized to the exact modes the selected camera advertises;
-  AE/AF regions are sent only when that camera reports region support.
+  position. Restored and live choices are normalized as one packet to the exact modes and zoom range
+  the accepted camera advertises; route-changing recall waits for the target camera's capabilities.
+  Settings and Fn cycles expose only applicable choices, and quick rulers require their exact manual
+  mode/range. AE/AF regions are sent only when that camera reports region support.
 - **Volume-key hardware shutter**: vibration-free release at 300 mm (photo capture / video start-stop).
 - **Directional audio (Sound Focus / Sound Stage)**: drives the device's accepted vendor audio-HAL controls; the acoustic effect still needs an off-axis real-scene A/B check.
 - **Photos**: HEIF and JPEG can be selected separately or together in photo mode. RAW (DNG) is
   additionally available only in TELE mode on the eligible standalone 3× camera; supported outputs
   can be combined. A DNG-only result gets a truthful RAW review tile; a processed sibling from the
-  same capture upgrades it, and Delete removes every known sibling. All saved formats carry
+  same capture upgrades it. Canonical families remain grouped across relaunch, and Delete removes
+  every known sibling; legacy files that cannot prove grouping explicitly delete only that file. The
+  fresh-launch review compares photos, RAW-only captures, and videos. All saved formats carry
   gravity-derived orientation correction.
 - **Video**: HEVC Main10 profiles for **HLG / O-Log2** plus 8-bit HEVC/AVC SDR. HLG uses the
   display-referred SDR-to-HLG mapping from ITU-R BT.2408-9 (SDR reference white → 75% HLG); it

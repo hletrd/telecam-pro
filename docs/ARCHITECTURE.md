@@ -44,13 +44,14 @@ Two critical consequences of the afocal converter drive the entire design:
 | `CameraSelector2.kt` | Detects the telephoto physical lens: finds the camera with focal length closest to 70 mm, prefers standalone ID over physical sub-camera routing. |
 | `CameraState.kt` | Enums plus `CameraUiState` — the shared UI and runtime-state language. |
 | `CaptureCapabilities.kt` | Flattens Camera2 characteristics into exact advertised mode sets plus maximum AE/AF region counts, alongside manual-sensor, RAW, HDR, focus, and stream capabilities. |
-| `ManualControls.kt` | Immutable snapshot of all pro capture parameters (focus, ISO, shutter, white balance, metering, processing). Restored/current values are normalized to the selected camera before the ViewModel publishes them and the Engine builds requests. |
+| `ControlAvailability.kt` | Projects those exact mode arrays, manual/range facts, and AE/AF region maxima into enum choices and admission flags shared by settings, top-bar/Fn cycles, and quick rulers. Sparse routes use a neutral singleton; before caps arrive, the current singleton remains visible but disabled. |
+| `ManualControls.kt` | Immutable snapshot of all pro capture parameters (focus, ISO, shutter, white balance, metering, processing). `normalizeControlsForRoute` applies one exact capability/zoom boundary to live and recalled packets before accepted Engine/UI/request publication. |
 | `RotationMath.kt` | Pure, unit-tested functions for preview/capture/EXIF rotation math and the video muxer orientation hint (extracted from CameraEngine). |
 | `AutoExposure.kt` | Pure, unit-tested app-side AE math: SHUTTER/ISO-priority drive functions and the photo-P program line (`driveProgram`), metered off the GL luma histogram. |
 | `OcsProbe.kt` | Debug-source-set-only OPPO CameraUnit/OCS availability probe (release builds compile a no-op stub and do not link the OEM SDK). |
 | `VendorTagInspector.kt` | Debug-only Camera2 capability logger for device-specific request/session keys. |
 | **gl/** | |
-| `GlPipeline.kt` | Owns the GL render thread and checked preview/encoder EGLSurface lifetimes. Outgoing outputs are unbound before destruction; encoder readiness is published only after the first real frame swaps successfully. Preview windows carry invalidation generations and encoder attachment/runtime failures are identity-owned and exactly once. Also owns texture/sampling buffers and drives background scope analysis. `CameraEngine` replays its complete `RendererConfigStore` after every `gl.start`. |
+| `GlPipeline.kt` | Owns the GL render thread and checked preview/encoder EGLSurface lifetimes. Outgoing outputs are unbound before destruction; encoder readiness is published only after the first real frame swaps successfully. Preview and encoder failures are identity-owned and exactly once. Real camera frames are acquired before either optional output, so a failed preview cannot starve an active encoder. Each GL generation owns and retires its analysis executor, busy gate, FBO/buffer snapshot, and callback authority. `CameraEngine` replays its complete `RendererConfigStore` after every `gl.start`. |
 | `FlipRenderer.kt` | Low-level OpenGL ES fullscreen quad renderer with texture-coordinate rotation (inverse of image rotation) to flip the 180° afocal image. Applies the SDR-to-HLG mapping or O-Log2 encoding in the fragment shader and handles focus peaking/zebra. |
 | `EglCore.kt` | Checked EGL/GLES setup, binding, presentation, buffer swap, unbind, surface destruction, and display teardown. Supports a 10-bit config, while v1 deliberately starts the stable 8-bit config. |
 | `Shaders.kt` / `SdrToHlgMapping.kt` | Shader source plus Android-free reference constants for the BT.2408-9 display-referred SDR-to-HLG sequence; also owns O-Log2, peaking/zebra, and punch-in shader paths. |
@@ -65,26 +66,28 @@ Two critical consequences of the afocal converter drive the entire design:
 | `ColorProfiles.kt` | Builds MediaFormat specs for HEVC Main10 (Rec.2020 + HLG/Log) and AVC 8-bit SDR. Tags dynamic range, color space, transfer function. |
 | `EncoderCaps.kt` | Scans MediaCodecList and exposes the hardware AVC/HEVC encoders that are stable with MediaMuxer. |
 | **storage/** | |
-| `MediaStoreWriter.kt` | Scoped-storage wrapper: creates pending DCIM/X9Tele entries (IS_PENDING), publishes on success, deletes on failure. Opened files backed by ParcelFileDescriptor. |
+| `CaptureFamily.kt` | Versioned, timestamped capture-family identity embedded in every new output filename. HEIF/JPEG/DNG siblings reuse one exact key; video owns a one-file family. Legacy names are deliberately not inferred by timestamp proximity. |
+| `LatestCaptureReducer.kt` | Android-free reducer for owned Images/Video rows. Selects the newest capture first, then a displayable sibling inside only that capture, and distinguishes proven capture-family deletion from legacy file-only deletion. |
+| `MediaStoreWriter.kt` | Scoped-storage wrapper: creates pending DCIM/X9Tele entries (IS_PENDING), publishes on success, deletes on failure, and stamps canonical outputs with DATE_TAKEN. Relaunch recovery uses bounded owned/published Images and Video queries plus an exact-family follow-up. Opened files are backed by ParcelFileDescriptor. |
 | `SettingsStore.kt` | SharedPreferences persistence of ManualControls + ExtraSettings across launches, gated by a "Remember Settings" toggle (default ON); enums stored by name, defensive load. Lens and TELE restoration have separate default-on preserve toggles. |
 | **focus/** | |
-| `FocusMapping.kt` | Maps UI slider (0..1) to LENS_FOCUS_DISTANCE (diopters). Nonlinear to enhance resolution near infinity (√ curve and offset). Bidirectional. |
+| `FocusMapping.kt` | Maps the UI slider (0..1) bidirectionally to LENS_FOCUS_DISTANCE with `diopters = minFocusDiopters * slider^3`. There is no additive offset, preserving exact infinity at slider 0 while concentrating travel near it. |
 | **ui/** | |
 | `CameraScreen.kt` | Compose root layout: preview TextureView, shutter button, mode toggle, gallery thumbnail, fixed settings panel, and capture overlays. Stateless, reads CameraUiState. |
 | `CameraViewModel.kt` | StateFlow<CameraUiState> owner. Turns CameraActions into CameraEngine calls, publishes capability-normalized controls, applies gesture changes with a trailing throttle, and coordinates capture-id review ownership. |
-| `CaptureOutputTracker.kt` | Bounded, synchronized ownership map for monotonic capture ids and every processed/RAW sibling. Selects the truthful review owner, upgrades RAW placeholders, and tombstones whole captures before deletion. |
+| `CaptureOutputTracker.kt` | Bounded, synchronized ownership map for monotonic capture ids and every processed/RAW sibling. Selects the truthful review owner, upgrades RAW placeholders, tombstones whole captures before deletion, and seeds a reconstructed prior-process family below every live capture id. |
 | `CameraActions.kt` | Callback interface for stateless UI commands such as focus, exposure, tap AF, lens, recording, persistence, and review actions. |
 | **ui/controls/** | |
-| `ManualDials.kt` | Horizontal scrolling dials for quick access to focus, shutter, ISO, white balance, EV, and zoom — the "Fn" layer. Mapped to CameraActions. |
-| `ProSheet.kt` | Fixed Sony-style settings panel with a 9-tab left rail: My, Shoot, Exposure, Focus, Lens, Video, Image, Assist, and Setup. Each tab hosts controls feeding CameraActions. |
+| `ManualDials.kt` | Horizontal scrolling dials for quick access to focus, shutter, ISO, white balance, EV, and zoom — the "Fn" layer. Entry is admitted by `ControlAvailability`, and a ruler closes if a route change removes its required exact mode/range. |
+| `ProSheet.kt` | Fixed Sony-style settings panel with a 9-tab left rail: My, Shoot, Exposure, Focus, Lens, Video, Image, Assist, and Setup. The rail is one selectable group whose items expose selected state and `Role.Tab`. Capability-dependent selectors contain advertised choices when present; an empty set falls back to a disabled neutral singleton, and otherwise-invalid entry points are disabled. |
 | `ProControls.kt` | Reusable Compose controls including rulers, segmented choices, toggles, sliders, and value rows. All are two-way bound to CameraUiState. |
 | **ui/overlays/** | |
 | `Overlays.kt` | Compose overlays: reticle (tap-to-focus), histogram/waveform, grid, spirit level, peaking, zebra, punch-in zoom indicator, AE/AWB/AF lock tags. Stateless off CameraUiState. |
-| `MediaReview.kt` | In-app review of the last capture: zoomable processed photos, rotating video playback, and a truthful non-decoding RAW/DNG metadata tile. Delete is capture-level; visible semantic Play/Pause and zoom-cycle controls remain available where applicable. |
-| `ControlCycles.kt` | Shared enum tap-cycle orders and auto-exposure readout text used by ManualDials, ProSheet, and CameraScreen (single copy — no drift). |
+| `MediaReview.kt` | In-app review of the last capture: zoomable processed photos, rotating video playback, and a truthful non-decoding RAW/DNG metadata tile. Delete copy promises all saved formats only for a proven canonical family; legacy rows explicitly delete one file. Visible semantic Play/Pause and zoom-cycle controls remain available where applicable. |
+| `ControlCycles.kt` | Shared tap-cycle and auto-exposure readout logic used by ManualDials, ProSheet, and CameraScreen. Capability-dependent cycles advance only through `ControlAvailability` choices (single copy — no drift). |
 | **ui/theme/** | |
 | `Theme.kt` | Material3 dark theme tuned for a Sony-style pro camera surface, typography, color palette, text field/button shapes. |
-| `MainActivity.kt` | Entry point. Requests CAMERA/RECORD_AUDIO permissions at runtime (ColorOS blocks pm grant). CAMERA request history distinguishes fresh/cancelled prompts from fixed denial before offering Settings. Hosts the Compose root and ViewModel. Lifecycle: onStart/onStop call engine pause/resume. |
+| `MainActivity.kt` | Entry point. Requests CAMERA/RECORD_AUDIO permissions at runtime (ColorOS blocks pm grant). CAMERA request history distinguishes fresh/cancelled prompts from fixed denial before offering Settings. Hosts the Compose root and ViewModel. Lifecycle: `onStart` calls the ViewModel's `onStart`, which resumes the engine; `onStop` calls the ViewModel's `onStop`, which pauses it. |
 | `TeleCameraApp.kt` | Application class, kept minimal. No wiring needed; all setup in MainActivity/ViewModel. |
 
 ---
@@ -173,7 +176,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | **ioExecutor** (single-thread) | CameraEngine | Deferred processed-still decoding, crop/rotation, HEIF/JPEG encoding, and publication. |
 | **recording-finalization executor** (single-thread) | CameraEngine | Dedicated, rejection-safe recorder stop/muxer finalization so still encoding cannot delay clip completion. Release waits a bounded interval for this lane before GL/executor teardown. |
 | **timelapseScheduler** (scheduled) | CameraEngine | Interval-driven timelapse capture trigger every N seconds. |
-| **analysisExecutor** (single-thread) | GlPipeline | Histogram/waveform computation from GL readback (per-pixel math). |
+| **analysisExecutor** (one single-thread executor per GL generation) | GlPipeline | Histogram/waveform computation from that generation's isolated FBO/readback snapshot. Retirement invalidates callback authority without waiting indefinitely for old math. |
 | **audio-capture** (implicit thread) | VideoRecorder | AudioRecord polling loop and PCM-to-AAC encoding. |
 | **video-drain** (implicit thread) | VideoRecorder | MediaCodec output buffer draining and MediaMuxer writes. |
 | **StandbyAudioMeter** (thread) | CameraEngine | Levels-only AudioRecord tap while video is armed but not rolling. A synchronized ownership gate reserves one immutable owner/release latch before thread start; REC opens the mic only after that exact owner releases. |
@@ -215,23 +218,33 @@ Accessed from GL + audio/video threads:
 - **Terminal GL acquisition**: `TerminalAcquisitionGate` linearizes cold `gl.start` and its input
   callback with engine release. Release closes the gate before its final `gl.stop`; it either waits
   for an in-flight acquisition and owns that generation's stop, or prevents the acquisition entirely.
-- **Output-surface ownership**: every preview bind/detach synchronously increments a generation before
-  it queues GL work. A stale native window is rejected before EGL mutation, and EGL failures converge
-  to a detached preview instead of escaping the looper. Every outgoing EGLSurface first binds a
-  surviving preview or makes nothing current, then destroys the surface. Codec teardown requires
-  verified current-ownership release plus either destroyed outputs or checked terminal EGL display
-  teardown; an individual destroy failure cannot authorize successful completion by itself. Encoder
-  create/bind/restore remains pending until the first real camera frame presents and swaps
-  successfully. Before that point failure completes attachment; afterward failure belongs to the
-  active recorder. Normal detach cancels a pending attach without manufacturing a runtime fault.
+- **Output-surface ownership and preview health**: every preview bind/detach synchronously increments
+  a generation before it queues GL work. A stale native window is rejected before EGL mutation.
+  Create/bind/init and runtime draw/swap failures complete the exact preview signal once; the Engine
+  accepts only the current Surface/generation, publishes Not-Ready, and retries that owner at most
+  three times before reporting terminal preview failure. Ready returns only after the accepted output
+  binds successfully. Real camera texture acquisition precedes both optional sinks, and preview and
+  encoder rendering are sibling branches, so a broken preview detaches without starving an otherwise
+  healthy active recorder. Every outgoing EGLSurface first binds a surviving output or makes nothing
+  current, then destroys the surface. Codec teardown requires verified current-ownership release plus
+  either destroyed outputs or checked terminal EGL display teardown; an individual destroy failure
+  cannot authorize successful completion by itself. Encoder create/bind/restore remains pending until
+  the first real camera frame presents and swaps successfully. Before that point failure completes
+  attachment; afterward failure belongs to the active recorder. Normal detach cancels a pending attach
+  without manufacturing a runtime fault.
+- **Analysis-generation isolation**: every `gl.start` creates an immutable analysis generation owning
+  its executor, single-flight gate, FBO/texture, direct buffer, byte snapshot, and callback authority.
+  `stop` retires that owner synchronously before executor shutdown and clears its snapshots during
+  release. Retired work can neither publish into the replacement generation nor clear its busy gate.
 - **Controller-health ownership**: Camera2 error/disconnect callbacks are authorized by installed
   controller identity for that controller's complete lifetime, not by the optics generation captured
   when it opened. The same controller remains authoritative through fast commits; callbacks from a
   replaced controller are inert. An owned failure atomically invalidates Ready/outputs, advances the
   session generation, claims any recorder, reports termination, and enters bounded recovery.
-- **Lifecycle guards**: `CameraEngine.paused` prevents reconfigure/open work during app backgrounding
-  (onStop → pause(); every queued boundary rechecks ownership). `CameraController.closed` gates
-  late-arriving open callbacks.
+- **Lifecycle guards**: `MainActivity.onStart` → `CameraViewModel.onStart` → `CameraEngine.resume`, and
+  `MainActivity.onStop` → `CameraViewModel.onStop` → `CameraEngine.pause`. The paused flag prevents
+  reconfigure/open work during app backgrounding; every queued boundary rechecks ownership, and
+  `CameraController.closed` gates late-arriving open callbacks.
 - **Session reopen ownership**: every session-key reopen snapshots one complete
   `OpticsReconfiguration` before invalidating Ready. The setup lane rechecks its generation and
   expected controller, then uses normal complete reconfiguration; no transaction-less close/open path
@@ -253,10 +266,20 @@ Accessed from GL + audio/video threads:
   codec, muxer, and fd native resources rather than racing release against native code. An active
   Camera2 failure claims the matching recorder, orders GL detach before finalization, reports
   termination, then permits bounded camera recovery.
-- **Capability-safe controls**: restored and live control snapshots are normalized against the exact
-  mode arrays for the selected camera before UI and engine publication. Request builders set only an
-  advertised value; AE and AF regions are gated independently by their maximum region counts, so a
-  zero-region camera omits that key rather than sending an unsupported rectangle.
+- **Capability-safe controls and recall**: `normalizeControlsForRoute` applies exact mode arrays,
+  manual capabilities, metering-region maxima, and the accepted route's zoom range as one packet.
+  A same-route settings/MR recall normalizes against the installed caps before its terminal fast
+  commit, uses that packet for Engine/controller/zoom state, and queues the generation-owned caps
+  reconciliation before Ready. A structural recall waits for the target route's caps and normalizes
+  there; outgoing caps never clamp a different target route. Superseded callbacks are rejected by
+  optics generation. Request builders still set only advertised values and omit AE/AF regions when
+  the corresponding maximum is zero.
+- **Capability-driven control admission**: one `ControlAvailability` projection derives visible enum
+  choices and enablement from the same exact AE/AF/AWB, antibanding, edge, noise-reduction, effect,
+  manual/range, flash, and region facts used by normalization. ProSheet filters its selectors;
+  top-bar/Fn cycles advance only through the projection; manual focus/shutter/ISO/WB/EV/zoom rulers
+  require their exact modes and ranges. If route caps invalidate an open ruler, Compose closes it and
+  retains the normalized applied value rather than leaving an inert editor open.
 - **Microphone admission**: `StandbyMeterOwnership` keeps reservation, intent, owner identity, and
   release-latch handoff on one monitor. Late meter threads recheck ownership before opening
   AudioRecord; REC fails a bounded release wait instead of creating a second owner; finalizer retries
@@ -594,15 +617,25 @@ does not query CameraService and copies the processed Image before resolving it.
 
 **Last-capture review ownership:**
 
-Every photo/video start receives a monotonic capture id for the engine lifetime. `CaptureOutputTracker`
-groups every HEIF/JPEG/DNG/video URI by that id and orders review ownership by newest id first, then by
-displayability within one capture. A newer DNG-only completion therefore owns a truthful RAW metadata
-placeholder instead of leaving an older thumbnail visible. A processed sibling from the same capture
-upgrades the placeholder; RAW arriving after processed, or any output from an older capture, is tracked
-for deletion but cannot displace the review owner. Delete tombstones the capture before asynchronous
-MediaStore calls, removes all currently known siblings, and immediately deletes a late sibling callback,
-so a deleted capture cannot resurrect itself. RAW remains metadata-only in review; no Bayer decoding is
-implied.
+At shutter/record admission, every capture receives a monotonic engine id plus one versioned,
+millisecond-timestamped `CaptureFamilyKey`. Every HEIF/JPEG/DNG sibling reuses the same still-family
+key and filename stem; video owns one canonical MP4 family. Within the running process,
+`CaptureOutputTracker` groups URIs by the monotonic id and orders review ownership by newest id first,
+then by displayability inside that capture. A newer DNG-only completion therefore owns a truthful RAW
+metadata placeholder instead of leaving an older thumbnail visible. A processed sibling from the same
+capture upgrades the placeholder; RAW arriving after processed, or any output from an older capture,
+is tracked for deletion but cannot displace the review owner.
+
+On relaunch, `MediaStoreWriter.latestOwnCapture` queries a bounded set of this package's published rows
+under `DCIM/X9Tele` from both Images and Video. The Android-free reducer chooses the newest capture
+before applying sibling display preference; an exact, bounded filename query then reconstructs every
+extant row for the winning canonical family. That family is seeded into the tracker with a synthetic
+ordering id below every live id, so even a racing first capture wins. Names from older app versions do
+not prove sibling identity and are never grouped by timestamp proximity: they restore with an explicit
+file-only delete scope. Capture-family copy promises all known formats, while legacy copy promises only
+the displayed file. Delete tombstones a tracked capture before asynchronous MediaStore calls, attempts
+every known sibling, immediately rejects a late sibling callback, and reports a failure if any attempted
+row could not be removed. RAW remains metadata-only in review; no Bayer decoding is implied.
 
 **Aspect ratio (processed stills):**
 
@@ -629,9 +662,12 @@ publish(context, uri)
 // Updates IS_PENDING = 0 (visible in gallery)
 delete(context, uri)
 // Removes the entry (if write failed)
+latestOwnCapture(context) → RestoredCapture
+// Bounded Images + Video scan, followed by an exact-family query when identity is proven
 ```
 
-On failure (OOM, disk full, etc.), the pending entry is deleted → no partial files in gallery.
+Canonical names also stamp `DATE_TAKEN` from admission time. On failure (OOM, disk full, etc.), the
+pending entry is deleted → no partial files in gallery.
 
 ---
 
@@ -640,10 +676,13 @@ On failure (OOM, disk full, etc.), the pending entry is deleted → no partial f
 **Overview:**
 Core Camera2 capture parameters are housed in the immutable `ManualControls` data class. The ViewModel
 copies it with updated fields on each interaction and re-applies it through
-`CameraEngine.setControls()`. Restored and live controls are normalized to exact advertised modes before
-the ViewModel publishes them; AE/AF regions are omitted independently when the corresponding maximum
-count is zero. Capture-mode, video, assist, hardware-key, and persistence options live
-in `CameraUiState`/`ExtraSettings` rather than being forced into `ManualControls`.
+`CameraEngine.setControls()`. Restored and live controls pass through the same route normalization for
+exact advertised modes, manual capabilities, region maxima, and zoom bounds. Same-route recall commits
+that normalized packet before Ready; a route-changing recall waits for the target camera's caps.
+The UI's `ControlAvailability` projection uses those same facts to filter settings and quick cycles,
+and to admit or close manual rulers. AE/AF regions are omitted independently when the corresponding
+maximum count is zero. Capture-mode, video, assist, hardware-key, and persistence options live in
+`CameraUiState`/`ExtraSettings` rather than being forced into `ManualControls`.
 
 Settings are persisted across app launches via `SettingsStore.kt` (SharedPreferences), gated by a 
 "Remember Settings" toggle that **defaults ON**. On launch, saved pro settings are restored from storage 
@@ -669,11 +708,17 @@ The fixed settings panel has nine left-rail tabs:
 9. **Setup** — privacy, persistence, Fn/My Menu customization, hardware-key assignments, and the
    diagnostic camera override reset when one is active.
 
+The rail is a Compose `selectableGroup`; each category is a `selectable` `Role.Tab` with the current
+category's selected state. Its existing 48 dp-plus geometry and visual treatment remain unchanged.
+
 **Quick Fn controls (ManualDials.kt):**
 
 Photo and video have separate configurable Fn bars with up to eight slots. The photo default exposes
 exposure mode, focus, shutter, ISO, WB, and EV; the video default adds gamma, stabilization, and audio
-scene choices. Numeric focus/shutter/ISO/WB/EV/zoom controls use the compact dial/ruler surface.
+scene choices. Capability-dependent taps cycle only through the selected route's advertised choices.
+Numeric focus/shutter/ISO/WB/EV/zoom controls use the compact dial/ruler surface only when their exact
+manual modes and scalar ranges exist. A caps change closes an invalid open ruler while keeping the
+normalized value applied.
 
 **Control application:**
 
