@@ -68,4 +68,31 @@ class FirstFailureSignalTest {
         assertEquals(1, notifications.get())
         assertSame(signal.cause, observed.get())
     }
+
+    @Test
+    fun `racing audio and video failures retain exactly one terminal cause`() {
+        val signal = FirstFailureSignal()
+        val ready = CountDownLatch(2)
+        val go = CountDownLatch(1)
+        val done = CountDownLatch(2)
+        val notifications = AtomicInteger()
+        val audioFailure = IllegalStateException("AudioRecord.read failed: ERROR_DEAD_OBJECT (-6)")
+        val videoFailure = IllegalStateException("video codec failed")
+
+        listOf(audioFailure, videoFailure).forEach { failure ->
+            Thread {
+                ready.countDown()
+                go.await()
+                signal.record(failure) { notifications.incrementAndGet() }
+                done.countDown()
+            }.start()
+        }
+
+        assertTrue(ready.await(2, TimeUnit.SECONDS))
+        go.countDown()
+        assertTrue(done.await(2, TimeUnit.SECONDS))
+
+        assertEquals(1, notifications.get())
+        assertTrue(signal.cause === audioFailure || signal.cause === videoFailure)
+    }
 }

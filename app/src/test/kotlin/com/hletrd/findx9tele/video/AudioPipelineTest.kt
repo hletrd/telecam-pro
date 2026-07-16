@@ -1,6 +1,7 @@
 package com.hletrd.findx9tele.video
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -60,5 +61,43 @@ class AudioPipelineTest {
     @Test
     fun audioSetupFailure_reportsUnavailableRoute() {
         assertEquals("USB unavailable", audioUnavailableLabel("USB"))
+    }
+
+    @Test
+    fun audioRead_positiveBytes_arePcm() {
+        assertEquals(AudioReadOutcome.Pcm(4096), classifyAudioRead(4096, running = true))
+    }
+
+    @Test
+    fun audioRead_zeroWhileRunning_isTransient() {
+        assertSame(AudioReadOutcome.Retry, classifyAudioRead(0, running = true))
+    }
+
+    @Test
+    fun audioRead_everyFrameworkErrorWhileRunning_isTerminalAndDescriptive() {
+        val errors = listOf(
+            -1 to "ERROR",
+            -2 to "ERROR_BAD_VALUE",
+            -3 to "ERROR_INVALID_OPERATION",
+            -6 to "ERROR_DEAD_OBJECT",
+        )
+
+        errors.forEach { (code, label) ->
+            assertEquals(AudioReadOutcome.Failure(code), classifyAudioRead(code, running = true))
+            val failure = audioReadFailure(code)
+            assertTrue(failure.message.orEmpty().contains(label))
+            assertTrue(failure.message.orEmpty().contains(code.toString()))
+        }
+    }
+
+    @Test
+    fun audioRead_unknownNegativeWhileRunning_isAlsoTerminal() {
+        assertEquals(AudioReadOutcome.Failure(-99), classifyAudioRead(-99, running = true))
+        assertTrue(audioReadFailure(-99).message.orEmpty().contains("UNKNOWN"))
+    }
+
+    @Test
+    fun audioRead_negativeAfterStopRequested_isNormalEos() {
+        assertSame(AudioReadOutcome.Stopped, classifyAudioRead(-6, running = false))
     }
 }

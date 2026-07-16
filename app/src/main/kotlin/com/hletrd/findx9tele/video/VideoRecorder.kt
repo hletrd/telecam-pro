@@ -440,26 +440,37 @@ class VideoRecorder(private val context: Context) {
                     val buf = codec.getInputBuffer(inIdx)
                     buf?.clear()
                     val read = if (running && buf != null) record.read(buf, buf.capacity()) else 0
-                    if (read > 0 && buf != null) {
-                        // Apply gain in place and emit a throttled level update before this PCM
-                        // buffer is queued to the AAC encoder below. At unity gain the rewrite is a
-                        // no-op, so the RMS pass is skipped entirely unless a level emit is due —
-                        // ~90% of buffers otherwise computed an RMS that maybeEmitLevel discarded.
-                        val emitDue = levelEmitDue()
-                        if (audioGain != 1f || emitDue) {
-                            val level = applyGainAndLevel(buf, read, audioGain)
-                            if (emitDue) maybeEmitLevel(level)
-                        }
-                    }
+                    // Read may block while stop() flips running and calls AudioRecord.stop(). Judge
+                    // the returned code against the state observed AFTER that call: a negative stop
+                    // wake-up is normal EOS, but any negative code while still running is terminal.
+                    val readOutcome = classifyAudioRead(read, running)
                     val ptsUs = audioPtsUs(totalSamples, ColorProfiles.AUDIO_SAMPLE_RATE)
-                    if (!running) {
-                        codec.queueInputBuffer(inIdx, 0, 0, ptsUs, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                        sentEos = true
-                    } else if (read > 0) {
-                        codec.queueInputBuffer(inIdx, 0, read, ptsUs, 0)
-                        totalSamples += read / bytesPerFrame
-                    } else {
-                        codec.queueInputBuffer(inIdx, 0, 0, ptsUs, 0)
+                    when (readOutcome) {
+                        is AudioReadOutcome.Pcm -> {
+                            val pcmBuffer = checkNotNull(buf)
+                            // Apply gain in place and emit a throttled level update before this PCM
+                            // buffer is queued to the AAC encoder below. At unity gain the rewrite is
+                            // a no-op, so the RMS pass is skipped entirely unless a level emit is due.
+                            val emitDue = levelEmitDue()
+                            if (audioGain != 1f || emitDue) {
+                                val level = applyGainAndLevel(pcmBuffer, readOutcome.byteCount, audioGain)
+                                if (emitDue) maybeEmitLevel(level)
+                            }
+                            codec.queueInputBuffer(inIdx, 0, readOutcome.byteCount, ptsUs, 0)
+                            totalSamples += readOutcome.byteCount / bytesPerFrame
+                        }
+                        AudioReadOutcome.Retry -> codec.queueInputBuffer(inIdx, 0, 0, ptsUs, 0)
+                        AudioReadOutcome.Stopped -> {
+                            codec.queueInputBuffer(
+                                inIdx,
+                                0,
+                                0,
+                                ptsUs,
+                                MediaCodec.BUFFER_FLAG_END_OF_STREAM,
+                            )
+                            sentEos = true
+                        }
+                        is AudioReadOutcome.Failure -> throw audioReadFailure(readOutcome.code)
                     }
                 } else if (!running && ++eosAttempts >= MAX_EOS_ATTEMPTS) {
                     // Stop was requested but the encoder has produced no free input buffer to carry
