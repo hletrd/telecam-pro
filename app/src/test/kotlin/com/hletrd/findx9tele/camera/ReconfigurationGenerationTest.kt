@@ -12,6 +12,19 @@ import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
 class ReconfigurationGenerationTest {
+
+    @Test
+    fun `session reopen requires owned desired generation`() {
+        assertTrue(sessionReopenMayProceed(7, 7, true, paused = false, recording = false))
+        assertFalse(sessionReopenMayProceed(8, 7, true, paused = false, recording = false))
+    }
+
+    @Test
+    fun `session reopen rejects replaced controller lifecycle and recording`() {
+        assertFalse(sessionReopenMayProceed(7, 7, false, paused = false, recording = false))
+        assertFalse(sessionReopenMayProceed(7, 7, true, paused = true, recording = false))
+        assertFalse(sessionReopenMayProceed(7, 7, true, paused = false, recording = true))
+    }
     @Test
     fun `current transaction owns rollback`() {
         assertTrue(reconfigurationOwnsGeneration(currentGeneration = 7, expectedGeneration = 7))
