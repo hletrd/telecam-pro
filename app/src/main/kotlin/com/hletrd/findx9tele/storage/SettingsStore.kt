@@ -96,7 +96,9 @@ class SettingsStore(private val prefs: SharedPreferences) {
     // Default ON: photographers expect their setup to survive an app restart out of the box.
     var rememberEnabled: Boolean
         get() = prefs.getBoolean(K_REMEMBER, true)
-        set(value) { prefs.edit { putBoolean(K_REMEMBER, value) } }
+        // This gate is itself part of the durable settings contract. In particular, disabling it
+        // does not trigger save(), so apply() here could resurrect the old true value after a kill.
+        set(value) { prefs.edit(commit = true) { putBoolean(K_REMEMBER, value) } }
 
     fun save(c: ManualControls, e: ExtraSettings) {
         // commit (synchronous), NOT apply: saves fire on user actions (e.g. a mode switch) and the

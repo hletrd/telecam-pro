@@ -35,6 +35,7 @@ import com.hletrd.findx9tele.camera.WbGains
 import com.hletrd.findx9tele.camera.WbMode
 import com.hletrd.findx9tele.camera.ZebraLevel
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -51,6 +52,11 @@ class SettingsStoreTest {
     private class FakePrefs(
         private val store: MutableMap<String, Any?> = mutableMapOf(),
     ) : SharedPreferences {
+        var commitCount: Int = 0
+            private set
+        var applyCount: Int = 0
+            private set
+
         override fun getString(key: String?, defValue: String?): String? =
             if (store.containsKey(key)) store[key] as String? else defValue
 
@@ -72,12 +78,20 @@ class SettingsStoreTest {
 
         override fun contains(key: String?): Boolean = store.containsKey(key)
         override fun getAll(): MutableMap<String, *> = store
-        override fun edit(): SharedPreferences.Editor = FakeEditor(store)
+        override fun edit(): SharedPreferences.Editor = FakeEditor(
+            store = store,
+            onCommit = { commitCount++ },
+            onApply = { applyCount++ },
+        )
         override fun registerOnSharedPreferenceChangeListener(l: SharedPreferences.OnSharedPreferenceChangeListener?) {}
         override fun unregisterOnSharedPreferenceChangeListener(l: SharedPreferences.OnSharedPreferenceChangeListener?) {}
     }
 
-    private class FakeEditor(private val store: MutableMap<String, Any?>) : SharedPreferences.Editor {
+    private class FakeEditor(
+        private val store: MutableMap<String, Any?>,
+        private val onCommit: () -> Unit,
+        private val onApply: () -> Unit,
+    ) : SharedPreferences.Editor {
         private val staged = mutableMapOf<String, Any?>()
         private val removed = mutableSetOf<String>()
         private var clearAll = false
@@ -90,8 +104,8 @@ class SettingsStoreTest {
         override fun putBoolean(key: String?, value: Boolean): SharedPreferences.Editor = apply { staged[key!!] = value }
         override fun remove(key: String?): SharedPreferences.Editor = apply { removed += key!! }
         override fun clear(): SharedPreferences.Editor = apply { clearAll = true }
-        override fun commit(): Boolean { flush(); return true }
-        override fun apply() { flush() }
+        override fun commit(): Boolean { onCommit(); flush(); return true }
+        override fun apply() { onApply(); flush() }
 
         private fun flush() {
             if (clearAll) store.clear()
@@ -134,6 +148,22 @@ class SettingsStoreTest {
         zoomRatio = 4.286f,
         jpegQuality = 80,
     )
+
+    @Test
+    fun rememberToggleCommitsBothValuesSynchronously() {
+        val prefs = FakePrefs()
+        val store = SettingsStore(prefs)
+
+        store.rememberEnabled = false
+        assertFalse(store.rememberEnabled)
+        assertEquals(1, prefs.commitCount)
+        assertEquals(0, prefs.applyCount)
+
+        store.rememberEnabled = true
+        assertTrue(store.rememberEnabled)
+        assertEquals(2, prefs.commitCount)
+        assertEquals(0, prefs.applyCount)
+    }
 
     private val nonDefaultExtras = ExtraSettings(
         transfer = ColorTransfer.LOG,
