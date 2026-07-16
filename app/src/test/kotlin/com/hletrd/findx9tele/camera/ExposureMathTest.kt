@@ -30,6 +30,51 @@ class ExposureMathTest {
         assertEquals(2_000_000_000L, c.effectiveExposureNs())
     }
 
+    // ---- captureWatchdogTimeoutMs: request exposure + bounded delivery budget ----
+
+    @Test
+    fun `HAL auto and unknown exposure retain the eight second watchdog floor`() {
+        assertEquals(8_000L, captureWatchdogTimeoutMs(clampedExposureNs = null))
+    }
+
+    @Test
+    fun `short manual exposure is rounded up and added to the delivery budget`() {
+        assertEquals(8_001L, captureWatchdogTimeoutMs(clampedExposureNs = 1L))
+        assertEquals(8_008L, captureWatchdogTimeoutMs(clampedExposureNs = 8_000_000L))
+    }
+
+    @Test
+    fun `two and eight second manual exposures receive their full exposure time`() {
+        assertEquals(10_000L, captureWatchdogTimeoutMs(clampedExposureNs = 2_000_000_000L))
+        assertEquals(16_000L, captureWatchdogTimeoutMs(clampedExposureNs = 8_000_000_000L))
+    }
+
+    @Test
+    fun `long AEB step uses the same sensor clamp as its capture request`() {
+        val sensorMaxNs = 30_000_000_000L
+        val plusTwoEvNs = manualAebExposuresNs(
+            baseNs = 8_000_000_000L,
+            minNs = 100_000L,
+            maxNs = sensorMaxNs,
+        ).last()
+        val bracketControls = ManualControls(exposureTimeNs = plusTwoEvNs)
+        val appliedNs = bracketControls.clampedEffectiveExposureNs(100_000L, sensorMaxNs)
+
+        assertEquals(sensorMaxNs, appliedNs)
+        assertEquals(38_000L, captureWatchdogTimeoutMs(appliedNs))
+    }
+
+    @Test
+    fun `watchdog arithmetic saturates instead of wrapping`() {
+        assertEquals(
+            Long.MAX_VALUE,
+            captureWatchdogTimeoutMs(
+                clampedExposureNs = 1_000_000L,
+                deliveryMarginMs = Long.MAX_VALUE,
+            ),
+        )
+    }
+
     // ---- effectiveExposureNs: ANGLE mode ----
 
     @Test

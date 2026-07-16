@@ -103,6 +103,46 @@ fun ManualControls.effectiveExposureNs(): Long =
         exposureTimeNs
     }
 
+/** The exact app-owned exposure placed on a request after applying the advertised sensor range. */
+internal fun ManualControls.clampedEffectiveExposureNs(minNs: Long?, maxNs: Long?): Long {
+    return clampExposureNs(effectiveExposureNs(), minNs, maxNs)
+}
+
+private fun clampExposureNs(requestedNs: Long, minNs: Long?, maxNs: Long?): Long =
+    if (minNs != null && maxNs != null && minNs <= maxNs) {
+        requestedNs.coerceIn(minNs, maxNs)
+    } else {
+        requestedNs
+    }
+
+internal const val CAPTURE_WATCHDOG_FLOOR_MS = 8_000L
+internal const val CAPTURE_DELIVERY_MARGIN_MS = 8_000L
+
+/**
+ * Deadline for a pending still. HAL-owned exposure keeps the historical [floorMs]; an app-owned
+ * exposure adds its full, request-clamped duration to a fixed delivery/readout margin. Arithmetic
+ * saturates so malformed/extreme capability values can never wrap into an immediate timeout.
+ */
+internal fun captureWatchdogTimeoutMs(
+    clampedExposureNs: Long?,
+    deliveryMarginMs: Long = CAPTURE_DELIVERY_MARGIN_MS,
+    floorMs: Long = CAPTURE_WATCHDOG_FLOOR_MS,
+): Long {
+    val floor = floorMs.coerceAtLeast(0L)
+    if (clampedExposureNs == null) return floor
+
+    val exposureNs = clampedExposureNs.coerceAtLeast(0L)
+    val wholeMs = exposureNs / 1_000_000L
+    val exposureMs = wholeMs + if (exposureNs % 1_000_000L == 0L) 0L else 1L
+    val margin = deliveryMarginMs.coerceAtLeast(0L)
+    val exposureAndMargin = if (exposureMs > Long.MAX_VALUE - margin) {
+        Long.MAX_VALUE
+    } else {
+        exposureMs + margin
+    }
+    return maxOf(floor, exposureAndMargin)
+}
+
 /**
  * Exposure times (ns) for a MANUAL-exposure AEB bracket: -2 / 0 / +2 EV around [baseNs] (×¼ / ×1 /
  * ×4), clamped to the sensor's [minNs]..[maxNs] and deduplicated after clamping (a base near a
@@ -210,9 +250,11 @@ private fun CaptureRequest.Builder.applyExposure(
             }
         }
         caps.isoRange?.let { set(CaptureRequest.SENSOR_SENSITIVITY, iso.coerceIn(it.lower, it.upper)) }
-        val exposureNs = caps.exposureTimeRange
-            ?.let { wantExposureNs.coerceIn(it.lower, it.upper) }
-            ?: wantExposureNs
+        val exposureNs = clampExposureNs(
+            requestedNs = wantExposureNs,
+            minNs = caps.exposureTimeRange?.lower,
+            maxNs = caps.exposureTimeRange?.upper,
+        )
         caps.exposureTimeRange?.let { set(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureNs) }
         // Frame duration must be >= the exposure (Camera2 contract). Stretch it to the exposure so a
         // shutter slower than 1/fps survives instead of being clamped to 1/fps (long-exposure/astro).

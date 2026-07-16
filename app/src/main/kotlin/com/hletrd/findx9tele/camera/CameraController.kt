@@ -808,12 +808,22 @@ class CameraController(context: Context) {
                 return@postToCamera cb.onError(IllegalStateException("Capture already in progress"))
             }
 
+            // Snapshot once: the timeout and the request must describe the same AEB/manual step even
+            // if the UI publishes the next immutable control set while this capture is in flight.
+            val requestControls = controls
+            val watchdogExposureNs = if (!requestControls.autoExposure && caps.supportsManualSensor) {
+                requestControls.clampedEffectiveExposureNs(
+                    minNs = caps.exposureTimeRange?.lower,
+                    maxNs = caps.exposureTimeRange?.upper,
+                )
+            } else {
+                null
+            }
+            val watchdogTimeoutMs = captureWatchdogTimeoutMs(watchdogExposureNs)
             val newPending = Pending(jpeg != null, raw != null, cb)
             pending = newPending
-            // Watchdog: if the HAL never delivers an image (a failed stream allocation, a dropped
-            // buffer — device-observed as gralloc "SnapAlloc invalid" on an oversized JPEG), the
-            // pending slot would otherwise stay occupied FOREVER and every later shutter press
-            // reads "Capture already in progress" — a dead shutter. Fail the shot instead.
+            // A dead HAL must not occupy the pending slot forever, but a legitimate multi-second
+            // manual/AEB exposure needs its full requested duration before the delivery budget begins.
             handler.postDelayed({
                 val p = pending
                 if (p === newPending && !p.done) {
@@ -826,7 +836,7 @@ class CameraController(context: Context) {
                     pending = null
                     p.cb.onError(IllegalStateException("Capture timed out — the camera delivered no image"))
                 }
-            }, CAPTURE_WATCHDOG_MS)
+            }, watchdogTimeoutMs)
 
             // The device can disconnect between the null-checks above and the capture below (the same
             // async-teardown window startPreview guards): createCaptureRequest/capture then throw
@@ -837,19 +847,19 @@ class CameraController(context: Context) {
                 val req = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
                     jpeg?.let { addTarget(it) }
                     raw?.let { addTarget(it) }
-                    applyManualControls(controls, caps, pinAutoFps)
+                    applyManualControls(requestControls, caps, pinAutoFps)
                     // Keep stills consistent with the session's pipeline: with the log session active the
                     // HAL processes everything scene-referred, so an unset key mid-session is undefined.
                     applyVendorLog()
                     applyTeleconverterHints()
-                    applyMetering(this, controls)
+                    applyMetering(this, requestControls)
                     // We rotate pixels ourselves (HEIF) / tag DNG orientation; keep JPEG upright.
                     set(CaptureRequest.JPEG_ORIENTATION, 0)
                     // Zero-shutter-lag: with the HAL AE owning exposure the HAL may serve the still
                     // from its ring buffer (capture start ≈ tap instead of a full pipeline drain —
                     // measured ~0.8 s in low light). Ignored by spec when AE is OFF (manual /
                     // app-side priority modes need the requested values on the actual frame).
-                    if (controls.autoExposure) runCatching { set(CaptureRequest.CONTROL_ENABLE_ZSL, true) }
+                    if (requestControls.autoExposure) runCatching { set(CaptureRequest.CONTROL_ENABLE_ZSL, true) }
                 }
                 s.capture(req.build(), object : CameraCaptureSession.CaptureCallback() {
                     override fun onCaptureStarted(
@@ -1037,9 +1047,6 @@ class CameraController(context: Context) {
 
     private companion object {
         const val TAG = "CameraController"
-        // Outer bound for a still to fully deliver (exposure + HAL processing + readout). Longest
-        // legitimate case ≈ 1/10 s exposure × pipeline depth + multi-frame processing ≈ 3–4 s.
-        const val CAPTURE_WATCHDOG_MS = 8_000L
         // Highest fallback index (attempt 3 = preview-only). Beyond this the session can't be built.
         const val MAX_CONFIG_ATTEMPT = 3
         // TELE tries the same four stream plans once with vendor operation mode 0x80b4 and once
