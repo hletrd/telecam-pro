@@ -163,8 +163,8 @@ Two critical consequences of the afocal converter drive the entire design:
 | **Main (UI)** | Android framework | Compose recomposition, ViewModel StateFlow updates, lifecycle callbacks (onStart/onStop). |
 | **mainHandler work** (main-thread Handler) | CameraViewModel | Lifecycle-owned periodic record/level/orientation/info updates, bounded zoom easing, and transient countdown/reticle work. `onStart` owns recurring registration and `onStop` removes it. |
 | **gl-pipeline** HandlerThread | GlPipeline | EGL operations, texture sampling, rendering, GL shader execution. |
-| **camera** HandlerThread | CameraController | Camera2 lifecycle and capture callbacks. Copies JPEG/YUV data while the Image is live and writes DNG synchronously while the RAW Image is valid. |
-| **setupExecutor** (single-thread) | CameraEngine | Post-GL-input Camera2 route/capability preflight plus serialized, generation-owned mode/lens/session reconfiguration and bounded recovery work. |
+| **camera** HandlerThread | CameraController | Camera2 lifecycle and capture callbacks. Copies JPEG/YUV data before cache-only EXIF composition while the Image is live, and writes DNG synchronously while the RAW Image is valid. |
+| **setupExecutor** (single-thread) | CameraEngine | Post-GL-input Camera2 route/capability preflight, lightweight physical-lens EXIF prefetch, serialized generation-owned mode/lens/session reconfiguration, and bounded recovery work. Debug diagnostics are queued behind the initial route/open work. |
 | **ioExecutor** (single-thread) | CameraEngine | Deferred processed-still decoding, crop/rotation, HEIF/JPEG encoding, and publication. |
 | **recording-finalization executor** (single-thread) | CameraEngine | Dedicated, rejection-safe recorder stop/muxer finalization so still encoding cannot delay clip completion. Release waits a bounded interval for this lane before GL/executor teardown. |
 | **timelapseScheduler** (scheduled) | CameraEngine | Interval-driven timelapse capture trigger every N seconds. |
@@ -196,7 +196,13 @@ Accessed from GL + audio/video threads:
 - **Optics transaction commit**: `OpticsCommitGate` publishes desired generation plus Not-Ready
   together. Ready can return only through the same monitor after the expected generation, controller
   identity, pause state, and same-camera session generation still match; rollback clearing, the Ready
-  bit, and the Ready controller commit as one state. External callbacks run after unlocking.
+  bit, the Ready controller, exact accepted session generation, and actual processed/RAW reader mask
+  commit as one state. A rejected same-route terminal commit queues reconfiguration only when its
+  optics intent still owns convergence; superseded work remains a no-op. External callbacks run after
+  unlocking.
+- **Ready publication ordering**: every Ready/Not-Ready event carries a monotonic publication sequence.
+  The ViewModel compares it again inside the StateFlow reducer, closing the check-to-write race so an
+  older Ready event cannot overwrite newer Not-Ready state.
 - **Cold startup convergence**: GL input ownership is established before blocking Camera2 preflight.
   The input callback snapshots the latest desired route, stale generations cannot publish, and a bounded
   `ColdStartRetryGate` lets a transient selection/capability failure recover without recreating the
@@ -205,8 +211,11 @@ Accessed from GL + audio/video threads:
   (onStop → pause(); every queued boundary rechecks ownership). `CameraController.closed` gates
   late-arriving open callbacks.
 - **Photo callback**: Image objects are valid only during `CameraController.PhotoCallback.onPhoto()`.
-  Processed JPEG/YUV data is copied into owned memory synchronously and encoded later on `ioExecutor`;
-  DNG is written synchronously while its RAW Image is still live.
+  Processed JPEG/YUV data is copied into owned memory before ancillary EXIF composition, then encoded
+  later on `ioExecutor`; DNG is written synchronously while its RAW Image is still live. Lightweight
+  focal-length, aperture, and equivalent-focal-length metadata for selected physical members is
+  prefetched on `setupExecutor`, so callback resolution is cache-only and falls back to selected-route
+  metadata without a CameraService lookup.
 - **Recording**: VideoRecorder owns its video/audio threads and muxer lock; GL just writes frames to the input Surface (thread-safe by the Surface contract).
 - **Microphone admission**: `StandbyMeterOwnership` keeps reservation, intent, owner identity, and
   release-latch handoff on one monitor. Late meter threads recheck ownership before opening
@@ -304,6 +313,12 @@ be described as the shipping source pipeline.
 - TELE first tries the stock-camera operation mode `0x80b4` with full/degraded capture streams, then
   tries `SESSION_REGULAR` with full/degraded capture streams. Vendor and regular preview-only plans
   are the two terminal attempts. Non-TELE sessions use `SESSION_REGULAR` directly.
+- The accepted still-output truth is the reader presence of the plan whose repeating preview request
+  succeeded, not the plan that was attempted. Generation-owned Ready publication carries that exact
+  processed/RAW mask with the accepted controller and session identity.
+- A preview-only Ready session disables PHOTO and in-REC snapshots but does not disable video REC/Stop.
+  Format normalization retains requested accepted outputs, otherwise selects an available processed
+  or RAW fallback, and yields an empty still set when neither reader exists.
 - Only after both the stream and operation-mode plans are exhausted is failure surfaced to the engine.
 
 This ordering preserves a processed capture whenever possible, keeps unsupported DNG out of logical
@@ -490,9 +505,12 @@ Captured via AudioRecord on a separate thread. Software PCM gain applied (user-s
 **Photo formats:**
 
 HEIF and JPEG are processed outputs and can be selected separately or together. DNG can be selected
-alone or combined only for an eligible RAW-capable TELE/standalone session; logical photo sessions
-normalize it off. The UI prevents an empty effective output set, and the engine retains a defensive
-capability check.
+alone or combined when the accepted session exposes a RAW reader. Capture requests are normalized
+against the immutable `PhotoSessionOutputs` published by the session that actually reached Ready:
+available requested outputs are retained, an available processed or RAW fallback is selected when
+necessary, and preview-only produces an empty still set. The UI disables unavailable formats, PHOTO,
+and in-REC snapshots from that same truth while video REC/Stop remains independent; the engine also
+binds capture admission to the accepted controller/session identity.
 
 **HEIF (still photo):**
 
@@ -511,7 +529,9 @@ JPEG runs the SAME processed-pixel pipeline as HEIF (`saveJpegAsync`): decode th
 center-crop to the selected aspect → rotate (afocal 180° + device) → re-encode at
 `ManualControls.jpegQuality`. The mandatory pixel rotation means it is NOT a byte passthrough — the
 output is a second lossy JPEG generation (accepted; keeping HEIF/JPEG framing identical wins). The
-exposure EXIF is re-stamped after `Bitmap.compress` from the shot's own TotalCaptureResult.
+exposure EXIF is re-stamped after `Bitmap.compress` from the shot's own TotalCaptureResult. Physical
+lens focal/aperture metadata comes from a setup-thread-prefetched immutable cache; the camera callback
+does not query CameraService and copies the processed Image before resolving it.
 
 **DNG (RAW, full-frame):**
 

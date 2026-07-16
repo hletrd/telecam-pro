@@ -149,6 +149,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
 - **Session fallback ladder** in `CameraController.configureSession`: non-TELE is full → drop RAW →
   drop HLG → preview-only. TELE tries vendor full/degraded plans, then regular full/degraded plans,
   and reserves both preview-only variants for last. Keep it; different capability combos fail on this HAL.
+  Ready state reports the processed/RAW readers from the session that actually succeeded, not the
+  aspirational attempt. Photo and in-REC snapshot admission follow that accepted output mask;
+  preview-only still permits video REC/Stop.
 - **Preview host is a `TextureView`, not `SurfaceView`.** A SurfaceView's surface sits behind the
   window and was occluded by the opaque Compose background → black viewfinder. TextureView composites
   in the view hierarchy.
@@ -296,10 +299,13 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   Camera2 selection/capability preflight; when its input arrives, resolve the latest desired optics
   generation. A stale startup result must never roll back or publish over a newer route, and transient
   preflight failure uses the bounded retry gate while the preview surface remains live.
-- **Ready binds controller and generation atomically.** Every optics intent publishes Not-Ready with
-  its desired generation. Only the synchronized terminal commit may install the Ready controller and
-  Ready bit, after rechecking generation, controller identity, pause state, and (for same-camera work)
-  session generation. Never split those ownership checks from Ready publication.
+- **Ready binds controller, generations, and accepted still outputs atomically.** Every optics intent
+  publishes Not-Ready with its desired generation. Only the synchronized terminal commit may install
+  the Ready controller, exact session generation, actual processed/RAW reader mask, and Ready bit,
+  after rechecking ownership and pause state. A rejected same-route terminal commit converges through
+  reconfiguration only while its optics intent is still current; superseded work is a no-op. Every
+  Ready/Not-Ready publication has a monotonic sequence, and the ViewModel rechecks that sequence inside
+  its StateFlow reducer so an older Ready event cannot overwrite newer Not-Ready state.
 - **Exactly one owner of the mic.** The Sony-style standby audio meter is a levels-only `AudioRecord`
   tap that runs while video is ARMED but not rolling. Its synchronized ownership gate reserves one
   immutable owner and release latch before thread start. REC must claim the handoff and observe that
@@ -310,7 +316,12 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   (androidx.exifinterface, "rw" pending FD, before publish) re-adds ISO / exposure / 35mm focal /
   make/model from the controller's latest capture result. HEIFs are currently NOT stamped (heifwriter
   has no EXIF API; androidx ExifInterface can't write HEIC). The review card's exposure line simply
-  drops out for files without EXIF.
+  drops out for files without EXIF. Lightweight physical-lens EXIF metadata is prefetched on
+  `setupExecutor`; the camera callback is cache-only and copies the processed Image before composing
+  ancillary metadata.
+- **Debug capability diagnostics queue behind initial camera work.** The debug-only broad capability
+  and vendor-tag scan runs on `setupExecutor` only after the initial route/open task is enqueued, so
+  diagnostics cannot delay the first Camera2 setup task.
 - **SettingsStore commits synchronously (`edit(commit = true)`), never apply().** Saves fire on user
   actions (a mode switch), and the very next gesture can be a Recents swipe-kill — apply()'s async
   disk write dies with the process and the change is silently lost ("last mode not remembered", hit
