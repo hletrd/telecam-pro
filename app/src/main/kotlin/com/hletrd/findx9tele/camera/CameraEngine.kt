@@ -891,9 +891,18 @@ class CameraEngine(private val context: Context) {
      * Selects the video capture resolution and recreates the Camera2 session so the producer stream,
      * SurfaceTexture buffer and encoder all agree on the same dimensions.
      */
-    fun setVideoResolution(s: Size): Boolean {
+    fun setRecalledVideoResolution(s: Size) {
+        // A memory/settings recall can target a different camera whose caps have not arrived yet.
+        // Store the request only; chooseVideoSize validates it against that target during reconfigure.
+        applyVideoResolutionRequest(s, VideoSizeRequestSource.RECALL)
+    }
+
+    fun setVideoResolution(s: Size): Boolean =
+        applyVideoResolutionRequest(s, VideoSizeRequestSource.INTERACTIVE)
+
+    private fun applyVideoResolutionRequest(s: Size, source: VideoSizeRequestSource): Boolean {
         val offered = caps?.let { if (openGate) it.openGateVideoSizes else it.availableVideoSizes }
-        if (offered != null && s !in offered) {
+        if (validatesVideoSizeAgainstCurrentCaps(source) && offered != null && s !in offered) {
             onStatus?.invoke("Resolution unavailable on this camera")
             return false
         }
@@ -902,6 +911,7 @@ class CameraEngine(private val context: Context) {
         // still offers it (and falls back to auto when it doesn't, e.g. after an openGate aspect
         // flip or a lens without that mode).
         requestedVideoSize = s
+        if (source == VideoSizeRequestSource.RECALL) return true
         if (videoSize == s) return true
         applyVideoSize(s)
         return true

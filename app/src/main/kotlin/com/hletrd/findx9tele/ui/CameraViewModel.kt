@@ -37,7 +37,10 @@ import com.hletrd.findx9tele.camera.MemorySlot
 import com.hletrd.findx9tele.camera.PeakingColor
 import com.hletrd.findx9tele.camera.PeakingLevel
 import com.hletrd.findx9tele.camera.PhotoFormats
+import com.hletrd.findx9tele.camera.PendingControlsDisposition
+import com.hletrd.findx9tele.camera.acceptedOpticsAuxState
 import com.hletrd.findx9tele.camera.normalizedFor
+import com.hletrd.findx9tele.camera.pendingControlsForTransition
 import com.hletrd.findx9tele.camera.ProcessingLevel
 import com.hletrd.findx9tele.camera.reconcileZoomWithCaps
 import com.hletrd.findx9tele.camera.ShutterMode
@@ -84,6 +87,25 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         applyScheduled = false
         pendingControls?.let { engine.setControls(it) }
         pendingControls = null
+    }
+
+    /** Invalidates a whole-controls packet that belongs to an optics/settings state being replaced. */
+    private fun cancelPendingControls() {
+        mainHandler.removeCallbacks(applyControlsRunnable)
+        applyScheduled = false
+        pendingControls = pendingControlsForTransition(
+            pendingControls,
+            PendingControlsDisposition.CANCEL_FOR_REPLACEMENT,
+        )
+    }
+
+    /** Lands the freshest user controls before a lens/TELE transaction derives its zoom packet. */
+    private fun drainPendingControls() {
+        pendingControlsForTransition(
+            pendingControls,
+            PendingControlsDisposition.DRAIN_BEFORE_OPTICS,
+        )?.let(engine::setControls)
+        cancelPendingControls()
     }
 
     private var countdownRunnable: Runnable? = null
@@ -170,13 +192,33 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         }
         // Camera health (engine camera/setup threads → StateFlow is thread-safe): dims the shutter
         // while the session is down instead of silently declining taps.
-        engine.onCameraReadyChange = { ready -> _state.update { it.copy(cameraReady = ready) } }
+        engine.onCameraReadyChange = { ready ->
+            mainHandler.post {
+                _state.update { current ->
+                    if (!ready) {
+                        current.copy(cameraReady = false)
+                    } else {
+                        // RAW truth and the pre-TELE return baseline change only when a camera intent
+                        // is accepted. Optimistic normalization made a failed TELE-off irreversible.
+                        val accepted = acceptedOpticsAuxState(
+                            teleconverter = current.teleconverterMode,
+                            rawAvailable = rawAvailable(current),
+                            preTeleUnifiedZoom = preTeleUnifiedZoom,
+                            photoFormats = current.photoFormats,
+                        )
+                        preTeleUnifiedZoom = accepted.preTeleUnifiedZoom
+                        current.copy(
+                            cameraReady = true,
+                            photoFormats = accepted.photoFormats,
+                        )
+                    }
+                }
+            }
+        }
         engine.onOpticsRollback = { mode, lens, teleconverter, controls, overrideId, generation ->
             mainHandler.post {
                 if (!engine.isOpticsGenerationCurrent(generation)) return@post
-                mainHandler.removeCallbacks(applyControlsRunnable)
-                applyScheduled = false
-                pendingControls = null
+                cancelPendingControls()
                 zoomPendingRatio = Float.NaN
                 _state.update {
                     it.copy(
@@ -185,10 +227,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                         teleconverterMode = teleconverter,
                         controls = controls,
                         cameraOverrideId = overrideId,
-                        photoFormats = it.photoFormats.normalizedFor(teleconverter),
                     )
                 }
                 refreshProgramAppSide()
+                scheduleSettingsSave()
             }
         }
         // DEBUG-only app-local zoom injection hook. Keep a receiver reference so ViewModel teardown
@@ -292,6 +334,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         status: String? = null,
         honorPreserveOptions: Boolean = false,
     ) {
+        // The recalled packet supersedes a delayed manual-control snapshot from the prior setup.
+        cancelPendingControls()
+        zoomPendingRatio = Float.NaN
         val c = loaded.controls
         val e = loaded.extras
         val defaults = CameraUiState()
@@ -328,6 +373,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         val restoredLens = restoredOptics.lens
         val restoredTeleconverter = restoredOptics.teleconverter
         val cSynced = c.copy(fps = safeFrameRate.fps, zoomRatio = restoredOptics.zoomRatio)
+        val restoredVideoSize = parseVideoResolution(e.videoResolution)
+        // Store before target optics is queued. Interactive picks validate against live caps, but a
+        // recalled target size must be validated by the target camera, not the outgoing camera.
+        restoredVideoSize?.let(engine::setRecalledVideoResolution)
         // Push to the engine (safe pre-start: these set @Volatile fields read when the camera opens).
         engine.setResolvedOptics(
             enabledVideo = e.mode == CaptureMode.VIDEO,
@@ -363,8 +412,6 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // silently — the engine re-picked the largest size on every launch). The engine re-validates
         // the request against the live caps once the camera opens and falls back to auto if the
         // size is no longer offered (lens change, aspect mismatch with openGate).
-        val restoredVideoSize = parseVideoResolution(e.videoResolution)
-        restoredVideoSize?.let { engine.setVideoResolution(it) }
         _state.update {
             it.copy(
                 rememberSettings = rememberSettings ?: it.rememberSettings,
@@ -890,9 +937,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         }
         // Invalidate any delayed full-controls packet before resolving the transition; otherwise it
         // can overwrite the new mode's lens-local/unified zoom after the reconfigure is queued.
-        mainHandler.removeCallbacks(applyControlsRunnable)
-        applyScheduled = false
-        pendingControls = null
+        cancelPendingControls()
         val before = _state.value
         val optics = remapModeOptics(
             fromMode = before.mode,
@@ -924,15 +969,16 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
     override fun onSetPhotoFormats(formats: PhotoFormats) {
         val s = _state.value
-        val rawAvailable = s.teleconverterMode || (
-            s.cameraOverrideId != null &&
-                s.caps?.supportsRaw == true &&
-                s.caps.physicalId == null &&
-                !s.caps.isLogicalMultiCamera
-            )
-        _state.update { it.copy(photoFormats = formats.normalizedFor(rawAvailable), activeMemorySlot = null) }
+        _state.update { it.copy(photoFormats = formats.normalizedFor(rawAvailable(s)), activeMemorySlot = null) }
         scheduleSettingsSave()
     }
+
+    private fun rawAvailable(s: CameraUiState): Boolean = s.teleconverterMode || (
+        s.cameraOverrideId != null &&
+            s.caps?.supportsRaw == true &&
+            s.caps.physicalId == null &&
+            !s.caps.isLogicalMultiCamera
+        )
     override fun onAspectRatio(ratio: AspectRatio) {
         engine.setAspectRatio(ratio)
         _state.update { it.copy(aspectRatio = ratio, activeMemorySlot = null) }
@@ -973,6 +1019,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
     override fun onToggleTeleconverter(enabled: Boolean) {
         if (rejectIfRecording("Stop REC first")) return
+        drainPendingControls()
         // TELE pins the STANDALONE 3× camera (the converter's host lens; digital-only zoom, afocal
         // flip). OFF restores the EXACT pre-TELE framing — lens band + ratio in whatever mode is
         // active (mirrors the engine's unified-zoom snapshot; user-required round-trip fidelity).
@@ -992,12 +1039,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             } else {
                 val unified = preTeleUnifiedZoom.takeIf { z -> !z.isNaN() }
                     ?: com.hletrd.findx9tele.camera.LensChoice.TELE3X.zoomPreset
-                preTeleUnifiedZoom = Float.NaN
                 val band = LensChoice.forZoom(unified)
                 it.copy(
                     teleconverterMode = false,
                     lens = band,
-                    photoFormats = it.photoFormats.normalizedFor(rawAvailable = false),
                     controls = it.controls.copy(
                         zoomRatio = if (it.mode == CaptureMode.VIDEO) {
                             (unified / band.zoomPreset).coerceAtLeast(1f)
@@ -1017,7 +1062,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     override fun onLens(choice: LensChoice) {
         if (rejectIfRecording("Stop REC first")) return
-        preTeleUnifiedZoom = Float.NaN // an explicit pick replaces any pre-TELE framing
+        drainPendingControls()
         // A lens pick is a ZOOM PRESET on the logical seamless camera (no reopen, no black gap).
         // TELE stays on only when it already is AND the pick is its 3× host lens; any other pick
         // exits converter shooting back to the seamless camera.
@@ -1027,7 +1072,6 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             it.copy(
                 lens = choice,
                 teleconverterMode = keepTc,
-                photoFormats = it.photoFormats.normalizedFor(rawAvailable = keepTc),
                 // Same engine mirror as onToggleTeleconverter: video lens picks are lens-local (1×).
                 controls = it.controls.copy(
                     zoomRatio = if (keepTc || it.mode == CaptureMode.VIDEO) 1f else choice.zoomPreset,
@@ -1322,6 +1366,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
 
     override fun onCameraOverride(id: String?) {
+        drainPendingControls()
         engine.setCameraOverride(id)
         _state.update { it.copy(cameraOverrideId = id) }
     }
