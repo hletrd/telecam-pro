@@ -183,7 +183,7 @@ class CameraController(context: Context) {
         this.selection = selection
         this.caps = caps
         this.glSurface = glInputSurface
-        this.controls = controls
+        this.controls = controls.normalizedFor(caps)
         this.tenBitHlg = tenBitHlg
         this.highSpeedFps = highSpeedFps
         this.vendorLogMode = vendorLogMode
@@ -584,6 +584,12 @@ class CameraController(context: Context) {
         val camera = device ?: return false
         val preview = glSurface ?: return false
         val s = session ?: return false
+        val touchAfUsesAuto = touchAfMayTrigger(
+            touchAfActive = touchAfActive,
+            maxAfRegions = caps.maxAfRegions,
+            focusMode = controls.focusMode,
+            afModes = caps.afModes,
+        )
         // The device can be disconnected asynchronously (app backgrounded, another client, HAL) between
         // session config and here; createCaptureRequest/setRepeatingRequest then throw CameraAccess/
         // IllegalState. Guard the whole build+submit so a torn-down session degrades to "no preview
@@ -599,12 +605,14 @@ class CameraController(context: Context) {
                 // Tap-to-focus: force AF_MODE_AUTO for a one-shot region scan that LOCKS on the tapped
                 // spot (CONTINUOUS + a bare trigger just holds the current, often-wrong, distance). The
                 // region is set by applyMetering above; the trigger below drives the scan.
-                if (touchAfActive && controls.focusMode != FocusMode.MANUAL) {
+                if (touchAfUsesAuto) {
                     set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
                 }
                 // AF lock: freeze focus at the last AF-resolved distance instead of leaving AF running.
                 // Not applicable in MANUAL focus mode, where focus is already fixed by the user.
-                if (controls.afLock && controls.focusMode != FocusMode.MANUAL && caps.supportsManualFocus) {
+                if (controls.afLock && controls.focusMode != FocusMode.MANUAL && caps.supportsManualFocus &&
+                    exactAdvertisedMode(CaptureRequest.CONTROL_AF_MODE_OFF, caps.afModes) != null
+                ) {
                     set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
                     set(CaptureRequest.LENS_FOCUS_DISTANCE, lastFocusDistance)
                 }
@@ -669,7 +677,7 @@ class CameraController(context: Context) {
             // region, then fall through to the repeating request (trigger IDLE) so the converged
             // focus is held. Cancel-then-start is more reliable than a bare START when the AF engine
             // is mid-scan (common in CONTINUOUS mode).
-            if (afTriggerPending && controls.focusMode != FocusMode.MANUAL) {
+            if (afTriggerPending && touchAfUsesAuto) {
                 if (BuildConfig.DEBUG) Log.i(TAG, "Touch AF: scanning region $meteringPoint")
                 builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_CANCEL)
                 runCatching { s.capture(builder.build(), callback, handler) }
@@ -709,6 +717,8 @@ class CameraController(context: Context) {
         private set
 
     private fun applyMetering(builder: CaptureRequest.Builder, controls: ManualControls) {
+        val targets = meteringRegionTargets(caps.maxAeRegions, caps.maxAfRegions, controls.focusMode)
+        if (!targets.ae && !targets.af) return
         val active = rawChars?.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return
 
         val point = meteringPoint
@@ -733,9 +743,8 @@ class CameraController(context: Context) {
         val regions = arrayOf(
             MeteringRectangle(box[0], box[1], box[2], box[3], MeteringRectangle.METERING_WEIGHT_MAX),
         )
-        builder.set(CaptureRequest.CONTROL_AE_REGIONS, regions)
-        // AF regions are only meaningful when the AF engine is running (any non-MANUAL focus mode).
-        if (controls.focusMode != FocusMode.MANUAL) builder.set(CaptureRequest.CONTROL_AF_REGIONS, regions)
+        if (targets.ae) builder.set(CaptureRequest.CONTROL_AE_REGIONS, regions)
+        if (targets.af) builder.set(CaptureRequest.CONTROL_AF_REGIONS, regions)
     }
 
     fun updateControls(controls: ManualControls) {
@@ -743,9 +752,10 @@ class CameraController(context: Context) {
         // main thread (ViewModel) and the camera thread (AEB/BURST chain), and the field is read on the
         // camera thread, so doing the mutation here keeps it single-threaded (no lost-update race).
         postToCamera {
+            val normalized = controls.normalizedFor(caps)
             // An explicit focus-mode change ends the tap-to-focus AUTO hold and resumes the chosen mode.
-            if (controls.focusMode != this.controls.focusMode) touchAfActive = false
-            this.controls = controls
+            if (normalized.focusMode != this.controls.focusMode) touchAfActive = false
+            this.controls = normalized
             startPreview()
         }
     }

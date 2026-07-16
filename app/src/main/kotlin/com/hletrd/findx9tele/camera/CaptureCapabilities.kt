@@ -112,6 +112,10 @@ data class CameraCaps(
     val afModes: IntArray,
     val awbModes: IntArray,
     val aeModes: IntArray,
+    /** Maximum simultaneous CONTROL_AE_REGIONS entries; zero means the key is unavailable. */
+    val maxAeRegions: Int,
+    /** Maximum simultaneous CONTROL_AF_REGIONS entries; zero means the key is unavailable. */
+    val maxAfRegions: Int,
     val antibandingModes: IntArray,
     val effectModes: IntArray,
     val edgeModes: IntArray,
@@ -276,6 +280,8 @@ data class CameraCaps(
                 afModes = chars.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: IntArray(0),
                 awbModes = chars.get(CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES) ?: IntArray(0),
                 aeModes = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_MODES) ?: IntArray(0),
+                maxAeRegions = chars.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) ?: 0,
+                maxAfRegions = chars.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0,
                 antibandingModes = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_ANTIBANDING_MODES) ?: IntArray(0),
                 effectModes = chars.get(CameraCharacteristics.CONTROL_AVAILABLE_EFFECTS) ?: IntArray(0),
                 edgeModes = chars.get(CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES) ?: IntArray(0),
@@ -288,6 +294,43 @@ data class CameraCaps(
         }
     }
 }
+
+/**
+ * Android-type-free projection of the Camera2 facts that own manual-control request values. Keeping
+ * arrays and scalar flags here lets host tests exercise sparse/absent capability matrices without
+ * constructing android.util.Range/Rational/Size-backed [CameraCaps].
+ */
+internal data class CameraControlCapabilities(
+    val supportsManualFocus: Boolean = false,
+    val supportsManualSensor: Boolean = false,
+    val supportsManualPostProcessing: Boolean = false,
+    val flashAvailable: Boolean = false,
+    val afModes: IntArray = IntArray(0),
+    val awbModes: IntArray = IntArray(0),
+    val aeModes: IntArray = IntArray(0),
+    val maxAeRegions: Int = 0,
+    val maxAfRegions: Int = 0,
+    val antibandingModes: IntArray = IntArray(0),
+    val effectModes: IntArray = IntArray(0),
+    val edgeModes: IntArray = IntArray(0),
+    val noiseReductionModes: IntArray = IntArray(0),
+)
+
+internal fun CameraCaps.controlCapabilities(): CameraControlCapabilities = CameraControlCapabilities(
+    supportsManualFocus = supportsManualFocus,
+    supportsManualSensor = supportsManualSensor,
+    supportsManualPostProcessing = supportsManualPostProcessing,
+    flashAvailable = flashAvailable,
+    afModes = afModes,
+    awbModes = awbModes,
+    aeModes = aeModes,
+    maxAeRegions = maxAeRegions,
+    maxAfRegions = maxAfRegions,
+    antibandingModes = antibandingModes,
+    effectModes = effectModes,
+    edgeModes = edgeModes,
+    noiseReductionModes = noiseReductionModes,
+)
 
 /**
  * Pure core of [CameraCaps.videoStabControlMode] (a full CameraCaps can't be built on the JVM —

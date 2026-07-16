@@ -74,6 +74,191 @@ data class ManualControls(
     val autoShutterDriven: Boolean get() = exposureMode == ExposureMode.ISO
 }
 
+/** Returns [requested] only when Camera2 advertised that exact integer mode value. */
+internal fun exactAdvertisedMode(requested: Int, advertised: IntArray): Int? =
+    requested.takeIf(advertised::contains)
+
+/** Which metering-region keys may be emitted for one request. */
+internal data class MeteringRegionTargets(val ae: Boolean, val af: Boolean)
+
+internal fun meteringRegionTargets(
+    maxAeRegions: Int,
+    maxAfRegions: Int,
+    focusMode: FocusMode,
+): MeteringRegionTargets = MeteringRegionTargets(
+    ae = maxAeRegions > 0,
+    af = maxAfRegions > 0 && focusMode != FocusMode.MANUAL,
+)
+
+internal fun touchAfMayTrigger(
+    touchAfActive: Boolean,
+    maxAfRegions: Int,
+    focusMode: FocusMode,
+    afModes: IntArray,
+): Boolean = touchAfActive && maxAfRegions > 0 && focusMode != FocusMode.MANUAL &&
+    exactAdvertisedMode(CameraMetadata.CONTROL_AF_MODE_AUTO, afModes) != null
+
+/** Normalizes a control packet against the selected route's flattened Camera2 capabilities. */
+internal fun ManualControls.normalizedFor(caps: CameraCaps): ManualControls =
+    normalizedFor(caps.controlCapabilities())
+
+/**
+ * Android-type-free normalization core. Unsupported selections fall back to a known advertised
+ * enum value; when an entire mode array is absent, the neutral UI default is retained and request
+ * construction omits that key.
+ */
+internal fun ManualControls.normalizedFor(caps: CameraControlCapabilities): ManualControls {
+    val normalizedFocus = selectAdvertisedEnum(
+        requested = focusMode,
+        fallbackOrder = listOf(FocusMode.CONTINUOUS, FocusMode.AUTO, FocusMode.MACRO, FocusMode.MANUAL),
+        advertised = caps.afModes,
+        metadata = FocusMode::afMetadata,
+        allowed = { it != FocusMode.MANUAL || caps.supportsManualFocus },
+    ) ?: FocusMode.CONTINUOUS
+
+    val requestedWbAllowed = when (wbMode) {
+        WbMode.MANUAL -> caps.supportsManualPostProcessing
+        WbMode.CUSTOM -> caps.supportsManualPostProcessing && customWbGains != null
+        else -> true
+    }
+    val normalizedWb = if (requestedWbAllowed &&
+        exactAdvertisedMode(wbMode.awbMetadata, caps.awbModes) != null
+    ) {
+        wbMode
+    } else {
+        selectAdvertisedEnum(
+            requested = WbMode.AUTO,
+            fallbackOrder = listOf(
+                WbMode.AUTO,
+                WbMode.DAYLIGHT,
+                WbMode.CLOUDY,
+                WbMode.SHADE,
+                WbMode.INCANDESCENT,
+                WbMode.FLUORESCENT,
+                WbMode.MANUAL,
+            ),
+            advertised = caps.awbModes,
+            metadata = WbMode::awbMetadata,
+            allowed = { it != WbMode.MANUAL || caps.supportsManualPostProcessing },
+        ) ?: WbMode.AUTO
+    }
+
+    val manualAeAvailable = caps.supportsManualSensor &&
+        exactAdvertisedMode(CameraMetadata.CONTROL_AE_MODE_OFF, caps.aeModes) != null
+    var normalizedExposureMode = exposureMode
+    var normalizedProgramAppSide = programAppSide && exposureMode == ExposureMode.PROGRAM
+    var normalizedFlash = if (caps.flashAvailable) flash else FlashMode.OFF
+
+    if (normalizedExposureMode != ExposureMode.PROGRAM && !manualAeAvailable) {
+        normalizedExposureMode = ExposureMode.PROGRAM
+        normalizedProgramAppSide = false
+    }
+    if (normalizedProgramAppSide && !manualAeAvailable) normalizedProgramAppSide = false
+    // AUTO/ON flash metering requires HAL AE. If that exact AE variant exists, route Program back
+    // to HAL AE; otherwise keep app-side Program and fall back to flash-off.
+    if (normalizedExposureMode == ExposureMode.PROGRAM && normalizedProgramAppSide &&
+        (normalizedFlash == FlashMode.AUTO || normalizedFlash == FlashMode.ON)
+    ) {
+        if (autoFlashAvailable(normalizedFlash, caps)) {
+            normalizedProgramAppSide = false
+        } else {
+            normalizedFlash = FlashMode.OFF
+        }
+    }
+    // OFF and TORCH do not need HAL flash metering. On an AE_OFF-only route, move Program to the
+    // app-side program line before normalization so TORCH remains a truthful, usable selection.
+    if (normalizedExposureMode == ExposureMode.PROGRAM && !normalizedProgramAppSide &&
+        (normalizedFlash == FlashMode.OFF || normalizedFlash == FlashMode.TORCH) &&
+        !autoFlashAvailable(normalizedFlash, caps) && manualAeAvailable
+    ) {
+        normalizedProgramAppSide = true
+    }
+    val usesManualAe = normalizedExposureMode != ExposureMode.PROGRAM || normalizedProgramAppSide
+    normalizedFlash = if (usesManualAe) {
+        normalizedFlash.takeIf { it == FlashMode.TORCH && caps.flashAvailable } ?: FlashMode.OFF
+    } else {
+        normalizeAutoFlash(normalizedFlash, caps)
+    }
+    // A sparse route may expose only AE_OFF. Program can still be truthful by using the existing
+    // app-side program line; publishing HAL Program would otherwise select a mode we cannot set.
+    if (normalizedExposureMode == ExposureMode.PROGRAM && !normalizedProgramAppSide &&
+        normalizedFlash == FlashMode.OFF &&
+        exactAdvertisedMode(CameraMetadata.CONTROL_AE_MODE_ON, caps.aeModes) == null &&
+        manualAeAvailable
+    ) {
+        normalizedProgramAppSide = true
+    }
+
+    val normalizedAntibanding = selectAdvertisedEnum(
+        requested = antibanding,
+        fallbackOrder = listOf(Antibanding.AUTO, Antibanding.OFF, Antibanding.HZ50, Antibanding.HZ60),
+        advertised = caps.antibandingModes,
+        metadata = Antibanding::antibandingMetadata,
+    ) ?: Antibanding.AUTO
+    val normalizedEdge = selectAdvertisedEnum(
+        requested = edge,
+        fallbackOrder = listOf(ProcessingLevel.OFF, ProcessingLevel.FAST, ProcessingLevel.HIGH_QUALITY),
+        advertised = caps.edgeModes,
+        metadata = ProcessingLevel::edgeMetadata,
+    ) ?: ProcessingLevel.OFF
+    val normalizedNoise = selectAdvertisedEnum(
+        requested = noiseReduction,
+        fallbackOrder = listOf(ProcessingLevel.OFF, ProcessingLevel.FAST, ProcessingLevel.HIGH_QUALITY),
+        advertised = caps.noiseReductionModes,
+        metadata = ProcessingLevel::noiseMetadata,
+    ) ?: ProcessingLevel.OFF
+    val normalizedEffect = selectAdvertisedEnum(
+        requested = colorEffect,
+        fallbackOrder = listOf(
+            ColorEffect.NONE,
+            ColorEffect.MONO,
+            ColorEffect.NEGATIVE,
+            ColorEffect.SEPIA,
+            ColorEffect.AQUA,
+            ColorEffect.POSTERIZE,
+        ),
+        advertised = caps.effectModes,
+        metadata = ColorEffect::metadata,
+    ) ?: ColorEffect.NONE
+
+    return copy(
+        focusMode = normalizedFocus,
+        afLock = afLock && normalizedFocus != FocusMode.MANUAL && caps.supportsManualFocus &&
+            exactAdvertisedMode(CameraMetadata.CONTROL_AF_MODE_OFF, caps.afModes) != null,
+        exposureMode = normalizedExposureMode,
+        programAppSide = normalizedProgramAppSide,
+        wbMode = normalizedWb,
+        antibanding = normalizedAntibanding,
+        meteringMode = if (caps.maxAeRegions > 0) meteringMode else MeteringMode.MATRIX,
+        edge = normalizedEdge,
+        noiseReduction = normalizedNoise,
+        colorEffect = normalizedEffect,
+        flash = normalizedFlash,
+    )
+}
+
+private fun <T> selectAdvertisedEnum(
+    requested: T,
+    fallbackOrder: List<T>,
+    advertised: IntArray,
+    metadata: (T) -> Int,
+    allowed: (T) -> Boolean = { true },
+): T? {
+    if (allowed(requested) && exactAdvertisedMode(metadata(requested), advertised) != null) return requested
+    return fallbackOrder.firstOrNull {
+        allowed(it) && exactAdvertisedMode(metadata(it), advertised) != null
+    }
+}
+
+private fun normalizeAutoFlash(
+    requested: FlashMode,
+    caps: CameraControlCapabilities,
+): FlashMode = requested.takeIf { autoFlashAvailable(it, caps) } ?: FlashMode.OFF
+
+private fun autoFlashAvailable(mode: FlashMode, caps: CameraControlCapabilities): Boolean =
+    (mode == FlashMode.OFF || caps.flashAvailable) &&
+        exactAdvertisedMode(mode.autoAeMetadata, caps.aeModes) != null
+
 /**
  * PASM-style exposure mode. No aperture-priority: the tele's aperture is fixed, so there is nothing
  * to prioritize. [letter] is the compact dial badge; [label] the settings-row name.
@@ -205,21 +390,39 @@ fun CaptureRequest.Builder.applyManualControls(
     }
 }
 
+private val FocusMode.afMetadata: Int
+    get() = when (this) {
+        FocusMode.MANUAL -> CameraMetadata.CONTROL_AF_MODE_OFF
+        FocusMode.AUTO -> CameraMetadata.CONTROL_AF_MODE_AUTO
+        FocusMode.CONTINUOUS -> CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+        FocusMode.MACRO -> CameraMetadata.CONTROL_AF_MODE_MACRO
+    }
+
+private val Antibanding.antibandingMetadata: Int
+    get() = when (this) {
+        Antibanding.AUTO -> CameraMetadata.CONTROL_AE_ANTIBANDING_MODE_AUTO
+        Antibanding.HZ50 -> CameraMetadata.CONTROL_AE_ANTIBANDING_MODE_50HZ
+        Antibanding.HZ60 -> CameraMetadata.CONTROL_AE_ANTIBANDING_MODE_60HZ
+        Antibanding.OFF -> CameraMetadata.CONTROL_AE_ANTIBANDING_MODE_OFF
+    }
+
+private val FlashMode.autoAeMetadata: Int
+    get() = when (this) {
+        FlashMode.OFF, FlashMode.TORCH -> CameraMetadata.CONTROL_AE_MODE_ON
+        FlashMode.AUTO -> CameraMetadata.CONTROL_AE_MODE_ON_AUTO_FLASH
+        FlashMode.ON -> CameraMetadata.CONTROL_AE_MODE_ON_ALWAYS_FLASH
+    }
+
 private fun CaptureRequest.Builder.applyFocus(c: ManualControls, caps: CameraCaps) {
     // Expression-position `when` so the compiler enforces exhaustiveness: a statement-position enum
     // `when` compiles fine with a missing case and silently no-ops it — the session would keep the
     // PREVIOUS AF mode while the UI shows the new one (the exact silent-drift trap a future 5th
     // FocusMode would spring).
-    val afMode = when (c.focusMode) {
-        FocusMode.MANUAL ->
-            if (caps.supportsManualFocus) CameraMetadata.CONTROL_AF_MODE_OFF
-            else CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE
-        FocusMode.AUTO -> CameraMetadata.CONTROL_AF_MODE_AUTO
-        FocusMode.CONTINUOUS -> CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE
-        FocusMode.MACRO -> CameraMetadata.CONTROL_AF_MODE_MACRO
-    }
-    set(CaptureRequest.CONTROL_AF_MODE, afMode)
-    if (c.focusMode == FocusMode.MANUAL && caps.supportsManualFocus) {
+    val afMode = c.focusMode.afMetadata
+    exactAdvertisedMode(afMode, caps.afModes)?.let { set(CaptureRequest.CONTROL_AF_MODE, it) }
+    if (c.focusMode == FocusMode.MANUAL && caps.supportsManualFocus &&
+        exactAdvertisedMode(CameraMetadata.CONTROL_AF_MODE_OFF, caps.afModes) != null
+    ) {
         set(CaptureRequest.LENS_FOCUS_DISTANCE, c.focusDistanceDiopters.coerceIn(0f, caps.minFocusDistanceDiopters))
     }
 }
@@ -230,7 +433,9 @@ private fun CaptureRequest.Builder.applyExposure(
     pinAutoFps: Boolean,
     previewExposureCap: Boolean = false,
 ) {
-    if (!c.autoExposure && caps.supportsManualSensor) {
+    val manualAe = !c.autoExposure && caps.supportsManualSensor &&
+        exactAdvertisedMode(CameraMetadata.CONTROL_AE_MODE_OFF, caps.aeModes) != null
+    if (manualAe) {
         set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
         var iso = c.iso
         var wantExposureNs = c.effectiveExposureNs()
@@ -260,64 +465,66 @@ private fun CaptureRequest.Builder.applyExposure(
         // shutter slower than 1/fps survives instead of being clamped to 1/fps (long-exposure/astro).
         set(CaptureRequest.SENSOR_FRAME_DURATION, sensorFrameDurationNs(c.fps, exposureNs, caps.maxFrameDurationNs))
     } else {
-        set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
-        set(CaptureRequest.CONTROL_AE_LOCK, c.aeLock)
-        set(
-            CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
-            c.exposureCompensation.coerceIn(caps.evRange.lower, caps.evRange.upper),
-        )
+        // Flash owns the final AE mode, but only an exact advertised variant may enter the builder.
+        // Applying it here also makes AE lock/comp conditional on an actually available HAL-AE mode.
+        exactAdvertisedMode(c.flash.autoAeMetadata, caps.aeModes)?.let { aeMode ->
+            set(CaptureRequest.CONTROL_AE_MODE, aeMode)
+            set(CaptureRequest.CONTROL_AE_LOCK, c.aeLock)
+            set(
+                CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
+                c.exposureCompensation.coerceIn(caps.evRange.lower, caps.evRange.upper),
+            )
+        }
     }
     // Photo AUTO preview can lower fps for a brighter low-light view. Video AUTO must stay at the
     // selected rate; otherwise a 29.97p clip can silently become 25p when AE chooses 1/25 s.
-    val fpsRange = if (pinAutoFps || (!c.autoExposure && caps.supportsManualSensor)) {
+    val fpsRange = if (pinAutoFps || manualAe) {
         caps.fixedFpsRange(c.fps)
     } else {
         caps.autoFpsRange(c.fps)
     }
     fpsRange?.let { set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
-    set(
-        CaptureRequest.CONTROL_AE_ANTIBANDING_MODE,
-        when (c.antibanding) {
-            Antibanding.AUTO -> CameraMetadata.CONTROL_AE_ANTIBANDING_MODE_AUTO
-            Antibanding.HZ50 -> CameraMetadata.CONTROL_AE_ANTIBANDING_MODE_50HZ
-            Antibanding.HZ60 -> CameraMetadata.CONTROL_AE_ANTIBANDING_MODE_60HZ
-            Antibanding.OFF -> CameraMetadata.CONTROL_AE_ANTIBANDING_MODE_OFF
-        },
-    )
+    exactAdvertisedMode(c.antibanding.antibandingMetadata, caps.antibandingModes)?.let {
+        set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, it)
+    }
 }
 
 private fun CaptureRequest.Builder.applyWhiteBalance(c: ManualControls, caps: CameraCaps) {
     when (c.wbMode) {
-        WbMode.MANUAL -> if (caps.supportsManualPostProcessing) {
+        WbMode.MANUAL -> if (caps.supportsManualPostProcessing &&
+            exactAdvertisedMode(CameraMetadata.CONTROL_AWB_MODE_OFF, caps.awbModes) != null
+        ) {
             set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
             // FAST (not TRANSFORM_MATRIX) honors COLOR_CORRECTION_GAINS without also requiring a
             // COLOR_CORRECTION_TRANSFORM — which we never set, so TRANSFORM_MATRIX left color undefined.
             set(CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_FAST)
             set(CaptureRequest.COLOR_CORRECTION_GAINS, kelvinTintToRggbGains(c.wbKelvin, c.wbTint))
-        } else {
-            set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
         }
         WbMode.CUSTOM -> {
             val g = c.customWbGains
-            if (caps.supportsManualPostProcessing && g != null) {
+            if (caps.supportsManualPostProcessing && g != null &&
+                exactAdvertisedMode(CameraMetadata.CONTROL_AWB_MODE_OFF, caps.awbModes) != null
+            ) {
                 // Measured card WB: replay the AWB gains sampled at capture time (see FAST-mode note
                 // on the MANUAL branch above).
                 set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
                 set(CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_FAST)
                 set(CaptureRequest.COLOR_CORRECTION_GAINS, RggbChannelVector(g.r, g.gEven, g.gOdd, g.b))
-            } else {
-                set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
             }
         }
         WbMode.AUTO -> {
-            set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
-            set(CaptureRequest.CONTROL_AWB_LOCK, c.awbLock)
+            exactAdvertisedMode(CameraMetadata.CONTROL_AWB_MODE_AUTO, caps.awbModes)?.let {
+                set(CaptureRequest.CONTROL_AWB_MODE, it)
+                set(CaptureRequest.CONTROL_AWB_LOCK, c.awbLock)
+            }
         }
-        else -> set(CaptureRequest.CONTROL_AWB_MODE, c.wbMode.awbMetadata)
+        else -> exactAdvertisedMode(c.wbMode.awbMetadata, caps.awbModes)?.let {
+            set(CaptureRequest.CONTROL_AWB_MODE, it)
+        }
     }
 }
 
-/** Named WB preset -> CONTROL_AWB_MODE_*. AUTO/MANUAL handled separately in applyWhiteBalance. */
+/** UI WB selection -> its exact CONTROL_AWB_MODE_* value. */
 private val WbMode.awbMetadata: Int
     get() = when (this) {
         WbMode.INCANDESCENT -> CameraMetadata.CONTROL_AWB_MODE_INCANDESCENT
@@ -325,16 +532,17 @@ private val WbMode.awbMetadata: Int
         WbMode.DAYLIGHT -> CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT
         WbMode.CLOUDY -> CameraMetadata.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT
         WbMode.SHADE -> CameraMetadata.CONTROL_AWB_MODE_SHADE
-        WbMode.AUTO, WbMode.MANUAL, WbMode.CUSTOM -> CameraMetadata.CONTROL_AWB_MODE_AUTO
+        WbMode.AUTO -> CameraMetadata.CONTROL_AWB_MODE_AUTO
+        WbMode.MANUAL, WbMode.CUSTOM -> CameraMetadata.CONTROL_AWB_MODE_OFF
     }
 
 private fun CaptureRequest.Builder.applyProcessing(c: ManualControls, caps: CameraCaps) {
-    if (caps.hasEffect(c.colorEffect.metadata)) {
-        set(CaptureRequest.CONTROL_EFFECT_MODE, c.colorEffect.metadata)
+    exactAdvertisedMode(c.colorEffect.metadata, caps.effectModes)?.let {
+        set(CaptureRequest.CONTROL_EFFECT_MODE, it)
     }
-    if (caps.edgeModes.isNotEmpty()) set(CaptureRequest.EDGE_MODE, c.edge.edgeMetadata)
-    if (caps.noiseReductionModes.isNotEmpty()) {
-        set(CaptureRequest.NOISE_REDUCTION_MODE, c.noiseReduction.noiseMetadata)
+    exactAdvertisedMode(c.edge.edgeMetadata, caps.edgeModes)?.let { set(CaptureRequest.EDGE_MODE, it) }
+    exactAdvertisedMode(c.noiseReduction.noiseMetadata, caps.noiseReductionModes)?.let {
+        set(CaptureRequest.NOISE_REDUCTION_MODE, it)
     }
 }
 
@@ -347,29 +555,29 @@ private fun CaptureRequest.Builder.applyProcessing(c: ManualControls, caps: Came
  *      ON → AE_MODE_ON_ALWAYS_FLASH, TORCH → AE_MODE_ON + FLASH_MODE_TORCH.
  */
 private fun CaptureRequest.Builder.applyFlash(c: ManualControls, caps: CameraCaps) {
-    val aeManual = !c.autoExposure && caps.supportsManualSensor
+    val aeManual = !c.autoExposure && caps.supportsManualSensor &&
+        exactAdvertisedMode(CameraMetadata.CONTROL_AE_MODE_OFF, caps.aeModes) != null
     if (aeManual) {
-        when (c.flash) {
-            FlashMode.TORCH -> set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_TORCH)
-            else -> set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_OFF)
+        if (caps.flashAvailable) {
+            when (c.flash) {
+                FlashMode.TORCH -> set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_TORCH)
+                else -> set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_OFF)
+            }
         }
     } else {
         // Expression-position `when`s for compiler-enforced exhaustiveness (see applyFocus): a new
         // FlashMode that forgets a branch here must fail the build, not silently keep the previous
         // AE flash variant on the repeating request.
-        val aeMode = when (c.flash) {
-            FlashMode.OFF, FlashMode.TORCH -> CameraMetadata.CONTROL_AE_MODE_ON
-            FlashMode.AUTO -> CameraMetadata.CONTROL_AE_MODE_ON_AUTO_FLASH
-            FlashMode.ON -> CameraMetadata.CONTROL_AE_MODE_ON_ALWAYS_FLASH
+        exactAdvertisedMode(c.flash.autoAeMetadata, caps.aeModes)?.let {
+            set(CaptureRequest.CONTROL_AE_MODE, it)
         }
-        set(CaptureRequest.CONTROL_AE_MODE, aeMode)
         val flashMode = when (c.flash) {
             FlashMode.OFF -> CameraMetadata.FLASH_MODE_OFF
             FlashMode.TORCH -> CameraMetadata.FLASH_MODE_TORCH
             // The AE flash variants own the firing decision; FLASH_MODE stays unset for them.
             FlashMode.AUTO, FlashMode.ON -> null
         }
-        flashMode?.let { set(CaptureRequest.FLASH_MODE, it) }
+        if (caps.flashAvailable) flashMode?.let { set(CaptureRequest.FLASH_MODE, it) }
     }
 }
 

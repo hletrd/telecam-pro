@@ -138,15 +138,16 @@ class CameraEngine(private val context: Context) {
     }
 
     private fun reconcileControlsWithCaps(cameraCaps: CameraCaps) {
+        val capabilityControls = controls.normalizedFor(cameraCaps)
         val range = cameraCaps.zoomRatioRange
         val zoom = reconcileZoomWithCaps(
             mode = if (videoMode) CaptureMode.VIDEO else CaptureMode.PHOTO,
             teleconverter = teleconverterMode,
-            zoomRatio = controls.zoomRatio,
+            zoomRatio = capabilityControls.zoomRatio,
             capsLower = range?.lower,
             capsUpper = range?.upper,
         )
-        controls = controls.copy(zoomRatio = zoom)
+        controls = capabilityControls.copy(zoomRatio = zoom)
         if (!videoMode && !teleconverterMode) lensChoice = LensChoice.forZoom(zoom)
         seedGlZoom()
     }
@@ -711,8 +712,9 @@ class CameraEngine(private val context: Context) {
     // ---- Controls ----
 
     fun setControls(c: ManualControls) {
-        controls = c
-        controller?.updateControls(c)
+        val normalized = caps?.let(c::normalizedFor) ?: c
+        controls = normalized
+        controller?.updateControls(normalized)
     }
 
     fun isOpticsGenerationCurrent(generation: Long): Boolean =

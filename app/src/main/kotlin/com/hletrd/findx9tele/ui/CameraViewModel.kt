@@ -1147,7 +1147,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setVideoFrameRate(rate)
         // Keep the exposure fps in step so the AE target-fps range, cine shutter angle and sensor
         // frame duration follow the selected video rate (drop-frame rates use their rounded parent).
-        val controls = _state.value.controls.copy(fps = rate.fps)
+        val current = _state.value
+        val requested = current.controls.copy(fps = rate.fps)
+        val controls = current.caps?.let(requested::normalizedFor) ?: requested
         engine.setControls(controls)
         // Re-base any pending throttled dial apply onto the new fps: the 40 ms trailing apply would
         // otherwise push its STALE snapshot (old fps) over this direct engine write moments later.
@@ -1178,26 +1180,29 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     private fun reconcileZoomToCaps(caps: CameraCaps) {
         val current = _state.value
+        val capabilityControls = current.controls.normalizedFor(caps)
         val range = caps.zoomRatioRange
         val resolved = reconcileZoomWithCaps(
             mode = current.mode,
             teleconverter = current.teleconverterMode,
-            zoomRatio = current.controls.zoomRatio,
+            zoomRatio = capabilityControls.zoomRatio,
             capsLower = range?.lower,
             capsUpper = range?.upper,
         )
+        val normalizedControls = capabilityControls.copy(zoomRatio = resolved)
         val lens = if (current.mode == CaptureMode.PHOTO && !current.teleconverterMode) {
             LensChoice.forZoom(resolved)
         } else {
             current.lens
         }
         _state.update {
-            it.copy(caps = caps, lens = lens, controls = it.controls.copy(zoomRatio = resolved))
+            it.copy(caps = caps, lens = lens, controls = normalizedControls)
         }
-        if (resolved != current.controls.zoomRatio) {
-            engine.setZoomRatio(resolved)
+        pendingControls = pendingControls?.normalizedFor(caps)?.copy(zoomRatio = resolved)
+        if (normalizedControls != current.controls) {
+            engine.setAeMetering(usesExposureAnalysis(normalizedControls))
+            engine.setControls(normalizedControls)
             if (!zoomPendingRatio.isNaN()) zoomPendingRatio = resolved
-            pendingControls = pendingControls?.copy(zoomRatio = resolved)
         }
     }
 
@@ -1562,7 +1567,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         persist: Boolean = slot != null,
         block: (ManualControls) -> ManualControls,
     ) {
-        val updated = block(_state.value.controls)
+        val current = _state.value
+        val requested = block(current.controls)
+        val updated = current.caps?.let(requested::normalizedFor) ?: requested
         engine.setAeMetering(usesExposureAnalysis(updated))
         _state.update { it.copy(controls = updated) }
         slot?.let(::markChanged)
