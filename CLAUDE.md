@@ -110,6 +110,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   for that same capture upgrades the placeholder; a late RAW sibling never displaces its processed
   peer or a newer capture. Delete freezes and tombstones the whole capture before asynchronous
   MediaStore deletion, removes every known sibling, and immediately deletes any late sibling callback.
+  Opening review pins that exact family outside the bounded ordinary history until close/delete; if
+  pinning the frozen URI fails, the UI promises file-only deletion. Images and Video restore queries
+  fail independently, so valid rows from either successful collection still participate.
   Across process restarts, every new capture's HEIF/JPEG/DNG outputs share one versioned timestamped
   filename key (video owns one-file family); a bounded Images+Video query reconstructs the newest exact
   family and seeds it below live ids. Legacy filenames are never proximity-grouped and expose truthful
@@ -346,8 +349,11 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
 - **Preview EGL health is part of Camera Ready.** Preview create/bind/init and runtime draw/swap
   failures complete one Surface/generation-owned signal. The Engine accepts only the current owner,
   publishes Not-Ready, and retries the same surface at most three times before terminal status; a
-  stale replacement failure is inert. Acquire each real camera texture before the optional preview
-  and encoder branches so preview loss cannot silently freeze an otherwise healthy active recording.
+  stale replacement failure is inert. A successful bind remains pending: Ready and retry-budget reset
+  happen only after that owner completes its first successful real-camera-frame swap; cached-frame
+  zoom redraws cannot publish Ready. Before every texture update, bind the live preview owner or
+  otherwise the active encoder owner; contain acquisition failure inside the owning health path so
+  preview loss cannot freeze an otherwise healthy active recording.
 - **REC readiness comes from the first successful real encoder swap, not surface allocation or
   `VideoRecorder.start()` returning.** Candidate create/bind/restore remains pending until a real
   camera frame draws, presents, swaps, and restores preview ownership. Queue attach before recorder
@@ -371,14 +377,20 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
 - **Settings, Fn cycles, and quick rulers share one capability projection.** Build visible choices and
   entry flags from the exact AE/AF/AWB, antibanding, edge, noise-reduction, effect, flash, manual/range,
   and AE/AF-region facts used by request normalization. Filter ProSheet choices, cycle only inside the
-  projected lists, and require exact OFF modes/ranges before opening a manual ruler. If a route change
+  projected lists, and require exact OFF modes/ranges before opening a manual ruler. The WB Fn chip may
+  open the preset sheet when multiple advertised modes exist even if a Kelvin ruler does not; MANUAL
+  WB still requires that ruler. Custom WB is enabled only in advertised, unlocked AUTO and consumes a
+  later converged result from its exact tagged request—never cached preset/manual gains. Its accepted
+  Ready-session owner is rechecked atomically after the callback crosses to main. If a route change
   invalidates an open ruler, close it and retain the normalized applied value.
 - **Exactly one owner of the mic.** The Sony-style standby audio meter is a levels-only `AudioRecord`
   tap that runs while video is ARMED but not rolling. Its synchronized ownership gate reserves one
   immutable owner and release latch before thread start. REC must claim the handoff and observe that
   exact release before `VideoRecorder` opens AudioRecord; on timeout it refuses the attempt. Internal
   restart paths only recheck current intent, so they cannot overwrite a newer disable/background
-  transition. Never add a second concurrent AudioRecord.
+  transition. Never add a second concurrent AudioRecord. While REC is running, every negative
+  `AudioRecord.read` is terminal and enters the recorder's exactly-once failure/finalization path;
+  only a negative read after stop is treated as normal end-of-stream.
 - **Still watchdog follows the request exposure.** HAL-auto keeps the historical 8 s timeout. Manual
   and app-side/AEB requests use the exact sensor-clamped exposure plus an 8 s delivery margin, with
   ceil-to-milliseconds and saturating arithmetic; a fixed 8 s deadline is not valid for long shots.
