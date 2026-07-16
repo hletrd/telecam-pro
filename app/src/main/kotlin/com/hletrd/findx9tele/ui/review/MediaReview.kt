@@ -53,6 +53,10 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.graphics.scale
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.isTraversalGroup
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -74,6 +78,17 @@ import kotlin.math.roundToInt
 /** Decodes [uri] downsampled so its longest side is ~[maxDim] px (<=0 = full resolution). */
 /** Rotation + dimensions of a video, for sizing/orienting the in-review player. */
 private data class VideoInfo(val rotationDeg: Int, val width: Int, val height: Int)
+
+private sealed interface ReviewMediaState {
+    data object Loading : ReviewMediaState
+    sealed interface Ready : ReviewMediaState {
+        data class Still(val bitmap: ImageBitmap) : Ready
+        data class Video(val info: VideoInfo) : Ready
+    }
+    data class Error(val message: String) : ReviewMediaState
+}
+
+private const val REVIEW_PREVIEW_MAX_DIM = 3000
 
 private fun loadVideoInfo(context: Context, uri: Uri): VideoInfo? = runCatching {
     if (context.contentResolver.getType(uri)?.startsWith("video/") != true) return@runCatching null
@@ -124,6 +139,23 @@ private suspend fun loadBitmap(context: Context, uri: Uri, maxDim: Int): ImageBi
             }?.asImageBitmap()
         }.getOrNull()
     }
+
+private suspend fun loadReviewMedia(context: Context, uri: Uri): ReviewMediaState {
+    val mimeType = withContext(Dispatchers.IO) {
+        runCatching { context.contentResolver.getType(uri) }.getOrNull()
+    }
+    return if (mimeType?.startsWith("video/") == true) {
+        withContext(Dispatchers.IO) { loadVideoInfo(context, uri) }
+            ?.let { ReviewMediaState.Ready.Video(it) }
+            ?: ReviewMediaState.Error("Unable to open this video.")
+    } else {
+        // A capped first decode avoids a 50 MP ARGB allocation (~200 MB) before Compose/GPU copies.
+        // The resulting 3000 px preview still carries ample detail for the existing 4×/8× focus check.
+        loadBitmap(context, uri, REVIEW_PREVIEW_MAX_DIM)
+            ?.let { ReviewMediaState.Ready.Still(it) }
+            ?: ReviewMediaState.Error("Unable to open this image.")
+    }
+}
 
 private data class ReviewMetadata(
     val name: String,
@@ -210,23 +242,20 @@ fun GalleryThumb(uri: Uri?, onClick: () -> Unit, modifier: Modifier = Modifier) 
 }
 
 /**
- * Fullscreen pinch-to-zoom review of [uri]. Loads full resolution for pixel-level focus checking
- * (falls back to a large downsample on failure).
+ * Fullscreen pinch-to-zoom review of [uri]. The initial still decode is bounded so opening a
+ * high-resolution capture cannot require a full-size ARGB allocation.
  */
 @Composable
 fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    val videoInfo by produceState<VideoInfo?>(initialValue = null, uri) {
-        value = withContext(Dispatchers.IO) { loadVideoInfo(context, uri) }
+    var loadAttempt by remember(uri) { mutableStateOf(0) }
+    var mediaState by remember(uri) { mutableStateOf<ReviewMediaState>(ReviewMediaState.Loading) }
+    LaunchedEffect(uri, loadAttempt) {
+        mediaState = ReviewMediaState.Loading
+        mediaState = loadReviewMedia(context, uri)
     }
-    // Stills decode a poster to display; a video renders a TextureView instead and never draws this
-    // bitmap. Keyed on videoInfo so once it resolves non-null the decode is skipped entirely — the
-    // old fall-through loaded a FULL-RES first frame (~33 MB at 4K) that was never shown. Stills
-    // still load full resolution (3000 px downsample fallback) for pixel-level focus checking.
-    val bitmap by produceState<ImageBitmap?>(initialValue = null, uri, videoInfo) {
-        value = if (videoInfo != null) null
-        else loadBitmap(context, uri, 0) ?: loadBitmap(context, uri, 3000)
-    }
+    val videoInfo = (mediaState as? ReviewMediaState.Ready.Video)?.info
+    val mediaReady = mediaState is ReviewMediaState.Ready
     val metadata by produceState<ReviewMetadata?>(initialValue = null, uri) {
         value = loadMetadata(context, uri)
     }
@@ -242,7 +271,7 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
     // closes the review; below it springs back. Zoomed in, vertical pan just pans.
     var dismissDrag by remember { mutableFloatStateOf(0f) }
 
-    LaunchedEffect(uri) {
+    LaunchedEffect(uri, loadAttempt) {
         scale = 1f
         offset = Offset.Zero
         dismissDrag = 0f
@@ -253,7 +282,12 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black)
-            .pointerInput(videoInfo != null) {
+            .semantics {
+                paneTitle = "Media review"
+                isTraversalGroup = true
+            }
+            .pointerInput(mediaReady, videoInfo != null) {
+                if (!mediaReady) return@pointerInput
                 // ONE gesture loop owns pinch + pan + swipe-dismiss + tap/double-tap/long-press.
                 // Two sibling pointerInput blocks fought here exactly like CameraScreen's tap-vs-
                 // pinch conflict: the pinch/pan loop consumed EVERY change, which cancelled the
@@ -405,13 +439,22 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                                     // The prepared callback fires LATER, after this runCatching has
                                     // exited — closing review during the async prepare releases the
                                     // player, and an unguarded start() on it crashes the main thread.
-                                    mp.setOnPreparedListener { p -> runCatching { p.start() } }
+                                    mp.setOnPreparedListener { p ->
+                                        runCatching { p.start() }
+                                            .onFailure { mediaState = ReviewMediaState.Error("Unable to play this video.") }
+                                    }
+                                    mp.setOnErrorListener { _, _, _ ->
+                                        playing = false
+                                        mediaState = ReviewMediaState.Error("Unable to play this video.")
+                                        true
+                                    }
                                     mp.prepareAsync()
                                 }.onFailure {
                                     runCatching { mp.release() }
                                     localPlayer = null
                                     heldPlayer.value = null
                                     if (playerRef.value === mp) playerRef.value = null
+                                    mediaState = ReviewMediaState.Error("Unable to play this video.")
                                 }
                             }
 
@@ -460,10 +503,10 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                 }
             }
         } else {
-        val bmp = bitmap
-        if (bmp != null) {
+        val still = mediaState as? ReviewMediaState.Ready.Still
+        if (still != null) {
             Image(
-                bitmap = bmp,
+                bitmap = still.bitmap,
                 contentDescription = "Review",
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
@@ -476,8 +519,30 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                         alpha = (1f - abs(dismissDrag) / 1400f).coerceIn(0.3f, 1f),
                     ),
             )
-        } else {
-            Text("Loading…", color = CameraColors.TextSecondary, style = MaterialTheme.typography.bodyMedium)
+        } else when (val current = mediaState) {
+            ReviewMediaState.Loading -> Text(
+                "Loading review…",
+                color = CameraColors.TextSecondary,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+            )
+            is ReviewMediaState.Error -> Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .padding(horizontal = 32.dp)
+                    .semantics { liveRegion = LiveRegionMode.Assertive },
+            ) {
+                Text(
+                    current.message,
+                    color = CameraColors.TextPrimary,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                TextButton(onClick = { loadAttempt += 1 }) {
+                    Text("Retry")
+                }
+            }
+            is ReviewMediaState.Ready -> Unit
         }
         }
 

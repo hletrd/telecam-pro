@@ -1,0 +1,89 @@
+package com.hletrd.findx9tele.ui
+
+import com.hletrd.findx9tele.camera.CaptureMode
+import com.hletrd.findx9tele.camera.LensChoice
+import com.hletrd.findx9tele.camera.TELE_DISPLAY_BASE
+import com.hletrd.findx9tele.camera.TELE_MAX_DISPLAY_ZOOM
+import com.hletrd.findx9tele.camera.TELE_ZOOM_SNAPS
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
+
+internal data class ZoomBounds(val lower: Float, val upper: Float)
+
+/** One zoom range shared by input targets and the value that can actually be applied. */
+internal fun effectiveZoomBounds(
+    capsLower: Float?,
+    capsUpper: Float?,
+    teleconverter: Boolean,
+): ZoomBounds? {
+    if (!teleconverter) {
+        if (capsLower == null || capsUpper == null || capsLower > capsUpper) return null
+        return ZoomBounds(capsLower, capsUpper)
+    }
+    val teleUpper = TELE_MAX_DISPLAY_ZOOM / TELE_DISPLAY_BASE
+    val lower = max(1f, capsLower ?: 1f)
+    val upper = min(teleUpper, capsUpper ?: teleUpper)
+    return if (lower <= upper) ZoomBounds(lower, upper) else ZoomBounds(upper, upper)
+}
+
+/**
+ * Applies TELE's magnetic marks with hysteresis. Entering or crossing a mark snaps once; a value
+ * already at/inside that snap band can move away in small increments instead of being trapped.
+ */
+internal fun normalizeZoomRequest(
+    requested: Float,
+    currentApplied: Float,
+    bounds: ZoomBounds?,
+    teleconverter: Boolean,
+): Float {
+    var value = bounds?.let { requested.coerceIn(it.lower, it.upper) } ?: requested
+    if (!teleconverter || !value.isFinite()) return value
+
+    val requestedDisplay = value * TELE_DISPLAY_BASE
+    val currentDisplay = currentApplied * TELE_DISPLAY_BASE
+    val snap = TELE_ZOOM_SNAPS.firstOrNull { mark ->
+        val band = mark * SNAP_FRACTION
+        val requestedDistance = abs(requestedDisplay - mark)
+        val currentDistance = abs(currentDisplay - mark)
+        val enteringBand = currentDistance >= band && requestedDistance < band
+        val crossingMark = currentDistance > SNAP_EPSILON &&
+            (currentDisplay - mark) * (requestedDisplay - mark) < 0f
+        (enteringBand || crossingMark) && requestedDistance < band
+    }
+    if (snap != null) value = snap / TELE_DISPLAY_BASE
+    return bounds?.let { value.coerceIn(it.lower, it.upper) } ?: value
+}
+
+internal data class RestoredOptics(
+    val lens: LensChoice,
+    val teleconverter: Boolean,
+    val zoomRatio: Float,
+)
+
+/** Resolves the exact lens-local/unified zoom representation used by both engine and UI restore. */
+internal fun restoredOptics(
+    mode: CaptureMode,
+    requestedLens: LensChoice,
+    teleconverter: Boolean,
+    savedZoomRatio: Float,
+): RestoredOptics {
+    if (teleconverter) {
+        return RestoredOptics(
+            lens = LensChoice.TELE3X,
+            teleconverter = true,
+            zoomRatio = savedZoomRatio.coerceIn(1f, TELE_MAX_DISPLAY_ZOOM / TELE_DISPLAY_BASE),
+        )
+    }
+    return if (mode == CaptureMode.VIDEO) {
+        RestoredOptics(requestedLens, false, savedZoomRatio.coerceIn(1f, MAX_NON_TELE_ZOOM))
+    } else {
+        val unified = savedZoomRatio.coerceIn(MIN_PHOTO_ZOOM, MAX_NON_TELE_ZOOM)
+        RestoredOptics(LensChoice.forZoom(unified), false, unified)
+    }
+}
+
+private const val SNAP_FRACTION = 0.06f
+private const val SNAP_EPSILON = 0.001f
+private const val MIN_PHOTO_ZOOM = 0.6f
+private const val MAX_NON_TELE_ZOOM = 20f

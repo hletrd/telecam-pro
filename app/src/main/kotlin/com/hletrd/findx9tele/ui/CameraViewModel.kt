@@ -1,6 +1,7 @@
 package com.hletrd.findx9tele.ui
 
 import android.app.Application
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -35,6 +36,7 @@ import com.hletrd.findx9tele.camera.MemorySlot
 import com.hletrd.findx9tele.camera.PeakingColor
 import com.hletrd.findx9tele.camera.PeakingLevel
 import com.hletrd.findx9tele.camera.PhotoFormats
+import com.hletrd.findx9tele.camera.normalizedFor
 import com.hletrd.findx9tele.camera.ProcessingLevel
 import com.hletrd.findx9tele.camera.ShutterMode
 import com.hletrd.findx9tele.camera.ShutterTimer
@@ -83,6 +85,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
 
     private var countdownRunnable: Runnable? = null
+    private var lifecycleStarted = false
+    private var debugZoomReceiver: android.content.BroadcastReceiver? = null
 
     // Auto-dismisses the transient status toast ("Saved" / "Video saved" / errors) so it doesn't hang
     // on screen forever (QA: "video saved" stuck). Each new message re-arms the 2 s timer.
@@ -90,11 +94,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     private var reticleHideRunnable: Runnable? = null
 
-    // capture-sequence id → its DNG sibling URI (bounded history), plus the id of the currently
-    // displayed lastMediaUri. Guarded by synchronized(captureOutputs): the save callbacks land on
-    // the engine's camera/io threads while Delete runs on main.
-    private val captureOutputs = LinkedHashMap<Int, android.net.Uri>()
-    private var lastDisplayedCaptureId = 0
+    // Owns every processed/raw URI for a capture and tombstones deleted ids so a late save callback
+    // cannot resurrect a sibling after the user deleted the frozen review shot.
+    private val captureOutputs = CaptureOutputTracker<Uri>(CAPTURE_OUTPUT_HISTORY)
 
     // Trailing debounce for persistence: every user-driven change to a PERSISTED setting schedules
     // one synchronous commit shortly after the LAST change. This closes the Recents-swipe-kill loss
@@ -108,6 +110,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     private val levelTicker = object : Runnable {
         override fun run() {
+            if (!lifecycleStarted || !_state.value.level) return
             _state.update { it.copy(levelRoll = engine.currentRollDegrees()) }
             mainHandler.postDelayed(this, 100)
         }
@@ -117,6 +120,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     // though the activity is portrait-locked. Only writes state when the discrete value changes.
     private val orientationTicker = object : Runnable {
         override fun run() {
+            if (!lifecycleStarted) return
             val o = engine.currentDeviceOrientation()
             if (o != _state.value.deviceOrientation) _state.update { it.copy(deviceOrientation = o) }
             mainHandler.postDelayed(this, 200)
@@ -126,6 +130,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     // Battery % + free storage for the OSD info pill, Sony-style. Slow tick — these move slowly.
     private val infoTicker = object : Runnable {
         override fun run() {
+            if (!lifecycleStarted) return
             _state.update { it.copy(batteryPct = readBatteryPct(), freeBytes = readFreeBytes()) }
             mainHandler.postDelayed(this, 10_000)
         }
@@ -146,19 +151,21 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // Camera health (engine camera/setup threads → StateFlow is thread-safe): dims the shutter
         // while the session is down instead of silently declining taps.
         engine.onCameraReadyChange = { ready -> _state.update { it.copy(cameraReady = ready) } }
-        // DEBUG: adb-driven zoom injection to test lens switching without a real pinch (adb can't
-        // simulate a two-finger pinch on this device). Usage:
-        //   adb shell am broadcast -a me.hletrd.telecampro.DEBUG_ZOOM --ef ratio 0.5
+        // DEBUG-only app-local zoom injection hook. Keep a receiver reference so ViewModel teardown
+        // unregisters it; NOT_EXPORTED prevents arbitrary apps/shell broadcasts from controlling
+        // camera framing while the process is alive.
         if (com.hletrd.findx9tele.BuildConfig.DEBUG) {
+            val receiver = object : android.content.BroadcastReceiver() {
+                override fun onReceive(c: android.content.Context?, i: android.content.Intent?) {
+                    val ratio = i?.getFloatExtra("ratio", -1f) ?: -1f
+                    if (ratio > 0f) applyZoomRatio(ratio)
+                }
+            }
+            debugZoomReceiver = receiver
             app.registerReceiver(
-                object : android.content.BroadcastReceiver() {
-                    override fun onReceive(c: android.content.Context?, i: android.content.Intent?) {
-                        val ratio = i?.getFloatExtra("ratio", -1f) ?: -1f
-                        if (ratio > 0f) applyZoomRatio(ratio)
-                    }
-                },
+                receiver,
                 android.content.IntentFilter("me.hletrd.telecampro.DEBUG_ZOOM"),
-                android.content.Context.RECEIVER_EXPORTED,
+                android.content.Context.RECEIVER_NOT_EXPORTED,
             )
         }
         // AF state (camera thread → StateFlow is thread-safe): colors the tap-AF reticle.
@@ -178,6 +185,21 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         }
         engine.onAudioLevel = { lvl -> _state.update { it.copy(audioLevel = lvl) } }
         engine.onAudioRoute = { route -> _state.update { it.copy(audioRouteLabel = route) } }
+        engine.onRecordingTerminated = {
+            // Codec/muxer failures originate on recorder drain threads. End REC state on main
+            // immediately; finalization continues on the engine's dedicated executor.
+            mainHandler.post {
+                mainHandler.removeCallbacks(recordTicker)
+                _state.update {
+                    it.copy(
+                        isRecording = false,
+                        recordElapsedMs = 0,
+                        audioRouteLabel = audioInputStatusLabel(it.audioInputPreference),
+                    )
+                }
+                refreshStandbyAudioMeter()
+            }
+        }
         // AE-resolved ISO/shutter (auto mode) for the live dial readout; camera thread → StateFlow is
         // thread-safe, Compose observes on main. The controller only fires this on change.
         engine.onExposureInfo = { iso, exp -> _state.update { it.copy(liveIso = iso, liveExposureNs = exp) } }
@@ -187,17 +209,16 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // Last saved displayable media → gallery thumbnail + in-app review (io thread → StateFlow is
         // thread-safe). The capture id groups it with any DNG sibling for a whole-shot Delete.
         engine.onMediaSaved = { uri, captureId ->
-            synchronized(captureOutputs) { lastDisplayedCaptureId = captureId }
-            _state.update { it.copy(lastMediaUri = uri) }
-        }
-        // DNG sibling of a capture (never displayed): remembered so review-Delete removes it too.
-        engine.onRawSaved = { uri, captureId ->
-            synchronized(captureOutputs) {
-                captureOutputs[captureId] = uri
-                while (captureOutputs.size > CAPTURE_OUTPUT_HISTORY) {
-                    captureOutputs.remove(captureOutputs.keys.first())
-                }
+            if (captureOutputs.record(captureId, uri)) {
+                deleteLateCaptureOutput(uri)
+            } else {
+                _state.update { it.copy(lastMediaUri = uri) }
             }
+        }
+        // DNG sibling of a capture (never displayed): owned by the same tracker and deleted
+        // immediately when it arrives after that capture was tombstoned in review.
+        engine.onRawSaved = { uri, captureId ->
+            if (captureOutputs.record(captureId, uri)) deleteLateCaptureOutput(uri)
         }
         restoreSettingsIfEnabled()
         refreshProgramAppSide()
@@ -210,9 +231,6 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         refreshMemorySlotInfo()
         // Sweep any pending media orphaned by a prior crash/force-kill (record stop never ran).
         engine.cleanupOrphans()
-        if (_state.value.level) mainHandler.post(levelTicker)
-        mainHandler.post(orientationTicker)
-        mainHandler.post(infoTicker)
         refreshStandbyAudioMeter()
     }
 
@@ -239,12 +257,12 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         val defaults = CameraUiState()
         val preservedTeleconverter =
             if (honorPreserveOptions && !e.preserveTeleconverter) defaults.teleconverterMode else e.teleconverter
-        val restoredLens = when {
+        val requestedLens = when {
             preservedTeleconverter -> LensChoice.TELE3X
             honorPreserveOptions && !e.preserveLensSelection -> defaults.lens
             else -> e.lens
         }
-        val restoredTeleconverter = restoredLens == LensChoice.TELE3X && preservedTeleconverter
+        val requestedTeleconverter = requestedLens == LensChoice.TELE3X && preservedTeleconverter
         // Settings restore is the one path that bypasses the pickers' gating, so re-validate the
         // UI-gated enum values before they reach the engine: a persisted high-speed rate would
         // rebuild the SIGABRT-ing constrained session on next launch (FPS_120 is intentionally
@@ -255,7 +273,21 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             else ExtraSettings().videoCodec
         // Keep the exposure fps in lockstep with the restored video rate (mirrors onVideoFrameRate;
         // restoring them independently let the AE/shutter-angle math run at a stale fps).
-        val cSynced = c.copy(fps = safeFrameRate.fps)
+        // If a launch-time preserve option deliberately changed the saved optics, reset framing to
+        // that resolved home. Otherwise (including every MR recall) restore the exact saved zoom.
+        val preserveChangedOptics = honorPreserveOptions && (
+            (!e.preserveTeleconverter && e.teleconverter) ||
+                (!e.preserveLensSelection && !requestedTeleconverter)
+            )
+        val requestedZoom = if (preserveChangedOptics) {
+            if (requestedTeleconverter || e.mode == CaptureMode.VIDEO) 1f else requestedLens.zoomPreset
+        } else {
+            c.zoomRatio
+        }
+        val restoredOptics = restoredOptics(e.mode, requestedLens, requestedTeleconverter, requestedZoom)
+        val restoredLens = restoredOptics.lens
+        val restoredTeleconverter = restoredOptics.teleconverter
+        val cSynced = c.copy(fps = safeFrameRate.fps, zoomRatio = restoredOptics.zoomRatio)
         // Push to the engine (safe pre-start: these set @Volatile fields read when the camera opens).
         engine.setVideoMode(e.mode == CaptureMode.VIDEO)
         engine.setControls(cSynced)
@@ -266,11 +298,21 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // (independent toggles, e.g. lens=3× with the converter not preserved as attached) reopens the
         // camera once instead of setLens bundling TELE on and a separate setTeleconverterMode call
         // immediately correcting it back off.
-        engine.setLens(restoredLens, restoredTeleconverter)
+        engine.setLens(restoredLens, restoredTeleconverter, restoredZoomRatio = cSynced.zoomRatio)
         applyEngineTransfer(e.mode, e.transfer)
         engine.setGammaAssist(e.gammaAssist)
         engine.setVideoStabMode(e.videoStabMode)
         engine.setAspectRatio(e.aspectRatio)
+        engine.setDriveMode(e.driveMode)
+        engine.setIntervalSec(e.intervalSec)
+        engine.setPeaking(e.focusPeaking)
+        engine.setPeakingLevel(e.peakingLevel)
+        engine.setPeakingColor(e.peakingColor)
+        engine.setZebra(e.zebra)
+        engine.setZebraLevel(e.zebraLevel)
+        engine.setFalseColor(e.falseColor)
+        engine.setAnalysis(e.histogram, e.waveform)
+        engine.setPunchIn(e.punchIn)
         engine.setVideoCodec(safeCodec)
         engine.setBitrateLevel(e.bitrateLevel)
         engine.setOpenGate(e.openGate)
@@ -289,13 +331,26 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 rememberSettings = rememberSettings ?: it.rememberSettings,
                 controls = cSynced,
                 transfer = e.transfer,
-                photoFormats = PhotoFormats(e.heif, e.jpeg, e.dngRaw),
+                photoFormats = PhotoFormats(e.heif, e.jpeg, e.dngRaw).normalizedFor(restoredTeleconverter),
                 mode = e.mode,
                 lens = restoredLens,
                 teleconverterMode = restoredTeleconverter,
                 videoStabMode = e.videoStabMode,
                 aspectRatio = e.aspectRatio,
+                timer = e.timer,
+                driveMode = e.driveMode,
+                intervalSec = e.intervalSec,
+                focusPeaking = e.focusPeaking,
+                peakingLevel = e.peakingLevel,
+                peakingColor = e.peakingColor,
+                zebra = e.zebra,
+                zebraLevel = e.zebraLevel,
+                falseColor = e.falseColor,
+                histogram = e.histogram,
+                waveform = e.waveform,
                 grid = e.grid,
+                level = e.level,
+                punchIn = e.punchIn,
                 videoCodec = safeCodec,
                 bitrateLevel = e.bitrateLevel,
                 videoFrameRate = safeFrameRate,
@@ -319,6 +374,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 statusMessage = status,
             )
         }
+        mainHandler.removeCallbacks(levelTicker)
+        if (e.level && lifecycleStarted) mainHandler.post(levelTicker)
         if (status != null) {
             mainHandler.removeCallbacks(clearStatusRunnable)
             mainHandler.postDelayed(clearStatusRunnable, 2000)
@@ -336,7 +393,20 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             teleconverter = s.teleconverterMode,
             videoStabMode = s.videoStabMode,
             aspectRatio = s.aspectRatio,
+            timer = s.timer,
+            driveMode = s.driveMode,
+            intervalSec = s.intervalSec,
+            focusPeaking = s.focusPeaking,
+            peakingLevel = s.peakingLevel,
+            peakingColor = s.peakingColor,
+            zebra = s.zebra,
+            zebraLevel = s.zebraLevel,
+            falseColor = s.falseColor,
+            histogram = s.histogram,
+            waveform = s.waveform,
             grid = s.grid,
+            level = s.level,
+            punchIn = s.punchIn,
             videoCodec = s.videoCodec,
             bitrateLevel = s.bitrateLevel,
             videoFrameRate = s.videoFrameRate,
@@ -542,11 +612,19 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         _state.update { it.copy(tapPoint = nx to ny) }
         reticleHideRunnable?.let { mainHandler.removeCallbacks(it) }
         val hide = Runnable {
+            engine.clearTapPoint()
             _state.update { it.copy(tapPoint = null) }
             reticleHideRunnable = null
         }
         reticleHideRunnable = hide
         mainHandler.postDelayed(hide, 2000)
+    }
+
+    override fun onResetFocusPoint() {
+        reticleHideRunnable?.let(mainHandler::removeCallbacks)
+        reticleHideRunnable = null
+        engine.clearTapPoint()
+        _state.update { it.copy(tapPoint = null) }
     }
 
     // ---- Exposure ----
@@ -648,29 +726,20 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     private var zoomFlushScheduled = false
     private var zoomPendingRatio = Float.NaN
 
-    private fun applyZoomRatio(ratio: Float) {
-        val range = _state.value.caps?.zoomRatioRange
-        var z = if (range != null) ratio.coerceIn(range.lower, range.upper) else ratio
-        if (_state.value.teleconverterMode) {
-            // TELE runs on the converter-equivalent display scale (13–60×): magnetic snaps at the
-            // user-spec 30×/60× marks (±6%), ceiling at 60×.
-            val disp = z * com.hletrd.findx9tele.camera.TELE_DISPLAY_BASE
-            val snapped = com.hletrd.findx9tele.camera.TELE_ZOOM_SNAPS
-                .firstOrNull { kotlin.math.abs(disp - it) < it * 0.06f }
-            if (snapped != null) z = snapped / com.hletrd.findx9tele.camera.TELE_DISPLAY_BASE
-            z = z.coerceIn(
-                1f,
-                com.hletrd.findx9tele.camera.TELE_MAX_DISPLAY_ZOOM / com.hletrd.findx9tele.camera.TELE_DISPLAY_BASE,
-            )
-        }
+    private fun applyZoomRatio(ratio: Float): Float {
+        val s = _state.value
+        val range = s.caps?.zoomRatioRange
+        val bounds = effectiveZoomBounds(range?.lower, range?.upper, s.teleconverterMode)
+        val z = normalizeZoomRequest(ratio, currentZoomBase(), bounds, s.teleconverterMode)
         zoomPendingRatio = z
-        if (zoomFlushScheduled) return // the scheduled flush picks up this newest value
+        if (zoomFlushScheduled) return z // the scheduled flush picks up this newest value
         zoomFlushScheduled = true
         flushZoom() // leading edge: first tick lands instantly
         mainHandler.postDelayed({
             zoomFlushScheduled = false
             if (!zoomPendingRatio.isNaN() && zoomPendingRatio != _state.value.controls.zoomRatio) flushZoom()
         }, 16) // ~60 Hz: the engine throttles HAL submits itself; GL follows every flush
+        return z
     }
 
     // Zoom-gesture lifecycle: every zoom input funnels through flushZoom, so "interacting" =
@@ -731,7 +800,13 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 applyZoomRatio(target)
                 return
             }
-            applyZoomRatio(next)
+            val applied = applyZoomRatio(next)
+            // A cap/snap may make the mathematical target unreachable. Stop as soon as application
+            // makes no progress instead of keeping a 30 Hz main-thread loop alive forever.
+            if (applied.isFinite() && kotlin.math.abs(applied - cur) < 0.0001f) {
+                zoomEaseTarget = null
+                return
+            }
             mainHandler.postDelayed(this, 33)
         }
     }
@@ -739,9 +814,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     /** One hardware zoom-key repeat: nudge the ease target and make sure the glide ticker runs. */
     fun onHardwareZoomStep(factor: Float) {
         val range = _state.value.caps?.zoomRatioRange ?: return
+        val bounds = effectiveZoomBounds(range.lower, range.upper, _state.value.teleconverterMode) ?: return
         val base = zoomEaseTarget ?: currentZoomBase()
         val wasIdle = zoomEaseTarget == null
-        zoomEaseTarget = (base * factor).coerceIn(range.lower, range.upper)
+        zoomEaseTarget = (base * factor).coerceIn(bounds.lower, bounds.upper)
         if (wasIdle) mainHandler.post(zoomEaseTicker)
     }
 
@@ -809,7 +885,14 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         scheduleSettingsSave()
     }
     override fun onSetPhotoFormats(formats: PhotoFormats) {
-        _state.update { it.copy(photoFormats = formats, activeMemorySlot = null) }
+        val s = _state.value
+        val rawAvailable = s.teleconverterMode || (
+            s.cameraOverrideId != null &&
+                s.caps?.supportsRaw == true &&
+                s.caps.physicalId == null &&
+                !s.caps.isLogicalMultiCamera
+            )
+        _state.update { it.copy(photoFormats = formats.normalizedFor(rawAvailable), activeMemorySlot = null) }
         scheduleSettingsSave()
     }
     override fun onAspectRatio(ratio: AspectRatio) {
@@ -876,6 +959,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 it.copy(
                     teleconverterMode = false,
                     lens = band,
+                    photoFormats = it.photoFormats.normalizedFor(rawAvailable = false),
                     controls = it.controls.copy(
                         zoomRatio = if (it.mode == CaptureMode.VIDEO) {
                             (unified / band.zoomPreset).coerceAtLeast(1f)
@@ -905,6 +989,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             it.copy(
                 lens = choice,
                 teleconverterMode = keepTc,
+                photoFormats = it.photoFormats.normalizedFor(rawAvailable = keepTc),
                 // Same engine mirror as onToggleTeleconverter: video lens picks are lens-local (1×).
                 controls = it.controls.copy(
                     zoomRatio = if (keepTc || it.mode == CaptureMode.VIDEO) 1f else choice.zoomPreset,
@@ -988,38 +1073,46 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setPeaking(enabled)
         _state.update { it.copy(focusPeaking = enabled) }
         markChanged(FnSlot.PEAKING)
+        scheduleSettingsSave()
     }
     override fun onPeakingLevel(level: PeakingLevel) {
         engine.setPeakingLevel(level)
         _state.update { it.copy(peakingLevel = level) }
         markChanged(FnSlot.PEAKING)
+        scheduleSettingsSave()
     }
     override fun onPeakingColor(color: PeakingColor) {
         engine.setPeakingColor(color)
         _state.update { it.copy(peakingColor = color) }
         markChanged(FnSlot.PEAKING)
+        scheduleSettingsSave()
     }
     override fun onToggleZebra(enabled: Boolean) {
         engine.setZebra(enabled)
         _state.update { it.copy(zebra = enabled) }
         markChanged(FnSlot.ZEBRA)
+        scheduleSettingsSave()
     }
     override fun onZebraLevel(level: ZebraLevel) {
         engine.setZebraLevel(level)
         _state.update { it.copy(zebraLevel = level) }
         markChanged(FnSlot.ZEBRA)
+        scheduleSettingsSave()
     }
     override fun onToggleFalseColor(enabled: Boolean) {
         engine.setFalseColor(enabled)
         _state.update { it.copy(falseColor = enabled, activeMemorySlot = null) }
+        scheduleSettingsSave()
     }
     override fun onToggleHistogram(enabled: Boolean) {
         engine.setAnalysis(enabled, _state.value.waveform)
         _state.update { it.copy(histogram = enabled, activeMemorySlot = null) }
+        scheduleSettingsSave()
     }
     override fun onToggleWaveform(enabled: Boolean) {
         engine.setAnalysis(_state.value.histogram, enabled)
         _state.update { it.copy(waveform = enabled, activeMemorySlot = null) }
+        scheduleSettingsSave()
     }
 
     override fun onToggleGammaAssist(enabled: Boolean) {
@@ -1040,26 +1133,33 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onToggleLevel(enabled: Boolean) {
         _state.update { it.copy(level = enabled) }
         mainHandler.removeCallbacks(levelTicker)
-        if (enabled) mainHandler.post(levelTicker)
+        if (enabled && lifecycleStarted) mainHandler.post(levelTicker)
         markChanged(FnSlot.LEVEL)
+        scheduleSettingsSave()
     }
     override fun onTogglePunchIn(enabled: Boolean) {
         engine.setPunchIn(enabled)
         _state.update { it.copy(punchIn = enabled) }
         markChanged(FnSlot.PUNCH_IN)
+        scheduleSettingsSave()
     }
 
     // ---- Drive ----
-    override fun onTimer(timer: ShutterTimer) = _state.update { it.copy(timer = timer, activeMemorySlot = null) }
+    override fun onTimer(timer: ShutterTimer) {
+        _state.update { it.copy(timer = timer, activeMemorySlot = null) }
+        scheduleSettingsSave()
+    }
     override fun onDriveMode(mode: DriveMode) {
         engine.setDriveMode(mode)
         _state.update { it.copy(driveMode = mode) }
         markChanged(FnSlot.DRIVE)
+        scheduleSettingsSave()
     }
     override fun onIntervalSec(sec: Int) {
         engine.setIntervalSec(sec)
         _state.update { it.copy(intervalSec = sec) }
         markChanged(FnSlot.DRIVE)
+        scheduleSettingsSave()
     }
 
     // ---- Shutter ----
@@ -1241,18 +1341,23 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         _state.update { it.copy(reviewOpen = open) }
     }
 
-    override fun onDeleteLastMedia() {
-        val uri = _state.value.lastMediaUri ?: return
-        // Delete the WHOLE shot: the displayed HEIF/JPEG plus the DNG sibling saved by the same
-        // shutter press (it used to survive, orphaned in the gallery). ContentResolver.delete is a
-        // Binder round-trip per file — run both off the main thread.
-        val rawSibling = synchronized(captureOutputs) { captureOutputs.remove(lastDisplayedCaptureId) }
-        _state.update { it.copy(lastMediaUri = null) }
+    override fun onDeleteLastMedia(uri: Uri) {
+        // Freeze ownership and tombstone the id BEFORE the Binder calls. Any slower HEIF/JPEG/DNG
+        // callback for the shot is then rejected and deleted instead of replacing the thumbnail.
+        val outputs = captureOutputs.takeForDelete(uri)
+        _state.update { if (it.lastMediaUri == uri) it.copy(lastMediaUri = null) else it }
         Thread {
-            MediaStoreWriter.delete(getApplication(), uri)
-            rawSibling?.let { MediaStoreWriter.delete(getApplication(), it) }
+            val allDeleted = outputs.map { MediaStoreWriter.delete(getApplication(), it) }.all { it }
+            mainHandler.post { showStatus(if (allDeleted) "Deleted" else "Could not delete every shot file") }
         }.start()
-        showStatus("Deleted")
+    }
+
+    private fun deleteLateCaptureOutput(uri: Uri) {
+        Thread {
+            if (!MediaStoreWriter.delete(getApplication(), uri)) {
+                mainHandler.post { showStatus("Could not delete a late shot file") }
+            }
+        }.start()
     }
 
     // [persist] defaults to "has an Fn slot": user-facing setters WITHOUT a slot (antibanding, AF
@@ -1322,15 +1427,23 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     // ---- Lifecycle ----
     fun onStart() {
+        if (lifecycleStarted) return
+        lifecycleStarted = true
         refreshAudioInputStatus()
         engine.resume()
         refreshStandbyAudioMeter()
         // Re-arm the OSD tickers paused in onStop (level only if its overlay is enabled).
+        mainHandler.removeCallbacks(levelTicker)
+        mainHandler.removeCallbacks(orientationTicker)
+        mainHandler.removeCallbacks(infoTicker)
         if (_state.value.level) mainHandler.post(levelTicker)
         mainHandler.post(orientationTicker)
         mainHandler.post(infoTicker)
     }
     fun onStop() {
+        if (!lifecycleStarted) return
+        lifecycleStarted = false
+        cancelCountdown()
         // engine.pause() finalizes any in-flight recording; keep the UI in sync so we don't return
         // to a phantom "recording" state with the timer still ticking.
         if (_state.value.isRecording) {
@@ -1352,6 +1465,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     override fun onCleared() {
         mainHandler.removeCallbacksAndMessages(null)
+        debugZoomReceiver?.let { receiver -> runCatching { getApplication<Application>().unregisterReceiver(receiver) } }
+        debugZoomReceiver = null
         engine.release()
         // ViewModel.onCleared() is @EmptySuper (empty base impl) — do not call super (lint EmptySuperCall).
     }

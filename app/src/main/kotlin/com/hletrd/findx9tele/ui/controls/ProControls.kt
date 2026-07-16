@@ -5,6 +5,9 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.progressSemantics
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.onLongClick
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -121,7 +124,13 @@ internal fun <T> SegmentedSelector(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .pointerInput(helpKey) { detectTapGestures(onLongPress = { showHelp(helpKey) }) },
+            .pointerInput(helpKey) { detectTapGestures(onLongPress = { showHelp(helpKey) }) }
+            .semantics {
+                onLongClick(label = "Show help") {
+                    showHelp(helpKey)
+                    true
+                }
+            },
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text(label, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
@@ -163,7 +172,13 @@ internal fun LabeledSlider(
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .pointerInput(label) { detectTapGestures(onLongPress = { showHelp(label) }) },
+            .pointerInput(label) { detectTapGestures(onLongPress = { showHelp(label) }) }
+            .semantics {
+                onLongClick(label = "Show help") {
+                    showHelp(label)
+                    true
+                }
+            },
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -188,6 +203,7 @@ internal fun LabeledSlider(
             fraction = fraction,
             onFraction = { f -> onValueChange(valueRange.start + f * span) },
             enabled = enabled,
+            valueDescription = valueLabel,
         )
     }
 }
@@ -202,6 +218,7 @@ private fun CameraSlider(
     fraction: Float,
     onFraction: (Float) -> Unit,
     enabled: Boolean,
+    valueDescription: String,
     tickCount: Int = 11,
 ) {
     val accent = if (enabled) CameraColors.ManualActive else CameraColors.TextSecondary
@@ -215,6 +232,8 @@ private fun CameraSlider(
             // settings slider, so expose it as an adjustable value with a set action.
             .progressSemantics(value = fraction.coerceIn(0f, 1f), valueRange = 0f..1f)
             .semantics {
+                stateDescription = valueDescription
+                if (!enabled) disabled()
                 setProgress { target ->
                     if (!enabled) return@setProgress false
                     onFraction(target.coerceIn(0f, 1f))
@@ -293,7 +312,13 @@ internal fun ToggleRow(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .pointerInput(label) { detectTapGestures(onLongPress = { showHelp(label) }) },
+            .pointerInput(label) { detectTapGestures(onLongPress = { showHelp(label) }) }
+            .semantics {
+                onLongClick(label = "Show help") {
+                    showHelp(label)
+                    true
+                }
+            },
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -582,14 +607,17 @@ fun TransferSelector(
 fun PhotoFormatToggles(
     formats: PhotoFormats,
     onSetPhotoFormats: (PhotoFormats) -> Unit,
+    rawAvailable: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    val rawSelected = rawAvailable && formats.dngRaw
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text("Output", color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             FilterChip(
                 selected = formats.heif,
                 onClick = { onSetPhotoFormats(formats.copy(heif = !formats.heif)) },
+                enabled = !formats.heif || formats.jpeg || rawSelected,
                 label = { Text("HEIF") },
                 colors = pixelChipColors(),
                 border = pixelChipBorder(formats.heif),
@@ -597,6 +625,7 @@ fun PhotoFormatToggles(
             FilterChip(
                 selected = formats.jpeg,
                 onClick = { onSetPhotoFormats(formats.copy(jpeg = !formats.jpeg)) },
+                enabled = !formats.jpeg || formats.heif || rawSelected,
                 label = { Text("JPEG") },
                 colors = pixelChipColors(),
                 border = pixelChipBorder(formats.jpeg),
@@ -604,9 +633,17 @@ fun PhotoFormatToggles(
             FilterChip(
                 selected = formats.dngRaw,
                 onClick = { onSetPhotoFormats(formats.copy(dngRaw = !formats.dngRaw)) },
-                label = { Text("DNG") },
+                enabled = rawAvailable && (!formats.dngRaw || formats.wantsProcessedStill),
+                label = { Text(if (rawAvailable) "DNG" else "DNG · TELE only") },
                 colors = pixelChipColors(),
                 border = pixelChipBorder(formats.dngRaw),
+            )
+        }
+        if (!rawAvailable) {
+            Text(
+                "RAW is available in TELE or an eligible standalone camera session.",
+                color = CameraColors.TextSecondary,
+                style = MaterialTheme.typography.labelSmall,
             )
         }
     }

@@ -46,6 +46,7 @@ interface CameraActions {
     fun onFocusSlider(slider: Float)
     fun onAfLock(locked: Boolean)
     fun onTapFocus(nx: Float, ny: Float)
+    fun onResetFocusPoint()
 
     // Exposure
     fun onIso(iso: Int)
@@ -140,7 +141,7 @@ interface CameraActions {
     fun onRecallMemorySlot(slot: MemorySlot)
     fun onVolumeKeyAction(action: HardwareKeyAction)
     fun onHalfPressAction(action: HardwareKeyAction)
-    fun onDeleteLastMedia()
+    fun onDeleteLastMedia(uri: android.net.Uri)
 
     /**
      * The full-screen media-review overlay opened/closed. Mirrored into CameraUiState.reviewOpen

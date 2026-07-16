@@ -10,9 +10,14 @@ import com.hletrd.findx9tele.camera.AudioInputPreference
 import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorTransfer
+import com.hletrd.findx9tele.camera.DriveMode
 import com.hletrd.findx9tele.camera.ExposureMode
 import com.hletrd.findx9tele.camera.FnSlot
+import com.hletrd.findx9tele.camera.PeakingColor
+import com.hletrd.findx9tele.camera.PeakingLevel
+import com.hletrd.findx9tele.camera.ShutterTimer
 import com.hletrd.findx9tele.camera.VideoStabMode
+import com.hletrd.findx9tele.camera.ZebraLevel
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.HardwareKeyAction
 import com.hletrd.findx9tele.camera.LensChoice
@@ -33,13 +38,26 @@ data class ExtraSettings(
     val transfer: ColorTransfer = ColorTransfer.HLG,
     val heif: Boolean = true,
     val jpeg: Boolean = false,
-    val dngRaw: Boolean = true,
+    val dngRaw: Boolean = false,
     val mode: CaptureMode = CaptureMode.PHOTO,
     val lens: LensChoice = LensChoice.MAIN,
     val teleconverter: Boolean = false,
     val videoStabMode: VideoStabMode = VideoStabMode.ENHANCED,
     val aspectRatio: AspectRatio = AspectRatio.W4_3,
+    val timer: ShutterTimer = ShutterTimer.OFF,
+    val driveMode: DriveMode = DriveMode.SINGLE,
+    val intervalSec: Int = 5,
+    val focusPeaking: Boolean = false,
+    val peakingLevel: PeakingLevel = PeakingLevel.MEDIUM,
+    val peakingColor: PeakingColor = PeakingColor.MAGENTA,
+    val zebra: Boolean = false,
+    val zebraLevel: ZebraLevel = ZebraLevel.IRE95,
+    val falseColor: Boolean = false,
+    val histogram: Boolean = false,
+    val waveform: Boolean = false,
     val grid: GridType = GridType.THIRDS,
+    val level: Boolean = false,
+    val punchIn: Boolean = false,
     val videoCodec: VideoCodec = VideoCodec.HEVC,
     val bitrateLevel: BitrateLevel = BitrateLevel.ULTRA,
     val videoFrameRate: VideoFrameRate = VideoFrameRate.DEFAULT,
@@ -174,7 +192,20 @@ class SettingsStore(private val prefs: SharedPreferences) {
                 teleconverter = prefs.getBoolean("${prefix}teleconverter", ed.teleconverter),
                 videoStabMode = enumOr(prefs.getString("${prefix}videoStabMode", null), ed.videoStabMode),
                 aspectRatio = enumOr(prefs.getString("${prefix}aspectRatio", null), ed.aspectRatio),
+                timer = enumOr(prefs.getString("${prefix}timer", null), ed.timer),
+                driveMode = enumOr(prefs.getString("${prefix}driveMode", null), ed.driveMode),
+                intervalSec = prefs.getInt("${prefix}intervalSec", ed.intervalSec).coerceAtLeast(1),
+                focusPeaking = prefs.getBoolean("${prefix}focusPeaking", ed.focusPeaking),
+                peakingLevel = enumOr(prefs.getString("${prefix}peakingLevel", null), ed.peakingLevel),
+                peakingColor = enumOr(prefs.getString("${prefix}peakingColor", null), ed.peakingColor),
+                zebra = prefs.getBoolean("${prefix}zebra", ed.zebra),
+                zebraLevel = enumOr(prefs.getString("${prefix}zebraLevel", null), ed.zebraLevel),
+                falseColor = prefs.getBoolean("${prefix}falseColor", ed.falseColor),
+                histogram = prefs.getBoolean("${prefix}histogram", ed.histogram),
+                waveform = prefs.getBoolean("${prefix}waveform", ed.waveform),
                 grid = enumOr(prefs.getString("${prefix}grid", null), ed.grid),
+                level = prefs.getBoolean("${prefix}level", ed.level),
+                punchIn = prefs.getBoolean("${prefix}punchIn", ed.punchIn),
                 videoCodec = enumOr(prefs.getString("${prefix}videoCodec", null), ed.videoCodec),
                 bitrateLevel = enumOr(prefs.getString("${prefix}bitrateLevel", null), ed.bitrateLevel),
                 videoFrameRate = enumOr(prefs.getString("${prefix}videoFrameRate", null), ed.videoFrameRate),
@@ -247,7 +278,20 @@ class SettingsStore(private val prefs: SharedPreferences) {
         putBoolean("${prefix}teleconverter", e.teleconverter)
         putString("${prefix}videoStabMode", e.videoStabMode.name)
         putString("${prefix}aspectRatio", e.aspectRatio.name)
+        putString("${prefix}timer", e.timer.name)
+        putString("${prefix}driveMode", e.driveMode.name)
+        putInt("${prefix}intervalSec", e.intervalSec)
+        putBoolean("${prefix}focusPeaking", e.focusPeaking)
+        putString("${prefix}peakingLevel", e.peakingLevel.name)
+        putString("${prefix}peakingColor", e.peakingColor.name)
+        putBoolean("${prefix}zebra", e.zebra)
+        putString("${prefix}zebraLevel", e.zebraLevel.name)
+        putBoolean("${prefix}falseColor", e.falseColor)
+        putBoolean("${prefix}histogram", e.histogram)
+        putBoolean("${prefix}waveform", e.waveform)
         putString("${prefix}grid", e.grid.name)
+        putBoolean("${prefix}level", e.level)
+        putBoolean("${prefix}punchIn", e.punchIn)
         putString("${prefix}videoCodec", e.videoCodec.name)
         putString("${prefix}bitrateLevel", e.bitrateLevel.name)
         putString("${prefix}videoFrameRate", e.videoFrameRate.name)

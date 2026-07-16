@@ -10,6 +10,7 @@ import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.ColorTransfer
+import com.hletrd.findx9tele.camera.DriveMode
 import com.hletrd.findx9tele.camera.ExposureMode
 import com.hletrd.findx9tele.camera.ExposureStep
 import com.hletrd.findx9tele.camera.FlashMode
@@ -22,13 +23,17 @@ import com.hletrd.findx9tele.camera.LensChoice
 import com.hletrd.findx9tele.camera.ManualControls
 import com.hletrd.findx9tele.camera.MemorySlot
 import com.hletrd.findx9tele.camera.MeteringMode
+import com.hletrd.findx9tele.camera.PeakingColor
+import com.hletrd.findx9tele.camera.PeakingLevel
 import com.hletrd.findx9tele.camera.ProcessingLevel
 import com.hletrd.findx9tele.camera.ShutterMode
+import com.hletrd.findx9tele.camera.ShutterTimer
 import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.camera.VideoFrameRate
 import com.hletrd.findx9tele.camera.VideoStabMode
 import com.hletrd.findx9tele.camera.WbGains
 import com.hletrd.findx9tele.camera.WbMode
+import com.hletrd.findx9tele.camera.ZebraLevel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -140,7 +145,20 @@ class SettingsStoreTest {
         teleconverter = true,
         videoStabMode = VideoStabMode.STANDARD,
         aspectRatio = AspectRatio.W16_9,
+        timer = ShutterTimer.SEC10,
+        driveMode = DriveMode.TIMELAPSE,
+        intervalSec = 17,
+        focusPeaking = true,
+        peakingLevel = PeakingLevel.HIGH,
+        peakingColor = PeakingColor.BLUE,
+        zebra = true,
+        zebraLevel = ZebraLevel.IRE70,
+        falseColor = true,
+        histogram = true,
+        waveform = true,
         grid = GridType.GOLDEN,
+        level = true,
+        punchIn = true,
         videoCodec = VideoCodec.AVC,
         bitrateLevel = BitrateLevel.MAX,
         videoFrameRate = VideoFrameRate.FPS_24,

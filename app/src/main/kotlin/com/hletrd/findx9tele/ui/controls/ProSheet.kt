@@ -10,6 +10,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -42,14 +43,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.isTraversalGroup
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -141,9 +149,10 @@ internal fun ProSheet(
     // exposes no way to disable that drag. A plain scrim + anchored panel can't be dragged at all;
     // it's dismissed only by the X, a scrim tap, or the system Back gesture.
     BackHandler(enabled = true, onBack = onDismiss)
-    // Interaction sources for indication-free clickables (scrim dismiss + panel click-through block).
+    // Interaction source for the indication-free scrim dismiss target.
     val scrimInteraction = remember { MutableInteractionSource() }
-    val panelInteraction = remember { MutableInteractionSource() }
+    val closeFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) { closeFocusRequester.requestFocus() }
 
     Box(modifier = modifier.fillMaxSize()) {
         // Scrim: tap outside the panel to dismiss.
@@ -151,6 +160,10 @@ internal fun ProSheet(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black.copy(alpha = 0.5f))
+                .semantics {
+                    contentDescription = "Close settings"
+                    role = Role.Button
+                }
                 .clickable(interactionSource = scrimInteraction, indication = null, onClick = onDismiss),
         )
 
@@ -161,8 +174,12 @@ internal fun ProSheet(
                 .fillMaxHeight(0.9f)
                 .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
                 .background(CameraColors.Pill)
-                // Consume taps on the panel so they don't fall through to the scrim below and dismiss.
-                .clickable(interactionSource = panelInteraction, indication = null, onClick = {})
+                .semantics {
+                    paneTitle = "Camera settings"
+                    isTraversalGroup = true
+                }
+                // Consume panel taps without adding a nameless dummy Button to the semantics tree.
+                .pointerInput(Unit) { detectTapGestures(onTap = {}) }
                 .statusBarsPadding()
                 .navigationBarsPadding(),
         ) {
@@ -172,7 +189,10 @@ internal fun ProSheet(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text("Menu", color = CameraColors.TextPrimary, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                CloseButton(onClick = onDismiss)
+                CloseButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.focusRequester(closeFocusRequester),
+                )
             }
 
             CompositionLocalProvider(LocalSettingHelp provides { key -> settingHelp(key)?.let { helpTip = it } }) {
@@ -213,7 +233,10 @@ internal fun ProSheet(
                 text = helpTip.orEmpty(),
                 color = CameraColors.TextPrimary,
                 style = MaterialTheme.typography.labelSmall,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .semantics { liveRegion = LiveRegionMode.Polite }
+                    .padding(horizontal = 20.dp, vertical = 8.dp),
             )
         }
     }
@@ -489,7 +512,17 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
     val caps = state.caps
     TabTitle("Shooting")
     SectionHeader("Format")
-    PhotoFormatToggles(formats = state.photoFormats, onSetPhotoFormats = actions::onSetPhotoFormats)
+    PhotoFormatToggles(
+        formats = state.photoFormats,
+        rawAvailable = state.teleconverterMode ||
+            (
+                state.cameraOverrideId != null &&
+                    state.caps?.supportsRaw == true &&
+                    state.caps.physicalId == null &&
+                    !state.caps.isLogicalMultiCamera
+                ),
+        onSetPhotoFormats = actions::onSetPhotoFormats,
+    )
     SegmentedSelector(
         label = "Aspect",
         options = AspectRatio.entries,
@@ -802,14 +835,22 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     // integer fps (24/30/60 here); 120 needs a matching high-speed config; drop-frame variants
     // (23.976/29.97/59.94) ride their integer parent. 8K is capped ≤30.
     val fpsOptions = VideoFrameRate.availableFor(caps, state.videoResolution, codec)
-    SegmentedSelector(
-        label = "FPS",
-        options = fpsOptions,
-        selected = state.videoFrameRate,
-        labelFor = ::videoFrameRateLabel,
-        onSelect = actions::onVideoFrameRate,
-        enabled = recordingMutable,
-    )
+    if (fpsOptions.isEmpty()) {
+        Text(
+            "FPS unavailable for this camera and resolution.",
+            color = CameraColors.Record,
+            style = MaterialTheme.typography.labelSmall,
+        )
+    } else {
+        SegmentedSelector(
+            label = "FPS",
+            options = fpsOptions,
+            selected = state.videoFrameRate,
+            labelFor = ::videoFrameRateLabel,
+            onSelect = actions::onVideoFrameRate,
+            enabled = recordingMutable,
+        )
+    }
     if (state.videoFrameRate.highSpeed) {
         Text(
             "Still capture off.",

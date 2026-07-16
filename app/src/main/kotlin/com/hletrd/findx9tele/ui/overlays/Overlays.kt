@@ -28,6 +28,9 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hletrd.findx9tele.BuildConfig
@@ -49,6 +52,32 @@ import com.hletrd.findx9tele.ui.controls.videoResolutionLabel
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
+
+/**
+ * Small HUD text must remain readable over a white frame. At 82% black, opaque secondary text
+ * (#9E9E9E) retains >5:1 contrast and the blue status accent retains >4.7:1.
+ */
+internal const val HUD_TEXT_SCRIM_ALPHA = 0.82f
+
+/** WCAG contrast of [foregroundRgb] against black [scrimAlpha] composited over white. */
+internal fun contrastRatioOnWhiteScrim(foregroundRgb: Int, scrimAlpha: Float): Double {
+    val foregroundLuminance = relativeLuminance(foregroundRgb)
+    val backgroundChannel = (1.0 - scrimAlpha.coerceIn(0f, 1f)).coerceIn(0.0, 1.0)
+    val backgroundLuminance = linearSrgb(backgroundChannel)
+    val lighter = maxOf(foregroundLuminance, backgroundLuminance)
+    val darker = minOf(foregroundLuminance, backgroundLuminance)
+    return (lighter + 0.05) / (darker + 0.05)
+}
+
+private fun relativeLuminance(rgb: Int): Double {
+    val red = linearSrgb(((rgb shr 16) and 0xFF) / 255.0)
+    val green = linearSrgb(((rgb shr 8) and 0xFF) / 255.0)
+    val blue = linearSrgb((rgb and 0xFF) / 255.0)
+    return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+}
+
+private fun linearSrgb(channel: Double): Double =
+    if (channel <= 0.04045) channel / 12.92 else Math.pow((channel + 0.055) / 1.055, 2.4)
 
 /**
  * Composition grid, drawn per [GridType]. Purely decorative; visibility/style is entirely driven
@@ -245,7 +274,13 @@ fun FocusReticle(
         AfIndication.FAILED -> Color(0xFFFF453A)
         AfIndication.SCANNING, AfIndication.IDLE -> Color(0xFFFFD60A)
     }
-    Canvas(modifier = modifier) {
+    val focusDescription = when (indication) {
+        AfIndication.FOCUSED -> "Focus locked"
+        AfIndication.FAILED -> "Autofocus failed"
+        AfIndication.SCANNING -> "Autofocus searching"
+        AfIndication.IDLE -> "Focus point"
+    }
+    Canvas(modifier = modifier.semantics { contentDescription = focusDescription }) {
         val cx = point.first * size.width
         val cy = point.second * size.height
         val half = 32.dp.toPx()
@@ -275,7 +310,9 @@ fun RecordingIndicator(elapsedMs: Long, modifier: Modifier = Modifier) {
     val timeLabel = "%02d:%02d".format(Locale.US, minutes, seconds)
     Row(
         modifier = modifier
-            .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(50)),
+            .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(50))
+            // Keep a stable REC description; elapsed telemetry must not be re-announced every second.
+            .clearAndSetSemantics { contentDescription = "Recording" },
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -345,7 +382,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier) {
     }
     Row(
         modifier = modifier
-            .background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(8.dp))
+            .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA), RoundedCornerShape(8.dp))
             // Sony bodies paginate their status strip; with many concurrent tags (AEL/AWL/AFL/LOUPE/…)
             // trailing tags would run off-screen, so scroll keeps every lock tag reachable.
             .horizontalScroll(rememberScrollState())

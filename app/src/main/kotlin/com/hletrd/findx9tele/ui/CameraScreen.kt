@@ -19,6 +19,7 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
@@ -57,9 +58,18 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.isTraversalGroup
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -123,6 +133,7 @@ import com.hletrd.findx9tele.ui.overlays.FrameLinesOverlay
 import com.hletrd.findx9tele.ui.overlays.FocusReticle
 import com.hletrd.findx9tele.ui.overlays.GridOverlay
 import com.hletrd.findx9tele.ui.overlays.HistogramOverlay
+import com.hletrd.findx9tele.ui.overlays.HUD_TEXT_SCRIM_ALPHA
 import com.hletrd.findx9tele.ui.overlays.LevelOverlay
 import com.hletrd.findx9tele.ui.overlays.RecordingIndicator
 import com.hletrd.findx9tele.ui.overlays.StatusBar
@@ -161,6 +172,7 @@ fun CameraScreen(
     var fnOverlayVisible by remember { mutableStateOf(false) }
     var manualDialOpen by remember { mutableStateOf(false) }
     val currentActions = rememberUpdatedState(actions)
+    val modalVisible = sheetVisible || fnOverlayVisible || (state.reviewOpen && reviewUri != null)
 
     fun openSheet(tab: ProSheetTab) {
         sheetInitialTab = tab
@@ -203,7 +215,8 @@ fun CameraScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(CameraColors.Background),
+            .background(CameraColors.Background)
+            .then(if (modalVisible) Modifier.clearAndSetSemantics { } else Modifier),
     ) {
         // The viewfinder is LETTERBOXED, not cover-cropped: the TextureView (plus every overlay that
         // must align with the image frame) lives in a centered box sized to the displayed preview
@@ -220,6 +233,19 @@ fun CameraScreen(
             AndroidView(
                 modifier = Modifier
                     .fillMaxSize()
+                    .semantics {
+                        contentDescription = "Camera viewfinder"
+                        customActions = listOf(
+                            CustomAccessibilityAction("Focus at center") {
+                                currentActions.value.onTapFocus(0.5f, 0.5f)
+                                true
+                            },
+                            CustomAccessibilityAction("Reset focus point") {
+                                currentActions.value.onResetFocusPoint()
+                                true
+                            },
+                        )
+                    }
                     // Tap-to-focus AND pinch-to-zoom share ONE gesture loop. Two separate pointerInput
                     // blocks (detectTapGestures + detectTransformGestures) fought each other: the tap
                     // detector consumed the gesture and killed the pinch after ~2 frames, so the pinch
@@ -450,6 +476,13 @@ fun CameraScreen(
                 modifier = Modifier
                     .align(Alignment.Center)
                     .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(8.dp))
+                    .semantics {
+                        liveRegion = if (message.isUrgentStatus()) {
+                            LiveRegionMode.Assertive
+                        } else {
+                            LiveRegionMode.Polite
+                        }
+                    }
                     .padding(horizontal = 14.dp, vertical = 8.dp),
             )
         }
@@ -614,13 +647,17 @@ fun CameraScreen(
                 reviewUri = null
             },
             onDelete = {
-                actions.onDeleteLastMedia()
+                actions.onDeleteLastMedia(frozenReviewUri)
                 actions.onReviewOpenChange(false)
                 reviewUri = null
             },
         )
     }
 }
+
+private fun String.isUrgentStatus(): Boolean =
+    listOf("error", "fail", "unable", "unavailable", "denied", "insufficient")
+        .any { contains(it, ignoreCase = true) }
 
 /**
  * Rotates content by [degrees] AND reserves the ROTATED bounding box in layout — unlike Modifier.rotate,
@@ -1110,6 +1147,8 @@ private fun FnOverlay(
             .take(12)
             .ifEmpty { FnSlot.DEFAULT }
     }
+    val closeFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) { closeFocusRequester.requestFocus() }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1134,11 +1173,12 @@ private fun FnOverlay(
                 .clip(RoundedCornerShape(8.dp))
                 .background(Color(0xF0181818))
                 .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(8.dp))
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = {},
-                )
+                .semantics {
+                    paneTitle = "Function menu"
+                    isTraversalGroup = true
+                }
+                // Consume blank-panel taps without exposing a nameless dummy Button.
+                .pointerInput(Unit) { detectTapGestures(onTap = {}) }
                 .padding(10.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -1153,7 +1193,12 @@ private fun FnOverlay(
                     color = CameraColors.TextSecondary,
                     style = MaterialTheme.typography.labelMedium,
                     modifier = Modifier
+                        .focusRequester(closeFocusRequester)
                         .clip(RoundedCornerShape(50))
+                        .semantics {
+                            contentDescription = "Close function menu"
+                            role = Role.Button
+                        }
                         .clickable(onClick = onDismiss)
                         .padding(horizontal = 10.dp, vertical = 5.dp),
                 )
@@ -1167,6 +1212,7 @@ private fun FnOverlay(
                         FnOverlayTile(
                             slot = slot,
                             value = fnSlotValue(slot, state),
+                            enabled = quickFnEnabled(slot, state),
                             onClick = {
                                 performQuickFn(slot, state, actions)
                                 onDismiss()
@@ -1187,6 +1233,7 @@ private fun FnOverlay(
 private fun FnOverlayTile(
     slot: FnSlot,
     value: String,
+    enabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -1194,30 +1241,38 @@ private fun FnOverlayTile(
         modifier = modifier
             .height(58.dp)
             .clip(RoundedCornerShape(8.dp))
-            .background(Color.White.copy(alpha = 0.09f))
+            .background(Color.White.copy(alpha = if (enabled) 0.09f else 0.04f))
             .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(8.dp))
             .semantics {
-                contentDescription = "${fnSlotLabel(slot)} $value"
+                contentDescription = fnSlotLabel(slot)
+                stateDescription = value
                 role = Role.Button
             }
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 9.dp, vertical = 7.dp),
         verticalArrangement = Arrangement.SpaceBetween,
     ) {
         Text(
             fnSlotLabel(slot),
-            color = CameraColors.TextSecondary,
+            color = CameraColors.TextSecondary.copy(alpha = if (enabled) 1f else 0.55f),
             style = MaterialTheme.typography.labelSmall,
             maxLines = 1,
         )
         Text(
             value,
-            color = CameraColors.TextPrimary,
+            color = CameraColors.TextPrimary.copy(alpha = if (enabled) 1f else 0.55f),
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.Bold,
             maxLines = 1,
         )
     }
+}
+
+private fun quickFnEnabled(slot: FnSlot, state: CameraUiState): Boolean = when (slot) {
+    FnSlot.TRANSFER -> !state.isRecording && state.videoCodec == VideoCodec.HEVC
+    FnSlot.TELECONVERTER -> !state.isRecording
+    FnSlot.OPEN_GATE -> state.mode == CaptureMode.VIDEO && !state.isRecording
+    else -> true
 }
 
 @Composable
@@ -1323,7 +1378,7 @@ private fun ModeLabel(text: String, active: Boolean, enabled: Boolean, onClick: 
             // snow, water — normal super-tele fare) the mid-gray inactive label fell under usable
             // contrast. Same treatment as every sibling HUD element.
             .clip(RoundedCornerShape(50))
-            .background(Color.Black.copy(alpha = 0.36f))
+            .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
             .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 6.dp, vertical = 2.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -1506,6 +1561,7 @@ private object PreviewCameraActions : CameraActions {
     override fun onFocusSlider(slider: Float) = Unit
     override fun onAfLock(locked: Boolean) = Unit
     override fun onTapFocus(nx: Float, ny: Float) = Unit
+    override fun onResetFocusPoint() = Unit
 
     override fun onIso(iso: Int) = Unit
     override fun onShutterNs(ns: Long) = Unit
@@ -1587,7 +1643,7 @@ private object PreviewCameraActions : CameraActions {
     override fun onRecallMemorySlot(slot: com.hletrd.findx9tele.camera.MemorySlot) = Unit
     override fun onVolumeKeyAction(action: com.hletrd.findx9tele.camera.HardwareKeyAction) = Unit
     override fun onHalfPressAction(action: com.hletrd.findx9tele.camera.HardwareKeyAction) = Unit
-    override fun onDeleteLastMedia() = Unit
+    override fun onDeleteLastMedia(uri: android.net.Uri) = Unit
 }
 
 @Preview(showBackground = true)

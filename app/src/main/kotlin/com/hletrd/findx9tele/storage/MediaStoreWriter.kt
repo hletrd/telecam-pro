@@ -85,9 +85,9 @@ object MediaStoreWriter {
             .getOrDefault(false)
     }
 
-    fun delete(context: Context, uri: Uri) {
-        runCatching { context.contentResolver.delete(uri, null, null) }
-    }
+    /** True only when the resolver confirms at least one row was removed. */
+    fun delete(context: Context, uri: Uri): Boolean =
+        runCatching { context.contentResolver.delete(uri, null, null) > 0 }.getOrDefault(false)
 
     /**
      * Deletes our own leftover pending (IS_PENDING=1) entries under DCIM/[subDir] — orphans from a

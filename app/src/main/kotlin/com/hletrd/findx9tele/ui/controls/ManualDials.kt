@@ -31,9 +31,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.sizeIn
-import androidx.compose.ui.semantics.onLongClick
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -459,11 +461,16 @@ private fun DialChip(
     Box(
         modifier = modifier
             .sizeIn(minHeight = 48.dp)
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            // TalkBack: combinedClickable surfaces the long-press only as a generic "long press"
-            // gesture, so give the action a spoken label. Touch still routes through the
-            // combinedClickable above; this names the action for screen-reader users (P4.9).
-            .semantics { onLongClick(label = "Open Fn menu") { onLongClick(); true } },
+            .combinedClickable(
+                enabled = enabled,
+                onClick = onClick,
+                onLongClickLabel = "Open Fn menu",
+                onLongClick = onLongClick,
+            )
+            .semantics {
+                contentDescription = label
+                stateDescription = value
+            },
         contentAlignment = Alignment.Center,
     ) {
         Row(
@@ -529,14 +536,17 @@ private fun FocusRuler(controls: ManualControls, caps: CameraCaps?, onFocusSlide
     val minDiopters = caps?.minFocusDistanceDiopters ?: 0f
     val enabled = controls.focusMode == FocusMode.MANUAL && minDiopters > 0f
     val fraction = FocusMapping.dioptersToSlider(controls.focusDistanceDiopters, minDiopters)
+    val readout = formatFocusRelative(controls.focusDistanceDiopters, minDiopters)
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        RulerReadout(formatFocusRelative(controls.focusDistanceDiopters, minDiopters))
+        RulerReadout(readout)
         // Relative 0..100 scale (0 = ∞); shorter travel than the default so fine focus near infinity
         // — where the afocal converter lands — is reachable without a marathon drag.
         RulerSlider(
             fraction = fraction,
             onFractionChange = onFocusSlider,
             enabled = enabled,
+            semanticLabel = "Focus distance",
+            valueDescription = readout,
             totalUnits = 100,
             majorEvery = 10,
         )
@@ -554,11 +564,14 @@ private fun ShutterRuler(controls: ManualControls, caps: CameraCaps?, actions: C
         if (controls.shutterMode == ShutterMode.ANGLE) {
             val fraction = ((controls.shutterAngle - 1f) / 359f).coerceIn(0f, 1f)
             val readout = "%.0f°  (%s)".format(Locale.US, controls.shutterAngle, formatShutterSpeed(controls.effectiveExposureNsForDisplay()))
+            val describedReadout = if (controls.autoShutterDriven) "Auto $readout" else readout
             RulerReadout(if (controls.autoShutterDriven) "A $readout" else readout)
             RulerSlider(
                 fraction = fraction,
                 onFractionChange = { f -> actions.onShutterAngle((1f + f * 359f).coerceIn(1f, 360f)) },
                 enabled = enabled,
+                semanticLabel = "Shutter angle",
+                valueDescription = describedReadout,
             )
         } else {
             val range = caps?.exposureTimeRange ?: Range(controls.exposureTimeNs, controls.exposureTimeNs)
@@ -568,11 +581,14 @@ private fun ShutterRuler(controls: ManualControls, caps: CameraCaps?, actions: C
                 stops.indices.minByOrNull { kotlin.math.abs(stops[it] - controls.exposureTimeNs) } ?: 0
             }
             val fraction = if (n <= 1) 0f else idx.toFloat() / (n - 1)
-            RulerReadout(if (controls.autoShutterDriven) "A ${formatShutterSpeed(controls.exposureTimeNs)}" else formatShutterSpeed(controls.exposureTimeNs))
+            val readout = formatShutterSpeed(controls.exposureTimeNs)
+            RulerReadout(if (controls.autoShutterDriven) "A $readout" else readout)
             RulerSlider(
                 fraction = fraction,
                 onFractionChange = { f -> actions.onShutterNs(stops[(f * (n - 1)).roundToInt().coerceIn(0, n - 1)]) },
                 enabled = enabled,
+                semanticLabel = "Shutter speed",
+                valueDescription = if (controls.autoShutterDriven) "Auto $readout" else readout,
                 totalUnits = (n - 1).coerceAtLeast(1),
                 majorEvery = stepMajorEvery(controls.exposureStep),
                 snap = true,
@@ -685,12 +701,15 @@ private fun IsoRuler(controls: ManualControls, caps: CameraCaps?, onIso: (Int) -
         stops.indices.minByOrNull { kotlin.math.abs(stops[it] - controls.iso) } ?: 0
     }
     val fraction = if (n <= 1) 0f else idx.toFloat() / (n - 1)
+    val readout = if (controls.autoIsoDriven) "Auto ISO ${controls.iso}" else "ISO ${controls.iso}"
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         RulerReadout(if (controls.autoIsoDriven) "A ISO ${controls.iso}" else "ISO ${controls.iso}")
         RulerSlider(
             fraction = fraction,
             onFractionChange = { f -> onIso(stops[(f * (n - 1)).roundToInt().coerceIn(0, n - 1)]) },
             enabled = enabled,
+            semanticLabel = "ISO",
+            valueDescription = readout,
             totalUnits = (n - 1).coerceAtLeast(1), // one tick per stop → snappy, short strip
             majorEvery = stepMajorEvery(controls.exposureStep),
             snap = true,
@@ -704,6 +723,7 @@ private const val WB_KELVIN_MAX = 10000f
 @Composable
 private fun WbRuler(controls: ManualControls, onWbKelvin: (Int) -> Unit) {
     val fraction = ((controls.wbKelvin - WB_KELVIN_MIN) / (WB_KELVIN_MAX - WB_KELVIN_MIN)).coerceIn(0f, 1f)
+    val readout = "${controls.wbKelvin} kelvin"
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         RulerReadout("${controls.wbKelvin}K")
         RulerSlider(
@@ -713,6 +733,8 @@ private fun WbRuler(controls: ManualControls, onWbKelvin: (Int) -> Unit) {
                 onWbKelvin(kelvin)
             },
             enabled = controls.wbMode == WbMode.MANUAL,
+            semanticLabel = "White balance",
+            valueDescription = readout,
         )
     }
 }
@@ -728,8 +750,9 @@ private fun EvRuler(controls: ManualControls, caps: CameraCaps?, onEv: (Int) -> 
     val hi = maxOf(range.lower, range.upper)
     val fraction = if (lo >= hi) 0f else ((controls.exposureCompensation - lo).toFloat() / (hi - lo).toFloat()).coerceIn(0f, 1f)
     val majorEvery = (1f / stepValue).roundToInt().coerceAtLeast(1)
+    val readout = "%+.1f EV".format(Locale.US, controls.exposureCompensation * stepValue)
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        RulerReadout("%+.1f EV".format(Locale.US, controls.exposureCompensation * stepValue))
+        RulerReadout(readout)
         RulerSlider(
             fraction = fraction,
             onFractionChange = { f ->
@@ -737,6 +760,8 @@ private fun EvRuler(controls: ManualControls, caps: CameraCaps?, onEv: (Int) -> 
                 onEv(ev)
             },
             enabled = controls.exposureMode != ExposureMode.MANUAL,
+            semanticLabel = "Exposure compensation",
+            valueDescription = readout,
             totalUnits = (hi - lo).coerceAtLeast(1),
             majorEvery = majorEvery,
             snap = true,
@@ -763,12 +788,15 @@ private fun ZoomRuler(
     }
     val display = controls.zoomRatio * base
     val fraction = if (hi <= lo) 0f else ((display - lo) / (hi - lo)).coerceIn(0f, 1f)
+    val readout = "%.1f×".format(Locale.US, display)
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        RulerReadout("%.1f×".format(Locale.US, display))
+        RulerReadout(readout)
         RulerSlider(
             fraction = fraction,
             onFractionChange = { f -> onZoomRatio(((lo + f * (hi - lo)) / base).coerceIn(range.lower, hi / base)) },
             enabled = hi > lo,
+            semanticLabel = "Zoom",
+            valueDescription = readout,
             totalUnits = 120,
             majorEvery = 12,
         )
@@ -792,6 +820,8 @@ private fun ZoomRuler(
  *   real step count (e.g. EV raw-compensation-unit count) for literal 1-tick-per-step snapping,
  *   or a large default for a dense, effectively-continuous feel (focus/shutter/ISO/WB).
  * @param majorEvery every Nth tick is drawn taller/brighter (purely a visual rhythm cue).
+ * @param semanticLabel spoken name of the real camera control represented by this ruler.
+ * @param valueDescription formatted camera-domain value announced instead of a percentage.
  */
 @Composable
 fun RulerSlider(
@@ -804,6 +834,8 @@ fun RulerSlider(
     tickSpacing: Dp = 12.dp,
     accentColor: Color = CameraColors.ManualActive,
     snap: Boolean = false,
+    semanticLabel: String = "Value",
+    valueDescription: String = "${(fraction.coerceIn(0f, 1f) * 100).roundToInt()} percent",
 ) {
     val density = LocalDensity.current
     val view = LocalView.current
@@ -831,6 +863,9 @@ fun RulerSlider(
             // rides this control, so expose it as an adjustable value with a set action.
             .progressSemantics(value = fraction.coerceIn(0f, 1f), valueRange = 0f..1f)
             .semantics {
+                contentDescription = semanticLabel
+                stateDescription = valueDescription
+                if (!enabled) disabled()
                 setProgress { target ->
                     if (!enabled) return@setProgress false
                     onFractionChange(target.coerceIn(0f, 1f))
