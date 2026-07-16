@@ -220,6 +220,32 @@ class CameraEngine(private val context: Context) {
         return true
     }
 
+    /**
+     * Same-route intents optimistically reuse the accepted session. A superseded dual-open attempt
+     * can restore that controller with a newer session token, so a rejected terminal commit must
+     * converge through the ordinary reconfigure path while this intent still owns the engine.
+     */
+    private fun commitFastPathOrReconfigure(
+        transaction: OpticsTransaction,
+        cameraId: String,
+        expectedController: CameraController,
+        terminalMutation: () -> Unit,
+    ) {
+        convergeFastPathCommit(
+            commit = {
+                commitOpticsReady(
+                    transaction.generation,
+                    expectedController,
+                    transaction.before.sessionGeneration,
+                    terminalMutation,
+                )
+            },
+            ownsTransaction = { ownsOpticsTransaction(transaction) },
+            canReconfigure = { !paused && recorder == null },
+            reconfigure = { reconfigureCamera(cameraId, transaction) },
+        )
+    }
+
     private fun ownsOpticsTransaction(transaction: OpticsTransaction): Boolean =
         reconfigurationOwnsGeneration(opticsIntentGeneration.get(), transaction.generation)
 
@@ -658,11 +684,7 @@ class CameraEngine(private val context: Context) {
                     // Same camera and same configured stream: the intent only changed request-side
                     // mode semantics, so the existing session is still the ready session.
                     val expectedController = controller ?: return@execute
-                    commitOpticsReady(
-                        transaction.generation,
-                        expectedController,
-                        transaction.before.sessionGeneration,
-                    ) {
+                    commitFastPathOrReconfigure(transaction, id, expectedController) {
                         overrideId = id
                     }
                 } else {
@@ -726,11 +748,7 @@ class CameraEngine(private val context: Context) {
                 reconfigureCamera(id, transaction)
             } else {
                 val expectedController = controller ?: return@execute
-                commitOpticsReady(
-                    transaction.generation,
-                    expectedController,
-                    transaction.before.sessionGeneration,
-                ) {
+                commitFastPathOrReconfigure(transaction, id, expectedController) {
                     // Enqueue the old generation's request-side work while the commit monitor is
                     // held. A newer begin cannot enqueue its packet until after this one, preserving
                     // controller/GL handler order as well as engine-field ownership.
@@ -1146,11 +1164,7 @@ class CameraEngine(private val context: Context) {
                     transaction.before.readyController === controller
                 ) {
                     val expectedController = controller ?: return@execute
-                    commitOpticsReady(
-                        transaction.generation,
-                        expectedController,
-                        transaction.before.sessionGeneration,
-                    ) {
+                    commitFastPathOrReconfigure(transaction, id, expectedController) {
                         overrideId = id
                         applyStabilization()
                     }
@@ -1173,11 +1187,7 @@ class CameraEngine(private val context: Context) {
                     transaction.before.readyController === controller
                 ) {
                     val expectedController = controller ?: return@execute
-                    commitOpticsReady(
-                        transaction.generation,
-                        expectedController,
-                        transaction.before.sessionGeneration,
-                    ) {
+                    commitFastPathOrReconfigure(transaction, id, expectedController) {
                         setZoomRatio(resolved.controls.zoomRatio)
                         overrideId = id
                     }
@@ -2627,6 +2637,21 @@ class CameraEngine(private val context: Context) {
 /** Prevents an older asynchronous camera intent from undoing a newer user choice. */
 internal fun reconfigurationOwnsGeneration(currentGeneration: Long, expectedGeneration: Long): Boolean =
     currentGeneration == expectedGeneration
+
+/**
+ * Completes a same-route transaction or schedules exactly one structural retry when the optimistic
+ * session owner was invalidated. Dependency lambdas keep the decision deterministic in host tests.
+ */
+internal fun convergeFastPathCommit(
+    commit: () -> Boolean,
+    ownsTransaction: () -> Boolean,
+    canReconfigure: () -> Boolean,
+    reconfigure: () -> Unit,
+): Boolean {
+    val committed = commit()
+    if (!committed && ownsTransaction() && canReconfigure()) reconfigure()
+    return committed
+}
 
 /**
  * Serializes optics intent publication and terminal acceptance on one monitor. Production supplies

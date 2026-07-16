@@ -208,6 +208,66 @@ class ReconfigurationGenerationTest {
     }
 
     @Test
+    fun `invalidated current fast path schedules exactly one reconfigure`() {
+        var commits = 0
+        var reconfigures = 0
+
+        assertFalse(
+            convergeFastPathCommit(
+                commit = { commits++; false },
+                ownsTransaction = { true },
+                canReconfigure = { true },
+                reconfigure = { reconfigures++ },
+            ),
+        )
+
+        assertEquals(1, commits)
+        assertEquals(1, reconfigures)
+    }
+
+    @Test
+    fun `superseded or inactive fast path does not reconfigure`() {
+        var reconfigures = 0
+
+        assertFalse(
+            convergeFastPathCommit(
+                commit = { false },
+                ownsTransaction = { false },
+                canReconfigure = { true },
+                reconfigure = { reconfigures++ },
+            ),
+        )
+        assertFalse(
+            convergeFastPathCommit(
+                commit = { false },
+                ownsTransaction = { true },
+                canReconfigure = { false },
+                reconfigure = { reconfigures++ },
+            ),
+        )
+
+        assertEquals(0, reconfigures)
+    }
+
+    @Test
+    fun `successful fast path does not schedule redundant reconfigure`() {
+        var ownershipChecks = 0
+        var reconfigures = 0
+
+        assertTrue(
+            convergeFastPathCommit(
+                commit = { true },
+                ownsTransaction = { ownershipChecks++; true },
+                canReconfigure = { true },
+                reconfigure = { reconfigures++ },
+            ),
+        )
+
+        assertEquals(0, ownershipChecks)
+        assertEquals(0, reconfigures)
+    }
+
+    @Test
     fun `new intent waits until terminal mutation and callback generation are captured`() {
         val gate = OpticsCommitGate()
         val older = gate.begin { it }
