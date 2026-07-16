@@ -60,4 +60,54 @@ class OpticsTransitionPolicyTest {
         assertFalse(validatesVideoSizeAgainstCurrentCaps(VideoSizeRequestSource.RECALL))
         assertTrue(validatesVideoSizeAgainstCurrentCaps(VideoSizeRequestSource.INTERACTIVE))
     }
+
+    @Test
+    fun `photo recall on same logical route uses request fast path`() {
+        assertFalse(
+            resolvedOpticsRequiresReconfigure(
+                beforeVideo = false,
+                targetVideo = false,
+                beforeTeleconverter = false,
+                targetTeleconverter = false,
+                beforeCameraId = "logical-back",
+                targetCameraId = "logical-back",
+                controllerAvailable = true,
+                beforeReady = true,
+                readyControllerMatches = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `resolved recall reconfigures every structural or unready route`() {
+        fun requires(
+            beforeVideo: Boolean = false,
+            targetVideo: Boolean = false,
+            beforeTele: Boolean = false,
+            targetTele: Boolean = false,
+            beforeId: String? = "logical-back",
+            targetId: String? = "logical-back",
+            controller: Boolean = true,
+            ready: Boolean = true,
+            owner: Boolean = true,
+        ) = resolvedOpticsRequiresReconfigure(
+            beforeVideo,
+            targetVideo,
+            beforeTele,
+            targetTele,
+            beforeId,
+            targetId,
+            controller,
+            ready,
+            owner,
+        )
+
+        assertTrue(requires(targetVideo = true))
+        assertTrue(requires(targetTele = true))
+        assertTrue(requires(targetId = "standalone-tele"))
+        assertTrue(requires(beforeId = null))
+        assertTrue(requires(controller = false))
+        assertTrue(requires(ready = false))
+        assertTrue(requires(owner = false))
+    }
 }

@@ -711,11 +711,17 @@ class CameraEngine(private val context: Context) {
             }
             val before = transaction.before
             val beforeCameraId = before.selection?.let { it.physicalId ?: it.logicalId }
-            val structuralChange = before.videoMode != enabledVideo ||
-                before.lens != resolvedLens ||
-                before.teleconverter != resolvedTeleconverter ||
-                beforeCameraId != id || controller == null || !before.ready ||
-                before.readyController !== controller
+            val structuralChange = resolvedOpticsRequiresReconfigure(
+                beforeVideo = before.videoMode,
+                targetVideo = enabledVideo,
+                beforeTeleconverter = before.teleconverter,
+                targetTeleconverter = resolvedTeleconverter,
+                beforeCameraId = beforeCameraId,
+                targetCameraId = id,
+                controllerAvailable = controller != null,
+                beforeReady = before.ready,
+                readyControllerMatches = before.readyController === controller,
+            )
             if (structuralChange) {
                 reconfigureCamera(id, transaction)
             } else {
@@ -2699,6 +2705,26 @@ internal fun rollbackOpticsState(
 /** Rapid intents share the last Ready baseline instead of snapshotting an in-flight candidate. */
 internal fun <T> selectRollbackBaseline(cameraReady: Boolean, current: T, pendingBaseline: T?): T =
     if (cameraReady) current else pendingBaseline ?: current
+
+/**
+ * Whether a recalled optics packet changes the Camera2 route/session contract. A non-TELE Photo
+ * lens band is a unified-zoom preset on one logical camera, so the lens enum itself is deliberately
+ * absent: same-id recalls can commit controls through the request fast path without a blackout.
+ */
+internal fun resolvedOpticsRequiresReconfigure(
+    beforeVideo: Boolean,
+    targetVideo: Boolean,
+    beforeTeleconverter: Boolean,
+    targetTeleconverter: Boolean,
+    beforeCameraId: String?,
+    targetCameraId: String?,
+    controllerAvailable: Boolean,
+    beforeReady: Boolean,
+    readyControllerMatches: Boolean,
+): Boolean = beforeVideo != targetVideo ||
+    beforeTeleconverter != targetTeleconverter ||
+    beforeCameraId == null || beforeCameraId != targetCameraId ||
+    !controllerAvailable || !beforeReady || !readyControllerMatches
 
 /** Thread-safe ownership token for completion-paced capture sequences. */
 internal class CaptureSequenceGeneration {
