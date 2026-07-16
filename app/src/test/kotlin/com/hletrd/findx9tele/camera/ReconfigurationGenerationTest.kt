@@ -114,4 +114,11 @@ class ReconfigurationGenerationTest {
         assertFalse(reconfigurationOwnsGeneration(newer, older))
         assertTrue(reconfigurationOwnsGeneration(newer, newer))
     }
+
+    @Test
+    fun `queued ready publication is rejected after supersession or pause`() {
+        assertTrue(cameraReadyPublicationIsCurrent(42L, 42L, cameraReady = true))
+        assertFalse(cameraReadyPublicationIsCurrent(43L, 42L, cameraReady = true))
+        assertFalse(cameraReadyPublicationIsCurrent(42L, 42L, cameraReady = false))
+    }
 }

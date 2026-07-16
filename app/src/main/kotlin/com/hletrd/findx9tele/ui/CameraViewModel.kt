@@ -192,12 +192,16 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         }
         // Camera health (engine camera/setup threads → StateFlow is thread-safe): dims the shutter
         // while the session is down instead of silently declining taps.
-        engine.onCameraReadyChange = { ready ->
-            mainHandler.post {
-                _state.update { current ->
-                    if (!ready) {
-                        current.copy(cameraReady = false)
-                    } else {
+        engine.onCameraReadyChange = { ready, generation ->
+            if (!ready) {
+                // False is immediately authoritative and carries no auxiliary state mutation.
+                _state.update { it.copy(cameraReady = false) }
+            } else {
+                mainHandler.post {
+                    // A newer optics intent or pause/session reopen can land while this camera-thread
+                    // callback is queued for main. Never publish stale Ready or normalize its RAW state.
+                    if (!engine.isCameraReadyForOpticsGeneration(generation)) return@post
+                    _state.update { current ->
                         // RAW truth and the pre-TELE return baseline change only when a camera intent
                         // is accepted. Optimistic normalization made a failed TELE-off irreversible.
                         val accepted = acceptedOpticsAuxState(

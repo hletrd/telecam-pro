@@ -91,7 +91,7 @@ class CameraEngine(private val context: Context) {
     // Camera-health signal for the UI (dim the shutter, show a persistent OSD tag while down):
     // fires on every cameraReady flip. A silent scheduleCameraRecovery exhaustion previously left a
     // black viewfinder behind a fully interactive-looking shutter with zero indication.
-    var onCameraReadyChange: ((Boolean) -> Unit)? = null
+    var onCameraReadyChange: ((ready: Boolean, generation: Long) -> Unit)? = null
     /** Restores UI optics when a current-generation camera switch fails before closing the old one. */
     var onOpticsRollback: ((CaptureMode, LensChoice, Boolean, ManualControls, String?, generation: Long) -> Unit)? = null
 
@@ -101,7 +101,7 @@ class CameraEngine(private val context: Context) {
     private fun updateCameraReady(ready: Boolean) {
         cameraReady = ready
         if (ready) readyController = controller
-        onCameraReadyChange?.invoke(ready)
+        onCameraReadyChange?.invoke(ready, opticsIntentGeneration.get())
     }
 
     private fun invalidateCameraReady() {
@@ -525,6 +525,10 @@ class CameraEngine(private val context: Context) {
 
     fun isOpticsGenerationCurrent(generation: Long): Boolean =
         reconfigurationOwnsGeneration(opticsIntentGeneration.get(), generation)
+
+    /** Rechecks a queued UI Ready publication after it crosses onto the main thread. */
+    fun isCameraReadyForOpticsGeneration(generation: Long): Boolean =
+        cameraReadyPublicationIsCurrent(opticsIntentGeneration.get(), generation, cameraReady)
 
     fun setVideoMode(enabled: Boolean, resolvedLens: LensChoice, resolvedControls: ManualControls) {
         // Publish one already-resolved optics packet before queuing any reconfiguration. Keeping the
@@ -2385,6 +2389,13 @@ class CameraEngine(private val context: Context) {
 /** Prevents an older asynchronous camera intent from undoing a newer user choice. */
 internal fun reconfigurationOwnsGeneration(currentGeneration: Long, expectedGeneration: Long): Boolean =
     currentGeneration == expectedGeneration
+
+/** A Ready callback may publish only while both its generation and engine-ready bit remain current. */
+internal fun cameraReadyPublicationIsCurrent(
+    currentGeneration: Long,
+    expectedGeneration: Long,
+    cameraReady: Boolean,
+): Boolean = cameraReady && reconfigurationOwnsGeneration(currentGeneration, expectedGeneration)
 
 internal data class OpticsIntentState(
     val mode: CaptureMode,
