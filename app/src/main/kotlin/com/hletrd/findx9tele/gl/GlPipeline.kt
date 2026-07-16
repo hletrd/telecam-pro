@@ -662,7 +662,9 @@ class GlPipeline {
                 core.swapBuffers(ownedPreview)
                 // Attachment alone is not renderer health. The first identity-owned swap is the
                 // only event that may publish Preview Ready and reset CameraEngine's retry budget.
-                ownedPreviewSignal?.ready()
+                // A zoom self-redraw swaps cached/uninitialized texture state and proves no camera
+                // producer progress, so it must leave a pending preview signal untouched.
+                ownedPreviewSignal?.readyAfterSwap(realCameraFrame = updateTex)
             }.exceptionOrNull()
             if (previewFailure != null) {
                 // Publish the identity-owned failure once, then detach the broken preview. Keep
@@ -1197,6 +1199,10 @@ internal class PreviewOutputSignal(
         }
     }
 }
+
+/** Cached-frame self-redraws can present pixels, but only a producer-fed swap proves preview health. */
+internal fun PreviewOutputSignal.readyAfterSwap(realCameraFrame: Boolean): Boolean =
+    realCameraFrame && ready()
 
 /**
  * Single-in-flight gate owned by one immutable analysis generation. Retirement is synchronous;

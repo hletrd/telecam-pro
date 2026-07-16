@@ -407,6 +407,20 @@ class CompletionDispatchTest {
     }
 
     @Test
+    fun `preview self redraw cannot publish ready before a real camera frame`() {
+        val ready = AtomicInteger()
+        val signal = PreviewOutputSignal(
+            onReady = { ready.incrementAndGet() },
+            onFailure = {},
+        )
+
+        assertFalse(signal.readyAfterSwap(realCameraFrame = false))
+        assertEquals(0, ready.get())
+        assertTrue(signal.readyAfterSwap(realCameraFrame = true))
+        assertEquals(1, ready.get())
+    }
+
+    @Test
     fun `real frame acquisition prefers preview then falls back to encoder`() {
         assertEquals(
             FrameAcquisitionOwner.PREVIEW,
