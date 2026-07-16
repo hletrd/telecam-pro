@@ -34,6 +34,61 @@ class CustomWbSamplingTest {
         assertFalse(eligible(tag, gainsAvailable = false))
     }
 
+    @Test
+    fun `sample remains owned by the exact ready accepted session through publication`() {
+        val acceptedSession = Any()
+        val controller = Any()
+
+        assertTrue(ownerCurrent(acceptedSession, acceptedSession, controller, controller))
+        assertFalse(ownerCurrent(Any(), acceptedSession, controller, controller))
+        assertFalse(ownerCurrent(acceptedSession, acceptedSession, Any(), controller))
+        assertFalse(
+            ownerCurrent(
+                acceptedSession,
+                acceptedSession,
+                controller,
+                controller,
+                currentSessionGeneration = 10,
+            ),
+        )
+        assertFalse(
+            ownerCurrent(
+                acceptedSession,
+                acceptedSession,
+                controller,
+                controller,
+                cameraReady = false,
+            ),
+        )
+        assertFalse(
+            ownerCurrent(
+                acceptedSession,
+                acceptedSession,
+                controller,
+                controller,
+                paused = true,
+            ),
+        )
+        assertFalse(
+            ownerCurrent(
+                acceptedSession,
+                acceptedSession,
+                controller,
+                controller,
+                wbMode = WbMode.DAYLIGHT,
+            ),
+        )
+        assertFalse(
+            ownerCurrent(
+                acceptedSession,
+                acceptedSession,
+                controller,
+                controller,
+                awbLocked = true,
+            ),
+        )
+    }
+
     private fun eligible(
         expectedTag: CustomWbSampleTag,
         resultTag: Any? = expectedTag,
@@ -48,5 +103,28 @@ class CustomWbSamplingTest {
         awbLocked = awbLocked,
         awbState = awbState,
         gainsAvailable = gainsAvailable,
+    )
+
+    private fun ownerCurrent(
+        currentAcceptedSession: Any?,
+        expectedAcceptedSession: Any?,
+        currentController: Any?,
+        expectedController: Any?,
+        currentSessionGeneration: Long = 9,
+        cameraReady: Boolean = true,
+        paused: Boolean = false,
+        wbMode: WbMode = WbMode.AUTO,
+        awbLocked: Boolean = false,
+    ): Boolean = customWbSampleOwnerIsCurrent(
+        currentAcceptedSession = currentAcceptedSession,
+        expectedAcceptedSession = expectedAcceptedSession,
+        currentController = currentController,
+        expectedController = expectedController,
+        currentSessionGeneration = currentSessionGeneration,
+        expectedSessionGeneration = 9,
+        cameraReady = cameraReady,
+        paused = paused,
+        wbMode = wbMode,
+        awbLocked = awbLocked,
     )
 }

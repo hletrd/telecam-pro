@@ -686,18 +686,21 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
             enabled = availability.wbDialEnabled,
         )
     }
-    // Sony Custom WB: frame a white/grey card and capture — freezes the AWB gains of that frame.
+    // Sony Custom WB: frame a white/grey card and capture a fresh accepted-session AWB sample.
+    val customWbCaptureEnabled = state.cameraReady && availability.customWbCaptureEnabled
     FilterChip(
         selected = controls.wbMode == WbMode.CUSTOM,
         onClick = actions::onCaptureCustomWb,
-        enabled = availability.customWbCaptureEnabled,
+        enabled = customWbCaptureEnabled,
         label = { Text("Capture Custom WB") },
         colors = pixelChipColors(),
         border = pixelChipBorder(controls.wbMode == WbMode.CUSTOM),
     )
     Text(
-        if (availability.customWbCaptureEnabled) {
+        if (customWbCaptureEnabled) {
             "Frame a white or grey card, then tap."
+        } else if (!state.cameraReady) {
+            "Wait for the camera to finish reconfiguring."
         } else {
             "Select Auto WB and turn AWB Lock off to measure."
         },

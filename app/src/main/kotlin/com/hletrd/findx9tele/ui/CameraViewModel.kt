@@ -858,6 +858,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onCaptureCustomWb() {
         val current = _state.value
         val availability = controlAvailability(current.caps?.controlCapabilities(), current.controls)
+        if (!current.cameraReady) {
+            showStatus("Camera reconfiguring")
+            return
+        }
         if (!availability.customWbCaptureEnabled) {
             showStatus("Use Auto WB with AWB Lock off")
             return
@@ -866,17 +870,19 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // request. Both posts share the camera handler, so the sample cannot race stale manual gains.
         drainPendingControls()
         val generation = ++customWbSampleGeneration
-        engine.requestCustomWbSample { gains ->
+        engine.requestCustomWbSample { sample ->
             mainHandler.post {
                 if (generation != customWbSampleGeneration) return@post
-                if (gains == null) {
+                if (sample == null) {
                     showStatus("Custom WB not measured")
                     return@post
                 }
-                updateControls(FnSlot.WB) {
-                    it.copy(wbMode = WbMode.CUSTOM, customWbGains = gains)
+                val applied = engine.consumeCustomWbSampleIfCurrent(sample) { gains ->
+                    updateControls(FnSlot.WB) {
+                        it.copy(wbMode = WbMode.CUSTOM, customWbGains = gains)
+                    }
                 }
-                showStatus("Custom WB set")
+                showStatus(if (applied) "Custom WB set" else "Custom WB not measured")
             }
         }
     }

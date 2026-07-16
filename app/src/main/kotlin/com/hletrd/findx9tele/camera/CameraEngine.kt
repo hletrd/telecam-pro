@@ -1149,29 +1149,57 @@ class CameraEngine(private val context: Context) {
     @Volatile private var gammaAssist = false
 
     /**
-     * Requests a fresh, converged grey-card sample from the current unlocked-AUTO request owner.
-     * Controller or optics replacement makes the callback inert instead of applying another
-     * route's cached gains as Custom WB.
+     * Requests a fresh, converged grey-card sample from the accepted unlocked-AUTO session.
+     * The returned sample retains that exact session as an opaque owner; callers must consume it
+     * through [consumeCustomWbSampleIfCurrent] after crossing thread boundaries.
      */
-    fun requestCustomWbSample(onResult: (WbGains?) -> Unit) {
-        val ownedController = controller
-        val ownedGeneration = opticsIntentGeneration.get()
-        if (ownedController == null || paused || controls.wbMode != WbMode.AUTO || controls.awbLock) {
+    internal fun requestCustomWbSample(onResult: (CustomWbSample?) -> Unit) {
+        val accepted = synchronized(this) {
+            currentAcceptedCameraSession()?.takeIf {
+                controls.wbMode == WbMode.AUTO && !controls.awbLock
+            }
+        }
+        if (accepted == null) {
             runCatching { onResult(null) }
             return
         }
-        ownedController.requestCustomWbSample { gains ->
-            val ownerCurrent = synchronized(this) {
-                controller === ownedController &&
-                    opticsIntentGeneration.get() == ownedGeneration &&
-                    !paused && controls.wbMode == WbMode.AUTO && !controls.awbLock
-            }
-            val sample = gains?.takeIf { ownerCurrent }?.let {
-                WbGains(it.red, it.greenEven, it.greenOdd, it.blue)
+        accepted.controller.requestCustomWbSample { gains ->
+            val sample = synchronized(this) {
+                gains?.takeIf { ownsCustomWbSample(accepted) }?.let {
+                    CustomWbSample(
+                        gains = WbGains(it.red, it.greenEven, it.greenOdd, it.blue),
+                        ownerToken = accepted,
+                    )
+                }
             }
             runCatching { onResult(sample) }
         }
     }
+
+    /** Atomically rechecks the sample owner and lets the UI publish it before ownership can change. */
+    internal fun consumeCustomWbSampleIfCurrent(
+        sample: CustomWbSample,
+        onCurrent: (WbGains) -> Unit,
+    ): Boolean = synchronized(this) {
+        val accepted = sample.ownerToken as? AcceptedCameraSession ?: return@synchronized false
+        if (!ownsCustomWbSample(accepted)) return@synchronized false
+        onCurrent(sample.gains)
+        true
+    }
+
+    private fun ownsCustomWbSample(expected: AcceptedCameraSession): Boolean =
+        customWbSampleOwnerIsCurrent(
+            currentAcceptedSession = acceptedCameraSession,
+            expectedAcceptedSession = expected,
+            currentController = controller,
+            expectedController = expected.controller,
+            currentSessionGeneration = cameraSessionGeneration.get(),
+            expectedSessionGeneration = expected.sessionGeneration,
+            cameraReady = cameraReady,
+            paused = paused,
+            wbMode = controls.wbMode,
+            awbLocked = controls.awbLock,
+        )
 
     // Remembered so the GL-start callback can re-seed it: setAeMetering can arrive from settings
     // restore BEFORE the GL thread exists, where GlPipeline.post silently drops it.
@@ -3436,6 +3464,35 @@ internal fun acceptedCameraSessionIsCurrent(
     paused: Boolean,
 ): Boolean = cameraReady && !paused && currentController === acceptedController &&
     currentSessionGeneration == acceptedSessionGeneration
+
+/** Fresh Custom-WB gains plus the opaque accepted-session owner that produced them. */
+internal class CustomWbSample internal constructor(
+    val gains: WbGains,
+    internal val ownerToken: Any,
+)
+
+/** Accepted-session and WB-state ownership gate shared by callback and main-thread consumption. */
+internal fun customWbSampleOwnerIsCurrent(
+    currentAcceptedSession: Any?,
+    expectedAcceptedSession: Any?,
+    currentController: Any?,
+    expectedController: Any?,
+    currentSessionGeneration: Long,
+    expectedSessionGeneration: Long,
+    cameraReady: Boolean,
+    paused: Boolean,
+    wbMode: WbMode,
+    awbLocked: Boolean,
+): Boolean = expectedAcceptedSession != null &&
+    currentAcceptedSession === expectedAcceptedSession &&
+    acceptedCameraSessionIsCurrent(
+        currentController = currentController,
+        acceptedController = expectedController,
+        currentSessionGeneration = currentSessionGeneration,
+        acceptedSessionGeneration = expectedSessionGeneration,
+        cameraReady = cameraReady,
+        paused = paused,
+    ) && wbMode == WbMode.AUTO && !awbLocked
 
 /** A queued session reopen may act only while its complete desired packet still owns the engine. */
 internal fun sessionReopenMayProceed(
