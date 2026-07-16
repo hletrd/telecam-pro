@@ -1446,7 +1446,18 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
 
     override fun onReviewOpenChange(open: Boolean) {
-        _state.update { it.copy(reviewOpen = open) }
+        _state.update {
+            it.copy(
+                reviewOpen = open,
+                // Block immediately on open; Compose clears the shared gate after the last modal
+                // closes, so review dismissal cannot briefly unblock a still-visible sheet/Fn menu.
+                cameraInputBlocked = if (open) true else it.cameraInputBlocked,
+            )
+        }
+    }
+
+    override fun onCameraInputBlockedChange(blocked: Boolean) {
+        _state.update { it.copy(cameraInputBlocked = blocked) }
     }
 
     override fun onDeleteLastMedia(uri: Uri) {

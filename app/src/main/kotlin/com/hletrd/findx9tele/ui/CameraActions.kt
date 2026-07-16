@@ -144,8 +144,9 @@ interface CameraActions {
     fun onDeleteLastMedia(uri: android.net.Uri)
 
     /**
-     * The full-screen media-review overlay opened/closed. Mirrored into CameraUiState.reviewOpen
-     * so MainActivity's hardware-key handlers can refuse to fire the shutter under the overlay.
+     * The full-screen media-review overlay opened/closed. [onCameraInputBlockedChange] owns the
+     * broader hardware-input gate shared with settings and Fn modals.
      */
     fun onReviewOpenChange(open: Boolean)
+    fun onCameraInputBlockedChange(blocked: Boolean)
 }

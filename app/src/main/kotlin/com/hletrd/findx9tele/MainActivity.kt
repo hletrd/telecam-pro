@@ -60,6 +60,10 @@ class MainActivity : ComponentActivity() {
     // the CTA must deep-link into App Settings instead of a dead re-request (designer UX-6 / M8).
     private var cameraPermanentlyDenied by mutableStateOf(false)
     private var pendingAudioAction by mutableStateOf<PendingAudioAction?>(null)
+    // Edge ownership is Activity-local: if a modal opens between DOWN and UP, the matching release
+    // still reaches the ViewModel and both edges stay consumed instead of wedging a press state.
+    private val ownedShutterKeys = mutableSetOf<Int>()
+    private val ownedHalfPressKeys = mutableSetOf<Int>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -151,6 +155,14 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        if (ownedShutterKeys.isNotEmpty()) {
+            ownedShutterKeys.clear()
+            vm.onHardwareFullKey(active = false)
+        }
+        if (ownedHalfPressKeys.isNotEmpty()) {
+            ownedHalfPressKeys.clear()
+            vm.onHardwareHalfPress(active = false)
+        }
         vm.onStop()
         super.onStop()
     }
@@ -163,33 +175,39 @@ class MainActivity : ComponentActivity() {
     // turns the media volume into a burst of beeps mid-shot; repeatCount gates auto-repeat.
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         if (isShutterKey(keyCode)) {
-            // NOT consumed on the PermissionGate (no camera to drive — volume keys were silently
-            // eaten there) and NOT consumed while the review overlay is up: volume-up during clip
-            // review used to start a recording BEHIND the overlay (viewfinder hidden, REC state
-            // invisible) and the completing capture then swapped the reviewed media. Under review
-            // the OS default — playback volume — is exactly what the user expects.
-            if (!hasCameraPermission || vm.state.value.reviewOpen) return super.onKeyDown(keyCode, event)
-            if (event.repeatCount == 0) {
+            val decision = cameraKeyDecision(
+                hasCameraPermission = hasCameraPermission,
+                cameraInputBlocked = vm.state.value.cameraInputBlocked,
+                alreadyOwned = keyCode in ownedShutterKeys,
+                edge = if (event.repeatCount == 0) CameraKeyEdge.DOWN else CameraKeyEdge.REPEAT,
+            )
+            if (decision.start) {
+                ownedShutterKeys += keyCode
                 val s = vm.state.value
                 if (s.mode == CaptureMode.VIDEO && !s.isRecording && s.recordAudio && !hasMicrophonePermission) {
                     vm.onToggleRecordAudio(false)
                     vm.onAppStatus("Recording without audio")
                 }
-                vm.onHardwareFullKey(active = true)
+                vm.onHardwareFullKey(active = ownedShutterKeys.isNotEmpty())
             }
-            return true
+            return if (decision.consume) true else super.onKeyDown(keyCode, event)
         }
         return super.onKeyDown(keyCode, event)
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
         if (isShutterKey(keyCode)) {
-            // Always deliver the release (a press can straddle the review overlay opening — the
-            // shutter/half-press state must not wedge active), but only CONSUME the event in the
-            // same cases the DOWN was consumed.
-            if (hasCameraPermission) vm.onHardwareFullKey(active = false)
-            if (!hasCameraPermission || vm.state.value.reviewOpen) return super.onKeyUp(keyCode, event)
-            return true
+            val decision = cameraKeyDecision(
+                hasCameraPermission = hasCameraPermission,
+                cameraInputBlocked = vm.state.value.cameraInputBlocked,
+                alreadyOwned = keyCode in ownedShutterKeys,
+                edge = CameraKeyEdge.UP,
+            )
+            if (decision.release) {
+                ownedShutterKeys -= keyCode
+                vm.onHardwareFullKey(active = ownedShutterKeys.isNotEmpty())
+            }
+            return if (decision.consume) true else super.onKeyUp(keyCode, event)
         }
         return super.onKeyUp(keyCode, event)
     }
@@ -208,27 +226,44 @@ class MainActivity : ComponentActivity() {
         if (BuildConfig.DEBUG && !isShutterKey(event.keyCode) && event.keyCode != KeyEvent.KEYCODE_BACK) {
             android.util.Log.i("BtnDbg", "key code=${event.keyCode} action=${event.action} perm=$hasCameraPermission")
         }
-        // Review gate mirrors onKeyDown/onKeyUp: no camera gestures under the full-screen review
-        // overlay (a capacitive slide would otherwise zoom the hidden viewfinder mid-review).
-        if (hasCameraPermission && !vm.state.value.reviewOpen) {
-            when (event.keyCode) {
-                // Live-captured 2026-07-09: the camera-control button's slide arrives as the STANDARD
-                // KEYCODE_ZOOM_IN/OUT (168/169), repeating ~20 Hz while the finger slides — NOT the
-                // OPPO 767/769 codes seen in one earlier session (kept as aliases just in case).
-                KeyEvent.KEYCODE_ZOOM_IN, KEY_CAM_SLIDE_IN -> {
-                    if (event.action == KeyEvent.ACTION_DOWN) vm.onHardwareZoomStep(ZOOM_STEP)
-                    return true
+        when (event.keyCode) {
+            // Half presses own their matching release even if a modal opens mid-press.
+            KeyEvent.KEYCODE_FOCUS, KEY_CAM_HALF_PRESS -> {
+                val edge = when (event.action) {
+                    KeyEvent.ACTION_DOWN -> if (event.repeatCount == 0) CameraKeyEdge.DOWN else CameraKeyEdge.REPEAT
+                    KeyEvent.ACTION_UP -> CameraKeyEdge.UP
+                    else -> return super.dispatchKeyEvent(event)
                 }
-                KeyEvent.KEYCODE_ZOOM_OUT, KEY_CAM_SLIDE_OUT -> {
-                    if (event.action == KeyEvent.ACTION_DOWN) vm.onHardwareZoomStep(1f / ZOOM_STEP)
-                    return true
+                val decision = cameraKeyDecision(
+                    hasCameraPermission = hasCameraPermission,
+                    cameraInputBlocked = vm.state.value.cameraInputBlocked,
+                    alreadyOwned = event.keyCode in ownedHalfPressKeys,
+                    edge = edge,
+                )
+                if (decision.start) {
+                    ownedHalfPressKeys += event.keyCode
+                    vm.onHardwareHalfPress(ownedHalfPressKeys.isNotEmpty())
                 }
-                // Half-press = the standard camera-family KEYCODE_FOCUS (DOWN engages, UP releases).
-                KeyEvent.KEYCODE_FOCUS, KEY_CAM_HALF_PRESS -> {
-                    if (event.action == KeyEvent.ACTION_DOWN || event.action == KeyEvent.ACTION_UP) {
-                        vm.onHardwareHalfPress(event.action == KeyEvent.ACTION_DOWN)
+                if (decision.release) {
+                    ownedHalfPressKeys -= event.keyCode
+                    vm.onHardwareHalfPress(ownedHalfPressKeys.isNotEmpty())
+                }
+                if (decision.consume) return true
+            }
+            else -> if (hasCameraPermission && !vm.state.value.cameraInputBlocked) {
+                when (event.keyCode) {
+                    // Live-captured 2026-07-09: the camera-control button's slide arrives as the
+                    // STANDARD KEYCODE_ZOOM_IN/OUT (168/169), repeating ~20 Hz while the finger
+                    // slides — NOT the OPPO 767/769 codes seen in one earlier session (kept as
+                    // aliases just in case).
+                    KeyEvent.KEYCODE_ZOOM_IN, KEY_CAM_SLIDE_IN -> {
+                        if (event.action == KeyEvent.ACTION_DOWN) vm.onHardwareZoomStep(ZOOM_STEP)
+                        return true
                     }
-                    return true
+                    KeyEvent.KEYCODE_ZOOM_OUT, KEY_CAM_SLIDE_OUT -> {
+                        if (event.action == KeyEvent.ACTION_DOWN) vm.onHardwareZoomStep(1f / ZOOM_STEP)
+                        return true
+                    }
                 }
             }
         }

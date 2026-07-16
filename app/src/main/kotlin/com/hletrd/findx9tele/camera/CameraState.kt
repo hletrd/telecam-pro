@@ -456,10 +456,11 @@ data class CameraUiState(
     // Live camera health: false while opening/reconfiguring/recovering (and after recovery gives
     // up). The shutter dims on it so a dead session never hides behind a ready-looking button.
     val cameraReady: Boolean = false,
-    // True while the full-screen media-review overlay is up. Lives in UI state (not a Compose
-    // local) because MainActivity's hardware-key handlers must refuse to fire the shutter under
-    // the overlay — volume-up during clip review used to start a recording BEHIND it.
+    // True while the full-screen media-review overlay is up (also used to freeze its media URI).
     val reviewOpen: Boolean = false,
+    // One Activity-facing gate for every full-screen modal (settings, Fn, review). Hardware shutter,
+    // zoom and half-press input must not mutate the hidden viewfinder behind any of them.
+    val cameraInputBlocked: Boolean = false,
     // Selected rear lens. Default 1× main for a normal app launch. Selecting 3× bundles
     // teleconverter mode on; other lenses bundle it off (see [LensChoice]).
     val lens: LensChoice = LensChoice.MAIN,

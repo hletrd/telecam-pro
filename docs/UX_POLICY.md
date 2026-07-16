@@ -10,6 +10,8 @@ Use Sony Alpha and Xperia Pro camera screens as the reference. Not generic phone
 - Do not add tutorial banners, warning chips, coach marks, marketing cards, or helper overlays unless
   the user asks.
 - Important states belong in the OSD, Fn, or a menu row.
+- Keep every interactive touch target at least 48 dp; compact glyphs may remain visually smaller
+  inside that hit region.
 - If it would look odd on a Sony camera screen, do not ship it.
 
 ## Examples

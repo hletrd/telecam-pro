@@ -171,11 +171,17 @@ fun CameraScreen(
     // Remembers the last-viewed settings tab so the gear reopens where the user left off.
     var sheetInitialTab by remember { mutableStateOf(ProSheetTab.MY_MENU) }
     var fnOverlayVisible by remember { mutableStateOf(false) }
-    var manualDialOpen by remember { mutableStateOf(false) }
     val currentActions = rememberUpdatedState(actions)
     val modalVisible = sheetVisible || fnOverlayVisible || (state.reviewOpen && reviewUri != null)
 
+    // MainActivity owns hardware camera keys outside Compose. Mirror every full-screen modal into
+    // CameraUiState so volume/camera/zoom/focus input cannot operate the hidden viewfinder behind it.
+    LaunchedEffect(modalVisible) {
+        currentActions.value.onCameraInputBlockedChange(modalVisible)
+    }
+
     fun openSheet(tab: ProSheetTab) {
+        currentActions.value.onCameraInputBlockedChange(true)
         sheetInitialTab = tab
         sheetVisible = true
     }
@@ -491,7 +497,11 @@ fun CameraScreen(
         TopBar(
             state = state,
             actions = actions,
-            onOpenSheet = { sheetVisible = true }, // reopen to the remembered last tab
+            onOpenSheet = {
+                // Block Activity-owned camera keys before Compose can draw the modal.
+                currentActions.value.onCameraInputBlockedChange(true)
+                sheetVisible = true // reopen to the remembered last tab
+            },
             dispClean = dispClean,
             onToggleDisp = { dispClean = !dispClean },
             glyphRotation = overlayRotation,
@@ -586,8 +596,10 @@ fun CameraScreen(
                 state = state,
                 actions = actions,
                 onRequestWhiteBalanceSheet = { openSheet(ProSheetTab.EXPOSURE) },
-                onOpenFnMenu = { fnOverlayVisible = true },
-                onDialOpenChange = { manualDialOpen = it },
+                onOpenFnMenu = {
+                    currentActions.value.onCameraInputBlockedChange(true)
+                    fnOverlayVisible = true
+                },
                 modifier = Modifier.padding(horizontal = 12.dp),
             )
 
@@ -1562,6 +1574,7 @@ private fun LensFlipButton(active: Boolean, onClick: () -> Unit, modifier: Modif
 private object PreviewCameraActions : CameraActions {
     override fun onPreviewSurfaceAvailable(surface: Surface, width: Int, height: Int) = Unit
     override fun onReviewOpenChange(open: Boolean) = Unit
+    override fun onCameraInputBlockedChange(blocked: Boolean) = Unit
     override fun onPreviewSurfaceChanged(width: Int, height: Int) = Unit
     override fun onPreviewSurfaceDestroyed() = Unit
 

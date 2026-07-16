@@ -2,6 +2,7 @@ package com.hletrd.findx9tele.ui.controls
 
 import android.util.Range
 import android.view.HapticFeedbackConstants
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
@@ -91,6 +92,13 @@ import kotlin.math.roundToInt
 enum class DialType { FOCUS, SHUTTER, ISO, WB, EV, ZOOM }
 
 /**
+ * Back gets first refusal from an expanded ruler; a closed cluster leaves Back to its parent.
+ * Keeping this admission rule pure pins the behavior on the JVM, while the local [BackHandler]
+ * owns the actual Compose state transition.
+ */
+internal fun manualDialConsumesBack(openDial: DialType?): Boolean = openDial != null
+
+/**
  * Whether a quick dial can claim manual ownership from its current automatic state. Keeping the
  * current focus/exposure mode out of this decision is intentional: the click reducer below owns the
  * AF→MF, P/ISO→S, and P/S→ISO transitions, so requiring the destination mode here would make
@@ -125,16 +133,16 @@ fun ManualDialCluster(
     onRequestWhiteBalanceSheet: () -> Unit,
     modifier: Modifier = Modifier,
     onOpenFnMenu: () -> Unit = {},
-    onDialOpenChange: (Boolean) -> Unit = {},
 ) {
     var openDial by remember { mutableStateOf<DialType?>(null) }
     val controls = state.controls
     val caps = state.caps
     val dialOpen = openDial != null
 
-    LaunchedEffect(dialOpen) {
-        onDialOpenChange(dialOpen)
-    }
+    // This handler is composed before the full-screen sheet/Fn/review handlers, so those later
+    // topmost surfaces retain priority. With no full-screen modal, Back closes the ruler instead of
+    // falling through to the Activity and backgrounding the camera.
+    BackHandler(enabled = manualDialConsumesBack(openDial)) { openDial = null }
 
     // MF assist: while the Focus ruler is open, punch in on the loupe point (last tap, else center)
     // so critical focus at 300 mm is judged on magnified pixels — the auto-magnify every MF-first

@@ -294,7 +294,9 @@ fun GalleryThumb(uri: Uri?, onClick: () -> Unit, modifier: Modifier = Modifier) 
         if (t != null) {
             Image(
                 bitmap = t,
-                contentDescription = "Review last shot",
+                // The parent is the one semantic Button; the pixels are decorative and must not
+                // produce a duplicate TalkBack announcement.
+                contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
             )
@@ -670,7 +672,7 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                 .align(Alignment.TopStart)
                 .statusBarsPadding()
                 .padding(12.dp)
-                .size(44.dp)
+                .size(48.dp)
                 .clip(CircleShape)
                 .background(Color.Black.copy(alpha = 0.5f))
                 .semantics {
@@ -688,7 +690,7 @@ fun MediaReviewOverlay(uri: Uri, onClose: () -> Unit, onDelete: () -> Unit, modi
                 .align(Alignment.TopEnd)
                 .statusBarsPadding()
                 .padding(12.dp)
-                .size(44.dp)
+                .size(48.dp)
                 .clip(CircleShape)
                 .background(Color.Black.copy(alpha = 0.5f))
                 .semantics {
