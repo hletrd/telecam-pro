@@ -142,11 +142,13 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
 - **Analysis readback is FBO-downsampled (2026-07-14).** The scopes/AE readback used to
   `glReadPixels` the FULL preview framebuffer (~33 MB at 4K) every 5th frame — a periodic GL-thread
   stall that read as preview/zoom stutter, and it metered peaking/zebra overlay pixels. It now
-  re-draws the clean scene into a 256×192 FBO (~190 KB readback). The REC tally border follows the
+  re-draws capture/EIS framing into an aspect-matched FBO whose long edge is at most 256 px
+  (≤256 KiB RGBA readback). Preview-only punch-in/loupe framing never enters scopes or AE. The REC tally border follows the
   panel's physical rounded corners via the WindowInsets RoundedCorner API (a square border's
   corners fall outside the visible area and vanish).
-- **Session fallback ladder** in `CameraController.configureSession`: attempt 0 full → 1 drop RAW → 2
-  drop HLG → 3 preview-only. Keep it; different capability combos fail on this HAL.
+- **Session fallback ladder** in `CameraController.configureSession`: non-TELE is full → drop RAW →
+  drop HLG → preview-only. TELE tries vendor full/degraded plans, then regular full/degraded plans,
+  and reserves both preview-only variants for last. Keep it; different capability combos fail on this HAL.
 - **Preview host is a `TextureView`, not `SurfaceView`.** A SurfaceView's surface sits behind the
   window and was occluded by the opaque Compose background → black viewfinder. TextureView composites
   in the view hierarchy.
@@ -286,8 +288,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   the last confident angle (same idea as the discrete-orientation `FLAT_GRAVITY_THRESHOLD` guard).
 - **GlPipeline drops anything posted before `start()` — re-seed GL state in the start callback.**
   `GlPipeline.post` is `handler?.post`, silently a no-op until the GL thread exists. Any GL state set
-  during settings-restore (LOG transfer, AE metering, gamma assist) MUST be re-applied inside the
-  `gl.start` callback in `CameraEngine` (it is — extend that block when adding GL state). Symptom when
+  during settings restore MUST be re-applied inside the `gl.start` callback in `CameraEngine`.
+  LOG transfer, AE metering, and gamma assist are re-seeded there; renderer-only assists live in one
+  `RendererConfigStore` snapshot and the complete snapshot is replayed for every GL generation. Symptom when
   missed: "works only after the first recording pushes it" (the LOG-preview bug).
 - **Exactly one owner of the mic.** The Sony-style standby audio meter is a levels-only `AudioRecord`
   tap that runs while video is ARMED but not rolling; `startRecording` stops it (flag + short join)

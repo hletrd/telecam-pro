@@ -46,7 +46,7 @@ new hash and must update that sheet after the full release gate is repeated.
 4. **Zoom lag/jank, three layers** — full-request rebuild per tick (→ controller fast path on a
    cached repeating builder), per-input-event state updates at ~120 Hz (→ 33 ms coalescing;
    compounding inputs MUST base on the coalesced pending value, not the stale UI state), and a
-   ~33 MB full-res analysis glReadPixels every 5th frame (→ 256×192 FBO re-draw, ~190 KB).
+   ~33 MB full-res analysis glReadPixels every 5th frame (→ aspect-matched FBO, ≤256 px long edge).
 5. **REC tally border vanished at the panel's rounded corners** — now follows the physical corner
    radius (WindowInsets RoundedCorner API, ×1.2 squircle compensation, user-tuned on device).
 6. **UI pills** — Fn-row edge-fade scroll hint; one shared 12 dp left inset (OSD / meter / Fn row).

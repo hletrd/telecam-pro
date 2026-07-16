@@ -46,7 +46,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `OcsProbe.kt` | Debug-source-set-only OPPO CameraUnit/OCS availability probe (release builds compile a no-op stub and do not link the OEM SDK). |
 | `VendorTagInspector.kt` | Debug-only Camera2 capability logger for device-specific request/session keys. |
 | **gl/** | |
-| `GlPipeline.kt` | Owns the GL render thread. Receives camera SurfaceTexture, renders 180°-flipped quads to preview Surface and video encoder Surface. Owns EGL context, texture, sampling buffers. Drives histogram/waveform analysis on a background executor. |
+| `GlPipeline.kt` | Owns the GL render thread. Receives camera SurfaceTexture, renders 180°-flipped quads to preview Surface and video encoder Surface. Owns EGL context, texture, sampling buffers. Drives histogram/waveform analysis on a background executor. `CameraEngine` owns a complete `RendererConfigStore` snapshot and replays it after every `gl.start`, so pre-start restore and GL restarts retain all assists. |
 | `FlipRenderer.kt` | Low-level OpenGL ES fullscreen quad renderer with texture-coordinate rotation (inverse of image rotation) to flip the 180° afocal image. Applies OETF (HLG / Log) in the fragment shader. Handles focus peaking (edge detection) and zebra (exposure clipping). |
 | `EglCore.kt` | EGL/GLES setup: context creation and surface binding. Supports a 10-bit config, while v1 deliberately starts the stable 8-bit config. |
 | `Shaders.kt` | Fragment/vertex shader source code. OETF (HLG, Log) application; peaking/zebra compositing; punch-in zoom. |
@@ -284,8 +284,9 @@ be described as the shipping source pipeline.
 - A standalone session starts with preview + HAL JPEG and adds RAW only when the camera advertises it
   and the current TELE capture is eligible. Fallback drops RAW before dropping the processed-still stream,
   and preview-only is the final stream plan.
-- TELE first tries the stock-camera operation mode `0x80b4`. If every compatible stream plan is rejected,
-  the same plans are retried with `SESSION_REGULAR`. Non-TELE sessions use `SESSION_REGULAR` directly.
+- TELE first tries the stock-camera operation mode `0x80b4` with full/degraded capture streams, then
+  tries `SESSION_REGULAR` with full/degraded capture streams. Vendor and regular preview-only plans
+  are the two terminal attempts. Non-TELE sessions use `SESSION_REGULAR` directly.
 - Only after both the stream and operation-mode plans are exhausted is failure surfaced to the engine.
 
 This ordering preserves a processed capture whenever possible, keeps unsupported DNG out of logical
@@ -331,9 +332,10 @@ builder gets only its zoom keys mutated and resubmitted — no full request re-d
 rejects it) and a RAW target errors the whole camera device, so logical stills arrive as
 YUV_420_888 (NV21-repacked on the camera thread, JPEG-encoded lazily on the io thread) and RAW is
 gated standalone-only. A capture watchdog fails any shot whose image never arrives (8 s) so the
-shutter can never wedge. The scopes/AE readback re-draws the clean scene into a 256×192 FBO
-(~190 KB) instead of glReadPixels on the full preview framebuffer (~33 MB at 4K — a periodic GL
-stall that read as preview stutter).
+shutter can never wedge. The scopes/AE readback re-draws capture/EIS framing into an aspect-matched
+FBO whose long edge is at most 256 px (≤256 KiB RGBA) instead of glReadPixels on the full preview
+framebuffer (~33 MB at 4K — a periodic GL stall that read as preview stutter). Preview-only
+punch-in/loupe framing is excluded from scopes and AE.
 
 ## Stabilization and Orientation
 

@@ -539,7 +539,7 @@ data class CameraUiState(
     val caps: CameraCaps? = null,
     val cameraOverrideId: String? = null,
     val statusMessage: String? = null,
-    // The most recently saved still (HEIF/JPEG) — powers the gallery thumbnail and the in-app review.
+    // The most recently saved displayable medium (HEIF/JPEG/video) — thumbnail + in-app review.
     val lastMediaUri: android.net.Uri? = null,
     val histogramData: HistogramData? = null,
     val waveformData: WaveformData? = null,
