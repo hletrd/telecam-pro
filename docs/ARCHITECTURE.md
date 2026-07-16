@@ -46,7 +46,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `OcsProbe.kt` | Debug-source-set-only OPPO CameraUnit/OCS availability probe (release builds compile a no-op stub and do not link the OEM SDK). |
 | `VendorTagInspector.kt` | Debug-only Camera2 capability logger for device-specific request/session keys. |
 | **gl/** | |
-| `GlPipeline.kt` | Owns the GL render thread. Receives camera SurfaceTexture, renders 180°-flipped quads to preview Surface and video encoder Surface. Owns EGL context, texture, sampling buffers. Drives histogram/waveform analysis on a background executor. `CameraEngine` owns a complete `RendererConfigStore` snapshot and replays it after every `gl.start`, so pre-start restore and GL restarts retain all assists. |
+| `GlPipeline.kt` | Owns the GL render thread. Receives camera SurfaceTexture, renders 180°-flipped quads to preview Surface and video encoder Surface. Preview windows carry caller-thread invalidation generations; encoder attachment returns an exactly-once `Result<Unit>`. Owns EGL context, texture, sampling buffers. Drives histogram/waveform analysis on a background executor. `CameraEngine` owns a complete `RendererConfigStore` snapshot and replays it after every `gl.start`, so pre-start restore and GL restarts retain all assists. |
 | `FlipRenderer.kt` | Low-level OpenGL ES fullscreen quad renderer with texture-coordinate rotation (inverse of image rotation) to flip the 180° afocal image. Applies OETF (HLG / Log) in the fragment shader. Handles focus peaking (edge detection) and zebra (exposure clipping). |
 | `EglCore.kt` | EGL/GLES setup: context creation and surface binding. Supports a 10-bit config, while v1 deliberately starts the stable 8-bit config. |
 | `Shaders.kt` | Fragment/vertex shader source code. OETF (HLG, Log) application; peaking/zebra compositing; punch-in zoom. |
@@ -75,11 +75,11 @@ Two critical consequences of the afocal converter drive the entire design:
 | `ProControls.kt` | Reusable Compose controls including rulers, segmented choices, toggles, sliders, and value rows. All are two-way bound to CameraUiState. |
 | **ui/overlays/** | |
 | `Overlays.kt` | Compose overlays: reticle (tap-to-focus), histogram/waveform, grid, spirit level, peaking, zebra, punch-in zoom indicator, AE/AWB/AF lock tags. Stateless off CameraUiState. |
-| `MediaReview.kt` | In-app review of the last capture: zoomable photo viewer and a rotating video player (TextureView + MediaPlayer honoring the container rotation), with delete. |
+| `MediaReview.kt` | In-app review of the last capture: zoomable photo viewer and a rotating video player (TextureView + MediaPlayer honoring the container rotation), with delete plus visible semantic Play/Pause and zoom-cycle controls. |
 | `ControlCycles.kt` | Shared enum tap-cycle orders and auto-exposure readout text used by ManualDials, ProSheet, and CameraScreen (single copy — no drift). |
 | **ui/theme/** | |
 | `Theme.kt` | Material3 dark theme tuned for a Sony-style pro camera surface, typography, color palette, text field/button shapes. |
-| `MainActivity.kt` | Entry point. Requests CAMERA/RECORD_AUDIO permissions at runtime (ColorOS blocks pm grant). Hosts the Compose root and ViewModel. Lifecycle: onStart/onStop call engine pause/resume. |
+| `MainActivity.kt` | Entry point. Requests CAMERA/RECORD_AUDIO permissions at runtime (ColorOS blocks pm grant). CAMERA request history distinguishes fresh/cancelled prompts from fixed denial before offering Settings. Hosts the Compose root and ViewModel. Lifecycle: onStart/onStop call engine pause/resume. |
 | `TeleCameraApp.kt` | Application class, kept minimal. No wiring needed; all setup in MainActivity/ViewModel. |
 
 ---
@@ -207,16 +207,33 @@ Accessed from GL + audio/video threads:
   The input callback snapshots the latest desired route, stale generations cannot publish, and a bounded
   `ColdStartRetryGate` lets a transient selection/capability failure recover without recreating the
   preview surface.
+- **Terminal GL acquisition**: `TerminalAcquisitionGate` linearizes cold `gl.start` and its input
+  callback with engine release. Release closes the gate before its final `gl.stop`; it either waits
+  for an in-flight acquisition and owns that generation's stop, or prevents the acquisition entirely.
+- **Output-surface ownership**: every preview bind/detach synchronously increments a generation before
+  it queues GL work. A stale native window is rejected before EGL mutation, and EGL failures converge
+  to a detached preview instead of escaping the looper. Encoder attach/detach uses an exactly-once
+  result dispatcher; a dead handler, absent EGL context, or EGL failure is never reported as success.
 - **Lifecycle guards**: `CameraEngine.paused` prevents reconfigure/open work during app backgrounding
   (onStop → pause(); every queued boundary rechecks ownership). `CameraController.closed` gates
   late-arriving open callbacks.
+- **Session reopen ownership**: every session-key reopen snapshots one complete
+  `OpticsReconfiguration` before invalidating Ready. The setup lane rechecks its generation and
+  expected controller, then uses normal complete reconfiguration; no transaction-less close/open path
+  can install stale selection or capabilities under a newer intent.
 - **Photo callback**: Image objects are valid only during `CameraController.PhotoCallback.onPhoto()`.
   Processed JPEG/YUV data is copied into owned memory before ancillary EXIF composition, then encoded
   later on `ioExecutor`; DNG is written synchronously while its RAW Image is still live. Lightweight
   focal-length, aperture, and equivalent-focal-length metadata for selected physical members is
   prefetched on `setupExecutor`, so callback resolution is cache-only and falls back to selected-route
   metadata without a CameraService lookup.
-- **Recording**: VideoRecorder owns its video/audio threads and muxer lock; GL just writes frames to the input Surface (thread-safe by the Surface contract).
+- **Recording admission and failure**: VideoRecorder owns its video/audio threads and muxer lock; GL
+  writes frames to the input Surface. REC snapshots the accepted controller/session, rechecks it after
+  mic handoff, and publishes recorder ownership atomically against camera failure. Encoder attach is
+  queued before publication; UI remains in a stoppable `isRecordingStarting` state until the owned
+  attach succeeds, so tally/timer never imply a phantom recording. An active Camera2 failure claims
+  the matching recorder, orders GL detach before finalization, reports termination, then permits
+  bounded camera recovery.
 - **Microphone admission**: `StandbyMeterOwnership` keeps reservation, intent, owner identity, and
   release-latch handoff on one monitor. Late meter threads recheck ownership before opening
   AudioRecord; REC fails a bounded release wait instead of creating a second owner; finalizer retries
@@ -366,8 +383,10 @@ newest full-control snapshot every 40 ms (25 Hz) during continuous dial input.
 **Stills** (`StillSnapshot`): the logical camera cannot allocate the HAL-JPEG blob (gralloc
 rejects it) and a RAW target errors the whole camera device, so logical stills arrive as
 YUV_420_888 (NV21-repacked on the camera thread, JPEG-encoded lazily on the io thread) and RAW is
-gated standalone-only. A capture watchdog fails any shot whose image never arrives (8 s) so the
-shutter can never wedge. The scopes/AE readback re-draws capture/EIS framing into an aspect-matched
+gated standalone-only. A capture watchdog fails any shot whose image never arrives so the shutter
+can never wedge: HAL-auto captures retain the 8 s floor, while manual/app-side requests use their
+exact sensor-clamped exposure plus an 8 s delivery margin with saturating arithmetic. The scopes/AE
+readback re-draws capture/EIS framing into an aspect-matched
 FBO whose long edge is at most 256 px (≤256 KiB RGBA) instead of glReadPixels on the full preview
 framebuffer (~33 MB at 4K — a periodic GL stall that read as preview stutter). Preview-only
 punch-in/loupe framing is excluded from scopes and AE.
@@ -496,7 +515,7 @@ Result: 8-bit SDR MP4, which AVC can encode natively.
 
 **Audio (AAC, 192 kbps):**
 
-Captured via AudioRecord on a separate thread. Software PCM gain applied (user-settable, 0.5× to 2.0× × post-gain). AAC LC encoder. Live RMS level throttled to ~10 Hz for the UI level meter.
+Captured via AudioRecord on a separate thread. Software PCM gain applied (user-settable, 0.5× to 2.0× × post-gain). AAC LC encoder. Live RMS level throttled to ~10 Hz for the UI level meter. Every AAC setup degradation publishes the selected route as unavailable before continuing video-only; the UI sets `Starting...` before engine callbacks so that terminal label is not overwritten.
 
 ---
 

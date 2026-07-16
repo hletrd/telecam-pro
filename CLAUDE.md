@@ -158,7 +158,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
 - **Lifecycle races crash the camera.** Launching behind the keyguard delivers `onStop` mid-session-
   config → device disconnects → `createCaptureRequest` throws `CAMERA_DISCONNECTED`. Guarded by a
   `closed` flag + `runCatching` in `CameraController`, and a `paused` flag in `CameraEngine` (never
-  open the camera while backgrounded).
+  open the camera while backgrounded). `TerminalAcquisitionGate` closes before release's final
+  `gl.stop`, so queued cold start cannot resurrect a GL generation afterward. Preview-window tasks
+  also carry synchronous invalidation generations; stale/released native windows cannot bind later.
 - **Sensor orientation = 90; activity is portrait-locked; preview verified upright on device.** The
   camera SurfaceTexture transform *already* rotates the sampled image by the sensor orientation, so
   the GL renderer adds **only the afocal 180°** in tele mode (`CameraEngine.previewRotationDegrees()`
@@ -299,6 +301,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   Camera2 selection/capability preflight; when its input arrives, resolve the latest desired optics
   generation. A stale startup result must never roll back or publish over a newer route, and transient
   preflight failure uses the bounded retry gate while the preview surface remains live.
+- **Every session reopen owns a complete optics generation.** Snapshot the desired override and
+  transaction before clearing Ready, recheck it on `setupExecutor`, and converge through
+  `reconfigureCamera`. Never restore a transaction-less close/open shortcut: it can pair an outgoing
+  selection/capability snapshot with a newer mode/lens generation.
 - **Ready binds controller, generations, and accepted still outputs atomically.** Every optics intent
   publishes Not-Ready with its desired generation. Only the synchronized terminal commit may install
   the Ready controller, exact session generation, actual processed/RAW reader mask, and Ready bit,
@@ -306,12 +312,25 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   reconfiguration only while its optics intent is still current; superseded work is a no-op. Every
   Ready/Not-Ready publication has a monotonic sequence, and the ViewModel rechecks that sequence inside
   its StateFlow reducer so an older Ready event cannot overwrite newer Not-Ready state.
+- **REC readiness comes from encoder EGL attachment, not `VideoRecorder.start()` returning.** Queue
+  attach before recorder publication and consume its exactly-once `Result`. Recording admission
+  snapshots the accepted Camera2 controller/session before mic handoff and atomically rechecks it at
+  publication. Until attach succeeds the UI is stoppable/locked but shows no tally or timer. An owned
+  Camera2 failure claims and ordered-finalizes the recorder before recovery; do not let camera errors
+  leave phantom REC/audio/UI state.
 - **Exactly one owner of the mic.** The Sony-style standby audio meter is a levels-only `AudioRecord`
   tap that runs while video is ARMED but not rolling. Its synchronized ownership gate reserves one
   immutable owner and release latch before thread start. REC must claim the handoff and observe that
   exact release before `VideoRecorder` opens AudioRecord; on timeout it refuses the attempt. Internal
   restart paths only recheck current intent, so they cannot overwrite a newer disable/background
   transition. Never add a second concurrent AudioRecord.
+- **Still watchdog follows the request exposure.** HAL-auto keeps the historical 8 s timeout. Manual
+  and app-side/AEB requests use the exact sensor-clamped exposure plus an 8 s delivery margin, with
+  ceil-to-milliseconds and saturating arithmetic; a fixed 8 s deadline is not valid for long shots.
+- **CAMERA permanent denial requires completed request history.** A fresh install and an empty
+  `RequestMultiplePermissions` result remain requestable. Persist only an actual false result, combine
+  it with `shouldShowRequestPermissionRationale`, clear history on grant, and suppress automatic
+  re-request only when Settings is genuinely required.
 - **`Bitmap.compress` strips ALL metadata — stamp JPEG EXIF back after writing.** `writeJpegExif`
   (androidx.exifinterface, "rw" pending FD, before publish) re-adds ISO / exposure / 35mm focal /
   make/model from the controller's latest capture result. HEIFs are currently NOT stamped (heifwriter
