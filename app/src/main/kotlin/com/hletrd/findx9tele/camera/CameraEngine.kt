@@ -704,6 +704,9 @@ class CameraEngine(private val context: Context) {
             }
             val wasReady = previewReady && cameraReady
             previewReady = true
+            // GlPipeline invokes this only after the generation's first successful real-frame
+            // swap. Bind success alone stays Pending, so repeated first-swap failures retain and
+            // eventually exhaust this surface generation's bounded recovery budget.
             previewRecoveryAttempts = 0
             val accepted = acceptedCameraSession?.takeIf {
                 !paused && controller === it.controller &&

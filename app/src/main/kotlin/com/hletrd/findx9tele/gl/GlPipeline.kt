@@ -186,12 +186,12 @@ class GlPipeline {
                     signal = signal.takeIf { surface != null },
                 )
             },
-            // EGL/native-window failures are contained on the GL thread. applyPreviewOutput clears
-            // partial state before rethrowing, so a stale or already-released Surface cannot escape
-            // through the looper and crash the process.
+            // EGL/native-window failures are contained on the GL thread. A successful attachment
+            // stays pending until drawFrame presents its first real preview frame; bind-only
+            // readiness would erase CameraEngine's recovery budget before swap health is known.
             onComplete = { result ->
                 result.fold(
-                    onSuccess = { if (applied && surface != null) signal.ready() },
+                    onSuccess = { if (!applied && surface != null) signal.cancel() },
                     onFailure = { failure -> if (surface != null) signal.fail(failure) },
                 )
             },
@@ -573,8 +573,44 @@ class GlPipeline {
         if (!updateTex && previewEgl == EGL14.EGL_NO_SURFACE) return
 
         if (updateTex) {
-            st.updateTexImage()
-            st.getTransformMatrix(stMatrix)
+            val framePreview = previewEgl
+            val frameEncoder = encoderEgl
+            val frameEncoderSignal = encoderSignal
+            val acquisitionOwner = frameAcquisitionOwner(
+                previewAvailable = framePreview != EGL14.EGL_NO_SURFACE,
+                encoderActive = frameEncoder != EGL14.EGL_NO_SURFACE &&
+                    frameEncoderSignal?.isActive() == true,
+            )
+            val acquisitionFailure = runCatching {
+                when (acquisitionOwner) {
+                    FrameAcquisitionOwner.NONE -> return
+                    FrameAcquisitionOwner.PREVIEW -> core.makeCurrent(framePreview)
+                    FrameAcquisitionOwner.ENCODER -> core.makeCurrent(frameEncoder)
+                }
+                st.updateTexImage()
+                st.getTransformMatrix(stMatrix)
+            }.exceptionOrNull()
+            if (acquisitionFailure != null) {
+                when (acquisitionOwner) {
+                    FrameAcquisitionOwner.NONE -> Unit
+                    FrameAcquisitionOwner.PREVIEW -> {
+                        previewSignal?.fail(acquisitionFailure)
+                        val detachFailure = runCatching { clearPreviewOutput(core) }.exceptionOrNull()
+                        // If the broken preview cannot relinquish native-window ownership, encoder
+                        // continuation is no longer safe. Terminate it explicitly instead of letting
+                        // the next frame escape the GL looper or silently freeze REC.
+                        if (detachFailure != null && frameEncoderSignal?.isActive() == true) {
+                            failEncoderOutput(core, frameEncoderSignal, detachFailure)
+                        }
+                    }
+                    FrameAcquisitionOwner.ENCODER -> {
+                        if (frameEncoderSignal != null) {
+                            failEncoderOutput(core, frameEncoderSignal, acquisitionFailure)
+                        }
+                    }
+                }
+                return
+            }
         }
 
         var sx = 0f
@@ -624,6 +660,9 @@ class GlPipeline {
                     zoomComp = zoomTarget / halZoom.coerceAtLeast(0.01f),
                 )
                 core.swapBuffers(ownedPreview)
+                // Attachment alone is not renderer health. The first identity-owned swap is the
+                // only event that may publish Preview Ready and reset CameraEngine's retry budget.
+                ownedPreviewSignal?.ready()
             }.exceptionOrNull()
             if (previewFailure != null) {
                 // Publish the identity-owned failure once, then detach the broken preview. Keep
@@ -1106,6 +1145,18 @@ internal class EncoderOutputSignal(
         if (wasPending) runCatching { onAttached(Result.failure(cause)) }
         return true
     }
+}
+
+/** Output whose EGL context owns acquisition of the next real camera texture frame. */
+internal enum class FrameAcquisitionOwner { NONE, PREVIEW, ENCODER }
+
+internal fun frameAcquisitionOwner(
+    previewAvailable: Boolean,
+    encoderActive: Boolean,
+): FrameAcquisitionOwner = when {
+    previewAvailable -> FrameAcquisitionOwner.PREVIEW
+    encoderActive -> FrameAcquisitionOwner.ENCODER
+    else -> FrameAcquisitionOwner.NONE
 }
 
 /** Exactly-once health bridge for one TextureView/EGL preview-output generation. */

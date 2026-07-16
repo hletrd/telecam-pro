@@ -392,6 +392,37 @@ class CompletionDispatchTest {
     }
 
     @Test
+    fun `preview output can fail its first frame without publishing ready`() {
+        val ready = AtomicInteger()
+        val failures = mutableListOf<Throwable>()
+        val signal = PreviewOutputSignal(
+            onReady = { ready.incrementAndGet() },
+            onFailure = failures::add,
+        )
+
+        assertTrue(signal.fail(IllegalStateException("first swap")))
+        assertFalse(signal.ready())
+        assertEquals(0, ready.get())
+        assertEquals(listOf("first swap"), failures.map { it.message })
+    }
+
+    @Test
+    fun `real frame acquisition prefers preview then falls back to encoder`() {
+        assertEquals(
+            FrameAcquisitionOwner.PREVIEW,
+            frameAcquisitionOwner(previewAvailable = true, encoderActive = true),
+        )
+        assertEquals(
+            FrameAcquisitionOwner.ENCODER,
+            frameAcquisitionOwner(previewAvailable = false, encoderActive = true),
+        )
+        assertEquals(
+            FrameAcquisitionOwner.NONE,
+            frameAcquisitionOwner(previewAvailable = false, encoderActive = false),
+        )
+    }
+
+    @Test
     fun `cancelled preview output cannot report a stale replacement failure`() {
         val ready = AtomicInteger()
         val failures = AtomicInteger()
