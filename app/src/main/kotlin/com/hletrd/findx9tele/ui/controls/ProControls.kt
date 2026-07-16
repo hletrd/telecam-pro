@@ -613,7 +613,7 @@ fun TransferSelector(
     }
 }
 
-/** HEIF / DNG output-format toggles; both may be enabled simultaneously. */
+/** HEIF / JPEG / DNG output-format toggles; supported formats may be enabled simultaneously. */
 @Composable
 fun PhotoFormatToggles(
     formats: PhotoFormats,

@@ -301,9 +301,9 @@ enum class BitrateLevel(val bpp: Float) {
  * (`MediaFormat.KEY_FRAME_RATE` as a float): the NTSC drop-frame rates are the real fractions
  * (24000/1001 ≈ 23.976, 30000/1001 ≈ 29.97, 60000/1001 ≈ 59.94), not their rounded neighbours.
  * [fps] is the rounded integer used for exposure math (AE target-fps range, cine shutter angle,
- * sensor frame duration) and for capability gating. [highSpeed] rates (120+) can only be captured
- * through a CameraConstrainedHighSpeedCaptureSession and are offered only when the selected camera
- * advertises a matching high-speed config for the chosen size.
+ * sensor frame duration) and for capability gating. [highSpeed] marks dormant 120+ entries retained
+ * for persisted-schema compatibility and diagnostic session machinery. Shipping [availableFor]
+ * always excludes them because the constrained high-speed session SIGABRTs this device's HAL.
  */
 enum class VideoFrameRate(
     val label: String,
@@ -320,6 +320,7 @@ enum class VideoFrameRate(
     FPS_50("50", 50.0, 50, false),
     FPS_59_94("59.94", 60000.0 / 1001.0, 60, true),
     FPS_60("60", 60.0, 60, false),
+    // Dormant in the shipping picker; see availableFor and CameraViewModel's restore guard.
     FPS_120("120", 120.0, 120, false, highSpeed = true);
 
     companion object {

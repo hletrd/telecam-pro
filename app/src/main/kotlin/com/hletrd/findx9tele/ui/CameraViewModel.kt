@@ -353,9 +353,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         }
         val requestedTeleconverter = requestedLens == LensChoice.TELE3X && preservedTeleconverter
         // Settings restore is the one path that bypasses the pickers' gating, so re-validate the
-        // UI-gated enum values before they reach the engine: a persisted high-speed rate would
-        // rebuild the SIGABRT-ing constrained session on next launch (FPS_120 is intentionally
-        // unselectable), and a persisted codec the device can't mux (APV) would break recording.
+        // UI-gated enum values before they reach the engine: FPS_120 remains a dormant enum/session
+        // path for schema compatibility and diagnostics, but the shipping picker excludes it because
+        // rebuilding the constrained session SIGABRTs this HAL. A persisted codec the device can't
+        // mux (APV) would likewise break recording.
         val safeFrameRate = if (e.videoFrameRate.highSpeed) ExtraSettings().videoFrameRate else e.videoFrameRate
         val safeCodec =
             if (com.hletrd.findx9tele.video.EncoderCaps.availableCodecs().contains(e.videoCodec)) e.videoCodec

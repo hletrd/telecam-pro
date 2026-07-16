@@ -837,8 +837,9 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     }
 
     // Frame rates gated per-resolution by real caps: normal rates need the camera to advertise the
-    // integer fps (24/30/60 here); 120 needs a matching high-speed config; drop-frame variants
-    // (23.976/29.97/59.94) ride their integer parent. 8K is capped ≤30.
+    // integer fps (24/30/60 here), and drop-frame variants (23.976/29.97/59.94) ride their integer
+    // parent. FPS_120/session machinery remains dormant for diagnostics: availableFor excludes it
+    // unconditionally because the constrained high-speed session SIGABRTs this HAL. 8K is capped ≤30.
     val fpsOptions = VideoFrameRate.availableFor(caps, state.videoResolution, codec)
     if (fpsOptions.isEmpty()) {
         Text(
@@ -856,14 +857,6 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
             enabled = recordingMutable,
         )
     }
-    if (state.videoFrameRate.highSpeed) {
-        Text(
-            "Still capture off.",
-            color = CameraColors.TextSecondary,
-            style = MaterialTheme.typography.labelSmall,
-        )
-    }
-
     SegmentedSelector(
         label = "Bitrate",
         options = BitrateLevel.entries,

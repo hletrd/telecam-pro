@@ -578,8 +578,8 @@ class CameraEngine(private val context: Context) {
             glInputSurface = input,
             controls = controls,
             tenBitHlg = false, // SDR session — HLG10+RAW+JPEG crashes the HAL
-            // >0 → build a CameraConstrainedHighSpeedCaptureSession at this fps (no JPEG/RAW). 0 keeps
-            // the regular tele session with full still capture. Falls back to regular on config failure.
+            // The shipping picker always resolves 0: constrained high-speed SIGABRTs this HAL.
+            // Non-zero support remains dormant for diagnostics/schema-compatible internal callers.
             highSpeedFps = desiredHighSpeedFps(),
             vendorLogMode = vendorLogMode.halValue,
             videoStabHalMode = c.videoStabControlMode(videoStabMode),
@@ -899,10 +899,9 @@ class CameraEngine(private val context: Context) {
     fun setBitrateLevel(b: BitrateLevel) { bitrateLevel = b }
 
     /**
-     * Selects the video frame rate. When this crosses the high-speed boundary (into or out of a
-     * ≥120fps rate the current camera advertises for [videoSize]), the camera is reopened so the
-     * session type — regular vs CameraConstrainedHighSpeedCaptureSession — matches. Purely changing
-     * a normal rate just updates the encoder rate for the next recording, no reopen.
+     * Selects the video frame rate. Shipping UI and settings restore exclude high-speed rates because
+     * the constrained session SIGABRTs this HAL. The boundary/reopen path remains dormant for
+     * diagnostics and persisted-schema compatibility; normal rates only update the next recording.
      */
     fun setVideoFrameRate(r: VideoFrameRate) {
         val before = desiredHighSpeedFps()
@@ -921,9 +920,9 @@ class CameraEngine(private val context: Context) {
     }
 
     /**
-     * The high-speed fps the camera should run at right now (0 = regular session): non-zero only when
-     * the selected rate is a high-speed one AND the current camera advertises a high-speed config for
-     * [videoSize] at ≥ that fps. Keeps the tele's normal recording path untouched when nothing needs it.
+     * Dormant high-speed-session resolver. Shipping selection/restore guarantees 0 because this HAL
+     * aborts constrained sessions; diagnostic internal callers still require a matching advertised
+     * config before the compatibility path returns a non-zero rate.
      */
     private fun desiredHighSpeedFps(): Int {
         val c = caps ?: return 0
