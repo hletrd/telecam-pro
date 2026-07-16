@@ -138,6 +138,7 @@ class CameraEngine(private val context: Context) {
     )
 
     private data class OpticsTransaction(val generation: Long, val before: OpticsSnapshot)
+    private data class OpticsReconfiguration(val overrideId: String?, val transaction: OpticsTransaction)
 
     @Volatile private var opticsRollbackBaseline: OpticsSnapshot? = null
 
@@ -182,11 +183,14 @@ class CameraEngine(private val context: Context) {
     private fun pendingOpticsTransaction(): OpticsTransaction? =
         opticsRollbackBaseline?.let { OpticsTransaction(opticsIntentGeneration.get(), it) }
 
-    /** Ownership token for resume even when no unaccepted intent needs a rollback baseline. */
+    /** Desired route + ownership token captured atomically for resume. */
     @Synchronized
-    private fun currentOpticsTransaction(): OpticsTransaction = OpticsTransaction(
-        generation = opticsIntentGeneration.get(),
-        before = selectRollbackBaseline(cameraReady, currentOpticsSnapshot(), opticsRollbackBaseline),
+    private fun currentOpticsReconfiguration(): OpticsReconfiguration = OpticsReconfiguration(
+        overrideId = overrideId,
+        transaction = OpticsTransaction(
+            generation = opticsIntentGeneration.get(),
+            before = selectRollbackBaseline(cameraReady, currentOpticsSnapshot(), opticsRollbackBaseline),
+        ),
     )
 
     @Synchronized
@@ -1946,7 +1950,8 @@ class CameraEngine(private val context: Context) {
             // Resume always carries an ownership token. Without one, a lens/TELE tap during the
             // dual-open wait could let this older attempt publish outgoing caps/Ready under the
             // newer generation even when there was no pre-pause rollback baseline.
-            reconfigureCamera(overrideId, currentOpticsTransaction())
+            val desired = currentOpticsReconfiguration()
+            reconfigureCamera(desired.overrideId, desired.transaction)
         }
     }
 
