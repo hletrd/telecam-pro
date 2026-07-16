@@ -51,58 +51,50 @@ sealed class StillSnapshot {
             else -> throw IllegalArgumentException("Unsupported still format ${image.format}")
         }
 
-        /**
-         * Repacks YUV_420_888 planes into NV21 (Y then interleaved V/U), honoring row/pixel strides.
-         * Fast path: the common semi-planar layout (chroma pixelStride == 2, rowStride == width)
-         * where plane[2]'s buffer is already the V/U interleave — one bulk get. Generic per-sample
-         * fallback otherwise.
-         */
+        /** Repacks YUV_420_888 by each plane's semantic U/V identity, never by stride heuristics. */
         private fun yuvToNv21(image: Image): ByteArray {
-            val w = image.width
-            val h = image.height
-            val out = ByteArray(w * h * 3 / 2)
-            val y = image.planes[0]
-            val u = image.planes[1]
-            val v = image.planes[2]
-
-            // ---- Y plane ----
-            val yBuf = y.buffer
-            if (y.pixelStride == 1 && y.rowStride == w) {
-                yBuf.get(out, 0, w * h)
-            } else {
-                var pos = 0
-                for (row in 0 until h) {
-                    yBuf.position(row * y.rowStride)
-                    yBuf.get(out, pos, w)
-                    pos += w
-                }
+            fun snapshot(plane: Image.Plane): YuvPlaneData {
+                val buffer = plane.buffer.duplicate()
+                val bytes = ByteArray(buffer.remaining())
+                buffer.get(bytes)
+                return YuvPlaneData(bytes, plane.rowStride, plane.pixelStride)
             }
-
-            // ---- chroma ----
-            val uvBytes = w * h / 2
-            val vBuf = v.buffer
-            val uBuf = u.buffer
-            if (v.pixelStride == 2 && v.rowStride == w && u.pixelStride == 2 && u.rowStride == w) {
-                // Semi-planar: V buffer reads V0 U0 V1 U1 … = exactly NV21's chroma sequence. Its
-                // last U byte lives only in the U plane (the V view ends one byte short).
-                val n = minOf(vBuf.remaining(), uvBytes)
-                vBuf.get(out, w * h, n)
-                if (n < uvBytes) {
-                    uBuf.position(uBuf.remaining() - 1)
-                    out[w * h + uvBytes - 1] = uBuf.get()
-                }
-            } else {
-                var pos = w * h
-                for (row in 0 until h / 2) {
-                    val vRow = row * v.rowStride
-                    val uRow = row * u.rowStride
-                    for (col in 0 until w / 2) {
-                        out[pos++] = vBuf.get(vRow + col * v.pixelStride)
-                        out[pos++] = uBuf.get(uRow + col * u.pixelStride)
-                    }
-                }
-            }
-            return out
+            return packYuv420ToNv21(
+                width = image.width,
+                height = image.height,
+                y = snapshot(image.planes[0]),
+                u = snapshot(image.planes[1]),
+                v = snapshot(image.planes[2]),
+            )
         }
     }
+}
+
+/** Plain plane snapshot used by the JVM-testable YUV stride conversion core. */
+internal data class YuvPlaneData(val bytes: ByteArray, val rowStride: Int, val pixelStride: Int)
+
+/** Packs planar, NV12-shaped, or NV21-shaped YUV_420_888 views into canonical NV21 (Y + VU). */
+internal fun packYuv420ToNv21(
+    width: Int,
+    height: Int,
+    y: YuvPlaneData,
+    u: YuvPlaneData,
+    v: YuvPlaneData,
+): ByteArray {
+    require(width > 0 && height > 0 && width % 2 == 0 && height % 2 == 0)
+    val out = ByteArray(width * height * 3 / 2)
+    var pos = 0
+    for (row in 0 until height) {
+        val rowStart = row * y.rowStride
+        for (col in 0 until width) out[pos++] = y.bytes[rowStart + col * y.pixelStride]
+    }
+    for (row in 0 until height / 2) {
+        val vRow = row * v.rowStride
+        val uRow = row * u.rowStride
+        for (col in 0 until width / 2) {
+            out[pos++] = v.bytes[vRow + col * v.pixelStride]
+            out[pos++] = u.bytes[uRow + col * u.pixelStride]
+        }
+    }
+    return out
 }

@@ -50,9 +50,9 @@ class VideoCapabilitiesTest {
     }
 
     @Test
-    fun `gating never returns an empty list`() {
+    fun `empty advertised caps return explicit unavailable list`() {
         val rates = VideoFrameRate.availableFor(emptySet(), highSpeedMaxFps = 0, width = 3840, height = 2160, codec = VideoCodec.HEVC)
-        assertTrue(rates.isNotEmpty())
+        assertTrue(rates.isEmpty())
     }
 
     @Test

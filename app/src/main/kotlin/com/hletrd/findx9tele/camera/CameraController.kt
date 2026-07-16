@@ -40,7 +40,13 @@ class CameraController(context: Context) {
 
     interface PhotoCallback {
         /** Images are valid only for the duration of this call. rawChars is the RAW producer's characteristics. */
-        fun onPhoto(jpeg: Image?, raw: Image?, result: TotalCaptureResult, rawChars: CameraCharacteristics)
+        fun onPhoto(
+            jpeg: Image?,
+            raw: Image?,
+            result: TotalCaptureResult,
+            rawChars: CameraCharacteristics,
+            takenAtMs: Long,
+        )
         fun onError(t: Throwable)
     }
 
@@ -323,7 +329,12 @@ class CameraController(context: Context) {
                 val effectiveZoom = ratio.coerceAtLeast(1f) * if (teleconverterMode) TELECONVERTER_MAGNIFICATION else 1f
                 runCatching { b.set(oplusOriginalZoomRatioKey, effectiveZoom) }
                 s.setRepeatingRequest(b.build(), cb, handler)
-            }.onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "zoom fast path failed, rebuilding: ${it.message}") }
+            }.onFailure {
+                if (BuildConfig.DEBUG) Log.w(TAG, "zoom fast path failed, rebuilding: ${it.message}")
+                // The cached builder/session can become invalid during a configure transition.
+                // Re-derive the full repeating request so the requested zoom is not silently lost.
+                startPreview()
+            }
         }
     }
 
@@ -372,6 +383,7 @@ class CameraController(context: Context) {
             // ChiMulticameraBase::Initialize). Only enable RAW for a standalone (non-routed) camera.
             standalone = selection.physicalId == null,
             logicalMultiCamera = caps.isLogicalMultiCamera,
+            teleconverterMode = teleconverterMode,
         )
         val useHlg = plan.useHlg
         val useJpeg = plan.useJpeg
@@ -420,7 +432,9 @@ class CameraController(context: Context) {
             // TC mode: pass the stock app's TC operation_mode (0x80b4) as the sessionType — captured
             // via CamX `configure_streams() operation_mode: 0x80b4` on the stock app (→ sensor mode 48,
             // the 300mm TC OIS profile). Falls back via onConfigureFailed if the framework/HAL rejects it.
-            if (teleconverterMode) 0x80b4 else SessionConfiguration.SESSION_REGULAR, configs, executor,
+            if (plan.useVendorOperationMode) 0x80b4 else SessionConfiguration.SESSION_REGULAR,
+            configs,
+            executor,
             object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(s: CameraCaptureSession) {
                     if (closed) { runCatching { s.close() }; return } // closed before config completed
@@ -432,7 +446,8 @@ class CameraController(context: Context) {
                 override fun onConfigureFailed(s: CameraCaptureSession) {
                     // Advance the fallback ladder and retry; give up once it is exhausted.
                     configAttempt = attempt + 1
-                    if (configAttempt > MAX_CONFIG_ATTEMPT) {
+                    val maxAttempt = if (teleconverterMode) MAX_TELE_CONFIG_ATTEMPT else MAX_CONFIG_ATTEMPT
+                    if (configAttempt > maxAttempt) {
                         Log.e(TAG, "Session configure failed; fallback ladder exhausted")
                         onError.onError(IllegalStateException("session configure failed"))
                     } else {
@@ -744,6 +759,8 @@ class CameraController(context: Context) {
     /** Clears the tap target, restoring the metering-mode regions on the next preview build. */
     fun clearMeteringPoint() {
         meteringPoint = null
+        touchAfActive = false
+        afTriggerPending = false
         postToCamera { startPreview() }
     }
 
@@ -760,7 +777,7 @@ class CameraController(context: Context) {
             val raw = rawReader?.surface?.takeIf { wantRaw && caps.supportsRaw }
             if (jpeg == null && raw == null) {
                 return@postToCamera cb.onError(
-                    IllegalStateException("No capture target — enable HEIF or DNG (the session may have fallen back to preview-only)"),
+                    IllegalStateException("No capture target — enable HEIF, JPEG, or DNG (the session may have fallen back to preview-only)"),
                 )
             }
             if (pending != null) {
@@ -814,39 +831,68 @@ class CameraController(context: Context) {
                     override fun onCaptureStarted(
                         session: CameraCaptureSession, request: CaptureRequest, timestamp: Long, frameNumber: Long,
                     ) {
+                        // The callback belongs to the request that created [newPending], not whatever
+                        // happens to occupy the reusable pending slot when a late callback arrives.
+                        // Bind its sensor timestamp before accepting images; an old image can arrive
+                        // after the watchdog has admitted a newer shot on the same ImageReader.
+                        if (!captureTokenIsCurrent(pending, newPending)) return
+                        synchronized(newPending) {
+                            if (newPending.done) return
+                            newPending.sensorTimestampNs = timestamp
+                            newPending.takenAtMs = System.currentTimeMillis()
+                            newPending.jpeg?.takeIf { !timestampBelongsToCapture(timestamp, it.timestamp) }?.let {
+                                it.close()
+                                newPending.jpeg = null
+                            }
+                            newPending.raw?.takeIf { !timestampBelongsToCapture(timestamp, it.timestamp) }?.let {
+                                it.close()
+                                newPending.raw = null
+                            }
+                        }
                         // TRUE shutter moment (sensor exposure start): queue→started is the user-felt
                         // shutter lag; started→completed→image is HAL processing + readout.
-                        if (BuildConfig.DEBUG) pending?.let {
-                            Log.i(TAG, "ShutterLag: started +${(System.nanoTime() - it.queuedAtNs) / 1_000_000} ms")
+                        if (BuildConfig.DEBUG) {
+                            Log.i(TAG, "ShutterLag: started +${(System.nanoTime() - newPending.queuedAtNs) / 1_000_000} ms")
                         }
                     }
 
                     override fun onCaptureCompleted(
                         session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult,
                     ) {
-                        if (BuildConfig.DEBUG) pending?.let {
-                            Log.i(TAG, "ShutterLag: completed +${(System.nanoTime() - it.queuedAtNs) / 1_000_000} ms")
+                        if (!captureTokenIsCurrent(pending, newPending)) return
+                        val resultTimestamp = result.get(CaptureResult.SENSOR_TIMESTAMP)
+                        synchronized(newPending) {
+                            if (newPending.done) return
+                            val expected = newPending.sensorTimestampNs
+                            if (expected != null && resultTimestamp != null && expected != resultTimestamp) return
+                            if (expected == null) newPending.sensorTimestampNs = resultTimestamp
+                            newPending.result = result
                         }
-                        pending?.let { it.result = result; tryComplete(it) }
+                        if (BuildConfig.DEBUG) {
+                            Log.i(TAG, "ShutterLag: completed +${(System.nanoTime() - newPending.queuedAtNs) / 1_000_000} ms")
+                        }
+                        tryComplete(newPending)
                     }
                     override fun onCaptureFailed(session: CameraCaptureSession, request: CaptureRequest, failure: android.hardware.camera2.CaptureFailure) {
-                        val p = pending
-                        if (p != null) {
+                        if (captureTokenIsCurrent(pending, newPending)) {
                             // Close any already-acquired images so the ImageReader (maxImages=2) isn't
                             // starved, and mark done so a late-arriving partial can't re-enter tryComplete.
-                            synchronized(p) {
-                                p.done = true
-                                runCatching { p.jpeg?.close() }
-                                runCatching { p.raw?.close() }
+                            synchronized(newPending) {
+                                newPending.done = true
+                                runCatching { newPending.jpeg?.close() }
+                                runCatching { newPending.raw?.close() }
                             }
-                            p.cb.onError(IllegalStateException("Capture failed: ${failure.reason}"))
+                            pending = null
+                            newPending.cb.onError(IllegalStateException("Capture failed: ${failure.reason}"))
                         }
-                        pending = null
                     }
                 }, handler)
             }.onFailure { t ->
-                pending = null // nothing acquired yet — the readers only deliver after a queued capture
-                cb.onError(t)
+                if (captureTokenIsCurrent(pending, newPending)) {
+                    pending = null // nothing acquired yet — the readers only deliver after a queued capture
+                    newPending.done = true
+                    cb.onError(t)
+                }
             }
         }
         // The controller is mid-teardown — a session-key reopen (Auto HDR / in-sensor zoom / lens / fps)
@@ -860,6 +906,11 @@ class CameraController(context: Context) {
         val p = pending
         if (p == null) { image.close(); return }
         synchronized(p) {
+            val expected = p.sensorTimestampNs
+            if (p.done || (expected != null && !timestampBelongsToCapture(expected, image.timestamp))) {
+                image.close()
+                return
+            }
             if (isRaw && p.wantRaw && p.raw == null) p.raw = image
             else if (!isRaw && p.wantJpeg && p.jpeg == null) p.jpeg = image
             else { image.close(); return }
@@ -874,6 +925,19 @@ class CameraController(context: Context) {
             val haveJpeg = !p.wantJpeg || p.jpeg != null
             val haveRaw = !p.wantRaw || p.raw != null
             if (!(haveResult && haveJpeg && haveRaw)) return
+            val expected = p.sensorTimestampNs
+            if (expected != null) {
+                if (p.jpeg?.let { !timestampBelongsToCapture(expected, it.timestamp) } == true) {
+                    p.jpeg?.close()
+                    p.jpeg = null
+                    return
+                }
+                if (p.raw?.let { !timestampBelongsToCapture(expected, it.timestamp) } == true) {
+                    p.raw?.close()
+                    p.raw = null
+                    return
+                }
+            }
             p.done = true
         }
         if (BuildConfig.DEBUG) {
@@ -881,7 +945,7 @@ class CameraController(context: Context) {
         }
         val chars = rawChars
         try {
-            if (chars != null) p.cb.onPhoto(p.jpeg, p.raw, p.result!!, chars)
+            if (chars != null) p.cb.onPhoto(p.jpeg, p.raw, p.result!!, chars, p.takenAtMs)
             else p.cb.onError(IllegalStateException("Missing camera characteristics"))
         } catch (t: Throwable) {
             p.cb.onError(t)
@@ -907,7 +971,7 @@ class CameraController(context: Context) {
                         p.done = true
                         runCatching { p.jpeg?.close() }
                         runCatching { p.raw?.close() }
-                        p.cb.onError(IllegalStateException("Camera closed during capture"))
+                        runCatching { p.cb.onError(IllegalStateException("Camera closed during capture")) }
                     }
                 }
             }
@@ -923,7 +987,8 @@ class CameraController(context: Context) {
         }
         // Same dead-thread quirk postToCamera guards against: if this instance somehow closes after
         // its looper died (OS kill ordering), the raw post throws instead of returning false.
-        runCatching { handler.post(teardown) }
+        val teardownPosted = runCatching { handler.post(teardown) }.getOrDefault(false)
+        if (!teardownPosted) teardown.run()
         // Quit AFTER posting cleanup so the queued teardown runs first, then the thread exits.
         // (Previously the "camera" HandlerThread leaked once per controller / override switch.)
         bg.quitSafely()
@@ -939,6 +1004,8 @@ class CameraController(context: Context) {
         var jpeg: Image? = null
         var raw: Image? = null
         var result: TotalCaptureResult? = null
+        var sensorTimestampNs: Long? = null
+        var takenAtMs: Long = System.currentTimeMillis()
         var done = false
         // Shutter-lag instrumentation (DEBUG logs only): capture-queue time on the camera thread.
         val queuedAtNs: Long = System.nanoTime()
@@ -951,6 +1018,9 @@ class CameraController(context: Context) {
         const val CAPTURE_WATCHDOG_MS = 8_000L
         // Highest fallback index (attempt 3 = preview-only). Beyond this the session can't be built.
         const val MAX_CONFIG_ATTEMPT = 3
+        // TELE tries the same four stream plans once with vendor operation mode 0x80b4 and once
+        // with SESSION_REGULAR, so an unsupported vendor mode cannot kill an otherwise-valid view.
+        const val MAX_TELE_CONFIG_ATTEMPT = 7
         // Max time close() waits for the camera thread to release the HAL device before a reopen.
         // Device close is normally well under this; the cap keeps a wedged close from hanging the UI.
         const val CLOSE_JOIN_TIMEOUT_MS = 1500L
@@ -958,13 +1028,26 @@ class CameraController(context: Context) {
     }
 }
 
+/** Identity guard for callbacks that can outlive and race reuse of the single pending-shot slot. */
+internal fun captureTokenIsCurrent(current: Any?, expected: Any): Boolean = current === expected
+
+/** Camera2 images/results for one request must carry the sensor timestamp reported at shutter start. */
+internal fun timestampBelongsToCapture(expectedTimestampNs: Long, actualTimestampNs: Long): Boolean =
+    expectedTimestampNs == actualTimestampNs
+
 /** What the session fallback ladder enables at a given attempt — see [CameraController]'s ladder doc. */
-internal data class SessionAttemptPlan(val useHlg: Boolean, val useJpeg: Boolean, val useRaw: Boolean)
+internal data class SessionAttemptPlan(
+    val useHlg: Boolean,
+    val useJpeg: Boolean,
+    val useRaw: Boolean,
+    val useVendorOperationMode: Boolean = false,
+)
 
 /**
- * Pure core of the fallback ladder (attempt 0 full → 1 drop RAW → 2 also drop HLG → 3
- * preview-only) so the HAL-crash-critical ordering is unit-testable off-device. [standalone] is the
- * "selection.physicalId == null" RAW gate (RAW via physical routing SIGSEGVs this QTI HAL).
+ * Pure core of the fallback ladder (full → drop RAW → drop HLG → preview-only) so the
+ * HAL-crash-critical ordering is unit-testable off-device. TELE repeats those four stream plans
+ * with regular operation mode after trying vendor 0x80b4. [standalone] is the
+ * `selection.physicalId == null` RAW gate (RAW via physical routing SIGSEGVs this QTI HAL).
  */
 internal fun sessionAttemptPlan(
     attempt: Int,
@@ -972,16 +1055,21 @@ internal fun sessionAttemptPlan(
     supportsRaw: Boolean,
     standalone: Boolean,
     logicalMultiCamera: Boolean = false,
-): SessionAttemptPlan = SessionAttemptPlan(
-    useHlg = wantHlg && attempt < 2,
-    useJpeg = attempt < 3,
+    teleconverterMode: Boolean = false,
+): SessionAttemptPlan {
+    val streamAttempt = if (teleconverterMode) attempt % 4 else attempt
+    return SessionAttemptPlan(
+    useHlg = wantHlg && streamAttempt < 2,
+    useJpeg = streamAttempt < 3,
     // RAW is STANDALONE-camera-only on this HAL, in BOTH failure modes: routed through a physical
     // sub-camera it rejects the stream ("DataSpace override not allowed"), and on the plain
     // LOGICAL camera a still with the RAW target errors the whole camera device ~5 s after the
     // shot (device-observed CAMERA_ERROR(3), 2026-07-14) — no image ever arrives. DNG therefore
     // exists only in TELE mode (standalone 3×) and on any explicit standalone selection.
-    useRaw = attempt < 1 && supportsRaw && standalone && !logicalMultiCamera,
-)
+    useRaw = streamAttempt < 1 && supportsRaw && standalone && !logicalMultiCamera,
+    useVendorOperationMode = teleconverterMode && attempt < 4,
+    )
+}
 
 /**
  * Pure ROI math behind tap/center/spot metering, extracted (like [sessionAttemptPlan]) so the

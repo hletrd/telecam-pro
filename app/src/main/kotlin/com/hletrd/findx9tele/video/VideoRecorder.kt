@@ -24,6 +24,7 @@ import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.storage.MediaStoreWriter
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
@@ -63,7 +64,8 @@ class VideoRecorder(private val context: Context) {
     private val muxerLock = Any()
 
     @Volatile private var running = false
-    @Volatile private var failure: Throwable? = null
+    private val firstFailure = FirstFailureSignal()
+    private var onFailure: ((Throwable) -> Unit)? = null
     @Volatile private var wroteVideoSample = false
     private var videoThread: Thread? = null
     private var audioThread: Thread? = null
@@ -104,6 +106,7 @@ class VideoRecorder(private val context: Context) {
         audioInputPreference: AudioInputPreference = AudioInputPreference.AUTO,
         onRoute: ((String) -> Unit)? = null,
         onLevel: ((Float) -> Unit)? = null,
+        onFailure: ((Throwable) -> Unit)? = null,
     ): Surface? {
         this.uri = uri
         this.audioGain = audioGain
@@ -113,6 +116,7 @@ class VideoRecorder(private val context: Context) {
         this.audioInputPreference = audioInputPreference
         this.onRoute = onRoute
         this.onLevel = onLevel
+        this.onFailure = onFailure
         val descriptor = MediaStoreWriter.openParcelFd(context, uri, "rw") ?: return null
         pfd = descriptor
 
@@ -214,7 +218,7 @@ class VideoRecorder(private val context: Context) {
         // A track alone is not enough: require at least one successfully muxed video sample and no
         // asynchronous codec/muxer error. Keep failed or empty recordings out of the gallery.
         val outputUri = uri
-        var saved = muxerStarted && wroteVideoSample && failure == null && outputUri != null
+        var saved = muxerStarted && wroteVideoSample && firstFailure.cause == null && outputUri != null
         if (saved) saved = MediaStoreWriter.publish(context, outputUri!!)
         if (!saved && outputUri != null) MediaStoreWriter.delete(context, outputUri)
 
@@ -229,7 +233,8 @@ class VideoRecorder(private val context: Context) {
         wroteVideoSample = false
         videoThread = null
         audioThread = null
-        return StopResult(saved = saved, error = failure)
+        onFailure = null
+        return StopResult(saved = saved, error = firstFailure.cause)
     }
 
     private fun drainVideo() {
@@ -502,10 +507,13 @@ class VideoRecorder(private val context: Context) {
         return muxerStarted
     }
 
-    @Synchronized
     private fun recordFailure(t: Throwable) {
-        if (failure == null) failure = t
         running = false
+        // Codec/muxer failures happen on the drain threads. Notify the owner immediately so it can
+        // leave REC state and start ordered teardown instead of waiting for a manual Stop tap. The
+        // atomic signal retains the first cause and invokes this callback at most once even when the
+        // video and audio threads fail together (or stop() observes a second finalization error).
+        firstFailure.record(t) { cause -> onFailure?.invoke(cause) }
     }
 
     private fun hasRecordPermission(): Boolean =
@@ -529,6 +537,24 @@ class VideoRecorder(private val context: Context) {
         // ~3 s of 10 ms input-dequeue timeouts: how long the stop path keeps asking for a free
         // input buffer to carry AAC EOS before declaring the encoder wedged and bailing.
         const val MAX_EOS_ATTEMPTS = 300
+    }
+}
+
+/**
+ * Thread-safe first-failure latch used by [VideoRecorder]'s independent audio/video drain threads.
+ * The first cause wins and its observer is invoked exactly once; observer exceptions are contained
+ * so a UI/engine callback can never crash the encoder thread that reported the real failure.
+ */
+internal class FirstFailureSignal {
+    private val causeRef = AtomicReference<Throwable?>()
+
+    val cause: Throwable?
+        get() = causeRef.get()
+
+    fun record(cause: Throwable, onFirst: (Throwable) -> Unit): Boolean {
+        if (!causeRef.compareAndSet(null, cause)) return false
+        runCatching { onFirst(cause) }
+        return true
     }
 }
 

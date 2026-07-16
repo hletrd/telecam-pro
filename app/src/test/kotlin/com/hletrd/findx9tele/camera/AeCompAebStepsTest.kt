@@ -7,24 +7,47 @@ import org.junit.Test
 class AeCompAebStepsTest {
 
     @Test
-    fun wideRange_fullBracket() {
-        assertEquals(listOf(-2, 0, 2), aeCompAebSteps(-6, 6))
+    fun halfStopUnits_fullBracket() {
+        assertEquals(listOf(-4, 0, 4), aeCompAebSteps(center = 0, lower = -6, upper = 6, evStepStops = 0.5f))
+    }
+
+    @Test
+    fun thirdStopUnits_fullBracket() {
+        assertEquals(
+            listOf(-6, 0, 6),
+            aeCompAebSteps(center = 0, lower = -9, upper = 9, evStepStops = 1f / 3f),
+        )
+    }
+
+    @Test
+    fun sixthStopUnits_fullBracket() {
+        assertEquals(
+            listOf(-12, 0, 12),
+            aeCompAebSteps(center = 0, lower = -18, upper = 18, evStepStops = 1f / 6f),
+        )
+    }
+
+    @Test
+    fun bracketIsCenteredOnCurrentCompensation() {
+        assertEquals(
+            listOf(-4, 2, 8),
+            aeCompAebSteps(center = 2, lower = -9, upper = 9, evStepStops = 1f / 3f),
+        )
     }
 
     @Test
     fun narrowRange_clampsAndDedupes() {
-        // [-1, 1]: -2 clamps to -1, +2 clamps to +1 → three DISTINCT shots, no duplicates.
-        assertEquals(listOf(-1, 0, 1), aeCompAebSteps(-1, 1))
+        assertEquals(
+            listOf(-1, 0, 1),
+            aeCompAebSteps(center = 0, lower = -1, upper = 1, evStepStops = 1f / 3f),
+        )
     }
 
     @Test
-    fun zeroRange_collapsesToOneShot() {
-        assertEquals(listOf(0), aeCompAebSteps(0, 0))
-    }
-
-    @Test
-    fun oneSidedRange_dropsTheUnreachableSide() {
-        // [0, 6]: -2 clamps to 0, duplicating the middle step → two shots.
-        assertEquals(listOf(0, 2), aeCompAebSteps(0, 6))
+    fun oneSidedRange_dropsUnreachableSide() {
+        assertEquals(
+            listOf(0, 6),
+            aeCompAebSteps(center = 0, lower = 0, upper = 6, evStepStops = 1f / 3f),
+        )
     }
 }

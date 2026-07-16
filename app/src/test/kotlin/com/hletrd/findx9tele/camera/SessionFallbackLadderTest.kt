@@ -64,4 +64,26 @@ class SessionFallbackLadderTest {
         assertFalse(p.useRaw)
         assertTrue(p.useJpeg)
     }
+
+    @Test
+    fun teleconverter_retriesSameStreamLadderWithRegularOperationMode() {
+        val vendor = sessionAttemptPlan(
+            attempt = 0,
+            wantHlg = true,
+            supportsRaw = true,
+            standalone = true,
+            teleconverterMode = true,
+        )
+        val regular = sessionAttemptPlan(
+            attempt = 4,
+            wantHlg = true,
+            supportsRaw = true,
+            standalone = true,
+            teleconverterMode = true,
+        )
+
+        assertTrue(vendor.useVendorOperationMode)
+        assertFalse(regular.useVendorOperationMode)
+        assertEquals(vendor.copy(useVendorOperationMode = false), regular)
+    }
 }

@@ -334,10 +334,11 @@ enum class VideoFrameRate(
          *    so a drop-frame rate rides on its integer parent (29.97 needs 30, etc.);
          *  - high-speed rates (120) are NEVER offered — the constrained high-speed session SIGABRTs
          *    this device's HAL (QA-confirmed), so [FPS_120] is intentionally unselectable.
-         * Always returns at least one rate so the UI never shows an empty selector.
+         * Returns an empty list when capabilities are missing or advertise no compatible normal
+         * rate; callers must show/handle that explicit unavailable state rather than invent 30 fps.
          */
         fun availableFor(caps: CameraCaps?, size: Size, codec: VideoCodec): List<VideoFrameRate> {
-            if (caps == null) return listOf(FPS_24, FPS_30, FPS_60)
+            if (caps == null) return emptyList()
             return availableFor(caps.availableFps.toSet(), caps.highSpeedFpsFor(size), size.width, size.height, codec)
         }
 
@@ -360,7 +361,7 @@ enum class VideoFrameRate(
                     else -> normalFps.contains(r.fps)
                 }
             }
-            return out.ifEmpty { listOf(FPS_30) }
+            return out
         }
     }
 }
@@ -396,25 +397,33 @@ fun effectiveBpp(level: BitrateLevel, codec: VideoCodec): Float =
 enum class AspectRatio(val w: Int, val h: Int) { W4_3(4, 3), W16_9(16, 9) }
 
 /**
- * Photo output formats. Any combination can be enabled at once. [heif] and [jpeg] are alternative
- * containers for the processed still (HEIF = smaller, JPEG = universal); both use the camera's
- * 8-bit JPEG ImageReader source in v1 and both run the SAME processed-pixel pipeline
+ * Photo output formats. Any non-empty supported combination can be enabled at once. [heif] and
+ * [jpeg] are alternative containers for the processed still (HEIF = smaller, JPEG = universal);
+ * both share one HAL-JPEG or logical-camera YUV source and run the same processed-pixel pipeline
  * (decode → aspect crop → afocal/device rotation → re-encode) — the mandatory 180° rotation means
- * neither container is a straight byte passthrough. [dngRaw] adds the full-frame RAW sensor file
- * alongside either.
+ * neither container is a straight byte passthrough. [dngRaw] adds a full-frame RAW sensor file and
+ * can be the only output when the active standalone session actually exposes RAW.
  */
 data class PhotoFormats(
     val heif: Boolean = true,
     val jpeg: Boolean = false,
-    val dngRaw: Boolean = true,
+    // RAW is session-dependent and therefore starts off on the logical-camera default. TELE or an
+    // eligible standalone session can enable it explicitly; the engine retains a defensive guard.
+    val dngRaw: Boolean = false,
 ) {
     /**
-     * True when the capture needs the camera's JPEG stream: BOTH processed containers (HEIF and
-     * JPEG) are produced from that single ImageReader, so the controller must be asked for it when
-     * either is enabled — gating it on [heif] alone made a JPEG-only selection fail with
+     * True when capture needs the processed ImageReader: BOTH processed containers (HEIF and JPEG)
+     * are produced from that one HAL-JPEG/YUV stream, so the controller must request it when either
+     * is enabled — gating it on [heif] alone made a JPEG-only selection fail with
      * "no capture target".
      */
     val wantsProcessedStill: Boolean get() = heif || jpeg
+}
+
+/** Keeps capture state representable: unsupported RAW is removed and at least one output remains. */
+internal fun PhotoFormats.normalizedFor(rawAvailable: Boolean): PhotoFormats {
+    val supported = if (rawAvailable) this else copy(dngRaw = false)
+    return if (supported.wantsProcessedStill || supported.dngRaw) supported else supported.copy(heif = true)
 }
 
 /**

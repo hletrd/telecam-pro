@@ -34,11 +34,16 @@ class CameraEngine(private val context: Context) {
     // threads via these single-thread executors.
     private val setupExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
     private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    // Recorder finalization can block for seconds joining codec/audio drains. It must never sit
+    // behind a burst's full-resolution still encodes on ioExecutor (or vice versa).
+    private val recorderExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
     // Drives interval (timelapse) capture off the camera/UI threads.
     private val timelapseScheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor()
     @Volatile private var timelapseFuture: java.util.concurrent.ScheduledFuture<*>? = null
     @Volatile private var controller: CameraController? = null
     @Volatile private var recorder: VideoRecorder? = null
+    private val recorderOwnershipLock = Any()
+    @Volatile private var recorderFinalizationLatch: java.util.concurrent.CountDownLatch? = null
     // URI (+ capture-sequence id) of the clip currently being recorded, so stop can surface it
     // (thumbnail/review) tagged like any other capture.
     @Volatile private var activeRecordingUri: android.net.Uri? = null
@@ -120,6 +125,8 @@ class CameraEngine(private val context: Context) {
     private val gyro = com.hletrd.findx9tele.stab.GyroEis(context)
     @Volatile private var teleconverterMode = false
     @Volatile private var videoMode = false
+    private val modeIntentGeneration = java.util.concurrent.atomic.AtomicLong(0)
+    private val lensIntentGeneration = java.util.concurrent.atomic.AtomicLong(0)
     // HAL-native log (vendor com.oplus.log.video.mode). Session key → changing it reopens the camera.
     @Volatile private var vendorLogMode = VendorLogMode.OFF
     // Video stabilization strategy. Default ENHANCED = HAL OIS+EIS (motion-blur reduction at 300 mm).
@@ -153,6 +160,8 @@ class CameraEngine(private val context: Context) {
     var onAudioLevel: ((Float) -> Unit)? = null
     // Actual AudioRecord route once recording starts, e.g. "USB · DJI Mic Mini".
     var onAudioRoute: ((String) -> Unit)? = null
+    /** Unexpected async codec/muxer failure; the recorder has already entered ordered teardown. */
+    var onRecordingTerminated: ((Throwable) -> Unit)? = null
     // AE-resolved ISO/shutter (auto mode) from the controller, for the live dial readout. Fired from
     // the camera thread, only on change; the ViewModel hoists it into UI state.
     var onExposureInfo: ((iso: Int?, exposureNs: Long?) -> Unit)? = null
@@ -350,7 +359,7 @@ class CameraEngine(private val context: Context) {
                 if (controller === ctrl) {
                     updateCameraReady(false)
                     onStatus?.invoke("Camera error: ${it.message}")
-                    scheduleCameraRecovery()
+                    scheduleCameraRecovery(ctrl)
                 }
             },
         )
@@ -366,12 +375,21 @@ class CameraEngine(private val context: Context) {
     fun setVideoMode(enabled: Boolean) {
         if (videoMode == enabled) return
         videoMode = enabled
+        val intentGeneration = modeIntentGeneration.incrementAndGet()
         controller?.setPinAutoFps(enabled)
         if (!started) return
+        // Publish reconfiguration synchronously with the user's intent. REC checks this flag before
+        // arming, so it cannot start against the old ready session while the reopen is merely queued.
+        updateCameraReady(false)
         // The mode flip can change the CAMERA (photo=logical seamless, video=standalone — see
         // resolveNonTeleId) as well as the stream size. Remap the zoom between the unified
         // main-relative scale and the lens-local scale so the framing carries across, then re-home.
         setupExecutor.execute {
+            if (videoMode != enabled || modeIntentGeneration.get() != intentGeneration) return@execute
+            if (paused || recorder != null) {
+                if (!paused && controller != null) updateCameraReady(true)
+                return@execute
+            }
             if (!teleconverterMode) {
                 val z = controls.zoomRatio
                 if (enabled) {
@@ -401,6 +419,10 @@ class CameraEngine(private val context: Context) {
                     emitPreviewAspect()
                     gl.setCameraPreviewSize(next.width, next.height)
                     reopenForSession()
+                } else if (controller != null && !paused) {
+                    // Same camera and same configured stream: the intent only changed request-side
+                    // mode semantics, so the existing session is still the ready session.
+                    updateCameraReady(true)
                 }
             }
         }
@@ -494,6 +516,11 @@ class CameraEngine(private val context: Context) {
         gl.setPunchInCenter(loupe.first, loupe.second)
     }
 
+    /** Clears the tap-owned AE/AF region when its UI reticle expires. */
+    fun clearTapPoint() {
+        controller?.clearMeteringPoint()
+    }
+
     // ---- Drive mode + video parameters ----
 
     fun setDriveMode(m: DriveMode) {
@@ -539,7 +566,7 @@ class CameraEngine(private val context: Context) {
     }
 
     /** Reopen the camera (if started) so the session type tracks [desiredHighSpeedFps]. */
-    private fun reopenForSession() {
+    private fun reopenForSession(expectedController: CameraController? = null) {
         if (!started || paused) return
         // Never tear the camera down under an active recording — it strands the encoder input surface
         // and gaps/corrupts the clip. The rate/open-gate change applies on the next recording instead.
@@ -552,6 +579,7 @@ class CameraEngine(private val context: Context) {
         // (vendor-feature toggles are main-thread ViewModel calls) exceeds the 5s ANR watchdog and the
         // OS kills the app. setupExecutor is single-threaded, so reopens also serialize cleanly.
         setupExecutor.execute {
+            if (expectedController != null && controller !== expectedController) return@execute
             // REC may have started after this reopen was queued. Never close a live recording stream.
             if (paused || recorder != null) return@execute
             controller?.close()
@@ -567,8 +595,9 @@ class CameraEngine(private val context: Context) {
      * the user backgrounds/foregrounds the app. Auto-reopen a bounded number of times, after a short
      * delay so the provider has time to restart. The attempt counter resets on the next successful open.
      */
-    private fun scheduleCameraRecovery() {
+    private fun scheduleCameraRecovery(failedController: CameraController) {
         if (!started || paused || recorder != null) return
+        if (controller !== failedController) return
         if (cameraRecoveryAttempts >= MAX_CAMERA_RECOVERY_ATTEMPTS) {
             // Recovery exhausted: say so instead of silently leaving a black viewfinder behind an
             // interactive-looking UI. cameraReady stays false, so the shutter is dimmed too; a
@@ -579,7 +608,11 @@ class CameraEngine(private val context: Context) {
         cameraRecoveryAttempts++
         runCatching {
             timelapseScheduler.schedule(
-                { reopenForSession() }, CAMERA_RECOVERY_DELAY_MS, java.util.concurrent.TimeUnit.MILLISECONDS,
+                {
+                    if (controller === failedController) reopenForSession(failedController)
+                },
+                CAMERA_RECOVERY_DELAY_MS,
+                java.util.concurrent.TimeUnit.MILLISECONDS,
             )
         }
     }
@@ -646,12 +679,18 @@ class CameraEngine(private val context: Context) {
         // TELE-toggle-off only: restore the pre-TELE framing instead of jumping to [choice]'s
         // preset. An explicit lens pick (onLens) must NOT restore — the user chose a new framing.
         restorePreTele: Boolean = false,
+        // Settings/MR restore only: preserve the exact saved zoom instead of applying a picker home.
+        // Photo values are unified main-relative; video and TELE values are lens-local.
+        restoredZoomRatio: Float? = null,
     ) {
         if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
+        val intentGeneration = lensIntentGeneration.incrementAndGet()
         val prevLens = lensChoice
         lensChoice = choice
+        if (started) updateCameraReady(false)
         // Resolve the camera id ON setupExecutor (dozen-plus Binder IPCs; also orders resolve→reopen).
         setupExecutor.execute {
+            if (lensIntentGeneration.get() != intentGeneration || paused || recorder != null) return@execute
             // The TC state is SESSION-scoped: the session TYPE (0x80b4, the stock TC operation mode
             // that engages the real 300 mm OIS profile), the Hasselblad hints, and the afocal flip
             // are all fixed at configureStreams. Flipping TELE on the SAME camera id (the video 3×
@@ -665,37 +704,53 @@ class CameraEngine(private val context: Context) {
                 // Digital 1–10× only, afocal flip on, RAW available (standalone id).
                 val id = cachedIdForFocal(LensChoice.TELE3X.targetEquivMm)
                 if (id == null) { onStatus?.invoke("3× unavailable"); return@execute }
-                if (teleChanged) {
+                if (teleChanged && restoredZoomRatio == null) {
                     preTeleUnifiedZoom = if (videoMode) {
                         prevLens.zoomPreset * controls.zoomRatio.coerceAtLeast(1f)
                     } else {
                         controls.zoomRatio
                     }
                 }
+                if (restoredZoomRatio != null) preTeleUnifiedZoom = Float.NaN
                 teleconverterMode = true
-                controls = controls.copy(zoomRatio = 1f)
-                if (overrideId != id || controller == null || teleChanged) setCameraOverride(id) else applyStabilization()
+                controls = controls.copy(
+                    zoomRatio = restoredZoomRatio
+                        ?.coerceIn(1f, TELE_MAX_DISPLAY_ZOOM / TELE_DISPLAY_BASE)
+                        ?: 1f,
+                )
+                if (overrideId != id || controller == null || teleChanged) {
+                    setCameraOverride(id)
+                } else {
+                    applyStabilization()
+                    updateCameraReady(true)
+                }
             } else {
                 // Mode-split homes (see resolveNonTeleId): PHOTO picks are ZOOM PRESETS on the
                 // logical seamless camera (no reopen); VIDEO picks reopen the matching STANDALONE
                 // lens (lens-local zoom resets to 1×).
-                val unified = if (restorePreTele && !preTeleUnifiedZoom.isNaN()) {
-                    preTeleUnifiedZoom
-                } else {
-                    choice.zoomPreset
+                val unified = when {
+                    restoredZoomRatio != null && videoMode -> choice.zoomPreset * restoredZoomRatio.coerceAtLeast(1f)
+                    restoredZoomRatio != null -> restoredZoomRatio
+                    restorePreTele && !preTeleUnifiedZoom.isNaN() -> preTeleUnifiedZoom
+                    else -> choice.zoomPreset
                 }
                 preTeleUnifiedZoom = Float.NaN
-                val band = LensChoice.forZoom(unified)
+                val band = if (restoredZoomRatio != null && videoMode) choice else LensChoice.forZoom(unified)
                 lensChoice = band
                 val id = resolveNonTeleId(band)
                 if (id == null) { onStatus?.invoke("${band.label} unavailable"); return@execute }
                 teleconverterMode = false
-                val targetZoom = if (videoMode) (unified / band.zoomPreset).coerceAtLeast(1f) else unified
+                val targetZoom = when {
+                    restoredZoomRatio != null -> restoredZoomRatio
+                    videoMode -> (unified / band.zoomPreset).coerceAtLeast(1f)
+                    else -> unified
+                }
                 if (overrideId != id || controller == null || teleChanged) {
                     controls = controls.copy(zoomRatio = targetZoom)
                     setCameraOverride(id)
                 } else {
                     setZoomRatio(targetZoom)
+                    updateCameraReady(true)
                 }
             }
         }
@@ -786,16 +841,28 @@ class CameraEngine(private val context: Context) {
                 },
                 onError = {
                     deviceUp.countDown() // an open-phase failure also releases the latch (fallback)
-                    if (controller === next) {
+                    // A concurrent-open refusal is expected on devices that cannot dual-open a
+                    // shared sensor; the setup task below owns that local sequential fallback.
+                    // Only an error AFTER the next device opened is a real active-controller fault.
+                    if (deviceOk.get() && controller === next) {
                         updateCameraReady(false)
                         onStatus?.invoke("Camera error: ${it.message}")
-                        scheduleCameraRecovery()
+                        scheduleCameraRecovery(next)
                     }
                 },
             )
             // The old camera streams through the new device's open. Bounded wait: a refusal or a
             // wedged open must degrade to the sequential path, not hang the setup thread.
             deviceUp.await(2, java.util.concurrent.TimeUnit.SECONDS)
+            // The blocking wait is an ownership boundary: pause, REC, or a newer reopen may have
+            // superseded this attempt while the setup thread was parked. Do not publish sizes or
+            // start a deferred session from an obsolete device; release every local handle.
+            if (paused || recorder != null || controller !== next) {
+                next.close()
+                old?.close()
+                if (controller === next) controller = null
+                return@execute
+            }
             // Update the GL stream size only now — the old camera was still producing into the
             // shared SurfaceTexture; resizing it earlier would distort its final frames.
             emitPreviewAspect()
@@ -919,7 +986,11 @@ class CameraEngine(private val context: Context) {
             formats.copy(dngRaw = false)
         } else formats
         when (driveMode) {
-            DriveMode.SINGLE -> ctrl.capturePhoto(effFormats.wantsProcessedStill, effFormats.dngRaw, photoCallback(effFormats))
+            DriveMode.SINGLE -> ctrl.capturePhoto(
+                effFormats.wantsProcessedStill,
+                effFormats.dngRaw,
+                photoCallback(effFormats, controls),
+            )
             DriveMode.BURST -> captureBurst(ctrl, effFormats)
             DriveMode.AEB -> captureAeb(ctrl, effFormats)
             DriveMode.TIMELAPSE -> startTimelapse(effFormats)
@@ -934,7 +1005,11 @@ class CameraEngine(private val context: Context) {
     private fun captureBurst(ctrl: CameraController, formats: PhotoFormats) {
         fun fire(shot: Int) {
             if (shot >= BURST_COUNT) return
-            ctrl.capturePhoto(formats.wantsProcessedStill, formats.dngRaw, photoCallback(formats) { fire(shot + 1) })
+            ctrl.capturePhoto(
+                formats.wantsProcessedStill,
+                formats.dngRaw,
+                photoCallback(formats, controls) { fire(shot + 1) },
+            )
         }
         fire(0)
     }
@@ -957,19 +1032,34 @@ class CameraEngine(private val context: Context) {
             fun fire(i: Int) {
                 if (i >= steps.size) { ctrl.updateControls(original); return }
                 // SPEED override so the bracketed time applies even when the user dials ANGLE.
-                ctrl.updateControls(original.copy(shutterMode = ShutterMode.SPEED, exposureTimeNs = steps[i]))
-                ctrl.capturePhoto(formats.wantsProcessedStill, formats.dngRaw, photoCallback(formats) { fire(i + 1) })
+                val stepControls = original.copy(shutterMode = ShutterMode.SPEED, exposureTimeNs = steps[i])
+                ctrl.updateControls(stepControls)
+                ctrl.capturePhoto(
+                    formats.wantsProcessedStill,
+                    formats.dngRaw,
+                    photoCallback(formats, stepControls) { fire(i + 1) },
+                )
             }
             fire(0)
             return
         }
         val range = c?.evRange
-        val steps = if (range != null) aeCompAebSteps(range.lower, range.upper)
+        val evStep = c?.evStep?.let {
+            if (it.denominator == 0) 1f / 3f else it.numerator.toFloat() / it.denominator.toFloat()
+        } ?: (1f / 3f)
+        val steps = if (range != null) {
+            aeCompAebSteps(original.exposureCompensation, range.lower, range.upper, evStep)
+        }
         else listOf(original.exposureCompensation)
         fun fire(i: Int) {
             if (i >= steps.size) { ctrl.updateControls(original); return }
-            ctrl.updateControls(original.copy(exposureCompensation = steps[i]))
-            ctrl.capturePhoto(formats.wantsProcessedStill, formats.dngRaw, photoCallback(formats) { fire(i + 1) })
+            val stepControls = original.copy(exposureCompensation = steps[i])
+            ctrl.updateControls(stepControls)
+            ctrl.capturePhoto(
+                formats.wantsProcessedStill,
+                formats.dngRaw,
+                photoCallback(formats, stepControls) { fire(i + 1) },
+            )
         }
         fire(0)
     }
@@ -982,7 +1072,11 @@ class CameraEngine(private val context: Context) {
         stopTimelapse()
         val period = intervalSec.coerceAtLeast(1).toLong()
         timelapseFuture = timelapseScheduler.scheduleWithFixedDelay({
-            controller?.capturePhoto(formats.wantsProcessedStill, formats.dngRaw, photoCallback(formats))
+            controller?.capturePhoto(
+                formats.wantsProcessedStill,
+                formats.dngRaw,
+                photoCallback(formats, controls),
+            )
         }, 0, period, java.util.concurrent.TimeUnit.SECONDS)
     }
 
@@ -991,65 +1085,129 @@ class CameraEngine(private val context: Context) {
         timelapseFuture = null
     }
 
+    /** Immutable request-time state consumed by every output belonging to one shutter press. */
+    private data class ShotSpec(
+        val controls: ManualControls,
+        val caps: CameraCaps?,
+        val selection: TeleSelection?,
+        val teleconverter: Boolean,
+        val aspectRatio: AspectRatio,
+        val jpegQuality: Int,
+        val rotationDegrees: Int,
+        val captureId: Int,
+        val requestedAtMs: Long,
+        val takenAtMs: Long,
+    )
+
+    private fun shotSpec(shotControls: ManualControls): ShotSpec {
+        val shotCaps = caps
+        val shotTeleconverter = teleconverterMode
+        val requestedAtMs = System.currentTimeMillis()
+        val rotation = shotCaps?.let {
+            RotationMath.captureRotationDegrees(
+                it.sensorOrientation,
+                shotTeleconverter,
+                gyro.currentDeviceOrientation(),
+            )
+        } ?: 0
+        return ShotSpec(
+            controls = shotControls,
+            caps = shotCaps,
+            selection = selection,
+            teleconverter = shotTeleconverter,
+            aspectRatio = aspectRatio,
+            jpegQuality = shotControls.jpegQuality.coerceIn(1, 100),
+            rotationDegrees = rotation,
+            captureId = captureSeq.incrementAndGet(),
+            requestedAtMs = requestedAtMs,
+            takenAtMs = requestedAtMs,
+        )
+    }
+
     /**
-     * Per-shot save callback (HEIF copied out then encoded async; DNG written synchronously while the
-     * raw Image is alive). Runs on the camera thread; Images are valid ONLY for this call. [onDone]
-     * chains the next shot in a BURST/AEB sequence (null for a single capture).
+     * Per-shot save callback. Processed frame copying happens while the Image is live, then encoding
+     * runs on [ioExecutor]. A BURST/AEB continuation is admitted only after that save job finishes,
+     * keeping at most one full processed snapshot queued behind the active shot.
      */
-    private fun photoCallback(formats: PhotoFormats, onDone: (() -> Unit)? = null) =
-        object : CameraController.PhotoCallback {
-            override fun onPhoto(jpeg: Image?, raw: Image?, result: TotalCaptureResult, rawChars: CameraCharacteristics) {
-                // Snapshot the orientation once, at the moment of capture, so the deferred HEIF encode
-                // and the synchronous DNG write agree on how the phone was held for this shot.
-                val rotation = captureRotationDegrees()
-                // One id per shutter press, shared by every container it produces (HEIF/JPEG/DNG), so
-                // the review UI can treat them as one shot (delete removes the DNG sibling too).
-                val captureId = captureSeq.incrementAndGet()
-                // Snapshot EVERYTHING the JPEG EXIF needs from THIS shot's own TotalCaptureResult
-                // (exposure, active physical lens, controls) — deferred io-thread writes must never
-                // read live fields a settings change or the next AEB step can overwrite.
-                val exifShot = exifShotOf(result)
-                // HEIF and JPEG both come from the single still ImageReader (HAL JPEG on standalone
-                // cameras, YUV on the logical one — see StillSnapshot). Snapshot the frame ONCE while
-                // the Image is alive (cheap copy on the camera thread), then compress + fan out to
-                // whichever containers are enabled on the io thread.
-                if (formats.heif || formats.jpeg) {
+    private fun photoCallback(
+        formats: PhotoFormats,
+        shotControls: ManualControls,
+        onDone: (() -> Unit)? = null,
+    ): CameraController.PhotoCallback {
+        val requestSpec = shotSpec(shotControls)
+        val completionDelivered = java.util.concurrent.atomic.AtomicBoolean(false)
+        val finish = {
+            if (completionDelivered.compareAndSet(false, true)) onDone?.invoke()
+            Unit
+        }
+        return object : CameraController.PhotoCallback {
+            override fun onPhoto(
+                jpeg: Image?,
+                raw: Image?,
+                result: TotalCaptureResult,
+                rawChars: CameraCharacteristics,
+                takenAtMs: Long,
+            ) {
+                val spec = requestSpec.copy(takenAtMs = takenAtMs)
+                val exifShot = exifShotOf(result, spec)
+                var processedQueued = false
+
+                if (formats.wantsProcessedStill) {
                     if (jpeg != null) {
                         val snap = runCatching { StillSnapshot.from(jpeg) }.getOrNull()
                         if (snap != null) {
-                            ioExecutor.execute {
-                                val bytes = runCatching { snap.jpegBytes() }.getOrNull()
-                                if (bytes == null) {
-                                    onStatus?.invoke("Failed to save photo")
-                                    return@execute
+                            val queued = runCatching {
+                                ioExecutor.execute {
+                                    try {
+                                        val bytes = runCatching { snap.jpegBytes() }.getOrNull()
+                                        if (bytes == null) {
+                                            onStatus?.invoke("Failed to save photo")
+                                        } else {
+                                            if (formats.heif) saveHeifAsync(bytes, spec)
+                                            if (formats.jpeg) saveJpegAsync(bytes, spec, exifShot)
+                                        }
+                                    } finally {
+                                        finish()
+                                    }
                                 }
-                                if (formats.heif) saveHeifAsync(bytes, rotation, captureId)
-                                if (formats.jpeg) saveJpegAsync(bytes, rotation, exifShot, captureId)
                             }
-                        } else onStatus?.invoke("Failed to save photo")
-                    } else onStatus?.invoke("Failed to save photo: no still image")
+                            processedQueued = queued.isSuccess
+                            queued.onFailure { onStatus?.invoke("Failed to queue photo save: ${it.message}") }
+                        } else {
+                            onStatus?.invoke("Failed to save photo")
+                        }
+                    } else {
+                        onStatus?.invoke("Failed to save photo: no still image")
+                    }
                 }
+
                 if (formats.dngRaw) {
                     if (raw != null) {
                         // DngCreator needs the live raw Image → must stay synchronous in this callback.
-                        runCatching { saveDng(raw, rawChars, result, rotation, captureId) }
+                        runCatching { saveDng(raw, rawChars, result, spec.rotationDegrees, spec.captureId) }
                             .onSuccess { onStatus?.invoke("DNG saved") }
                             .onFailure { onStatus?.invoke("Failed to save DNG: ${it.message}") }
-                    } else onStatus?.invoke("Failed to save DNG: no RAW")
+                    } else {
+                        onStatus?.invoke("Failed to save DNG: no RAW")
+                    }
                 }
-                if (!formats.heif && !formats.jpeg && !formats.dngRaw) onStatus?.invoke("No output selected")
-                // HEIF success/failure is reported from inside saveHeifAsync (it runs later).
-                onDone?.invoke()
+                if (!formats.wantsProcessedStill && !formats.dngRaw) onStatus?.invoke("No output selected")
+                if (!processedQueued) finish()
             }
-            override fun onError(t: Throwable) { onStatus?.invoke("Capture failed: ${t.message}"); onDone?.invoke() }
+
+            override fun onError(t: Throwable) {
+                onStatus?.invoke("Capture failed: ${t.message}")
+                finish()
+            }
         }
+    }
 
     /**
      * Decode → center-crop to [aspectRatio] (HEIF only; [saveDng]'s RAW output always stays
      * full-frame) → rotate 180° → write HEIF, on [ioExecutor]. Publishes only on success; deletes
      * on any failure.
      */
-    private fun saveHeifAsync(bytes: ByteArray, rotationDegrees: Int, captureId: Int) {
+    private fun saveHeifAsync(bytes: ByteArray, spec: ShotSpec) {
         var decoded: Bitmap? = null
         var cropped: Bitmap? = null
         var rotated: Bitmap? = null
@@ -1058,13 +1216,13 @@ class CameraEngine(private val context: Context) {
             val d = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             if (d == null) { onStatus?.invoke("Failed to save HEIF: decode failed"); return }
             decoded = d
-            val ar = aspectRatio
+            val ar = spec.aspectRatio
             val base = if (ar != AspectRatio.W4_3) { // W4_3 = full sensor, no crop needed
                 val c = centerCrop(d, ar.w, ar.h)
                 cropped = c
                 c
             } else d
-            val r = rotateBitmap(base, rotationDegrees)
+            val r = rotateBitmap(base, spec.rotationDegrees)
             rotated = r
             val u = MediaStoreWriter.createPendingImage(context, fileName("IMG", "heic"), "image/heic")
             if (u == null) { onStatus?.invoke("Failed to save HEIF"); return }
@@ -1072,7 +1230,7 @@ class CameraEngine(private val context: Context) {
             // The Setup quality slider governs BOTH still containers: HEIF here and the JPEG
             // re-encode in saveJpegAsync (it used to silently apply only to JPEG, leaving the
             // DEFAULT photo format pinned at the encoder's 95).
-            val quality = controls.jpegQuality.coerceIn(1, 100)
+            val quality = spec.jpegQuality
             val wrote = MediaStoreWriter.openParcelFd(context, u, "rw")?.use { pfd ->
                 HeifCapture.writeHeif(pfd.fileDescriptor, r, quality); true
             } ?: false
@@ -1082,7 +1240,7 @@ class CameraEngine(private val context: Context) {
                 onStatus?.invoke("Failed to publish HEIF")
                 return
             }
-            onMediaSaved?.invoke(u, captureId)
+            onMediaSaved?.invoke(u, spec.captureId)
             onStatus?.invoke("Saved")
         } catch (e: OutOfMemoryError) {
             uri?.let { MediaStoreWriter.delete(context, it) }
@@ -1106,7 +1264,7 @@ class CameraEngine(private val context: Context) {
      * [saveHeifAsync] — NOT the HEIF encoder — so JPEG and HEIF frame identically. Publishes only on
      * success; deletes on any failure.
      */
-    private fun saveJpegAsync(bytes: ByteArray, rotationDegrees: Int, exifShot: ExifShot, captureId: Int) {
+    private fun saveJpegAsync(bytes: ByteArray, spec: ShotSpec, exifShot: ExifShot) {
         var decoded: Bitmap? = null
         var cropped: Bitmap? = null
         var rotated: Bitmap? = null
@@ -1115,20 +1273,20 @@ class CameraEngine(private val context: Context) {
             val d = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             if (d == null) { onStatus?.invoke("Failed to save JPEG: decode failed"); return }
             decoded = d
-            val ar = aspectRatio
+            val ar = spec.aspectRatio
             val base = if (ar != AspectRatio.W4_3) { // W4_3 = full sensor, no crop needed
                 val c = centerCrop(d, ar.w, ar.h)
                 cropped = c
                 c
             } else d
-            val r = rotateBitmap(base, rotationDegrees)
+            val r = rotateBitmap(base, spec.rotationDegrees)
             rotated = r
             val u = MediaStoreWriter.createPendingImage(context, fileName("IMG", "jpg"), "image/jpeg")
             if (u == null) { onStatus?.invoke("Failed to save JPEG"); return }
             uri = u
-            val quality = controls.jpegQuality.coerceIn(1, 100)
+            val quality = spec.jpegQuality
             val wrote = MediaStoreWriter.openOutputStream(context, u)?.use { out ->
-                r.compress(Bitmap.CompressFormat.JPEG, quality, out); true
+                r.compress(Bitmap.CompressFormat.JPEG, quality, out)
             } ?: false
             if (!wrote) { MediaStoreWriter.delete(context, u); onStatus?.invoke("Failed to save JPEG"); return }
             // Bitmap.compress strips all metadata, so stamp the exposure EXIF back before publishing
@@ -1139,7 +1297,7 @@ class CameraEngine(private val context: Context) {
                 onStatus?.invoke("Failed to publish JPEG")
                 return
             }
-            onMediaSaved?.invoke(u, captureId)
+            onMediaSaved?.invoke(u, spec.captureId)
             onStatus?.invoke("Saved")
         } catch (e: OutOfMemoryError) {
             uri?.let { MediaStoreWriter.delete(context, it) }
@@ -1182,6 +1340,10 @@ class CameraEngine(private val context: Context) {
             onStatus?.invoke("Camera reconfiguring")
             return false
         }
+        if (videoFrameRate !in VideoFrameRate.availableFor(caps, videoSize, videoCodec)) {
+            onStatus?.invoke("Selected FPS is unavailable")
+            return false
+        }
         // A just-stopped clip's async teardown still owns the mic (and the encoder pipeline is being
         // finalized) — refuse until finishRecording completes rather than starting a second recorder
         // whose AudioRecord init would fail (silent video-only clip).
@@ -1202,6 +1364,7 @@ class CameraEngine(private val context: Context) {
         val uri = MediaStoreWriter.createPendingVideo(context, name, "video/mp4") ?: return false
         activeRecordingUri = uri
         activeRecordingCaptureId = captureSeq.incrementAndGet()
+        val recordingCaptureId = activeRecordingCaptureId
         val size = videoSize
         val codec = videoCodec
         val rate = videoFrameRate
@@ -1228,6 +1391,7 @@ class CameraEngine(private val context: Context) {
             else -> ColorTransfer.SDR
         }
         val rec = VideoRecorder(context)
+        val earlyFailure = java.util.concurrent.atomic.AtomicReference<Throwable?>()
         // Physical device orientation at record start → muxer rotation hint so a landscape-held clip
         // plays upright (GL only bakes the afocal 180°; see VideoRecorder.start).
         val orientationHint = gyro.currentDeviceOrientation()
@@ -1237,6 +1401,10 @@ class CameraEngine(private val context: Context) {
             audioScene, controls.zoomRatio, audioInputPreference,
             onRoute = { route -> onAudioRoute?.invoke(route) },
             onLevel = { lvl -> onAudioLevel?.invoke(lvl) },
+            onFailure = { failure ->
+                earlyFailure.compareAndSet(null, failure)
+                handleUnexpectedRecorderFailure(rec, uri, recordingCaptureId, failure)
+            },
         )
         if (surface == null) {
             // Encoder/muxer failed to configure; drop the pending MediaStore row we created so it
@@ -1246,26 +1414,30 @@ class CameraEngine(private val context: Context) {
         }
         gl.setTransfer(glTransfer)
         gl.setEncoderOutput(surface, size.width, size.height)
-        recorder = rec
+        synchronized(recorderOwnershipLock) { recorder = rec }
+        // A drain thread can fail before start() returns and before recorder ownership is published.
+        // Re-run the same identity-guarded claim after publication so that early failure is not lost.
+        earlyFailure.get()?.let { handleUnexpectedRecorderFailure(rec, uri, recordingCaptureId, it) }
+        if (recorder !== rec) return false
         return true
     }
 
     fun stopRecording() {
-        val rec = recorder ?: return
-        recorder = null
-        val uri = activeRecordingUri
-        val captureId = activeRecordingCaptureId
-        activeRecordingUri = null
-        recorderTeardownInFlight = true
+        val (rec, uri, captureId) = synchronized(recorderOwnershipLock) {
+            val owned = recorder ?: return
+            recorder = null
+            val ownedUri = activeRecordingUri
+            val ownedCaptureId = activeRecordingCaptureId
+            activeRecordingUri = null
+            Triple(owned, ownedUri, ownedCaptureId)
+        }
         // ORDERED teardown: finishRecording (rec.stop() → codec release; joins the drain threads up
         // to seconds, so it stays OFF the main thread on ioExecutor) dispatches from the completion
         // callback, which runs on the GL thread only AFTER the encoder EGL surface is actually
         // cleared. The old fire-and-forget post had no happens-before edge with the independent
         // ioExecutor — a queued drawFrame could still makeCurrent() the encoder surface while the
         // codec that owns it was being released (uncaught EGL failure on the GL thread).
-        gl.setEncoderOutput(null, 0, 0) {
-            ioExecutor.execute { finishRecording(rec, uri, captureId) }
-        }
+        detachAndFinalizeRecording(rec, uri, captureId)
         // Restore the preview curve startRecording overrode: an AVC recording pushes null (SDR) into
         // GL and nothing else re-applies the LOG/HLG preview render until the next transfer change.
         gl.setTransfer(transfer)
@@ -1276,6 +1448,51 @@ class CameraEngine(private val context: Context) {
     // in that window would violate the one-AudioRecord invariant (its init would fail, or worse,
     // steal the route from the finalizing clip).
     @Volatile private var recorderTeardownInFlight = false
+
+    private fun handleUnexpectedRecorderFailure(
+        rec: VideoRecorder,
+        uri: android.net.Uri,
+        captureId: Int,
+        failure: Throwable,
+    ) {
+        val claimed = synchronized(recorderOwnershipLock) {
+            if (recorder !== rec) {
+                false
+            } else {
+                recorder = null
+                if (activeRecordingUri == uri) activeRecordingUri = null
+                true
+            }
+        }
+        if (!claimed) return
+        detachAndFinalizeRecording(rec, uri, captureId)
+        onStatus?.invoke("Recording stopped: ${failure.message ?: "encoder error"}")
+        onRecordingTerminated?.invoke(failure)
+        gl.setTransfer(transfer)
+    }
+
+    private fun detachAndFinalizeRecording(rec: VideoRecorder, uri: android.net.Uri?, captureId: Int) {
+        recorderTeardownInFlight = true
+        val completed = java.util.concurrent.CountDownLatch(1)
+        recorderFinalizationLatch = completed
+        val dispatched = java.util.concurrent.atomic.AtomicBoolean(false)
+        gl.setEncoderOutput(null, 0, 0) {
+            if (!dispatched.compareAndSet(false, true)) return@setEncoderOutput
+            val task = Runnable {
+                try {
+                    finishRecording(rec, uri, captureId)
+                } finally {
+                    completed.countDown()
+                }
+            }
+            val accepted = runCatching { recorderExecutor.execute(task) }.isSuccess
+            if (!accepted) {
+                // Executor shutdown/rejection must not strand MediaStore or the teardown latch.
+                runCatching { Thread(task, "record-finalize-fallback").start() }
+                    .onFailure { task.run() }
+            }
+        }
+    }
 
     private fun finishRecording(rec: VideoRecorder, uri: android.net.Uri?, captureId: Int) {
         try {
@@ -1290,6 +1507,7 @@ class CameraEngine(private val context: Context) {
             }
         } finally {
             recorderTeardownInFlight = false
+            if (standbyMeterWanted && !paused) setStandbyAudioMonitor(true)
         }
     }
 
@@ -1303,18 +1521,22 @@ class CameraEngine(private val context: Context) {
         // Finalize an in-flight recording OFF the main thread: rec.stop() joins the drain threads (up
         // to a few seconds) and calling it inline on onStop risks an ANR. Clear the encoder EGL first
         // so GL stops drawing into the input surface before the codec releases it.
-        val rec = recorder
-        recorder = null
-        val pausedClipUri = activeRecordingUri
-        val pausedClipCaptureId = activeRecordingCaptureId
-        activeRecordingUri = null
+        val ownedRecording = synchronized(recorderOwnershipLock) {
+            recorder?.let { owned ->
+                recorder = null
+                val ownedUri = activeRecordingUri
+                val ownedCaptureId = activeRecordingCaptureId
+                activeRecordingUri = null
+                Triple(owned, ownedUri, ownedCaptureId)
+            }
+        }
+        val rec = ownedRecording?.first
+        val pausedClipUri = ownedRecording?.second
+        val pausedClipCaptureId = ownedRecording?.third ?: 0
         if (rec != null) {
-            recorderTeardownInFlight = true
             // Same ordered teardown as stopRecording: release the codec only after the GL thread
             // confirmed the encoder EGL surface is cleared.
-            gl.setEncoderOutput(null, 0, 0) {
-                ioExecutor.execute { finishRecording(rec, pausedClipUri, pausedClipCaptureId) }
-            }
+            detachAndFinalizeRecording(rec, pausedClipUri, pausedClipCaptureId)
             gl.setTransfer(transfer) // restore the preview curve startRecording overrode (AVC → null)
         }
         gyro.stop()
@@ -1361,22 +1583,34 @@ class CameraEngine(private val context: Context) {
     fun setPunchIn(enabled: Boolean) = gl.setPunchIn(enabled)
 
     fun release() {
+        paused = true
+        started = false
         updateCameraReady(false)
         stopTimelapse()
-        // ACCEPTED main-thread teardown: onCleared() means the process is going away — the
-        // rec.stop() drain joins (up to ~3 s each, wedge-guarded) are tolerated here because there
-        // is no user-visible session left to jank, and dispatching to ioExecutor would race the
-        // executor shutdown below. pause() normally ran first, so recorder is almost always null.
-        runCatching { recorder?.stop() }
-        recorder = null
+        standbyMeterWanted = false
+        // Preserve the same GL-detach-before-codec-release order during ViewModel teardown. Await
+        // the exactly-once finalization latch before dropping GL/executor ownership; pause() usually
+        // started this already, while the direct branch covers unusual unbalanced lifecycle exits.
+        synchronized(recorderOwnershipLock) {
+            recorder?.let { rec ->
+                recorder = null
+                val uri = activeRecordingUri
+                val captureId = activeRecordingCaptureId
+                activeRecordingUri = null
+                detachAndFinalizeRecording(rec, uri, captureId)
+            }
+        }
+        recorderFinalizationLatch?.let {
+            runCatching { it.await(RECORDER_FINALIZE_RELEASE_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS) }
+        }
         gyro.stop()
         controller?.close()
         controller = null
         gl.stop()
-        started = false
         starting = false
         setupExecutor.shutdown()
         ioExecutor.shutdown()
+        recorderExecutor.shutdown()
         timelapseScheduler.shutdown()
     }
 
@@ -1508,9 +1742,9 @@ class CameraEngine(private val context: Context) {
      * from the capture result (LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID) so FocalLength/FNumber/
      * LensModel describe the lens that actually took the frame, exactly like the stock camera.
      */
-    private fun exifShotOf(result: android.hardware.camera2.TotalCaptureResult): ExifShot {
-        val c = controls
-        val base = caps
+    private fun exifShotOf(result: android.hardware.camera2.TotalCaptureResult, spec: ShotSpec): ExifShot {
+        val c = spec.controls
+        val base = spec.caps
         // Active physical lens (logical camera) → its own optics; standalone cameras are themselves.
         val activeId = runCatching {
             result.get(android.hardware.camera2.CaptureResult.LOGICAL_MULTI_CAMERA_ACTIVE_PHYSICAL_ID)
@@ -1526,22 +1760,24 @@ class CameraEngine(private val context: Context) {
         val baseEquiv = base?.equivalentFocalMm ?: 0f
         // TELE uses the NOMINAL 300 mm base so EXIF matches the OSD/pill marks exactly
         // (13×→300, 30×→690, 60×→1380); the caps-measured 69.4 mm equiv would read 680 at 30×.
-        val eff = if (teleconverterMode) {
-            300f * c.zoomRatio.coerceAtLeast(1f)
+        val appliedZoom = result.get(android.hardware.camera2.CaptureResult.CONTROL_ZOOM_RATIO)
+            ?: c.zoomRatio
+        val eff = if (spec.teleconverter) {
+            300f * appliedZoom.coerceAtLeast(1f)
         } else {
-            baseEquiv * c.zoomRatio.coerceAtLeast(0.01f)
+            baseEquiv * appliedZoom.coerceAtLeast(0.01f)
         }
         // Digital portion of the zoom: in TELE the converter's 4.286× is OPTICAL (glass), so only
         // the user's 1-10× ratio is digital; otherwise it's effective ÷ the active lens's equiv.
-        val digital = if (teleconverterMode) {
-            c.zoomRatio.coerceAtLeast(1f)
+        val digital = if (spec.teleconverter) {
+            appliedZoom.coerceAtLeast(1f)
         } else if (lensEquiv > 0f) {
             (eff / lensEquiv).coerceAtLeast(1f)
         } else 1f
         val evStep = base?.evStep?.let {
             if (it.denominator == 0) 1f / 3f else it.numerator.toFloat() / it.denominator
         } ?: (1f / 3f)
-        val activeLensId = activeId ?: selection?.let { it.physicalId ?: it.logicalId }
+        val activeLensId = activeId ?: spec.selection?.let { it.physicalId ?: it.logicalId }
         val lensName = when (activeLensId) {
             "3" -> "ultra-wide"
             "2" -> "wide"
@@ -1567,9 +1803,10 @@ class CameraEngine(private val context: Context) {
             lensFocalMm = lensFocal,
             lensApertureF = lensF,
             // TELE reads a clean "300", not 297 — same nearest-10 rounding the OSD applies.
-            focal35mm = if (teleconverterMode) (Math.round(eff / 10f) * 10) else Math.round(eff),
+            focal35mm = if (spec.teleconverter) (Math.round(eff / 10f) * 10) else Math.round(eff),
             digitalZoom = digital,
-            evBiasStops = c.exposureCompensation * evStep,
+            evBiasStops = (result.get(android.hardware.camera2.CaptureResult.CONTROL_AE_EXPOSURE_COMPENSATION)
+                ?: c.exposureCompensation) * evStep,
             meteringMode = c.meteringMode,
             flashFired = result.get(android.hardware.camera2.CaptureResult.FLASH_STATE) ==
                 android.hardware.camera2.CaptureResult.FLASH_STATE_FIRED,
@@ -1581,7 +1818,7 @@ class CameraEngine(private val context: Context) {
             manualExposure = c.exposureMode == ExposureMode.MANUAL,
             manualWb = c.wbMode != WbMode.AUTO,
             lensModel = modelLabel,
-            takenAtMs = System.currentTimeMillis(),
+            takenAtMs = spec.takenAtMs,
         )
     }
 
@@ -1686,6 +1923,7 @@ class CameraEngine(private val context: Context) {
     fun setStandbyAudioMonitor(enabled: Boolean) {
         standbyMeterWanted = enabled
         if (!enabled) return
+        if (paused) return
         if (standbyMeterThread?.isAlive == true) return
         // Also refuse while a stopped recording's async teardown still owns the mic — recorder is
         // already null then, but its AudioRecord releases only when finishRecording completes.
@@ -1763,6 +2001,7 @@ class CameraEngine(private val context: Context) {
         // Auto-recovery from a mid-session camera HAL error/disconnect (see scheduleCameraRecovery).
         const val MAX_CAMERA_RECOVERY_ATTEMPTS = 3
         const val CAMERA_RECOVERY_DELAY_MS = 1000L
+        const val RECORDER_FINALIZE_RELEASE_TIMEOUT_MS = 7_000L
     }
 }
 
@@ -1774,13 +2013,19 @@ internal data class CropBox(val x: Int, val y: Int, val w: Int, val h: Int)
  * unit-testable without a Bitmap (an unmocked android.jar stub on the JVM).
  */
 /**
- * AUTO-exposure AEB compensation steps: a -2/0/+2 EV bracket clamped to the camera's EV range.
+ * AUTO-exposure AEB compensation steps: a ±2-stop bracket around [center] converted through the
+ * camera's advertised [evStepStops], then clamped to its compensation-unit range.
  * distinct() so a narrow range that clamps two steps to the same value doesn't fire duplicate
  * identical frames (a 1-shot "bracket"). Pure and top-level like [centerCropBox] so the clamp and
  * dedupe are unit-testable (the MANUAL branch's sibling, manualAebExposuresNs, already is).
  */
-internal fun aeCompAebSteps(lower: Int, upper: Int): List<Int> =
-    listOf(-2, 0, 2).map { it.coerceIn(lower, upper) }.distinct()
+internal fun aeCompAebSteps(center: Int, lower: Int, upper: Int, evStepStops: Float): List<Int> {
+    val safeStep = evStepStops.takeIf { it.isFinite() && it > 0f } ?: (1f / 3f)
+    val twoStopsInUnits = kotlin.math.round(2f / safeStep).toInt().coerceAtLeast(1)
+    return listOf(center - twoStopsInUnits, center, center + twoStopsInUnits)
+        .map { it.coerceIn(lower, upper) }
+        .distinct()
+}
 
 internal fun centerCropBox(srcW: Int, srcH: Int, ratioW: Int, ratioH: Int): CropBox {
     val heightForFullWidth = srcW * ratioH / ratioW

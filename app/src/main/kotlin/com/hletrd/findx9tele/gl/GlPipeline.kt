@@ -12,7 +12,10 @@ import com.hletrd.findx9tele.camera.HistogramData
 import com.hletrd.findx9tele.camera.WaveformData
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Owns the GL render thread. The camera renders into [inputSurface] (an external SurfaceTexture);
@@ -243,30 +246,34 @@ class GlPipeline {
     fun setEncoderOutput(surface: Surface?, width: Int, height: Int, onApplied: (() -> Unit)? = null) {
         val h = handler
         if (h == null) {
-            onApplied?.invoke()
+            OnceAction { onApplied?.invoke() }.run()
             return
         }
-        h.post {
-            val core = egl
-            if (core != null) {
-                if (encoderEgl != EGL14.EGL_NO_SURFACE) {
-                    core.releaseSurface(encoderEgl)
-                    encoderEgl = EGL14.EGL_NO_SURFACE
+        postWithCompletion(
+            post = { task -> h.post(task) },
+            block = {
+                val core = egl
+                if (core != null) {
+                    if (encoderEgl != EGL14.EGL_NO_SURFACE) {
+                        core.releaseSurface(encoderEgl)
+                        encoderEgl = EGL14.EGL_NO_SURFACE
+                    }
+                    // Reset the presentation-time base whenever the encoder surface changes (record
+                    // start/stop) so the next recording rebases from its own first frame.
+                    encoderBaseSet = false
+                    encoderBaseNs = 0L
+                    if (surface != null) {
+                        encoderW = width
+                        encoderH = height
+                        encoderEgl = core.createWindowSurface(surface)
+                    }
                 }
-                // Reset the presentation-time base whenever the encoder surface changes (record
-                // start/stop) so the next recording rebases from its own first frame.
-                encoderBaseSet = false
-                encoderBaseNs = 0L
-                if (surface != null) {
-                    encoderW = width
-                    encoderH = height
-                    encoderEgl = core.createWindowSurface(surface)
-                }
-            }
-            // Signal completion AFTER the surface change is applied, on the GL thread; fires even when
-            // egl is null (nothing to apply) so an ordered-teardown caller is never left waiting.
-            onApplied?.invoke()
-        }
+            },
+            // Signal completion AFTER the surface change is applied, on the GL thread. A dead/
+            // quitting looper rejects Handler.post; postWithCompletion then invokes this inline so
+            // an ordered recorder teardown can never wait forever. Delivery remains exactly once.
+            onComplete = { onApplied?.invoke() },
+        )
     }
 
     private var lastDrawMs = 0L
@@ -296,13 +303,16 @@ class GlPipeline {
     fun setHalZoom(z: Float) = post { halZoom = z }
 
     private fun drawFrame(updateTex: Boolean = true) {
+        val now = android.os.SystemClock.uptimeMillis()
         if (com.hletrd.findx9tele.BuildConfig.DEBUG) {
-            val now = android.os.SystemClock.uptimeMillis()
             if (lastDrawMs != 0L && now - lastDrawMs > 50) {
                 android.util.Log.i("GlPipeline", "FrameGap: ${now - lastDrawMs} ms")
             }
-            lastDrawMs = now
         }
+        // Release builds use this timestamp too: setZoomTarget() consults it to decide whether the
+        // camera is quiet enough for a self-redraw. Keeping the write inside DEBUG made every zoom
+        // update look idle in production and injected redundant preview draws between real frames.
+        lastDrawMs = now
         val core = egl ?: return
         val st = surfaceTexture ?: return
         if (previewEgl == EGL14.EGL_NO_SURFACE) return
@@ -468,32 +478,165 @@ class GlPipeline {
         }
     }
 
-    fun stop() {
+    fun stop(onStopped: (() -> Unit)? = null) {
         analysisExecutor.shutdown()
-        val h = handler ?: return
-        h.post {
-            val core = egl
-            if (core != null) {
-                if (encoderEgl != EGL14.EGL_NO_SURFACE) core.releaseSurface(encoderEgl)
-                if (previewEgl != EGL14.EGL_NO_SURFACE) core.releaseSurface(previewEgl)
-                renderer.release()
-                core.release()
+        val ownedThread = thread
+        val ownedHandler = handler
+        val completed = CountDownLatch(1)
+        val completion = OnceAction {
+            try {
+                onStopped?.invoke()
+            } finally {
+                completed.countDown()
             }
-            surfaceTexture?.release()
-            inputSurface?.release()
-            surfaceTexture = null
-            inputSurface = null
-            egl = null
-            inited = false
         }
-        thread?.quitSafely()
-        thread = null
-        handler = null
+
+        if (ownedThread == null || ownedHandler == null) {
+            completion.run()
+            if (thread === ownedThread) thread = null
+            if (handler === ownedHandler) handler = null
+            return
+        }
+
+        // stop() can be called from a GL callback. Running cleanup directly avoids posting behind
+        // ourselves and then deadlocking while waiting for that queued task on the same thread.
+        if (Thread.currentThread() === ownedThread) {
+            try {
+                releaseGlResources()
+            } finally {
+                completion.run()
+                runCatching { ownedThread.quitSafely() }
+                if (thread === ownedThread) thread = null
+                if (handler === ownedHandler) handler = null
+            }
+            return
+        }
+
+        val cleanup = Runnable {
+            try {
+                // If a bounded stop timed out and a new generation has since started, this old
+                // Runnable must not tear down the replacement generation's EGL state.
+                if (thread === ownedThread) releaseGlResources()
+            } finally {
+                completion.run()
+                // Clear ownership only from the generation that actually performed cleanup. A
+                // bounded caller-side timeout keeps these references intact so a late accepted
+                // cleanup can still recognize and release its own generation.
+                if (thread === ownedThread) thread = null
+                if (handler === ownedHandler) handler = null
+            }
+        }
+        val accepted = runCatching { ownedHandler.post(cleanup) }.getOrDefault(false)
+        runCatching { ownedThread.quitSafely() }
+
+        val deadlineNs = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(STOP_TIMEOUT_MS)
+        if (accepted) {
+            runCatching { completed.await(STOP_TIMEOUT_MS, TimeUnit.MILLISECONDS) }
+        }
+        val remainingNs = deadlineNs - System.nanoTime()
+        if (ownedThread.isAlive && remainingNs > 0L) {
+            val joinMs = TimeUnit.NANOSECONDS.toMillis(remainingNs).coerceAtLeast(1L)
+            runCatching { ownedThread.join(joinMs) }
+        }
+
+        val threadExited = !ownedThread.isAlive
+        val cleanupCompleted = completed.count == 0L
+        if (threadExited && !cleanupCompleted) {
+            // The task was rejected, or the looper died after accepting it. With the owned thread
+            // now gone no GL work can race this caller-side fallback cleanup.
+            runCatching { releaseGlResources() }
+        }
+        // A wedged GL thread may outlive the bounded wait. Deliver completion once so release cannot
+        // hang indefinitely; the late cleanup Runnable (if accepted) will observe the same one-shot.
+        completion.run()
+        if (threadExited) {
+            if (thread === ownedThread) thread = null
+            if (handler === ownedHandler) handler = null
+        }
+    }
+
+    /** Releases all GL-owned resources. Runs on the GL thread, or after that thread has exited. */
+    private fun releaseGlResources() {
+        val core = egl
+        if (core != null) {
+            // Caller-thread fallback needs to make the context current before deleting renderer/FBO
+            // objects. The normal GL-thread path also benefits from not relying on whichever output
+            // happened to receive the last draw.
+            val current = when {
+                previewEgl != EGL14.EGL_NO_SURFACE -> previewEgl
+                encoderEgl != EGL14.EGL_NO_SURFACE -> encoderEgl
+                else -> EGL14.EGL_NO_SURFACE
+            }
+            if (current != EGL14.EGL_NO_SURFACE) runCatching { core.makeCurrent(current) }
+            runCatching { surfaceTexture?.release() }
+            runCatching { inputSurface?.release() }
+            runCatching {
+                if (analysisFbo != 0) GLES20.glDeleteFramebuffers(1, intArrayOf(analysisFbo), 0)
+                if (analysisTex != 0) GLES20.glDeleteTextures(1, intArrayOf(analysisTex), 0)
+                renderer.release()
+            }
+            if (encoderEgl != EGL14.EGL_NO_SURFACE) runCatching { core.releaseSurface(encoderEgl) }
+            if (previewEgl != EGL14.EGL_NO_SURFACE) runCatching { core.releaseSurface(previewEgl) }
+            runCatching { core.release() }
+        } else {
+            runCatching { surfaceTexture?.release() }
+            runCatching { inputSurface?.release() }
+        }
+        surfaceTexture = null
+        inputSurface = null
+        previewSurface = null
+        previewEgl = EGL14.EGL_NO_SURFACE
+        encoderEgl = EGL14.EGL_NO_SURFACE
+        analysisFbo = 0
+        analysisTex = 0
+        analysisBusy = false
+        encoderBaseSet = false
+        encoderBaseNs = 0L
+        lastDrawMs = 0L
+        egl = null
+        inited = false
     }
 
     private inline fun post(crossinline block: () -> Unit) {
         handler?.post { block() }
     }
+
+    private companion object {
+        const val STOP_TIMEOUT_MS = 1_500L
+    }
+}
+
+/** Executes [callback] at most once across racing GL/caller threads. Callback failures are sealed. */
+internal class OnceAction(private val callback: () -> Unit) {
+    private val delivered = AtomicBoolean(false)
+
+    fun run(): Boolean {
+        if (!delivered.compareAndSet(false, true)) return false
+        runCatching(callback)
+        return true
+    }
+}
+
+/**
+ * Posts [block] and delivers [onComplete] exactly once after it runs. If [post] rejects or throws,
+ * completion runs inline so native-teardown waiters cannot be stranded on a dead looper.
+ */
+internal fun postWithCompletion(
+    post: (Runnable) -> Boolean,
+    block: () -> Unit,
+    onComplete: () -> Unit,
+): Boolean {
+    val completion = OnceAction(onComplete)
+    val task = Runnable {
+        try {
+            block()
+        } finally {
+            completion.run()
+        }
+    }
+    val accepted = runCatching { post(task) }.getOrDefault(false)
+    if (!accepted) completion.run()
+    return accepted
 }
 
 // Pure scope-analysis math, hoisted out of GlPipeline (they hold no instance state — just the RGBA
