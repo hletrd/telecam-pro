@@ -7,15 +7,15 @@ package com.hletrd.findx9tele.gl
  * uMvp) and transforms external-texture coordinates via the SurfaceTexture matrix (uTexMatrix).
  *
  * The fragment shader samples the camera's external OES texture and optionally applies:
- *  - a transfer OETF for the video encoder path (HLG, or the official OPPO O-Log2 curve),
+ *  - an SDR-to-HLG mapping or the official OPPO O-Log2 curve for the video encoder path,
  *  - focus peaking (edge highlight) and zebra (clipping stripes) for the preview path.
  *
- * NOTE: the camera preview signal is display-referred (already non-linear). The LOG path
- * linearizes it (γ2.2 approximation of the ISP's SDR output), converts Rec.709→BT.2020 primaries
- * (O-Gamut), and applies the official O-Log2 OETF so mid-grey lands on OPPO's published anchor and
- * footage grades with OPPO's O-Log2 LUTs. It is still an approximation because the preview stream is
- * already display-referred, so there is no above-white highlight headroom — the SDR tone mapping
- * bounds the dynamic range. Verify on device.
+ * NOTE: the camera preview signal is display-referred (already non-linear). HLG follows the
+ * simplified ITU-R BT.2408-9 display-referred mapping: BT.1886 decode, linear BT.709→BT.2020,
+ * reference-white/inverse-OOTF adjustment, then the BT.2100 HLG OETF. LOG linearizes with the
+ * existing γ2.2 approximation, converts to BT.2020 (O-Gamut), and applies the official O-Log2 OETF.
+ * Neither path can recover above-white highlights removed by the ISP's SDR tone mapping. Verify on
+ * device.
  */
 object Shaders {
 
@@ -46,13 +46,16 @@ object Shaders {
         varying vec2 vTexCoord;
 
         const vec3 LUMA = vec3(0.2627, 0.6780, 0.0593); // Rec.2020 luma weights
+        const float SDR_EOTF_GAMMA = ${SdrToHlgMapping.SDR_EOTF_GAMMA};
+        const float BT2408_HLG_SCALE = ${SdrToHlgMapping.NORMALIZED_DISPLAY_LIGHT_SCALE};
+        const float HLG_SYSTEM_GAMMA = ${SdrToHlgMapping.HLG_SYSTEM_GAMMA};
 
         float luma(vec3 c) { return dot(c, LUMA); }
 
-        // HLG OETF (approx; input treated as pseudo-linear [0,1]).
+        // BT.2100 HLG OETF. Input is normalized scene light from the BT.2408 mapping below.
         vec3 hlg(vec3 x) {
             vec3 lo = sqrt(3.0 * clamp(x, 0.0, 1.0));
-            float a = 0.17883277, b = 0.28466892, c = 0.55991073;
+            float a = ${SdrToHlgMapping.HLG_A}, b = ${SdrToHlgMapping.HLG_B}, c = ${SdrToHlgMapping.HLG_C};
             vec3 hi = a * log(max(12.0 * x - b, 1e-4)) + c;
             return mix(hi, lo, step(x, vec3(1.0 / 12.0)));
         }
@@ -60,9 +63,9 @@ object Shaders {
         // Rec.709 -> Rec.2020 primaries (linear light), for the O-Log2 encode (O-Gamut = BT.2020).
         vec3 toRec2020(vec3 c) {
             return vec3(
-                dot(vec3(0.6274, 0.3293, 0.0433), c),
-                dot(vec3(0.0691, 0.9195, 0.0114), c),
-                dot(vec3(0.0164, 0.0880, 0.8956), c));
+                dot(vec3(${SdrToHlgMapping.R_FROM_R}, ${SdrToHlgMapping.R_FROM_G}, ${SdrToHlgMapping.R_FROM_B}), c),
+                dot(vec3(${SdrToHlgMapping.G_FROM_R}, ${SdrToHlgMapping.G_FROM_G}, ${SdrToHlgMapping.G_FROM_B}), c),
+                dot(vec3(${SdrToHlgMapping.B_FROM_R}, ${SdrToHlgMapping.B_FROM_G}, ${SdrToHlgMapping.B_FROM_B}), c));
         }
 
         // OPPO O-Log2 OETF, constants from the official white paper (2026-04, EN v1):
@@ -99,7 +102,15 @@ object Shaders {
             vec3 color = base;
 
             if (uTransfer == 1) {
-                color = hlg(color);
+                // Simplified display-referred SDR-to-HLG mapping (ITU-R BT.2408-9 §5.1.3.4):
+                // BT.1886 decode -> linear 709-to-2020 -> normalized reference-white scale and
+                // per-channel inverse OOTF -> BT.2100 HLG OETF. SDR white maps to 75% HLG.
+                vec3 sdrDisplayLight = pow(clamp(color, 0.0, 1.0), vec3(SDR_EOTF_GAMMA));
+                vec3 bt2020DisplayLight = toRec2020(sdrDisplayLight);
+                vec3 hlgSceneLight = pow(
+                    max(bt2020DisplayLight * BT2408_HLG_SCALE, vec3(0.0)),
+                    vec3(1.0 / HLG_SYSTEM_GAMMA));
+                color = hlg(hlgSceneLight);
             } else if (uTransfer == 2) {
                 // O-Log2 from the display-referred SDR stream: linearize (the ISP's SDR output is
                 // ~gamma 2.2), move to O-Gamut primaries, then the official OETF (see file docs).
