@@ -948,8 +948,13 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     private var zoomInteracting = false
     private val zoomInteractionEnd = Runnable {
         zoomInteracting = false
+        mainHandler.removeCallbacks(zoomQuietLanding)
         engine.setZoomInteraction(false)
     }
+    // Quiet-window landing: one throttle window after the LAST flush, the exact (non-wide-aimed)
+    // ratio lands on the HAL even though the 700 ms boost tail is still running — otherwise a clip
+    // keeps the ~1.2×-wide framing after finger-up and a tail still frames wider than the finder.
+    private val zoomQuietLanding = Runnable { engine.landExactZoom() }
 
     private fun flushZoom() {
         val z = zoomPendingRatio
@@ -960,6 +965,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         }
         mainHandler.removeCallbacks(zoomInteractionEnd)
         mainHandler.postDelayed(zoomInteractionEnd, 700)
+        mainHandler.removeCallbacks(zoomQuietLanding)
+        mainHandler.postDelayed(zoomQuietLanding, 250)
         // Straight to the engine fast path (cached-builder resubmit) — updateControls would re-apply
         // the FULL control set. Chip highlight follows the zoom band only on the seamless (photo)
         // camera; video zoom is lens-local. Persistence rides the debounced settings save.
@@ -1784,6 +1791,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         mainHandler.removeCallbacks(infoTicker)
         zoomEaseTarget = null
         mainHandler.removeCallbacks(zoomEaseTicker)
+        mainHandler.removeCallbacks(zoomQuietLanding)
         saveSettingsIfEnabled() // persist on background so the next launch restores them
         engine.setStandbyAudioMonitor(false) // release the mic while backgrounded
         engine.pause()

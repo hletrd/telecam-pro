@@ -1890,16 +1890,38 @@ class CameraEngine(private val context: Context) {
         gl.setZoomTarget(z)
         // The HAL follows at a throttled pace. Mid-gesture it is aimed slightly WIDE
         // (÷ZOOM_GESTURE_MARGIN) so the GL crop has field for instant zoom-out too; the exact
-        // value lands at gesture end (setZoomInteraction(false)).
+        // value lands at the quiet-window landing (landExactZoom) or gesture end
+        // (setZoomInteraction(false)). The throttle/wide-aim decision is the pure, unit-tested
+        // resolveHalZoomSubmit. requestRatio carries the EXACT z so stills never inherit the aim.
         val now = android.os.SystemClock.uptimeMillis()
-        val halTarget = if (zoomInteractionActive) {
-            val wide = z / ZOOM_GESTURE_MARGIN
-            if (r != null) wide.coerceIn(r.lower, r.upper) else wide
-        } else z
-        if (!zoomInteractionActive || now - lastHalZoomSubmitMs >= ZOOM_HAL_THROTTLE_MS) {
+        val plan = resolveHalZoomSubmit(
+            requestedZoom = z,
+            interactionActive = zoomInteractionActive,
+            nowMs = now,
+            lastSubmitMs = lastHalZoomSubmitMs,
+            gestureMargin = ZOOM_GESTURE_MARGIN,
+            throttleMs = ZOOM_HAL_THROTTLE_MS,
+            rangeLower = r?.lower,
+            rangeUpper = r?.upper,
+        )
+        if (plan.submitNow) {
             lastHalZoomSubmitMs = now
-            controller?.setZoomRatio(halTarget)
+            controller?.setZoomRatio(plan.halTarget, requestRatio = z)
         }
+    }
+
+    /**
+     * Lands the EXACT (non-wide-aimed) ratio while a gesture is still formally active but has gone
+     * quiet for one throttle window. Without this, the last throttled submit's ~1.2×-wide framing
+     * held for the full 700 ms interaction tail — a recorded clip carried it after finger-up (the
+     * encoder only sees real frames; GL zoomComp masks it in the preview only). One spaced
+     * fast-path swap, NOT a boost flip — the fps-boost window and its single gesture-end rebuild
+     * are unchanged, so this does not recreate the back-to-back double-stall c92eada removed.
+     */
+    fun landExactZoom() {
+        if (!zoomInteractionActive) return
+        lastHalZoomSubmitMs = android.os.SystemClock.uptimeMillis()
+        controller?.setZoomRatio(controls.zoomRatio)
     }
 
     @Volatile private var zoomInteractionActive = false

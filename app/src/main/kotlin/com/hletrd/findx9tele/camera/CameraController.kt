@@ -324,14 +324,18 @@ class CameraController(context: Context) {
      * full [startPreview] rebuild when no builder is cached yet (pre-first-preview) or in
      * constrained high-speed mode (whose repeating request is a burst list).
      */
-    fun setZoomRatio(ratio: Float) {
+    fun setZoomRatio(ratio: Float, requestRatio: Float = ratio) {
         postToCamera {
-            controls = controls.copy(zoomRatio = ratio)
+            // [controls] feeds STILL requests too (capturePhoto snapshots it): store the EXACT
+            // user-framed ratio, not the mid-gesture wide-aimed HAL target — a still captured in
+            // the interaction tail otherwise frames ~17% wider than the viewfinder (the repeating
+            // stream's wide aim is GL-compensated in the preview; a still has no compensation).
+            controls = controls.copy(zoomRatio = requestRatio)
             submitZoomFastPath(ratio)
         }
     }
 
-    /** Camera-thread body of the zoom fast path; [controls] must already carry [ratio]. */
+    /** Camera-thread body of the zoom fast path; submits [ratio] on the repeating stream only. */
     private fun submitZoomFastPath(ratio: Float) {
         val s = session ?: return
         val b = previewBuilder
