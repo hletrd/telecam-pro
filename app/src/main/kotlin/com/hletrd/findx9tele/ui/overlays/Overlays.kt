@@ -468,6 +468,12 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier) {
         if (state.punchIn) {
             Text("LOUPE", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
         }
+        // Like LOUPE: shown whenever the toggle is ON, independent of the current gate (TELE,
+        // photo, 4:3, zoom floor) — "on but gated off" was otherwise indistinguishable from "off",
+        // and the toggle read as broken when flipped in 16:9 or video.
+        if (state.teleFinder) {
+            Text("PIP", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+        }
         if (BuildConfig.DEBUG) {
             val caps = state.caps
             val cameraLabel = when {
