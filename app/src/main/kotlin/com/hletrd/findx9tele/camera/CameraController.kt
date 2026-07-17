@@ -835,7 +835,63 @@ class CameraController(context: Context) {
             }
             // An explicit focus-mode change ends the tap-to-focus AUTO hold and resumes the chosen mode.
             if (normalized.focusMode != this.controls.focusMode) touchAfActive = false
+            val previous = this.controls
             this.controls = normalized
+            // Sensor fast path (mirrors the zoom fast path): a focus/ISO/shutter drag and the
+            // app-side AE loop feed this at up to 25 Hz, and EVERY full rebuild's repeating-request
+            // swap gaps this HAL's stream 170-250 ms (measured) — a 2 s ruler drag was a ~5 fps
+            // viewfinder exactly while judging critical focus at 300 mm. When the delta touches
+            // ONLY the sensor scalars, mutate the cached builder via the SAME derivation the full
+            // build uses, paced to >=200 ms with a trailing exact landing. Anything else keeps the
+            // full rebuild.
+            if (sensorOnlyControlsDelta(previous, normalized)) {
+                submitSensorFastPath()
+            } else {
+                startPreview()
+            }
+        }
+    }
+
+    // Camera-thread pacing state for the sensor fast path (see updateControls).
+    private var lastSensorSubmitMs = 0L
+    private var sensorFastPathQueued = false
+
+    /** Paces sensor-value submits; a queued trailing task always lands the NEWEST packet. */
+    private fun submitSensorFastPath() {
+        val now = android.os.SystemClock.uptimeMillis()
+        val since = now - lastSensorSubmitMs
+        if (since >= SENSOR_SUBMIT_MIN_INTERVAL_MS) {
+            lastSensorSubmitMs = now
+            applySensorFastPath()
+        } else if (!sensorFastPathQueued) {
+            sensorFastPathQueued = true
+            handler.postDelayed({
+                sensorFastPathQueued = false
+                lastSensorSubmitMs = android.os.SystemClock.uptimeMillis()
+                applySensorFastPath()
+            }, SENSOR_SUBMIT_MIN_INTERVAL_MS - since)
+        }
+        // else: a trailing task is already queued; it reads the newest [controls] when it fires.
+    }
+
+    /** Camera-thread body: mutate only the sensor keys on the cached repeating builder. */
+    private fun applySensorFastPath() {
+        val s = session ?: return
+        val b = previewBuilder
+        val cb = previewCallback
+        if (b == null || cb == null || highSpeedFps > 0) { startPreview(); return }
+        runCatching {
+            b.applySensorValueControls(
+                controls,
+                caps,
+                pinAutoFps = pinAutoFps || smoothPreviewBoost,
+                previewExposureCap = true,
+            )
+            s.setRepeatingRequest(b.build(), cb, handler)
+        }.onFailure {
+            if (BuildConfig.DEBUG) Log.w(TAG, "sensor fast path failed, rebuilding: ${it.message}")
+            // The cached builder/session can go invalid during a configure transition; re-derive
+            // the full repeating request so the new sensor values are not silently lost.
             startPreview()
         }
     }
@@ -1158,6 +1214,9 @@ class CameraController(context: Context) {
     private companion object {
         const val TAG = "CameraController"
         const val CUSTOM_WB_SAMPLE_TIMEOUT_MS = 2_000L
+        // Sensor fast-path pacing: every repeating-request swap gaps this HAL ~180 ms (measured),
+        // so high-churn sensor submits hold the same >=200 ms floor as the zoom fast path.
+        const val SENSOR_SUBMIT_MIN_INTERVAL_MS = 200L
         // Highest fallback index (attempt 3 = preview-only). Beyond this the session can't be built.
         const val MAX_CONFIG_ATTEMPT = 3
         // TELE tries the same four stream plans once with vendor operation mode 0x80b4 and once

@@ -396,6 +396,37 @@ fun CaptureRequest.Builder.applyManualControls(
     }
 }
 
+/**
+ * True when [next] differs from [previous] ONLY in the high-churn sensor scalars (manual focus
+ * distance, ISO, exposure time) — the keys a focus/ISO/shutter drag or the app-side AE loop
+ * rewrites continuously. The copy-normalize-compare shape is exhaustive by data-class equality:
+ * a future ManualControls field defaults to "must match", so it can never silently ride the
+ * fast path.
+ */
+internal fun sensorOnlyControlsDelta(previous: ManualControls, next: ManualControls): Boolean =
+    previous != next && previous.copy(
+        focusDistanceDiopters = next.focusDistanceDiopters,
+        iso = next.iso,
+        exposureTimeNs = next.exposureTimeNs,
+    ) == next
+
+/**
+ * The high-churn sensor half of [applyManualControls] — the SAME derivation functions the full
+ * request build uses (MF distance clamp; manual-AE ISO/exposure clamps, preview exposure cap,
+ * frame-duration stretch), so the controller's sensor fast path can never drift from the full
+ * rebuild. Re-applied mode keys (AF/AE mode) rewrite their current values — the fast path only
+ * fires when [sensorOnlyControlsDelta] holds, so those are identical by construction.
+ */
+internal fun CaptureRequest.Builder.applySensorValueControls(
+    c: ManualControls,
+    caps: CameraCaps,
+    pinAutoFps: Boolean,
+    previewExposureCap: Boolean,
+) {
+    applyFocus(c, caps)
+    applyExposure(c, caps, pinAutoFps, previewExposureCap)
+}
+
 internal val FocusMode.afMetadata: Int
     get() = when (this) {
         FocusMode.MANUAL -> CameraMetadata.CONTROL_AF_MODE_OFF
