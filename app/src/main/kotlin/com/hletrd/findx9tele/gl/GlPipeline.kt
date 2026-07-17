@@ -720,7 +720,30 @@ class GlPipeline {
                 // Publish the identity-owned failure once, then detach the broken preview. Keep
                 // processing a real frame below so active recording remains truthful and live.
                 ownedPreviewSignal?.fail(previewFailure)
-                runCatching { clearPreviewOutput(core) }
+                val detachFailure = runCatching { clearPreviewOutput(core) }.exceptionOrNull()
+                if (detachFailure != null) {
+                    // Same containment policy as the texture-acquisition branch above — the old
+                    // bare runCatching DISCARDED this failure and retained the poisoned
+                    // previewEgl/native-window owner for every same-surface recovery retry, while
+                    // the same frame kept flowing into the encoder. A preview that cannot
+                    // relinquish native-window ownership makes encoder continuation unsafe:
+                    // terminate the identity-owned recorder explicitly, then orphan the poisoned
+                    // EGL surface (destroyed later under clearOrphanedOutputs' checked detach) so
+                    // recovery restarts from a clean create instead of retrying the unresolved
+                    // clear transaction. The original preview failure stays primary (already
+                    // published above); this frame is abandoned (no encoder/analysis work).
+                    val activeEncoderSignal = encoderSignal
+                    if (activeEncoderSignal?.isActive() == true) {
+                        failEncoderOutput(core, activeEncoderSignal, detachFailure)
+                    }
+                    val poisoned = previewEgl
+                    if (poisoned != EGL14.EGL_NO_SURFACE) orphanedEglOutputs.retain(poisoned)
+                    previewEgl = EGL14.EGL_NO_SURFACE
+                    previewSurface = null
+                    previewSignal?.cancel()
+                    previewSignal = null
+                    return
+                }
             }
         }
 
