@@ -383,9 +383,30 @@ fun GalleryThumb(uri: Uri?, onClick: () -> Unit, modifier: Modifier = Modifier) 
                 )
             }
         } else {
+            // "No capture yet" pictograph: frame + sun-dot + mountain path — a complete photo
+            // glyph like the app's other multi-primitive hand-drawn icons (the lone off-center
+            // dot it used to draw read as a rendering artifact, not an empty state).
             Canvas(Modifier.size(22.dp)) {
                 val color = CameraColors.TextSecondary
-                drawCircle(color, radius = size.minDimension * 0.12f, center = Offset(size.width * 0.32f, size.height * 0.36f))
+                val stroke = Stroke(width = size.minDimension * 0.07f)
+                drawRoundRect(
+                    color = color,
+                    cornerRadius = CornerRadius(size.minDimension * 0.12f),
+                    style = stroke,
+                )
+                drawCircle(
+                    color,
+                    radius = size.minDimension * 0.10f,
+                    center = Offset(size.width * 0.32f, size.height * 0.34f),
+                )
+                val mountains = Path().apply {
+                    moveTo(size.width * 0.12f, size.height * 0.78f)
+                    lineTo(size.width * 0.40f, size.height * 0.50f)
+                    lineTo(size.width * 0.58f, size.height * 0.66f)
+                    lineTo(size.width * 0.72f, size.height * 0.54f)
+                    lineTo(size.width * 0.88f, size.height * 0.78f)
+                }
+                drawPath(mountains, color, style = stroke)
             }
         }
     }
