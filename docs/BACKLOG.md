@@ -104,6 +104,25 @@ These do not require a code or metadata change unless the result exposes a defec
   a product decision on a separate video session that lacks the current RAW/manual Camera2 surface.
 - **Optional product work:** configurable keep-screen-on, geotagging, custom save locations, slow-
   motion playback metadata, and advanced focus/bracketing workflows.
+- **True wide-field TELE finder (design item, owner decision needed):** the shipped Tele Finder
+  PIP (Assist toggle, default OFF) honestly re-draws the FULL current camera frame — the single
+  Camera2 stream already carries the HAL's `CONTROL_ZOOM_RATIO` crop, so no GL work can show a
+  genuinely wider field. A real iPhone-style wide finder needs either (a) a second concurrent
+  wide stream (high risk on this HAL — physical-sub-camera routing and several multi-stream
+  combos crash it; must be device-verified per session plan), or (b) capping the HAL zoom and
+  rendering the remaining main-view magnification in GL (touches AE metering, tap-AF region
+  mapping, video encoder framing, and preview sharpness — a zoom-architecture change, not a
+  finder change). Either path needs a deliberate design + device A/B before implementation.
+
+## Deferred from review-plan-fix cycle 1 (2026-07-17 run; durable record)
+
+Full records in `docs/plans/2026-07-17-rpf-cycle1.md` § Deferrals:
+
+- **AGG-19 (Low/Medium)** — `FINDER_MIN_ZOOM = 1.15` is likely too low to be useful. Exit: a
+  device session with the converter mounted tunes the threshold (or a zoomComp-based gate).
+- **AGG-20 (Low/Medium)** — app-side AE ticks pay full repeating-request rebuilds (~180 ms HAL
+  stall each; post-gesture photo-P re-center emits a submit train). Exit: device measurement; if
+  visible, add a sensor-keys-only fast path on the cached builder (same pattern as zoom).
 
 ## Verification Quick Reference
 
@@ -125,11 +144,12 @@ Runtime CAMERA and RECORD_AUDIO permissions are granted through the app UI on Co
 AVD is suitable only for UI/crash checks; telephoto routing, RAW, color, audio, stabilization, and
 saved-file behavior require PMA110.
 
-## Deferred from review-plan-fix cycle 2 (2026-07-10 — final cycle; durable record)
+## Deferred from review-plan-fix cycle 2 (2026-07-10 run; durable record)
 
-The review-plan-fix loop ended with cycle 2, so its deferrals live HERE, not "in the next cycle."
-Full citations, severities, and exit criteria: `docs/plans/2026-07-10-rpf-cycle2.md` § Deferred
-(D-1..D-18). Summary of what remains open:
+That 2026-07-10 loop ended with its cycle 2 (later runs — 2026-07-16 cycles 1-9 and the 2026-07-17
+loop — have their own dated plans under `docs/plans/`), so the 2026-07-10 deferrals live HERE, not
+"in the next cycle." Full citations, severities, and exit criteria:
+`docs/plans/2026-07-10-rpf-cycle2.md` § Deferred (D-1..D-18). Summary of what remains open:
 
 - **Device re-verification of the cycle-2 changes** — the PMA110 re-locked behind a secure keyguard
   mid-cycle. VERIFIED on device post-unlock by the orchestrator (2026-07-10): letterboxed preview

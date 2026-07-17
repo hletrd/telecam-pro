@@ -116,7 +116,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   Across process restarts, every new capture's HEIF/JPEG/DNG outputs share one versioned timestamped
   filename key (video owns one-file family); a bounded Images+Video query reconstructs the newest exact
   family and seeds it below live ids. Legacy filenames are never proximity-grouped and expose truthful
-  file-only delete copy.
+  file-only delete copy. A late sibling of an id that the tracker's own bounded trim evicts DURING
+  its `record()` is TRACK_ONLY, never the review owner — an evicted family would publish a review
+  URI that can't be pinned and would degrade delete to file-only.
 - **Stills on the LOGICAL camera are YUV, not HAL JPEG (2026-07-14).** gralloc rejects the ~42 MB
   JPEG blob allocation on the plain logical session (`SnapAlloc: ValidateDescriptor invalid` — the
   image never arrives and the shot wedges `pending`), at BOTH 4096×3072 and the logical array's own
@@ -130,7 +132,18 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   them through the full `startPreview` rebuild read as stutter. Pinch/zoom events are additionally
   COALESCED in the ViewModel (leading apply + 16 ms trailing flush of the newest value, ~60 Hz) — per-event
   application recomposed the whole tree at input rate (~120 Hz) and read as jank.
-- **VIDEO stays on the STANDALONE lenses — the logical camera's EIS leaks its warp margin
+- **Tele Finder PIP is HONEST about the single stream (2026-07-17).** The Assist toggle (default
+  OFF, persisted) draws a bottom-left corner viewport re-drawing the FULL current camera frame in
+  TELE + 4:3 past `FINDER_MIN_ZOOM`. It can NEVER show an unzoomed/wide field: the HAL's
+  `CONTROL_ZOOM_RATIO` crop is baked into the one camera texture, so the PIP is only wider than
+  the main view while GL zoom compensation or punch-in magnifies past the delivered field (a true
+  wide finder is a BACKLOG design item — second stream or HAL-zoom-cap split). GL scissor box and
+  Compose border derive from ONE pure seam (`finderRect`; the padding-before-fillMaxWidth chain
+  drew the border ~6% small), the border anchor is layout-direction-absolute (RTL), the engine
+  resolves toggle && TELE && 4:3 in one place (`pushTeleFinder`, re-pushed at intent time so the
+  GL PIP can't outlive a TC-off), and the finder draw is failure-isolated with
+  `try/finally { glDisable(GL_SCISSOR_TEST) }` — scissor is CONTEXT state; a leak would clip the
+  encoder/analysis draws, and a finder-only error must never fail preview health.
   (2026-07-14).** With any video stabilization on (Standard AND Active), camera 0's stream carries
   an uncorrected EIS warp band (~6% of width) on one edge — in the PREVIEW and in the RECORDED
   FILE (device-verified frame extraction; displays as a rainbow-smear band at the bottom in
@@ -146,13 +159,22 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   submits are throttled to ≥200 ms and aimed 1.2× WIDE mid-gesture (zoom-out margin), landing on
   the exact value at gesture end. Encoder/analysis only ever see REAL camera frames (self-redraws
   are preview-only). Plus: in low light the app-side P loop trades exposure→ISO brightness-
-  neutrally during gestures (ISO-headroom-bounded) so the base frame rate rises.
+  neutrally during gestures (ISO-headroom-bounded) so the base frame rate rises. Each gesture EDGE
+  is ONE submit: the fps-boost flip's own preview rebuild carries the current/final exact zoom
+  (`setSmoothPreviewBoost(active, finalZoom)`) — the old rebuild-then-correct order at gesture end
+  re-submitted the stale wide-aimed ratio and paid two ~180 ms stalls back to back. The zoom RMW
+  on engine `controls` takes the engine monitor (packet writers replace `controls` wholesale under
+  it; `@Volatile` alone lost whole rollback packets mid-pinch), and `onZoomResult→gl.setHalZoom`
+  forwarding is change-gated with a per-rebuild reset (a suppressed final ramp value would
+  otherwise wedge the GL compensation after a reopen).
 - **Compounding zoom inputs must base on the COALESCED pending value (2026-07-14).** Pinch factors,
   hardware-key steps, and the ease ticker all multiply "the current zoom" — but UI state lags the
   16 ms coalescing flush, so compounding against `_state` made zoom crawl between flushes then jump
   at the boundary (read as pinch jank twice before being root-caused). `currentZoomBase()` in the
-  ViewModel is the one true base; reset `zoomPendingRatio` whenever anything outside the coalescer
-  rewrites zoom (mode flip, lens preset, TC toggle).
+  ViewModel is the one true base; reset `zoomPendingRatio` AND `zoomEaseTarget` whenever anything
+  outside the coalescer rewrites zoom (mode flip, lens preset, TC toggle) — the ease target is an
+  ABSOLUTE number in the old zoom scale, and a glide surviving a scale remap eases toward an
+  un-commanded framing in the new scale.
 - **The REC tally border must follow the panel's rounded corners.** A square full-screen border's
   corner segments fall OUTSIDE the visible display area and vanish. Read the radius from the
   WindowInsets RoundedCorner API and scale ×1.2 — the glass corner is a continuous-curvature
@@ -349,7 +371,11 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
 - **Preview EGL health is part of Camera Ready.** Preview create/bind/init and runtime draw/swap
   failures complete one Surface/generation-owned signal. The Engine accepts only the current owner,
   publishes Not-Ready, and retries the same surface at most three times before terminal status; a
-  stale replacement failure is inert. A successful bind remains pending: Ready and retry-budget reset
+  stale replacement failure is inert. A draw/swap failure whose preview DETACH also fails applies
+  the acquisition branch's containment: fail an active encoder owner, orphan the poisoned preview
+  EGL surface (destroyed later under the checked orphan sweep), and abandon the frame — never
+  retain a poisoned owner for ordinary same-surface retries while frames keep flowing to the
+  encoder. A successful bind remains pending: Ready and retry-budget reset
   happen only after that owner completes its first successful real-camera-frame swap; cached-frame
   zoom redraws cannot publish Ready. Before every texture update, bind the live preview owner or
   otherwise the active encoder owner; contain acquisition failure inside the owning health path so
@@ -361,7 +387,12 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   snapshots the accepted Camera2 controller/session before mic handoff and atomically rechecks it at
   publication. Until attach succeeds the UI is stoppable/locked but shows no tally or timer. An owned
   Camera2 failure claims and ordered-finalizes the recorder before recovery; do not let camera errors
-  leave phantom REC/audio/UI state.
+  leave phantom REC/audio/UI state. Admission itself runs on the RECORDER EXECUTOR, never main (the
+  ≤400 ms mic-release wait + MediaStore insert + codec/muxer construction janked every REC press);
+  only the in-flight gate is synchronous, the UI publishes optimistic "starting" state that the
+  result callback resets on refusal, and a stop arriving mid-admission is LATCHED
+  (`recStopRequestedDuringStart`) and executed on the same serial executor the moment the recorder
+  publishes — never raced against an unpublished owner.
 - **The MediaCodec input Surface has exactly one release owner.** `VideoRecorder` releases it on every
   partial setup failure and, on clean stop, only after the engine's checked EGL detach has completed;
   Surface release precedes codec release and ownership clearing, and repeated cleanup is a no-op. If a
@@ -390,7 +421,11 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   restart paths only recheck current intent, so they cannot overwrite a newer disable/background
   transition. Never add a second concurrent AudioRecord. While REC is running, every negative
   `AudioRecord.read` is terminal and enters the recorder's exactly-once failure/finalization path;
-  only a negative read after stop is treated as normal end-of-stream.
+  only a negative read after stop is treated as normal end-of-stream. The STANDBY meter classifies
+  reads through the same `AudioReadPolicy`: zero retries, a negative read ends that AudioRecord
+  generation (release exactly once — `n <= 0 → continue` used to hot-spin the meter thread forever
+  on a dead route), then a bounded backed-off recreation (≤3 generations, reset by any successful
+  PCM read) re-arms only while the standby intent still wants a meter.
 - **Still watchdog follows the request exposure.** HAL-auto keeps the historical 8 s timeout. Manual
   and app-side/AEB requests use the exact sensor-clamped exposure plus an 8 s delivery margin, with
   ceil-to-milliseconds and saturating arithmetic; a fixed 8 s deadline is not valid for long shots.

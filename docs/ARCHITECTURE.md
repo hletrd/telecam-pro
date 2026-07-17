@@ -179,7 +179,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | **analysisExecutor** (one single-thread executor per GL generation) | GlPipeline | Histogram/waveform computation from that generation's isolated FBO/readback snapshot. Retirement invalidates callback authority without waiting indefinitely for old math. |
 | **audio-capture** (implicit thread) | VideoRecorder | AudioRecord polling loop and PCM-to-AAC encoding. |
 | **video-drain** (implicit thread) | VideoRecorder | MediaCodec output buffer draining and MediaMuxer writes. |
-| **StandbyAudioMeter** (thread) | CameraEngine | Levels-only AudioRecord tap while video is armed but not rolling. A synchronized ownership gate reserves one immutable owner/release latch before thread start; REC opens the mic only after that exact owner releases. |
+| **StandbyAudioMeter** (thread) | CameraEngine | Levels-only AudioRecord tap while video is armed but not rolling. A synchronized ownership gate reserves one immutable owner/release latch before thread start; REC opens the mic only after that exact owner releases. Reads are classified via `AudioReadPolicy`: zero retries, a negative (terminal framework error) ends the generation with an exactly-once release, then a bounded backed-off recreation (≤3 failed generations, reset by any successful PCM read) re-arms only while the standby intent still wants a meter. |
 
 **Cross-thread visibility and ownership seams:**
 
@@ -262,7 +262,12 @@ Accessed from GL + audio/video threads:
 - **Recording admission and failure**: VideoRecorder owns its video/audio threads and muxer lock; GL
   writes frames to its exactly-once-owned codec input Surface. REC snapshots the accepted
   controller/session, rechecks it after mic handoff, and publishes recorder ownership atomically
-  against camera failure. Encoder attach is queued before publication; UI remains in a stoppable
+  against camera failure. Admission runs on the serial **recorder executor**, never main (the
+  bounded mic-release wait, MediaStore pending insert, and codec/muxer/AudioRecord construction
+  cost ~100-700 ms); only the in-flight gate is synchronous, the UI publishes optimistic starting
+  state that the result callback resets on refusal, and a stop arriving mid-admission is latched
+  and executed on the same executor the moment the recorder publishes (never raced against an
+  unpublished owner). Encoder attach is queued before publication; UI remains in a stoppable
   `isRecordingStarting` state until the first
   successful real encoder swap, so tally/timer never imply a phantom recording. Clean finalization
   releases the Surface only after checked EGL unbind/destroy, before codec release/ownership clear;
@@ -431,13 +436,23 @@ bases itself on `currentZoomBase()` — the coalesced PENDING value, not UI stat
 flush window; compounding against the stale state made zoom crawl-then-jump. The flushed value
 takes the controller **fast path** (`CameraController.setZoomRatio`): the cached repeating-request
 builder gets only its zoom keys mutated and resubmitted — no full request re-derivation.
+Scale-remap invalidation covers BOTH pending inputs: `onModeChange`/`onToggleTeleconverter`/`onLens`
+reset `zoomPendingRatio` AND null `zoomEaseTarget` (a hardware-slider glide target is an absolute
+number in the OLD scale; surviving a remap it eased toward an un-commanded framing). Each zoom
+gesture EDGE costs one repeating-request swap: `setZoomInteraction` folds the current/final exact
+ratio into the fps-boost flip's own rebuild (`setSmoothPreviewBoost(active, finalZoom)`), instead
+of the old rebuild-then-correct pair that transiently re-submitted the stale mid-gesture wide-aimed
+ratio. The engine's zoom read-modify-write on `controls` shares the packet writers' monitor, and
+`onZoomResult → gl.setHalZoom` forwarding is change-gated with a per-rebuild reset.
 
 This zoom coalescer is separate from the general `ManualControls` packet throttle, which applies the
 newest full-control snapshot every 40 ms (25 Hz) during continuous dial input.
 
 **Stills** (`StillSnapshot`): the logical camera cannot allocate the HAL-JPEG blob (gralloc
 rejects it) and a RAW target errors the whole camera device, so logical stills arrive as
-YUV_420_888 (NV21-repacked on the camera thread, JPEG-encoded lazily on the io thread) and RAW is
+YUV_420_888 (NV21-repacked on the camera thread via row-wise `System.arraycopy` fast paths — the
+fully elementwise pack was ~19M bounds-checked ops per still and stalled 3A/zoom during bursts —
+with a generic elementwise fallback; JPEG-encoded lazily on the io thread) and RAW is
 gated standalone-only. A capture watchdog fails any shot whose image never arrives so the shutter
 can never wedge: HAL-auto captures retain the 8 s floor, while manual/app-side requests use their
 exact sensor-clamped exposure plus an 8 s delivery margin with saturating arithmetic. The scopes/AE
