@@ -3246,6 +3246,10 @@ class CameraEngine(private val context: Context) {
             standbyMeterOwnership.disable()
             return
         }
+        // An explicit (re)enable is fresh user/mode intent: a mic that recovered after the
+        // recreate budget was spent gets its full ≤3-generation budget back instead of being
+        // denied by the stale failure history of a dead route.
+        standbyMeterFailureStreak.set(0)
         startStandbyAudioMonitor(updateIntent = true)
     }
 
@@ -3305,7 +3309,13 @@ class CameraEngine(private val context: Context) {
                     // loop (AudioReadPolicy): zero = transient retry, negative = end THIS
                     // AudioRecord generation. The finally still releases exactly once; a bounded
                     // recreation (below) re-arms only while the standby intent still wants a meter.
-                    when (classifyAudioRead(n, running = true)) {
+                    // Like the recorder loop, judge the code against the ownership state observed
+                    // AFTER the blocking read: REC's beginRecording can revoke `wanted` while
+                    // read() is blocked, and the resulting negative wake-up is a normal handoff
+                    // end — charging it to the failure streak would shortchange a later genuine
+                    // dead-route recreation budget.
+                    val stillWanted = standbyMeterOwnership.ownsAndWants(owner)
+                    when (classifyAudioRead(n, running = stillWanted)) {
                         is AudioReadOutcome.Pcm -> if (!sawPcm) {
                             sawPcm = true
                             standbyMeterFailureStreak.set(0)
@@ -3315,7 +3325,9 @@ class CameraEngine(private val context: Context) {
                             terminalReadError = true
                             break
                         }
-                        AudioReadOutcome.Stopped -> break // unreachable with running=true; explicit for exhaustiveness
+                        // Negative read after the intent was revoked mid-block (REC handoff /
+                        // disable): a normal generation end, NOT a failure — no streak charge.
+                        AudioReadOutcome.Stopped -> break
                     }
                     val now = System.nanoTime()
                     if (now - lastEmit < 100_000_000L) continue // ~10 Hz is plenty for a meter
