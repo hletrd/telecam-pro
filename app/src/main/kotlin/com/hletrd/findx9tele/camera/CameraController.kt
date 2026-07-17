@@ -625,12 +625,24 @@ class CameraController(context: Context) {
                     set(CaptureRequest.LENS_FOCUS_DISTANCE, lastFocusDistance)
                 }
             }
+            // A fresh repeating request means the HAL may ramp its zoom again (session reopen ramps
+            // from 1.0). Reset the change gate so the FIRST result after every rebuild forwards —
+            // otherwise a final ramp value equal to the pre-rebuild steady value would be suppressed
+            // and the GL compensation would hold a stale mid-ramp halZoom.
+            lastForwardedResultZoom = Float.NaN
             val callback = object : CameraCaptureSession.CaptureCallback() {
                 override fun onCaptureCompleted(
                     session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult,
                 ) {
                     result.get(CaptureResult.CONTROL_ZOOM_RATIO)?.let { rz ->
-                        onZoomResult?.invoke(rz)
+                        // Change-gated: this callback runs 30-60 Hz and the GL compensation only
+                        // needs FRESH values while the HAL is actually ramping — forwarding a
+                        // steady value allocated a capturing lambda + GL handler post per frame
+                        // for a no-op (the hottest callback in the app).
+                        if (rz != lastForwardedResultZoom) {
+                            lastForwardedResultZoom = rz
+                            onZoomResult?.invoke(rz)
+                        }
                         if (BuildConfig.DEBUG && rz != lastTracedResultZoom) {
                             lastTracedResultZoom = rz
                             Log.i(TAG, "ZoomTrace: result=$rz t=${android.os.SystemClock.uptimeMillis()}")
@@ -828,6 +840,8 @@ class CameraController(context: Context) {
     // low-light 10-15 fps rate — at 10 fps ANY zoom reads as jank regardless of how smoothly the
     // ratio is applied (the stock camera keeps ~30 fps and lets ISO carry the difference).
     private var lastTracedResultZoom = -1f
+    // Change gate for onZoomResult forwarding (camera-thread confined; NaN = always forward next).
+    private var lastForwardedResultZoom = Float.NaN
     private var smoothPreviewBoost = false
 
     fun setSmoothPreviewBoost(active: Boolean, finalZoom: Float? = null) {
