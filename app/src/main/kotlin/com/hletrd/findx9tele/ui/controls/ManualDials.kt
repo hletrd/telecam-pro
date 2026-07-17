@@ -20,11 +20,6 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
-import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.graphics.BlendMode
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.CompositingStrategy
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -253,24 +248,13 @@ private fun DialChipRow(
     }
     // The chip row scrolls horizontally and its content is wider than the screen — without a hint
     // the half-cut trailing chip at the screen edge reads as a LAYOUT BUG rather than "scrollable"
-    // (user-reported margin weirdness). Fade the trailing 8% out while there is more to scroll.
+    // (user-reported margin weirdness). The fade lives in the shared trailingEdgeFadeScrollHint,
+    // applied to every horizontally scrolling chip row app-wide (SegmentedSelector included).
     val fnScroll = rememberScrollState()
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
-            .drawWithContent {
-                drawContent()
-                if (fnScroll.canScrollForward) {
-                    drawRect(
-                        brush = Brush.horizontalGradient(
-                            0.90f to Color.White,
-                            1f to Color.Transparent,
-                        ),
-                        blendMode = BlendMode.DstIn,
-                    )
-                }
-            }
+            .trailingEdgeFadeScrollHint(fnScroll)
             .horizontalScroll(fnScroll),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {

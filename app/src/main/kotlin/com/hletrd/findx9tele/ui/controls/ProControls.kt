@@ -12,6 +12,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -33,7 +34,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -108,6 +114,28 @@ internal fun pixelChipBorder(selected: Boolean) = FilterChipDefaults.filterChipB
     selectedBorderWidth = 0.dp,
 )
 
+/**
+ * Trailing-edge fade for horizontally scrolling chip rows: without the hint, the half-cut trailing
+ * chip at the panel edge reads as a LAYOUT BUG rather than "scrollable" (user-reported on the Fn
+ * dial row). The fix originally landed only there — every settings SegmentedSelector (several with
+ * MORE chips than the row that triggered the report) had the identical failure shape. Apply BEFORE
+ * `horizontalScroll` in the modifier chain, sharing its [scrollState].
+ */
+internal fun Modifier.trailingEdgeFadeScrollHint(scrollState: ScrollState): Modifier = this
+    .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+    .drawWithContent {
+        drawContent()
+        if (scrollState.canScrollForward) {
+            drawRect(
+                brush = Brush.horizontalGradient(
+                    0.90f to Color.White,
+                    1f to Color.Transparent,
+                ),
+                blendMode = BlendMode.DstIn,
+            )
+        }
+    }
+
 /** Exclusive segmented selector (FilterChip row) for a fixed set of enum/value options. */
 @Composable
 internal fun <T> SegmentedSelector(
@@ -135,10 +163,12 @@ internal fun <T> SegmentedSelector(
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text(label, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
+        val optionScroll = rememberScrollState()
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
+                .trailingEdgeFadeScrollHint(optionScroll)
+                .horizontalScroll(optionScroll),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             options.forEach { option ->
