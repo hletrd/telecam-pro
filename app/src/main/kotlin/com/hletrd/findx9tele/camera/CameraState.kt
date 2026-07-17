@@ -237,6 +237,33 @@ const val FINDER_MARGIN = 0.03f
 // full frame ~1:1 and adds nothing. Threshold tuning is a deferred on-device item (plan cycle 1).
 const val FINDER_MIN_ZOOM = 1.15f
 
+/**
+ * The engine-RESOLVED half of the finder gate (everything except the zoom floor): user toggle,
+ * TELE mounted, PHOTO mode, 4:3. Photo-only because the finder is a still-composition aid and
+ * 4:3 is the STILL aspect — in video that setting is semantically unrelated to the recorded
+ * framing, so keying the overlay off it made the PIP appear/vanish with a photo setting mid-clip.
+ * 16:9 is excluded because the AspectMask pillarboxes would dim/misframe the corner box.
+ * ONE implementation for the engine (`pushTeleFinder`) and the Compose border — the same
+ * hand-written condition used to live in three places and could silently drift.
+ */
+fun teleFinderResolved(
+    enabled: Boolean,
+    teleconverter: Boolean,
+    videoMode: Boolean,
+    aspect: AspectRatio,
+): Boolean = enabled && teleconverter && !videoMode && aspect == AspectRatio.W4_3
+
+/** The full visibility gate: the resolved flag plus the [FINDER_MIN_ZOOM] floor (GL applies the
+ *  same floor to its own resolved flag via the live zoom target). */
+fun teleFinderVisible(
+    enabled: Boolean,
+    teleconverter: Boolean,
+    videoMode: Boolean,
+    aspect: AspectRatio,
+    zoomRatio: Float,
+): Boolean = teleFinderResolved(enabled, teleconverter, videoMode, aspect) &&
+    zoomRatio >= FINDER_MIN_ZOOM
+
 /** Finder-PIP box in the preview box's own units, measured from the bottom-left corner. */
 data class FinderRect(val x: Float, val y: Float, val width: Float, val height: Float)
 

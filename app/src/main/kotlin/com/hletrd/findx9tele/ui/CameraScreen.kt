@@ -109,8 +109,8 @@ import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FnSlot
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
-import com.hletrd.findx9tele.camera.FINDER_MIN_ZOOM
 import com.hletrd.findx9tele.camera.finderRect
+import com.hletrd.findx9tele.camera.teleFinderVisible
 import com.hletrd.findx9tele.camera.LensChoice
 import com.hletrd.findx9tele.camera.MediaDeleteScope
 import com.hletrd.findx9tele.camera.MeteringMode
@@ -376,16 +376,21 @@ fun CameraScreen(
             }
 
             // TELE finder PIP border: frames the GL corner viewport (the FULL current camera frame —
-            // see FINDER_* in CameraState for the honest single-stream contract). Gated like the GL
-            // resolved flag: user Assist toggle AND TELE AND zoomed AND 4:3 (16:9's AspectMask would
-            // dim/misframe the corner box). The rect comes from the same pure finderRect the GL
-            // scissor uses — sized from the FULL aspect box, offset by the margin (the previous
-            // padding-before-fillMaxWidth chain shrank the border ~6% below the GL content box).
-            // Absolute anchor + absolute offset: the GL box has no layout direction, so the border
-            // must not mirror to bottom-right under RTL system locales. Square corners trace the
-            // sharp GL scissor rect.
-            if (state.teleFinder && state.teleconverterMode &&
-                state.controls.zoomRatio >= FINDER_MIN_ZOOM && state.aspectRatio == AspectRatio.W4_3
+            // see FINDER_* in CameraState for the honest single-stream contract). The gate is the
+            // shared teleFinderVisible predicate — the same one the engine resolves for GL — so the
+            // border and the PIP content cannot drift. The rect comes from the same pure finderRect
+            // the GL scissor uses — sized from the FULL aspect box, offset by the margin (the
+            // previous padding-before-fillMaxWidth chain shrank the border ~6% below the GL content
+            // box). Absolute anchor + absolute offset: the GL box has no layout direction, so the
+            // border must not mirror to bottom-right under RTL system locales. Square corners trace
+            // the sharp GL scissor rect.
+            if (teleFinderVisible(
+                    enabled = state.teleFinder,
+                    teleconverter = state.teleconverterMode,
+                    videoMode = state.mode == CaptureMode.VIDEO,
+                    aspect = state.aspectRatio,
+                    zoomRatio = state.controls.zoomRatio,
+                )
             ) {
                 BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                     val rect = finderRect(maxWidth.value, maxHeight.value)

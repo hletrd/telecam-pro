@@ -921,6 +921,9 @@ class CameraEngine(private val context: Context) {
             }
             null
         }
+        // Mode is a finder-gate input (photo-only): re-resolve synchronously so a photo→video flip
+        // can never leave the GL PIP drawing until the async reconfigure lands.
+        pushTeleFinder()
         controller?.updateControls(resolvedControls)
         if (!changed) return
         val intentGeneration = modeIntentGeneration.incrementAndGet()
@@ -995,6 +998,10 @@ class CameraEngine(private val context: Context) {
             // Settings/MR replaces automatic routing; the snapshot retains an override for rollback.
             overrideId = null
         }.first
+        // Self-contained finder resolve: TC/mode just changed above, and relying on the restore
+        // block's TRAILING setAspectRatio/setTeleFinder calls made correctness depend on adjacent
+        // setter call order (a reorder would resolve against stale inputs).
+        pushTeleFinder()
         val modeGeneration = modeIntentGeneration.incrementAndGet()
         val lensGeneration = lensIntentGeneration.incrementAndGet()
         controller?.setPinAutoFps(enabledVideo)
@@ -2864,10 +2871,12 @@ class CameraEngine(private val context: Context) {
     }
 
     // TELE finder PIP: the user's persisted Assist toggle (default OFF). Only the RESOLVED flag —
-    // toggle && TELE && 4:3 — is pushed to GL and stored in RendererConfig (so a fresh GL
-    // generation replays the resolved value via applyRendererConfig). 16:9 is excluded because the
-    // AspectMask pillarboxes would dim/misframe the corner box, and the finder deliberately shows
-    // the FULL delivered frame (see FINDER_* in CameraState for the honest single-stream contract).
+    // teleFinderResolved: toggle && TELE && PHOTO && 4:3 — is pushed to GL and stored in
+    // RendererConfig (so a fresh GL generation replays the resolved value via applyRendererConfig).
+    // Photo-only: it is a still-composition aid and 4:3 is the STILL aspect. 16:9 is excluded
+    // because the AspectMask pillarboxes would dim/misframe the corner box, and the finder
+    // deliberately shows the FULL delivered frame (see FINDER_* in CameraState for the honest
+    // single-stream contract).
     @Volatile private var teleFinderEnabled = false
 
     fun setTeleFinder(enabled: Boolean) {
@@ -2875,10 +2884,11 @@ class CameraEngine(private val context: Context) {
         pushTeleFinder()
     }
 
-    /** Recomputes and pushes the resolved finder flag; called on toggle, aspect, lens/TC, and
-     *  session (re)config so the GL PIP can never outlive a TC-off or aspect change. */
+    /** Recomputes and pushes the resolved finder flag; called on toggle, aspect, lens/TC, mode,
+     *  and session (re)config so the GL PIP can never outlive a TC-off, aspect, or mode change.
+     *  The predicate itself is the shared, unit-tested [teleFinderResolved]. */
     private fun pushTeleFinder() {
-        val resolved = teleFinderEnabled && teleconverterMode && aspectRatio == AspectRatio.W4_3
+        val resolved = teleFinderResolved(teleFinderEnabled, teleconverterMode, videoMode, aspectRatio)
         rendererConfig.update { it.copy(teleFinder = resolved) }
         gl.setTeleFinder(resolved)
     }

@@ -1347,7 +1347,7 @@ private fun settingHelp(key: String): String? = when (key) {
     "Grid" -> "Composition guides (thirds, golden, square, center)"
     "Level" -> "Electronic horizon for keeping shots level"
     "Punch-In" -> "Magnifies the frame to check manual focus"
-    "Tele Finder" -> "Corner PIP of the full frame while zoomed. TELE, 4:3 only"
+    "Tele Finder" -> "Corner PIP of the full frame while zoomed. TELE photo, 4:3 only"
     "Sharpness" -> "Edge enhancement applied by the ISP"
     "NR" -> "Noise reduction — Off keeps the most fine detail"
     "Color" -> "Color rendering effect (mono, negative…)"
