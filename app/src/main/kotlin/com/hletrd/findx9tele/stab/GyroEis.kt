@@ -116,7 +116,10 @@ class GyroEis(context: Context) : SensorEventListener {
                 // confident angle instead of chasing the noise (QA: "level spins when pointing down").
                 if (shouldUpdateRoll(x, y)) {
                     val rollDeg = Math.toDegrees(atan2(x, y).toDouble()).toFloat()
-                    rollDegrees += ROLL_LOW_PASS_ALPHA * (rollDeg - rollDegrees)
+                    // Wrap-aware smoothing: atan2 lives on (-180, 180], and a naive lerp across
+                    // that seam (+179 → -179) steps ~72° through the WRONG quadrants in one
+                    // sample — snapToQuadrant below then hands a capture a 90°-off orientation.
+                    rollDegrees = smoothedRoll(rollDegrees, rollDeg, ROLL_LOW_PASS_ALPHA)
                 }
 
                 // Only update the discrete capture orientation when the phone is clearly HELD: the
@@ -192,3 +195,19 @@ internal fun snapToQuadrant(rollDegrees: Float): Int {
     val d = Math.round(rollDegrees / 90f) * 90
     return ((d % 360) + 360) % 360
 }
+
+/** Normalize an angle in degrees into (-180, 180] — the same range atan2-derived roll lives in. */
+internal fun wrapDegrees(d: Float): Float {
+    var w = d % 360f
+    if (w <= -180f) w += 360f
+    if (w > 180f) w -= 360f
+    return w
+}
+
+/**
+ * One wrap-aware low-pass step for the absolute roll: the correction always takes the SHORTEST
+ * angular path (a +179°→-179° sample is a 2° move, not a -358° one), and the result stays in
+ * atan2's (-180, 180] range so the seam never accumulates.
+ */
+internal fun smoothedRoll(current: Float, sample: Float, alpha: Float): Float =
+    wrapDegrees(current + alpha * wrapDegrees(sample - current))

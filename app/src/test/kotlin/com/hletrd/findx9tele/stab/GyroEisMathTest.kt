@@ -62,4 +62,53 @@ class GyroEisMathTest {
         assertEquals(270, snapToQuadrant(-45.1f))
         assertEquals(270, snapToQuadrant(-90f))
     }
+
+    // ---- smoothedRoll: wrap-aware low-pass across the atan2 ±180° seam (AGG3-22 / D-17) ----
+    // The naive lerp `current + α*(sample - current)` at the seam (+179 sample -179) stepped
+    // α*(-358) ≈ -72° through the WRONG quadrants in one sample; snapToQuadrant then handed a
+    // capture a 90°-off orientation. The wrap-aware step must take the 2° shortest path instead.
+
+    @Test
+    fun `smoothedRoll crosses the seam by the shortest path`() {
+        // +179° current, -179° sample: shortest move is +2° (through 180), not -358°.
+        val out = smoothedRoll(current = 179f, sample = -179f, alpha = 0.75f)
+        // 179 + 0.75*2 = 180.5 → wraps to -179.5. The key property: it stays in the ±180 band
+        // AND snaps to the SAME 180° quadrant as both endpoints — never a side quadrant.
+        assertEquals(180, snapToQuadrant(out))
+        assertTrue("stays normalized", out > -180.0001f && out <= 180.0001f)
+    }
+
+    @Test
+    fun `smoothedRoll seam crossing in the other direction is symmetric`() {
+        val out = smoothedRoll(current = -179f, sample = 179f, alpha = 0.75f)
+        assertEquals(180, snapToQuadrant(out))
+        assertTrue(out > -180.0001f && out <= 180.0001f)
+    }
+
+    @Test
+    fun `smoothedRoll away from the seam matches the plain lerp`() {
+        // 40° → 50° at α=0.75: plain lerp lands 47.5 — wrap handling must not distort it.
+        assertEquals(47.5f, smoothedRoll(40f, 50f, 0.75f), 1e-4f)
+    }
+
+    @Test
+    fun `smoothedRoll never swings through a wrong quadrant at the seam`() {
+        // Iterate a noisy hover around the seam: the smoothed value must always snap to 180,
+        // never to 90 or 270 (the wrong-quadrant transient the naive lerp produced).
+        var roll = 178f
+        val samples = floatArrayOf(-179.5f, 179.8f, -178.9f, 179.2f, -179.9f, 178.8f)
+        for (s in samples) {
+            roll = smoothedRoll(roll, s, 0.75f)
+            assertEquals("sample $s produced roll $roll", 180, snapToQuadrant(roll))
+        }
+    }
+
+    @Test
+    fun `wrapDegrees normalizes into the atan2 band`() {
+        assertEquals(0f, wrapDegrees(360f), 0f)
+        assertEquals(180f, wrapDegrees(180f), 0f)
+        assertEquals(180f, wrapDegrees(-180f), 0f) // -180 folds to +180 (single seam value)
+        assertEquals(-170f, wrapDegrees(190f), 1e-4f)
+        assertEquals(170f, wrapDegrees(-190f), 1e-4f)
+    }
 }
