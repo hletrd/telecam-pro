@@ -705,6 +705,7 @@ fun CameraScreen(
         MediaReviewOverlay(
             uri = frozenReviewUri,
             deleteScope = reviewDeleteScope,
+            overlayRotation = overlayRotation,
             onClose = {
                 actions.onReviewOpenChange(false, frozenReviewUri)
                 reviewUri = null

@@ -45,10 +45,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -423,6 +427,11 @@ fun MediaReviewOverlay(
     onClose: () -> Unit,
     onDelete: () -> Unit,
     modifier: Modifier = Modifier,
+    // Shooting-screen glyph rule applied to review: compact/short labels counter-rotate so they
+    // read upright in the landscape hold the 300 mm rig encourages; wide boxes (the metadata
+    // block) stay screen-fixed — Modifier.rotate is a draw transform, not a re-layout, and a
+    // rotated wide box pokes out of its layout slot.
+    overlayRotation: Float = 0f,
 ) {
     val context = LocalContext.current
     var loadAttempt by remember(uri) { mutableIntStateOf(0) }
@@ -817,6 +826,9 @@ fun MediaReviewOverlay(
                     .align(Alignment.TopCenter)
                     .statusBarsPadding()
                     .padding(top = 16.dp)
+                    // Short label → counter-rotates like the shooting screen's compact glyphs (a
+                    // focus check right after a landscape-held 300 mm shot reads "4×" upright).
+                    .rotate(overlayRotation)
                     .clip(RoundedCornerShape(50))
                     .background(Color.Black.copy(alpha = 0.55f))
                     .padding(horizontal = 12.dp, vertical = 5.dp),
