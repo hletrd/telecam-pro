@@ -226,10 +226,15 @@ object MediaStoreWriter {
             (System.currentTimeMillis() - android.os.SystemClock.elapsedRealtime()) / 1000 +
                 android.os.Process.getStartElapsedRealtime() / 1000
         val selection =
-            "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? AND ${MediaStore.MediaColumns.DATE_ADDED} < ?"
+            "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? AND ${MediaStore.MediaColumns.DATE_ADDED} < ? AND " +
+                "${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} = ?"
         // RELATIVE_PATH values are normalized with a trailing slash ("DCIM/X9Tele/"), so anchor the
         // pattern on it — "DCIM/X9Tele%" would also sweep a hypothetical "DCIM/X9TeleOther/".
-        val args = arrayOf("DCIM/$subDir/%", processStartSecs.toString())
+        // OWNER_PACKAGE_NAME makes ownership an EXPLICIT invariant (mirroring queryOwnedPublished):
+        // today scoped storage without READ_MEDIA_* already hides other apps' rows, but a future
+        // media-read permission would otherwise silently widen this delete sweep to any app's
+        // pending items under a same-named DCIM path.
+        val args = arrayOf("DCIM/$subDir/%", processStartSecs.toString(), context.packageName)
         for (base in listOf(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
