@@ -1489,23 +1489,35 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         } else {
             val s = _state.value
             val inputStatus = audioInputStatus(s.audioInputPreference)
-            _state.update {
-                it.copy(audioRouteLabel = if (s.recordAudio) "Starting..." else "Off")
-            }
-            if (s.recordAudio && !inputStatus.available) {
-                showStatus("${inputStatus.label}; using default")
-            }
-            if (!engine.startRecording(s.recordAudio)) {
-                _state.update { it.copy(audioRouteLabel = audioInputStatusLabel(it.audioInputPreference)) }
-                refreshStandbyAudioMeter()
-                return
-            }
+            // Optimistic starting state FIRST (starting-and-stoppable, no tally until the first
+            // real encoder swap): engine admission now runs on the recorder executor — the mic
+            // handoff wait and codec/muxer construction used to jank main at every REC press —
+            // and a refused admission resets this state through the result callback (which may
+            // run synchronously for an immediate refusal).
             _state.update {
                 it.copy(
+                    audioRouteLabel = if (s.recordAudio) "Starting..." else "Off",
                     isRecording = true,
                     isRecordingStarting = true,
                     recordElapsedMs = 0,
                 )
+            }
+            if (s.recordAudio && !inputStatus.available) {
+                showStatus("${inputStatus.label}; using default")
+            }
+            engine.startRecording(s.recordAudio) { ok ->
+                if (!ok) {
+                    mainHandler.removeCallbacks(recordTicker)
+                    _state.update {
+                        it.copy(
+                            isRecording = false,
+                            isRecordingStarting = false,
+                            recordElapsedMs = 0,
+                            audioRouteLabel = audioInputStatusLabel(it.audioInputPreference),
+                        )
+                    }
+                    refreshStandbyAudioMeter()
+                }
             }
         }
         refreshStandbyAudioMeter()

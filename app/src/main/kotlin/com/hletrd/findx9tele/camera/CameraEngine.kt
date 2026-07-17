@@ -2383,7 +2383,49 @@ class CameraEngine(private val context: Context) {
             paused = paused,
         )
 
-    fun startRecording(recordAudio: Boolean): Boolean {
+    // REC admission runs on [recorderExecutor], never the caller's (main) thread: the bounded
+    // standby-mic release wait (≤400 ms), the MediaStore pending insert (Binder IPC), and the
+    // MediaCodec/MediaMuxer/AudioRecord construction below cost ~100-700 ms — guaranteed dropped
+    // frames at every REC press when run synchronously on main. Only the in-flight gate stays
+    // synchronous. Stop-during-start stays exactly-once via [recStopRequestedDuringStart]: a stop
+    // arriving while admission is queued/in flight is latched and executed on the same serial
+    // executor the moment admission publishes the recorder (preserving the documented "stoppable
+    // while starting" UI contract) instead of racing an unpublished owner and stopping nothing.
+    @Volatile private var recStartInFlight = false
+    private var recStopRequestedDuringStart = false // guarded by recorderOwnershipLock
+
+    fun startRecording(recordAudio: Boolean, onResult: (Boolean) -> Unit) {
+        synchronized(recorderOwnershipLock) {
+            if (recStartInFlight) {
+                onResult(false)
+                return
+            }
+            recStartInFlight = true
+            recStopRequestedDuringStart = false
+        }
+        val accepted = runCatching {
+            recorderExecutor.execute {
+                val ok = runCatching { startRecordingBlocking(recordAudio) }.getOrDefault(false)
+                val stopNow = synchronized(recorderOwnershipLock) {
+                    recStartInFlight = false
+                    val latched = recStopRequestedDuringStart
+                    recStopRequestedDuringStart = false
+                    latched && ok
+                }
+                onResult(ok)
+                if (stopNow) stopRecording()
+            }
+        }.isSuccess
+        if (!accepted) {
+            synchronized(recorderOwnershipLock) {
+                recStartInFlight = false
+                recStopRequestedDuringStart = false
+            }
+            onResult(false)
+        }
+    }
+
+    private fun startRecordingBlocking(recordAudio: Boolean): Boolean {
         val acceptedSession = currentAcceptedRecordingSession()
         if (acceptedSession == null) {
             onStatus?.invoke("Camera reconfiguring")
@@ -2550,6 +2592,16 @@ class CameraEngine(private val context: Context) {
     }
 
     fun stopRecording() {
+        synchronized(recorderOwnershipLock) {
+            if (recStartInFlight) {
+                // Admission is still queued/in flight on the recorder executor: latch the stop —
+                // it runs there the moment the recorder publishes (exactly-once, ordered behind
+                // the start) — instead of racing an unpublished owner and silently stopping
+                // nothing while the queued admission then starts an unwanted recording.
+                recStopRequestedDuringStart = true
+                return
+            }
+        }
         val (rec, uri, captureId) = synchronized(recorderOwnershipLock) {
             val owned = recorder ?: return
             recorder = null
