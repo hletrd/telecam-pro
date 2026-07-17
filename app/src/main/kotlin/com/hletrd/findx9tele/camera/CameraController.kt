@@ -327,24 +327,29 @@ class CameraController(context: Context) {
     fun setZoomRatio(ratio: Float) {
         postToCamera {
             controls = controls.copy(zoomRatio = ratio)
-            val s = session ?: return@postToCamera
-            val b = previewBuilder
-            val cb = previewCallback
-            if (b == null || cb == null || highSpeedFps > 0) { startPreview(); return@postToCamera }
-            if (BuildConfig.DEBUG) Log.i(TAG, "ZoomTrace: submit=$ratio t=${android.os.SystemClock.uptimeMillis()}")
-            runCatching {
-                caps.zoomRatioRange?.let { b.set(CaptureRequest.CONTROL_ZOOM_RATIO, ratio.coerceIn(it.lower, it.upper)) }
-                // Keep OPPO's logical-zoom session hint in step (it contextualizes OIS/EIS strength);
-                // same guarded write as applyTeleconverterHints.
-                val effectiveZoom = ratio.coerceAtLeast(1f) * if (teleconverterMode) TELECONVERTER_MAGNIFICATION else 1f
-                runCatching { b.set(oplusOriginalZoomRatioKey, effectiveZoom) }
-                s.setRepeatingRequest(b.build(), cb, handler)
-            }.onFailure {
-                if (BuildConfig.DEBUG) Log.w(TAG, "zoom fast path failed, rebuilding: ${it.message}")
-                // The cached builder/session can become invalid during a configure transition.
-                // Re-derive the full repeating request so the requested zoom is not silently lost.
-                startPreview()
-            }
+            submitZoomFastPath(ratio)
+        }
+    }
+
+    /** Camera-thread body of the zoom fast path; [controls] must already carry [ratio]. */
+    private fun submitZoomFastPath(ratio: Float) {
+        val s = session ?: return
+        val b = previewBuilder
+        val cb = previewCallback
+        if (b == null || cb == null || highSpeedFps > 0) { startPreview(); return }
+        if (BuildConfig.DEBUG) Log.i(TAG, "ZoomTrace: submit=$ratio t=${android.os.SystemClock.uptimeMillis()}")
+        runCatching {
+            caps.zoomRatioRange?.let { b.set(CaptureRequest.CONTROL_ZOOM_RATIO, ratio.coerceIn(it.lower, it.upper)) }
+            // Keep OPPO's logical-zoom session hint in step (it contextualizes OIS/EIS strength);
+            // same guarded write as applyTeleconverterHints.
+            val effectiveZoom = ratio.coerceAtLeast(1f) * if (teleconverterMode) TELECONVERTER_MAGNIFICATION else 1f
+            runCatching { b.set(oplusOriginalZoomRatioKey, effectiveZoom) }
+            s.setRepeatingRequest(b.build(), cb, handler)
+        }.onFailure {
+            if (BuildConfig.DEBUG) Log.w(TAG, "zoom fast path failed, rebuilding: ${it.message}")
+            // The cached builder/session can become invalid during a configure transition.
+            // Re-derive the full repeating request so the requested zoom is not silently lost.
+            startPreview()
         }
     }
 
@@ -825,9 +830,19 @@ class CameraController(context: Context) {
     private var lastTracedResultZoom = -1f
     private var smoothPreviewBoost = false
 
-    fun setSmoothPreviewBoost(active: Boolean) {
+    fun setSmoothPreviewBoost(active: Boolean, finalZoom: Float? = null) {
         postToCamera {
-            if (smoothPreviewBoost == active) return@postToCamera
+            // Land the caller's exact zoom INSIDE the same rebuild that flips the boost. The old
+            // rebuild-then-correct order at gesture end submitted the stale mid-gesture wide-aimed
+            // ratio first (this field was last written by the throttled wide submit) and then paid
+            // a second ~180 ms repeating-request stall for the correction.
+            if (finalZoom != null) controls = controls.copy(zoomRatio = finalZoom)
+            if (smoothPreviewBoost == active) {
+                // Boost state already correct (duplicate gesture edge): still honor the exact zoom
+                // without a full rebuild.
+                if (finalZoom != null) submitZoomFastPath(finalZoom)
+                return@postToCamera
+            }
             smoothPreviewBoost = active
             startPreview()
         }

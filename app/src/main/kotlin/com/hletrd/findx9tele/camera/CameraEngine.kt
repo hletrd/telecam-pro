@@ -1825,13 +1825,16 @@ class CameraEngine(private val context: Context) {
      */
     fun setZoomInteraction(active: Boolean) {
         zoomInteractionActive = active
-        controller?.setSmoothPreviewBoost(active)
-        if (!active) {
-            // Gesture over: land the HAL on the EXACT requested ratio (mid-gesture submits are
-            // throttled and aimed slightly wide); the GL compensation converges to 1 as the
-            // matching results arrive.
-            controller?.setZoomRatio(controls.zoomRatio)
-        }
+        // ONE submit per boost flip: the boost's own preview rebuild carries the current exact
+        // ratio, so no separate corrective submit runs. The old rebuild-then-correct order at
+        // gesture end paid two ~180 ms repeating-request stalls back to back AND transiently
+        // re-submitted the stale mid-gesture wide-aimed ratio (the rebuild read the controller's
+        // last stored zoom, which the throttled wide submit had written) — real frames and the
+        // video encoder saw the wrong framing for a beat. Gesture start also swallows the first
+        // fast-path tick (throttle stamp below): GL zoomComp covers instantly and the HAL follows
+        // at the next ≥200 ms window. The GL compensation converges to 1 as matching results land.
+        lastHalZoomSubmitMs = android.os.SystemClock.uptimeMillis()
+        controller?.setSmoothPreviewBoost(active, finalZoom = controls.zoomRatio)
         // (The low-light frame-rate help lives in applyExposure's ALWAYS-on preview exposure cap —
         // an earlier gesture-scoped trade here mutated the real program values, so a still captured
         // right after a zoom inherited the traded short-exposure/high-ISO pair.)
