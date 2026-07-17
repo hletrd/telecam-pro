@@ -3,15 +3,18 @@ package com.hletrd.findx9tele.ui.controls
 import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.AudioScene
 import com.hletrd.findx9tele.camera.CameraUiState
+import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.DriveMode
 import com.hletrd.findx9tele.camera.ExposureMode
 import com.hletrd.findx9tele.camera.FlashMode
+import com.hletrd.findx9tele.camera.FnSlot
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.FrameLineType
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.MeteringMode
 import com.hletrd.findx9tele.camera.ShutterTimer
+import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.camera.VideoStabMode
 import com.hletrd.findx9tele.camera.WbMode
 
@@ -167,4 +170,17 @@ internal fun nextTimer(timer: ShutterTimer): ShutterTimer = when (timer) {
 internal fun nextAspect(ratio: AspectRatio): AspectRatio = when (ratio) {
     AspectRatio.W4_3 -> AspectRatio.W16_9
     AspectRatio.W16_9 -> AspectRatio.W4_3
+}
+
+/**
+ * Per-slot availability for every quick-Fn surface (Fn overlay, My Menu, Recent rows). One shared
+ * predicate: the Fn overlay dimmed-and-guarded these slots while My Menu's rows were always-hot —
+ * the one path in the app that could toggle the teleconverter (the afocal 180° flip, live into
+ * the recorded file) or the transfer curve mid-recording.
+ */
+internal fun quickFnEnabled(slot: FnSlot, state: CameraUiState): Boolean = when (slot) {
+    FnSlot.TRANSFER -> !state.isRecording && state.videoCodec == VideoCodec.HEVC
+    FnSlot.TELECONVERTER -> !state.isRecording
+    FnSlot.OPEN_GATE -> state.mode == CaptureMode.VIDEO && !state.isRecording
+    else -> true
 }

@@ -346,12 +346,15 @@ internal fun ToggleRow(
     }
 }
 
-/** Label + clickable value row (e.g. "Camera Override  Default"), used for one-off advanced rows. */
+/** Label + clickable value row (e.g. "Camera Override  Default"), used for one-off advanced rows.
+ *  [enabled] dims the row and drops the click, like every other lockable-control surface — a hot
+ *  row over a locked action reads as (and previously was) an unguarded mutation path. */
 @Composable
 internal fun LabelValueRow(
     label: String,
     valueLabel: String,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
     onClick: (() -> Unit)? = null,
 ) {
     Row(
@@ -361,7 +364,7 @@ internal fun LabelValueRow(
                 if (onClick != null) {
                     Modifier
                         .sizeIn(minHeight = 48.dp)
-                        .clickable(onClick = onClick)
+                        .clickable(enabled = enabled, onClick = onClick)
                 } else {
                     Modifier
                 },
@@ -369,8 +372,17 @@ internal fun LabelValueRow(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
-        Text(valueLabel, color = CameraColors.Accent, style = MaterialTheme.typography.labelMedium)
+        val alpha = if (enabled) 1f else 0.55f
+        Text(
+            label,
+            color = CameraColors.TextPrimary.copy(alpha = alpha),
+            style = MaterialTheme.typography.labelMedium,
+        )
+        Text(
+            valueLabel,
+            color = CameraColors.Accent.copy(alpha = alpha),
+            style = MaterialTheme.typography.labelMedium,
+        )
     }
 }
 

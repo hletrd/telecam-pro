@@ -132,6 +132,7 @@ import com.hletrd.findx9tele.ui.controls.exposureMeterCompensationEv
 import com.hletrd.findx9tele.ui.controls.nextAspect
 import com.hletrd.findx9tele.ui.controls.nextAvailable
 import com.hletrd.findx9tele.ui.controls.nextTimer
+import com.hletrd.findx9tele.ui.controls.quickFnEnabled
 import com.hletrd.findx9tele.ui.controls.flashModeLabel
 import com.hletrd.findx9tele.ui.controls.fnSlotLabel
 import com.hletrd.findx9tele.ui.controls.fnSlotValue
@@ -1337,12 +1338,8 @@ private fun FnOverlayTile(
     }
 }
 
-private fun quickFnEnabled(slot: FnSlot, state: CameraUiState): Boolean = when (slot) {
-    FnSlot.TRANSFER -> !state.isRecording && state.videoCodec == VideoCodec.HEVC
-    FnSlot.TELECONVERTER -> !state.isRecording
-    FnSlot.OPEN_GATE -> state.mode == CaptureMode.VIDEO && !state.isRecording
-    else -> true
-}
+// quickFnEnabled moved to ControlCycles.kt — one shared per-slot availability for every quick-Fn
+// surface (the Fn overlay here, plus My Menu / Recent rows in ProSheet).
 
 @Composable
 private fun ExposureMeter(state: CameraUiState, modifier: Modifier = Modifier) {

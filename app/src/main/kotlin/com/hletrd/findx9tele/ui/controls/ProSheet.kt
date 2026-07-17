@@ -445,6 +445,7 @@ private fun MyMenuTab(state: CameraUiState, actions: CameraActions) {
             LabelValueRow(
                 label = fnSlotLabel(slot),
                 valueLabel = fnSlotValue(slot, state),
+                enabled = quickFnEnabled(slot, state),
                 onClick = { performQuickFn(slot, state, actions) },
             )
         }
@@ -455,6 +456,7 @@ private fun MyMenuTab(state: CameraUiState, actions: CameraActions) {
             LabelValueRow(
                 label = fnSlotLabel(slot),
                 valueLabel = fnSlotValue(slot, state),
+                enabled = quickFnEnabled(slot, state),
                 onClick = { performQuickFn(slot, state, actions) },
             )
         }
@@ -1258,6 +1260,11 @@ internal fun fnSlotValue(slot: FnSlot, state: CameraUiState): String {
 }
 
 internal fun performQuickFn(slot: FnSlot, state: CameraUiState, actions: CameraActions) {
+    // Defense in depth for EVERY caller surface (Fn overlay, My Menu, Recent): the visual
+    // enabled/dimmed state lives at the row, but the action itself must refuse too — My Menu rows
+    // used to invoke this unguarded, making them the one path that could toggle the teleconverter
+    // (the afocal 180° flip) or the transfer curve mid-recording.
+    if (!quickFnEnabled(slot, state)) return
     val availability = controlAvailability(state.caps?.controlCapabilities(), state.controls)
     when (slot) {
         FnSlot.EXPOSURE_MODE -> actions.onExposureMode(
@@ -1288,7 +1295,7 @@ internal fun performQuickFn(slot: FnSlot, state: CameraUiState, actions: CameraA
         FnSlot.LEVEL -> actions.onToggleLevel(!state.level)
         FnSlot.PUNCH_IN -> actions.onTogglePunchIn(!state.punchIn)
         FnSlot.TELECONVERTER -> actions.onToggleTeleconverter(!state.teleconverterMode)
-        FnSlot.OPEN_GATE -> if (state.mode == CaptureMode.VIDEO && !state.isRecording) actions.onToggleOpenGate(!state.openGate)
+        FnSlot.OPEN_GATE -> actions.onToggleOpenGate(!state.openGate) // gate lives in quickFnEnabled
         FnSlot.FRAME_LINES -> actions.onFrameLines(nextFrameLine(state.frameLines))
     }
 }
