@@ -2477,6 +2477,28 @@ class CameraEngine(private val context: Context) {
         // meter thread acquire AudioRecord after recorder admission and recreating dual ownership.
         val audioClaim = standbyMeterOwnership.beginRecording()
         if (!audioClaim.admitted) return false
+        // Expected failures below return false with their own cleanup, but an UNEXPECTED throw
+        // between the mic claim and recorder publication must still release the single-mic claim:
+        // the executor-level runCatching used to swallow it with the claim stranded — meter dark
+        // and every later REC refused ("Audio meter is stopping") until process restart. Recorder
+        // partials on a throw rely on VideoRecorder's own setup-failure release + the failure
+        // callbacks; the claim release is the invariant this guard owns.
+        return try {
+            startRecordingClaimed(recordAudio, acceptedSession, audioClaim)
+        } catch (t: Throwable) {
+            android.util.Log.w("CameraEngine", "REC admission threw; releasing mic claim", t)
+            abortRecordingStart()
+            onStatus?.invoke("REC failed")
+            false
+        }
+    }
+
+    /** The post-mic-claim half of REC admission; every return path releases or converts the claim. */
+    private fun startRecordingClaimed(
+        recordAudio: Boolean,
+        acceptedSession: AcceptedCameraSession,
+        audioClaim: StandbyMeterOwnership.RecordingClaim<java.util.concurrent.CountDownLatch>,
+    ): Boolean {
         val meterReleased = audioClaim.release?.let {
             runCatching { it.await(400, java.util.concurrent.TimeUnit.MILLISECONDS) }.getOrDefault(false)
         } ?: true
