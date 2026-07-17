@@ -1869,7 +1869,12 @@ class CameraEngine(private val context: Context) {
             r?.upper ?: Float.MAX_VALUE
         }
         val z = ratio.coerceIn(r?.lower ?: ratio, hi)
-        controls = controls.copy(zoomRatio = z)
+        // Packet writers (rollback / caps-normalize on setupExecutor) replace [controls] wholesale
+        // under this monitor. Take it for the zoom read-modify-write too: @Volatile alone gives
+        // visibility, not atomicity, so a 60 Hz pinch flush could overwrite (lose) an entire
+        // normalized packet published between its read and write-back — exactly around the
+        // lens/TELE/mode churn where rollbacks happen.
+        synchronized(this) { controls = controls.copy(zoomRatio = z) }
         // The PREVIEW zooms instantly: GL crops the last frame to the requested ratio and
         // self-redraws (every setRepeatingRequest stalls this HAL's stream ~180 ms — measured —
         // so per-tick HAL submits made zoom read as ~5 fps no matter how smooth the input was).
