@@ -222,19 +222,16 @@ object MediaStoreWriter {
         // executor while an immediate first capture creates its own pending entry on ioExecutor —
         // without the age gate the sweep could delete that in-flight write (two-executor race on
         // shared MediaStore state; an orphan from a prior crash is by definition older than us).
-        val processStartSecs =
-            (System.currentTimeMillis() - android.os.SystemClock.elapsedRealtime()) / 1000 +
-                android.os.Process.getStartElapsedRealtime() / 1000
-        val selection =
-            "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? AND ${MediaStore.MediaColumns.DATE_ADDED} < ? AND " +
-                "${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} = ?"
-        // RELATIVE_PATH values are normalized with a trailing slash ("DCIM/X9Tele/"), so anchor the
-        // pattern on it — "DCIM/X9Tele%" would also sweep a hypothetical "DCIM/X9TeleOther/".
-        // OWNER_PACKAGE_NAME makes ownership an EXPLICIT invariant (mirroring queryOwnedPublished):
-        // today scoped storage without READ_MEDIA_* already hides other apps' rows, but a future
-        // media-read permission would otherwise silently widen this delete sweep to any app's
-        // pending items under a same-named DCIM path.
-        val args = arrayOf("DCIM/$subDir/%", processStartSecs.toString(), context.packageName)
+        val processStartSecs = processStartEpochSecs(
+            nowMillis = System.currentTimeMillis(),
+            elapsedRealtimeMillis = android.os.SystemClock.elapsedRealtime(),
+            processStartElapsedRealtimeMillis = android.os.Process.getStartElapsedRealtime(),
+        )
+        // Selection/args construction is pure and PINNED BY TEST (OrphanSweepTest): the whole call
+        // below is runCatching-wrapped, so a placeholder/arg-count mismatch or a broken path anchor
+        // would otherwise fail as a silently-swallowed SQLiteException — the sweep no-ops forever
+        // with no crash, no log, and no test failure.
+        val (selection, args) = orphanSweepSelection(subDir, context.packageName, processStartSecs)
         for (base in listOf(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
@@ -260,4 +257,39 @@ object MediaStoreWriter {
             }
         }
     }
+}
+
+/**
+ * Epoch-seconds moment this process started: wall-clock "now" rolled back by the time elapsed
+ * since boot, plus the process-start elapsed-realtime stamp. Mixes the two clocks deliberately —
+ * DATE_ADDED is epoch seconds, but "before this process" is an elapsed-realtime fact. Integer
+ * division truncates up to ~1 s conservative (fewer deletions), which is the safe direction for
+ * a delete sweep.
+ */
+internal fun processStartEpochSecs(
+    nowMillis: Long,
+    elapsedRealtimeMillis: Long,
+    processStartElapsedRealtimeMillis: Long,
+): Long = (nowMillis - elapsedRealtimeMillis) / 1000 + processStartElapsedRealtimeMillis / 1000
+
+/**
+ * The orphan-sweep delete predicate, as a pure pair so OrphanSweepTest can pin it:
+ * - RELATIVE_PATH values are normalized with a trailing slash ("DCIM/X9Tele/"), so the pattern
+ *   anchors on it — "DCIM/X9Tele%" would also sweep a hypothetical "DCIM/X9TeleOther/".
+ * - OWNER_PACKAGE_NAME makes ownership an EXPLICIT invariant (mirroring queryOwnedPublished):
+ *   scoped storage without READ_MEDIA_* already hides other apps' rows today, but a future
+ *   media-read permission would otherwise silently widen this delete sweep to any app's pending
+ *   items under a same-named DCIM path.
+ * - Placeholder count must equal the arg count; a drifted edit fails the test, not silently
+ *   inside the sweep's runCatching.
+ */
+internal fun orphanSweepSelection(
+    subDir: String,
+    packageName: String,
+    cutoffEpochSecs: Long,
+): Pair<String, Array<String>> {
+    val selection =
+        "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ? AND ${MediaStore.MediaColumns.DATE_ADDED} < ? AND " +
+            "${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} = ?"
+    return selection to arrayOf("DCIM/$subDir/%", cutoffEpochSecs.toString(), packageName)
 }
