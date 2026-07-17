@@ -23,6 +23,8 @@ import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -51,6 +53,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.Modifier
@@ -106,6 +109,8 @@ import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FnSlot
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
+import com.hletrd.findx9tele.camera.FINDER_MIN_ZOOM
+import com.hletrd.findx9tele.camera.finderRect
 import com.hletrd.findx9tele.camera.LensChoice
 import com.hletrd.findx9tele.camera.MediaDeleteScope
 import com.hletrd.findx9tele.camera.MeteringMode
@@ -368,6 +373,30 @@ fun CameraScreen(
             }
             if (shutterBlink) {
                 Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.85f)))
+            }
+
+            // TELE finder PIP border: frames the GL corner viewport (the FULL current camera frame —
+            // see FINDER_* in CameraState for the honest single-stream contract). Gated like the GL
+            // resolved flag: user Assist toggle AND TELE AND zoomed AND 4:3 (16:9's AspectMask would
+            // dim/misframe the corner box). The rect comes from the same pure finderRect the GL
+            // scissor uses — sized from the FULL aspect box, offset by the margin (the previous
+            // padding-before-fillMaxWidth chain shrank the border ~6% below the GL content box).
+            // Absolute anchor + absolute offset: the GL box has no layout direction, so the border
+            // must not mirror to bottom-right under RTL system locales. Square corners trace the
+            // sharp GL scissor rect.
+            if (state.teleFinder && state.teleconverterMode &&
+                state.controls.zoomRatio >= FINDER_MIN_ZOOM && state.aspectRatio == AspectRatio.W4_3
+            ) {
+                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                    val rect = finderRect(maxWidth.value, maxHeight.value)
+                    Box(
+                        modifier = Modifier
+                            .align(AbsoluteAlignment.BottomLeft)
+                            .absoluteOffset(x = rect.x.dp, y = (-rect.y).dp)
+                            .size(rect.width.dp, rect.height.dp)
+                            .border(1.dp, Color.White.copy(alpha = 0.85f)),
+                    )
+                }
             }
         }
 
@@ -1674,6 +1703,7 @@ private object PreviewCameraActions : CameraActions {
     override fun onGridType(type: GridType) = Unit
     override fun onToggleLevel(enabled: Boolean) = Unit
     override fun onTogglePunchIn(enabled: Boolean) = Unit
+    override fun onToggleTeleFinder(enabled: Boolean) = Unit
 
     override fun onTimer(timer: ShutterTimer) = Unit
     override fun onDriveMode(mode: DriveMode) = Unit

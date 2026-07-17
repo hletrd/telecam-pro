@@ -58,6 +58,7 @@ data class ExtraSettings(
     val grid: GridType = GridType.THIRDS,
     val level: Boolean = false,
     val punchIn: Boolean = false,
+    val teleFinder: Boolean = false,
     val videoCodec: VideoCodec = VideoCodec.HEVC,
     val bitrateLevel: BitrateLevel = BitrateLevel.ULTRA,
     val videoFrameRate: VideoFrameRate = VideoFrameRate.DEFAULT,
@@ -208,6 +209,7 @@ class SettingsStore(private val prefs: SharedPreferences) {
                 grid = enumOr(prefs.getString("${prefix}grid", null), ed.grid),
                 level = prefs.getBoolean("${prefix}level", ed.level),
                 punchIn = prefs.getBoolean("${prefix}punchIn", ed.punchIn),
+                teleFinder = prefs.getBoolean("${prefix}teleFinder", ed.teleFinder),
                 videoCodec = enumOr(prefs.getString("${prefix}videoCodec", null), ed.videoCodec),
                 bitrateLevel = enumOr(prefs.getString("${prefix}bitrateLevel", null), ed.bitrateLevel),
                 videoFrameRate = enumOr(prefs.getString("${prefix}videoFrameRate", null), ed.videoFrameRate),
@@ -294,6 +296,7 @@ class SettingsStore(private val prefs: SharedPreferences) {
         putString("${prefix}grid", e.grid.name)
         putBoolean("${prefix}level", e.level)
         putBoolean("${prefix}punchIn", e.punchIn)
+        putBoolean("${prefix}teleFinder", e.teleFinder)
         putString("${prefix}videoCodec", e.videoCodec.name)
         putString("${prefix}bitrateLevel", e.bitrateLevel.name)
         putString("${prefix}videoFrameRate", e.videoFrameRate.name)

@@ -17,6 +17,7 @@ internal data class RendererConfig(
     val histogram: Boolean = false,
     val waveform: Boolean = false,
     val punchIn: Boolean = false,
+    val teleFinder: Boolean = false,
 )
 
 /** Thread-safe copy-on-write owner for [RendererConfig]. */

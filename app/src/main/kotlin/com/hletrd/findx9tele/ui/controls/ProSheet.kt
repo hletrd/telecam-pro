@@ -1056,6 +1056,10 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
     ToggleRow(label = "Level", checked = state.level, onCheckedChange = actions::onToggleLevel)
     SectionHeader("Focus Aids")
     ToggleRow(label = "Punch-In", checked = state.punchIn, onCheckedChange = actions::onTogglePunchIn)
+    SectionHeader("TELE")
+    // Finder PIP: corner re-draw of the FULL current camera frame (single-stream — see FINDER_* in
+    // CameraState). Only takes effect with the teleconverter on, zoomed, at 4:3.
+    ToggleRow(label = "Tele Finder", checked = state.teleFinder, onCheckedChange = actions::onToggleTeleFinder)
 }
 
 @Composable
@@ -1339,6 +1343,7 @@ private fun settingHelp(key: String): String? = when (key) {
     "Grid" -> "Composition guides (thirds, golden, square, center)"
     "Level" -> "Electronic horizon for keeping shots level"
     "Punch-In" -> "Magnifies the frame to check manual focus"
+    "Tele Finder" -> "Corner PIP of the full frame while zoomed. TELE, 4:3 only"
     "Sharpness" -> "Edge enhancement applied by the ISP"
     "NR" -> "Noise reduction — Off keeps the most fine detail"
     "Color" -> "Color rendering effect (mono, negative…)"

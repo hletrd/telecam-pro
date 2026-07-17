@@ -8,6 +8,8 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.view.Surface
 import com.hletrd.findx9tele.camera.ColorTransfer
+import com.hletrd.findx9tele.camera.FINDER_MIN_ZOOM
+import com.hletrd.findx9tele.camera.finderRect
 import com.hletrd.findx9tele.camera.HistogramData
 import com.hletrd.findx9tele.camera.WaveformData
 import java.nio.ByteBuffer
@@ -90,6 +92,11 @@ class GlPipeline {
     // from the tapped point so the loupe follows an off-center subject. Preview-only.
     private var punchInX = 0.5f
     private var punchInY = 0.5f
+    // TELE finder PIP: the RESOLVED enable flag (user toggle && TELE && 4:3, resolved by
+    // CameraEngine.pushTeleFinder). The finder actually draws only when this is set AND the view is
+    // magnified past FINDER_MIN_ZOOM (checked against [zoomTarget] in drawFrame). It re-draws the
+    // FULL current camera frame — the widest field the single stream carries, NOT an unzoomed view.
+    private var teleFinder = false
 
     // Gyro EIS: provider returns [yaw, pitch, roll] shake radians; eisFocal scales to the effective
     // (teleconverter) focal length in image widths; eisCrop is the headroom (e.g. 0.10).
@@ -352,6 +359,12 @@ class GlPipeline {
 
     /** Preview-only center crop-zoom (focus punch-in); does not affect the recorded/encoder frame. */
     fun setPunchIn(enabled: Boolean) = post { punchIn = enabled }
+
+    /** TELE finder PIP: with the resolved flag on and the view magnified, draw a small corner
+     *  viewport re-drawing the FULL current camera frame (single-stream: the HAL zoom crop is
+     *  baked in, so this is the widest available field, not an unzoomed one). Preview-only; the
+     *  actual gating also requires [zoomTarget] ≥ FINDER_MIN_ZOOM (checked at draw). */
+    fun setTeleFinder(enabled: Boolean) = post { teleFinder = enabled }
 
     /** Sets the loupe magnification center (texcoord 0..1); the punch-in zoom follows this point. */
     fun setPunchInCenter(x: Float, y: Float) = post {
@@ -659,6 +672,43 @@ class GlPipeline {
                     delogAssist = nativeLog && gammaAssist,
                     zoomComp = zoomTarget / halZoom.coerceAtLeast(0.01f),
                 )
+                // TELE finder PIP (opt-in, resolved by CameraEngine.pushTeleFinder): a corner
+                // viewport re-drawing the FULL current camera frame while the main view is
+                // magnified. Single-stream honesty: the HAL's zoom crop is baked into the texture,
+                // so this box is only wider than the main view while zoomComp/punch-in magnify past
+                // the delivered field (mid-gesture); it converges to the same framing at rest — a
+                // true wide 3× finder needs a second stream (BACKLOG). The main draw above already
+                // filled the surface and renderer.draw's internal glClear is framebuffer-wide, so
+                // the finder box is scissored to keep its clear from wiping the main preview.
+                // ISOLATION: a finder-only failure must degrade to "no PIP this frame" — it must
+                // never feed preview health or burn the bounded recovery budget — and scissor is
+                // CONTEXT state shared with the encoder/analysis draws, so the finally rearms it
+                // off even when the draw throws (a leak would clip every later draw to this box).
+                if (teleFinder && zoomTarget >= FINDER_MIN_ZOOM && previewW > 0 && previewH > 0) {
+                    val rect = finderRect(previewW.toFloat(), previewH.toFloat())
+                    // Bottom-left corner in GL's bottom-left-origin pixel space (the Compose border
+                    // mirrors the same rect from its top-left-origin space via the shared seam).
+                    val fx = rect.x.toInt()
+                    val fy = rect.y.toInt()
+                    val fw = rect.width.toInt().coerceAtLeast(1)
+                    val fh = rect.height.toInt().coerceAtLeast(1)
+                    runCatching {
+                        try {
+                            GLES20.glEnable(GLES20.GL_SCISSOR_TEST)
+                            GLES20.glScissor(fx, fy, fw, fh)
+                            renderer.draw(
+                                stMatrix, fw, fh, previewTransfer, false, false, false,
+                                // Full delivered frame: no extra GL crop on top of the HAL field
+                                // (crop/center/EIS deliberately left at defaults — the finder shows
+                                // the whole frame, not the loupe/stab framing).
+                                zoomComp = 1f,
+                                viewportX = fx, viewportY = fy,
+                            )
+                        } finally {
+                            GLES20.glDisable(GLES20.GL_SCISSOR_TEST)
+                        }
+                    }
+                }
                 core.swapBuffers(ownedPreview)
                 // Attachment alone is not renderer health. The first identity-owned swap is the
                 // only event that may publish Preview Ready and reset CameraEngine's retry budget.

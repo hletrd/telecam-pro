@@ -600,6 +600,9 @@ class CameraEngine(private val context: Context) {
         // that ~90° SurfaceTexture rotation swaps the displayed width/height.
         gl.setSensorOrientation(c.sensorOrientation)
         gl.setRotationDegrees(previewRotationDegrees())
+        // TELE finder PIP: re-resolve on every session (re)config and tele change, like rotation
+        // (the user toggle, TELE state, or aspect may all have changed since the last push).
+        pushTeleFinder()
         // App-side gyro EIS is disabled (unusable at 300 mm): the HAL video-stab modes own
         // stabilization, so GL EIS cannot double-warp. Push the resolved HAL mode to the live request.
         gl.setEis(false, 0f, 0f)
@@ -1128,6 +1131,7 @@ class CameraEngine(private val context: Context) {
         gl.setFalseColor(config.falseColor)
         gl.setAnalysisEnabled(config.histogram, config.waveform)
         gl.setPunchIn(config.punchIn)
+        gl.setTeleFinder(config.teleFinder)
     }
 
     /** Forces the luma readback for the app-side auto-exposure loop (SHUTTER/ISO priority). */
@@ -1438,7 +1442,11 @@ class CameraEngine(private val context: Context) {
     fun setAudioInputPreference(p: AudioInputPreference) { audioInputPreference = p }
 
     /** Still-photo center-crop aspect ratio; applies to HEIF and JPEG. W4_3 = no crop. */
-    fun setAspectRatio(a: AspectRatio) { aspectRatio = a }
+    fun setAspectRatio(a: AspectRatio) {
+        aspectRatio = a
+        // The finder PIP is 4:3-only (see pushTeleFinder); keep its resolved flag in step.
+        pushTeleFinder()
+    }
 
     /**
      * Selects the video capture resolution and recreates the Camera2 session so the producer stream,
@@ -1527,6 +1535,11 @@ class CameraEngine(private val context: Context) {
             overrideId = null
             intent
         }
+        // The optics packet above already updated [teleconverterMode]; resolve the finder PIP now
+        // so a TC-off (or a lens pick that drops TC) can never leave the GL PIP drawing after the
+        // Compose border is gone — applyStabilization re-pushes, but only once the async session
+        // reconfigure completes.
+        pushTeleFinder()
         // Resolve the camera id ON setupExecutor (dozen-plus Binder IPCs; also orders resolve→reopen).
         setupExecutor.execute {
             if (!ownsOpticsTransaction(transaction) ||
@@ -2752,6 +2765,26 @@ class CameraEngine(private val context: Context) {
     fun setPunchIn(enabled: Boolean) {
         rendererConfig.update { it.copy(punchIn = enabled) }
         gl.setPunchIn(enabled)
+    }
+
+    // TELE finder PIP: the user's persisted Assist toggle (default OFF). Only the RESOLVED flag —
+    // toggle && TELE && 4:3 — is pushed to GL and stored in RendererConfig (so a fresh GL
+    // generation replays the resolved value via applyRendererConfig). 16:9 is excluded because the
+    // AspectMask pillarboxes would dim/misframe the corner box, and the finder deliberately shows
+    // the FULL delivered frame (see FINDER_* in CameraState for the honest single-stream contract).
+    @Volatile private var teleFinderEnabled = false
+
+    fun setTeleFinder(enabled: Boolean) {
+        teleFinderEnabled = enabled
+        pushTeleFinder()
+    }
+
+    /** Recomputes and pushes the resolved finder flag; called on toggle, aspect, lens/TC, and
+     *  session (re)config so the GL PIP can never outlive a TC-off or aspect change. */
+    private fun pushTeleFinder() {
+        val resolved = teleFinderEnabled && teleconverterMode && aspectRatio == AspectRatio.W4_3
+        rendererConfig.update { it.copy(teleFinder = resolved) }
+        gl.setTeleFinder(resolved)
     }
 
     /** Breaks the engine→ViewModel callback graph before asynchronous owner teardown begins. */

@@ -470,6 +470,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setFalseColor(e.falseColor)
         engine.setAnalysis(e.histogram, e.waveform)
         engine.setPunchIn(e.punchIn)
+        engine.setTeleFinder(e.teleFinder)
         engine.setVideoCodec(safeCodec)
         engine.setBitrateLevel(e.bitrateLevel)
         engine.setOpenGate(e.openGate)
@@ -506,6 +507,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 grid = e.grid,
                 level = e.level,
                 punchIn = e.punchIn,
+                teleFinder = e.teleFinder,
                 videoCodec = safeCodec,
                 bitrateLevel = e.bitrateLevel,
                 videoFrameRate = safeFrameRate,
@@ -562,6 +564,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             grid = s.grid,
             level = s.level,
             punchIn = s.punchIn,
+            teleFinder = s.teleFinder,
             videoCodec = s.videoCodec,
             bitrateLevel = s.bitrateLevel,
             videoFrameRate = s.videoFrameRate,
@@ -1361,6 +1364,11 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setPunchIn(enabled)
         _state.update { it.copy(punchIn = enabled) }
         markChanged(FnSlot.PUNCH_IN)
+        scheduleSettingsSave()
+    }
+    override fun onToggleTeleFinder(enabled: Boolean) {
+        engine.setTeleFinder(enabled)
+        _state.update { it.copy(teleFinder = enabled) }
         scheduleSettingsSave()
     }
 

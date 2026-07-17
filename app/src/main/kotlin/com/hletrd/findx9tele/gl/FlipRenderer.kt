@@ -129,8 +129,12 @@ class FlipRenderer {
         // this HAL's stream ~180 ms, so the LIVE zoom renders here as a texture crop while the HAL
         // catches up at a throttled pace. ≥1 (can't sample beyond the frame); 1 = no-op.
         zoomComp: Float = 1f,
+        // Viewport origin for sub-rect draws (the TELE finder PIP); callers scissor around the draw
+        // because the internal glClear is framebuffer-wide otherwise.
+        viewportX: Int = 0,
+        viewportY: Int = 0,
     ) {
-        GLES20.glViewport(0, 0, targetWidth, targetHeight)
+        GLES20.glViewport(viewportX, viewportY, targetWidth, targetHeight)
         GLES20.glClearColor(0f, 0f, 0f, 1f)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
 

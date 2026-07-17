@@ -19,6 +19,7 @@ class RendererConfigStoreTest {
                 histogram = true,
                 waveform = true,
                 punchIn = true,
+                teleFinder = true,
             )
         }
 
@@ -33,6 +34,7 @@ class RendererConfigStoreTest {
                 histogram = true,
                 waveform = true,
                 punchIn = true,
+                teleFinder = true,
             ),
             store.snapshot(),
         )
@@ -44,9 +46,10 @@ class RendererConfigStoreTest {
 
         store.update { it.copy(zebra = true) }
         store.update { it.copy(punchIn = true) }
+        store.update { it.copy(teleFinder = true) }
 
         assertEquals(
-            RendererConfig(peaking = true, zebra = true, histogram = true, punchIn = true),
+            RendererConfig(peaking = true, zebra = true, histogram = true, punchIn = true, teleFinder = true),
             store.snapshot(),
         )
     }

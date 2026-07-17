@@ -115,6 +115,8 @@ interface CameraActions {
     fun onGridType(type: GridType)
     fun onToggleLevel(enabled: Boolean)
     fun onTogglePunchIn(enabled: Boolean)
+    /** TELE finder PIP Assist toggle (default OFF); the engine resolves it against TELE + 4:3. */
+    fun onToggleTeleFinder(enabled: Boolean)
 
     // Drive
     fun onTimer(timer: ShutterTimer)

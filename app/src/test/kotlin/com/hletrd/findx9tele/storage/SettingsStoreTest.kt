@@ -189,6 +189,7 @@ class SettingsStoreTest {
         grid = GridType.GOLDEN,
         level = true,
         punchIn = true,
+        teleFinder = true,
         videoCodec = VideoCodec.AVC,
         bitrateLevel = BitrateLevel.MAX,
         videoFrameRate = VideoFrameRate.FPS_24,

@@ -222,6 +222,40 @@ const val TELECONVERTER_MAGNIFICATION = 300f / 70f
 // with the 4.3× converter ≈ 13×. The user-spec range is 13–60× with magnetic snaps at 30× / 60×.
 val TELE_DISPLAY_BASE: Float = (LensChoice.TELE3X.targetEquivMm / LensChoice.MAIN.targetEquivMm) * TELECONVERTER_MAGNIFICATION
 const val TELE_MAX_DISPLAY_ZOOM = 60f
+
+// TELE finder PIP: an opt-in corner viewport re-drawing the FULL current camera frame while the
+// main view is magnified. Single-stream honesty: the HAL's CONTROL_ZOOM_RATIO crop is baked into
+// the delivered frames, so the finder can only ever be as wide as the last HAL field — wider than
+// the main view while GL zoom compensation (mid-gesture) or punch-in magnifies past it, identical
+// once the HAL converges. A true unzoomed/wide 3× finder needs a second wide camera stream — see
+// docs/BACKLOG.md (design item; this HAL's multi-stream fragility makes it a device-verified
+// project, not a GL change). Fractions of the preview box, shared between the GL draw (content)
+// and the Compose overlay (border) through [finderRect] so both boxes stay pixel-aligned.
+const val FINDER_FRACTION = 0.30f
+const val FINDER_MARGIN = 0.03f
+// Draw the PIP only once the main view is meaningfully magnified — below this it duplicates the
+// full frame ~1:1 and adds nothing. Threshold tuning is a deferred on-device item (plan cycle 1).
+const val FINDER_MIN_ZOOM = 1.15f
+
+/** Finder-PIP box in the preview box's own units, measured from the bottom-left corner. */
+data class FinderRect(val x: Float, val y: Float, val width: Float, val height: Float)
+
+/**
+ * The one geometry rule for the finder PIP, shared by the GL scissor/viewport (pixels) and the
+ * Compose border overlay (dp): a [fraction]-sized box of the FULL preview box, inset by [margin]
+ * of the short edge from the bottom-left corner. Both consumers MUST derive their rect from here —
+ * the original Compose modifier chain (`padding` before `fillMaxWidth`) sized the border from
+ * padding-reduced constraints and drew it ~6% smaller than the GL content box.
+ */
+fun finderRect(
+    boxWidth: Float,
+    boxHeight: Float,
+    fraction: Float = FINDER_FRACTION,
+    margin: Float = FINDER_MARGIN,
+): FinderRect {
+    val inset = minOf(boxWidth, boxHeight) * margin
+    return FinderRect(inset, inset, boxWidth * fraction, boxHeight * fraction)
+}
 val TELE_ZOOM_SNAPS = floatArrayOf(30f, 60f)
 
 /**
@@ -548,6 +582,8 @@ data class CameraUiState(
     // Physical device orientation (0/90/180/270) from gravity; rotates overlays to stay upright.
     val deviceOrientation: Int = 0,
     val punchIn: Boolean = false,
+    // TELE finder PIP Assist toggle (default OFF; see FINDER_* above for the honest contract).
+    val teleFinder: Boolean = false,
     // Sony-style customization: Fn row, My Menu, recent changed settings and MR banks.
     val photoFnSlots: List<FnSlot> = FnSlot.PHOTO_DEFAULT,
     val videoFnSlots: List<FnSlot> = FnSlot.VIDEO_DEFAULT,
