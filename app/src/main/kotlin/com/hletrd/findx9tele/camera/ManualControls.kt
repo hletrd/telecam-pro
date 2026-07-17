@@ -287,6 +287,49 @@ enum class ExposureStep(val ev: Float, val label: String) {
 // Preview exposure ceiling for the auto program (1/30 s → a ≥30 fps live view when ISO allows).
 private const val PREVIEW_MAX_EXPOSURE_NS = 33_333_333L
 
+// HAL-safety ceiling for ANY repeating (preview) request exposure, all AE-OFF modes. A multi-second
+// SENSOR_EXPOSURE_TIME on the REPEATING request wedges this QTI HAL's still handoff: a queued still
+// sits inert behind the in-flight long frame and the device errors with CAMERA_ERROR(3) after ~one
+// exposure duration — device-reproduced 3/3 at 6.3 s (S mode, and P mode with the ISO ceiling
+// exhausted so the neutral trade above was skipped); the 0.8 s control repeated fine. 500 ms keeps
+// a ≥2 fps live view with safety margin under the proven 0.8 s. The STILL request is untouched and
+// carries the true exposure — only the viewfinder trades exposure for ISO (brightness-neutrally
+// while headroom lasts, then honestly darker).
+internal const val PREVIEW_SAFE_MAX_EXPOSURE_NS = 500_000_000L
+
+/**
+ * Preview-only exposure→ISO trade for the repeating request, pure for host tests.
+ * [neutralCapNs] is the mode's fps-motivated target (PROGRAM's 1/30 s) or null for user-owned
+ * S/ISO/M modes (WYSIWYG below the safety ceiling); [safetyCapNs] is the unconditional HAL bound.
+ * Returns the exposure/ISO pair the REPEATING request should carry.
+ */
+internal fun previewExposureTrade(
+    wantExposureNs: Long,
+    iso: Int,
+    isoUpper: Int,
+    neutralCapNs: Long?,
+    safetyCapNs: Long = PREVIEW_SAFE_MAX_EXPOSURE_NS,
+): Pair<Long, Int> {
+    val capNs = neutralCapNs ?: safetyCapNs
+    if (wantExposureNs <= capNs || iso <= 0) {
+        // Below every applicable ceiling (or no usable ISO to trade against): WYSIWYG.
+        return wantExposureNs.coerceAtMost(safetyCapNs) to iso
+    }
+    // Brightness-neutral first: shorten exposure and raise ISO by the same factor, bounded by the
+    // advertised ISO headroom. The 1.05 floor avoids churning the request for sub-tenth-stop trades.
+    var exposureNs = wantExposureNs
+    var tradedIso = iso
+    val scale = minOf(wantExposureNs.toDouble() / capNs, isoUpper.toDouble() / iso)
+    if (scale > 1.05) {
+        exposureNs = (wantExposureNs / scale).toLong()
+        tradedIso = (iso * scale).toInt().coerceAtMost(isoUpper)
+    }
+    // The safety clamp is NOT conditional on headroom — with the ISO ceiling exhausted the preview
+    // gets darker instead of carrying a HAL-lethal long frame (the exact skipped-trade path that
+    // shipped the 6.3 s crash).
+    return exposureNs.coerceAtMost(safetyCapNs) to tradedIso
+}
+
 fun ManualControls.effectiveExposureNs(): Long =
     if (shutterMode == ShutterMode.ANGLE && fps > 0) {
         ((shutterAngle.coerceIn(1f, 360f) / 360.0) / fps * 1_000_000_000.0).toLong()
@@ -500,20 +543,24 @@ private fun CaptureRequest.Builder.applyExposure(
         set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
         var iso = c.iso
         var wantExposureNs = c.effectiveExposureNs()
-        // PREVIEW-only cap for the auto program (app-side P): its program line legitimately parks
-        // the STILL exposure at 1/14-1/10 s in dim light, but a preview at that exposure IS a
-        // 10-15 fps viewfinder — the user-reported "low preview fps". Trade exposure for ISO
-        // BRIGHTNESS-NEUTRALLY, bounded by ISO headroom (past the ceiling the preview honestly
-        // slows, like every camera's night view). User-owned modes (S/ISO/M) stay WYSIWYG.
-        if (previewExposureCap && c.exposureMode == ExposureMode.PROGRAM && wantExposureNs > PREVIEW_MAX_EXPOSURE_NS) {
-            val isoUpper = admittedIsoRange.upper
-            if (iso > 0) {
-                val scale = minOf(wantExposureNs.toDouble() / PREVIEW_MAX_EXPOSURE_NS, isoUpper.toDouble() / iso)
-                if (scale > 1.05) {
-                    wantExposureNs = (wantExposureNs / scale).toLong()
-                    iso = (iso * scale).toInt().coerceAtMost(isoUpper)
-                }
-            }
+        // PREVIEW-only exposure policy (still requests never pass previewExposureCap):
+        //  - PROGRAM: its line legitimately parks the STILL exposure at 1/14-1/10 s in dim light,
+        //    but a preview at that exposure IS a 10-15 fps viewfinder — trade exposure for ISO
+        //    BRIGHTNESS-NEUTRALLY toward 1/30 s, bounded by ISO headroom.
+        //  - ALL AE-OFF modes: the PREVIEW_SAFE_MAX_EXPOSURE_NS clamp applies UNCONDITIONALLY —
+        //    a multi-second repeating frame wedges this HAL's still handoff (CAMERA_ERROR(3),
+        //    lost shot, device-reproduced at 6.3 s). S/ISO/M stay WYSIWYG below that ceiling;
+        //    above it the preview brightens via ISO while headroom lasts, then honestly darkens.
+        if (previewExposureCap) {
+            val neutralCap = if (c.exposureMode == ExposureMode.PROGRAM) PREVIEW_MAX_EXPOSURE_NS else null
+            val (tradedExposure, tradedIso) = previewExposureTrade(
+                wantExposureNs = wantExposureNs,
+                iso = iso,
+                isoUpper = admittedIsoRange.upper,
+                neutralCapNs = neutralCap,
+            )
+            wantExposureNs = tradedExposure
+            iso = tradedIso
         }
         set(
             CaptureRequest.SENSOR_SENSITIVITY,

@@ -202,4 +202,75 @@ class ExposureMathTest {
             }
         }
     }
+
+    // ---- previewExposureTrade: the REPEATING-request exposure policy ----
+    // Pins the QA-1 fix: a multi-second SENSOR_EXPOSURE_TIME on the repeating request wedges this
+    // HAL's still handoff (CAMERA_ERROR(3) after ~one exposure, shot lost — device-reproduced at
+    // 6.3 s). The safety clamp must hold in EVERY mode and EVERY headroom state; the neutral trade
+    // must stay brightness-neutral while ISO headroom lasts.
+
+    @Test
+    fun `user modes below the safety ceiling stay WYSIWYG`() {
+        // S mode at 1/4 s: no neutral cap, under the 500 ms safety ceiling — untouched.
+        val (e, iso) = previewExposureTrade(
+            wantExposureNs = 250_000_000L, iso = 400, isoUpper = 12_800, neutralCapNs = null,
+        )
+        assertEquals(250_000_000L, e)
+        assertEquals(400, iso)
+    }
+
+    @Test
+    fun `user mode long exposure trades brightness-neutrally into ISO headroom`() {
+        // S 6.3 s at ISO 100 (upper 12800): scale = min(12.6, 128) = 12.6 → exposure lands at the
+        // 500 ms ceiling with the SAME EV (exposure×ISO product preserved within rounding).
+        val want = 6_300_000_000L
+        val (e, iso) = previewExposureTrade(
+            wantExposureNs = want, iso = 100, isoUpper = 12_800, neutralCapNs = null,
+        )
+        assertTrue("exposure clamped to the safety ceiling", e <= PREVIEW_SAFE_MAX_EXPOSURE_NS)
+        val wantEv = want.toDouble() * 100
+        val gotEv = e.toDouble() * iso
+        assertTrue("EV preserved within 10%", gotEv > wantEv * 0.9 && gotEv < wantEv * 1.1)
+    }
+
+    @Test
+    fun `exhausted ISO headroom still clamps the repeating exposure`() {
+        // The exact shipped failure: P/S at 6.3 s with ISO already at the ceiling → the old code
+        // skipped the trade entirely and put 6.3 s on the wire. The clamp must be unconditional.
+        val (e, iso) = previewExposureTrade(
+            wantExposureNs = 6_300_000_000L, iso = 12_750, isoUpper = 12_800, neutralCapNs = null,
+        )
+        assertTrue("no long frame ever reaches the repeating request", e <= PREVIEW_SAFE_MAX_EXPOSURE_NS)
+        assertTrue(iso <= 12_800)
+    }
+
+    @Test
+    fun `program mode keeps its 1 over 30s neutral target when headroom allows`() {
+        // P at 1/10 s, ISO 800 (upper 12800): scale = min(3.0, 16) = 3.0 → ~1/30 s at ISO 2400.
+        val (e, iso) = previewExposureTrade(
+            wantExposureNs = 100_000_000L, iso = 800, isoUpper = 12_800, neutralCapNs = 33_333_333L,
+        )
+        assertTrue("preview restored to ~1/30 s", e in 29_000_000L..34_000_000L)
+        assertTrue("ISO carries the traded stops", iso in 2_300..2_500)
+    }
+
+    @Test
+    fun `program mode with no headroom keeps the honest slow preview under the safety ceiling`() {
+        // P at 1/10 s with the ISO ceiling exhausted: no neutral trade possible; 1/10 s is safe,
+        // so the preview honestly slows (pre-existing night-view behavior preserved).
+        val (e, iso) = previewExposureTrade(
+            wantExposureNs = 100_000_000L, iso = 12_800, isoUpper = 12_800, neutralCapNs = 33_333_333L,
+        )
+        assertEquals(100_000_000L, e)
+        assertEquals(12_800, iso)
+    }
+
+    @Test
+    fun `non positive ISO cannot trade but is still clamped safe`() {
+        val (e, iso) = previewExposureTrade(
+            wantExposureNs = 6_300_000_000L, iso = 0, isoUpper = 12_800, neutralCapNs = null,
+        )
+        assertTrue(e <= PREVIEW_SAFE_MAX_EXPOSURE_NS)
+        assertEquals(0, iso)
+    }
 }
