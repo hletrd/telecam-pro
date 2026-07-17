@@ -1514,6 +1514,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             if (s.recordAudio && !inputStatus.available) {
                 showStatus("${inputStatus.label}; using default")
             }
+            // THREAD CONTRACT: this callback runs on the RECORDER EXECUTOR for a queued admission,
+            // or synchronously on MAIN for an immediate refusal. Its body must stay limited to
+            // thread-safe primitives (StateFlow.update, Handler.removeCallbacks, the engine's own
+            // gated calls) — main-confined ViewModel fields must not be touched here.
             engine.startRecording(s.recordAudio) { ok ->
                 if (!ok) {
                     mainHandler.removeCallbacks(recordTicker)
