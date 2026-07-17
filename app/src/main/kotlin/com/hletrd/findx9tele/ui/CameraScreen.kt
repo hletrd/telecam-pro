@@ -582,7 +582,10 @@ fun CameraScreen(
                     } else {
                         it.upper * mul
                     }
-                    android.util.Range(it.lower * mul, hi)
+                    // Defensive floor clamp: android.util.Range THROWS on lower > upper. Safe on
+                    // this device's advertised caps, but a future caps profile whose lower*mul
+                    // exceeded the TELE display ceiling would crash EVERY recomposition.
+                    android.util.Range(minOf(it.lower * mul, hi), hi)
                 },
                 numberRotation = overlayRotation,
             )
