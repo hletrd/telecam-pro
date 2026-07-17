@@ -796,10 +796,14 @@ class CameraEngine(private val context: Context) {
 
     private fun wireController(): CameraController {
         val ctrl = CameraController(context)
-        ctrl.onExposure = { iso, exp -> onExposureInfo?.invoke(iso, exp) }
-        ctrl.onZoomResult = { rz -> gl.setHalZoom(rz) }
-        ctrl.onFocusDistance = { d -> onFocusDistance?.invoke(d) }
-        ctrl.onAfState = { hal -> onAfIndication?.invoke(AfIndication.fromHal(hal)) }
+        // Every result callback is identity-gated: a CLOSING controller's capture results keep
+        // arriving on its camera thread for a beat after the replacement is wired, and an ungated
+        // setHalZoom could clobber the new generation's GL zoom compensation for a frame during a
+        // reopen (the same replaced-controller-is-inert rule the error path already follows).
+        ctrl.onExposure = { iso, exp -> if (controller === ctrl) onExposureInfo?.invoke(iso, exp) }
+        ctrl.onZoomResult = { rz -> if (controller === ctrl) gl.setHalZoom(rz) }
+        ctrl.onFocusDistance = { d -> if (controller === ctrl) onFocusDistance?.invoke(d) }
+        ctrl.onAfState = { hal -> if (controller === ctrl) onAfIndication?.invoke(AfIndication.fromHal(hal)) }
         return ctrl
     }
 
