@@ -1,8 +1,6 @@
 package com.hletrd.findx9tele.ui.controls
 
-import java.io.File
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ProSheetTabTest {
@@ -18,15 +16,9 @@ class ProSheetTabTest {
         }
     }
 
-    @Test
-    fun `rail source keeps selectable group selected state and tab role`() {
-        val source = sequenceOf(
-            File("app/src/main/kotlin/com/hletrd/findx9tele/ui/controls/ProSheet.kt"),
-            File("src/main/kotlin/com/hletrd/findx9tele/ui/controls/ProSheet.kt"),
-        ).firstOrNull(File::isFile) ?: error("ProSheet.kt not found from ${File(".").absolutePath}")
-        val text = source.readText()
-
-        assertTrue(text.contains(".selectableGroup()"))
-        assertTrue(text.contains(".selectable(selected = selected, role = Role.Tab, onClick = onClick)"))
-    }
+    // (A former second test grepped ProSheet.kt's SOURCE TEXT for `.selectable(...)` substrings —
+    // it verified nothing about the rendered semantics tree and passed as long as the characters
+    // appeared anywhere in the file, so it was removed. Real Role.Tab/selected verification needs
+    // an instrumented Compose UI test; per repo convention, Compose-only behavior is covered by
+    // on-device verification.)
 }

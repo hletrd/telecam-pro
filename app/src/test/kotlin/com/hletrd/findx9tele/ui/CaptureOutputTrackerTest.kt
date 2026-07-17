@@ -80,7 +80,12 @@ class CaptureOutputTrackerTest {
     }
 
     @Test
-    fun partialFamilyDelete_hasEveryKnownFailureVisibleToTheCaller() {
+    fun wholeFamilyDelete_returnsEveryKnownSiblingForTheCallerToAttempt() {
+        // takeForDelete has no per-output success/failure concept — delete outcomes live at the
+        // MediaStore caller. What THIS seam must guarantee is that every known sibling of the
+        // capture is surfaced for the attempt, so a partial failure upstream can never be caused
+        // by the tracker withholding a family member. (An earlier second assertion here was
+        // tautological: it recomputed a locally-built map and could never fail on its own.)
         val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
         tracker.seedPriorCapture(
             listOf(
@@ -89,11 +94,7 @@ class CaptureOutputTrackerTest {
             ),
             preferredOutput = "shot.heic",
         )
-        val attempted = tracker.takeForDelete("shot.heic")
-        val results = attempted.associateWith { it != "shot.dng" }
-
-        assertEquals(setOf("shot.heic", "shot.dng"), attempted)
-        assertFalse(results.values.all { it })
+        assertEquals(setOf("shot.heic", "shot.dng"), tracker.takeForDelete("shot.heic"))
     }
 
     @Test
