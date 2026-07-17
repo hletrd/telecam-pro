@@ -1055,6 +1055,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             it.copy(mode = mode, lens = optics.lens, controls = optics.controls)
         }
         zoomPendingRatio = Float.NaN // the remap invalidated the coalesced base
+        // The remap also invalidated any in-flight hardware-key glide: its absolute target was set
+        // in the OLD zoom scale, and easing toward it in the new scale is an un-commanded jump.
+        zoomEaseTarget = null
         engine.setVideoMode(mode == CaptureMode.VIDEO, optics.lens, optics.controls)
         applyEngineTransfer(mode, _state.value.transfer)
         refreshProgramAppSide() // photo P is app-side (min-shutter rule), video P is HAL AE
@@ -1157,6 +1160,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             }
         }
         zoomPendingRatio = Float.NaN // preset/TC zoom overwrote the coalesced base
+        zoomEaseTarget = null // the TC scale flip invalidated any in-flight hardware-key glide
         markChanged(FnSlot.TELECONVERTER)
         saveSettingsIfEnabled()
     }
@@ -1182,6 +1186,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             )
         }
         zoomPendingRatio = Float.NaN // preset/TC zoom overwrote the coalesced base
+        zoomEaseTarget = null // the preset rewrite invalidated any in-flight hardware-key glide
         markChanged(FnSlot.TELECONVERTER)
         saveSettingsIfEnabled()
     }
