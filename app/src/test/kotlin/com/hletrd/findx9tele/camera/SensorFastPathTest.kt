@@ -37,6 +37,23 @@ class SensorFastPathTest {
     }
 
     @Test
+    fun `live tap-to-focus refuses the fast path - its AF override lives outside applyManualControls`() {
+        // The full rebuild sets AF_MODE_AUTO for the tapped one-shot hold AFTER applyManualControls;
+        // the fast path re-runs applyFocus, whose unconditional AF_MODE write would release the
+        // tapped focus within ~100 ms of app-side AE ticks (the architect-caught regression).
+        val delta = base.copy(iso = base.iso + 100)
+        assertTrue(sensorFastPathAdmitted(base, delta, touchAfActive = false))
+        assertFalse(sensorFastPathAdmitted(base, delta, touchAfActive = true))
+    }
+
+    @Test
+    fun `AF lock refuses the fast path - its frozen distance override lives outside applyManualControls`() {
+        val locked = base.copy(afLock = true)
+        val delta = locked.copy(exposureTimeNs = locked.exposureTimeNs * 2)
+        assertFalse(sensorFastPathAdmitted(locked, delta, touchAfActive = false))
+    }
+
+    @Test
     fun `any non-sensor field difference forces the full rebuild`() {
         assertFalse(sensorOnlyControlsDelta(base, base.copy(zoomRatio = base.zoomRatio + 1f)))
         assertFalse(

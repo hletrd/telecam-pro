@@ -841,10 +841,11 @@ class CameraController(context: Context) {
             // app-side AE loop feed this at up to 25 Hz, and EVERY full rebuild's repeating-request
             // swap gaps this HAL's stream 170-250 ms (measured) — a 2 s ruler drag was a ~5 fps
             // viewfinder exactly while judging critical focus at 300 mm. When the delta touches
-            // ONLY the sensor scalars, mutate the cached builder via the SAME derivation the full
-            // build uses, paced to >=200 ms with a trailing exact landing. Anything else keeps the
-            // full rebuild.
-            if (sensorOnlyControlsDelta(previous, normalized)) {
+            // ONLY the sensor scalars AND no tap-focus/AF-lock override is live (the fast path's
+            // applyFocus would silently release them — see sensorFastPathAdmitted), mutate the
+            // cached builder via the SAME derivation the full build uses, paced to >=200 ms with a
+            // trailing exact landing. Anything else keeps the full rebuild.
+            if (sensorFastPathAdmitted(previous, normalized, touchAfActive)) {
                 submitSensorFastPath()
             } else {
                 startPreview()
@@ -876,6 +877,11 @@ class CameraController(context: Context) {
 
     /** Camera-thread body: mutate only the sensor keys on the cached repeating builder. */
     private fun applySensorFastPath() {
+        // Admission re-check for the QUEUED trailing task: a tap-to-focus/AF-lock can arrive after
+        // the task was queued, and its own full rebuild already carried the newest sensor values —
+        // running applyFocus here would clobber the just-applied AF override. Skip, don't rebuild:
+        // any later sensor delta takes the full-rebuild branch while the override is live.
+        if (touchAfActive || controls.afLock) return
         val s = session ?: return
         val b = previewBuilder
         val cb = previewCallback
