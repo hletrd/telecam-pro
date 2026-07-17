@@ -464,7 +464,7 @@ fun CameraScreen(
                     // upright in a landscape hold).
                     .rotate(overlayRotation)
                     .clip(RoundedCornerShape(50))
-                    .background(Color.Black.copy(alpha = 0.55f))
+                    .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
                     .padding(horizontal = 12.dp, vertical = 5.dp),
             )
         }
@@ -1055,7 +1055,7 @@ private fun StatusInfoPill(state: CameraUiState, modifier: Modifier = Modifier) 
     }
     Row(
         modifier = modifier
-            .background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(8.dp))
+            .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA), RoundedCornerShape(8.dp))
             .padding(horizontal = 10.dp, vertical = 5.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -1103,7 +1103,7 @@ private fun ZoomIndicator(
             fontWeight = FontWeight.Bold,
             modifier = Modifier
                 .rotate(numberRotation)
-                .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(50))
+                .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA), RoundedCornerShape(50))
                 .padding(horizontal = 12.dp, vertical = 4.dp),
         )
         Box(
@@ -1135,7 +1135,7 @@ private fun MemoryRecallStrip(
     Row(
         modifier = modifier
             .clip(RoundedCornerShape(50))
-            .background(Color.Black.copy(alpha = 0.36f))
+            .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
             .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(50))
             .padding(4.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -1357,7 +1357,7 @@ private fun ExposureMeter(state: CameraUiState, modifier: Modifier = Modifier) {
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(14.dp))
-            .background(Color.Black.copy(alpha = 0.48f))
+            .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
             .padding(horizontal = 6.dp, vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp),

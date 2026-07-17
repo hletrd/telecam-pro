@@ -310,7 +310,7 @@ fun RecordingIndicator(elapsedMs: Long, modifier: Modifier = Modifier) {
     val timeLabel = "%02d:%02d".format(Locale.US, minutes, seconds)
     Row(
         modifier = modifier
-            .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(50))
+            .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA), RoundedCornerShape(50))
             // Keep a stable REC description; elapsed telemetry must not be re-announced every second.
             .clearAndSetSemantics { contentDescription = "Recording" },
         horizontalArrangement = Arrangement.spacedBy(6.dp),

@@ -85,6 +85,7 @@ import com.hletrd.findx9tele.camera.controlAvailability
 import com.hletrd.findx9tele.camera.controlCapabilities
 import com.hletrd.findx9tele.focus.FocusMapping
 import com.hletrd.findx9tele.ui.CameraActions
+import com.hletrd.findx9tele.ui.overlays.HUD_TEXT_SCRIM_ALPHA
 import com.hletrd.findx9tele.ui.theme.CameraColors
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -574,11 +575,18 @@ private fun formatFocusRelative(diopters: Float, minDiopters: Float): String {
 @Composable
 private fun RulerReadout(value: String, modifier: Modifier = Modifier) {
     Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        // The one number the photographer is actively adjusting sits near the TOP of the bottom
+        // cluster's gradient, where the scrim is nearly transparent — over sky/snow it competed
+        // with scene luminance unprotected while every audited HUD sibling had a tested pill.
         Text(
             text = value,
             color = CameraColors.ManualActive,
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
+            modifier = Modifier
+                .clip(RoundedCornerShape(50))
+                .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
+                .padding(horizontal = 14.dp, vertical = 2.dp),
         )
     }
 }
