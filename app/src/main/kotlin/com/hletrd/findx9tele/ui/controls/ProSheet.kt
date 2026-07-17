@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -211,10 +212,14 @@ internal fun ProSheet(
                 // panel itself no longer drags, so there is nothing left to bounce. Weighted Box because
                 // Modifier.weight is a RowScope extension.
                 Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                    // Each tab owns its own scroll position: a single shared rememberScrollState()
+                    // opened every tab at the PREVIOUS tab's offset (scroll Setup near its bottom,
+                    // pick Lens → Lens opened mid-page with its title hidden).
+                    val tabScrollStates = remember { ProSheetTab.entries.associateWith { ScrollState(initial = 0) } }
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .verticalScroll(rememberScrollState(), overscrollEffect = null)
+                            .verticalScroll(tabScrollStates.getValue(selectedTab), overscrollEffect = null)
                             .padding(horizontal = 18.dp, vertical = 16.dp),
                         verticalArrangement = Arrangement.spacedBy(20.dp),
                     ) {
