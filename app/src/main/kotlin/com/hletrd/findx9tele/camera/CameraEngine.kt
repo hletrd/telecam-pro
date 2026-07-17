@@ -877,7 +877,13 @@ class CameraEngine(private val context: Context) {
 
     fun setControls(c: ManualControls) {
         val normalized = caps?.let(c::normalizedFor) ?: c
-        controls = normalized
+        // Packet-write invariant: EVERY wholesale [controls] writer holds the engine monitor
+        // (rollbackOptics is @Synchronized, the commit-gate/caps-reconcile writers run inside
+        // synchronized(this), the zoom RMW takes it). This main-thread apply loop was the one
+        // exception — its write landing between a setupExecutor writer's read and write-back
+        // silently clobbered the route-normalized packet with one normalized against the
+        // OUTGOING caps (the VM's caps snapshot lags onCapsReady by a main-queue hop).
+        synchronized(this) { controls = normalized }
         controller?.updateControls(normalized)
     }
 
