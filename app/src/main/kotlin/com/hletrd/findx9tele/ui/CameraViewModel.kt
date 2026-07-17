@@ -259,6 +259,11 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 if (!engine.isOpticsGenerationCurrent(generation)) return@post
                 cancelPendingControls()
                 zoomPendingRatio = Float.NaN
+                // The rollback restored a different optics scale: a hardware-glide target is an
+                // ABSOLUTE number in the failed attempt's scale, and easing toward it after the
+                // restore is an un-commanded zoom run (same invariant as onModeChange/onLens/TC).
+                zoomEaseTarget = null
+                mainHandler.removeCallbacks(zoomEaseTicker)
                 _state.update {
                     it.copy(
                         mode = mode,
@@ -405,6 +410,11 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // The recalled packet supersedes a delayed manual-control snapshot from the prior setup.
         cancelPendingControls()
         zoomPendingRatio = Float.NaN
+        // MR recall / settings restore can change mode/lens/TC — i.e. the zoom SCALE. A hardware
+        // glide still easing toward a target computed in the old scale would visibly drag the
+        // just-recalled framing away from the preset (same invariant as onModeChange/onLens/TC).
+        zoomEaseTarget = null
+        mainHandler.removeCallbacks(zoomEaseTicker)
         val c = loaded.controls
         val e = loaded.extras
         val defaults = CameraUiState()
@@ -1525,6 +1535,11 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     override fun onCameraOverride(id: String?) {
         drainPendingControls()
+        // A camera-id override reopens onto a different route (different zoom scale): abandon any
+        // in-flight coalesced/gliding zoom the same way every other optics-remap door does.
+        zoomPendingRatio = Float.NaN
+        zoomEaseTarget = null
+        mainHandler.removeCallbacks(zoomEaseTicker)
         engine.setCameraOverride(id)
         _state.update { it.copy(cameraOverrideId = id) }
     }
