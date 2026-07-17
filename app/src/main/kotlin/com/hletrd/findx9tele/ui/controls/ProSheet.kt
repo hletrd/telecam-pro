@@ -41,7 +41,9 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -214,8 +216,13 @@ internal fun ProSheet(
                 Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
                     // Each tab owns its own scroll position: a single shared rememberScrollState()
                     // opened every tab at the PREVIOUS tab's offset (scroll Setup near its bottom,
-                    // pick Lens → Lens opened mid-page with its title hidden).
-                    val tabScrollStates = remember { ProSheetTab.entries.associateWith { ScrollState(initial = 0) } }
+                    // pick Lens → Lens opened mid-page with its title hidden). Saveable per tab so
+                    // the offsets survive process recreation like the old single state did.
+                    val tabScrollStates = ProSheetTab.entries.associateWith { tab ->
+                        rememberSaveable(saver = ScrollState.Saver, key = "proSheetScroll_${tab.name}") {
+                            ScrollState(initial = 0)
+                        }
+                    }
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
@@ -241,11 +248,16 @@ internal fun ProSheet(
             }
 
             // Help strip (Sony menu-tips style): empty at rest, then shows the long-pressed row's
-            // one-liner. Fixed single line so the panel doesn't jump.
+            // one-liner. Fixed single line so the panel doesn't jump — enforced with maxLines,
+            // because several help strings are 55-70 chars and a large system font scale would
+            // otherwise wrap them and grow the bottom-anchored sheet (the exact jump this
+            // comment promises against).
             Text(
                 text = helpTip.orEmpty(),
                 color = CameraColors.TextPrimary,
                 style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
                     .fillMaxWidth()
                     .semantics { liveRegion = LiveRegionMode.Polite }
