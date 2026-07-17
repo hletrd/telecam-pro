@@ -476,6 +476,14 @@ class VideoRecorder(private val context: Context) {
                     // Stop was requested but the encoder has produced no free input buffer to carry
                     // EOS for ~3 s — it is effectively wedged. Bail instead of looping until stop()'s
                     // join gives up; stop() finalizes/fails the clip based on what was actually muxed.
+                    // Degrade to video-only like every sibling audio-setup bail: if the wedge hit
+                    // before the codec ever emitted its output format (audioTrack still -1), leaving
+                    // expectedTracks == 2 would keep maybeStartMuxer waiting forever and stop()'s
+                    // saved gate would discard a perfectly good video track over a dead AAC encoder.
+                    synchronized(muxerLock) {
+                        expectedTracks = 1
+                        maybeStartMuxer()
+                    }
                     return
                 }
             }
