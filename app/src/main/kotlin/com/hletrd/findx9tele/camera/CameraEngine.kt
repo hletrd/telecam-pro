@@ -18,7 +18,10 @@ import com.hletrd.findx9tele.gl.GlPipeline
 import com.hletrd.findx9tele.storage.CaptureFamilyKey
 import com.hletrd.findx9tele.storage.CaptureFamilyMedia
 import com.hletrd.findx9tele.storage.MediaStoreWriter
+import com.hletrd.findx9tele.video.AudioReadOutcome
 import com.hletrd.findx9tele.video.VideoRecorder
+import com.hletrd.findx9tele.video.classifyAudioRead
+import com.hletrd.findx9tele.video.standbyMeterShouldRecreate
 
 /**
  * Facade tying Camera2 + GL(180° flip) + capture encoders + video recorder + MediaStore together.
@@ -3153,6 +3156,10 @@ class CameraEngine(private val context: Context) {
     private val standbyMeterOwnership =
         StandbyMeterOwnership<java.util.concurrent.CountDownLatch>()
 
+    // Consecutive standby AudioRecord generations that died on a terminal read error WITHOUT one
+    // successful PCM read; bounds the recreate-after-dead-route policy (see the meter's finally).
+    private val standbyMeterFailureStreak = java.util.concurrent.atomic.AtomicInteger(0)
+
     fun setStandbyAudioMonitor(enabled: Boolean) {
         if (!enabled) {
             standbyMeterOwnership.disable()
@@ -3183,6 +3190,10 @@ class CameraEngine(private val context: Context) {
         } ?: return
         val t = Thread({
             var audioRecord: android.media.AudioRecord? = null
+            // Read-loop outcome flags for the finally's bounded-recreation decision: a terminal
+            // negative read ends this generation; one successful PCM read resets the retry budget.
+            var sawPcm = false
+            var terminalReadError = false
             try {
                 // Reservation does not imply start admission: REC may have claimed ownership while
                 // this thread was waiting to run.
@@ -3206,7 +3217,25 @@ class CameraEngine(private val context: Context) {
                 var lastEmit = 0L
                 while (standbyMeterOwnership.ownsAndWants(owner) && recorder == null) {
                     val n = rec.read(buf, 0, buf.size)
-                    if (n <= 0) continue
+                    // Negative reads are TERMINAL framework errors (ERROR_DEAD_OBJECT after a route
+                    // loss, ERROR_INVALID_OPERATION, ...) and return synchronously — the old
+                    // `n <= 0 -> continue` hot-spun this thread forever on a dead mic and never
+                    // reached the finally release. Classify exactly like VideoRecorder's recording
+                    // loop (AudioReadPolicy): zero = transient retry, negative = end THIS
+                    // AudioRecord generation. The finally still releases exactly once; a bounded
+                    // recreation (below) re-arms only while the standby intent still wants a meter.
+                    when (classifyAudioRead(n, running = true)) {
+                        is AudioReadOutcome.Pcm -> if (!sawPcm) {
+                            sawPcm = true
+                            standbyMeterFailureStreak.set(0)
+                        }
+                        AudioReadOutcome.Retry -> continue
+                        is AudioReadOutcome.Failure -> {
+                            terminalReadError = true
+                            break
+                        }
+                        AudioReadOutcome.Stopped -> break // unreachable with running=true; explicit for exhaustiveness
+                    }
                     val now = System.nanoTime()
                     if (now - lastEmit < 100_000_000L) continue // ~10 Hz is plenty for a meter
                     lastEmit = now
@@ -3227,7 +3256,24 @@ class CameraEngine(private val context: Context) {
                 val completion = standbyMeterOwnership.complete(owner)
                 owner.release.countDown()
                 runCatching { onAudioLevel?.invoke(0f) }
-                if (completion.retryPending && !paused) startStandbyAudioMonitor(updateIntent = false)
+                if (completion.retryPending && !paused) {
+                    startStandbyAudioMonitor(updateIntent = false)
+                } else if (terminalReadError && !paused &&
+                    standbyMeterShouldRecreate(
+                        failedGenerations = standbyMeterFailureStreak.incrementAndGet(),
+                        maxRecreates = STANDBY_METER_MAX_RECREATES,
+                    )
+                ) {
+                    // Bounded, backed-off recreation after a dead-route read error: a fresh
+                    // AudioRecord usually recovers a device switch, but a persistently dead mic
+                    // must not recreate-spin — after the budget the meter stays dark (level 0)
+                    // until the standby intent itself changes. The restart path below re-checks
+                    // the CURRENT intent, so it cannot override a newer disable/background/REC
+                    // transition; the release latch above is already counted down, so REC handoff
+                    // is never delayed by this backoff.
+                    runCatching { Thread.sleep(STANDBY_METER_RETRY_BACKOFF_MS) }
+                    startStandbyAudioMonitor(updateIntent = false)
+                }
             }
         }, "StandbyAudioMeter")
         runCatching { t.start() }.onFailure {
@@ -3238,6 +3284,12 @@ class CameraEngine(private val context: Context) {
     }
 
     private companion object {
+        // Standby-meter dead-route recreation budget: at most this many consecutive AudioRecord
+        // generations that never produced a PCM read, each after a short backoff (a persistently
+        // dead mic must not recreate-spin; any successful read resets the budget).
+        private const val STANDBY_METER_MAX_RECREATES = 3
+        private const val STANDBY_METER_RETRY_BACKOFF_MS = 300L
+
         // Exposure floor while a zoom gesture is live (1/30 s → ≥30 fps preview when ISO headroom allows).
         private const val ZOOM_SMOOTH_EXPOSURE_NS = 33_333_333L
 

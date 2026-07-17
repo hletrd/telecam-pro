@@ -19,6 +19,14 @@ internal fun classifyAudioRead(byteCount: Int, running: Boolean): AudioReadOutco
     else -> AudioReadOutcome.Failure(byteCount)
 }
 
+/**
+ * Standby-meter recreation policy after a terminal read error: recreate only while the bounded
+ * budget of consecutive failed generations (no successful PCM read in any of them) is not
+ * exhausted. Generation counting starts at 1 for the first failed owner.
+ */
+internal fun standbyMeterShouldRecreate(failedGenerations: Int, maxRecreates: Int): Boolean =
+    failedGenerations in 1..maxRecreates
+
 /** Builds the terminal failure retained by [FirstFailureSignal] for a running read error. */
 internal fun audioReadFailure(code: Int): IllegalStateException =
     IllegalStateException("AudioRecord.read failed: ${audioReadErrorLabel(code)} ($code)")
