@@ -150,11 +150,12 @@ class GyroEis(context: Context) : SensorEventListener {
     // internal (not private): the pure decision seams below and their unit tests reference the two
     // gravity thresholds by name so the boundary math stays single-sourced.
     internal companion object {
-        // Sensors are registered at an explicit ~200 Hz sampling period (5000 µs) rather than
-        // SENSOR_DELAY_FASTEST (~500-1000 Hz) — the GL loop only consumes the result once per
-        // rendered frame (30-60 Hz), so anything faster is wasted CPU/battery with no
-        // stabilization-quality benefit.
-        const val SAMPLING_PERIOD_US = 5000
+        // The accelerometer is registered at a UI-rate ~16.7 Hz period (60 ms): its only live
+        // consumers are the horizon level overlay and the discrete capture orientation, both read
+        // at ≤10 Hz — the earlier explicit 200 Hz period (chosen for the removed GL EIS loop) fed
+        // 12× more samples than anything consumed (battery). If the gyroscope is ever
+        // re-registered for EIS it needs its OWN faster period; do not reuse this one.
+        const val SAMPLING_PERIOD_US = 60_000
 
         // In-plane gravity magnitude (m/s²) above which the phone is considered clearly HELD (not
         // flat), so its discrete orientation can be trusted. ~4.9 = half g ≈ tilted ≥30° from flat.
@@ -172,9 +173,10 @@ class GyroEis(context: Context) : SensorEventListener {
         // correct. Retune alongside SAMPLING_PERIOD_US if the sampling rate changes.
         const val LOW_PASS_ALPHA = 0.1f
 
-        // Per-sample low-pass coefficient for the accelerometer-derived absolute roll. Heavier
-        // smoothing is unnecessary here since it only feeds a UI overlay, not EIS correction.
-        const val ROLL_LOW_PASS_ALPHA = 0.2f
+        // Per-sample low-pass coefficient for the accelerometer-derived absolute roll. Tuned WITH
+        // SAMPLING_PERIOD_US: the design time-constant is ~20 ms (0.2 at the old 5 ms period);
+        // at the 60 ms UI-rate period the same corner needs ~0.75. Retune together.
+        const val ROLL_LOW_PASS_ALPHA = 0.75f
     }
 }
 
