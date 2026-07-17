@@ -1165,7 +1165,7 @@ private fun MemoryRecallStrip(
             Box(
                 contentAlignment = Alignment.Center,
                 modifier = Modifier
-                    .sizeIn(minWidth = 40.dp, minHeight = 48.dp)
+                    .sizeIn(minWidth = 48.dp, minHeight = 48.dp) // 48 dp floor (UX policy), like TeleChip
                     .semantics {
                         contentDescription = if (saved) {
                             "${slot.label} $name $summary"
