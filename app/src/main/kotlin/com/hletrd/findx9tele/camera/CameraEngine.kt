@@ -1371,6 +1371,7 @@ class CameraEngine(private val context: Context) {
                     val uri = activeRecordingUri
                     val captureId = activeRecordingCaptureId
                     activeRecordingUri = null
+                    activeRecordingCaptureId = 0 // stale-until-overwritten otherwise (ARCH-8)
                     OwnedRecording(owned, uri, captureId)
                 }
             }
@@ -2657,6 +2658,7 @@ class CameraEngine(private val context: Context) {
             val ownedUri = activeRecordingUri
             val ownedCaptureId = activeRecordingCaptureId
             activeRecordingUri = null
+            activeRecordingCaptureId = 0 // stale-until-overwritten otherwise (ARCH-8)
             Triple(owned, ownedUri, ownedCaptureId)
         }
         // ORDERED teardown: finishRecording (rec.stop() → codec release; joins the drain threads up
@@ -2688,7 +2690,10 @@ class CameraEngine(private val context: Context) {
                 false
             } else {
                 recorder = null
-                if (activeRecordingUri == uri) activeRecordingUri = null
+                if (activeRecordingUri == uri) {
+                    activeRecordingUri = null
+                    activeRecordingCaptureId = 0 // stale-until-overwritten otherwise (ARCH-8)
+                }
                 true
             }
         }
@@ -2806,6 +2811,7 @@ class CameraEngine(private val context: Context) {
                 val ownedUri = activeRecordingUri
                 val ownedCaptureId = activeRecordingCaptureId
                 activeRecordingUri = null
+                activeRecordingCaptureId = 0 // stale-until-overwritten otherwise (ARCH-8)
                 Triple(owned, ownedUri, ownedCaptureId)
             }
         }
@@ -2942,6 +2948,7 @@ class CameraEngine(private val context: Context) {
                 val uri = activeRecordingUri
                 val captureId = activeRecordingCaptureId
                 activeRecordingUri = null
+                activeRecordingCaptureId = 0 // stale-until-overwritten otherwise (ARCH-8)
                 detachAndFinalizeRecording(rec, uri, captureId)
             }
         }
