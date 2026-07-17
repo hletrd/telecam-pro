@@ -56,6 +56,32 @@ internal fun normalizeZoomRequest(
     return bounds?.let { value.coerceIn(it.lower, it.upper) } ?: value
 }
 
+/** One ~30 Hz hardware-glide tick decision. */
+internal sealed interface ZoomEaseStep {
+    /** Apply [value] and keep the glide ticking. */
+    data class Step(val value: Float) : ZoomEaseStep
+
+    /** Apply [target] once and stop the glide. */
+    data class Land(val target: Float) : ZoomEaseStep
+}
+
+/**
+ * One hardware-glide tick: exponential approach in log-zoom space (`cur * (target/cur)^0.4`), so
+ * the sweep feels like a powered zoom rocker. Lands (applies the exact target and stops) when the
+ * remaining log-distance is inside [EASE_LANDING_LOG], or immediately when either value is
+ * non-finite/non-positive — a corrupted current ratio (0/NaN) would otherwise make pow/ln produce
+ * NaN, and NaN comparisons are always false, keeping a ~30 Hz ticker alive forever.
+ */
+internal fun zoomEaseStep(current: Float, target: Float): ZoomEaseStep {
+    if (!current.isFinite() || current <= 0f) return ZoomEaseStep.Land(target)
+    val next = (current * Math.pow((target / current).toDouble(), EASE_EXPONENT)).toFloat()
+    if (!next.isFinite() || next <= 0f) return ZoomEaseStep.Land(target)
+    if (abs(kotlin.math.ln((target / next).toDouble())) < EASE_LANDING_LOG) {
+        return ZoomEaseStep.Land(target)
+    }
+    return ZoomEaseStep.Step(next)
+}
+
 internal data class RestoredOptics(
     val lens: LensChoice,
     val teleconverter: Boolean,
@@ -126,6 +152,8 @@ internal fun restoredOptics(
 
 private const val SNAP_FRACTION = 0.06f
 private const val SNAP_EPSILON = 0.001f
+private const val EASE_EXPONENT = 0.4
+private const val EASE_LANDING_LOG = 0.004
 private const val MIN_PHOTO_ZOOM = 0.6f
 private const val MAX_PHOTO_UNIFIED_ZOOM = 20f
 private const val MAX_VIDEO_LOCAL_ZOOM = 10f

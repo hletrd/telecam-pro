@@ -981,34 +981,26 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     private val zoomEaseTicker = object : Runnable {
         override fun run() {
             val target = zoomEaseTarget ?: return
-            // Non-finite/non-positive guard: a zoomRatio of 0/NaN (e.g. a corrupted persisted value
-            // slipping past the load clamp) would make pow/ln produce NaN, and NaN comparisons are
-            // always false — the ticker would re-post itself at ~30 Hz FOREVER with a broken readout.
-            val cur = currentZoomBase().takeIf { it.isFinite() && it > 0f } ?: run {
-                zoomEaseTarget = null
-                applyZoomRatio(target)
-                return
-            }
-            val next = (cur * Math.pow((target / cur).toDouble(), 0.4)).toFloat()
-            if (!next.isFinite() || next <= 0f) {
-                zoomEaseTarget = null
-                applyZoomRatio(target)
-                return
-            }
+            val cur = currentZoomBase()
             // applyZoomRatio, NOT onZoomRatio: the public setter cancels the glide (manual takeover).
-            if (kotlin.math.abs(kotlin.math.ln((target / next).toDouble())) < 0.004) {
-                zoomEaseTarget = null
-                applyZoomRatio(target)
-                return
+            // The per-tick math (incl. the non-finite/non-positive guard that once let a corrupted
+            // ratio keep a NaN ticker alive forever) is the pure, unit-tested zoomEaseStep.
+            when (val step = zoomEaseStep(cur, target)) {
+                is ZoomEaseStep.Land -> {
+                    zoomEaseTarget = null
+                    applyZoomRatio(step.target)
+                }
+                is ZoomEaseStep.Step -> {
+                    val applied = applyZoomRatio(step.value)
+                    // A cap/snap may make the mathematical target unreachable. Stop as soon as
+                    // application makes no progress instead of keeping a 30 Hz loop alive forever.
+                    if (applied.isFinite() && kotlin.math.abs(applied - cur) < 0.0001f) {
+                        zoomEaseTarget = null
+                        return
+                    }
+                    mainHandler.postDelayed(this, 33)
+                }
             }
-            val applied = applyZoomRatio(next)
-            // A cap/snap may make the mathematical target unreachable. Stop as soon as application
-            // makes no progress instead of keeping a 30 Hz main-thread loop alive forever.
-            if (applied.isFinite() && kotlin.math.abs(applied - cur) < 0.0001f) {
-                zoomEaseTarget = null
-                return
-            }
-            mainHandler.postDelayed(this, 33)
         }
     }
 
