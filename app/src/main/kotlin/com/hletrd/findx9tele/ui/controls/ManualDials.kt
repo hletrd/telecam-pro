@@ -137,7 +137,11 @@ fun ManualDialCluster(
     var openDial by remember { mutableStateOf<DialType?>(null) }
     val controls = state.controls
     val caps = state.caps
-    val availability = controlAvailability(caps?.controlCapabilities(), controls)
+    // Keyed remember: see TopBar — the projection is pure in (caps, controls) and telemetry ticks
+    // recompose this cluster at 5-10 Hz without changing either input.
+    val availability = remember(caps, controls) {
+        controlAvailability(caps?.controlCapabilities(), controls)
+    }
     val dialOpen = openDial != null
 
     // Route changes can replace the exact OFF mode/range behind an already-open ruler. Close it on

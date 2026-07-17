@@ -757,7 +757,12 @@ private fun TopBar(
     glyphRotation: Float = 0f,
 ) {
     val recordingLocked = state.isRecording
-    val availability = controlAvailability(state.caps?.controlCapabilities(), state.controls)
+    // Keyed remember: capability projection allocates ~9 filtered lists; recomputing it on EVERY
+    // recomposition made each 5-10 Hz telemetry tick (audio level, roll, REC timer) re-derive it
+    // although caps/controls hadn't changed.
+    val availability = remember(state.caps, state.controls) {
+        controlAvailability(state.caps?.controlCapabilities(), state.controls)
+    }
     Row(
         modifier = modifier
             .fillMaxWidth()
