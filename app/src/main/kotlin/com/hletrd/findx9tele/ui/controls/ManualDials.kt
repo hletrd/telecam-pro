@@ -933,9 +933,20 @@ fun RulerSlider(
             .padding(horizontal = 4.dp)
             .pointerInput(enabled, totalUnits, pxPerUnit, snap) {
                 if (!enabled) return@pointerInput
+                // Publication is FRAME-GATED (~60 Hz): on this 120 Hz touch panel a per-event
+                // onFractionChange re-normalized controls and re-published the whole CameraUiState
+                // at input rate — the documented pre-coalescer pinch-jank mechanism, alive on the
+                // continuous rulers. The ruler's own strip still follows the finger per event
+                // (localUnit only invalidates this Canvas draw), and drag end always lands the
+                // exact final value the gate may have swallowed.
+                var lastEmitMs = 0L
+                var emittedUnit = Float.NaN
                 detectHorizontalDragGestures(
-                    onDragStart = { isDragging = true },
-                    onDragEnd = { isDragging = false },
+                    onDragStart = { isDragging = true; lastEmitMs = 0L; emittedUnit = Float.NaN },
+                    onDragEnd = {
+                        isDragging = false
+                        if (emittedUnit != localUnit) onFractionChange(localUnit / totalUnits)
+                    },
                     onDragCancel = { isDragging = false },
                 ) { change, dragAmount ->
                     change.consume()
@@ -944,7 +955,12 @@ fun RulerSlider(
                     val next = if (snap) contUnit.roundToInt().toFloat() else contUnit
                     if (snap && next != localUnit) view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
                     localUnit = next
-                    onFractionChange(localUnit / totalUnits)
+                    val now = android.os.SystemClock.uptimeMillis()
+                    if (now - lastEmitMs >= 16) {
+                        lastEmitMs = now
+                        emittedUnit = next
+                        onFractionChange(next / totalUnits)
+                    }
                 }
             },
     ) {
