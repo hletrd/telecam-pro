@@ -335,6 +335,16 @@ class CameraController(context: Context) {
         }
     }
 
+    /**
+     * Still-truth-only zoom update for THROTTLED (non-submitted) ticks: capturePhoto snapshots
+     * [controls], so a shutter press inside the ~200 ms throttle window must see the ratio the
+     * viewfinder already frames (GL zooms instantly), not the previous submitted tick's. No
+     * repeating-request touch here — that is exactly what the throttle exists to avoid.
+     */
+    fun noteRequestZoom(requestRatio: Float) {
+        postToCamera { controls = controls.copy(zoomRatio = requestRatio) }
+    }
+
     /** Camera-thread body of the zoom fast path; submits [ratio] on the repeating stream only. */
     private fun submitZoomFastPath(ratio: Float) {
         val s = session ?: return

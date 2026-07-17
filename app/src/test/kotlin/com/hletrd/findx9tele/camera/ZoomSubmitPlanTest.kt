@@ -71,4 +71,32 @@ class ZoomSubmitPlanTest {
         assertTrue(p.submitNow)
         assertEquals(4f, p.halTarget, 0f)
     }
+
+    // ---- controlsZoomRatio: the still-request truth (8e12013 exact-ratio invariant + AGG3-27) ----
+    // A still snapshots the controller's controls, so EVERY plan — submitted or throttled, wide-
+    // aimed or exact — must carry the EXACT requested ratio for the still truth. The wide aim is
+    // preview-only; the throttle may swallow the repeating submit but never the framing truth.
+
+    @Test
+    fun `mid-gesture wide aim still carries the exact ratio for stills`() {
+        val p = plan(4f, active = true, now = 300L, last = 0L)
+        assertTrue(p.submitNow)
+        assertEquals(4f / margin, p.halTarget, 1e-6f)
+        assertEquals(4f, p.controlsZoomRatio, 0f)
+    }
+
+    @Test
+    fun `throttled tick still carries the exact ratio for stills`() {
+        // The AGG3-27 window: submit swallowed, but a shutter press here must frame this ratio.
+        val p = plan(4f, active = true, now = 199L, last = 0L)
+        assertFalse(p.submitNow)
+        assertEquals(4f, p.controlsZoomRatio, 0f)
+    }
+
+    @Test
+    fun `idle submit carries the same exact ratio in both fields`() {
+        val p = plan(4f, active = false)
+        assertEquals(4f, p.halTarget, 0f)
+        assertEquals(4f, p.controlsZoomRatio, 0f)
+    }
 }

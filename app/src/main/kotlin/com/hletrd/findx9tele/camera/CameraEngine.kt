@@ -1917,7 +1917,12 @@ class CameraEngine(private val context: Context) {
         )
         if (plan.submitNow) {
             lastHalZoomSubmitMs = now
-            controller?.setZoomRatio(plan.halTarget, requestRatio = z)
+            controller?.setZoomRatio(plan.halTarget, requestRatio = plan.controlsZoomRatio)
+        } else {
+            // A swallowed tick must STILL update the controller's still-request truth: the
+            // viewfinder (GL target) already frames z, and a shutter press inside the throttle
+            // window would otherwise capture the PREVIOUS tick's ratio (aggregate AGG3-27).
+            controller?.noteRequestZoom(plan.controlsZoomRatio)
         }
     }
 

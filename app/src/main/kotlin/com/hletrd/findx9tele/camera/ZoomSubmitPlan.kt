@@ -1,7 +1,16 @@
 package com.hletrd.findx9tele.camera
 
-/** One HAL zoom-submit decision for a zoom tick (see [resolveHalZoomSubmit]). */
-internal data class ZoomSubmitPlan(val halTarget: Float, val submitNow: Boolean)
+/**
+ * One HAL zoom-submit decision for a zoom tick (see [resolveHalZoomSubmit]).
+ * [controlsZoomRatio] is the EXACT requested ratio the controller's still-request truth must carry
+ * for this tick REGARDLESS of [submitNow] — a shutter press inside the throttle window must frame
+ * what the viewfinder shows, never the previous tick's ratio and never the wide-aimed [halTarget].
+ */
+internal data class ZoomSubmitPlan(
+    val halTarget: Float,
+    val submitNow: Boolean,
+    val controlsZoomRatio: Float,
+)
 
 /**
  * The HAL half of a zoom tick, as a pure decision so the throttle/wide-aim rules are unit-testable
@@ -30,5 +39,5 @@ internal fun resolveHalZoomSubmit(
         requestedZoom
     }
     val submitNow = !interactionActive || nowMs - lastSubmitMs >= throttleMs
-    return ZoomSubmitPlan(halTarget = halTarget, submitNow = submitNow)
+    return ZoomSubmitPlan(halTarget = halTarget, submitNow = submitNow, controlsZoomRatio = requestedZoom)
 }
