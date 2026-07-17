@@ -459,6 +459,19 @@ internal fun lensLabel(lens: com.hletrd.findx9tele.camera.LensChoice): String = 
     com.hletrd.findx9tele.camera.LensChoice.TELE10X -> "10×"
 }
 
+// The 3× caption must be TRUTHFUL about the converter: lens picks are zoom presets that do NOT
+// bundle TELE, so an unconditional "+ TC = 300 mm" claimed the afocal correction was active when
+// the adjacent toggle was off — an operator could shoot a mounted converter uncorrected.
+internal fun lensFocalCaption(
+    lens: com.hletrd.findx9tele.camera.LensChoice,
+    teleconverter: Boolean,
+): String = when (lens) {
+    com.hletrd.findx9tele.camera.LensChoice.ULTRAWIDE -> "14 mm"
+    com.hletrd.findx9tele.camera.LensChoice.MAIN -> "23 mm"
+    com.hletrd.findx9tele.camera.LensChoice.TELE3X -> if (teleconverter) "70 mm + TC = 300 mm" else "70 mm"
+    com.hletrd.findx9tele.camera.LensChoice.TELE10X -> "230 mm"
+}
+
 internal fun driveModeLabel(mode: DriveMode): String = when (mode) {
     DriveMode.SINGLE -> "Single"
     DriveMode.BURST -> "Burst"

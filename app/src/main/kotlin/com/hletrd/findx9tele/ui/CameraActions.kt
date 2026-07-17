@@ -128,7 +128,8 @@ interface CameraActions {
     fun onToggleRecording()
     fun onHardwareHalfPress(active: Boolean)
 
-    // Lens (bundles teleconverter mode: 3× on, others off)
+    // Lens picks are ZOOM PRESETS — they do NOT bundle the teleconverter. TELE stays on only when
+    // it already is AND the pick is its 3× host lens; onToggleTeleconverter owns converter state.
     fun onLens(choice: com.hletrd.findx9tele.camera.LensChoice)
 
     // Settings

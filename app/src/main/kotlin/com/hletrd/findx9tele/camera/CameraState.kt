@@ -261,10 +261,11 @@ val TELE_ZOOM_SNAPS = floatArrayOf(30f, 60f)
 /**
  * The four rear lenses, addressed by their 35mm-equivalent focal length (the app resolves each to
  * the back camera whose equiv focal is closest — no hardcoded ids). [TELE3X] is the 3×/70 mm
- * periscope the Hasselblad teleconverter clamps onto; selecting it bundles teleconverter mode ON
- * (the afocal 180° flip — stabilization at 300 mm is the HAL's OIS+EIS via [VideoStabMode], not
- * app-side gyro warping), and selecting any other lens turns teleconverter mode OFF, all in one
- * action.
+ * periscope the Hasselblad teleconverter clamps onto. Lens picks are ZOOM PRESETS on the seamless
+ * logical camera — they do NOT bundle teleconverter mode: TELE stays on only when it already is
+ * AND the pick is its 3× host lens, and the separate TELE toggle owns converter shooting (the
+ * afocal 180° flip — stabilization at 300 mm is the HAL's OIS+EIS via [VideoStabMode], not
+ * app-side gyro warping).
  */
 enum class LensChoice(val targetEquivMm: Float, val label: String, val zoomPreset: Float) {
     ULTRAWIDE(14f, "0.6×", 0.6f),
@@ -547,8 +548,8 @@ data class CameraUiState(
     // One Activity-facing gate for every full-screen modal (settings, Fn, review). Hardware shutter,
     // zoom and half-press input must not mutate the hidden viewfinder behind any of them.
     val cameraInputBlocked: Boolean = false,
-    // Selected rear lens. Default 1× main for a normal app launch. Selecting 3× bundles
-    // teleconverter mode on; other lenses bundle it off (see [LensChoice]).
+    // Selected rear lens. Default 1× main for a normal app launch. Lens picks are zoom presets
+    // and do NOT bundle teleconverter mode (see [LensChoice]); the TELE toggle owns the converter.
     val lens: LensChoice = LensChoice.MAIN,
     // Teleconverter mode: manual (not auto-detected). ON = afocal 180° flip; locked to the 3× lens.
     val teleconverterMode: Boolean = false,

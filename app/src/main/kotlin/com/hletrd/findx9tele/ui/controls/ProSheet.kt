@@ -770,8 +770,9 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
 private fun LensTab(state: CameraUiState, actions: CameraActions) {
     TabTitle("Lens")
     SectionHeader("Optics")
-    // Picking a lens bundles teleconverter mode: 3× turns it ON (afocal 180° flip), every other lens
-    // turns it OFF — one tap. The teleconverter is locked to the 3× periscope.
+    // Lens picks are ZOOM PRESETS on the seamless logical camera — they do NOT bundle the
+    // teleconverter. TELE stays on only when it already is AND the pick is its 3× host lens; the
+    // separate toggle below pins converter shooting (afocal 180° flip, standalone 3× camera).
     SegmentedSelector(
         label = "Lens",
         options = LensChoice.entries,
@@ -779,13 +780,11 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
         labelFor = ::lensLabel,
         onSelect = actions::onLens,
     )
-    val focalCaption = when (state.lens) {
-        LensChoice.ULTRAWIDE -> "14 mm"
-        LensChoice.MAIN -> "23 mm"
-        LensChoice.TELE3X -> "70 mm + TC = 300 mm"
-        LensChoice.TELE10X -> "230 mm"
-    }
-    Text(focalCaption, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
+    Text(
+        lensFocalCaption(state.lens, state.teleconverterMode),
+        color = CameraColors.TextSecondary,
+        style = MaterialTheme.typography.labelSmall,
+    )
     ToggleRow(
         label = "Teleconverter",
         checked = state.teleconverterMode,
