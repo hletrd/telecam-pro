@@ -118,11 +118,17 @@ These do not require a code or metadata change unless the result exposes a defec
 
 Full records in `docs/plans/2026-07-17-rpf-cycle1.md` § Deferrals:
 
-- **AGG-19 (Low/Medium)** — `FINDER_MIN_ZOOM = 1.15` is likely too low to be useful. Exit: a
-  device session with the converter mounted tunes the threshold (or a zoomComp-based gate).
-- **AGG-20 (Low/Medium)** — app-side AE ticks pay full repeating-request rebuilds (~180 ms HAL
-  stall each; post-gesture photo-P re-center emits a submit train). Exit: device measurement; if
-  visible, add a sensor-keys-only fast path on the cached builder (same pattern as zoom).
+- **AGG-19 (Low/Medium)** — `FINDER_MIN_ZOOM = 1.15` is likely too low to be useful, and (cycle-2
+  review) the gate AXIS itself is suspect: by the honest single-stream contract the at-rest PIP
+  duplicates the main view — it is only informative during punch-in or while `zoomComp > 1`
+  (mid-gesture), so the device session should evaluate `punchIn || zoomComp > k` as the gate
+  rather than a raw zoom floor. Exit: a device session with the converter mounted tunes the
+  threshold AND settles the axis question.
+- **AGG-20 (Low/Medium)** — RETIRED BY IMPLEMENTATION (cycle 2, 2026-07-17): the sensor-keys-only
+  fast path on the cached builder landed (`sensorOnlyControlsDelta`/`applySensorValueControls`,
+  ≥200 ms pacing with trailing exact landing), covering the app-side AE pair and manual
+  focus/ISO/shutter drags. Residual: on-device confirmation that dial-drag preview cadence
+  improved rides the normal per-cycle device verification.
 
 ## Verification Quick Reference
 

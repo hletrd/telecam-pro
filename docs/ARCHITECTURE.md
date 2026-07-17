@@ -45,8 +45,12 @@ Two critical consequences of the afocal converter drive the entire design:
 | `CameraState.kt` | Enums plus `CameraUiState` — the shared UI and runtime-state language. |
 | `CaptureCapabilities.kt` | Flattens Camera2 characteristics into exact advertised mode sets plus maximum AE/AF region counts, alongside manual-sensor, RAW, HDR, focus, and stream capabilities. |
 | `ControlAvailability.kt` | Projects those exact mode arrays, manual/range facts, and AE/AF region maxima into enum choices and admission flags shared by settings, top-bar/Fn cycles, and quick rulers. Sparse routes use a neutral singleton; before caps arrive, the current singleton remains visible but disabled. |
-| `ManualControls.kt` | Immutable snapshot of all pro capture parameters (focus, ISO, shutter, white balance, metering, processing). `normalizeControlsForRoute` applies one exact capability/zoom boundary to live and recalled packets before accepted Engine/UI/request publication. |
+| `ManualControls.kt` | Immutable snapshot of all pro capture parameters (focus, ISO, shutter, white balance, metering, processing). `normalizeControlsForRoute` applies one exact capability/zoom boundary to live and recalled packets before accepted Engine/UI/request publication. Also owns the sensor fast-path admission predicate (`sensorOnlyControlsDelta`) and the shared sensor-key request derivation (`applySensorValueControls`). |
 | `RotationMath.kt` | Pure, unit-tested functions for preview/capture/EXIF rotation math and the video muxer orientation hint (extracted from CameraEngine). |
+| `RendererConfig.kt` | One immutable snapshot of every renderer-only assist (peaking, zebra, false color, punch-in, tele finder, …) with a store that replays the complete snapshot into each fresh GL generation. |
+| `OpticsConstraints.kt` | Pure admission/rollback rules for optics transactions (mode/lens/TC transitions, structural-reconfigure decisions), unit-tested off-device. |
+| `ZoomSubmitPlan.kt` | Pure HAL zoom-submit decision (throttle window + mid-gesture wide-aim clamp), extracted from `CameraEngine.setZoomRatio` and unit-tested. |
+| `RecordingAdmissionLatch.kt` | Monitor-owning REC stop-during-start latch (`tryBeginAdmission`/`requestStop`/`completeAdmission`), extracted from CameraEngine and race-tested. |
 | `AutoExposure.kt` | Pure, unit-tested app-side AE math: SHUTTER/ISO-priority drive functions and the photo-P program line (`driveProgram`), metered off the GL luma histogram. |
 | `OcsProbe.kt` | Debug-source-set-only OPPO CameraUnit/OCS availability probe (release builds compile a no-op stub and do not link the OEM SDK). |
 | `VendorTagInspector.kt` | Debug-only Camera2 capability logger for device-specific request/session keys. |
@@ -58,9 +62,11 @@ Two critical consequences of the afocal converter drive the entire design:
 | **stab/** | |
 | `GyroEis.kt` | Sensor helper for gravity-derived device orientation and the horizon overlay. It retains residual-shake math, but the shipping GL path disables app-side EIS in favor of HAL OIS+EIS. |
 | **capture/** | |
+| `StillSnapshot.kt` | YUV_420_888→NV21 repack (row-wise arraycopy fast paths + generic fallback) and lazy JPEG encode for logical-camera stills, which cannot use the HAL JPEG path. |
 | `HeifCapture.kt` | Encodes HEIF from a Bitmap after crop and `captureRotationDegrees()` pixel rotation. Writes via the ioExecutor off the camera thread. |
 | `DngCapture.kt` | Writes DNG (RAW sensor frame) using DngCreator. Sets EXIF orientation tag (cannot pixel-rotate Bayer CFA). Synchronous in the photo callback while the raw Image is live. |
 | **video/** | |
+| `AudioReadPolicy.kt` | Pure classification of `AudioRecord.read` return codes (PCM / transient retry / normal stop / terminal failure) shared by the recorder loop and the standby meter, plus the meter's bounded-recreate budget rule. |
 | `VideoRecorder.kt` | MediaCodec HEVC/AVC encoder + AAC audio encoder + MediaMuxer. Exactly-once owner of the codec input Surface: clean release follows verified EGL detach and partial setup also releases; a still-live drain takes the documented no-release abandon path. Video input comes from GL already flipped; audio runs separately with software PCM gain. A negative `AudioRecord.read` while running is a terminal recorder failure, not empty PCM; after stop it is normal EOS. |
 | `AudioInputInspector.kt` | Resolves the preferred recording input (built-in / wired / USB / BT) against connected AudioDeviceInfo entries; provides the route labels shown in the UI. |
 | `ColorProfiles.kt` | Builds MediaFormat specs for HEVC Main10 (Rec.2020 + HLG/Log) and AVC 8-bit SDR. Tags dynamic range, color space, transfer function. |
@@ -73,6 +79,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | **focus/** | |
 | `FocusMapping.kt` | Maps the UI slider (0..1) bidirectionally to LENS_FOCUS_DISTANCE with `diopters = minFocusDiopters * slider^3`. There is no additive offset, preserving exact infinity at slider 0 while concentrating travel near it. |
 | **ui/** | |
+| `ZoomMath.kt` | Pure zoom-scale math shared by engine and UI: effective bounds, TELE magnetic-snap normalization, mode/restore scale remaps, and the hardware-glide ease-step function. |
 | `CameraScreen.kt` | Compose root layout: preview TextureView, shutter button, mode toggle, gallery thumbnail, fixed settings panel, and capture overlays. Stateless, reads CameraUiState. |
 | `CameraViewModel.kt` | StateFlow<CameraUiState> owner. Turns CameraActions into CameraEngine calls, publishes capability-normalized controls, applies gesture changes with a trailing throttle, and coordinates capture-id review ownership. |
 | `CaptureOutputTracker.kt` | Bounded, synchronized ownership map for monotonic capture ids and every processed/RAW sibling. Selects the truthful review owner, upgrades RAW placeholders, tombstones whole captures before deletion, and seeds a reconstructed prior-process family below every live capture id. One open-review family can be pinned outside ordinary bounded history until close/delete. |
@@ -88,6 +95,8 @@ Two critical consequences of the afocal converter drive the entire design:
 | **ui/theme/** | |
 | `Theme.kt` | Material3 dark theme tuned for a Sony-style pro camera surface, typography, color palette, text field/button shapes. |
 | `MainActivity.kt` | Entry point. Requests CAMERA/RECORD_AUDIO permissions at runtime (ColorOS blocks pm grant). CAMERA request history distinguishes fresh/cancelled prompts from fixed denial before offering Settings. Hosts the Compose root and ViewModel. Lifecycle: `onStart` calls the ViewModel's `onStart`, which resumes the engine; `onStop` calls the ViewModel's `onStop`, which pauses it. |
+| `CameraPermissionPolicy.kt` | Pure CAMERA-permission decision table: fresh install / cancelled prompt / genuine permanent denial, driven only by completed request history plus rationale state. |
+| `HardwareInputPolicy.kt` | Pure mapping of the camera-control button's key events (full press, capacitive zoom slides in both OEM code families, half-press if ever delivered) to configurable `HardwareKeyAction`s. |
 | `TeleCameraApp.kt` | Application class, kept minimal. No wiring needed; all setup in MainActivity/ViewModel. |
 
 ---
@@ -442,11 +451,49 @@ number in the OLD scale; surviving a remap it eased toward an un-commanded frami
 gesture EDGE costs one repeating-request swap: `setZoomInteraction` folds the current/final exact
 ratio into the fps-boost flip's own rebuild (`setSmoothPreviewBoost(active, finalZoom)`), instead
 of the old rebuild-then-correct pair that transiently re-submitted the stale mid-gesture wide-aimed
-ratio. The engine's zoom read-modify-write on `controls` shares the packet writers' monitor, and
-`onZoomResult → gl.setHalZoom` forwarding is change-gated with a per-rebuild reset.
+ratio. The engine's zoom read-modify-write on `controls` shares the packet writers' monitor (as
+does `setControls` — every wholesale `controls` writer holds the engine monitor), and
+`onZoomResult → gl.setHalZoom` forwarding is change-gated with a per-rebuild reset. The
+throttle/wide-aim decision itself is the pure `resolveHalZoomSubmit` (`camera/ZoomSubmitPlan.kt`,
+unit-tested), and two additions keep captures WYSIWYG: the controller stores the EXACT requested
+ratio for still requests (`setZoomRatio(halRatio, requestRatio)` — a still must never inherit the
+mid-gesture ~1.2×-wide aim), and a QUIET-WINDOW landing (`landExactZoom`, ~250 ms after the last
+flush) lands the exact ratio on the HAL well before the 700 ms fps-boost tail ends, so a recorded
+clip stops carrying the wide framing after finger-up. Scale-remap invalidation of
+`zoomPendingRatio`/`zoomEaseTarget` covers ALL the remap doors: `onModeChange`,
+`onToggleTeleconverter`, `onLens`, `onStop`, **`onOpticsRollback`, `applyLoaded` (settings/MR
+recall), and the debug `onCameraOverride`** — the last three were the doors 6affe20 originally
+missed. The glide's per-tick math is the pure `zoomEaseStep` (`ui/ZoomMath.kt`, unit-tested).
 
 This zoom coalescer is separate from the general `ManualControls` packet throttle, which applies the
-newest full-control snapshot every 40 ms (25 Hz) during continuous dial input.
+newest full-control snapshot every 40 ms (25 Hz) during continuous dial input. The controller pairs
+it with a **sensor fast path** mirroring the zoom one: when an `updateControls` delta touches ONLY
+the high-churn sensor scalars (manual focus distance; ISO + exposure time — the app-side AE pair),
+admission is the pure `sensorOnlyControlsDelta` and the cached repeating builder gets only its
+sensor keys re-derived via the same `applySensorValueControls` the full rebuild uses, paced ≥200 ms
+with a trailing exact landing. Anything else still takes the full `startPreview` rebuild. Ruler
+drags are additionally frame-gated at the source (`RulerSlider` publishes ≤60 Hz with an exact
+landing on drag end; the ruler's own canvas still follows the finger per event).
+
+### Tele Finder PIP (opt-in, photo-only)
+
+An Assist toggle (default OFF, persisted) draws a bottom-left corner viewport re-drawing the FULL
+current camera frame while the main view is magnified. **Single-stream honesty**: the HAL's
+`CONTROL_ZOOM_RATIO` crop is baked into the one camera texture, so the PIP can only be wider than
+the main view while GL zoom compensation (mid-gesture) or punch-in magnifies past the delivered
+field — a true unzoomed/wide finder is a BACKLOG design item (second stream or HAL-zoom-cap split).
+Gating is ONE shared, unit-tested predicate (`teleFinderResolved`/`teleFinderVisible` in
+`CameraState.kt`): toggle && TELE && **photo mode** && 4:3, plus the `FINDER_MIN_ZOOM` floor
+(photo-only because it is a still-composition aid and 4:3 is the STILL aspect; 16:9's AspectMask
+would dim/misframe the corner box). The engine resolves the flag in one place (`pushTeleFinder` —
+re-pushed synchronously on toggle/aspect/lens-TC/mode/session-config AND on `rollbackOptics` via
+`applyStabilization`, with self-contained pushes in `setVideoMode`/`setResolvedOptics`), stores it
+in `RendererConfig` for GL-generation replay, and geometry flows from ONE pure seam (`finderRect`)
+shared by the GL scissor box and the Compose border so both stay pixel-aligned (RTL-safe absolute
+anchor). The GL draw is failure-isolated (`runCatching` + `try/finally { glDisable(GL_SCISSOR_TEST) }`
+— scissor is CONTEXT state; a leak would clip the encoder/analysis draws, and a finder-only error
+must never fail preview health). A compact `PIP` OSD tag shows whenever the toggle is ON,
+independent of the current gate, so "on but gated off" is distinguishable from "off".
 
 **Stills** (`StillSnapshot`): the logical camera cannot allocate the HAL-JPEG blob (gralloc
 rejects it) and a RAW target errors the whole camera device, so logical stills arrive as
@@ -648,7 +695,10 @@ key and filename stem; video owns one canonical MP4 family. Within the running p
 then by displayability inside that capture. A newer DNG-only completion therefore owns a truthful RAW
 metadata placeholder instead of leaving an older thumbnail visible. A processed sibling from the same
 capture upgrades the placeholder; RAW arriving after processed, or any output from an older capture,
-is tracked for deletion but cannot displace the review owner.
+is tracked for deletion but cannot displace the review owner. A late sibling whose capture id the
+tracker's own bounded trim evicts DURING its `record()` call is re-checked after the trim and
+demoted to track-only — an evicted family must never become the review owner (its URI could not be
+pinned and delete would silently degrade to file-only).
 
 On relaunch, `MediaStoreWriter.latestOwnCapture` independently queries bounded sets of this package's
 published rows under `DCIM/X9Tele` from Images and Video. A failure in one collection does not discard
@@ -731,7 +781,7 @@ The fixed settings panel has nine left-rail tabs:
 5. **Lens** — 0.6x/1x/3x/10x selection, TELE mode, stabilization mode, and OIS.
 6. **Video** — codec, transfer, resolution, FPS, bitrate, Open Gate, and audio.
 7. **Image** — edge sharpness, noise reduction, and color-effect processing.
-8. **Assist** — gamma display assist, frame lines, zebra, false color, scopes, grid, level, and punch-in.
+8. **Assist** — gamma display assist, frame lines, zebra, false color, scopes, grid, level, punch-in, and the Tele Finder PIP toggle.
 9. **Setup** — privacy, persistence, Fn/My Menu customization, hardware-key assignments, and the
    diagnostic camera override reset when one is active.
 

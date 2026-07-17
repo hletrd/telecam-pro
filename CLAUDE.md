@@ -132,18 +132,24 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   them through the full `startPreview` rebuild read as stutter. Pinch/zoom events are additionally
   COALESCED in the ViewModel (leading apply + 16 ms trailing flush of the newest value, ~60 Hz) — per-event
   application recomposed the whole tree at input rate (~120 Hz) and read as jank.
-- **Tele Finder PIP is HONEST about the single stream (2026-07-17).** The Assist toggle (default
-  OFF, persisted) draws a bottom-left corner viewport re-drawing the FULL current camera frame in
-  TELE + 4:3 past `FINDER_MIN_ZOOM`. It can NEVER show an unzoomed/wide field: the HAL's
-  `CONTROL_ZOOM_RATIO` crop is baked into the one camera texture, so the PIP is only wider than
-  the main view while GL zoom compensation or punch-in magnifies past the delivered field (a true
-  wide finder is a BACKLOG design item — second stream or HAL-zoom-cap split). GL scissor box and
-  Compose border derive from ONE pure seam (`finderRect`; the padding-before-fillMaxWidth chain
-  drew the border ~6% small), the border anchor is layout-direction-absolute (RTL), the engine
-  resolves toggle && TELE && 4:3 in one place (`pushTeleFinder`, re-pushed at intent time so the
-  GL PIP can't outlive a TC-off), and the finder draw is failure-isolated with
+- **Tele Finder PIP is HONEST about the single stream (2026-07-17; photo-only since cycle 2).**
+  The Assist toggle (default OFF, persisted) draws a bottom-left corner viewport re-drawing the
+  FULL current camera frame in TELE **photo** + 4:3 past `FINDER_MIN_ZOOM` (photo-only: it is a
+  still-composition aid and 4:3 is the STILL aspect — keying a video overlay off a photo setting
+  made it appear/vanish mid-clip with no visible cause). It can NEVER show an unzoomed/wide field:
+  the HAL's `CONTROL_ZOOM_RATIO` crop is baked into the one camera texture, so the PIP is only
+  wider than the main view while GL zoom compensation or punch-in magnifies past the delivered
+  field (a true wide finder is a BACKLOG design item — second stream or HAL-zoom-cap split). GL
+  scissor box and Compose border derive from ONE pure seam (`finderRect`; the
+  padding-before-fillMaxWidth chain drew the border ~6% small), the border anchor is
+  layout-direction-absolute (RTL), the gate is ONE shared unit-tested predicate
+  (`teleFinderResolved`/`teleFinderVisible`) resolved in one place (`pushTeleFinder`, re-pushed
+  synchronously at every intent/mode/rollback door so the GL PIP can't outlive a TC-off), a `PIP`
+  OSD tag shows whenever the toggle is ON (on-but-gated-off must not read as off), and the finder
+  draw is failure-isolated with
   `try/finally { glDisable(GL_SCISSOR_TEST) }` — scissor is CONTEXT state; a leak would clip the
   encoder/analysis draws, and a finder-only error must never fail preview health.
+- **VIDEO stays on the STANDALONE lenses — the logical camera's EIS leaks its warp margin
   (2026-07-14).** With any video stabilization on (Standard AND Active), camera 0's stream carries
   an uncorrected EIS warp band (~6% of width) on one edge — in the PREVIEW and in the RECORDED
   FILE (device-verified frame extraction; displays as a rainbow-smear band at the bottom in
@@ -164,9 +170,17 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   (`setSmoothPreviewBoost(active, finalZoom)`) — the old rebuild-then-correct order at gesture end
   re-submitted the stale wide-aimed ratio and paid two ~180 ms stalls back to back. The zoom RMW
   on engine `controls` takes the engine monitor (packet writers replace `controls` wholesale under
-  it; `@Volatile` alone lost whole rollback packets mid-pinch), and `onZoomResult→gl.setHalZoom`
+  it; `@Volatile` alone lost whole rollback packets mid-pinch — `setControls` now takes the same
+  monitor, closing the last unsynchronized wholesale writer), and `onZoomResult→gl.setHalZoom`
   forwarding is change-gated with a per-rebuild reset (a suppressed final ramp value would
-  otherwise wedge the GL compensation after a reopen).
+  otherwise wedge the GL compensation after a reopen). Since cycle 2: stills build from the EXACT
+  requested ratio, never the wide-aimed HAL target (`setZoomRatio(halRatio, requestRatio)`); a
+  quiet-window landing (~250 ms after the last flush) lands the exact ratio before the 700 ms
+  boost tail so clips stop carrying ~1.2×-wide framing after finger-up; and the same ≥200 ms
+  fast-path architecture covers the OTHER high-churn keys — `sensorOnlyControlsDelta` admits
+  focus-distance/ISO/exposure-only deltas to a cached-builder resubmit
+  (`applySensorValueControls`, the same derivation the full rebuild uses) so ruler drags and the
+  app-side AE loop stop paying full ~180 ms rebuild stalls at 25 Hz.
 - **Compounding zoom inputs must base on the COALESCED pending value (2026-07-14).** Pinch factors,
   hardware-key steps, and the ease ticker all multiply "the current zoom" — but UI state lags the
   16 ms coalescing flush, so compounding against `_state` made zoom crawl between flushes then jump
