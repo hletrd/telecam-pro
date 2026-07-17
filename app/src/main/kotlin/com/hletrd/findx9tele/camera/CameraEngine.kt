@@ -1239,6 +1239,10 @@ class CameraEngine(private val context: Context) {
     /** Clears the tap-owned AE/AF region when its UI reticle expires. */
     fun clearTapPoint() {
         controller?.clearMeteringPoint()
+        // The loupe crop is tap-owned state too: without this reset the punch-in magnifier stayed
+        // permanently centered on the LAST tapped point (across mode/lens/TC switches — nothing
+        // else writes it) while AF/AE correctly returned to their defaults.
+        gl.setPunchInCenter(0.5f, 0.5f)
     }
 
     // ---- Drive mode + video parameters ----
