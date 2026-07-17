@@ -90,6 +90,14 @@ internal class CaptureOutputTracker<T>(
         outputsByCapture.getOrPut(captureId) { linkedSetOf() }.add(output)
         captureByOutput[output] = captureId
         trimCaptures()
+        // Trimming can evict the capture that was JUST added — a late sibling of an old id arriving
+        // while the ordinary history is full (reachable right after deleting a pinned review while
+        // newer ids hold every ordinary slot). An evicted capture must never become the review
+        // owner: the UI would publish a URI whose family/reverse mapping no longer exists,
+        // pinForReview would fail, and delete would silently degrade to the displayed file only.
+        // The file itself is untouched — it simply ages out of managed history like any other
+        // older-than-history capture.
+        if (captureByOutput[output] != captureId) return CaptureOutputDecision.TRACK_ONLY
 
         val currentCaptureId = reviewCaptureId
         val ownsReview = when {

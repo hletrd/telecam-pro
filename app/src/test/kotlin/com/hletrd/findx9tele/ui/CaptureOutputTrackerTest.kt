@@ -263,4 +263,46 @@ class CaptureOutputTrackerTest {
         assertEquals(setOf("shot.dng", "shot.heic"), tracker.takeForDelete("shot.dng"))
         assertFalse(tracker.isCurrentReviewOutput("shot.heic"))
     }
+
+    // The exact post-delete interleaving from the cycle-10 review: a late sibling of an id the
+    // tracker evicts DURING its own record() must never become the review owner — the UI would
+    // publish a URI whose family no longer exists, pinForReview would fail, and delete would
+    // silently degrade to the displayed file.
+    @Test
+    fun lateSiblingEvictedByItsOwnRecord_neverBecomesReviewOwner() {
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 2)
+        // 1. Fill history: id 5 is evicted, id 10 owns review.
+        tracker.record(5, "a5.heic", CaptureOutputKind.DISPLAYABLE)
+        tracker.record(6, "a6.heic", CaptureOutputKind.DISPLAYABLE)
+        assertEquals(
+            CaptureOutputDecision.REVIEW,
+            tracker.record(10, "a10.heic", CaptureOutputKind.DISPLAYABLE),
+        )
+        // 2. Pin id 10 for the open review; it stops consuming an ordinary slot.
+        assertTrue(tracker.pinForReview("a10.heic"))
+        // 3. A late first output for id 7 fills both ordinary slots (6 and 7).
+        assertEquals(
+            CaptureOutputDecision.TRACK_ONLY,
+            tracker.record(7, "a7.heic", CaptureOutputKind.DISPLAYABLE),
+        )
+        // 4. Delete the pinned id 10: the review owner clears while 6 and 7 stay at the limit.
+        assertEquals(setOf("a10.heic"), tracker.takeForDelete("a10.heic"))
+        // 5. A late sibling of the long-evicted id 5 arrives: record() inserts it and its own
+        //    trim immediately evicts it again — it must NOT claim the now-null review owner.
+        assertEquals(
+            CaptureOutputDecision.TRACK_ONLY,
+            tracker.record(5, "b5.dng", CaptureOutputKind.RAW),
+        )
+        assertFalse(tracker.isCurrentReviewOutput("b5.dng"))
+        // The evicted sibling is no longer a managed family: pinning must truthfully fail so the
+        // UI can promise file-only deletion, and delete returns only the displayed file.
+        assertFalse(tracker.pinForReview("b5.dng"))
+        assertEquals(setOf("b5.dng"), tracker.takeForDelete("b5.dng"))
+        // The retained ordinary families are untouched and can still claim review normally.
+        assertEquals(
+            CaptureOutputDecision.REVIEW,
+            tracker.record(11, "a11.heic", CaptureOutputKind.DISPLAYABLE),
+        )
+        assertTrue(tracker.isCurrentReviewOutput("a11.heic"))
+    }
 }
