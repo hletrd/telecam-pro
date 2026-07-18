@@ -140,6 +140,62 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     // would leave it null and NPE on a launch that restores saved settings.
     private val zoomGlide = ZoomGlideState()
 
+    // The 16 ms trailing coalescer flush, held as a NAMED Runnable so a remap door / onStop can
+    // cancel it — the old anonymous postDelayed lambda had no reference to remove (AGG3-26).
+    // All four zoom Runnables are declared BEFORE the init block (CRIT4-12): invalidateZoomGlide()
+    // runs DURING construction (applyLoaded in init), and fields declared below init are still
+    // null there — the old layout passed nulls to Handler.removeCallbacks (platform-tolerated),
+    // and a `by lazy` variant was WORSE (the lazy delegates are fields too; a construction-time
+    // access NPE'd on the null delegate — device-caught 2026-07-18). Field initializers run
+    // strictly top-to-bottom, so everything here is real by the time init executes.
+    private val zoomTrailingFlush = Runnable {
+        zoomGlide.flushScheduled = false
+        if (!zoomGlide.pendingRatio.isNaN() && zoomGlide.pendingRatio != _state.value.controls.zoomRatio) flushZoom()
+    }
+
+    // Zoom-gesture lifecycle: every zoom input funnels through flushZoom, so "interacting" =
+    // first flush → 700 ms after the last one. Drives the engine's smooth-preview boost.
+    private val zoomInteractionEnd = Runnable {
+        zoomGlide.interacting = false
+        mainHandler.removeCallbacks(zoomQuietLanding)
+        engine.setZoomInteraction(false)
+    }
+
+    // Quiet-window landing: one throttle window after the LAST flush, the exact (non-wide-aimed)
+    // ratio lands on the HAL even though the 700 ms boost tail is still running — otherwise a clip
+    // keeps the ~1.2×-wide framing after finger-up and a tail still frames wider than the finder.
+    private val zoomQuietLanding = Runnable { engine.landExactZoom() }
+
+    // Hardware slide-zoom easing: the camera button emits DISCRETE key repeats (~20 Hz), and applying
+    // each 1.04x jump directly reads as stutter. Instead the steps move a TARGET and a ~30 Hz ticker
+    // glides the actual ratio toward it (exponential approach in log-zoom space), so the preview
+    // sweeps smoothly like a powered zoom rocker.
+    private val zoomEaseTicker = object : Runnable {
+        override fun run() {
+            val target = zoomGlide.easeTarget ?: return
+            val cur = currentZoomBase()
+            // applyZoomRatio, NOT onZoomRatio: the public setter cancels the glide (manual takeover).
+            // The per-tick math (incl. the non-finite/non-positive guard that once let a corrupted
+            // ratio keep a NaN ticker alive forever) is the pure, unit-tested zoomEaseStep.
+            when (val step = zoomEaseStep(cur, target)) {
+                is ZoomEaseStep.Land -> {
+                    zoomGlide.easeTarget = null
+                    applyZoomRatio(step.target)
+                }
+                is ZoomEaseStep.Step -> {
+                    val applied = applyZoomRatio(step.value)
+                    // A cap/snap may make the mathematical target unreachable. Stop as soon as
+                    // application makes no progress instead of keeping a 30 Hz loop alive forever.
+                    if (applied.isFinite() && kotlin.math.abs(applied - cur) < 0.0001f) {
+                        zoomGlide.easeTarget = null
+                        return
+                    }
+                    mainHandler.postDelayed(this, 33)
+                }
+            }
+        }
+    }
+
     // Trailing debounce for persistence: every user-driven change to a PERSISTED setting schedules
     // one synchronous commit shortly after the LAST change. This closes the Recents-swipe-kill loss
     // window for dial/slider changes (previously only saved on onStop) WITHOUT the old failure mode
@@ -983,19 +1039,6 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     // glide state lives in the [zoomGlide] holder (declared above init) so every optics-scale remap
     // door invalidates it through the single invalidateZoomGlide() owner (AGG3-51).
 
-    // The 16 ms trailing coalescer flush, held as a NAMED Runnable so a remap door / onStop can
-    // cancel it — the old anonymous postDelayed lambda had no reference to remove (AGG3-26).
-    // All four zoom Runnables are `by lazy` (CRIT4-12): invalidateZoomGlide() runs DURING
-    // construction (applyLoaded in init) while plain `val` fields declared below the init block
-    // are still null, and passing those nulls to Handler.removeCallbacks only worked by platform
-    // tolerance. Lazy init allocates on first touch, so the construction-time invalidate cancels
-    // real (never-scheduled) Runnables instead.
-    private val zoomTrailingFlush: Runnable by lazy {
-        Runnable {
-            zoomGlide.flushScheduled = false
-            if (!zoomGlide.pendingRatio.isNaN() && zoomGlide.pendingRatio != _state.value.controls.zoomRatio) flushZoom()
-        }
-    }
 
     private fun applyZoomRatio(ratio: Float): Float {
         val s = _state.value
@@ -1010,19 +1053,6 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         return z
     }
 
-    // Zoom-gesture lifecycle: every zoom input funnels through flushZoom, so "interacting" =
-    // first flush → 700 ms after the last one. Drives the engine's smooth-preview boost.
-    private val zoomInteractionEnd: Runnable by lazy {
-        Runnable {
-            zoomGlide.interacting = false
-            mainHandler.removeCallbacks(zoomQuietLanding)
-            engine.setZoomInteraction(false)
-        }
-    }
-    // Quiet-window landing: one throttle window after the LAST flush, the exact (non-wide-aimed)
-    // ratio lands on the HAL even though the 700 ms boost tail is still running — otherwise a clip
-    // keeps the ~1.2×-wide framing after finger-up and a tail still frames wider than the finder.
-    private val zoomQuietLanding: Runnable by lazy { Runnable { engine.landExactZoom() } }
 
     private fun flushZoom() {
         val z = zoomGlide.pendingRatio
@@ -1059,37 +1089,6 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         pendingControls = pendingControls?.copy(zoomRatio = z)
         markChanged(FnSlot.ZOOM)
         scheduleSettingsSave()
-    }
-    // Hardware slide-zoom easing: the camera button emits DISCRETE key repeats (~20 Hz), and applying
-    // each 1.04x jump directly reads as stutter. Instead the steps move a TARGET and a ~30 Hz ticker
-    // glides the actual ratio toward it (exponential approach in log-zoom space), so the preview
-    // sweeps smoothly like a powered zoom rocker.
-    private val zoomEaseTicker: Runnable by lazy {
-        object : Runnable {
-            override fun run() {
-                val target = zoomGlide.easeTarget ?: return
-                val cur = currentZoomBase()
-                // applyZoomRatio, NOT onZoomRatio: the public setter cancels the glide (manual takeover).
-                // The per-tick math (incl. the non-finite/non-positive guard that once let a corrupted
-                // ratio keep a NaN ticker alive forever) is the pure, unit-tested zoomEaseStep.
-                when (val step = zoomEaseStep(cur, target)) {
-                    is ZoomEaseStep.Land -> {
-                        zoomGlide.easeTarget = null
-                        applyZoomRatio(step.target)
-                    }
-                    is ZoomEaseStep.Step -> {
-                        val applied = applyZoomRatio(step.value)
-                        // A cap/snap may make the mathematical target unreachable. Stop as soon as
-                        // application makes no progress instead of keeping a 30 Hz loop alive forever.
-                        if (applied.isFinite() && kotlin.math.abs(applied - cur) < 0.0001f) {
-                            zoomGlide.easeTarget = null
-                            return
-                        }
-                        mainHandler.postDelayed(this, 33)
-                    }
-                }
-            }
-        }
     }
 
     /** One hardware zoom-key repeat: nudge the ease target and make sure the glide ticker runs. */
