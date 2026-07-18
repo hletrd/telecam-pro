@@ -64,10 +64,16 @@ class CameraSelector2Test {
     }
 
     @Test
-    fun `falls back to the first candidate when all have non-positive focal`() {
-        val candidates = listOf(sel("a", null, 0f), sel("b", null, -1f))
-        // filter removes both -> firstOrNull() fallback keeps the app from selecting nothing.
-        assertEquals("a", CameraSelector2.pickBest(candidates)!!.logicalId)
+    fun `all invalid focal metadata falls back only to a standalone candidate`() {
+        val candidates = listOf(sel("logical", "4", 0f), sel("safe", null, -1f))
+        assertEquals("safe", CameraSelector2.pickBest(candidates)!!.logicalId)
+        assertNull(CameraSelector2.pickBest(candidates)!!.physicalId)
+    }
+
+    @Test
+    fun `all invalid routed candidates fail closed`() {
+        val candidates = listOf(sel("logical", "4", 0f), sel("logical", "5", -1f))
+        assertNull(CameraSelector2.pickBest(candidates))
     }
 
     // ---- pickClosest: the lens-switcher resolver (UW / main / 3× / 10×) ----

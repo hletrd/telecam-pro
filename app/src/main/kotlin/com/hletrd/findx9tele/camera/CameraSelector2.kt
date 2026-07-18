@@ -97,7 +97,12 @@ object CameraSelector2 {
         candidates.filter { it.equivFocalMm > 0f }
             .minWithOrNull(
                 compareBy({ abs(it.equivFocalMm - targetEquivMm) }, { if (it.physicalId == null) 0 else 1 }),
-            ) ?: candidates.firstOrNull()
+            )
+            // Focal metadata can disappear transiently while CameraService is recovering. Never
+            // turn that degraded read into a routed physical output: this device's QTI HAL is known
+            // to SIGSEGV in configureStreams for that path. A standalone candidate is safe to open;
+            // if none exists, fail closed and let the UI report the route unavailable.
+            ?: candidates.firstOrNull { it.physicalId == null }
 
     /**
      * Pure selection over an enumerated candidate list: the one whose 35mm-equiv is CLOSEST to
