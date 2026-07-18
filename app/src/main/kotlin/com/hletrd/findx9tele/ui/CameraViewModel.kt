@@ -133,6 +133,13 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     // cannot resurrect a sibling after the user deleted the frozen review shot.
     private val captureOutputs = CaptureOutputTracker<Uri>(CAPTURE_OUTPUT_HISTORY)
 
+    // The plain zoom-glide state (pending / ease / interacting / flush-scheduled) as one tested holder
+    // so every optics-scale remap door invalidates it through the single invalidateZoomGlide() owner
+    // (AGG3-51). Declared BEFORE init: applyLoaded()/restoreSettingsIfEnabled() runs during
+    // construction and calls invalidateZoomGlide(), which dereferences this — a later declaration
+    // would leave it null and NPE on a launch that restores saved settings.
+    private val zoomGlide = ZoomGlideState()
+
     // Trailing debounce for persistence: every user-driven change to a PERSISTED setting schedules
     // one synchronous commit shortly after the LAST change. This closes the Recents-swipe-kill loss
     // window for dial/slider changes (previously only saved on onStop) WITHOUT the old failure mode
@@ -258,12 +265,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             mainHandler.post {
                 if (!engine.isOpticsGenerationCurrent(generation)) return@post
                 cancelPendingControls()
-                zoomPendingRatio = Float.NaN
-                // The rollback restored a different optics scale: a hardware-glide target is an
-                // ABSOLUTE number in the failed attempt's scale, and easing toward it after the
-                // restore is an un-commanded zoom run (same invariant as onModeChange/onLens/TC).
-                zoomEaseTarget = null
-                mainHandler.removeCallbacks(zoomEaseTicker)
+                // The rollback restored a different optics scale: every in-flight glide value is an
+                // ABSOLUTE ratio in the failed attempt's scale, so ease target / coalesced base /
+                // throttled landing all invalidate together (same invariant as every optics-remap door).
+                invalidateZoomGlide()
                 _state.update {
                     it.copy(
                         mode = mode,
@@ -409,12 +414,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     ) {
         // The recalled packet supersedes a delayed manual-control snapshot from the prior setup.
         cancelPendingControls()
-        zoomPendingRatio = Float.NaN
-        // MR recall / settings restore can change mode/lens/TC — i.e. the zoom SCALE. A hardware
-        // glide still easing toward a target computed in the old scale would visibly drag the
-        // just-recalled framing away from the preset (same invariant as onModeChange/onLens/TC).
-        zoomEaseTarget = null
-        mainHandler.removeCallbacks(zoomEaseTicker)
+        // MR recall / settings restore can change mode/lens/TC — i.e. the zoom SCALE. Any glide still
+        // easing toward a target computed in the old scale (or a throttled landing about to fire) would
+        // visibly drag the just-recalled framing away from the preset (same invariant as every remap door).
+        invalidateZoomGlide()
         val c = loaded.controls
         val e = loaded.extras
         val defaults = CameraUiState()
@@ -917,37 +920,40 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // Any direct zoom input (pinch, dial, in-sheet slider) takes over from an in-flight hardware
         // slide glide — otherwise the ~30 Hz ease ticker keeps dragging the ratio back toward its
         // now-stale target every 33 ms, fighting the finger.
-        zoomEaseTarget = null
+        zoomGlide.easeTarget = null
         applyZoomRatio(ratio)
     }
     // Pinch events arrive at INPUT rate (up to ~120 Hz on this panel); applying each one drove a
     // whole-tree recomposition plus a setRepeatingRequest per event — the residual zoom jank after
     // the fast path landed. Coalesce: apply the first event immediately (no perceived latency),
-    // then flush only the NEWEST value every 16 ms (~60 Hz) while the gesture continues.
-    private var zoomFlushScheduled = false
-    private var zoomPendingRatio = Float.NaN
+    // then flush only the NEWEST value every 16 ms (~60 Hz) while the gesture continues. The plain
+    // glide state lives in the [zoomGlide] holder (declared above init) so every optics-scale remap
+    // door invalidates it through the single invalidateZoomGlide() owner (AGG3-51).
+
+    // The 16 ms trailing coalescer flush, held as a NAMED Runnable so a remap door / onStop can
+    // cancel it — the old anonymous postDelayed lambda had no reference to remove (AGG3-26).
+    private val zoomTrailingFlush = Runnable {
+        zoomGlide.flushScheduled = false
+        if (!zoomGlide.pendingRatio.isNaN() && zoomGlide.pendingRatio != _state.value.controls.zoomRatio) flushZoom()
+    }
 
     private fun applyZoomRatio(ratio: Float): Float {
         val s = _state.value
         val range = s.caps?.zoomRatioRange
         val bounds = effectiveZoomBounds(range?.lower, range?.upper, s.teleconverterMode)
         val z = normalizeZoomRequest(ratio, currentZoomBase(), bounds, s.teleconverterMode)
-        zoomPendingRatio = z
-        if (zoomFlushScheduled) return z // the scheduled flush picks up this newest value
-        zoomFlushScheduled = true
+        zoomGlide.pendingRatio = z
+        if (zoomGlide.flushScheduled) return z // the scheduled flush picks up this newest value
+        zoomGlide.flushScheduled = true
         flushZoom() // leading edge: first tick lands instantly
-        mainHandler.postDelayed({
-            zoomFlushScheduled = false
-            if (!zoomPendingRatio.isNaN() && zoomPendingRatio != _state.value.controls.zoomRatio) flushZoom()
-        }, 16) // ~60 Hz: the engine throttles HAL submits itself; GL follows every flush
+        mainHandler.postDelayed(zoomTrailingFlush, 16) // ~60 Hz: engine throttles HAL submits; GL follows
         return z
     }
 
     // Zoom-gesture lifecycle: every zoom input funnels through flushZoom, so "interacting" =
     // first flush → 700 ms after the last one. Drives the engine's smooth-preview boost.
-    private var zoomInteracting = false
     private val zoomInteractionEnd = Runnable {
-        zoomInteracting = false
+        zoomGlide.interacting = false
         mainHandler.removeCallbacks(zoomQuietLanding)
         engine.setZoomInteraction(false)
     }
@@ -957,10 +963,21 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     private val zoomQuietLanding = Runnable { engine.landExactZoom() }
 
     private fun flushZoom() {
-        val z = zoomPendingRatio
+        val z = zoomGlide.pendingRatio
         if (z.isNaN()) return
-        if (!zoomInteracting) {
-            zoomInteracting = true
+        // Zoom-OUT leading edge (AGG3-9/CRIT-6): the engine SWALLOWS a gesture's first fast-path tick —
+        // setZoomInteraction(true) stamps its HAL-throttle clock, so the setZoomRatio right after it is
+        // throttled for ~200 ms. Invisible for zoom-IN (GL zoomComp magnifies the delivered frame
+        // instantly) but a zoom-OUT preview stalls ~200-380 ms because GL CANNOT widen past the
+        // delivered crop. When the gesture's FIRST tick moves toward WIDE, submit it BEFORE marking the
+        // interaction active: with interaction still inactive the engine submits the exact ratio
+        // immediately (resolveHalZoomSubmit → submitNow), and setZoomInteraction's boost rebuild then
+        // reads this just-committed z as its finalZoom. All subsequent mid-gesture ticks keep the
+        // existing coalesced/throttled path and the wide-aim policy unchanged.
+        val leadingWide = zoomGlide.isLeadingEdgeToWide(z, _state.value.controls.zoomRatio)
+        if (leadingWide) engine.setZoomRatio(z)
+        if (!zoomGlide.interacting) {
+            zoomGlide.interacting = true
             engine.setZoomInteraction(true)
         }
         mainHandler.removeCallbacks(zoomInteractionEnd)
@@ -968,9 +985,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         mainHandler.removeCallbacks(zoomQuietLanding)
         mainHandler.postDelayed(zoomQuietLanding, 250)
         // Straight to the engine fast path (cached-builder resubmit) — updateControls would re-apply
-        // the FULL control set. Chip highlight follows the zoom band only on the seamless (photo)
-        // camera; video zoom is lens-local. Persistence rides the debounced settings save.
-        engine.setZoomRatio(z)
+        // the FULL control set. The leading zoom-OUT tick already submitted above; every other tick
+        // submits here. Chip highlight follows the zoom band only on the seamless (photo) camera;
+        // video zoom is lens-local. Persistence rides the debounced settings save.
+        if (!leadingWide) engine.setZoomRatio(z)
         val s = _state.value
         val lensBand = if (!s.teleconverterMode && s.mode == CaptureMode.PHOTO) LensChoice.forZoom(z) else s.lens
         _state.update { it.copy(controls = it.controls.copy(zoomRatio = z), lens = lensBand) }
@@ -984,17 +1002,16 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     // each 1.04x jump directly reads as stutter. Instead the steps move a TARGET and a ~30 Hz ticker
     // glides the actual ratio toward it (exponential approach in log-zoom space), so the preview
     // sweeps smoothly like a powered zoom rocker.
-    private var zoomEaseTarget: Float? = null
     private val zoomEaseTicker = object : Runnable {
         override fun run() {
-            val target = zoomEaseTarget ?: return
+            val target = zoomGlide.easeTarget ?: return
             val cur = currentZoomBase()
             // applyZoomRatio, NOT onZoomRatio: the public setter cancels the glide (manual takeover).
             // The per-tick math (incl. the non-finite/non-positive guard that once let a corrupted
             // ratio keep a NaN ticker alive forever) is the pure, unit-tested zoomEaseStep.
             when (val step = zoomEaseStep(cur, target)) {
                 is ZoomEaseStep.Land -> {
-                    zoomEaseTarget = null
+                    zoomGlide.easeTarget = null
                     applyZoomRatio(step.target)
                 }
                 is ZoomEaseStep.Step -> {
@@ -1002,7 +1019,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                     // A cap/snap may make the mathematical target unreachable. Stop as soon as
                     // application makes no progress instead of keeping a 30 Hz loop alive forever.
                     if (applied.isFinite() && kotlin.math.abs(applied - cur) < 0.0001f) {
-                        zoomEaseTarget = null
+                        zoomGlide.easeTarget = null
                         return
                     }
                     mainHandler.postDelayed(this, 33)
@@ -1015,9 +1032,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     fun onHardwareZoomStep(factor: Float) {
         val range = _state.value.caps?.zoomRatioRange ?: return
         val bounds = effectiveZoomBounds(range.lower, range.upper, _state.value.teleconverterMode) ?: return
-        val base = zoomEaseTarget ?: currentZoomBase()
-        val wasIdle = zoomEaseTarget == null
-        zoomEaseTarget = (base * factor).coerceIn(bounds.lower, bounds.upper)
+        val base = zoomGlide.easeTarget ?: currentZoomBase()
+        val wasIdle = zoomGlide.easeTarget == null
+        zoomGlide.easeTarget = (base * factor).coerceIn(bounds.lower, bounds.upper)
         if (wasIdle) mainHandler.post(zoomEaseTicker)
     }
 
@@ -1035,9 +1052,33 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
      * lags it by up to 16 ms), else the state value. Every compounding zoom input (pinch factor,
      * hardware-key step, ease ticker) must use THIS as its base.
      */
-    private fun currentZoomBase(): Float {
-        val pending = zoomPendingRatio
-        return if (!pending.isNaN()) pending else _state.value.controls.zoomRatio
+    private fun currentZoomBase(): Float = zoomGlide.base(_state.value.controls.zoomRatio)
+
+    /**
+     * One-shot teardown of the whole zoom-glide lifecycle, called from EVERY optics-SCALE remap door
+     * (mode / lens / TC / MR-recall / rollback / camera-override) AND onStop. A scale remap makes
+     * every in-flight glide value an ABSOLUTE ratio in the OLD scale: the coalesced pending ratio, the
+     * hardware-key ease target, and the throttled quiet-landing / interaction-end / 16 ms-flush
+     * Runnables would each submit an old-scale ratio (or run a wasted AE/AF rebuild) through whatever
+     * controller is live — plausibly the OUTGOING one, since a full reopen outlasts these 16/250/700 ms
+     * callbacks (AGG3-10/TRC-1). This is the single door prior cycles hand-duplicated at ~10 sites and
+     * forgot at several (AGG3-25/26/51, VER-3, ARCH-4): it clears every plain field via the holder and
+     * cancels every matching timer.
+     *
+     * It deliberately does NOT call engine.setZoomInteraction(false): a synchronous boost-off would
+     * fire setSmoothPreviewBoost(false) → a full startPreview() rebuild on the controller a remap is
+     * about to discard (the exact wasted rebuild AGG3-10 flags). Resetting the ViewModel-side
+     * `interacting` flag is enough — the next gesture's first flush re-arms the boost edge on the FRESH
+     * controller (whose own smoothPreviewBoost starts false), so the low-light fps boost is not lost
+     * (ARCH-4); onStop leaves the engine's own `zoomInteractionActive` to the immediately-following
+     * engine.pause()/resume() (a stale-true flag is inert until the next gesture re-sets it).
+     */
+    private fun invalidateZoomGlide() {
+        zoomGlide.invalidateForRemap()
+        mainHandler.removeCallbacks(zoomEaseTicker)
+        mainHandler.removeCallbacks(zoomTrailingFlush)
+        mainHandler.removeCallbacks(zoomQuietLanding)
+        mainHandler.removeCallbacks(zoomInteractionEnd)
     }
 
     override fun onJpegQuality(quality: Int) = updateControls(persist = true) { it.copy(jpegQuality = quality) }
@@ -1063,10 +1104,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         _state.update {
             it.copy(mode = mode, lens = optics.lens, controls = optics.controls)
         }
-        zoomPendingRatio = Float.NaN // the remap invalidated the coalesced base
-        // The remap also invalidated any in-flight hardware-key glide: its absolute target was set
-        // in the OLD zoom scale, and easing toward it in the new scale is an un-commanded jump.
-        zoomEaseTarget = null
+        // The mode remap invalidated the zoom SCALE — the coalesced base, any hardware-key glide whose
+        // absolute target was set in the old scale, and any throttled quiet-landing / interaction-end
+        // that would otherwise submit an old-scale ratio through the outgoing controller (AGG3-10/25).
+        invalidateZoomGlide()
         engine.setVideoMode(mode == CaptureMode.VIDEO, optics.lens, optics.controls)
         applyEngineTransfer(mode, _state.value.transfer)
         refreshProgramAppSide() // photo P is app-side (min-shutter rule), video P is HAL AE
@@ -1168,8 +1209,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 )
             }
         }
-        zoomPendingRatio = Float.NaN // preset/TC zoom overwrote the coalesced base
-        zoomEaseTarget = null // the TC scale flip invalidated any in-flight hardware-key glide
+        // The TC scale flip overwrote the coalesced base and invalidated any hardware-key glide /
+        // throttled landing set in the pre-flip scale (same invariant as every optics-remap door).
+        invalidateZoomGlide()
         markChanged(FnSlot.TELECONVERTER)
         saveSettingsIfEnabled()
     }
@@ -1194,8 +1236,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 ),
             )
         }
-        zoomPendingRatio = Float.NaN // preset/TC zoom overwrote the coalesced base
-        zoomEaseTarget = null // the preset rewrite invalidated any in-flight hardware-key glide
+        // The lens-preset rewrite overwrote the coalesced base and invalidated any hardware-key glide /
+        // throttled landing set in the pre-pick scale (same invariant as every optics-remap door).
+        invalidateZoomGlide()
         markChanged(FnSlot.TELECONVERTER)
         saveSettingsIfEnabled()
     }
@@ -1289,7 +1332,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         if (normalizedControls != current.controls) {
             engine.setAeMetering(usesExposureAnalysis(normalizedControls))
             engine.setControls(normalizedControls)
-            if (!zoomPendingRatio.isNaN()) zoomPendingRatio = normalizedControls.zoomRatio
+            if (!zoomGlide.pendingRatio.isNaN()) zoomGlide.pendingRatio = normalizedControls.zoomRatio
         }
     }
 
@@ -1540,9 +1583,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         drainPendingControls()
         // A camera-id override reopens onto a different route (different zoom scale): abandon any
         // in-flight coalesced/gliding zoom the same way every other optics-remap door does.
-        zoomPendingRatio = Float.NaN
-        zoomEaseTarget = null
-        mainHandler.removeCallbacks(zoomEaseTicker)
+        invalidateZoomGlide()
         engine.setCameraOverride(id)
         _state.update { it.copy(cameraOverrideId = id) }
     }
@@ -1793,9 +1834,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         mainHandler.removeCallbacks(levelTicker)
         mainHandler.removeCallbacks(orientationTicker)
         mainHandler.removeCallbacks(infoTicker)
-        zoomEaseTarget = null
-        mainHandler.removeCallbacks(zoomEaseTicker)
-        mainHandler.removeCallbacks(zoomQuietLanding)
+        // Full glide teardown (AGG3-26/VER-3/ARCH-4): earlier onStop reset only the ease target and
+        // left zoomPendingRatio / the 16 ms flush / the interacting flag / zoomInteractionEnd live, so a
+        // background mid-pinch leaked a stale base into resume and stuck the boost edge off.
+        invalidateZoomGlide()
         saveSettingsIfEnabled() // persist on background so the next launch restores them
         engine.setStandbyAudioMonitor(false) // release the mic while backgrounded
         engine.pause()
