@@ -96,6 +96,55 @@ class VideoRecorderMuxerStartTest {
     }
 
     @Test
+    fun `muxer stop failure over sample-less degraded audio track is tolerated (TR4-2)`() {
+        // The one non-terminal combination: video complete, audio degraded mid-REC, and the audio
+        // track never muxed a sample — MediaMuxer.stop() throwing over the empty track must not
+        // delete the clean video clip.
+        assertFalse(
+            muxerStopFailureIsTerminal(
+                wroteVideoSample = true,
+                audioDegradedMidRec = true,
+                wroteAudioSample = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `every other muxer stop failure stays terminal (TR4-2)`() {
+        // No video sample: nothing worth saving regardless of the audio story.
+        assertTrue(
+            muxerStopFailureIsTerminal(
+                wroteVideoSample = false,
+                audioDegradedMidRec = true,
+                wroteAudioSample = false,
+            ),
+        )
+        // No mid-REC degrade: a stop() throw is a genuine container-finalization failure.
+        assertTrue(
+            muxerStopFailureIsTerminal(
+                wroteVideoSample = true,
+                audioDegradedMidRec = false,
+                wroteAudioSample = false,
+            ),
+        )
+        // Audio samples were actually muxed: the empty-track excuse does not apply.
+        assertTrue(
+            muxerStopFailureIsTerminal(
+                wroteVideoSample = true,
+                audioDegradedMidRec = true,
+                wroteAudioSample = true,
+            ),
+        )
+        assertTrue(
+            muxerStopFailureIsTerminal(
+                wroteVideoSample = false,
+                audioDegradedMidRec = false,
+                wroteAudioSample = false,
+            ),
+        )
+    }
+
+    @Test
     fun `already-started muxer never restarts (idempotency)`() {
         // maybeStartMuxer is called from every addTrack/degrade site; a second call once the muxer is
         // live must be a no-op across ALL field combinations — MediaMuxer.start() called twice throws

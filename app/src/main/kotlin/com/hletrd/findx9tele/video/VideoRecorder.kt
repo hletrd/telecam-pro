@@ -69,6 +69,13 @@ class VideoRecorder(private val context: Context) {
     private val firstFailure = FirstFailureSignal()
     private var onFailure: ((Throwable) -> Unit)? = null
     @Volatile private var wroteVideoSample = false
+    // Set the first time an AUDIO sample is muxed, and when a mid-REC audio fault degrades the
+    // recording to video-only. Together they identify the one muxer.stop() failure that must NOT
+    // delete the clip: a 2-track muxer whose audio track never received a sample because the mic
+    // died right after addTrack (TR4-2) — MediaMuxer.stop() can throw over the empty track while
+    // the video track is complete and playable.
+    @Volatile private var wroteAudioSample = false
+    @Volatile private var audioDegradedMidRec = false
     private var videoThread: Thread? = null
     private var audioThread: Thread? = null
     private var audioRecord: AudioRecord? = null
@@ -218,7 +225,19 @@ class VideoRecorder(private val context: Context) {
             runCatching { audioRecord?.release() }
             synchronized(muxerLock) {
                 if (muxerStarted) {
-                    runCatching { muxer?.stop() }.onFailure(::recordFailure)
+                    // A muxer.stop() throw is normally VIDEO-terminal (moov not finalized → delete).
+                    // The one tolerated case is the TR4-2 corner: audio degraded mid-REC after its
+                    // track was added but before any audio sample was muxed — stop() may throw over
+                    // the empty audio track while the video track is complete. Failing the clip
+                    // there would delete a good take over a dead mic, the exact loss class the
+                    // degrade path exists to prevent; attempt the publish gate instead.
+                    runCatching { muxer?.stop() }.onFailure { t ->
+                        if (muxerStopFailureIsTerminal(wroteVideoSample, audioDegradedMidRec, wroteAudioSample)) {
+                            recordFailure(t)
+                        } else if (com.hletrd.findx9tele.BuildConfig.DEBUG) {
+                            Log.w(TAG, "muxer.stop() failed over sample-less degraded audio track; keeping clip: ${t.message}")
+                        }
+                    }
                 }
             }
             // CameraEngine calls stop() only after GlPipeline's checked EGL detach callback. The
@@ -246,15 +265,15 @@ class VideoRecorder(private val context: Context) {
         // firstFailure (see degradeAudioToVideoOnly), so a clean video track still publishes here.
         val outputUri = uri
         val complete = muxerStarted && wroteVideoSample && firstFailure.cause == null && outputUri != null
-        val saved = if (complete) {
-            // A transient MediaStore publish() failure must NOT delete a complete recording: leave the
-            // IS_PENDING file on disk for MediaStoreWriter.cleanupOrphanedPending (its own
-            // OWNER_PACKAGE_NAME-scoped orphan sweep) to reclaim on the next launch, rather than
-            // destroying a cleanly-muxed clip over a resolver hiccup (CR-8). publish()==false is
-            // logged, not fatal, and never falls through to the delete branch.
-            MediaStoreWriter.publish(context, outputUri!!).also { published ->
+        val saved = if (complete && outputUri != null) {
+            // publish() retries transient resolver failures internally (CRIT4-5). If it STILL fails,
+            // do not delete the complete recording here — but be honest about the consequence: no
+            // republish path exists, so the pending file stays invisible until the next launch's
+            // orphan sweep DELETES it. The retry is what makes a transient hiccup survivable; a
+            // persistent provider failure loses the clip either way (deferred, not prevented).
+            MediaStoreWriter.publish(context, outputUri).also { published ->
                 if (!published && com.hletrd.findx9tele.BuildConfig.DEBUG) {
-                    Log.w(TAG, "publish() failed; leaving pending file for orphan sweep: $outputUri")
+                    Log.w(TAG, "publish() failed after retries; pending file will be swept next launch: $outputUri")
                 }
             }
         } else {
@@ -277,6 +296,8 @@ class VideoRecorder(private val context: Context) {
         audioTrack = -1
         muxerStarted = false
         wroteVideoSample = false
+        wroteAudioSample = false
+        audioDegradedMidRec = false
         videoThread = null
         audioThread = null
         onFailure = null
@@ -540,6 +561,7 @@ class VideoRecorder(private val context: Context) {
                             // muxer that is globally broken also fails the video write (:drainVideoLoop),
                             // whose recordFailure then correctly wins the save gate and deletes.
                             muxer?.writeSampleData(audioTrack, buf, info)
+                            wroteAudioSample = true
                         }
                     }
                     codec.releaseOutputBuffer(outIdx, false)
@@ -608,7 +630,11 @@ class VideoRecorder(private val context: Context) {
      */
     private fun degradeAudioToVideoOnly(cause: Throwable) {
         if (com.hletrd.findx9tele.BuildConfig.DEBUG) Log.w(TAG, "audio degraded to video-only (mid-REC): ${cause.message}")
+        audioDegradedMidRec = true
         onRoute?.invoke(audioUnavailableLabel(audioInputPreference.label))
+        // Zero the live meter explicitly: the mic is dead, and a meter frozen at its last level
+        // would mislead the operator into believing audio is still being captured (CRIT4-6).
+        onLevel?.invoke(0f)
         synchronized(muxerLock) {
             expectedTracks = 1
             maybeStartMuxer()
@@ -721,6 +747,22 @@ internal fun shouldStartMuxer(
     expectedTracks: Int,
     audioTrackReady: Boolean,
 ): Boolean = !muxerStarted && videoTrackReady && (expectedTracks == 1 || audioTrackReady)
+
+/**
+ * Pure gate for stop()'s muxer.stop() failure handling (TR4-2). A stop() throw normally means the
+ * container was not finalized and the clip must be failed/deleted. The ONE tolerated combination is
+ * a mid-REC audio degrade whose track never received a sample ([audioDegradedMidRec] true,
+ * [wroteAudioSample] false) while the video track is complete ([wroteVideoSample] true) —
+ * MediaMuxer.stop() may throw over the registered-but-empty audio track even though the video
+ * track is playable. There the failure is NOT terminal: stop() proceeds to the publish gate, so a
+ * dropped mic in the add-track→first-sample window cannot delete a clean take. Every other
+ * combination (no video sample, no degrade, or audio samples actually muxed) stays terminal.
+ */
+internal fun muxerStopFailureIsTerminal(
+    wroteVideoSample: Boolean,
+    audioDegradedMidRec: Boolean,
+    wroteAudioSample: Boolean,
+): Boolean = !(wroteVideoSample && audioDegradedMidRec && !wroteAudioSample)
 
 /**
  * Audio presentation timestamp for a sample count at [sampleRate]. Pure integer math, top-level so
