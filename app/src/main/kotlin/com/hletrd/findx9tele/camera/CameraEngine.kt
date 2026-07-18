@@ -21,10 +21,7 @@ import com.hletrd.findx9tele.gl.GlPipeline
 import com.hletrd.findx9tele.storage.CaptureFamilyKey
 import com.hletrd.findx9tele.storage.CaptureFamilyMedia
 import com.hletrd.findx9tele.storage.MediaStoreWriter
-import com.hletrd.findx9tele.video.AudioReadOutcome
 import com.hletrd.findx9tele.video.VideoRecorder
-import com.hletrd.findx9tele.video.classifyAudioRead
-import com.hletrd.findx9tele.video.standbyMeterShouldRecreate
 
 /**
  * Facade tying Camera2 + GL(180° flip) + capture encoders + video recorder + MediaStore together.
@@ -35,6 +32,7 @@ class CameraEngine(private val context: Context) {
 
     private val manager = context.getSystemService(CameraManager::class.java)
     private val gl = GlPipeline()
+    private val rendererAssists = RendererAssists(gl)
     // Terminal owner for every operation that can acquire a fresh GL generation. release() closes
     // it before its one GL stop, so a queued cold start cannot resurrect resources afterward.
     private val terminalAcquisitionGate = TerminalAcquisitionGate()
@@ -307,7 +305,10 @@ class CameraEngine(private val context: Context) {
                     expectedController,
                     transaction.before.photoSessionOutputs,
                     expectedSessionGeneration = transaction.before.sessionGeneration,
-                    terminalMutation = terminalMutation,
+                    terminalMutation = {
+                        terminalMutation()
+                        finishRetainedControllerOpticsRemap(expectedController)
+                    },
                     beforeReadyPublication = beforeReadyPublication,
                 )
             },
@@ -315,6 +316,19 @@ class CameraEngine(private val context: Context) {
             canReconfigure = { !paused && recorder == null },
             reconfigure = { reconfigureCamera(cameraId, transaction) },
         )
+    }
+
+    /**
+     * Completes the zoom lifecycle only for a fast optics commit that RETAINS its CameraController.
+     * Reconfiguration paths skip this entirely because [wireController] installs a fresh boost=false
+     * owner. The controller folds exact controls + boost-off into one camera-thread request update,
+     * avoiding both the stale low-light FPS pin and a second corrective rebuild.
+     */
+    private fun finishRetainedControllerOpticsRemap(expectedController: CameraController) {
+        zoomInteractionActive = false
+        lastHalZoomSubmitMs = android.os.SystemClock.uptimeMillis()
+        gl.setZoomTarget(controls.zoomRatio)
+        expectedController.commitRetainedOpticsControls(controls)
     }
 
     private fun ownsOpticsTransaction(transaction: OpticsTransaction): Boolean =
@@ -356,7 +370,6 @@ class CameraEngine(private val context: Context) {
         previewStreamSize = before.previewStreamSize
         preTeleUnifiedZoom = before.preTeleUnifiedZoom
         controller?.setPinAutoFps(before.videoMode)
-        controller?.updateControls(before.controls)
         // Queue the exact UI optics first. Caps reconciliation follows it on main and is tagged with
         // this generation, so it cannot clamp the failed candidate or a newer user intent.
         onOpticsRollback?.invoke(
@@ -375,6 +388,11 @@ class CameraEngine(private val context: Context) {
         applyStabilization()
         val restoreSession = before.ready && before.readyController === controller && !paused &&
             before.sessionGeneration == cameraSessionGeneration.get()
+        if (restoreSession) {
+            finishRetainedControllerOpticsRemap(checkNotNull(controller))
+        } else {
+            controller?.updateControls(before.controls)
+        }
         val readyPublication = if (restoreSession) {
             val restoredController = checkNotNull(controller)
             acceptedCameraSession = AcceptedCameraSession(
@@ -471,11 +489,6 @@ class CameraEngine(private val context: Context) {
     @Volatile private var audioScene = AudioScene.STANDARD
     @Volatile private var audioInputPreference = AudioInputPreference.AUTO
     @Volatile private var aspectRatio = AspectRatio.W4_3
-    // Desired GL-only assists outlive the handler/EGL generation. Settings restore calls these
-    // setters before gl.start(), where handler posts are intentionally unavailable, so every new
-    // generation replays this complete snapshot before the first camera frame.
-    private val rendererConfig = RendererConfigStore()
-
     var onStatus: ((String?) -> Unit)? = null
     var onCapsReady: ((CameraCaps, generation: Long) -> Unit)? = null
     // The auto-chosen video size for the selected lens (largest 16:9), so the UI's Video tab reflects
@@ -559,9 +572,7 @@ class CameraEngine(private val context: Context) {
                         // Re-seed desired GL state that may have been set before the handler existed.
                         gl.setNativeLog(false)
                         gl.setTransfer(transfer)
-                        gl.setAeMetering(aeMetering)
-                        gl.setGammaAssist(gammaAssist)
-                        applyRendererConfig()
+                        rendererAssists.replayAll()
                         gyro.start()
                         // Capture route + token after GL input exists. A newer intent invalidates it.
                         val desired = currentOpticsReconfiguration()
@@ -644,8 +655,7 @@ class CameraEngine(private val context: Context) {
         reopenForSession()
     }
     fun setFalseColor(enabled: Boolean) {
-        rendererConfig.update { it.copy(falseColor = enabled) }
-        gl.setFalseColor(enabled)
+        rendererAssists.setFalseColor(enabled)
     }
 
     fun onPreviewSurfaceChanged(width: Int, height: Int) {
@@ -1076,7 +1086,6 @@ class CameraEngine(private val context: Context) {
                             lensChoice = LensChoice.forZoom(normalizedControls.zoomRatio)
                         }
                         seedGlZoom()
-                        expectedController.updateControls(normalizedControls)
                         overrideId = id
                     },
                     beforeReadyPublication = { generation -> onCapsReady?.invoke(routeCaps, generation) },
@@ -1115,71 +1124,35 @@ class CameraEngine(private val context: Context) {
         if (recorder == null) gl.setTransfer(t)
     }
     fun setPeaking(enabled: Boolean) {
-        rendererConfig.update { it.copy(peaking = enabled) }
-        gl.setPeaking(enabled)
+        rendererAssists.setPeaking(enabled)
     }
     fun setZebra(enabled: Boolean) {
-        rendererConfig.update { it.copy(zebra = enabled) }
-        gl.setZebra(enabled)
+        rendererAssists.setZebra(enabled)
     }
-
-    // Adjustable peaking (sensitivity + color) and zebra (%): threshold and color are combined into
-    // one GL call, so either change re-applies both from the current level/color.
-    private fun applyPeaking(config: RendererConfig = rendererConfig.snapshot()) =
-        gl.setPeakingParams(
-            config.peakingLevel.threshold,
-            config.peakingColor.r,
-            config.peakingColor.g,
-            config.peakingColor.b,
-        )
     fun setPeakingLevel(l: PeakingLevel) {
-        val config = rendererConfig.update { it.copy(peakingLevel = l) }
-        applyPeaking(config)
+        rendererAssists.setPeakingLevel(l)
     }
     fun setPeakingColor(c: PeakingColor) {
-        val config = rendererConfig.update { it.copy(peakingColor = c) }
-        applyPeaking(config)
+        rendererAssists.setPeakingColor(c)
     }
     fun setZebraLevel(z: ZebraLevel) {
-        rendererConfig.update { it.copy(zebraLevel = z) }
-        gl.setZebraThreshold(z.threshold)
+        rendererAssists.setZebraLevel(z)
     }
 
     /** Enables/disables GL-thread histogram and/or waveform computation feeding [onAnalysis]. */
     fun setAnalysis(histogram: Boolean, waveform: Boolean) {
-        rendererConfig.update { it.copy(histogram = histogram, waveform = waveform) }
-        gl.setAnalysisEnabled(histogram, waveform)
-    }
-
-    /** Replays all desired handler-backed assists into the current GL generation, in order. */
-    private fun applyRendererConfig(config: RendererConfig = rendererConfig.snapshot()) {
-        gl.setPeaking(config.peaking)
-        applyPeaking(config)
-        gl.setZebra(config.zebra)
-        gl.setZebraThreshold(config.zebraLevel.threshold)
-        gl.setFalseColor(config.falseColor)
-        gl.setAnalysisEnabled(config.histogram, config.waveform)
-        gl.setPunchIn(config.punchIn)
-        gl.setTeleFinder(config.teleFinder)
+        rendererAssists.setAnalysis(histogram, waveform)
     }
 
     /** Forces the luma readback for the app-side auto-exposure loop (SHUTTER/ISO priority). */
     fun setAeMetering(enabled: Boolean) {
-        // The ViewModel calls this on EVERY control mutation (updateControls); the value only
-        // actually changes on a mode transition. Skip the redundant GL-handler post (60-120/s of
-        // no-op messages during a sustained gesture).
-        if (aeMetering == enabled) return
-        aeMetering = enabled
-        gl.setAeMetering(enabled)
+        rendererAssists.setAeMetering(enabled)
     }
 
     /** Gamma Display Assist: normal monitor image while recording O-Log (the file stays log). */
     fun setGammaAssist(enabled: Boolean) {
-        gammaAssist = enabled
-        gl.setGammaAssist(enabled)
+        rendererAssists.setGammaAssist(enabled)
     }
-
-    @Volatile private var gammaAssist = false
 
     /**
      * Requests a fresh, converged grey-card sample from the accepted unlocked-AUTO session.
@@ -1234,10 +1207,6 @@ class CameraEngine(private val context: Context) {
             awbLocked = controls.awbLock,
         )
 
-    // Remembered so the GL-start callback can re-seed it: setAeMetering can arrive from settings
-    // restore BEFORE the GL thread exists, where GlPipeline.post silently drops it.
-    @Volatile private var aeMetering = false
-
     /**
      * Tap-to-focus/meter. Maps a VIEW-normalized tap [(nx,ny), origin top-left] to a
      * SENSOR-normalized point by inverting the GL content rotation applied to the preview — the
@@ -1257,7 +1226,7 @@ class CameraEngine(private val context: Context) {
         // offset (AGG4-11/P2.8). Compose each space's mapping through that space's own current
         // center; the loupe scale is isotropic and commutes with the rotations, so composing
         // AFTER the rotation math is exact.
-        val punchActive = rendererConfig.snapshot().punchIn
+        val punchActive = rendererAssists.isPunchInEnabled()
         val span = 1f - PUNCH_IN_CROP
         val sensorRaw = viewTapToSensorPoint(nx, ny, c.sensorOrientation, teleconverterMode)
         val sensor = if (punchActive) {
@@ -1666,7 +1635,6 @@ class CameraEngine(private val context: Context) {
                 ) {
                     val expectedController = controller ?: return@execute
                     commitFastPathOrReconfigure(transaction, id, expectedController) {
-                        setZoomRatio(resolved.controls.zoomRatio)
                         overrideId = id
                     }
                 } else {
@@ -1942,7 +1910,7 @@ class CameraEngine(private val context: Context) {
         } else {
             r?.upper ?: Float.MAX_VALUE
         }
-        val z = ratio.coerceIn(r?.lower ?: ratio, hi)
+        val z = clampToOrderedBounds(ratio, r?.lower ?: ratio, hi)
         // Packet writers (rollback / caps-normalize on setupExecutor) replace [controls] wholesale
         // under this monitor. Take it for the zoom read-modify-write too: @Volatile alone gives
         // visibility, not atomicity, so a 60 Hz pinch flush could overwrite (lose) an entire
@@ -2010,7 +1978,7 @@ class CameraEngine(private val context: Context) {
         } else {
             r?.upper ?: Float.MAX_VALUE
         }
-        val z = ratio.coerceIn(r?.lower ?: ratio, hi)
+        val z = clampToOrderedBounds(ratio, r?.lower ?: ratio, hi)
         // Same monitor rule as setZoomRatio: packet writers replace [controls] wholesale under it.
         synchronized(this) { controls = controls.copy(zoomRatio = z) }
         gl.setZoomTarget(z)
@@ -2057,11 +2025,35 @@ class CameraEngine(private val context: Context) {
         }
         val ctrl = accepted.controller
         when (driveMode) {
-            DriveMode.SINGLE -> ctrl.capturePhoto(
-                effFormats.wantsProcessedStill,
-                effFormats.dngRaw,
-                photoCallback(effFormats, controls),
-            )
+            DriveMode.SINGLE -> {
+                val snapshotLease = if (effFormats.wantsProcessedStill) {
+                    singleProcessedSnapshotBudget.tryAcquire()
+                } else {
+                    null
+                }
+                if (effFormats.wantsProcessedStill && snapshotLease == null) {
+                    onStatus?.invoke("Finishing previous photo")
+                    return false
+                }
+                val callback = runCatching {
+                    photoCallback(effFormats, controls, retainedSnapshotLease = snapshotLease)
+                }.getOrElse { failure ->
+                    snapshotLease?.release()
+                    onStatus?.invoke("Capture failed: ${failure.message}")
+                    return false
+                }
+                val dispatched = runCatching {
+                    ctrl.capturePhoto(
+                        effFormats.wantsProcessedStill,
+                        effFormats.dngRaw,
+                        callback,
+                    )
+                }
+                if (dispatched.isFailure) {
+                    callback.onError(dispatched.exceptionOrNull()!!)
+                    return false
+                }
+            }
             DriveMode.BURST -> captureBurst(accepted, effFormats)
             DriveMode.AEB -> captureAeb(accepted, effFormats)
             DriveMode.TIMELAPSE -> startTimelapse(formats)
@@ -2209,6 +2201,7 @@ class CameraEngine(private val context: Context) {
         emitMediaSaved = { uri, id -> onMediaSaved?.invoke(uri, id) },
         emitRawSaved = { uri, id -> onRawSaved?.invoke(uri, id) },
     )
+    private val singleProcessedSnapshotBudget = ProcessedSnapshotBudget()
 
     private fun shotSpec(shotControls: ManualControls): ShotSpec {
         val shotCaps = caps
@@ -2249,13 +2242,40 @@ class CameraEngine(private val context: Context) {
     private fun photoCallback(
         formats: PhotoFormats,
         shotControls: ManualControls,
+        retainedSnapshotLease: ProcessedSnapshotBudget.Lease? = null,
         onDone: (() -> Unit)? = null,
     ): CameraController.PhotoCallback {
+        require(retainedSnapshotLease == null || formats.wantsProcessedStill)
         val requestSpec = shotSpec(shotControls)
+        val remainingSaveLanes = java.util.concurrent.atomic.AtomicInteger(
+            (if (formats.wantsProcessedStill) 1 else 0) + (if (formats.dngRaw) 1 else 0),
+        )
         val completionDelivered = java.util.concurrent.atomic.AtomicBoolean(false)
-        val finish = {
-            if (completionDelivered.compareAndSet(false, true)) onDone?.invoke()
+        val finishSequence = {
+            if (remainingSaveLanes.get() == 0 && completionDelivered.compareAndSet(false, true)) {
+                onDone?.invoke()
+            }
             Unit
+        }
+        val processedFinished = java.util.concurrent.atomic.AtomicBoolean(!formats.wantsProcessedStill)
+        val finishProcessed = {
+            if (processedFinished.compareAndSet(false, true)) {
+                retainedSnapshotLease?.release()
+                if (remainingSaveLanes.decrementAndGet() == 0) finishSequence()
+            }
+            Unit
+        }
+        val dngFinished = java.util.concurrent.atomic.AtomicBoolean(!formats.dngRaw)
+        val finishDng = {
+            if (dngFinished.compareAndSet(false, true) && remainingSaveLanes.decrementAndGet() == 0) {
+                finishSequence()
+            }
+            Unit
+        }
+        // Status observers are UI-owned and must never strand a retained-snapshot lease or a
+        // BURST/AEB/timelapse continuation if one is detached or throws during teardown.
+        val reportStatus: (String) -> Unit = { message ->
+            runCatching { onStatus?.invoke(message) }
         }
         return object : CameraController.PhotoCallback {
             override fun onPhoto(
@@ -2265,61 +2285,103 @@ class CameraEngine(private val context: Context) {
                 rawChars: CameraCharacteristics,
                 takenAtMs: Long,
             ) {
-                val spec = requestSpec.copy(takenAtMs = takenAtMs)
-                // Copy the live Image first so the ImageReader slot and Camera2 handler are held for
-                // the shortest possible interval; EXIF composition below performs cache-only reads.
-                val processedSnapshot = if (formats.wantsProcessedStill && jpeg != null) {
-                    runCatching { StillSnapshot.from(jpeg) }.getOrNull()
-                } else {
-                    null
-                }
-                val exifShot = exifShotOf(result, spec)
                 var processedQueued = false
+                var dngPublishQueued = false
+                try {
+                    val spec = requestSpec.copy(takenAtMs = takenAtMs)
+                    // Copy the live Image first so the ImageReader slot and Camera2 handler are held
+                    // for the shortest possible interval; EXIF composition is cache-only.
+                    val processedSnapshot = if (formats.wantsProcessedStill && jpeg != null) {
+                        runCatching { StillSnapshot.from(jpeg) }.getOrNull()
+                    } else {
+                        null
+                    }
+                    val exifShot = exifShotOf(result, spec)
 
-                if (formats.wantsProcessedStill) {
-                    if (jpeg != null) {
-                        if (processedSnapshot != null) {
-                            val queued = runCatching {
-                                ioExecutor.execute {
-                                    try {
-                                        val bytes = runCatching { processedSnapshot.jpegBytes() }.getOrNull()
-                                        if (bytes == null) {
-                                            onStatus?.invoke("Failed to save photo")
-                                        } else {
-                                            stillPipeline.saveProcessedStills(bytes, spec, exifShot, wantHeif = formats.heif, wantJpeg = formats.jpeg)
+                    if (formats.wantsProcessedStill) {
+                        if (jpeg != null) {
+                            if (processedSnapshot != null) {
+                                val queued = runCatching {
+                                    ioExecutor.execute {
+                                        try {
+                                            val bytes = runCatching { processedSnapshot.jpegBytes() }.getOrNull()
+                                            if (bytes == null) {
+                                                reportStatus("Failed to save photo")
+                                            } else {
+                                                stillPipeline.saveProcessedStills(
+                                                    bytes,
+                                                    spec,
+                                                    exifShot,
+                                                    wantHeif = formats.heif,
+                                                    wantJpeg = formats.jpeg,
+                                                )
+                                            }
+                                        } finally {
+                                            finishProcessed()
                                         }
-                                    } finally {
-                                        finish()
                                     }
                                 }
+                                processedQueued = queued.isSuccess
+                                queued.onFailure {
+                                    reportStatus("Failed to queue photo save: ${it.message}")
+                                }
+                            } else {
+                                reportStatus("Failed to save photo")
                             }
-                            processedQueued = queued.isSuccess
-                            queued.onFailure { onStatus?.invoke("Failed to queue photo save: ${it.message}") }
                         } else {
-                            onStatus?.invoke("Failed to save photo")
+                            reportStatus("Failed to save photo: no still image")
                         }
-                    } else {
-                        onStatus?.invoke("Failed to save photo: no still image")
                     }
-                }
 
-                if (formats.dngRaw) {
-                    if (raw != null) {
-                        // DngCreator needs the live raw Image → must stay synchronous in this callback.
-                        runCatching { stillPipeline.saveDng(raw, rawChars, result, spec) }
-                            .onSuccess { onStatus?.invoke("DNG saved") }
-                            .onFailure { onStatus?.invoke("Failed to save DNG: ${it.message}") }
-                    } else {
-                        onStatus?.invoke("Failed to save DNG: no RAW")
+                    if (formats.dngRaw) {
+                        if (raw != null) {
+                            // DngCreator needs the live Image, so write + COMPLETE marking remain on
+                            // this camera callback. Only retrying publication crosses to ioExecutor.
+                            val write = runCatching {
+                                stillPipeline.saveDng(raw, rawChars, result, spec)
+                            }
+                            write.onFailure { failure ->
+                                reportStatus("Failed to save DNG: ${failure.message}")
+                            }
+                            val pending = write.getOrNull()
+                            if (pending != null) {
+                                val queued = runCatching {
+                                    ioExecutor.execute {
+                                        try {
+                                            stillPipeline.publishDng(pending)
+                                        } finally {
+                                            finishDng()
+                                        }
+                                    }
+                                }
+                                dngPublishQueued = queued.isSuccess
+                                queued.onFailure {
+                                    // The bytes are COMPLETE and remain pending for launch recovery.
+                                    reportStatus("Failed to queue DNG publish; will retry")
+                                }
+                            }
+                        } else {
+                            reportStatus("Failed to save DNG: no RAW")
+                        }
                     }
+                    if (!formats.wantsProcessedStill && !formats.dngRaw) {
+                        reportStatus("No output selected")
+                    }
+                } finally {
+                    if (!processedQueued) finishProcessed()
+                    if (!dngPublishQueued) finishDng()
+                    finishSequence()
                 }
-                if (!formats.wantsProcessedStill && !formats.dngRaw) onStatus?.invoke("No output selected")
-                if (!processedQueued) finish()
             }
 
             override fun onError(t: Throwable) {
-                onStatus?.invoke("Capture failed: ${t.message}")
-                finish()
+                try {
+                    reportStatus("Capture failed: ${t.message}")
+                } finally {
+                    finishProcessed()
+                    finishDng()
+                    finishSequence()
+                }
             }
         }
     }
@@ -2403,7 +2465,7 @@ class CameraEngine(private val context: Context) {
         // AudioRecord.release() ran, so the single-mic invariant holds whenever the wait succeeds.
         // A timed-out owner remains the mic owner: fail this REC attempt rather than letting a late
         // meter thread acquire AudioRecord after recorder admission and recreating dual ownership.
-        val audioClaim = standbyMeterOwnership.beginRecording()
+        val audioClaim = standbyAudioController.beginRecording()
         if (!audioClaim.admitted) return false
         // Expected failures below return false with their own cleanup, but an UNEXPECTED throw
         // between the mic claim and recorder publication must still release the single-mic claim:
@@ -2578,8 +2640,7 @@ class CameraEngine(private val context: Context) {
     }
 
     private fun abortRecordingStart() {
-        standbyMeterOwnership.abortRecording()
-        if (!paused) startStandbyAudioMonitor(updateIntent = false)
+        standbyAudioController.abortRecording()
     }
 
     fun stopRecording() {
@@ -2722,8 +2783,7 @@ class CameraEngine(private val context: Context) {
             }
         } finally {
             recorderTeardownInFlight = false
-            standbyMeterOwnership.finishRecording()
-            if (!paused) startStandbyAudioMonitor(updateIntent = false)
+            standbyAudioController.finishRecording()
         }
     }
 
@@ -2731,7 +2791,7 @@ class CameraEngine(private val context: Context) {
     fun pause() {
         paused = true
         coldStartRetryGate.cancel()
-        standbyMeterOwnership.disable()
+        standbyAudioController.disable()
         invalidateCameraReady()
         // A backgrounded timelapse can't capture anyway (controller is nulled below, so every tick
         // no-ops) — stop it outright rather than silently resuming mid-sequence with a gap.
@@ -2820,21 +2880,18 @@ class CameraEngine(private val context: Context) {
     fun currentDeviceOrientation(): Int = gyro.currentDeviceOrientation()
 
     fun setPunchIn(enabled: Boolean) {
-        rendererConfig.update { it.copy(punchIn = enabled) }
-        gl.setPunchIn(enabled)
+        rendererAssists.setPunchIn(enabled)
     }
 
     // TELE finder PIP: the user's persisted Assist toggle (default OFF). Only the RESOLVED flag —
     // teleFinderResolved: toggle && TELE && PHOTO && 4:3 — is pushed to GL and stored in
-    // RendererConfig (so a fresh GL generation replays the resolved value via applyRendererConfig).
+    // RendererAssists (so a fresh GL generation replays the resolved value via replayAll).
     // Photo-only: it is a still-composition aid and 4:3 is the STILL aspect. 16:9 is excluded
     // because the AspectMask pillarboxes would dim/misframe the corner box, and the finder
     // deliberately shows the FULL delivered frame (see FINDER_* in CameraState for the honest
     // single-stream contract).
-    @Volatile private var teleFinderEnabled = false
-
     fun setTeleFinder(enabled: Boolean) {
-        teleFinderEnabled = enabled
+        rendererAssists.setTeleFinderIntent(enabled)
         pushTeleFinder()
     }
 
@@ -2842,9 +2899,13 @@ class CameraEngine(private val context: Context) {
      *  and session (re)config so the GL PIP can never outlive a TC-off, aspect, or mode change.
      *  The predicate itself is the shared, unit-tested [teleFinderResolved]. */
     private fun pushTeleFinder() {
-        val resolved = teleFinderResolved(teleFinderEnabled, teleconverterMode, videoMode, aspectRatio)
-        rendererConfig.update { it.copy(teleFinder = resolved) }
-        gl.setTeleFinder(resolved)
+        val resolved = teleFinderResolved(
+            rendererAssists.isTeleFinderEnabled(),
+            teleconverterMode,
+            videoMode,
+            aspectRatio,
+        )
+        rendererAssists.setTeleFinderResolved(resolved)
     }
 
     /** Breaks the engine→ViewModel callback graph before asynchronous owner teardown begins. */
@@ -2877,7 +2938,7 @@ class CameraEngine(private val context: Context) {
         coldStartRetryGate.cancel()
         invalidateCameraReady()
         stopTimelapse()
-        standbyMeterOwnership.disable()
+        standbyAudioController.disable()
         // Preserve the same GL-detach-before-codec-release order during ViewModel teardown. Await
         // the exactly-once finalization latch before dropping GL/executor ownership; pause() usually
         // started this already, while the direct branch covers unusual unbalanced lifecycle exits.
@@ -3075,159 +3136,20 @@ class CameraEngine(private val context: Context) {
     }
 
 
-    // ---- Standby audio meter (Sony-style pre-roll level check) --------------------------------
-    // A levels-only mic tap that feeds [onAudioLevel] while video mode is ARMED but not recording,
-    // so input levels are visible before rolling. Stops itself the moment a real recording starts
-    // (the recorder owns the mic) or the flag drops.
-    private val standbyMeterOwnership =
-        StandbyMeterOwnership<java.util.concurrent.CountDownLatch>()
-
-    // Consecutive standby AudioRecord generations that died on a terminal read error WITHOUT one
-    // successful PCM read; bounds the recreate-after-dead-route policy (see the meter's finally).
-    private val standbyMeterFailureStreak = java.util.concurrent.atomic.AtomicInteger(0)
+    private val standbyAudioController = StandbyAudioController(
+        context = context,
+        audioGain = { audioGain },
+        onLevel = { level -> onAudioLevel?.invoke(level) },
+        canStart = { !paused && recorder == null && !recorderTeardownInFlight },
+        recorderAbsent = { recorder == null },
+        isPaused = { paused },
+    )
 
     fun setStandbyAudioMonitor(enabled: Boolean) {
-        if (!enabled) {
-            standbyMeterOwnership.disable()
-            return
-        }
-        // An explicit (re)enable is fresh user/mode intent: a mic that recovered after the
-        // recreate budget was spent gets its full ≤3-generation budget back instead of being
-        // denied by the stale failure history of a dead route.
-        standbyMeterFailureStreak.set(0)
-        startStandbyAudioMonitor(updateIntent = true)
-    }
-
-    /** Starts only if the latest intent still wants metering; internal retries never re-enable it. */
-    private fun startStandbyAudioMonitor(updateIntent: Boolean) {
-        val canStart = !paused && recorder == null && !recorderTeardownInFlight &&
-            context.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
-            android.content.pm.PackageManager.PERMISSION_GRANTED
-        // reserve publishes the immutable owner + release latch before Thread.start. Concurrent UI
-        // refresh/finalizer calls therefore see one owner, and REC can await that exact generation.
-        val createRelease = { java.util.concurrent.CountDownLatch(1) }
-        val owner = if (updateIntent) {
-            standbyMeterOwnership.reserve(
-                enabled = true,
-                canStart = canStart,
-                createRelease = createRelease,
-            )
-        } else {
-            standbyMeterOwnership.reserveCurrentWanted(
-                canStart = canStart,
-                createRelease = createRelease,
-            )
-        } ?: return
-        val t = Thread({
-            var audioRecord: android.media.AudioRecord? = null
-            // Read-loop outcome flags for the finally's bounded-recreation decision: a terminal
-            // negative read ends this generation; one successful PCM read resets the retry budget.
-            var sawPcm = false
-            var terminalReadError = false
-            try {
-                // Reservation does not imply start admission: REC may have claimed ownership while
-                // this thread was waiting to run.
-                if (!standbyMeterOwnership.ownsAndWants(owner)) return@Thread
-                val sampleRate = 48_000
-                val minBuf = android.media.AudioRecord.getMinBufferSize(
-                    sampleRate, android.media.AudioFormat.CHANNEL_IN_MONO, android.media.AudioFormat.ENCODING_PCM_16BIT,
-                )
-                if (minBuf <= 0) return@Thread
-                val rec = runCatching {
-                    android.media.AudioRecord(
-                        android.media.MediaRecorder.AudioSource.CAMCORDER, sampleRate,
-                        android.media.AudioFormat.CHANNEL_IN_MONO, android.media.AudioFormat.ENCODING_PCM_16BIT, minBuf * 2,
-                    )
-                }.getOrNull() ?: return@Thread
-                audioRecord = rec
-                if (rec.state != android.media.AudioRecord.STATE_INITIALIZED) return@Thread
-                if (!standbyMeterOwnership.ownsAndWants(owner)) return@Thread
-                if (runCatching { rec.startRecording() }.isFailure) return@Thread
-                val buf = ShortArray(2048)
-                var lastEmit = 0L
-                while (standbyMeterOwnership.ownsAndWants(owner) && recorder == null) {
-                    val n = rec.read(buf, 0, buf.size)
-                    // Negative reads are TERMINAL framework errors (ERROR_DEAD_OBJECT after a route
-                    // loss, ERROR_INVALID_OPERATION, ...) and return synchronously — the old
-                    // `n <= 0 -> continue` hot-spun this thread forever on a dead mic and never
-                    // reached the finally release. Classify exactly like VideoRecorder's recording
-                    // loop (AudioReadPolicy): zero = transient retry, negative = end THIS
-                    // AudioRecord generation. The finally still releases exactly once; a bounded
-                    // recreation (below) re-arms only while the standby intent still wants a meter.
-                    // Like the recorder loop, judge the code against the ownership state observed
-                    // AFTER the blocking read: REC's beginRecording can revoke `wanted` while
-                    // read() is blocked, and the resulting negative wake-up is a normal handoff
-                    // end — charging it to the failure streak would shortchange a later genuine
-                    // dead-route recreation budget.
-                    val stillWanted = standbyMeterOwnership.ownsAndWants(owner)
-                    when (classifyAudioRead(n, running = stillWanted)) {
-                        is AudioReadOutcome.Pcm -> if (!sawPcm) {
-                            sawPcm = true
-                            standbyMeterFailureStreak.set(0)
-                        }
-                        AudioReadOutcome.Retry -> continue
-                        is AudioReadOutcome.Failure -> {
-                            terminalReadError = true
-                            break
-                        }
-                        // Negative read after the intent was revoked mid-block (REC handoff /
-                        // disable): a normal generation end, NOT a failure — no streak charge.
-                        AudioReadOutcome.Stopped -> break
-                    }
-                    val now = System.nanoTime()
-                    if (now - lastEmit < 100_000_000L) continue // ~10 Hz is plenty for a meter
-                    lastEmit = now
-                    var sum = 0.0
-                    for (i in 0 until n) { val v = buf[i].toDouble(); sum += v * v }
-                    // 32768 = signed 16-bit full scale, matching VideoRecorder's recording meter so
-                    // the level bar doesn't step at the standby→recording handoff.
-                    val rms = kotlin.math.sqrt(sum / n) / 32768.0
-                    onAudioLevel?.invoke((rms * audioGain).toFloat().coerceIn(0f, 1f))
-                }
-            } finally {
-                // Signal "mic fully released" on EVERY exit path (incl. the early return@Thread
-                // bails and read failures) before publishing the release latch.
-                audioRecord?.let { rec ->
-                    runCatching { rec.stop() }
-                    runCatching { rec.release() }
-                }
-                val completion = standbyMeterOwnership.complete(owner)
-                owner.release.countDown()
-                runCatching { onAudioLevel?.invoke(0f) }
-                if (completion.retryPending && !paused) {
-                    startStandbyAudioMonitor(updateIntent = false)
-                } else if (terminalReadError && !paused &&
-                    standbyMeterShouldRecreate(
-                        failedGenerations = standbyMeterFailureStreak.incrementAndGet(),
-                        maxRecreates = STANDBY_METER_MAX_RECREATES,
-                    )
-                ) {
-                    // Bounded, backed-off recreation after a dead-route read error: a fresh
-                    // AudioRecord usually recovers a device switch, but a persistently dead mic
-                    // must not recreate-spin — after the budget the meter stays dark (level 0)
-                    // until the standby intent itself changes. The restart path below re-checks
-                    // the CURRENT intent, so it cannot override a newer disable/background/REC
-                    // transition; the release latch above is already counted down, so REC handoff
-                    // is never delayed by this backoff.
-                    runCatching { Thread.sleep(STANDBY_METER_RETRY_BACKOFF_MS) }
-                    startStandbyAudioMonitor(updateIntent = false)
-                }
-            }
-        }, "StandbyAudioMeter")
-        runCatching { t.start() }.onFailure {
-            val completion = standbyMeterOwnership.complete(owner)
-            owner.release.countDown()
-            if (completion.retryPending && !paused) startStandbyAudioMonitor(updateIntent = false)
-        }
+        standbyAudioController.setEnabled(enabled)
     }
 
     private companion object {
-        // Standby-meter dead-route recreation budget: at most this many consecutive AudioRecord
-        // generations that never produced a PCM read, each after a short backoff (a persistently
-        // dead mic must not recreate-spin; any successful read resets the budget).
-        private const val STANDBY_METER_MAX_RECREATES = 3
-        private const val STANDBY_METER_RETRY_BACKOFF_MS = 300L
-
         // Exposure floor while a zoom gesture is live (1/30 s → ≥30 fps preview when ISO headroom allows).
         private const val ZOOM_SMOOTH_EXPOSURE_NS = 33_333_333L
 
@@ -3383,94 +3305,6 @@ internal class ColdStartRetryGate(private val maxAttempts: Int) {
         attempts = 0
         attemptGeneration = null
         scheduled = null
-    }
-}
-
-/**
- * Single-owner admission for the standby AudioRecord and the recording handoff. The release object
- * is generic so the JVM suite can prove ownership without Android audio classes.
- */
-internal class StandbyMeterOwnership<R> {
-    data class Owner<R>(val id: Long, val release: R)
-    data class RecordingClaim<R>(val admitted: Boolean, val release: R?)
-    data class Completion(val completed: Boolean, val retryPending: Boolean)
-
-    private var nextId = 0L
-    private var wanted = false
-    private var active: Owner<R>? = null
-    private var recordingClaimed = false
-    private var restoreWantedOnAbort = false
-    private var wantedChangedSinceClaim = false
-    private var restartAfterActive = false
-
-    @Synchronized
-    fun reserve(enabled: Boolean, canStart: Boolean, createRelease: () -> R): Owner<R>? {
-        if (recordingClaimed) wantedChangedSinceClaim = true
-        wanted = enabled
-        return reserveWantedLocked(canStart, createRelease)
-    }
-
-    /** Internal restart path: observes current intent without changing it. */
-    @Synchronized
-    fun reserveCurrentWanted(canStart: Boolean, createRelease: () -> R): Owner<R>? =
-        reserveWantedLocked(canStart, createRelease)
-
-    private fun reserveWantedLocked(canStart: Boolean, createRelease: () -> R): Owner<R>? {
-        if (!wanted || !canStart || recordingClaimed) return null
-        if (active != null) {
-            restartAfterActive = true
-            return null
-        }
-        restartAfterActive = false
-        return Owner(++nextId, createRelease()).also { active = it }
-    }
-
-    @Synchronized
-    fun disable(): R? {
-        if (recordingClaimed) wantedChangedSinceClaim = true
-        wanted = false
-        restartAfterActive = false
-        return active?.release
-    }
-
-    @Synchronized
-    fun ownsAndWants(owner: Owner<R>): Boolean = wanted && active?.id == owner.id
-
-    @Synchronized
-    fun complete(owner: Owner<R>): Completion {
-        if (active?.id != owner.id) return Completion(completed = false, retryPending = false)
-        active = null
-        val retryPending = restartAfterActive && wanted && !recordingClaimed
-        restartAfterActive = false
-        return Completion(completed = true, retryPending = retryPending)
-    }
-
-    /** Claims the recording transition before any recorder object exists, blocking new meters. */
-    @Synchronized
-    fun beginRecording(): RecordingClaim<R> {
-        if (recordingClaimed) return RecordingClaim(admitted = false, release = null)
-        recordingClaimed = true
-        restoreWantedOnAbort = wanted
-        wantedChangedSinceClaim = false
-        wanted = false
-        restartAfterActive = false
-        return RecordingClaim(admitted = true, release = active?.release)
-    }
-
-    @Synchronized
-    fun abortRecording() {
-        if (!wantedChangedSinceClaim) wanted = restoreWantedOnAbort
-        recordingClaimed = false
-        restoreWantedOnAbort = false
-        wantedChangedSinceClaim = false
-    }
-
-    /** Releases recorder admission after its AudioRecord teardown; intent is rechecked separately. */
-    @Synchronized
-    fun finishRecording() {
-        recordingClaimed = false
-        restoreWantedOnAbort = false
-        wantedChangedSinceClaim = false
     }
 }
 
