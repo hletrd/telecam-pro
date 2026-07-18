@@ -213,10 +213,21 @@ class CameraController(context: Context) {
                     }
                 }
                 override fun onDisconnected(camera: CameraDevice) {
+                    if (closed) return // an intentional teardown's late disconnect is not a health event
                     onError.onError(IllegalStateException("Camera disconnected"))
                     close()
                 }
                 override fun onError(camera: CameraDevice, error: Int) {
+                    // Same closed gate as every other StateCallback path: tearing down the
+                    // standalone camera during a photo↔video flip can make this HAL hiccup
+                    // ("Error clearing streaming request: Function not implemented (-38)" →
+                    // ERROR_CAMERA_DEVICE) — surfacing that as a user-visible camera error and
+                    // kicking bounded recovery for a device we were closing anyway is pure
+                    // noise. A LIVE session's error still reports (closed is set only by close()).
+                    if (closed) {
+                        if (BuildConfig.DEBUG) Log.w(TAG, "Ignoring camera error $error during intentional close")
+                        return
+                    }
                     onError.onError(IllegalStateException("Camera error $error"))
                     close()
                 }
@@ -851,11 +862,12 @@ class CameraController(context: Context) {
             // app-side AE loop feed this at up to 25 Hz, and EVERY full rebuild's repeating-request
             // swap gaps this HAL's stream 170-250 ms (measured) — a 2 s ruler drag was a ~5 fps
             // viewfinder exactly while judging critical focus at 300 mm. When the delta touches
-            // ONLY the sensor scalars AND no tap-focus/AF-lock override is live (the fast path's
-            // applyFocus would silently release them — see sensorFastPathAdmitted), mutate the
-            // cached builder via the SAME derivation the full build uses, paced to >=200 ms with a
-            // trailing exact landing. Anything else keeps the full rebuild.
-            if (sensorFastPathAdmitted(previous, normalized, touchAfActive)) {
+            // ONLY the sensor scalars, mutate the cached builder via the SAME derivation the full
+            // build uses, paced to >=200 ms with a trailing exact landing; a live tap-focus/AF-lock
+            // override is RE-APPLIED onto the builder afterward (reapplyAfOverrides) so it can ride
+            // the fast path too — a wholesale refusal starved the preview back to ~5 fps whenever
+            // the app-side AE loop ran with a held tap-AF. Anything else keeps the full rebuild.
+            if (sensorFastPathAdmitted(previous, normalized)) {
                 submitSensorFastPath()
             } else {
                 startPreview()
@@ -887,11 +899,6 @@ class CameraController(context: Context) {
 
     /** Camera-thread body: mutate only the sensor keys on the cached repeating builder. */
     private fun applySensorFastPath() {
-        // Admission re-check for the QUEUED trailing task: a tap-to-focus/AF-lock can arrive after
-        // the task was queued, and its own full rebuild already carried the newest sensor values —
-        // running applyFocus here would clobber the just-applied AF override. Skip, don't rebuild:
-        // any later sensor delta takes the full-rebuild branch while the override is live.
-        if (touchAfActive || controls.afLock) return
         val s = session ?: return
         val b = previewBuilder
         val cb = previewCallback
@@ -903,12 +910,45 @@ class CameraController(context: Context) {
                 pinAutoFps = pinAutoFps || smoothPreviewBoost,
                 previewExposureCap = true,
             )
+            // applyFocus above rewrote CONTROL_AF_MODE per the base focus mode; a live tap-AF /
+            // AF-lock override must be restored on top, exactly as the full rebuild applies it
+            // AFTER applyManualControls. This also covers the queued-trailing-task ordering (a
+            // tap can land between queueing and firing): re-applying beats the old wholesale
+            // refusal, which starved the preview to ~5 fps under app-side AE with a held tap-AF.
+            reapplyAfOverrides(b)
             s.setRepeatingRequest(b.build(), cb, handler)
         }.onFailure {
             if (BuildConfig.DEBUG) Log.w(TAG, "sensor fast path failed, rebuilding: ${it.message}")
             // The cached builder/session can go invalid during a configure transition; re-derive
             // the full repeating request so the new sensor values are not silently lost.
             startPreview()
+        }
+    }
+
+    /**
+     * Restores the tap-to-focus / AF-lock override keys the full rebuild applies after
+     * [applyManualControls] (see startPreview lines above): tap-AF holds AF_MODE_AUTO on the
+     * tapped region (regions persist on the cached builder; NO trigger here — re-firing
+     * AF_TRIGGER_START would restart the scan the hold is meant to freeze), AF lock pins
+     * AF_MODE_OFF at the last AF-resolved distance. Key state after this equals the full
+     * rebuild's, so a fast-path submit can never silently release an override (the cycle-2
+     * regression that motivated the old refusal).
+     */
+    private fun reapplyAfOverrides(builder: CaptureRequest.Builder) {
+        val touchAfUsesAuto = touchAfMayTrigger(
+            touchAfActive = touchAfActive,
+            maxAfRegions = caps.maxAfRegions,
+            focusMode = controls.focusMode,
+            afModes = caps.afModes,
+        )
+        if (touchAfUsesAuto) {
+            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
+        }
+        if (controls.afLock && controls.focusMode != FocusMode.MANUAL && caps.supportsManualFocus &&
+            exactAdvertisedMode(CaptureRequest.CONTROL_AF_MODE_OFF, caps.afModes) != null
+        ) {
+            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+            builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, lastFocusDistance)
         }
     }
 

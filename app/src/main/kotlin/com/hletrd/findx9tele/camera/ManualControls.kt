@@ -454,20 +454,18 @@ internal fun sensorOnlyControlsDelta(previous: ManualControls, next: ManualContr
     ) == next
 
 /**
- * Full sensor fast-path admission: the delta must be sensor-only AND no AF override may be live
- * on the cached builder. Tap-to-focus (a one-shot AF_MODE_AUTO hold) and AF lock (AF_MODE_OFF +
- * frozen LENS_FOCUS_DISTANCE) are applied by the full rebuild AFTER [applyManualControls] — the
- * fast path re-runs [applySensorValueControls]→applyFocus, whose unconditional CONTROL_AF_MODE
- * write would silently RELEASE them; the app-side AE loop fires sensor-only deltas ~6×/s, so a
- * tapped focus would unlock within ~100 ms. While an override is live every delta takes the full
- * rebuild, which re-applies the override (those states are transient, and a quiet lens is wanted
- * then anyway).
+ * Full sensor fast-path admission: the delta must be sensor-only. A live tap-to-focus / AF-lock
+ * override no longer refuses the fast path: the controller RE-APPLIES the override keys onto the
+ * cached builder after [applySensorValueControls] (see CameraController.reapplyAfOverrides), so
+ * the resulting key state is identical to the full rebuild's — without the ~180 ms repeating-swap
+ * stall. (The earlier wholesale refusal fixed the tap-AF release regression but re-created the
+ * ~5 fps dim-light preview whenever the app-side AE loop ran with a held tap-AF/AF-lock — the
+ * exact starvation the fast path exists to remove.)
  */
 internal fun sensorFastPathAdmitted(
     previous: ManualControls,
     next: ManualControls,
-    touchAfActive: Boolean,
-): Boolean = !touchAfActive && !next.afLock && sensorOnlyControlsDelta(previous, next)
+): Boolean = sensorOnlyControlsDelta(previous, next)
 
 /**
  * The high-churn sensor half of [applyManualControls] — the SAME derivation functions the full
@@ -476,8 +474,8 @@ internal fun sensorFastPathAdmitted(
  * re-applied AE mode key rewrites its current value (flash/AE resolution lives inside
  * applyManualControls and the admission delta pins those fields). The AF mode key is NOT safe by
  * construction — tap-to-focus/AF-lock overrides live OUTSIDE applyManualControls in the full
- * rebuild — which is exactly why [sensorFastPathAdmitted] refuses the fast path while either
- * override is live.
+ * rebuild — so the fast-path caller MUST re-apply them after this (CameraController.
+ * reapplyAfOverrides), exactly as the full rebuild does after applyManualControls.
  */
 internal fun CaptureRequest.Builder.applySensorValueControls(
     c: ManualControls,

@@ -37,20 +37,17 @@ class SensorFastPathTest {
     }
 
     @Test
-    fun `live tap-to-focus refuses the fast path - its AF override lives outside applyManualControls`() {
-        // The full rebuild sets AF_MODE_AUTO for the tapped one-shot hold AFTER applyManualControls;
-        // the fast path re-runs applyFocus, whose unconditional AF_MODE write would release the
-        // tapped focus within ~100 ms of app-side AE ticks (the architect-caught regression).
+    fun `a sensor-only delta rides the fast path regardless of AF overrides`() {
+        // Live tap-AF/AF-lock no longer refuses admission: the controller re-applies the override
+        // keys onto the cached builder AFTER applySensorValueControls (reapplyAfOverrides), so the
+        // key state equals the full rebuild's without the ~180 ms swap stall. The old wholesale
+        // refusal re-created the ~5 fps dim-light preview whenever the app-side AE loop ran with a
+        // held tap-AF — the exact starvation the fast path exists to remove. The device check for
+        // "tapped focus HOLDS across an ISO change" remains the on-device regression gate.
         val delta = base.copy(iso = base.iso + 100)
-        assertTrue(sensorFastPathAdmitted(base, delta, touchAfActive = false))
-        assertFalse(sensorFastPathAdmitted(base, delta, touchAfActive = true))
-    }
-
-    @Test
-    fun `AF lock refuses the fast path - its frozen distance override lives outside applyManualControls`() {
+        assertTrue(sensorFastPathAdmitted(base, delta))
         val locked = base.copy(afLock = true)
-        val delta = locked.copy(exposureTimeNs = locked.exposureTimeNs * 2)
-        assertFalse(sensorFastPathAdmitted(locked, delta, touchAfActive = false))
+        assertTrue(sensorFastPathAdmitted(locked, locked.copy(exposureTimeNs = locked.exposureTimeNs * 2)))
     }
 
     @Test
