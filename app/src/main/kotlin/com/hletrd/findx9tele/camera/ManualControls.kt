@@ -221,7 +221,21 @@ internal fun ManualControls.normalizedFor(caps: CameraControlCapabilities): Manu
         metadata = ColorEffect::metadata,
     ) ?: ColorEffect.NONE
 
+    // NUMERIC exposure joins the enum normalization: the caps-seam range already carries the
+    // device-verified 4 s still ceiling (HAL_SAFE_MAX_STILL_EXPOSURE_NS), and a persisted or
+    // MR-recalled over-ceiling shutter must show the value the camera will actually apply —
+    // the request path always clamped, but the OSD/ruler read THIS field (a restored "5.0s"
+    // chip over a 4.0 s request was the observed truthfulness gap).
+    val normalizedExposureNs = if (caps.exposureTimeMinNs != null && caps.exposureTimeMaxNs != null &&
+        caps.exposureTimeMinNs <= caps.exposureTimeMaxNs
+    ) {
+        exposureTimeNs.coerceIn(caps.exposureTimeMinNs, caps.exposureTimeMaxNs)
+    } else {
+        exposureTimeNs
+    }
+
     return copy(
+        exposureTimeNs = normalizedExposureNs,
         focusMode = normalizedFocus,
         afLock = afLock && normalizedFocus != FocusMode.MANUAL && caps.supportsManualFocus &&
             caps.hasFocusDistanceRange &&

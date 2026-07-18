@@ -329,6 +329,12 @@ internal data class CameraControlCapabilities(
     val hasFocusDistanceRange: Boolean = false,
     val hasIsoRange: Boolean = false,
     val hasExposureTimeRange: Boolean = false,
+    // Plain Longs (not android Range) so normalization can clamp NUMERIC exposure on the JVM.
+    // Carries the caps-seam value, i.e. already capped at HAL_SAFE_MAX_STILL_EXPOSURE_NS: a
+    // persisted/recalled over-ceiling shutter must NORMALIZE down so the OSD/ruler show the value
+    // the camera actually applies (a restored 5 s chip over a 4 s request was the observed lie).
+    val exposureTimeMinNs: Long? = null,
+    val exposureTimeMaxNs: Long? = null,
     val hasEvCompensationRange: Boolean = false,
     val hasZoomRatioRange: Boolean = false,
     val flashAvailable: Boolean = false,
@@ -350,6 +356,8 @@ internal fun CameraCaps.controlCapabilities(): CameraControlCapabilities = Camer
     hasFocusDistanceRange = minFocusDistanceDiopters > 0f,
     hasIsoRange = isoRange != null,
     hasExposureTimeRange = exposureTimeRange != null,
+    exposureTimeMinNs = exposureTimeRange?.lower,
+    exposureTimeMaxNs = exposureTimeRange?.upper,
     hasEvCompensationRange = evRange.lower < evRange.upper,
     hasZoomRatioRange = zoomRatioRange?.let { it.lower < it.upper } == true,
     flashAvailable = flashAvailable,

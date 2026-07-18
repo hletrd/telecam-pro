@@ -228,6 +228,11 @@ class CameraController(context: Context) {
                         if (BuildConfig.DEBUG) Log.w(TAG, "Ignoring camera error $error during intentional close")
                         return
                     }
+                    // Always log the RAW trigger before the engine's recovery path re-frames it:
+                    // during the long-exposure investigation the only visible signature was the
+                    // framework's own stopRepeating log inside close() — the actual onError source
+                    // was silent, which cost a device-bisect session to attribute.
+                    Log.e(TAG, "CameraDevice.StateCallback.onError: code=$error (device=${camera.id})")
                     onError.onError(IllegalStateException("Camera error $error"))
                     close()
                 }

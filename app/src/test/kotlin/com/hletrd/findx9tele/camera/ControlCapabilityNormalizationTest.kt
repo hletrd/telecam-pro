@@ -284,4 +284,25 @@ class ControlCapabilityNormalizationTest {
         assertNull(exactAdvertisedMode(CameraMetadata.EDGE_MODE_OFF, advertised))
         assertNull(exactAdvertisedMode(CameraMetadata.EDGE_MODE_FAST, IntArray(0)))
     }
+
+    @Test
+    fun `numeric exposure normalizes into the caps range so the UI shows the applied value`() {
+        // The caps seam carries the device-verified 4 s still ceiling; a persisted/recalled 6.3 s
+        // (or a restored 5 s) must normalize DOWN so the OSD/ruler never display a shutter the
+        // camera cannot execute — the request path always clamped, but the UI reads this field.
+        val caps = CameraControlCapabilities(
+            exposureTimeMinNs = 14_000L,
+            exposureTimeMaxNs = 4_000_000_000L,
+        )
+        val restored = ManualControls(exposureTimeNs = 6_300_000_000L)
+        assertEquals(4_000_000_000L, restored.normalizedFor(caps).exposureTimeNs)
+        // In-range values pass through untouched; absent bounds leave the value alone.
+        val inRange = ManualControls(exposureTimeNs = 800_000_000L)
+        assertEquals(800_000_000L, inRange.normalizedFor(caps).exposureTimeNs)
+        assertEquals(
+            6_300_000_000L,
+            ManualControls(exposureTimeNs = 6_300_000_000L)
+                .normalizedFor(CameraControlCapabilities()).exposureTimeNs,
+        )
+    }
 }
