@@ -12,6 +12,13 @@ import kotlin.math.hypot
 
 private const val FULL_FRAME_DIAGONAL_MM = 43.2666f
 
+// Device-verified ceiling for a STILL request's SENSOR_EXPOSURE_TIME on this HAL (PMA110,
+// bisected 2026-07-18 on the standalone TELE camera): 4 s captures complete with correct EXIF;
+// 5 s and above error the whole camera device (CAMERA_ERROR(3)) and silently lose the shot,
+// even with the repeating stream clamped short. Applied to the advertised exposure range at the
+// caps seam so every consumer (ruler ladder, request clamps, AEB, watchdog) stays truthful.
+internal const val HAL_SAFE_MAX_STILL_EXPOSURE_NS = 4_000_000_000L
+
 /** Immutable optics subset safe to cache before a still callback needs physical-lens EXIF. */
 internal data class LensExifMetadata(
     val focalLengthMm: Float,
@@ -256,7 +263,22 @@ data class CameraCaps(
                 minFocusDistanceDiopters = chars.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f,
                 hyperfocalDiopters = chars.get(CameraCharacteristics.LENS_INFO_HYPERFOCAL_DISTANCE) ?: 0f,
                 isoRange = chars.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE),
-                exposureTimeRange = chars.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE),
+                // The advertised upper (≥20 s here) is a LIE on this HAL: a STILL request above
+                // 4 s errors the whole camera device ~one exposure after the shot with
+                // CAMERA_ERROR(3) and the image never arrives — device-bisected 2026-07-18 on the
+                // standalone TELE (2/3.2/4 s OK with correct EXIF; 5/6.3 s reproducibly fatal,
+                // repeating stream already safely clamped by PREVIEW_SAFE_MAX_EXPOSURE_NS at the
+                // time, so the still request alone is the trigger). Clamping HERE — the single
+                // caps seam — keeps the shutter ruler, request clamps, AEB brackets, and the
+                // still watchdog all truthful at once.
+                exposureTimeRange = chars.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)
+                    ?.let { adv ->
+                        if (adv.upper > HAL_SAFE_MAX_STILL_EXPOSURE_NS) {
+                            Range(adv.lower, HAL_SAFE_MAX_STILL_EXPOSURE_NS)
+                        } else {
+                            adv
+                        }
+                    },
                 maxFrameDurationNs = chars.get(CameraCharacteristics.SENSOR_INFO_MAX_FRAME_DURATION) ?: 0L,
                 evRange = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE) ?: Range(0, 0),
                 evStep = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP) ?: Rational(1, 3),
