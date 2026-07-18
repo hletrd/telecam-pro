@@ -1,0 +1,317 @@
+package com.hletrd.findx9tele.capture
+
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.TotalCaptureResult
+import android.media.Image
+import com.hletrd.findx9tele.camera.AspectRatio
+import com.hletrd.findx9tele.camera.CameraCaps
+import com.hletrd.findx9tele.camera.ManualControls
+import com.hletrd.findx9tele.camera.MeteringMode
+import com.hletrd.findx9tele.camera.RotationMath
+import com.hletrd.findx9tele.camera.TeleSelection
+import com.hletrd.findx9tele.camera.centerCropBox
+import com.hletrd.findx9tele.storage.CaptureFamilyKey
+import com.hletrd.findx9tele.storage.MediaStoreWriter
+
+/** Immutable request-time state consumed by every output belonging to one shutter press. */
+internal data class ShotSpec(
+    val controls: ManualControls,
+    val caps: CameraCaps?,
+    val selection: TeleSelection?,
+    val teleconverter: Boolean,
+    val aspectRatio: AspectRatio,
+    val jpegQuality: Int,
+    val rotationDegrees: Int,
+    val captureId: Int,
+    val familyKey: CaptureFamilyKey,
+    val requestedAtMs: Long,
+    val takenAtMs: Long,
+)
+
+/**
+ * Stamps ISO / exposure / 35mm focal / device EXIF onto a just-written JPEG (pending, rw).
+ * [iso]/[expNs] come from the shot's own TotalCaptureResult, snapshotted in the capture
+ * callback — the live controller.lastIso/lastExposureNs may already describe a LATER frame by
+ * the time this runs on the io thread.
+ */
+/**
+ * Everything the JPEG EXIF stamp needs, snapshotted AT THE SHOT (capture result + the controls
+ * and optics active for that frame). Field set mirrors the stock camera's 3× reference sample
+ * (FNumber/FocalLength/35 mm/LensModel/APEX values/metering/flash/program/zoom).
+ */
+internal data class ExifShot(
+    val iso: Int,
+    val expNs: Long,
+    val lensFocalMm: Float,
+    val lensApertureF: Float,
+    val focal35mm: Int,
+    val digitalZoom: Float,
+    val evBiasStops: Float,
+    val meteringMode: MeteringMode,
+    val flashFired: Boolean,
+    val exposureProgram: Int, // EXIF: 1=manual, 2=program, 4=shutter priority
+    val manualExposure: Boolean,
+    val manualWb: Boolean,
+    val lensModel: String,
+    val takenAtMs: Long,
+)
+
+/**
+ * The STILL SAVE LANES, extracted from CameraEngine (ARCH4-3 step 1 of the god-object plan):
+ * decode/crop/rotate + HEIF/JPEG encode, DNG write, and JPEG EXIF re-stamp. Runs entirely on the
+ * caller's executors (ioExecutor for processed stills; the camera callback for DNG, whose
+ * DngCreator needs the live Image), reads only immutable [ShotSpec]/[ExifShot] snapshots, and
+ * touches NO engine monitor — the zero-ownership-risk slice the extraction plan lands first. The
+ * emit callbacks read the engine's live listeners at invoke time, so late listener wiring behaves
+ * exactly as before the move.
+ */
+internal class StillCapturePipeline(
+    private val context: Context,
+    private val emitStatus: (String) -> Unit,
+    private val emitMediaSaved: (android.net.Uri, Int) -> Unit,
+    private val emitRawSaved: (android.net.Uri, Int) -> Unit,
+) {
+
+    /**
+     * ONE decode → center-crop to [ShotSpec.aspectRatio] (processed stills only; [saveDng]'s RAW
+     * output always stays full-frame) → rotate pass feeding BOTH processed encoders (PERF4-5): the
+     * old per-format lanes each decoded/cropped/rotated the SAME bytes into a ~50 MB ARGB
+     * intermediate, so a HEIF+JPEG shot paid the whole pixel pipeline twice serially on
+     * [ioExecutor]. Each encoder keeps its own failure isolation (a HEIF write error must not cost
+     * the JPEG) and the publish-or-delete policy documented on [writeProcessedHeif].
+     */
+    fun saveProcessedStills(
+        bytes: ByteArray,
+        spec: ShotSpec,
+        exifShot: ExifShot,
+        wantHeif: Boolean,
+        wantJpeg: Boolean,
+    ) {
+        if (!wantHeif && !wantJpeg) return
+        var decoded: Bitmap? = null
+        var cropped: Bitmap? = null
+        var rotated: Bitmap? = null
+        try {
+            val d = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            if (d == null) { emitStatus("Failed to save photo: decode failed"); return }
+            decoded = d
+            val ar = spec.aspectRatio
+            val base = if (ar != AspectRatio.W4_3) { // W4_3 = full sensor, no crop needed
+                val c = centerCrop(d, ar.w, ar.h)
+                cropped = c
+                c
+            } else d
+            val r = rotateBitmap(base, spec.rotationDegrees)
+            rotated = r
+            if (wantHeif) runCatching { writeProcessedHeif(r, spec) }
+                .onFailure { emitStatus("Failed to save HEIF: ${it.message}") }
+            if (wantJpeg) runCatching { writeProcessedJpeg(r, spec, exifShot) }
+                .onFailure { emitStatus("Failed to save JPEG: ${it.message}") }
+        } catch (e: OutOfMemoryError) {
+            emitStatus("Failed to save photo: out of memory")
+        } finally {
+            val rr = rotated
+            val cc = cropped
+            val dd = decoded
+            if (rr != null && rr !== cc && rr !== dd) rr.recycle()
+            if (cc != null && cc !== dd) cc.recycle()
+            dd?.recycle()
+        }
+    }
+
+    /**
+     * HEIF encode of the shared rotated bitmap. Publishes only on success; a persistent publish()
+     * failure (transients already retried inside it, CRIT4-5) deletes the still DELIBERATELY,
+     * unlike video's leave-pending policy: a still is reshootable and the immediate status lets
+     * the user reshoot now, whereas an invisible pending file would silently vanish in the next
+     * launch's orphan sweep with no feedback at all.
+     */
+    private fun writeProcessedHeif(rotated: Bitmap, spec: ShotSpec) {
+        val u = MediaStoreWriter.createPendingImage(
+            context,
+            spec.familyKey.displayName("heic"),
+            "image/heic",
+        )
+        if (u == null) { emitStatus("Failed to save HEIF"); return }
+        // The Setup quality slider governs BOTH still containers (it used to silently apply only
+        // to JPEG, leaving the DEFAULT photo format pinned at the encoder's 95).
+        val quality = spec.jpegQuality
+        val wrote = runCatching {
+            MediaStoreWriter.openParcelFd(context, u, "rw")?.use { pfd ->
+                HeifCapture.writeHeif(pfd.fileDescriptor, rotated, quality); true
+            } ?: false
+        }.getOrElse { failure -> MediaStoreWriter.delete(context, u); throw failure }
+        if (!wrote) { MediaStoreWriter.delete(context, u); emitStatus("Failed to save HEIF"); return }
+        if (!MediaStoreWriter.publish(context, u)) {
+            MediaStoreWriter.delete(context, u)
+            emitStatus("Failed to publish HEIF")
+            return
+        }
+        emitMediaSaved(u, spec.captureId)
+        emitStatus("Saved")
+    }
+
+    /**
+     * JPEG re-encode of the SAME rotated bitmap the HEIF got, so the two frame identically.
+     * Same publish-or-delete policy as [writeProcessedHeif].
+     */
+    private fun writeProcessedJpeg(rotated: Bitmap, spec: ShotSpec, exifShot: ExifShot) {
+        val u = MediaStoreWriter.createPendingImage(
+            context,
+            spec.familyKey.displayName("jpg"),
+            "image/jpeg",
+        )
+        if (u == null) { emitStatus("Failed to save JPEG"); return }
+        val quality = spec.jpegQuality
+        val wrote = runCatching {
+            MediaStoreWriter.openOutputStream(context, u)?.use { out ->
+                rotated.compress(Bitmap.CompressFormat.JPEG, quality, out)
+            } ?: false
+        }.getOrElse { failure -> MediaStoreWriter.delete(context, u); throw failure }
+        if (!wrote) { MediaStoreWriter.delete(context, u); emitStatus("Failed to save JPEG"); return }
+        // Bitmap.compress strips all metadata, so stamp the exposure EXIF back before publishing
+        // (best-effort — a failed EXIF write must never lose the image itself).
+        runCatching { writeJpegExif(u, exifShot) }
+        if (!MediaStoreWriter.publish(context, u)) {
+            MediaStoreWriter.delete(context, u)
+            emitStatus("Failed to publish JPEG")
+            return
+        }
+        emitMediaSaved(u, spec.captureId)
+        emitStatus("Saved")
+    }
+
+    /** Writes the RAW image as DNG synchronously (always full-frame; no [aspectRatio] crop applied). Publishes only on success; deletes then rethrows on failure. */
+    fun saveDng(
+        raw: Image,
+        chars: CameraCharacteristics,
+        result: TotalCaptureResult,
+        spec: ShotSpec,
+    ) {
+        val uri = MediaStoreWriter.createPendingImage(
+            context,
+            spec.familyKey.displayName("dng"),
+            "image/x-adobe-dng",
+        )
+            ?: throw IllegalStateException("Failed to create MediaStore entry")
+        try {
+            val out = MediaStoreWriter.openOutputStream(context, uri)
+                ?: throw IllegalStateException("Failed to open output stream")
+            out.use {
+                DngCapture.writeDng(it, raw, chars, result, exifOrientationFor(spec.rotationDegrees))
+            }
+            if (!MediaStoreWriter.publish(context, uri)) {
+                throw IllegalStateException("Failed to publish DNG")
+            }
+            emitRawSaved(uri, spec.captureId)
+        } catch (t: Throwable) {
+            MediaStoreWriter.delete(context, uri)
+            throw t
+        }
+    }
+
+    private fun writeJpegExif(uri: android.net.Uri, shot: ExifShot) {
+        MediaStoreWriter.openParcelFd(context, uri, "rw")?.use { pfd ->
+            val exif = androidx.exifinterface.media.ExifInterface(pfd.fileDescriptor)
+            fun set(tag: String, value: String) = exif.setAttribute(tag, value)
+
+            if (shot.iso > 0) set(androidx.exifinterface.media.ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY, shot.iso.toString())
+            if (shot.expNs > 0) {
+                val sec = shot.expNs / 1_000_000_000.0
+                set(androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_TIME, sec.toString())
+                // APEX shutter speed = -log2(t), rational, matching the stock sample (6.908 at 1/120).
+                val apex = -Math.log(sec) / Math.log(2.0)
+                set(
+                    androidx.exifinterface.media.ExifInterface.TAG_SHUTTER_SPEED_VALUE,
+                    "${Math.round(apex * 1000)}/1000",
+                )
+            }
+            if (shot.lensApertureF > 0f) {
+                set(androidx.exifinterface.media.ExifInterface.TAG_F_NUMBER, shot.lensApertureF.toString())
+                // APEX aperture = 2·log2(F) (stock: 2.35 at f/2.2).
+                val apexAv = 2.0 * Math.log(shot.lensApertureF.toDouble()) / Math.log(2.0)
+                set(
+                    androidx.exifinterface.media.ExifInterface.TAG_APERTURE_VALUE,
+                    "${Math.round(apexAv * 100)}/100",
+                )
+                set(
+                    androidx.exifinterface.media.ExifInterface.TAG_MAX_APERTURE_VALUE,
+                    "${Math.round(apexAv * 100)}/100",
+                )
+            }
+            if (shot.lensFocalMm > 0f) {
+                // Real lens focal (20.1 mm on the 3×), rational millimeters like the stock sample.
+                set(
+                    androidx.exifinterface.media.ExifInterface.TAG_FOCAL_LENGTH,
+                    "${Math.round(shot.lensFocalMm * 1000)}/1000",
+                )
+            }
+            if (shot.focal35mm > 0) {
+                set(
+                    androidx.exifinterface.media.ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM,
+                    shot.focal35mm.toString(),
+                )
+            }
+            set(
+                androidx.exifinterface.media.ExifInterface.TAG_DIGITAL_ZOOM_RATIO,
+                "${Math.round(shot.digitalZoom * 10000)}/10000",
+            )
+            // EV bias in sixths, the stock sample's denominator (0/6).
+            set(
+                androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_BIAS_VALUE,
+                "${Math.round(shot.evBiasStops * 6)}/6",
+            )
+            set(
+                androidx.exifinterface.media.ExifInterface.TAG_METERING_MODE,
+                when (shot.meteringMode) {
+                    MeteringMode.MATRIX -> "5" // pattern
+                    MeteringMode.CENTER -> "2" // center-weighted (the stock default)
+                    MeteringMode.SPOT -> "3"
+                },
+            )
+            // 0x1 = fired; 0x10 = "did not fire, compulsory off" (the stock sample's value).
+            set(androidx.exifinterface.media.ExifInterface.TAG_FLASH, if (shot.flashFired) "1" else "16")
+            set(androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_PROGRAM, shot.exposureProgram.toString())
+            set(androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_MODE, if (shot.manualExposure) "1" else "0")
+            set(androidx.exifinterface.media.ExifInterface.TAG_WHITE_BALANCE, if (shot.manualWb) "1" else "0")
+            set(androidx.exifinterface.media.ExifInterface.TAG_LENS_MODEL, shot.lensModel)
+            set(androidx.exifinterface.media.ExifInterface.TAG_COLOR_SPACE, "1") // sRGB
+
+            val dt = java.text.SimpleDateFormat("yyyy:MM:dd HH:mm:ss", java.util.Locale.US)
+                .format(java.util.Date(shot.takenAtMs))
+            val offset = java.text.SimpleDateFormat("XXX", java.util.Locale.US)
+                .format(java.util.Date(shot.takenAtMs))
+            set(androidx.exifinterface.media.ExifInterface.TAG_DATETIME, dt)
+            set(androidx.exifinterface.media.ExifInterface.TAG_DATETIME_ORIGINAL, dt)
+            set(androidx.exifinterface.media.ExifInterface.TAG_DATETIME_DIGITIZED, dt)
+            set(androidx.exifinterface.media.ExifInterface.TAG_OFFSET_TIME, offset)
+            set(androidx.exifinterface.media.ExifInterface.TAG_OFFSET_TIME_ORIGINAL, offset)
+            // Pixels are rotated upright before encode — the orientation tag must say NORMAL,
+            // not the invalid 0 exifinterface leaves when the tag was never present.
+            set(androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION, "1")
+            // The stock sample writes the MARKET name, not the ro.product.model code (PMA110).
+            set(androidx.exifinterface.media.ExifInterface.TAG_MAKE, "OPPO")
+            set(androidx.exifinterface.media.ExifInterface.TAG_MODEL, "OPPO Find X9 Ultra")
+            exif.saveAttributes()
+        }
+    }
+
+    private fun rotateBitmap(src: Bitmap, degrees: Int): Bitmap {
+        if (degrees % 360 == 0) return src
+        val m = Matrix().apply { postRotate(degrees.toFloat()) }
+        return Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
+    }
+
+    /** Maps a clockwise rotation (0/90/180/270) to the matching EXIF/TIFF orientation tag for DNG. */
+    private fun exifOrientationFor(degrees: Int): Int = RotationMath.exifOrientationFor(degrees)
+
+    /** Returns the largest [ratioW]:[ratioH] rect centered within [src], cropped out of it (HEIF + JPEG paths). */
+    private fun centerCrop(src: Bitmap, ratioW: Int, ratioH: Int): Bitmap {
+        val (x, y, cropW, cropH) = centerCropBox(src.width, src.height, ratioW, ratioH)
+        return Bitmap.createBitmap(src, x, y, cropW, cropH)
+    }
+}
