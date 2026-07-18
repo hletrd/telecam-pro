@@ -1,6 +1,8 @@
 package com.hletrd.findx9tele.camera
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -59,5 +61,17 @@ class FinderGeometryTest {
     fun `box aspect matches the preview box aspect`() {
         val r = finderRect(boxWidth = 1080f, boxHeight = 1440f)
         assertEquals(1080f / 1440f, r.width / r.height, 1e-4f)
+    }
+
+    @Test
+    fun `top-left UI hit geometry consumes only the visible finder rect`() {
+        val r = finderRect(boxWidth = 1080f, boxHeight = 1440f)
+        val top = 1440f - r.y - r.height
+
+        assertTrue(finderContainsTopLeftPoint(r.x + 1f, top + 1f, 1080f, 1440f))
+        assertTrue(finderContainsTopLeftPoint(r.x + r.width, top + r.height, 1080f, 1440f))
+        assertFalse(finderContainsTopLeftPoint(r.x - 1f, top + 1f, 1080f, 1440f))
+        assertFalse(finderContainsTopLeftPoint(r.x + 1f, top - 1f, 1080f, 1440f))
+        assertFalse(finderContainsTopLeftPoint(0f, 0f, 0f, 1440f))
     }
 }

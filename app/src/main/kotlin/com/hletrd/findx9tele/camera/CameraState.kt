@@ -290,6 +290,24 @@ fun finderRect(
     val inset = minOf(boxWidth, boxHeight) * margin
     return FinderRect(inset, inset, boxWidth * fraction, boxHeight * fraction)
 }
+
+/**
+ * Whether a top-left-origin UI pointer lands inside the bottom-left-origin finder rectangle.
+ * Keeping this beside [finderRect] prevents the non-interactive PIP hit block from drifting away
+ * from the GL viewport and Compose border it protects.
+ */
+fun finderContainsTopLeftPoint(
+    pointX: Float,
+    pointY: Float,
+    boxWidth: Float,
+    boxHeight: Float,
+): Boolean {
+    if (boxWidth <= 0f || boxHeight <= 0f) return false
+    val rect = finderRect(boxWidth, boxHeight)
+    val top = boxHeight - rect.y - rect.height
+    return pointX >= rect.x && pointX <= rect.x + rect.width &&
+        pointY >= top && pointY <= top + rect.height
+}
 val TELE_ZOOM_SNAPS = floatArrayOf(30f, 60f)
 
 /**
@@ -468,6 +486,50 @@ fun effectiveBpp(level: BitrateLevel, codec: VideoCodec): Float =
 // Only the two ratios that matter for this 4:3-native sensor: 4:3 is the full sensor readout, 16:9
 // is a center crop of it. (1:1 / portrait dropped — not meaningful for this camera.)
 enum class AspectRatio(val w: Int, val h: Int) { W4_3(4, 3), W16_9(16, 9) }
+
+internal data class AspectDimensions(val width: Float, val height: Float)
+
+/**
+ * Still aspect as displayed in the portrait viewfinder. The sensor's approximately 90°
+ * orientation swaps its width/height axes before Compose draws the capture mask.
+ */
+internal fun displayedStillAspect(ratio: AspectRatio): AspectDimensions =
+    AspectDimensions(width = ratio.h.toFloat(), height = ratio.w.toFloat())
+
+/** Largest target-aspect rectangle centered inside a container. */
+internal data class CenteredRect(
+    val x: Float,
+    val y: Float,
+    val width: Float,
+    val height: Float,
+)
+
+/**
+ * One floating-point geometry seam for a centered aspect fit. Sensor crop integerization remains
+ * in [centerCropBox]; host tests bind its pixel rounding to this representation.
+ */
+internal fun largestCenteredRect(
+    containerWidth: Float,
+    containerHeight: Float,
+    aspectWidth: Float,
+    aspectHeight: Float,
+): CenteredRect {
+    if (containerWidth <= 0f || containerHeight <= 0f || aspectWidth <= 0f || aspectHeight <= 0f) {
+        return CenteredRect(x = 0f, y = 0f, width = 0f, height = 0f)
+    }
+    val heightForFullWidth = containerWidth * aspectHeight / aspectWidth
+    val (width, height) = if (heightForFullWidth <= containerHeight) {
+        containerWidth to heightForFullWidth
+    } else {
+        (containerHeight * aspectWidth / aspectHeight) to containerHeight
+    }
+    return CenteredRect(
+        x = (containerWidth - width) / 2f,
+        y = (containerHeight - height) / 2f,
+        width = width,
+        height = height,
+    )
+}
 
 /**
  * Photo output formats. Any non-empty supported combination can be enabled at once. [heif] and
