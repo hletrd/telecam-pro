@@ -56,6 +56,13 @@ class ZoomSubmitPlanTest {
     }
 
     @Test
+    fun `inverted or non-finite range fails open instead of throwing`() {
+        assertEquals(5f, plan(6f, active = true, lower = 10f, upper = 1f).halTarget, 0f)
+        assertEquals(5f, plan(6f, active = true, lower = Float.NaN, upper = 10f).halTarget, 0f)
+        assertEquals(5f, clampToOrderedBounds(5f, Float.NEGATIVE_INFINITY, 10f), 0f)
+    }
+
+    @Test
     fun `mid-gesture submit throttles inside the window`() {
         assertFalse(plan(4f, active = true, now = 199L, last = 0L).submitNow)
     }

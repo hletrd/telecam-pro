@@ -467,6 +467,35 @@ internal fun sensorOnlyControlsDelta(previous: ManualControls, next: ManualContr
         exposureTimeNs = next.exposureTimeNs,
     ) == next
 
+/** True only when an optics remap changed the Camera2 packet's zoom ratio. */
+internal fun zoomOnlyControlsDelta(previous: ManualControls, next: ManualControls): Boolean =
+    previous != next && previous.copy(zoomRatio = next.zoomRatio) == next
+
+/** One camera-thread action for an optics commit that retains the existing Camera2 session. */
+internal enum class RetainedOpticsApplyPlan {
+    NO_OP,
+    ZOOM_FAST_PATH,
+    SENSOR_FAST_PATH,
+    FULL_REBUILD,
+}
+
+/**
+ * Resolves the single request update for a same-route optics commit. An active smooth-preview
+ * boost always needs one full rebuild so its pinned FPS keys are removed from the cached builder;
+ * without a boost, narrow deltas retain their established fast paths.
+ */
+internal fun retainedOpticsApplyPlan(
+    previous: ManualControls,
+    next: ManualControls,
+    smoothPreviewBoostActive: Boolean,
+): RetainedOpticsApplyPlan = when {
+    smoothPreviewBoostActive -> RetainedOpticsApplyPlan.FULL_REBUILD
+    previous == next -> RetainedOpticsApplyPlan.NO_OP
+    zoomOnlyControlsDelta(previous, next) -> RetainedOpticsApplyPlan.ZOOM_FAST_PATH
+    sensorFastPathAdmitted(previous, next) -> RetainedOpticsApplyPlan.SENSOR_FAST_PATH
+    else -> RetainedOpticsApplyPlan.FULL_REBUILD
+}
+
 /**
  * Full sensor fast-path admission: the delta must be sensor-only. A live tap-to-focus / AF-lock
  * override no longer refuses the fast path: the controller RE-APPLIES the override keys onto the
@@ -706,7 +735,9 @@ private fun CaptureRequest.Builder.applyFlash(c: ManualControls, caps: CameraCap
 }
 
 private fun CaptureRequest.Builder.applyZoom(c: ManualControls, caps: CameraCaps) {
-    caps.zoomRatioRange?.let { set(CaptureRequest.CONTROL_ZOOM_RATIO, c.zoomRatio.coerceIn(it.lower, it.upper)) }
+    caps.zoomRatioRange?.let {
+        set(CaptureRequest.CONTROL_ZOOM_RATIO, clampToOrderedBounds(c.zoomRatio, it.lower, it.upper))
+    }
 }
 
 internal val ColorEffect.metadata: Int

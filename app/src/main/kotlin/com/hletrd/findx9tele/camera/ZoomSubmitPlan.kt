@@ -34,7 +34,7 @@ internal fun resolveHalZoomSubmit(
 ): ZoomSubmitPlan {
     val halTarget = if (interactionActive) {
         val wide = requestedZoom / gestureMargin
-        if (rangeLower != null && rangeUpper != null) wide.coerceIn(rangeLower, rangeUpper) else wide
+        clampToOrderedBounds(wide, rangeLower, rangeUpper)
     } else {
         requestedZoom
     }

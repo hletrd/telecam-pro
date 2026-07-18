@@ -54,6 +54,7 @@ class CameraController(context: Context) {
     private val manager = context.getSystemService(CameraManager::class.java)
     private val bg = HandlerThread("camera").apply { start() }
     private val handler = Handler(bg.looper)
+    private val callbackDispatchGate = CameraCallbackDispatchGate()
     // Camera2 posts its callbacks through this executor; guard the post so a framework callback that
     // lands AFTER close() quit the looper is handled instead of thrown — OPPO's LegacyMessageQueue
     // raises IllegalStateException "sending message to a dead thread" rather than returning false.
@@ -63,7 +64,7 @@ class CameraController(context: Context) {
     // per-process camera budget). Every StateCallback path checks `closed` first, so the inline run
     // just closes the leaked handle and returns.
     private val executor = Executor { cmd ->
-        val posted = runCatching { handler.post(cmd) }.getOrDefault(false)
+        val posted = callbackDispatchGate.dispatch { bg.isAlive && handler.post(cmd) }
         if (!posted) runCatching { cmd.run() }
     }
 
@@ -76,7 +77,17 @@ class CameraController(context: Context) {
      */
     private fun postToCamera(block: () -> Unit): Boolean {
         if (closed || !bg.isAlive) return false
-        return runCatching { handler.post(block) }.getOrDefault(false)
+        return callbackDispatchGate.dispatch { bg.isAlive && handler.post(block) }
+    }
+
+    /**
+     * Delayed sibling of [postToCamera]. OPPO's legacy queue can throw after `quitSafely()` instead
+     * of returning false; every timeout/trailing task must therefore use this single containment
+     * seam and execute its owner-specific fallback when scheduling loses the close race.
+     */
+    private fun postDelayedToCamera(task: Runnable, delayMs: Long): Boolean {
+        if (closed || !bg.isAlive) return false
+        return callbackDispatchGate.dispatch { bg.isAlive && handler.postDelayed(task, delayMs) }
     }
 
     private var device: CameraDevice? = null
@@ -369,7 +380,9 @@ class CameraController(context: Context) {
         if (b == null || cb == null || highSpeedFps > 0) { startPreview(); return }
         if (BuildConfig.DEBUG) Log.i(TAG, "ZoomTrace: submit=$ratio t=${android.os.SystemClock.uptimeMillis()}")
         runCatching {
-            caps.zoomRatioRange?.let { b.set(CaptureRequest.CONTROL_ZOOM_RATIO, ratio.coerceIn(it.lower, it.upper)) }
+            caps.zoomRatioRange?.let {
+                b.set(CaptureRequest.CONTROL_ZOOM_RATIO, clampToOrderedBounds(ratio, it.lower, it.upper))
+            }
             // Keep OPPO's logical-zoom session hint in step (it contextualizes OIS/EIS strength);
             // same guarded write as applyTeleconverterHints.
             val effectiveZoom = ratio.coerceAtLeast(1f) * if (teleconverterMode) TELECONVERTER_MAGNIFICATION else 1f
@@ -796,7 +809,7 @@ class CameraController(context: Context) {
                 finishCustomWbSample(id, null)
                 return@postToCamera
             }
-            if (!handler.postDelayed(timeout, CUSTOM_WB_SAMPLE_TIMEOUT_MS)) {
+            if (!postDelayedToCamera(timeout, CUSTOM_WB_SAMPLE_TIMEOUT_MS)) {
                 finishCustomWbSample(id, null)
             }
         }
@@ -849,29 +862,58 @@ class CameraController(context: Context) {
         // Confine the field write to the camera handler thread: updateControls is called from both the
         // main thread (ViewModel) and the camera thread (AEB/BURST chain), and the field is read on the
         // camera thread, so doing the mutation here keeps it single-threaded (no lost-update race).
-        postToCamera {
-            val normalized = controls.normalizedFor(caps)
-            if (normalized.wbMode != WbMode.AUTO || normalized.awbLock) {
-                pendingCustomWbSample?.let { finishCustomWbSample(it.id, null) }
+        postToCamera { applyControlsOnCamera(controls, retainedOpticsCommit = false) }
+    }
+
+    /**
+     * Applies a same-route optics packet and ends any retained smooth-preview boost in the SAME
+     * camera-thread request update. A controller replacement starts with boost=false and never calls
+     * this seam; the retained session either pays one necessary rebuild to remove pinned FPS keys or
+     * keeps the existing zoom/sensor fast path when no boost was active.
+     */
+    fun commitRetainedOpticsControls(controls: ManualControls) {
+        postToCamera { applyControlsOnCamera(controls, retainedOpticsCommit = true) }
+    }
+
+    private fun applyControlsOnCamera(
+        requested: ManualControls,
+        retainedOpticsCommit: Boolean,
+    ) {
+        val normalized = requested.normalizedFor(caps)
+        if (normalized.wbMode != WbMode.AUTO || normalized.awbLock) {
+            pendingCustomWbSample?.let { finishCustomWbSample(it.id, null) }
+        }
+        // An explicit focus-mode change ends the tap-to-focus AUTO hold and resumes the chosen mode.
+        if (normalized.focusMode != controls.focusMode) touchAfActive = false
+        val previous = controls
+        val plan = if (retainedOpticsCommit) {
+            retainedOpticsApplyPlan(previous, normalized, smoothPreviewBoost)
+        } else {
+            null
+        }
+        controls = normalized
+
+        if (retainedOpticsCommit) {
+            // Clear before rebuilding/fast-submitting: startPreview and the sensor-key derivation
+            // both read this field to decide whether the low-light FPS floor remains pinned.
+            smoothPreviewBoost = false
+            when (plan) {
+                RetainedOpticsApplyPlan.NO_OP -> Unit
+                RetainedOpticsApplyPlan.ZOOM_FAST_PATH -> submitZoomFastPath(normalized.zoomRatio)
+                RetainedOpticsApplyPlan.SENSOR_FAST_PATH -> submitSensorFastPath()
+                RetainedOpticsApplyPlan.FULL_REBUILD -> startPreview()
+                null -> error("retained optics plan missing")
             }
-            // An explicit focus-mode change ends the tap-to-focus AUTO hold and resumes the chosen mode.
-            if (normalized.focusMode != this.controls.focusMode) touchAfActive = false
-            val previous = this.controls
-            this.controls = normalized
-            // Sensor fast path (mirrors the zoom fast path): a focus/ISO/shutter drag and the
-            // app-side AE loop feed this at up to 25 Hz, and EVERY full rebuild's repeating-request
-            // swap gaps this HAL's stream 170-250 ms (measured) — a 2 s ruler drag was a ~5 fps
-            // viewfinder exactly while judging critical focus at 300 mm. When the delta touches
-            // ONLY the sensor scalars, mutate the cached builder via the SAME derivation the full
-            // build uses, paced to >=200 ms with a trailing exact landing; a live tap-focus/AF-lock
-            // override is RE-APPLIED onto the builder afterward (applyAfOverrides) so it can ride
-            // the fast path too — a wholesale refusal starved the preview back to ~5 fps whenever
-            // the app-side AE loop ran with a held tap-AF. Anything else keeps the full rebuild.
-            if (sensorFastPathAdmitted(previous, normalized)) {
-                submitSensorFastPath()
-            } else {
-                startPreview()
-            }
+            return
+        }
+
+        // Sensor fast path (mirrors the zoom fast path): a focus/ISO/shutter drag and the app-side
+        // AE loop feed this at up to 25 Hz, and EVERY full rebuild's repeating-request swap gaps
+        // this HAL's stream 170-250 ms. Anything broader keeps the full rebuild.
+        if (sensorFastPathAdmitted(previous, normalized)) {
+            submitSensorFastPath()
+        } else {
+            startPreview()
         }
     }
 
@@ -888,11 +930,14 @@ class CameraController(context: Context) {
             applySensorFastPath()
         } else if (!sensorFastPathQueued) {
             sensorFastPathQueued = true
-            handler.postDelayed({
+            val trailing = Runnable {
                 sensorFastPathQueued = false
                 lastSensorSubmitMs = android.os.SystemClock.uptimeMillis()
                 applySensorFastPath()
-            }, SENSOR_SUBMIT_MIN_INTERVAL_MS - since)
+            }
+            if (!postDelayedToCamera(trailing, SENSOR_SUBMIT_MIN_INTERVAL_MS - since)) {
+                sensorFastPathQueued = false
+            }
         }
         // else: a trailing task is already queued; it reads the newest [controls] when it fires.
     }
@@ -1049,11 +1094,11 @@ class CameraController(context: Context) {
             pending = newPending
             // A dead HAL must not occupy the pending slot forever, but a legitimate multi-second
             // manual/AEB exposure needs its full requested duration before the delivery budget begins.
-            handler.postDelayed({
+            val watchdog = Runnable {
                 val p = pending
                 if (p === newPending && !p.done) {
                     synchronized(p) {
-                        if (p.done) return@postDelayed
+                        if (p.done) return@Runnable
                         p.done = true
                         runCatching { p.jpeg?.close() }
                         runCatching { p.raw?.close() }
@@ -1061,7 +1106,21 @@ class CameraController(context: Context) {
                     pending = null
                     p.cb.onError(IllegalStateException("Capture timed out — the camera delivered no image"))
                 }
-            }, watchdogTimeoutMs)
+            }
+            if (!postDelayedToCamera(watchdog, watchdogTimeoutMs)) {
+                if (pending === newPending) pending = null
+                synchronized(newPending) {
+                    if (!newPending.done) {
+                        newPending.done = true
+                        runCatching { newPending.jpeg?.close() }
+                        runCatching { newPending.raw?.close() }
+                        runCatching {
+                            newPending.cb.onError(IllegalStateException("Camera closed before capture watchdog could start"))
+                        }
+                    }
+                }
+                return@postToCamera
+            }
 
             // The device can disconnect between the null-checks above and the capture below (the same
             // async-teardown window startPreview guards): createCaptureRequest/capture then throw
@@ -1247,11 +1306,17 @@ class CameraController(context: Context) {
         }
         // Same dead-thread quirk postToCamera guards against: if this instance somehow closes after
         // its looper died (OS kill ordering), the raw post throws instead of returning false.
-        val teardownPosted = runCatching { handler.post(teardown) }.getOrDefault(false)
+        var teardownPosted = false
+        callbackDispatchGate.beginClose {
+            teardownPosted = runCatching { handler.post(teardown) }.getOrDefault(false)
+            // Quit inside the same gate that admits callback posts. A framework callback is either
+            // already queued ahead of teardown or observes closing and uses the inline fallback;
+            // it can never probe the dead Handler in between teardown admission and quitSafely.
+            bg.quitSafely()
+        }
         if (!teardownPosted) teardown.run()
-        // Quit AFTER posting cleanup so the queued teardown runs first, then the thread exits.
-        // (Previously the "camera" HandlerThread leaked once per controller / override switch.)
-        bg.quitSafely()
+        // Teardown was posted before quitSafely, so the queued cleanup runs first and then the
+        // HandlerThread exits. (Previously the thread leaked once per controller / override switch.)
         // Block (bounded) until that teardown actually runs and the HAL device is released, so a
         // subsequent open of the SAME physical camera on a session-key reopen (Auto HDR / in-sensor
         // zoom / lens / high-speed fps) doesn't race a half-closed device — that race surfaces as
