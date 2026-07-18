@@ -165,18 +165,18 @@ class GyroEis(context: Context) : SensorEventListener {
         // steeply up/down) — hold the last value so the horizon level doesn't spin on atan2 noise.
         const val LEVEL_GRAVITY_THRESHOLD = 2.5f
 
-        // Per-sample low-pass coefficient for the gyro's "intended orientation" estimate. This is
-        // a per-SAMPLE coefficient, so it assumes the ~200 Hz gyroscope sampling period set above
-        // (SAMPLING_PERIOD_US) and yields roughly a 1-2 Hz corner (previously 0.02 at the
-        // uncapped ~500-1000 Hz SENSOR_DELAY_FASTEST rate — same corner, different sample rate):
-        // slow intentional pans are followed, shake above the corner is left as residual to
-        // correct. Retune alongside SAMPLING_PERIOD_US if the sampling rate changes.
+        // DEAD CODE, kept for a future EIS revival (CR4-4): the gyroscope is NOT registered (its
+        // only consumer, GL shake warping, is disabled) so nothing reads this coefficient. If EIS
+        // re-registers the gyro it needs its OWN sampling period — SAMPLING_PERIOD_US above is the
+        // 60 ms accelerometer period, not a gyro rate — and this alpha must be retuned to it.
         const val LOW_PASS_ALPHA = 0.1f
 
         // Per-sample low-pass coefficient for the accelerometer-derived absolute roll. Tuned WITH
-        // SAMPLING_PERIOD_US: the design time-constant is ~20 ms (0.2 at the old 5 ms period);
-        // at the 60 ms UI-rate period the same corner needs ~0.75. Retune together.
-        const val ROLL_LOW_PASS_ALPHA = 0.75f
+        // SAMPLING_PERIOD_US to hold the design time-constant τ ≈ 22 ms via α = 1 − exp(−T/τ):
+        // at the old 5 ms period, 0.2 → τ = −5/ln(0.8) ≈ 22.4 ms; at the 60 ms UI-rate period the
+        // SAME τ needs α ≈ 0.93 (the interim 0.75 actually gave τ ≈ 43 ms — a ~2× heavier smooth
+        // than intended, a visibly laggier horizon level; CRIT4-8). Retune together.
+        const val ROLL_LOW_PASS_ALPHA = 0.93f
     }
 }
 
