@@ -65,7 +65,18 @@ object MediaStoreWriter {
             displayNames = familyKey.knownOutputDisplayNames(),
             limit = MAX_FAMILY_ROWS,
         ).fold(
-            onSuccess = { exactRows -> restoreLatestCapture(exactRows) },
+            // An EMPTY exact result gets the same FILE_ONLY fallback as a failed query (CR4-11):
+            // between the broad query that found the winner and this bounded follow-up, another
+            // app can delete/re-pend those rows — dropping the whole restore over that TOCTOU
+            // discarded a review file that still exists on disk. The two branches must agree.
+            onSuccess = { exactRows ->
+                restoreLatestCapture(exactRows) ?: RestoredCapture(
+                    preferred = initial.preferred,
+                    outputs = listOf(initial.preferred),
+                    familyKey = null,
+                    deleteScope = RestoredDeleteScope.FILE_ONLY,
+                )
+            },
             // A failed family expansion cannot safely promise capture-level deletion. Retain only
             // the already-resolved review file and make the fallback contract explicit.
             onFailure = {

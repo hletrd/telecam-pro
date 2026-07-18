@@ -138,102 +138,122 @@ class SettingsStore(private val prefs: SharedPreferences) {
             )
         }.toMap()
 
+    // Per-field defensive readers (CR4-12): a single type-mismatched key (a field whose stored
+    // type changed across an app version makes the typed getter throw ClassCastException) used to
+    // discard the WHOLE saved blob via loadWithPrefix's outer runCatching — every remembered
+    // setting silently reverted to defaults over one bad key. Each field now degrades alone; the
+    // outer runCatching remains only as a last-resort net.
+    private fun safeBoolean(key: String, default: Boolean): Boolean =
+        runCatching { prefs.getBoolean(key, default) }.getOrDefault(default)
+
+    private fun safeInt(key: String, default: Int): Int =
+        runCatching { prefs.getInt(key, default) }.getOrDefault(default)
+
+    private fun safeFloat(key: String, default: Float): Float =
+        runCatching { prefs.getFloat(key, default) }.getOrDefault(default)
+
+    private fun safeLong(key: String, default: Long): Long =
+        runCatching { prefs.getLong(key, default) }.getOrDefault(default)
+
+    private fun safeString(key: String, default: String?): String? =
+        runCatching { prefs.getString(key, default) }.getOrDefault(default)
+
     private fun loadWithPrefix(prefix: String, hasKey: String): Loaded? {
-        if (!prefs.getBoolean(hasKey, false)) return null
+        if (!safeBoolean(hasKey, false)) return null
         return runCatching {
             val d = ManualControls()
             val controls = ManualControls(
-                focusMode = enumOr(prefs.getString("${prefix}focusMode", null), d.focusMode),
-                focusDistanceDiopters = prefs.getFloat("${prefix}focusDiopters", d.focusDistanceDiopters),
-                afLock = prefs.getBoolean("${prefix}afLock", d.afLock),
-                exposureMode = enumOr(prefs.getString("${prefix}exposureMode", null), d.exposureMode),
-                iso = prefs.getInt("${prefix}iso", d.iso),
-                exposureTimeNs = prefs.getLong("${prefix}exposureTimeNs", d.exposureTimeNs),
-                shutterMode = enumOr(prefs.getString("${prefix}shutterMode", null), d.shutterMode),
-                shutterAngle = prefs.getFloat("${prefix}shutterAngle", d.shutterAngle),
-                exposureCompensation = prefs.getInt("${prefix}exposureCompensation", d.exposureCompensation),
-                aeLock = prefs.getBoolean("${prefix}aeLock", d.aeLock),
-                antibanding = enumOr(prefs.getString("${prefix}antibanding", null), d.antibanding),
-                fps = prefs.getInt("${prefix}fps", d.fps),
-                exposureStep = enumOr(prefs.getString("${prefix}exposureStep", null), d.exposureStep),
-                wbMode = enumOr(prefs.getString("${prefix}wbMode", null), d.wbMode),
-                wbKelvin = prefs.getInt("${prefix}wbKelvin", d.wbKelvin),
-                wbTint = prefs.getInt("${prefix}wbTint", d.wbTint),
-                awbLock = prefs.getBoolean("${prefix}awbLock", d.awbLock),
-                meteringMode = enumOr(prefs.getString("${prefix}meteringMode", null), d.meteringMode),
-                afSpotSize = enumOr(prefs.getString("${prefix}afSpotSize", null), d.afSpotSize),
-                customWbGains = if (prefs.getBoolean("${prefix}hasCustomWb", false)) {
+                focusMode = enumOr(safeString("${prefix}focusMode", null), d.focusMode),
+                focusDistanceDiopters = safeFloat("${prefix}focusDiopters", d.focusDistanceDiopters),
+                afLock = safeBoolean("${prefix}afLock", d.afLock),
+                exposureMode = enumOr(safeString("${prefix}exposureMode", null), d.exposureMode),
+                iso = safeInt("${prefix}iso", d.iso),
+                exposureTimeNs = safeLong("${prefix}exposureTimeNs", d.exposureTimeNs),
+                shutterMode = enumOr(safeString("${prefix}shutterMode", null), d.shutterMode),
+                shutterAngle = safeFloat("${prefix}shutterAngle", d.shutterAngle),
+                exposureCompensation = safeInt("${prefix}exposureCompensation", d.exposureCompensation),
+                aeLock = safeBoolean("${prefix}aeLock", d.aeLock),
+                antibanding = enumOr(safeString("${prefix}antibanding", null), d.antibanding),
+                fps = safeInt("${prefix}fps", d.fps),
+                exposureStep = enumOr(safeString("${prefix}exposureStep", null), d.exposureStep),
+                wbMode = enumOr(safeString("${prefix}wbMode", null), d.wbMode),
+                wbKelvin = safeInt("${prefix}wbKelvin", d.wbKelvin),
+                wbTint = safeInt("${prefix}wbTint", d.wbTint),
+                awbLock = safeBoolean("${prefix}awbLock", d.awbLock),
+                meteringMode = enumOr(safeString("${prefix}meteringMode", null), d.meteringMode),
+                afSpotSize = enumOr(safeString("${prefix}afSpotSize", null), d.afSpotSize),
+                customWbGains = if (safeBoolean("${prefix}hasCustomWb", false)) {
                     WbGains(
-                        r = prefs.getFloat("${prefix}customWbR", 1f),
-                        gEven = prefs.getFloat("${prefix}customWbGe", 1f),
-                        gOdd = prefs.getFloat("${prefix}customWbGo", 1f),
-                        b = prefs.getFloat("${prefix}customWbB", 1f),
+                        r = safeFloat("${prefix}customWbR", 1f),
+                        gEven = safeFloat("${prefix}customWbGe", 1f),
+                        gOdd = safeFloat("${prefix}customWbGo", 1f),
+                        b = safeFloat("${prefix}customWbB", 1f),
                     )
                 } else {
                     null
                 },
-                edge = enumOr(prefs.getString("${prefix}edge", null), d.edge),
-                noiseReduction = enumOr(prefs.getString("${prefix}noiseReduction", null), d.noiseReduction),
-                colorEffect = enumOr(prefs.getString("${prefix}colorEffect", null), d.colorEffect),
-                flash = enumOr(prefs.getString("${prefix}flash", null), d.flash),
-                oisEnabled = prefs.getBoolean("${prefix}oisEnabled", d.oisEnabled),
+                edge = enumOr(safeString("${prefix}edge", null), d.edge),
+                noiseReduction = enumOr(safeString("${prefix}noiseReduction", null), d.noiseReduction),
+                colorEffect = enumOr(safeString("${prefix}colorEffect", null), d.colorEffect),
+                flash = enumOr(safeString("${prefix}flash", null), d.flash),
+                oisEnabled = safeBoolean("${prefix}oisEnabled", d.oisEnabled),
                 // Clamped: this raw float is the ONE zoom path with no UI/caps gate (caps aren't
                 // known at load time), and a non-positive/NaN value would feed the zoom ease
                 // ticker's log-space math (a 0 makes target/cur = Inf -> NaN loop).
-                zoomRatio = prefs.getFloat("${prefix}zoomRatio", d.zoomRatio)
+                zoomRatio = safeFloat("${prefix}zoomRatio", d.zoomRatio)
                     .let { if (it.isFinite()) it.coerceIn(0.1f, 100f) else d.zoomRatio },
-                jpegQuality = prefs.getInt("${prefix}jpegQuality", d.jpegQuality),
+                jpegQuality = safeInt("${prefix}jpegQuality", d.jpegQuality),
             )
             val ed = ExtraSettings()
             val extras = ExtraSettings(
-                transfer = enumOr(prefs.getString("${prefix}transfer", null), ed.transfer),
-                heif = prefs.getBoolean("${prefix}heif", ed.heif),
-                jpeg = prefs.getBoolean("${prefix}jpeg", ed.jpeg),
-                dngRaw = prefs.getBoolean("${prefix}dngRaw", ed.dngRaw),
-                mode = enumOr(prefs.getString("${prefix}mode", null), ed.mode),
-                lens = enumOr(prefs.getString("${prefix}lens", null), ed.lens),
-                teleconverter = prefs.getBoolean("${prefix}teleconverter", ed.teleconverter),
-                videoStabMode = enumOr(prefs.getString("${prefix}videoStabMode", null), ed.videoStabMode),
-                aspectRatio = enumOr(prefs.getString("${prefix}aspectRatio", null), ed.aspectRatio),
-                timer = enumOr(prefs.getString("${prefix}timer", null), ed.timer),
-                driveMode = enumOr(prefs.getString("${prefix}driveMode", null), ed.driveMode),
-                intervalSec = prefs.getInt("${prefix}intervalSec", ed.intervalSec).coerceAtLeast(1),
-                focusPeaking = prefs.getBoolean("${prefix}focusPeaking", ed.focusPeaking),
-                peakingLevel = enumOr(prefs.getString("${prefix}peakingLevel", null), ed.peakingLevel),
-                peakingColor = enumOr(prefs.getString("${prefix}peakingColor", null), ed.peakingColor),
-                zebra = prefs.getBoolean("${prefix}zebra", ed.zebra),
-                zebraLevel = enumOr(prefs.getString("${prefix}zebraLevel", null), ed.zebraLevel),
-                falseColor = prefs.getBoolean("${prefix}falseColor", ed.falseColor),
-                histogram = prefs.getBoolean("${prefix}histogram", ed.histogram),
-                waveform = prefs.getBoolean("${prefix}waveform", ed.waveform),
-                grid = enumOr(prefs.getString("${prefix}grid", null), ed.grid),
-                level = prefs.getBoolean("${prefix}level", ed.level),
-                punchIn = prefs.getBoolean("${prefix}punchIn", ed.punchIn),
-                teleFinder = prefs.getBoolean("${prefix}teleFinder", ed.teleFinder),
-                videoCodec = enumOr(prefs.getString("${prefix}videoCodec", null), ed.videoCodec),
-                bitrateLevel = enumOr(prefs.getString("${prefix}bitrateLevel", null), ed.bitrateLevel),
-                videoFrameRate = enumOr(prefs.getString("${prefix}videoFrameRate", null), ed.videoFrameRate),
-                videoResolution = prefs.getString("${prefix}videoResolution", null) ?: ed.videoResolution,
-                openGate = prefs.getBoolean("${prefix}openGate", ed.openGate),
-                recordAudio = prefs.getBoolean("${prefix}recordAudio", ed.recordAudio),
-                audioGain = prefs.getFloat("${prefix}audioGain", ed.audioGain),
-                audioScene = enumOr(prefs.getString("${prefix}audioScene", null), ed.audioScene),
-                audioInputPreference = enumOr(prefs.getString("${prefix}audioInputPreference", null), ed.audioInputPreference),
+                transfer = enumOr(safeString("${prefix}transfer", null), ed.transfer),
+                heif = safeBoolean("${prefix}heif", ed.heif),
+                jpeg = safeBoolean("${prefix}jpeg", ed.jpeg),
+                dngRaw = safeBoolean("${prefix}dngRaw", ed.dngRaw),
+                mode = enumOr(safeString("${prefix}mode", null), ed.mode),
+                lens = enumOr(safeString("${prefix}lens", null), ed.lens),
+                teleconverter = safeBoolean("${prefix}teleconverter", ed.teleconverter),
+                videoStabMode = enumOr(safeString("${prefix}videoStabMode", null), ed.videoStabMode),
+                aspectRatio = enumOr(safeString("${prefix}aspectRatio", null), ed.aspectRatio),
+                timer = enumOr(safeString("${prefix}timer", null), ed.timer),
+                driveMode = enumOr(safeString("${prefix}driveMode", null), ed.driveMode),
+                intervalSec = safeInt("${prefix}intervalSec", ed.intervalSec).coerceAtLeast(1),
+                focusPeaking = safeBoolean("${prefix}focusPeaking", ed.focusPeaking),
+                peakingLevel = enumOr(safeString("${prefix}peakingLevel", null), ed.peakingLevel),
+                peakingColor = enumOr(safeString("${prefix}peakingColor", null), ed.peakingColor),
+                zebra = safeBoolean("${prefix}zebra", ed.zebra),
+                zebraLevel = enumOr(safeString("${prefix}zebraLevel", null), ed.zebraLevel),
+                falseColor = safeBoolean("${prefix}falseColor", ed.falseColor),
+                histogram = safeBoolean("${prefix}histogram", ed.histogram),
+                waveform = safeBoolean("${prefix}waveform", ed.waveform),
+                grid = enumOr(safeString("${prefix}grid", null), ed.grid),
+                level = safeBoolean("${prefix}level", ed.level),
+                punchIn = safeBoolean("${prefix}punchIn", ed.punchIn),
+                teleFinder = safeBoolean("${prefix}teleFinder", ed.teleFinder),
+                videoCodec = enumOr(safeString("${prefix}videoCodec", null), ed.videoCodec),
+                bitrateLevel = enumOr(safeString("${prefix}bitrateLevel", null), ed.bitrateLevel),
+                videoFrameRate = enumOr(safeString("${prefix}videoFrameRate", null), ed.videoFrameRate),
+                videoResolution = safeString("${prefix}videoResolution", null) ?: ed.videoResolution,
+                openGate = safeBoolean("${prefix}openGate", ed.openGate),
+                recordAudio = safeBoolean("${prefix}recordAudio", ed.recordAudio),
+                audioGain = safeFloat("${prefix}audioGain", ed.audioGain),
+                audioScene = enumOr(safeString("${prefix}audioScene", null), ed.audioScene),
+                audioInputPreference = enumOr(safeString("${prefix}audioInputPreference", null), ed.audioInputPreference),
                 photoFnSlots = enumListOr(
-                    prefs.getString("${prefix}photoFnSlots", null) ?: prefs.getString("${prefix}fnSlots", null),
+                    safeString("${prefix}photoFnSlots", null) ?: safeString("${prefix}fnSlots", null),
                     ed.photoFnSlots,
                 ),
                 videoFnSlots = enumListOr(
-                    prefs.getString("${prefix}videoFnSlots", null),
+                    safeString("${prefix}videoFnSlots", null),
                     ed.videoFnSlots,
                 ),
-                myMenuSlots = enumListOr(prefs.getString("${prefix}myMenuSlots", null), ed.myMenuSlots),
-                volumeKeyAction = enumOr(prefs.getString("${prefix}volumeKeyAction", null), ed.volumeKeyAction),
-                halfPressAction = enumOr(prefs.getString("${prefix}halfPressAction", null), ed.halfPressAction),
-                gammaAssist = prefs.getBoolean("${prefix}gammaAssist", ed.gammaAssist),
-                frameLines = enumOr(prefs.getString("${prefix}frameLines", null), ed.frameLines),
-                preserveLensSelection = prefs.getBoolean("${prefix}preserveLensSelection", ed.preserveLensSelection),
-                preserveTeleconverter = prefs.getBoolean("${prefix}preserveTeleconverter", ed.preserveTeleconverter),
+                myMenuSlots = enumListOr(safeString("${prefix}myMenuSlots", null), ed.myMenuSlots),
+                volumeKeyAction = enumOr(safeString("${prefix}volumeKeyAction", null), ed.volumeKeyAction),
+                halfPressAction = enumOr(safeString("${prefix}halfPressAction", null), ed.halfPressAction),
+                gammaAssist = safeBoolean("${prefix}gammaAssist", ed.gammaAssist),
+                frameLines = enumOr(safeString("${prefix}frameLines", null), ed.frameLines),
+                preserveLensSelection = safeBoolean("${prefix}preserveLensSelection", ed.preserveLensSelection),
+                preserveTeleconverter = safeBoolean("${prefix}preserveTeleconverter", ed.preserveTeleconverter),
             )
             Loaded(controls, extras)
         }.getOrNull()
