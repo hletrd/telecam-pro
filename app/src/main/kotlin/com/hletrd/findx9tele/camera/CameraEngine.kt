@@ -1247,12 +1247,18 @@ class CameraEngine(private val context: Context) {
         gl.setPunchInCenter(loupe.first, loupe.second)
     }
 
-    /** Clears the tap-owned AE/AF region when its UI reticle expires. */
+    /**
+     * The FUNCTIONAL tap release: drops the tap-owned AE/AF region and re-centers the loupe.
+     * Called on explicit reset and from the ViewModel's optics-remap doors — NOT from the 2 s
+     * reticle timer, which is visual-only (AGG4-3: the tapped focus must HOLD until a new tap,
+     * a focus-mode change, an explicit reset, or a remap; the timer used to silently return AF
+     * to continuous hunting and re-center the loupe mid-composition).
+     */
     fun clearTapPoint() {
         controller?.clearMeteringPoint()
         // The loupe crop is tap-owned state too: without this reset the punch-in magnifier stayed
-        // permanently centered on the LAST tapped point (across mode/lens/TC switches — nothing
-        // else writes it) while AF/AE correctly returned to their defaults.
+        // permanently centered on the LAST tapped point (across mode/lens/TC switches — the remap
+        // doors call through here) while AF/AE correctly returned to their defaults.
         gl.setPunchInCenter(0.5f, 0.5f)
     }
 
@@ -2294,6 +2300,11 @@ class CameraEngine(private val context: Context) {
                 HeifCapture.writeHeif(pfd.fileDescriptor, r, quality); true
             } ?: false
             if (!wrote) { MediaStoreWriter.delete(context, u); onStatus?.invoke("Failed to save HEIF"); return }
+            // publish() retries transient resolver failures internally (CRIT4-5). A persistent
+            // failure deletes the still DELIBERATELY, unlike video's leave-pending policy: a still
+            // is reshootable and the immediate "Failed to publish" status lets the user reshoot
+            // now, whereas an invisible pending file would silently vanish in the next launch's
+            // orphan sweep with no feedback at all.
             if (!MediaStoreWriter.publish(context, u)) {
                 MediaStoreWriter.delete(context, u)
                 onStatus?.invoke("Failed to publish HEIF")
@@ -2355,6 +2366,8 @@ class CameraEngine(private val context: Context) {
             // Bitmap.compress strips all metadata, so stamp the exposure EXIF back before publishing
             // (best-effort — a failed EXIF write must never lose the image itself).
             runCatching { writeJpegExif(u, exifShot) }
+            // Same deliberate delete-on-persistent-publish-failure policy as saveHeifAsync (the
+            // still is reshootable; publish() already retried transients).
             if (!MediaStoreWriter.publish(context, u)) {
                 MediaStoreWriter.delete(context, u)
                 onStatus?.invoke("Failed to publish JPEG")

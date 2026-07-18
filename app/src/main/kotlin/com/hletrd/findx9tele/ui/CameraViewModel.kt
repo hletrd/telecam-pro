@@ -782,8 +782,12 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setTapPoint(nx, ny)
         _state.update { it.copy(tapPoint = nx to ny) }
         reticleHideRunnable?.let { mainHandler.removeCallbacks(it) }
+        // The 2 s timer is VISUAL ONLY (keep the viewfinder quiet): it hides the reticle but must
+        // NOT release the AF hold, the metering region, or the loupe center. The tapped focus
+        // holds until a new tap, a focus-mode change, an explicit reset, or an optics remap —
+        // the documented pro-camera lock semantics (AGG4-3; the old timer silently returned AF to
+        // AF-C hunting 2 s after every tap and re-centered the loupe mid-composition).
         val hide = Runnable {
-            engine.clearTapPoint()
             _state.update { it.copy(tapPoint = null) }
             reticleHideRunnable = null
         }
@@ -791,7 +795,16 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         mainHandler.postDelayed(hide, 2000)
     }
 
-    override fun onResetFocusPoint() {
+    override fun onResetFocusPoint() = clearTapFocus()
+
+    /**
+     * The FUNCTIONAL tap-AF release: drops the AF_MODE_AUTO hold + metering region and re-centers
+     * the loupe, plus the visual reticle. Called on explicit reset and from every optics-remap
+     * door (mode/lens/TC/camera-override) — a tapped point is meaningless in the new field of
+     * view, and since the 2 s reticle timer no longer resets the loupe, the doors are what keep a
+     * stale tap-centered loupe from surviving a remap.
+     */
+    private fun clearTapFocus() {
         reticleHideRunnable?.let(mainHandler::removeCallbacks)
         reticleHideRunnable = null
         engine.clearTapPoint()
@@ -1108,6 +1121,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // absolute target was set in the old scale, and any throttled quiet-landing / interaction-end
         // that would otherwise submit an old-scale ratio through the outgoing controller (AGG3-10/25).
         invalidateZoomGlide()
+        clearTapFocus()
         engine.setVideoMode(mode == CaptureMode.VIDEO, optics.lens, optics.controls)
         applyEngineTransfer(mode, _state.value.transfer)
         refreshProgramAppSide() // photo P is app-side (min-shutter rule), video P is HAL AE
@@ -1212,6 +1226,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // The TC scale flip overwrote the coalesced base and invalidated any hardware-key glide /
         // throttled landing set in the pre-flip scale (same invariant as every optics-remap door).
         invalidateZoomGlide()
+        clearTapFocus()
         markChanged(FnSlot.TELECONVERTER)
         saveSettingsIfEnabled()
     }
@@ -1239,6 +1254,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // The lens-preset rewrite overwrote the coalesced base and invalidated any hardware-key glide /
         // throttled landing set in the pre-pick scale (same invariant as every optics-remap door).
         invalidateZoomGlide()
+        clearTapFocus()
         markChanged(FnSlot.TELECONVERTER)
         saveSettingsIfEnabled()
     }
@@ -1584,6 +1600,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // A camera-id override reopens onto a different route (different zoom scale): abandon any
         // in-flight coalesced/gliding zoom the same way every other optics-remap door does.
         invalidateZoomGlide()
+        clearTapFocus()
         engine.setCameraOverride(id)
         _state.update { it.copy(cameraOverrideId = id) }
     }

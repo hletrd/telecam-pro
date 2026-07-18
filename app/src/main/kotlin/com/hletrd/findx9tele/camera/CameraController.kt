@@ -998,7 +998,10 @@ class CameraController(context: Context) {
     fun setMeteringPoint(sx: Float, sy: Float) {
         meteringPoint = sx.coerceIn(0f, 1f) to sy.coerceIn(0f, 1f)
         afTriggerPending = true
-        touchAfActive = true // hold AF_MODE_AUTO on this spot until the focus mode changes
+        // Hold AF_MODE_AUTO on this spot until a focus-mode change, a replacing tap, or the
+        // engine's explicit clearMeteringPoint (reset / optics remap). The UI's 2 s reticle timer
+        // is visual-only and does NOT release this hold (AGG4-3).
+        touchAfActive = true
         postToCamera { startPreview() }
     }
 

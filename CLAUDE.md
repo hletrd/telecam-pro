@@ -293,7 +293,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   enabled in video mode. App-side/manual exposure also pins the selected FPS.
 - **Tap-to-focus uses `AF_MODE_AUTO`.** CONTINUOUS + a bare trigger just holds the (often wrong)
   current distance; a tapped point sets a metering region and forces a one-shot AUTO scan that LOCKS
-  (`touchAfActive`, cleared on focus-mode change). AF reaches FOCUSED on device.
+  (`touchAfActive`). The lock (and the tap-owned loupe center) releases on a NEW tap, a focus-mode
+  change, an explicit reset, or an optics-remap door (mode/lens/TC/camera-override) — the 2 s
+  reticle timer is VISUAL-ONLY and does not release it (cycle 4; it used to return AF to AF-C
+  hunting 2 s after every tap). AF reaches FOCUSED on device.
 - **Aspect ratio is only 4:3 or 16:9.** The sensor is 4:3-native: `AspectRatio.W4_3` = full readout
   (no crop, the default + the no-crop sentinel), `W16_9` = its center crop. Full/1:1/portrait removed.
 - **Video caps come from the device, not hardcodes.** `video/EncoderCaps.kt` scans `MediaCodecList`.

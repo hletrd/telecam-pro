@@ -420,7 +420,10 @@ App-side and manual exposure also pin the selected frame rate.
 
 Continuous AF mode (`AF_MODE_CONTINUOUS_PICTURE`) with a bare trigger holds the current (often incorrect) 
 focus distance. Instead, tapping a region sets a metering/AF region and forces a one-shot `AF_MODE_AUTO` 
-scan that **locks** the focus on the tapped point (`touchAfActive` flag, cleared when focus mode changes). 
+scan that **locks** the focus on the tapped point (`touchAfActive` flag). The lock — together with the 
+tap-owned loupe center — is released by a replacing tap, a focus-mode change, the explicit reset action, 
+or any optics-remap door (mode/lens/TC/camera-override via `CameraViewModel.clearTapFocus()` → 
+`CameraEngine.clearTapPoint()`); the 2 s reticle auto-hide is visual-only and does NOT release the hold. 
 AF state reaches FOCUSED on device.
 
 ---
