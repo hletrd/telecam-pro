@@ -236,6 +236,10 @@ const val FINDER_MARGIN = 0.03f
 // Draw the PIP only once the main view is meaningfully magnified — below this it duplicates the
 // full frame ~1:1 and adds nothing. Threshold tuning is a deferred on-device item (plan cycle 1).
 const val FINDER_MIN_ZOOM = 1.15f
+// The punch-in loupe's texcoord crop: the magnified preview samples a (1-crop) span of the frame
+// (0.6 → 2.5× magnification). Shared between the GL draw (gl/GlPipeline) and the tap-mapping
+// composition in CameraEngine (P2.8/AGG4-11) so the two cannot drift.
+const val PUNCH_IN_CROP = 0.6f
 
 /**
  * The engine-RESOLVED half of the finder gate (everything except the zoom floor): user toggle,

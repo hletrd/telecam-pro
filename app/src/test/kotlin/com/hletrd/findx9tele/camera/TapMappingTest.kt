@@ -68,4 +68,43 @@ class TapMappingTest {
         assertEquals(0.5f, x, eps)
         assertEquals(0.2f, y, eps)
     }
+
+    // ---- loupeAdjustedTap (AGG4-11/P2.8): magnified taps compose through the loupe crop ----
+
+    @Test
+    fun loupeAdjustedTap_centerTapLandsOnTheLoupeCenter() {
+        // A tap dead-center of the magnified view IS the loupe center, wherever the loupe sits.
+        val (x, y) = loupeAdjustedTap(0.5f, 0.5f, 0.3f, 0.7f, 0.4f)
+        assertEquals(0.3f, x, eps)
+        assertEquals(0.7f, y, eps)
+    }
+
+    @Test
+    fun loupeAdjustedTap_offsetShrinksByTheSampledSpan() {
+        // At 2.5x magnification (span 0.4), a tap at the view edge (offset 0.5 from center) covers
+        // only 0.2 of the frame from the loupe center.
+        val (x, y) = loupeAdjustedTap(1f, 0.5f, 0.5f, 0.5f, 0.4f)
+        assertEquals(0.7f, x, eps)
+        assertEquals(0.5f, y, eps)
+    }
+
+    @Test
+    fun loupeAdjustedTap_clampsToTheFrame() {
+        // A loupe parked near a corner plus an outward tap cannot escape [0,1].
+        val (x, y) = loupeAdjustedTap(1f, 0f, 0.9f, 0.1f, 0.4f)
+        assertTrue(x in 0f..1f)
+        assertTrue(y in 0f..1f)
+        assertEquals(1f, x, eps) // 0.9 + 0.4*0.5 = 1.1 -> clamped
+    }
+
+    @Test
+    fun loupeAdjustedTap_repeatedTapsConverge() {
+        // Tapping the same on-screen point repeatedly walks the center toward the subject and
+        // converges (geometric series), never oscillates: center' = c + span*(p-0.5).
+        var cx = 0.5f
+        repeat(10) { cx = loupeAdjustedTap(0.8f, 0.5f, cx, 0.5f, 0.4f).first }
+        // Fixed point: c = c + 0.4*0.3 has none inside (0,1) until clamped by the frame edge —
+        // after 10 taps the center has moved monotonically toward it.
+        assertTrue(cx > 0.9f)
+    }
 }

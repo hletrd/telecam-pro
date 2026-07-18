@@ -795,6 +795,12 @@ class CameraEngine(private val context: Context) {
     }
 
     private fun wireController(): CameraController {
+        // A fresh controller means a fresh gesture world: clear the interaction flag so a glide
+        // that was cut short by a remap door (whose invalidate deliberately skips the boost-off
+        // rebuild) cannot leave the NEXT gesture's leading edge seeing a stale mid-gesture state
+        // (AGG4-2 — the flag used to survive every mode/lens/TC remap and defeat the leading-edge
+        // exact submit for one gesture).
+        zoomInteractionActive = false
         val ctrl = CameraController(context)
         // Every result callback is identity-gated: a CLOSING controller's capture results keep
         // arriving on its camera thread for a beat after the replacement is wired, and an ungated
@@ -1235,17 +1241,47 @@ class CameraEngine(private val context: Context) {
      * sensor orientation plus the teleconverter's afocal 180° (normalized to 0/90/180/270). The
      * centered tap is rotated by -total degrees and re-centered, then forwarded to the controller.
      *
-     * NOTE: this ignores the EIS/punch-in crop and offset, so the mapping is only APPROXIMATE and
-     * needs on-device calibration — the axis signs (and possibly a horizontal mirror) may need
-     * flipping once validated against the live preview.
+     * A tap made while the punch-in loupe is ACTIVE is additionally composed through the loupe's
+     * crop+center (loupeAdjustedTap, AGG4-11) so AF/metering land on the scene point actually
+     * under the finger. EIS shift is not composed (app-side EIS is disabled; shift is 0). Axis
+     * signs remain an on-device calibration item.
      */
     fun setTapPoint(nx: Float, ny: Float) {
         val c = caps ?: return
-        val sensor = viewTapToSensorPoint(nx, ny, c.sensorOrientation, teleconverterMode)
+        // While the loupe MAGNIFIES, the screen shows only a (1-PUNCH_IN_CROP) span of the frame
+        // centered on the current loupe center — a raw full-frame mapping would aim AF/metering
+        // (and the next loupe recenter) at the wrong scene point, off by the magnification and
+        // offset (AGG4-11/P2.8). Compose each space's mapping through that space's own current
+        // center; the loupe scale is isotropic and commutes with the rotations, so composing
+        // AFTER the rotation math is exact.
+        val punchActive = rendererConfig.snapshot().punchIn
+        val span = 1f - PUNCH_IN_CROP
+        val sensorRaw = viewTapToSensorPoint(nx, ny, c.sensorOrientation, teleconverterMode)
+        val sensor = if (punchActive) {
+            loupeAdjustedTap(sensorRaw.first, sensorRaw.second, loupeCenterSensorX, loupeCenterSensorY, span)
+        } else {
+            sensorRaw
+        }
         controller?.setMeteringPoint(sensor.first, sensor.second)
-        val loupe = viewTapToLoupeCenter(nx, ny, previewRotationDegrees())
+        val loupeRaw = viewTapToLoupeCenter(nx, ny, previewRotationDegrees())
+        val loupe = if (punchActive) {
+            loupeAdjustedTap(loupeRaw.first, loupeRaw.second, loupeCenterTexX, loupeCenterTexY, span)
+        } else {
+            loupeRaw
+        }
+        loupeCenterTexX = loupe.first
+        loupeCenterTexY = loupe.second
+        loupeCenterSensorX = sensor.first
+        loupeCenterSensorY = sensor.second
         gl.setPunchInCenter(loupe.first, loupe.second)
     }
+
+    // Tap-owned loupe center mirrors in BOTH spaces (AGG4-11): texcoord (what GL magnifies about)
+    // and sensor (what a magnified tap's metering composes against). Reset with clearTapPoint.
+    @Volatile private var loupeCenterTexX = 0.5f
+    @Volatile private var loupeCenterTexY = 0.5f
+    @Volatile private var loupeCenterSensorX = 0.5f
+    @Volatile private var loupeCenterSensorY = 0.5f
 
     /**
      * The FUNCTIONAL tap release: drops the tap-owned AE/AF region and re-centers the loupe.
@@ -1259,6 +1295,10 @@ class CameraEngine(private val context: Context) {
         // The loupe crop is tap-owned state too: without this reset the punch-in magnifier stayed
         // permanently centered on the LAST tapped point (across mode/lens/TC switches — the remap
         // doors call through here) while AF/AE correctly returned to their defaults.
+        loupeCenterTexX = 0.5f
+        loupeCenterTexY = 0.5f
+        loupeCenterSensorX = 0.5f
+        loupeCenterSensorY = 0.5f
         gl.setPunchInCenter(0.5f, 0.5f)
     }
 
@@ -1949,6 +1989,30 @@ class CameraEngine(private val context: Context) {
         if (!zoomInteractionActive) return
         lastHalZoomSubmitMs = android.os.SystemClock.uptimeMillis()
         controller?.setZoomRatio(controls.zoomRatio)
+    }
+
+    /**
+     * Commits [ratio] as the engine/GL/still-request zoom truth WITHOUT a HAL submit (AGG4-1).
+     * The zoom-OUT leading edge calls this immediately before setZoomInteraction(true), whose
+     * boost rebuild then carries `controls.zoomRatio` as its finalZoom — the gesture edge's ONE
+     * submit. The old leading-edge fast-path submit PLUS that rebuild paid two back-to-back
+     * ~180 ms repeating-request stalls at every fresh pinch-out (the exact anti-pattern the
+     * gesture-END path was rewritten to remove); the encoder saw the longer real-frame gap even
+     * though GL zoomComp masked it in the preview.
+     */
+    fun commitZoomForBoost(ratio: Float) {
+        val r = caps?.zoomRatioRange
+        val hi = if (teleconverterMode) {
+            minOf(r?.upper ?: Float.MAX_VALUE, TELE_MAX_DISPLAY_ZOOM / TELE_DISPLAY_BASE)
+        } else {
+            r?.upper ?: Float.MAX_VALUE
+        }
+        val z = ratio.coerceIn(r?.lower ?: ratio, hi)
+        // Same monitor rule as setZoomRatio: packet writers replace [controls] wholesale under it.
+        synchronized(this) { controls = controls.copy(zoomRatio = z) }
+        gl.setZoomTarget(z)
+        // Still-request truth must follow even though no repeating submit happens here.
+        controller?.noteRequestZoom(z)
     }
 
     @Volatile private var zoomInteractionActive = false
@@ -2866,6 +2930,11 @@ class CameraEngine(private val context: Context) {
     /** Reopens the camera after [pause], reusing the existing GL input surface and start state. */
     fun resume() {
         paused = false
+        // onStop's invalidateZoomGlide cancels the interaction-end runnable (the only ordinary
+        // clearer of this flag), so a background mid-gesture left it stale-true across the whole
+        // next foreground session's first gesture (AGG4-2). Resume covers the no-reopen path
+        // (controller still installed); wireController covers every reopen.
+        zoomInteractionActive = false
         coldStartRetryGate.cancel()
         gyro.start()
         if (!started) {
@@ -3956,3 +4025,20 @@ internal fun viewTapToLoupeCenter(nx: Float, ny: Float, previewRotationDegrees: 
     val ly = ax * sin + ay * cos
     return (lx + 0.5f).coerceIn(0f, 1f) to (ly + 0.5f).coerceIn(0f, 1f)
 }
+
+/**
+ * Composes a rotated tap point through the ACTIVE punch-in loupe crop (AGG4-11/P2.8). While the
+ * loupe magnifies, the renderer samples `center + span·(p − 0.5)` — an affine map that commutes
+ * with the (orthonormal, center-pivoted) rotation stages, so the same composition is exact in
+ * BOTH the sensor space (metering) and the texcoord space (loupe recenter), each against its own
+ * current center. [span] = 1 − PUNCH_IN_CROP (the sampled fraction of the frame; 0.4 → 2.5×).
+ * Callers bypass this entirely when the loupe is off (the identity would require center 0.5).
+ */
+internal fun loupeAdjustedTap(
+    px: Float,
+    py: Float,
+    centerX: Float,
+    centerY: Float,
+    span: Float,
+): Pair<Float, Float> =
+    (centerX + span * (px - 0.5f)).coerceIn(0f, 1f) to (centerY + span * (py - 0.5f)).coerceIn(0f, 1f)

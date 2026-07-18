@@ -9,6 +9,7 @@ import android.os.HandlerThread
 import android.view.Surface
 import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.FINDER_MIN_ZOOM
+import com.hletrd.findx9tele.camera.PUNCH_IN_CROP
 import com.hletrd.findx9tele.camera.finderRect
 import com.hletrd.findx9tele.camera.HistogramData
 import com.hletrd.findx9tele.camera.WaveformData
@@ -686,7 +687,7 @@ class GlPipeline {
         }
 
         // Punch-in is preview-only: the encoder draw below always uses the original `crop`.
-        val previewCrop = if (punchIn) maxOf(crop, 0.6f) else crop
+        val previewCrop = if (punchIn) maxOf(crop, PUNCH_IN_CROP) else crop
 
         // The loupe (movable punch-in) recenters the preview zoom on the tapped point; the encoder
         // draw below stays centered so recordings are unaffected.
