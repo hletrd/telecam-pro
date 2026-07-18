@@ -33,12 +33,6 @@ internal data class ShotSpec(
 )
 
 /**
- * Stamps ISO / exposure / 35mm focal / device EXIF onto a just-written JPEG (pending, rw).
- * [iso]/[expNs] come from the shot's own TotalCaptureResult, snapshotted in the capture
- * callback — the live controller.lastIso/lastExposureNs may already describe a LATER frame by
- * the time this runs on the io thread.
- */
-/**
  * Everything the JPEG EXIF stamp needs, snapshotted AT THE SHOT (capture result + the controls
  * and optics active for that frame). Field set mirrors the stock camera's 3× reference sample
  * (FNumber/FocalLength/35 mm/LensModel/APEX values/metering/flash/program/zoom).

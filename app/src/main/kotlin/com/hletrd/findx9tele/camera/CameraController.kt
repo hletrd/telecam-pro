@@ -864,7 +864,7 @@ class CameraController(context: Context) {
             // viewfinder exactly while judging critical focus at 300 mm. When the delta touches
             // ONLY the sensor scalars, mutate the cached builder via the SAME derivation the full
             // build uses, paced to >=200 ms with a trailing exact landing; a live tap-focus/AF-lock
-            // override is RE-APPLIED onto the builder afterward (reapplyAfOverrides) so it can ride
+            // override is RE-APPLIED onto the builder afterward (applyAfOverrides) so it can ride
             // the fast path too — a wholesale refusal starved the preview back to ~5 fps whenever
             // the app-side AE loop ran with a held tap-AF. Anything else keeps the full rebuild.
             if (sensorFastPathAdmitted(previous, normalized)) {

@@ -99,12 +99,11 @@ class TapMappingTest {
 
     @Test
     fun loupeAdjustedTap_repeatedTapsConverge() {
-        // Tapping the same on-screen point repeatedly walks the center toward the subject and
-        // converges (geometric series), never oscillates: center' = c + span*(p-0.5).
+        // Tapping the same on-screen point repeatedly walks the center monotonically toward the
+        // subject (fixed step span*(p-0.5) per tap, clamped at the frame edge), never oscillates.
         var cx = 0.5f
         repeat(10) { cx = loupeAdjustedTap(0.8f, 0.5f, cx, 0.5f, 0.4f).first }
-        // Fixed point: c = c + 0.4*0.3 has none inside (0,1) until clamped by the frame edge —
-        // after 10 taps the center has moved monotonically toward it.
+        // After 10 fixed steps of 0.12 the center has clamped against the frame edge.
         assertTrue(cx > 0.9f)
     }
 }

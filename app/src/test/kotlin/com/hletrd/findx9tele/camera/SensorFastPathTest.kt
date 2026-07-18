@@ -39,7 +39,7 @@ class SensorFastPathTest {
     @Test
     fun `a sensor-only delta rides the fast path regardless of AF overrides`() {
         // Live tap-AF/AF-lock no longer refuses admission: the controller re-applies the override
-        // keys onto the cached builder AFTER applySensorValueControls (reapplyAfOverrides), so the
+        // keys onto the cached builder AFTER applySensorValueControls (applyAfOverrides), so the
         // key state equals the full rebuild's without the ~180 ms swap stall. The old wholesale
         // refusal re-created the ~5 fps dim-light preview whenever the app-side AE loop ran with a
         // held tap-AF — the exact starvation the fast path exists to remove. The device check for
