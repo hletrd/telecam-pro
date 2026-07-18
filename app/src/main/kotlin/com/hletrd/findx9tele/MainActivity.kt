@@ -71,6 +71,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Drop obscured touches before they reach camera/settings/delete consent surfaces. This is
+        // Android's view-level tapjacking defense and needs no overlay permission or network access.
+        window.decorView.filterTouchesWhenObscured = true
         refreshPermissionState()
 
         // Debug-only CameraUnit availability check. Query-only, off the main thread; see OcsProbe.
@@ -308,7 +311,7 @@ class MainActivity : ComponentActivity() {
         if (hasCameraPermission && requestedBefore) {
             // A Settings grant (or a later runtime grant) starts a fresh denial history. This also
             // prevents a future Android auto-reset from inheriting an obsolete pre-grant denial.
-            permissionPreferences.edit { putBoolean(CAMERA_REQUESTED_BEFORE_KEY, false) }
+            permissionPreferences.edit(commit = true) { putBoolean(CAMERA_REQUESTED_BEFORE_KEY, false) }
         }
         cameraPermanentlyDenied = classifyCameraPermission(
             granted = hasCameraPermission,
@@ -322,7 +325,7 @@ class MainActivity : ComponentActivity() {
         val requestedBefore = permissionPreferences.getBoolean(CAMERA_REQUESTED_BEFORE_KEY, false)
         val updated = updatedCameraPermissionRequestHistory(requestedBefore, result)
         if (updated != requestedBefore) {
-            permissionPreferences.edit { putBoolean(CAMERA_REQUESTED_BEFORE_KEY, updated) }
+            permissionPreferences.edit(commit = true) { putBoolean(CAMERA_REQUESTED_BEFORE_KEY, updated) }
         }
     }
 
