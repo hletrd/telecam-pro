@@ -124,7 +124,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   image never arrives and the shot wedges `pending`), at BOTH 4096×3072 and the logical array's own
   4080×3064. `StillSnapshot` repacks YUV_420_888→NV21 on the camera thread and JPEG-encodes lazily
   on the io thread; standalone cameras keep the proven HAL-JPEG path. A capture watchdog
-  (`CAPTURE_WATCHDOG_MS`) fails any shot whose image never arrives so the shutter can never wedge.
+  (`CAPTURE_WATCHDOG_FLOOR_MS` + the exposure-aware margin) fails any shot whose image never arrives so the shutter can never wedge.
 - **Seamless zoom = the logical camera, PHOTO ONLY (2026-07-14).** Camera 0 (`logicalMultiCamera`,
   physIds 3/2/4/5) spans zoomRatio 0.6–20 with HAL-internal lens crossing — pinch never reopens.
   Lens picks are zoom presets; TELE pins standalone 4 (digital 1–10×) and OFF returns to logical at
@@ -134,12 +134,15 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   application recomposed the whole tree at input rate (~120 Hz) and read as jank.
 - **Tele Finder PIP is HONEST about the single stream (2026-07-17; photo-only since cycle 2).**
   The Assist toggle (default OFF, persisted) draws a bottom-left corner viewport re-drawing the
-  FULL current camera frame in TELE **photo** + 4:3 past `FINDER_MIN_ZOOM` (photo-only: it is a
-  still-composition aid and 4:3 is the STILL aspect — keying a video overlay off a photo setting
-  made it appear/vanish mid-clip with no visible cause). It can NEVER show an unzoomed/wide field:
-  the HAL's `CONTROL_ZOOM_RATIO` crop is baked into the one camera texture, so the PIP is only
-  wider than the main view while GL zoom compensation or punch-in magnifies past the delivered
-  field (a true wide finder is a BACKLOG design item — second stream or HAL-zoom-cap split). GL
+  FULL current camera frame in TELE **photo** + 4:3 while the PUNCH-IN LOUPE is active (photo-only:
+  it is a still-composition aid and 4:3 is the STILL aspect — keying a video overlay off a photo
+  setting made it appear/vanish mid-clip with no visible cause). It can NEVER show an unzoomed/wide
+  field: the HAL's `CONTROL_ZOOM_RATIO` crop is baked into the one camera texture, so the PIP is
+  only genuinely wider than the main view while the loupe (or transient GL zoom compensation)
+  magnifies past the delivered field — which is why cycle 4 replaced the old raw zoom floor
+  (`FINDER_MIN_ZOOM`, removed) with the loupe as the gate axis: at a steady zoom the PIP duplicated
+  the main view ~1:1 and added nothing (a true wide finder is a BACKLOG design item — second stream
+  or HAL-zoom-cap split). GL
   scissor box and Compose border derive from ONE pure seam (`finderRect`; the
   padding-before-fillMaxWidth chain drew the border ~6% small), the border anchor is
   layout-direction-absolute (RTL), the gate is ONE shared unit-tested predicate
@@ -280,6 +283,14 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   timer so zoom only landed on finger-up; the earlier 80 ms window quantized the hardware slide-zoom
   into visible steps). Keep the `applyScheduled`-flag trailing throttle. Persistence is separate: user
   changes schedule a 500 ms trailing debounced synchronous commit (`scheduleSettingsSave`).
+- **Video records the DISPLAYED portrait aspect since cycle 4 (2026-07-18).** The encoder buffer
+  takes `RotationMath.encoderSurfaceSize` — swapped to portrait (2160×3840 for 4K UHD) whenever
+  sensor+content rotation nets 90/270 — because the stream-shaped LANDSCAPE buffer made
+  `coverScale` overscan ~3.16× and every clip recorded only a center band of the viewfinder field
+  (device-measured via luminance-gradient A/B: pre-fix cell-map corr ≤0.29, post-fix 0.992). The
+  camera STREAM stays `videoSize` (the HAL fixes that); only the MediaCodec buffer and EGL target
+  swap. The muxer hint still carries device tilt only. Pre-cycle-4 "verified" video facts below
+  describe container/codec truthfully but predate this framing fix.
 - **Release output files verified on PMA110 (2026-07-10).** A serialized rapid double-shutter test
   produced exactly one valid DNG+HEIF pair (DNG 4080×3064, 16-bit). A 4K HLG clip was HEVC Main10
   3840×2160 at 30000/1001 with AAC 48 kHz stereo; Open Gate produced HEVC Main10 2560×1920 4:3 at
@@ -455,9 +466,14 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   immutable owner and release latch before thread start. REC must claim the handoff and observe that
   exact release before `VideoRecorder` opens AudioRecord; on timeout it refuses the attempt. Internal
   restart paths only recheck current intent, so they cannot overwrite a newer disable/background
-  transition. Never add a second concurrent AudioRecord. While REC is running, every negative
-  `AudioRecord.read` is terminal and enters the recorder's exactly-once failure/finalization path;
-  only a negative read after stop is treated as normal end-of-stream. The STANDBY meter classifies
+  transition. Never add a second concurrent AudioRecord. While REC is running, a negative
+  `AudioRecord.read` is AUDIO-terminal but NOT clip-terminal: the recorder degrades to VIDEO-ONLY
+  (`degradeAudioToVideoOnly` — drops the audio expectation, zeroes the live meter, never touches
+  the shared `firstFailure` latch) and the cleanly-muxed video still PUBLISHES via the
+  `shouldStartMuxer`/`shouldPublishRecording` gates; only VIDEO codec/muxer faults delete the clip.
+  A `muxer.stop()` throw over a degraded, sample-less audio track is tolerated
+  (`muxerStopFailureIsTerminal`) so a mic dropped in the add-track window cannot delete a good
+  take. Only a negative read after stop is treated as normal end-of-stream. The STANDBY meter classifies
   reads through the same `AudioReadPolicy`: zero retries, a negative read ends that AudioRecord
   generation (release exactly once — `n <= 0 → continue` used to hot-spin the meter thread forever
   on a dead route), then a bounded backed-off recreation (≤3 generations, reset by any successful

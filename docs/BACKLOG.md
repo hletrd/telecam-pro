@@ -2,7 +2,7 @@
 
 Current release board. Read after `CLAUDE.md`; use `ARCHITECTURE.md` for implementation details.
 Historical investigation notes are snapshots under `docs/reviews/` and `.context/reviews/`, not
-active TODO lists. Updated 2026-07-10.
+active TODO lists. Last synced by review-plan-fix cycle 4 (2026-07-18); per-file history via `git log -- docs/BACKLOG.md`.
 
 ## Release State
 
@@ -61,6 +61,22 @@ new hash and must update that sheet after the full release gate is repeated.
   damping at 300 mm vs the previous SESSION_REGULAR build to confirm the OIS profile actually
   differs (result metadata shows ois=1/vstab=2 either way).
 
+### Verified 2026-07-18 — review-plan-fix cycles 3-4 (device-verified)
+
+- Long-exposure stills: 2/3.2/4 s captured with correct EXIF on the standalone TELE; 5/6.3 s
+  reproducibly error the device (`CAMERA_ERROR(3)`) — the 4 s caps-seam ceiling
+  (`HAL_SAFE_MAX_STILL_EXPOSURE_NS`) plus the 500 ms repeating clamp ship as the fix. NOTE: the
+  bisect covers ONLY the standalone TELE; the ceiling is applied to every route as a conservative
+  assumption (see Residual Field Checks for the logical-camera bisect).
+- Cycle-3 P9.2 session: zoom fast path + slider both directions, TC on/off, tap-AF + ISO-drag
+  focus hold (bit-exact lens distance), photo↔video flips clean.
+- Cycle 4: the recorded-video FRAMING defect was device-confirmed and fixed — the encoder buffer
+  was stream-shaped landscape while GL content is portrait, so every clip carried a ~3.16× center
+  band of the viewfinder field (luminance-gradient A/B; cell-map corr 0.29 pre-fix). Post-fix the
+  encoder takes the displayed-aspect swapped buffer (2160×3840 for 4K UHD): preview↔file cell-map
+  correlation 0.992, span ratio ~0.87. Older "Verified" video entries in this file predate this
+  finding — their container/codec facts stand, their implied framing does not.
+
 ## Before Production
 
 These are manual Play Console operations, not repository implementation work:
@@ -87,6 +103,13 @@ These do not require a code or metadata change unless the result exposes a defec
   output check. Also confirm a held-landscape VIDEO clip in an external gallery (the muxer
   orientation-hint SIGN is unverified — `RotationMath.videoOrientationHint` pins the current
   mapping and is the one place to flip if wrong).
+- Added by review-plan-fix cycles 2-4 (2026-07-17/18 runs):
+  P-mode brightness-target judgment in a lit room (QA-3); EIS warp-band re-confirmation per the
+  established lit-scene frame-extraction method (QA-4); a long-exposure bisect of the LOGICAL
+  camera's still ceiling (the shipped 4 s clamp is tele-verified-only and conservatively global);
+  level-overlay responsiveness feel after the roll-alpha retune (0.93); the mid-REC dead-mic
+  meter zeroing (hard to trigger on demand — code-inspected); held portrait/landscape playback of
+  the new PORTRAIT-buffer video files in external galleries (orientation-hint sign, U1).
 - Added by the 2026-07-10 review cycle (code changed since the recorded release AAB — re-run the
   full release gate and refresh `docs/play-console-submit.md`'s hash before upload):
   one HEIF capture on heifwriter 1.1.0 (stable, was 1.2.0-alpha01); waveform overlay visual parity
@@ -150,6 +173,14 @@ Runtime CAMERA and RECORD_AUDIO permissions are granted through the app UI on Co
 AVD is suitable only for UI/crash checks; telephoto routing, RAW, color, audio, stabilization, and
 saved-file behavior require PMA110.
 
+## Deferral dispositions from the 2026-07-17 cycle-2 run (updated by cycle 4)
+
+- **AGG2-36 / AGG3-17** CameraEngine god-object extraction: ESCALATED by cycle 3; cycle 4 landed
+  extraction step 1 (`StillCapturePipeline`) and recorded the architect's ordered steps 2-7 in
+  docs/plans/2026-07-18-rpf-cycle4.md §Deferrals (cycle 5 begins with steps 2-3).
+- **AGG2-38** start↔stop same-tick REC race test: CLOSED by cycle 4 (`RecStartStopRaceTest` over
+  the real `RecordingAdmissionLatch` + the extracted `shouldPublishRecording` save gate).
+
 ## Deferred from review-plan-fix cycle 2 (2026-07-10 run; durable record)
 
 That 2026-07-10 loop ended with its cycle 2 (later runs — 2026-07-16 cycles 1-9 and the 2026-07-17
@@ -178,7 +209,7 @@ loop — have their own dated plans under `docs/plans/`), so the 2026-07-10 defe
   **D-12** dead backup_rules removal (needs explicit owner sign-off — file deletion),
   **D-13** pure-env release signing gate (when CI exists), **D-14** keep-screen-on toggle (already
   above), **D-15** FnSlot table test on next enum growth, **D-16** OPPO Maven cred relocation (with
-  the CameraUnit AUTH_CODE work), **D-17** GyroEis roll wrap transient (cosmetic), **D-18** the
+  the CameraUnit AUTH_CODE work), **D-17** GyroEis roll wrap transient — CLOSED by cycle 3 (aa6cab9, wrap-aware smoothedRoll + GyroEisMathTest), **D-18** the
   lit-scene/human-ears residual field checks (above).
 
 ## Historical References

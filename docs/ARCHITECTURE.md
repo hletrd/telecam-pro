@@ -45,7 +45,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `CameraState.kt` | Enums plus `CameraUiState` — the shared UI and runtime-state language. |
 | `CaptureCapabilities.kt` | Flattens Camera2 characteristics into exact advertised mode sets plus maximum AE/AF region counts, alongside manual-sensor, RAW, HDR, focus, and stream capabilities. |
 | `ControlAvailability.kt` | Projects those exact mode arrays, manual/range facts, and AE/AF region maxima into enum choices and admission flags shared by settings, top-bar/Fn cycles, and quick rulers. Sparse routes use a neutral singleton; before caps arrive, the current singleton remains visible but disabled. |
-| `ManualControls.kt` | Immutable snapshot of all pro capture parameters (focus, ISO, shutter, white balance, metering, processing). `normalizeControlsForRoute` applies one exact capability/zoom boundary to live and recalled packets before accepted Engine/UI/request publication. Also owns the sensor fast-path admission predicate (`sensorOnlyControlsDelta`) and the shared sensor-key request derivation (`applySensorValueControls`). |
+| `ManualControls.kt` | Immutable snapshot of all pro capture parameters (focus, ISO, shutter, white balance, metering, processing). `normalizeControlsForRoute` applies one exact capability/zoom boundary to live and recalled packets before accepted Engine/UI/request publication. Also owns the sensor fast-path admission predicate (`sensorFastPathAdmitted`, wrapping `sensorOnlyControlsDelta` — a live tap-AF/AF-lock override rides the fast path and is re-applied, not refused) and the shared sensor-key request derivation (`applySensorValueControls`). |
 | `RotationMath.kt` | Pure, unit-tested functions for preview/capture/EXIF rotation math and the video muxer orientation hint (extracted from CameraEngine). |
 | `RendererConfig.kt` | One immutable snapshot of every renderer-only assist (peaking, zebra, false color, punch-in, tele finder, …) with a store that replays the complete snapshot into each fresh GL generation. |
 | `OpticsConstraints.kt` | Pure admission/rollback rules for optics transactions (mode/lens/TC transitions, structural-reconfigure decisions), unit-tested off-device. |
@@ -55,7 +55,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `OcsProbe.kt` | Debug-source-set-only OPPO CameraUnit/OCS availability probe (release builds compile a no-op stub and do not link the OEM SDK). |
 | `VendorTagInspector.kt` | Debug-only Camera2 capability logger for device-specific request/session keys. |
 | **gl/** | |
-| `GlPipeline.kt` | Owns the GL render thread and checked preview/encoder EGLSurface lifetimes. Outgoing outputs are unbound before destruction; preview and encoder readiness are each published only after the first real frame swaps successfully. Before texture acquisition it binds the live preview owner, otherwise the active encoder owner, and contains acquisition/output failures in identity-owned exactly-once paths. Each GL generation owns and retires its analysis executor, busy gate, FBO/buffer snapshot, and callback authority. `CameraEngine` replays its complete `RendererConfigStore` after every `gl.start`. |
+| `GlPipeline.kt` | Owns the GL render thread and checked preview/encoder EGLSurface lifetimes. Outgoing outputs are unbound before destruction; preview and encoder readiness are each published only after the first real frame swaps successfully. Before texture acquisition it binds the live preview owner, otherwise the active encoder owner, and contains acquisition/output failures in identity-owned exactly-once paths. Each GL generation owns and retires its analysis executor, busy gate, FBO/buffer snapshot, and callback authority. `CameraEngine` replays its complete `RendererConfigStore` after every `gl.start`. EGL-init failure is CONTAINED: `start()` leaves `egl` null (no GL-thread crash, no eglTerminate of the process-shared default display) and the next preview bind routes the failure through the one preview-health path. `start()` is idempotent under double-call, and a GL thread wedged past `stop()`'s bounded join is deliberately ABANDONED (ownership nulled, thread leaked — the VideoRecorder drain-wedge pattern) so a later `start()` can spawn a fresh generation instead of a permanently dead viewfinder. |
 | `FlipRenderer.kt` | Low-level OpenGL ES fullscreen quad renderer with texture-coordinate rotation (inverse of image rotation) to flip the 180° afocal image. Applies the SDR-to-HLG mapping or O-Log2 encoding in the fragment shader and handles focus peaking/zebra. |
 | `EglCore.kt` | Checked EGL/GLES setup, binding, presentation, buffer swap, unbind, surface destruction, and display teardown. Supports a 10-bit config, while v1 deliberately starts the stable 8-bit config. |
 | `Shaders.kt` / `SdrToHlgMapping.kt` | Shader source plus Android-free reference constants for the BT.2408-9 display-referred SDR-to-HLG sequence; also owns O-Log2, peaking/zebra, and punch-in shader paths. |
@@ -67,7 +67,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `DngCapture.kt` | Writes DNG (RAW sensor frame) using DngCreator. Sets EXIF orientation tag (cannot pixel-rotate Bayer CFA). Synchronous in the photo callback while the raw Image is live. |
 | **video/** | |
 | `AudioReadPolicy.kt` | Pure classification of `AudioRecord.read` return codes (PCM / transient retry / normal stop / terminal failure) shared by the recorder loop and the standby meter, plus the meter's bounded-recreate budget rule. |
-| `VideoRecorder.kt` | MediaCodec HEVC/AVC encoder + AAC audio encoder + MediaMuxer. Exactly-once owner of the codec input Surface: clean release follows verified EGL detach and partial setup also releases; a still-live drain takes the documented no-release abandon path. Video input comes from GL already flipped; audio runs separately with software PCM gain. A negative `AudioRecord.read` while running is a terminal recorder failure, not empty PCM; after stop it is normal EOS. |
+| `VideoRecorder.kt` | MediaCodec HEVC/AVC encoder + AAC audio encoder + MediaMuxer. Exactly-once owner of the codec input Surface: clean release follows verified EGL detach and partial setup also releases; a still-live drain takes the documented no-release abandon path. Video input comes from GL already flipped; audio runs separately with software PCM gain. A mid-REC negative `AudioRecord.read` degrades to a PUBLISHED video-only file (`degradeAudioToVideoOnly`); only VIDEO faults delete; after stop a negative read is normal EOS. The encoder buffer takes `RotationMath.encoderSurfaceSize` — swapped to the DISPLAYED portrait aspect for the 90° sensor so `coverScale` records exactly the viewfinder field (the stream-shaped landscape buffer recorded a ~3.16× center band; device-measured and fixed cycle 4). |
 | `AudioInputInspector.kt` | Resolves the preferred recording input (built-in / wired / USB / BT) against connected AudioDeviceInfo entries; provides the route labels shown in the UI. |
 | `ColorProfiles.kt` | Builds MediaFormat specs for HEVC Main10 (Rec.2020 + HLG/Log) and AVC 8-bit SDR. Tags dynamic range, color space, transfer function. |
 | `EncoderCaps.kt` | Scans MediaCodecList and exposes the hardware AVC/HEVC encoders that are stable with MediaMuxer. |
@@ -92,8 +92,10 @@ Two critical consequences of the afocal converter drive the entire design:
 | `Overlays.kt` | Compose overlays: reticle (tap-to-focus), histogram/waveform, grid, spirit level, peaking, zebra, punch-in zoom indicator, AE/AWB/AF lock tags. Stateless off CameraUiState. |
 | `MediaReview.kt` | In-app review of the last capture: zoomable processed photos, rotating video playback, and a truthful non-decoding RAW/DNG metadata tile. Delete copy promises all saved formats only for a proven canonical family; legacy rows explicitly delete one file. Visible semantic Play/Pause and zoom-cycle controls remain available where applicable. |
 | `ControlCycles.kt` | Shared tap-cycle and auto-exposure readout logic used by ManualDials, ProSheet, and CameraScreen. Capability-dependent cycles advance only through `ControlAvailability` choices (single copy — no drift). |
+| `ZoomGlideState.kt` | The Android-free half of the zoom-interaction lifecycle: coalesced `pendingRatio`, hardware-glide `easeTarget`, `interacting`, `flushScheduled`, plus `invalidateForRemap()` and the zoom-OUT `isLeadingEdgeToWide` decision. Every optics-scale remap door invalidates through the ViewModel's single `invalidateZoomGlide()` wrapper (host-tested). |
 | **ui/theme/** | |
 | `Theme.kt` | Material3 dark theme tuned for a Sony-style pro camera surface, typography, color palette, text field/button shapes. |
+| **(app root — `com.hletrd.findx9tele`)** | |
 | `MainActivity.kt` | Entry point. Requests CAMERA/RECORD_AUDIO permissions at runtime (ColorOS blocks pm grant). CAMERA request history distinguishes fresh/cancelled prompts from fixed denial before offering Settings. Hosts the Compose root and ViewModel. Lifecycle: `onStart` calls the ViewModel's `onStart`, which resumes the engine; `onStop` calls the ViewModel's `onStop`, which pauses it. |
 | `CameraPermissionPolicy.kt` | Pure CAMERA-permission decision table: fresh install / cancelled prompt / genuine permanent denial, driven only by completed request history plus rationale state. |
 | `HardwareInputPolicy.kt` | Pure mapping of the camera-control button's key events (full press, capacitive zoom slides in both OEM code families, half-press if ever delivered) to configurable `HardwareKeyAction`s. |
@@ -380,6 +382,19 @@ All rotation math (preview, capture, EXIF orientation mapping) is pure and unit-
 
 ## Camera Selection & HAL Workarounds
 
+**Two-stage exposure safety (cycle-3 P1.1, device-bisected).** The advertised exposure upper
+(≥20 s) is a lie on this HAL: a STILL request above 4 s errors the whole camera device
+(`CAMERA_ERROR(3)`) and silently loses the shot. `HAL_SAFE_MAX_STILL_EXPOSURE_NS` (4 s) is applied
+at the single caps seam (`clampStillExposureRange`, host-tested), so the shutter ruler ladder,
+request clamps, AEB brackets, numeric normalization (`normalizedFor`), and the exposure-aware
+still watchdog all inherit one truth. Independently, the REPEATING (preview) request is capped at
+`PREVIEW_SAFE_MAX_EXPOSURE_NS` (500 ms) via the brightness-neutral `previewExposureTrade`
+(exposure→ISO), because a long repeating exposure stalls the stream and starves session
+transitions; S/ISO/M previews above 500 ms are brightness-accurate but deliberately NOT
+noise/motion-blur-WYSIWYG (the alternative is a sub-1 fps viewfinder). The 4 s ceiling was
+bisected on the standalone TELE camera only and is applied to EVERY route as a conservative
+assumption — a logical-camera bisect is a recorded residual (docs/BACKLOG.md).
+
 **Telephoto detection (CameraSelector2.select):**
 - Enumerates all cameras and picks the one with focal length **closest to 70 mm** (not the longest; the 230 mm 10× is ruled out).
 - Returns both logical ID (for opening) and physical ID (if it's a sub-camera of a logical multicamera).
@@ -448,9 +463,11 @@ bases itself on `currentZoomBase()` — the coalesced PENDING value, not UI stat
 flush window; compounding against the stale state made zoom crawl-then-jump. The flushed value
 takes the controller **fast path** (`CameraController.setZoomRatio`): the cached repeating-request
 builder gets only its zoom keys mutated and resubmitted — no full request re-derivation.
-Scale-remap invalidation covers BOTH pending inputs: `onModeChange`/`onToggleTeleconverter`/`onLens`
-reset `zoomPendingRatio` AND null `zoomEaseTarget` (a hardware-slider glide target is an absolute
-number in the OLD scale; surviving a remap it eased toward an un-commanded framing). Each zoom
+Scale-remap invalidation covers BOTH pending inputs: every remap door calls
+`invalidateZoomGlide()` → `ZoomGlideState.invalidateForRemap()`, clearing
+`ZoomGlideState.pendingRatio` AND nulling `ZoomGlideState.easeTarget` (a hardware-slider glide
+target is an absolute number in the OLD scale; surviving a remap it eased toward an un-commanded
+framing). Each zoom
 gesture EDGE costs one repeating-request swap: `setZoomInteraction` folds the current/final exact
 ratio into the fps-boost flip's own rebuild (`setSmoothPreviewBoost(active, finalZoom)`), instead
 of the old rebuild-then-correct pair that transiently re-submitted the stale mid-gesture wide-aimed
@@ -463,7 +480,7 @@ ratio for still requests (`setZoomRatio(halRatio, requestRatio)` — a still mus
 mid-gesture ~1.2×-wide aim), and a QUIET-WINDOW landing (`landExactZoom`, ~250 ms after the last
 flush) lands the exact ratio on the HAL well before the 700 ms fps-boost tail ends, so a recorded
 clip stops carrying the wide framing after finger-up. Scale-remap invalidation of
-`zoomPendingRatio`/`zoomEaseTarget` covers ALL the remap doors: `onModeChange`,
+`ZoomGlideState.pendingRatio`/`.easeTarget` (via `invalidateZoomGlide()`) covers ALL the remap doors: `onModeChange`,
 `onToggleTeleconverter`, `onLens`, `onStop`, **`onOpticsRollback`, `applyLoaded` (settings/MR
 recall), and the debug `onCameraOverride`** — the last three were the doors 6affe20 originally
 missed. The glide's per-tick math is the pure `zoomEaseStep` (`ui/ZoomMath.kt`, unit-tested).
@@ -472,9 +489,11 @@ This zoom coalescer is separate from the general `ManualControls` packet throttl
 newest full-control snapshot every 40 ms (25 Hz) during continuous dial input. The controller pairs
 it with a **sensor fast path** mirroring the zoom one: when an `updateControls` delta touches ONLY
 the high-churn sensor scalars (manual focus distance; ISO + exposure time — the app-side AE pair),
-admission is the pure `sensorOnlyControlsDelta` and the cached repeating builder gets only its
-sensor keys re-derived via the same `applySensorValueControls` the full rebuild uses, paced ≥200 ms
-with a trailing exact landing. Anything else still takes the full `startPreview` rebuild. Ruler
+admission is the pure `sensorFastPathAdmitted` (wrapping `sensorOnlyControlsDelta`; a live
+tap-AF/AF-lock override no longer refuses the fast path — the controller re-applies the override
+keys onto the cached builder through the SAME `applyAfOverrides` the full rebuild uses) and the
+cached repeating builder gets only its sensor keys re-derived via the same
+`applySensorValueControls` the full rebuild uses, paced ≥200 ms with a trailing exact landing. Anything else still takes the full `startPreview` rebuild. Ruler
 drags are additionally frame-gated at the source (`RulerSlider` publishes ≤60 Hz with an exact
 landing on drag end; the ruler's own canvas still follows the finger per event).
 
@@ -486,9 +505,12 @@ current camera frame while the main view is magnified. **Single-stream honesty**
 the main view while GL zoom compensation (mid-gesture) or punch-in magnifies past the delivered
 field — a true unzoomed/wide finder is a BACKLOG design item (second stream or HAL-zoom-cap split).
 Gating is ONE shared, unit-tested predicate (`teleFinderResolved`/`teleFinderVisible` in
-`CameraState.kt`): toggle && TELE && **photo mode** && 4:3, plus the `FINDER_MIN_ZOOM` floor
-(photo-only because it is a still-composition aid and 4:3 is the STILL aspect; 16:9's AspectMask
-would dim/misframe the corner box). The engine resolves the flag in one place (`pushTeleFinder` —
+`CameraState.kt`): toggle && TELE && **photo mode** && 4:3, plus an ACTIVE punch-in loupe — the
+honest gate axis since cycle 4 (the old raw `FINDER_MIN_ZOOM` floor showed a corner box that
+duplicated the main view ~1:1 at steady zoom; the single stream means the PIP is only genuinely
+wider while the loupe magnifies past the delivered frame). Photo-only because it is a
+still-composition aid and 4:3 is the STILL aspect; 16:9's AspectMask would dim/misframe the
+corner box. GL applies the same axis at draw via its own punch-in state. The engine resolves the flag in one place (`pushTeleFinder` —
 re-pushed synchronously on toggle/aspect/lens-TC/mode/session-config AND on `rollbackOptics` via
 `applyStabilization`, with self-contained pushes in `setVideoMode`/`setResolvedOptics`), stores it
 in `RendererConfig` for GL-generation replay, and geometry flows from ONE pure seam (`finderRect`)
