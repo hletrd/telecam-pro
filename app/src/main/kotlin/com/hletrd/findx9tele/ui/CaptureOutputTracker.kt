@@ -21,6 +21,15 @@ internal data class PriorCaptureOutput<T>(
     val kind: CaptureOutputKind,
 )
 
+/** Immutable ownership snapshot carried across an asynchronous MediaStore delete attempt. */
+internal data class CaptureDeletePlan<T>(
+    val requestedOutput: T,
+    val outputs: Set<T>,
+    internal val captureId: Int?,
+    internal val kindsByOutput: Map<T, CaptureOutputKind>,
+    internal val preferredOutput: T?,
+)
+
 /**
  * Bounded ownership map for every file emitted by one capture. Deleted capture ids are tombstoned
  * so a slower sibling that arrives after review deletion is rejected immediately.
@@ -35,6 +44,7 @@ internal class CaptureOutputTracker<T>(
 ) {
     private val outputsByCapture = LinkedHashMap<Int, LinkedHashSet<T>>()
     private val captureByOutput = HashMap<T, Int>()
+    private val kindByOutput = HashMap<T, CaptureOutputKind>()
     private val tombstones = LinkedHashSet<Int>()
     private var reviewCaptureId: Int? = null
     private var reviewOutput: T? = null
@@ -64,10 +74,16 @@ internal class CaptureOutputTracker<T>(
         // A launch seed is expected once, but replacement is deterministic and cannot merge two
         // prior families if a caller retries restoration.
         outputsByCapture.remove(PRIOR_PROCESS_CAPTURE_ID).orEmpty().forEach { output ->
-            if (captureByOutput[output] == PRIOR_PROCESS_CAPTURE_ID) captureByOutput.remove(output)
+            if (captureByOutput[output] == PRIOR_PROCESS_CAPTURE_ID) {
+                captureByOutput.remove(output)
+                kindByOutput.remove(output)
+            }
         }
         outputsByCapture[PRIOR_PROCESS_CAPTURE_ID] = LinkedHashSet(accepted.keys)
-        accepted.keys.forEach { captureByOutput[it] = PRIOR_PROCESS_CAPTURE_ID }
+        accepted.forEach { (output, kind) ->
+            captureByOutput[output] = PRIOR_PROCESS_CAPTURE_ID
+            kindByOutput[output] = kind
+        }
         trimCaptures()
         if (PRIOR_PROCESS_CAPTURE_ID !in outputsByCapture) return false
 
@@ -89,6 +105,7 @@ internal class CaptureOutputTracker<T>(
         if (captureId in tombstones) return CaptureOutputDecision.DELETE
         outputsByCapture.getOrPut(captureId) { linkedSetOf() }.add(output)
         captureByOutput[output] = captureId
+        kindByOutput[output] = kind
         trimCaptures()
         // Trimming can evict the capture that was JUST added — a late sibling of an old id arriving
         // while the ordinary history is full (reachable right after deleting a pinned review while
@@ -142,12 +159,23 @@ internal class CaptureOutputTracker<T>(
         trimCaptures()
     }
 
-    /** Freezes all currently-known siblings and tombstones their capture before async deletion. */
+    /**
+     * Freezes all currently-known siblings and tombstones their capture before async deletion.
+     * The returned plan retains enough ownership detail for [restoreDeleteSurvivors] to put a
+     * partially deleted family back into review without accepting late outputs for that family.
+     */
     @Synchronized
-    fun takeForDelete(output: T): Set<T> {
+    fun beginDelete(output: T): CaptureDeletePlan<T> {
         val captureId = pinnedReviewCaptureId.takeIf { pinnedReviewOutput == output }
             ?: captureByOutput[output]
-            ?: return setOf(output)
+            ?: return CaptureDeletePlan(
+                requestedOutput = output,
+                outputs = setOf(output),
+                captureId = null,
+                kindsByOutput = emptyMap(),
+                preferredOutput = output,
+            )
+        val preferredOutput = reviewOutput.takeIf { reviewCaptureId == captureId } ?: output
         if (pinnedReviewCaptureId == captureId) {
             pinnedReviewCaptureId = null
             pinnedReviewOutput = null
@@ -158,13 +186,80 @@ internal class CaptureOutputTracker<T>(
             tombstones.remove(tombstones.first())
         }
         val owned = outputsByCapture.remove(captureId).orEmpty().toSet() + output
-        owned.forEach(captureByOutput::remove)
+        val kinds = owned.mapNotNull { ownedOutput ->
+            kindByOutput[ownedOutput]?.let { ownedOutput to it }
+        }.toMap()
+        owned.forEach { ownedOutput ->
+            captureByOutput.remove(ownedOutput)
+            kindByOutput.remove(ownedOutput)
+        }
         if (reviewCaptureId == captureId) {
             reviewCaptureId = null
             reviewOutput = null
             reviewKind = null
         }
-        return owned
+        return CaptureDeletePlan(
+            requestedOutput = output,
+            outputs = owned,
+            captureId = captureId,
+            kindsByOutput = kinds,
+            preferredOutput = preferredOutput,
+        )
+    }
+
+    /** Compatibility helper for callers/tests that do not need partial-result reconciliation. */
+    @Synchronized
+    fun takeForDelete(output: T): Set<T> = beginDelete(output).outputs
+
+    /**
+     * Restores only the resolver-confirmed survivors from [plan]. The capture tombstone remains,
+     * so a late HEIF/JPEG/DNG callback is still rejected instead of growing the family after the
+     * user's delete intent. A newer capture that arrived during Binder I/O keeps review ownership.
+     * Returns the survivor that truthfully became the review owner, or null when a newer owner won.
+     */
+    @Synchronized
+    fun restoreDeleteSurvivors(plan: CaptureDeletePlan<T>, survivors: Set<T>): T? {
+        val retained = plan.outputs.filterTo(linkedSetOf()) { it in survivors }
+        if (retained.isEmpty()) return null
+        val captureId = plan.captureId
+        if (captureId == null) {
+            // An external/aged-out file has file-only scope and no capture id to reconstruct. Give
+            // it the prior-process slot so it remains reviewable and deletable without grouping.
+            return if (seedPriorCapture(
+                    outputs = retained.map { PriorCaptureOutput(it, CaptureOutputKind.DISPLAYABLE) },
+                    preferredOutput = plan.requestedOutput.takeIf { it in retained } ?: retained.first(),
+                )
+            ) {
+                reviewOutput
+            } else {
+                null
+            }
+        }
+
+        outputsByCapture.remove(captureId).orEmpty().forEach { oldOutput ->
+            if (captureByOutput[oldOutput] == captureId) {
+                captureByOutput.remove(oldOutput)
+                kindByOutput.remove(oldOutput)
+            }
+        }
+        outputsByCapture[captureId] = retained
+        retained.forEach { survivor ->
+            captureByOutput[survivor] = captureId
+            kindByOutput[survivor] = plan.kindsByOutput[survivor] ?: CaptureOutputKind.DISPLAYABLE
+        }
+        trimCaptures()
+        if (captureId !in outputsByCapture) return null
+
+        val chosen = plan.preferredOutput.takeIf { it in retained }
+            ?: retained.firstOrNull { kindByOutput[it] == CaptureOutputKind.DISPLAYABLE }
+            ?: retained.first()
+        val currentCaptureId = reviewCaptureId
+        if (currentCaptureId == null || captureId >= currentCaptureId) {
+            reviewCaptureId = captureId
+            reviewOutput = chosen
+            reviewKind = kindByOutput[chosen]
+        }
+        return chosen.takeIf { reviewCaptureId == captureId && reviewOutput == chosen }
     }
 
     @Synchronized
@@ -179,7 +274,10 @@ internal class CaptureOutputTracker<T>(
                 .filter { it != pinnedReviewCaptureId }
                 .minOrNull() ?: return
             val evicted = outputsByCapture.remove(oldestCaptureId).orEmpty()
-            evicted.forEach(captureByOutput::remove)
+            evicted.forEach { output ->
+                captureByOutput.remove(output)
+                kindByOutput.remove(output)
+            }
         }
     }
 

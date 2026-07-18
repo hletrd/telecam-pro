@@ -98,6 +98,52 @@ class CaptureOutputTrackerTest {
     }
 
     @Test
+    fun partialFamilyDelete_restoresOnlySurvivorsAndKeepsLateOutputsTombstoned() {
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
+        tracker.record(21, "shot.heic", CaptureOutputKind.DISPLAYABLE)
+        tracker.record(21, "shot.jpg", CaptureOutputKind.DISPLAYABLE)
+        tracker.record(21, "shot.dng", CaptureOutputKind.RAW)
+
+        val plan = tracker.beginDelete("shot.heic")
+        assertEquals(setOf("shot.heic", "shot.jpg", "shot.dng"), plan.outputs)
+        assertEquals(
+            "shot.jpg",
+            tracker.restoreDeleteSurvivors(plan, setOf("shot.jpg", "shot.dng")),
+        )
+        assertTrue(tracker.isCurrentReviewOutput("shot.jpg"))
+        assertEquals(setOf("shot.jpg", "shot.dng"), tracker.takeForDelete("shot.jpg"))
+        assertEquals(
+            CaptureOutputDecision.DELETE,
+            tracker.record(21, "late.heic", CaptureOutputKind.DISPLAYABLE),
+        )
+    }
+
+    @Test
+    fun partialFamilyDelete_doesNotDisplaceNewerCaptureThatArrivedDuringResolverWork() {
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
+        tracker.record(31, "old.heic", CaptureOutputKind.DISPLAYABLE)
+        val plan = tracker.beginDelete("old.heic")
+        tracker.record(32, "new.heic", CaptureOutputKind.DISPLAYABLE)
+
+        assertEquals(null, tracker.restoreDeleteSurvivors(plan, setOf("old.heic")))
+        assertTrue(tracker.isCurrentReviewOutput("new.heic"))
+        assertEquals(setOf("old.heic"), tracker.takeForDelete("old.heic"))
+    }
+
+    @Test
+    fun failedFileOnlyDelete_restoresAReviewableFileOnlyEntry() {
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
+        val plan = tracker.beginDelete("external.jpg")
+
+        assertEquals(
+            "external.jpg",
+            tracker.restoreDeleteSurvivors(plan, setOf("external.jpg")),
+        )
+        assertTrue(tracker.isCurrentReviewOutput("external.jpg"))
+        assertEquals(setOf("external.jpg"), tracker.takeForDelete("external.jpg"))
+    }
+
+    @Test
     fun boundedHistory_evictsOldReverseMapping() {
         val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 1)
         tracker.record(1, "old.heic", CaptureOutputKind.DISPLAYABLE)
