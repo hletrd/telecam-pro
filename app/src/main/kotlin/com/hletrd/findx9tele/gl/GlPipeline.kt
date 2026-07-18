@@ -152,6 +152,20 @@ class GlPipeline {
     private var onInputReady: ((Surface) -> Unit)? = null
 
     fun start(tenBit: Boolean, onInputReady: (Surface) -> Unit) {
+        // Double-start guard (CR-7). One GL generation owns the HandlerThread + EGL context +
+        // analysis executor/FBO/gates, and stop() is the ONLY thing that retires that owner (it
+        // nulls `thread` once its GL thread has quit+joined). Re-entering start() while a generation
+        // is live used to overwrite thread/handler/resourceReleaseHub and post a fresh EglCore,
+        // orphaning the previous thread, EglCore (context/display/surfaces), surfaceTexture/
+        // inputSurface, and analysis executor with no teardown — a leaked live GL context per
+        // re-entry. Contract: a second start() before a completed stop() is a safe no-op; the live
+        // generation (and its original tenBit/onInputReady) keeps running. The sole caller
+        // (CameraEngine.onPreviewSurfaceAvailable) already serializes this behind started/starting/
+        // paused, and the one legitimate restart door (stop → afterResourcesReleased →
+        // onPreviewSurfaceAvailable) re-dispatches on the single-threaded setupExecutor only AFTER
+        // stop() has blocked-joined the GL thread and nulled `thread`, so this guard never refuses a
+        // real restart — it only rejects an unbalanced re-entry that would leak the prior generation.
+        if (thread != null) return
         this.tenBit = tenBit
         this.onInputReady = onInputReady
         analysisGeneration?.retire()
@@ -161,7 +175,33 @@ class GlPipeline {
         resourceReleaseHub = ResourceReleaseHub()
         unsafeOutputAbandoned = false
         handler = Handler(t.looper)
-        post { egl = EglCore(tenBit = tenBit) }
+        post {
+            // EGL init containment (CR-3). EglCore's constructor throws on any eglInitialize/
+            // eglChooseConfig/eglCreateContext failure; an uncaught throw inside this Handler
+            // Runnable dies on the GL HandlerThread → default uncaught handler → process death, and
+            // the initialized EGLDisplay leaks. Contain it like every other GL failure in this file:
+            // leave `egl` null so the very next applyPreviewOutput takes its core==null branch and
+            // throws "GL context is unavailable for preview output", which dispatchWithResult routes
+            // through the preview-output signal → CameraEngine.handlePreviewFailure (Not-Ready +
+            // bounded retry — the one Surface/generation-owned preview-health path). No separate
+            // failure surface is needed here: no preview output is bound yet at start() time (the
+            // pending setPreviewOutput carries the failure), so there is nothing to signal directly.
+            // Best-effort terminal teardown of the default display releases the leaked handle
+            // (eglTerminate also destroys any half-created context/surface): EglCore's constructor is
+            // atomic, so on failure it never hands back a core to run the checked release on, and the
+            // default display is the only reachable EGL handle. Nothing of ours is current on this
+            // thread at construction-failure time, so no prior unbind is owed before the terminate.
+            egl = runCatching { EglCore(tenBit = tenBit) }.getOrElse { failure ->
+                runCatching {
+                    val display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
+                    if (display != EGL14.EGL_NO_DISPLAY) EGL14.eglTerminate(display)
+                }
+                if (com.hletrd.findx9tele.BuildConfig.DEBUG) {
+                    android.util.Log.e("GlPipeline", "EGL init failed; preview stays Not-Ready", failure)
+                }
+                null
+            }
+        }
     }
 
     fun setPreviewOutput(
