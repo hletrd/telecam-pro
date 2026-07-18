@@ -62,7 +62,7 @@ VIDEO
 • HEVC recording with HLG or GL-baked O-Log2 profiles, plus SDR for fast delivery.
 • Hardware OIS + EIS stabilization to cut motion blur at long focal lengths.
 • Device Sound Focus / Sound Stage audio-scene controls (passed to the device's audio system).
-• 4K UHD, standard and NTSC drop-frame rates, ~120 Mbps target bitrate.
+• 4K UHD, standard and NTSC drop-frame rates, with up to ~99 Mbps target bitrate at 4K30 Max.
 
 FRAMING AND MONITORING
 • Focus peaking, zebra, false color, grid, spirit level, punch-in loupe, histogram, waveform, and an

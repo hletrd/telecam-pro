@@ -2,17 +2,20 @@
 
 Current release board. Read after `CLAUDE.md`; use `ARCHITECTURE.md` for implementation details.
 Historical investigation notes are snapshots under `docs/reviews/` and `.context/reviews/`, not
-active TODO lists. Last synced by review-plan-fix cycle 4 (2026-07-18); per-file history via `git log -- docs/BACKLOG.md`.
+active TODO lists. Last synced by review-plan-fix cycle 5 (2026-07-18); per-file history via `git log -- docs/BACKLOG.md`.
 
 ## Release State
 
-Version 1.0 (`versionCode=1`) is ready for Play Console upload at the code, packaging, and physical-
-device verification levels. The upload artifact is:
+Version 1.0 (`versionCode=1`) is a release candidate, **not currently ready for upload**. Source has
+changed since the recorded 2026-07-10 artifact, so the path below and its old hash are historical
+until a new signed bundle is generated and all current release evidence is refreshed:
 
 `app/build/outputs/bundle/release/app-release.aab`
 
-Its SHA-256 and signing certificate are recorded in `docs/play-console-submit.md`. Rebuilds produce a
-new hash and must update that sheet after the full release gate is repeated.
+`docs/play-console-submit.md` marks the old SHA-256 **DO NOT UPLOAD**. Before Play submission, re-run
+the complete debug/release gates, regenerate and validate/sign-check/align-check the AAB/APK, update
+that sheet with the new hashes, and run the current PMA110 release-device matrix. The current-cycle
+PMA110 and release-artifact evidence is **NOT RUN / pending**.
 
 ### Verified 2026-07-10
 
@@ -137,16 +140,10 @@ These do not require a code or metadata change unless the result exposes a defec
   mapping, video encoder framing, and preview sharpness — a zoom-architecture change, not a
   finder change). Either path needs a deliberate design + device A/B before implementation.
 
-## Deferred from review-plan-fix cycle 1 (2026-07-17 run; durable record)
+## Dispositions from review-plan-fix cycle 1 (2026-07-17 run; durable record)
 
 Full records in `docs/plans/2026-07-17-rpf-cycle1.md` § Deferrals:
 
-- **AGG-19 (Low/Medium)** — `FINDER_MIN_ZOOM = 1.15` is likely too low to be useful, and (cycle-2
-  review) the gate AXIS itself is suspect: by the honest single-stream contract the at-rest PIP
-  duplicates the main view — it is only informative during punch-in or while `zoomComp > 1`
-  (mid-gesture), so the device session should evaluate `punchIn || zoomComp > k` as the gate
-  rather than a raw zoom floor. Exit: a device session with the converter mounted tunes the
-  threshold AND settles the axis question.
 - **AGG-20 (Low/Medium)** — RETIRED BY IMPLEMENTATION (cycle 2, 2026-07-17): the sensor-keys-only
   fast path on the cached builder landed (`sensorOnlyControlsDelta`/`applySensorValueControls`,
   ≥200 ms pacing with trailing exact landing), covering the app-side AE pair and manual
@@ -173,11 +170,12 @@ Runtime CAMERA and RECORD_AUDIO permissions are granted through the app UI on Co
 AVD is suitable only for UI/crash checks; telephoto routing, RAW, color, audio, stabilization, and
 saved-file behavior require PMA110.
 
-## Deferral dispositions from the 2026-07-17 cycle-2 run (updated by cycle 4)
+## Deferral dispositions from the 2026-07-17 cycle-2 run (updated 2026-07-18)
 
-- **AGG2-36 / AGG3-17** CameraEngine god-object extraction: ESCALATED by cycle 3; cycle 4 landed
-  extraction step 1 (`StillCapturePipeline`) and recorded the architect's ordered steps 2-7 in
-  docs/plans/2026-07-18-rpf-cycle4.md §Deferrals (cycle 5 begins with steps 2-3).
+- **AGG2-36 / AGG3-17** CameraEngine god-object extraction: cycle 4 landed step 1
+  (`StillCapturePipeline`); the current cycle landed steps 2-3 (`RendererAssists` and
+  `StandbyAudioController`). The remaining ordered slices stay recorded in
+  `docs/plans/2026-07-18-rpf-cycle4.md` §Deferrals.
 - **AGG2-38** start↔stop same-tick REC race test: CLOSED by cycle 4 (`RecStartStopRaceTest` over
   the real `RecordingAdmissionLatch` + the extracted `shouldPublishRecording` save gate).
 
@@ -202,9 +200,10 @@ loop — have their own dated plans under `docs/plans/`), so the 2026-07-10 defe
 - **D-4** structural refactors (state triplication/applyExtras, CameraEngine split, AE-loop move,
   CameraSession seam, caps projection out of CameraUiState, telemetry-flow split, typed engine
   events) — MUST land before the CameraUnit / item-#4 v2 work.
-- **D-5..D-9** perf items needing device measurement (downsampled analysis readback, startRecording
-  off main, async DNG write, single-decode HEIF+JPEG, GL frame coalescing / cached request builder /
-  waveform draw reuse).
+- **D-5..D-9** implementations are landed: downsampled analysis readback, REC admission off main,
+  single-decode HEIF+JPEG, GL frame coalescing / cached request builder / waveform draw reuse, and
+  DNG publication on `ioExecutor` after the required synchronous live-RAW write. Their remaining
+  performance/feel evidence is part of the pending current PMA110 matrix.
 - **D-10** MR-bank management placement (IA decision), **D-11** AE metering under LOG preview,
   **D-12** dead backup_rules removal (needs explicit owner sign-off — file deletion),
   **D-13** pure-env release signing gate (when CI exists), **D-14** keep-screen-on toggle (already

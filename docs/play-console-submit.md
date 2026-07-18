@@ -4,6 +4,11 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 ## Upload Artifact
 
+> **DO NOT UPLOAD THE CURRENT LOCAL AAB OR THE HASHED 2026-07-10 ARTIFACT.** Source has changed since
+> that candidate. Regenerate a signed bundle, repeat every current release gate and artifact check,
+> update both hashes below, and complete the current PMA110 release matrix first. Current artifact
+> regeneration and PMA110 evidence are **NOT RUN / pending**.
+
 - Signed Android App Bundle:
   `app/build/outputs/bundle/release/app-release.aab`
 - Version: `versionCode=1`, `versionName=1.0`
@@ -12,13 +17,14 @@ Use this sheet for the parts that must be entered manually in Play Console.
 - Upload certificate SHA-256:
   `A6:D0:A0:3F:B1:48:09:50:8F:CA:27:0F:1B:57:6E:F9:55:DF:FC:CB:D6:19:D4:5D:87:04:38:6A:29:F4:BC:AF`
 
-Do not upload debug APKs or older unsigned/stale release bundles. Use the signed AAB above.
+Do not upload debug APKs or any unsigned/stale release bundle. The path above is the expected output
+location, not evidence that its present contents are uploadable.
 
-### Verified v1 artifact (2026-07-10)
+### Historical v1 candidate (verified 2026-07-10; stale — DO NOT UPLOAD)
 
-- AAB SHA-256:
+- Historical AAB SHA-256 (does not describe current source):
   `8230d82f482807e6feae4ae80d6a8052d1633bb8921f4cf6b908d8192224fe62`
-- Matching release APK SHA-256:
+- Historical matching release APK SHA-256:
   `1b2a9ba978f937f2cbcbd44e59e10ab9681156a72d8107df4485e795e9c3c190`
 - `bundletool 1.18.3 validate`: passed
 - APK signing: v2 signature valid; certificate matches the upload certificate above
@@ -26,8 +32,9 @@ Do not upload debug APKs or older unsigned/stale release bundles. Use the signed
 - Manifest: target/min SDK 36, no `INTERNET`, no `DEBUGGABLE`
 - Build gates passed, including the unit-test suite and `lintRelease`. Re-run every release gate before
   upload; `app/src/test/` is the suite source of truth rather than a copied test/task count.
-- PMA110 smoke test: DNG+HEIF photo, 4K HLG/AAC video, Open Gate 4:3 video, settings
-  persistence, and no crash/ANR all passed
+- The 2026-07-10 PMA110 smoke test passed DNG+HEIF photo, 4K HLG/AAC video, Open Gate 4:3 video,
+  settings persistence, and no crash/ANR. That is historical evidence only; current-source PMA110
+  verification is **NOT RUN / pending**.
 
 The developer account was created in 2015, so the closed-test production-access requirement for new
 personal accounts created after November 13, 2023 does not apply.
@@ -88,7 +95,8 @@ The app requires Android 16 / API 36 and is intentionally single-device.
 
 ## Manual Console Sequence
 
-1. Create the app and upload the verified AAB to Internal testing.
+1. Generate and verify a new signed AAB, update this sheet's hashes, and complete the current PMA110
+   release matrix; only then upload that exact artifact to Internal testing.
 2. Enter the Store Listing and Data Safety answers from this repository.
 3. Upload the icon, feature graphic, and all six phone screenshots.
 4. Restrict the device catalog to CPH2841 and PMA110 before any wider rollout.

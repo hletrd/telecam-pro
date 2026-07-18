@@ -40,14 +40,17 @@ Two critical consequences of the afocal converter drive the entire design:
 |---|---|
 | **camera/** | |
 | `CameraEngine.kt` | Facade orchestrating Camera2, GL, capture encoders, video recorder, sensors, and storage. Serializes camera reconfiguration, owns asynchronous save/finalization lanes, and publishes cross-thread state through volatile seams plus synchronized ownership gates. |
-| `CameraController.kt` | Camera2 session lifecycle, capability-safe request building, and fallback plans across stream sets and session operation modes. Sets a mode only when its exact value is advertised and applies AE/AF regions independently only when each maximum region count is positive. Callback-driven, runs on a camera HandlerThread. |
+| `CameraController.kt` | Camera2 session lifecycle, capability-safe request building, and fallback plans across stream sets and session operation modes. Sets a mode only when its exact value is advertised and applies AE/AF regions independently only when each maximum region count is positive. Callback-driven, runs on a camera HandlerThread; framework callback admission is serialized against `quitSafely` so late `onClosed` work never posts to a dead OPPO queue. |
+| `CameraCallbackDispatchGate.kt` | Android-free close/admission gate ordering Camera2 executor posts before teardown, or rejecting them for the controller's inline late-callback cleanup after close begins. |
 | `CameraSelector2.kt` | Detects the telephoto physical lens: finds the camera with focal length closest to 70 mm, prefers standalone ID over physical sub-camera routing. |
 | `CameraState.kt` | Enums plus `CameraUiState` — the shared UI and runtime-state language. |
 | `CaptureCapabilities.kt` | Flattens Camera2 characteristics into exact advertised mode sets plus maximum AE/AF region counts, alongside manual-sensor, RAW, HDR, focus, and stream capabilities. |
 | `ControlAvailability.kt` | Projects those exact mode arrays, manual/range facts, and AE/AF region maxima into enum choices and admission flags shared by settings, top-bar/Fn cycles, and quick rulers. Sparse routes use a neutral singleton; before caps arrive, the current singleton remains visible but disabled. |
-| `ManualControls.kt` | Immutable snapshot of all pro capture parameters (focus, ISO, shutter, white balance, metering, processing). `normalizeControlsForRoute` applies one exact capability/zoom boundary to live and recalled packets before accepted Engine/UI/request publication. Also owns the sensor fast-path admission predicate (`sensorFastPathAdmitted`, wrapping `sensorOnlyControlsDelta` — a live tap-AF/AF-lock override rides the fast path and is re-applied, not refused) and the shared sensor-key request derivation (`applySensorValueControls`). |
+| `ManualControls.kt` | Immutable snapshot of all pro capture parameters (focus, ISO, shutter, white balance, metering, processing). `normalizeControlsForRoute` applies one exact capability/zoom boundary to live and recalled packets before accepted Engine/UI/request publication. Also owns the sensor fast-path admission predicate (`sensorFastPathAdmitted`, wrapping `sensorOnlyControlsDelta` — a live tap-AF/AF-lock override rides the fast path and is re-applied, not refused), the retained-optics exact-controls/boost-off plan, and the shared sensor-key request derivation (`applySensorValueControls`). |
 | `RotationMath.kt` | Pure, unit-tested functions for preview/capture/EXIF rotation math and the video muxer orientation hint (extracted from CameraEngine). |
 | `RendererConfig.kt` | One immutable snapshot of every renderer-only assist (peaking, zebra, false color, punch-in, tele finder, …) with a store that replays the complete snapshot into each fresh GL generation. |
+| `RendererAssists.kt` | Owns `RendererConfigStore`, resolves Tele Finder intent, and is the single setter/replay facade between CameraEngine and GlPipeline. Every setter records state before posting so a dropped old-generation GL command is restored by `replayAll()` on the next generation. |
+| `StandbyAudioController.kt` | Owns the armed-video standby meter lifecycle, bounded AudioRecord recreation, and exact `StandbyMeterOwnership` handoff to REC. All engine dependencies are live lambdas so a retired meter generation cannot reclaim a newer intent. |
 | `OpticsConstraints.kt` | Pure admission/rollback rules for optics transactions (mode/lens/TC transitions, structural-reconfigure decisions), unit-tested off-device. |
 | `ZoomSubmitPlan.kt` | Pure HAL zoom-submit decision (throttle window + mid-gesture wide-aim clamp), extracted from `CameraEngine.setZoomRatio` and unit-tested. |
 | `RecordingAdmissionLatch.kt` | Monitor-owning REC stop-during-start latch (`tryBeginAdmission`/`requestStop`/`completeAdmission`), extracted from CameraEngine and race-tested. |
@@ -55,7 +58,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `OcsProbe.kt` | Debug-source-set-only OPPO CameraUnit/OCS availability probe (release builds compile a no-op stub and do not link the OEM SDK). |
 | `VendorTagInspector.kt` | Debug-only Camera2 capability logger for device-specific request/session keys. |
 | **gl/** | |
-| `GlPipeline.kt` | Owns the GL render thread and checked preview/encoder EGLSurface lifetimes. Outgoing outputs are unbound before destruction; preview and encoder readiness are each published only after the first real frame swaps successfully. Before texture acquisition it binds the live preview owner, otherwise the active encoder owner, and contains acquisition/output failures in identity-owned exactly-once paths. Each GL generation owns and retires its analysis executor, busy gate, FBO/buffer snapshot, and callback authority. `CameraEngine` replays its complete `RendererConfigStore` after every `gl.start`. EGL-init failure is CONTAINED: `start()` leaves `egl` null (no GL-thread crash, no eglTerminate of the process-shared default display) and the next preview bind routes the failure through the one preview-health path. `start()` is idempotent under double-call, and a GL thread wedged past `stop()`'s bounded join is deliberately ABANDONED (ownership nulled, thread leaked — the VideoRecorder drain-wedge pattern) so a later `start()` can spawn a fresh generation instead of a permanently dead viewfinder. |
+| `GlPipeline.kt` | Owns the GL render thread and checked preview/encoder EGLSurface lifetimes. Outgoing outputs are unbound before destruction; preview and encoder readiness are each published only after the first real frame swaps successfully. Before texture acquisition it binds the live preview owner, otherwise the active encoder owner, and contains acquisition/output failures in identity-owned exactly-once paths. Each GL generation owns and retires its analysis executor, busy gate, FBO/buffer snapshot, and callback authority. `RendererAssists.replayAll()` restores the complete remembered renderer configuration after every fresh input generation. EGL-init failure is CONTAINED: `start()` leaves `egl` null (no GL-thread crash, no eglTerminate of the process-shared default display) and the next preview bind routes the failure through the one preview-health path. `start()` is idempotent under double-call, and a GL thread wedged past `stop()`'s bounded join is deliberately ABANDONED (ownership nulled, thread leaked — the VideoRecorder drain-wedge pattern) so a later `start()` can spawn a fresh generation instead of a permanently dead viewfinder. |
 | `FlipRenderer.kt` | Low-level OpenGL ES fullscreen quad renderer with texture-coordinate rotation (inverse of image rotation) to flip the 180° afocal image. Applies the SDR-to-HLG mapping or O-Log2 encoding in the fragment shader and handles focus peaking/zebra. |
 | `EglCore.kt` | Checked EGL/GLES setup, binding, presentation, buffer swap, unbind, surface destruction, and display teardown. Supports a 10-bit config, while v1 deliberately starts the stable 8-bit config. |
 | `Shaders.kt` / `SdrToHlgMapping.kt` | Shader source plus Android-free reference constants for the BT.2408-9 display-referred SDR-to-HLG sequence; also owns O-Log2, peaking/zebra, and punch-in shader paths. |
@@ -63,7 +66,8 @@ Two critical consequences of the afocal converter drive the entire design:
 | `GyroEis.kt` | Sensor helper for gravity-derived device orientation and the horizon overlay. It retains residual-shake math, but the shipping GL path disables app-side EIS in favor of HAL OIS+EIS. |
 | **capture/** | |
 | `StillSnapshot.kt` | YUV_420_888→NV21 repack (row-wise arraycopy fast paths + generic fallback) and lazy JPEG encode for logical-camera stills, which cannot use the HAL JPEG path. |
-| `HeifCapture.kt` | Encodes HEIF from a Bitmap after crop and `captureRotationDegrees()` pixel rotation. Writes via the ioExecutor off the camera thread. |
+| `StillCapturePipeline.kt` | Owns processed-still decode/crop/rotation, isolated HEIF/JPEG encoders, shared shot EXIF composition, DNG write orchestration, and MediaStore write-state transitions. Processed work runs on ioExecutor; DNG bytes are written synchronously while the RAW Image is live, then `publishDng` runs on ioExecutor. |
+| `HeifCapture.kt` | Encodes HEIF from a Bitmap after crop and `captureRotationDegrees()` pixel rotation, injecting the same shot EXIF APP1 payload used for JPEG. Writes via the ioExecutor off the camera thread. |
 | `DngCapture.kt` | Writes DNG (RAW sensor frame) using DngCreator. Sets EXIF orientation tag (cannot pixel-rotate Bayer CFA). Synchronous in the photo callback while the raw Image is live. |
 | **video/** | |
 | `AudioReadPolicy.kt` | Pure classification of `AudioRecord.read` return codes (PCM / transient retry / normal stop / terminal failure) shared by the recorder loop and the standby meter, plus the meter's bounded-recreate budget rule. |
@@ -74,7 +78,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | **storage/** | |
 | `CaptureFamily.kt` | Versioned, timestamped capture-family identity embedded in every new output filename. HEIF/JPEG/DNG siblings reuse one exact key; video owns a one-file family. Legacy names are deliberately not inferred by timestamp proximity. |
 | `LatestCaptureReducer.kt` | Android-free reducer for owned Images/Video rows. Selects the newest capture first, then a displayable sibling inside only that capture, and distinguishes proven capture-family deletion from legacy file-only deletion. |
-| `MediaStoreWriter.kt` | Scoped-storage wrapper: creates pending DCIM/X9Tele entries (IS_PENDING), publishes on success, deletes on failure, and stamps canonical outputs with DATE_TAKEN. Relaunch recovery independently retains successful bounded Images/Video query rows, then performs an exact-family follow-up. Opened files are backed by ParcelFileDescriptor. |
+| `MediaStoreWriter.kt` | Scoped-storage wrapper with a durable per-URI `REGISTERED`/`COMPLETE` journal. It creates pending DCIM/X9Tele rows, marks fully closed outputs complete before publication, adopts finalized or conservatively validated JPEG/DNG/video orphan rows on relaunch, and retains indeterminate rows (including unmarked HEIF) pending. Delete count zero is existence-probed so an already-absent row is success rather than a broken restored URI. Canonical outputs carry DATE_TAKEN; published Images/Video restore queries remain independently failure-isolated. |
 | `SettingsStore.kt` | SharedPreferences persistence of ManualControls + ExtraSettings across launches, gated by a "Remember Settings" toggle (default ON); enums stored by name, defensive load. Lens and TELE restoration have separate default-on preserve toggles. |
 | **focus/** | |
 | `FocusMapping.kt` | Maps the UI slider (0..1) bidirectionally to LENS_FOCUS_DISTANCE with `diopters = minFocusDiopters * slider^3`. There is no additive offset, preserving exact infinity at slider 0 while concentrating travel near it. |
@@ -163,13 +167,17 @@ Two critical consequences of the afocal converter drive the entire design:
 2. The camera callback copies the short-lived `Image` into owned JPEG bytes or an owned YUV snapshot.
 3. `ioExecutor` produces a Bitmap, center-crops 16:9 when selected, and pixel-rotates for sensor,
    device orientation, and the afocal 180° correction. It then encodes each requested HEIF/JPEG output;
-   JPEG is re-encoded at the shot's frozen quality setting and is never a byte passthrough.
-4. MediaStore creates each output as pending, publishes on success, and deletes it on failure.
+   JPEG is re-encoded at the shot's frozen quality setting and is never a byte passthrough. Both
+   formats receive the same shot-owned exposure/lens EXIF attributes.
+4. MediaStore creates each output as pending plus durably `REGISTERED`, marks the closed output
+   `COMPLETE`, then publishes. A publication outage leaves valuable complete bytes pending for
+   relaunch adoption; only an interrupted, structurally invalid write is deleted.
 
 **Still-photo journey (DNG/RAW):**
 1. An eligible TELE/standalone Camera2 session → RAW_SENSOR ImageReader → photoCallback on camera thread.
-2. Synchronously (Image still live): DngCreator.writeDng → map `captureRotationDegrees()` to the corresponding EXIF orientation tag → MediaStore write.
-3. Cannot pixel-rotate Bayer CFA; EXIF tag is auto-applied by RAW renderers.
+2. Synchronously (Image still live): DngCreator.writeDng → map `captureRotationDegrees()` to the corresponding EXIF orientation tag → MediaStore write → durable `COMPLETE` marker.
+3. Cannot pixel-rotate Bayer CFA; EXIF tag is auto-applied by RAW renderers. The completed URI then
+   crosses to `ioExecutor` for retrying publication; a publish-only failure keeps it for recovery.
 
 ---
 
@@ -182,9 +190,9 @@ Two critical consequences of the afocal converter drive the entire design:
 | **Main (UI)** | Android framework | Compose recomposition, ViewModel StateFlow updates, lifecycle callbacks (onStart/onStop). |
 | **mainHandler work** (main-thread Handler) | CameraViewModel | Lifecycle-owned periodic record/level/orientation/info updates, bounded zoom easing, and transient countdown/reticle work. `onStart` owns recurring registration and `onStop` removes it. |
 | **gl-pipeline** HandlerThread | GlPipeline | EGL operations, texture sampling, rendering, GL shader execution. |
-| **camera** HandlerThread | CameraController | Camera2 lifecycle and capture callbacks. Copies JPEG/YUV data before cache-only EXIF composition while the Image is live, and writes DNG synchronously while the RAW Image is valid. |
+| **camera** HandlerThread | CameraController | Camera2 lifecycle and capture callbacks. Copies JPEG/YUV data before cache-only EXIF composition while the Image is live, and invokes the synchronous DNG byte write while the RAW Image is valid. |
 | **setupExecutor** (single-thread) | CameraEngine | Post-GL-input Camera2 route/capability preflight, lightweight physical-lens EXIF prefetch, serialized generation-owned mode/lens/session reconfiguration, and bounded recovery work. Debug diagnostics are queued behind the initial route/open work. |
-| **ioExecutor** (single-thread) | CameraEngine | Deferred processed-still decoding, crop/rotation, HEIF/JPEG encoding, and publication. |
+| **ioExecutor** (single-thread) | CameraEngine / StillCapturePipeline | Deferred processed-still decoding, crop/rotation, shared HEIF/JPEG EXIF composition, encoding, processed publication, and retrying DNG publication after the live-Image write is complete. |
 | **recording-finalization executor** (single-thread) | CameraEngine | Dedicated, rejection-safe recorder stop/muxer finalization so still encoding cannot delay clip completion. Release waits a bounded interval for this lane before GL/executor teardown. |
 | **timelapseScheduler** (scheduled) | CameraEngine | Interval-driven timelapse capture trigger every N seconds. |
 | **analysisExecutor** (one single-thread executor per GL generation) | GlPipeline | Histogram/waveform computation from that generation's isolated FBO/readback snapshot. Retirement invalidates callback authority without waiting indefinitely for old math. |
@@ -357,9 +365,9 @@ in the portrait-locked preview (which does not rotate). The rotation functions a
 deliberately held portrait/landscape saved-file check remains useful field verification.
 
 **HEIF (pixel-rotated):**
-1. JPEG → decode to Bitmap.
+1. Owned JPEG/YUV snapshot → decode/convert to Bitmap.
 2. Bitmap.createBitmap(..., Matrix.postRotate(captureRotationDegrees), ...) → new rotated Bitmap.
-3. Encode HEIF.
+3. Compose the shot EXIF APP1 payload and encode HEIF with `HeifWriter.addExifData`.
 
 **DNG (EXIF orientation tag):**
 1. RAW_SENSOR Image → DngCreator.
@@ -467,7 +475,10 @@ Scale-remap invalidation covers BOTH pending inputs: every remap door calls
 `invalidateZoomGlide()` → `ZoomGlideState.invalidateForRemap()`, clearing
 `ZoomGlideState.pendingRatio` AND nulling `ZoomGlideState.easeTarget` (a hardware-slider glide
 target is an absolute number in the OLD scale; surviving a remap it eased toward an un-commanded
-framing). Each zoom
+framing). Structural reopens start with a fresh boost-free controller; same-route commits call
+`commitRetainedOpticsControls`, whose pure `retainedOpticsApplyPlan` folds the exact packet plus
+boost removal into one camera-thread request update (a full rebuild only when the FPS pin must be
+removed). Each zoom
 gesture EDGE costs one repeating-request swap: `setZoomInteraction` folds the current/final exact
 ratio into the fps-boost flip's own rebuild (`setSmoothPreviewBoost(active, finalZoom)`), instead
 of the old rebuild-then-correct pair that transiently re-submitted the stale mid-gesture wide-aimed
@@ -690,12 +701,16 @@ binds capture admission to the accepted controller/session identity.
    - Convert/decode the owned input → Bitmap.
    - Center-crop (if AspectRatio != W4_3).
    - Matrix.postRotate(captureRotationDegrees) → new Bitmap.
-   - HeifCapture.writeHeif(ParcelFileDescriptor, Bitmap) → HEIF-encoded bytes.
-4. MediaStore: create pending entry with IS_PENDING flag → write → publish on success; delete on failure.
+   - Compose one shot-owned EXIF snapshot, encode it into a cache-only JPEG seed, extract its APP1
+     payload, and pass that payload to `HeifWriter.addExifData`.
+   - HeifCapture.writeHeif(ParcelFileDescriptor, Bitmap, exifData) → HEIF-encoded bytes with
+     exposure/lens metadata matching the JPEG sibling.
+4. MediaStore: create `IS_PENDING` + journal `REGISTERED` → write/close → journal `COMPLETE`
+   → publish. A publish-only failure remains pending for recovery rather than losing the file.
 
 **JPEG (still photo):**
 
-JPEG runs the SAME processed-pixel pipeline as HEIF (`saveJpegAsync`): decode the ImageReader bytes →
+JPEG runs the SAME processed-pixel pipeline as HEIF (`StillCapturePipeline.saveProcessedStills`): decode the ImageReader bytes →
 center-crop to the selected aspect → rotate (afocal 180° + device) → re-encode at
 `ManualControls.jpegQuality`. The mandatory pixel rotation means it is NOT a byte passthrough — the
 output is a second lossy JPEG generation (accepted; keeping HEIF/JPEG framing identical wins). The
@@ -709,7 +724,9 @@ does not query CameraService and copies the processed Image before resolving it.
 2. photoCallback on camera thread (synchronous, Image still live):
    - DngCapture.writeDng(OutputStream, raw Image, CameraCharacteristics, TotalCaptureResult, exifOrientation).
    - DngCreator sets EXIF orientation tag (cannot rotate Bayer pixels).
-3. MediaStore: create pending → write → publish.
+3. MediaStore: create `REGISTERED` pending row → write/close → mark `COMPLETE`; return a
+   `PendingDngPublication` from the camera callback, then call `publishDng` on `ioExecutor`.
+   If queueing or publication fails, launch recovery adopts the complete DNG instead of deleting it.
 
 **Last-capture review ownership:**
 
@@ -736,8 +753,11 @@ file-only delete scope. Opening review pins the frozen URI's exact family outsid
 history; if pinning fails, delete copy remains file-only. Closing releases the pin, while deletion
 consumes it with the family. Capture-family copy promises all known formats, while legacy copy promises
 only the displayed file. Delete tombstones a tracked capture before asynchronous MediaStore calls,
-attempts every known sibling, immediately rejects a late sibling callback, and reports a failure if any
-attempted row could not be removed. RAW remains metadata-only in review; no Bayer decoding is implied.
+attempts every known sibling, and immediately rejects a late sibling callback. If only some resolver
+deletions succeed, `restoreDeleteSurvivors` reconstructs the surviving subset under the original
+capture id and restores its best review owner with explicit retry copy; only a survivor that cannot be
+restored falls back to a Gallery retry message. RAW remains metadata-only in review; no Bayer decoding
+is implied.
 
 **Aspect ratio (processed stills):**
 
@@ -757,19 +777,28 @@ DNG always saves full-frame (crop not applied).
 
 ```kotlin
 createPendingImage(context, fileName, mimeType) → Uri
-// Creates entry in DCIM/X9Tele with IS_PENDING = 1
+// Creates DCIM/X9Tele IS_PENDING = 1, then durably journals REGISTERED
 openParcelFd(context, uri, "rw") → ParcelFileDescriptor
 // Caller writes to the FD
+markWriteComplete(context, uri)
+// Durably journals COMPLETE only after all bytes/container metadata are closed
 publish(context, uri)
-// Updates IS_PENDING = 0 (visible in gallery)
+// Updates IS_PENDING = 0 (visible in gallery), then clears the journal entry
 delete(context, uri)
-// Removes the entry (if write failed)
+// Removes an incomplete/proven-invalid entry, then clears confirmed deletion from the journal
+cleanupOrphanedPending(context)
+// ADOPT complete/structurally-valid rows; DELETE proven-invalid rows; KEEP_PENDING if indeterminate
 latestOwnCapture(context) → RestoredCapture
 // Bounded Images + Video scan, followed by an exact-family query when identity is proven
 ```
 
-Canonical names also stamp `DATE_TAKEN` from admission time. On failure (OOM, disk full, etc.), the
-pending entry is deleted → no partial files in gallery.
+Canonical names also stamp `DATE_TAKEN` from admission time. Relaunch recovery probes JPEG,
+video, and DNG terminal structure while the row is still private. A `COMPLETE` journal record always
+authorizes adoption; legacy or `REGISTERED` rows are adopted only when structurally valid, deleted
+only when definitively invalid, and otherwise remain pending for a later retry. Unmarked HEIF is
+deliberately indeterminate because header dimensions can precede a closed payload. Thus interrupted
+partial bytes stay out of the gallery without treating a transient MediaProvider publication
+failure as data loss.
 
 ---
 

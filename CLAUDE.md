@@ -184,7 +184,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   focus-distance/ISO/exposure-only deltas (`sensorOnlyControlsDelta`) to a cached-builder resubmit
   (`applySensorValueControls`, the same derivation the full rebuild uses) so ruler drags and the
   app-side AE loop stop paying full ~180 ms rebuild stalls at 25 Hz. A live tap-AF/AF-lock
-  override RIDES the fast path: `reapplyAfOverrides` restores the override keys (tap-AF
+  override RIDES the fast path: `applyAfOverrides` restores the override keys (tap-AF
   AF_MODE_AUTO hold, AF-lock OFF + frozen distance; regions persist on the cached builder; never
   a re-trigger) after every fast-path value write, so key state equals the full rebuild's — the
   earlier wholesale refusal (c928eac) protected the tapped focus but starved the preview back to
@@ -207,7 +207,8 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   hardware-key steps, and the ease ticker all multiply "the current zoom" — but UI state lags the
   16 ms coalescing flush, so compounding against `_state` made zoom crawl between flushes then jump
   at the boundary (read as pinch jank twice before being root-caused). `currentZoomBase()` in the
-  ViewModel is the one true base; reset `zoomPendingRatio` AND `zoomEaseTarget` whenever anything
+  ViewModel is the one true base; reset `ZoomGlideState.pendingRatio` AND
+  `ZoomGlideState.easeTarget` whenever anything
   outside the coalescer rewrites zoom (mode flip, lens preset, TC toggle) — the ease target is an
   ABSOLUTE number in the old zoom scale, and a glide surviving a scale remap eases toward an
   un-commanded framing in the new scale.
@@ -437,9 +438,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   leave phantom REC/audio/UI state. Admission itself runs on the RECORDER EXECUTOR, never main (the
   ≤400 ms mic-release wait + MediaStore insert + codec/muxer construction janked every REC press);
   only the in-flight gate is synchronous, the UI publishes optimistic "starting" state that the
-  result callback resets on refusal, and a stop arriving mid-admission is LATCHED
-  (`recStopRequestedDuringStart`) and executed on the same serial executor the moment the recorder
-  publishes — never raced against an unpublished owner.
+  result callback resets on refusal, and a stop arriving mid-admission is LATCHED by
+  `RecordingAdmissionLatch.requestStop()` and consumed exactly once by
+  `RecordingAdmissionLatch.completeAdmission()` on the same serial executor the moment the
+  recorder publishes — never raced against an unpublished owner.
 - **The MediaCodec input Surface has exactly one release owner.** `VideoRecorder` releases it on every
   partial setup failure and, on clean stop, only after the engine's checked EGL detach has completed;
   Surface release precedes codec release and ownership clearing, and repeated cleanup is a no-op. If a
@@ -485,13 +487,26 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   `RequestMultiplePermissions` result remain requestable. Persist only an actual false result, combine
   it with `shouldShowRequestPermissionRationale`, clear history on grant, and suppress automatic
   re-request only when Settings is genuinely required.
-- **`Bitmap.compress` strips ALL metadata — stamp JPEG EXIF back after writing.** `writeJpegExif`
-  (androidx.exifinterface, "rw" pending FD, before publish) re-adds ISO / exposure / 35mm focal /
-  make/model from the controller's latest capture result. HEIFs are currently NOT stamped (heifwriter
-  has no EXIF API; androidx ExifInterface can't write HEIC). The review card's exposure line simply
-  drops out for files without EXIF. Lightweight physical-lens EXIF metadata is prefetched on
+- **Processed stills preserve one shot-owned EXIF snapshot.** `Bitmap.compress` strips metadata, so
+  `StillCapturePipeline` re-stamps JPEG through ExifInterface before publish. For HEIF it composes the
+  same EXIF attributes into a cache-only JPEG seed, extracts the APP1 payload, and passes it to
+  `HeifWriter.addExifData`; ISO / exposure / 35mm focal / make / model therefore stay in parity
+  across both processed formats. Lightweight physical-lens metadata is prefetched on
   `setupExecutor`; the camera callback is cache-only and copies the processed Image before composing
   ancillary metadata.
+- **Pending MediaStore rows have durable write states.** Every insert commits a `REGISTERED` journal
+  entry before bytes are written; a fully closed encoder/muxer output commits `COMPLETE` before
+  publication. Relaunch recovery adopts `COMPLETE` rows, conservatively validates JPEG/DNG/video
+  legacy or `REGISTERED` rows, deletes only proven-invalid unfinished output, and leaves
+  indeterminate rows pending. Unmarked HEIF is deliberately indeterminate: header dimensions do
+  not prove its payload closed. A transient publish failure therefore retains a finalized
+  photo/video for recovery instead of deleting it. Partial family deletion restores only a
+  resolver-confirmed survivor into review with retry copy; an already-absent sibling is successful,
+  and only an unresolvable survivor falls back to a Gallery retry message.
+- **DNG publication does not hold the camera callback.** `DngCreator.writeImage` and the durable
+  `COMPLETE` marker remain synchronous while the RAW `Image` is valid; `saveDng` returns a frozen
+  `PendingDngPublication`, and only `publishDng` (including resolver retry backoff and callbacks)
+  runs on `ioExecutor`. Queue rejection keeps the complete pending row for launch recovery.
 - **Debug capability diagnostics queue behind initial camera work.** The debug-only broad capability
   and vendor-tag scan runs on `setupExecutor` only after the initial route/open task is enqueued, so
   diagnostics cannot delay the first Camera2 setup task.
@@ -510,13 +525,16 @@ MainActivity → CameraViewModel(CameraUiState/CameraActions) → CameraEngine (
 CameraEngine ├─ CameraSelector2  pick tele (closest-to-70mm, standalone; pickBest pure+tested)
              ├─ CameraController Camera2 session, capability-safe requests, fallback, capture/3A
              ├─ RotationMath     pure preview/capture/EXIF rotation (unit-tested)
+             ├─ RendererAssists  remembered renderer state + generation replay authority
+             ├─ StandbyAudioController single-owner armed-video level meter lifecycle
              ├─ GlPipeline       checked EGL ownership + afocal 180° + color + scopes/AE luma
              │    └─ FlipRenderer / EglCore / Shaders / SdrToHlgMapping
              ├─ GyroEis          gravity roll + held-device orientation (GL shake warp disabled)
              ├─ AutoExposure     app-side S/ISO-priority AE loop (meters GL luma; pure+tested)
-             ├─ capture/HeifCapture (pixel-rotate) + DngCapture (EXIF orient)
+             ├─ capture/StillCapturePipeline (processed + RAW save orchestration)
+             │    └─ HeifCapture (pixel-rotate/EXIF) + DngCapture (EXIF orient)
              ├─ video/VideoRecorder (exactly-once input Surface; HEVC/AVC + AAC/muxer)
-             └─ storage/MediaStoreWriter (scoped, IS_PENDING) + SettingsStore (persist)
+             └─ storage/MediaStoreWriter (IS_PENDING + durable recovery) + SettingsStore
 UI: CameraScreen + CaptureOutputTracker (capture-level review/delete) + controls/* + overlays/*
 ```
 
