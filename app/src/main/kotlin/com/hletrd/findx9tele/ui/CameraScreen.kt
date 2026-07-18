@@ -390,7 +390,7 @@ fun CameraScreen(
                     teleconverter = state.teleconverterMode,
                     videoMode = state.mode == CaptureMode.VIDEO,
                     aspect = state.aspectRatio,
-                    zoomRatio = state.controls.zoomRatio,
+                    punchIn = state.punchIn,
                 )
             ) {
                 BoxWithConstraints(modifier = Modifier.fillMaxSize()) {

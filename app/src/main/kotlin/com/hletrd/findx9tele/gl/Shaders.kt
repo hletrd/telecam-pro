@@ -19,6 +19,19 @@ package com.hletrd.findx9tele.gl
  */
 object Shaders {
 
+    // O-Log2 shadow-toe constants (official white paper, 2026-04 EN v1) — the SINGLE source for
+    // the forward toe AND the inverse's segment boundary (P6.7/CR4-8: the boundary used to be a
+    // second hand-computed literal, 0.20856, whose arithmetic slipped — it squared 0.06641088
+    // instead of 0.006 + 0.05641088 = 0.06241088, so the inverse used the toe branch for a band
+    // of P the forward had encoded with the log segment).
+    const val OLOG2_TOE_SCALE = 47.28711236
+    const val OLOG2_TOE_OFFSET = 0.05641088
+    const val OLOG2_TOE_MAX_R = 0.006
+
+    /** P at the forward curve's R = [OLOG2_TOE_MAX_R] switch — the derived inverse boundary. */
+    val OLOG2_INV_BOUNDARY: Double =
+        OLOG2_TOE_SCALE * (OLOG2_TOE_MAX_R + OLOG2_TOE_OFFSET) * (OLOG2_TOE_MAX_R + OLOG2_TOE_OFFSET)
+
     const val VERTEX = """
         uniform mat4 uMvp;
         uniform mat4 uTexMatrix;
@@ -31,7 +44,9 @@ object Shaders {
         }
     """
 
-    const val FRAGMENT = """
+    // Plain val (not const): the O-Log2 inverse boundary above is a DERIVED expression, which a
+    // compile-time constant string cannot interpolate. Behavior is identical.
+    val FRAGMENT = """
         #extension GL_OES_EGL_image_external : require
         precision highp float;
         uniform samplerExternalOES uTexture;
@@ -75,17 +90,18 @@ object Shaders {
         // 0.4868 (499/1023) anchor, so OPPO's published O-Log2 LUTs restore it correctly.
         vec3 olog2(vec3 R) {
             vec3 logP = 0.08550479 * log2(max(R + 0.00964052, 1e-5)) + 0.69336945;
-            vec3 toe = 47.28711236 * (R + 0.05641088) * (R + 0.05641088);
-            return clamp(mix(logP, toe, step(R, vec3(0.006))), 0.0, 1.0);
+            vec3 toe = $OLOG2_TOE_SCALE * (R + $OLOG2_TOE_OFFSET) * (R + $OLOG2_TOE_OFFSET);
+            return clamp(mix(logP, toe, step(R, vec3($OLOG2_TOE_MAX_R))), 0.0, 1.0);
         }
 
         // Exact inverse of the O-Log2 OETF above, for Gamma Display Assist: code value P -> scene
         // reflectance R. Main segment inverts the log; the shadow toe inverts the parabola
-        // (positive root). Segment boundary: P(R=0.006) = 47.28711236 * 0.06641088^2 ≈ 0.20856.
+        // (positive root). Segment boundary is DERIVED from the forward toe constants (Kotlin
+        // interpolation, one source): P(R = OLOG2_TOE_MAX_R) via the toe polynomial.
         vec3 olog2Inv(vec3 P) {
             vec3 logR = exp2((P - 0.69336945) / 0.08550479) - 0.00964052;
-            vec3 toeR = sqrt(max(P, 0.0) / 47.28711236) - 0.05641088;
-            return mix(logR, toeR, step(P, vec3(0.20856)));
+            vec3 toeR = sqrt(max(P, 0.0) / $OLOG2_TOE_SCALE) - $OLOG2_TOE_OFFSET;
+            return mix(logR, toeR, step(P, vec3($OLOG2_INV_BOUNDARY)));
         }
 
         // Rec.2020 -> Rec.709 primaries (linear light), inverse of toRec2020 — the assist shows the

@@ -28,4 +28,14 @@ class AnalysisTargetSizeTest {
     fun `analysis framing stays on capture crop and frame center`() {
         assertEquals(AnalysisFrame(crop = 0.12f, centerX = 0.5f, centerY = 0.5f), analysisFrame(0.12f))
     }
+
+    @Test
+    fun `analysis readback always meters display-referred, LOG preview included`() {
+        // AGG4-9/P3.4: the scopes/AE meter must not move when the user toggles LOG — metering the
+        // flat O-Log2 preview curve put 18% grey at ~0.4868 instead of 0.18 and settled the
+        // app-side AE ~1.5 stops off.
+        assertEquals(null, analysisReadbackTransfer(com.hletrd.findx9tele.camera.ColorTransfer.LOG))
+        assertEquals(null, analysisReadbackTransfer(com.hletrd.findx9tele.camera.ColorTransfer.HLG))
+        assertEquals(null, analysisReadbackTransfer(null))
+    }
 }

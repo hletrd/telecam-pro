@@ -8,7 +8,6 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.view.Surface
 import com.hletrd.findx9tele.camera.ColorTransfer
-import com.hletrd.findx9tele.camera.FINDER_MIN_ZOOM
 import com.hletrd.findx9tele.camera.PUNCH_IN_CROP
 import com.hletrd.findx9tele.camera.finderRect
 import com.hletrd.findx9tele.camera.HistogramData
@@ -94,9 +93,11 @@ class GlPipeline {
     private var punchInX = 0.5f
     private var punchInY = 0.5f
     // TELE finder PIP: the RESOLVED enable flag (user toggle && TELE && 4:3, resolved by
-    // CameraEngine.pushTeleFinder). The finder actually draws only when this is set AND the view is
-    // magnified past FINDER_MIN_ZOOM (checked against [zoomTarget] in drawFrame). It re-draws the
-    // FULL current camera frame — the widest field the single stream carries, NOT an unzoomed view.
+    // CameraEngine.pushTeleFinder). The finder actually draws only when this is set AND the
+    // punch-in loupe is active (checked in drawFrame — the same gate axis as the Compose border's
+    // teleFinderVisible). It re-draws the FULL current camera frame — the widest field the single
+    // stream carries, NOT an unzoomed view — which is only wider than the main view while the
+    // loupe magnifies past it.
     private var teleFinder = false
 
     // Gyro EIS: provider returns [yaw, pitch, roll] shake radians; eisFocal scales to the effective
@@ -187,16 +188,14 @@ class GlPipeline {
             // bounded retry — the one Surface/generation-owned preview-health path). No separate
             // failure surface is needed here: no preview output is bound yet at start() time (the
             // pending setPreviewOutput carries the failure), so there is nothing to signal directly.
-            // Best-effort terminal teardown of the default display releases the leaked handle
-            // (eglTerminate also destroys any half-created context/surface): EglCore's constructor is
-            // atomic, so on failure it never hands back a core to run the checked release on, and the
-            // default display is the only reachable EGL handle. Nothing of ours is current on this
-            // thread at construction-failure time, so no prior unbind is owed before the terminate.
+            // On failure the half-initialized display handle is deliberately LEAKED (DBG4-4): the
+            // default EGLDisplay is PROCESS-WIDE shared state — the Compose/HWUI renderer holds the
+            // same handle — and eglTerminate on a non-refcounting EGL implementation would tear
+            // down the framework's own EGL resources from app code. One leaked handle on an
+            // already-broken-EGL device is strictly safer than a possible process-wide display
+            // teardown; EglCore's constructor is atomic, so there is no core to run the checked
+            // release on and nothing of ours is current on this thread.
             egl = runCatching { EglCore(tenBit = tenBit) }.getOrElse { failure ->
-                runCatching {
-                    val display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
-                    if (display != EGL14.EGL_NO_DISPLAY) EGL14.eglTerminate(display)
-                }
                 if (com.hletrd.findx9tele.BuildConfig.DEBUG) {
                     android.util.Log.e("GlPipeline", "EGL init failed; preview stays Not-Ready", failure)
                 }
@@ -401,10 +400,10 @@ class GlPipeline {
     /** Preview-only center crop-zoom (focus punch-in); does not affect the recorded/encoder frame. */
     fun setPunchIn(enabled: Boolean) = post { punchIn = enabled }
 
-    /** TELE finder PIP: with the resolved flag on and the view magnified, draw a small corner
-     *  viewport re-drawing the FULL current camera frame (single-stream: the HAL zoom crop is
-     *  baked in, so this is the widest available field, not an unzoomed one). Preview-only; the
-     *  actual gating also requires [zoomTarget] ≥ FINDER_MIN_ZOOM (checked at draw). */
+    /** TELE finder PIP: with the resolved flag on and the punch-in loupe active, draw a small
+     *  corner viewport re-drawing the FULL current camera frame (single-stream: the HAL zoom crop
+     *  is baked in, so this is the widest available field, not an unzoomed one). Preview-only; the
+     *  actual gating also requires the loupe ([punchIn], checked at draw). */
     fun setTeleFinder(enabled: Boolean) = post { teleFinder = enabled }
 
     /** Sets the loupe magnification center (texcoord 0..1); the punch-in zoom follows this point. */
@@ -725,7 +724,10 @@ class GlPipeline {
                 // never feed preview health or burn the bounded recovery budget — and scissor is
                 // CONTEXT state shared with the encoder/analysis draws, so the finally rearms it
                 // off even when the draw throws (a leak would clip every later draw to this box).
-                if (teleFinder && zoomTarget >= FINDER_MIN_ZOOM && previewW > 0 && previewH > 0) {
+                // Same gate axis as the Compose border's teleFinderVisible: resolved && punch-in
+                // (AGG4-29/P3.4) — the PIP shows the FULL delivered frame while the loupe magnifies,
+                // the one case the single stream makes it genuinely wider than the main view.
+                if (teleFinder && punchIn && previewW > 0 && previewH > 0) {
                     val rect = finderRect(previewW.toFloat(), previewH.toFloat())
                     // Bottom-left corner in GL's bottom-left-origin pixel space (the Compose border
                     // mirrors the same rect from its top-left-origin space via the shared seam).
@@ -832,7 +834,12 @@ class GlPipeline {
                 runAnalysisReadback(
                     generation = analysis,
                     core = core,
-                    transfer = previewTransfer,
+                    // ALWAYS display-referred (null), never previewTransfer (AGG4-9/P3.4): with LOG
+                    // active the preview renders the flat O-Log2 curve, and metering THAT put 18%
+                    // grey at the ~0.4868 log anchor instead of 0.18 — the app-side AE loop settled
+                    // ~1.5 stops off and the histogram/waveform/zebra read the encode curve rather
+                    // than the scene. The meter must not move when the user toggles LOG.
+                    transfer = analysisReadbackTransfer(previewTransfer),
                     sx = sx,
                     sy = sy,
                     roll = roll,
@@ -1040,6 +1047,20 @@ class GlPipeline {
             if (thread === ownedThread) thread = null
             if (handler === ownedHandler) handler = null
             if (resourceReleaseHub === ownedReleaseHub) resourceReleaseHub = null
+        } else if (thread === ownedThread) {
+            // DELIBERATE GENERATION ABANDON (DBG4-3): the GL thread is wedged inside native code
+            // past the bounded stop. Leaving `thread` set made start()'s double-start guard no-op
+            // every later start — a permanently dead viewfinder until process death (the pre-guard
+            // code leaked the wedge but recovered a working preview). Drop the ownership references
+            // (the VideoRecorder drain-wedge abandon pattern) so a fresh start() can spawn a new
+            // generation; the wedged thread and its GL/EGL resources are leaked ON PURPOSE. Its
+            // late cleanup Runnable identity-checks `thread === ownedThread` (now false) and will
+            // not touch the replacement. If the wedge ever clears, its residual queued tasks hit
+            // checked/runCatching EGL paths against surfaces owned elsewhere — contained errors,
+            // strictly better than a guaranteed dead preview.
+            thread = null
+            if (handler === ownedHandler) handler = null
+            if (resourceReleaseHub === ownedReleaseHub) resourceReleaseHub = null
         }
     }
 
@@ -1133,6 +1154,16 @@ internal data class AnalysisFrame(val crop: Float, val centerX: Float, val cente
 
 /** Analysis deliberately excludes the preview-only punch-in crop and movable loupe center. */
 internal fun analysisFrame(captureCrop: Float): AnalysisFrame = AnalysisFrame(captureCrop, 0.5f, 0.5f)
+
+/**
+ * The transfer for the scopes/AE analysis re-draw: ALWAYS display-referred (null), whatever the
+ * PREVIEW currently renders (AGG4-9/P3.4). With LOG selected the preview shows the flat O-Log2
+ * curve for monitoring, but the METER must read scene brightness in the same domain the AE loop's
+ * targets are defined in — metering the log curve put 18% grey at the ~0.4868 anchor instead of
+ * 0.18 and settled the app-side AE ~1.5 stops off. Pure seam so a host test pins that toggling
+ * LOG cannot move the metered domain.
+ */
+internal fun analysisReadbackTransfer(previewTransfer: ColorTransfer?): ColorTransfer? = null
 
 /** Preserves the rendered frame's orientation/aspect while bounding synchronous RGBA readback. */
 internal fun analysisTargetSize(width: Int, height: Int, maxLongEdge: Int = 256): AnalysisTargetSize {

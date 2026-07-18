@@ -233,9 +233,6 @@ const val TELE_MAX_DISPLAY_ZOOM = 60f
 // and the Compose overlay (border) through [finderRect] so both boxes stay pixel-aligned.
 const val FINDER_FRACTION = 0.30f
 const val FINDER_MARGIN = 0.03f
-// Draw the PIP only once the main view is meaningfully magnified — below this it duplicates the
-// full frame ~1:1 and adds nothing. Threshold tuning is a deferred on-device item (plan cycle 1).
-const val FINDER_MIN_ZOOM = 1.15f
 // The punch-in loupe's texcoord crop: the magnified preview samples a (1-crop) span of the frame
 // (0.6 → 2.5× magnification). Shared between the GL draw (gl/GlPipeline) and the tap-mapping
 // composition in CameraEngine (P2.8/AGG4-11) so the two cannot drift.
@@ -257,16 +254,21 @@ fun teleFinderResolved(
     aspect: AspectRatio,
 ): Boolean = enabled && teleconverter && !videoMode && aspect == AspectRatio.W4_3
 
-/** The full visibility gate: the resolved flag plus the [FINDER_MIN_ZOOM] floor (GL applies the
- *  same floor to its own resolved flag via the live zoom target). */
+/**
+ * The full visibility gate: the resolved flag plus an ACTIVE punch-in loupe (AGG4-29/P3.4). The
+ * single camera stream means the PIP re-draws the SAME delivered frame as the main view — it is
+ * only genuinely WIDER while the loupe magnifies past that frame, so the loupe is the honest gate
+ * axis. The old raw zoom floor (1.15×) showed a corner box that duplicated the main view ~1:1 at
+ * steady state ("adds nothing" by its own comment — the exact thing UX_POLICY says not to ship).
+ * GL applies the same axis to its own resolved flag via its punch-in state.
+ */
 fun teleFinderVisible(
     enabled: Boolean,
     teleconverter: Boolean,
     videoMode: Boolean,
     aspect: AspectRatio,
-    zoomRatio: Float,
-): Boolean = teleFinderResolved(enabled, teleconverter, videoMode, aspect) &&
-    zoomRatio >= FINDER_MIN_ZOOM
+    punchIn: Boolean,
+): Boolean = teleFinderResolved(enabled, teleconverter, videoMode, aspect) && punchIn
 
 /** Finder-PIP box in the preview box's own units, measured from the bottom-left corner. */
 data class FinderRect(val x: Float, val y: Float, val width: Float, val height: Float)

@@ -29,30 +29,29 @@ class TeleFinderVisibilityTest {
     }
 
     @Test
-    fun `visibility is the resolved flag AND the zoom floor - the GL decomposition`() {
-        // GL gates its resolved flag on the live zoom target; the Compose border uses
-        // teleFinderVisible directly. The two decompositions must be the same function.
+    fun `visibility is the resolved flag AND an active punch-in loupe - the GL decomposition`() {
+        // GL gates its resolved flag on its own punch-in state; the Compose border uses
+        // teleFinderVisible directly. The two decompositions must be the same function (AGG4-29:
+        // the loupe is the one case the single-stream PIP is genuinely wider than the main view —
+        // the old raw zoom floor showed a ~1:1 duplicate corner box at steady state).
         for (enabled in booleanArrayOf(true, false))
             for (tc in booleanArrayOf(true, false))
                 for (video in booleanArrayOf(true, false))
                     for (aspect in AspectRatio.entries)
-                        for (zoom in floatArrayOf(1f, FINDER_MIN_ZOOM - 0.01f, FINDER_MIN_ZOOM, 3f)) {
-                            val glStyle = teleFinderResolved(enabled, tc, video, aspect) &&
-                                zoom >= FINDER_MIN_ZOOM
+                        for (punchIn in booleanArrayOf(true, false)) {
+                            val glStyle = teleFinderResolved(enabled, tc, video, aspect) && punchIn
                             assertEquals(
-                                "enabled=$enabled tc=$tc video=$video aspect=$aspect zoom=$zoom",
+                                "enabled=$enabled tc=$tc video=$video aspect=$aspect punchIn=$punchIn",
                                 glStyle,
-                                teleFinderVisible(enabled, tc, video, aspect, zoom),
+                                teleFinderVisible(enabled, tc, video, aspect, punchIn),
                             )
                         }
     }
 
     @Test
-    fun `zoom floor boundary is inclusive`() {
-        assertTrue(teleFinderVisible(true, true, false, AspectRatio.W4_3, FINDER_MIN_ZOOM))
-        assertFalse(
-            teleFinderVisible(true, true, false, AspectRatio.W4_3, FINDER_MIN_ZOOM - 1e-4f),
-        )
+    fun `loupe off hides the finder even fully resolved`() {
+        assertTrue(teleFinderVisible(true, true, false, AspectRatio.W4_3, punchIn = true))
+        assertFalse(teleFinderVisible(true, true, false, AspectRatio.W4_3, punchIn = false))
     }
 
     @Test
@@ -60,7 +59,7 @@ class TeleFinderVisibilityTest {
         // The 4:3 gate is the STILL aspect; in video it used to make the PIP appear/vanish with an
         // unrelated photo setting. Photo-only closes that semantic surprise.
         for (aspect in AspectRatio.entries) {
-            assertFalse(teleFinderVisible(true, true, true, aspect, 5f))
+            assertFalse(teleFinderVisible(true, true, true, aspect, punchIn = true))
         }
     }
 }

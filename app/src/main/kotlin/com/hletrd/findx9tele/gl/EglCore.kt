@@ -51,7 +51,14 @@ class EglCore(sharedContext: EGLContext = EGL14.EGL_NO_CONTEXT, tenBit: Boolean 
         )
         val configs = arrayOfNulls<EGLConfig>(1)
         val num = IntArray(1)
-        if (!EGL14.eglChooseConfig(eglDisplay, attribs, 0, configs, 0, 1, num, 0)) return null
+        if (!EGL14.eglChooseConfig(eglDisplay, attribs, 0, configs, 0, 1, num, 0)) {
+            // Consume the error this failed call raised (CR4-10): EGL errors are sticky until
+            // read, and the init path's blind checkEglError("eglCreateContext") would otherwise
+            // re-read this stale code and fail a VALID context created after the 10-bit→8-bit
+            // config fallback.
+            EGL14.eglGetError()
+            return null
+        }
         return if (num[0] > 0) configs[0] else null
     }
 
