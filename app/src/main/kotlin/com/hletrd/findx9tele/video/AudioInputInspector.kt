@@ -14,6 +14,12 @@ internal object AudioInputInspector {
     fun status(context: Context, preference: AudioInputPreference): AudioInputStatus {
         val devices = inputDevices(context)
         if (preference == AudioInputPreference.AUTO) {
+            // With no capture device at all, routeLabel(AUTO, null) itself falls back to "Auto" —
+            // composing that into "Auto · ${...}" produced the doubled "Auto · Auto" label AND
+            // falsely reported AUTO as ready when there is nothing to record from.
+            if (devices.isEmpty()) {
+                return AudioInputStatus("Auto · no mic detected", available = false)
+            }
             val device = devices.firstOrNull { it.type != AudioDeviceInfo.TYPE_BUILTIN_MIC }
                 ?: devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
             return AudioInputStatus("Auto · ${routeLabel(preference, device)}", available = true)

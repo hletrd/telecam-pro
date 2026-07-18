@@ -560,18 +560,25 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
     caps?.zoomRatioRange?.let { range ->
         // TELE shows the converter-equivalent scale (13–60×) but writes the lens-local ratio.
         val zBase = if (state.teleconverterMode) com.hletrd.findx9tele.camera.TELE_DISPLAY_BASE else 1f
+        val loDisplay = range.lower * zBase
         val zHi = if (state.teleconverterMode) {
             minOf(range.upper * zBase, com.hletrd.findx9tele.camera.TELE_MAX_DISPLAY_ZOOM)
         } else {
             range.upper
         }
-        LabeledSlider(
-            label = "Zoom",
-            valueLabel = "%.1fx".format(Locale.US, state.controls.zoomRatio * zBase),
-            value = (state.controls.zoomRatio * zBase).coerceIn(range.lower * zBase, zHi),
-            onValueChange = { v -> actions.onZoomRatio(v / zBase) },
-            valueRange = (range.lower * zBase)..zHi,
-        )
+        // Defensive guard (mirrors the sibling ZoomRuler in ManualDials.kt): coerceIn/ClosedRange
+        // THROW on lower > upper. Unreachable on this device's advertised caps, but a pathological
+        // tele caps profile crossing the TELE display ceiling would otherwise crash every
+        // recomposition of this tab.
+        if (zHi > loDisplay) {
+            LabeledSlider(
+                label = "Zoom",
+                valueLabel = "%.1fx".format(Locale.US, state.controls.zoomRatio * zBase),
+                value = (state.controls.zoomRatio * zBase).coerceIn(loDisplay, zHi),
+                onValueChange = { v -> actions.onZoomRatio(v / zBase) },
+                valueRange = loDisplay..zHi,
+            )
+        }
     }
     LabeledSlider(
         label = "JPEG Quality",
@@ -787,6 +794,11 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
 
 @Composable
 private fun LensTab(state: CameraUiState, actions: CameraActions) {
+    // Both onLens and onToggleTeleconverter refuse mid-REC deeper in the ViewModel (a full optics-
+    // generation reopen — the afocal 180° flip — would tear the recording); these rows used to stay
+    // visually hot and only silently no-op (a "Stop REC first" toast) on tap, inconsistent with My
+    // Menu's dimmed-and-guarded quick-Fn rows (3825ae2).
+    val recordingMutable = !state.isRecording
     TabTitle("Lens")
     SectionHeader("Optics")
     // Lens picks are ZOOM PRESETS on the seamless logical camera — they do NOT bundle the
@@ -798,6 +810,7 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
         selected = state.lens,
         labelFor = ::lensLabel,
         onSelect = actions::onLens,
+        enabled = recordingMutable,
     )
     Text(
         lensFocalCaption(state.lens, state.teleconverterMode),
@@ -808,6 +821,7 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
         label = "Teleconverter",
         checked = state.teleconverterMode,
         onCheckedChange = actions::onToggleTeleconverter,
+        enabled = recordingMutable,
     )
     Text(
         "3× lens only.",

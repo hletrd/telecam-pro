@@ -177,10 +177,22 @@ internal fun nextAspect(ratio: AspectRatio): AspectRatio = when (ratio) {
  * predicate: the Fn overlay dimmed-and-guarded these slots while My Menu's rows were always-hot —
  * the one path in the app that could toggle the teleconverter (the afocal 180° flip, live into
  * the recorded file) or the transfer curve mid-recording.
+ *
+ * Coverage is derived from `CameraViewModel`'s own `rejectIfRecording` gates, not guessed: every
+ * slot below routes to an action that already refuses mid-REC there (a session-reconfiguring or
+ * live-discontinuity change), so the UI-level gate here must match exactly or a row stays visually
+ * hot and only silently no-ops (a transient toast) on tap — STABILIZATION (`onVideoStabMode`
+ * rebuilds the repeating request with a new OIS/EIS profile, a visible discontinuity baked into the
+ * file) and AUDIO_SCENE (`onAudioScene`) were the two additional gated actions this predicate had
+ * not yet caught up to. Slots with no `else` branch (EXPOSURE_MODE/FOCUS/SHUTTER/ISO/WB/EV/ZOOM/
+ * DRIVE/METERING and the pure-overlay toggles) are genuinely REC-safe: they only rewrite Camera2
+ * request-level values or app-side overlay state, never a session/profile reopen.
  */
 internal fun quickFnEnabled(slot: FnSlot, state: CameraUiState): Boolean = when (slot) {
     FnSlot.TRANSFER -> !state.isRecording && state.videoCodec == VideoCodec.HEVC
     FnSlot.TELECONVERTER -> !state.isRecording
     FnSlot.OPEN_GATE -> state.mode == CaptureMode.VIDEO && !state.isRecording
+    FnSlot.STABILIZATION -> !state.isRecording
+    FnSlot.AUDIO_SCENE -> !state.isRecording
     else -> true
 }

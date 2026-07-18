@@ -15,11 +15,13 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.FilterChip
@@ -115,6 +117,21 @@ internal fun pixelChipBorder(selected: Boolean) = FilterChipDefaults.filterChipB
 )
 
 /**
+ * Every settings-sheet [FilterChip] sits inside this: bundled Material3 (`material3-android:1.4.0`)
+ * never calls `minimumInteractiveComponentSize()` on `ChipKt`, unlike Checkbox/RadioButton/Switch/
+ * Slider/IconButton, so the chip's fixed ~32 dp container is under the app-wide 48 dp touch floor
+ * (cycle 2 fixed this for MR slots/DialChip/TeleChip via the same outer-Box `sizeIn`/`heightIn`
+ * pattern). Centering the compact chip inside a taller invisible Box grows only the tappable area —
+ * the visual chip stays exactly as compact as before.
+ */
+@Composable
+internal fun MinTouchTargetChip(content: @Composable () -> Unit) {
+    Box(contentAlignment = Alignment.Center, modifier = Modifier.heightIn(min = 48.dp)) {
+        content()
+    }
+}
+
+/**
  * Trailing-edge fade for horizontally scrolling chip rows: without the hint, the half-cut trailing
  * chip at the panel edge reads as a LAYOUT BUG rather than "scrollable" (user-reported on the Fn
  * dial row). The fix originally landed only there — every settings SegmentedSelector (several with
@@ -173,14 +190,16 @@ internal fun <T> SegmentedSelector(
         ) {
             options.forEach { option ->
                 val isSelected = option == selected
-                FilterChip(
-                    selected = isSelected,
-                    onClick = { onSelect(option) },
-                    enabled = enabled,
-                    label = { Text(labelFor(option)) },
-                    colors = pixelChipColors(),
-                    border = pixelChipBorder(isSelected),
-                )
+                MinTouchTargetChip {
+                    FilterChip(
+                        selected = isSelected,
+                        onClick = { onSelect(option) },
+                        enabled = enabled,
+                        label = { Text(labelFor(option)) },
+                        colors = pixelChipColors(),
+                        border = pixelChipBorder(isSelected),
+                    )
+                }
             }
         }
     }
@@ -655,14 +674,16 @@ fun TransferSelector(
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             ColorTransfer.entries.forEach { option ->
                 val isSelected = transfer == option
-                FilterChip(
-                    selected = isSelected,
-                    onClick = { onTransfer(option) },
-                    enabled = enabled,
-                    label = { Text(transferLabel(option)) },
-                    colors = pixelChipColors(),
-                    border = pixelChipBorder(isSelected),
-                )
+                MinTouchTargetChip {
+                    FilterChip(
+                        selected = isSelected,
+                        onClick = { onTransfer(option) },
+                        enabled = enabled,
+                        label = { Text(transferLabel(option)) },
+                        colors = pixelChipColors(),
+                        border = pixelChipBorder(isSelected),
+                    )
+                }
             }
         }
     }
@@ -682,30 +703,36 @@ fun PhotoFormatToggles(
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text("Output", color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            FilterChip(
-                selected = formats.heif,
-                onClick = { onSetPhotoFormats(formats.copy(heif = !formats.heif)) },
-                enabled = processedAvailable && (!formats.heif || formats.jpeg || rawSelected),
-                label = { Text("HEIF") },
-                colors = pixelChipColors(),
-                border = pixelChipBorder(formats.heif),
-            )
-            FilterChip(
-                selected = formats.jpeg,
-                onClick = { onSetPhotoFormats(formats.copy(jpeg = !formats.jpeg)) },
-                enabled = processedAvailable && (!formats.jpeg || formats.heif || rawSelected),
-                label = { Text("JPEG") },
-                colors = pixelChipColors(),
-                border = pixelChipBorder(formats.jpeg),
-            )
-            FilterChip(
-                selected = formats.dngRaw,
-                onClick = { onSetPhotoFormats(formats.copy(dngRaw = !formats.dngRaw)) },
-                enabled = rawAvailable && (!formats.dngRaw || processedSelected),
-                label = { Text("DNG") },
-                colors = pixelChipColors(),
-                border = pixelChipBorder(formats.dngRaw),
-            )
+            MinTouchTargetChip {
+                FilterChip(
+                    selected = formats.heif,
+                    onClick = { onSetPhotoFormats(formats.copy(heif = !formats.heif)) },
+                    enabled = processedAvailable && (!formats.heif || formats.jpeg || rawSelected),
+                    label = { Text("HEIF") },
+                    colors = pixelChipColors(),
+                    border = pixelChipBorder(formats.heif),
+                )
+            }
+            MinTouchTargetChip {
+                FilterChip(
+                    selected = formats.jpeg,
+                    onClick = { onSetPhotoFormats(formats.copy(jpeg = !formats.jpeg)) },
+                    enabled = processedAvailable && (!formats.jpeg || formats.heif || rawSelected),
+                    label = { Text("JPEG") },
+                    colors = pixelChipColors(),
+                    border = pixelChipBorder(formats.jpeg),
+                )
+            }
+            MinTouchTargetChip {
+                FilterChip(
+                    selected = formats.dngRaw,
+                    onClick = { onSetPhotoFormats(formats.copy(dngRaw = !formats.dngRaw)) },
+                    enabled = rawAvailable && (!formats.dngRaw || processedSelected),
+                    label = { Text("DNG") },
+                    colors = pixelChipColors(),
+                    border = pixelChipBorder(formats.dngRaw),
+                )
+            }
         }
         if (!processedAvailable && !rawAvailable) {
             Text(
