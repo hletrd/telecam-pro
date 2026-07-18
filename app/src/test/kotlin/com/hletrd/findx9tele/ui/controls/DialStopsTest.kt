@@ -46,6 +46,40 @@ class DialStopsTest {
         assertTrue(isoStops(100, 12800, 0f).contentEquals(intArrayOf(100))) // stepEv <= 0
     }
 
+    // AGG3-7/CR-12: isoStops used to round each candidate to 2 significant figures, producing
+    // non-standard values (130/630/1300/5100/8100…) that contradict the "conventional stops"
+    // comment. It now snaps to the standard 1/3-stop ISO ladder (STANDARD_ISO_LADDER), so a
+    // representative device range must reproduce EXACTLY the real-camera ladder, not a rounded
+    // approximation of it.
+    @Test
+    fun `isoStops pins the standard 1-3-stop ladder for a representative 100-12800 range`() {
+        val expected = intArrayOf(
+            100, 125, 160, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600,
+            2000, 2500, 3200, 4000, 5000, 6400, 8000, 10000, 12800,
+        )
+        assertTrue(
+            "expected standard ISO ladder, got ${isoStops(100, 12800, 1f / 3f).toList()}",
+            isoStops(100, 12800, 1f / 3f).contentEquals(expected),
+        )
+    }
+
+    // Hardware bounds that don't land on a standard stop (90 sits between the ladder's 80 and 100;
+    // 9000 sits between 8000 and 10000) must still be individually reachable — the ladder gets the
+    // two odd endpoints ADDED verbatim alongside the nearest standard stops between them, never
+    // rounded away, so the full advertised device range stays reachable.
+    @Test
+    fun `isoStops keeps non-standard hardware endpoints reachable alongside standard stops`() {
+        val stops = isoStops(90, 9000, 1f / 3f)
+        assertEquals(90, stops.first())
+        assertEquals(9000, stops.last())
+        assertTrue(stops.contains(100))
+        assertTrue(stops.contains(6400))
+        assertTrue(stops.contains(8000))
+        for (i in 1 until stops.size) {
+            assertTrue("strictly increasing @$i", stops[i] > stops[i - 1])
+        }
+    }
+
     @Test
     fun `shutterStops core keeps both bounds and stays sorted`() {
         for (step in floatArrayOf(1f / 3f, 0.5f, 1f)) {

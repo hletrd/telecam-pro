@@ -41,6 +41,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -173,13 +174,23 @@ fun ManualDialCluster(
         }
     }
 
+    // AGG3-34: visible/exit content must not both derive from the SAME nulled state, or the shrink
+    // animation composes the empty `null -> Unit` branch and the dial blinks out instead of
+    // animating shut. lastOpenDial tracks the most recent non-null selection (updated via
+    // SideEffect, so it lands strictly after openDial itself already drove this composition and
+    // therefore never lags a live dial switch); the exit animation renders THAT while `dialOpen`
+    // (still keyed on openDial != null) drives visibility.
+    var lastOpenDial by remember { mutableStateOf<DialType?>(null) }
+    SideEffect { if (openDial != null) lastOpenDial = openDial }
+    val displayedDial = openDial ?: lastOpenDial
+
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
         AnimatedVisibility(
             visible = dialOpen,
             enter = fadeIn(tween(160)) + expandVertically(tween(180)),
             exit = fadeOut(tween(120)) + shrinkVertically(tween(160)),
         ) {
-            when (openDial) {
+            when (displayedDial) {
                 DialType.FOCUS -> FocusRuler(controls = controls, caps = caps, onFocusSlider = actions::onFocusSlider)
                 DialType.SHUTTER -> ShutterRuler(controls = controls, caps = caps, actions = actions)
                 DialType.ISO -> IsoRuler(controls = controls, caps = caps, onIso = actions::onIso)
@@ -707,11 +718,23 @@ internal fun roundToSignificant(v: Double, sig: Int): Double {
     return Math.round(v * mag) / mag
 }
 
-/** ISO values [stepEv] EV apart across [[lower], [upper]], anchored at 100, rounded to 2 significant
- *  figures so they read as conventional stops (100, 125, 160, 200, …). Hardware bounds always
- *  included. Plain-bounds core: android.util.Range getters throw "not mocked" on the JVM, so the
- *  testable seam takes Int lower/upper directly (the sessionAttemptPlan/centerCropBox house pattern);
- *  the Range overload below is a thin wrapper. */
+// Standard 1/3-stop ISO ladder (ISO 12232 conventional sensitivities, the values every real camera
+// body shows). AGG3-7/CR-12: snapping each `100·2^(k·stepEv)` candidate to 2 significant figures
+// instead of this table produced non-standard values a photographer never sees on a body — 130,
+// 630, 1300, 5100, 8100 — contradicting the very comment that used to sit here. Mirrors the
+// NICE_SHUTTER_DENOM nearest-match pattern in ProControls.kt.
+private val STANDARD_ISO_LADDER = intArrayOf(
+    50, 64, 80, 100, 125, 160, 200, 250, 320, 400, 500, 640, 800, 1000, 1250, 1600,
+    2000, 2500, 3200, 4000, 5000, 6400, 8000, 10000, 12800, 16000, 20000, 25600,
+)
+
+/** ISO values [stepEv] EV apart across [[lower], [upper]], anchored at 100, each snapped to the
+ *  nearest [STANDARD_ISO_LADDER] entry so they read as conventional stops (100, 125, 160, 200, …)
+ *  rather than a generic significant-figure round. Hardware bounds always included (kept exactly
+ *  even when they fall between two standard stops, so the full advertised range stays reachable).
+ *  Plain-bounds core: android.util.Range getters throw "not mocked" on the JVM, so the testable
+ *  seam takes Int lower/upper directly (the sessionAttemptPlan/centerCropBox house pattern); the
+ *  Range overload below is a thin wrapper. */
 internal fun isoStops(lower: Int, upper: Int, stepEv: Float): IntArray {
     if (lower >= upper || stepEv <= 0f) return intArrayOf(lower)
     val set = sortedSetOf(lower, upper)
@@ -719,7 +742,8 @@ internal fun isoStops(lower: Int, upper: Int, stepEv: Float): IntArray {
     val kLo = Math.ceil(Math.log(lower / 100.0) / ln2 / stepEv).toInt()
     val kHi = Math.floor(Math.log(upper / 100.0) / ln2 / stepEv).toInt()
     for (k in kLo..kHi) {
-        val nice = roundToSignificant(100.0 * Math.pow(2.0, k * stepEv.toDouble()), 2).roundToInt()
+        val raw = 100.0 * Math.pow(2.0, k * stepEv.toDouble())
+        val nice = STANDARD_ISO_LADDER.minByOrNull { kotlin.math.abs(it - raw) } ?: raw.roundToInt()
         if (nice > lower && nice < upper) set.add(nice)
     }
     return set.toIntArray()
@@ -945,13 +969,20 @@ fun RulerSlider(
                 // exact final value the gate may have swallowed.
                 var lastEmitMs = 0L
                 var emittedUnit = Float.NaN
+                // AGG3-21: Compose delivers onDragCancel (not onDragEnd) whenever a competing
+                // gesture detector claims the pointer mid-drag (e.g. a slightly-diagonal drag
+                // reinterpreted by an ancestor as a different gesture). That must land the exact
+                // final value exactly like a clean release, or the applied camera value sits up
+                // to one 16 ms gate window behind the finger and visibly snaps back on the next
+                // recomposition.
+                val landFinalValue = {
+                    isDragging = false
+                    if (emittedUnit != localUnit) onFractionChange(localUnit / totalUnits)
+                }
                 detectHorizontalDragGestures(
                     onDragStart = { isDragging = true; lastEmitMs = 0L; emittedUnit = Float.NaN },
-                    onDragEnd = {
-                        isDragging = false
-                        if (emittedUnit != localUnit) onFractionChange(localUnit / totalUnits)
-                    },
-                    onDragCancel = { isDragging = false },
+                    onDragEnd = landFinalValue,
+                    onDragCancel = landFinalValue,
                 ) { change, dragAmount ->
                     change.consume()
                     // Content follows the finger: dragging left (negative dx) increases the value.
