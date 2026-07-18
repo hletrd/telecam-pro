@@ -199,12 +199,31 @@ object MediaStoreWriter {
     fun openOutputStream(context: Context, uri: Uri): OutputStream? =
         runCatching { context.contentResolver.openOutputStream(uri) }.getOrNull()
 
-    /** Clears IS_PENDING so the file becomes visible to other apps (e.g. the gallery). */
+    /**
+     * Clears IS_PENDING so the file becomes visible to other apps (e.g. the gallery).
+     *
+     * Retries a transient resolver failure a few times with a short backoff (CRIT4-5): a complete
+     * artifact must not be stranded pending — and later deleted by the next launch's
+     * [cleanupOrphanedPending] sweep — over a one-off provider hiccup. Callers run on background
+     * executors (ioExecutor / recorderExecutor), so the bounded sleep never blocks the UI. A
+     * persistent failure still returns false; there is NO republish path afterwards — the pending
+     * file is invisible until the sweep deletes it.
+     */
     fun publish(context: Context, uri: Uri): Boolean {
         val values = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
-        return runCatching { context.contentResolver.update(uri, values, null, null) > 0 }
-            .getOrDefault(false)
+        repeat(PUBLISH_ATTEMPTS) { attempt ->
+            val published = runCatching { context.contentResolver.update(uri, values, null, null) > 0 }
+                .getOrDefault(false)
+            if (published) return true
+            if (attempt < PUBLISH_ATTEMPTS - 1) {
+                runCatching { Thread.sleep(PUBLISH_RETRY_BACKOFF_MS * (attempt + 1)) }
+            }
+        }
+        return false
     }
+
+    private const val PUBLISH_ATTEMPTS = 3
+    private const val PUBLISH_RETRY_BACKOFF_MS = 50L
 
     /** True only when the resolver confirms at least one row was removed. */
     fun delete(context: Context, uri: Uri): Boolean =
