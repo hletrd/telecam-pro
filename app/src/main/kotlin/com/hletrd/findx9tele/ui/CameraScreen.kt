@@ -567,16 +567,10 @@ fun CameraScreen(
                 .padding(top = 64.dp),
         ) {
             // Display MAIN-relative magnification (the stock-app style: 3× at the 3× tele's native,
-            // 10× at the 10×, 13× with the TC). baseMul = opened lens equiv / main equiv (70/23 ≈ 3.04
-            // for the 3× tele); the afocal converter multiplies on top (300/70). So tele-native shows
-            // ~3.0× (TC off) / 13–60× (TC on). TELE uses the CONSTANT display scale so the pill,
-            // the snaps (30×/60×), and the ceiling all land on the same round numbers — the
-            // caps-measured equiv (69.4 mm) would read 59.5× at the spec'd 60× ceiling.
-            val mul = if (state.teleconverterMode) {
-                com.hletrd.findx9tele.camera.TELE_DISPLAY_BASE
-            } else {
-                (state.caps?.equivalentFocalMm ?: 70f) / LensChoice.MAIN.targetEquivMm
-            }
+            // 10× at the 10×, 13× with the TC) via the ONE shared zoomDisplayMultiplier — the
+            // Fn/My-Menu ZOOM value reads the same helper so the two can never disagree again
+            // (DES4-1: the Fn tile used to show the raw lens-local ratio).
+            val mul = zoomDisplayMultiplier(state.teleconverterMode, state.caps?.equivalentFocalMm)
             ZoomIndicator(
                 zoom = state.controls.zoomRatio * mul,
                 range = state.caps?.zoomRatioRange?.let {
@@ -1117,7 +1111,7 @@ private fun ZoomIndicator(
         // (iPhone-style). The bar below stays horizontal — a generic level indicator reads fine at any
         // angle, and rotating it would collide with the surrounding chrome.
         Text(
-            text = "%.1f×".format(zoom),
+            text = "%.1f×".format(java.util.Locale.US, zoom),
             color = CameraColors.Accent,
             fontSize = 15.sp,
             fontWeight = FontWeight.Bold,
@@ -1381,9 +1375,9 @@ private fun ExposureMeter(state: CameraUiState, modifier: Modifier = Modifier) {
     val manualEv = manualMeterEv(state.controls.exposureMode, state.histogramData?.luma)
     val indicatorEv = if (state.controls.exposureMode == ExposureMode.MANUAL) manualEv else compensationEv
     val label = when {
-        state.controls.exposureMode == ExposureMode.MANUAL && manualEv != null -> "M %+.1f".format(manualEv)
+        state.controls.exposureMode == ExposureMode.MANUAL && manualEv != null -> "M %+.1f".format(java.util.Locale.US, manualEv)
         state.controls.exposureMode == ExposureMode.MANUAL -> "M --"
-        else -> "%+.1f".format(compensationEv)
+        else -> "%+.1f".format(java.util.Locale.US, compensationEv)
     }
     // Vertical Sony-style scale: +3 EV at the top, -3 EV at the bottom, readout above it.
     Column(

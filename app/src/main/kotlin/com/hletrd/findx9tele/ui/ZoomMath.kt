@@ -12,6 +12,22 @@ import kotlin.math.min
 
 internal data class ZoomBounds(val lower: Float, val upper: Float)
 
+/**
+ * The ONE main-relative zoom DISPLAY multiplier (DES4-1): TELE uses the constant converter scale
+ * (13–60× round numbers; the caps-measured 69.4 mm would read 59.5× at the 60× ceiling), other
+ * routes use openedLensEquiv ÷ mainEquiv (≈3.0× at the 3× tele's native position). The HUD pill
+ * and the Fn/My-Menu ZOOM value MUST both read through this — the Fn tile used to show the raw
+ * lens-local ratio ("2.3×") while the pill showed "30.0×" for the identical physical state. (The
+ * Shooting-tab slider and Zoom ruler are EDIT surfaces on the lens-local scale outside TELE and
+ * deliberately keep their own base.)
+ */
+internal fun zoomDisplayMultiplier(teleconverter: Boolean, equivalentFocalMm: Float?): Float =
+    if (teleconverter) {
+        TELE_DISPLAY_BASE
+    } else {
+        (equivalentFocalMm ?: LensChoice.MAIN.targetEquivMm) / LensChoice.MAIN.targetEquivMm
+    }
+
 /** One zoom range shared by input targets and the value that can actually be applied. */
 internal fun effectiveZoomBounds(
     capsLower: Float?,

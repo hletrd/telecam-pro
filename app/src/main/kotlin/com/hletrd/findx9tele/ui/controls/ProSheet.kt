@@ -41,6 +41,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.key
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.text.style.TextOverflow
@@ -217,10 +218,16 @@ internal fun ProSheet(
                     // Each tab owns its own scroll position: a single shared rememberScrollState()
                     // opened every tab at the PREVIOUS tab's offset (scroll Setup near its bottom,
                     // pick Lens → Lens opened mid-page with its title hidden). Saveable per tab so
-                    // the offsets survive process recreation like the old single state did.
+                    // the offsets survive process recreation. Positional scoping via the key()
+                    // composable, NOT rememberSaveable's custom-key overload — that overload is
+                    // deprecated (QA4-1; its own deprecation text names the state-sharing/loss bug
+                    // class this surface already shipped twice) and violates the repo's
+                    // no-deprecated-APIs policy.
                     val tabScrollStates = ProSheetTab.entries.associateWith { tab ->
-                        rememberSaveable(saver = ScrollState.Saver, key = "proSheetScroll_${tab.name}") {
-                            ScrollState(initial = 0)
+                        key(tab) {
+                            rememberSaveable(saver = ScrollState.Saver) {
+                                ScrollState(initial = 0)
+                            }
                         }
                     }
                     Column(
@@ -528,14 +535,18 @@ private fun MemoryPresetRow(
             Text(name, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
             Text(summary, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
         }
-        FilterChip(
-            selected = false,
-            onClick = onSave,
-            enabled = !locked,
-            label = { Text(if (saved) "Update" else "Save") },
-            colors = pixelChipColors(),
-            border = pixelChipBorder(false),
-        )
+        // DES4-3: the d875eea 48 dp sweep covered the three shared selector components; this
+        // standalone action chip (writes an MR bank) was left bare at ~32 dp.
+        MinTouchTargetChip {
+            FilterChip(
+                selected = false,
+                onClick = onSave,
+                enabled = !locked,
+                label = { Text(if (saved) "Update" else "Save") },
+                colors = pixelChipColors(),
+                border = pixelChipBorder(false),
+            )
+        }
     }
 }
 
@@ -714,14 +725,17 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     }
     // Sony Custom WB: frame a white/grey card and capture a fresh accepted-session AWB sample.
     val customWbCaptureEnabled = state.cameraReady && availability.customWbCaptureEnabled
-    FilterChip(
-        selected = controls.wbMode == WbMode.CUSTOM,
-        onClick = actions::onCaptureCustomWb,
-        enabled = customWbCaptureEnabled,
-        label = { Text("Capture Custom WB") },
-        colors = pixelChipColors(),
-        border = pixelChipBorder(controls.wbMode == WbMode.CUSTOM),
-    )
+    // DES4-3: standalone action chip missed by the d875eea sweep — same 48 dp wrapper.
+    MinTouchTargetChip {
+        FilterChip(
+            selected = controls.wbMode == WbMode.CUSTOM,
+            onClick = actions::onCaptureCustomWb,
+            enabled = customWbCaptureEnabled,
+            label = { Text("Capture Custom WB") },
+            colors = pixelChipColors(),
+            border = pixelChipBorder(controls.wbMode == WbMode.CUSTOM),
+        )
+    }
     Text(
         if (customWbCaptureEnabled) {
             "Frame a white or grey card, then tap."
@@ -839,6 +853,9 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
         selected = state.videoStabMode,
         labelFor = { it.label },
         onSelect = actions::onVideoStabMode,
+        // Same REC guard as the Lens/TC rows above (CR4-6): onVideoStabMode refuses mid-REC with
+        // a toast, so a visually-hot selector here silently no-oped while its siblings greyed out.
+        enabled = recordingMutable,
     )
     val stabCaption = when (state.videoStabMode) {
         VideoStabMode.OFF -> "Off"
@@ -1268,7 +1285,15 @@ internal fun fnSlotValue(slot: FnSlot, state: CameraUiState): String {
         }
         FnSlot.WB -> if (c.wbMode == WbMode.MANUAL) "${c.wbKelvin}K" else wbModeLabel(c.wbMode)
         FnSlot.EV -> "%+.1f".format(Locale.US, evCompStops(state))
-        FnSlot.ZOOM -> "%.1fx".format(Locale.US, c.zoomRatio)
+        // Same main-relative display scale as the HUD pill (shared zoomDisplayMultiplier, DES4-1):
+        // in TELE this reads 13-60x like every other zoom surface, never the raw lens-local ratio.
+        FnSlot.ZOOM -> "%.1fx".format(
+            Locale.US,
+            c.zoomRatio * com.hletrd.findx9tele.ui.zoomDisplayMultiplier(
+                state.teleconverterMode,
+                state.caps?.equivalentFocalMm,
+            ),
+        )
         FnSlot.STABILIZATION -> state.videoStabMode.label
         FnSlot.DRIVE -> driveModeLabel(state.driveMode)
         FnSlot.METERING -> meteringModeLabel(c.meteringMode)
