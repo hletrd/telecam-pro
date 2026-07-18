@@ -177,10 +177,29 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   requested ratio, never the wide-aimed HAL target (`setZoomRatio(halRatio, requestRatio)`); a
   quiet-window landing (~250 ms after the last flush) lands the exact ratio before the 700 ms
   boost tail so clips stop carrying ~1.2×-wide framing after finger-up; and the same ≥200 ms
-  fast-path architecture covers the OTHER high-churn keys — `sensorOnlyControlsDelta` admits
-  focus-distance/ISO/exposure-only deltas to a cached-builder resubmit
+  fast-path architecture covers the OTHER high-churn keys — `sensorFastPathAdmitted` admits
+  focus-distance/ISO/exposure-only deltas (`sensorOnlyControlsDelta`) to a cached-builder resubmit
   (`applySensorValueControls`, the same derivation the full rebuild uses) so ruler drags and the
-  app-side AE loop stop paying full ~180 ms rebuild stalls at 25 Hz.
+  app-side AE loop stop paying full ~180 ms rebuild stalls at 25 Hz. A live tap-AF/AF-lock
+  override RIDES the fast path: `reapplyAfOverrides` restores the override keys (tap-AF
+  AF_MODE_AUTO hold, AF-lock OFF + frozen distance; regions persist on the cached builder; never
+  a re-trigger) after every fast-path value write, so key state equals the full rebuild's — the
+  earlier wholesale refusal (c928eac) protected the tapped focus but starved the preview back to
+  ~5 fps whenever the app-side AE loop ran with a held override. Device-verified 2026-07-18: the
+  tapped lens distance holds bit-exact across ISO changes with the loop live.
+- **Long exposures: the repeating request is CLAMPED and the still ceiling is 4 s (device-bisected
+  2026-07-18).** Two independent HAL facts: (1) a multi-second `SENSOR_EXPOSURE_TIME` on the
+  REPEATING request wedges the still handoff — the queued still sits inert behind the in-flight
+  long frame and the device errors `CAMERA_ERROR(3)` after ~one exposure (shot silently lost,
+  3/3 repro at 6.3 s) — so `previewExposureTrade` unconditionally caps the preview exposure at
+  `PREVIEW_SAFE_MAX_EXPOSURE_NS` (500 ms) in EVERY AE-OFF mode, trading brightness into ISO while
+  headroom lasts (PROGRAM keeps its 1/30 s neutral target; the old trade SKIPPED entirely at the
+  ISO ceiling, which is exactly how 6.3 s reached the wire in the dark). (2) With the repeating
+  stream safely short, a STILL request above 4 s STILL errors the device the same way — the
+  advertised exposure upper (≥20 s) is a lie; 2/3.2/4 s complete with correct EXIF, 5/6.3 s are
+  reproducibly fatal. `HAL_SAFE_MAX_STILL_EXPOSURE_NS` (4 s) clamps the advertised range at the
+  CAPS seam so the shutter ruler, request clamps, AEB brackets, and the still watchdog all stay
+  truthful; an over-ceiling persisted value captures at a clamped, EXIF-honest 4.0 s.
 - **Compounding zoom inputs must base on the COALESCED pending value (2026-07-14).** Pinch factors,
   hardware-key steps, and the ease ticker all multiply "the current zoom" — but UI state lags the
   16 ms coalescing flush, so compounding against `_state` made zoom crawl between flushes then jump
