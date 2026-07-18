@@ -1,5 +1,6 @@
 package com.hletrd.findx9tele.ui
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -30,5 +31,13 @@ class StatusUrgencyTest {
         assertFalse("DNG saved".isUrgentStatus())
         assertFalse("MR1 loaded".isUrgentStatus())
         assertFalse("Stop REC first".isUrgentStatus())
+    }
+
+    @Test
+    fun `status lifetime is long for failures short for success and neutral for guidance`() {
+        assertEquals(6_000L, statusDisplayDurationMs("Could not publish HEIF"))
+        assertEquals(1_500L, statusDisplayDurationMs("Video saved"))
+        assertEquals(2_500L, statusDisplayDurationMs("No audio samples — video only"))
+        assertEquals(null, statusDisplayDurationMs(null))
     }
 }

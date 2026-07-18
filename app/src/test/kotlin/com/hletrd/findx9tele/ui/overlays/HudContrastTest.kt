@@ -2,10 +2,19 @@ package com.hletrd.findx9tele.ui.overlays
 
 import androidx.compose.ui.graphics.toArgb
 import com.hletrd.findx9tele.ui.theme.CameraColors
+import com.hletrd.findx9tele.ui.teleChipIdleScrimAlpha
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HudContrastTest {
+
+    @Test
+    fun `idle TELE uses the shared bright-frame scrim floor`() {
+        assertEquals(HUD_TEXT_SCRIM_ALPHA, teleChipIdleScrimAlpha(), 0f)
+        val ratio = contrastRatioOnWhiteScrim(rgbOf(CameraColors.TextPrimary), teleChipIdleScrimAlpha())
+        assertTrue("idle TELE contrast was $ratio", ratio >= 4.5)
+    }
 
     // LIVE surfaces reference the REAL palette (TEST4-10): the old literal copies pinned a stale
     // duplicate of CameraColors — a palette tweak kept these green while shipping an unchecked

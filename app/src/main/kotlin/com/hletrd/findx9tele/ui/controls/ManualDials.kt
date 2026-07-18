@@ -81,6 +81,7 @@ import com.hletrd.findx9tele.camera.controlAvailability
 import com.hletrd.findx9tele.camera.controlCapabilities
 import com.hletrd.findx9tele.focus.FocusMapping
 import com.hletrd.findx9tele.ui.CameraActions
+import com.hletrd.findx9tele.ui.formatDisplayZoom
 import com.hletrd.findx9tele.ui.overlays.HUD_TEXT_SCRIM_ALPHA
 import com.hletrd.findx9tele.ui.theme.CameraColors
 import java.util.Locale
@@ -301,12 +302,13 @@ private fun FnDialChip(
 ) {
     val controls = state.controls
     val caps = state.caps
+    val policyEnabled = quickFnEnabled(slot, state)
     when (slot) {
         FnSlot.EXPOSURE_MODE -> DialChip(
             label = "AE",
             value = controls.exposureMode.letter,
             active = controls.exposureMode != ExposureMode.PROGRAM,
-            enabled = availability.exposureModes.size > 1,
+            enabled = policyEnabled && availability.exposureModes.size > 1,
             onClick = { actions.onExposureMode(nextAvailable(controls.exposureMode, availability.exposureModes)) },
             onLongClick = onOpenFnMenu,
         )
@@ -318,7 +320,7 @@ private fun FnDialChip(
                 caps?.minFocusDistanceDiopters ?: 0f,
             ),
             active = openDial == DialType.FOCUS,
-            enabled = quickManualDialEnabled(DialType.FOCUS, availability),
+            enabled = policyEnabled && quickManualDialEnabled(DialType.FOCUS, availability),
             onClick = { onSelect(DialType.FOCUS) },
             onLongClick = onOpenFnMenu,
         )
@@ -331,7 +333,7 @@ private fun FnDialChip(
                 else -> formatShutterSpeed(controls.exposureTimeNs)
             },
             active = openDial == DialType.SHUTTER,
-            enabled = quickManualDialEnabled(DialType.SHUTTER, availability),
+            enabled = policyEnabled && quickManualDialEnabled(DialType.SHUTTER, availability),
             onClick = { onSelect(DialType.SHUTTER) },
             onLongClick = onOpenFnMenu,
         )
@@ -343,7 +345,7 @@ private fun FnDialChip(
                 else -> controls.iso.toString()
             },
             active = openDial == DialType.ISO,
-            enabled = quickManualDialEnabled(DialType.ISO, availability),
+            enabled = policyEnabled && quickManualDialEnabled(DialType.ISO, availability),
             onClick = { onSelect(DialType.ISO) },
             onLongClick = onOpenFnMenu,
         )
@@ -351,7 +353,7 @@ private fun FnDialChip(
             label = "WB",
             value = if (controls.wbMode == WbMode.MANUAL) "${controls.wbKelvin}K" else wbModeLabel(controls.wbMode),
             active = openDial == DialType.WB,
-            enabled = whiteBalanceFnChipEnabled(controls.wbMode, availability),
+            enabled = policyEnabled && whiteBalanceFnChipEnabled(controls.wbMode, availability),
             onClick = { onSelect(DialType.WB) },
             onLongClick = onOpenFnMenu,
         )
@@ -359,15 +361,19 @@ private fun FnDialChip(
             label = "EV",
             value = "%+.1f".format(Locale.US, controls.exposureCompensation * evStepValue),
             active = openDial == DialType.EV,
-            enabled = quickManualDialEnabled(DialType.EV, availability),
+            enabled = policyEnabled && quickManualDialEnabled(DialType.EV, availability),
             onClick = { onSelect(DialType.EV) },
             onLongClick = onOpenFnMenu,
         )
         FnSlot.ZOOM -> DialChip(
             label = "Zoom",
-            value = "%.1fx".format(Locale.US, controls.zoomRatio),
+            value = formatDisplayZoom(
+                controls.zoomRatio,
+                state.teleconverterMode,
+                state.caps?.equivalentFocalMm,
+            ),
             active = openDial == DialType.ZOOM,
-            enabled = quickManualDialEnabled(DialType.ZOOM, availability),
+            enabled = policyEnabled && quickManualDialEnabled(DialType.ZOOM, availability),
             onClick = { onSelect(DialType.ZOOM) },
             onLongClick = onOpenFnMenu,
         )
@@ -377,7 +383,7 @@ private fun FnDialChip(
             label = "Stabilization",
             value = state.videoStabMode.label,
             active = state.videoStabMode != VideoStabMode.OFF,
-            enabled = true,
+            enabled = policyEnabled,
             onClick = { actions.onVideoStabMode(nextVideoStabMode(state.videoStabMode)) },
             onLongClick = onOpenFnMenu,
         )
@@ -385,7 +391,7 @@ private fun FnDialChip(
             label = "Drive",
             value = driveModeLabel(state.driveMode),
             active = state.driveMode != com.hletrd.findx9tele.camera.DriveMode.SINGLE,
-            enabled = true,
+            enabled = policyEnabled,
             onClick = { actions.onDriveMode(nextDriveMode(state.driveMode)) },
             onLongClick = onOpenFnMenu,
         )
@@ -393,7 +399,7 @@ private fun FnDialChip(
             label = "Meter",
             value = meteringModeLabel(controls.meteringMode),
             active = controls.meteringMode != MeteringMode.MATRIX,
-            enabled = availability.meteringModes.size > 1,
+            enabled = policyEnabled && availability.meteringModes.size > 1,
             onClick = { actions.onMeteringMode(nextAvailable(controls.meteringMode, availability.meteringModes)) },
             onLongClick = onOpenFnMenu,
         )
@@ -401,7 +407,7 @@ private fun FnDialChip(
             label = "Peaking",
             value = if (state.focusPeaking) "On" else "Off",
             active = state.focusPeaking,
-            enabled = true,
+            enabled = policyEnabled,
             onClick = { actions.onTogglePeaking(!state.focusPeaking) },
             onLongClick = onOpenFnMenu,
         )
@@ -409,12 +415,12 @@ private fun FnDialChip(
             label = "Zebra",
             value = if (state.zebra) "On" else "Off",
             active = state.zebra,
-            enabled = true,
+            enabled = policyEnabled,
             onClick = { actions.onToggleZebra(!state.zebra) },
             onLongClick = onOpenFnMenu,
         )
         FnSlot.TRANSFER -> {
-            val transferMutable = !state.isRecording && state.videoCodec == VideoCodec.HEVC
+            val transferMutable = policyEnabled
             DialChip(
                 // "Gamma" is the standard camera term for the transfer curve (HLG / O-Log / SDR);
                 // the old "TF" abbreviation read as nonsense (feedback).
@@ -430,7 +436,7 @@ private fun FnDialChip(
             label = "Audio",
             value = state.audioScene.label,
             active = state.audioScene != com.hletrd.findx9tele.camera.AudioScene.STANDARD,
-            enabled = true,
+            enabled = policyEnabled,
             onClick = { actions.onAudioScene(nextAudioScene(state.audioScene)) },
             onLongClick = onOpenFnMenu,
         )
@@ -438,7 +444,7 @@ private fun FnDialChip(
             label = "Grid",
             value = gridTypeLabel(state.grid),
             active = state.grid != GridType.NONE,
-            enabled = true,
+            enabled = policyEnabled,
             onClick = { actions.onGridType(nextGridType(state.grid)) },
             onLongClick = onOpenFnMenu,
         )
@@ -446,7 +452,7 @@ private fun FnDialChip(
             label = "Level",
             value = if (state.level) "On" else "Off",
             active = state.level,
-            enabled = true,
+            enabled = policyEnabled,
             onClick = { actions.onToggleLevel(!state.level) },
             onLongClick = onOpenFnMenu,
         )
@@ -454,31 +460,31 @@ private fun FnDialChip(
             label = "Loupe",
             value = if (state.punchIn) "On" else "Off",
             active = state.punchIn,
-            enabled = true,
+            enabled = policyEnabled,
             onClick = { actions.onTogglePunchIn(!state.punchIn) },
             onLongClick = onOpenFnMenu,
         )
         FnSlot.TELECONVERTER -> DialChip(
             label = "Tele",
-            value = if (state.teleconverterMode) "300" else "Off",
+            value = if (state.teleconverterMode) "300 mm" else "Off",
             active = state.teleconverterMode,
-            enabled = !state.isRecording,
-            onClick = { if (!state.isRecording) actions.onToggleTeleconverter(!state.teleconverterMode) },
+            enabled = policyEnabled,
+            onClick = { if (policyEnabled) actions.onToggleTeleconverter(!state.teleconverterMode) },
             onLongClick = onOpenFnMenu,
         )
         FnSlot.OPEN_GATE -> DialChip(
             label = "Open Gate",
             value = if (state.openGate) "4:3" else "Off",
             active = state.openGate,
-            enabled = state.mode == CaptureMode.VIDEO && !state.isRecording,
-            onClick = { if (state.mode == CaptureMode.VIDEO && !state.isRecording) actions.onToggleOpenGate(!state.openGate) },
+            enabled = policyEnabled,
+            onClick = { if (policyEnabled) actions.onToggleOpenGate(!state.openGate) },
             onLongClick = onOpenFnMenu,
         )
         FnSlot.FRAME_LINES -> DialChip(
             label = "Frame",
             value = state.frameLines.label,
             active = state.frameLines != FrameLineType.OFF,
-            enabled = true,
+            enabled = policyEnabled,
             onClick = { actions.onFrameLines(nextFrameLine(state.frameLines)) },
             onLongClick = onOpenFnMenu,
         )
@@ -515,6 +521,7 @@ private fun DialChip(
             .sizeIn(minHeight = 48.dp)
             .combinedClickable(
                 enabled = enabled,
+                role = Role.Button,
                 onClick = onClick,
                 onLongClickLabel = "Open Fn menu",
                 onLongClick = onLongClick,

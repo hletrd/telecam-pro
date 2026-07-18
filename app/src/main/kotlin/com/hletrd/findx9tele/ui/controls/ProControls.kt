@@ -2,12 +2,17 @@ package com.hletrd.findx9tele.ui.controls
 
 import android.util.Size
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.progressSemantics
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -37,6 +42,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -83,6 +89,14 @@ import kotlin.math.roundToInt
  * through this local so the shared components below stay presentational.
  */
 internal val LocalSettingHelp = compositionLocalOf<(String) -> Unit> { {} }
+
+internal data class SettingSemantics(val label: String, val state: String)
+
+internal fun sliderSettingSemantics(label: String, value: String): SettingSemantics =
+    SettingSemantics(label = label, state = value)
+
+internal fun toggleSettingSemantics(label: String, checked: Boolean): SettingSemantics =
+    SettingSemantics(label = label, state = if (checked) "On" else "Off")
 
 // ---------------------------------------------------------------------------
 // Small reusable building blocks shared by every settings row
@@ -233,11 +247,14 @@ internal fun LabeledSlider(
     val span = valueRange.endInclusive - valueRange.start
     val fraction = if (span <= 0f) 0f else ((value - valueRange.start) / span).coerceIn(0f, 1f)
     val showHelp = LocalSettingHelp.current
+    val accessibility = sliderSettingSemantics(label, valueLabel)
     Column(
         modifier = modifier
             .fillMaxWidth()
             .pointerInput(label) { detectTapGestures(onLongPress = { showHelp(label) }) }
-            .semantics {
+            .semantics(mergeDescendants = true) {
+                contentDescription = accessibility.label
+                stateDescription = accessibility.state
                 onLongClick(label = "Show help") {
                     showHelp(label)
                     true
@@ -366,6 +383,7 @@ private fun CameraSlider(
 }
 
 /** Label + Switch row used by every boolean toggle in the settings menu. */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun ToggleRow(
     label: String,
@@ -375,11 +393,23 @@ internal fun ToggleRow(
     enabled: Boolean = true,
 ) {
     val showHelp = LocalSettingHelp.current
+    val accessibility = toggleSettingSemantics(label, checked)
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .pointerInput(label) { detectTapGestures(onLongPress = { showHelp(label) }) }
-            .semantics {
+            .sizeIn(minHeight = 48.dp)
+            .combinedClickable(
+                enabled = enabled,
+                role = Role.Switch,
+                onClick = { onCheckedChange(!checked) },
+                onLongClickLabel = "Show help",
+                onLongClick = { showHelp(label) },
+            )
+            .semantics(mergeDescendants = true) {
+                contentDescription = accessibility.label
+                stateDescription = accessibility.state
+                role = Role.Switch
+                if (!enabled) disabled()
                 onLongClick(label = "Show help") {
                     showHelp(label)
                     true
@@ -395,8 +425,9 @@ internal fun ToggleRow(
         )
         Switch(
             checked = checked,
-            onCheckedChange = onCheckedChange,
+            onCheckedChange = null,
             enabled = enabled,
+            modifier = Modifier.clearAndSetSemantics { },
             colors = SwitchDefaults.colors(
                 checkedThumbColor = Color.White,
                 checkedTrackColor = CameraColors.Accent,
@@ -427,7 +458,7 @@ internal fun LabelValueRow(
                 if (onClick != null) {
                     Modifier
                         .sizeIn(minHeight = 48.dp)
-                        .clickable(enabled = enabled, onClick = onClick)
+                        .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
                 } else {
                     Modifier
                 },

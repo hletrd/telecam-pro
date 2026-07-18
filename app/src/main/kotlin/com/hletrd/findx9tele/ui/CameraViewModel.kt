@@ -252,11 +252,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
 
     init {
-        engine.onStatus = { msg ->
-            _state.update { it.copy(statusMessage = msg) }
-            mainHandler.removeCallbacks(clearStatusRunnable)
-            if (msg != null) mainHandler.postDelayed(clearStatusRunnable, 2000)
-        }
+        engine.onStatus = ::publishStatus
         // Caps arrive on the setup thread. Reconcile restored/schema-normalized zoom against the
         // selected camera's authoritative range on main before any delayed input can reuse it.
         engine.onCapsReady = { caps, generation ->
@@ -338,10 +334,12 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             mainHandler.post {
                 if (!engine.isOpticsGenerationCurrent(generation)) return@post
                 cancelPendingControls()
+                cancelCountdown()
                 // The rollback restored a different optics scale: every in-flight glide value is an
                 // ABSOLUTE ratio in the failed attempt's scale, so ease target / coalesced base /
                 // throttled landing all invalidate together (same invariant as every optics-remap door).
                 invalidateZoomGlide()
+                clearTapFocus()
                 _state.update {
                     it.copy(
                         mode = mode,
@@ -493,10 +491,12 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     ) {
         // The recalled packet supersedes a delayed manual-control snapshot from the prior setup.
         cancelPendingControls()
+        cancelCountdown()
         // MR recall / settings restore can change mode/lens/TC — i.e. the zoom SCALE. Any glide still
         // easing toward a target computed in the old scale (or a throttled landing about to fire) would
         // visibly drag the just-recalled framing away from the preset (same invariant as every remap door).
         invalidateZoomGlide()
+        clearTapFocus()
         val c = loaded.controls
         val e = loaded.extras
         val defaults = CameraUiState()
@@ -642,9 +642,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         }
         mainHandler.removeCallbacks(levelTicker)
         if (e.level && lifecycleStarted) mainHandler.post(levelTicker)
-        if (status != null) {
-            mainHandler.removeCallbacks(clearStatusRunnable)
-            mainHandler.postDelayed(clearStatusRunnable, 2000)
+        mainHandler.removeCallbacks(clearStatusRunnable)
+        statusDisplayDurationMs(status)?.let { durationMs ->
+            mainHandler.postDelayed(clearStatusRunnable, durationMs)
         }
     }
 
@@ -724,11 +724,15 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setTransfer(if (mode == CaptureMode.VIDEO) transfer else ColorTransfer.SDR)
     }
 
-    private fun showStatus(message: String) {
+    private fun publishStatus(message: String?) {
         _state.update { it.copy(statusMessage = message) }
         mainHandler.removeCallbacks(clearStatusRunnable)
-        mainHandler.postDelayed(clearStatusRunnable, 2000)
+        statusDisplayDurationMs(message)?.let { durationMs ->
+            mainHandler.postDelayed(clearStatusRunnable, durationMs)
+        }
     }
+
+    private fun showStatus(message: String) = publishStatus(message)
 
     private fun rejectIfRecording(message: String): Boolean {
         if (!_state.value.isRecording) return false
@@ -814,7 +818,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
 
     private fun focalSummary(s: CameraUiState): String =
-        if (s.teleconverterMode) "300mm" else "${s.lens.targetEquivMm.toInt()}mm"
+        if (s.teleconverterMode) "300 mm" else "${s.lens.targetEquivMm.toInt()} mm"
 
     private fun transferSummary(t: ColorTransfer): String = when (t) {
         ColorTransfer.HLG -> "HLG"
@@ -1129,14 +1133,11 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
      * cancels every matching timer.
      *
      * It deliberately does NOT call engine.setZoomInteraction(false): a synchronous boost-off would
-     * fire setSmoothPreviewBoost(false) → a full startPreview() rebuild on the controller a remap is
-     * about to discard (the exact wasted rebuild AGG3-10 flags). Resetting the ViewModel-side
-     * `interacting` flag is enough — the next gesture's first flush re-arms the boost edge on the FRESH
-     * controller (whose own smoothPreviewBoost starts false), so the low-light fps boost is not lost
-     * (ARCH-4). The engine's own `zoomInteractionActive` is cleared by the engine itself: in
-     * `resume()` (covers onStop-mid-gesture with no reopen) and in `wireController` (covers every
-     * reopen) — AGG4-2; the flag used to leak stale-true across remap doors and defeat the next
-     * gesture's leading edge.
+     * fire setSmoothPreviewBoost(false) → a full startPreview() rebuild on a controller the remap may
+     * discard. Resetting the ViewModel-side `interacting` flag is enough. A structural reopen gets a
+     * fresh boost=false controller through `wireController`; a same-route commit goes through
+     * `commitRetainedOpticsControls`, which folds exact controls and boost removal into its one
+     * camera-thread request update. `resume()` covers an onStop-mid-gesture lifecycle return.
      */
     private fun invalidateZoomGlide() {
         zoomGlide.invalidateForRemap()
@@ -1192,6 +1193,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         scheduleSettingsSave()
     }
     override fun onSetPhotoFormats(formats: PhotoFormats) {
+        cancelCountdown()
         val s = _state.value
         _state.update {
             it.copy(
@@ -1202,6 +1204,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         scheduleSettingsSave()
     }
     override fun onAspectRatio(ratio: AspectRatio) {
+        cancelCountdown()
         engine.setAspectRatio(ratio)
         _state.update { it.copy(aspectRatio = ratio, activeMemorySlot = null) }
         scheduleSettingsSave()
@@ -1241,6 +1244,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
     override fun onToggleTeleconverter(enabled: Boolean) {
         if (rejectIfRecording("Stop REC first")) return
+        cancelCountdown()
         drainPendingControls()
         // TELE pins the STANDALONE 3× camera (the converter's host lens; digital-only zoom, afocal
         // flip). OFF restores the EXACT pre-TELE framing — lens band + ratio in whatever mode is
@@ -1287,6 +1291,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     override fun onLens(choice: LensChoice) {
         if (rejectIfRecording("Stop REC first")) return
+        cancelCountdown()
         drainPendingControls()
         // A lens pick is a ZOOM PRESET on the logical seamless camera (no reopen, no black gap).
         // TELE stays on only when it already is AND the pick is its 3× host lens; any other pick
@@ -1505,16 +1510,19 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     // ---- Drive ----
     override fun onTimer(timer: ShutterTimer) {
+        cancelCountdown()
         _state.update { it.copy(timer = timer, activeMemorySlot = null) }
         scheduleSettingsSave()
     }
     override fun onDriveMode(mode: DriveMode) {
+        cancelCountdown()
         engine.setDriveMode(mode)
         _state.update { it.copy(driveMode = mode) }
         markChanged(FnSlot.DRIVE)
         scheduleSettingsSave()
     }
     override fun onIntervalSec(sec: Int) {
+        cancelCountdown()
         engine.setIntervalSec(sec)
         _state.update { it.copy(intervalSec = sec) }
         markChanged(FnSlot.DRIVE)
@@ -1562,7 +1570,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
 
     override fun onCapturePhoto() {
-        if (_state.value.timerCountdownSec > 0) return // countdown already in progress; ignore re-tap
+        if (_state.value.timerCountdownSec > 0) {
+            cancelCountdown()
+            return
+        }
         val state = _state.value
         if (!state.stillCaptureReady) {
             // Surface the engine's authoritative session status now; never run a known-impossible
@@ -1654,6 +1665,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
 
     override fun onCameraOverride(id: String?) {
+        cancelCountdown()
         drainPendingControls()
         // A camera-id override reopens onto a different route (different zoom scale): abandon any
         // in-flight coalesced/gliding zoom the same way every other optics-remap door does.
@@ -1764,7 +1776,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onDeleteLastMedia(uri: Uri) {
         // Freeze ownership and tombstone the id BEFORE the Binder calls. Any slower HEIF/JPEG/DNG
         // callback for the shot is then rejected and deleted instead of replacing the thumbnail.
-        val outputs = captureOutputs.takeForDelete(uri)
+        val deletePlan = captureOutputs.beginDelete(uri)
+        val outputs = deletePlan.outputs
         // The open overlay can still hold the RAW URI after a processed sibling upgraded the
         // thumbnail. Clear whichever sibling currently owns review, not only the tapped URI.
         _state.update {
@@ -1775,8 +1788,35 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             }
         }
         ioExecutor.execute {
-            val allDeleted = outputs.map { MediaStoreWriter.delete(getApplication(), it) }.all { it }
-            mainHandler.post { showStatus(if (allDeleted) "Deleted" else "Could not delete media") }
+            val survivors = outputs.filterTo(linkedSetOf()) { output ->
+                !MediaStoreWriter.delete(getApplication(), output)
+            }
+            val restored = captureOutputs.restoreDeleteSurvivors(deletePlan, survivors)
+            mainHandler.post {
+                if (restored != null) {
+                    _state.update { current ->
+                        if (captureOutputs.isCurrentReviewOutput(restored)) {
+                            current.copy(
+                                lastMediaUri = restored,
+                                lastMediaDeleteScope = if (deletePlan.captureId != null) {
+                                    MediaDeleteScope.CAPTURE_FAMILY
+                                } else {
+                                    MediaDeleteScope.FILE_ONLY
+                                },
+                            )
+                        } else {
+                            current
+                        }
+                    }
+                }
+                showStatus(
+                    when {
+                        survivors.isEmpty() -> "Deleted"
+                        restored != null -> "Some media could not be deleted — retry from review"
+                        else -> "Some media could not be deleted — retry in Gallery"
+                    },
+                )
+            }
         }
     }
 

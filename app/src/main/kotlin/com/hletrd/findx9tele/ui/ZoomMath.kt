@@ -9,6 +9,7 @@ import com.hletrd.findx9tele.camera.TELE_ZOOM_SNAPS
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+import java.util.Locale
 
 internal data class ZoomBounds(val lower: Float, val upper: Float)
 
@@ -27,6 +28,18 @@ internal fun zoomDisplayMultiplier(teleconverter: Boolean, equivalentFocalMm: Fl
     } else {
         (equivalentFocalMm ?: LensChoice.MAIN.targetEquivMm) / LensChoice.MAIN.targetEquivMm
     }
+
+/** Camera-style zoom typography shared by every read-only zoom surface. */
+internal fun formatZoomMultiplier(zoom: Float): String = "%.1f×".format(Locale.US, zoom)
+
+/** Main-relative display value for a lens-local zoom request. */
+internal fun formatDisplayZoom(
+    localZoomRatio: Float,
+    teleconverter: Boolean,
+    equivalentFocalMm: Float?,
+): String = formatZoomMultiplier(
+    localZoomRatio * zoomDisplayMultiplier(teleconverter, equivalentFocalMm),
+)
 
 /** One zoom range shared by input targets and the value that can actually be applied. */
 internal fun effectiveZoomBounds(

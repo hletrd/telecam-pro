@@ -282,7 +282,7 @@ private data class ReviewMetadata(
     val sizeBytes: Long,
     val width: Int,
     val height: Int,
-    /** "ISO 1250 · 1/300s · 300mm" when the file carries exposure EXIF (JPEG/DNG); null otherwise. */
+    /** "ISO 1250 · 1/300s · 300 mm" when the file carries exposure EXIF (JPEG/DNG); null otherwise. */
     val exifLine: String?,
 )
 
@@ -300,7 +300,7 @@ private suspend fun loadMetadata(context: Context, uri: Uri): ReviewMetadata? =
                     val parts = buildList {
                         iso?.let { add("ISO $it") }
                         expS?.let { add(if (it >= 1.0) "%.1fs".format(java.util.Locale.US, it) else "1/${(1.0 / it).roundToInt()}s") }
-                        focal35?.takeIf { f -> f.toIntOrNull()?.let { it > 0 } == true }?.let { add("${it}mm") }
+                        focal35?.takeIf { f -> f.toIntOrNull()?.let { it > 0 } == true }?.let { add("$it mm") }
                     }
                     parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
                 }
@@ -871,6 +871,7 @@ fun MediaReviewOverlay(
                     color = CameraColors.TextPrimary,
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.Bold,
+                    modifier = Modifier.rotate(overlayRotation),
                 )
             }
         }
@@ -1079,7 +1080,7 @@ internal fun reviewScaleLabel(scale: Float): String = when {
     abs(scale - 1f) < 0.05f -> "1×"
     abs(scale - 4f) < 0.05f -> "4×"
     abs(scale - 8f) < 0.05f -> "8×"
-    else -> "%.1f×".format(java.util.Locale.ROOT, scale)
+    else -> "%.1f×".format(java.util.Locale.US, scale)
 }
 
 internal fun reviewZoomActionLabel(scale: Float): String = when (nextReviewScale(scale)) {

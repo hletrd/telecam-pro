@@ -13,6 +13,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -106,6 +107,8 @@ import com.hletrd.findx9tele.camera.controlCapabilities
 import com.hletrd.findx9tele.camera.videoBitRate
 import com.hletrd.findx9tele.video.EncoderCaps
 import com.hletrd.findx9tele.ui.CameraActions
+import com.hletrd.findx9tele.ui.formatDisplayZoom
+import com.hletrd.findx9tele.ui.formatZoomMultiplier
 import com.hletrd.findx9tele.ui.theme.CameraColors
 import java.util.Locale
 import kotlinx.coroutines.delay
@@ -135,6 +138,8 @@ internal data class ProSheetTabSelection(val tab: ProSheetTab, val selected: Boo
 
 internal fun proSheetTabSelection(selected: ProSheetTab): List<ProSheetTabSelection> =
     ProSheetTab.entries.map { ProSheetTabSelection(it, it == selected) }
+
+internal fun proSheetUsesSideLayout(width: Float, height: Float): Boolean = width > height
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -166,7 +171,8 @@ internal fun ProSheet(
     val closeFocusRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) { closeFocusRequester.requestFocus() }
 
-    Box(modifier = modifier.fillMaxSize()) {
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+        val sideLayout = proSheetUsesSideLayout(maxWidth.value, maxHeight.value)
         // Scrim: tap outside the panel to dismiss.
         Box(
             modifier = Modifier
@@ -179,12 +185,25 @@ internal fun ProSheet(
                 .clickable(interactionSource = scrimInteraction, indication = null, onClick = onDismiss),
         )
 
-        Column(
-            modifier = Modifier
+        val panelModifier = if (sideLayout) {
+            Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .fillMaxWidth(0.72f)
+        } else {
+            Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .fillMaxHeight(0.9f)
-                .clip(RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
+        }
+        val panelShape = if (sideLayout) {
+            RoundedCornerShape(topStart = 24.dp, bottomStart = 24.dp)
+        } else {
+            RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+        }
+        Column(
+            modifier = panelModifier
+                .clip(panelShape)
                 .background(CameraColors.Pill)
                 .semantics {
                     paneTitle = "Camera settings"
@@ -584,7 +603,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         if (zHi > loDisplay) {
             LabeledSlider(
                 label = "Zoom",
-                valueLabel = "%.1fx".format(Locale.US, state.controls.zoomRatio * zBase),
+                valueLabel = formatZoomMultiplier(state.controls.zoomRatio * zBase),
                 value = (state.controls.zoomRatio * zBase).coerceIn(loDisplay, zHi),
                 onValueChange = { v -> actions.onZoomRatio(v / zBase) },
                 valueRange = loDisplay..zHi,
@@ -1019,7 +1038,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     }
     LabeledSlider(
         label = "Gain",
-        valueLabel = "%.1fx".format(Locale.US, state.audioGain),
+        valueLabel = formatZoomMultiplier(state.audioGain),
         value = state.audioGain,
         onValueChange = actions::onAudioGain,
         valueRange = 0f..2f,
@@ -1257,7 +1276,7 @@ private fun MiniTextButton(text: String, enabled: Boolean, onClick: () -> Unit) 
     Box(
         modifier = Modifier
             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-            .clickable(enabled = enabled, onClick = onClick),
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Box(
@@ -1290,14 +1309,11 @@ internal fun fnSlotValue(slot: FnSlot, state: CameraUiState): String {
         }
         FnSlot.WB -> if (c.wbMode == WbMode.MANUAL) "${c.wbKelvin}K" else wbModeLabel(c.wbMode)
         FnSlot.EV -> "%+.1f".format(Locale.US, evCompStops(state))
-        // Same main-relative display scale as the HUD pill (shared zoomDisplayMultiplier, DES4-1):
-        // in TELE this reads 13-60x like every other zoom surface, never the raw lens-local ratio.
-        FnSlot.ZOOM -> "%.1fx".format(
-            Locale.US,
-            c.zoomRatio * com.hletrd.findx9tele.ui.zoomDisplayMultiplier(
-                state.teleconverterMode,
-                state.caps?.equivalentFocalMm,
-            ),
+        // Same main-relative display scale and formatter as the HUD pill and persistent Fn row.
+        FnSlot.ZOOM -> formatDisplayZoom(
+            c.zoomRatio,
+            state.teleconverterMode,
+            state.caps?.equivalentFocalMm,
         )
         FnSlot.STABILIZATION -> state.videoStabMode.label
         FnSlot.DRIVE -> driveModeLabel(state.driveMode)
@@ -1309,7 +1325,7 @@ internal fun fnSlotValue(slot: FnSlot, state: CameraUiState): String {
         FnSlot.GRID -> gridTypeLabel(state.grid)
         FnSlot.LEVEL -> if (state.level) "On" else "Off"
         FnSlot.PUNCH_IN -> if (state.punchIn) "On" else "Off"
-        FnSlot.TELECONVERTER -> if (state.teleconverterMode) "300mm" else "Off"
+        FnSlot.TELECONVERTER -> if (state.teleconverterMode) "300 mm" else "Off"
         FnSlot.OPEN_GATE -> if (state.openGate) "4:3" else "Off"
         FnSlot.FRAME_LINES -> state.frameLines.label
     }

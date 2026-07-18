@@ -9,8 +9,21 @@ import com.hletrd.findx9tele.camera.TELE_MAX_DISPLAY_ZOOM
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.Locale
 
 class ZoomMathTest {
+    @Test fun `shared zoom formatter uses photographic glyph and stable decimal`() {
+        val previous = Locale.getDefault()
+        try {
+            Locale.setDefault(Locale.GERMANY)
+            assertEquals("1.5×", formatZoomMultiplier(1.5f))
+            assertEquals("10.0×", formatDisplayZoom(1f, false, LensChoice.TELE10X.targetEquivMm))
+            assertEquals("13.0×", formatDisplayZoom(1f, true, null))
+        } finally {
+            Locale.setDefault(previous)
+        }
+    }
+
     @Test fun `tele bounds use the same 60x ceiling as application`() {
         val bounds = effectiveZoomBounds(1f, 10f, teleconverter = true)!!
         assertEquals(1f, bounds.lower, 0f)

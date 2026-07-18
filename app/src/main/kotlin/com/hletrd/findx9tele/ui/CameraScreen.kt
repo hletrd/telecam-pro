@@ -76,6 +76,7 @@ import androidx.compose.ui.semantics.isTraversalGroup
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.geometry.CornerRadius
@@ -94,6 +95,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.drop
 import com.hletrd.findx9tele.camera.Antibanding
 import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.AutoExposure
@@ -110,6 +112,7 @@ import com.hletrd.findx9tele.camera.FnSlot
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.finderRect
+import com.hletrd.findx9tele.camera.finderContainsTopLeftPoint
 import com.hletrd.findx9tele.camera.teleFinderVisible
 import com.hletrd.findx9tele.camera.LensChoice
 import com.hletrd.findx9tele.camera.MediaDeleteScope
@@ -210,8 +213,9 @@ fun CameraScreen(
     }
     val overlayRotation by animateFloatAsState(targetValue = overlayRotationTarget, label = "overlayRotation")
 
-    // Live zoom readout: show a bar + "N.N×" whenever the zoom ratio moves (pinch or in-sheet slider),
-    // then fade it out ~1.4 s after the last change (iPhone-style). Never shown at rest.
+    // Live zoom readout: show a bar + "N.N×" whenever the zoom ratio CHANGES (including a genuine
+    // move to exactly 1×), then fade it out ~1.4 s after the last change. Dropping snapshotFlow's
+    // initial sample prevents a restored non-1× setup from flashing the pill on launch.
     var zoomVisible by remember { mutableStateOf(false) }
     // snapshotFlow + collectLatest instead of keying the effect on the raw ratio: keying restarted
     // (cancel + relaunch) a coroutine PER zoom tick — touch-sample rate during a pinch, ~30 Hz on a
@@ -219,14 +223,10 @@ fun CameraScreen(
     // now watches the value; collectLatest restarts only the fade delay.
     val zoomRatioState = rememberUpdatedState(state.controls.zoomRatio)
     LaunchedEffect(Unit) {
-        snapshotFlow { zoomRatioState.value }.collectLatest { ratio ->
-            if (ratio != 1f) {
-                zoomVisible = true
-                delay(1400)
-                zoomVisible = false
-            } else {
-                zoomVisible = false
-            }
+        snapshotFlow { zoomRatioState.value }.drop(1).collectLatest {
+            zoomVisible = true
+            delay(1400)
+            zoomVisible = false
         }
     }
 
@@ -236,6 +236,11 @@ fun CameraScreen(
             .background(CameraColors.Background)
             .then(if (modalVisible) Modifier.clearAndSetSemantics { } else Modifier),
     ) {
+        // GL sampling, capture masks, tap mapping, and encoder framing currently share a deliberate
+        // portrait-window contract. Keep the alternative operator layout dormant until that entire
+        // orientation pipeline is implemented and device-verified together.
+        val landscapeOperator = false
+        val displayedPreviewAspect = state.previewAspect.coerceAtLeast(0.01f)
         // The viewfinder is LETTERBOXED, not cover-cropped: the TextureView (plus every overlay that
         // must align with the image frame) lives in a centered box sized to the displayed preview
         // aspect, so the FULL capture field is always visible. Letterboxing at the Compose layer —
@@ -246,8 +251,15 @@ fun CameraScreen(
         Box(
             modifier = Modifier
                 .align(Alignment.Center)
-                .aspectRatio(state.previewAspect.coerceAtLeast(0.01f)),
+                .aspectRatio(displayedPreviewAspect),
         ) {
+            val finderVisible = teleFinderVisible(
+                enabled = state.teleFinder,
+                teleconverter = state.teleconverterMode,
+                videoMode = state.mode == CaptureMode.VIDEO,
+                aspect = state.aspectRatio,
+                punchIn = state.punchIn,
+            )
             AndroidView(
                 modifier = Modifier
                     .fillMaxSize()
@@ -270,7 +282,7 @@ fun CameraScreen(
                     // scale never left 1.0 (device-diagnosed via ZoomDbg). Handling both in a single
                     // awaitEachGesture removes the conflict: two fingers → pinch-zoom, a clean single
                     // stationary touch → tap-focus.
-                    .pointerInput(Unit) {
+                    .pointerInput(finderVisible) {
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
                             var maxPointers = 1
@@ -300,7 +312,15 @@ fun CameraScreen(
                                 val w = size.width.toFloat()
                                 val h = size.height.toFloat()
                                 if (w > 0f && h > 0f) {
-                                    currentActions.value.onTapFocus(down.position.x / w, down.position.y / h)
+                                    if (!finderVisible || !finderContainsTopLeftPoint(
+                                            pointX = down.position.x,
+                                            pointY = down.position.y,
+                                            boxWidth = w,
+                                            boxHeight = h,
+                                        )
+                                    ) {
+                                        currentActions.value.onTapFocus(down.position.x / w, down.position.y / h)
+                                    }
                                 }
                             }
                         }
@@ -385,14 +405,7 @@ fun CameraScreen(
             // box). Absolute anchor + absolute offset: the GL box has no layout direction, so the
             // border must not mirror to bottom-right under RTL system locales. Square corners trace
             // the sharp GL scissor rect.
-            if (teleFinderVisible(
-                    enabled = state.teleFinder,
-                    teleconverter = state.teleconverterMode,
-                    videoMode = state.mode == CaptureMode.VIDEO,
-                    aspect = state.aspectRatio,
-                    punchIn = state.punchIn,
-                )
-            ) {
+            if (finderVisible) {
                 BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                     val rect = finderRect(maxWidth.value, maxHeight.value)
                     Box(
@@ -400,7 +413,23 @@ fun CameraScreen(
                             .align(AbsoluteAlignment.BottomLeft)
                             .absoluteOffset(x = rect.x.dp, y = (-rect.y).dp)
                             .size(rect.width.dp, rect.height.dp)
-                            .border(1.dp, Color.White.copy(alpha = 0.85f)),
+                            .border(1.dp, Color.White.copy(alpha = 0.85f))
+                            .semantics {
+                                contentDescription = "Tele finder preview"
+                                stateDescription = "Non-interactive"
+                            }
+                            // Consume the PIP's pointer stream as well as guarding the viewfinder's
+                            // focus dispatch. It is a framing reference, never a second focus plane.
+                            .pointerInput(Unit) {
+                                awaitEachGesture {
+                                    awaitFirstDown(requireUnconsumed = false).consume()
+                                    while (true) {
+                                        val event = awaitPointerEvent()
+                                        event.changes.forEach { it.consume() }
+                                        if (event.changes.none { it.pressed }) break
+                                    }
+                                }
+                            },
                     )
                 }
             }
@@ -506,11 +535,27 @@ fun CameraScreen(
         if (state.timerCountdownSec > 0) {
             // The 120 sp digit is the largest orientation-sensitive glyph on screen — a sideways
             // "6" reads ambiguously in a landscape self-timer, so it counter-rotates too.
-            TimerCountdown(
-                seconds = state.timerCountdownSec,
-                modifier = Modifier.fillMaxSize(),
-                rotationDegrees = overlayRotation,
-            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .semantics(mergeDescendants = true) {
+                        contentDescription = "Self timer"
+                        stateDescription = "${state.timerCountdownSec} seconds remaining; activate to cancel"
+                        liveRegion = LiveRegionMode.Assertive
+                        role = Role.Button
+                    }
+                    .clickable(
+                        onClickLabel = "Cancel self timer",
+                        role = Role.Button,
+                        onClick = { currentActions.value.onCapturePhoto() },
+                    ),
+            ) {
+                TimerCountdown(
+                    seconds = state.timerCountdownSec,
+                    modifier = Modifier.fillMaxSize(),
+                    rotationDegrees = overlayRotation,
+                )
+            }
         }
 
         state.statusMessage?.let { message ->
@@ -609,76 +654,114 @@ fun CameraScreen(
             }
         }
 
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .background(
-                    Brush.verticalGradient(
-                        0f to Color.Transparent,
-                        1f to Color.Black.copy(alpha = 0.6f),
-                    ),
-                )
-                .navigationBarsPadding()
-                .padding(top = 28.dp, bottom = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            if (!dispClean) MemoryRecallStrip(
-                state = state,
-                actions = actions,
-                glyphRotation = overlayRotation,
-                modifier = Modifier
-                    .align(Alignment.CenterHorizontally)
-                    .padding(horizontal = 16.dp),
-            )
-
-            ManualDialCluster(
-                state = state,
-                actions = actions,
-                onRequestWhiteBalanceSheet = { openSheet(ProSheetTab.EXPOSURE) },
-                onOpenFnMenu = {
-                    currentActions.value.onCameraInputBlockedChange(true)
-                    fnOverlayVisible = true
-                },
-                modifier = Modifier.padding(horizontal = 12.dp),
-            )
-
-            ModeCarousel(
-                mode = state.mode,
-                onModeChange = actions::onModeChange,
-                enabled = !state.isRecording,
-                glyphRotation = overlayRotation,
+        val manualPane: @Composable () -> Unit = {
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-            )
+                verticalArrangement = Arrangement.spacedBy(if (landscapeOperator) 6.dp else 14.dp),
+            ) {
+                if (!dispClean) MemoryRecallStrip(
+                    state = state,
+                    actions = actions,
+                    glyphRotation = overlayRotation,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                )
 
-            ShutterRow(
-                mode = state.mode,
-                isRecording = state.isRecording,
-                teleconverterOn = state.teleconverterMode,
-                lastMediaUri = state.lastMediaUri,
-                onOpenReview = {
-                    state.lastMediaUri?.let { uri ->
-                        val familyPinned = currentActions.value.onReviewOpenChange(true, uri)
-                        reviewUri = uri
-                        reviewDeleteScope = if (familyPinned) {
-                            state.lastMediaDeleteScope
-                        } else {
-                            MediaDeleteScope.FILE_ONLY
+                ManualDialCluster(
+                    state = state,
+                    actions = actions,
+                    onRequestWhiteBalanceSheet = { openSheet(ProSheetTab.EXPOSURE) },
+                    onOpenFnMenu = {
+                        currentActions.value.onCameraInputBlockedChange(true)
+                        fnOverlayVisible = true
+                    },
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                )
+            }
+        }
+        val capturePane: @Composable () -> Unit = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(if (landscapeOperator) 4.dp else 10.dp),
+            ) {
+                FocalRail(
+                    state = state,
+                    onLens = actions::onLens,
+                    glyphRotation = overlayRotation,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                ModeCarousel(
+                    mode = state.mode,
+                    onModeChange = actions::onModeChange,
+                    enabled = !state.isRecording,
+                    glyphRotation = overlayRotation,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+
+                ShutterRow(
+                    mode = state.mode,
+                    isRecording = state.isRecording,
+                    lastMediaUri = state.lastMediaUri,
+                    onOpenReview = {
+                        state.lastMediaUri?.let { uri ->
+                            val familyPinned = currentActions.value.onReviewOpenChange(true, uri)
+                            reviewUri = uri
+                            reviewDeleteScope = if (familyPinned) {
+                                state.lastMediaDeleteScope
+                            } else {
+                                MediaDeleteScope.FILE_ONLY
+                            }
                         }
-                    }
-                },
-                onShutter = onShutter,
-                onSnapshot = actions::onCapturePhoto,
-                onToggleTeleconverter = { actions.onToggleTeleconverter(!state.teleconverterMode) },
-                teleconverterEnabled = !state.isRecording,
-                cameraHealthy = state.primaryShutterHealthy,
-                shutterEnabled = state.primaryShutterEnabled,
-                stillCaptureAvailable = state.stillCaptureReady,
-                glyphRotation = overlayRotation,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 28.dp),
+                    },
+                    onShutter = onShutter,
+                    onSnapshot = actions::onCapturePhoto,
+                    cameraHealthy = state.primaryShutterHealthy,
+                    shutterEnabled = state.primaryShutterEnabled,
+                    stillCaptureAvailable = state.stillCaptureReady,
+                    glyphRotation = overlayRotation,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = if (landscapeOperator) 12.dp else 28.dp),
+                )
+            }
+        }
+
+        val operatorChrome = Modifier
+            .background(
+                Brush.verticalGradient(
+                    0f to Color.Transparent,
+                    1f to Color.Black.copy(alpha = 0.6f),
+                ),
             )
+            .navigationBarsPadding()
+
+        if (landscapeOperator) {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .fillMaxWidth(0.82f)
+                    .then(operatorChrome)
+                    .padding(top = 12.dp, bottom = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.Bottom,
+            ) {
+                Box(modifier = Modifier.weight(1f)) { manualPane() }
+                Box(modifier = Modifier.weight(1f)) { capturePane() }
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .then(operatorChrome)
+                    .padding(top = 28.dp, bottom = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                manualPane()
+                capturePane()
+            }
         }
     }
 
@@ -725,6 +808,15 @@ internal fun String.isUrgentStatus(): Boolean =
     // rendered as polite toasts — found while pinning this classifier (TEST4-14).
     listOf("error", "fail", "unable", "unavailable", "denied", "insufficient", "could not")
         .any { contains(it, ignoreCase = true) }
+
+/** Keeps successful acknowledgements quiet while leaving actionable failures readable. */
+internal fun statusDisplayDurationMs(message: String?): Long? = when {
+    message == null -> null
+    message.isUrgentStatus() -> 6_000L
+    listOf("saved", "deleted", "loaded").any { token -> message.contains(token, ignoreCase = true) } ->
+        1_500L
+    else -> 2_500L
+}
 
 /**
  * Rotates content by [degrees] AND reserves the ROTATED bounding box in layout — unlike Modifier.rotate,
@@ -961,7 +1053,7 @@ private fun TeleChip(active: Boolean, onClick: () -> Unit, modifier: Modifier = 
     val bg = when {
         active && enabled -> CameraColors.TextPrimary
         active -> CameraColors.TextPrimary.copy(alpha = 0.38f)
-        else -> CameraColors.ChromeScrim.copy(alpha = if (enabled) 0.45f else 0.22f)
+        else -> CameraColors.ChromeScrim.copy(alpha = teleChipIdleScrimAlpha())
     }
     val fg = when {
         active -> Color.Black.copy(alpha = if (enabled) 1f else 0.55f)
@@ -993,6 +1085,9 @@ private fun TeleChip(active: Boolean, onClick: () -> Unit, modifier: Modifier = 
         }
     }
 }
+
+/** Test seam pinning TELE's idle plate to the app-wide, bright-frame contrast floor. */
+internal fun teleChipIdleScrimAlpha(): Float = HUD_TEXT_SCRIM_ALPHA
 
 @Composable
 private fun GearButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
@@ -1121,7 +1216,7 @@ private fun ZoomIndicator(
         // (iPhone-style). The bar below stays horizontal — a generic level indicator reads fine at any
         // angle, and rotating it would collide with the surrounding chrome.
         Text(
-            text = "%.1f×".format(java.util.Locale.US, zoom),
+            text = formatZoomMultiplier(zoom),
             color = CameraColors.Accent,
             fontSize = 15.sp,
             fontWeight = FontWeight.Bold,
@@ -1446,6 +1541,92 @@ private fun log2(value: Float): Float = (ln(value.toDouble()) / ln(2.0)).toFloat
 // Bottom cluster: mode carousel + shutter row (the manual dial cluster lives in ManualDials.kt).
 // ---------------------------------------------------------------------------
 
+internal data class FocalRailState(
+    val active: Boolean,
+    val enabled: Boolean,
+    val stateDescription: String,
+)
+
+internal fun focalRailState(
+    choice: LensChoice,
+    selectedLens: LensChoice,
+    teleconverter: Boolean,
+    cameraReady: Boolean,
+    recording: Boolean,
+): FocalRailState {
+    val active = choice == selectedLens
+    val enabled = cameraReady && !recording
+    val description = when {
+        recording -> "Unavailable while recording"
+        !cameraReady -> "Camera reconfiguring"
+        active && teleconverter && choice == LensChoice.TELE3X -> "Selected; teleconverter on"
+        active -> "Selected"
+        else -> "Not selected"
+    }
+    return FocalRailState(active, enabled, description)
+}
+
+/** Direct iPhone/Sony-familiar focal presets; TELE remains a separate, labeled converter action. */
+@Composable
+private fun FocalRail(
+    state: CameraUiState,
+    onLens: (LensChoice) -> Unit,
+    modifier: Modifier = Modifier,
+    glyphRotation: Float = 0f,
+) {
+    Row(modifier = modifier, horizontalArrangement = Arrangement.Center) {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            LensChoice.entries.forEach { choice ->
+                val presentation = focalRailState(
+                    choice = choice,
+                    selectedLens = state.lens,
+                    teleconverter = state.teleconverterMode,
+                    cameraReady = state.cameraReady,
+                    recording = state.isRecording,
+                )
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .rotate(glyphRotation)
+                        .semantics {
+                            contentDescription = "${choice.label} lens"
+                            stateDescription = presentation.stateDescription
+                            selected = presentation.active
+                            role = Role.Button
+                            if (!presentation.enabled) disabled()
+                        }
+                        .clickable(
+                            enabled = presentation.enabled,
+                            role = Role.Button,
+                            onClick = { onLens(choice) },
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(
+                                if (presentation.active) CameraColors.TextPrimary
+                                else Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA),
+                            )
+                            .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = choice.label,
+                            color = if (presentation.active) Color.Black else CameraColors.TextPrimary,
+                            fontSize = 12.sp,
+                            fontWeight = if (presentation.active) FontWeight.Bold else FontWeight.SemiBold,
+                            modifier = Modifier.alpha(if (presentation.enabled) 1f else 0.38f),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun ModeCarousel(
     mode: CaptureMode,
@@ -1482,7 +1663,14 @@ private fun ModeLabel(text: String, active: Boolean, enabled: Boolean, onClick: 
     Box(
         modifier = modifier
             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-            .clickable(enabled = enabled, onClick = onClick),
+            .semantics {
+                contentDescription = "$text mode"
+                stateDescription = if (active) "Selected" else "Not selected"
+                selected = active
+                role = Role.Button
+                if (!enabled) disabled()
+            }
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Column(
@@ -1519,29 +1707,33 @@ private fun ModeLabel(text: String, active: Boolean, enabled: Boolean, onClick: 
     }
 }
 
-/** Gallery thumbnail placeholder / shutter (photo|video) / teleconverter "flip" button row. */
+/** Gallery thumbnail and centered shutter row. TELE lives only in the labeled top-bar chip. */
 @Composable
 private fun ShutterRow(
     mode: CaptureMode,
     isRecording: Boolean,
-    teleconverterOn: Boolean,
     lastMediaUri: android.net.Uri?,
     onOpenReview: () -> Unit,
     onShutter: () -> Unit,
     onSnapshot: () -> Unit,
-    onToggleTeleconverter: () -> Unit,
     modifier: Modifier = Modifier,
-    teleconverterEnabled: Boolean = true,
     glyphRotation: Float = 0f,
     cameraHealthy: Boolean = true,
     shutterEnabled: Boolean = true,
     stillCaptureAvailable: Boolean = true,
 ) {
-    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
+    Box(modifier = modifier) {
         // Counter-rotate the review thumbnail so its image reads upright as the phone turns.
-        GalleryThumb(uri = lastMediaUri, onClick = onOpenReview, modifier = Modifier.rotate(glyphRotation))
-        Spacer(modifier = Modifier.weight(1f))
-        Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
+        GalleryThumb(
+            uri = lastMediaUri,
+            onClick = onOpenReview,
+            modifier = Modifier.align(Alignment.CenterStart).rotate(glyphRotation),
+        )
+        Row(
+            modifier = Modifier.align(Alignment.Center),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             if (mode == CaptureMode.VIDEO && isRecording) {
                 SnapshotButton(onClick = onSnapshot, enabled = stillCaptureAvailable)
             }
@@ -1553,8 +1745,6 @@ private fun ShutterRow(
                 enabled = shutterEnabled,
             )
         }
-        Spacer(modifier = Modifier.weight(1f))
-        LensFlipButton(active = teleconverterOn, enabled = teleconverterEnabled, onClick = onToggleTeleconverter)
     }
 }
 
@@ -1589,9 +1779,9 @@ private fun ShutterButton(
                     else -> "Start recording"
                 }
                 role = Role.Button
-                if (!enabled) disabled()
+                stateDescription = if (enabled) "Ready" else "Unavailable; activate for details"
             }
-            .clickable(enabled = enabled, interactionSource = interaction, indication = null) {
+            .clickable(interactionSource = interaction, indication = null) {
                 view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
                 onClick()
             },
@@ -1635,41 +1825,6 @@ private fun SnapshotButton(onClick: () -> Unit, enabled: Boolean, modifier: Modi
         Canvas(modifier = Modifier.size(36.dp)) {
             drawCircle(color = Color.White, radius = size.minDimension / 2f, style = Stroke(width = 2.dp.toPx()))
             drawCircle(color = Color.White, radius = size.minDimension * 0.32f)
-        }
-    }
-}
-
-/**
- * Teleconverter toggle, drawn as a lens glyph. The engine describes engaging the teleconverter as
- * an "afocal 180° flip" (see [com.hletrd.findx9tele.camera.CameraUiState.teleconverterMode]), so
- * this doubles as the pro camera's lens/teleconverter state slot —
- * this app has a single fixed tele lens, so there is nothing to flip to; the teleconverter toggle
- * is the closest in-contract analogue and is duplicated here (also reachable via the top-bar TELE
- * chip and the pro sheet's Stabilization tab) for quick access next to the shutter.
- */
-@Composable
-private fun LensFlipButton(active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
-    val alpha = if (enabled) 1f else 0.38f
-    val ringColor = if (active) CameraColors.Accent.copy(alpha = alpha) else Color.White.copy(alpha = 0.35f * alpha)
-    val glyphColor = if (active) CameraColors.Accent.copy(alpha = alpha) else CameraColors.TextPrimary.copy(alpha = alpha)
-    Box(
-        modifier = modifier
-            .size(52.dp)
-            .clip(CircleShape)
-            .background(CameraColors.Pill)
-            .border(1.5.dp, ringColor, CircleShape)
-            .semantics {
-                contentDescription = "Teleconverter"
-                stateDescription = if (active) "On" else "Off"
-                role = Role.Button
-            }
-            .clickable(enabled = enabled, onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Canvas(Modifier.size(26.dp)) {
-            drawCircle(glyphColor, radius = size.minDimension * 0.46f, style = Stroke(width = 1.4.dp.toPx()))
-            drawCircle(glyphColor, radius = size.minDimension * 0.26f, style = Stroke(width = 1.2.dp.toPx()))
-            drawCircle(glyphColor, radius = size.minDimension * 0.08f)
         }
     }
 }

@@ -46,6 +46,8 @@ import com.hletrd.findx9tele.camera.MeteringMode
 import com.hletrd.findx9tele.camera.ShutterTimer
 import com.hletrd.findx9tele.camera.VideoStabMode
 import com.hletrd.findx9tele.camera.WaveformData
+import com.hletrd.findx9tele.camera.displayedStillAspect
+import com.hletrd.findx9tele.camera.largestCenteredRect
 import com.hletrd.findx9tele.camera.videoBitRate
 import com.hletrd.findx9tele.ui.controls.transferLabelShort
 import com.hletrd.findx9tele.ui.controls.videoCodecLabelShort
@@ -186,25 +188,28 @@ fun AspectMask(ratio: AspectRatio, modifier: Modifier = Modifier) {
     if (ratio == AspectRatio.W4_3) return // full sensor = no crop mask
     val barColor = Color.Black.copy(alpha = 0.5f)
     Canvas(modifier = modifier.fillMaxSize()) {
-        // The mask boxes the crop AS DISPLAYED, and the ~90° sensor orientation swaps W/H on this
-        // portrait-locked screen (same rule as the engine's preview-aspect report): a 16:9 crop of
-        // the 4:3 sensor keeps the long side — vertical on screen — and narrows the short side, so
-        // inside the 3:4 viewfinder the bars land LEFT/RIGHT. The pre-letterbox code used w/h and
-        // shaded top/bottom, marking a region that was NOT what the shutter would save.
-        val targetAspect = ratio.h.toFloat() / ratio.w.toFloat()
-        val viewAspect = size.width / size.height
-        if (viewAspect > targetAspect) {
-            // View is wider than the target box: bar off the left/right edges.
-            val frameWidth = size.height * targetAspect
-            val barWidth = (size.width - frameWidth) / 2f
-            drawRect(color = barColor, topLeft = Offset.Zero, size = Size(barWidth, size.height))
-            drawRect(color = barColor, topLeft = Offset(size.width - barWidth, 0f), size = Size(barWidth, size.height))
-        } else {
-            // View is taller than the target box: bar off the top/bottom edges.
-            val frameHeight = size.width / targetAspect
-            val barHeight = (size.height - frameHeight) / 2f
-            drawRect(color = barColor, topLeft = Offset.Zero, size = Size(size.width, barHeight))
-            drawRect(color = barColor, topLeft = Offset(0f, size.height - barHeight), size = Size(size.width, barHeight))
+        val displayedAspect = displayedStillAspect(ratio)
+        val frame = largestCenteredRect(
+            containerWidth = size.width,
+            containerHeight = size.height,
+            aspectWidth = displayedAspect.width,
+            aspectHeight = displayedAspect.height,
+        )
+        if (frame.x > 0f) {
+            drawRect(color = barColor, topLeft = Offset.Zero, size = Size(frame.x, size.height))
+            drawRect(
+                color = barColor,
+                topLeft = Offset(frame.x + frame.width, 0f),
+                size = Size(frame.x, size.height),
+            )
+        }
+        if (frame.y > 0f) {
+            drawRect(color = barColor, topLeft = Offset.Zero, size = Size(size.width, frame.y))
+            drawRect(
+                color = barColor,
+                topLeft = Offset(0f, frame.y + frame.height),
+                size = Size(size.width, frame.y),
+            )
         }
     }
 }
@@ -371,17 +376,17 @@ fun AudioMeter(level: Float, modifier: Modifier = Modifier) {
 fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier) {
     val focal = state.caps?.equivalentFocalMm ?: 0f
     // The afocal teleconverter multiplies the ~70 mm periscope → a ~300 mm effective focal.
-    // Round to the nearest 10 mm so the readout reads a clean "300mm" rather than 296.
+    // Round to the nearest 10 mm so the readout reads a clean "300 mm" rather than 296 mm.
     // TELE effective focal follows the digital zoom on the NOMINAL 300 mm base (constant scale,
     // matching the 13/30/60× pill marks): 300 mm at 13×, 690 at 30×, 1380 at 60×.
     val effFocal = ((300f * state.controls.zoomRatio.coerceAtLeast(1f)) / 10f).roundToInt() * 10
     val focalLabel = when {
         focal <= 0f -> "--"
-        state.teleconverterMode -> "${effFocal}mm TELE"
+        state.teleconverterMode -> "$effFocal mm TELE"
         // Seamless zoom: the logical camera's equiv focal is the MAIN lens's (23 mm) and the unified
         // zoom is main-relative, so the EFFECTIVE focal is their product — 14 mm at 0.6×, 230 mm at
         // 10× — tracking the lens the HAL actually has active, like the TELE readout does.
-        else -> "%.0fmm".format(Locale.US, focal * state.controls.zoomRatio.coerceAtLeast(0.01f))
+        else -> "%.0f mm".format(Locale.US, focal * state.controls.zoomRatio.coerceAtLeast(0.01f))
     }
     Row(
         modifier = modifier
