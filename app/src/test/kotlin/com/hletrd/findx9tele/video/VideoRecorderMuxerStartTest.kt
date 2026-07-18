@@ -1,5 +1,6 @@
 package com.hletrd.findx9tele.video
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -142,6 +143,22 @@ class VideoRecorderMuxerStartTest {
                 wroteAudioSample = false,
             ),
         )
+    }
+
+    @Test
+    fun `muxer stop terminal policy covers all eight boolean combinations`() {
+        for (video in booleanArrayOf(false, true)) {
+            for (degraded in booleanArrayOf(false, true)) {
+                for (audio in booleanArrayOf(false, true)) {
+                    val expectedTerminal = !(video && degraded && !audio)
+                    assertEquals(
+                        "video=$video degraded=$degraded audio=$audio",
+                        expectedTerminal,
+                        muxerStopFailureIsTerminal(video, degraded, audio),
+                    )
+                }
+            }
+        }
     }
 
     @Test

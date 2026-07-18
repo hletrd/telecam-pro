@@ -19,13 +19,21 @@ object HeifCapture {
      * supported release path (a library false-positive, present in stable 1.1.0 too).
      */
     @SuppressLint("RestrictedApi")
-    fun writeHeif(fd: FileDescriptor, bitmap: Bitmap, quality: Int = 95) {
+    fun writeHeif(
+        fd: FileDescriptor,
+        bitmap: Bitmap,
+        quality: Int = 95,
+        exifData: ByteArray? = null,
+    ) {
         val writer = HeifWriter.Builder(fd, bitmap.width, bitmap.height, HeifWriter.INPUT_MODE_BITMAP)
             .setQuality(quality)
             .build()
         try {
             writer.start()
             writer.addBitmap(bitmap)
+            exifData?.takeIf { it.isNotEmpty() }?.let { data ->
+                writer.addExifData(0, data, 0, data.size)
+            }
             writer.stop(STOP_TIMEOUT_MS)
         } finally {
             writer.close()

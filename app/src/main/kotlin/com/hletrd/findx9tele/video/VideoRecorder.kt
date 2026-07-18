@@ -271,14 +271,15 @@ class VideoRecorder(private val context: Context) {
             hasUri = outputUri != null,
         )
         val saved = if (complete && outputUri != null) {
+            // Persist FINALIZED before the resolver publish call. A provider outage or process death
+            // after muxer.stop() must lead launch recovery to adopt this take, never sweep it.
+            MediaStoreWriter.markWriteComplete(context, outputUri)
             // publish() retries transient resolver failures internally (CRIT4-5). If it STILL fails,
-            // do not delete the complete recording here — but be honest about the consequence: no
-            // republish path exists, so the pending file stays invisible until the next launch's
-            // orphan sweep DELETES it. The retry is what makes a transient hiccup survivable; a
-            // persistent provider failure loses the clip either way (deferred, not prevented).
+            // leave the COMPLETE journal entry pending. Launch recovery retries adoption and never
+            // deletes the valuable clip merely because MediaProvider is still unavailable.
             MediaStoreWriter.publish(context, outputUri).also { published ->
                 if (!published && com.hletrd.findx9tele.BuildConfig.DEBUG) {
-                    Log.w(TAG, "publish() failed after retries; pending file will be swept next launch: $outputUri")
+                    Log.w(TAG, "publish() failed after retries; finalized file retained for recovery: $outputUri")
                 }
             }
         } else {
@@ -534,10 +535,7 @@ class VideoRecorder(private val context: Context) {
                     // before the codec ever emitted its output format (audioTrack still -1), leaving
                     // expectedTracks == 2 would keep maybeStartMuxer waiting forever and stop()'s
                     // saved gate would discard a perfectly good video track over a dead AAC encoder.
-                    synchronized(muxerLock) {
-                        expectedTracks = 1
-                        maybeStartMuxer()
-                    }
+                    degradeAudioToVideoOnly(IllegalStateException("AAC encoder input EOS timed out"))
                     return
                 }
             }

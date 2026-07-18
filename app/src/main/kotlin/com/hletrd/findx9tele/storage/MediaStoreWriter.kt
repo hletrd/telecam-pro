@@ -4,11 +4,14 @@ import android.content.ContentResolver
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
+import android.media.MediaExtractor
+import android.media.MediaFormat
 import android.net.Uri
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import java.io.OutputStream
+import java.io.FileInputStream
 
 /**
  * Thin wrapper around MediaStore for saving photos/videos into DCIM/<subDir> using the
@@ -18,6 +21,9 @@ object MediaStoreWriter {
 
     private const val MAX_RESTORE_ROWS_PER_COLLECTION = 64
     private const val MAX_FAMILY_ROWS = 8
+    private const val PENDING_JOURNAL = "pending_media_journal"
+    private const val PENDING_REGISTERED = "registered"
+    private const val PENDING_COMPLETE = "complete"
 
     /**
      * Reconstructs the newest published capture THIS APP saved under its own folder.
@@ -179,9 +185,10 @@ object MediaStoreWriter {
                 put(MediaStore.Images.Media.DATE_TAKEN, it)
             }
         }
-        return runCatching {
+        val uri = runCatching {
             context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-        }.getOrNull()
+        }.getOrNull() ?: return null
+        return registerPending(context, uri)
     }
 
     fun createPendingVideo(
@@ -199,10 +206,23 @@ object MediaStoreWriter {
                 put(MediaStore.Video.Media.DATE_TAKEN, it)
             }
         }
-        return runCatching {
+        val uri = runCatching {
             context.contentResolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
-        }.getOrNull()
+        }.getOrNull() ?: return null
+        return registerPending(context, uri)
     }
+
+    /**
+     * Durably records that all bytes/container metadata for [uri] were finalized. Call this after
+     * the encoder/muxer has stopped and the output has been closed, but before [publish]. A launch
+     * recovery can then distinguish a valuable complete take from an interrupted write without
+     * guessing from file size alone.
+     */
+    fun markWriteComplete(context: Context, uri: Uri): Boolean =
+        context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE)
+            .edit()
+            .putString(uri.toString(), PENDING_COMPLETE)
+            .commit()
 
     fun openParcelFd(context: Context, uri: Uri, mode: String = "rw"): ParcelFileDescriptor? =
         runCatching { context.contentResolver.openFileDescriptor(uri, mode) }.getOrNull()
@@ -225,7 +245,10 @@ object MediaStoreWriter {
         repeat(PUBLISH_ATTEMPTS) { attempt ->
             val published = runCatching { context.contentResolver.update(uri, values, null, null) > 0 }
                 .getOrDefault(false)
-            if (published) return true
+            if (published) {
+                clearPending(context, uri)
+                return true
+            }
             if (attempt < PUBLISH_ATTEMPTS - 1) {
                 runCatching { Thread.sleep(PUBLISH_RETRY_BACKOFF_MS * (attempt + 1)) }
             }
@@ -236,16 +259,43 @@ object MediaStoreWriter {
     private const val PUBLISH_ATTEMPTS = 3
     private const val PUBLISH_RETRY_BACKOFF_MS = 50L
 
-    /** True only when the resolver confirms at least one row was removed. */
-    fun delete(context: Context, uri: Uri): Boolean =
-        runCatching { context.contentResolver.delete(uri, null, null) > 0 }.getOrDefault(false)
+    /**
+     * True when the requested media is gone after the operation. A resolver delete count of zero
+     * is ambiguous (already absent vs. provider failure), so probe the exact URI before reporting a
+     * failure. This keeps asynchronous family-delete reconciliation from restoring a stale URI as a
+     * broken review thumbnail merely because another app removed it first.
+     */
+    fun delete(context: Context, uri: Uri): Boolean {
+        val deleteCount = runCatching { context.contentResolver.delete(uri, null, null) }.getOrNull()
+        val rowExistsAfter = if ((deleteCount ?: 0) > 0) {
+            null
+        } else {
+            mediaRowExists(context, uri)
+        }
+        val disposition = mediaDeleteDisposition(deleteCount, rowExistsAfter)
+        if (disposition != MediaDeleteDisposition.FAILED) clearPending(context, uri)
+        return disposition != MediaDeleteDisposition.FAILED
+    }
+
+    /** Null means the provider could not answer; false is an authoritative already-absent row. */
+    private fun mediaRowExists(context: Context, uri: Uri): Boolean? = runCatching {
+        val queryArgs = Bundle().apply {
+            // delete() is also used for not-yet-published cleanup; include an owned pending row so
+            // an empty default query cannot be mistaken for authoritative absence.
+            putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
+        }
+        context.contentResolver.query(
+            uri,
+            arrayOf(MediaStore.MediaColumns._ID),
+            queryArgs,
+            null,
+        )?.use { cursor -> cursor.moveToFirst() }
+    }.getOrNull()
 
     /**
-     * Deletes our own leftover pending (IS_PENDING=1) entries under DCIM/[subDir] — orphans from a
-     * prior crash / force-kill where [publish]/[delete] never ran (a recording whose MediaMuxer was
-     * never stopped, leaving a corrupt, invisible 0-byte-ish file). Safe to run on launch: the normal
-     * capture/record paths publish or delete synchronously, so nothing of ours is legitimately pending
-     * at startup, and scoped storage only exposes our own entries. Best-effort; never throws.
+     * Recovers our own prior-process pending entries under DCIM/[subDir]. A complete take is adopted
+     * by publishing it; only a proven incomplete artifact is deleted. Indeterminate rows remain
+     * pending for a later launch rather than risking silent data loss. Best-effort; never throws.
      */
     fun cleanupOrphanedPending(context: Context, subDir: String = "X9Tele") {
         // Only sweep entries created BEFORE this process: the launch-time sweep runs on the setup
@@ -274,20 +324,201 @@ object MediaStoreWriter {
                     putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
                 }
                 context.contentResolver.query(
-                    base, arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.IS_PENDING), queryArgs, null,
+                    base,
+                    arrayOf(
+                        MediaStore.MediaColumns._ID,
+                        MediaStore.MediaColumns.IS_PENDING,
+                        MediaStore.MediaColumns.MIME_TYPE,
+                        MediaStore.MediaColumns.SIZE,
+                    ),
+                    queryArgs,
+                    null,
                 )?.use { cursor ->
                     val idCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
                     val pendingCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.IS_PENDING)
+                    val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE)
+                    val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
                     while (cursor.moveToNext()) {
                         if (cursor.getInt(pendingCol) != 1) continue
                         val uri = ContentUris.withAppendedId(base, cursor.getLong(idCol))
-                        runCatching { context.contentResolver.delete(uri, null, null) }
+                        val journalState = pendingJournalState(context, uri)
+                        val sizeBytes = if (cursor.isNull(sizeCol)) 0L else cursor.getLong(sizeCol)
+                        val probe = when {
+                            sizeBytes <= 0L -> PendingProbe.INVALID
+                            journalState == PendingJournalState.COMPLETE -> PendingProbe.VALID
+                            else -> probePendingMedia(
+                                context = context,
+                                uri = uri,
+                                mimeType = cursor.getString(mimeCol).orEmpty(),
+                                isVideoCollection = base == MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                                sizeBytes = sizeBytes,
+                            )
+                        }
+                        when (orphanDisposition(journalState, probe)) {
+                            OrphanDisposition.ADOPT -> publish(context, uri)
+                            OrphanDisposition.DELETE -> delete(context, uri)
+                            OrphanDisposition.KEEP_PENDING -> Unit
+                        }
                     }
                 }
             }
         }
     }
+
+    private fun registerPending(context: Context, uri: Uri): Uri? {
+        val registered = context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE)
+            .edit()
+            .putString(uri.toString(), PENDING_REGISTERED)
+            .commit()
+        if (registered) return uri
+        runCatching { context.contentResolver.delete(uri, null, null) }
+        return null
+    }
+
+    private fun pendingJournalState(context: Context, uri: Uri): PendingJournalState =
+        when (context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE).getString(uri.toString(), null)) {
+            PENDING_COMPLETE -> PendingJournalState.COMPLETE
+            PENDING_REGISTERED -> PendingJournalState.REGISTERED
+            else -> PendingJournalState.UNKNOWN
+        }
+
+    private fun clearPending(context: Context, uri: Uri) {
+        context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE)
+            .edit()
+            .remove(uri.toString())
+            .commit()
+    }
+
+    private fun probePendingMedia(
+        context: Context,
+        uri: Uri,
+        mimeType: String,
+        isVideoCollection: Boolean,
+        sizeBytes: Long,
+    ): PendingProbe = runCatching {
+        when (pendingMediaProbeKind(mimeType, isVideoCollection)) {
+            PendingMediaProbeKind.VIDEO -> probeFinalizedVideo(context, uri)
+            PendingMediaProbeKind.JPEG -> probeCompleteJpeg(context, uri, sizeBytes)
+            PendingMediaProbeKind.DNG -> probeCompleteDng(context, uri, sizeBytes)
+            // HEIF/unknown image containers can expose dimensions before their payload is fully
+            // closed. A bounds-only decode therefore cannot prove completion. Without a durable
+            // COMPLETE marker, retain the private pending row instead of publishing corrupt media.
+            PendingMediaProbeKind.KEEP_PENDING -> PendingProbe.INDETERMINATE
+        }
+    }.getOrDefault(PendingProbe.INDETERMINATE)
+
+    private fun probeFinalizedVideo(context: Context, uri: Uri): PendingProbe {
+        val extractor = MediaExtractor()
+        return try {
+            val pfd = openParcelFd(context, uri, "r") ?: return PendingProbe.INDETERMINATE
+            pfd.use { descriptor ->
+                extractor.setDataSource(descriptor.fileDescriptor)
+                if ((0 until extractor.trackCount).any { index ->
+                        extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
+                    }
+                ) {
+                    PendingProbe.VALID
+                } else {
+                    PendingProbe.INVALID
+                }
+            }
+        } finally {
+            runCatching { extractor.release() }
+        }
+    }
+
+    private fun probeCompleteJpeg(context: Context, uri: Uri, sizeBytes: Long): PendingProbe {
+        if (sizeBytes < 4L) return PendingProbe.INVALID
+        val pfd = openParcelFd(context, uri, "r") ?: return PendingProbe.INDETERMINATE
+        return pfd.use {
+            FileInputStream(it.fileDescriptor).use { input ->
+                val channel = input.channel
+                if (channel.size() < 4L) return@use PendingProbe.INVALID
+                channel.position(channel.size() - 2L)
+                val tail = ByteArray(2)
+                if (input.read(tail) == 2 && tail[0] == 0xff.toByte() && tail[1] == 0xd9.toByte()) {
+                    PendingProbe.VALID
+                } else {
+                    PendingProbe.INVALID
+                }
+            }
+        }
+    }
+
+    private fun probeCompleteDng(context: Context, uri: Uri, sizeBytes: Long): PendingProbe {
+        val pfd = openParcelFd(context, uri, "r") ?: return PendingProbe.INDETERMINATE
+        return pfd.use {
+            val exif = androidx.exifinterface.media.ExifInterface(it.fileDescriptor)
+            val width = exif.getAttributeInt(androidx.exifinterface.media.ExifInterface.TAG_IMAGE_WIDTH, 0)
+            val height = exif.getAttributeInt(androidx.exifinterface.media.ExifInterface.TAG_IMAGE_LENGTH, 0)
+            val version = exif.getAttributeBytes(androidx.exifinterface.media.ExifInterface.TAG_DNG_VERSION)
+            val offsets = parseUnsignedExifValues(
+                exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_STRIP_OFFSETS),
+            )
+            val counts = parseUnsignedExifValues(
+                exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_STRIP_BYTE_COUNTS),
+            )
+            val stripsFit = offsets.isNotEmpty() && offsets.size == counts.size &&
+                offsets.zip(counts).all { (offset, count) -> count > 0L && offset <= sizeBytes - count }
+            if (width > 0 && height > 0 && version != null && version.isNotEmpty() && stripsFit) {
+                PendingProbe.VALID
+            } else {
+                PendingProbe.INVALID
+            }
+        }
+    }
+
 }
+
+internal enum class MediaDeleteDisposition { DELETED, ALREADY_ABSENT, FAILED }
+
+/** Pure resolver-result reduction used by [MediaStoreWriter.delete]. */
+internal fun mediaDeleteDisposition(
+    deleteCount: Int?,
+    rowExistsAfter: Boolean?,
+): MediaDeleteDisposition = when {
+    deleteCount != null && deleteCount > 0 -> MediaDeleteDisposition.DELETED
+    rowExistsAfter == false -> MediaDeleteDisposition.ALREADY_ABSENT
+    else -> MediaDeleteDisposition.FAILED
+}
+
+internal enum class PendingMediaProbeKind { VIDEO, JPEG, DNG, KEEP_PENDING }
+
+/**
+ * Only containers with a conservative terminal-structure probe may bridge a missing COMPLETE
+ * marker. In particular, HEIF remains pending: header dimensions do not prove its payload closed.
+ */
+internal fun pendingMediaProbeKind(
+    mimeType: String,
+    isVideoCollection: Boolean,
+): PendingMediaProbeKind = when {
+    isVideoCollection -> PendingMediaProbeKind.VIDEO
+    mimeType.equals("image/jpeg", ignoreCase = true) -> PendingMediaProbeKind.JPEG
+    mimeType.contains("dng", ignoreCase = true) -> PendingMediaProbeKind.DNG
+    else -> PendingMediaProbeKind.KEEP_PENDING
+}
+
+internal enum class PendingJournalState { UNKNOWN, REGISTERED, COMPLETE }
+
+internal enum class PendingProbe { VALID, INVALID, INDETERMINATE }
+
+internal enum class OrphanDisposition { ADOPT, DELETE, KEEP_PENDING }
+
+/** Pure conservative launch-recovery decision; an unknown answer never destroys user media. */
+internal fun orphanDisposition(
+    journalState: PendingJournalState,
+    probe: PendingProbe,
+): OrphanDisposition = when {
+    journalState == PendingJournalState.COMPLETE -> OrphanDisposition.ADOPT
+    probe == PendingProbe.VALID -> OrphanDisposition.ADOPT
+    probe == PendingProbe.INVALID -> OrphanDisposition.DELETE
+    else -> OrphanDisposition.KEEP_PENDING
+}
+
+internal fun parseUnsignedExifValues(raw: String?): List<Long> = raw
+    ?.split(',')
+    ?.mapNotNull { token -> token.trim().substringBefore('/').toLongOrNull()?.takeIf { it >= 0L } }
+    .orEmpty()
 
 /**
  * Epoch-seconds moment this process started: wall-clock "now" rolled back by the time elapsed

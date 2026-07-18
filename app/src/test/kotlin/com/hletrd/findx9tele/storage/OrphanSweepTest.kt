@@ -60,4 +60,85 @@ class OrphanSweepTest {
         )
         assertTrue(truncated <= 1_000_040L + 1)
     }
+
+    @Test
+    fun `completed journal rows are always adopted`() {
+        PendingProbe.entries.forEach { probe ->
+            assertEquals(
+                OrphanDisposition.ADOPT,
+                orphanDisposition(PendingJournalState.COMPLETE, probe),
+            )
+        }
+    }
+
+    @Test
+    fun `valid legacy or registered rows are adopted`() {
+        assertEquals(
+            OrphanDisposition.ADOPT,
+            orphanDisposition(PendingJournalState.UNKNOWN, PendingProbe.VALID),
+        )
+        assertEquals(
+            OrphanDisposition.ADOPT,
+            orphanDisposition(PendingJournalState.REGISTERED, PendingProbe.VALID),
+        )
+    }
+
+    @Test
+    fun `only structurally invalid unfinished rows are deleted`() {
+        assertEquals(
+            OrphanDisposition.DELETE,
+            orphanDisposition(PendingJournalState.REGISTERED, PendingProbe.INVALID),
+        )
+        assertEquals(
+            OrphanDisposition.DELETE,
+            orphanDisposition(PendingJournalState.UNKNOWN, PendingProbe.INVALID),
+        )
+        assertEquals(
+            OrphanDisposition.KEEP_PENDING,
+            orphanDisposition(PendingJournalState.REGISTERED, PendingProbe.INDETERMINATE),
+        )
+        assertEquals(
+            OrphanDisposition.KEEP_PENDING,
+            orphanDisposition(PendingJournalState.UNKNOWN, PendingProbe.INDETERMINATE),
+        )
+    }
+
+    @Test
+    fun `DNG strip values parse conservatively`() {
+        assertEquals(listOf(8L, 16L), parseUnsignedExifValues("8, 16"))
+        assertEquals(listOf(7L), parseUnsignedExifValues("7/1, -1, bad"))
+        assertTrue(parseUnsignedExifValues(null).isEmpty())
+    }
+
+    @Test
+    fun `unjournaled HEIF stays pending because headers do not prove a closed payload`() {
+        assertEquals(
+            PendingMediaProbeKind.KEEP_PENDING,
+            pendingMediaProbeKind("image/heif", isVideoCollection = false),
+        )
+        assertEquals(
+            OrphanDisposition.KEEP_PENDING,
+            orphanDisposition(PendingJournalState.REGISTERED, PendingProbe.INDETERMINATE),
+        )
+    }
+
+    @Test
+    fun `delete zero is success only when an existence probe proves the row absent`() {
+        assertEquals(
+            MediaDeleteDisposition.ALREADY_ABSENT,
+            mediaDeleteDisposition(deleteCount = 0, rowExistsAfter = false),
+        )
+        assertEquals(
+            MediaDeleteDisposition.FAILED,
+            mediaDeleteDisposition(deleteCount = 0, rowExistsAfter = true),
+        )
+        assertEquals(
+            MediaDeleteDisposition.FAILED,
+            mediaDeleteDisposition(deleteCount = null, rowExistsAfter = null),
+        )
+        assertEquals(
+            MediaDeleteDisposition.DELETED,
+            mediaDeleteDisposition(deleteCount = 1, rowExistsAfter = null),
+        )
+    }
 }
