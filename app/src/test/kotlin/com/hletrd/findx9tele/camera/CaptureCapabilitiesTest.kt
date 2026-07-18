@@ -66,4 +66,31 @@ class CaptureCapabilitiesTest {
         assertEquals(2.26f, metadata.apertureF, 0.0001f)
         assertEquals(57.977f, metadata.equivalentFocalMm, 0.001f)
     }
+
+    @Test
+    fun `still exposure caps-seam clamp holds the device-verified 4s ceiling (TEST4-17)`() {
+        // The single most safety-critical constant of cycle 3: this seam is what keeps a 5s+
+        // selection (CAMERA_ERROR(3) shot loss) unselectable everywhere downstream.
+        // Advertised upper above the ceiling clamps down; the lower rides through.
+        assertEquals(
+            14_000L to 4_000_000_000L,
+            clampStillExposureRange(14_000L, 20_000_000_000L),
+        )
+        // An in-range advertisement is untouched.
+        assertEquals(
+            14_000L to 1_000_000_000L,
+            clampStillExposureRange(14_000L, 1_000_000_000L),
+        )
+        // Exactly at the ceiling is allowed (4.0s is the verified-good top stop).
+        assertEquals(
+            14_000L to 4_000_000_000L,
+            clampStillExposureRange(14_000L, 4_000_000_000L),
+        )
+        // Defensive: a pathological lower above the ceiling clamps too — an inverted
+        // Range(lower > upper) throws at construction.
+        assertEquals(
+            4_000_000_000L to 4_000_000_000L,
+            clampStillExposureRange(5_000_000_000L, 20_000_000_000L),
+        )
+    }
 }

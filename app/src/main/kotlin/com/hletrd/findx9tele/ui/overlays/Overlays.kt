@@ -610,7 +610,7 @@ private fun DrawScope.drawWaveform(data: WaveformData) {
  * low-count buckets nearly invisible; a floor + √ curve lifts them so any populated bucket paints
  * clearly (QA: "waveform too faint"). Pulled out so both the counting and the fill pass agree.
  */
-private fun waveformAlphaBucket(value: Int, maxVal: Int, alphaBuckets: Int): Int {
+internal fun waveformAlphaBucket(value: Int, maxVal: Int, alphaBuckets: Int): Int {
     val norm = (value.toFloat() / maxVal).coerceIn(0f, 1f)
     return (kotlin.math.sqrt(norm) * (alphaBuckets - 1)).toInt().coerceIn(0, alphaBuckets - 1)
 }

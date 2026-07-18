@@ -720,8 +720,10 @@ fun CameraScreen(
     }
 }
 
-private fun String.isUrgentStatus(): Boolean =
-    listOf("error", "fail", "unable", "unavailable", "denied", "insufficient")
+internal fun String.isUrgentStatus(): Boolean =
+    // "could not": the delete-failure statuses ("Could not delete media") matched no keyword and
+    // rendered as polite toasts — found while pinning this classifier (TEST4-14).
+    listOf("error", "fail", "unable", "unavailable", "denied", "insufficient", "could not")
         .any { contains(it, ignoreCase = true) }
 
 /**

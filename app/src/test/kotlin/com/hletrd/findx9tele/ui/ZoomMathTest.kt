@@ -133,4 +133,34 @@ class ZoomMathTest {
             0f,
         )
     }
+
+    // ---- TEST4-6: the non-teleconverter branch of effectiveZoomBounds ----
+
+    @Test
+    fun `non-TC bounds pass caps through`() {
+        assertEquals(ZoomBounds(0.6f, 20f), effectiveZoomBounds(0.6f, 20f, teleconverter = false))
+    }
+
+    @Test
+    fun `non-TC bounds are null on missing or inverted caps`() {
+        org.junit.Assert.assertNull(effectiveZoomBounds(null, 20f, teleconverter = false))
+        org.junit.Assert.assertNull(effectiveZoomBounds(0.6f, null, teleconverter = false))
+        org.junit.Assert.assertNull(effectiveZoomBounds(20f, 1f, teleconverter = false))
+    }
+
+    // ---- TEST4-7: the crossingMark re-snap path (both endpoints INSIDE the band) ----
+
+    @Test
+    fun `crossing the mark inside its own band re-snaps to the mark`() {
+        // 30.5x -> 29.5x display: both within the 30x band, but the request crosses the exact
+        // mark — the crossingMark predicate (not enteringBand) must land it back on 30x.
+        val bounds = effectiveZoomBounds(1f, 10f, teleconverter = true)
+        val normalized = normalizeZoomRequest(
+            requested = 29.5f / TELE_DISPLAY_BASE,
+            currentApplied = 30.5f / TELE_DISPLAY_BASE,
+            bounds = bounds,
+            teleconverter = true,
+        )
+        assertEquals(30f, normalized * TELE_DISPLAY_BASE, 0.001f)
+    }
 }

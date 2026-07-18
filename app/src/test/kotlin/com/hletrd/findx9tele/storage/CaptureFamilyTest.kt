@@ -44,4 +44,27 @@ class CaptureFamilyTest {
         assertNull(CaptureFamilyKey.parse("IMG_TELECAM_F1_1752676496123_42.heic"))
         assertNull(CaptureFamilyKey.parse(null))
     }
+
+    @Test
+    fun `constructor bounds are pinned at their exact edges (TEST4-20)`() {
+        // The field-width invariants back the fixed-width filename format; loosening them without
+        // widening the format would silently produce unparseable display names.
+        val maxTimestamp = 9_999_999_999_999L
+        val maxSequence = 9_999_999_999L
+        val atMax = CaptureFamilyKey(CaptureFamilyMedia.STILL, maxTimestamp, maxSequence)
+        assertEquals(maxTimestamp, atMax.capturedAtEpochMillis)
+        org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            CaptureFamilyKey(CaptureFamilyMedia.STILL, maxTimestamp + 1, 0L)
+        }
+        org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            CaptureFamilyKey(CaptureFamilyMedia.STILL, 0L, maxSequence + 1)
+        }
+        org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            CaptureFamilyKey(CaptureFamilyMedia.STILL, -1L, 0L)
+        }
+        // displayName rejects a non [a-z0-9] extension instead of writing a malformed name.
+        org.junit.Assert.assertThrows(IllegalArgumentException::class.java) {
+            atMax.displayName("He!c")
+        }
+    }
 }

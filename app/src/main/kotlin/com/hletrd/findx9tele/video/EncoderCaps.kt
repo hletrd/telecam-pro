@@ -44,16 +44,14 @@ object EncoderCaps {
         val infos = runCatching {
             MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
         }.getOrNull() ?: return null
-        var fallback: Info? = null
-        for (ci in infos) {
-            if (!ci.isEncoder) continue
-            if (ci.supportedTypes.none { it.equals(mime, ignoreCase = true) }) continue
-            val hw = runCatching { ci.isHardwareAccelerated }.getOrDefault(!ci.name.startsWith("c2.android") && !ci.name.startsWith("OMX.google"))
-            val info = Info(ci.name, hw)
-            if (hw) return info
-            if (fallback == null) fallback = info
+        val candidates = infos.mapNotNull { ci ->
+            if (!ci.isEncoder) return@mapNotNull null
+            if (ci.supportedTypes.none { it.equals(mime, ignoreCase = true) }) return@mapNotNull null
+            val hw = runCatching { ci.isHardwareAccelerated }
+                .getOrDefault(looksHardwareAccelerated(ci.name))
+            Info(ci.name, hw) to hw
         }
-        return fallback
+        return pickBestEncoder(candidates)
     }
 
     /**
@@ -77,4 +75,26 @@ object EncoderCaps {
     const val MIME_DOLBY_VISION = "video/dolby-vision"
     // APV (Advanced Professional Video, ISO/IEC 21794) — HW `c2.qti.apv.encoder` on this SoC.
     const val MIME_APV = "video/apv"
+}
+
+/**
+ * Name-based hardware heuristic used only when [android.media.MediaCodecInfo.isHardwareAccelerated]
+ * itself throws (TEST4-19): the two Android software-encoder prefixes are the reliable negatives.
+ * Extracted pure so misclassifying a new vendor name fails a host test, not a device recording.
+ */
+internal fun looksHardwareAccelerated(codecName: String): Boolean =
+    !codecName.startsWith("c2.android") && !codecName.startsWith("OMX.google")
+
+/**
+ * The encoder tie-break, extracted pure (TEST4-19): the FIRST hardware candidate wins immediately;
+ * otherwise the FIRST software candidate is the remembered fallback (a later software match must
+ * never displace an earlier one); null on no candidates.
+ */
+internal fun <T> pickBestEncoder(candidates: List<Pair<T, Boolean>>): T? {
+    var fallback: T? = null
+    for ((value, hw) in candidates) {
+        if (hw) return value
+        if (fallback == null) fallback = value
+    }
+    return fallback
 }

@@ -264,7 +264,12 @@ class VideoRecorder(private val context: Context) {
         // the gallery. An AUDIO-only mid-REC fault degraded to video-only and never touched
         // firstFailure (see degradeAudioToVideoOnly), so a clean video track still publishes here.
         val outputUri = uri
-        val complete = muxerStarted && wroteVideoSample && firstFailure.cause == null && outputUri != null
+        val complete = shouldPublishRecording(
+            muxerStarted = muxerStarted,
+            wroteVideoSample = wroteVideoSample,
+            hasFailure = firstFailure.cause != null,
+            hasUri = outputUri != null,
+        )
         val saved = if (complete && outputUri != null) {
             // publish() retries transient resolver failures internally (CRIT4-5). If it STILL fails,
             // do not delete the complete recording here — but be honest about the consequence: no
@@ -758,6 +763,20 @@ internal fun shouldStartMuxer(
  * dropped mic in the add-track→first-sample window cannot delete a clean take. Every other
  * combination (no video sample, no degrade, or audio samples actually muxed) stays terminal.
  */
+/**
+ * The stop() save gate, extracted pure (TEST4-5/P4.7): a recording is PUBLISHED only when the
+ * muxer started, at least one video sample was muxed, no VIDEO-side failure latched, and the
+ * pending uri still exists — anything else is deleted. In particular a start immediately followed
+ * by a stop (the same-executor-tick case the admission latch serializes) has no muxed video sample
+ * yet, so the half-created pending file is DELETED, never published to the gallery.
+ */
+internal fun shouldPublishRecording(
+    muxerStarted: Boolean,
+    wroteVideoSample: Boolean,
+    hasFailure: Boolean,
+    hasUri: Boolean,
+): Boolean = muxerStarted && wroteVideoSample && !hasFailure && hasUri
+
 internal fun muxerStopFailureIsTerminal(
     wroteVideoSample: Boolean,
     audioDegradedMidRec: Boolean,

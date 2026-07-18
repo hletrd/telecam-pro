@@ -19,6 +19,19 @@ private const val FULL_FRAME_DIAGONAL_MM = 43.2666f
 // caps seam so every consumer (ruler ladder, request clamps, AEB, watchdog) stays truthful.
 internal const val HAL_SAFE_MAX_STILL_EXPOSURE_NS = 4_000_000_000L
 
+/**
+ * The caps-seam still-exposure clamp as pure Long math (TEST4-17): the single most safety-critical
+ * transform of cycle 3 was inline against android.util.Range and had no host test — a dropped or
+ * inverted guard would compile clean and re-arm the CAMERA_ERROR(3) shot-loss on the next 5 s+
+ * selection. Both ends clamp (a pathological advertised lower above the ceiling must not produce
+ * an inverted Range, which throws at construction).
+ */
+internal fun clampStillExposureRange(
+    lowerNs: Long,
+    upperNs: Long,
+    ceilingNs: Long = HAL_SAFE_MAX_STILL_EXPOSURE_NS,
+): Pair<Long, Long> = minOf(lowerNs, ceilingNs) to minOf(upperNs, ceilingNs)
+
 /** Immutable optics subset safe to cache before a still callback needs physical-lens EXIF. */
 internal data class LensExifMetadata(
     val focalLengthMm: Float,
@@ -273,11 +286,8 @@ data class CameraCaps(
                 // still watchdog all truthful at once.
                 exposureTimeRange = chars.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)
                     ?.let { adv ->
-                        if (adv.upper > HAL_SAFE_MAX_STILL_EXPOSURE_NS) {
-                            Range(adv.lower, HAL_SAFE_MAX_STILL_EXPOSURE_NS)
-                        } else {
-                            adv
-                        }
+                        val (lo, hi) = clampStillExposureRange(adv.lower, adv.upper)
+                        if (lo == adv.lower && hi == adv.upper) adv else Range(lo, hi)
                     },
                 maxFrameDurationNs = chars.get(CameraCharacteristics.SENSOR_INFO_MAX_FRAME_DURATION) ?: 0L,
                 evRange = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE) ?: Range(0, 0),

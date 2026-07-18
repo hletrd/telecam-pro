@@ -305,4 +305,80 @@ class ControlCapabilityNormalizationTest {
                 .normalizedFor(CameraControlCapabilities()).exposureTimeNs,
         )
     }
+
+    @Test
+    fun `numeric exposure guard covers every branch of the range matrix (TEST4-1)`() {
+        val caps = CameraControlCapabilities(
+            exposureTimeMinNs = 14_000L,
+            exposureTimeMaxNs = 4_000_000_000L,
+        )
+        // BELOW the minimum coerces UP, not just over-max down.
+        assertEquals(14_000L, ManualControls(exposureTimeNs = 1L).normalizedFor(caps).exposureTimeNs)
+        // An INVERTED range (a caps-read glitch) must leave the value untouched — coerceIn on an
+        // inverted range throws, and the min<=max guard is what prevents that crash.
+        val inverted = CameraControlCapabilities(
+            exposureTimeMinNs = 4_000_000_000L,
+            exposureTimeMaxNs = 14_000L,
+        )
+        assertEquals(
+            6_300_000_000L,
+            ManualControls(exposureTimeNs = 6_300_000_000L).normalizedFor(inverted).exposureTimeNs,
+        )
+        // One-sided bounds (either end alone) take the untouched path too.
+        val minOnly = CameraControlCapabilities(exposureTimeMinNs = 14_000L)
+        assertEquals(1L, ManualControls(exposureTimeNs = 1L).normalizedFor(minOnly).exposureTimeNs)
+        val maxOnly = CameraControlCapabilities(exposureTimeMaxNs = 4_000_000_000L)
+        assertEquals(
+            6_300_000_000L,
+            ManualControls(exposureTimeNs = 6_300_000_000L).normalizedFor(maxOnly).exposureTimeNs,
+        )
+    }
+
+    @Test
+    fun `app-side Program flips back to HAL AE when advertised auto flash needs it (TEST4-2)`() {
+        // A sparse-route recall can leave programAppSide=true; with flash AUTO requested AND the
+        // exact AE auto-flash variant advertised, normalization must return Program to the HAL AE
+        // (flash metering needs it) and keep the requested flash.
+        val caps = CameraControlCapabilities(
+            supportsManualSensor = true,
+            hasIsoRange = true,
+            hasExposureTimeRange = true,
+            flashAvailable = true,
+            aeModes = intArrayOf(
+                CameraMetadata.CONTROL_AE_MODE_OFF,
+                CameraMetadata.CONTROL_AE_MODE_ON,
+                CameraMetadata.CONTROL_AE_MODE_ON_AUTO_FLASH,
+                CameraMetadata.CONTROL_AE_MODE_ON_ALWAYS_FLASH,
+            ),
+        )
+        val auto = ManualControls(
+            exposureMode = ExposureMode.PROGRAM,
+            programAppSide = true,
+            flash = FlashMode.AUTO,
+        ).normalizedFor(caps)
+        assertFalse(auto.programAppSide)
+        assertEquals(FlashMode.AUTO, auto.flash)
+        val on = ManualControls(
+            exposureMode = ExposureMode.PROGRAM,
+            programAppSide = true,
+            flash = FlashMode.ON,
+        ).normalizedFor(caps)
+        assertFalse(on.programAppSide)
+        assertEquals(FlashMode.ON, on.flash)
+        // Without the advertised variant, app-side Program stays and flash falls back OFF.
+        val noFlashCaps = CameraControlCapabilities(
+            supportsManualSensor = true,
+            hasIsoRange = true,
+            hasExposureTimeRange = true,
+            flashAvailable = true,
+            aeModes = intArrayOf(CameraMetadata.CONTROL_AE_MODE_OFF),
+        )
+        val fallback = ManualControls(
+            exposureMode = ExposureMode.PROGRAM,
+            programAppSide = true,
+            flash = FlashMode.AUTO,
+        ).normalizedFor(noFlashCaps)
+        assertTrue(fallback.programAppSide)
+        assertEquals(FlashMode.OFF, fallback.flash)
+    }
 }

@@ -64,10 +64,11 @@ class AutoExposureTest {
     }
 
     @Test
-    fun correction_isClampedToOneStop() {
-        // A pitch-dark meter must not demand more than one stop per tick.
+    fun correction_isClampedToMaxStep() {
+        // A pitch-dark meter must not demand more than the documented 0.30-stop per-tick clamp
+        // (P7.1/TEST4-15: the old 1.0-stop assertion silently tolerated a 3x-too-fast AE swing).
         val c = AutoExposure.correctionStops(0.001f, 0f)!!
-        assertTrue("per-tick step must be <= 1 stop, was $c", c <= 1.0f + 1e-4f)
+        assertTrue("per-tick step must be <= 0.30 stop, was $c", c <= 0.30f + 1e-4f)
     }
 
     @Test

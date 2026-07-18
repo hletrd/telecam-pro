@@ -1,15 +1,22 @@
 package com.hletrd.findx9tele.ui.overlays
 
+import androidx.compose.ui.graphics.toArgb
+import com.hletrd.findx9tele.ui.theme.CameraColors
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HudContrastTest {
 
+    // LIVE surfaces reference the REAL palette (TEST4-10): the old literal copies pinned a stale
+    // duplicate of CameraColors — a palette tweak kept these green while shipping an unchecked
+    // color. Historical pre-fix documentation tests below keep their literals on purpose.
+    private fun rgbOf(color: androidx.compose.ui.graphics.Color): Int = color.toArgb() and 0xFFFFFF
+
     @Test
     fun `shared HUD scrim clears small-text contrast on a white frame`() {
         val foregrounds = mapOf(
-            "primary" to 0xFFFFFF,
-            "secondary" to 0x9E9E9E,
+            "primary" to rgbOf(CameraColors.TextPrimary),
+            "secondary" to rgbOf(CameraColors.TextSecondary),
             "blue status accent" to 0x4C9AFF,
         )
 
@@ -52,9 +59,9 @@ class HudContrastTest {
         // Pin each foreground so a future alpha/color tweak can't sink one back under 4.5:1 on a white
         // frame the way the pre-fix 0.45/0.5/0.55/0.62 alphas did.
         val foregrounds = mapOf(
-            "chrome/review/toast/scope white" to 0xFFFFFF,
-            "chrome/metadata secondary #9E9E9E" to 0x9E9E9E,
-            "chrome accent blue #8AB4F8" to 0x8AB4F8,
+            "chrome/review/toast/scope white" to rgbOf(CameraColors.TextPrimary),
+            "chrome/metadata secondary" to rgbOf(CameraColors.TextSecondary),
+            "chrome accent blue" to rgbOf(CameraColors.Accent),
         )
         foregrounds.forEach { (label, rgb) ->
             val ratio = contrastRatioOnWhiteScrim(rgb, HUD_TEXT_SCRIM_ALPHA)
@@ -78,14 +85,23 @@ class HudContrastTest {
         // Pin their actual foregrounds so a future alpha/color tweak can't quietly sink one of
         // them back under 4.5:1 on a white frame.
         val foregrounds = mapOf(
-            "white (pill/meter/REC time)" to 0xFFFFFF,
-            "secondary (empty MR label)" to 0x9E9E9E,
-            "accent blue (zoom readout)" to 0x8AB4F8,
-            "manual yellow (ruler readout, half-press label)" to 0xFFD60A,
+            "white (pill/meter/REC time)" to rgbOf(CameraColors.TextPrimary),
+            "secondary (empty MR label)" to rgbOf(CameraColors.TextSecondary),
+            "accent blue (zoom readout)" to rgbOf(CameraColors.Accent),
+            "manual yellow (ruler readout, half-press label)" to rgbOf(CameraColors.ManualActive),
         )
         foregrounds.forEach { (label, rgb) ->
             val ratio = contrastRatioOnWhiteScrim(rgb, HUD_TEXT_SCRIM_ALPHA)
             assertTrue("$label contrast was $ratio", ratio >= 4.5)
         }
+    }
+
+    @Test
+    fun `review action button scrim shares the pinned alpha (DES4-4)`() {
+        // ReviewActionButton (video play/pause + still zoom control) was the one review-screen
+        // surface still on a magic 0.62f; it now routes through HUD_TEXT_SCRIM_ALPHA, so its
+        // white glyph is covered by the same floor as every sibling.
+        val ratio = contrastRatioOnWhiteScrim(rgbOf(CameraColors.TextPrimary), HUD_TEXT_SCRIM_ALPHA)
+        assertTrue("review action glyph contrast was $ratio", ratio >= 4.5)
     }
 }
