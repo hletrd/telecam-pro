@@ -75,6 +75,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.hletrd.findx9tele.camera.MediaDeleteScope
+import com.hletrd.findx9tele.ui.overlays.HUD_TEXT_SCRIM_ALPHA
 import com.hletrd.findx9tele.ui.theme.CameraColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -799,7 +800,10 @@ fun MediaReviewOverlay(
                     .align(Alignment.BottomStart)
                     .padding(14.dp)
                     .clip(RoundedCornerShape(10.dp))
-                    .background(Color.Black.copy(alpha = 0.55f))
+                    // Sits directly over the reviewed (often bright) photo, so it rides the same tested
+                    // contrast floor (05486cb) as the live HUD — at 0.55 the secondary EXIF line was
+                    // ~1.78:1, effectively unreadable over any bright region of the frame.
+                    .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
                     .widthIn(max = 280.dp)
                     .padding(horizontal = 12.dp, vertical = 9.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -830,7 +834,9 @@ fun MediaReviewOverlay(
                     // focus check right after a landscape-held 300 mm shot reads "4×" upright).
                     .rotate(overlayRotation)
                     .clip(RoundedCornerShape(50))
-                    .background(Color.Black.copy(alpha = 0.55f))
+                    // Match the live ZoomIndicator's tested contrast floor (05486cb) — its 0.55 sibling
+                    // cleared 4.5 only by a hair over a bright review photo.
+                    .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
                     .padding(horizontal = 12.dp, vertical = 5.dp),
             )
         }
@@ -866,7 +872,8 @@ fun MediaReviewOverlay(
             }
         }
 
-        // Close button, top-left.
+        // Close button, top-left. Scrim rides the tested HUD contrast floor (05486cb): the "✕" over a
+        // bright/high-key review frame washed out at 0.5 (≈3.98:1, under the 4.5 floor).
         Box(
             modifier = Modifier
                 .align(Alignment.TopStart)
@@ -874,7 +881,7 @@ fun MediaReviewOverlay(
                 .padding(12.dp)
                 .size(48.dp)
                 .clip(CircleShape)
-                .background(Color.Black.copy(alpha = 0.5f))
+                .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
                 .semantics {
                     contentDescription = "Close review"
                     role = Role.Button
@@ -885,6 +892,9 @@ fun MediaReviewOverlay(
             Text("✕", color = CameraColors.TextPrimary, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
         }
 
+        // Delete button, top-right. Scrim rides the tested HUD contrast floor (05486cb): the red trash
+        // glyph over a bright frame was the worst interactive contrast found (≈1.43:1 at 0.5) — and it
+        // is a DESTRUCTIVE action, so it must never be ambiguous. At the floor the red clears 4.5.
         Box(
             modifier = Modifier
                 .align(Alignment.TopEnd)
@@ -892,7 +902,7 @@ fun MediaReviewOverlay(
                 .padding(12.dp)
                 .size(48.dp)
                 .clip(CircleShape)
-                .background(Color.Black.copy(alpha = 0.5f))
+                .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
                 .semantics {
                     contentDescription = deleteCopy.title.removeSuffix("?")
                     role = Role.Button

@@ -516,13 +516,16 @@ fun CameraScreen(
         state.statusMessage?.let { message ->
             // Centered transient toast ("Saved" / "Video saved" / errors). Previously pinned near the
             // top, where it collided with the OSD status row (300mm / codec / etc.) — QA-reported.
+            // This is the channel for capture/permission/storage ERRORS, so its scrim rides the tested
+            // contrast floor (05486cb) like every sibling pill — 0.55 cleared 4.5 only by a hair and
+            // was one alpha tweak from regressing the app's most important on-screen text.
             Text(
                 text = message,
                 color = CameraColors.TextPrimary,
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier
                     .align(Alignment.Center)
-                    .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(8.dp))
+                    .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA), RoundedCornerShape(8.dp))
                     .semantics {
                         liveRegion = if (message.isUrgentStatus()) {
                             LiveRegionMode.Assertive
@@ -700,6 +703,7 @@ fun CameraScreen(
             state = state,
             actions = actions,
             onDismiss = { fnOverlayVisible = false },
+            glyphRotation = overlayRotation,
         )
     }
 
@@ -818,6 +822,13 @@ private fun TopBar(
  * Ghost circular translucent chrome button shared by every top-bar icon. The tappable area is a
  * 48 dp touch target (Material / WCAG 2.2 minimum) while the visible scrim stays a compact 36 dp, so
  * one-handed / gloved use on this 3168 px panel mis-taps far less without bloating the chrome.
+ *
+ * The scrim rides [HUD_TEXT_SCRIM_ALPHA] — the same tested contrast floor 05486cb applied to the OSD
+ * readouts — because the earlier 0.45 disc failed it badly (secondary #9E9E9E glyphs ≈1.25:1, white
+ * ≈3.35:1 over a bright sky), leaving flash/grid/aspect state unreadable outdoors. The enabled/
+ * disabled affordance is carried by the glyph's own alpha (each content lambda dims to 0.38 when
+ * disabled), not by fading the disc: a mid-gray disc near the glyph's own gray (≈0.5 alpha) is
+ * actually LOWER contrast than either the floor or the old 0.22, so a single floor alpha is correct.
  */
 @Composable
 private fun ChromeIconButton(
@@ -842,7 +853,7 @@ private fun ChromeIconButton(
             modifier = Modifier
                 .size(36.dp)
                 .clip(CircleShape)
-                .background(CameraColors.ChromeScrim.copy(alpha = if (enabled) 0.45f else 0.22f)),
+                .background(CameraColors.ChromeScrim.copy(alpha = HUD_TEXT_SCRIM_ALPHA)),
             contentAlignment = Alignment.Center,
             content = content,
         )
@@ -1213,6 +1224,7 @@ private fun FnOverlay(
     state: CameraUiState,
     actions: CameraActions,
     onDismiss: () -> Unit,
+    glyphRotation: Float = 0f,
 ) {
     BackHandler(onBack = onDismiss)
     val slots = remember(state.activeFnSlots, state.myMenuSlots, state.recentSettingSlots) {
@@ -1261,7 +1273,10 @@ private fun FnOverlay(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Fn", color = CameraColors.TextPrimary, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                // Short glyphs counter-rotate with device orientation (+dev policy) like the MR strip
+                // directly above this menu; the wide header Row stays screen-fixed (rotating a wide
+                // box pokes it out of its layout slot — Modifier.rotate is draw-only).
+                Text("Fn", color = CameraColors.TextPrimary, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.rotate(glyphRotation))
                 Box(
                     modifier = Modifier
                         .focusRequester(closeFocusRequester)
@@ -1278,7 +1293,7 @@ private fun FnOverlay(
                         "Close",
                         color = CameraColors.TextSecondary,
                         style = MaterialTheme.typography.labelMedium,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        modifier = Modifier.rotate(glyphRotation).padding(horizontal = 10.dp, vertical = 5.dp),
                     )
                 }
             }
@@ -1296,6 +1311,7 @@ private fun FnOverlay(
                                 performQuickFn(slot, state, actions)
                                 onDismiss()
                             },
+                            glyphRotation = glyphRotation,
                             modifier = Modifier.weight(1f),
                         )
                     }
@@ -1315,7 +1331,12 @@ private fun FnOverlayTile(
     enabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    glyphRotation: Float = 0f,
 ) {
+    // The tile BOX (background/border/48-hit) stays screen-fixed — rotating a wide box pokes it out of
+    // its layout slot. Only the short glyph label/value counter-rotate (+dev policy), matching every
+    // sibling compact-glyph surface (MR strip, mode labels, zoom readout) so the tiles read upright in
+    // a landscape hold instead of sideways — the one menu most likely opened mid-shot.
     Column(
         modifier = modifier
             .height(58.dp)
@@ -1336,6 +1357,7 @@ private fun FnOverlayTile(
             color = CameraColors.TextSecondary.copy(alpha = if (enabled) 1f else 0.55f),
             style = MaterialTheme.typography.labelSmall,
             maxLines = 1,
+            modifier = Modifier.rotate(glyphRotation),
         )
         Text(
             value,
@@ -1343,6 +1365,7 @@ private fun FnOverlayTile(
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.Bold,
             maxLines = 1,
+            modifier = Modifier.rotate(glyphRotation),
         )
     }
 }

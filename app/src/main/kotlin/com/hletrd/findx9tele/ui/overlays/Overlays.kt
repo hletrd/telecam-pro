@@ -28,6 +28,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -344,7 +345,9 @@ fun AudioMeter(level: Float, modifier: Modifier = Modifier) {
     Box(
         modifier = modifier
             .size(width = 120.dp, height = 8.dp)
-            .background(Color.Black.copy(alpha = 0.45f), RoundedCornerShape(4.dp)),
+            // Rides the tested HUD contrast floor (05486cb) like the OSD pills: the meter reads level
+            // against bright scenes, so its scrim can't be the near-transparent 0.45 it was.
+            .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA), RoundedCornerShape(4.dp)),
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             if (fill > 0f) {
@@ -495,7 +498,10 @@ fun HistogramOverlay(data: HistogramData?, modifier: Modifier = Modifier) {
     Box(
         modifier = modifier
             .size(width = 150.dp, height = 84.dp)
-            .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(8.dp))
+            // Scrim rides the tested HUD contrast floor (05486cb): the scopes exist to judge exposure
+            // against bright/high-key scenes bleeding through the box, so the panel can't sit at the
+            // old 0.55 — the darker plate also makes the thin luma/RGB traces read better, not worse.
+            .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA), RoundedCornerShape(8.dp))
             .padding(6.dp),
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
@@ -532,12 +538,13 @@ private fun DrawScope.drawHistogramCurve(bins: IntArray, color: Color) {
 fun WaveformOverlay(data: WaveformData?, modifier: Modifier = Modifier) {
     // Fixed compact box (matching the histogram's footprint) instead of a fraction of the screen
     // width, so it has a known extent, stacks cleanly under the histogram, and stays clear of the
-    // top-bar settings glyph. Darker scrim + brighter trace (below) so it reads at a glance.
+    // top-bar settings glyph. Scrim rides the tested HUD contrast floor (05486cb) — same reasoning as
+    // the histogram — with a brighter trace (below) so it reads at a glance over bright scenes.
     Box(
         modifier = modifier
             .width(150.dp)
             .height(84.dp)
-            .background(Color.Black.copy(alpha = 0.62f), RoundedCornerShape(8.dp))
+            .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA), RoundedCornerShape(8.dp))
             .padding(6.dp),
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
@@ -553,36 +560,59 @@ private fun DrawScope.drawWaveform(data: WaveformData) {
     val maxVal = (data.bins.maxOrNull() ?: 0).coerceAtLeast(1)
     val colWidth = size.width / data.columns
     val rowHeight = size.height / data.rows
-    val color = Color(0xFF8BFFA8) // brighter green than before for contrast against the scrim
-    // Up to columns×rows (8k+) individual drawCircle ops ran per redraw at ~6 Hz (perf review).
-    // Quantize the alpha ramp into a few buckets and batch each as ONE drawPoints call — round-cap
-    // points of the same diameter render like the old circles, in ~8 draw ops.
+    // Perf (PERF-5/AGG3-43): the batched-drawPoints version still boxed every populated cell —
+    // Offset is a value class, so an `ArrayList<Offset>` per bucket boxed up to columns×rows (~8k)
+    // Offsets per redraw at ~6 Hz (~1.5 MB/s garbage on main). Bucket the same √ alpha ramp into
+    // primitive FloatArrays of interleaved x,y pairs and hand each straight to the native
+    // Canvas.drawPoints(float[]) — zero per-point boxing, identical round-cap dots in ~8 draw ops.
     val alphaBuckets = 8
-    val points = Array(alphaBuckets) { ArrayList<Offset>() }
+    val counts = IntArray(alphaBuckets)
+    for (col in 0 until data.columns) {
+        for (row in 0 until data.rows) {
+            val value = data.bins[col * data.rows + row]
+            if (value <= 0) continue
+            counts[waveformAlphaBucket(value, maxVal, alphaBuckets)]++
+        }
+    }
+    val coords = Array(alphaBuckets) { FloatArray(counts[it] * 2) } // FloatArray = primitive, no boxing
+    val next = IntArray(alphaBuckets)
     for (col in 0 until data.columns) {
         val x = col * colWidth + colWidth / 2f
         for (row in 0 until data.rows) {
             val value = data.bins[col * data.rows + row]
             if (value <= 0) continue
-            // The old linear alpha (value/max) left low-count buckets nearly invisible. Lift them with
-            // a floor + √ curve so any populated bucket paints clearly (QA: "waveform too faint").
-            val norm = (value.toFloat() / maxVal).coerceIn(0f, 1f)
-            val bucket = (kotlin.math.sqrt(norm) * (alphaBuckets - 1)).toInt().coerceIn(0, alphaBuckets - 1)
-            points[bucket].add(Offset(x, row * rowHeight + rowHeight / 2f))
+            val bucket = waveformAlphaBucket(value, maxVal, alphaBuckets)
+            val i = next[bucket]
+            coords[bucket][i] = x
+            coords[bucket][i + 1] = row * rowHeight + rowHeight / 2f
+            next[bucket] = i + 2
         }
     }
     val diameter = 3.2.dp.toPx() // stroke width == the old 1.6 dp-radius circles
-    for (bucket in 0 until alphaBuckets) {
-        if (points[bucket].isEmpty()) continue
-        val alpha = (0.4f + 0.6f * (bucket / (alphaBuckets - 1f))).coerceIn(0f, 1f)
-        drawPoints(
-            points = points[bucket],
-            pointMode = androidx.compose.ui.graphics.PointMode.Points,
-            color = color.copy(alpha = alpha),
-            strokeWidth = diameter,
-            cap = androidx.compose.ui.graphics.StrokeCap.Round,
-        )
+    val paint = android.graphics.Paint().apply {
+        isAntiAlias = true
+        style = android.graphics.Paint.Style.STROKE
+        strokeCap = android.graphics.Paint.Cap.ROUND // round dots, like the old drawCircle points
+        strokeWidth = diameter
+        color = android.graphics.Color.rgb(0x8B, 0xFF, 0xA8) // brighter green for contrast against the scrim
     }
+    val canvas = drawContext.canvas.nativeCanvas
+    for (bucket in 0 until alphaBuckets) {
+        if (counts[bucket] == 0) continue
+        val alpha = (0.4f + 0.6f * (bucket / (alphaBuckets - 1f))).coerceIn(0f, 1f)
+        paint.alpha = (alpha * 255f).roundToInt()
+        canvas.drawPoints(coords[bucket], paint)
+    }
+}
+
+/**
+ * Maps a bucket cell's [value] to an alpha bucket index. The old linear alpha (value/max) left
+ * low-count buckets nearly invisible; a floor + √ curve lifts them so any populated bucket paints
+ * clearly (QA: "waveform too faint"). Pulled out so both the counting and the fill pass agree.
+ */
+private fun waveformAlphaBucket(value: Int, maxVal: Int, alphaBuckets: Int): Int {
+    val norm = (value.toFloat() / maxVal).coerceIn(0f, 1f)
+    return (kotlin.math.sqrt(norm) * (alphaBuckets - 1)).toInt().coerceIn(0, alphaBuckets - 1)
 }
 
 /**
