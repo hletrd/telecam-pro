@@ -241,16 +241,38 @@ class VideoRecorder(private val context: Context) {
         audioRecord = null
 
         // A track alone is not enough: require at least one successfully muxed video sample and no
-        // asynchronous codec/muxer error. Keep failed or empty recordings out of the gallery.
+        // asynchronous VIDEO codec/muxer error (firstFailure). Keep failed or empty recordings out of
+        // the gallery. An AUDIO-only mid-REC fault degraded to video-only and never touched
+        // firstFailure (see degradeAudioToVideoOnly), so a clean video track still publishes here.
         val outputUri = uri
-        var saved = muxerStarted && wroteVideoSample && firstFailure.cause == null && outputUri != null
-        if (saved) saved = MediaStoreWriter.publish(context, outputUri!!)
-        if (!saved && outputUri != null) MediaStoreWriter.delete(context, outputUri)
+        val complete = muxerStarted && wroteVideoSample && firstFailure.cause == null && outputUri != null
+        val saved = if (complete) {
+            // A transient MediaStore publish() failure must NOT delete a complete recording: leave the
+            // IS_PENDING file on disk for MediaStoreWriter.cleanupOrphanedPending (its own
+            // OWNER_PACKAGE_NAME-scoped orphan sweep) to reclaim on the next launch, rather than
+            // destroying a cleanly-muxed clip over a resolver hiccup (CR-8). publish()==false is
+            // logged, not fatal, and never falls through to the delete branch.
+            MediaStoreWriter.publish(context, outputUri!!).also { published ->
+                if (!published && com.hletrd.findx9tele.BuildConfig.DEBUG) {
+                    Log.w(TAG, "publish() failed; leaving pending file for orphan sweep: $outputUri")
+                }
+            }
+        } else {
+            // Incomplete or VIDEO-failed recording: remove the pending file now so an empty/corrupt
+            // clip never surfaces in the gallery.
+            if (outputUri != null) MediaStoreWriter.delete(context, outputUri)
+            false
+        }
 
         videoCodec = null
         audioCodec = null
         muxer = null
         pfd = null
+        // Clear uri with every other field so a repeated stop() is a pure no-op: complete=false AND
+        // outputUri=null means neither publish nor the destructive delete can run again — a 2nd stop()
+        // can NEVER delete the clip the 1st already published (CR-4: uri used to survive this reset, so
+        // a 2nd stop() recomputed saved=false and deleted the ALREADY-PUBLISHED file).
+        uri = null
         videoTrack = -1
         audioTrack = -1
         muxerStarted = false
@@ -373,8 +395,11 @@ class VideoRecorder(private val context: Context) {
             try {
                 runAudio(record, codec)
             } catch (t: Exception) {
-                if (com.hletrd.findx9tele.BuildConfig.DEBUG) Log.w(TAG, "audio encode aborted: ${t.message}")
-                recordFailure(t)
+                // Every terminal audio fault reaches here (the negative-read throw, an audio codec
+                // throw, or an audio-track muxer write that propagated). Degrade to video-only — a
+                // cleanly-muxed video track must survive a dead mic, NOT be deleted via the shared
+                // firstFailure latch (AGG3-2). VIDEO-side faults keep using recordFailure/delete.
+                degradeAudioToVideoOnly(t)
             }
         }
     }
@@ -470,6 +495,9 @@ class VideoRecorder(private val context: Context) {
                             )
                             sentEos = true
                         }
+                        // A mid-REC negative read (dropped BT/USB/wired mic → ERROR_DEAD_OBJECT etc.)
+                        // is AUDIO-terminal: throw so the thread catch degrades to VIDEO-ONLY (AGG3-2).
+                        // It no longer deletes the cleanly-muxed video via the shared firstFailure latch.
                         is AudioReadOutcome.Failure -> throw audioReadFailure(readOutcome.code)
                     }
                 } else if (!running && ++eosAttempts >= MAX_EOS_ATTEMPTS) {
@@ -506,8 +534,12 @@ class VideoRecorder(private val context: Context) {
                         buf.position(info.offset)
                         buf.limit(info.offset + info.size)
                         synchronized(muxerLock) {
-                            runCatching { muxer?.writeSampleData(audioTrack, buf, info) }
-                                .onFailure(::recordFailure)
+                            // An audio-track muxer write failure is AUDIO-side: let it propagate to
+                            // this thread's catch, which degrades to video-only (AGG3-2). The shared
+                            // firstFailure/delete latch is reserved for VIDEO codec/muxer errors — a
+                            // muxer that is globally broken also fails the video write (:drainVideoLoop),
+                            // whose recordFailure then correctly wins the save gate and deletes.
+                            muxer?.writeSampleData(audioTrack, buf, info)
                         }
                     }
                     codec.releaseOutputBuffer(outIdx, false)
@@ -533,7 +565,9 @@ class VideoRecorder(private val context: Context) {
     }
 
     private fun maybeStartMuxer() {
-        if (!muxerStarted && videoTrack >= 0 && (expectedTracks == 1 || audioTrack >= 0)) {
+        // Pure gate extracted below so the video-only-degrade accounting is host-testable
+        // (AGG3-53/TEST-3): fa80574 shipped this branch with zero coverage.
+        if (shouldStartMuxer(muxerStarted, videoTrack >= 0, expectedTracks, audioTrack >= 0)) {
             muxer?.start()
             muxerStarted = true
         }
@@ -557,6 +591,28 @@ class VideoRecorder(private val context: Context) {
         // atomic signal retains the first cause and invokes this callback at most once even when the
         // video and audio threads fail together (or stop() observes a second finalization error).
         firstFailure.record(t) { cause -> onFailure?.invoke(cause) }
+    }
+
+    /**
+     * Terminal AUDIO-only fault MID-recording (a dropped mic's negative [AudioRecord.read] in
+     * [runAudio], an audio codec throw, or an audio-track muxer write error): degrade to VIDEO-ONLY
+     * exactly like every audio-SETUP bail, NEVER destroy a cleanly-muxed video track (AGG3-2). It
+     * therefore does NOT route into the shared [firstFailure] latch (reserved for VIDEO codec/muxer
+     * faults, whose delete IS correct), does NOT clear [running] (video keeps draining to the stop
+     * point), and does NOT invoke [onFailure] (the recording continues, it is not auto-stopped) —
+     * mirroring the [startAudio] degrades and the fa80574 AAC-wedge bail. Dropping the audio
+     * expectation ([expectedTracks] = 1 + [maybeStartMuxer]) lets a muxer still waiting for the audio
+     * track start on video alone; a muxer that already started with both tracks simply stops
+     * receiving audio samples. Idempotent under repeated audio faults; safe to call while already
+     * holding [muxerLock] (the monitor is reentrant).
+     */
+    private fun degradeAudioToVideoOnly(cause: Throwable) {
+        if (com.hletrd.findx9tele.BuildConfig.DEBUG) Log.w(TAG, "audio degraded to video-only (mid-REC): ${cause.message}")
+        onRoute?.invoke(audioUnavailableLabel(audioInputPreference.label))
+        synchronized(muxerLock) {
+            expectedTracks = 1
+            maybeStartMuxer()
+        }
     }
 
     private fun hasRecordPermission(): Boolean =
@@ -646,6 +702,25 @@ internal class ExactlyOnceResourceOwner<T : Any> {
         }
     }
 }
+
+/**
+ * Pure MediaMuxer-start gate, extracted from [VideoRecorder.maybeStartMuxer] so the video-only
+ * degrade accounting is host-testable (AGG3-53/TEST-3 — fa80574 shipped it with zero coverage). The
+ * one shared muxer may start only ONCE ([muxerStarted] false), only after the video track exists
+ * ([videoTrackReady] — a MediaMuxer started with no video track produces an unplayable file), and —
+ * unless the audio expectation was dropped to video-only ([expectedTracks] == 1) — only after the
+ * audio track exists ([audioTrackReady], so audio samples are never lost before addTrack). The
+ * `expectedTracks == 1` short-circuit is the DATA-LOSS fix behind both the AAC-wedge bail (fa80574)
+ * and the mid-REC audio degrade (AGG3-2): a recording whose audio died starts on the video track
+ * alone instead of waiting forever for a dead AAC encoder and discarding a clean video clip. Four
+ * primitives / no Android types, next to [classifyAudioRead]'s pattern, so it is unit-testable.
+ */
+internal fun shouldStartMuxer(
+    muxerStarted: Boolean,
+    videoTrackReady: Boolean,
+    expectedTracks: Int,
+    audioTrackReady: Boolean,
+): Boolean = !muxerStarted && videoTrackReady && (expectedTracks == 1 || audioTrackReady)
 
 /**
  * Audio presentation timestamp for a sample count at [sampleRate]. Pure integer math, top-level so
