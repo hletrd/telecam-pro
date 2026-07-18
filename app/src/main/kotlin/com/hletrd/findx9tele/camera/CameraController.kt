@@ -640,20 +640,11 @@ class CameraController(context: Context) {
                 applyTeleconverterHints()
                 applyMetering(this, controls)
                 pendingCustomWbSample?.let { setTag(it.tag) }
-                // Tap-to-focus: force AF_MODE_AUTO for a one-shot region scan that LOCKS on the tapped
-                // spot (CONTINUOUS + a bare trigger just holds the current, often-wrong, distance). The
-                // region is set by applyMetering above; the trigger below drives the scan.
-                if (touchAfUsesAuto) {
-                    set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
-                }
-                // AF lock: freeze focus at the last AF-resolved distance instead of leaving AF running.
-                // Not applicable in MANUAL focus mode, where focus is already fixed by the user.
-                if (controls.afLock && controls.focusMode != FocusMode.MANUAL && caps.supportsManualFocus &&
-                    exactAdvertisedMode(CaptureRequest.CONTROL_AF_MODE_OFF, caps.afModes) != null
-                ) {
-                    set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
-                    set(CaptureRequest.LENS_FOCUS_DISTANCE, lastFocusDistance)
-                }
+                // Tap-to-focus / AF-lock overrides: ONE shared applier with the sensor fast path
+                // (ARCH4-5 — the two sites used to be hand-duplicated byte-for-byte, the exact
+                // drift class that produced the c928eac/f61594a regression pair). The tap region
+                // is set by applyMetering above; the trigger below drives the one-shot scan.
+                applyAfOverrides(this)
             }
             // A fresh repeating request means the HAL may ramp its zoom again (session reopen ramps
             // from 1.0). Reset the change gate so the FIRST result after every rebuild forwards —
@@ -917,10 +908,11 @@ class CameraController(context: Context) {
             )
             // applyFocus above rewrote CONTROL_AF_MODE per the base focus mode; a live tap-AF /
             // AF-lock override must be restored on top, exactly as the full rebuild applies it
-            // AFTER applyManualControls. This also covers the queued-trailing-task ordering (a
-            // tap can land between queueing and firing): re-applying beats the old wholesale
-            // refusal, which starved the preview to ~5 fps under app-side AE with a held tap-AF.
-            reapplyAfOverrides(b)
+            // AFTER applyManualControls — the SAME applier, so the two paths cannot drift
+            // (ARCH4-5). This also covers the queued-trailing-task ordering (a tap can land
+            // between queueing and firing): re-applying beats the old wholesale refusal, which
+            // starved the preview to ~5 fps under app-side AE with a held tap-AF.
+            applyAfOverrides(b)
             s.setRepeatingRequest(b.build(), cb, handler)
         }.onFailure {
             if (BuildConfig.DEBUG) Log.w(TAG, "sensor fast path failed, rebuilding: ${it.message}")
@@ -931,29 +923,36 @@ class CameraController(context: Context) {
     }
 
     /**
-     * Restores the tap-to-focus / AF-lock override keys the full rebuild applies after
-     * [applyManualControls] (see startPreview lines above): tap-AF holds AF_MODE_AUTO on the
-     * tapped region (regions persist on the cached builder; NO trigger here — re-firing
-     * AF_TRIGGER_START would restart the scan the hold is meant to freeze), AF lock pins
-     * AF_MODE_OFF at the last AF-resolved distance. Key state after this equals the full
-     * rebuild's, so a fast-path submit can never silently release an override (the cycle-2
-     * regression that motivated the old refusal).
+     * The ONE application site for the tap-to-focus / AF-lock override keys, shared by the full
+     * rebuild (startPreview, after [applyManualControls]) and the sensor fast path (ARCH4-5:
+     * both paths must produce identical AF key state, enforced by construction instead of two
+     * hand-synced copies). Tap-AF holds AF_MODE_AUTO on the tapped region (regions persist on the
+     * cached builder; NO trigger here — re-firing AF_TRIGGER_START would restart the scan the
+     * hold is meant to freeze); AF lock pins AF_MODE_OFF at the last AF-resolved distance and
+     * WINS when both are set (the pure [afOverrideFor] pins that precedence under test).
      */
-    private fun reapplyAfOverrides(builder: CaptureRequest.Builder) {
-        val touchAfUsesAuto = touchAfMayTrigger(
-            touchAfActive = touchAfActive,
-            maxAfRegions = caps.maxAfRegions,
+    private fun applyAfOverrides(builder: CaptureRequest.Builder) {
+        val override = afOverrideFor(
+            touchAfUsesAuto = touchAfMayTrigger(
+                touchAfActive = touchAfActive,
+                maxAfRegions = caps.maxAfRegions,
+                focusMode = controls.focusMode,
+                afModes = caps.afModes,
+            ),
+            afLock = controls.afLock,
             focusMode = controls.focusMode,
-            afModes = caps.afModes,
+            supportsManualFocus = caps.supportsManualFocus,
+            afOffAdvertised = exactAdvertisedMode(CaptureRequest.CONTROL_AF_MODE_OFF, caps.afModes) != null,
+            lastFocusDistance = lastFocusDistance,
         )
-        if (touchAfUsesAuto) {
-            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
-        }
-        if (controls.afLock && controls.focusMode != FocusMode.MANUAL && caps.supportsManualFocus &&
-            exactAdvertisedMode(CaptureRequest.CONTROL_AF_MODE_OFF, caps.afModes) != null
-        ) {
-            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
-            builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, lastFocusDistance)
+        when (override) {
+            is AfOverride.TouchAuto ->
+                builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
+            is AfOverride.LockAt -> {
+                builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+                builder.set(CaptureRequest.LENS_FOCUS_DISTANCE, override.focusDistance)
+            }
+            null -> Unit
         }
     }
 
@@ -1407,4 +1406,37 @@ internal fun meteringRect(
     val left = (cx - rw / 2).coerceIn(activeLeft, activeRight - rw)
     val top = (cy - rh / 2).coerceIn(activeTop, activeBottom - rh)
     return intArrayOf(left, top, rw, rh)
+}
+
+/**
+ * The AF-override key state both request-build paths must apply identically (ARCH4-5): the full
+ * rebuild in startPreview and the sensor fast path share one applier driven by this pure decision,
+ * so the tap-AF/AF-lock behavior cannot drift between them again (the c928eac/f61594a class).
+ */
+internal sealed interface AfOverride {
+    /** Tap-AF hold: AF_MODE_AUTO on the tapped region; NO trigger (never restart the held scan). */
+    data object TouchAuto : AfOverride
+
+    /** AF lock: AF_MODE_OFF pinned at the last AF-resolved [focusDistance]. */
+    data class LockAt(val focusDistance: Float) : AfOverride
+}
+
+/**
+ * Resolves which AF override (if any) applies. PRECEDENCE: when a tap-AF hold and AF lock are BOTH
+ * active, the LOCK wins — both write CONTROL_AF_MODE, and the historical sequential apply (touch
+ * first, lock second) always left the lock's frozen distance as the final key state; this function
+ * pins that outcome under host test instead of relying on statement order.
+ */
+internal fun afOverrideFor(
+    touchAfUsesAuto: Boolean,
+    afLock: Boolean,
+    focusMode: FocusMode,
+    supportsManualFocus: Boolean,
+    afOffAdvertised: Boolean,
+    lastFocusDistance: Float,
+): AfOverride? = when {
+    afLock && focusMode != FocusMode.MANUAL && supportsManualFocus && afOffAdvertised ->
+        AfOverride.LockAt(lastFocusDistance)
+    touchAfUsesAuto -> AfOverride.TouchAuto
+    else -> null
 }
