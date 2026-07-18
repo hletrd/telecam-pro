@@ -132,6 +132,20 @@ internal fun MinTouchTargetChip(content: @Composable () -> Unit) {
 }
 
 /**
+ * The same 48 dp outer-target pattern for bare Material3 `Button`/`TextButton` sites (DES4-2):
+ * bundled material3 1.4.0 gives Button/TextButton only a 40 dp `defaultMinSize`
+ * (ButtonSmallTokens.ContainerHeight), NOT `minimumInteractiveComponentSize()` — 8 dp under the
+ * app-wide floor on exactly the surfaces where a mis-tap is costliest (the permission-gate CTAs, a
+ * review-load Retry, and the destructive delete-confirmation pair).
+ */
+@Composable
+internal fun MinTouchTargetButton(content: @Composable () -> Unit) {
+    Box(contentAlignment = Alignment.Center, modifier = Modifier.heightIn(min = 48.dp)) {
+        content()
+    }
+}
+
+/**
  * Trailing-edge fade for horizontally scrolling chip rows: without the hint, the half-cut trailing
  * chip at the panel edge reads as a LAYOUT BUG rather than "scrollable" (user-reported on the Fn
  * dial row). The fix originally landed only there — every settings SegmentedSelector (several with
@@ -579,22 +593,28 @@ internal fun bitrateLevelLabel(level: BitrateLevel): String = when (level) {
  * "3840×2160" -> "4K", "1920×1080" -> "1080p", etc. 4:3 Open-Gate sizes are tagged by their width
  * bucket with a "4:3" suffix (e.g. 4096×3072 -> "4K 4:3"); anything unrecognized falls back to "W×H".
  */
-internal fun videoResolutionLabel(size: Size): String {
-    val is43 = size.height * 4 == size.width * 3
+internal fun videoResolutionLabel(size: Size): String = videoResolutionLabelFor(size.width, size.height)
+
+/** Plain-int core of [videoResolutionLabel] (android.util.Size is not mocked on the JVM). */
+internal fun videoResolutionLabelFor(width: Int, height: Int): String {
+    val is43 = height * 4 == width * 3
+    // 4:3 classes key on HEIGHT (TEST4-11/P5.9): the K-name of a 4:3 frame is defined by the
+    // vertical resolution its class implies (4K 4:3 = 3840x2880), so a nonstandard-width size
+    // classifies by what it vertically resolves, not by the widest width bucket it crosses.
     if (is43) return when {
-        size.width >= 7680 -> "8K 4:3"
-        size.width >= 3840 -> "4K 4:3"
-        size.width >= 2560 -> "2.5K 4:3"
-        size.width >= 1920 -> "1080 4:3"
-        else -> "${size.width}×${size.height}"
+        height >= 5760 -> "8K 4:3"
+        height >= 2880 -> "4K 4:3"
+        height >= 1920 -> "2.5K 4:3"
+        height >= 1440 -> "1080 4:3"
+        else -> "${width}×$height"
     }
-    return when (size.height) {
+    return when (height) {
         4320 -> "8K"
         2160 -> "4K"
         1440 -> "1440p"
         1080 -> "1080p"
         720 -> "720p"
-        else -> "${size.width}×${size.height}"
+        else -> "${width}×$height"
     }
 }
 

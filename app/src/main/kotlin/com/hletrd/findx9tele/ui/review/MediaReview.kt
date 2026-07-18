@@ -75,6 +75,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.hletrd.findx9tele.camera.MediaDeleteScope
+import com.hletrd.findx9tele.ui.controls.MinTouchTargetButton
 import com.hletrd.findx9tele.ui.overlays.HUD_TEXT_SCRIM_ALPHA
 import com.hletrd.findx9tele.ui.theme.CameraColors
 import kotlinx.coroutines.Dispatchers
@@ -298,7 +299,7 @@ private suspend fun loadMetadata(context: Context, uri: Uri): ReviewMetadata? =
                     val focal35 = exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM)
                     val parts = buildList {
                         iso?.let { add("ISO $it") }
-                        expS?.let { add(if (it >= 1.0) "%.1fs".format(it) else "1/${(1.0 / it).roundToInt()}s") }
+                        expS?.let { add(if (it >= 1.0) "%.1fs".format(java.util.Locale.US, it) else "1/${(1.0 / it).roundToInt()}s") }
                         focal35?.takeIf { f -> f.toIntOrNull()?.let { it > 0 } == true }?.let { add("${it}mm") }
                     }
                     parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
@@ -785,8 +786,10 @@ fun MediaReviewOverlay(
                     color = CameraColors.TextPrimary,
                     style = MaterialTheme.typography.bodyMedium,
                 )
-                TextButton(onClick = { loadAttempt += 1 }) {
-                    Text("Retry")
+                MinTouchTargetButton {
+                    TextButton(onClick = { loadAttempt += 1 }) {
+                        Text("Retry")
+                    }
                 }
             }
             is ReviewMediaState.Ready -> Unit
@@ -936,17 +939,23 @@ fun MediaReviewOverlay(
             title = { Text(deleteCopy.title) },
             text = { Text(deleteCopy.body) },
             confirmButton = {
-                TextButton(onClick = {
-                    confirmDelete = false
-                    onDelete()
-                }) {
-                    // Destructive action reads red (same delete-red as the trash glyph); the rest of
-                    // the review chrome stays Sony-style monochrome.
-                    Text("Delete", color = Color(0xFFFF6B6B))
+                // 48 dp outer targets (DES4-2): a mis-tap is costliest right here, next to the
+                // app's one destructive, irreversible action.
+                MinTouchTargetButton {
+                    TextButton(onClick = {
+                        confirmDelete = false
+                        onDelete()
+                    }) {
+                        // Destructive action reads red (same delete-red as the trash glyph); the rest of
+                        // the review chrome stays Sony-style monochrome.
+                        Text("Delete", color = Color(0xFFFF6B6B))
+                    }
                 }
             },
             dismissButton = {
-                TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
+                MinTouchTargetButton {
+                    TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
+                }
             },
         )
     }
@@ -1012,7 +1021,9 @@ private fun ReviewActionButton(
         modifier = modifier
             .size(48.dp)
             .clip(CircleShape)
-            .background(Color.Black.copy(alpha = 0.62f))
+            // Shared scrim constant (DES4-4): the last review-screen surface still on a magic
+            // alpha after the fc16e23 sweep — HudContrastTest pins this one with its siblings.
+            .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
             .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
             .semantics {
                 contentDescription = actionLabel
@@ -1099,5 +1110,5 @@ internal fun reviewMetadataLine(raw: Boolean, width: Int, height: Int, sizeBytes
 private fun formatBytes(bytes: Long): String {
     if (bytes <= 0L) return "--"
     val mib = bytes / (1024.0 * 1024.0)
-    return "%.1f MB".format(mib)
+    return "%.1f MB".format(java.util.Locale.US, mib)
 }

@@ -40,6 +40,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.hletrd.findx9tele.ui.controls.MinTouchTargetButton
 import androidx.core.content.edit
 import androidx.core.net.toUri
 import com.hletrd.findx9tele.camera.CaptureMode
@@ -225,6 +226,10 @@ class MainActivity : ComponentActivity() {
     // session are config-dependent and kept only as aliases; the light press is currently NOT
     // delivered at all (the KEYCODE_FOCUS/782 handlers stay armed if it ever arrives). Slides →
     // stepped zoom via the eased target; press/half-press → the configurable HardwareKeyActions.
+    // RestrictedApi: overriding ComponentActivity.dispatchKeyEvent trips AndroidX's library-group
+    // restriction lint, but this override is the ONLY delivery point for the camera-control
+    // button's key events (verified: removing the suppress yields 5 RestrictedApi errors and
+    // there is no public alternative hook for pre-IME key interception here).
     @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         // DEBUG: trace every non-standard key so the camera-button gestures can be re-mapped from a
@@ -389,14 +394,23 @@ private fun PermissionGate(
                 containerColor = Color.White,
                 contentColor = Color.Black,
             )
+            // 48 dp outer targets (DES4-2): these CTAs gate ALL further use of the app and are the
+            // first thing a new user must hit one-handed; material3's bare Button/TextButton stop
+            // at a 40 dp container.
             if (permanentlyDenied) {
-                Button(onClick = onOpenSettings, colors = primaryColors) { Text("Settings") }
+                MinTouchTargetButton {
+                    Button(onClick = onOpenSettings, colors = primaryColors) { Text("Settings") }
+                }
             } else {
-                Button(onClick = onRequest, colors = primaryColors) { Text("Grant Camera") }
+                MinTouchTargetButton {
+                    Button(onClick = onRequest, colors = primaryColors) { Text("Grant Camera") }
+                }
             }
             Spacer(Modifier.height(8.dp))
-            TextButton(onClick = onOpenPrivacy) {
-                Text("Privacy", color = CameraColors.TextSecondary)
+            MinTouchTargetButton {
+                TextButton(onClick = onOpenPrivacy) {
+                    Text("Privacy", color = CameraColors.TextSecondary)
+                }
             }
         }
     }
