@@ -50,4 +50,31 @@ object RotationMath {
      * which re-applies the container rotation itself) before trusting it.
      */
     fun videoOrientationHint(deviceOrientation: Int): Int = normalize(deviceOrientation)
+
+    /**
+     * True when the GL content aspect is SWAPPED relative to the camera stream: the SurfaceTexture
+     * transform rotates sampling by [sensorOrientation] and the renderer adds [contentRotationDeg]
+     * (the afocal 180°), so a net 90/270 displays the stream's H×W. MUST mirror `coverScale`'s
+     * `rotated` predicate in gl/FlipRenderer.kt — that is what decides whether a draw target of a
+     * given aspect gets the full field or an overscan crop.
+     */
+    fun contentAspectSwapped(sensorOrientation: Int, contentRotationDeg: Int): Boolean =
+        normalize(sensorOrientation + contentRotationDeg) % 180 == 90
+
+    /**
+     * The encoder buffer dimensions for a camera stream of [streamW]×[streamH] (ARCH4-1, framing
+     * contract): the encoder MUST be framed to the same displayed aspect as the preview or
+     * `coverScale` silently overscan-crops the recorded field. With the 90° sensor the displayed
+     * content is portrait, so the encoder buffer swaps to [streamH]×[streamW]; cover then nets
+     * (1,1) and the file records exactly the viewfinder field (device-measured 2026-07-18: the
+     * landscape-buffer arrangement recorded a ~3.16× center band of the preview field).
+     * Returns width to height.
+     */
+    fun encoderSurfaceSize(
+        streamW: Int,
+        streamH: Int,
+        sensorOrientation: Int,
+        contentRotationDeg: Int,
+    ): Pair<Int, Int> =
+        if (contentAspectSwapped(sensorOrientation, contentRotationDeg)) streamH to streamW else streamW to streamH
 }

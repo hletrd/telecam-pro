@@ -2595,8 +2595,21 @@ class CameraEngine(private val context: Context) {
         // Physical device orientation at record start → muxer rotation hint so a landscape-held clip
         // plays upright (GL only bakes the afocal 180°; see VideoRecorder.start).
         val orientationHint = gyro.currentDeviceOrientation()
+        // FRAMING CONTRACT (ARCH4-1): the encoder buffer must match the DISPLAYED aspect, not the
+        // camera stream's. The SurfaceTexture transform rotates GL sampling by the sensor's 90°,
+        // so the displayed content is portrait; drawing it into the stream-shaped LANDSCAPE buffer
+        // made coverScale overscan ~3.16× and the file recorded only a center band of the
+        // viewfinder field (device-measured via luminance-gradient A/B, 2026-07-18). The camera
+        // stream itself stays [videoSize] (the HAL fixes that); only the MediaCodec buffer swaps.
+        val (encW, encH) = RotationMath.encoderSurfaceSize(
+            size.width,
+            size.height,
+            caps?.sensorOrientation ?: 90,
+            previewRotationDegrees(),
+        )
+        val encoderSize = Size(encW, encH)
         val surface = rec.start(
-            uri, size, rate.encoderRate, captureRate, bitRateFor(size, rate),
+            uri, encoderSize, rate.encoderRate, captureRate, bitRateFor(size, rate),
             fileTransfer, codec, recordAudio, audioGain, orientationHint,
             audioScene, controls.zoomRatio, audioInputPreference,
             onRoute = { route -> onAudioRoute?.invoke(route) },
@@ -2615,8 +2628,8 @@ class CameraEngine(private val context: Context) {
         // after admission, while stop/failure detach is necessarily queued behind this attach.
         gl.setEncoderOutput(
             surface,
-            size.width,
-            size.height,
+            encoderSize.width,
+            encoderSize.height,
             onRuntimeFailure = reportRecorderFailure,
         ) { result ->
             // GlPipeline guarantees exactly-once result delivery, so a plain atomic publication is

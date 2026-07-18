@@ -76,4 +76,27 @@ class RotationMathTest {
         assertEquals(270, RotationMath.videoOrientationHint(-90))
         assertEquals(90, RotationMath.videoOrientationHint(450))
     }
+
+    @Test
+    fun `content aspect swap mirrors coverScale's rotated predicate`() {
+        // Net 90/270 swaps; 0/180 does not. Must stay in lockstep with gl/FlipRenderer.coverScale.
+        org.junit.Assert.assertTrue(RotationMath.contentAspectSwapped(90, 0))
+        org.junit.Assert.assertTrue(RotationMath.contentAspectSwapped(90, 180)) // TELE afocal flip
+        org.junit.Assert.assertTrue(RotationMath.contentAspectSwapped(270, 0))
+        org.junit.Assert.assertFalse(RotationMath.contentAspectSwapped(0, 0))
+        org.junit.Assert.assertFalse(RotationMath.contentAspectSwapped(180, 0))
+        org.junit.Assert.assertFalse(RotationMath.contentAspectSwapped(90, 90))
+    }
+
+    @Test
+    fun `encoder surface size swaps to the displayed aspect for the 90deg sensor (ARCH4-1)`() {
+        // The framing contract: the encoder buffer matches the DISPLAYED (portrait) aspect so
+        // coverScale nets (1,1) and the file records the viewfinder field. 4K UHD and Open Gate:
+        assertEquals(2160 to 3840, RotationMath.encoderSurfaceSize(3840, 2160, 90, 0))
+        assertEquals(1920 to 2560, RotationMath.encoderSurfaceSize(2560, 1920, 90, 0))
+        // TELE (afocal 180 on top of sensor 90) is still swapped.
+        assertEquals(2160 to 3840, RotationMath.encoderSurfaceSize(3840, 2160, 90, 180))
+        // A hypothetical 0deg sensor keeps the stream shape.
+        assertEquals(3840 to 2160, RotationMath.encoderSurfaceSize(3840, 2160, 0, 0))
+    }
 }

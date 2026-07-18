@@ -62,4 +62,35 @@ class CoverScaleTest {
         assertTrue("ex finite", ex.isFinite())
         assertTrue("ey finite", ey.isFinite())
     }
+
+    // ---- Framing contract (ARCH4-1): preview and encoder must net the SAME field ----
+
+    @Test
+    fun `preview and encoder targets both net identity for the 90deg sensor (framing contract)`() {
+        // Camera stream 3840x2160 landscape; sensorOrientation 90 rotates displayed content to
+        // portrait. The preview surface is portrait (1440x2560 for 16:9); the encoder buffer is
+        // RotationMath.encoderSurfaceSize's swapped 2160x3840. Both targets must cover with (1,1)
+        // so the recorded file shows exactly the viewfinder field.
+        val (pex, pey) = coverScale(3840, 2160, 90, 0, 1440, 2560)
+        assertEquals(1f, pex, eps)
+        assertEquals(1f, pey, eps)
+        val (eex, eey) = coverScale(3840, 2160, 90, 0, 2160, 3840)
+        assertEquals(1f, eex, eps)
+        assertEquals(1f, eey, eps)
+        // TELE adds the afocal 180 (net 270 -> still swapped): same identity must hold.
+        val (tex, tey) = coverScale(3840, 2160, 90, 180, 2160, 3840)
+        assertEquals(1f, tex, eps)
+        assertEquals(1f, tey, eps)
+    }
+
+    @Test
+    fun `stream-shaped landscape encoder target overscans 3-16x (the recorded-field bug this pins)`() {
+        // The pre-fix arrangement: portrait-displayed content drawn into the LANDSCAPE stream-shaped
+        // buffer. coverScale overscans ey = (3840/2160)/(2160/3840) = 3.1605 — the recorded file
+        // carried only a center band of the preview field (device-measured 2026-07-18, gradient
+        // ratio ~3.4). This test documents the failure mode so a regression is named, not silent.
+        val (ex, ey) = coverScale(3840, 2160, 90, 0, 3840, 2160)
+        assertEquals(1f, ex, eps)
+        assertEquals(3840f / 2160f / (2160f / 3840f), ey, 1e-3f)
+    }
 }
