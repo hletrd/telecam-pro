@@ -44,4 +44,74 @@ class AudioInputInspectorTest {
         assertFalse(AudioInputInspector.isBluetoothInput(AudioDeviceInfo.TYPE_USB_DEVICE))
         assertFalse(AudioInputInspector.isBluetoothInput(AudioDeviceInfo.TYPE_UNKNOWN))
     }
+
+    // ---- resolveAudioInputStatus (TEST4-18/CR4-9): the pure status decision ----
+
+    @Test
+    fun status_autoWithNoDevices_isHonestlyUnavailable() {
+        val s = resolveAudioInputStatus(emptyList(), com.hletrd.findx9tele.camera.AudioInputPreference.AUTO)
+        assertFalse(s.available)
+        org.junit.Assert.assertEquals("Auto · no mic detected", s.label)
+    }
+
+    @Test
+    fun status_autoWithBuiltinOnly_labelsThePhoneMic() {
+        val s = resolveAudioInputStatus(
+            listOf(AudioInputPortInfo(AudioDeviceInfo.TYPE_BUILTIN_MIC, null)),
+            com.hletrd.findx9tele.camera.AudioInputPreference.AUTO,
+        )
+        assertTrue(s.available)
+        org.junit.Assert.assertEquals("Auto · Phone mic", s.label)
+    }
+
+    @Test
+    fun status_autoPrefersARecognizedExternalMic() {
+        val s = resolveAudioInputStatus(
+            listOf(
+                AudioInputPortInfo(AudioDeviceInfo.TYPE_BUILTIN_MIC, null),
+                AudioInputPortInfo(AudioDeviceInfo.TYPE_USB_HEADSET, "Rode VideoMic"),
+            ),
+            com.hletrd.findx9tele.camera.AudioInputPreference.AUTO,
+        )
+        assertTrue(s.available)
+        org.junit.Assert.assertEquals("Auto · USB mic · Rode VideoMic", s.label)
+    }
+
+    @Test
+    fun status_autoSkipsUnrecognizedInputTypesForTheBuiltin() {
+        // CR4-9: `type != BUILTIN` alone picked telephony/FM-tuner style ports and labeled them
+        // like a mic; an unrecognized non-mic port must lose to the builtin.
+        val s = resolveAudioInputStatus(
+            listOf(
+                AudioInputPortInfo(AudioDeviceInfo.TYPE_TELEPHONY, null),
+                AudioInputPortInfo(AudioDeviceInfo.TYPE_BUILTIN_MIC, null),
+            ),
+            com.hletrd.findx9tele.camera.AudioInputPreference.AUTO,
+        )
+        assertTrue(s.available)
+        org.junit.Assert.assertEquals("Auto · Phone mic", s.label)
+    }
+
+    @Test
+    fun status_missingConcretePreference_isUnavailable() {
+        val s = resolveAudioInputStatus(
+            listOf(AudioInputPortInfo(AudioDeviceInfo.TYPE_BUILTIN_MIC, null)),
+            com.hletrd.findx9tele.camera.AudioInputPreference.WIRED,
+        )
+        assertFalse(s.available)
+        org.junit.Assert.assertEquals("Wired missing", s.label)
+    }
+
+    @Test
+    fun status_matchedConcretePreference_isReady() {
+        val s = resolveAudioInputStatus(
+            listOf(
+                AudioInputPortInfo(AudioDeviceInfo.TYPE_BUILTIN_MIC, null),
+                AudioInputPortInfo(AudioDeviceInfo.TYPE_WIRED_HEADSET, "Lav"),
+            ),
+            com.hletrd.findx9tele.camera.AudioInputPreference.WIRED,
+        )
+        assertTrue(s.available)
+        org.junit.Assert.assertEquals("Wired mic · Lav ready", s.label)
+    }
 }
