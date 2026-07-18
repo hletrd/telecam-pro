@@ -108,6 +108,14 @@ kotlin {
     jvmToolchain(21)
 }
 
+composeCompiler {
+    // PERF4-1: framework types carried by CameraUiState (Size/Range/Uri + our CameraCaps holder)
+    // are UNSTABLE to the Compose compiler, so every child receiving the whole state recomposed
+    // on every ~10-25 Hz telemetry tick regardless of strong skipping. The config marks the
+    // effectively-immutable ones stable; CameraUiState itself is @Immutable in source.
+    stabilityConfigurationFiles.add(layout.projectDirectory.file("compose_stability.conf"))
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)

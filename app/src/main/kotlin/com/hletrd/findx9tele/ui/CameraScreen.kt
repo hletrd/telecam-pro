@@ -1042,29 +1042,37 @@ private fun DispButton(active: Boolean, onClick: () -> Unit, modifier: Modifier 
 @Composable
 private fun StatusInfoPill(state: CameraUiState, modifier: Modifier = Modifier) {
     if (state.batteryPct < 0 && state.freeBytes <= 0) return
-    val remaining: String? = when {
-        state.freeBytes <= 0 -> null
-        state.mode == CaptureMode.VIDEO -> {
-            val bps = com.hletrd.findx9tele.camera.videoBitRate(
-                state.videoResolution.width, state.videoResolution.height,
-                state.videoFrameRate.encoderRate,
-                com.hletrd.findx9tele.camera.effectiveBpp(state.bitrateLevel, state.videoCodec), state.videoCodec,
-            ).toLong() + 192_000L // + AAC
-            val min = (state.freeBytes * 8L / bps.coerceAtLeast(1L)) / 60L
-            when {
-                min >= 600 -> "9h+"
-                min >= 60 -> "${min / 60}h${min % 60}m"
-                else -> "${min}min"
+    // remember(): the bitrate/remaining derivation re-ran on every recomposition (~10-25 Hz from
+    // telemetry ticks) though its real inputs change on the 10 s info tick or a settings change
+    // (PERF4-2).
+    val remaining: String? = remember(
+        state.freeBytes, state.mode, state.videoResolution, state.videoFrameRate,
+        state.bitrateLevel, state.videoCodec, state.photoFormats,
+    ) {
+        when {
+            state.freeBytes <= 0 -> null
+            state.mode == CaptureMode.VIDEO -> {
+                val bps = com.hletrd.findx9tele.camera.videoBitRate(
+                    state.videoResolution.width, state.videoResolution.height,
+                    state.videoFrameRate.encoderRate,
+                    com.hletrd.findx9tele.camera.effectiveBpp(state.bitrateLevel, state.videoCodec), state.videoCodec,
+                ).toLong() + 192_000L // + AAC
+                val min = (state.freeBytes * 8L / bps.coerceAtLeast(1L)) / 60L
+                when {
+                    min >= 600 -> "9h+"
+                    min >= 60 -> "${min / 60}h${min % 60}m"
+                    else -> "${min}min"
+                }
             }
-        }
-        else -> {
-            var perShot = 0L
-            if (state.photoFormats.heif) perShot += 8_000_000L
-            if (state.photoFormats.jpeg) perShot += 6_000_000L
-            if (state.photoFormats.dngRaw) perShot += 26_000_000L
-            if (perShot == 0L) perShot = 8_000_000L
-            val shots = state.freeBytes / perShot
-            if (shots > 9999) "9999+" else "$shots"
+            else -> {
+                var perShot = 0L
+                if (state.photoFormats.heif) perShot += 8_000_000L
+                if (state.photoFormats.jpeg) perShot += 6_000_000L
+                if (state.photoFormats.dngRaw) perShot += 26_000_000L
+                if (perShot == 0L) perShot = 8_000_000L
+                val shots = state.freeBytes / perShot
+                if (shots > 9999) "9999+" else "$shots"
+            }
         }
     }
     Row(
@@ -1372,12 +1380,18 @@ private fun ExposureMeter(state: CameraUiState, modifier: Modifier = Modifier) {
     // The shared helper returns the final signed stop amount. Do not multiply by the raw Camera2
     // compensation index again: that double-scaled positive values and reversed negative signs.
     val compensationEv = exposureMeterCompensationEv(state)
-    val manualEv = manualMeterEv(state.controls.exposureMode, state.histogramData?.luma)
+    // remember(): manualMeterEv sums 256 luma bins and the label formats strings — keyed to the
+    // real inputs so a level/audio telemetry tick doesn't recompute them (PERF4-2).
+    val manualEv = remember(state.controls.exposureMode, state.histogramData) {
+        manualMeterEv(state.controls.exposureMode, state.histogramData?.luma)
+    }
     val indicatorEv = if (state.controls.exposureMode == ExposureMode.MANUAL) manualEv else compensationEv
-    val label = when {
-        state.controls.exposureMode == ExposureMode.MANUAL && manualEv != null -> "M %+.1f".format(java.util.Locale.US, manualEv)
-        state.controls.exposureMode == ExposureMode.MANUAL -> "M --"
-        else -> "%+.1f".format(java.util.Locale.US, compensationEv)
+    val label = remember(state.controls.exposureMode, manualEv, compensationEv) {
+        when {
+            state.controls.exposureMode == ExposureMode.MANUAL && manualEv != null -> "M %+.1f".format(java.util.Locale.US, manualEv)
+            state.controls.exposureMode == ExposureMode.MANUAL -> "M --"
+            else -> "%+.1f".format(java.util.Locale.US, compensationEv)
+        }
     }
     // Vertical Sony-style scale: +3 EV at the top, -3 EV at the bottom, readout above it.
     Column(

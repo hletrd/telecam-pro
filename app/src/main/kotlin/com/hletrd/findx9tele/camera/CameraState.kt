@@ -1,6 +1,7 @@
 package com.hletrd.findx9tele.camera
 
 import android.util.Size
+import androidx.compose.runtime.Immutable
 
 /** Photo vs video capture mode. */
 enum class CaptureMode { PHOTO, VIDEO }
@@ -546,7 +547,13 @@ internal fun PhotoFormats.normalizedFor(outputs: PhotoSessionOutputs): PhotoForm
 /**
  * Immutable snapshot the UI renders. Hardware-independent so it can be previewed/unit-tested.
  * [controls] holds capture parameters; the remaining fields are viewfinder assists and app state.
+ *
+ * @Immutable is a PROMISE to the Compose compiler (PERF4-1): every field is replaced wholesale via
+ * copy() and never mutated in place (the IntArray-bearing scope types are fresh per analysis tick).
+ * Without it, strong skipping compared instances by identity and every telemetry emission
+ * recomposed every whole-state child (~10-25 Hz during ordinary shooting).
  */
+@Immutable
 data class CameraUiState(
     val mode: CaptureMode = CaptureMode.PHOTO,
     val controls: ManualControls = ManualControls(),
@@ -686,7 +693,9 @@ data class CameraUiState(
         }
 }
 
-/** Downsampled luminance + per-channel histogram (256 bins) for the viewfinder overlay. */
+/** Downsampled luminance + per-channel histogram (256 bins) for the viewfinder overlay.
+ * @Immutable: arrays are written once by the analysis executor before publication (PERF4-1). */
+@Immutable
 data class HistogramData(
     val luma: IntArray,
     val red: IntArray,
@@ -698,6 +707,7 @@ data class HistogramData(
  * Luma waveform: for each of [columns] screen columns, [rows] vertical luma buckets holding a count.
  * `bins[col * rows + row]` — row 0 = brightest (top), row [rows-1] = darkest (bottom).
  */
+@Immutable
 data class WaveformData(
     val columns: Int,
     val rows: Int,

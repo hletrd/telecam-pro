@@ -672,8 +672,12 @@ class CameraController(context: Context) {
                     result.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let { lastFocusDistance = it }
                     // Custom WB deliberately does not retain or read a cached value: it owns a
                     // fresh tagged unlocked-AUTO request and accepts only its converged result.
-                    val awbGains = result.get(CaptureResult.COLOR_CORRECTION_GAINS)
+                    // The gains .get lives INSIDE the sample gate (PERF4-3): result.get for an
+                    // RggbChannelVector allocates a framework object per call, and this callback
+                    // runs 30-60 Hz — fetching it unconditionally was steady-state GC garbage
+                    // consumed only during a one-shot custom-WB sample.
                     pendingCustomWbSample?.let { sample ->
+                        val awbGains = result.get(CaptureResult.COLOR_CORRECTION_GAINS)
                         if (customWbResultBelongsToRequest(
                                 expectedTag = sample.tag,
                                 resultTag = request.tag,

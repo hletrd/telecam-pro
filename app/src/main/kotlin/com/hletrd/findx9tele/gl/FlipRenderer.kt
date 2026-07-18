@@ -47,6 +47,8 @@ class FlipRenderer {
     private val mvp = FloatArray(16)
     private val rot = FloatArray(16)
     private val texMatrix = FloatArray(16)
+    // Reused (ex, ey) receiver for the per-draw cover-scale (PERF4-4; GL-thread confined).
+    private val coverScratch = FloatArray(2)
 
     private var previewW = 1
     private var previewH = 1
@@ -141,9 +143,11 @@ class FlipRenderer {
         GLES20.glUseProgram(program)
 
         // Center-crop "cover" scale so the content aspect fills the target without distortion.
-        val (ex, ey) = coverScale(previewW, previewH, sensorOrientationDeg, rotationDeg, targetWidth, targetHeight)
+        // Allocation-free form (PERF4-4): draw runs 1-4x per frame (preview + encoder + finder +
+        // analysis) and the Pair-returning coverScale boxed 3 objects per call in the hottest loop.
+        coverScaleInto(coverScratch, previewW, previewH, sensorOrientationDeg, rotationDeg, targetWidth, targetHeight)
         Matrix.setIdentityM(mvp, 0)
-        Matrix.scaleM(mvp, 0, ex, ey, 1f)
+        Matrix.scaleM(mvp, 0, coverScratch[0], coverScratch[1], 1f)
 
         // Texcoord transform about center: content rotation (afocal 180° + sensor) + EIS roll,
         // crop-zoom for stabilization headroom, then EIS translation, then the SurfaceTexture matrix.
@@ -244,11 +248,27 @@ internal fun coverScale(
     targetWidth: Int,
     targetHeight: Int,
 ): Pair<Float, Float> {
+    val out = FloatArray(2)
+    coverScaleInto(out, previewW, previewH, sensorOrientationDeg, rotationDeg, targetWidth, targetHeight)
+    return out[0] to out[1]
+}
+
+/** Allocation-free form of [coverScale] for the per-frame draw loop: writes (ex, ey) into [out]. */
+internal fun coverScaleInto(
+    out: FloatArray,
+    previewW: Int,
+    previewH: Int,
+    sensorOrientationDeg: Int,
+    rotationDeg: Int,
+    targetWidth: Int,
+    targetHeight: Int,
+) {
     val rotated = (sensorOrientationDeg + rotationDeg) % 180 == 90
     val displayedAspect = if (rotated) previewH.toFloat() / previewW else previewW.toFloat() / previewH
     val viewAspect = targetWidth.toFloat() / targetHeight.coerceAtLeast(1)
     var ex = 1f
     var ey = 1f
     if (displayedAspect > viewAspect) ex = displayedAspect / viewAspect else ey = viewAspect / displayedAspect
-    return ex to ey
+    out[0] = ex
+    out[1] = ey
 }

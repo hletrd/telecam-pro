@@ -170,12 +170,29 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
 
     // Battery % + free storage for the OSD info pill, Sony-style. Slow tick — these move slowly.
+    // The reads run on the shared io executor (PERF4-9): StatFs is filesystem I/O that can block
+    // on a busy volume — exactly when a concurrent capture save is hammering it — and it sat on
+    // the MAIN thread; the result posts back into state.
     private val infoTicker = object : Runnable {
         override fun run() {
             if (!lifecycleStarted) return
-            _state.update { it.copy(batteryPct = readBatteryPct(), freeBytes = readFreeBytes()) }
+            ioExecutor.execute {
+                val battery = readBatteryPct()
+                val free = readFreeBytes()
+                mainHandler.post {
+                    if (lifecycleStarted) _state.update { it.copy(batteryPct = battery, freeBytes = free) }
+                }
+            }
             mainHandler.postDelayed(this, 10_000)
         }
+    }
+
+    // One shared background lane for the ViewModel's own MediaStore/StatFs work (PERF4-6/PERF4-9):
+    // the restore, whole-family delete, and late-sibling delete paths each spawned a bare
+    // unpooled Thread per invocation. Single-threaded so deletes stay ordered; shut down in
+    // onCleared after the engine release completes.
+    private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "vm-io").apply { isDaemon = true }
     }
 
     init {
@@ -310,9 +327,14 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             if (s.histogram || s.waveform || s.controls.exposureMode == ExposureMode.MANUAL) {
                 _state.update { it.copy(histogramData = h, waveformData = w) }
             }
-            // Feed the app-side auto-exposure loop (SHUTTER/ISO priority). The luma array is freshly
-            // allocated per callback, so it's safe to hand to the main thread. No-op in P/M.
-            if (h != null) mainHandler.post { applyAutoExposure(h.luma) }
+            // Feed the app-side auto-exposure loop only in the modes that DRIVE from it (PERF4-7):
+            // SHUTTER, ISO, and app-side photo-P. MANUAL and video-P made this a ~6 Hz main-thread
+            // wakeup into a no-op branch. The luma array is freshly allocated per callback, so it's
+            // safe to hand to the main thread.
+            val mode = s.controls.exposureMode
+            val drivesAppSideAe = mode == ExposureMode.SHUTTER || mode == ExposureMode.ISO ||
+                (mode == ExposureMode.PROGRAM && s.controls.programAppSide)
+            if (h != null && drivesAppSideAe) mainHandler.post { applyAutoExposure(h.luma) }
         }
         engine.onAudioLevel = { lvl -> _state.update { it.copy(audioLevel = lvl) } }
         engine.onAudioRoute = { route -> _state.update { it.copy(audioRouteLabel = route) } }
@@ -362,9 +384,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         restoreSettingsIfEnabled()
         refreshProgramAppSide()
         // Restore the newest photo, RAW-only shot, or video and seed all proven siblings before
-        // publishing review. Legacy filenames stay one-file delete scopes.
-        Thread {
-            val restored = MediaStoreWriter.latestOwnCapture(getApplication()) ?: return@Thread
+        // publishing review. Legacy filenames stay one-file delete scopes. Shared io lane, not a
+        // bare Thread (PERF4-6).
+        ioExecutor.execute execute@{
+            val restored = MediaStoreWriter.latestOwnCapture(getApplication()) ?: return@execute
             val priorOutputs = restored.outputs.map { output ->
                 PriorCaptureOutput(
                     output = output.output,
@@ -375,7 +398,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 )
             }
             val preferred = restored.preferred.output
-            if (!captureOutputs.seedPriorCapture(priorOutputs, preferred)) return@Thread
+            if (!captureOutputs.seedPriorCapture(priorOutputs, preferred)) return@execute
             val deleteScope = when (restored.deleteScope) {
                 RestoredDeleteScope.CAPTURE_FAMILY -> MediaDeleteScope.CAPTURE_FAMILY
                 RestoredDeleteScope.FILE_ONLY -> MediaDeleteScope.FILE_ONLY
@@ -387,7 +410,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                     it
                 }
             }
-        }.start()
+        }
         refreshMemorySlotInfo()
         // Sweep any pending media orphaned by a prior crash/force-kill (record stop never ran).
         engine.cleanupOrphans()
@@ -1752,10 +1775,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 it
             }
         }
-        Thread {
+        ioExecutor.execute {
             val allDeleted = outputs.map { MediaStoreWriter.delete(getApplication(), it) }.all { it }
             mainHandler.post { showStatus(if (allDeleted) "Deleted" else "Could not delete media") }
-        }.start()
+        }
     }
 
     private fun recordCaptureOutput(uri: Uri, captureId: Int, kind: CaptureOutputKind) {
@@ -1781,11 +1804,11 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
 
     private fun deleteLateCaptureOutput(uri: Uri) {
-        Thread {
+        ioExecutor.execute {
             if (!MediaStoreWriter.delete(getApplication(), uri)) {
                 mainHandler.post { showStatus("Could not delete a late shot file") }
             }
-        }.start()
+        }
     }
 
     // [persist] defaults to "has an Fn slot": user-facing setters WITHOUT a slot (antibanding, AF
@@ -1910,6 +1933,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             // Thread creation failure is exceptional; preserve resource correctness as the fallback.
             ownedEngine.release()
         }
+        // Let already-queued MediaStore deletes finish, then retire the lane (daemon thread, so a
+        // shutdown that never drains cannot block process exit).
+        runCatching { ioExecutor.shutdown() }
         // ViewModel.onCleared() is @EmptySuper (empty base impl) — do not call super (lint EmptySuperCall).
     }
 

@@ -629,7 +629,10 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
 private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     val controls = state.controls
     val caps = state.caps
-    val availability = controlAvailability(caps?.controlCapabilities(), controls)
+    // remember(): the projection allocates ~9 filtered lists and caps/controls rarely change,
+    // while telemetry ticks recompose the open tab ~10-25 Hz (PERF4-8; TopBar/ManualDials
+    // already memoize the identical projection).
+    val availability = remember(caps, controls) { controlAvailability(caps?.controlCapabilities(), controls) }
     TabTitle("Exposure")
     SectionHeader("Exposure")
     // PASM-style: P (auto), S (shutter-priority, app auto-ISO), ISO (iso-priority, app auto-shutter),
@@ -758,7 +761,8 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
 @Composable
 private fun FocusTab(state: CameraUiState, actions: CameraActions) {
     val controls = state.controls
-    val availability = controlAvailability(state.caps?.controlCapabilities(), controls)
+    // remember(): see PERF4-8 note in ExposureColorTab.
+    val availability = remember(state.caps, controls) { controlAvailability(state.caps?.controlCapabilities(), controls) }
     TabTitle("Focus")
     SectionHeader("Autofocus")
     SegmentedSelector(
@@ -1026,7 +1030,8 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
 @Composable
 private fun ProcessingTab(state: CameraUiState, actions: CameraActions) {
     val controls = state.controls
-    val availability = controlAvailability(state.caps?.controlCapabilities(), controls)
+    // remember(): see PERF4-8 note in ExposureColorTab.
+    val availability = remember(state.caps, controls) { controlAvailability(state.caps?.controlCapabilities(), controls) }
     TabTitle("Image")
     SectionHeader("Processing")
     SegmentedSelector(
@@ -1316,6 +1321,7 @@ internal fun performQuickFn(slot: FnSlot, state: CameraUiState, actions: CameraA
     // used to invoke this unguarded, making them the one path that could toggle the teleconverter
     // (the afocal 180° flip) or the transfer curve mid-recording.
     if (!quickFnEnabled(slot, state)) return
+    // Plain call (not remember): this runs once per quick-Fn TAP, not per recomposition.
     val availability = controlAvailability(state.caps?.controlCapabilities(), state.controls)
     when (slot) {
         FnSlot.EXPOSURE_MODE -> actions.onExposureMode(

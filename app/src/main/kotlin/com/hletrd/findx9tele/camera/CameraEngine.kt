@@ -2288,8 +2288,7 @@ class CameraEngine(private val context: Context) {
                                         if (bytes == null) {
                                             onStatus?.invoke("Failed to save photo")
                                         } else {
-                                            if (formats.heif) saveHeifAsync(bytes, spec)
-                                            if (formats.jpeg) saveJpegAsync(bytes, spec, exifShot)
+                                            saveProcessedStills(bytes, spec, exifShot, wantHeif = formats.heif, wantJpeg = formats.jpeg)
                                         }
                                     } finally {
                                         finish()
@@ -2328,18 +2327,27 @@ class CameraEngine(private val context: Context) {
     }
 
     /**
-     * Decode → center-crop to [aspectRatio] (HEIF only; [saveDng]'s RAW output always stays
-     * full-frame) → rotate 180° → write HEIF, on [ioExecutor]. Publishes only on success; deletes
-     * on any failure.
+     * ONE decode → center-crop to [ShotSpec.aspectRatio] (processed stills only; [saveDng]'s RAW
+     * output always stays full-frame) → rotate pass feeding BOTH processed encoders (PERF4-5): the
+     * old per-format lanes each decoded/cropped/rotated the SAME bytes into a ~50 MB ARGB
+     * intermediate, so a HEIF+JPEG shot paid the whole pixel pipeline twice serially on
+     * [ioExecutor]. Each encoder keeps its own failure isolation (a HEIF write error must not cost
+     * the JPEG) and the publish-or-delete policy documented on [writeProcessedHeif].
      */
-    private fun saveHeifAsync(bytes: ByteArray, spec: ShotSpec) {
+    private fun saveProcessedStills(
+        bytes: ByteArray,
+        spec: ShotSpec,
+        exifShot: ExifShot,
+        wantHeif: Boolean,
+        wantJpeg: Boolean,
+    ) {
+        if (!wantHeif && !wantJpeg) return
         var decoded: Bitmap? = null
         var cropped: Bitmap? = null
         var rotated: Bitmap? = null
-        var uri: android.net.Uri? = null
         try {
             val d = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-            if (d == null) { onStatus?.invoke("Failed to save HEIF: decode failed"); return }
+            if (d == null) { onStatus?.invoke("Failed to save photo: decode failed"); return }
             decoded = d
             val ar = spec.aspectRatio
             val base = if (ar != AspectRatio.W4_3) { // W4_3 = full sensor, no crop needed
@@ -2349,39 +2357,12 @@ class CameraEngine(private val context: Context) {
             } else d
             val r = rotateBitmap(base, spec.rotationDegrees)
             rotated = r
-            val u = MediaStoreWriter.createPendingImage(
-                context,
-                spec.familyKey.displayName("heic"),
-                "image/heic",
-            )
-            if (u == null) { onStatus?.invoke("Failed to save HEIF"); return }
-            uri = u
-            // The Setup quality slider governs BOTH still containers: HEIF here and the JPEG
-            // re-encode in saveJpegAsync (it used to silently apply only to JPEG, leaving the
-            // DEFAULT photo format pinned at the encoder's 95).
-            val quality = spec.jpegQuality
-            val wrote = MediaStoreWriter.openParcelFd(context, u, "rw")?.use { pfd ->
-                HeifCapture.writeHeif(pfd.fileDescriptor, r, quality); true
-            } ?: false
-            if (!wrote) { MediaStoreWriter.delete(context, u); onStatus?.invoke("Failed to save HEIF"); return }
-            // publish() retries transient resolver failures internally (CRIT4-5). A persistent
-            // failure deletes the still DELIBERATELY, unlike video's leave-pending policy: a still
-            // is reshootable and the immediate "Failed to publish" status lets the user reshoot
-            // now, whereas an invisible pending file would silently vanish in the next launch's
-            // orphan sweep with no feedback at all.
-            if (!MediaStoreWriter.publish(context, u)) {
-                MediaStoreWriter.delete(context, u)
-                onStatus?.invoke("Failed to publish HEIF")
-                return
-            }
-            onMediaSaved?.invoke(u, spec.captureId)
-            onStatus?.invoke("Saved")
+            if (wantHeif) runCatching { writeProcessedHeif(r, spec) }
+                .onFailure { onStatus?.invoke("Failed to save HEIF: ${it.message}") }
+            if (wantJpeg) runCatching { writeProcessedJpeg(r, spec, exifShot) }
+                .onFailure { onStatus?.invoke("Failed to save JPEG: ${it.message}") }
         } catch (e: OutOfMemoryError) {
-            uri?.let { MediaStoreWriter.delete(context, it) }
-            onStatus?.invoke("Failed to save HEIF: out of memory")
-        } catch (t: Throwable) {
-            uri?.let { MediaStoreWriter.delete(context, it) }
-            onStatus?.invoke("Failed to save HEIF: ${t.message}")
+            onStatus?.invoke("Failed to save photo: out of memory")
         } finally {
             val rr = rotated
             val cc = cropped
@@ -2393,66 +2374,65 @@ class CameraEngine(private val context: Context) {
     }
 
     /**
-     * Decode → center-crop to [aspectRatio] → rotate 180°(+device) → re-encode JPEG (at
-     * [ManualControls.jpegQuality]), on [ioExecutor]. Uses the same processed-pixel pipeline as
-     * [saveHeifAsync] — NOT the HEIF encoder — so JPEG and HEIF frame identically. Publishes only on
-     * success; deletes on any failure.
+     * HEIF encode of the shared rotated bitmap. Publishes only on success; a persistent publish()
+     * failure (transients already retried inside it, CRIT4-5) deletes the still DELIBERATELY,
+     * unlike video's leave-pending policy: a still is reshootable and the immediate status lets
+     * the user reshoot now, whereas an invisible pending file would silently vanish in the next
+     * launch's orphan sweep with no feedback at all.
      */
-    private fun saveJpegAsync(bytes: ByteArray, spec: ShotSpec, exifShot: ExifShot) {
-        var decoded: Bitmap? = null
-        var cropped: Bitmap? = null
-        var rotated: Bitmap? = null
-        var uri: android.net.Uri? = null
-        try {
-            val d = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-            if (d == null) { onStatus?.invoke("Failed to save JPEG: decode failed"); return }
-            decoded = d
-            val ar = spec.aspectRatio
-            val base = if (ar != AspectRatio.W4_3) { // W4_3 = full sensor, no crop needed
-                val c = centerCrop(d, ar.w, ar.h)
-                cropped = c
-                c
-            } else d
-            val r = rotateBitmap(base, spec.rotationDegrees)
-            rotated = r
-            val u = MediaStoreWriter.createPendingImage(
-                context,
-                spec.familyKey.displayName("jpg"),
-                "image/jpeg",
-            )
-            if (u == null) { onStatus?.invoke("Failed to save JPEG"); return }
-            uri = u
-            val quality = spec.jpegQuality
-            val wrote = MediaStoreWriter.openOutputStream(context, u)?.use { out ->
-                r.compress(Bitmap.CompressFormat.JPEG, quality, out)
+    private fun writeProcessedHeif(rotated: Bitmap, spec: ShotSpec) {
+        val u = MediaStoreWriter.createPendingImage(
+            context,
+            spec.familyKey.displayName("heic"),
+            "image/heic",
+        )
+        if (u == null) { onStatus?.invoke("Failed to save HEIF"); return }
+        // The Setup quality slider governs BOTH still containers (it used to silently apply only
+        // to JPEG, leaving the DEFAULT photo format pinned at the encoder's 95).
+        val quality = spec.jpegQuality
+        val wrote = runCatching {
+            MediaStoreWriter.openParcelFd(context, u, "rw")?.use { pfd ->
+                HeifCapture.writeHeif(pfd.fileDescriptor, rotated, quality); true
             } ?: false
-            if (!wrote) { MediaStoreWriter.delete(context, u); onStatus?.invoke("Failed to save JPEG"); return }
-            // Bitmap.compress strips all metadata, so stamp the exposure EXIF back before publishing
-            // (best-effort — a failed EXIF write must never lose the image itself).
-            runCatching { writeJpegExif(u, exifShot) }
-            // Same deliberate delete-on-persistent-publish-failure policy as saveHeifAsync (the
-            // still is reshootable; publish() already retried transients).
-            if (!MediaStoreWriter.publish(context, u)) {
-                MediaStoreWriter.delete(context, u)
-                onStatus?.invoke("Failed to publish JPEG")
-                return
-            }
-            onMediaSaved?.invoke(u, spec.captureId)
-            onStatus?.invoke("Saved")
-        } catch (e: OutOfMemoryError) {
-            uri?.let { MediaStoreWriter.delete(context, it) }
-            onStatus?.invoke("Failed to save JPEG: out of memory")
-        } catch (t: Throwable) {
-            uri?.let { MediaStoreWriter.delete(context, it) }
-            onStatus?.invoke("Failed to save JPEG: ${t.message}")
-        } finally {
-            val rr = rotated
-            val cc = cropped
-            val dd = decoded
-            if (rr != null && rr !== cc && rr !== dd) rr.recycle()
-            if (cc != null && cc !== dd) cc.recycle()
-            dd?.recycle()
+        }.getOrElse { failure -> MediaStoreWriter.delete(context, u); throw failure }
+        if (!wrote) { MediaStoreWriter.delete(context, u); onStatus?.invoke("Failed to save HEIF"); return }
+        if (!MediaStoreWriter.publish(context, u)) {
+            MediaStoreWriter.delete(context, u)
+            onStatus?.invoke("Failed to publish HEIF")
+            return
         }
+        onMediaSaved?.invoke(u, spec.captureId)
+        onStatus?.invoke("Saved")
+    }
+
+    /**
+     * JPEG re-encode of the SAME rotated bitmap the HEIF got, so the two frame identically.
+     * Same publish-or-delete policy as [writeProcessedHeif].
+     */
+    private fun writeProcessedJpeg(rotated: Bitmap, spec: ShotSpec, exifShot: ExifShot) {
+        val u = MediaStoreWriter.createPendingImage(
+            context,
+            spec.familyKey.displayName("jpg"),
+            "image/jpeg",
+        )
+        if (u == null) { onStatus?.invoke("Failed to save JPEG"); return }
+        val quality = spec.jpegQuality
+        val wrote = runCatching {
+            MediaStoreWriter.openOutputStream(context, u)?.use { out ->
+                rotated.compress(Bitmap.CompressFormat.JPEG, quality, out)
+            } ?: false
+        }.getOrElse { failure -> MediaStoreWriter.delete(context, u); throw failure }
+        if (!wrote) { MediaStoreWriter.delete(context, u); onStatus?.invoke("Failed to save JPEG"); return }
+        // Bitmap.compress strips all metadata, so stamp the exposure EXIF back before publishing
+        // (best-effort — a failed EXIF write must never lose the image itself).
+        runCatching { writeJpegExif(u, exifShot) }
+        if (!MediaStoreWriter.publish(context, u)) {
+            MediaStoreWriter.delete(context, u)
+            onStatus?.invoke("Failed to publish JPEG")
+            return
+        }
+        onMediaSaved?.invoke(u, spec.captureId)
+        onStatus?.invoke("Saved")
     }
 
     /** Writes the RAW image as DNG synchronously (always full-frame; no [aspectRatio] crop applied). Publishes only on success; deletes then rethrows on failure. */
