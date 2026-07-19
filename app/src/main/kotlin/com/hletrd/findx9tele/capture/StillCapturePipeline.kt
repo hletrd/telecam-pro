@@ -136,7 +136,7 @@ internal class StillCapturePipeline(
      * deleting a valuable take.
      */
     private fun writeProcessedHeif(rotated: Bitmap, spec: ShotSpec, exifShot: ExifShot) {
-        val exifData = buildHeifExifData(exifShot)
+        val exifData = buildHeifExifData(exifShot, rotated.width, rotated.height)
         val u = MediaStoreWriter.createPendingImage(
             context,
             spec.familyKey.displayName("heic"),
@@ -243,7 +243,7 @@ internal class StillCapturePipeline(
         }
     }
 
-    private fun buildHeifExifData(shot: ExifShot): ByteArray {
+    private fun buildHeifExifData(shot: ExifShot, width: Int, height: Int): ByteArray {
         val temp = File.createTempFile("x9-heif-exif-", ".jpg", context.cacheDir)
         return try {
             val seed = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
@@ -256,6 +256,13 @@ internal class StillCapturePipeline(
             }
             val exif = androidx.exifinterface.media.ExifInterface(temp)
             applyExifAttributes(exif, shot)
+            // ExifInterface learned ImageWidth/ImageLength from the 1x1 JPEG seed above. If those
+            // values ride into the HEIF unchanged, MediaStore indexes a valid full-resolution HEIF
+            // as 1x1. Replace both primary and compressed-image dimension pairs with the already
+            // cropped/rotated bitmap's true encoded size before extracting the APP1 payload.
+            heifExifDimensionAttributes(width, height).forEach { (tag, value) ->
+                exif.setAttribute(tag, value)
+            }
             exif.saveAttributes()
             extractExifApp1(temp.readBytes()) ?: error("EXIF APP1 payload missing")
         } finally {

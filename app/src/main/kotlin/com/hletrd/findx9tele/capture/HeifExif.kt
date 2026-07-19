@@ -1,5 +1,7 @@
 package com.hletrd.findx9tele.capture
 
+import androidx.exifinterface.media.ExifInterface
+
 /**
  * Extracts the APP1 EXIF payload (`Exif\u0000\u0000` + TIFF data) from a JPEG. HeifWriter expects
  * exactly this payload, without the JPEG marker or two-byte segment length. Kept pure so the byte
@@ -33,6 +35,30 @@ internal fun extractExifApp1(jpeg: ByteArray): ByteArray? {
         offset = payloadEnd
     }
     return null
+}
+
+/**
+ * Dimension tags that must describe the HEIF image receiving this EXIF payload, not the tiny JPEG
+ * used only as an ExifInterface serialization vessel.
+ *
+ * MediaStore's WIDTH/HEIGHT columns are read-only and are indexed from ImageWidth/ImageLength.
+ * PixelX/YDimension are the corresponding compressed-image tags and also let ExifInterface repair
+ * the primary dimensions while parsing. Writing both pairs keeps the embedded metadata and the
+ * published MediaStore row aligned with the actual HEIF item dimensions.
+ */
+internal fun heifExifDimensionAttributes(
+    width: Int,
+    height: Int,
+): List<Pair<String, String>> {
+    require(width > 0 && height > 0) { "HEIF dimensions must be positive" }
+    val widthValue = width.toString()
+    val heightValue = height.toString()
+    return listOf(
+        ExifInterface.TAG_IMAGE_WIDTH to widthValue,
+        ExifInterface.TAG_IMAGE_LENGTH to heightValue,
+        ExifInterface.TAG_PIXEL_X_DIMENSION to widthValue,
+        ExifInterface.TAG_PIXEL_Y_DIMENSION to heightValue,
+    )
 }
 
 private val EXIF_SIGNATURE = byteArrayOf('E'.code.toByte(), 'x'.code.toByte(), 'i'.code.toByte(), 'f'.code.toByte(), 0, 0)

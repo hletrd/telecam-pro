@@ -1,7 +1,9 @@
 package com.hletrd.findx9tele.capture
 
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class HeifExifTest {
@@ -34,5 +36,28 @@ class HeifExifTest {
                 ),
             ),
         )
+    }
+
+    @Test
+    fun `HEIF EXIF dimensions replace every one-pixel seed dimension`() {
+        assertEquals(
+            listOf(
+                "ImageWidth" to "3072",
+                "ImageLength" to "4096",
+                "PixelXDimension" to "3072",
+                "PixelYDimension" to "4096",
+            ),
+            heifExifDimensionAttributes(width = 3072, height = 4096),
+        )
+    }
+
+    @Test
+    fun `HEIF EXIF dimensions reject invalid encoded sizes`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            heifExifDimensionAttributes(width = 0, height = 4096)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            heifExifDimensionAttributes(width = 3072, height = -1)
+        }
     }
 }
