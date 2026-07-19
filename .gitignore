@@ -35,3 +35,4 @@ telecampro-upload-passwords.txt.gpg
 # Local reference sample photos from the stock camera (EXIF reference only — never commit)
 IMG2*.heic
 IMG2*.jpg
+device-tests/reports/
