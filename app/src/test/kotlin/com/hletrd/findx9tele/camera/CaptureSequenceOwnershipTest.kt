@@ -27,6 +27,24 @@ class CaptureSequenceOwnershipTest {
     }
 
     @Test
+    fun `photo to video cancels timelapse ownership before a stale callback can fire`() {
+        val generations = CaptureSequenceGeneration()
+        val photoRun = generations.restart()
+        var staleCallbackFires = 0
+
+        if (captureModeTransitionStopsTimelapse(currentVideo = false, targetVideo = true)) {
+            generations.stop()
+        }
+        if (generations.owns(photoRun)) staleCallbackFires++
+
+        assertFalse(generations.owns(photoRun))
+        assertEquals(0, staleCallbackFires)
+        assertFalse(captureModeTransitionStopsTimelapse(currentVideo = false, targetVideo = false))
+        assertFalse(captureModeTransitionStopsTimelapse(currentVideo = true, targetVideo = false))
+        assertFalse(captureModeTransitionStopsTimelapse(currentVideo = true, targetVideo = true))
+    }
+
+    @Test
     fun `manual aeb step retains newer non bracket controls`() {
         val latest = ManualControls(
             iso = 3200,

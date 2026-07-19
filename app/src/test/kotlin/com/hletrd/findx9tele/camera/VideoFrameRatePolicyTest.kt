@@ -3,6 +3,7 @@ package com.hletrd.findx9tele.camera
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class VideoFrameRatePolicyTest {
@@ -14,12 +15,24 @@ class VideoFrameRatePolicyTest {
                 exposureMode = mode,
                 exposureTimeNs = 500_000_000L,
                 fps = 30,
-                programAppSide = true,
             ).normalizedForCaptureMode(CaptureMode.VIDEO)
 
             assertEquals("$mode must preserve 30p", 33_333_333L, normalized.exposureTimeNs)
-            assertFalse("video never keeps the photo-P loop armed", normalized.programAppSide)
+            assertFalse(normalized.programAppSide)
         }
+    }
+
+    @Test
+    fun `video timing clamp preserves capability-owned app Program fallback`() {
+        val fallback = ManualControls(
+            exposureMode = ExposureMode.PROGRAM,
+            exposureTimeNs = 500_000_000L,
+            fps = 30,
+            programAppSide = true,
+        ).normalizedForCaptureMode(CaptureMode.VIDEO)
+
+        assertEquals(33_333_333L, fallback.exposureTimeNs)
+        assertTrue(fallback.programAppSide)
     }
 
     @Test

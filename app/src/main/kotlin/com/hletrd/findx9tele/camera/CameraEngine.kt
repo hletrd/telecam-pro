@@ -78,6 +78,9 @@ class CameraEngine(private val context: Context) {
     @Volatile private var driveMode: DriveMode = DriveMode.SINGLE
     @Volatile private var intervalSec: Int = 5
     @Volatile private var controls = ManualControls()
+    // Hidden while Video is active, but transaction-owned like every visible optics control: a
+    // failed/overlapping MR recall must restore the exact Photo shutter of the last Ready session.
+    @Volatile private var photoExposureTimeNs = controls.exposureTimeNs
     @Volatile private var transfer = ColorTransfer.HLG
     @Volatile private var lensChoice: LensChoice = LensChoice.MAIN
     @Volatile private var overrideId: String? = null
@@ -110,7 +113,7 @@ class CameraEngine(private val context: Context) {
     // black viewfinder behind a fully interactive-looking shutter with zero indication.
     var onCameraReadyChange: ((CameraReadyPublication) -> Unit)? = null
     /** Restores UI optics when a current-generation camera switch fails before closing the old one. */
-    var onOpticsRollback: ((CaptureMode, LensChoice, Boolean, ManualControls, String?, generation: Long) -> Unit)? = null
+    var onOpticsRollback: ((CaptureMode, LensChoice, Boolean, ManualControls, Long, String?, generation: Long) -> Unit)? = null
 
     // AF engine state for the reticle color, mapped from the controller's raw CONTROL_AF_STATE.
     var onAfIndication: ((AfIndication) -> Unit)? = null
@@ -154,6 +157,7 @@ class CameraEngine(private val context: Context) {
             capsLower = range?.lower,
             capsUpper = range?.upper,
         )
+        if (!videoMode) photoExposureTimeNs = controls.exposureTimeNs
         if (!videoMode && !teleconverterMode) lensChoice = LensChoice.forZoom(controls.zoomRatio)
         seedGlZoom()
     }
@@ -163,10 +167,12 @@ class CameraEngine(private val context: Context) {
         val lens: LensChoice,
         val teleconverter: Boolean,
         val controls: ManualControls,
+        val photoExposureTimeNs: Long,
         val overrideId: String?,
         val selection: TeleSelection?,
         val caps: CameraCaps?,
         val videoSize: Size,
+        val requestedVideoSize: Size?,
         val previewStreamSize: Size,
         val preTeleUnifiedZoom: Float,
         val ready: Boolean,
@@ -197,10 +203,12 @@ class CameraEngine(private val context: Context) {
         lens = lensChoice,
         teleconverter = teleconverterMode,
         controls = controls,
+        photoExposureTimeNs = photoExposureTimeNs,
         overrideId = overrideId,
         selection = selection,
         caps = caps,
         videoSize = videoSize,
+        requestedVideoSize = requestedVideoSize,
         previewStreamSize = previewStreamSize,
         preTeleUnifiedZoom = preTeleUnifiedZoom,
         ready = cameraReady,
@@ -355,7 +363,9 @@ class CameraEngine(private val context: Context) {
                 lens = before.lens,
                 teleconverter = before.teleconverter,
                 controls = before.controls,
+                photoExposureTimeNs = before.photoExposureTimeNs,
                 overrideId = before.overrideId,
+                requestedVideoSize = before.requestedVideoSize,
             ),
         ) ?: return
         opticsRollbackBaseline = null
@@ -363,10 +373,12 @@ class CameraEngine(private val context: Context) {
         lensChoice = restored.lens
         teleconverterMode = restored.teleconverter
         controls = restored.controls
+        photoExposureTimeNs = restored.photoExposureTimeNs
         overrideId = restored.overrideId
         selection = before.selection
         caps = before.caps
         videoSize = before.videoSize
+        requestedVideoSize = restored.requestedVideoSize
         previewStreamSize = before.previewStreamSize
         preTeleUnifiedZoom = before.preTeleUnifiedZoom
         controller?.setPinAutoFps(before.videoMode)
@@ -377,6 +389,7 @@ class CameraEngine(private val context: Context) {
             restored.lens,
             restored.teleconverter,
             restored.controls,
+            restored.photoExposureTimeNs,
             restored.overrideId,
             transaction.generation,
         )
@@ -899,7 +912,12 @@ class CameraEngine(private val context: Context) {
     // ---- Controls ----
 
     fun setControls(c: ManualControls) {
-        val normalized = (caps?.let(c::normalizedFor) ?: c).normalizedForCaptureMode(
+        val modeIntent = if (videoMode && c.exposureMode == ExposureMode.PROGRAM) {
+            c.copy(programAppSide = false)
+        } else {
+            c
+        }
+        val normalized = (caps?.let(modeIntent::normalizedFor) ?: modeIntent).normalizedForCaptureMode(
             if (videoMode) CaptureMode.VIDEO else CaptureMode.PHOTO,
         )
         // Packet-write invariant: EVERY wholesale [controls] writer holds the engine monitor
@@ -908,7 +926,10 @@ class CameraEngine(private val context: Context) {
         // exception — its write landing between a setupExecutor writer's read and write-back
         // silently clobbered the route-normalized packet with one normalized against the
         // OUTGOING caps (the VM's caps snapshot lags onCapsReady by a main-queue hop).
-        synchronized(this) { controls = normalized }
+        synchronized(this) {
+            controls = normalized
+            if (!videoMode) photoExposureTimeNs = normalized.exposureTimeNs
+        }
         controller?.updateControls(normalized)
     }
 
@@ -925,19 +946,39 @@ class CameraEngine(private val context: Context) {
             cameraReady = cameraReady,
         )
 
-    fun setVideoMode(enabled: Boolean, resolvedLens: LensChoice, resolvedControls: ManualControls) {
+    fun setVideoMode(
+        enabled: Boolean,
+        resolvedLens: LensChoice,
+        resolvedControls: ManualControls,
+        resolvedPhotoExposureTimeNs: Long,
+    ) {
+        val wasVideoMode = videoMode
+        if (captureModeTransitionStopsTimelapse(wasVideoMode, enabled)) {
+            // Interval shooting is photo-owned. Revoke its generation before publishing any VIDEO
+            // optics/session intent so a queued tick or late still-save completion cannot follow the
+            // new accepted session into Video. Keep [driveMode] untouched: returning to Photo still
+            // shows TIMELAPSE, but the photographer must press the shutter to start a fresh run.
+            stopTimelapse()
+        }
         // Publish one already-resolved optics packet before queuing any reconfiguration. Keeping the
         // UI and engine remaps separate let a delayed full-controls apply race this method and made
         // Photo/Video transitions depend on executor timing.
-        val modeControls = resolvedControls.normalizedForCaptureMode(
+        val enteringVideo = !videoMode && enabled
+        val modeIntent = if (enteringVideo && resolvedControls.exposureMode == ExposureMode.PROGRAM) {
+            resolvedControls.copy(programAppSide = false)
+        } else {
+            resolvedControls
+        }
+        val modeControls = modeIntent.normalizedForCaptureMode(
             if (enabled) CaptureMode.VIDEO else CaptureMode.PHOTO,
         )
-        val changed = videoMode != enabled
+        val changed = wasVideoMode != enabled
         val transaction = if (changed) {
             beginOpticsTransaction {
                 videoMode = enabled
                 lensChoice = resolvedLens
                 controls = modeControls
+                photoExposureTimeNs = resolvedPhotoExposureTimeNs.coerceAtLeast(1L)
                 // A mode intent owns automatic routing. Clear the resolved outgoing id atomically.
                 overrideId = null
             }.first
@@ -946,6 +987,7 @@ class CameraEngine(private val context: Context) {
                 videoMode = enabled
                 lensChoice = resolvedLens
                 controls = modeControls
+                photoExposureTimeNs = resolvedPhotoExposureTimeNs.coerceAtLeast(1L)
             }
             null
         }
@@ -997,11 +1039,44 @@ class CameraEngine(private val context: Context) {
                     transaction.before.readyController === controller && !paused
                 ) {
                     // Same camera and same configured stream: the intent only changed request-side
-                    // mode semantics, so the existing session is still the ready session.
+                    // mode semantics, so the existing session is still the ready session. Reconcile
+                    // against this retained route before publishing Ready: an AE_OFF-only camera
+                    // must re-arm app-owned Program + luma analysis in the ViewModel, even though
+                    // Video entry intentionally cleared the Photo-derived ownership flag.
                     val expectedController = controller ?: return@execute
-                    commitFastPathOrReconfigure(transaction, id, expectedController) {
-                        overrideId = id
+                    val routeCaps = caps ?: run {
+                        reconfigureCamera(id, transaction)
+                        return@execute
                     }
+                    val range = routeCaps.zoomRatioRange
+                    commitFastPathOrReconfigure(
+                        transaction = transaction,
+                        cameraId = id,
+                        expectedController = expectedController,
+                        terminalMutation = {
+                            // This terminal mutation holds the engine monitor, the same monitor used
+                            // by setControls. Normalize the LIVE target-mode packet so a P-ownership
+                            // refresh or dial update that landed while setup was queued cannot be
+                            // overwritten by the older transition snapshot.
+                            controls = normalizeRetainedControlsAtCommit(
+                                liveControls = controls,
+                                capabilities = routeCaps.controlCapabilities(),
+                                mode = if (enabled) CaptureMode.VIDEO else CaptureMode.PHOTO,
+                                teleconverter = teleconverterMode,
+                                capsLower = range?.lower,
+                                capsUpper = range?.upper,
+                            )
+                            if (!enabled) photoExposureTimeNs = controls.exposureTimeNs
+                            if (!enabled && !teleconverterMode) {
+                                lensChoice = LensChoice.forZoom(controls.zoomRatio)
+                            }
+                            seedGlZoom()
+                            overrideId = id
+                        },
+                        beforeReadyPublication = { generation ->
+                            onCapsReady?.invoke(routeCaps, generation)
+                        },
+                    )
                 } else {
                     reconfigureCamera(id, transaction)
                 }
@@ -1015,9 +1090,21 @@ class CameraEngine(private val context: Context) {
         resolvedLens: LensChoice,
         resolvedTeleconverter: Boolean,
         resolvedControls: ManualControls,
-    ) {
-        if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
-        val modeControls = resolvedControls.normalizedForCaptureMode(
+        resolvedPhotoExposureTimeNs: Long,
+        recalledVideoSize: Size?,
+    ): Boolean {
+        if (recorder != null) { onStatus?.invoke("Stop REC first"); return false }
+        if (captureModeTransitionStopsTimelapse(videoMode, enabledVideo)) {
+            // MR/settings recall is a second route into VIDEO and must own the same interval boundary
+            // as the direct Photo/Video carousel transition.
+            stopTimelapse()
+        }
+        val modeIntent = if (enabledVideo && resolvedControls.exposureMode == ExposureMode.PROGRAM) {
+            resolvedControls.copy(programAppSide = false)
+        } else {
+            resolvedControls
+        }
+        val modeControls = modeIntent.normalizedForCaptureMode(
             if (enabledVideo) CaptureMode.VIDEO else CaptureMode.PHOTO,
         )
         val transaction = beginOpticsTransaction {
@@ -1025,6 +1112,8 @@ class CameraEngine(private val context: Context) {
             lensChoice = resolvedLens
             teleconverterMode = resolvedTeleconverter
             controls = modeControls
+            photoExposureTimeNs = resolvedPhotoExposureTimeNs.coerceAtLeast(1L)
+            recalledVideoSize?.let { requestedVideoSize = it }
             preTeleUnifiedZoom = Float.NaN
             // Settings/MR replaces automatic routing; the snapshot retains an override for rollback.
             overrideId = null
@@ -1036,7 +1125,7 @@ class CameraEngine(private val context: Context) {
         val modeGeneration = modeIntentGeneration.incrementAndGet()
         val lensGeneration = lensIntentGeneration.incrementAndGet()
         controller?.setPinAutoFps(enabledVideo)
-        if (!started) return
+        if (!started) return true
         setupExecutor.execute {
             if (!ownsOpticsTransaction(transaction) ||
                 modeIntentGeneration.get() != modeGeneration ||
@@ -1074,24 +1163,24 @@ class CameraEngine(private val context: Context) {
                     return@execute
                 }
                 val range = routeCaps.zoomRatioRange
-                val normalizedControls = normalizeControlsForRoute(
-                    requested = modeControls,
-                    capabilities = routeCaps.controlCapabilities(),
-                    mode = if (enabledVideo) CaptureMode.VIDEO else CaptureMode.PHOTO,
-                    teleconverter = resolvedTeleconverter,
-                    capsLower = range?.lower,
-                    capsUpper = range?.upper,
-                )
                 commitFastPathOrReconfigure(
                     transaction = transaction,
                     cameraId = id,
                     expectedController = expectedController,
                     terminalMutation = {
-                        // Enqueue the owned normalized packet while the commit monitor is held. A
-                        // newer begin cannot enqueue its packet first or publish raw recalled state.
-                        controls = normalizedControls
+                        // Preserve any target-owned update that landed after the recalled packet was
+                        // published; terminal commit and setControls serialize on this monitor.
+                        controls = normalizeRetainedControlsAtCommit(
+                            liveControls = controls,
+                            capabilities = routeCaps.controlCapabilities(),
+                            mode = if (enabledVideo) CaptureMode.VIDEO else CaptureMode.PHOTO,
+                            teleconverter = resolvedTeleconverter,
+                            capsLower = range?.lower,
+                            capsUpper = range?.upper,
+                        )
+                        if (!enabledVideo) photoExposureTimeNs = controls.exposureTimeNs
                         if (!enabledVideo && !resolvedTeleconverter) {
-                            lensChoice = LensChoice.forZoom(normalizedControls.zoomRatio)
+                            lensChoice = LensChoice.forZoom(controls.zoomRatio)
                         }
                         seedGlZoom()
                         overrideId = id
@@ -1100,6 +1189,7 @@ class CameraEngine(private val context: Context) {
                 )
             }
         }
+        return true
     }
 
     /**
@@ -2433,6 +2523,10 @@ class CameraEngine(private val context: Context) {
     private val recAdmission = RecordingAdmissionLatch()
 
     fun startRecording(recordAudio: Boolean, onResult: (Boolean) -> Unit) {
+        // Defensive boundary for any future REC entry point that bypasses setVideoMode (or for a
+        // Video-mode snapshot that accidentally started an interval run). This invalidates only the
+        // active sequence; the selected TIMELAPSE drive mode remains available on return to Photo.
+        stopTimelapse()
         if (!recAdmission.tryBeginAdmission()) {
             onResult(false)
             return
@@ -3383,6 +3477,8 @@ internal data class OpticsIntentState(
     val teleconverter: Boolean,
     val controls: ManualControls,
     val overrideId: String?,
+    val photoExposureTimeNs: Long = controls.exposureTimeNs,
+    val requestedVideoSize: Size? = null,
 )
 
 /** Returns the exact pre-intent optics only while that intent still owns the current generation. */
@@ -3417,6 +3513,10 @@ internal fun resolvedOpticsRequiresReconfigure(
     beforeTeleconverter != targetTeleconverter ||
     beforeCameraId == null || beforeCameraId != targetCameraId ||
     !controllerAvailable || !beforeReady || !readyControllerMatches
+
+/** Interval shooting is photo-owned and is cancelled only on the Photo -> Video edge. */
+internal fun captureModeTransitionStopsTimelapse(currentVideo: Boolean, targetVideo: Boolean): Boolean =
+    !currentVideo && targetVideo
 
 /** Thread-safe ownership token for completion-paced capture sequences. */
 internal class CaptureSequenceGeneration {

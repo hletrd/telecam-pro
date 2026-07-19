@@ -38,6 +38,10 @@ object ColorProfiles {
      */
     private fun MediaFormat.applyFrameRate(encoderRate: Double, captureRate: Double) {
         setFloat(MediaFormat.KEY_FRAME_RATE, encoderRate.toFloat())
+        // Surface-input encoders derive cadence from buffer timestamps; KEY_FRAME_RATE is primarily
+        // a rate-control hint. Camera2 feeds integer 24/30/60 sensor cadence, so cap the encoder
+        // input at the true selected value to honor 23.976/29.97/59.94 without retiming PTS or audio.
+        setFloat(MediaFormat.KEY_MAX_FPS_TO_ENCODER, encoderRate.toFloat())
         if (captureRate > 0.0) {
             setFloat(MediaFormat.KEY_CAPTURE_RATE, captureRate.toFloat())
             setInteger(MediaFormat.KEY_OPERATING_RATE, captureRate.toInt())

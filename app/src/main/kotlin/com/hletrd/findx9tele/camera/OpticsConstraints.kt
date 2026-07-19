@@ -67,7 +67,15 @@ internal fun normalizeControlsForRoute(
     capsLower: Float?,
     capsUpper: Float?,
 ): ManualControls {
-    val capabilityControls = requested.normalizedFor(capabilities).normalizedForCaptureMode(mode)
+    // Video PROGRAM normally belongs to HAL AE. Route switches happen while mode already equals
+    // VIDEO, so clear ownership at this central caps seam rather than only on Photo -> Video entry;
+    // an AE_OFF-only target will truthfully re-enable the app-side fallback during normalization.
+    val modeIntent = if (mode == CaptureMode.VIDEO && requested.exposureMode == ExposureMode.PROGRAM) {
+        requested.copy(programAppSide = false)
+    } else {
+        requested
+    }
+    val capabilityControls = modeIntent.normalizedFor(capabilities).normalizedForCaptureMode(mode)
     return capabilityControls.copy(
         zoomRatio = reconcileZoomWithCaps(
             mode = mode,
@@ -78,3 +86,23 @@ internal fun normalizeControlsForRoute(
         ),
     )
 }
+
+/**
+ * Retained-session terminal normalization. Callers pass the live packet while holding the engine
+ * monitor; taking a transition-time snapshot here would lose controls accepted while setup queued.
+ */
+internal fun normalizeRetainedControlsAtCommit(
+    liveControls: ManualControls,
+    capabilities: CameraControlCapabilities,
+    mode: CaptureMode,
+    teleconverter: Boolean,
+    capsLower: Float?,
+    capsUpper: Float?,
+): ManualControls = normalizeControlsForRoute(
+    requested = liveControls,
+    capabilities = capabilities,
+    mode = mode,
+    teleconverter = teleconverter,
+    capsLower = capsLower,
+    capsUpper = capsUpper,
+)

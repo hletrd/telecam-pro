@@ -328,9 +328,6 @@ internal fun ManualControls.normalizedForCaptureMode(mode: CaptureMode): ManualC
     val intervalNs = frameIntervalNs(fps)
     return copy(
         exposureTimeNs = intervalNs?.let(exposureTimeNs::coerceAtMost) ?: exposureTimeNs,
-        // Video PROGRAM is owned by HAL AE. A restored photo-P packet must not briefly enter video
-        // with the app-side program line active while the ViewModel refresh is still queued.
-        programAppSide = false,
     )
 }
 

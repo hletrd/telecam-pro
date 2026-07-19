@@ -79,6 +79,7 @@ import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.camera.WbMode
 import com.hletrd.findx9tele.camera.controlAvailability
 import com.hletrd.findx9tele.camera.controlCapabilities
+import com.hletrd.findx9tele.camera.exposureUpperBoundForCaptureMode
 import com.hletrd.findx9tele.focus.FocusMapping
 import com.hletrd.findx9tele.ui.CameraActions
 import com.hletrd.findx9tele.ui.formatDisplayZoom
@@ -193,7 +194,12 @@ fun ManualDialCluster(
         ) {
             when (displayedDial) {
                 DialType.FOCUS -> FocusRuler(controls = controls, caps = caps, onFocusSlider = actions::onFocusSlider)
-                DialType.SHUTTER -> ShutterRuler(controls = controls, caps = caps, actions = actions)
+                DialType.SHUTTER -> ShutterRuler(
+                    mode = state.mode,
+                    controls = controls,
+                    caps = caps,
+                    actions = actions,
+                )
                 DialType.ISO -> IsoRuler(controls = controls, caps = caps, onIso = actions::onIso)
                 DialType.WB -> WbRuler(controls = controls, onWbKelvin = actions::onWbKelvin)
                 DialType.EV -> EvRuler(controls = controls, caps = caps, onEv = actions::onExposureCompensation)
@@ -620,7 +626,12 @@ private fun FocusRuler(controls: ManualControls, caps: CameraCaps?, onFocusSlide
 }
 
 @Composable
-private fun ShutterRuler(controls: ManualControls, caps: CameraCaps?, actions: CameraActions) {
+private fun ShutterRuler(
+    mode: CaptureMode,
+    controls: ManualControls,
+    caps: CameraCaps?,
+    actions: CameraActions,
+) {
     // The shutter is user-editable in Shutter-priority and Manual; in ISO priority it's app-driven, so
     // the ruler is shown but inert. ANGLE is a cine convention — same exposure, expressed as a shutter
     // angle relative to the frame rate (180° = 1/(2·fps)).
@@ -640,7 +651,14 @@ private fun ShutterRuler(controls: ManualControls, caps: CameraCaps?, actions: C
                 valueDescription = describedReadout,
             )
         } else {
-            val range = caps?.exposureTimeRange ?: Range(controls.exposureTimeNs, controls.exposureTimeNs)
+            val sensorRange = caps?.exposureTimeRange
+                ?: Range(controls.exposureTimeNs, controls.exposureTimeNs)
+            val upper = exposureUpperBoundForCaptureMode(
+                mode = mode,
+                fps = controls.fps,
+                sensorUpperNs = sensorRange.upper,
+            ).coerceAtLeast(sensorRange.lower)
+            val range = Range(sensorRange.lower, upper)
             val stops = remember(range.lower, range.upper, controls.exposureStep) { shutterStops(range, controls.exposureStep.ev) }
             val n = stops.size
             val idx = remember(controls.exposureTimeNs, stops) {

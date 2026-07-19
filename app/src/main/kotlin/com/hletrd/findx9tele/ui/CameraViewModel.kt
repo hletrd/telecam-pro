@@ -76,6 +76,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     private val settingsStore = SettingsStore(app)
     private val _state = MutableStateFlow(CameraUiState())
     val state: StateFlow<CameraUiState> = _state.asStateFlow()
+    // Video must clamp its live/request shutter to one frame, but that derived value must not erase
+    // the photographer's Photo shutter (including ANGLE's dormant SPEED value). Persisted through
+    // ExtraSettings so a process death while Video is selected still restores Photo faithfully.
+    private var photoExposureTimeNs = ManualControls().exposureTimeNs
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var recordStartMs = 0L
@@ -326,13 +330,12 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                             photoFormats = accepted.photoFormats,
                         )
                     }
-                    if (cameraReadyPublicationGate.owns(publication)) {
-                        formatStatus?.let(::showStatus)
-                    }
+                    if (cameraReadyPublicationGate.owns(publication)) formatStatus?.let(::showStatus)
                 }
             }
         }
-        engine.onOpticsRollback = { mode, lens, teleconverter, controls, overrideId, generation ->
+        engine.onOpticsRollback = {
+                mode, lens, teleconverter, controls, restoredPhotoExposureTimeNs, overrideId, generation ->
             mainHandler.post {
                 if (!engine.isOpticsGenerationCurrent(generation)) return@post
                 cancelPendingControls()
@@ -342,6 +345,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 // throttled landing all invalidate together (same invariant as every optics-remap door).
                 invalidateZoomGlide()
                 clearTapFocus()
+                // Engine snapshots this hidden bank inside the same generation-owned transaction as
+                // visible optics, so even Ready-callback overlap restores the exact accepted value.
+                photoExposureTimeNs = restoredPhotoExposureTimeNs
                 _state.update {
                     it.copy(
                         mode = mode,
@@ -491,14 +497,6 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         status: String? = null,
         honorPreserveOptions: Boolean = false,
     ) {
-        // The recalled packet supersedes a delayed manual-control snapshot from the prior setup.
-        cancelPendingControls()
-        cancelCountdown()
-        // MR recall / settings restore can change mode/lens/TC — i.e. the zoom SCALE. Any glide still
-        // easing toward a target computed in the old scale (or a throttled landing about to fire) would
-        // visibly drag the just-recalled framing away from the preset (same invariant as every remap door).
-        invalidateZoomGlide()
-        clearTapFocus()
         val c = loaded.controls
         val e = loaded.extras
         val defaults = CameraUiState()
@@ -535,38 +533,68 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         val restoredOptics = restoredOptics(e.mode, requestedLens, requestedTeleconverter, requestedZoom)
         val restoredLens = restoredOptics.lens
         val restoredTeleconverter = restoredOptics.teleconverter
-        // Clamp the restored numeric exposure against the last-known caps BEFORE the immediate
-        // _state publish (TR4-5): a legacy over-ceiling value (e.g. a persisted 6.3 s) used to
-        // display raw for one onCapsReady main-hop before reconcile normalized it. The terminal
-        // route normalize still runs later; this only closes the display transient. No caps yet
-        // (cold launch) leaves the value for reconcile as before.
-        val lastCapsExp = _state.value.caps?.controlCapabilities()
+        // Clamp only when the currently accepted session is the same route as the restored target.
+        // Outgoing caps are not authoritative across mode/lens recalls: applying a 0.5 s Video-lens
+        // ceiling to a 4 s Photo bank would permanently destroy the photographer's saved shutter.
+        // Target-route normalization still runs before that route publishes Ready.
+        val currentState = _state.value
+        val currentCapsDescribeTarget = restoredRouteUsesCurrentCaps(
+            cameraReady = currentState.cameraReady,
+            currentMode = currentState.mode,
+            currentLens = currentState.lens,
+            currentTeleconverter = currentState.teleconverterMode,
+            currentOverrideId = currentState.cameraOverrideId,
+            targetMode = e.mode,
+            targetLens = restoredLens,
+            targetTeleconverter = restoredTeleconverter,
+        )
+        val lastCapsExp = currentState.caps
+            ?.takeIf { currentCapsDescribeTarget }
+            ?.controlCapabilities()
         val expMin = lastCapsExp?.exposureTimeMinNs
         val expMax = lastCapsExp?.exposureTimeMaxNs
-        val clampedExposureNs = if (expMin != null && expMax != null && expMin <= expMax) {
-            c.exposureTimeNs.coerceIn(expMin, expMax)
-        } else {
-            c.exposureTimeNs
-        }
+        val restoredExposure = restoredExposureState(
+            targetMode = e.mode,
+            activeExposureTimeNs = c.exposureTimeNs,
+            storedPhotoExposureTimeNs = e.photoExposureTimeNs,
+            authoritativeMinNs = expMin,
+            authoritativeMaxNs = expMax,
+        )
+        val previousPhotoExposureTimeNs = photoExposureTimeNs
+        photoExposureTimeNs = restoredExposure.photoExposureTimeNs
         val cSynced = c.copy(
             fps = safeFrameRate.fps,
             zoomRatio = restoredOptics.zoomRatio,
-            exposureTimeNs = clampedExposureNs,
+            exposureTimeNs = restoredExposure.activeExposureTimeNs,
         ).normalizedForCaptureMode(e.mode)
         val restoredVideoSize = parseVideoResolution(e.videoResolution)
-        // Store before target optics is queued. Interactive picks validate against live caps, but a
-        // recalled target size must be validated by the target camera, not the outgoing camera.
-        restoredVideoSize?.let(engine::setRecalledVideoResolution)
-        // Push to the engine (safe pre-start: these set @Volatile fields read when the camera opens).
-        engine.setResolvedOptics(
+        // Resolution and hidden Photo exposure join the optics transaction. A synchronous REC
+        // rejection or asynchronous camera rollback must leave neither rejected bank behind.
+        val opticsAccepted = engine.setResolvedOptics(
             enabledVideo = e.mode == CaptureMode.VIDEO,
             resolvedLens = restoredLens,
             resolvedTeleconverter = restoredTeleconverter,
             resolvedControls = cSynced,
+            resolvedPhotoExposureTimeNs = photoExposureTimeNs,
+            recalledVideoSize = restoredVideoSize,
         )
+        if (!opticsAccepted) {
+            photoExposureTimeNs = previousPhotoExposureTimeNs
+            return
+        }
+        // The recalled packet supersedes a delayed manual-control snapshot from the prior setup.
+        // These callbacks share the main queue, so cancelling immediately after synchronous
+        // admission still precedes any stale trailing apply without mutating a rejected recall.
+        cancelPendingControls()
+        cancelCountdown()
+        // MR recall / settings restore can change mode/lens/TC — i.e. the zoom SCALE. Any glide still
+        // easing toward a target computed in the old scale (or a throttled landing about to fire) would
+        // visibly drag the just-recalled framing away from the preset (same invariant as every remap door).
+        invalidateZoomGlide()
+        clearTapFocus()
         // Manual/priority modes need luma analysis even when scopes are hidden: priority AE drives
         // from it, and full manual uses it for the live exposure meter.
-        engine.setAeMetering(usesExposureAnalysis(cSynced))
+        engine.setAeMetering(exposureAnalysisRequired(cSynced))
         applyEngineTransfer(e.mode, e.transfer)
         engine.setGammaAssist(e.gammaAssist)
         engine.setVideoStabMode(e.videoStabMode)
@@ -657,6 +685,11 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             jpeg = s.photoFormats.jpeg,
             dngRaw = s.photoFormats.dngRaw,
             mode = s.mode,
+            photoExposureTimeNs = if (s.mode == CaptureMode.PHOTO) {
+                s.controls.exposureTimeNs
+            } else {
+                photoExposureTimeNs
+            },
             lens = s.lens,
             teleconverter = s.teleconverterMode,
             videoStabMode = s.videoStabMode,
@@ -743,9 +776,6 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
 
     fun onAppStatus(message: String) = showStatus(message)
-
-    private fun usesExposureAnalysis(c: ManualControls): Boolean =
-        c.exposureMode != ExposureMode.PROGRAM || c.programAppSide
 
     /** Recomputes [ManualControls.programAppSide] after mode/flash/exposure-mode changes, seeding a smooth handoff. */
     private fun refreshProgramAppSide() {
@@ -1162,12 +1192,19 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // can overwrite the new mode's lens-local/unified zoom after the reconfigure is queued.
         cancelPendingControls()
         val before = _state.value
+        val exposureState = modeExposureState(
+            fromMode = before.mode,
+            toMode = mode,
+            controls = before.controls,
+            rememberedPhotoExposureTimeNs = photoExposureTimeNs,
+        )
+        photoExposureTimeNs = exposureState.photoExposureTimeNs
         val optics = remapModeOptics(
             fromMode = before.mode,
             toMode = mode,
             lens = before.lens,
             teleconverter = before.teleconverterMode,
-            controls = before.controls,
+            controls = exposureState.controls,
         )
         _state.update {
             it.copy(mode = mode, lens = optics.lens, controls = optics.controls)
@@ -1177,9 +1214,17 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // that would otherwise submit an old-scale ratio through the outgoing controller (AGG3-10/25).
         invalidateZoomGlide()
         clearTapFocus()
-        engine.setVideoMode(mode == CaptureMode.VIDEO, optics.lens, optics.controls)
+        engine.setVideoMode(
+            enabled = mode == CaptureMode.VIDEO,
+            resolvedLens = optics.lens,
+            resolvedControls = optics.controls,
+            resolvedPhotoExposureTimeNs = photoExposureTimeNs,
+        )
         applyEngineTransfer(mode, _state.value.transfer)
         refreshProgramAppSide() // photo P is app-side (min-shutter rule), video P is HAL AE
+        // refreshProgramAppSide is intentionally a no-op when the already-published flag matches;
+        // the analysis pipeline still needs an explicit mode-boundary update in that case.
+        engine.setAeMetering(exposureAnalysisRequired(_state.value.controls))
         refreshStandbyAudioMeter()
         markChanged(if (mode == CaptureMode.VIDEO) FnSlot.TRANSFER else FnSlot.EXPOSURE_MODE)
         // Persist the mode the instant it changes, not just on onStop: swiping the app from Recents
@@ -1408,7 +1453,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             )
         }
         if (normalizedControls != current.controls) {
-            engine.setAeMetering(usesExposureAnalysis(normalizedControls))
+            engine.setAeMetering(exposureAnalysisRequired(normalizedControls))
             engine.setControls(normalizedControls)
             // Do NOT re-base a LIVE gesture's coalesced target (TR4-3): a caps callback landing
             // between a gesture's first flush and its 16 ms trailing flush would overwrite the
@@ -1865,7 +1910,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         val requested = block(current.controls)
         val updated = (current.caps?.let(requested::normalizedFor) ?: requested)
             .normalizedForCaptureMode(current.mode)
-        engine.setAeMetering(usesExposureAnalysis(updated))
+        engine.setAeMetering(exposureAnalysisRequired(updated))
         _state.update { it.copy(controls = updated) }
         slot?.let(::markChanged)
         pendingControls = updated
@@ -2009,6 +2054,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 internal fun programShouldRunAppSide(mode: CaptureMode, exposureMode: ExposureMode, flash: FlashMode): Boolean =
     mode == CaptureMode.PHOTO && exposureMode == ExposureMode.PROGRAM &&
         flash != FlashMode.AUTO && flash != FlashMode.ON
+
+/** Analysis readback is needed only for app-owned exposure or the manual meter. */
+internal fun exposureAnalysisRequired(controls: ManualControls): Boolean =
+    controls.exposureMode != ExposureMode.PROGRAM || controls.programAppSide
 
 /**
  * Handheld-safe shutter target (ns) for app-side PROGRAM: the 1/(35mm-equivalent focal) rule at the

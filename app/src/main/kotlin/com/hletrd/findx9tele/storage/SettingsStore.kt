@@ -40,6 +40,9 @@ data class ExtraSettings(
     val jpeg: Boolean = false,
     val dngRaw: Boolean = false,
     val mode: CaptureMode = CaptureMode.PHOTO,
+    // Video stores a frame-rate-clamped live shutter in ManualControls. Keep the last Photo value
+    // separately so Photo -> Video -> process death -> Photo does not destroy a long exposure.
+    val photoExposureTimeNs: Long = ManualControls().exposureTimeNs,
     val lens: LensChoice = LensChoice.MAIN,
     val teleconverter: Boolean = false,
     val videoStabMode: VideoStabMode = VideoStabMode.ENHANCED,
@@ -211,6 +214,10 @@ class SettingsStore(private val prefs: SharedPreferences) {
                 jpeg = safeBoolean("${prefix}jpeg", ed.jpeg),
                 dngRaw = safeBoolean("${prefix}dngRaw", ed.dngRaw),
                 mode = enumOr(safeString("${prefix}mode", null), ed.mode),
+                // Legacy installs have no separate Photo value; their one saved shutter is the best
+                // lossless migration source, especially when they last exited in Video slow-shutter.
+                photoExposureTimeNs = safeLong("${prefix}photoExposureTimeNs", controls.exposureTimeNs)
+                    .coerceAtLeast(1L),
                 lens = enumOr(safeString("${prefix}lens", null), ed.lens),
                 teleconverter = safeBoolean("${prefix}teleconverter", ed.teleconverter),
                 videoStabMode = enumOr(safeString("${prefix}videoStabMode", null), ed.videoStabMode),
@@ -298,6 +305,7 @@ class SettingsStore(private val prefs: SharedPreferences) {
         putBoolean("${prefix}jpeg", e.jpeg)
         putBoolean("${prefix}dngRaw", e.dngRaw)
         putString("${prefix}mode", e.mode.name)
+        putLong("${prefix}photoExposureTimeNs", e.photoExposureTimeNs)
         putString("${prefix}lens", e.lens.name)
         putBoolean("${prefix}teleconverter", e.teleconverter)
         putString("${prefix}videoStabMode", e.videoStabMode.name)

@@ -171,6 +171,7 @@ class SettingsStoreTest {
         jpeg = true,
         dngRaw = false,
         mode = CaptureMode.VIDEO,
+        photoExposureTimeNs = 750_000_000L,
         lens = LensChoice.TELE3X,
         teleconverter = true,
         videoStabMode = VideoStabMode.STANDARD,
@@ -221,6 +222,21 @@ class SettingsStoreTest {
     @Test
     fun load_onEmptyStore_isNull() {
         assertNull(SettingsStore(FakePrefs()).load())
+    }
+
+    @Test
+    fun load_migratesLegacySharedShutterIntoPhotoExposureMemory() {
+        val legacyExposureNs = 500_000_000L
+        val prefs = FakePrefs(
+            mutableMapOf(
+                "hasSaved" to true,
+                "mode" to CaptureMode.VIDEO.name,
+                "exposureTimeNs" to legacyExposureNs,
+            ),
+        )
+
+        val loaded = requireNotNull(SettingsStore(prefs).load())
+        assertEquals(legacyExposureNs, loaded.extras.photoExposureTimeNs)
     }
 
     @Test

@@ -123,6 +123,91 @@ internal data class ModeOptics(
     val controls: ManualControls,
 )
 
+internal data class ModeExposureState(
+    val controls: ManualControls,
+    val photoExposureTimeNs: Long,
+)
+
+internal data class RestoredExposureState(
+    val activeExposureTimeNs: Long,
+    val photoExposureTimeNs: Long,
+)
+
+/**
+ * Returns whether the currently published caps describe a restored target route. Photo's non-TELE
+ * focal presets all share the logical camera, while Video presets select distinct standalone
+ * cameras. Hidden Photo exposure memory never uses Video caps; this predicate only governs the
+ * restored packet that is about to become active.
+ */
+internal fun restoredRouteUsesCurrentCaps(
+    cameraReady: Boolean,
+    currentMode: CaptureMode,
+    currentLens: LensChoice,
+    currentTeleconverter: Boolean,
+    currentOverrideId: String?,
+    targetMode: CaptureMode,
+    targetLens: LensChoice,
+    targetTeleconverter: Boolean,
+): Boolean {
+    if (
+        !cameraReady || currentOverrideId != null || currentMode != targetMode ||
+        currentTeleconverter != targetTeleconverter
+    ) {
+        return false
+    }
+    return targetTeleconverter || targetMode == CaptureMode.PHOTO || currentLens == targetLens
+}
+
+/** Preserves an inactive Photo shutter until authoritative Photo-route caps can validate it. */
+internal fun restoredExposureState(
+    targetMode: CaptureMode,
+    activeExposureTimeNs: Long,
+    storedPhotoExposureTimeNs: Long,
+    authoritativeMinNs: Long?,
+    authoritativeMaxNs: Long?,
+): RestoredExposureState {
+    val active = if (
+        authoritativeMinNs != null && authoritativeMaxNs != null &&
+        authoritativeMinNs <= authoritativeMaxNs
+    ) {
+        activeExposureTimeNs.coerceIn(authoritativeMinNs, authoritativeMaxNs)
+    } else {
+        activeExposureTimeNs.coerceAtLeast(1L)
+    }
+    return RestoredExposureState(
+        activeExposureTimeNs = active,
+        photoExposureTimeNs = if (targetMode == CaptureMode.PHOTO) {
+            active
+        } else {
+            storedPhotoExposureTimeNs.coerceAtLeast(1L)
+        },
+    )
+}
+
+/**
+ * Retains the photographer's Photo shutter while Video applies its fixed-frame-rate ceiling.
+ * [ManualControls.exposureTimeNs] also holds the dormant SPEED value while ANGLE is selected, so it
+ * must round-trip even when the active angle itself already fits within one frame.
+ */
+internal fun modeExposureState(
+    fromMode: CaptureMode,
+    toMode: CaptureMode,
+    controls: ManualControls,
+    rememberedPhotoExposureTimeNs: Long,
+): ModeExposureState {
+    val remembered = if (fromMode == CaptureMode.PHOTO) {
+        controls.exposureTimeNs
+    } else {
+        rememberedPhotoExposureTimeNs.coerceAtLeast(1L)
+    }
+    val targetControls = if (fromMode == CaptureMode.VIDEO && toMode == CaptureMode.PHOTO) {
+        controls.copy(exposureTimeNs = remembered)
+    } else {
+        controls
+    }
+    return ModeExposureState(targetControls, remembered)
+}
+
 /**
  * Resolves one Photo/Video transition. Photo zoom is unified/main-relative; non-TELE Video zoom is
  * local to the selected standalone lens. TELE is local in both modes and therefore stays unchanged.
@@ -134,7 +219,15 @@ internal fun remapModeOptics(
     teleconverter: Boolean,
     controls: ManualControls,
 ): ModeOptics {
-    val modeControls = controls.normalizedForCaptureMode(toMode)
+    // PROGRAM is app-owned in Photo but normally HAL-owned in Video. Clear the Photo-derived flag
+    // on an actual Video entry; route capability normalization may re-enable it later when a sparse
+    // camera exposes only AE_OFF.
+    val targetControls = if (fromMode != CaptureMode.VIDEO && toMode == CaptureMode.VIDEO) {
+        controls.copy(programAppSide = false)
+    } else {
+        controls
+    }
+    val modeControls = targetControls.normalizedForCaptureMode(toMode)
     if (fromMode == toMode || teleconverter) return ModeOptics(lens, modeControls)
     return if (toMode == CaptureMode.VIDEO) {
         val band = LensChoice.forZoom(modeControls.zoomRatio)

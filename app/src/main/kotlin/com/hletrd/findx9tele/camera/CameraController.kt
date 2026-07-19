@@ -194,7 +194,12 @@ class CameraController(context: Context) {
         this.selection = selection
         this.caps = caps
         this.glSurface = glInputSurface
-        this.controls = controls.normalizedFor(caps).normalizedForCaptureMode(
+        val modeIntent = if (pinAutoFps && controls.exposureMode == ExposureMode.PROGRAM) {
+            controls.copy(programAppSide = false)
+        } else {
+            controls
+        }
+        this.controls = modeIntent.normalizedFor(caps).normalizedForCaptureMode(
             if (pinAutoFps) CaptureMode.VIDEO else CaptureMode.PHOTO,
         )
         this.tenBitHlg = tenBitHlg
@@ -887,7 +892,12 @@ class CameraController(context: Context) {
         requested: ManualControls,
         retainedOpticsCommit: Boolean,
     ) {
-        val normalized = requested.normalizedFor(caps).normalizedForCaptureMode(
+        val modeIntent = if (pinAutoFps && requested.exposureMode == ExposureMode.PROGRAM) {
+            requested.copy(programAppSide = false)
+        } else {
+            requested
+        }
+        val normalized = modeIntent.normalizedFor(caps).normalizedForCaptureMode(
             if (pinAutoFps) CaptureMode.VIDEO else CaptureMode.PHOTO,
         )
         if (normalized.wbMode != WbMode.AUTO || normalized.awbLock) {
@@ -1047,7 +1057,12 @@ class CameraController(context: Context) {
         if (pinAutoFps == enabled) return
         pinAutoFps = enabled
         postToCamera {
-            controls = controls.normalizedForCaptureMode(
+            val modeIntent = if (enabled && controls.exposureMode == ExposureMode.PROGRAM) {
+                controls.copy(programAppSide = false)
+            } else {
+                controls
+            }
+            controls = modeIntent.normalizedFor(caps).normalizedForCaptureMode(
                 if (enabled) CaptureMode.VIDEO else CaptureMode.PHOTO,
             )
             startPreview()

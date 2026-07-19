@@ -6,7 +6,9 @@ import com.hletrd.findx9tele.camera.LensChoice
 import com.hletrd.findx9tele.camera.ManualControls
 import com.hletrd.findx9tele.camera.TELE_DISPLAY_BASE
 import com.hletrd.findx9tele.camera.TELE_MAX_DISPLAY_ZOOM
+import com.hletrd.findx9tele.camera.normalizedForCaptureMode
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.Locale
@@ -151,6 +153,148 @@ class ZoomMathTest {
         assertEquals(LensChoice.TELE3X, remapped.lens)
         assertEquals(2.5f, remapped.controls.zoomRatio, 0f)
         assertEquals(33_333_333L, remapped.controls.exposureTimeNs)
+    }
+
+    @Test fun `photo slow shutter survives a tele video round trip`() {
+        val photoControls = ManualControls(
+            exposureMode = com.hletrd.findx9tele.camera.ExposureMode.MANUAL,
+            exposureTimeNs = 500_000_000L,
+            fps = 30,
+            zoomRatio = 2.5f,
+        )
+        val entering = modeExposureState(
+            fromMode = CaptureMode.PHOTO,
+            toMode = CaptureMode.VIDEO,
+            controls = photoControls,
+            rememberedPhotoExposureTimeNs = 8_000_000L,
+        )
+        val video = remapModeOptics(
+            fromMode = CaptureMode.PHOTO,
+            toMode = CaptureMode.VIDEO,
+            lens = LensChoice.TELE3X,
+            teleconverter = true,
+            controls = entering.controls,
+        )
+        assertEquals(33_333_333L, video.controls.exposureTimeNs)
+
+        val leaving = modeExposureState(
+            fromMode = CaptureMode.VIDEO,
+            toMode = CaptureMode.PHOTO,
+            controls = video.controls,
+            rememberedPhotoExposureTimeNs = entering.photoExposureTimeNs,
+        )
+        val photo = remapModeOptics(
+            fromMode = CaptureMode.VIDEO,
+            toMode = CaptureMode.PHOTO,
+            lens = LensChoice.TELE3X,
+            teleconverter = true,
+            controls = leaving.controls,
+        )
+
+        assertEquals(500_000_000L, photo.controls.exposureTimeNs)
+    }
+
+    @Test fun `angle mode round trip retains its dormant photo speed`() {
+        val remembered = modeExposureState(
+            fromMode = CaptureMode.PHOTO,
+            toMode = CaptureMode.VIDEO,
+            controls = ManualControls(
+                exposureMode = com.hletrd.findx9tele.camera.ExposureMode.SHUTTER,
+                shutterMode = com.hletrd.findx9tele.camera.ShutterMode.ANGLE,
+                shutterAngle = 180f,
+                exposureTimeNs = 2_000_000_000L,
+                fps = 30,
+            ),
+            rememberedPhotoExposureTimeNs = 8_000_000L,
+        )
+        val video = remembered.controls.normalizedForCaptureMode(CaptureMode.VIDEO)
+        val restored = modeExposureState(
+            fromMode = CaptureMode.VIDEO,
+            toMode = CaptureMode.PHOTO,
+            controls = video,
+            rememberedPhotoExposureTimeNs = remembered.photoExposureTimeNs,
+        )
+
+        assertEquals(2_000_000_000L, restored.controls.exposureTimeNs)
+        assertEquals(com.hletrd.findx9tele.camera.ShutterMode.ANGLE, restored.controls.shutterMode)
+    }
+
+    @Test fun `video MR restore never clamps the hidden photo shutter with outgoing caps`() {
+        val restored = restoredExposureState(
+            targetMode = CaptureMode.VIDEO,
+            activeExposureTimeNs = 2_000_000_000L,
+            storedPhotoExposureTimeNs = 4_000_000_000L,
+            authoritativeMinNs = 10_000L,
+            authoritativeMaxNs = 500_000_000L,
+        )
+
+        assertEquals(500_000_000L, restored.activeExposureTimeNs)
+        assertEquals(4_000_000_000L, restored.photoExposureTimeNs)
+    }
+
+    @Test fun `cross-route photo MR waits for target caps before clamping`() {
+        assertFalse(
+            restoredRouteUsesCurrentCaps(
+                cameraReady = true,
+                currentMode = CaptureMode.VIDEO,
+                currentLens = LensChoice.TELE3X,
+                currentTeleconverter = false,
+                currentOverrideId = null,
+                targetMode = CaptureMode.PHOTO,
+                targetLens = LensChoice.MAIN,
+                targetTeleconverter = false,
+            ),
+        )
+        val restored = restoredExposureState(
+            targetMode = CaptureMode.PHOTO,
+            activeExposureTimeNs = 4_000_000_000L,
+            storedPhotoExposureTimeNs = 500_000_000L,
+            authoritativeMinNs = null,
+            authoritativeMaxNs = null,
+        )
+
+        assertEquals(4_000_000_000L, restored.activeExposureTimeNs)
+        assertEquals(4_000_000_000L, restored.photoExposureTimeNs)
+    }
+
+    @Test fun `same logical photo route may use its accepted caps immediately`() {
+        assertTrue(
+            restoredRouteUsesCurrentCaps(
+                cameraReady = true,
+                currentMode = CaptureMode.PHOTO,
+                currentLens = LensChoice.ULTRAWIDE,
+                currentTeleconverter = false,
+                currentOverrideId = null,
+                targetMode = CaptureMode.PHOTO,
+                targetLens = LensChoice.TELE3X,
+                targetTeleconverter = false,
+            ),
+        )
+        val restored = restoredExposureState(
+            targetMode = CaptureMode.PHOTO,
+            activeExposureTimeNs = 6_300_000_000L,
+            storedPhotoExposureTimeNs = 500_000_000L,
+            authoritativeMinNs = 10_000L,
+            authoritativeMaxNs = 4_000_000_000L,
+        )
+
+        assertEquals(4_000_000_000L, restored.activeExposureTimeNs)
+        assertEquals(4_000_000_000L, restored.photoExposureTimeNs)
+    }
+
+    @Test fun `debug camera override never lends caps to an automatic MR route`() {
+        assertFalse(
+            restoredRouteUsesCurrentCaps(
+                cameraReady = true,
+                currentMode = CaptureMode.PHOTO,
+                currentLens = LensChoice.MAIN,
+                currentTeleconverter = false,
+                currentOverrideId = "5",
+                targetMode = CaptureMode.PHOTO,
+                targetLens = LensChoice.MAIN,
+                targetTeleconverter = false,
+            ),
+        )
     }
 
     @Test fun `live caps reconcile mode contract and narrower camera range`() {

@@ -188,6 +188,102 @@ class ControlCapabilityNormalizationTest {
     }
 
     @Test
+    fun `video timing policy retains Program fallback on an AE off only route`() {
+        val offOnly = CameraControlCapabilities(
+            supportsManualSensor = true,
+            hasIsoRange = true,
+            hasExposureTimeRange = true,
+            exposureTimeMinNs = 10_000L,
+            exposureTimeMaxNs = 4_000_000_000L,
+            aeModes = intArrayOf(CameraMetadata.CONTROL_AE_MODE_OFF),
+        )
+
+        val normalized = normalizeRetainedControlsAtCommit(
+            liveControls = ManualControls(
+                exposureMode = ExposureMode.PROGRAM,
+                exposureTimeNs = 500_000_000L,
+                fps = 30,
+            ),
+            capabilities = offOnly,
+            mode = CaptureMode.VIDEO,
+            teleconverter = false,
+            capsLower = 1f,
+            capsUpper = 4f,
+        )
+
+        assertEquals(ExposureMode.PROGRAM, normalized.exposureMode)
+        assertTrue(normalized.programAppSide)
+        assertEquals(33_333_333L, normalized.exposureTimeNs)
+    }
+
+    @Test
+    fun `retained photo commit preserves the newest app Program packet`() {
+        val routeCaps = CameraControlCapabilities(
+            supportsManualSensor = true,
+            hasIsoRange = true,
+            hasExposureTimeRange = true,
+            exposureTimeMinNs = 10_000L,
+            exposureTimeMaxNs = 4_000_000_000L,
+            aeModes = intArrayOf(
+                CameraMetadata.CONTROL_AE_MODE_OFF,
+                CameraMetadata.CONTROL_AE_MODE_ON,
+            ),
+        )
+        val transitionSnapshot = ManualControls(
+            exposureMode = ExposureMode.PROGRAM,
+            programAppSide = false,
+            iso = 100,
+        )
+        val livePacket = transitionSnapshot.copy(programAppSide = true, iso = 1_250)
+
+        val committed = normalizeRetainedControlsAtCommit(
+            liveControls = livePacket,
+            capabilities = routeCaps,
+            mode = CaptureMode.PHOTO,
+            teleconverter = true,
+            capsLower = 1f,
+            capsUpper = 10f,
+        )
+
+        assertTrue(committed.programAppSide)
+        assertEquals(1_250, committed.iso)
+        assertFalse(transitionSnapshot.programAppSide)
+    }
+
+    @Test
+    fun `video route switch drops AE off fallback when target HAL AE is available`() {
+        val normalRoute = CameraControlCapabilities(
+            supportsManualSensor = true,
+            hasIsoRange = true,
+            hasExposureTimeRange = true,
+            exposureTimeMinNs = 10_000L,
+            exposureTimeMaxNs = 4_000_000_000L,
+            aeModes = intArrayOf(
+                CameraMetadata.CONTROL_AE_MODE_OFF,
+                CameraMetadata.CONTROL_AE_MODE_ON,
+            ),
+        )
+        val offOnlyRoutePacket = ManualControls(
+            exposureMode = ExposureMode.PROGRAM,
+            programAppSide = true,
+            exposureTimeNs = 33_333_333L,
+            fps = 30,
+        )
+
+        val normalized = normalizeControlsForRoute(
+            requested = offOnlyRoutePacket,
+            capabilities = normalRoute,
+            mode = CaptureMode.VIDEO,
+            teleconverter = false,
+            capsLower = 1f,
+            capsUpper = 10f,
+        )
+
+        assertEquals(ExposureMode.PROGRAM, normalized.exposureMode)
+        assertFalse(normalized.programAppSide)
+    }
+
+    @Test
     fun `manual and custom WB require the advertised AWB off value`() {
         val autoOnly = CameraControlCapabilities(
             supportsManualPostProcessing = true,

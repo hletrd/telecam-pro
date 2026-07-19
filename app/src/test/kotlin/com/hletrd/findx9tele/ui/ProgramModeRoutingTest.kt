@@ -3,6 +3,7 @@ package com.hletrd.findx9tele.ui
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ExposureMode
 import com.hletrd.findx9tele.camera.FlashMode
+import com.hletrd.findx9tele.camera.ManualControls
 import com.hletrd.findx9tele.camera.TELECONVERTER_MAGNIFICATION
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -31,6 +32,19 @@ class ProgramModeRoutingTest {
     @Test
     fun `video PROGRAM stays on the HAL AE`() {
         assertFalse(programShouldRunAppSide(CaptureMode.VIDEO, ExposureMode.PROGRAM, FlashMode.OFF))
+        assertFalse(exposureAnalysisRequired(ManualControls(exposureMode = ExposureMode.PROGRAM)))
+    }
+
+    @Test
+    fun `app-owned and priority exposure keep analysis enabled`() {
+        assertTrue(
+            exposureAnalysisRequired(
+                ManualControls(exposureMode = ExposureMode.PROGRAM, programAppSide = true),
+            ),
+        )
+        assertTrue(exposureAnalysisRequired(ManualControls(exposureMode = ExposureMode.SHUTTER)))
+        assertTrue(exposureAnalysisRequired(ManualControls(exposureMode = ExposureMode.ISO)))
+        assertTrue(exposureAnalysisRequired(ManualControls(exposureMode = ExposureMode.MANUAL)))
     }
 
     @Test

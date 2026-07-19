@@ -3,6 +3,7 @@ package com.hletrd.findx9tele.camera
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
@@ -118,15 +119,21 @@ class ReconfigurationGenerationTest {
 
     @Test
     fun `current rollback restores the complete accepted optics snapshot`() {
+        val acceptedSize = android.util.Size(3840, 2160)
         val snapshot = OpticsIntentState(
             mode = CaptureMode.VIDEO,
             lens = LensChoice.TELE3X,
             teleconverter = true,
             controls = ManualControls(zoomRatio = 2.5f),
             overrideId = "4",
+            photoExposureTimeNs = 4_000_000_000L,
+            requestedVideoSize = acceptedSize,
         )
 
-        assertEquals(snapshot, rollbackOpticsState(7, 7, snapshot))
+        val restored = rollbackOpticsState(7, 7, snapshot)
+        assertSame(snapshot, restored)
+        assertEquals(4_000_000_000L, restored?.photoExposureTimeNs)
+        assertSame(acceptedSize, restored?.requestedVideoSize)
     }
 
     @Test
@@ -144,13 +151,31 @@ class ReconfigurationGenerationTest {
 
     @Test
     fun `rapid second intent keeps the last ready baseline`() {
-        val accepted = OpticsIntentState(CaptureMode.PHOTO, LensChoice.MAIN, false, ManualControls(), null)
-        val inFlight = accepted.copy(mode = CaptureMode.VIDEO, lens = LensChoice.TELE3X)
-
-        assertEquals(
-            accepted,
-            selectRollbackBaseline(cameraReady = false, current = inFlight, pendingBaseline = accepted),
+        val acceptedSize = android.util.Size(3840, 2160)
+        val accepted = OpticsIntentState(
+            CaptureMode.PHOTO,
+            LensChoice.MAIN,
+            false,
+            ManualControls(),
+            null,
+            photoExposureTimeNs = 4_000_000_000L,
+            requestedVideoSize = acceptedSize,
         )
+        val inFlight = accepted.copy(
+            mode = CaptureMode.VIDEO,
+            lens = LensChoice.TELE3X,
+            photoExposureTimeNs = 250_000_000L,
+            requestedVideoSize = android.util.Size(1920, 1080),
+        )
+
+        val baseline = selectRollbackBaseline(
+            cameraReady = false,
+            current = inFlight,
+            pendingBaseline = accepted,
+        )
+        assertSame(accepted, baseline)
+        assertEquals(4_000_000_000L, baseline.photoExposureTimeNs)
+        assertSame(acceptedSize, baseline.requestedVideoSize)
     }
 
     @Test
