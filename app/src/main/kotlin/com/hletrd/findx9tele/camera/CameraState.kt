@@ -749,7 +749,9 @@ data class CameraUiState(
         get() = cameraReady && (mode == CaptureMode.VIDEO || photoSessionOutputs.hasStillTarget)
     val primaryShutterEnabled: Boolean
         get() = when {
-            mode == CaptureMode.PHOTO -> stillCaptureReady
+            // A running self-timer is itself a primary-shutter action: tapping the shutter again
+            // cancels it even if camera readiness changes during the countdown.
+            mode == CaptureMode.PHOTO -> timerCountdownSec > 0 || stillCaptureReady
             isRecording -> true // stopping REC must survive a concurrent camera-health transition
             else -> cameraReady
         }

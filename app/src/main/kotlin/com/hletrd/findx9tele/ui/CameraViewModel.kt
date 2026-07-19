@@ -1575,19 +1575,17 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
 
     override fun onCapturePhoto() {
-        if (_state.value.timerCountdownSec > 0) {
-            cancelCountdown()
-            return
-        }
         val state = _state.value
-        if (!state.stillCaptureReady) {
-            // Surface the engine's authoritative session status now; never run a known-impossible
-            // 2/5/10-second countdown for a preview-only accepted session.
-            fireShutterWithFeedback()
-            return
-        }
-        val seconds = state.timer.seconds
-        if (seconds <= 0) fireShutterWithFeedback() else startCountdown(seconds)
+        dispatchPhotoShutter(
+            countdownSeconds = state.timerCountdownSec,
+            stillCaptureReady = state.stillCaptureReady,
+            configuredDelaySeconds = state.timer.seconds,
+            cancelCountdown = ::cancelCountdown,
+            // The engine's decline path surfaces the authoritative session status when a
+            // preview-only session has no still target; no impossible countdown is started.
+            fireShutter = ::fireShutterWithFeedback,
+            startCountdown = ::startCountdown,
+        )
     }
 
     private fun startCountdown(seconds: Int) {

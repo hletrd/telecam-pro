@@ -1,5 +1,6 @@
 package com.hletrd.findx9tele.ui
 
+import androidx.compose.ui.semantics.Role
 import com.hletrd.findx9tele.camera.LensChoice
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -10,9 +11,14 @@ class CameraUiPolicyTest {
     @Test
     fun `focal rail exposes selection converter reconfiguration and REC truth`() {
         val selected = focalRailState(LensChoice.TELE3X, LensChoice.TELE3X, true, true, false)
-        assertTrue(selected.active)
+        assertTrue(selected.selected)
         assertTrue(selected.enabled)
         assertEquals("Selected; teleconverter on", selected.stateDescription)
+        assertEquals(Role.Tab, selected.accessibilityRole)
+
+        val unselected = focalRailState(LensChoice.MAIN, LensChoice.TELE3X, true, true, false)
+        assertFalse(unselected.selected)
+        assertEquals("Not selected", unselected.stateDescription)
 
         val reconfiguring = focalRailState(LensChoice.MAIN, LensChoice.MAIN, false, false, false)
         assertFalse(reconfiguring.enabled)
@@ -21,5 +27,26 @@ class CameraUiPolicyTest {
         val recording = focalRailState(LensChoice.MAIN, LensChoice.MAIN, false, true, true)
         assertFalse(recording.enabled)
         assertEquals("Unavailable while recording", recording.stateDescription)
+    }
+
+    @Test
+    fun `photo shutter countdown activation dispatches only cancel`() {
+        var cancelCalls = 0
+        var fireCalls = 0
+        var startedAt: Int? = null
+
+        dispatchPhotoShutter(
+            countdownSeconds = 2,
+            // Cancellation has priority even if readiness falls during the timer.
+            stillCaptureReady = false,
+            configuredDelaySeconds = 3,
+            cancelCountdown = { cancelCalls += 1 },
+            fireShutter = { fireCalls += 1 },
+            startCountdown = { startedAt = it },
+        )
+
+        assertEquals(1, cancelCalls)
+        assertEquals(0, fireCalls)
+        assertEquals(null, startedAt)
     }
 }

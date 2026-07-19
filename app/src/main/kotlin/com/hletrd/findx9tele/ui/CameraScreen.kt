@@ -21,6 +21,8 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -703,6 +705,7 @@ fun CameraScreen(
                 ShutterRow(
                     mode = state.mode,
                     isRecording = state.isRecording,
+                    timerCountdownSec = state.timerCountdownSec,
                     lastMediaUri = state.lastMediaUri,
                     onOpenReview = {
                         state.lastMediaUri?.let { uri ->
@@ -1542,9 +1545,10 @@ private fun log2(value: Float): Float = (ln(value.toDouble()) / ln(2.0)).toFloat
 // ---------------------------------------------------------------------------
 
 internal data class FocalRailState(
-    val active: Boolean,
+    val selected: Boolean,
     val enabled: Boolean,
     val stateDescription: String,
+    val accessibilityRole: Role,
 )
 
 internal fun focalRailState(
@@ -1554,16 +1558,18 @@ internal fun focalRailState(
     cameraReady: Boolean,
     recording: Boolean,
 ): FocalRailState {
-    val active = choice == selectedLens
+    val selected = choice == selectedLens
     val enabled = cameraReady && !recording
     val description = when {
         recording -> "Unavailable while recording"
         !cameraReady -> "Camera reconfiguring"
-        active && teleconverter && choice == LensChoice.TELE3X -> "Selected; teleconverter on"
-        active -> "Selected"
+        selected && teleconverter && choice == LensChoice.TELE3X -> "Selected; teleconverter on"
+        selected -> "Selected"
         else -> "Not selected"
     }
-    return FocalRailState(active, enabled, description)
+    // Compose's Android accessibility bridge maps Selected to AccessibilityNodeInfo.isSelected
+    // only for Role.Tab. Other roles map it to isChecked, which leaves UIAutomator selected=false.
+    return FocalRailState(selected, enabled, description, Role.Tab)
 }
 
 /** Direct iPhone/Sony-familiar focal presets; TELE remains a separate, labeled converter action. */
@@ -1575,7 +1581,10 @@ private fun FocalRail(
     glyphRotation: Float = 0f,
 ) {
     Row(modifier = modifier, horizontalArrangement = Arrangement.Center) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.selectableGroup(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             LensChoice.entries.forEach { choice ->
                 val presentation = focalRailState(
                     choice = choice,
@@ -1591,13 +1600,14 @@ private fun FocalRail(
                         .semantics {
                             contentDescription = "${choice.label} lens"
                             stateDescription = presentation.stateDescription
-                            selected = presentation.active
-                            role = Role.Button
-                            if (!presentation.enabled) disabled()
                         }
-                        .clickable(
+                        // Selection and activation must live on the same outer node. A separate
+                        // selected semantic followed by clickable exported selected=false from the
+                        // actionable AccessibilityNodeInfo on PMA110.
+                        .selectable(
+                            selected = presentation.selected,
                             enabled = presentation.enabled,
-                            role = Role.Button,
+                            role = presentation.accessibilityRole,
                             onClick = { onLens(choice) },
                         ),
                     contentAlignment = Alignment.Center,
@@ -1606,7 +1616,7 @@ private fun FocalRail(
                         modifier = Modifier
                             .clip(CircleShape)
                             .background(
-                                if (presentation.active) CameraColors.TextPrimary
+                                if (presentation.selected) CameraColors.TextPrimary
                                 else Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA),
                             )
                             .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
@@ -1615,9 +1625,9 @@ private fun FocalRail(
                     ) {
                         Text(
                             text = choice.label,
-                            color = if (presentation.active) Color.Black else CameraColors.TextPrimary,
+                            color = if (presentation.selected) Color.Black else CameraColors.TextPrimary,
                             fontSize = 12.sp,
-                            fontWeight = if (presentation.active) FontWeight.Bold else FontWeight.SemiBold,
+                            fontWeight = if (presentation.selected) FontWeight.Bold else FontWeight.SemiBold,
                             modifier = Modifier.alpha(if (presentation.enabled) 1f else 0.38f),
                         )
                     }
@@ -1712,6 +1722,7 @@ private fun ModeLabel(text: String, active: Boolean, enabled: Boolean, onClick: 
 private fun ShutterRow(
     mode: CaptureMode,
     isRecording: Boolean,
+    timerCountdownSec: Int,
     lastMediaUri: android.net.Uri?,
     onOpenReview: () -> Unit,
     onShutter: () -> Unit,
@@ -1740,6 +1751,7 @@ private fun ShutterRow(
             ShutterButton(
                 mode = mode,
                 isRecording = isRecording,
+                timerCountdownSec = timerCountdownSec,
                 onClick = onShutter,
                 cameraHealthy = cameraHealthy,
                 enabled = shutterEnabled,
@@ -1753,6 +1765,7 @@ private fun ShutterRow(
 private fun ShutterButton(
     mode: CaptureMode,
     isRecording: Boolean,
+    timerCountdownSec: Int,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     cameraHealthy: Boolean = true,
@@ -1774,14 +1787,23 @@ private fun ShutterButton(
             .alpha(if (cameraHealthy) 1f else 0.35f)
             .semantics {
                 contentDescription = when {
+                    timerCountdownSec > 0 -> "Cancel self timer"
                     mode == CaptureMode.PHOTO -> "Take photo"
                     isRecording -> "Stop recording"
                     else -> "Start recording"
                 }
                 role = Role.Button
-                stateDescription = if (enabled) "Ready" else "Unavailable; activate for details"
+                stateDescription = when {
+                    timerCountdownSec > 0 -> "$timerCountdownSec seconds remaining"
+                    enabled -> "Ready"
+                    else -> "Unavailable; activate for details"
+                }
             }
-            .clickable(interactionSource = interaction, indication = null) {
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                onClickLabel = if (timerCountdownSec > 0) "Cancel self timer" else null,
+            ) {
                 view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
                 onClick()
             },

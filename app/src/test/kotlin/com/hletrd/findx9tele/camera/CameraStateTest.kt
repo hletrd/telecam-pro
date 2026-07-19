@@ -63,4 +63,16 @@ class CameraStateTest {
 
         assertTrue(recording.primaryShutterEnabled)
     }
+
+    @Test
+    fun `photo shutter remains enabled to cancel an active countdown`() {
+        val countdown = CameraUiState(
+            mode = CaptureMode.PHOTO,
+            cameraReady = false,
+            timerCountdownSec = 2,
+            photoSessionOutputs = PhotoSessionOutputs(),
+        )
+
+        assertTrue(countdown.primaryShutterEnabled)
+    }
 }
