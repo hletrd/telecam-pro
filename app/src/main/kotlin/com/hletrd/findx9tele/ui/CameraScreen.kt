@@ -1567,9 +1567,10 @@ internal fun focalRailState(
         selected -> "Selected"
         else -> "Not selected"
     }
-    // Compose's Android accessibility bridge maps Selected to AccessibilityNodeInfo.isSelected
-    // only for Role.Tab. Other roles map it to isChecked, which leaves UIAutomator selected=false.
-    return FocalRailState(selected, enabled, description, Role.Tab)
+    // These presets are one mutually exclusive value, not pages of content. RadioButton lets
+    // TalkBack announce that relationship truthfully; Android exports the active preset through
+    // AccessibilityNodeInfo.isChecked rather than mislabelling each focal length as a tab.
+    return FocalRailState(selected, enabled, description, Role.RadioButton)
 }
 
 /** Direct iPhone/Sony-familiar focal presets; TELE remains a separate, labeled converter action. */

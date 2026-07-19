@@ -14,7 +14,7 @@ class CameraUiPolicyTest {
         assertTrue(selected.selected)
         assertTrue(selected.enabled)
         assertEquals("Selected; teleconverter on", selected.stateDescription)
-        assertEquals(Role.Tab, selected.accessibilityRole)
+        assertEquals(Role.RadioButton, selected.accessibilityRole)
 
         val unselected = focalRailState(LensChoice.MAIN, LensChoice.TELE3X, true, true, false)
         assertFalse(unselected.selected)
@@ -48,5 +48,41 @@ class CameraUiPolicyTest {
         assertEquals(1, cancelCalls)
         assertEquals(0, fireCalls)
         assertEquals(null, startedAt)
+    }
+
+    @Test
+    fun `photo shutter dispatches immediate unavailable and delayed paths exactly once`() {
+        var fireCalls = 0
+        var startedAt: Int? = null
+
+        dispatchPhotoShutter(
+            countdownSeconds = 0,
+            stillCaptureReady = false,
+            configuredDelaySeconds = 10,
+            cancelCountdown = { error("No countdown exists") },
+            fireShutter = { fireCalls += 1 },
+            startCountdown = { error("An unavailable still target cannot start a timer") },
+        )
+        assertEquals(1, fireCalls)
+
+        dispatchPhotoShutter(
+            countdownSeconds = 0,
+            stillCaptureReady = true,
+            configuredDelaySeconds = 0,
+            cancelCountdown = { error("No countdown exists") },
+            fireShutter = { fireCalls += 1 },
+            startCountdown = { error("A zero-delay shutter must fire immediately") },
+        )
+        assertEquals(2, fireCalls)
+
+        dispatchPhotoShutter(
+            countdownSeconds = 0,
+            stillCaptureReady = true,
+            configuredDelaySeconds = 3,
+            cancelCountdown = { error("No countdown exists") },
+            fireShutter = { error("A configured timer must not fire immediately") },
+            startCountdown = { startedAt = it },
+        )
+        assertEquals(3, startedAt)
     }
 }
