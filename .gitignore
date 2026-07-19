@@ -36,3 +36,4 @@ telecampro-upload-passwords.txt.gpg
 IMG2*.heic
 IMG2*.jpg
 device-tests/reports/
+__pycache__/
