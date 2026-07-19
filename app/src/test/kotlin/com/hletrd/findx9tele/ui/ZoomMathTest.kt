@@ -134,6 +134,25 @@ class ZoomMathTest {
         assertEquals(controls, remapped.controls)
     }
 
+    @Test fun `video entry clamps slow shutter even when tele optics do not remap`() {
+        val remapped = remapModeOptics(
+            fromMode = CaptureMode.PHOTO,
+            toMode = CaptureMode.VIDEO,
+            lens = LensChoice.TELE3X,
+            teleconverter = true,
+            controls = ManualControls(
+                exposureMode = com.hletrd.findx9tele.camera.ExposureMode.ISO,
+                exposureTimeNs = 500_000_000L,
+                fps = 30,
+                zoomRatio = 2.5f,
+            ),
+        )
+
+        assertEquals(LensChoice.TELE3X, remapped.lens)
+        assertEquals(2.5f, remapped.controls.zoomRatio, 0f)
+        assertEquals(33_333_333L, remapped.controls.exposureTimeNs)
+    }
+
     @Test fun `live caps reconcile mode contract and narrower camera range`() {
         assertEquals(
             8f,

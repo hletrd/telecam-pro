@@ -45,7 +45,9 @@ import com.hletrd.findx9tele.camera.controlAvailability
 import com.hletrd.findx9tele.camera.controlCapabilities
 import com.hletrd.findx9tele.camera.normalizeControlsForRoute
 import com.hletrd.findx9tele.camera.normalizedFor
+import com.hletrd.findx9tele.camera.normalizedForCaptureMode
 import com.hletrd.findx9tele.camera.pendingControlsForTransition
+import com.hletrd.findx9tele.camera.exposureUpperBoundForCaptureMode
 import com.hletrd.findx9tele.camera.withDefaultIfEmpty
 import com.hletrd.findx9tele.camera.ProcessingLevel
 import com.hletrd.findx9tele.camera.ShutterMode
@@ -550,7 +552,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             fps = safeFrameRate.fps,
             zoomRatio = restoredOptics.zoomRatio,
             exposureTimeNs = clampedExposureNs,
-        )
+        ).normalizedForCaptureMode(e.mode)
         val restoredVideoSize = parseVideoResolution(e.videoResolution)
         // Store before target optics is queued. Interactive picks validate against live caps, but a
         // recalled target size must be validated by the target camera, not the outgoing camera.
@@ -1344,11 +1346,14 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // frame duration follow the selected video rate (drop-frame rates use their rounded parent).
         val current = _state.value
         val requested = current.controls.copy(fps = rate.fps)
-        val controls = current.caps?.let(requested::normalizedFor) ?: requested
+        val controls = (current.caps?.let(requested::normalizedFor) ?: requested)
+            .normalizedForCaptureMode(current.mode)
         engine.setControls(controls)
         // Re-base any pending throttled dial apply onto the new fps: the 40 ms trailing apply would
         // otherwise push its STALE snapshot (old fps) over this direct engine write moments later.
-        pendingControls = pendingControls?.copy(fps = rate.fps)
+        pendingControls = pendingControls
+            ?.copy(fps = rate.fps)
+            ?.normalizedForCaptureMode(current.mode)
         _state.update { it.copy(videoFrameRate = rate, controls = controls, activeMemorySlot = null) }
         scheduleSettingsSave()
     }
@@ -1860,7 +1865,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     ) {
         val current = _state.value
         val requested = block(current.controls)
-        val updated = current.caps?.let(requested::normalizedFor) ?: requested
+        val updated = (current.caps?.let(requested::normalizedFor) ?: requested)
+            .normalizedForCaptureMode(current.mode)
         engine.setAeMetering(usesExposureAnalysis(updated))
         _state.update { it.copy(controls = updated) }
         slot?.let(::markChanged)
@@ -1894,21 +1900,26 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         val evStops = c.exposureCompensation * evStep
         val isoRange = caps.isoRange
         val expRange = caps.exposureTimeRange
+        val exposureUpperNs = expRange?.let {
+            exposureUpperBoundForCaptureMode(s.mode, c.fps, it.upper)
+        }
         when (c.exposureMode) {
             ExposureMode.SHUTTER -> if (isoRange != null) {
                 AutoExposure.driveIso(luma, c.iso, isoRange.lower, isoRange.upper, evStops)?.let { newIso ->
                     updateControls { it.copy(iso = newIso) }
                 }
             }
-            ExposureMode.ISO -> if (expRange != null) {
-                AutoExposure.driveShutterNs(luma, c.effectiveExposureNs(), expRange.lower, expRange.upper, evStops)?.let { newNs ->
+            ExposureMode.ISO -> if (expRange != null && exposureUpperNs != null && exposureUpperNs >= expRange.lower) {
+                AutoExposure.driveShutterNs(luma, c.effectiveExposureNs(), expRange.lower, exposureUpperNs, evStops)?.let { newNs ->
                     updateControls { it.copy(exposureTimeNs = newNs) }
                 }
             }
-            ExposureMode.PROGRAM -> if (c.programAppSide && isoRange != null && expRange != null) {
+            ExposureMode.PROGRAM -> if (c.programAppSide && isoRange != null && expRange != null &&
+                exposureUpperNs != null && exposureUpperNs >= expRange.lower
+            ) {
                 AutoExposure.driveProgram(
                     luma, c.iso, c.effectiveExposureNs(), preferredProgramShutterNs(s),
-                    isoRange.lower, isoRange.upper, expRange.lower, expRange.upper, evStops,
+                    isoRange.lower, isoRange.upper, expRange.lower, exposureUpperNs, evStops,
                 )?.let { (newIso, newNs) ->
                     updateControls { it.copy(iso = newIso, exposureTimeNs = newNs) }
                 }

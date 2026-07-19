@@ -311,6 +311,40 @@ private const val PREVIEW_MAX_EXPOSURE_NS = 33_333_333L
 // while headroom lasts, then honestly darker).
 internal const val PREVIEW_SAFE_MAX_EXPOSURE_NS = 500_000_000L
 
+private const val NANOS_PER_SECOND = 1_000_000_000L
+
+/** The longest exposure that can still deliver every frame at [fps]. */
+internal fun frameIntervalNs(fps: Int): Long? =
+    if (fps > 0) NANOS_PER_SECOND / fps else null
+
+/**
+ * Capture-mode boundary for shutter state. TeleCam Pro does not expose a video slow-shutter mode:
+ * the selected 24/30/60p rate is a delivery contract, so every app-owned video exposure must fit
+ * within one frame. Keeping this in the control packet also makes the OSD/ruler show the value the
+ * sensor request can actually apply instead of advertising (for example) 30p beside an auto 1/2 s.
+ */
+internal fun ManualControls.normalizedForCaptureMode(mode: CaptureMode): ManualControls {
+    if (mode != CaptureMode.VIDEO) return this
+    val intervalNs = frameIntervalNs(fps)
+    return copy(
+        exposureTimeNs = intervalNs?.let(exposureTimeNs::coerceAtMost) ?: exposureTimeNs,
+        // Video PROGRAM is owned by HAL AE. A restored photo-P packet must not briefly enter video
+        // with the app-side program line active while the ViewModel refresh is still queued.
+        programAppSide = false,
+    )
+}
+
+/** Sensor/auto-AE upper bound after applying the product's fixed-rate video contract. */
+internal fun exposureUpperBoundForCaptureMode(
+    mode: CaptureMode,
+    fps: Int,
+    sensorUpperNs: Long,
+): Long = if (mode == CaptureMode.VIDEO) {
+    frameIntervalNs(fps)?.let { minOf(sensorUpperNs, it) } ?: sensorUpperNs
+} else {
+    sensorUpperNs
+}
+
 /**
  * Preview-only exposure→ISO trade for the repeating request, pure for host tests.
  * [neutralCapNs] is the mode's fps-motivated target (PROGRAM's 1/30 s) or null for user-owned
@@ -412,9 +446,35 @@ fun manualAebExposuresNs(baseNs: Long, minNs: Long, maxNs: Long): List<Long> {
  * "exposure longer than the frame interval" edge case is unit-testable off-device.
  */
 fun sensorFrameDurationNs(fps: Int, exposureNs: Long, maxFrameDurationNs: Long): Long {
-    val nominal = if (fps > 0) 1_000_000_000L / fps else 0L
+    val nominal = frameIntervalNs(fps) ?: 0L
     val needed = maxOf(nominal, exposureNs)
     return if (maxFrameDurationNs > 0L) needed.coerceAtMost(maxFrameDurationNs) else needed
+}
+
+internal data class SensorRequestTiming(
+    val exposureNs: Long,
+    val frameDurationNs: Long,
+)
+
+/**
+ * Pure request-timing policy. Stills may stretch frame duration for long exposure; fixed-rate video
+ * clamps exposure to one frame and therefore keeps the sensor cadence at the advertised rate.
+ */
+internal fun sensorRequestTiming(
+    fps: Int,
+    requestedExposureNs: Long,
+    maxFrameDurationNs: Long,
+    enforceFrameRate: Boolean,
+): SensorRequestTiming {
+    val exposureNs = if (enforceFrameRate) {
+        frameIntervalNs(fps)?.let(requestedExposureNs::coerceAtMost) ?: requestedExposureNs
+    } else {
+        requestedExposureNs
+    }
+    return SensorRequestTiming(
+        exposureNs = exposureNs,
+        frameDurationNs = sensorFrameDurationNs(fps, exposureNs, maxFrameDurationNs),
+    )
 }
 
 /**
@@ -431,9 +491,11 @@ fun CaptureRequest.Builder.applyManualControls(
     // neutrally) so the live view never becomes a 10-15 fps slideshow in dim light; the STILL
     // request keeps the true program exposure. See applyExposure.
     previewExposureCap: Boolean = false,
+    // VIDEO only: app-owned S/ISO/M exposure may not stretch the sensor frame beyond 1/fps.
+    enforceFrameRate: Boolean = false,
 ) {
     applyFocus(c, caps)
-    applyExposure(c, caps, pinAutoFps, previewExposureCap)
+    applyExposure(c, caps, pinAutoFps, previewExposureCap, enforceFrameRate)
     applyWhiteBalance(c, caps)
     applyProcessing(c, caps)
     // Flash runs AFTER exposure: when AE is ON, the auto/always-flash variants set CONTROL_AE_MODE
@@ -525,9 +587,10 @@ internal fun CaptureRequest.Builder.applySensorValueControls(
     caps: CameraCaps,
     pinAutoFps: Boolean,
     previewExposureCap: Boolean,
+    enforceFrameRate: Boolean,
 ) {
     applyFocus(c, caps)
-    applyExposure(c, caps, pinAutoFps, previewExposureCap)
+    applyExposure(c, caps, pinAutoFps, previewExposureCap, enforceFrameRate)
 }
 
 internal val FocusMode.afMetadata: Int
@@ -572,6 +635,7 @@ private fun CaptureRequest.Builder.applyExposure(
     caps: CameraCaps,
     pinAutoFps: Boolean,
     previewExposureCap: Boolean = false,
+    enforceFrameRate: Boolean = false,
 ) {
     val isoRange = caps.isoRange
     val exposureRange = caps.exposureTimeRange
@@ -607,15 +671,20 @@ private fun CaptureRequest.Builder.applyExposure(
             CaptureRequest.SENSOR_SENSITIVITY,
             iso.coerceIn(admittedIsoRange.lower, admittedIsoRange.upper),
         )
-        val exposureNs = clampExposureNs(
+        val admittedExposureNs = clampExposureNs(
             requestedNs = wantExposureNs,
             minNs = admittedExposureRange.lower,
             maxNs = admittedExposureRange.upper,
         )
-        set(CaptureRequest.SENSOR_EXPOSURE_TIME, exposureNs)
-        // Frame duration must be >= the exposure (Camera2 contract). Stretch it to the exposure so a
-        // shutter slower than 1/fps survives instead of being clamped to 1/fps (long-exposure/astro).
-        set(CaptureRequest.SENSOR_FRAME_DURATION, sensorFrameDurationNs(c.fps, exposureNs, caps.maxFrameDurationNs))
+        val timing = sensorRequestTiming(
+            fps = c.fps,
+            requestedExposureNs = admittedExposureNs,
+            maxFrameDurationNs = caps.maxFrameDurationNs,
+            enforceFrameRate = enforceFrameRate,
+        )
+        set(CaptureRequest.SENSOR_EXPOSURE_TIME, timing.exposureNs)
+        // Stills may stretch to a long exposure; video enforces the selected delivery cadence.
+        set(CaptureRequest.SENSOR_FRAME_DURATION, timing.frameDurationNs)
     } else {
         // Flash owns the final AE mode, but only an exact advertised variant may enter the builder.
         // Applying it here also makes AE lock/comp conditional on an actually available HAL-AE mode.

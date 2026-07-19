@@ -67,7 +67,7 @@ internal fun normalizeControlsForRoute(
     capsLower: Float?,
     capsUpper: Float?,
 ): ManualControls {
-    val capabilityControls = requested.normalizedFor(capabilities)
+    val capabilityControls = requested.normalizedFor(capabilities).normalizedForCaptureMode(mode)
     return capabilityControls.copy(
         zoomRatio = reconcileZoomWithCaps(
             mode = mode,

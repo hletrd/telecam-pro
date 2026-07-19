@@ -6,6 +6,7 @@ import com.hletrd.findx9tele.camera.ManualControls
 import com.hletrd.findx9tele.camera.TELE_DISPLAY_BASE
 import com.hletrd.findx9tele.camera.TELE_MAX_DISPLAY_ZOOM
 import com.hletrd.findx9tele.camera.TELE_ZOOM_SNAPS
+import com.hletrd.findx9tele.camera.normalizedForCaptureMode
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -133,20 +134,21 @@ internal fun remapModeOptics(
     teleconverter: Boolean,
     controls: ManualControls,
 ): ModeOptics {
-    if (fromMode == toMode || teleconverter) return ModeOptics(lens, controls)
+    val modeControls = controls.normalizedForCaptureMode(toMode)
+    if (fromMode == toMode || teleconverter) return ModeOptics(lens, modeControls)
     return if (toMode == CaptureMode.VIDEO) {
-        val band = LensChoice.forZoom(controls.zoomRatio)
+        val band = LensChoice.forZoom(modeControls.zoomRatio)
         ModeOptics(
             lens = band,
-            controls = controls.copy(
-                zoomRatio = (controls.zoomRatio / band.zoomPreset).coerceIn(1f, MAX_VIDEO_LOCAL_ZOOM),
+            controls = modeControls.copy(
+                zoomRatio = (modeControls.zoomRatio / band.zoomPreset).coerceIn(1f, MAX_VIDEO_LOCAL_ZOOM),
             ),
         )
     } else {
         ModeOptics(
             lens = lens,
-            controls = controls.copy(
-                zoomRatio = (lens.zoomPreset * controls.zoomRatio.coerceAtLeast(1f))
+            controls = modeControls.copy(
+                zoomRatio = (lens.zoomPreset * modeControls.zoomRatio.coerceAtLeast(1f))
                     .coerceIn(MIN_PHOTO_ZOOM, MAX_PHOTO_UNIFIED_ZOOM),
             ),
         )

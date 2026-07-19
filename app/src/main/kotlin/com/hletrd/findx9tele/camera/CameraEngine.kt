@@ -899,7 +899,9 @@ class CameraEngine(private val context: Context) {
     // ---- Controls ----
 
     fun setControls(c: ManualControls) {
-        val normalized = caps?.let(c::normalizedFor) ?: c
+        val normalized = (caps?.let(c::normalizedFor) ?: c).normalizedForCaptureMode(
+            if (videoMode) CaptureMode.VIDEO else CaptureMode.PHOTO,
+        )
         // Packet-write invariant: EVERY wholesale [controls] writer holds the engine monitor
         // (rollbackOptics is @Synchronized, the commit-gate/caps-reconcile writers run inside
         // synchronized(this), the zoom RMW takes it). This main-thread apply loop was the one
@@ -927,12 +929,15 @@ class CameraEngine(private val context: Context) {
         // Publish one already-resolved optics packet before queuing any reconfiguration. Keeping the
         // UI and engine remaps separate let a delayed full-controls apply race this method and made
         // Photo/Video transitions depend on executor timing.
+        val modeControls = resolvedControls.normalizedForCaptureMode(
+            if (enabled) CaptureMode.VIDEO else CaptureMode.PHOTO,
+        )
         val changed = videoMode != enabled
         val transaction = if (changed) {
             beginOpticsTransaction {
                 videoMode = enabled
                 lensChoice = resolvedLens
-                controls = resolvedControls
+                controls = modeControls
                 // A mode intent owns automatic routing. Clear the resolved outgoing id atomically.
                 overrideId = null
             }.first
@@ -940,14 +945,14 @@ class CameraEngine(private val context: Context) {
             synchronized(this) {
                 videoMode = enabled
                 lensChoice = resolvedLens
-                controls = resolvedControls
+                controls = modeControls
             }
             null
         }
         // Mode is a finder-gate input (photo-only): re-resolve synchronously so a photo→video flip
         // can never leave the GL PIP drawing until the async reconfigure lands.
         pushTeleFinder()
-        controller?.updateControls(resolvedControls)
+        controller?.updateControls(modeControls)
         if (!changed) return
         val intentGeneration = modeIntentGeneration.incrementAndGet()
         controller?.setPinAutoFps(enabled)
@@ -1012,11 +1017,14 @@ class CameraEngine(private val context: Context) {
         resolvedControls: ManualControls,
     ) {
         if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
+        val modeControls = resolvedControls.normalizedForCaptureMode(
+            if (enabledVideo) CaptureMode.VIDEO else CaptureMode.PHOTO,
+        )
         val transaction = beginOpticsTransaction {
             videoMode = enabledVideo
             lensChoice = resolvedLens
             teleconverterMode = resolvedTeleconverter
-            controls = resolvedControls
+            controls = modeControls
             preTeleUnifiedZoom = Float.NaN
             // Settings/MR replaces automatic routing; the snapshot retains an override for rollback.
             overrideId = null
@@ -1067,7 +1075,7 @@ class CameraEngine(private val context: Context) {
                 }
                 val range = routeCaps.zoomRatioRange
                 val normalizedControls = normalizeControlsForRoute(
-                    requested = resolvedControls,
+                    requested = modeControls,
                     capabilities = routeCaps.controlCapabilities(),
                     mode = if (enabledVideo) CaptureMode.VIDEO else CaptureMode.PHOTO,
                     teleconverter = resolvedTeleconverter,

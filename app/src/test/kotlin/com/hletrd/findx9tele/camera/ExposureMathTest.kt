@@ -10,8 +10,8 @@ import org.junit.Test
  * relationship that governs whether a shutter slower than 1/fps actually survives to the sensor.
  *
  * These are android-type-free (plain Kotlin on [ManualControls]), so they run on the JVM. They
- * exist to pin down the "exposure longer than the frame interval" edge case for video/long-exposure
- * stills through the 300 mm tele, where sub-1/fps shutters are the norm in low light.
+ * exist to pin down the "exposure longer than the frame interval" edge case for long-exposure
+ * stills through the 300 mm tele. Video has a separate fixed-rate policy and cannot stretch frames.
  */
 class ExposureMathTest {
 
@@ -117,9 +117,8 @@ class ExposureMathTest {
     }
 
     // ---- The "exposure longer than the frame interval" invariant ----
-    // These document the relationship the capture request must preserve: SENSOR_FRAME_DURATION must
-    // be >= SENSOR_EXPOSURE_TIME (Camera2 contract), so a shutter slower than 1/fps requires the
-    // frame duration to stretch to the exposure — otherwise the HAL silently caps the exposure.
+    // These document the long-exposure STILL relationship: SENSOR_FRAME_DURATION must be >=
+    // SENSOR_EXPOSURE_TIME, so a shutter slower than 1/fps requires the frame duration to stretch.
 
     @Test
     fun `a sub-1over-fps shutter exceeds the nominal frame interval`() {

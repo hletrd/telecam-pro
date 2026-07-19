@@ -194,7 +194,9 @@ class CameraController(context: Context) {
         this.selection = selection
         this.caps = caps
         this.glSurface = glInputSurface
-        this.controls = controls.normalizedFor(caps)
+        this.controls = controls.normalizedFor(caps).normalizedForCaptureMode(
+            if (pinAutoFps) CaptureMode.VIDEO else CaptureMode.PHOTO,
+        )
         this.tenBitHlg = tenBitHlg
         this.highSpeedFps = highSpeedFps
         this.vendorLogMode = vendorLogMode
@@ -647,7 +649,13 @@ class CameraController(context: Context) {
         return runCatching {
             val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                 addTarget(preview)
-                applyManualControls(controls, caps, pinAutoFps || smoothPreviewBoost, previewExposureCap = true)
+                applyManualControls(
+                    controls,
+                    caps,
+                    pinAutoFps = pinAutoFps || smoothPreviewBoost,
+                    previewExposureCap = true,
+                    enforceFrameRate = pinAutoFps,
+                )
                 applyVendorLog()
                 applyVideoStab()
                 applyTeleconverterHints()
@@ -879,7 +887,9 @@ class CameraController(context: Context) {
         requested: ManualControls,
         retainedOpticsCommit: Boolean,
     ) {
-        val normalized = requested.normalizedFor(caps)
+        val normalized = requested.normalizedFor(caps).normalizedForCaptureMode(
+            if (pinAutoFps) CaptureMode.VIDEO else CaptureMode.PHOTO,
+        )
         if (normalized.wbMode != WbMode.AUTO || normalized.awbLock) {
             pendingCustomWbSample?.let { finishCustomWbSample(it.id, null) }
         }
@@ -954,6 +964,7 @@ class CameraController(context: Context) {
                 caps,
                 pinAutoFps = pinAutoFps || smoothPreviewBoost,
                 previewExposureCap = true,
+                enforceFrameRate = pinAutoFps,
             )
             // applyFocus above rewrote CONTROL_AF_MODE per the base focus mode; a live tap-AF /
             // AF-lock override must be restored on top, exactly as the full rebuild applies it
@@ -1035,7 +1046,12 @@ class CameraController(context: Context) {
     fun setPinAutoFps(enabled: Boolean) {
         if (pinAutoFps == enabled) return
         pinAutoFps = enabled
-        postToCamera { startPreview() }
+        postToCamera {
+            controls = controls.normalizedForCaptureMode(
+                if (enabled) CaptureMode.VIDEO else CaptureMode.PHOTO,
+            )
+            startPreview()
+        }
     }
 
     /**
@@ -1131,7 +1147,12 @@ class CameraController(context: Context) {
                 val req = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
                     jpeg?.let { addTarget(it) }
                     raw?.let { addTarget(it) }
-                    applyManualControls(requestControls, caps, pinAutoFps)
+                    applyManualControls(
+                        requestControls,
+                        caps,
+                        pinAutoFps = pinAutoFps,
+                        enforceFrameRate = pinAutoFps,
+                    )
                     // Keep stills consistent with the session's pipeline: with the log session active the
                     // HAL processes everything scene-referred, so an unset key mid-session is undefined.
                     applyVendorLog()
