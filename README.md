@@ -54,7 +54,11 @@
   AV1 software encode, APV MP4 muxing, and native vendor log are excluded from the shipped UI. O-Log2
   is the GL-baked shipping path.
 - **Aspect ratios**: 4:3 (full sensor) / 16:9 (center crop). Sony-style mode-aware OSD.
-- **Capture aids**: focus peaking (adjustable sensitivity/color), zebra, false color, grid, spirit level, movable punch-in loupe, an opt-in Tele Finder PIP (corner viewport of the full delivered frame while the loupe magnifies past it, TELE photo 4:3), histogram, waveform, in-app last-shot pinch-to-zoom review. A direct 0.6/1/3/10× focal rail sits beside the zoom pill.
+- **Capture aids**: focus peaking (adjustable sensitivity/color), zebra, false color, grid, spirit
+  level, a movable punch-in loupe, and an opt-in **Loupe Overview** (a same-stream reference to the
+  full delivered frame while the loupe is active in TELE Photo 4:3—not an automatic 1× or a second
+  camera feed), plus histogram, waveform, and in-app last-shot pinch-to-zoom review. A direct
+  0.6/1/3/10× focal rail sits beside the zoom pill.
 - **Settings persistence**: pro controls saved across launches ("Remember Settings", default ON),
   with separate default-on preserve toggles for lens selection and TELE mode.
 - **Durable saves**: completed captures and clips survive interruptions — a capture followed by an

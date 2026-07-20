@@ -132,23 +132,23 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   them through the full `startPreview` rebuild read as stutter. Pinch/zoom events are additionally
   COALESCED in the ViewModel (leading apply + 16 ms trailing flush of the newest value, ~60 Hz) — per-event
   application recomposed the whole tree at input rate (~120 Hz) and read as jank.
-- **Tele Finder PIP is HONEST about the single stream (2026-07-17; photo-only since cycle 2).**
+- **Loupe Overview is HONEST about the single stream (2026-07-17; photo-only since cycle 2).**
   The Assist toggle (default OFF, persisted) draws a bottom-left corner viewport re-drawing the
   FULL current camera frame in TELE **photo** + 4:3 while the PUNCH-IN LOUPE is active (photo-only:
   it is a still-composition aid and 4:3 is the STILL aspect — keying a video overlay off a photo
   setting made it appear/vanish mid-clip with no visible cause). It can NEVER show an unzoomed/wide
-  field: the HAL's `CONTROL_ZOOM_RATIO` crop is baked into the one camera texture, so the PIP is
+  field: the HAL's `CONTROL_ZOOM_RATIO` crop is baked into the one camera texture, so the overview is
   only genuinely wider than the main view while the loupe (or transient GL zoom compensation)
   magnifies past the delivered field — which is why cycle 4 replaced the old raw zoom floor
-  (`FINDER_MIN_ZOOM`, removed) with the loupe as the gate axis: at a steady zoom the PIP duplicated
+  (`FINDER_MIN_ZOOM`, removed) with the loupe as the gate axis: at a steady zoom the overview duplicated
   the main view ~1:1 and added nothing (a true wide finder is a BACKLOG design item — second stream
   or HAL-zoom-cap split). GL
   scissor box and Compose border derive from ONE pure seam (`finderRect`; the
   padding-before-fillMaxWidth chain drew the border ~6% small), the border anchor is
   layout-direction-absolute (RTL), the gate is ONE shared unit-tested predicate
   (`teleFinderResolved`/`teleFinderVisible`) resolved in one place (`pushTeleFinder`, re-pushed
-  synchronously at every intent/mode/rollback door so the GL PIP can't outlive a TC-off), a `PIP`
-  OSD tag shows whenever the toggle is ON (on-but-gated-off must not read as off), and the finder
+  synchronously at every intent/mode/rollback door so the GL overview can't outlive a TC-off), and
+  an `OVERVIEW` OSD tag appears only while the same-stream overview is actually visible. The finder
   draw is failure-isolated with
   `try/finally { glDisable(GL_SCISSOR_TEST) }` — scissor is CONTEXT state; a leak would clip the
   encoder/analysis draws, and a finder-only error must never fail preview health.

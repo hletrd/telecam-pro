@@ -312,8 +312,10 @@ Accessed from GL + audio/video threads:
   releases that process lease. Scheduler rejection takes the same fail-closed path before detach submission.
   An active
   Camera2 failure claims the matching recorder, orders GL detach before finalization, reports
-  termination, then permits bounded camera recovery. A negative `AudioRecord.read` while running
-  records the first failure and stops empty AAC submission; a negative result after stop is normal EOS.
+  termination, then permits bounded camera recovery. A negative `AudioRecord.read` while running is
+  audio-terminal: it stops empty AAC submission, zeroes the live meter, and degrades the take to
+  video-only without entering the clip-level first-failure latch. A negative result after stop is
+  normal EOS.
 - **Capability-safe controls and recall**: `normalizeControlsForRoute` applies exact mode arrays,
   manual capabilities, metering-region maxima, and the accepted route's zoom range as one packet.
   A same-route settings/MR recall normalizes against the installed caps before its terminal fast
