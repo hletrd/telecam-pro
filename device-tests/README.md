@@ -55,6 +55,7 @@ a later case.
 | full | `video_record_validate` | 65 s HEVC Main10 HLG 29.97p → full-frame decode, PTS cadence, AAC A/V sync |
 | full | `tap_af_hold_visible_and_reset` | tap-AF holds past reticle fade with visible reset, then restores prior AF mode |
 | full | `settings_sheet_tabs` | all 9 settings tabs exist with exactly one selected tab |
+| full | `function_menu_roundtrip` | visible Fn entry → enabled tiles → Back restores camera chrome |
 | full | `mode_persists_across_kill` | Remember Settings survives force-stop |
 | reliability | `capture_then_kill_survives` | kill 0.6 s after shutter → files survive, valid, no stuck pending |
 | reliability | `rec_backgrounded_finalizes` | HOME mid-REC → playable clip finalizes |

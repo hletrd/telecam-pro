@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.semantics.stateDescription
@@ -274,24 +275,56 @@ private fun DialChipRow(
     // applied to every horizontally scrolling chip row app-wide (SegmentedSelector included).
     val fnScroll = rememberScrollState()
     Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .trailingEdgeFadeScrollHint(fnScroll)
-            .horizontalScroll(fnScroll),
+        modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        state.activeFnSlots.forEach { slot ->
-            FnDialChip(
-                slot = slot,
-                state = state,
-                openDial = openDial,
-                evStepValue = evStepValue,
-                onSelect = onSelect,
-                actions = actions,
-                onOpenFnMenu = onOpenFnMenu,
-                availability = availability,
-            )
+        FnMenuButton(onClick = onOpenFnMenu)
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .trailingEdgeFadeScrollHint(fnScroll)
+                .horizontalScroll(fnScroll),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            state.activeFnSlots.forEach { slot ->
+                FnDialChip(
+                    slot = slot,
+                    state = state,
+                    openDial = openDial,
+                    evStepValue = evStepValue,
+                    onSelect = onSelect,
+                    actions = actions,
+                    onOpenFnMenu = onOpenFnMenu,
+                    availability = availability,
+                )
+            }
         }
+    }
+}
+
+/** Sony-familiar, always-visible entry point; dial long-press remains as the expert shortcut. */
+@Composable
+private fun FnMenuButton(onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            .clip(RoundedCornerShape(50))
+            .background(CameraColors.Pill.copy(alpha = 0.85f))
+            .border(1.dp, CameraColors.Accent.copy(alpha = 0.65f), RoundedCornerShape(50))
+            .semantics {
+                contentDescription = "Open function menu"
+                role = Role.Button
+            }
+            .clickable(role = Role.Button, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = "Fn",
+            color = CameraColors.Accent,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+        )
     }
 }
 

@@ -23,6 +23,11 @@ from dtest import media
 FOCAL_PRESETS = ("0.6× lens", "1× lens", "3× lens", "10× lens")
 CAPTURE_MODES = ("Photo mode", "Video mode")
 SETTINGS_TABS = ("My", "Shoot", "Exposure", "Focus", "Lens", "Video", "Image", "Assist", "Setup")
+FN_TILE_LABELS = {
+    "AE", "Focus", "Shutter", "ISO", "WB", "EV", "Zoom", "Stabilization", "Drive",
+    "Meter", "Peaking", "Zebra", "Gamma", "Audio", "Grid", "Level", "Loupe", "Tele",
+    "Open Gate", "Frame",
+}
 CAPTURE_SETTLED = re.compile(
     r"CaptureFamily: settled stem=(IMG_TELECAM_F1_[0-9]{13}_[0-9]{10}) "
     r"outputs=([a-z0-9,]+)"
@@ -854,6 +859,30 @@ def t_settings(ctx: Context) -> None:
     assert not missing, f"settings tabs missing: {missing}"
     assert len(selected) == 1, f"expected exactly one selected settings tab, got {selected}"
     ctx.note(f"all 9 tabs present; selected={selected[0]}")
+
+
+@test("function_menu_roundtrip", "full")
+def t_function_menu(ctx: Context) -> None:
+    """The visible Sony-style Fn entry opens actionable tiles and Back restores camera chrome."""
+    pid = ensure_foreground(ctx)
+    opener = ctx.adb.ui().find_desc_exact("Open function menu")
+    assert opener and opener.enabled, "shooting screen has no visible, enabled Fn entry point"
+    mark = ctx.adb.log_mark()
+    ctx.adb.tap(*opener.center)
+    menu = ctx.adb.ui()
+    assert menu.find_desc_exact("Close function menu"), "Fn overlay did not expose its close control"
+    tiles = [node for node in menu.nodes if node.desc in FN_TILE_LABELS and node.enabled]
+    assert tiles, "Fn overlay exposed no enabled setting tile"
+    ctx.adb.screenshot("function_menu")
+    ctx.adb.shell("input keyevent KEYCODE_BACK")
+    time.sleep(1)
+    restored = ctx.adb.ui()
+    assert restored.find_desc_exact("Open function menu"), "Back did not restore the Fn entry"
+    assert restored.find_desc_exact("Close function menu") is None, "Back left the Fn overlay open"
+    assert restored.find(desc="Open settings"), "camera chrome was not restored after Fn dismiss"
+    fatals = ctx.adb.fatal_lines(mark, pid)
+    assert not fatals, f"errors during Fn open/dismiss: {fatals[:2]}"
+    ctx.note(f"Fn opened with {len(tiles)} enabled tiles and Back restored camera")
 
 
 @test("mode_persists_across_kill", "full", destructive=True, mutates_settings=True)
