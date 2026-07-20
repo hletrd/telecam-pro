@@ -58,7 +58,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `OcsProbe.kt` | Debug-source-set-only OPPO CameraUnit/OCS availability probe (release builds compile a no-op stub and do not link the OEM SDK). |
 | `VendorTagInspector.kt` | Debug-only Camera2 capability logger for device-specific request/session keys. |
 | **gl/** | |
-| `GlPipeline.kt` | Owns the GL render thread and checked preview/encoder EGLSurface lifetimes. Outgoing outputs are unbound before destruction; preview and encoder readiness are each published only after the first real frame swaps successfully. Before texture acquisition it binds the live preview owner, otherwise the active encoder owner, and contains acquisition/output failures in identity-owned exactly-once paths. Each GL generation owns and retires its analysis executor, busy gate, FBO/buffer snapshot, and callback authority. `RendererAssists.replayAll()` restores the complete remembered renderer configuration after every fresh input generation. EGL-init failure is CONTAINED: `start()` leaves `egl` null (no GL-thread crash, no eglTerminate of the process-shared default display) and the next preview bind routes the failure through the one preview-health path. `start()` is idempotent under double-call, and a GL thread wedged past `stop()`'s bounded join is deliberately ABANDONED (ownership nulled, thread leaked — the VideoRecorder drain-wedge pattern) so a later `start()` can spawn a fresh generation instead of a permanently dead viewfinder. |
+| `GlPipeline.kt` | One object owns one native GL generation and checked preview/encoder EGLSurface lifetimes. Outgoing outputs are unbound before destruction; preview and encoder readiness publish only after a real swap. Each object owns and retires its analysis executor, busy gate, FBO/buffer snapshot, callbacks, and native fields. `stop()` reports STOPPED only when the thread exits and checked native-output release succeeds; timeout or unsafe release permanently ABANDONS the object. `CameraEngine` compare-and-swaps a fresh object into `AtomicOwnerSlot`, restarts it from a live foreground preview, captures the exact owner/input for every preview/Camera2/recorder transaction, and identity-gates late callbacks. `RendererAssists` resolves/replays config into the current object once per operation. Thus a leaked old handler can touch only its own retired EGL state, never replacement state. |
 | `FlipRenderer.kt` | Low-level OpenGL ES fullscreen quad renderer with texture-coordinate rotation (inverse of image rotation) to flip the 180° afocal image. Applies the SDR-to-HLG mapping or O-Log2 encoding in the fragment shader and handles focus peaking/zebra. |
 | `EglCore.kt` | Checked EGL/GLES setup, binding, presentation, buffer swap, unbind, surface destruction, and display teardown. Supports a 10-bit config, while v1 deliberately starts the stable 8-bit config. |
 | `Shaders.kt` / `SdrToHlgMapping.kt` | Shader source plus Android-free reference constants for the BT.2408-9 display-referred SDR-to-HLG sequence; also owns O-Log2, peaking/zebra, and punch-in shader paths. |
@@ -71,14 +71,14 @@ Two critical consequences of the afocal converter drive the entire design:
 | `DngCapture.kt` | Writes DNG (RAW sensor frame) using DngCreator. Sets EXIF orientation tag (cannot pixel-rotate Bayer CFA). Synchronous in the photo callback while the raw Image is live. |
 | **video/** | |
 | `AudioReadPolicy.kt` | Pure classification of `AudioRecord.read` return codes (PCM / transient retry / normal stop / terminal failure) shared by the recorder loop and the standby meter, plus the meter's bounded-recreate budget rule. |
-| `VideoRecorder.kt` | MediaCodec HEVC/AVC encoder + AAC audio encoder + MediaMuxer. Exactly-once owner of the codec input Surface: clean release follows verified EGL detach and partial setup also releases; a still-live drain takes the documented no-release abandon path. Video input comes from GL already flipped; audio runs separately with software PCM gain. A mid-REC negative `AudioRecord.read` degrades to a PUBLISHED video-only file (`degradeAudioToVideoOnly`); only VIDEO faults delete; after stop a negative read is normal EOS. The encoder buffer takes `RotationMath.encoderSurfaceSize` — swapped to the DISPLAYED portrait aspect for the 90° sensor so `coverScale` records exactly the viewfinder field (the stream-shaped landscape buffer recorded a ~3.16× center band; device-measured and fixed cycle 4). |
+| `VideoRecorder.kt` | MediaCodec HEVC/AVC encoder + AAC audio encoder + MediaMuxer. Exactly-once owner of the codec input Surface: clean release follows verified EGL detach and partial setup also releases; a still-live drain takes the documented no-release abandon path. Video input comes from GL already flipped; audio runs separately with software PCM gain. A mid-REC negative `AudioRecord.read` degrades to video-only; only VIDEO faults delete. The one tolerated sample-less-audio `muxer.stop()` failure is published only after native owners close and MediaExtractor reopens an actual video track. The encoder buffer takes `RotationMath.encoderSurfaceSize` — swapped to the DISPLAYED portrait aspect for the 90° sensor so `coverScale` records exactly the viewfinder field. |
 | `AudioInputInspector.kt` | Resolves the preferred recording input (built-in / wired / USB / BT) against connected AudioDeviceInfo entries; provides the route labels shown in the UI. |
 | `ColorProfiles.kt` | Builds MediaFormat specs for HEVC Main10 (Rec.2020 + HLG/Log) and AVC 8-bit SDR. Tags dynamic range, color space, transfer function. |
 | `EncoderCaps.kt` | Scans MediaCodecList and exposes the hardware AVC/HEVC encoders that are stable with MediaMuxer. |
 | **storage/** | |
 | `CaptureFamily.kt` | Versioned, timestamped capture-family identity embedded in every new output filename. HEIF/JPEG/DNG siblings reuse one exact key; video owns a one-file family. Legacy names are deliberately not inferred by timestamp proximity. |
 | `LatestCaptureReducer.kt` | Android-free reducer for owned Images/Video rows. Selects the newest capture first, then a displayable sibling inside only that capture, and distinguishes proven capture-family deletion from legacy file-only deletion. |
-| `MediaStoreWriter.kt` | Scoped-storage wrapper with a durable per-URI `REGISTERED`/`COMPLETE` journal. It creates pending DCIM/X9Tele rows, marks fully closed outputs complete before publication, adopts finalized or conservatively validated JPEG/DNG/video orphan rows on relaunch, and retains indeterminate rows (including unmarked HEIF) pending. Delete count zero is existence-probed so an already-absent row is success rather than a broken restored URI. Canonical outputs carry DATE_TAKEN; published Images/Video restore queries remain independently failure-isolated. |
+| `MediaStoreWriter.kt` | Scoped-storage wrapper with a durable per-URI `REGISTERED`/`COMPLETE` journal. It retries COMPLETE markers boundedly, creates/publishes pending DCIM/X9Tele rows, and structurally probes JPEG/DNG/video plus HEIF top-level ISO-BMFF extents (`ftyp`/`meta`/`mdat`) without bitmap decode. Launch recovery adopts COMPLETE/valid rows, deletes only proven-invalid rows, retains indeterminate/error rows, continues across collection failures, and returns a sanitized `RecoveryReport` for bounded provider retry. Delete count zero is existence-probed so an already-absent row is success. |
 | `SettingsStore.kt` | SharedPreferences persistence of ManualControls + ExtraSettings across launches, gated by a "Remember Settings" toggle (default ON); enums stored by name, defensive load. Lens and TELE restoration have separate default-on preserve toggles. |
 | **focus/** | |
 | `FocusMapping.kt` | Maps the UI slider (0..1) bidirectionally to LENS_FOCUS_DISTANCE with `diopters = minFocusDiopters * slider^3`. There is no additive offset, preserving exact infinity at slider 0 while concentrating travel near it. |
@@ -198,7 +198,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | **analysisExecutor** (one single-thread executor per GL generation) | GlPipeline | Histogram/waveform computation from that generation's isolated FBO/readback snapshot. Retirement invalidates callback authority without waiting indefinitely for old math. |
 | **audio-capture** (implicit thread) | VideoRecorder | AudioRecord polling loop and PCM-to-AAC encoding. |
 | **video-drain** (implicit thread) | VideoRecorder | MediaCodec output buffer draining and MediaMuxer writes. |
-| **StandbyAudioMeter** (thread) | CameraEngine | Levels-only AudioRecord tap while video is armed but not rolling. A synchronized ownership gate reserves one immutable owner/release latch before thread start; REC opens the mic only after that exact owner releases. Reads are classified via `AudioReadPolicy`: zero retries, a negative (terminal framework error) ends the generation with an exactly-once release, then a bounded backed-off recreation (≤3 failed generations, reset by any successful PCM read) re-arms only while the standby intent still wants a meter. |
+| **StandbyAudioMeter** (thread) | CameraEngine | Levels-only AudioRecord tap while video is armed but not rolling. A synchronized ownership gate reserves one immutable owner/release latch before thread start; REC opens the mic only after that exact owner releases. Invalid buffer, construction/state, start, thread-launch, and terminal-read failures consume one shared bounded generation budget with backed-off recreation; any successful PCM read resets it. Retries recheck wanted/paused/REC ownership and unavailable is reported only after exhaustion. |
 
 **Cross-thread visibility and ownership seams:**
 
@@ -793,24 +793,24 @@ createPendingImage(context, fileName, mimeType) → Uri
 openParcelFd(context, uri, "rw") → ParcelFileDescriptor
 // Caller writes to the FD
 markWriteComplete(context, uri)
-// Durably journals COMPLETE only after all bytes/container metadata are closed
+// Boundedly journals COMPLETE after bytes/container metadata close; returns durable result/attempts
 publish(context, uri)
 // Updates IS_PENDING = 0 (visible in gallery), then clears the journal entry
 delete(context, uri)
 // Removes an incomplete/proven-invalid entry, then clears confirmed deletion from the journal
 cleanupOrphanedPending(context)
-// ADOPT complete/structurally-valid rows; DELETE proven-invalid rows; KEEP_PENDING if indeterminate
+// → RecoveryReport; ADOPT valid, DELETE proven-invalid, RETAIN indeterminate/error; collections isolated
 latestOwnCapture(context) → RestoredCapture
 // Bounded Images + Video scan, followed by an exact-family query when identity is proven
 ```
 
-Canonical names also stamp `DATE_TAKEN` from admission time. Relaunch recovery probes JPEG,
-video, and DNG terminal structure while the row is still private. A `COMPLETE` journal record always
-authorizes adoption; legacy or `REGISTERED` rows are adopted only when structurally valid, deleted
-only when definitively invalid, and otherwise remain pending for a later retry. Unmarked HEIF is
-deliberately indeterminate because header dimensions can precede a closed payload. Thus interrupted
-partial bytes stay out of the gallery without treating a transient MediaProvider publication
-failure as data loss.
+Canonical names also stamp `DATE_TAKEN` from admission time. Relaunch recovery probes JPEG, video,
+DNG, and HEIF terminal structure while the row is still private. HEIF proof walks bounded top-level
+ISO-BMFF headers and requires explicitly sized complete extents plus `ftyp`/`meta`/non-empty `mdat`;
+size-zero boxes and header dimensions alone never authorize adoption. A `COMPLETE` journal record always authorizes adoption; legacy or
+`REGISTERED` rows are adopted only when structurally valid, deleted only when definitively invalid,
+and otherwise retained with an explicit report. Provider failures retry boundedly, preserving
+partial bytes privately without turning a transient publication failure into data loss.
 
 ---
 
@@ -820,7 +820,7 @@ failure as data loss.
 Core Camera2 capture parameters are housed in the immutable `ManualControls` data class. The ViewModel
 copies it with updated fields on each interaction and re-applies it through
 `CameraEngine.setControls()`. Restored and live controls pass through the same route normalization for
-exact advertised modes, manual capabilities, region maxima, and zoom bounds. Same-route recall commits
+exact advertised modes, focus/ISO/exposure/EV bounds, region maxima, and zoom bounds. Same-route recall commits
 that normalized packet before Ready; a route-changing recall waits for the target camera's caps.
 The UI's `ControlAvailability` projection uses those same facts to filter settings and quick cycles,
 and to admit or close manual rulers. AE/AF regions are omitted independently when the corresponding
@@ -859,6 +859,11 @@ category's selected state. Its existing 48 dp-plus geometry and visual treatment
 Photo and video have separate configurable Fn bars with up to eight slots. The photo default exposes
 exposure mode, focus, shutter, ISO, WB, and EV; the video default adds gamma, stabilization, and audio
 scene choices. Capability-dependent taps cycle only through the selected route's advertised choices.
+The shooting-screen Fn overlay renders only that active mode's distinct configured slots (maximum
+eight, with its mode-specific default as the empty fallback); it never merges My Menu or Recent.
+Its default four-column/two-row grid uses measured, counter-rotated label/value layout in a held-
+landscape portrait window, grows above a 58 dp minimum, and scrolls when window/font constraints
+require it. Full accessibility labels/state remain intact when narrow visual aliases are used.
 The WB chip can open the preset sheet whenever more than one advertised mode exists; only MANUAL WB
 requires the Kelvin ruler. Compact view keeps a 36 dp visual Fn button inside a 48 dp hit target on
 the focal rail; `DISP` reveals the full configurable strip. In the Fn grid, numeric

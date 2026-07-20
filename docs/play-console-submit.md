@@ -75,14 +75,16 @@ Summary:
 - Feature graphic: `docs/assets/play/feature-graphic.png`
   - 1024 x 500 PNG
   - no alpha
-- Phone screenshots:
-  - `docs/assets/play/screenshots/01-main-viewfinder.png`
-  - `docs/assets/play/screenshots/02-pro-settings.png`
-  - `docs/assets/play/screenshots/03-focus-loupe.png`
-  - `docs/assets/play/screenshots/04-video-controls.png`
-  - `docs/assets/play/screenshots/05-lens-selection.png`
-  - `docs/assets/play/screenshots/06-video-settings.png`
-  - all are 1440 x 2560 (9:16) no-alpha PNGs captured from the physical PMA110 and tracked with Git LFS
+- Phone screenshots — **all six are STALE / DO NOT UPLOAD**:
+  - **STALE:** `docs/assets/play/screenshots/01-main-viewfinder.png`
+  - **STALE:** `docs/assets/play/screenshots/02-pro-settings.png`
+  - **STALE:** `docs/assets/play/screenshots/03-focus-loupe.png`
+  - **STALE:** `docs/assets/play/screenshots/04-video-controls.png`
+  - **STALE:** `docs/assets/play/screenshots/05-lens-selection.png`
+  - **STALE:** `docs/assets/play/screenshots/06-video-settings.png`
+  - historical 2026-07-10 physical-PMA110 captures, 1440 x 2560 (9:16), before the current Fn/chrome behavior
+  - recapture from the exact signed candidate only after its current release-device matrix passes;
+    cycle/debug UI verification screenshots are not substitute Play assets
 
 ## Device Catalog
 
@@ -98,7 +100,8 @@ The app requires Android 16 / API 36 and is intentionally single-device.
 1. Generate and verify a new signed AAB, update this sheet's hashes, and complete the current PMA110
    release matrix; only then upload that exact artifact to Internal testing.
 2. Enter the Store Listing and Data Safety answers from this repository.
-3. Upload the icon, feature graphic, and all six phone screenshots.
+3. Recapture and review all six phone flows from that exact candidate, then upload the icon, feature
+   graphic, and the six replacement screenshots; do not use the stale checked-in captures.
 4. Restrict the device catalog to CPH2841 and PMA110 before any wider rollout.
 5. Review Play's automated checks and pre-launch report.
 6. Promote the same artifact only after the internal-test install succeeds.

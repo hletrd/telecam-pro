@@ -12,6 +12,9 @@ Use Sony Alpha and Xperia Pro camera screens as the reference. Not generic phone
 - Important states belong in the OSD, Fn, or a menu row.
 - Start in a preview-first compact state. `DISP` reveals detailed status and the full Fn strip;
   compact mode keeps only active or output-changing state plus the Fn entry point.
+- The shooting Fn overlay contains only the active mode's configured functions: distinct, ordered,
+  and capped at eight. My Menu and Recent stay in their own settings surfaces. Use an adaptive,
+  scrollable four-column grid rather than covering the preview with overflow rows.
 - Keep MR save/recall in Shooting/My Menu. At rest, show only the active MR slot in the OSD.
 - Keep every interactive touch target at least 48 dp; compact glyphs may remain visually smaller
   inside that hit region.

@@ -96,6 +96,8 @@ Requires JDK 21, Android SDK Platform 37, and SDK Build Tools 36.0.0. The app st
 API 36 at runtime. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) is the current as-built design
 authority. The [`2026-07-01 specification`](docs/superpowers/specs/2026-07-01-find-x9-ultra-camera-design.md)
 is a preserved historical snapshot and is superseded wherever it differs; it is not the current design.
+The Gradle 9.6.1 wrapper distribution is pinned to Gradle's published SHA-256, and resolved build
+plugins/dependencies are checked against `gradle/verification-metadata.xml` in strict mode by default.
 
 ### Release build (Google Play)
 
@@ -149,21 +151,29 @@ not just session setup logs:
 
 ## Implementation Status
 
-- ✅ **Build & gates**: `./gradlew testDebugUnitTest lintRelease assembleRelease bundleRelease` passes.
-- ✅ **Unit tests**: `app/src/test/` is the suite source of truth; rerun
-  `./gradlew :app:testDebugUnitTest` for the current result instead of relying on a copied count.
-- ✅ **Release device smoke test on PMA110**: fresh launch starts at 1x / 23 mm with TELE off;
+- ⛔ **Current release stop (2026-07-21): this source is not ready for upload.** Source and UI have
+  changed since the recorded candidate. Do not upload a local AAB or the checked-in Play screenshots.
+  Generate an exact signed candidate, rerun every current host/artifact/PMA110 release gate, and
+  refresh hashes and assets first. [`docs/BACKLOG.md`](docs/BACKLOG.md) is the authoritative release
+  board.
+
+The entries below are historical 2026-07-10 evidence and do not describe current HEAD:
+
+- 🗂️ **Historical build & gates**: `./gradlew testDebugUnitTest lintRelease assembleRelease bundleRelease`
+  passed for that candidate. `app/src/test/` remains the suite source of truth; rerun it for current
+  results instead of relying on a copied count.
+- 🗂️ **Historical release device smoke test on PMA110**: fresh launch started at 1x / 23 mm with TELE off;
   Preserve Lens and Preserve TELE default on and persist independently; rapid double-shutter in an
   eligible TELE session produces one valid DNG+HEIF pair; 4K HLG records HEVC Main10 at 30000/1001
   with AAC; Open Gate records
   2560x1920 4:3; and no crash or ANR was observed. The installed release APK matched the locally
   verified artifact byte-for-byte and was not debuggable.
-- ✅ **UI and Play assets**: the menu hierarchy and core photo/video flows were reviewed on the
-  physical device. Six 1440x2560 PMA110 screenshots are tracked with Git LFS.
-- ⏳ **Remaining Play Console work**: upload the signed AAB, enter the listing and Data Safety answers,
+- 🗂️ **Historical UI evidence**: the then-current menu hierarchy and core photo/video flows were
+  reviewed on the physical device. The six tracked 1440x2560 PMA110 screenshots are stale and marked
+  **DO NOT UPLOAD** in the listing sheet.
+- ⏳ **After a new signed candidate is proven**: upload the signed AAB, enter the listing and Data Safety answers,
   restrict the device catalog to CPH2841/PMA110, run internal testing, and review the pre-launch report.
   The exact operator checklist is in [`docs/play-console-submit.md`](docs/play-console-submit.md).
 - 🔎 **Residual field checks**: directional-audio off-axis acoustic A/B, held portrait/landscape
-  saved-file orientation, and post-mapping HLG appearance on a real HDR display are worth confirming;
-  none changes the current build or Play metadata.
+  saved-file orientation, and post-mapping HLG appearance on a real HDR display remain pending.
 - 📌 **Deferred beyond v1**: R8/minify and Dolby Vision. See [`docs/BACKLOG.md`](docs/BACKLOG.md).
