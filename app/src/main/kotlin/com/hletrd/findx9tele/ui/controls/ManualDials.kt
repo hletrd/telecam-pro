@@ -89,6 +89,8 @@ import com.hletrd.findx9tele.camera.controlCapabilities
 import com.hletrd.findx9tele.camera.exposureUpperBoundForCaptureMode
 import com.hletrd.findx9tele.focus.FocusMapping
 import com.hletrd.findx9tele.ui.CameraActions
+import com.hletrd.findx9tele.ui.FnEntryAnchor
+import com.hletrd.findx9tele.ui.fnEntryAnchor
 import com.hletrd.findx9tele.ui.formatDisplayZoom
 import com.hletrd.findx9tele.ui.overlays.HUD_TEXT_SCRIM_ALPHA
 import com.hletrd.findx9tele.ui.theme.CameraColors
@@ -321,7 +323,10 @@ private fun DialChipRow(
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        CompactFnButton(onClick = onOpenFnMenu, glyphRotation = glyphRotation)
+        val entryAnchor = fnEntryAnchor(state.deviceOrientation)
+        if (entryAnchor == FnEntryAnchor.START) {
+            CompactFnButton(onClick = onOpenFnMenu, glyphRotation = glyphRotation)
+        }
         Row(
             modifier = Modifier
                 .weight(1f)
@@ -341,6 +346,9 @@ private fun DialChipRow(
                     availability = availability,
                 )
             }
+        }
+        if (entryAnchor == FnEntryAnchor.END) {
+            CompactFnButton(onClick = onOpenFnMenu, glyphRotation = glyphRotation)
         }
     }
 }

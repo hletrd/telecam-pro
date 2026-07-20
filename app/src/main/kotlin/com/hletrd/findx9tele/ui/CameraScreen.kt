@@ -757,13 +757,21 @@ fun CameraScreen(
                         modifier = Modifier.fillMaxWidth(),
                     )
                     if (!detailsVisible) {
+                        val entryAnchor = fnEntryAnchor(state.deviceOrientation)
                         CompactFnButton(
                             onClick = {
                                 currentActions.value.onCameraInputBlockedChange(true)
                                 fnOverlayVisible = true
                             },
                             glyphRotation = overlayRotation,
-                            modifier = Modifier.align(Alignment.CenterStart).padding(start = 12.dp),
+                            modifier = when (entryAnchor) {
+                                FnEntryAnchor.START -> Modifier
+                                    .align(Alignment.CenterStart)
+                                    .padding(start = 12.dp)
+                                FnEntryAnchor.END -> Modifier
+                                    .align(Alignment.CenterEnd)
+                                    .padding(end = 12.dp)
+                            },
                         )
                     }
                 }
@@ -1461,6 +1469,13 @@ internal const val FN_OVERLAY_MAX_SLOTS = 8
 
 internal enum class FnOverlayAnchor { BOTTOM_CENTER, CENTER_START, CENTER_END }
 
+/**
+ * Raw-window edge for the Fn entry affordance. The activity stays portrait-locked, so a clockwise
+ * hold (270 degrees) moves the physical bottom edge to raw end; portrait and a counter-clockwise
+ * hold keep it at raw start. The entry and its opened tray therefore stay under the same thumb.
+ */
+internal enum class FnEntryAnchor { START, END }
+
 internal data class FnOverlayLayoutPolicy(
     val rawColumnCount: Int,
     val anchor: FnOverlayAnchor,
@@ -1484,6 +1499,13 @@ internal fun fnOverlayLayoutPolicy(deviceOrientation: Int): FnOverlayLayoutPolic
         90 -> FnOverlayLayoutPolicy(FN_OVERLAY_HELD_COLUMN_COUNT, FnOverlayAnchor.CENTER_START)
         270 -> FnOverlayLayoutPolicy(FN_OVERLAY_HELD_COLUMN_COUNT, FnOverlayAnchor.CENTER_END)
         else -> FnOverlayLayoutPolicy(FN_OVERLAY_COLUMN_COUNT, FnOverlayAnchor.BOTTOM_CENTER)
+    }
+
+internal fun fnEntryAnchor(deviceOrientation: Int): FnEntryAnchor =
+    if (((deviceOrientation % 360) + 360) % 360 == 270) {
+        FnEntryAnchor.END
+    } else {
+        FnEntryAnchor.START
     }
 
 /**

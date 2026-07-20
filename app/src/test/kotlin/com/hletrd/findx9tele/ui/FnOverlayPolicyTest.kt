@@ -57,6 +57,16 @@ class FnOverlayPolicyTest {
     }
 
     @Test
+    fun `Fn entry stays on the physical bottom edge in either hold`() {
+        listOf(0, 90, 180, 360, 450).forEach {
+            assertEquals(FnEntryAnchor.START, fnEntryAnchor(it))
+        }
+        listOf(270, -90).forEach {
+            assertEquals(FnEntryAnchor.END, fnEntryAnchor(it))
+        }
+    }
+
+    @Test
     fun `held tray uses raw 2x4 side anchors and preserves physical 4x2 order`() {
         val slots = FnSlot.entries.take(8)
 
