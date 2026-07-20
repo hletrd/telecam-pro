@@ -41,13 +41,13 @@ recording left active by an earlier failed case cannot be killed by a later case
 | smoke | `launch_preview_live` | cold launch → live viewfinder (frame-diff), OSD chrome, clean logcat |
 | smoke | `session_configured_3a` | 3A telemetry flows (configured repeating request; ois/vstab visible) |
 | full | `mode_switch_roundtrip` | photo↔video flips without camera errors (benign −38 teardown excluded) |
-| full | `lens_presets` | 0.6/1/3/10× focal-rail presets cycle without errors |
+| full | `lens_presets` | 0.6/1/3/10× cycle; exactly one RadioButton is checked after each tap |
 | full | `teleconverter_roundtrip` | TC on→off round-trip; OSD `mm TELE` state tracks the toggle |
 | full | `photo_capture_valid_files` | still → HEIF/JPEG pulled + parsed (dims, JPEG EXIF APP1 present) |
 | full | `tele_dng_capture` | TELE-mode capture; any DNG sibling validates as TIFF ≥1 MB |
 | full | `video_record_validate` | ~5 s clip → ffprobe: HEVC, sane duration, dimensions, audio |
 | full | `tap_af_lock_persists` | tap-AF engages `afMode=1` and HOLDS past the 2 s reticle timeout |
-| full | `settings_sheet_tabs` | settings sheet opens with the full tab rail |
+| full | `settings_sheet_tabs` | all 9 settings tabs exist with exactly one selected tab |
 | full | `mode_persists_across_kill` | Remember Settings survives force-stop |
 | reliability | `capture_then_kill_survives` | kill 0.6 s after shutter → files survive, valid, no stuck pending |
 | reliability | `rec_backgrounded_finalizes` | HOME mid-REC → playable clip finalizes |

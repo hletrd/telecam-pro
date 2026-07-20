@@ -17,6 +17,9 @@ from dtest.adb import MEDIA_DIR, Adb
 from dtest.framework import Context, Skip, test
 from dtest import media
 
+FOCAL_PRESETS = ("0.6× lens", "1× lens", "3× lens", "10× lens")
+SETTINGS_TABS = ("My", "Shoot", "Exposure", "Focus", "Lens", "Video", "Image", "Assist", "Setup")
+
 
 # ---------------------------------------------------------------- helpers
 
@@ -68,6 +71,25 @@ def capture_still(ctx: Context, timeout_s: float = 25.0) -> list[str]:
     new = ctx.adb.wait_new_media(before, min_new=1, timeout_s=timeout_s)
     assert new, "no new media file appeared after capture"
     return new
+
+
+def focal_rail_error(tree, expected: str) -> str | None:
+    nodes = {description: tree.find_desc_exact(description) for description in FOCAL_PRESETS}
+    missing = [description for description, node in nodes.items() if node is None]
+    if missing:
+        return f"focal controls missing: {missing}"
+
+    present = [node for node in nodes.values() if node is not None]
+    wrong_roles = [node.desc for node in present if not node.class_name.endswith("RadioButton")]
+    if wrong_roles:
+        return f"focal controls are not radio buttons: {wrong_roles}"
+    if any(not node.checkable for node in present):
+        return "one or more focal controls are not checkable"
+
+    checked = [node.desc for node in present if node.checked]
+    if checked != [expected]:
+        return f"expected exactly {expected!r} checked, got {checked}"
+    return None
 
 
 # ---------------------------------------------------------------- smoke
@@ -124,7 +146,14 @@ def t_lenses(ctx: Context) -> None:
     mark = ctx.adb.log_mark()
     for lens in ("1× lens", "3× lens", "10× lens", "0.6× lens", "1× lens"):
         ctx.adb.tap_ui(desc=lens)
-        time.sleep(1.2)
+        deadline = time.time() + 6
+        error = "selection state did not settle"
+        while time.time() < deadline:
+            error = focal_rail_error(ctx.adb.ui(), lens)
+            if error is None:
+                break
+            time.sleep(0.4)
+        assert error is None, error
     fatals = ctx.adb.fatal_lines(mark, pid)
     assert not fatals, f"errors during lens presets: {fatals[:2]}"
     ctx.note("0.6/1/3/10 presets cycled clean")
@@ -258,11 +287,14 @@ def t_settings(ctx: Context) -> None:
     ensure_foreground(ctx)
     ctx.adb.tap_ui(desc="Open settings")
     tree = ctx.adb.ui()
-    missing = [t for t in ("My", "Shoot", "Focus", "Video", "Setup") if not tree.find(text=t)]
+    tab_nodes = {tab: tree.find(text=tab) for tab in SETTINGS_TABS}
+    missing = [tab for tab, node in tab_nodes.items() if node is None]
+    selected = [tab for tab, node in tab_nodes.items() if node is not None and node.selected]
     ctx.adb.shell("input keyevent KEYCODE_BACK")
     time.sleep(1)
     assert not missing, f"settings tabs missing: {missing}"
-    ctx.note("tab rail present")
+    assert len(selected) == 1, f"expected exactly one selected settings tab, got {selected}"
+    ctx.note(f"all 9 tabs present; selected={selected[0]}")
 
 
 @test("mode_persists_across_kill", "full", destructive=True)

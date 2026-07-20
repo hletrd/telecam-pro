@@ -10,8 +10,9 @@ DEVICE_TESTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(DEVICE_TESTS))
 
 import run as runner  # noqa: E402
+import cases  # noqa: E402
 from dtest import framework  # noqa: E402
-from dtest.adb import APP_ID, Adb, AdbError  # noqa: E402
+from dtest.adb import APP_ID, Adb, AdbError, UiTree  # noqa: E402
 
 
 class FakeAdb:
@@ -70,6 +71,45 @@ class RunnerHelpersTest(unittest.TestCase):
                 runner.sha256_file(fixture),
                 "0941d239425b174d99d3eb516e36fcff357b668a7ad24e5e481531f59a5ec28f",
             )
+
+
+class UiSemanticsTest(unittest.TestCase):
+    @staticmethod
+    def focal_xml(checked: str, *, radio_role: bool = True) -> str:
+        nodes = []
+        class_name = "android.widget.RadioButton" if radio_role else "android.widget.Button"
+        for index, description in enumerate(cases.FOCAL_PRESETS):
+            is_checked = str(description == checked).lower()
+            nodes.append(
+                f'<node text="" content-desc="{description}" class="{class_name}" '
+                f'checkable="true" checked="{is_checked}" selected="false" enabled="true" '
+                f'bounds="[{index * 10},0][{index * 10 + 10},10]" />'
+            )
+        return f"<hierarchy>{''.join(nodes)}</hierarchy>"
+
+    def test_ui_tree_exports_radio_checked_state(self) -> None:
+        tree = UiTree(self.focal_xml("3× lens"))
+
+        selected = tree.find_desc_exact("3× lens")
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.class_name, "android.widget.RadioButton")
+        self.assertTrue(selected.checkable)
+        self.assertTrue(selected.checked)
+        self.assertFalse(selected.selected)
+
+    def test_focal_contract_requires_exactly_expected_checked_radio(self) -> None:
+        self.assertIsNone(cases.focal_rail_error(UiTree(self.focal_xml("10× lens")), "10× lens"))
+        self.assertIn(
+            "not radio buttons",
+            cases.focal_rail_error(
+                UiTree(self.focal_xml("10× lens", radio_role=False)),
+                "10× lens",
+            ),
+        )
+        self.assertIn(
+            "expected exactly",
+            cases.focal_rail_error(UiTree(self.focal_xml("1× lens")), "3× lens"),
+        )
 
 
 class ForceStopGuardTest(unittest.TestCase):

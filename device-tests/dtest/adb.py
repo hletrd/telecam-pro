@@ -36,7 +36,10 @@ class AdbError(RuntimeError):
 class UiNode:
     text: str
     desc: str
+    class_name: str
     bounds: tuple[int, int, int, int]  # l, t, r, b
+    checkable: bool
+    checked: bool
     selected: bool
     enabled: bool
 
@@ -216,12 +219,14 @@ class Adb:
         return UiTree(xml)
 
     def tap_ui(self, *, desc: str | None = None, text: str | None = None, retries: int = 3) -> UiNode:
-        """Find a node and tap it, re-dumping to verify the tap had a chance to land."""
+        """Find and tap an enabled node; the caller must verify the expected state change."""
         last = None
         for _ in range(retries):
             tree = self.ui()
             node = tree.find(desc=desc, text=text)
             if node:
+                if not node.enabled:
+                    raise AdbError(f"UI node is disabled (desc={desc!r} text={text!r})")
                 self.tap(*node.center)
                 time.sleep(0.9)
                 return node
@@ -253,7 +258,10 @@ class UiTree:
                 UiNode(
                     text=el.get("text", ""),
                     desc=el.get("content-desc", ""),
+                    class_name=el.get("class", ""),
                     bounds=tuple(int(g) for g in m.groups()),  # type: ignore[arg-type]
+                    checkable=el.get("checkable") == "true",
+                    checked=el.get("checked") == "true",
                     selected=el.get("selected") == "true",
                     enabled=el.get("enabled") != "false",
                 )
@@ -273,6 +281,10 @@ class UiTree:
             if needle in n.desc.lower() or needle in n.text.lower():
                 return n
         return None
+
+    def find_desc_exact(self, description: str) -> UiNode | None:
+        needle = description.casefold()
+        return next((node for node in self.nodes if node.desc.casefold() == needle), None)
 
     def all_labels(self) -> set[str]:
         out = set()
