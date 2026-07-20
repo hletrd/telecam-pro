@@ -10,6 +10,21 @@ import org.junit.Test
 
 class CameraUiPolicyTest {
     @Test
+    fun `mode carousel exposes one mutually exclusive radio choice`() {
+        val selected = modeCarouselState(active = true, enabled = true)
+        assertTrue(selected.selected)
+        assertTrue(selected.enabled)
+        assertEquals("Selected", selected.stateDescription)
+        assertEquals(Role.RadioButton, selected.accessibilityRole)
+
+        val locked = modeCarouselState(active = false, enabled = false)
+        assertFalse(locked.selected)
+        assertFalse(locked.enabled)
+        assertEquals("Not selected", locked.stateDescription)
+        assertEquals(Role.RadioButton, locked.accessibilityRole)
+    }
+
+    @Test
     fun `an actual focus mode change releases the tap owned point`() {
         assertTrue(focusModeChangeClearsTapPoint(FocusMode.CONTINUOUS, FocusMode.MANUAL))
         assertTrue(focusModeChangeClearsTapPoint(FocusMode.AUTO, FocusMode.CONTINUOUS))

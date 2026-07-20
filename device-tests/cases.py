@@ -21,6 +21,7 @@ from dtest.framework import Context, Incomplete, UnsafeState, test
 from dtest import media
 
 FOCAL_PRESETS = ("0.6× lens", "1× lens", "3× lens", "10× lens")
+CAPTURE_MODES = ("Photo mode", "Video mode")
 SETTINGS_TABS = ("My", "Shoot", "Exposure", "Focus", "Lens", "Video", "Image", "Assist", "Setup")
 CAPTURE_SETTLED = re.compile(
     r"CaptureFamily: settled stem=(IMG_TELECAM_F1_[0-9]{13}_[0-9]{10}) "
@@ -407,6 +408,25 @@ def focal_rail_error(tree, expected: str) -> str | None:
     return None
 
 
+def mode_carousel_error(tree, expected: str) -> str | None:
+    nodes = {description: tree.find_desc_exact(description) for description in CAPTURE_MODES}
+    missing = [description for description, node in nodes.items() if node is None]
+    if missing:
+        return f"capture-mode controls missing: {missing}"
+
+    present = [node for node in nodes.values() if node is not None]
+    wrong_roles = [node.desc for node in present if not node.class_name.endswith("RadioButton")]
+    if wrong_roles:
+        return f"capture-mode controls are not radio buttons: {wrong_roles}"
+    if any(not node.checkable for node in present):
+        return "one or more capture-mode controls are not checkable"
+
+    checked = [node.desc for node in present if node.checked]
+    if checked != [expected]:
+        return f"expected exactly {expected!r} checked, got {checked}"
+    return None
+
+
 # ---------------------------------------------------------------- smoke
 
 @test("launch_preview_live", "smoke", destructive=True)
@@ -450,6 +470,10 @@ def t_modes(ctx: Context) -> None:
         raise UnsafeState("mode round-trip entered while recording was active")
     initial_mode = "VIDEO" if tree.find(desc="Start recording") else "PHOTO"
     assert initial_mode == "VIDEO" or shutter_node(ctx), "could not determine initial capture mode"
+    expected_initial_mode = "Video mode" if initial_mode == "VIDEO" else "Photo mode"
+    assert mode_carousel_error(tree, expected_initial_mode) is None, (
+        mode_carousel_error(tree, expected_initial_mode)
+    )
     test_mark = ctx.adb.log_mark()
     baseline = wait_mode_three_a(
         ctx,
@@ -486,7 +510,11 @@ def t_modes(ctx: Context) -> None:
 
     mark = ctx.adb.log_mark()
     ensure_video_mode(ctx)
-    assert ctx.adb.ui().find(desc="Start recording"), "video mode did not arm the REC button"
+    video_tree = ctx.adb.ui()
+    assert video_tree.find(desc="Start recording"), "video mode did not arm the REC button"
+    assert mode_carousel_error(video_tree, "Video mode") is None, (
+        mode_carousel_error(video_tree, "Video mode")
+    )
     video_acceptance = wait_session_acceptance(
         ctx,
         mark,
@@ -508,7 +536,11 @@ def t_modes(ctx: Context) -> None:
 
     recovery_mark = ctx.adb.log_mark()
     ensure_photo_mode(ctx)
+    photo_tree = ctx.adb.ui()
     assert shutter_node(ctx), "photo mode did not restore the shutter"
+    assert mode_carousel_error(photo_tree, "Photo mode") is None, (
+        mode_carousel_error(photo_tree, "Photo mode")
+    )
     photo_acceptance = wait_session_acceptance(
         ctx,
         recovery_mark,

@@ -73,12 +73,10 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
-import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.isTraversalGroup
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.role
-import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.geometry.CornerRadius
@@ -1682,7 +1680,7 @@ private fun ModeCarousel(
     glyphRotation: Float = 0f,
     enabled: Boolean = true,
 ) {
-    Row(modifier = modifier, horizontalArrangement = Arrangement.Center) {
+    Row(modifier = modifier.selectableGroup(), horizontalArrangement = Arrangement.Center) {
         Row(horizontalArrangement = Arrangement.spacedBy(32.dp)) {
             // The mode labels are SHORT ("Photo"/"Video"), so — iPhone-style — they DO counter-rotate
             // to stay upright as the phone turns (unlike the wide dial pills, which would overflow their
@@ -1705,19 +1703,37 @@ private fun ModeCarousel(
     }
 }
 
+internal data class ModeCarouselState(
+    val selected: Boolean,
+    val enabled: Boolean,
+    val stateDescription: String,
+    val accessibilityRole: Role,
+)
+
+internal fun modeCarouselState(active: Boolean, enabled: Boolean): ModeCarouselState =
+    ModeCarouselState(
+        selected = active,
+        enabled = enabled,
+        stateDescription = if (active) "Selected" else "Not selected",
+        accessibilityRole = Role.RadioButton,
+    )
+
 @Composable
 private fun ModeLabel(text: String, active: Boolean, enabled: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val presentation = modeCarouselState(active, enabled)
     Box(
         modifier = modifier
             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
             .semantics {
                 contentDescription = "$text mode"
-                stateDescription = if (active) "Selected" else "Not selected"
-                selected = active
-                role = Role.Button
-                if (!enabled) disabled()
+                stateDescription = presentation.stateDescription
             }
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
+            .selectable(
+                selected = presentation.selected,
+                enabled = presentation.enabled,
+                role = presentation.accessibilityRole,
+                onClick = onClick,
+            ),
         contentAlignment = Alignment.Center,
     ) {
         Column(

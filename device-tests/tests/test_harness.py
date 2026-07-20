@@ -316,6 +316,35 @@ class UiSemanticsTest(unittest.TestCase):
             cases.focal_rail_error(UiTree(self.focal_xml("1× lens")), "3× lens"),
         )
 
+    @staticmethod
+    def mode_xml(checked: str, *, radio_role: bool = True) -> str:
+        class_name = "android.widget.RadioButton" if radio_role else "android.widget.Button"
+        nodes = []
+        for index, description in enumerate(cases.CAPTURE_MODES):
+            is_checked = str(description == checked).lower()
+            nodes.append(
+                f'<node text="" content-desc="{description}" class="{class_name}" '
+                f'checkable="true" checked="{is_checked}" selected="false" enabled="true" '
+                f'bounds="[{index * 50},0][{index * 50 + 48},48]" />'
+            )
+        return f"<hierarchy>{''.join(nodes)}</hierarchy>"
+
+    def test_mode_contract_requires_one_checked_radio(self) -> None:
+        self.assertIsNone(
+            cases.mode_carousel_error(UiTree(self.mode_xml("Photo mode")), "Photo mode")
+        )
+        self.assertIn(
+            "not radio buttons",
+            cases.mode_carousel_error(
+                UiTree(self.mode_xml("Video mode", radio_role=False)),
+                "Video mode",
+            ),
+        )
+        self.assertIn(
+            "expected exactly",
+            cases.mode_carousel_error(UiTree(self.mode_xml("Video mode")), "Photo mode"),
+        )
+
     def test_still_precondition_detects_every_multi_drive_osd_tag(self) -> None:
         for label in ("BURST", "AEB±2", "TL 5s"):
             with self.subTest(label=label):
