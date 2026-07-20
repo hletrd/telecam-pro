@@ -51,6 +51,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -130,11 +131,15 @@ internal fun reconcileOpenManualDial(
     availability: ControlAvailability,
 ): DialType? = openDial?.takeIf { quickManualDialEnabled(it, availability) }
 
+/** The fixed compact Fn glyph follows the shared animated overlay angle without sign/phase drift. */
+internal fun fnMenuGlyphRotation(overlayRotation: Float): Float = overlayRotation
+
 @Composable
 fun ManualDialCluster(
     state: CameraUiState,
     actions: CameraActions,
     onRequestWhiteBalanceSheet: () -> Unit,
+    glyphRotation: Float,
     modifier: Modifier = Modifier,
     onOpenFnMenu: () -> Unit = {},
 ) {
@@ -249,6 +254,7 @@ fun ManualDialCluster(
             actions = actions,
             onOpenFnMenu = onOpenFnMenu,
             availability = availability,
+            glyphRotation = glyphRotation,
         )
     }
 }
@@ -261,6 +267,7 @@ private fun DialChipRow(
     actions: CameraActions,
     onOpenFnMenu: () -> Unit,
     availability: ControlAvailability,
+    glyphRotation: Float,
     modifier: Modifier = Modifier,
 ) {
     val controls = state.controls
@@ -279,7 +286,7 @@ private fun DialChipRow(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        FnMenuButton(onClick = onOpenFnMenu)
+        FnMenuButton(onClick = onOpenFnMenu, glyphRotation = glyphRotation)
         Row(
             modifier = Modifier
                 .weight(1f)
@@ -305,7 +312,7 @@ private fun DialChipRow(
 
 /** Sony-familiar, always-visible entry point; dial long-press remains as the expert shortcut. */
 @Composable
-private fun FnMenuButton(onClick: () -> Unit) {
+private fun FnMenuButton(onClick: () -> Unit, glyphRotation: Float) {
     Box(
         modifier = Modifier
             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
@@ -324,6 +331,7 @@ private fun FnMenuButton(onClick: () -> Unit) {
             color = CameraColors.Accent,
             fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
+            modifier = Modifier.rotate(fnMenuGlyphRotation(glyphRotation)),
         )
     }
 }

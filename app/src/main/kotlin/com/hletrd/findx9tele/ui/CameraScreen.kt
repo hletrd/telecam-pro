@@ -682,6 +682,7 @@ fun CameraScreen(
                     state = state,
                     actions = actions,
                     onRequestWhiteBalanceSheet = { openSheet(ProSheetTab.EXPOSURE) },
+                    glyphRotation = overlayRotation,
                     onOpenFnMenu = {
                         currentActions.value.onCameraInputBlockedChange(true)
                         fnOverlayVisible = true
