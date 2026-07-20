@@ -7,7 +7,7 @@ Usage:
   python3 device-tests/run.py --serial 127.0.0.1:5599 --tier all -k capture
 
 Requires: adb on PATH with the PMA110 connected (wireless-debugging loopback proxy is
-fine). ffprobe is optional — video checks degrade to structural validation without it.
+fine). ffprobe is required for a green video result; structural fallback is non-green.
 Reports land in device-tests/reports/<timestamp>/ (gitignored).
 """
 

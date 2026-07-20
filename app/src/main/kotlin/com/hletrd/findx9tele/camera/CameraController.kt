@@ -36,6 +36,8 @@ import java.util.concurrent.Executor
  */
 class CameraController(context: Context) {
 
+    internal val diagnosticId: Long = controllerSequence.incrementAndGet()
+
     fun interface Ready { fun onReady(outputs: PhotoSessionOutputs) }
     fun interface ErrorCb { fun onError(t: Throwable) }
 
@@ -127,7 +129,14 @@ class CameraController(context: Context) {
     private var teleconverterMode = false
     // Video preview/recording must honor the selected fps even under auto exposure. Photo preview
     // leaves this false so AE can lower its frame rate for a brighter low-light view.
-    @Volatile private var pinAutoFps = false
+    private var pinAutoFps = false
+    // Requested intent is the cross-thread supersession gate; applied mode/generation remain
+    // camera-thread-owned and change together before the exact request carrying that identity.
+    private val modeIntentGate = PreviewModeIntentGate(
+        PreviewModeIntent(pinAutoFps = false, opticsGeneration = 0),
+    )
+    private var diagnosticRequestMode = CaptureMode.PHOTO
+    private var diagnosticOpticsGeneration = 0L
     // >0 → configure a CameraConstrainedHighSpeedCaptureSession at this fps (slow-motion), feeding
     // ONLY the GL input surface (no JPEG/RAW — high-speed sessions forbid extra targets). 0 = the
     // regular tele session. Set once per open(); on a high-speed config failure it drops back to 0.
@@ -182,6 +191,7 @@ class CameraController(context: Context) {
         videoStabHalMode: Int = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF,
         teleconverterMode: Boolean = false,
         pinAutoFps: Boolean = false,
+        diagnosticOpticsGeneration: Long = 0,
         // Dual-open camera switching: open the DEVICE now (the outgoing camera keeps streaming
         // through its ~120 ms) but hold the session until [startDeferredSession] — the preview
         // surface belongs to the old session until it closes. onDeviceOpened fires from the camera
@@ -208,6 +218,9 @@ class CameraController(context: Context) {
         this.videoStabHalMode = videoStabHalMode
         this.teleconverterMode = teleconverterMode
         this.pinAutoFps = pinAutoFps
+        this.diagnosticRequestMode = if (pinAutoFps) CaptureMode.VIDEO else CaptureMode.PHOTO
+        this.diagnosticOpticsGeneration = diagnosticOpticsGeneration
+        modeIntentGate.reset(PreviewModeIntent(pinAutoFps, diagnosticOpticsGeneration))
         this.rawChars = runCatching {
             manager.getCameraCharacteristics(selection.physicalId ?: selection.logicalId)
         }.getOrNull()
@@ -319,6 +332,8 @@ class CameraController(context: Context) {
     // pinch tick. Camera-thread confined; refreshed by every full startPreview rebuild.
     private var previewBuilder: CaptureRequest.Builder? = null
     private var previewCallback: CameraCaptureSession.CaptureCallback? = null
+    @Volatile internal var latestPreviewRequestGeneration: Long = 0
+        private set
     private var customWbSampleSequence = 0L
     private var pendingCustomWbSample: PendingCustomWbSample? = null
 
@@ -641,6 +656,13 @@ class CameraController(context: Context) {
         val camera = device ?: return false
         val preview = glSurface ?: return false
         val s = session ?: return false
+        // Process-global and strictly increasing across controller replacements. Device tests use
+        // this identity to reject late results from the outgoing Photo/Video request after a mode
+        // switch; a mode label alone cannot distinguish an old Photo callback from the new one.
+        val requestGeneration = previewRequestSequence.incrementAndGet()
+        latestPreviewRequestGeneration = requestGeneration
+        val requestMode = diagnosticRequestMode
+        val requestOpticsGeneration = diagnosticOpticsGeneration
         val touchAfUsesAuto = touchAfMayTrigger(
             touchAfActive = touchAfActive,
             maxAfRegions = caps.maxAfRegions,
@@ -678,6 +700,8 @@ class CameraController(context: Context) {
             // and the GL compensation would hold a stale mid-ramp halZoom.
             lastForwardedResultZoom = Float.NaN
             val callback = object : CameraCaptureSession.CaptureCallback() {
+                private var firstDiagnosticResultPending = true
+
                 override fun onCaptureCompleted(
                     session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult,
                 ) {
@@ -745,7 +769,8 @@ class CameraController(context: Context) {
                     // whether AE/AF are converging on the standalone tele or effectively inert.
                     // Debug builds only — release users don't need per-second camera telemetry
                     // in logcat (minor capability disclosure + log spam; security review).
-                    if (BuildConfig.DEBUG && threeAFrame % 30 == 0) {
+                    if (BuildConfig.DEBUG && (firstDiagnosticResultPending || threeAFrame % 30 == 0)) {
+                        firstDiagnosticResultPending = false
                         val ae = result.get(CaptureResult.CONTROL_AE_STATE)
                         val af = result.get(CaptureResult.CONTROL_AF_STATE)
                         val afMode = result.get(CaptureResult.CONTROL_AF_MODE)
@@ -753,7 +778,7 @@ class CameraController(context: Context) {
                         val vstab = result.get(CaptureResult.CONTROL_VIDEO_STABILIZATION_MODE)
                         val effectiveZoom = controls.zoomRatio.coerceAtLeast(1f) *
                             if (teleconverterMode) TELECONVERTER_MAGNIFICATION else 1f
-                        Log.i(TAG, "3A: aeState=$ae afState=$af afMode=$afMode iso=${result.get(CaptureResult.SENSOR_SENSITIVITY)} expNs=${result.get(CaptureResult.SENSOR_EXPOSURE_TIME)} lens=$lastFocusDistance ois=$ois vstab=$vstab (req=$videoStabHalMode tele=$teleconverterMode effZoom=$effectiveZoom)")
+                        Log.i(TAG, "3A: controllerId=$diagnosticId opticsGeneration=$requestOpticsGeneration requestGeneration=$requestGeneration mode=${requestMode.name} aeState=$ae afState=$af afMode=$afMode iso=${result.get(CaptureResult.SENSOR_SENSITIVITY)} expNs=${result.get(CaptureResult.SENSOR_EXPOSURE_TIME)} lens=$lastFocusDistance ois=$ois vstab=$vstab (req=$videoStabHalMode tele=$teleconverterMode effZoom=$effectiveZoom)")
                     }
                 }
             }
@@ -1053,10 +1078,16 @@ class CameraController(context: Context) {
     }
 
     /** Pins AUTO exposure to the selected fps in video mode, and restores low-light fps in photo. */
-    fun setPinAutoFps(enabled: Boolean) {
-        if (pinAutoFps == enabled) return
-        pinAutoFps = enabled
+    fun setPinAutoFps(enabled: Boolean, opticsGeneration: Long) {
+        val intent = PreviewModeIntent(enabled, opticsGeneration)
+        if (!modeIntentGate.request(intent)) return
         postToCamera {
+            // Drop superseded toggles before changing either the real request key or its diagnostic
+            // owner. Both are camera-thread-confined, so a built request can never mix two intents.
+            if (!modeIntentGate.isCurrent(intent)) return@postToCamera
+            pinAutoFps = enabled
+            diagnosticRequestMode = if (enabled) CaptureMode.VIDEO else CaptureMode.PHOTO
+            diagnosticOpticsGeneration = opticsGeneration
             val modeIntent = if (enabled && controls.exposureMode == ExposureMode.PROGRAM) {
                 controls.copy(programAppSide = false)
             } else {
@@ -1381,6 +1412,8 @@ class CameraController(context: Context) {
 
     private companion object {
         const val TAG = "CameraController"
+        val controllerSequence = java.util.concurrent.atomic.AtomicLong(0)
+        val previewRequestSequence = java.util.concurrent.atomic.AtomicLong(0)
         const val CUSTOM_WB_SAMPLE_TIMEOUT_MS = 2_000L
         // Sensor fast-path pacing: every repeating-request swap gaps this HAL ~180 ms (measured),
         // so high-churn sensor submits hold the same >=200 ms floor as the zoom fast path.
@@ -1395,6 +1428,30 @@ class CameraController(context: Context) {
         const val CLOSE_JOIN_TIMEOUT_MS = 1500L
         const val OPLUS_CAMERA_MODE_TELEPHOTO_HASSELBLAD: Byte = 40
     }
+}
+
+internal data class PreviewModeIntent(
+    val pinAutoFps: Boolean,
+    val opticsGeneration: Long,
+)
+
+/** Atomic last-intent gate; equal duplicate requests retain identity so their queued owner survives. */
+internal class PreviewModeIntentGate(initial: PreviewModeIntent) {
+    private val requested = java.util.concurrent.atomic.AtomicReference(initial)
+
+    fun reset(intent: PreviewModeIntent) {
+        requested.set(intent)
+    }
+
+    fun request(intent: PreviewModeIntent): Boolean {
+        while (true) {
+            val previous = requested.get()
+            if (previous == intent) return false
+            if (requested.compareAndSet(previous, intent)) return true
+        }
+    }
+
+    fun isCurrent(intent: PreviewModeIntent): Boolean = requested.get() === intent
 }
 
 /** Identity guard for callbacks that can outlive and race reuse of the single pending-shot slot. */

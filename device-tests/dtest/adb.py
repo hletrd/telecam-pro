@@ -31,6 +31,18 @@ LOGCAT_FATAL = re.compile(r"FATAL EXCEPTION|ANR in|CAMERA_ERROR|Fatal signal")
 # the QTI HAL's photo↔video teardown emits a framework-level -38 "Error clearing streaming
 # request" that the app contains (closed-gate StateCallback, cycle 3) — it never reaches the UI.
 LOGCAT_BENIGN = re.compile(r"Error clearing streaming request: Function not implemented \(-38\)")
+GLOBAL_CAMERA_FATAL = re.compile(
+    rf"ANR in {re.escape(APP_ID)}|"
+    rf"am_anr.*{re.escape(APP_ID)}|"
+    r"(?:Fatal signal|FATAL EXCEPTION).*(?:cameraserver|camera[_ .-]?provider|provider@2\.[4-9])|"
+    r"(?:cameraserver|camera[_ .-]?provider|provider@2\.[4-9]).*"
+    r"(?:Fatal signal|FATAL EXCEPTION|service died|has died|crash)|"
+    r"CameraManagerGlobal.*Camera service (?:is )?(?:currently )?unavailable|"
+    r"CameraService.*(?:service died|service is unavailable|ERROR_CAMERA_SERVICE)|"
+    r"CameraProviderManager.*(?:service died|has died|fatal)|"
+    r"Camera3-Device.*(?:Error condition .*reported by HAL|Camera HAL reported serious device error)",
+    re.IGNORECASE,
+)
 
 
 class AdbError(RuntimeError):
@@ -166,6 +178,14 @@ def parse_media_rows(collection: str, output: str) -> list[MediaRow]:
     return rows
 
 
+def relevant_global_fatal_lines(log: str) -> list[str]:
+    """System/HAL failures relevant to this app, excluding unrelated device log noise."""
+    return [
+        line for line in log.splitlines()
+        if GLOBAL_CAMERA_FATAL.search(line) and not LOGCAT_BENIGN.search(line)
+    ]
+
+
 class Adb:
     def __init__(self, serial: str, workdir: Path, *, allow_destructive: bool = False):
         self.serial = serial
@@ -285,18 +305,37 @@ class Adb:
     # -- logcat ------------------------------------------------------------
 
     def log_mark(self) -> str:
-        return self.shell('date +"%m-%d %H:%M:%S.000"')
+        # logcat accepts fractional Unix epoch on API 36. Millisecond precision avoids admitting up
+        # to 999 ms of pre-mark lines, while epoch form remains unambiguous across New Year.
+        return self.shell("date +%s.%3N")
 
-    def logcat_since(self, mark: str, pid: int | None = None, timeout: int = 30) -> str:
-        pid_arg = f"--pid={pid} " if pid else ""
-        return self._run("logcat", "-d", "-t", mark, *(pid_arg.split()), timeout=timeout)  # type: ignore[return-value]
+    def logcat_since(
+        self,
+        mark: str,
+        pid: int | None = None,
+        timeout: int = 30,
+        *,
+        all_buffers: bool = False,
+    ) -> str:
+        args = ["logcat", "-d", "-v", "threadtime"]
+        if all_buffers:
+            args.extend(("-b", "all"))
+        args.extend(("-t", mark))
+        if pid is not None:
+            args.append(f"--pid={pid}")
+        return self._run(*args, timeout=timeout)  # type: ignore[return-value]
 
     def fatal_lines(self, mark: str, pid: int | None = None) -> list[str]:
-        log = self.logcat_since(mark, pid)
-        return [
-            ln for ln in log.splitlines()
+        app_log = self.logcat_since(mark, pid)
+        app_lines = [
+            ln for ln in app_log.splitlines()
             if LOGCAT_FATAL.search(ln) and not LOGCAT_BENIGN.search(ln)
         ]
+        global_lines = relevant_global_fatal_lines(
+            self.logcat_since(mark, all_buffers=True)
+        )
+        # The app line may also be present in the all-buffer dump; preserve order without duplicates.
+        return list(dict.fromkeys((*app_lines, *global_lines)))
 
     def wait_log(self, mark: str, pattern: str, timeout_s: float = 15.0, pid: int | None = None) -> str | None:
         rx = re.compile(pattern)

@@ -24,6 +24,7 @@ from dtest.adb import (  # noqa: E402
     MediaRow,
     UiTree,
     parse_media_rows,
+    relevant_global_fatal_lines,
 )
 
 
@@ -190,6 +191,93 @@ class RunnerHelpersTest(unittest.TestCase):
             )
 
 
+class LogcatSafetyTest(unittest.TestCase):
+    def test_global_scan_keeps_app_and_camera_service_failures_only(self) -> None:
+        log = "\n".join(
+            (
+                "ActivityManager: ANR in me.hletrd.telecampro.debug (me.hletrd.telecampro.debug/.MainActivity)",
+                "libc: Fatal signal 6 (SIGABRT) in tid 123 (provider@2.4-se)",
+                "Camera3-Device: Camera 0: Camera HAL reported serious device error",
+                "CameraManagerGlobal: Camera service is unavailable",
+                "Camera2ClientBase: Error condition 1 reported by HAL, requestId 42",
+                "ActivityManager: ANR in com.example.unrelated",
+                "CameraDevice-JV-0: Error clearing streaming request: Function not implemented (-38)",
+            )
+        )
+
+        fatal = relevant_global_fatal_lines(log)
+
+        self.assertEqual(len(fatal), 4)
+        self.assertTrue(any("ANR in me.hletrd.telecampro.debug" in line for line in fatal))
+        self.assertTrue(any("provider@2.4-se" in line for line in fatal))
+        self.assertTrue(any("serious device error" in line for line in fatal))
+        self.assertTrue(any("Camera service is unavailable" in line for line in fatal))
+        self.assertFalse(any("com.example.unrelated" in line for line in fatal))
+        self.assertFalse(any("Camera2ClientBase" in line for line in fatal))
+        self.assertFalse(any("Function not implemented" in line for line in fatal))
+
+    def test_fatal_scan_reads_app_pid_and_all_system_buffers(self) -> None:
+        class RecordingLogAdb(Adb):
+            def __init__(self, workdir: Path):
+                super().__init__("test-serial", workdir)
+                self.commands: list[tuple[str, ...]] = []
+
+            def _run(self, *args: str, binary: bool = False, timeout: int = 60):
+                del binary, timeout
+                self.commands.append(args)
+                if "--pid=123" in args:
+                    return "AndroidRuntime: FATAL EXCEPTION: main"
+                return "ActivityManager: ANR in me.hletrd.telecampro.debug"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            adb = RecordingLogAdb(Path(temp_dir))
+            fatal = adb.fatal_lines("1784538672.419", pid=123)
+
+        self.assertEqual(len(fatal), 2)
+        self.assertEqual(
+            adb.commands,
+            [
+                (
+                    "logcat",
+                    "-d",
+                    "-v",
+                    "threadtime",
+                    "-t",
+                    "1784538672.419",
+                    "--pid=123",
+                ),
+                (
+                    "logcat",
+                    "-d",
+                    "-v",
+                    "threadtime",
+                    "-b",
+                    "all",
+                    "-t",
+                    "1784538672.419",
+                ),
+            ],
+        )
+
+    def test_log_mark_uses_exact_epoch_milliseconds(self) -> None:
+        class RecordingMarkAdb(Adb):
+            def __init__(self, workdir: Path):
+                super().__init__("test-serial", workdir)
+                self.command: str | None = None
+
+            def shell(self, cmd: str, timeout: int = 60) -> str:
+                del timeout
+                self.command = cmd
+                return "1784538672.419"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            adb = RecordingMarkAdb(Path(temp_dir))
+            mark = adb.log_mark()
+
+        self.assertEqual(mark, "1784538672.419")
+        self.assertEqual(adb.command, "date +%s.%3N")
+
+
 class UiSemanticsTest(unittest.TestCase):
     @staticmethod
     def focal_xml(checked: str, *, radio_role: bool = True) -> str:
@@ -283,6 +371,73 @@ class UiSemanticsTest(unittest.TestCase):
         self.assertEqual(match.group(7), "84000000")
         self.assertEqual(match.group(8), "29.970029970")
         self.assertEqual(match.group(9), "HLG")
+
+    def test_mode_3a_rejects_outgoing_and_pre_video_photo_results(self) -> None:
+        log = "\n".join(
+            (
+                "CameraController: 3A: controllerId=1 opticsGeneration=7 "
+                "requestGeneration=40 mode=PHOTO aeState=2",
+                "CameraEngine: CameraSessionAccepted: controllerId=2 opticsGeneration=8 "
+                "sessionGeneration=12 requestGeneration=41 mode=VIDEO cameraId=4 ready=true",
+                "CameraController: 3A: controllerId=1 opticsGeneration=7 "
+                "requestGeneration=41 mode=VIDEO aeState=2",
+                "CameraController: 3A: controllerId=2 opticsGeneration=8 "
+                "requestGeneration=42 mode=VIDEO aeState=2",
+                "CameraEngine: CameraSessionAccepted: controllerId=3 opticsGeneration=9 "
+                "sessionGeneration=13 requestGeneration=43 mode=PHOTO cameraId=0 ready=false",
+                "CameraEngine: CameraSessionAccepted: controllerId=3 opticsGeneration=10 "
+                "sessionGeneration=14 requestGeneration=43 mode=PHOTO cameraId=0 ready=true",
+                "CameraController: 3A: controllerId=2 opticsGeneration=8 "
+                "requestGeneration=43 mode=PHOTO aeState=2",
+                "CameraController: 3A: controllerId=3 opticsGeneration=10 "
+                "requestGeneration=44 mode=PHOTO aeState=2",
+            )
+        )
+
+        video_acceptance = cases.newest_session_acceptance(
+            log,
+            "VIDEO",
+            after_optics_generation=7,
+        )
+        self.assertIsNotNone(video_acceptance)
+        self.assertEqual(video_acceptance.controller_id, 2)
+        self.assertEqual(video_acceptance.optics_generation, 8)
+        self.assertEqual(
+            cases.newest_mode_three_a(
+                log,
+                "VIDEO",
+                after_request_generation=40,
+                controller_id=video_acceptance.controller_id,
+                optics_generation=video_acceptance.optics_generation,
+            ).request_generation,
+            42,
+        )
+
+        photo_acceptance = cases.newest_session_acceptance(
+            log,
+            "PHOTO",
+            after_optics_generation=8,
+        )
+        self.assertIsNotNone(photo_acceptance)
+        self.assertEqual(photo_acceptance.optics_generation, 10)
+        self.assertIsNone(
+            cases.newest_mode_three_a(
+                log,
+                "PHOTO",
+                after_request_generation=42,
+                controller_id=2,
+                optics_generation=10,
+            )
+        )
+        photo_evidence = cases.newest_mode_three_a(
+            log,
+            "PHOTO",
+            after_request_generation=42,
+            controller_id=photo_acceptance.controller_id,
+            optics_generation=photo_acceptance.optics_generation,
+        )
+        self.assertIsNotNone(photo_evidence)
+        self.assertEqual(photo_evidence.request_generation, 44)
 
 
 class RecordingCleanupTest(unittest.TestCase):

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 import time
+from dataclasses import dataclass
 from fractions import Fraction
 
 from dtest.adb import APP_ID, MEDIA_DIR, MEDIA_RELATIVE_PATH, Adb, MediaRow
@@ -39,7 +40,33 @@ RECORDING_FINALIZED = re.compile(
     r"RecordingFinalized: captureId=([0-9]+) saved=(true|false) "
     r"error=([A-Za-z0-9_.$-]+)"
 )
+MODE_THREE_A = re.compile(
+    r"3A: controllerId=([0-9]+) opticsGeneration=([0-9]+) "
+    r"requestGeneration=([0-9]+) mode=(PHOTO|VIDEO)\b"
+)
+SESSION_ACCEPTED = re.compile(
+    r"CameraSessionAccepted: controllerId=([0-9]+) opticsGeneration=([0-9]+) "
+    r"sessionGeneration=([0-9]+) requestGeneration=([0-9]+) "
+    r"mode=(PHOTO|VIDEO) cameraId=(\S+) ready=(true|false)"
+)
 LONG_VIDEO_SECONDS = 65
+
+
+@dataclass(frozen=True)
+class ModeThreeAEvidence:
+    line: str
+    controller_id: int
+    optics_generation: int
+    request_generation: int
+
+
+@dataclass(frozen=True)
+class SessionAcceptance:
+    line: str
+    controller_id: int
+    optics_generation: int
+    session_generation: int
+    request_generation: int
 
 
 # ---------------------------------------------------------------- helpers
@@ -70,6 +97,110 @@ def ensure_video_mode(ctx: Context) -> None:
         return
     ctx.adb.tap_ui(desc="Video mode")
     time.sleep(1.5)
+
+
+def newest_mode_three_a(
+    log: str,
+    mode: str,
+    *,
+    after_request_generation: int = 0,
+    controller_id: int | None = None,
+    optics_generation: int | None = None,
+) -> ModeThreeAEvidence | None:
+    """Return the newest 3A result owned by an exact accepted route when supplied."""
+    candidates: list[ModeThreeAEvidence] = []
+    for line in log.splitlines():
+        match = MODE_THREE_A.search(line)
+        if match is None:
+            continue
+        evidence = ModeThreeAEvidence(
+            line=line,
+            controller_id=int(match.group(1)),
+            optics_generation=int(match.group(2)),
+            request_generation=int(match.group(3)),
+        )
+        if match.group(4) != mode or evidence.request_generation <= after_request_generation:
+            continue
+        if controller_id is not None and evidence.controller_id != controller_id:
+            continue
+        if optics_generation is not None and evidence.optics_generation != optics_generation:
+            continue
+        candidates.append(evidence)
+    return max(candidates, key=lambda item: item.request_generation) if candidates else None
+
+
+def newest_session_acceptance(
+    log: str,
+    mode: str,
+    *,
+    after_optics_generation: int = -1,
+) -> SessionAcceptance | None:
+    candidates: list[SessionAcceptance] = []
+    for line in log.splitlines():
+        match = SESSION_ACCEPTED.search(line)
+        if match is None or match.group(5) != mode or match.group(7) != "true":
+            continue
+        evidence = SessionAcceptance(
+            line=line,
+            controller_id=int(match.group(1)),
+            optics_generation=int(match.group(2)),
+            session_generation=int(match.group(3)),
+            request_generation=int(match.group(4)),
+        )
+        if evidence.optics_generation > after_optics_generation:
+            candidates.append(evidence)
+    return max(
+        candidates,
+        key=lambda item: (item.optics_generation, item.session_generation),
+    ) if candidates else None
+
+
+def wait_mode_three_a(
+    ctx: Context,
+    mark: str,
+    pid: int,
+    mode: str,
+    *,
+    after_request_generation: int = 0,
+    controller_id: int | None = None,
+    optics_generation: int | None = None,
+    timeout_s: float = 10,
+) -> ModeThreeAEvidence | None:
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        evidence = newest_mode_three_a(
+            ctx.adb.logcat_since(mark, pid),
+            mode,
+            after_request_generation=after_request_generation,
+            controller_id=controller_id,
+            optics_generation=optics_generation,
+        )
+        if evidence is not None:
+            return evidence
+        time.sleep(0.5)
+    return None
+
+
+def wait_session_acceptance(
+    ctx: Context,
+    mark: str,
+    pid: int,
+    mode: str,
+    *,
+    after_optics_generation: int = -1,
+    timeout_s: float = 12,
+) -> SessionAcceptance | None:
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        evidence = newest_session_acceptance(
+            ctx.adb.logcat_since(mark, pid),
+            mode,
+            after_optics_generation=after_optics_generation,
+        )
+        if evidence is not None:
+            return evidence
+        time.sleep(0.5)
+    return None
 
 
 def shutter_node(ctx: Context):
@@ -300,9 +431,11 @@ def t_3a(ctx: Context) -> None:
     """The camera session publishes 3A telemetry (proves a configured repeating request)."""
     pid = ensure_foreground(ctx)
     mark = ctx.adb.log_mark()
-    line = ctx.adb.wait_log(mark, r"3A: aeState=\d", timeout_s=10, pid=pid)
-    assert line, "no 3A telemetry within 10 s — session not configured?"
-    ctx.note(line.split("3A:")[-1].strip()[:90])
+    mode = "VIDEO" if ctx.adb.ui().find(desc="Start recording") else "PHOTO"
+    timeout_s = 20 if mode == "PHOTO" else 10
+    evidence = wait_mode_three_a(ctx, mark, pid, mode, timeout_s=timeout_s)
+    assert evidence, f"no {mode} 3A telemetry within {timeout_s} s — session not configured?"
+    ctx.note(evidence.line.split("3A:")[-1].strip()[:90])
 
 
 # ---------------------------------------------------------------- full: modes/lenses/TC
@@ -311,12 +444,89 @@ def t_3a(ctx: Context) -> None:
 def t_modes(ctx: Context) -> None:
     """Photo↔Video flips reconfigure the session without camera errors."""
     pid = ensure_foreground(ctx)
+    tree = ctx.adb.ui()
+    if tree.find(desc="Stop recording"):
+        raise UnsafeState("mode round-trip entered while recording was active")
+    initial_mode = "VIDEO" if tree.find(desc="Start recording") else "PHOTO"
+    assert initial_mode == "VIDEO" or shutter_node(ctx), "could not determine initial capture mode"
+    test_mark = ctx.adb.log_mark()
+    baseline = wait_mode_three_a(
+        ctx,
+        test_mark,
+        pid,
+        initial_mode,
+        timeout_s=20 if initial_mode == "PHOTO" else 10,
+    )
+    assert baseline, f"initial {initial_mode} request did not publish generation-owned 3A"
+
+    # A persisted Video launch must not silently turn this into a one-way Video→Photo test. First
+    # establish a committed Photo baseline, then exercise both advertised transition directions.
+    if initial_mode == "VIDEO":
+        baseline_mark = ctx.adb.log_mark()
+        ensure_photo_mode(ctx)
+        baseline_acceptance = wait_session_acceptance(
+            ctx,
+            baseline_mark,
+            pid,
+            "PHOTO",
+            after_optics_generation=baseline.optics_generation,
+        )
+        assert baseline_acceptance, "could not establish an accepted Photo baseline"
+        baseline = wait_mode_three_a(
+            ctx,
+            baseline_mark,
+            pid,
+            "PHOTO",
+            after_request_generation=baseline.request_generation,
+            controller_id=baseline_acceptance.controller_id,
+            optics_generation=baseline_acceptance.optics_generation,
+        )
+        assert baseline, "accepted Photo baseline did not produce an owned 3A result"
+
     mark = ctx.adb.log_mark()
     ensure_video_mode(ctx)
     assert ctx.adb.ui().find(desc="Start recording"), "video mode did not arm the REC button"
+    video_acceptance = wait_session_acceptance(
+        ctx,
+        mark,
+        pid,
+        "VIDEO",
+        after_optics_generation=baseline.optics_generation,
+    )
+    assert video_acceptance, "Video route was not committed Ready by the camera engine"
+    video_evidence = wait_mode_three_a(
+        ctx,
+        mark,
+        pid,
+        "VIDEO",
+        after_request_generation=baseline.request_generation,
+        controller_id=video_acceptance.controller_id,
+        optics_generation=video_acceptance.optics_generation,
+    )
+    assert video_evidence, "accepted Video route did not produce an owned 3A result"
+
+    recovery_mark = ctx.adb.log_mark()
     ensure_photo_mode(ctx)
     assert shutter_node(ctx), "photo mode did not restore the shutter"
-    fatals = ctx.adb.fatal_lines(mark, pid)
+    photo_acceptance = wait_session_acceptance(
+        ctx,
+        recovery_mark,
+        pid,
+        "PHOTO",
+        after_optics_generation=video_acceptance.optics_generation,
+    )
+    assert photo_acceptance, "Photo route was not committed Ready after Video"
+    recovered = wait_mode_three_a(
+        ctx,
+        recovery_mark,
+        pid,
+        "PHOTO",
+        after_request_generation=video_evidence.request_generation,
+        controller_id=photo_acceptance.controller_id,
+        optics_generation=photo_acceptance.optics_generation,
+    )
+    assert recovered, "accepted Photo route did not resume with its own newer 3A request"
+    fatals = ctx.adb.fatal_lines(test_mark, pid)
     assert not fatals, f"errors during mode flips: {fatals[:2]}"
     ctx.note("photo→video→photo clean")
 

@@ -9,8 +9,10 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.TotalCaptureResult
 import android.media.Image
+import android.util.Log
 import android.util.Size
 import android.view.Surface
+import com.hletrd.findx9tele.BuildConfig
 import com.hletrd.findx9tele.capture.DngCapture
 import com.hletrd.findx9tele.capture.ExifShot
 import com.hletrd.findx9tele.capture.ShotSpec
@@ -260,6 +262,7 @@ class CameraEngine(private val context: Context) {
         // handler work. Never perform Binder IPC, close resources, or invoke external callbacks
         // while the optics monitor is held.
         var publication: CameraReadyPublication? = null
+        var acceptedDiagnostic: String? = null
         val publicationGeneration = opticsCommitGate.commit(
             expectedGeneration = expectedGeneration,
             ownsTerminal = {
@@ -284,9 +287,16 @@ class CameraEngine(private val context: Context) {
                 sessionGeneration = sessionGeneration,
                 photoOutputs = photoOutputs,
             )
+            val acceptedMode = if (videoMode) CaptureMode.VIDEO else CaptureMode.PHOTO
+            val acceptedCameraId = selection?.let { it.physicalId ?: it.logicalId } ?: "none"
+            acceptedDiagnostic = "CameraSessionAccepted: controllerId=${expectedController.diagnosticId} " +
+                "opticsGeneration=$expectedGeneration sessionGeneration=$sessionGeneration " +
+                "requestGeneration=${expectedController.latestPreviewRequestGeneration} " +
+                "mode=${acceptedMode.name} cameraId=$acceptedCameraId ready=$effectiveReady"
             cameraRecoveryAttempts = 0
         } ?: return false
         coldStartRetryGate.success(publicationGeneration)
+        if (BuildConfig.DEBUG) Log.i("CameraEngine", checkNotNull(acceptedDiagnostic))
         // Reconciled caps/controls must enter the caller's main queue before Ready. Callback failure
         // is sealed so UI plumbing cannot strand an otherwise accepted Camera2 session Not-Ready.
         runCatching { beforeReadyPublication?.invoke(publicationGeneration) }
@@ -381,7 +391,7 @@ class CameraEngine(private val context: Context) {
         requestedVideoSize = restored.requestedVideoSize
         previewStreamSize = before.previewStreamSize
         preTeleUnifiedZoom = before.preTeleUnifiedZoom
-        controller?.setPinAutoFps(before.videoMode)
+        controller?.setPinAutoFps(before.videoMode, transaction.generation)
         // Queue the exact UI optics first. Caps reconciliation follows it on main and is tagged with
         // this generation, so it cannot clamp the failed candidate or a newer user intent.
         onOpticsRollback?.invoke(
@@ -891,6 +901,7 @@ class CameraEngine(private val context: Context) {
             videoStabHalMode = c.videoStabControlMode(videoStabMode),
             teleconverterMode = teleconverterMode,
             pinAutoFps = videoMode,
+            diagnosticOpticsGeneration = expectedOpticsGeneration,
             onReady = { outputs ->
                 // Generation, controller identity, rollback acceptance, and Ready publication are
                 // one commit. A superseding intent cannot land between the check and publication.
@@ -994,10 +1005,10 @@ class CameraEngine(private val context: Context) {
         // Mode is a finder-gate input (photo-only): re-resolve synchronously so a photo→video flip
         // can never leave the GL PIP drawing until the async reconfigure lands.
         pushTeleFinder()
+        transaction?.let { controller?.setPinAutoFps(enabled, it.generation) }
         controller?.updateControls(modeControls)
         if (!changed) return
         val intentGeneration = modeIntentGeneration.incrementAndGet()
-        controller?.setPinAutoFps(enabled)
         if (!started) return
         // beginOpticsTransaction published Not-Ready atomically with the desired packet, so REC
         // cannot start against the outgoing session while this reopen is merely queued.
@@ -1124,7 +1135,7 @@ class CameraEngine(private val context: Context) {
         pushTeleFinder()
         val modeGeneration = modeIntentGeneration.incrementAndGet()
         val lensGeneration = lensIntentGeneration.incrementAndGet()
-        controller?.setPinAutoFps(enabledVideo)
+        controller?.setPinAutoFps(enabledVideo, transaction.generation)
         if (!started) return true
         setupExecutor.execute {
             if (!ownsOpticsTransaction(transaction) ||
@@ -1873,6 +1884,7 @@ class CameraEngine(private val context: Context) {
                 videoStabHalMode = c.videoStabControlMode(videoStabMode),
                 teleconverterMode = teleconverterMode,
                 pinAutoFps = videoMode,
+                diagnosticOpticsGeneration = transaction.generation,
                 deferSession = true,
                 onDeviceOpened = { deviceOk.set(true); deviceUp.countDown() },
                 onReady = { outputs ->
