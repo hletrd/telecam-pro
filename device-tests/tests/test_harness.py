@@ -24,7 +24,9 @@ from dtest.adb import (  # noqa: E402
     AdbError,
     DisplayMetrics,
     MediaRow,
+    UiNode,
     UiTree,
+    parse_df_available_bytes,
     parse_media_rows,
     relevant_global_fatal_lines,
 )
@@ -168,6 +170,18 @@ class SequenceMediaAdb(Adb):
         return self.last
 
 
+class DfAdb(Adb):
+    def __init__(self, workdir: Path, output: str):
+        super().__init__("test-serial", workdir)
+        self.output = output
+        self.commands: list[str] = []
+
+    def shell(self, cmd: str, timeout: int = 60) -> str:
+        del timeout
+        self.commands.append(cmd)
+        return self.output
+
+
 class RunnerHelpersTest(unittest.TestCase):
     def test_base_apk_path_prefers_base_split(self) -> None:
         output = "\n".join(
@@ -211,6 +225,27 @@ class RunnerHelpersTest(unittest.TestCase):
         self.assertEqual(metrics, DisplayMetrics(1440, 3168, 560))
         self.assertEqual(adb.assert_command, "screencap")
         self.assertEqual(adb.density_command, "wm density")
+
+    def test_free_bytes_parses_one_df_k_available_column(self) -> None:
+        output = (
+            "Filesystem     1K-blocks      Used Available Use% Mounted on\n"
+            "/dev/fuse       234567890 123456789 111111101  53% /storage/emulated\n"
+        )
+        expected = 111_111_101 * 1024
+        self.assertEqual(parse_df_available_bytes(output), expected)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            adb = DfAdb(Path(temp_dir), output)
+            self.assertEqual(adb.free_bytes(), expected)
+        self.assertEqual(adb.commands, ["df -k /sdcard"])
+
+        for malformed in (
+            "Filesystem 1K-blocks Used Capacity Mounted on\n/dev/fuse 10 5 50% /sdcard",
+            "Filesystem 1K-blocks Used Available Use% Mounted on\n/dev/fuse 10 5 0 50% /sdcard",
+            "Filesystem 1K-blocks Used Available Use% Mounted on\n",
+        ):
+            with self.subTest(malformed=malformed):
+                with self.assertRaises(AdbError):
+                    parse_df_available_bytes(malformed)
 
 
 class LogcatSafetyTest(unittest.TestCase):
@@ -455,6 +490,58 @@ class UiSemanticsTest(unittest.TestCase):
 
         self.assertIsNone(cases.active_multi_drive_label(UiTree("<hierarchy />")))
 
+    def test_photo_timer_and_drive_selected_options_are_exact(self) -> None:
+        xml = (
+            '<hierarchy>'
+            '<node text="10s" content-desc="" class="android.widget.Button" '
+            'checkable="true" checked="true" selected="true" enabled="true" '
+            'bounds="[0,0][48,48]" />'
+            '<node text="Burst" content-desc="" class="android.widget.Button" '
+            'checkable="true" checked="true" selected="true" enabled="true" '
+            'bounds="[0,50][100,70]" />'
+            '<node text="Single" content-desc="" class="android.widget.Button" '
+            'checkable="true" checked="false" selected="false" enabled="true" '
+            'bounds="[0,80][100,100]" />'
+            '</hierarchy>'
+        )
+
+        drives, timers = cases.selected_photo_setting_options(UiTree(xml))
+
+        self.assertEqual(drives, {"Burst"})
+        self.assertEqual(timers, {"10s"})
+
+    def test_settings_scrim_dismiss_point_stays_outside_anchored_panel(self) -> None:
+        scrim = UiNode(
+            text="",
+            desc="Close settings",
+            class_name="android.view.View",
+            bounds=(0, 0, 1440, 3200),
+            checkable=False,
+            checked=False,
+            selected=False,
+            enabled=True,
+            clickable=True,
+        )
+        self.assertEqual(
+            cases.settings_scrim_dismiss_point(DisplayMetrics(1440, 3200, 480), scrim),
+            (720, 160),
+        )
+
+        landscape_scrim = UiNode(**{**scrim.__dict__, "bounds": (0, 0, 3200, 1440)})
+        self.assertEqual(
+            cases.settings_scrim_dismiss_point(
+                DisplayMetrics(3200, 1440, 480),
+                landscape_scrim,
+            ),
+            (320, 720),
+        )
+
+    def test_snapshot_extension_mime_mapping_is_exact(self) -> None:
+        self.assertEqual(cases.expected_image_mime("capture.heic"), "image/heic")
+        self.assertEqual(cases.expected_image_mime("capture.jpg"), "image/jpeg")
+        self.assertEqual(cases.expected_image_mime("capture.dng"), "image/x-adobe-dng")
+        self.assertIsNone(cases.expected_image_mime("capture.mp4"))
+
     @staticmethod
     def video_osd_tree(spec: str, transfer: str) -> UiTree:
         nodes = []
@@ -568,6 +655,110 @@ class UiSemanticsTest(unittest.TestCase):
 
 
 class RecordingCleanupTest(unittest.TestCase):
+    @staticmethod
+    def admitted_spec(
+        *,
+        bitrate: int = 84_000_000,
+        fps: str = "29.970029970",
+        encoder: str = "2160x3840",
+    ):
+        line = (
+            "RecordingSpec: admitted stem=VID_TELECAM_F1_1700000000000_0000000042 "
+            f"codec=HEVC source=3840x2160 encoder={encoder} bitrate={bitrate} "
+            f"fps={fps} transfer=HLG audio=true"
+        )
+        return cases.RECORDING_SPEC.search(line)
+
+    def test_recording_storage_budget_keeps_double_payload_and_one_gib_free(self) -> None:
+        payload = 84_000_000 * 20 // 8
+        self.assertEqual(
+            cases.required_recording_free_bytes(84, 20),
+            payload * 2 + cases.REC_STORAGE_RESERVE_BYTES,
+        )
+
+        required = cases.required_recording_free_bytes(84, 4)
+        context = SimpleNamespace(
+            adb=SimpleNamespace(free_bytes=lambda: required - 1),
+            note=lambda _message: None,
+        )
+        with self.assertRaisesRegex(framework.Incomplete, "requires .*shared storage"):
+            cases.require_recording_storage(
+                context,
+                84,
+                4,
+                label="unit recording",
+            )
+
+    def test_recording_admission_must_match_osd_and_bitrate_cap(self) -> None:
+        osd = cases.VIDEO_OSD.fullmatch("4K 29.97p HEVC 84Mb")
+        admitted = self.admitted_spec()
+        self.assertIsNotNone(osd)
+        self.assertIsNotNone(admitted)
+        self.assertEqual(cases.recording_admission_errors(admitted, osd), [])
+
+        mismatch = self.admitted_spec(bitrate=85_000_000)
+        errors = cases.recording_admission_errors(mismatch, osd)
+        self.assertTrue(any("bitrate" in error and "OSD" in error for error in errors))
+
+        rounded_only = self.admitted_spec(bitrate=84_999_999)
+        self.assertEqual(cases.recording_admission_errors(rounded_only, osd), [])
+
+        below_display_bucket = self.admitted_spec(bitrate=83_999_999)
+        errors = cases.recording_admission_errors(below_display_bucket, osd)
+        self.assertTrue(any("bitrate" in error and "OSD" in error for error in errors))
+
+        raster_mismatch = self.admitted_spec(encoder="1920x1080")
+        errors = cases.recording_admission_errors(raster_mismatch, osd)
+        self.assertTrue(any("changes the admitted raster" in error for error in errors))
+
+        over_cap = self.admitted_spec(bitrate=251_000_000)
+        errors = cases.recording_admission_errors(over_cap, osd)
+        self.assertTrue(any("safety cap" in error for error in errors))
+
+    def test_short_video_decode_requires_admitted_fps_and_frame_cadence(self) -> None:
+        healthy = {
+            "probe": "ffprobe",
+            "video_seconds": Fraction(4),
+            "frame_count": 120,
+            "observed_fps": Fraction(30),
+            "nominal_fps": Fraction(30),
+            "minimum_frame_interval": Fraction(1, 30),
+            "maximum_frame_interval": Fraction(1, 30),
+        }
+        cases.require_decoded_video(
+            healthy,
+            minimum_seconds=3.5,
+            expected_fps=Fraction(30),
+        )
+
+        slow = {**healthy, "observed_fps": Fraction(293, 10)}
+        with self.assertRaisesRegex(AssertionError, "observed fps is unhealthy"):
+            cases.require_decoded_video(
+                slow,
+                minimum_seconds=3.5,
+                expected_fps=Fraction(30),
+            )
+
+        dropped_frame_gap = {**healthy, "maximum_frame_interval": Fraction(1, 15)}
+        with self.assertRaisesRegex(AssertionError, "cadence has a gap"):
+            cases.require_decoded_video(
+                dropped_frame_gap,
+                minimum_seconds=3.5,
+                expected_fps=Fraction(30),
+            )
+
+        short_with_two_frames = {
+            **healthy,
+            "video_seconds": Fraction(13, 5),
+            "frame_count": 2,
+        }
+        with self.assertRaisesRegex(AssertionError, "decoded only 2 frames"):
+            cases.require_decoded_video(
+                short_with_two_frames,
+                minimum_seconds=2.5,
+                expected_fps=Fraction(30),
+            )
+
     def test_stop_retries_dropped_tap_until_idle_is_proven(self) -> None:
         adb = StopRetryAdb(drops=1)
 
@@ -619,8 +810,162 @@ class RecordingCleanupTest(unittest.TestCase):
         with self.assertRaisesRegex(framework.UnsafeState, "was not observed"):
             cases.wait_recording_finalized(missing, "mark", 123, 42)
 
+        transport_failure = SimpleNamespace(
+            adb=SimpleNamespace(
+                wait_log=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    AdbError("device offline")
+                )
+            )
+        )
+        with self.assertRaisesRegex(framework.UnsafeState, "transport failed.*device offline"):
+            cases.wait_recording_finalized(transport_failure, "mark", 123, 42)
+
+    def test_cleanup_transport_failure_is_always_unsafe(self) -> None:
+        with self.assertRaisesRegex(framework.UnsafeState, "mode restore.*device offline"):
+            cases.cleanup_transport_or_unsafe(
+                "mode restore",
+                lambda: (_ for _ in ()).throw(AdbError("device offline")),
+            )
+
+    def test_cleanup_non_transport_failure_is_always_unsafe(self) -> None:
+        with self.assertRaisesRegex(
+            framework.UnsafeState,
+            "media restore: ValueError: malformed numeric field",
+        ) as raised:
+            cases.cleanup_transport_or_unsafe(
+                "media restore",
+                lambda: (_ for _ in ()).throw(ValueError("malformed numeric field")),
+            )
+
+        self.assertIsInstance(raised.exception.__cause__, ValueError)
+
+    def test_cleanup_preserves_existing_unsafe_state(self) -> None:
+        original = framework.UnsafeState("recorder ownership is unknown")
+
+        with self.assertRaises(framework.UnsafeState) as raised:
+            cases.cleanup_transport_or_unsafe(
+                "mode restore",
+                lambda: (_ for _ in ()).throw(original),
+            )
+
+        self.assertIs(raised.exception, original)
+
+    def test_late_admission_transport_failure_aborts_the_suite(self) -> None:
+        context = SimpleNamespace(
+            adb=SimpleNamespace(
+                wait_log=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    AdbError("device offline")
+                )
+            )
+        )
+
+        with self.assertRaisesRegex(
+            framework.UnsafeState,
+            "cleanup admission recovery transport failed.*device offline",
+        ):
+            cases.recover_recording_admission(context, "mark", 123, "cleanup")
+
+    def test_still_terminal_wait_accounts_for_every_replayed_tap(self) -> None:
+        log = "\n".join(
+            (
+                "CameraController: ShutterLag: started +20 ms",
+                "CameraEngine: CaptureFamily: settled "
+                "stem=IMG_TELECAM_F1_1700000000000_0000000043 outputs=heic,jpg",
+                "CameraController: ShutterLag: started +18 ms",
+                "CameraEngine: CaptureFamily: settled "
+                "stem=IMG_TELECAM_F1_1700000002000_0000000044 outputs=heic,jpg",
+            )
+        )
+        context = SimpleNamespace(adb=SimpleNamespace(logcat_since=lambda *_args: log))
+
+        evidence = cases.wait_still_capture_terminals(
+            context,
+            "mark",
+            123,
+            timeout_s=0.05,
+            settle_s=0,
+            poll_s=0,
+        )
+
+        self.assertEqual(evidence.started_count, 2)
+        self.assertEqual([family.capture_id for family in evidence.families], [43, 44])
+
+    def test_still_terminal_wait_rejects_an_unsettled_delivered_press(self) -> None:
+        context = SimpleNamespace(
+            adb=SimpleNamespace(
+                logcat_since=lambda *_args: "CameraController: ShutterLag: started +20 ms"
+            )
+        )
+
+        with self.assertRaisesRegex(framework.UnsafeState, "terminal state was not proven"):
+            cases.wait_still_capture_terminals(
+                context,
+                "mark",
+                123,
+                timeout_s=0.002,
+                settle_s=0,
+                poll_s=0,
+            )
+
+    def test_still_terminal_transport_failure_aborts_the_suite(self) -> None:
+        context = SimpleNamespace(
+            adb=SimpleNamespace(
+                logcat_since=lambda *_args: (_ for _ in ()).throw(AdbError("offline"))
+            )
+        )
+
+        with self.assertRaisesRegex(
+            framework.UnsafeState,
+            "still terminal transport failed.*offline",
+        ):
+            cases.wait_still_capture_terminals(
+                context,
+                "mark",
+                123,
+                timeout_s=0.01,
+                settle_s=0,
+                poll_s=0,
+            )
+
 
 class MediaStoreTest(unittest.TestCase):
+    def test_existing_media_row_metadata_must_remain_present_and_stable(self) -> None:
+        first = media_row(1)
+        second = media_row(2, collection="video")
+        self.assertEqual(cases.existing_media_regressions([first], [first, second]), [])
+
+        changed = MediaRow(**{**first.__dict__, "size_bytes": first.size_bytes + 1})
+        regressions = cases.existing_media_regressions([first, second], [changed])
+        self.assertTrue(any("changed" in error and "('image', 1)" in error for error in regressions))
+        self.assertTrue(any("disappeared" in error and "('video', 2)" in error for error in regressions))
+
+    def test_expected_multi_family_wait_exposes_duplicates_and_late_delta(self) -> None:
+        baseline = media_row(1)
+        first = media_row(2, collection="video", family_sequence=42)
+        duplicate = media_row(3, collection="video", family_sequence=42)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            adb = SequenceMediaAdb(
+                Path(temp_dir),
+                [[baseline, first, duplicate], [baseline, first, duplicate]],
+            )
+            rows = cases.wait_expected_new_media_rows(
+                SimpleNamespace(adb=adb),
+                {baseline.key},
+                {first.display_name},
+                timeout_s=0.05,
+                settle_s=0,
+                poll_s=0,
+            )
+
+        self.assertEqual(rows, [first, duplicate])
+        self.assertIsNotNone(
+            cases.exact_media_delta_error(
+                {baseline.key},
+                {first.key},
+                [baseline, first, duplicate],
+            )
+        )
+
     def test_sips_dimension_parser_reads_full_heif_canvas(self) -> None:
         output = "/tmp/image.heic:\n  pixelWidth: 3072\n  pixelHeight: 4096\n"
         self.assertEqual(media.sips_dimensions(output), (3072, 4096))
@@ -680,6 +1025,24 @@ class MediaStoreTest(unittest.TestCase):
 
         self.assertEqual([row.key for row in rows], [("image", 2), ("image", 3)])
         self.assertTrue(all(not row.is_pending and row.size_bytes > 0 for row in rows))
+
+    def test_known_video_row_can_publish_alongside_a_snapshot_family(self) -> None:
+        pending_video = media_row(7, collection="video", pending=True, size_bytes=0)
+        ready_video = media_row(7, collection="video")
+        snapshot = media_row(8)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            adb = SequenceMediaAdb(
+                Path(temp_dir),
+                [
+                    [pending_video],
+                    [ready_video, snapshot],
+                    [ready_video, snapshot],
+                ],
+            )
+
+            row = adb.wait_published_media_row(("video", 7), timeout_s=1, settle_s=0)
+
+        self.assertEqual(row, ready_video)
 
     def test_media_query_rejects_cli_parse_errors_and_unexpected_output(self) -> None:
         for output in (

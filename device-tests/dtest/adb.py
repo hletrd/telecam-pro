@@ -194,6 +194,33 @@ def relevant_global_fatal_lines(log: str) -> list[str]:
     ]
 
 
+def parse_df_available_bytes(output: str) -> int:
+    """Parse the Available column from Android toybox ``df -k`` output."""
+    lines = [line.split() for line in output.splitlines() if line.strip()]
+    header_index = next(
+        (index for index, fields in enumerate(lines) if "Available" in fields),
+        None,
+    )
+    if header_index is None:
+        raise AdbError(f"df -k omitted an Available column: {output[:300]}")
+    available_index = lines[header_index].index("Available")
+    candidates = []
+    for fields in lines[header_index + 1:]:
+        if len(fields) <= available_index:
+            continue
+        value = fields[available_index]
+        if value.isdigit():
+            candidates.append(int(value))
+    if len(candidates) != 1:
+        raise AdbError(
+            f"df -k returned {len(candidates)} parseable filesystem rows: {output[:300]}"
+        )
+    available_kib = candidates[0]
+    if available_kib <= 0:
+        raise AdbError(f"df -k reported no available storage: {output[:300]}")
+    return available_kib * 1024
+
+
 class Adb:
     def __init__(self, serial: str, workdir: Path, *, allow_destructive: bool = False):
         self.serial = serial
@@ -231,6 +258,10 @@ class Adb:
         local.parent.mkdir(parents=True, exist_ok=True)
         self._run("pull", remote, str(local), timeout=180)
         return local
+
+    def free_bytes(self) -> int:
+        """Return free shared-storage bytes from one unambiguous toybox ``df -k`` row."""
+        return parse_df_available_bytes(self.shell("df -k /sdcard"))
 
     # -- app lifecycle -----------------------------------------------------
 
@@ -469,6 +500,31 @@ class Adb:
                 and all(row.metadata_ready for row in latest)
             )
             if publish_complete and fingerprint == last_fingerprint:
+                stable_since = stable_since or time.time()
+                if time.time() - stable_since >= settle_s:
+                    return latest
+            else:
+                stable_since = None
+            last_fingerprint = fingerprint
+            time.sleep(0.5)
+        return latest
+
+    def wait_published_media_row(
+        self,
+        key: tuple[str, int],
+        *,
+        timeout_s: float = 45.0,
+        settle_s: float = 1.0,
+    ) -> MediaRow | None:
+        """Wait for one already-known pending row to publish without assuming it is the only family."""
+        deadline = time.time() + timeout_s
+        stable_since: float | None = None
+        last_fingerprint: tuple | None = None
+        latest: MediaRow | None = None
+        while time.time() < deadline:
+            latest = next((row for row in self.media_store_rows() if row.key == key), None)
+            fingerprint = latest.metadata_fingerprint if latest is not None else None
+            if latest is not None and latest.metadata_ready and fingerprint == last_fingerprint:
                 stable_since = stable_since or time.time()
                 if time.time() - stable_since >= settle_s:
                     return latest

@@ -243,6 +243,92 @@ def parse_ffprobe_payload(header: dict, scan: dict) -> dict:
     }
 
 
+_FFPROBE_CODEC_BY_RECORDING_CODEC = {
+    "HEVC": "hevc",
+    "AVC": "h264",
+    "APV": "apv",
+}
+
+
+def _audio_contract_errors(
+    info: dict,
+    *,
+    expected_audio: bool,
+    expected_sample_rate: int | None = None,
+    expected_channels: int | None = None,
+) -> list[str]:
+    """Return AAC stream and decoded A/V-boundary violations."""
+    audio_count = info.get("audio_stream_count")
+    audio = info.get("audio")
+    if not expected_audio:
+        if audio_count != 0:
+            return [f"audio_stream_count={audio_count!r}, expected no audio"]
+        return []
+
+    if audio_count != 1 or not isinstance(audio, dict):
+        return [f"audio_stream_count={audio_count!r}, expected one AAC stream"]
+
+    errors = []
+    audio_exact = {"codec": "aac"}
+    if expected_sample_rate is not None:
+        audio_exact["sample_rate"] = expected_sample_rate
+    if expected_channels is not None:
+        audio_exact["channels"] = expected_channels
+    for field, expected in audio_exact.items():
+        if audio.get(field) != expected:
+            errors.append(f"audio.{field}={audio.get(field)!r}, expected {expected!r}")
+
+    video_start = info.get("video_start")
+    video_end = info.get("video_end")
+    audio_start = audio.get("start")
+    audio_end = audio.get("end")
+    if not all(
+        isinstance(value, Fraction)
+        for value in (video_start, video_end, audio_start, audio_end)
+    ):
+        errors.append("decoded A/V start/end timestamps are unavailable")
+        return errors
+
+    start_delta = abs(audio_start - video_start)
+    end_delta = abs(audio_end - video_end)
+    if start_delta > Fraction(1, 4):
+        errors.append(f"A/V start delta={float(start_delta):.3f}s, expected <=0.25s")
+    if end_delta > Fraction(1, 4):
+        errors.append(f"A/V end delta={float(end_delta):.3f}s, expected <=0.25s")
+    return errors
+
+
+def recording_contract_errors(
+    info: dict,
+    *,
+    expected_codec: str,
+    expected_width: int,
+    expected_height: int,
+    expected_audio: bool,
+) -> list[str]:
+    """Validate decoded MP4 metadata against an admitted RecordingSpec."""
+    if info.get("probe") != "ffprobe":
+        return ["ffprobe frame decoding was unavailable"]
+
+    try:
+        ffprobe_codec = _FFPROBE_CODEC_BY_RECORDING_CODEC[expected_codec]
+    except KeyError as error:
+        raise ValueError(f"unsupported RecordingSpec codec: {expected_codec!r}") from error
+
+    errors = []
+    exact = {
+        "video_stream_count": 1,
+        "codec": ffprobe_codec,
+        "width": expected_width,
+        "height": expected_height,
+    }
+    for field, expected in exact.items():
+        if info.get(field) != expected:
+            errors.append(f"{field}={info.get(field)!r}, expected {expected!r}")
+    errors.extend(_audio_contract_errors(info, expected_audio=expected_audio))
+    return errors
+
+
 def hlg_2997_errors(
     info: dict,
     *,
@@ -297,39 +383,17 @@ def hlg_2997_errors(
     if not isinstance(frames, int) or frames < 1_790:
         errors.append(f"frame_count={frames!r}, expected at least 1790 decoded frames")
 
-    audio_count = info.get("audio_stream_count")
-    audio = info.get("audio")
-    if expected_audio:
-        if audio_count != 1 or not isinstance(audio, dict):
-            errors.append(f"audio_stream_count={audio_count!r}, expected one AAC stream")
-        else:
-            # FFmpeg 8 reports this Android AAC-LC track's profile as unknown in MP4 even though
-            # codec_name/sample-rate/channel layout are authoritative, so do not invent a profile
-            # assertion from an absent field.
-            audio_exact = {"codec": "aac", "sample_rate": 48_000, "channels": 2}
-            for field, expected in audio_exact.items():
-                if audio.get(field) != expected:
-                    errors.append(f"audio.{field}={audio.get(field)!r}, expected {expected!r}")
-            video_start = info.get("video_start")
-            video_end = info.get("video_end")
-            audio_start = audio.get("start")
-            audio_end = audio.get("end")
-            if not all(
-                isinstance(value, Fraction)
-                for value in (video_start, video_end, audio_start, audio_end)
-            ):
-                errors.append("decoded A/V start/end timestamps are unavailable")
-            else:
-                start_delta = abs(audio_start - video_start)
-                end_delta = abs(audio_end - video_end)
-                if start_delta > Fraction(1, 4):
-                    errors.append(
-                        f"A/V start delta={float(start_delta):.3f}s, expected <=0.25s"
-                    )
-                if end_delta > Fraction(1, 4):
-                    errors.append(f"A/V end delta={float(end_delta):.3f}s, expected <=0.25s")
-    elif audio_count != 0:
-        errors.append(f"audio_stream_count={audio_count!r}, expected no audio")
+    # FFmpeg 8 reports this Android AAC-LC track's profile as unknown in MP4 even though
+    # codec_name/sample-rate/channel layout are authoritative, so do not invent a profile
+    # assertion from an absent field.
+    errors.extend(
+        _audio_contract_errors(
+            info,
+            expected_audio=expected_audio,
+            expected_sample_rate=48_000 if expected_audio else None,
+            expected_channels=2 if expected_audio else None,
+        )
+    )
     return errors
 
 

@@ -61,6 +61,15 @@ SESSION_ACCEPTED = re.compile(
     r"mode=(PHOTO|VIDEO) cameraId=(\S+) ready=(true|false)"
 )
 LONG_VIDEO_SECONDS = 65
+REC_SOAK_CYCLES = 5
+REC_SOAK_SECONDS = 4
+REC_SOAK_MAX_MBPS = 250
+REC_SNAPSHOT_STORAGE_SECONDS = 90
+REC_STORAGE_RESERVE_BYTES = 1024 ** 3
+REC_SNAPSHOT_EXTRA_BYTES = 512 * 1024 ** 2
+REC_STORAGE_VBR_MULTIPLIER = 2
+REC_SNAPSHOT_PROMPT_SECONDS = 4.0
+REC_SNAPSHOT_TERMINAL_SETTLE_SECONDS = 3.0
 
 
 @dataclass(frozen=True)
@@ -78,6 +87,29 @@ class SessionAcceptance:
     optics_generation: int
     session_generation: int
     request_generation: int
+
+
+@dataclass(frozen=True)
+class SettledStillFamily:
+    stem: str
+    extensions: tuple[str, ...]
+
+    @property
+    def capture_id(self) -> int:
+        return int(self.stem.rsplit("_", 1)[1])
+
+
+@dataclass(frozen=True)
+class StillTerminalEvidence:
+    started_count: int
+    families: tuple[SettledStillFamily, ...]
+    first_started_after_s: float | None
+
+
+@dataclass(frozen=True)
+class PhotoSettingMarkers:
+    timer_option: str
+    drive_option: str
 
 
 # ---------------------------------------------------------------- helpers
@@ -229,6 +261,182 @@ def active_multi_drive_label(tree) -> str | None:
     return None
 
 
+PHOTO_DRIVE_OPTIONS = {"Single", "Burst", "AEB", "Timelapse"}
+PHOTO_TIMER_OPTIONS = {"Off", "3s", "10s"}
+
+
+def selected_photo_setting_options(tree) -> tuple[set[str], set[str]]:
+    selected = {
+        node.text
+        for node in tree.nodes
+        if node.text and (node.selected or node.checked)
+    }
+    return selected & PHOTO_DRIVE_OPTIONS, selected & PHOTO_TIMER_OPTIONS
+
+
+def _settings_option(ctx: Context, label: str, *, max_scrolls: int = 12) -> None:
+    """Select one exact Shooting-sheet chip, scrolling only inside the settings content pane."""
+    metrics = ctx.adb.display_metrics()
+    x = metrics.width_px * 4 // 5
+    top = metrics.height_px // 3
+    bottom = metrics.height_px * 4 // 5
+    for _ in range(max_scrolls):
+        tree = ctx.adb.ui()
+        candidates = [
+            node for node in tree.nodes
+            if node.text.casefold() == label.casefold() and node.enabled
+            and 0 <= node.center[0] < metrics.width_px
+            and 0 <= node.center[1] < metrics.height_px
+        ]
+        if candidates:
+            target = candidates[-1]
+            ctx.adb.tap(*target.center)
+            deadline = time.monotonic() + 4
+            while time.monotonic() < deadline:
+                selected = [
+                    node for node in ctx.adb.ui().nodes
+                    if node.text.casefold() == label.casefold()
+                    and (node.selected or node.checked)
+                ]
+                if selected:
+                    return
+                time.sleep(0.25)
+            raise AssertionError(f"settings option {label!r} did not become selected")
+        ctx.adb.shell(f"input swipe {x} {bottom} {x} {top} 250")
+        time.sleep(0.35)
+    raise AssertionError(f"settings option {label!r} was not reachable")
+
+
+def _close_settings_via_scrim(ctx: Context) -> None:
+    tree = ctx.adb.ui()
+    close_nodes = [node for node in tree.nodes if node.desc == "Close settings"]
+    if not close_nodes:
+        raise AssertionError("settings sheet exposed no close target")
+    # The full-screen scrim is safer under ADB's reconnect replay than the X: a replay in its
+    # exposed band becomes a harmless viewfinder tap instead of reopening the settings button.
+    scrim = max(
+        close_nodes,
+        key=lambda node: (node.bounds[2] - node.bounds[0]) * (node.bounds[3] - node.bounds[1]),
+    )
+    ctx.adb.tap(*settings_scrim_dismiss_point(ctx.adb.display_metrics(), scrim))
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        tree = ctx.adb.ui()
+        if tree.find(desc="Open settings") and tree.find_desc_exact("Close settings") is None:
+            time.sleep(0.8)  # allow the persisted-settings debounce to flush
+            return
+        time.sleep(0.25)
+    raise AssertionError("settings sheet did not close back to the camera")
+
+
+def settings_scrim_dismiss_point(
+    metrics: DisplayMetrics,
+    scrim: UiNode,
+) -> tuple[int, int]:
+    """Return a point in the sheet's exposed scrim, never in its anchored panel.
+
+    Portrait uses a 90%-height bottom panel, so the full-screen semantics node's centre is covered by
+    the panel. Landscape uses a 72%-width end panel. The remaining top/left bands are real scrim and
+    replay as harmless viewfinder taps if ADB delivered the first attempt before reconnecting.
+    """
+    left, top, right, bottom = scrim.bounds
+    width = right - left
+    height = bottom - top
+    if width <= 0 or height <= 0:
+        raise AssertionError(f"settings scrim has invalid bounds: {scrim.bounds}")
+    if metrics.width_px <= metrics.height_px:
+        return left + width // 2, top + min(height - 1, max(0, height // 20))
+    return left + min(width - 1, max(0, width // 10)), top + height // 2
+
+
+def set_photo_settings(ctx: Context, *, drive: str, timer: str) -> None:
+    """Set exact Photo drive/timer chips through the idempotent settings UI."""
+    if ctx.adb.ui().find_desc_exact("Close settings") is not None:
+        _close_settings_via_scrim(ctx)
+    ensure_photo_mode(ctx)
+    ctx.adb.tap_ui(desc="Open settings")
+    try:
+        ctx.adb.tap_ui(text="Shoot")
+        metrics = ctx.adb.display_metrics()
+        x = metrics.width_px * 4 // 5
+        top = metrics.height_px // 3
+        bottom = metrics.height_px * 4 // 5
+        # A prior sheet visit may restore this tab's scroll position. Rewind deterministically.
+        for _ in range(8):
+            ctx.adb.shell(f"input swipe {x} {top} {x} {bottom} 200")
+            time.sleep(0.1)
+        _settings_option(ctx, drive)
+        _settings_option(ctx, timer)
+    finally:
+        if ctx.adb.ui().find_desc_exact("Close settings") is not None:
+            _close_settings_via_scrim(ctx)
+
+
+def read_photo_settings(ctx: Context) -> PhotoSettingMarkers:
+    """Read exact selected Shooting-sheet chips; OSD absence must never be inferred as Single."""
+    if ctx.adb.ui().find_desc_exact("Close settings") is not None:
+        _close_settings_via_scrim(ctx)
+    ensure_photo_mode(ctx)
+    ctx.adb.tap_ui(desc="Open settings")
+    try:
+        ctx.adb.tap_ui(text="Shoot")
+        metrics = ctx.adb.display_metrics()
+        x = metrics.width_px * 4 // 5
+        top = metrics.height_px // 3
+        bottom = metrics.height_px * 4 // 5
+        for _ in range(8):
+            ctx.adb.shell(f"input swipe {x} {top} {x} {bottom} 200")
+            time.sleep(0.1)
+
+        drives: set[str] = set()
+        timers: set[str] = set()
+        for _ in range(12):
+            selected_drives, selected_timers = selected_photo_setting_options(ctx.adb.ui())
+            drives.update(selected_drives)
+            timers.update(selected_timers)
+            if len(drives) > 1 or len(timers) > 1:
+                raise AssertionError(
+                    f"ambiguous selected Photo settings: drives={drives}, timers={timers}"
+                )
+            if len(drives) == 1 and len(timers) == 1:
+                return PhotoSettingMarkers(next(iter(timers)), next(iter(drives)))
+            ctx.adb.shell(f"input swipe {x} {bottom} {x} {top} 250")
+            time.sleep(0.35)
+        raise AssertionError(
+            f"could not read selected Photo settings: drives={drives}, timers={timers}"
+        )
+    finally:
+        if ctx.adb.ui().find_desc_exact("Close settings") is not None:
+            _close_settings_via_scrim(ctx)
+
+
+def restore_photo_settings(ctx: Context, expected: PhotoSettingMarkers) -> None:
+    set_photo_settings(ctx, drive=expected.drive_option, timer=expected.timer_option)
+    actual = read_photo_settings(ctx)
+    if actual != expected:
+        raise UnsafeState(f"Photo timer/drive restore mismatch: expected={expected}, actual={actual}")
+
+
+def restore_photo_settings_verified(ctx: Context, expected: PhotoSettingMarkers) -> None:
+    try:
+        restore_photo_settings(ctx, expected)
+    except UnsafeState:
+        raise
+    except Exception as error:
+        raise UnsafeState(f"could not restore Photo timer/drive: {error}") from error
+
+
+def expected_image_mime(display_name: str) -> str | None:
+    extension = display_name.rsplit(".", 1)[-1].casefold()
+    return {
+        "heic": "image/heic",
+        "heif": "image/heic",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "dng": "image/x-adobe-dng",
+    }.get(extension)
+
+
 def video_target_precondition_error(tree) -> str | None:
     """Validate the visible preset without changing the photographer's persisted settings."""
     osd = [
@@ -272,6 +480,122 @@ def video_resolution_label(width: int, height: int) -> str:
         1080: "1080p",
         720: "720p",
     }.get(height, f"{width}×{height}")
+
+
+def required_recording_free_bytes(
+    bitrate_mbps: int,
+    seconds: int,
+    *,
+    extra_bytes: int = 0,
+) -> int:
+    """Reserve 2× payload for VBR/containers plus 1 GiB that the suite may never consume."""
+    assert bitrate_mbps > 0 and seconds > 0 and extra_bytes >= 0
+    payload_bytes = math.ceil(bitrate_mbps * 1_000_000 * seconds / 8)
+    return (
+        payload_bytes * REC_STORAGE_VBR_MULTIPLIER
+        + extra_bytes
+        + REC_STORAGE_RESERVE_BYTES
+    )
+
+
+def require_recording_storage(
+    ctx: Context,
+    bitrate_mbps: int,
+    seconds: int,
+    *,
+    label: str,
+    extra_bytes: int = 0,
+) -> None:
+    required = required_recording_free_bytes(
+        bitrate_mbps,
+        seconds,
+        extra_bytes=extra_bytes,
+    )
+    available = ctx.adb.free_bytes()
+    if available < required:
+        raise Incomplete(
+            f"{label} requires {required / 1024 ** 3:.2f} GiB free, "
+            f"but shared storage has {available / 1024 ** 3:.2f} GiB"
+        )
+    ctx.note(
+        f"storage preflight: {available / 1024 ** 3:.2f} GiB free, "
+        f"{required / 1024 ** 3:.2f} GiB required"
+    )
+
+
+def recording_admission_errors(admitted, osd) -> list[str]:
+    """Cross-check the recorder's exact admitted packet against the visible persisted preset."""
+    errors: list[str] = []
+    expected_codec = {"HEVC": "HEVC", "H.264": "AVC", "APV": "APV"}[osd.group("codec")]
+    if admitted.group(2) != expected_codec:
+        errors.append(f"codec={admitted.group(2)}, OSD={osd.group('codec')}")
+
+    source_width, source_height = int(admitted.group(3)), int(admitted.group(4))
+    encoder_width, encoder_height = int(admitted.group(5)), int(admitted.group(6))
+    admitted_resolution = video_resolution_label(source_width, source_height)
+    if admitted_resolution != osd.group("resolution"):
+        errors.append(f"source={admitted_resolution}, OSD={osd.group('resolution')}")
+    if sorted((source_width, source_height)) != sorted((encoder_width, encoder_height)):
+        errors.append(
+            f"source={source_width}x{source_height}, "
+            f"encoder={encoder_width}x{encoder_height} changes the admitted raster"
+        )
+
+    admitted_fps = Fraction(admitted.group(8))
+    osd_fps = Fraction(osd.group("fps"))
+    if abs(admitted_fps - osd_fps) > Fraction(1, 1_000):
+        errors.append(f"fps={float(admitted_fps):.6f}, OSD={float(osd_fps):.3f}")
+
+    admitted_bitrate = int(admitted.group(7))
+    osd_mbps = int(osd.group("mbps"))
+    # The app displays integer Mbps by truncating the exact encoder target.
+    if admitted_bitrate // 1_000_000 != osd_mbps:
+        errors.append(f"bitrate={admitted_bitrate}, OSD={osd_mbps}Mb/s")
+    if admitted_bitrate > REC_SOAK_MAX_MBPS * 1_000_000:
+        errors.append(
+            f"bitrate={admitted_bitrate} exceeds {REC_SOAK_MAX_MBPS}Mb/s safety cap"
+        )
+    return errors
+
+
+def wait_recording_running(ctx: Context, pid: int, *, timeout_s: float = 12.0) -> None:
+    """Wait past optimistic admission until the first real encoder frame exposes REC semantics."""
+    deadline = time.monotonic() + timeout_s
+    last_state = "not checked"
+    while time.monotonic() < deadline:
+        if ctx.adb.pid() != pid:
+            raise UnsafeState(f"app process changed before REC became ready: expected {pid}")
+        tree = ctx.adb.ui()
+        stop = tree.find_desc_exact("Stop recording")
+        running = tree.find_desc_exact("Recording")
+        last_state = f"stop={stop is not None}, recording={running is not None}"
+        if stop is not None and running is not None:
+            return
+        time.sleep(0.25)
+    raise AssertionError(f"REC never reached first-frame running state ({last_state})")
+
+
+def assert_recording_continues(ctx: Context, pid: int, seconds: float) -> None:
+    """Require uninterrupted REC semantics for the requested wall-clock interval."""
+    started = time.monotonic()
+    deadline = started + seconds
+    preview_checked = False
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.75, remaining))
+        assert ctx.adb.pid() == pid, "app process changed during REC soak interval"
+        tree = ctx.adb.ui()
+        assert tree.find_desc_exact("Stop recording"), "REC stopped before the requested interval"
+        assert tree.find_desc_exact("Recording"), "first-frame REC semantics disappeared early"
+        if not preview_checked and time.monotonic() - started >= seconds / 2:
+            assert ctx.adb.preview_is_live(), "preview froze during REC soak interval"
+            preview_checked = True
+    final_tree = ctx.adb.ui()
+    assert final_tree.find_desc_exact("Stop recording"), "REC was not active at the stop boundary"
+    assert final_tree.find_desc_exact("Recording"), "REC tally vanished before the stop boundary"
+    assert preview_checked, "REC interval ended before preview liveness could be verified"
 
 
 def stop_recording_verified(
@@ -322,13 +646,35 @@ def recording_capture_id(admitted) -> int:
     return int(admitted.group(1).rsplit("_", 1)[1])
 
 
+def cleanup_transport_or_unsafe(label: str, action):
+    """Turn any failed cleanup proof into a suite-stopping unsafe state."""
+    try:
+        return action()
+    except UnsafeState:
+        raise
+    except Exception as error:
+        raise UnsafeState(f"{label}: {type(error).__name__}: {error}") from error
+
+
+def recover_recording_admission(ctx: Context, mark: str, pid: int, label: str):
+    """Recover an admission during cleanup without allowing transport loss to continue the suite."""
+    line = cleanup_transport_or_unsafe(
+        f"{label} admission recovery transport failed",
+        lambda: ctx.adb.wait_log(mark, RECORDING_SPEC.pattern, timeout_s=3, pid=pid),
+    )
+    return RECORDING_SPEC.search(line) if line else None
+
+
 def wait_recording_finalized(ctx: Context, mark: str, pid: int, capture_id: int) -> str:
     """Require codec/audio drain, muxer stop, and MediaStore publish before suite continuation."""
     pattern = (
         rf"RecordingFinalized: captureId={capture_id} saved=(true|false) "
         r"error=([A-Za-z0-9_.$-]+)"
     )
-    line = ctx.adb.wait_log(mark, pattern, timeout_s=45, pid=pid)
+    line = cleanup_transport_or_unsafe(
+        f"recording {capture_id} finalization transport failed",
+        lambda: ctx.adb.wait_log(mark, pattern, timeout_s=45, pid=pid),
+    )
     if line is None:
         raise UnsafeState(f"recording {capture_id} finalization was not observed")
     match = RECORDING_FINALIZED.search(line)
@@ -342,7 +688,83 @@ def wait_recording_finalized(ctx: Context, mark: str, pid: int, capture_id: int)
     return line
 
 
-def require_decoded_video(info: dict, *, minimum_seconds: float) -> None:
+def _still_terminal_snapshot(log: str) -> tuple[int, tuple[SettledStillFamily, ...]]:
+    """Parse every post-mark shutter start and unique terminal family from one logcat snapshot."""
+    started_count = sum("ShutterLag: started" in line for line in log.splitlines())
+    families: dict[str, tuple[str, ...]] = {}
+    malformed = []
+    for line in log.splitlines():
+        if "CaptureFamily: settled" not in line:
+            continue
+        match = CAPTURE_SETTLED.search(line)
+        if match is None:
+            malformed.append(line)
+            continue
+        extensions = tuple(match.group(2).split(","))
+        prior = families.setdefault(match.group(1), extensions)
+        if prior != extensions:
+            malformed.append(line)
+    if malformed:
+        raise UnsafeState(f"malformed or contradictory still terminal evidence: {malformed[:2]}")
+    settled = tuple(
+        SettledStillFamily(stem, extensions)
+        for stem, extensions in sorted(families.items())
+    )
+    return started_count, settled
+
+
+def wait_still_capture_terminals(
+    ctx: Context,
+    mark: str,
+    pid: int,
+    *,
+    timeout_s: float = 60.0,
+    settle_s: float = REC_SNAPSHOT_TERMINAL_SETTLE_SECONDS,
+    poll_s: float = 0.5,
+    action_started_at: float | None = None,
+) -> StillTerminalEvidence:
+    """Prove every observed snapshot request reached a stable CaptureFamily terminal.
+
+    ADB can reconnect and replay ``input tap`` after the first delivery reached Android. Waiting for
+    only the first family is therefore unsafe: a replayed press (or a broken multi-drive path) may
+    still own Camera2/save resources. Require terminal families to account for every observed sensor
+    start, then keep the complete terminal set stable past the reconnect replay window.
+    """
+    began = action_started_at if action_started_at is not None else time.monotonic()
+    deadline = time.monotonic() + timeout_s
+    stable_since: float | None = None
+    last_fingerprint: tuple | None = None
+    first_started_after_s: float | None = None
+    last_state = "no shutter or terminal evidence"
+    while time.monotonic() < deadline:
+        log = cleanup_transport_or_unsafe(
+            "mid-REC still terminal transport failed",
+            lambda: ctx.adb.logcat_since(mark, pid),
+        )
+        started_count, families = _still_terminal_snapshot(log)
+        now = time.monotonic()
+        if started_count and first_started_after_s is None:
+            first_started_after_s = now - began
+        last_state = f"starts={started_count}, settled={[family.stem for family in families]}"
+        fingerprint = (started_count, families)
+        terminals_account_for_starts = bool(families) and len(families) >= started_count
+        if terminals_account_for_starts and fingerprint == last_fingerprint:
+            stable_since = stable_since or now
+            if now - stable_since >= settle_s:
+                return StillTerminalEvidence(started_count, families, first_started_after_s)
+        else:
+            stable_since = None
+        last_fingerprint = fingerprint
+        time.sleep(poll_s)
+    raise UnsafeState(f"mid-REC still terminal state was not proven ({last_state})")
+
+
+def require_decoded_video(
+    info: dict,
+    *,
+    minimum_seconds: float,
+    expected_fps: Fraction | None = None,
+) -> None:
     if info.get("probe") != "ffprobe":
         raise Incomplete("ffprobe is unavailable; frame decoding was not verified")
     seconds = info.get("video_seconds")
@@ -351,6 +773,43 @@ def require_decoded_video(info: dict, *, minimum_seconds: float) -> None:
     )
     frames = info.get("frame_count")
     assert isinstance(frames, int) and frames >= 2, f"decoded too few frames: {frames!r}"
+    if expected_fps is None:
+        return
+
+    observed_fps = info.get("observed_fps")
+    nominal_fps = info.get("nominal_fps")
+    assert (
+        isinstance(observed_fps, Fraction)
+        and expected_fps * Fraction(98, 100)
+        <= observed_fps
+        <= expected_fps * Fraction(102, 100)
+    ), f"decoded observed fps is unhealthy: {observed_fps!r}, expected about {expected_fps}"
+    assert (
+        isinstance(nominal_fps, Fraction)
+        and expected_fps * Fraction(99, 100)
+        <= nominal_fps
+        <= expected_fps * Fraction(101, 100)
+    ), f"container nominal fps differs from admission: {nominal_fps!r} vs {expected_fps}"
+    minimum_frames = math.ceil(seconds * expected_fps * Fraction(95, 100))
+    assert frames >= minimum_frames, (
+        f"decoded only {frames} frames; expected at least {minimum_frames} "
+        f"for decoded duration {float(seconds):.3f}s at {float(expected_fps):.3f}fps"
+    )
+    target_interval = Fraction(1, 1) / expected_fps
+    minimum_interval = info.get("minimum_frame_interval")
+    maximum_interval = info.get("maximum_frame_interval")
+    assert (
+        isinstance(minimum_interval, Fraction)
+        and minimum_interval >= target_interval / 2
+    ), f"decoded frame interval is implausibly short: {minimum_interval!r}"
+    maximum_healthy_interval = target_interval * Fraction(3, 2)
+    assert (
+        isinstance(maximum_interval, Fraction)
+        and maximum_interval <= maximum_healthy_interval
+    ), (
+        f"decoded frame cadence has a gap: {maximum_interval!r}, "
+        f"expected <= {maximum_healthy_interval}"
+    )
 
 
 def capture_still(ctx: Context, timeout_s: float = 25.0) -> list[MediaRow]:
@@ -398,6 +857,60 @@ def assert_published_row(row: MediaRow) -> None:
     assert row.size_bytes > 0, f"row has no bytes: {row}"
 
 
+def existing_media_regressions(before: list[MediaRow], after: list[MediaRow]) -> list[str]:
+    """Existing published-row metadata must remain stable while later operations append rows."""
+    after_by_key = {row.key: row for row in after}
+    errors = []
+    for row in before:
+        current = after_by_key.get(row.key)
+        if current is None:
+            errors.append(f"existing row disappeared: {row.key} {row.display_name}")
+        elif current.metadata_fingerprint != row.metadata_fingerprint:
+            errors.append(f"existing row changed: {row.key} {row.display_name}")
+    return errors
+
+
+def wait_expected_new_media_rows(
+    ctx: Context,
+    before: set[tuple[str, int]],
+    expected_names: set[str],
+    *,
+    timeout_s: float = 45.0,
+    settle_s: float = 1.0,
+    poll_s: float = 0.5,
+) -> list[MediaRow]:
+    """Wait for several known capture families without accepting their cardinality by accident."""
+    deadline = time.monotonic() + timeout_s
+    stable_since: float | None = None
+    last_fingerprint: tuple | None = None
+    latest: list[MediaRow] = []
+    while time.monotonic() < deadline:
+        latest = [row for row in ctx.adb.media_store_rows() if row.key not in before]
+        names = {row.display_name for row in latest}
+        fingerprint = tuple(row.metadata_fingerprint for row in latest)
+        complete = expected_names <= names and all(row.metadata_ready for row in latest)
+        if complete and fingerprint == last_fingerprint:
+            stable_since = stable_since or time.monotonic()
+            if time.monotonic() - stable_since >= settle_s:
+                return latest
+        else:
+            stable_since = None
+        last_fingerprint = fingerprint
+        time.sleep(poll_s)
+    return latest
+
+
+def exact_media_delta_error(
+    before: set[tuple[str, int]],
+    expected: set[tuple[str, int]],
+    current: list[MediaRow],
+) -> str | None:
+    actual = {row.key for row in current if row.key not in before}
+    if actual == expected:
+        return None
+    return f"expected new keys={sorted(expected)}, actual={sorted(actual)}"
+
+
 def focal_rail_error(tree, expected: str) -> str | None:
     nodes = {description: tree.find_desc_exact(description) for description in FOCAL_PRESETS}
     missing = [description for description, node in nodes.items() if node is None]
@@ -434,6 +947,66 @@ def mode_carousel_error(tree, expected: str) -> str | None:
     if checked != [expected]:
         return f"expected exactly {expected!r} checked, got {checked}"
     return None
+
+
+def restore_capture_mode_verified(ctx: Context, initial_mode: str, pid: int) -> None:
+    cleanup_transport_or_unsafe(
+        f"could not verify {initial_mode} mode restoration",
+        lambda: _restore_capture_mode_verified(ctx, initial_mode, pid),
+    )
+
+
+def _restore_capture_mode_verified(ctx: Context, initial_mode: str, pid: int) -> None:
+    """Restore the exact entry mode and prove its UI, accepted session, 3A, and preview state."""
+    expected_shutter = "Start recording" if initial_mode == "VIDEO" else "Take photo"
+    expected_carousel = "Video mode" if initial_mode == "VIDEO" else "Photo mode"
+    tree = ctx.adb.ui()
+    if tree.find_desc_exact("Stop recording"):
+        raise UnsafeState("refusing capture-mode restore while REC is active")
+    transition_needed = tree.find_desc_exact(expected_shutter) is None
+    transition_mark = ctx.adb.log_mark() if transition_needed else None
+    if transition_needed:
+        ctx.adb.tap_ui(desc=expected_carousel)
+
+    deadline = time.monotonic() + 20
+    last_error = "not checked"
+    while time.monotonic() < deadline:
+        if ctx.adb.pid() != pid:
+            raise UnsafeState(f"app process changed while restoring {initial_mode}: expected {pid}")
+        tree = ctx.adb.ui()
+        carousel_error = mode_carousel_error(tree, expected_carousel)
+        idle = tree.find_desc_exact(expected_shutter)
+        stopped = tree.find_desc_exact("Stop recording") is None
+        last_error = f"idle={idle is not None}, stopped={stopped}, carousel={carousel_error}"
+        if idle is not None and stopped and carousel_error is None:
+            break
+        time.sleep(0.25)
+    else:
+        raise UnsafeState(f"could not restore {initial_mode} UI ({last_error})")
+
+    if transition_mark is not None:
+        acceptance = wait_session_acceptance(
+            ctx,
+            transition_mark,
+            pid,
+            initial_mode,
+            timeout_s=20,
+        )
+        if acceptance is None:
+            raise UnsafeState(f"restored {initial_mode} route never committed Ready")
+        evidence = wait_mode_three_a(
+            ctx,
+            transition_mark,
+            pid,
+            initial_mode,
+            controller_id=acceptance.controller_id,
+            optics_generation=acceptance.optics_generation,
+            timeout_s=20 if initial_mode == "PHOTO" else 10,
+        )
+        if evidence is None:
+            raise UnsafeState(f"restored {initial_mode} route produced no owned 3A result")
+    if not ctx.adb.preview_is_live():
+        raise UnsafeState(f"preview was not live after restoring {initial_mode}")
 
 
 def _overlap_area(first, second) -> int:
@@ -868,8 +1441,7 @@ def t_video(ctx: Context) -> None:
         if recording_may_be_active:
             observed_recording = stop_recording_verified(ctx, pid)
             if admitted is None:
-                late_line = ctx.adb.wait_log(mark, RECORDING_SPEC.pattern, timeout_s=3, pid=pid)
-                admitted = RECORDING_SPEC.search(late_line) if late_line else None
+                admitted = recover_recording_admission(ctx, mark, pid, "strict video")
             if admitted is None:
                 # Even if the UI is idle, a returned/failed transport call may have admitted and
                 # asynchronously stopped a recorder. Without its identity+terminal evidence, later
@@ -1103,6 +1675,579 @@ def t_persist(ctx: Context) -> None:
 
 
 # ---------------------------------------------------------------- reliability (the mandate)
+
+@test(
+    "rec_teardown_soak",
+    "reliability",
+    mutates_settings=True,
+    writes_media=True,
+)
+def t_rec_teardown_soak(ctx: Context) -> None:
+    """Five finalized clips prove recorder teardown can hand ownership to the next admission."""
+    pid = ensure_foreground(ctx)
+    initial_tree = ctx.adb.ui()
+    if initial_tree.find_desc_exact("Stop recording"):
+        raise UnsafeState("REC soak entered while recording was already active")
+    if initial_tree.find_desc_exact("Start recording"):
+        initial_mode = "VIDEO"
+    elif initial_tree.find_desc_exact("Take photo"):
+        initial_mode = "PHOTO"
+    else:
+        raise UnsafeState("REC soak could not prove an idle capture mode")
+
+    suite_mark = ctx.adb.log_mark()
+    recorder_idle = True
+    baseline_rows: list[MediaRow] | None = None
+    baseline_keys: set[tuple[str, int]] = set()
+    expected_names: set[str] = set()
+    preserved: list[MediaRow] | None = None
+    try:
+        ensure_video_mode(ctx)
+        osd = selected_video_osd(ctx.adb.ui())
+        if osd is None:
+            raise Incomplete("REC soak requires exactly one visible video OSD specification")
+        bitrate_mbps = int(osd.group("mbps"))
+        if bitrate_mbps <= 0 or bitrate_mbps > REC_SOAK_MAX_MBPS:
+            raise Incomplete(
+                f"REC soak refuses {bitrate_mbps}Mb/s "
+                f"(allowed 1..{REC_SOAK_MAX_MBPS}Mb/s)"
+            )
+        require_recording_storage(
+            ctx,
+            bitrate_mbps,
+            REC_SOAK_CYCLES * REC_SOAK_SECONDS,
+            label=f"REC teardown soak ({REC_SOAK_CYCLES} clips)",
+        )
+        baseline_rows = ctx.adb.media_store_rows()
+        if any(row.is_pending for row in baseline_rows):
+            raise Incomplete("REC soak requires zero pre-existing app-owned pending rows")
+        baseline_keys = {row.key for row in baseline_rows}
+        preserved = baseline_rows
+        admissions = []
+        capture_ids: list[int] = []
+        for cycle in range(1, REC_SOAK_CYCLES + 1):
+            mark = ctx.adb.log_mark()
+            admitted = None
+            recording_may_be_active = True
+            recorder_idle = False
+            try:
+                assert ctx.adb.pid() == pid, f"cycle {cycle}: app process changed before admission"
+                start = ctx.adb.ui().find_desc_exact("Start recording")
+                assert start is not None and start.enabled, (
+                    f"cycle {cycle}: previous recorder did not re-arm the next admission"
+                )
+                # Query once, then tap immediately. Pull/probe/MediaStore work is deliberately deferred
+                # until all five owners have handed off, so it cannot cool down a teardown race.
+                ctx.adb.tap(*start.center)
+                admitted_line = ctx.adb.wait_log(mark, RECORDING_SPEC.pattern, timeout_s=12, pid=pid)
+                assert admitted_line, f"cycle {cycle}: recorder did not publish an admitted spec"
+                admitted = RECORDING_SPEC.search(admitted_line)
+                assert admitted is not None, f"cycle {cycle}: malformed admission: {admitted_line}"
+                admission_errors = recording_admission_errors(admitted, osd)
+                assert not admission_errors, (
+                    f"cycle {cycle}: admitted recorder differs from safe OSD preset: "
+                    + "; ".join(admission_errors)
+                )
+                wait_recording_running(ctx, pid)
+                assert_recording_continues(ctx, pid, REC_SOAK_SECONDS)
+                observed_recording = stop_recording_verified(ctx, pid)
+                assert observed_recording, f"cycle {cycle}: REC ended before the requested Stop"
+                wait_recording_finalized(ctx, mark, pid, recording_capture_id(admitted))
+                recording_may_be_active = False
+                recorder_idle = True
+            finally:
+                if recording_may_be_active:
+                    observed_recording = stop_recording_verified(ctx, pid)
+                    if admitted is None:
+                        admitted = recover_recording_admission(
+                            ctx,
+                            mark,
+                            pid,
+                            f"REC teardown soak cycle {cycle}",
+                        )
+                    if admitted is None:
+                        detail = "REC UI was observed" if observed_recording else "REC start was attempted"
+                        raise UnsafeState(
+                            f"cycle {cycle}: {detail}, but admission/finalization identity is unavailable"
+                        )
+                    if all(existing.group(1) != admitted.group(1) for existing in admissions):
+                        admissions.append(admitted)
+                        expected_names.add(f"{admitted.group(1)}.mp4")
+                    wait_recording_finalized(ctx, mark, pid, recording_capture_id(admitted))
+                    recorder_idle = True
+
+            assert admitted is not None
+            if all(existing.group(1) != admitted.group(1) for existing in admissions):
+                admissions.append(admitted)
+                expected_names.add(f"{admitted.group(1)}.mp4")
+            capture_id = recording_capture_id(admitted)
+            capture_ids.append(capture_id)
+            assert capture_ids == sorted(set(capture_ids)), (
+                f"recording capture IDs are not unique and increasing: {capture_ids}"
+            )
+            ctx.note(f"cycle {cycle}/{REC_SOAK_CYCLES}: finalized for immediate hand-off")
+
+        assert ctx.adb.pid() == pid, "app process changed after the final soak owner"
+        assert ctx.adb.ui().find_desc_exact("Start recording"), (
+            "final soak owner did not re-arm REC"
+        )
+
+        assert len(admissions) == REC_SOAK_CYCLES
+        rows = wait_expected_new_media_rows(ctx, baseline_keys, expected_names, settle_s=2.0)
+        assert len(rows) == REC_SOAK_CYCLES, (
+            f"REC soak expected {REC_SOAK_CYCLES} rows, got {rows}"
+        )
+        assert {row.display_name for row in rows} == expected_names, (
+            f"REC soak admission/MediaStore names differ: expected={sorted(expected_names)}, "
+            f"actual={sorted(row.display_name for row in rows)}"
+        )
+        assert all(row.collection == "video" and row.mime_type == "video/mp4" for row in rows), (
+            f"REC soak published a non-MP4 row: {rows}"
+        )
+        assert all(not row.is_pending for row in rows), f"REC soak left pending rows: {rows}"
+        by_name = {row.display_name: row for row in rows}
+        assert len(by_name) == REC_SOAK_CYCLES, f"REC soak published duplicate names: {rows}"
+
+        current = ctx.adb.media_store_rows()
+        regressions = existing_media_regressions(baseline_rows, current)
+        assert not regressions, "; ".join(regressions)
+        delta_error = exact_media_delta_error(baseline_keys, {row.key for row in rows}, current)
+        assert delta_error is None, f"REC soak published unexpected rows: {delta_error}"
+        preserved = current
+
+        for cycle, admitted in enumerate(admissions, start=1):
+            row = by_name[f"{admitted.group(1)}.mp4"]
+            assert_published_row(row)
+            local = ctx.adb.pull(
+                f"{MEDIA_DIR}/{row.display_name}",
+                ctx.evidence / row.display_name,
+            )
+            info = media.mp4_probe(local)
+            require_decoded_video(
+                info,
+                minimum_seconds=3.5,
+                expected_fps=Fraction(admitted.group(8)),
+            )
+            expected_width, expected_height = int(admitted.group(5)), int(admitted.group(6))
+            contract_errors = media.recording_contract_errors(
+                info,
+                expected_codec=admitted.group(2),
+                expected_width=expected_width,
+                expected_height=expected_height,
+                expected_audio=admitted.group(10) == "true",
+            )
+            assert not contract_errors, (
+                f"cycle {cycle}: decoded file differs from RecordingSpec: "
+                + "; ".join(contract_errors)
+            )
+            assert (row.width, row.height) == (expected_width, expected_height), (
+                f"cycle {cycle}: MediaStore/encoder dimensions differ: {row} vs {admitted.group(0)}"
+            )
+            assert row.size_bytes == local.stat().st_size == info.get("format_size"), (
+                f"cycle {cycle}: MediaStore/file/container size mismatch"
+            )
+            assert row.duration_ms is not None
+            assert abs(Fraction(row.duration_ms, 1_000) - info["video_seconds"]) <= Fraction(1, 2), (
+                f"cycle {cycle}: MediaStore/video duration mismatch"
+            )
+            ctx.note(f"cycle {cycle}/{REC_SOAK_CYCLES}: {row.display_name} fully decoded")
+
+        current = ctx.adb.media_store_rows()
+        regressions = existing_media_regressions(preserved, current)
+        assert not regressions, "; ".join(regressions)
+        delta_error = exact_media_delta_error(baseline_keys, {row.key for row in rows}, current)
+        assert delta_error is None, f"REC soak late rows after probes: {delta_error}"
+        assert not [row for row in current if row.is_pending], "REC soak left a late pending row"
+        preserved = current
+    finally:
+        if recorder_idle:
+            restore_capture_mode_verified(ctx, initial_mode, pid)
+            if baseline_rows is not None:
+                restored_rows = cleanup_transport_or_unsafe(
+                    "REC soak post-restore MediaStore transport failed",
+                    ctx.adb.media_store_rows,
+                )
+                regressions = existing_media_regressions(preserved, restored_rows)
+                pending = [row for row in restored_rows if row.is_pending]
+                delta = [row for row in restored_rows if row.key not in baseline_keys]
+                exact_names = (
+                    len(delta) == len(expected_names)
+                    and {row.display_name for row in delta} == expected_names
+                )
+                if regressions or pending or not exact_names:
+                    detail = [*regressions]
+                    if pending:
+                        detail.append(f"pending rows after mode restore: {pending}")
+                    if not exact_names:
+                        detail.append(
+                            "post-restore delta differs: "
+                            f"expected={sorted(expected_names)}, "
+                            f"actual={sorted(row.display_name for row in delta)}"
+                        )
+                    raise UnsafeState("REC soak post-restore media check failed: " + "; ".join(detail))
+
+    fatals = ctx.adb.fatal_lines(suite_mark, pid)
+    assert not fatals, f"errors during REC teardown soak: {fatals[:2]}"
+    ctx.note(f"{REC_SOAK_CYCLES} consecutive recorder owners finalized cleanly")
+
+
+@test(
+    "recording_snapshot_preserves_video",
+    "reliability",
+    mutates_settings=True,
+    writes_media=True,
+)
+def t_recording_snapshot(ctx: Context) -> None:
+    """A still captured mid-REC publishes beside a fully finalized, decodable video owner."""
+    pid = ensure_foreground(ctx)
+    initial_tree = ctx.adb.ui()
+    if initial_tree.find_desc_exact("Stop recording"):
+        raise UnsafeState("recording snapshot entered while REC was already active")
+    if initial_tree.find_desc_exact("Start recording"):
+        initial_mode = "VIDEO"
+    elif initial_tree.find_desc_exact("Take photo"):
+        initial_mode = "PHOTO"
+    else:
+        raise UnsafeState("recording snapshot could not prove an idle capture mode")
+    suite_mark = ctx.adb.log_mark()
+    recorder_idle = True
+    still_attempted = False
+    still_terminal = False
+    still_action_started_at: float | None = None
+    photo_settings_original: PhotoSettingMarkers | None = None
+    photo_settings_mutated = False
+    initial_rows: list[MediaRow] | None = None
+    initial_keys: set[tuple[str, int]] = set()
+    expected_new_names: set[str] = set()
+    expected_new_keys: set[tuple[str, int]] | None = None
+    preserved: list[MediaRow] | None = None
+    try:
+        ensure_photo_mode(ctx)
+        photo_settings_original = read_photo_settings(ctx)
+        if photo_settings_original.drive_option == "Timelapse":
+            raise Incomplete(
+                "recording snapshot will not alter a pre-existing Timelapse drive because an "
+                "active interval sequence cannot be distinguished safely from an idle preset"
+            )
+        pre_setting_rows = ctx.adb.media_store_rows()
+        if any(row.is_pending for row in pre_setting_rows):
+            raise Incomplete("recording snapshot requires no still save in flight before setup")
+        time.sleep(2)
+        stable_pre_setting_rows = ctx.adb.media_store_rows()
+        if [row.metadata_fingerprint for row in stable_pre_setting_rows] != [
+            row.metadata_fingerprint for row in pre_setting_rows
+        ]:
+            raise Incomplete("recording snapshot observed media activity before setup")
+        # Exercise the exact regression, rather than depending on the photographer already using a
+        # non-default preset. Both selections are idempotent setting-chip taps and are restored below.
+        photo_settings_mutated = True
+        set_photo_settings(ctx, drive="Burst", timer="10s")
+        configured = read_photo_settings(ctx)
+        assert configured == PhotoSettingMarkers("10s", "Burst"), (
+            f"could not arm the snapshot timer/drive regression preset: {configured}"
+        )
+        ensure_video_mode(ctx)
+        osd = selected_video_osd(ctx.adb.ui())
+        if osd is None:
+            raise Incomplete("recording snapshot requires exactly one visible video OSD specification")
+        bitrate_mbps = int(osd.group("mbps"))
+        if bitrate_mbps <= 0 or bitrate_mbps > REC_SOAK_MAX_MBPS:
+            raise Incomplete(
+                f"recording snapshot refuses {bitrate_mbps}Mb/s "
+                f"(allowed 1..{REC_SOAK_MAX_MBPS}Mb/s)"
+            )
+        require_recording_storage(
+            ctx,
+            bitrate_mbps,
+            REC_SNAPSHOT_STORAGE_SECONDS,
+            label="recording snapshot",
+            extra_bytes=REC_SNAPSHOT_EXTRA_BYTES,
+        )
+        initial_rows = ctx.adb.media_store_rows()
+        if any(row.is_pending for row in initial_rows):
+            raise Incomplete("recording snapshot requires zero pre-existing app-owned pending rows")
+        preserved = initial_rows
+        initial_keys = {row.key for row in initial_rows}
+        mark = ctx.adb.log_mark()
+        admitted = None
+        snapshot_rows: list[MediaRow] = []
+        terminal_evidence: StillTerminalEvidence | None = None
+        recording_row: MediaRow | None = None
+        recording_may_be_active = True
+        recorder_idle = False
+        try:
+            ctx.adb.tap_ui(desc="Start recording")
+            admitted_line = ctx.adb.wait_log(mark, RECORDING_SPEC.pattern, timeout_s=12, pid=pid)
+            assert admitted_line, "recording snapshot did not receive a recorder admission"
+            admitted = RECORDING_SPEC.search(admitted_line)
+            assert admitted is not None, f"malformed recorder admission: {admitted_line}"
+            admission_errors = recording_admission_errors(admitted, osd)
+            assert not admission_errors, (
+                "recording snapshot admission differs from safe OSD preset: "
+                + "; ".join(admission_errors)
+            )
+            wait_recording_running(ctx, pid)
+            expected_video_name = f"{admitted.group(1)}.mp4"
+            expected_new_names.add(expected_video_name)
+
+            row_deadline = time.time() + 12
+            while time.time() < row_deadline:
+                candidates = [
+                    row for row in ctx.adb.media_store_rows()
+                    if row.display_name == expected_video_name and row.collection == "video"
+                ]
+                if len(candidates) == 1:
+                    recording_row = candidates[0]
+                    break
+                if len(candidates) > 1:
+                    raise UnsafeState(f"duplicate active recording rows: {candidates}")
+                time.sleep(0.5)
+            assert recording_row is not None, "active recorder MediaStore row never appeared"
+            assert recording_row.is_pending, (
+                f"active recorder row published before Stop/finalization: {recording_row}"
+            )
+
+            snapshot_deadline = time.time() + 12
+            snapshot = None
+            while time.time() < snapshot_deadline:
+                snapshot = ctx.adb.ui().find_desc_exact("Take photo while recording")
+                if snapshot is not None and snapshot.enabled:
+                    break
+                time.sleep(0.5)
+            assert snapshot is not None and snapshot.enabled, "mid-REC still control never became ready"
+
+            snapshot_before = {row.key for row in ctx.adb.media_store_rows()}
+            snapshot_mark = ctx.adb.log_mark()
+            still_attempted = True
+            still_action_started_at = time.monotonic()
+            ctx.adb.tap(*snapshot.center)
+            terminal_evidence = wait_still_capture_terminals(
+                ctx,
+                snapshot_mark,
+                pid,
+                action_started_at=still_action_started_at,
+            )
+            still_terminal = True
+            for family in terminal_evidence.families:
+                expected_new_names.update(
+                    f"{family.stem}.{extension}" for extension in family.extensions
+                )
+            assert terminal_evidence.started_count == 1, (
+                "mid-REC snapshot did not produce exactly one sensor start: "
+                f"{terminal_evidence}"
+            )
+            assert terminal_evidence.first_started_after_s is not None
+            assert terminal_evidence.first_started_after_s <= REC_SNAPSHOT_PROMPT_SECONDS, (
+                "mid-REC snapshot obeyed the Photo self-timer instead of firing promptly: "
+                f"{terminal_evidence.first_started_after_s:.2f}s"
+            )
+            assert len(terminal_evidence.families) == 1, (
+                "mid-REC snapshot obeyed/replayed a multi-shot drive: "
+                f"{terminal_evidence.families}"
+            )
+            settled = terminal_evidence.families[0]
+            assert settled.capture_id > recording_capture_id(admitted), (
+                "still/video capture sequence collided or moved backward: "
+                f"video={recording_capture_id(admitted)}, still={settled.capture_id}"
+            )
+            expected_image_names = {
+                f"{settled.stem}.{extension}" for extension in settled.extensions
+            }
+            snapshot_rows = wait_expected_new_media_rows(
+                ctx,
+                snapshot_before,
+                expected_image_names,
+                timeout_s=30,
+                settle_s=1.0,
+            )
+            assert len(snapshot_rows) == len(expected_image_names), (
+                f"mid-REC still row cardinality differs: expected={expected_image_names}, "
+                f"actual={snapshot_rows}"
+            )
+            assert all(row.collection == "image" for row in snapshot_rows), (
+                f"mid-REC still produced an invalid family: {snapshot_rows}"
+            )
+            assert {row.display_name for row in snapshot_rows} == expected_image_names, (
+                f"mid-REC settled/MediaStore outputs differ: {snapshot_rows}"
+            )
+            assert all(not row.is_pending for row in snapshot_rows), (
+                f"mid-REC still left pending rows: {snapshot_rows}"
+            )
+            assert ctx.adb.pid() == pid, "app process changed during mid-REC still"
+            assert ctx.adb.preview_is_live(), "preview froze after mid-REC still"
+            post_snapshot_tree = ctx.adb.ui()
+            assert post_snapshot_tree.find_desc_exact("Stop recording"), (
+                "mid-REC still disrupted the active recorder UI"
+            )
+            assert post_snapshot_tree.find_desc_exact("Recording"), (
+                "mid-REC still removed first-frame REC semantics"
+            )
+            # Give the post-snapshot encoder path its own intentional interval; file length is not
+            # allowed to depend on incidental MediaStore/UI polling latency.
+            assert_recording_continues(ctx, pid, 3.0)
+
+            observed_recording = stop_recording_verified(ctx, pid)
+            assert observed_recording, "mid-REC snapshot take ended before the requested Stop"
+            wait_recording_finalized(ctx, mark, pid, recording_capture_id(admitted))
+            recording_may_be_active = False
+            recorder_idle = True
+        finally:
+            if recording_may_be_active:
+                observed_recording = stop_recording_verified(ctx, pid)
+                if admitted is None:
+                    admitted = recover_recording_admission(ctx, mark, pid, "recording snapshot")
+                if admitted is None:
+                    detail = "REC UI was observed" if observed_recording else "REC start was attempted"
+                    raise UnsafeState(
+                        f"recording snapshot {detail}, but terminal identity is unavailable"
+                    )
+                expected_new_names.add(f"{admitted.group(1)}.mp4")
+                wait_recording_finalized(ctx, mark, pid, recording_capture_id(admitted))
+                recorder_idle = True
+            if still_attempted and not still_terminal:
+                terminal_evidence = wait_still_capture_terminals(
+                    ctx,
+                    snapshot_mark,
+                    pid,
+                    action_started_at=still_action_started_at,
+                )
+                still_terminal = True
+                for family in terminal_evidence.families:
+                    expected_new_names.update(
+                        f"{family.stem}.{extension}" for extension in family.extensions
+                    )
+
+        assert admitted is not None and recording_row is not None
+        published_video = ctx.adb.wait_published_media_row(recording_row.key, timeout_s=45, settle_s=1.0)
+        assert published_video is not None and published_video.metadata_ready, (
+            f"recording row did not publish completely: {published_video}"
+        )
+        assert_published_row(published_video)
+        assert published_video.display_name == f"{admitted.group(1)}.mp4"
+        assert published_video.mime_type == "video/mp4", (
+            f"recording snapshot video has wrong MIME: {published_video}"
+        )
+
+        final_rows = ctx.adb.media_store_rows()
+        regressions = existing_media_regressions(initial_rows, final_rows)
+        assert not regressions, "; ".join(regressions)
+        expected_new_keys = {published_video.key, *(row.key for row in snapshot_rows)}
+        actual_new_keys = {row.key for row in final_rows if row.key not in initial_keys}
+        assert actual_new_keys == expected_new_keys, (
+            f"recording snapshot published unexpected rows: expected={expected_new_keys}, "
+            f"actual={actual_new_keys}"
+        )
+        assert not [row for row in final_rows if row.is_pending], "recording snapshot left pending rows"
+        preserved = final_rows
+
+        for row in snapshot_rows:
+            assert_published_row(row)
+            expected_mime = expected_image_mime(row.display_name)
+            assert expected_mime is not None and row.mime_type == expected_mime, (
+                f"mid-REC extension/MIME mismatch: {row.display_name} -> {row.mime_type}, "
+                f"expected {expected_mime}"
+            )
+            local = ctx.adb.pull(f"{MEDIA_DIR}/{row.display_name}", ctx.evidence / row.display_name)
+            assert local.stat().st_size == row.size_bytes, (
+                f"mid-REC file/MediaStore size differs: {row.display_name}"
+            )
+            if row.mime_type == "image/jpeg":
+                info = media.jpeg_info(local)
+                assert info["exif"], f"mid-REC JPEG lacks EXIF: {row.display_name}"
+                assert (info["width"], info["height"]) == (row.width, row.height), (
+                    f"mid-REC JPEG MediaStore/file dimensions differ: {row} vs {info}"
+                )
+                assert info["bytes"] == row.size_bytes, (
+                    f"mid-REC JPEG parser/file size differs: {row.display_name}"
+                )
+            elif row.mime_type == "image/heic":
+                assert media.heic_valid(local), f"mid-REC HEIC invalid: {row.display_name}"
+                dimensions = media.image_dimensions(local)
+                if dimensions is None:
+                    raise Incomplete("sips is unavailable; mid-REC HEIF dimensions were not decoded")
+                assert dimensions == (row.width, row.height), (
+                    f"mid-REC HEIF MediaStore/file dimensions differ: {row} vs {dimensions}"
+                )
+            elif row.mime_type == "image/x-adobe-dng":
+                assert media.dng_valid(local), f"mid-REC DNG invalid: {row.display_name}"
+            else:
+                raise AssertionError(f"mid-REC still has unexpected MIME: {row}")
+
+        video_local = ctx.adb.pull(
+            f"{MEDIA_DIR}/{published_video.display_name}",
+            ctx.evidence / published_video.display_name,
+        )
+        video_info = media.mp4_probe(video_local)
+        require_decoded_video(
+            video_info,
+            minimum_seconds=2.5,
+            expected_fps=Fraction(admitted.group(8)),
+        )
+        expected_dimensions = (int(admitted.group(5)), int(admitted.group(6)))
+        contract_errors = media.recording_contract_errors(
+            video_info,
+            expected_codec=admitted.group(2),
+            expected_width=expected_dimensions[0],
+            expected_height=expected_dimensions[1],
+            expected_audio=admitted.group(10) == "true",
+        )
+        assert not contract_errors, (
+            "mid-REC video differs from RecordingSpec: " + "; ".join(contract_errors)
+        )
+        assert (published_video.width, published_video.height) == expected_dimensions
+        assert published_video.size_bytes == video_local.stat().st_size == video_info.get("format_size")
+        assert published_video.duration_ms is not None
+        assert abs(
+            Fraction(published_video.duration_ms, 1_000) - video_info["video_seconds"]
+        ) <= Fraction(1, 2)
+        final_rows = ctx.adb.media_store_rows()
+        regressions = existing_media_regressions(preserved, final_rows)
+        assert not regressions, "; ".join(regressions)
+        delta_error = exact_media_delta_error(initial_keys, expected_new_keys, final_rows)
+        assert delta_error is None, f"recording snapshot published late rows: {delta_error}"
+        assert not [row for row in final_rows if row.is_pending], (
+            "recording snapshot left a late pending row"
+        )
+        preserved = final_rows
+        ctx.note(
+            f"mid-REC {len(snapshot_rows)} image output(s) + {published_video.display_name} decoded"
+        )
+    finally:
+        safe_to_restore = recorder_idle and (not still_attempted or still_terminal)
+        if safe_to_restore:
+            if photo_settings_original is not None and photo_settings_mutated:
+                restore_capture_mode_verified(ctx, "PHOTO", pid)
+                restore_photo_settings_verified(ctx, photo_settings_original)
+            restore_capture_mode_verified(ctx, initial_mode, pid)
+            if initial_rows is not None:
+                restored_rows = cleanup_transport_or_unsafe(
+                    "recording snapshot post-restore MediaStore transport failed",
+                    ctx.adb.media_store_rows,
+                )
+                regressions = existing_media_regressions(preserved, restored_rows)
+                pending = [row for row in restored_rows if row.is_pending]
+                delta = [row for row in restored_rows if row.key not in initial_keys]
+                exact_names = (
+                    len(delta) == len(expected_new_names)
+                    and {row.display_name for row in delta} == expected_new_names
+                )
+                if regressions or pending or not exact_names:
+                    detail = [*regressions]
+                    if pending:
+                        detail.append(f"pending rows after mode restore: {pending}")
+                    if not exact_names:
+                        detail.append(
+                            "post-restore delta differs: "
+                            f"expected={sorted(expected_new_names)}, "
+                            f"actual={sorted(row.display_name for row in delta)}"
+                        )
+                    raise UnsafeState(
+                        "recording snapshot post-restore media check failed: " + "; ".join(detail)
+                    )
+
+    fatals = ctx.adb.fatal_lines(suite_mark, pid)
+    assert not fatals, f"errors during recording snapshot: {fatals[:2]}"
+
 
 @test(
     "capture_then_kill_survives",

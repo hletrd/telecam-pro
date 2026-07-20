@@ -58,6 +58,8 @@ a later case.
 | full | `settings_sheet_tabs` | all 9 tabs select matching pages; 48 dp/on-screen; modal isolated; Back restores camera |
 | full | `function_menu_roundtrip` | visible Fn entry → enabled tiles → Back restores camera chrome |
 | full | `mode_persists_across_kill` | Remember Settings survives force-stop |
+| reliability | `rec_teardown_soak` | 5×4 s back-to-back REC/finalize/re-arm before any pull; exact five-row delta, full decode/cadence/audio contract, pending=0 |
+| reliability | `recording_snapshot_preserves_video` | forces Burst+10 s Photo settings, proves one prompt mid-REC still, restores both, validates exact still+MP4 delta/codec/audio |
 | reliability | `capture_then_kill_survives` | kill 0.6 s after shutter → files survive, valid, no stuck pending |
 | reliability | `rec_backgrounded_finalizes` | HOME mid-REC → playable clip finalizes |
 | reliability | `rec_stop_then_kill_published` | kill 0.5 s after stop → clip adopted+published by launch recovery |
