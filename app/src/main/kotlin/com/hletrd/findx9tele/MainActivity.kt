@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
@@ -37,6 +38,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -62,6 +64,7 @@ class MainActivity : ComponentActivity() {
     // the CTA must deep-link into App Settings instead of a dead re-request (designer UX-6 / M8).
     private var cameraPermanentlyDenied by mutableStateOf(false)
     private var pendingAudioAction by mutableStateOf<PendingAudioAction?>(null)
+    private var showMicrophoneRationale by mutableStateOf(false)
     // Edge ownership is Activity-local: if a modal opens between DOWN and UP, the matching release
     // still reaches the ViewModel and both edges stay consumed instead of wedging a press state.
     private val ownedShutterKeys = mutableSetOf<Int>()
@@ -122,7 +125,6 @@ class MainActivity : ComponentActivity() {
                             override fun onToggleRecording() {
                                 requestMicrophoneThen(
                                     action = PendingAudioAction.START_RECORDING,
-                                    launcher = { microphoneLauncher.launch(Manifest.permission.RECORD_AUDIO) },
                                     block = vm::onToggleRecording,
                                 )
                             }
@@ -134,12 +136,23 @@ class MainActivity : ComponentActivity() {
                                 }
                                 requestMicrophoneThen(
                                     action = PendingAudioAction.ENABLE_AUDIO,
-                                    launcher = { microphoneLauncher.launch(Manifest.permission.RECORD_AUDIO) },
                                 ) { vm.onToggleRecordAudio(true) }
                             }
                         }
                     }
                     CameraScreen(state = state, actions = permissionAwareActions, modifier = Modifier.fillMaxSize())
+                    if (showMicrophoneRationale) {
+                        MicrophonePermissionRationale(
+                            onContinue = {
+                                showMicrophoneRationale = false
+                                microphoneLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            },
+                            onDismiss = {
+                                showMicrophoneRationale = false
+                                pendingAudioAction = null
+                            },
+                        )
+                    }
                 } else {
                     PermissionGate(
                         permanentlyDenied = cameraPermanentlyDenied,
@@ -186,7 +199,7 @@ class MainActivity : ComponentActivity() {
         if (isShutterKey(keyCode)) {
             val decision = cameraKeyDecision(
                 hasCameraPermission = hasCameraPermission,
-                cameraInputBlocked = vm.state.value.cameraInputBlocked,
+                cameraInputBlocked = vm.state.value.cameraInputBlocked || showMicrophoneRationale,
                 alreadyOwned = keyCode in ownedShutterKeys,
                 edge = if (event.repeatCount == 0) CameraKeyEdge.DOWN else CameraKeyEdge.REPEAT,
             )
@@ -210,7 +223,7 @@ class MainActivity : ComponentActivity() {
         if (isShutterKey(keyCode)) {
             val decision = cameraKeyDecision(
                 hasCameraPermission = hasCameraPermission,
-                cameraInputBlocked = vm.state.value.cameraInputBlocked,
+                cameraInputBlocked = vm.state.value.cameraInputBlocked || showMicrophoneRationale,
                 alreadyOwned = keyCode in ownedShutterKeys,
                 edge = CameraKeyEdge.UP,
             )
@@ -251,7 +264,7 @@ class MainActivity : ComponentActivity() {
                 }
                 val decision = cameraKeyDecision(
                     hasCameraPermission = hasCameraPermission,
-                    cameraInputBlocked = vm.state.value.cameraInputBlocked,
+                    cameraInputBlocked = vm.state.value.cameraInputBlocked || showMicrophoneRationale,
                     alreadyOwned = event.keyCode in ownedHalfPressKeys,
                     edge = edge,
                 )
@@ -265,7 +278,7 @@ class MainActivity : ComponentActivity() {
                 }
                 if (decision.consume) return true
             }
-            else -> if (hasCameraPermission && !vm.state.value.cameraInputBlocked) {
+            else -> if (hasCameraPermission && !vm.state.value.cameraInputBlocked && !showMicrophoneRationale) {
                 when (event.keyCode) {
                     // Live-captured 2026-07-09: the camera-control button's slide arrives as the
                     // STANDARD KEYCODE_ZOOM_IN/OUT (168/169), repeating ~20 Hz while the finger
@@ -290,7 +303,7 @@ class MainActivity : ComponentActivity() {
             keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
             keyCode == KeyEvent.KEYCODE_CAMERA
 
-    private fun requestMicrophoneThen(action: PendingAudioAction, launcher: () -> Unit, block: () -> Unit) {
+    private fun requestMicrophoneThen(action: PendingAudioAction, block: () -> Unit) {
         val s = vm.state.value
         val needsMicrophone = when (action) {
             PendingAudioAction.ENABLE_AUDIO -> true
@@ -301,7 +314,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         pendingAudioAction = action
-        launcher()
+        showMicrophoneRationale = true
     }
 
     private fun refreshPermissionState() {
@@ -363,6 +376,32 @@ class MainActivity : ComponentActivity() {
     }
 
     private enum class PendingAudioAction { ENABLE_AUDIO, START_RECORDING }
+}
+
+@Composable
+private fun MicrophonePermissionRationale(
+    onContinue: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.microphone_permission_title)) },
+        text = { Text(stringResource(R.string.microphone_permission_rationale)) },
+        confirmButton = {
+            MinTouchTargetButton {
+                TextButton(onClick = onContinue) {
+                    Text(stringResource(R.string.microphone_permission_continue))
+                }
+            }
+        },
+        dismissButton = {
+            MinTouchTargetButton {
+                TextButton(onClick = onDismiss) {
+                    Text(stringResource(R.string.microphone_permission_not_now))
+                }
+            }
+        },
+    )
 }
 
 @Composable

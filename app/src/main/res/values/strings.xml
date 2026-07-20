@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">TeleCam Pro</string>
+    <string name="microphone_permission_title">Microphone access</string>
+    <string name="microphone_permission_rationale">TeleCam Pro uses the microphone to add audio to videos and, before recording, while the input level meter is visible in armed Video mode. Audio stays on this device and is not uploaded, collected by the developer, or shared with third parties.</string>
+    <string name="microphone_permission_continue">Continue</string>
+    <string name="microphone_permission_not_now">Not now</string>
 </resources>

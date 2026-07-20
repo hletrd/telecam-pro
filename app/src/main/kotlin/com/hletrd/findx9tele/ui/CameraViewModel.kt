@@ -45,6 +45,8 @@ import com.hletrd.findx9tele.camera.acceptedOpticsAuxState
 import com.hletrd.findx9tele.camera.controlAvailability
 import com.hletrd.findx9tele.camera.controlCapabilities
 import com.hletrd.findx9tele.camera.normalizeControlsForRoute
+import com.hletrd.findx9tele.camera.normalizeAudioGain
+import com.hletrd.findx9tele.camera.normalizeFnSlots
 import com.hletrd.findx9tele.camera.normalizedFor
 import com.hletrd.findx9tele.camera.normalizedForCaptureMode
 import com.hletrd.findx9tele.camera.pendingControlsForTransition
@@ -127,6 +129,11 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     private var countdownRunnable: Runnable? = null
     private var lifecycleStarted = false
+    private var standbyMeterVisible = false
+    private var standbyMeterEnabled = false
+    // Main-confined identity for optimistic REC UI. A queued refusal may arrive after stop/new-start
+    // or lifecycle teardown; only the exact attempt that submitted it may reconcile the state.
+    private var recordingAttemptGeneration = 0L
     private var debugZoomReceiver: android.content.BroadcastReceiver? = null
     // Main-thread token for the one-shot Custom-WB sample. Any newer WB action makes an older
     // controller callback inert before it can publish gains or a stale status message.
@@ -416,6 +423,27 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         }
         engine.onAudioLevel = { lvl -> _state.update { it.copy(audioLevel = lvl) } }
         engine.onAudioRoute = { route -> _state.update { it.copy(audioRouteLabel = route) } }
+        engine.onStandbyAudioAvailable = {
+            mainHandler.post {
+                val current = _state.value
+                if (!current.isRecording && standbyMeterVisible) {
+                    _state.update {
+                        it.copy(audioRouteLabel = audioInputStatusLabel(it.audioInputPreference))
+                    }
+                }
+            }
+        }
+        engine.onStandbyAudioUnavailable = {
+            mainHandler.post {
+                val current = _state.value
+                if (!current.isRecording && standbyMeterVisible) {
+                    _state.update {
+                        it.copy(audioRouteLabel = "${it.audioInputPreference.label} unavailable")
+                    }
+                    publishStatus("Standby microphone unavailable")
+                }
+            }
+        }
         engine.onRecordingStarted = {
             mainHandler.post {
                 val current = _state.value
@@ -461,38 +489,46 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         }
         restoreSettingsIfEnabled()
         refreshProgramAppSide()
-        // Restore the newest photo, RAW-only shot, or video and seed all proven siblings before
-        // publishing review. Legacy filenames stay one-file delete scopes. Shared io lane, not a
-        // bare Thread (PERF4-6).
-        ioExecutor.execute execute@{
-            val restored = MediaStoreWriter.latestOwnCapture(getApplication()) ?: return@execute
-            val priorOutputs = restored.outputs.map { output ->
-                PriorCaptureOutput(
-                    output = output.output,
-                    kind = when (output.kind) {
-                        StoredMediaOutputKind.DISPLAYABLE -> CaptureOutputKind.DISPLAYABLE
-                        StoredMediaOutputKind.RAW -> CaptureOutputKind.RAW
-                    },
-                )
-            }
-            val preferred = restored.preferred.output
-            if (!captureOutputs.seedPriorCapture(priorOutputs, preferred)) return@execute
-            val deleteScope = when (restored.deleteScope) {
-                RestoredDeleteScope.CAPTURE_FAMILY -> MediaDeleteScope.CAPTURE_FAMILY
-                RestoredDeleteScope.FILE_ONLY -> MediaDeleteScope.FILE_ONLY
-            }
-            _state.update {
-                if (it.lastMediaUri == null && captureOutputs.isCurrentReviewOutput(preferred)) {
-                    it.copy(lastMediaUri = preferred, lastMediaDeleteScope = deleteScope)
-                } else {
-                    it
+        // Sweep prior-process pending rows first, then restore the newest published family. This
+        // includes a row adopted by recovery without ever letting provider probes delay Camera2
+        // startup. CaptureOutputTracker prevents a late launch result from displacing live output.
+        engine.cleanupOrphans {
+            restoreLatestPublishedCapture()
+        }
+        refreshMemorySlotInfo()
+        refreshStandbyAudioMeter()
+    }
+
+    private fun restoreLatestPublishedCapture() {
+        // Legacy filenames stay one-file delete scopes. The ViewModel's ordered I/O lane also keeps
+        // this query serialized with review deletion; shutdown rejection simply means teardown won.
+        runCatching {
+            ioExecutor.execute execute@{
+                val restored = MediaStoreWriter.latestOwnCapture(getApplication()) ?: return@execute
+                val priorOutputs = restored.outputs.map { output ->
+                    PriorCaptureOutput(
+                        output = output.output,
+                        kind = when (output.kind) {
+                            StoredMediaOutputKind.DISPLAYABLE -> CaptureOutputKind.DISPLAYABLE
+                            StoredMediaOutputKind.RAW -> CaptureOutputKind.RAW
+                        },
+                    )
+                }
+                val preferred = restored.preferred.output
+                if (!captureOutputs.seedPriorCapture(priorOutputs, preferred)) return@execute
+                val deleteScope = when (restored.deleteScope) {
+                    RestoredDeleteScope.CAPTURE_FAMILY -> MediaDeleteScope.CAPTURE_FAMILY
+                    RestoredDeleteScope.FILE_ONLY -> MediaDeleteScope.FILE_ONLY
+                }
+                _state.update {
+                    if (it.lastMediaUri == null && captureOutputs.isCurrentReviewOutput(preferred)) {
+                        it.copy(lastMediaUri = preferred, lastMediaDeleteScope = deleteScope)
+                    } else {
+                        it
+                    }
                 }
             }
         }
-        refreshMemorySlotInfo()
-        // Sweep any pending media orphaned by a prior crash/force-kill (record stop never ran).
-        engine.cleanupOrphans()
-        refreshStandbyAudioMeter()
     }
 
     /** On launch, restore persisted pro settings (if the user enabled "Remember settings"). */
@@ -669,15 +705,15 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 videoResolution = restoredVideoSize ?: it.videoResolution,
                 openGate = e.openGate,
                 recordAudio = e.recordAudio,
-                audioGain = e.audioGain,
+                audioGain = normalizeAudioGain(e.audioGain),
                 audioScene = e.audioScene,
                 gammaAssist = e.gammaAssist,
                 frameLines = e.frameLines,
                 audioInputPreference = e.audioInputPreference,
                 audioRouteLabel = audioInputStatusLabel(e.audioInputPreference),
-                photoFnSlots = e.photoFnSlots,
-                videoFnSlots = e.videoFnSlots,
-                myMenuSlots = e.myMenuSlots,
+                photoFnSlots = normalizeFnSlots(e.photoFnSlots, FnSlot.PHOTO_DEFAULT),
+                videoFnSlots = normalizeFnSlots(e.videoFnSlots, FnSlot.VIDEO_DEFAULT),
+                myMenuSlots = normalizeFnSlots(e.myMenuSlots, FnSlot.MY_MENU_DEFAULT),
                 volumeKeyAction = e.volumeKeyAction,
                 halfPressAction = e.halfPressAction,
                 preserveLensSelection = if (honorPreserveOptions) e.preserveLensSelection else it.preserveLensSelection,
@@ -760,10 +796,25 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         android.os.StatFs(android.os.Environment.getExternalStorageDirectory().path).availableBytes
     }.getOrDefault(-1L)
 
-    /** Sony-style standby level check: meter the mic whenever video mode is armed but not rolling. */
-    private fun refreshStandbyAudioMeter() {
+    /** Own AudioRecord only while its armed-Video level meter is genuinely visible. */
+    private fun refreshStandbyAudioMeter(forceRestart: Boolean = false) {
         val s = _state.value
-        engine.setStandbyAudioMonitor(s.mode == CaptureMode.VIDEO && s.recordAudio && !s.isRecording)
+        val enabled = standbyAudioMeterShouldRun(
+            lifecycleStarted = lifecycleStarted,
+            visible = standbyMeterVisible,
+            mode = s.mode,
+            recordAudio = s.recordAudio,
+            recording = s.isRecording,
+        )
+        if (!forceRestart && enabled == standbyMeterEnabled) return
+        standbyMeterEnabled = enabled
+        engine.setStandbyAudioMonitor(enabled)
+    }
+
+    override fun onStandbyAudioMeterVisibilityChanged(visible: Boolean) {
+        if (standbyMeterVisible == visible) return
+        standbyMeterVisible = visible
+        refreshStandbyAudioMeter()
     }
 
     private fun applyEngineTransfer(
@@ -823,12 +874,6 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     private fun audioInputStatusLabel(preference: AudioInputPreference = _state.value.audioInputPreference): String =
         audioInputStatus(preference).label
-
-    private fun refreshAudioInputStatus() {
-        if (!_state.value.isRecording) {
-            _state.update { it.copy(audioRouteLabel = audioInputStatusLabel(it.audioInputPreference)) }
-        }
-    }
 
     private fun refreshMemorySlotInfo(activeSlot: MemorySlot? = _state.value.activeMemorySlot) {
         val info = settingsStore.savedPresetInfo()
@@ -899,7 +944,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
 
     private fun normalizedSlots(slots: List<FnSlot>, fallback: List<FnSlot>): List<FnSlot> =
-        slots.distinct().take(FN_SLOT_LIMIT).ifEmpty { fallback }
+        normalizeFnSlots(slots, fallback, FN_SLOT_LIMIT)
 
     // ---- Preview surface ----
     override fun onPreviewSurfaceAvailable(surface: Surface, width: Int, height: Int) =
@@ -1315,8 +1360,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
     override fun onAudioGain(gain: Float) {
         if (rejectIfRecording("Stop REC first")) return
-        engine.setAudioGain(gain)
-        _state.update { it.copy(audioGain = gain, activeMemorySlot = null) }
+        val normalized = normalizeAudioGain(gain)
+        engine.setAudioGain(normalized)
+        _state.update { it.copy(audioGain = normalized, activeMemorySlot = null) }
         // Debounced, not immediate: this rides a slider, and a synchronous full-prefs commit per
         // drag frame stuttered the main thread. The trailing save still lands within ~0.5 s.
         scheduleSettingsSave()
@@ -1338,6 +1384,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 activeMemorySlot = null,
             )
         }
+        // Explicit route intent owns a fresh bounded standby setup attempt when the meter is shown.
+        refreshStandbyAudioMeter(forceRestart = true)
         saveSettingsIfEnabled()
     }
     override fun onToggleTeleconverter(enabled: Boolean) {
@@ -1715,6 +1763,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     override fun onToggleRecording() {
         cancelCountdown()
+        val attemptGeneration = ++recordingAttemptGeneration
         if (_state.value.isRecording) {
             engine.stopRecording()
             mainHandler.removeCallbacks(recordTicker)
@@ -1746,21 +1795,31 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 showStatus("${inputStatus.label}; using default")
             }
             // THREAD CONTRACT: this callback runs on the RECORDER EXECUTOR for a queued admission,
-            // or synchronously on MAIN for an immediate refusal. Its body must stay limited to
-            // thread-safe primitives (StateFlow.update, Handler.removeCallbacks, the engine's own
-            // gated calls) — main-confined ViewModel fields must not be touched here.
+            // or synchronously on MAIN for an immediate refusal. Reconcile a refusal on MAIN as one
+            // ordered unit: refreshStandbyAudioMeter reads main-confined lifecycle/visibility fields,
+            // and must observe any onStop/onStart work already queued ahead of this callback.
             engine.startRecording(s.recordAudio) { ok ->
                 if (!ok) {
-                    mainHandler.removeCallbacks(recordTicker)
-                    _state.update {
-                        it.copy(
-                            isRecording = false,
-                            isRecordingStarting = false,
-                            recordElapsedMs = 0,
-                            audioRouteLabel = audioInputStatusLabel(it.audioInputPreference),
-                        )
+                    mainHandler.post {
+                        val current = _state.value
+                        if (!recordingAttemptOwnsGeneration(
+                                currentGeneration = recordingAttemptGeneration,
+                                expectedGeneration = attemptGeneration,
+                                isRecording = current.isRecording,
+                                isRecordingStarting = current.isRecordingStarting,
+                            )
+                        ) return@post
+                        mainHandler.removeCallbacks(recordTicker)
+                        _state.update {
+                            it.copy(
+                                isRecording = false,
+                                isRecordingStarting = false,
+                                recordElapsedMs = 0,
+                                audioRouteLabel = audioInputStatusLabel(it.audioInputPreference),
+                            )
+                        }
+                        refreshStandbyAudioMeter()
                     }
-                    refreshStandbyAudioMeter()
                 }
             }
         }
@@ -2030,7 +2089,6 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     fun onStart() {
         if (lifecycleStarted) return
         lifecycleStarted = true
-        refreshAudioInputStatus()
         engine.resume()
         refreshStandbyAudioMeter()
         // Re-arm the OSD tickers paused in onStop (level only if its overlay is enabled).
@@ -2044,6 +2102,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     fun onStop() {
         if (!lifecycleStarted) return
         lifecycleStarted = false
+        recordingAttemptGeneration++
         customWbSampleGeneration++
         cancelCountdown()
         // engine.pause() finalizes any in-flight recording; keep the UI in sync so we don't return
@@ -2066,11 +2125,13 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // and skip a preview rebuild that could only race the queued close.
         clearTapFocus(rebuildPreview = false)
         saveSettingsIfEnabled() // persist on background so the next launch restores them
+        standbyMeterEnabled = false
         engine.setStandbyAudioMonitor(false) // release the mic while backgrounded
         engine.pause()
     }
 
     override fun onCleared() {
+        recordingAttemptGeneration++
         mainHandler.removeCallbacksAndMessages(null)
         debugZoomReceiver?.let { receiver -> runCatching { getApplication<Application>().unregisterReceiver(receiver) } }
         debugZoomReceiver = null
@@ -2100,6 +2161,22 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         const val SETTINGS_SAVE_DEBOUNCE_MS = 500L
     }
 }
+
+internal fun standbyAudioMeterShouldRun(
+    lifecycleStarted: Boolean,
+    visible: Boolean,
+    mode: CaptureMode,
+    recordAudio: Boolean,
+    recording: Boolean,
+): Boolean = lifecycleStarted && visible && mode == CaptureMode.VIDEO && recordAudio && !recording
+
+/** A delayed async REC admission result may mutate only the optimistic UI attempt that submitted it. */
+internal fun recordingAttemptOwnsGeneration(
+    currentGeneration: Long,
+    expectedGeneration: Long,
+    isRecording: Boolean,
+    isRecordingStarting: Boolean,
+): Boolean = currentGeneration == expectedGeneration && isRecording && isRecordingStarting
 
 internal fun focusModeChangeClearsTapPoint(
     current: FocusMode,

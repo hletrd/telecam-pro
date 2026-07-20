@@ -1094,9 +1094,9 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
     SectionHeader("Focus Aids")
     ToggleRow(label = "Punch-In", checked = state.punchIn, onCheckedChange = actions::onTogglePunchIn)
     SectionHeader("TELE")
-    // Finder PIP: corner re-draw of the FULL current camera frame (single-stream — see FINDER_* in
-    // CameraState). Only takes effect with the teleconverter on, zoomed, at 4:3.
-    ToggleRow(label = "Tele Finder", checked = state.teleFinder, onCheckedChange = actions::onToggleTeleFinder)
+    // Loupe Overview is a same-stream full-frame reference, never an automatic 1x camera feed.
+    // Exact predicate: enabled + Photo + 4:3 + TELE + active punch-in. Default remains off.
+    ToggleRow(label = "Loupe Overview", checked = state.teleFinder, onCheckedChange = actions::onToggleTeleFinder)
 }
 
 @Composable

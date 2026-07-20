@@ -2,7 +2,7 @@
 
 Current release board. Read after `CLAUDE.md`; use `ARCHITECTURE.md` for implementation details.
 Historical investigation notes are snapshots under `docs/reviews/` and `.context/reviews/`, not
-active TODO lists. Last synced by review-plan-fix cycle 5 (2026-07-18); per-file history via `git log -- docs/BACKLOG.md`.
+active TODO lists. Last synced by review-plan-fix cycle 2 (2026-07-21); per-file history via `git log -- docs/BACKLOG.md`.
 
 ## Release State
 
@@ -130,8 +130,8 @@ These do not require a code or metadata change unless the result exposes a defec
   a product decision on a separate video session that lacks the current RAW/manual Camera2 surface.
 - **Optional product work:** configurable keep-screen-on, geotagging, custom save locations, slow-
   motion playback metadata, and advanced focus/bracketing workflows.
-- **True wide-field TELE finder (design item, owner decision needed):** the shipped Tele Finder
-  PIP (Assist toggle, default OFF) honestly re-draws the FULL current camera frame — the single
+- **True wide-field TELE finder (design item, owner decision needed):** the shipped `Loupe Overview`
+  assist (default OFF) honestly re-draws the FULL current camera frame — the single
   Camera2 stream already carries the HAL's `CONTROL_ZOOM_RATIO` crop, so no GL work can show a
   genuinely wider field. A real iPhone-style wide finder needs either (a) a second concurrent
   wide stream (high risk on this HAL — physical-sub-camera routing and several multi-stream
@@ -143,8 +143,8 @@ These do not require a code or metadata change unless the result exposes a defec
   API-35 `CameraDeviceSetup` query returned `true` for logical-0 physical PRIVATE pairs `2+4` and
   `2+5` at both 640x480+640x480 and 640x480+1920x1440, but that metadata-only answer does not erase
   the existing QTI `configureStreams` SIGSEGV/Broken-pipe evidence for physical routing. The next
-  step is an explicitly approved, isolated preview-only HAL experiment; do not enable or present a
-  fake same-stream box as the requested 1x finder.
+  step is an explicitly approved, isolated preview-only HAL experiment on `127.0.0.1:5602`; do not
+  enable or present the same-stream overview as the requested 1x finder.
 
 ## Dispositions from review-plan-fix cycle 1 (2026-07-17 run; durable record)
 

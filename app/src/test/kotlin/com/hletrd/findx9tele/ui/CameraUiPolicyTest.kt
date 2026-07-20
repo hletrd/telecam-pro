@@ -6,12 +6,88 @@ import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.LensChoice
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.ManualControls
+import com.hletrd.findx9tele.camera.normalizeFnSlots
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CameraUiPolicyTest {
+    @Test
+    fun `standby meter owns mic only while armed Video level is visible`() {
+        fun allowed(
+            started: Boolean = true,
+            visible: Boolean = true,
+            mode: com.hletrd.findx9tele.camera.CaptureMode =
+                com.hletrd.findx9tele.camera.CaptureMode.VIDEO,
+            audio: Boolean = true,
+            recording: Boolean = false,
+        ) = standbyAudioMeterShouldRun(started, visible, mode, audio, recording)
+
+        assertTrue(allowed())
+        assertFalse(allowed(visible = false))
+        assertFalse(allowed(started = false))
+        assertFalse(allowed(mode = com.hletrd.findx9tele.camera.CaptureMode.PHOTO))
+        assertFalse(allowed(audio = false))
+        assertFalse(allowed(recording = true))
+    }
+
+    @Test
+    fun `late recording refusal after stop cannot reacquire the standby microphone`() {
+        // A recorder-executor refusal is reconciled on main after onStop. Its refreshed state uses
+        // the latest lifecycle/visibility snapshot, even though recording has just become false.
+        assertFalse(
+            standbyAudioMeterShouldRun(
+                lifecycleStarted = false,
+                visible = true,
+                mode = com.hletrd.findx9tele.camera.CaptureMode.VIDEO,
+                recordAudio = true,
+                recording = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `late recording refusal cannot reset a newer optimistic attempt`() {
+        fun owns(current: Long, expected: Long, recording: Boolean = true, starting: Boolean = true) =
+            recordingAttemptOwnsGeneration(current, expected, recording, starting)
+
+        assertTrue(owns(current = 7, expected = 7))
+        assertFalse(owns(current = 8, expected = 7)) // stopped attempt A
+        assertFalse(owns(current = 9, expected = 7)) // newer start B
+        assertFalse(owns(current = 7, expected = 7, recording = false)) // already idle
+        assertFalse(owns(current = 7, expected = 7, starting = false)) // already started
+    }
+
+    @Test
+    fun `Fn normalization is distinct bounded and falls back from empty input`() {
+        val nine = listOf(
+            com.hletrd.findx9tele.camera.FnSlot.ISO,
+            com.hletrd.findx9tele.camera.FnSlot.WB,
+            com.hletrd.findx9tele.camera.FnSlot.EV,
+            com.hletrd.findx9tele.camera.FnSlot.FOCUS,
+            com.hletrd.findx9tele.camera.FnSlot.SHUTTER,
+            com.hletrd.findx9tele.camera.FnSlot.EXPOSURE_MODE,
+            com.hletrd.findx9tele.camera.FnSlot.TRANSFER,
+            com.hletrd.findx9tele.camera.FnSlot.STABILIZATION,
+            com.hletrd.findx9tele.camera.FnSlot.AUDIO_SCENE,
+            com.hletrd.findx9tele.camera.FnSlot.ISO,
+        )
+        val fallback = com.hletrd.findx9tele.camera.FnSlot.PHOTO_DEFAULT
+
+        assertEquals(nine.distinct().take(8), normalizeFnSlots(nine, fallback))
+        assertEquals(fallback, normalizeFnSlots(emptyList(), fallback))
+    }
+
+    @Test
+    fun `active TELE reveal waits for a finite measured trailing scroll edge`() {
+        assertNull(topBarTeleRevealTarget(active = false, maxScroll = 120))
+        assertNull(topBarTeleRevealTarget(active = true, maxScroll = 0))
+        assertNull(topBarTeleRevealTarget(active = true, maxScroll = Int.MAX_VALUE))
+        assertEquals(120, topBarTeleRevealTarget(active = true, maxScroll = 120))
+    }
+
     @Test
     fun `mode carousel exposes one mutually exclusive radio choice`() {
         val selected = modeCarouselState(active = true, enabled = true)

@@ -2,7 +2,9 @@ package com.hletrd.findx9tele.ui.controls
 
 import android.hardware.camera2.CameraMetadata
 import com.hletrd.findx9tele.camera.CameraControlCapabilities
+import com.hletrd.findx9tele.camera.ExposureMode
 import com.hletrd.findx9tele.camera.FnSlot
+import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.ManualControls
 import com.hletrd.findx9tele.camera.WbMode
 import com.hletrd.findx9tele.camera.controlAvailability
@@ -173,6 +175,60 @@ class QuickManualDialEnablementTest {
         )
         expected.forEach { (slot, dial) -> assertEquals(slot.name, dial, manualDialForFnSlot(slot)) }
         assertNull(manualDialForFnSlot(FnSlot.EXPOSURE_MODE))
+    }
+
+    @Test
+    fun `manual dial transition preserves exposure focus WB and EV ownership`() {
+        assertEquals(
+            ManualDialTransition(openDial = DialType.FOCUS, focusMode = FocusMode.MANUAL),
+            manualDialTransition(
+                DialType.FOCUS,
+                null,
+                ExposureMode.PROGRAM,
+                FocusMode.CONTINUOUS,
+                WbMode.AUTO,
+            ),
+        )
+        assertEquals(
+            ManualDialTransition(openDial = DialType.SHUTTER, exposureMode = ExposureMode.SHUTTER),
+            manualDialTransition(
+                DialType.SHUTTER,
+                null,
+                ExposureMode.ISO,
+                FocusMode.MANUAL,
+                WbMode.MANUAL,
+            ),
+        )
+        assertEquals(
+            ManualDialTransition(openDial = DialType.ISO, exposureMode = ExposureMode.ISO),
+            manualDialTransition(
+                DialType.ISO,
+                null,
+                ExposureMode.SHUTTER,
+                FocusMode.MANUAL,
+                WbMode.MANUAL,
+            ),
+        )
+        assertEquals(
+            ManualDialTransition(openDial = null, openExposureSheet = true),
+            manualDialTransition(
+                DialType.WB,
+                null,
+                ExposureMode.PROGRAM,
+                FocusMode.MANUAL,
+                WbMode.DAYLIGHT,
+            ),
+        )
+        assertEquals(
+            ManualDialTransition(openDial = null),
+            manualDialTransition(
+                DialType.EV,
+                null,
+                ExposureMode.MANUAL,
+                FocusMode.MANUAL,
+                WbMode.MANUAL,
+            ),
+        )
     }
 
     private fun enabled(

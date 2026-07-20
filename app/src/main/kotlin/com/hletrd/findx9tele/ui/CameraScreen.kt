@@ -12,6 +12,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -47,6 +48,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableFloatStateOf
@@ -75,11 +77,14 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.isTraversalGroup
 import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -90,6 +95,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Constraints
@@ -101,6 +107,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import com.hletrd.findx9tele.camera.Antibanding
 import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.AutoExposure
@@ -147,9 +155,11 @@ import com.hletrd.findx9tele.ui.controls.flashModeLabel
 import com.hletrd.findx9tele.ui.controls.fnSlotLabel
 import com.hletrd.findx9tele.ui.controls.fnSlotValue
 import com.hletrd.findx9tele.ui.controls.manualDialForFnSlot
+import com.hletrd.findx9tele.ui.controls.manualDialTransition
 import com.hletrd.findx9tele.ui.controls.performQuickFn
 import com.hletrd.findx9tele.ui.controls.quickManualDialEnabled
 import com.hletrd.findx9tele.ui.controls.shutterTimerLabel
+import com.hletrd.findx9tele.ui.controls.trailingEdgeFadeScrollHint
 import com.hletrd.findx9tele.ui.controls.whiteBalanceFnChipEnabled
 import com.hletrd.findx9tele.ui.overlays.AspectMask
 import com.hletrd.findx9tele.ui.overlays.AudioMeter
@@ -209,6 +219,12 @@ fun CameraScreen(
     LaunchedEffect(modalVisible) {
         currentActions.value.onCameraInputBlockedChange(modalVisible)
     }
+    LaunchedEffect(detailsVisible, modalVisible) {
+        currentActions.value.onStandbyAudioMeterVisibilityChanged(detailsVisible && !modalVisible)
+    }
+    DisposableEffect(Unit) {
+        onDispose { currentActions.value.onStandbyAudioMeterVisibilityChanged(false) }
+    }
 
     fun openSheet(tab: ProSheetTab) {
         currentActions.value.onCameraInputBlockedChange(true)
@@ -218,30 +234,17 @@ fun CameraScreen(
 
     fun selectManualDial(type: DialType) {
         val controls = state.controls
-        when {
-            type == DialType.WB && controls.wbMode != WbMode.MANUAL -> {
-                openManualDial = null
-                openSheet(ProSheetTab.EXPOSURE)
-            }
-            // Taking shutter/ISO/focus ownership follows the same transition whether entry comes
-            // from the detailed strip or the compact Fn grid.
-            type == DialType.SHUTTER &&
-                (controls.exposureMode == ExposureMode.PROGRAM || controls.exposureMode == ExposureMode.ISO) -> {
-                currentActions.value.onExposureMode(ExposureMode.SHUTTER)
-                openManualDial = type
-            }
-            type == DialType.ISO &&
-                (controls.exposureMode == ExposureMode.PROGRAM || controls.exposureMode == ExposureMode.SHUTTER) -> {
-                currentActions.value.onExposureMode(ExposureMode.ISO)
-                openManualDial = type
-            }
-            type == DialType.FOCUS && controls.focusMode != FocusMode.MANUAL -> {
-                currentActions.value.onFocusMode(FocusMode.MANUAL)
-                openManualDial = type
-            }
-            type == DialType.EV && controls.exposureMode == ExposureMode.MANUAL -> openManualDial = null
-            else -> openManualDial = if (openManualDial == type) null else type
-        }
+        val transition = manualDialTransition(
+            requested = type,
+            currentlyOpen = openManualDial,
+            exposureMode = controls.exposureMode,
+            focusMode = controls.focusMode,
+            wbMode = controls.wbMode,
+        )
+        transition.exposureMode?.let(currentActions.value::onExposureMode)
+        transition.focusMode?.let(currentActions.value::onFocusMode)
+        openManualDial = transition.openDial
+        if (transition.openExposureSheet) openSheet(ProSheetTab.EXPOSURE)
     }
 
     // Counter-rotates compact on-screen glyphs/labels so they stay upright as the phone turns, even
@@ -453,10 +456,10 @@ fun CameraScreen(
                 Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.85f)))
             }
 
-            // TELE finder PIP border: frames the GL corner viewport (the FULL current camera frame —
-            // see FINDER_* in CameraState for the honest single-stream contract). The gate is the
-            // shared teleFinderVisible predicate — the same one the engine resolves for GL — so the
-            // border and the PIP content cannot drift. The rect comes from the same pure finderRect
+            // Loupe Overview border: frames a re-draw of the FULL current-camera stream, not a 1x
+            // camera feed. Exact predicate: user toggle + Photo + 4:3 + TELE + active punch-in. The
+            // shared teleFinderVisible predicate is the same gate the engine resolves for GL, so the
+            // border and overview content cannot drift. The rect comes from the same pure finderRect
             // the GL scissor uses — sized from the FULL aspect box, offset by the margin (the
             // previous padding-before-fillMaxWidth chain shrank the border ~6% below the GL content
             // box). Absolute anchor + absolute offset: the GL box has no layout direction, so the
@@ -472,10 +475,10 @@ fun CameraScreen(
                             .size(rect.width.dp, rect.height.dp)
                             .border(1.dp, Color.White.copy(alpha = 0.85f))
                             .semantics {
-                                contentDescription = "Tele finder preview"
+                                contentDescription = "Loupe overview"
                                 stateDescription = "Non-interactive"
                             }
-                            // Consume the PIP's pointer stream as well as guarding the viewfinder's
+                            // Consume the overview's pointer stream as well as guarding the viewfinder's
                             // focus dispatch. It is a framing reference, never a second focus plane.
                             .pointerInput(Unit) {
                                 awaitEachGesture {
@@ -634,11 +637,16 @@ fun CameraScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .semantics(mergeDescendants = true) {
+                    .focusable()
+                    .clearAndSetSemantics {
                         contentDescription = "Self timer"
                         stateDescription = "${state.timerCountdownSec} seconds remaining"
                         liveRegion = LiveRegionMode.Assertive
                         role = Role.Button
+                        onClick {
+                            currentActions.value.onCapturePhoto()
+                            true
+                        }
                     }
                     .clickable(
                         onClickLabel = "Cancel self timer",
@@ -989,6 +997,13 @@ private fun TopBar(
     val availability = remember(state.caps, state.controls) {
         controlAvailability(state.caps?.controlCapabilities(), state.controls)
     }
+    val topBarScroll = rememberScrollState()
+    LaunchedEffect(state.teleconverterMode, topBarScroll) {
+        snapshotFlow { topBarTeleRevealTarget(state.teleconverterMode, topBarScroll.maxValue) }
+            .filterNotNull()
+            .first()
+            .let { topBarScroll.animateScrollTo(it) }
+    }
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -999,7 +1014,8 @@ private fun TopBar(
         Row(
             modifier = Modifier
                 .weight(1f)
-                .horizontalScroll(rememberScrollState()),
+                .trailingEdgeFadeScrollHint(topBarScroll)
+                .horizontalScroll(topBarScroll),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -1051,18 +1067,28 @@ private fun TopBar(
     }
 }
 
+/** A measured trailing edge is the only valid auto-reveal target; Int.MAX_VALUE is pre-layout. */
+internal fun topBarTeleRevealTarget(active: Boolean, maxScroll: Int): Int? =
+    maxScroll.takeIf { active && it in 1 until Int.MAX_VALUE }
+
 /** Persistent, directly dismissible feedback for the tap-owned AF/AE point after its reticle fades. */
 @Composable
 private fun TapFocusHoldChip(onReset: () -> Unit, modifier: Modifier = Modifier) {
+    val activate = onReset
     Box(
         modifier = modifier
             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
             .clip(RoundedCornerShape(50))
             .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
-            .semantics {
+            .focusable()
+            .clearAndSetSemantics {
                 contentDescription = "Reset focus point"
                 stateDescription = "Tap focus held"
                 role = Role.Button
+                onClick {
+                    activate()
+                    true
+                }
             }
             .clickable(role = Role.Button, onClickLabel = "Reset focus point", onClick = onReset)
             .padding(horizontal = 12.dp),
@@ -1097,15 +1123,23 @@ private fun ChromeIconButton(
     enabled: Boolean = true,
     content: @Composable BoxScope.() -> Unit,
 ) {
+    val activate = onClick
     Box(
         modifier = modifier
             .size(48.dp)
             .clip(CircleShape)
-            .semantics {
+            .focusable()
+            .clearAndSetSemantics {
                 this.contentDescription = contentDescription
                 role = Role.Button
+                if (!enabled) disabled()
+                onClick {
+                    if (!enabled) return@onClick false
+                    activate()
+                    true
+                }
             }
-            .clickable(enabled = enabled, onClick = onClick),
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Box(
@@ -1221,6 +1255,7 @@ private fun GridButton(active: Boolean, onClick: () -> Unit, modifier: Modifier 
 
 @Composable
 private fun TeleChip(active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
+    val activate = onClick
     val bg = when {
         active && enabled -> CameraColors.TextPrimary
         active -> CameraColors.TextPrimary.copy(alpha = 0.38f)
@@ -1236,12 +1271,19 @@ private fun TeleChip(active: Boolean, onClick: () -> Unit, modifier: Modifier = 
     Box(
         modifier = modifier
             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-            .semantics {
+            .focusable()
+            .clearAndSetSemantics {
                 contentDescription = "Teleconverter"
                 stateDescription = if (active) "On" else "Off"
                 role = Role.Button
+                if (!enabled) disabled()
+                onClick {
+                    if (!enabled) return@onClick false
+                    activate()
+                    true
+                }
             }
-            .clickable(enabled = enabled, onClick = onClick),
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Box(
@@ -1414,7 +1456,15 @@ private fun ZoomIndicator(
 }
 
 internal const val FN_OVERLAY_COLUMN_COUNT = 4
+internal const val FN_OVERLAY_HELD_COLUMN_COUNT = 2
 internal const val FN_OVERLAY_MAX_SLOTS = 8
+
+internal enum class FnOverlayAnchor { BOTTOM_CENTER, CENTER_START, CENTER_END }
+
+internal data class FnOverlayLayoutPolicy(
+    val rawColumnCount: Int,
+    val anchor: FnOverlayAnchor,
+)
 
 internal enum class FnTileContentAxis {
     PORTRAIT,
@@ -1428,6 +1478,40 @@ internal fun fnOverlaySlots(mode: CaptureMode, activeSlots: List<FnSlot>): List<
         .distinct()
         .take(FN_OVERLAY_MAX_SLOTS)
         .ifEmpty { if (mode == CaptureMode.VIDEO) FnSlot.VIDEO_DEFAULT else FnSlot.PHOTO_DEFAULT }
+
+internal fun fnOverlayLayoutPolicy(deviceOrientation: Int): FnOverlayLayoutPolicy =
+    when (((deviceOrientation % 360) + 360) % 360) {
+        90 -> FnOverlayLayoutPolicy(FN_OVERLAY_HELD_COLUMN_COUNT, FnOverlayAnchor.CENTER_START)
+        270 -> FnOverlayLayoutPolicy(FN_OVERLAY_HELD_COLUMN_COUNT, FnOverlayAnchor.CENTER_END)
+        else -> FnOverlayLayoutPolicy(FN_OVERLAY_COLUMN_COUNT, FnOverlayAnchor.BOTTOM_CENTER)
+    }
+
+/**
+ * Raw portrait-locked cells that become a physical 4x2 tray when the handset is held sideways.
+ * Null cells preserve the intended physical row for mode-specific lists shorter than eight slots.
+ */
+internal fun fnOverlayGridRows(slots: List<FnSlot>, deviceOrientation: Int): List<List<FnSlot?>> {
+    val visible = slots.take(FN_OVERLAY_MAX_SLOTS)
+    return when (((deviceOrientation % 360) + 360) % 360) {
+        90 -> MutableList<FnSlot?>(FN_OVERLAY_MAX_SLOTS) { null }.also { raw ->
+            visible.forEachIndexed { index, slot ->
+                val physicalRow = index / FN_OVERLAY_COLUMN_COUNT
+                val physicalColumn = index % FN_OVERLAY_COLUMN_COUNT
+                raw[physicalColumn * FN_OVERLAY_HELD_COLUMN_COUNT + (1 - physicalRow)] = slot
+            }
+        }.chunked(FN_OVERLAY_HELD_COLUMN_COUNT)
+        270 -> MutableList<FnSlot?>(FN_OVERLAY_MAX_SLOTS) { null }.also { raw ->
+            visible.forEachIndexed { index, slot ->
+                val physicalRow = index / FN_OVERLAY_COLUMN_COUNT
+                val physicalColumn = index % FN_OVERLAY_COLUMN_COUNT
+                raw[(FN_OVERLAY_COLUMN_COUNT - 1 - physicalColumn) * FN_OVERLAY_HELD_COLUMN_COUNT + physicalRow] = slot
+            }
+        }.chunked(FN_OVERLAY_HELD_COLUMN_COUNT)
+        else -> visible.chunked(FN_OVERLAY_COLUMN_COUNT).map { row ->
+            row.map<FnSlot, FnSlot?> { it } + List(FN_OVERLAY_COLUMN_COUNT - row.size) { null }
+        }
+    }
+}
 
 internal fun fnTileContentAxis(deviceOrientation: Int): FnTileContentAxis =
     when (((deviceOrientation % 360) + 360) % 360) {
@@ -1478,9 +1562,14 @@ private fun FnOverlay(
     onDismiss: () -> Unit,
     glyphRotation: Float = 0f,
 ) {
+    val dismiss = onDismiss
     BackHandler(onBack = onDismiss)
     val slots = remember(state.mode, state.activeFnSlots) {
         fnOverlaySlots(state.mode, state.activeFnSlots)
+    }
+    val layoutPolicy = fnOverlayLayoutPolicy(state.deviceOrientation)
+    val gridRows = remember(slots, state.deviceOrientation) {
+        fnOverlayGridRows(slots, state.deviceOrientation)
     }
     val contentAxis = fnTileContentAxis(state.deviceOrientation)
     val availability = remember(state.caps, state.controls) {
@@ -1496,19 +1585,28 @@ private fun FnOverlay(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .semantics {
-                    contentDescription = "Close function menu"
-                    role = Role.Button
-                }
-                .clickable(onClick = onDismiss),
+                // Touch-only scrim: the explicit 48 dp Close control below is the modal's sole
+                // named close action for TalkBack, Switch Access, and UI automation.
+                .pointerInput(Unit) { detectTapGestures(onTap = { onDismiss() }) },
         )
-        Column(
-            modifier = Modifier
+        val panelPlacement = when (layoutPolicy.anchor) {
+            FnOverlayAnchor.BOTTOM_CENTER -> Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
                 .padding(horizontal = 14.dp)
                 .padding(bottom = 154.dp)
                 .fillMaxWidth()
+            FnOverlayAnchor.CENTER_START -> Modifier
+                .align(Alignment.CenterStart)
+                .padding(start = 14.dp, top = 14.dp, bottom = 14.dp)
+                .width(232.dp)
+            FnOverlayAnchor.CENTER_END -> Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 14.dp, top = 14.dp, bottom = 14.dp)
+                .width(232.dp)
+        }
+        Column(
+            modifier = panelPlacement
                 .clip(RoundedCornerShape(8.dp))
                 // The full-screen scrim stays light, but the compact panel itself is opaque so
                 // focal-rail values cannot read as a second line inside held-landscape Fn tiles.
@@ -1537,11 +1635,16 @@ private fun FnOverlay(
                         .focusRequester(closeFocusRequester)
                         .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
                         .clip(RoundedCornerShape(50))
-                        .semantics {
+                        .focusable()
+                        .clearAndSetSemantics {
                             contentDescription = "Close function menu"
                             role = Role.Button
+                            onClick {
+                                dismiss()
+                                true
+                            }
                         }
-                        .clickable(onClick = onDismiss),
+                        .clickable(role = Role.Button, onClick = onDismiss),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
@@ -1552,37 +1655,43 @@ private fun FnOverlay(
                     )
                 }
             }
-            slots.chunked(FN_OVERLAY_COLUMN_COUNT).forEach { rowSlots ->
+            gridRows.forEach { rowSlots ->
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    // Preserve empty raw cells/rows for custom lists shorter than eight. Without
+                    // the row floor an all-null held row collapses and changes the perceived 4x2
+                    // slot position even though fnOverlayGridRows intentionally retained it.
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 58.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     rowSlots.forEach { slot ->
-                        val manualDial = manualDialForFnSlot(slot)
-                        val enabled = quickFnEnabled(slot, state) && when (manualDial) {
-                            DialType.WB -> whiteBalanceFnChipEnabled(state.controls.wbMode, availability)
-                            null -> true
-                            else -> quickManualDialEnabled(manualDial, availability)
+                        if (slot == null) {
+                            Spacer(modifier = Modifier.weight(1f))
+                        } else {
+                            val manualDial = manualDialForFnSlot(slot)
+                            val enabled = quickFnEnabled(slot, state) && when (manualDial) {
+                                DialType.WB -> whiteBalanceFnChipEnabled(state.controls.wbMode, availability)
+                                null -> true
+                                else -> quickManualDialEnabled(manualDial, availability)
+                            }
+                            FnOverlayTile(
+                                slot = slot,
+                                value = fnSlotValue(slot, state),
+                                enabled = enabled,
+                                onClick = {
+                                    if (manualDial != null) {
+                                        onSelectManualDial(manualDial)
+                                        onDismiss()
+                                    } else {
+                                        // Cycle/toggle actions keep the context visible so several
+                                        // shooting choices can be prepared in one Fn visit.
+                                        performQuickFn(slot, state, actions)
+                                    }
+                                },
+                                glyphRotation = glyphRotation,
+                                contentAxis = contentAxis,
+                                modifier = Modifier.weight(1f),
+                            )
                         }
-                        FnOverlayTile(
-                            slot = slot,
-                            value = fnSlotValue(slot, state),
-                            enabled = enabled,
-                            onClick = {
-                                if (manualDial != null) {
-                                    onSelectManualDial(manualDial)
-                                } else {
-                                    performQuickFn(slot, state, actions)
-                                }
-                                onDismiss()
-                            },
-                            glyphRotation = glyphRotation,
-                            contentAxis = contentAxis,
-                            modifier = Modifier.weight(1f),
-                        )
-                    }
-                    repeat(FN_OVERLAY_COLUMN_COUNT - rowSlots.size) {
-                        Spacer(modifier = Modifier.weight(1f))
                     }
                 }
             }
@@ -1600,6 +1709,7 @@ private fun FnOverlayTile(
     glyphRotation: Float = 0f,
     contentAxis: FnTileContentAxis = FnTileContentAxis.PORTRAIT,
 ) {
+    val activate = onClick
     val heldLandscape = contentAxis != FnTileContentAxis.PORTRAIT
     val visualLabel = fnOverlayVisualLabel(slot, heldLandscape)
     val visualValue = fnOverlayVisualValue(slot, value, heldLandscape)
@@ -1610,12 +1720,19 @@ private fun FnOverlayTile(
             .clip(RoundedCornerShape(8.dp))
             .background(Color.White.copy(alpha = if (enabled) 0.09f else 0.04f))
             .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(8.dp))
-            .semantics {
+            .focusable()
+            .clearAndSetSemantics {
                 contentDescription = fnSlotLabel(slot)
                 stateDescription = value
                 role = Role.Button
+                if (!enabled) disabled()
+                onClick {
+                    if (!enabled) return@onClick false
+                    activate()
+                    true
+                }
             }
-            .clickable(enabled = enabled, onClick = onClick)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
             .padding(horizontal = 9.dp, vertical = 7.dp),
         contentAlignment = Alignment.Center,
     ) {
@@ -1656,6 +1773,7 @@ private fun FnOverlayTileLabel(text: String, alpha: Float, modifier: Modifier = 
         color = CameraColors.TextSecondary.copy(alpha = alpha),
         style = MaterialTheme.typography.labelSmall,
         maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
         modifier = modifier,
     )
 }
@@ -1668,6 +1786,7 @@ private fun FnOverlayTileValue(text: String, alpha: Float, modifier: Modifier = 
         style = MaterialTheme.typography.labelMedium,
         fontWeight = FontWeight.Bold,
         maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
         modifier = modifier,
     )
 }
@@ -1807,13 +1926,22 @@ private fun FocalRail(
                     modifier = Modifier
                         .size(48.dp)
                         .rotate(glyphRotation)
-                        .semantics {
-                            contentDescription = "${choice.label} lens"
-                            stateDescription = presentation.stateDescription
-                        }
+                        .focusable()
                         // Selection and activation must live on the same outer node. A separate
                         // selected semantic followed by clickable exported selected=false from the
                         // actionable AccessibilityNodeInfo on PMA110.
+                        .clearAndSetSemantics {
+                            contentDescription = "${choice.label} lens"
+                            stateDescription = presentation.stateDescription
+                            role = presentation.accessibilityRole
+                            selected = presentation.selected
+                            if (!presentation.enabled) disabled()
+                            onClick {
+                                if (!presentation.enabled) return@onClick false
+                                onLens(choice)
+                                true
+                            }
+                        }
                         .selectable(
                             selected = presentation.selected,
                             enabled = presentation.enabled,
@@ -1896,12 +2024,22 @@ internal fun modeCarouselState(active: Boolean, enabled: Boolean): ModeCarouselS
 @Composable
 private fun ModeLabel(text: String, active: Boolean, enabled: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val presentation = modeCarouselState(active, enabled)
+    val activate = onClick
     Box(
         modifier = modifier
             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-            .semantics {
+            .focusable()
+            .clearAndSetSemantics {
                 contentDescription = "$text mode"
                 stateDescription = presentation.stateDescription
+                role = presentation.accessibilityRole
+                selected = presentation.selected
+                if (!presentation.enabled) disabled()
+                onClick {
+                    if (!presentation.enabled) return@onClick false
+                    activate()
+                    true
+                }
             }
             .selectable(
                 selected = presentation.selected,
@@ -2006,6 +2144,10 @@ private fun ShutterButton(
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val shutterScale by animateFloatAsState(if (pressed) 0.9f else 1f, label = "shutterScale")
+    val activate = {
+        view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+        onClick()
+    }
     Canvas(
         modifier = modifier
             .size(76.dp)
@@ -2014,7 +2156,8 @@ private fun ShutterButton(
             // declined anyway — dim the button so it stops LOOKING ready in front of a black
             // viewfinder. Still tappable: the decline path surfaces its own status message.
             .alpha(if (cameraHealthy) 1f else 0.35f)
-            .semantics {
+            .focusable()
+            .clearAndSetSemantics {
                 contentDescription = when {
                     timerCountdownSec > 0 -> "Cancel self timer"
                     mode == CaptureMode.PHOTO -> "Take photo"
@@ -2027,15 +2170,21 @@ private fun ShutterButton(
                     enabled -> "Ready"
                     else -> "Unavailable"
                 }
+                if (!enabled) disabled()
+                onClick {
+                    if (!enabled) return@onClick false
+                    activate()
+                    true
+                }
             }
             .clickable(
+                enabled = enabled,
                 interactionSource = interaction,
                 indication = null,
+                role = Role.Button,
                 onClickLabel = if (timerCountdownSec > 0) "Cancel self timer" else null,
-            ) {
-                view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                onClick()
-            },
+                onClick = activate,
+            ),
     ) {
         drawCircle(color = Color.White, radius = size.minDimension / 2f, style = Stroke(width = 4.dp.toPx()))
         when {
@@ -2062,15 +2211,24 @@ private fun ShutterButton(
 @Composable
 private fun SnapshotButton(onClick: () -> Unit, enabled: Boolean, modifier: Modifier = Modifier) {
     // 48 dp touch target, 36 dp visual dot.
+    val activate = onClick
     Box(
         modifier = modifier
             .size(48.dp)
             .alpha(if (enabled) 1f else 0.35f)
-            .semantics {
+            .focusable()
+            .clearAndSetSemantics {
                 contentDescription = "Take photo while recording"
                 role = Role.Button
+                stateDescription = if (enabled) "Ready" else "Unavailable"
+                if (!enabled) disabled()
+                onClick {
+                    if (!enabled) return@onClick false
+                    activate()
+                    true
+                }
             }
-            .clickable(enabled = enabled, onClick = onClick),
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Canvas(modifier = Modifier.size(36.dp)) {
@@ -2085,6 +2243,7 @@ internal object PreviewCameraActions : CameraActions {
     override fun onPreviewSurfaceAvailable(surface: Surface, width: Int, height: Int) = Unit
     override fun onReviewOpenChange(open: Boolean, uri: android.net.Uri): Boolean = false
     override fun onCameraInputBlockedChange(blocked: Boolean) = Unit
+    override fun onStandbyAudioMeterVisibilityChanged(visible: Boolean) = Unit
     override fun onPreviewSurfaceChanged(width: Int, height: Int) = Unit
     override fun onPreviewSurfaceDestroyed() = Unit
 

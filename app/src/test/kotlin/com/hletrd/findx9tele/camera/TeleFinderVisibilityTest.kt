@@ -6,10 +6,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Truth table for the shared TELE-finder gate. The engine (`pushTeleFinder` → GL resolved flag)
+ * Truth table for the same-stream Loupe Overview gate. The engine (`pushTeleFinder` → GL flag)
  * and the Compose border both consume these functions; before the extraction the condition was
  * hand-written in three places and a one-sided edit could silently desync the white border from
- * the GL-drawn PIP content.
+ * the GL-drawn overview content. This does not claim a separate 1x camera source.
  */
 class TeleFinderVisibilityTest {
 
@@ -32,7 +32,7 @@ class TeleFinderVisibilityTest {
     fun `visibility is the resolved flag AND an active punch-in loupe - the GL decomposition`() {
         // GL gates its resolved flag on its own punch-in state; the Compose border uses
         // teleFinderVisible directly. The two decompositions must be the same function (AGG4-29:
-        // the loupe is the one case the single-stream PIP is genuinely wider than the main view —
+        // the loupe is the one case the same-stream overview is wider than the main view —
         // the old raw zoom floor showed a ~1:1 duplicate corner box at steady state).
         for (enabled in booleanArrayOf(true, false))
             for (tc in booleanArrayOf(true, false))
@@ -56,7 +56,7 @@ class TeleFinderVisibilityTest {
 
     @Test
     fun `video mode never shows the finder regardless of the photo aspect setting`() {
-        // The 4:3 gate is the STILL aspect; in video it used to make the PIP appear/vanish with an
+        // The 4:3 gate is the STILL aspect; in video it used to make the overview appear/vanish with an
         // unrelated photo setting. Photo-only closes that semantic surprise.
         for (aspect in AspectRatio.entries) {
             assertFalse(teleFinderVisible(true, true, true, aspect, punchIn = true))

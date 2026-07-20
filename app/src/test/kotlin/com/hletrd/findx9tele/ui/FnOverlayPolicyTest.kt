@@ -57,6 +57,54 @@ class FnOverlayPolicyTest {
     }
 
     @Test
+    fun `held tray uses raw 2x4 side anchors and preserves physical 4x2 order`() {
+        val slots = FnSlot.entries.take(8)
+
+        assertEquals(
+            FnOverlayLayoutPolicy(FN_OVERLAY_HELD_COLUMN_COUNT, FnOverlayAnchor.CENTER_START),
+            fnOverlayLayoutPolicy(90),
+        )
+        assertEquals(
+            listOf(
+                listOf(slots[4], slots[0]),
+                listOf(slots[5], slots[1]),
+                listOf(slots[6], slots[2]),
+                listOf(slots[7], slots[3]),
+            ),
+            fnOverlayGridRows(slots, 90),
+        )
+
+        assertEquals(
+            FnOverlayLayoutPolicy(FN_OVERLAY_HELD_COLUMN_COUNT, FnOverlayAnchor.CENTER_END),
+            fnOverlayLayoutPolicy(270),
+        )
+        assertEquals(
+            listOf(
+                listOf(slots[3], slots[7]),
+                listOf(slots[2], slots[6]),
+                listOf(slots[1], slots[5]),
+                listOf(slots[0], slots[4]),
+            ),
+            fnOverlayGridRows(slots, 270),
+        )
+    }
+
+    @Test
+    fun `short held lists retain blank cells instead of changing physical rows`() {
+        val slots = FnSlot.PHOTO_DEFAULT
+
+        assertEquals(
+            listOf(
+                listOf(slots[4], slots[0]),
+                listOf(slots[5], slots[1]),
+                listOf(null, slots[2]),
+                listOf(null, slots[3]),
+            ),
+            fnOverlayGridRows(slots, 90),
+        )
+    }
+
+    @Test
     fun `held landscape copy is compact without changing portrait copy`() {
         assertEquals("Stabilization", fnOverlayVisualLabel(FnSlot.STABILIZATION, false))
         assertEquals("Steady", fnOverlayVisualLabel(FnSlot.STABILIZATION, true))
@@ -68,5 +116,10 @@ class FnOverlayPolicyTest {
         assertEquals("Std", fnOverlayVisualValue(FnSlot.STABILIZATION, "Standard", true))
         assertEquals("Focus", fnOverlayVisualValue(FnSlot.AUDIO_SCENE, "Sound Focus", true))
         assertEquals("300mm", fnOverlayVisualValue(FnSlot.TELECONVERTER, "300 mm", true))
+
+        // Stabilization is the longest production label. The tray uses a compact visual alias while
+        // the semantic node still exports fnSlotLabel(slot), and Text ellipsizes any future overflow.
+        assertEquals("Stabilization", fnOverlayVisualLabel(FnSlot.STABILIZATION, false))
+        assertEquals("Steady", fnOverlayVisualLabel(FnSlot.STABILIZATION, true))
     }
 }

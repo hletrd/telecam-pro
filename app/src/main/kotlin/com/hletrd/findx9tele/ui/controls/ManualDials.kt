@@ -16,6 +16,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.selection.selectable
@@ -31,10 +32,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.foundation.rememberScrollState
@@ -140,6 +144,42 @@ internal fun manualDialForFnSlot(slot: FnSlot): DialType? = when (slot) {
     FnSlot.EV -> DialType.EV
     FnSlot.ZOOM -> DialType.ZOOM
     else -> null
+}
+
+/**
+ * One ownership-safe result for every manual-control entry point. The detailed dial strip and the
+ * compact Fn tray both consume this plan, so a shortcut cannot silently skip the exposure/focus
+ * mode transition that makes its ruler authoritative.
+ */
+internal data class ManualDialTransition(
+    val openDial: DialType?,
+    val exposureMode: ExposureMode? = null,
+    val focusMode: FocusMode? = null,
+    val openExposureSheet: Boolean = false,
+)
+
+internal fun manualDialTransition(
+    requested: DialType,
+    currentlyOpen: DialType?,
+    exposureMode: ExposureMode,
+    focusMode: FocusMode,
+    wbMode: WbMode,
+): ManualDialTransition = when {
+    requested == DialType.WB && wbMode != WbMode.MANUAL -> ManualDialTransition(
+        openDial = null,
+        openExposureSheet = true,
+    )
+    requested == DialType.SHUTTER &&
+        (exposureMode == ExposureMode.PROGRAM || exposureMode == ExposureMode.ISO) ->
+        ManualDialTransition(openDial = requested, exposureMode = ExposureMode.SHUTTER)
+    requested == DialType.ISO &&
+        (exposureMode == ExposureMode.PROGRAM || exposureMode == ExposureMode.SHUTTER) ->
+        ManualDialTransition(openDial = requested, exposureMode = ExposureMode.ISO)
+    requested == DialType.FOCUS && focusMode != FocusMode.MANUAL ->
+        ManualDialTransition(openDial = requested, focusMode = FocusMode.MANUAL)
+    requested == DialType.EV && exposureMode == ExposureMode.MANUAL ->
+        ManualDialTransition(openDial = null)
+    else -> ManualDialTransition(openDial = if (currentlyOpen == requested) null else requested)
 }
 
 /** The fixed compact Fn glyph follows the shared animated overlay angle without sign/phase drift. */
@@ -312,12 +352,18 @@ internal fun CompactFnButton(
     glyphRotation: Float,
     modifier: Modifier = Modifier,
 ) {
+    val activate = onClick
     Box(
         modifier = modifier
             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-            .semantics {
+            .focusable()
+            .clearAndSetSemantics {
                 contentDescription = "Open function menu"
                 role = Role.Button
+                onClick {
+                    activate()
+                    true
+                }
             }
             .clickable(role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
@@ -343,12 +389,18 @@ internal fun CompactFnButton(
 
 @Composable
 private fun CompactDialCloseButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val activate = onClick
     Box(
         modifier = modifier
             .size(48.dp)
-            .semantics {
+            .focusable()
+            .clearAndSetSemantics {
                 contentDescription = "Close adjustment"
                 role = Role.Button
+                onClick {
+                    activate()
+                    true
+                }
             }
             .clickable(role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
@@ -583,6 +635,7 @@ private fun DialChip(
     onLongClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val activate = onClick
     val bg = if (active) CameraColors.TextPrimary else CameraColors.Pill.copy(alpha = 0.7f)
     val fg = when {
         active -> Color.Black
@@ -594,17 +647,25 @@ private fun DialChip(
     Box(
         modifier = modifier
             .sizeIn(minHeight = 48.dp)
+            .focusable()
+            .clearAndSetSemantics {
+                contentDescription = label
+                stateDescription = value
+                role = Role.Button
+                if (!enabled) disabled()
+                onClick {
+                    if (!enabled) return@onClick false
+                    activate()
+                    true
+                }
+            }
             .combinedClickable(
                 enabled = enabled,
                 role = Role.Button,
                 onClick = onClick,
                 onLongClickLabel = "Open Fn menu",
                 onLongClick = onLongClick,
-            )
-            .semantics {
-                contentDescription = label
-                stateDescription = value
-            },
+            ),
         contentAlignment = Alignment.Center,
     ) {
         Row(
@@ -759,14 +820,28 @@ private fun SpeedAngleToggle(mode: ShutterMode, enabled: Boolean, onSelect: (Shu
     ) {
         ShutterMode.entries.forEach { m ->
             val on = mode == m
+            val activate = { onSelect(m) }
             Box(
                 modifier = Modifier
                     .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                    .focusable()
+                    .clearAndSetSemantics {
+                        contentDescription = if (m == ShutterMode.SPEED) "Shutter speed" else "Shutter angle"
+                        stateDescription = if (on) "Selected" else "Not selected"
+                        role = Role.RadioButton
+                        selected = on
+                        if (!enabled) disabled()
+                        onClick {
+                            if (!enabled) return@onClick false
+                            activate()
+                            true
+                        }
+                    }
                     .selectable(
                         selected = on,
                         enabled = enabled,
                         role = Role.RadioButton,
-                        onClick = { onSelect(m) },
+                        onClick = activate,
                     ),
                 contentAlignment = Alignment.Center,
             ) {

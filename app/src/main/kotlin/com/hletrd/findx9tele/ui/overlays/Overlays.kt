@@ -545,7 +545,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                 punchIn = state.punchIn,
             )
         ) {
-            Text("PIP", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+            Text("OVERVIEW", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
         }
     }
 }

@@ -115,7 +115,7 @@ interface CameraActions {
     fun onGridType(type: GridType)
     fun onToggleLevel(enabled: Boolean)
     fun onTogglePunchIn(enabled: Boolean)
-    /** TELE finder PIP Assist toggle (default OFF); the engine resolves it against TELE + 4:3. */
+    /** Same-stream Loupe Overview toggle (default OFF); resolved against TELE + Photo + 4:3 + loupe. */
     fun onToggleTeleFinder(enabled: Boolean)
 
     // Drive
@@ -153,4 +153,6 @@ interface CameraActions {
      */
     fun onReviewOpenChange(open: Boolean, uri: android.net.Uri): Boolean
     fun onCameraInputBlockedChange(blocked: Boolean)
+    /** True only while the standby Video level meter is actually visible and unobscured. */
+    fun onStandbyAudioMeterVisibilityChanged(visible: Boolean)
 }
