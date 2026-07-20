@@ -155,7 +155,8 @@ def ensure_video_mode(ctx: Context) -> None:
 def launch_ui_snapshot(ctx: Context, *, orientation: int, scenario: str = "default"):
     """Open the debug-only, HAL-free production-composable snapshot surface."""
     ctx.adb.shell(
-        f"am start -W -n {SNAPSHOT_ACTIVITY} --ei device_orientation {orientation} "
+        f"am start -W --activity-reorder-to-front -n {SNAPSHOT_ACTIVITY} "
+        f"--ei device_orientation {orientation} "
         f"--es snapshot_scenario {scenario}"
     )
     deadline = time.monotonic() + 8
