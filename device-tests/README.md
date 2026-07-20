@@ -53,7 +53,7 @@ a later case.
 | full | `photo_capture_valid_files` | stable owned MediaStore family; pending=0, size/dims/MIME, pulled file validity |
 | full | `tele_dng_capture` | TELE DNG validates as TIFF ≥1 MB; reports non-green incomplete when RAW is not enabled |
 | full | `video_record_validate` | 65 s HEVC Main10 HLG 29.97p → full-frame decode, PTS cadence, AAC A/V sync |
-| full | `tap_af_lock_persists` | tap-AF engages `afMode=1` and HOLDS past the 2 s reticle timeout |
+| full | `tap_af_hold_visible_and_reset` | tap-AF holds past reticle fade with visible reset, then restores prior AF mode |
 | full | `settings_sheet_tabs` | all 9 settings tabs exist with exactly one selected tab |
 | full | `mode_persists_across_kill` | Remember Settings survives force-stop |
 | reliability | `capture_then_kill_survives` | kill 0.6 s after shutter → files survive, valid, no stuck pending |

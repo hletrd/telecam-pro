@@ -2,12 +2,20 @@ package com.hletrd.findx9tele.ui
 
 import androidx.compose.ui.semantics.Role
 import com.hletrd.findx9tele.camera.LensChoice
+import com.hletrd.findx9tele.camera.FocusMode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CameraUiPolicyTest {
+    @Test
+    fun `an actual focus mode change releases the tap owned point`() {
+        assertTrue(focusModeChangeClearsTapPoint(FocusMode.CONTINUOUS, FocusMode.MANUAL))
+        assertTrue(focusModeChangeClearsTapPoint(FocusMode.AUTO, FocusMode.CONTINUOUS))
+        assertFalse(focusModeChangeClearsTapPoint(FocusMode.MACRO, FocusMode.MACRO))
+    }
+
     @Test
     fun `focal rail exposes selection converter reconfiguration and REC truth`() {
         val selected = focalRailState(LensChoice.TELE3X, LensChoice.TELE3X, true, true, false)

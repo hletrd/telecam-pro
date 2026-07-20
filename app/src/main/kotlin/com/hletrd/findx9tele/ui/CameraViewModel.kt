@@ -892,19 +892,27 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onPreviewSurfaceDestroyed() = engine.onPreviewSurfaceDestroyed()
 
     // ---- Focus ----
-    override fun onFocusMode(mode: FocusMode) = updateControls(FnSlot.FOCUS) { c ->
-        // AF→MF handoff: entering MANUAL seeds the slider from the LIVE lens position, so fine
-        // focus starts from AF's solution (near ∞ through the afocal converter) instead of a stale
-        // or 0-diopter value — the workflow is "AF once, then trim by hand".
-        val live = _state.value.liveFocusDiopters
-        val min = _state.value.caps?.minFocusDistanceDiopters ?: 0f
-        if (mode == FocusMode.MANUAL && c.focusMode != FocusMode.MANUAL && live != null && min > 0f) {
-            c.copy(focusMode = mode, focusDistanceDiopters = live.coerceIn(0f, min))
-        } else {
-            c.copy(focusMode = mode)
+    override fun onFocusMode(mode: FocusMode) {
+        if (focusModeChangeClearsTapPoint(_state.value.controls.focusMode, mode)) {
+            clearTapFocus()
+        }
+        updateControls(FnSlot.FOCUS) { c ->
+            // AF→MF handoff: entering MANUAL seeds the slider from the LIVE lens position, so fine
+            // focus starts from AF's solution (near ∞ through the afocal converter) instead of a stale
+            // or 0-diopter value — the workflow is "AF once, then trim by hand".
+            val live = _state.value.liveFocusDiopters
+            val min = _state.value.caps?.minFocusDistanceDiopters ?: 0f
+            if (mode == FocusMode.MANUAL && c.focusMode != FocusMode.MANUAL && live != null && min > 0f) {
+                c.copy(focusMode = mode, focusDistanceDiopters = live.coerceIn(0f, min))
+            } else {
+                c.copy(focusMode = mode)
+            }
         }
     }
     override fun onFocusSlider(slider: Float) {
+        if (focusModeChangeClearsTapPoint(_state.value.controls.focusMode, FocusMode.MANUAL)) {
+            clearTapFocus()
+        }
         val min = _state.value.caps?.minFocusDistanceDiopters ?: 0f
         val d = FocusMapping.sliderToDiopters(slider, min)
         updateControls(FnSlot.FOCUS) { it.copy(focusDistanceDiopters = d, focusMode = FocusMode.MANUAL) }
@@ -912,7 +920,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     override fun onAfLock(locked: Boolean) = updateControls(FnSlot.FOCUS) { it.copy(afLock = locked) }
     override fun onTapFocus(nx: Float, ny: Float) {
         engine.setTapPoint(nx, ny)
-        _state.update { it.copy(tapPoint = nx to ny) }
+        _state.update { it.copy(tapPoint = nx to ny, tapFocusHeld = true) }
         reticleHideRunnable?.let { mainHandler.removeCallbacks(it) }
         // The 2 s timer is VISUAL ONLY (keep the viewfinder quiet): it hides the reticle but must
         // NOT release the AF hold, the metering region, or the loupe center. The tapped focus
@@ -940,7 +948,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         reticleHideRunnable?.let(mainHandler::removeCallbacks)
         reticleHideRunnable = null
         engine.clearTapPoint()
-        _state.update { it.copy(tapPoint = null) }
+        _state.update { it.copy(tapPoint = null, tapFocusHeld = false) }
     }
 
     // ---- Exposure ----
@@ -2042,6 +2050,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         const val SETTINGS_SAVE_DEBOUNCE_MS = 500L
     }
 }
+
+internal fun focusModeChangeClearsTapPoint(current: FocusMode, requested: FocusMode): Boolean =
+    current != requested
 
 /**
  * PROGRAM runs app-side for STILLS — the auto min-shutter (1/focal rule) + Auto ISO a real P mode

@@ -715,8 +715,12 @@ data class CameraUiState(
     // relaunches, while a fresh install still opens on the 1× main lens with TELE off.
     val preserveLensSelection: Boolean = true,
     val preserveTeleconverter: Boolean = true,
-    // Transient tap point (normalized 0..1 in view space) for the focus/meter reticle; null = none.
+    // Transient tap point (normalized 0..1 in view space) for the focus/meter reticle; null means
+    // the large reticle has faded, not necessarily that the functional AF/AE point was released.
     val tapPoint: Pair<Float, Float>? = null,
+    // Functional tap-owned AF/AE region. Kept separate from tapPoint so the 2 s visual fade cannot
+    // turn a still-active hold into invisible state; the UI exposes a persistent reset affordance.
+    val tapFocusHeld: Boolean = false,
     // AE-resolved exposure while in auto (from CaptureResult); null in manual or before the first
     // result. Lets the Shutter/ISO chips show what AE actually chose instead of just "Auto".
     val liveIso: Int? = null,

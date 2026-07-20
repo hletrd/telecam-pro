@@ -44,6 +44,7 @@ MODE_THREE_A = re.compile(
     r"3A: controllerId=([0-9]+) opticsGeneration=([0-9]+) "
     r"requestGeneration=([0-9]+) mode=(PHOTO|VIDEO)\b"
 )
+AF_MODE = re.compile(r"\bafMode=([0-9]+)\b")
 SESSION_ACCEPTED = re.compile(
     r"CameraSessionAccepted: controllerId=([0-9]+) opticsGeneration=([0-9]+) "
     r"sessionGeneration=([0-9]+) requestGeneration=([0-9]+) "
@@ -760,11 +761,16 @@ def t_video(ctx: Context) -> None:
 
 # ---------------------------------------------------------------- full: AF + settings
 
-@test("tap_af_lock_persists", "full", mutates_settings=True)
+@test("tap_af_hold_visible_and_reset", "full", mutates_settings=True)
 def t_tap_af(ctx: Context) -> None:
-    """Tap-to-focus engages AF_MODE_AUTO and the hold survives past the 2 s reticle timeout."""
+    """Tap-AF stays visibly held after reticle fade, then its direct reset restores prior AF."""
     pid = ensure_foreground(ctx)
     ensure_photo_mode(ctx)
+    baseline_mark = ctx.adb.log_mark()
+    baseline = wait_mode_three_a(ctx, baseline_mark, pid, "PHOTO", timeout_s=20)
+    assert baseline, "no baseline Photo 3A before tap-AF"
+    baseline_af = AF_MODE.search(baseline.line)
+    assert baseline_af, f"baseline 3A omitted afMode: {baseline.line}"
     tree = ctx.adb.ui()
     gear = tree.find(desc="Open settings")
     assert gear, "no reference chrome to locate the preview"
@@ -780,12 +786,26 @@ def t_tap_af(ctx: Context) -> None:
     assert recent and "afMode=1" in recent[-1], (
         f"AF hold released after reticle timeout: {recent[-1] if recent else 'no 3A'}"
     )
-    ctx.adb.tap_ui(desc="Open settings")
-    ctx.adb.tap_ui(text="Focus")
-    ctx.adb.ui()  # navigating away is enough; explicit reset lives in Focus tab
-    ctx.adb.shell("input keyevent KEYCODE_BACK")
-    time.sleep(1)
-    ctx.note("tap-AF engaged and held past 2 s")
+    reset = ctx.adb.ui().find_desc_exact("Reset focus point")
+    assert reset and reset.enabled, "tap-AF became an invisible hold after the reticle faded"
+    reset_mark = ctx.adb.log_mark()
+    ctx.adb.tap(*reset.center)
+    assert ctx.adb.wait_log(reset_mark, r"TapFocus: cleared", timeout_s=5, pid=pid), (
+        "reset affordance did not clear the engine tap point"
+    )
+    restored = ctx.adb.wait_log(
+        reset_mark,
+        rf"3A: .*afMode={baseline_af.group(1)}\b",
+        timeout_s=8,
+        pid=pid,
+    )
+    assert restored, f"reset did not restore prior afMode={baseline_af.group(1)}"
+    assert ctx.adb.ui().find_desc_exact("Reset focus point") is None, (
+        "tap-focus reset affordance remained after the point was cleared"
+    )
+    fatals = ctx.adb.fatal_lines(mark, pid)
+    assert not fatals, f"errors during tap-AF hold/reset: {fatals[:2]}"
+    ctx.note(f"tap-AF held visibly, reset to afMode={baseline_af.group(1)}")
 
 
 @test("settings_sheet_tabs", "full")

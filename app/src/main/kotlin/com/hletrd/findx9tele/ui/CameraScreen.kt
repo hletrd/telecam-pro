@@ -601,6 +601,16 @@ fun CameraScreen(
                 .padding(top = 8.dp),
         )
 
+        if (state.tapFocusHeld) {
+            TapFocusHoldChip(
+                onReset = currentActions.value::onResetFocusPoint,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 112.dp),
+            )
+        }
+
         // Live zoom readout, centered under the TopBar; fades in on pinch/slider change. Moved off the
         // bottom cluster (it overlapped the MR1/MR2/MR3 strip) — a top-center HUD reads clearly and
         // stays clear of the manual dials + shutter row.
@@ -906,6 +916,32 @@ private fun TopBar(
             DispButton(active = dispClean, onClick = onToggleDisp, modifier = Modifier.rotate(glyphRotation))
             GearButton(onClick = onOpenSheet, modifier = Modifier.rotate(glyphRotation))
         }
+    }
+}
+
+/** Persistent, directly dismissible feedback for the tap-owned AF/AE point after its reticle fades. */
+@Composable
+private fun TapFocusHoldChip(onReset: () -> Unit, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            .clip(RoundedCornerShape(50))
+            .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
+            .semantics {
+                contentDescription = "Reset focus point"
+                stateDescription = "Tap focus held"
+                role = Role.Button
+            }
+            .clickable(role = Role.Button, onClickLabel = "Reset focus point", onClick = onReset)
+            .padding(horizontal = 12.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = "AF HOLD ×",
+            color = CameraColors.Accent,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+        )
     }
 }
 

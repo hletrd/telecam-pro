@@ -1381,6 +1381,7 @@ class CameraEngine(private val context: Context) {
         loupeCenterSensorX = 0.5f
         loupeCenterSensorY = 0.5f
         gl.setPunchInCenter(0.5f, 0.5f)
+        if (BuildConfig.DEBUG) Log.i("CameraEngine", "TapFocus: cleared")
     }
 
     // ---- Drive mode + video parameters ----

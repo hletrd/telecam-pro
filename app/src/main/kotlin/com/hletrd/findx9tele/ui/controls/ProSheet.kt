@@ -66,6 +66,7 @@ import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -809,6 +810,16 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
             enabled = availability.afLockEnabled,
         )
     }
+    LabelValueRow(
+        label = "Tap Focus",
+        valueLabel = if (state.tapFocusHeld) "Reset" else "No point",
+        enabled = state.tapFocusHeld,
+        onClick = actions::onResetFocusPoint,
+        modifier = Modifier.semantics {
+            contentDescription = "Reset focus point"
+            stateDescription = if (state.tapFocusHeld) "Tap focus held" else "No tap focus point"
+        },
+    )
     SectionHeader("MF Assist")
     ToggleRow(label = "Peaking", checked = state.focusPeaking, onCheckedChange = actions::onTogglePeaking)
     SegmentedSelector(
