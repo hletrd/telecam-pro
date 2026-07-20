@@ -406,13 +406,13 @@ private fun PermissionGate(
                 }
             } else {
                 MinTouchTargetButton {
-                    Button(onClick = onRequest, colors = primaryColors) { Text("Grant Camera") }
+                    Button(onClick = onRequest, colors = primaryColors) { Text("Allow Camera Access") }
                 }
             }
             Spacer(Modifier.height(8.dp))
             MinTouchTargetButton {
                 TextButton(onClick = onOpenPrivacy) {
-                    Text("Privacy", color = CameraColors.TextSecondary)
+                    Text("Privacy Policy", color = CameraColors.TextSecondary)
                 }
             }
         }

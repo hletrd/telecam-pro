@@ -985,7 +985,7 @@ private fun RawReviewPlaceholder(modifier: Modifier = Modifier) {
             .padding(48.dp)
             .semantics(mergeDescendants = true) {
                 contentDescription = "RAW DNG capture"
-                stateDescription = "Pixel preview unavailable"
+                stateDescription = "Preview unavailable"
             },
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,

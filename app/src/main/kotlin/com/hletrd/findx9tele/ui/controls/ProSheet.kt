@@ -727,11 +727,11 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     }
     Text(
         if (customWbCaptureEnabled) {
-            "Frame a white or grey card, then tap."
+            "Aim at a white or gray card."
         } else if (!state.cameraReady) {
-            "Wait for the camera to finish reconfiguring."
+            "Camera busy."
         } else {
-            "Select Auto WB and turn AWB Lock off to measure."
+            "Requires Auto WB with AWB Lock off."
         },
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.labelSmall,
@@ -863,12 +863,7 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
     }
     Text(stabCaption, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
     if (state.caps?.oisAvailable == true) {
-        ToggleRow(label = "OIS", checked = state.controls.oisEnabled, onCheckedChange = actions::onToggleOis)
-        Text(
-            "Stills use OIS.",
-            color = CameraColors.TextSecondary,
-            style = MaterialTheme.typography.labelSmall,
-        )
+        ToggleRow(label = "Photo OIS", checked = state.controls.oisEnabled, onCheckedChange = actions::onToggleOis)
     }
 }
 
@@ -880,8 +875,8 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     TabTitle("Video")
     if (state.isRecording) {
         LabelValueRow(
-            label = "REC Lock",
-            valueLabel = "Stop REC first",
+            label = "Recording",
+            valueLabel = "Settings locked",
         )
     }
 
@@ -914,7 +909,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     }.orEmpty()
     if (resolutionOptions.isEmpty()) {
         Text(
-            "Resolution unavailable for this camera.",
+            "No supported resolution.",
             color = CameraColors.Record,
             style = MaterialTheme.typography.labelSmall,
         )
@@ -936,7 +931,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     val fpsOptions = VideoFrameRate.availableFor(caps, state.videoResolution, codec)
     if (fpsOptions.isEmpty()) {
         Text(
-            "FPS unavailable for this camera and resolution.",
+            "No supported frame rate for this setup.",
             color = CameraColors.Record,
             style = MaterialTheme.typography.labelSmall,
         )
@@ -1005,13 +1000,6 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         onSelect = actions::onAudioScene,
         enabled = state.recordAudio && recordingMutable,
     )
-    if (state.audioScene == AudioScene.SOUND_FOCUS) {
-        Text(
-            "Directional pickup.",
-            color = CameraColors.TextSecondary,
-            style = MaterialTheme.typography.labelSmall,
-        )
-    }
     LabeledSlider(
         label = "Gain",
         valueLabel = formatZoomMultiplier(state.audioGain),
@@ -1117,24 +1105,24 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
     TabTitle("Setup")
     SectionHeader("App")
     LabelValueRow(
-        label = "Privacy",
-        valueLabel = "Open",
+        label = "Privacy Policy",
+        valueLabel = "View",
         onClick = { openPrivacyPolicy(context) },
     )
     SectionHeader("Startup")
     ToggleRow(
-        label = "Remember",
+        label = "Remember Settings",
         checked = state.rememberSettings,
         onCheckedChange = actions::onToggleRememberSettings,
     )
     ToggleRow(
-        label = "Preserve Lens",
+        label = "Remember Lens",
         checked = state.preserveLensSelection,
         onCheckedChange = actions::onTogglePreserveLensSelection,
         enabled = state.rememberSettings,
     )
     ToggleRow(
-        label = "Preserve TELE",
+        label = "Remember Teleconverter",
         checked = state.preserveTeleconverter,
         onCheckedChange = actions::onTogglePreserveTeleconverter,
         enabled = state.rememberSettings,

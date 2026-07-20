@@ -586,7 +586,7 @@ fun CameraScreen(
                     .fillMaxSize()
                     .semantics(mergeDescendants = true) {
                         contentDescription = "Self timer"
-                        stateDescription = "${state.timerCountdownSec} seconds remaining; activate to cancel"
+                        stateDescription = "${state.timerCountdownSec} seconds remaining"
                         liveRegion = LiveRegionMode.Assertive
                         role = Role.Button
                     }
@@ -1363,6 +1363,7 @@ private fun MemoryRecallStrip(
             val enabled = !state.isRecording
             val name = state.memorySlotNames[slot] ?: slot.label
             val summary = state.memorySlotSummaries[slot].orEmpty()
+            val slotDescription = if (name == slot.label) slot.label else "${slot.label}: $name"
             val bg = when {
                 active -> Color(0xFFFFD60A)
                 saved -> Color.White.copy(alpha = 0.14f)
@@ -1384,9 +1385,11 @@ private fun MemoryRecallStrip(
                     .sizeIn(minWidth = 48.dp, minHeight = 48.dp) // 48 dp floor (UX policy), like TeleChip
                     .semantics {
                         contentDescription = if (saved) {
-                            "${slot.label} $name $summary"
+                            listOf(slotDescription, summary)
+                                .filter(String::isNotBlank)
+                                .joinToString(". ")
                         } else {
-                            "${slot.label} empty"
+                            "${slot.label}, empty"
                         }
                         role = Role.Button
                     }
@@ -1910,7 +1913,7 @@ private fun ShutterButton(
                 stateDescription = when {
                     timerCountdownSec > 0 -> "$timerCountdownSec seconds remaining"
                     enabled -> "Ready"
-                    else -> "Unavailable; activate for details"
+                    else -> "Unavailable"
                 }
             }
             .clickable(

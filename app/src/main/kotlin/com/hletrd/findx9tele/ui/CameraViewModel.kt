@@ -1948,7 +1948,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     private fun deleteLateCaptureOutput(uri: Uri) {
         ioExecutor.execute {
             if (!MediaStoreWriter.delete(getApplication(), uri)) {
-                mainHandler.post { showStatus("Capture file could not be deleted") }
+                mainHandler.post { showStatus("Could not delete file") }
             }
         }
     }

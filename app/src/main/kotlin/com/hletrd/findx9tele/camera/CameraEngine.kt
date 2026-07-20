@@ -1736,7 +1736,7 @@ class CameraEngine(private val context: Context) {
             ColdStartRetryGate.Failure.Exhausted ->
                 onStatus?.invoke("Camera unavailable. Reopen the app.")
             is ColdStartRetryGate.Failure.Retry -> {
-                onStatus?.invoke("$reason — retrying")
+                onStatus?.invoke("$reason. Retrying…")
                 runCatching {
                     timelapseScheduler.schedule(
                         {
