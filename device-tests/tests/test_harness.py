@@ -337,7 +337,13 @@ class LogcatSafetyTest(unittest.TestCase):
 
 class UiSemanticsTest(unittest.TestCase):
     @staticmethod
-    def camera_layout_xml(*, short_settings: bool = False, overlap_top: bool = False) -> str:
+    def camera_layout_xml(
+        *,
+        detailed: bool = True,
+        short_settings: bool = False,
+        overlap_top: bool = False,
+        split_fn_action: bool = False,
+    ) -> str:
         nodes = []
 
         def add(
@@ -352,18 +358,13 @@ class UiSemanticsTest(unittest.TestCase):
             nodes.append(
                 f'<node text="" content-desc="{description}" class="{class_name}" '
                 f'checkable="{str(checkable).lower()}" checked="{str(checked).lower()}" '
-                f'selected="false" enabled="true" bounds="[{left},{top}][{right},{bottom}]" />'
+                f'selected="false" enabled="true" clickable="true" focusable="true" '
+                f'bounds="[{left},{top}][{right},{bottom}]" />'
             )
 
         top_descriptions = (
-            "Flash Off",
-            "Self timer Off",
-            "Aspect ratio 4:3",
-            "Grid off",
-            "Teleconverter",
-            "Hide shooting info",
-            "Open settings",
-        )
+            ("Flash Off", "Self timer Off", "Aspect ratio 4:3", "Grid off") if detailed else ()
+        ) + ("Teleconverter", "Hide shooting info", "Open settings")
         for index, description in enumerate(top_descriptions):
             left = index * 52
             if overlap_top and index == 1:
@@ -371,7 +372,18 @@ class UiSemanticsTest(unittest.TestCase):
             width = 30 if short_settings and description == "Open settings" else 48
             add(description, (left, 0, left + width, 48))
 
-        add("Open function menu", (0, 450, 48, 498))
+        fn_bounds = (0, 450, 48, 498) if detailed else (0, 520, 48, 568)
+        add("Open function menu", fn_bounds)
+        if split_fn_action:
+            nodes[-1] = nodes[-1].replace('class="android.widget.Button"', 'class="android.view.View"').replace(
+                'clickable="true"', 'clickable="false"',
+            )
+            nodes.append(
+                '<node text="" content-desc="" class="android.widget.Button" '
+                'checkable="false" checked="false" selected="false" enabled="true" '
+                f'clickable="true" focusable="true" bounds="[{fn_bounds[0]},{fn_bounds[1]}]'
+                f'[{fn_bounds[2]},{fn_bounds[3]}]" />'
+            )
         for index, description in enumerate(cases.FOCAL_PRESETS):
             add(
                 description,
@@ -395,7 +407,15 @@ class UiSemanticsTest(unittest.TestCase):
     def test_camera_layout_contract_checks_touch_bounds_order_and_overlap(self) -> None:
         metrics = DisplayMetrics(360, 800, 160)
         self.assertEqual(
-            cases.camera_chrome_layout_errors(UiTree(self.camera_layout_xml()), metrics),
+            cases.camera_chrome_layout_errors(
+                UiTree(self.camera_layout_xml(detailed=True)), metrics, detailed=True,
+            ),
+            [],
+        )
+        self.assertEqual(
+            cases.camera_chrome_layout_errors(
+                UiTree(self.camera_layout_xml(detailed=False)), metrics, detailed=False,
+            ),
             [],
         )
 
@@ -411,6 +431,11 @@ class UiSemanticsTest(unittest.TestCase):
         )
         self.assertTrue(any("top bar" in error and "overlap" in error for error in overlap))
 
+        split = cases.camera_chrome_layout_errors(
+            UiTree(self.camera_layout_xml(split_fn_action=True)), metrics, detailed=True,
+        )
+        self.assertTrue(any("equal-bounds split semantics" in error for error in split))
+
     @staticmethod
     def function_menu_xml(
         *,
@@ -418,6 +443,9 @@ class UiSemanticsTest(unittest.TestCase):
         short_first: bool = False,
         overlap_second: bool = False,
         out_of_bounds_last: bool = False,
+        split_first_action: bool = False,
+        focusable: bool = True,
+        full_screen_close: bool = False,
     ) -> str:
         labels = tuple(sorted(cases.FN_TILE_LABELS))[:count]
         nodes = []
@@ -435,8 +463,22 @@ class UiSemanticsTest(unittest.TestCase):
             nodes.append(
                 f'<node text="" content-desc="{description}" class="android.widget.Button" '
                 f'checkable="false" checked="false" selected="false" enabled="true" '
-                f'clickable="true" bounds="[{left},{top}][{right},{top + 58}]" />'
+                f'clickable="{str(not (split_first_action and index == 0)).lower()}" '
+                f'focusable="{str(focusable).lower()}" bounds="[{left},{top}][{right},{top + 58}]" />'
             )
+            if split_first_action and index == 0:
+                nodes[-1] = nodes[-1].replace('class="android.widget.Button"', 'class="android.view.View"')
+                nodes.append(
+                    '<node text="" content-desc="" class="android.widget.Button" '
+                    'checkable="false" checked="false" selected="false" enabled="true" '
+                    f'clickable="true" focusable="true" bounds="[{left},{top}][{right},{top + 58}]" />'
+                )
+        close_bounds = "[0,0][360,800]" if full_screen_close else "[304,540][352,588]"
+        nodes.append(
+            '<node text="" content-desc="Close function menu" class="android.widget.Button" '
+            'checkable="false" checked="false" selected="false" enabled="true" '
+            f'clickable="true" focusable="true" bounds="{close_bounds}" />'
+        )
         return f"<hierarchy>{''.join(nodes)}</hierarchy>"
 
     def test_function_menu_layout_contract_checks_count_size_bounds_and_overlap(self) -> None:
@@ -470,6 +512,21 @@ class UiSemanticsTest(unittest.TestCase):
         )
         self.assertTrue(any("out of screen bounds" in error for error in out_of_bounds))
 
+        split = cases.function_menu_layout_errors(
+            UiTree(self.function_menu_xml(split_first_action=True)), metrics,
+        )
+        self.assertTrue(any("equal-bounds split semantics" in error for error in split))
+
+        unfocusable = cases.function_menu_layout_errors(
+            UiTree(self.function_menu_xml(focusable=False)), metrics,
+        )
+        self.assertTrue(any("not focusable" in error for error in unfocusable))
+
+        scrim_close = cases.function_menu_layout_errors(
+            UiTree(self.function_menu_xml(full_screen_close=True)), metrics,
+        )
+        self.assertTrue(any("scrim must be touch-only" in error for error in scrim_close))
+
     @staticmethod
     def focal_xml(checked: str, *, radio_role: bool = True) -> str:
         nodes = []
@@ -478,7 +535,8 @@ class UiSemanticsTest(unittest.TestCase):
             is_checked = str(description == checked).lower()
             nodes.append(
                 f'<node text="" content-desc="{description}" class="{class_name}" '
-                f'checkable="true" checked="{is_checked}" selected="false" enabled="true" clickable="true" '
+                f'checkable="true" checked="{is_checked}" selected="false" enabled="true" '
+                f'clickable="true" focusable="true" '
                 f'bounds="[{index * 10},0][{index * 10 + 10},10]" />'
             )
         return f"<hierarchy>{''.join(nodes)}</hierarchy>"
@@ -493,6 +551,7 @@ class UiSemanticsTest(unittest.TestCase):
         self.assertTrue(selected.checked)
         self.assertFalse(selected.selected)
         self.assertTrue(selected.clickable)
+        self.assertTrue(selected.focusable)
 
     def test_focal_contract_requires_exactly_expected_checked_radio(self) -> None:
         self.assertIsNone(cases.focal_rail_error(UiTree(self.focal_xml("10× lens")), "10× lens"))

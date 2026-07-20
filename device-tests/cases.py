@@ -32,6 +32,7 @@ FN_TILE_LABELS = {
     "Meter", "Peaking", "Zebra", "Gamma", "Audio", "Grid", "Level", "Loupe", "Tele",
     "Open Gate", "Frame",
 }
+FN_NUMERIC_TILE_LABELS = {"Focus", "Shutter", "ISO", "WB", "EV", "Zoom"}
 CAPTURE_SETTLED = re.compile(
     r"CaptureFamily: settled stem=(IMG_TELECAM_F1_[0-9]{13}_[0-9]{10}) "
     r"outputs=([a-z0-9,]+)"
@@ -1025,7 +1026,38 @@ def _minimum_touch_px(metrics: DisplayMetrics) -> int:
     return math.ceil(48 * metrics.density_dpi / 160) - 2  # tolerate pixel rounding only
 
 
-def camera_chrome_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
+def _described_action_errors(tree, node: UiNode, label: str, role_suffix: str = "Button") -> list[str]:
+    """Require the described node itself to own its platform action and focus semantics."""
+    errors: list[str] = []
+    if not node.class_name.endswith(role_suffix):
+        errors.append(f"{label}: described node has role {node.class_name!r}, expected {role_suffix}")
+    # Compose omits the click action from the already-checked radio item. Its checked state is the
+    # coherent action outcome; every other enabled control must remain directly clickable.
+    if node.enabled and not node.clickable and not (node.checkable and node.checked):
+        errors.append(f"{label}: enabled described node is not clickable")
+    if not node.focusable:
+        errors.append(f"{label}: described action node is not focusable")
+    split = [
+        peer for peer in tree.nodes
+        if peer is not node
+        and peer.bounds == node.bounds
+        and (peer.clickable or peer.focusable)
+        and (peer.desc != node.desc or peer.class_name != node.class_name)
+    ]
+    if split:
+        errors.append(
+            f"{label}: equal-bounds split semantics with "
+            + ", ".join(f"{peer.desc!r}/{peer.class_name}" for peer in split)
+        )
+    return errors
+
+
+def camera_chrome_layout_errors(
+    tree,
+    metrics: DisplayMetrics,
+    *,
+    detailed: bool | None = None,
+) -> list[str]:
     """Pixel-level contract for the fixed Sony/iPhone-familiar shooting controls."""
     errors: list[str] = []
 
@@ -1036,11 +1068,27 @@ def camera_chrome_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
             return None
         return matches[0]
 
-    top = [
-        ("Flash", one("Flash", lambda node: node.desc.startswith("Flash "))),
-        ("Self timer", one("Self timer", lambda node: node.desc.startswith("Self timer "))),
-        ("Aspect ratio", one("Aspect ratio", lambda node: node.desc.startswith("Aspect ratio "))),
-        ("Grid", one("Grid", lambda node: node.desc in ("Grid on", "Grid off"))),
+    def optional_one(label: str, predicate) -> UiNode | None:
+        matches = [node for node in tree.nodes if predicate(node)]
+        if len(matches) > 1:
+            errors.append(f"{label}: expected at most one node, got {len(matches)}")
+            return None
+        return matches[0] if matches else None
+
+    if detailed is None:
+        detailed = any(node.desc in ("Grid on", "Grid off") for node in tree.nodes)
+    photo_mode = any(node.desc == "Take photo" for node in tree.nodes)
+    optional_top_specs = [
+        ("Flash", lambda node: node.desc.startswith("Flash ")),
+        ("Self timer", lambda node: node.desc.startswith("Self timer ")),
+        ("Aspect ratio", lambda node: node.desc.startswith("Aspect ratio ")),
+        ("Grid", lambda node: node.desc in ("Grid on", "Grid off")),
+    ]
+    top = []
+    for label, predicate in optional_top_specs:
+        required = detailed and (label == "Grid" or photo_mode)
+        top.append((label, one(label, predicate) if required else optional_one(label, predicate)))
+    top.extend([
         ("Teleconverter", one("Teleconverter", lambda node: node.desc == "Teleconverter")),
         (
             "Shooting info",
@@ -1050,7 +1098,7 @@ def camera_chrome_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
             ),
         ),
         ("Open settings", one("Open settings", lambda node: node.desc == "Open settings")),
-    ]
+    ])
     fn = one("Open function menu", lambda node: node.desc == "Open function menu")
     focal = [(label, one(label, lambda node, label=label: node.desc == label)) for label in FOCAL_PRESETS]
     modes = [(label, one(label, lambda node, label=label: node.desc == label)) for label in CAPTURE_MODES]
@@ -1076,6 +1124,9 @@ def camera_chrome_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
             errors.append(
                 f"{label}: touch bounds {right - left}x{bottom - top_px}px < {minimum_px}px"
             )
+        if label != "Gallery":
+            suffix = "RadioButton" if label in FOCAL_PRESETS or label in CAPTURE_MODES else "Button"
+            errors.extend(_described_action_errors(tree, node, label, suffix))
 
     def assert_row(row_name: str, row) -> None:
         present = [(label, node) for label, node in row if node is not None]
@@ -1101,7 +1152,19 @@ def camera_chrome_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
             errors.append(f"{upper_name} is not above {lower_name}")
 
     below("top bar", top, "Fn row", [("Fn", fn)])
-    below("Fn row", [("Fn", fn)], "focal rail", focal)
+    if detailed:
+        below("Fn row", [("Fn", fn)], "focal rail", focal)
+    elif fn is not None:
+        focal_nodes = [node for _, node in focal if node is not None]
+        vertically_aligned = any(
+            min(fn.bounds[3], node.bounds[3]) > max(fn.bounds[1], node.bounds[1])
+            for node in focal_nodes
+        )
+        if focal_nodes and not vertically_aligned:
+            errors.append("compact Fn entry is not aligned with the focal rail")
+        for node in focal_nodes:
+            if _overlap_area(fn, node) > 0:
+                errors.append(f"compact Fn entry overlaps {node.desc}")
     below("focal rail", focal, "mode carousel", modes)
     below("mode carousel", modes, "shutter row", [("Gallery", gallery), ("Shutter", shutter)])
 
@@ -1115,7 +1178,7 @@ def camera_chrome_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
 
 
 def function_menu_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
-    """Constrained-window contract for the production Fn tile grid."""
+    """Constrained-window and one-action-node contract for the production Fn tile grid."""
     errors: list[str] = []
     tiles = [node for node in tree.nodes if node.desc in FN_TILE_LABELS]
     if not 1 <= len(tiles) <= 8:
@@ -1131,11 +1194,21 @@ def function_menu_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
             errors.append(
                 f"Fn {tile.desc}: touch bounds {right - left}x{bottom - top}px < {minimum_px}px"
             )
+        errors.extend(_described_action_errors(tree, tile, f"Fn {tile.desc}"))
 
     for index, first in enumerate(tiles):
         for second in tiles[index + 1:]:
             if _overlap_area(first, second) > 0:
                 errors.append(f"Fn tiles overlap: {first.desc} and {second.desc}")
+
+    close_nodes = [node for node in tree.nodes if node.desc == "Close function menu"]
+    if len(close_nodes) != 1:
+        errors.append(f"Fn close: expected one explicit action node, got {len(close_nodes)}")
+    else:
+        close = close_nodes[0]
+        errors.extend(_described_action_errors(tree, close, "Fn close"))
+        if close.bounds == (0, 0, metrics.width_px, metrics.height_px):
+            errors.append("Fn close: full-screen scrim must be touch-only")
     return errors
 
 
@@ -1678,6 +1751,11 @@ def t_function_menu(ctx: Context) -> None:
     assert not layout_errors, "Fn overlay layout violations: " + "; ".join(layout_errors)
     tiles = [node for node in menu.nodes if node.desc in FN_TILE_LABELS and node.enabled]
     assert tiles, "Fn overlay exposed no enabled setting tile"
+    quick_tiles = [
+        node for node in tiles
+        if node.desc not in FN_NUMERIC_TILE_LABELS and node.clickable and node.focusable
+    ]
+    assert quick_tiles, "Fn overlay exposed no activatable in-place quick action"
     ctx.adb.screenshot("function_menu")
     ctx.adb.shell("input keyevent KEYCODE_BACK")
     time.sleep(1)
@@ -1688,8 +1766,8 @@ def t_function_menu(ctx: Context) -> None:
     fatals = ctx.adb.fatal_lines(mark, pid)
     assert not fatals, f"errors during Fn open/dismiss: {fatals[:2]}"
     ctx.note(
-        f"Fn opened with {len(tiles)} enabled tiles; all tiles in-bounds, >=48dp, "
-        "non-overlapping; Back restored camera"
+        f"Fn opened with {len(tiles)} enabled tiles and {len(quick_tiles)} in-place actions; "
+        "all tiles own actions, are in-bounds, >=48dp, non-overlapping; Back restored camera"
     )
 
 
