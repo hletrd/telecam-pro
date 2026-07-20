@@ -47,6 +47,7 @@ a later case.
 |---|---|---|
 | smoke | `launch_preview_live` | cold launch → live viewfinder (frame-diff), OSD chrome, clean logcat |
 | smoke | `session_configured_3a` | 3A telemetry flows (configured repeating request; ois/vstab visible) |
+| full | `camera_chrome_layout` | top/Fn/focal/mode/gallery/shutter bounds ≥48 dp, ordered, non-overlapping, centered |
 | full | `mode_switch_roundtrip` | photo↔video sessions plus exactly one checked RadioButton mode, without camera errors |
 | full | `lens_presets` | 0.6/1/3/10× cycle; exactly one RadioButton is checked after each tap |
 | full | `teleconverter_roundtrip` | TC on→off round-trip; OSD `mm TELE` state tracks the toggle |

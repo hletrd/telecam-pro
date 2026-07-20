@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import struct
 import sys
 import tempfile
 import unittest
@@ -21,6 +22,7 @@ from dtest.adb import (  # noqa: E402
     MEDIA_RELATIVE_PATH,
     Adb,
     AdbError,
+    DisplayMetrics,
     MediaRow,
     UiTree,
     parse_media_rows,
@@ -190,6 +192,26 @@ class RunnerHelpersTest(unittest.TestCase):
                 "0941d239425b174d99d3eb516e36fcff357b668a7ad24e5e481531f59a5ec28f",
             )
 
+    def test_display_metrics_use_screencap_size_and_active_density_override(self) -> None:
+        class MetricsAdb(Adb):
+            def exec_out(self, cmd: str, timeout: int = 60) -> bytes:
+                del timeout
+                self.assert_command = cmd
+                return struct.pack("<4I", 1440, 3168, 1, 0)
+
+            def shell(self, cmd: str, timeout: int = 60) -> str:
+                del timeout
+                self.density_command = cmd
+                return "Physical density: 510\nOverride density: 560"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            adb = MetricsAdb("test-serial", Path(temp_dir))
+            metrics = adb.display_metrics()
+
+        self.assertEqual(metrics, DisplayMetrics(1440, 3168, 560))
+        self.assertEqual(adb.assert_command, "screencap")
+        self.assertEqual(adb.density_command, "wm density")
+
 
 class LogcatSafetyTest(unittest.TestCase):
     def test_global_scan_keeps_app_and_camera_service_failures_only(self) -> None:
@@ -279,6 +301,81 @@ class LogcatSafetyTest(unittest.TestCase):
 
 
 class UiSemanticsTest(unittest.TestCase):
+    @staticmethod
+    def camera_layout_xml(*, short_settings: bool = False, overlap_top: bool = False) -> str:
+        nodes = []
+
+        def add(
+            description: str,
+            bounds: tuple[int, int, int, int],
+            *,
+            class_name: str = "android.widget.Button",
+            checkable: bool = False,
+            checked: bool = False,
+        ) -> None:
+            left, top, right, bottom = bounds
+            nodes.append(
+                f'<node text="" content-desc="{description}" class="{class_name}" '
+                f'checkable="{str(checkable).lower()}" checked="{str(checked).lower()}" '
+                f'selected="false" enabled="true" bounds="[{left},{top}][{right},{bottom}]" />'
+            )
+
+        top_descriptions = (
+            "Flash Off",
+            "Self timer Off",
+            "Aspect ratio 4:3",
+            "Grid off",
+            "Teleconverter",
+            "Hide shooting info",
+            "Open settings",
+        )
+        for index, description in enumerate(top_descriptions):
+            left = index * 52
+            if overlap_top and index == 1:
+                left = 0
+            width = 30 if short_settings and description == "Open settings" else 48
+            add(description, (left, 0, left + width, 48))
+
+        add("Open function menu", (0, 450, 48, 498))
+        for index, description in enumerate(cases.FOCAL_PRESETS):
+            add(
+                description,
+                (60 + index * 52, 520, 108 + index * 52, 568),
+                class_name="android.widget.RadioButton",
+                checkable=True,
+                checked=description == "1× lens",
+            )
+        for index, description in enumerate(cases.CAPTURE_MODES):
+            add(
+                description,
+                (105 + index * 102, 580, 153 + index * 102, 628),
+                class_name="android.widget.RadioButton",
+                checkable=True,
+                checked=description == "Photo mode",
+            )
+        add("No capture to review", (10, 650, 62, 702))
+        add("Take photo", (142, 640, 218, 716))
+        return f"<hierarchy>{''.join(nodes)}</hierarchy>"
+
+    def test_camera_layout_contract_checks_touch_bounds_order_and_overlap(self) -> None:
+        metrics = DisplayMetrics(360, 800, 160)
+        self.assertEqual(
+            cases.camera_chrome_layout_errors(UiTree(self.camera_layout_xml()), metrics),
+            [],
+        )
+
+        short = cases.camera_chrome_layout_errors(
+            UiTree(self.camera_layout_xml(short_settings=True)),
+            metrics,
+        )
+        self.assertTrue(any("Open settings: touch bounds" in error for error in short))
+
+        overlap = cases.camera_chrome_layout_errors(
+            UiTree(self.camera_layout_xml(overlap_top=True)),
+            metrics,
+        )
+        self.assertTrue(any("top bar" in error and "overlap" in error for error in overlap))
+
     @staticmethod
     def focal_xml(checked: str, *, radio_role: bool = True) -> str:
         nodes = []

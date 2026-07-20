@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import re
 import time
+import math
 from dataclasses import dataclass
 from fractions import Fraction
 
-from dtest.adb import APP_ID, MEDIA_DIR, MEDIA_RELATIVE_PATH, Adb, MediaRow
+from dtest.adb import APP_ID, MEDIA_DIR, MEDIA_RELATIVE_PATH, Adb, DisplayMetrics, MediaRow, UiNode
 from dtest.framework import Context, Incomplete, UnsafeState, test
 from dtest import media
 
@@ -432,6 +433,103 @@ def mode_carousel_error(tree, expected: str) -> str | None:
     return None
 
 
+def _overlap_area(first, second) -> int:
+    left = max(first.bounds[0], second.bounds[0])
+    top = max(first.bounds[1], second.bounds[1])
+    right = min(first.bounds[2], second.bounds[2])
+    bottom = min(first.bounds[3], second.bounds[3])
+    return max(0, right - left) * max(0, bottom - top)
+
+
+def camera_chrome_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
+    """Pixel-level contract for the fixed Sony/iPhone-familiar shooting controls."""
+    errors: list[str] = []
+
+    def one(label: str, predicate) -> UiNode | None:
+        matches = [node for node in tree.nodes if predicate(node)]
+        if len(matches) != 1:
+            errors.append(f"{label}: expected one node, got {len(matches)}")
+            return None
+        return matches[0]
+
+    top = [
+        ("Flash", one("Flash", lambda node: node.desc.startswith("Flash "))),
+        ("Self timer", one("Self timer", lambda node: node.desc.startswith("Self timer "))),
+        ("Aspect ratio", one("Aspect ratio", lambda node: node.desc.startswith("Aspect ratio "))),
+        ("Grid", one("Grid", lambda node: node.desc in ("Grid on", "Grid off"))),
+        ("Teleconverter", one("Teleconverter", lambda node: node.desc == "Teleconverter")),
+        (
+            "Shooting info",
+            one(
+                "Shooting info",
+                lambda node: node.desc in ("Show shooting info", "Hide shooting info"),
+            ),
+        ),
+        ("Open settings", one("Open settings", lambda node: node.desc == "Open settings")),
+    ]
+    fn = one("Open function menu", lambda node: node.desc == "Open function menu")
+    focal = [(label, one(label, lambda node, label=label: node.desc == label)) for label in FOCAL_PRESETS]
+    modes = [(label, one(label, lambda node, label=label: node.desc == label)) for label in CAPTURE_MODES]
+    shutter = one(
+        "Idle shutter",
+        lambda node: node.desc in ("Take photo", "Start recording"),
+    )
+    gallery = one(
+        "Gallery",
+        lambda node: node.desc == "No capture to review" or node.desc.startswith("Review last "),
+    )
+
+    named_nodes = [*top, ("Open function menu", fn), *focal, *modes, ("Shutter", shutter), ("Gallery", gallery)]
+    minimum_px = math.ceil(48 * metrics.density_dpi / 160) - 2  # tolerate pixel rounding only
+    for label, node in named_nodes:
+        if node is None:
+            continue
+        left, top_px, right, bottom = node.bounds
+        if not (0 <= left < right <= metrics.width_px and 0 <= top_px < bottom <= metrics.height_px):
+            errors.append(f"{label}: out of screen bounds {node.bounds}")
+            continue
+        if right - left < minimum_px or bottom - top_px < minimum_px:
+            errors.append(
+                f"{label}: touch bounds {right - left}x{bottom - top_px}px < {minimum_px}px"
+            )
+
+    def assert_row(row_name: str, row) -> None:
+        present = [(label, node) for label, node in row if node is not None]
+        centers = [node.center[0] for _, node in present]
+        if centers != sorted(centers) or len(set(centers)) != len(centers):
+            errors.append(f"{row_name}: controls are not strictly left-to-right")
+        for index, (first_label, first) in enumerate(present):
+            for second_label, second in present[index + 1:]:
+                if _overlap_area(first, second) > 0:
+                    errors.append(f"{row_name}: {first_label} overlaps {second_label}")
+
+    assert_row("top bar", top)
+    assert_row("focal rail", focal)
+    assert_row("mode carousel", modes)
+    assert_row("shutter row", [("Gallery", gallery), ("Shutter", shutter)])
+
+    def below(upper_name: str, upper, lower_name: str, lower) -> None:
+        upper_nodes = [node for _, node in upper if node is not None]
+        lower_nodes = [node for _, node in lower if node is not None]
+        if upper_nodes and lower_nodes and max(node.bounds[3] for node in upper_nodes) > min(
+            node.bounds[1] for node in lower_nodes
+        ):
+            errors.append(f"{upper_name} is not above {lower_name}")
+
+    below("top bar", top, "Fn row", [("Fn", fn)])
+    below("Fn row", [("Fn", fn)], "focal rail", focal)
+    below("focal rail", focal, "mode carousel", modes)
+    below("mode carousel", modes, "shutter row", [("Gallery", gallery), ("Shutter", shutter)])
+
+    if shutter is not None:
+        center_tolerance = math.ceil(8 * metrics.density_dpi / 160)
+        if abs(shutter.center[0] - metrics.width_px // 2) > center_tolerance:
+            errors.append(
+                f"idle shutter is not centered: x={shutter.center[0]}, screen={metrics.width_px}"
+            )
+    return errors
+
+
 # ---------------------------------------------------------------- smoke
 
 @test("launch_preview_live", "smoke", destructive=True)
@@ -462,6 +560,27 @@ def t_3a(ctx: Context) -> None:
     evidence = wait_mode_three_a(ctx, mark, pid, mode, timeout_s=timeout_s)
     assert evidence, f"no {mode} 3A telemetry within {timeout_s} s — session not configured?"
     ctx.note(evidence.line.split("3A:")[-1].strip()[:90])
+
+
+@test("camera_chrome_layout", "full")
+def t_camera_chrome_layout(ctx: Context) -> None:
+    """Core camera controls meet the PMA110 touch-size, ordering, overlap, and centering contract."""
+    pid = ensure_foreground(ctx)
+    mark = ctx.adb.log_mark()
+    tree = ctx.adb.ui()
+    if tree.find_desc_exact("Stop recording"):
+        raise UnsafeState("layout contract cannot inspect an active recording")
+    metrics = ctx.adb.display_metrics()
+    errors = camera_chrome_layout_errors(tree, metrics)
+    assert not errors, "camera chrome layout violations: " + "; ".join(errors)
+    assert ctx.adb.preview_is_live(), "preview froze while inspecting camera chrome"
+    ctx.adb.screenshot("camera_chrome_layout")
+    fatals = ctx.adb.fatal_lines(mark, pid)
+    assert not fatals, f"fatal log lines after layout inspection: {fatals[:2]}"
+    ctx.note(
+        f"{metrics.width_px}x{metrics.height_px}@{metrics.density_dpi}dpi; "
+        "16 core controls in-bounds, >=48dp, ordered and non-overlapping"
+    )
 
 
 # ---------------------------------------------------------------- full: modes/lenses/TC

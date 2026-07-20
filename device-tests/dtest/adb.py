@@ -67,6 +67,13 @@ class UiNode:
 
 
 @dataclass(frozen=True)
+class DisplayMetrics:
+    width_px: int
+    height_px: int
+    density_dpi: int
+
+
+@dataclass(frozen=True)
 class MediaRow:
     collection: str
     row_id: int
@@ -269,6 +276,23 @@ class Adb:
         self.shell(f"input tap {x} {y}")
 
     # -- screen ------------------------------------------------------------
+
+    def display_metrics(self) -> DisplayMetrics:
+        raw = self.exec_out("screencap")
+        if len(raw) < 16:
+            raise AdbError("screencap returned no display header")
+        width, height, _fmt, _color_space = struct.unpack_from("<4I", raw, 0)
+        if width <= 0 or height <= 0 or width > 16_384 or height > 16_384:
+            raise AdbError(f"invalid screencap dimensions: {width}x{height}")
+
+        density_output = self.shell("wm density")
+        densities = [int(value) for value in re.findall(r"(?:Physical|Override) density: (\d+)", density_output)]
+        if not densities:
+            raise AdbError(f"could not parse display density: {density_output[:200]}")
+        density = densities[-1]  # Override, when present, is the active logical density.
+        if density < 72 or density > 1_200:
+            raise AdbError(f"implausible display density: {density}")
+        return DisplayMetrics(width, height, density)
 
     def screen_stats(self, sample_step: int = 97) -> tuple[float, float]:
         """Mean/stddev of sampled luma from a RAW screencap (no PNG decode needed)."""
