@@ -1,5 +1,6 @@
 package com.hletrd.findx9tele.ui
 
+import android.content.Intent
 import android.hardware.camera2.CameraMetadata
 import android.os.Bundle
 import android.util.Range
@@ -29,19 +30,21 @@ import com.hletrd.findx9tele.ui.theme.FindX9TeleTheme
  * with no-op actions, so visual QA never opens Camera2 or configures a physical-camera output.
  */
 class UiSnapshotActivity : ComponentActivity() {
+    private var snapshotRequest by mutableStateOf(SnapshotRequest())
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val orientation = intent.getIntExtra(EXTRA_DEVICE_ORIENTATION, 0)
-        val scenario = intent.getStringExtra(EXTRA_SCENARIO)
+        snapshotRequest = intent.snapshotRequest()
         setContent {
             FindX9TeleTheme {
-                var snapshotState by remember {
-                    mutableStateOf(snapshotState(scenario, orientation))
+                val request = snapshotRequest
+                var snapshotState by remember(request) {
+                    mutableStateOf(snapshotState(request.scenario, request.orientation))
                 }
                 // The Gamma tile is a safe, deterministic interaction probe: it updates the real
                 // composable in place while this HAL-free fixture keeps every camera action a no-op.
-                val snapshotActions = remember {
+                val snapshotActions = remember(request) {
                     object : CameraActions by PreviewCameraActions {
                         override fun onTransfer(transfer: ColorTransfer) {
                             snapshotState = snapshotState.copy(transfer = transfer)
@@ -68,6 +71,12 @@ class UiSnapshotActivity : ComponentActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        snapshotRequest = intent.snapshotRequest()
+    }
+
     companion object {
         const val EXTRA_DEVICE_ORIENTATION = "device_orientation"
         const val EXTRA_SCENARIO = "snapshot_scenario"
@@ -78,6 +87,16 @@ class UiSnapshotActivity : ComponentActivity() {
         const val SCENARIO_LOUPE = "loupe"
     }
 }
+
+private data class SnapshotRequest(
+    val scenario: String? = null,
+    val orientation: Int = 0,
+)
+
+private fun Intent.snapshotRequest(): SnapshotRequest = SnapshotRequest(
+    scenario = getStringExtra(UiSnapshotActivity.EXTRA_SCENARIO),
+    orientation = getIntExtra(UiSnapshotActivity.EXTRA_DEVICE_ORIENTATION, 0),
+)
 
 /**
  * HAL-free fixtures for screenshot and accessibility evidence. Every scenario feeds the shipping
