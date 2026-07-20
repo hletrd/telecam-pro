@@ -512,7 +512,7 @@ cached repeating builder gets only its sensor keys re-derived via the same
 drags are additionally frame-gated at the source (`RulerSlider` publishes ≤60 Hz with an exact
 landing on drag end; the ruler's own canvas still follows the finger per event).
 
-### Tele Finder PIP (opt-in, photo-only)
+### Tele Finder PIP (legacy single-stream assist)
 
 An Assist toggle (default OFF, persisted) draws a bottom-left corner viewport re-drawing the FULL
 current camera frame while the main view is magnified. **Single-stream honesty**: the HAL's
@@ -532,8 +532,16 @@ in `RendererConfig` for GL-generation replay, and geometry flows from ONE pure s
 shared by the GL scissor box and the Compose border so both stay pixel-aligned (RTL-safe absolute
 anchor). The GL draw is failure-isolated (`runCatching` + `try/finally { glDisable(GL_SCISSOR_TEST) }`
 — scissor is CONTEXT state; a leak would clip the encoder/analysis draws, and a finder-only error
-must never fail preview health). A compact `PIP` OSD tag shows whenever the toggle is ON,
-independent of the current gate, so "on but gated off" is distinguishable from "off".
+must never fail preview health). A compact `PIP` OSD tag appears only while the resolved legacy
+viewport is actually visible.
+
+This is not the requested always-on 1x finder for 3x/10x/TELE. PMA110 advertises only `[0,1]` as a
+concurrent-camera set, so separate rear-device pairs `2+0`, `2+4`, and `2+5` are unavailable. The
+API-35 metadata-only `CameraDeviceSetup` query reports that logical camera 0 can theoretically carry
+deferred PRIVATE pairs `2+4` and `2+5` at 640x480+640x480 and 640x480+1920x1440. That query opens no
+camera and configures no session; it does not overrule the device-observed QTI crash when routed
+physical outputs reach `configureStreams`. A true 1x finder therefore remains gated behind an
+explicit, isolated HAL-risk experiment rather than shipping on the optimistic query result.
 
 **Stills** (`StillSnapshot`): the logical camera cannot allocate the HAL-JPEG blob (gralloc
 rejects it) and a RAW target errors the whole camera device, so logical stills arrive as
@@ -852,9 +860,11 @@ Photo and video have separate configurable Fn bars with up to eight slots. The p
 exposure mode, focus, shutter, ISO, WB, and EV; the video default adds gamma, stabilization, and audio
 scene choices. Capability-dependent taps cycle only through the selected route's advertised choices.
 The WB chip can open the preset sheet whenever more than one advertised mode exists; only MANUAL WB
-requires the Kelvin ruler. Numeric focus/shutter/ISO/WB/EV/zoom controls use the compact dial/ruler
-surface only when their exact manual modes and scalar ranges exist. A caps change closes an invalid
-open ruler while keeping the normalized value applied.
+requires the Kelvin ruler. Compact view keeps a 36 dp visual Fn button inside a 48 dp hit target on
+the focal rail; `DISP` reveals the full configurable strip. In the Fn grid, numeric
+focus/shutter/ISO/WB/EV/zoom tiles open their ruler instead of cycling or resetting a value. Only the
+requested ruler remains visible, with an explicit close control. A caps change closes an invalid open
+ruler while keeping the normalized value applied.
 
 **Control application:**
 

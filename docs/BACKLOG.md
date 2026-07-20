@@ -138,7 +138,13 @@ These do not require a code or metadata change unless the result exposes a defec
   combos crash it; must be device-verified per session plan), or (b) capping the HAL zoom and
   rendering the remaining main-view magnification in GL (touches AE metering, tap-AF region
   mapping, video encoder framing, and preview sharpness — a zoom-architecture change, not a
-  finder change). Either path needs a deliberate design + device A/B before implementation.
+  finder change). 2026-07-21 device probes narrowed the options: public concurrent sets contain only
+  `[0,1]`, so rear pairs `2+0`, `2+4`, and `2+5` cannot use separate CameraDevice sessions. A safe
+  API-35 `CameraDeviceSetup` query returned `true` for logical-0 physical PRIVATE pairs `2+4` and
+  `2+5` at both 640x480+640x480 and 640x480+1920x1440, but that metadata-only answer does not erase
+  the existing QTI `configureStreams` SIGSEGV/Broken-pipe evidence for physical routing. The next
+  step is an explicitly approved, isolated preview-only HAL experiment; do not enable or present a
+  fake same-stream box as the requested 1x finder.
 
 ## Dispositions from review-plan-fix cycle 1 (2026-07-17 run; durable record)
 
@@ -204,7 +210,8 @@ loop — have their own dated plans under `docs/plans/`), so the 2026-07-10 defe
   single-decode HEIF+JPEG, GL frame coalescing / cached request builder / waveform draw reuse, and
   DNG publication on `ioExecutor` after the required synchronous live-RAW write. Their remaining
   performance/feel evidence is part of the pending current PMA110 matrix.
-- **D-10** MR-bank management placement (IA decision), **D-11** AE metering under LOG preview,
+- **D-10** MR-bank management placement — CLOSED 2026-07-21: save/recall lives in Shooting/My Menu,
+  the viewfinder strip is removed, and only an active slot appears in the compact OSD. **D-11** AE metering under LOG preview,
   **D-12** dead backup_rules removal (needs explicit owner sign-off — file deletion),
   **D-13** pure-env release signing gate (when CI exists), **D-14** keep-screen-on toggle (already
   above), **D-15** FnSlot table test on next enum growth, **D-16** OPPO Maven cred relocation (with
