@@ -25,6 +25,7 @@ class StandbyAudioControllerTest {
     private data class Fixture(
         val controller: StandbyAudioController,
         val scheduled: ArrayDeque<() -> Unit>,
+        val fallbackScheduled: ArrayDeque<() -> Unit>,
         val available: MutableList<Unit>,
         val unavailable: MutableList<StandbyAudioUnavailable>,
     )
@@ -37,8 +38,11 @@ class StandbyAudioControllerTest {
         threadLauncher: StandbyThreadLauncher = StandbyThreadLauncher { _, task -> task(); true },
         reserveProcessAdmission: () -> (() -> Unit)? = { {} },
         runNativeAcquisition: ((() -> Unit) -> Boolean) = { block -> block(); true },
+        retryScheduler: StandbyRetryScheduler? = null,
+        processBusyRetryFallback: StandbyRetryScheduler? = null,
     ): Fixture {
         val scheduled = ArrayDeque<() -> Unit>()
+        val fallbackScheduled = ArrayDeque<() -> Unit>()
         val available = mutableListOf<Unit>()
         val unavailable = mutableListOf<StandbyAudioUnavailable>()
         return Fixture(
@@ -52,13 +56,21 @@ class StandbyAudioControllerTest {
                 permissionGranted = { true },
                 audioSetup = setup,
                 threadLauncher = threadLauncher,
-                retryScheduler = StandbyRetryScheduler { _, task -> scheduled.addLast(task); true },
+                retryScheduler = retryScheduler ?: StandbyRetryScheduler { _, task ->
+                    scheduled.addLast(task)
+                    true
+                },
+                processBusyRetryFallback = processBusyRetryFallback ?: StandbyRetryScheduler { _, task ->
+                    fallbackScheduled.addLast(task)
+                    true
+                },
                 onAvailable = { available += Unit },
                 onUnavailable = unavailable::add,
                 reserveProcessAdmission = reserveProcessAdmission,
                 runNativeAcquisition = runNativeAcquisition,
             ),
             scheduled = scheduled,
+            fallbackScheduled = fallbackScheduled,
             available = available,
             unavailable = unavailable,
         )
@@ -80,6 +92,169 @@ class StandbyAudioControllerTest {
         assertEquals(0, setupCalls)
         assertEquals(1, fixture.scheduled.size)
         assertTrue(fixture.unavailable.isEmpty())
+    }
+
+    @Test
+    fun `rejected process-busy schedule falls back and recovers after lease release`() {
+        var processBusy = true
+        var setupCalls = 0
+        val input = FakeInput()
+        val fixture = fixture(
+            setup = StandbyAudioSetup {
+                setupCalls++
+                StandbyAudioSetupResult.Ready(input)
+            },
+            reserveProcessAdmission = { if (processBusy) null else ({}) },
+            retryScheduler = StandbyRetryScheduler { _, _ -> false },
+        )
+
+        fixture.controller.setEnabled(true)
+        assertEquals(0, setupCalls)
+        assertEquals(1, fixture.fallbackScheduled.size)
+        assertTrue(fixture.unavailable.isEmpty())
+
+        processBusy = false
+        fixture.fallbackScheduled.removeFirst().invoke()
+
+        assertEquals(1, setupCalls)
+        assertEquals(1, input.starts)
+        assertEquals(1, input.stops)
+        assertEquals(1, input.releases)
+        assertTrue(fixture.unavailable.isEmpty())
+    }
+
+    @Test
+    fun `throwing process-busy scheduler uses the same quiet fallback`() {
+        var processBusy = true
+        var setupCalls = 0
+        val fixture = fixture(
+            setup = StandbyAudioSetup {
+                setupCalls++
+                StandbyAudioSetupResult.Ready(FakeInput())
+            },
+            reserveProcessAdmission = { if (processBusy) null else ({}) },
+            retryScheduler = StandbyRetryScheduler { _, _ -> error("injected scheduler throw") },
+        )
+
+        fixture.controller.setEnabled(true)
+        assertEquals(1, fixture.fallbackScheduled.size)
+        assertTrue(fixture.unavailable.isEmpty())
+
+        processBusy = false
+        fixture.fallbackScheduled.removeFirst().invoke()
+
+        assertEquals(1, setupCalls)
+        assertTrue(fixture.unavailable.isEmpty())
+    }
+
+    @Test
+    fun `rejected primary and fallback report infrastructure state without audio failure charge`() {
+        val fixture = fixture(
+            setup = StandbyAudioSetup { error("busy admission must dominate setup") },
+            reserveProcessAdmission = { null },
+            retryScheduler = StandbyRetryScheduler { _, _ -> false },
+            processBusyRetryFallback = StandbyRetryScheduler { _, _ -> false },
+        )
+
+        fixture.controller.setEnabled(true)
+
+        assertEquals(
+            StandbyAudioUnavailable(
+                StandbyAudioFailureReason.RETRY_SCHEDULER,
+                failedGenerations = 0,
+            ),
+            fixture.unavailable.single(),
+        )
+        assertTrue(fixture.scheduled.isEmpty())
+        assertTrue(fixture.fallbackScheduled.isEmpty())
+    }
+
+    @Test
+    fun `disable pause and REC handoff cancel a pending process-busy fallback`() {
+        var disabledSetupCalls = 0
+        val disabled = fixture(
+            setup = StandbyAudioSetup {
+                disabledSetupCalls++
+                StandbyAudioSetupResult.Ready(FakeInput())
+            },
+            reserveProcessAdmission = { null },
+            retryScheduler = StandbyRetryScheduler { _, _ -> false },
+        )
+        disabled.controller.setEnabled(true)
+        disabled.controller.disable()
+        disabled.fallbackScheduled.removeFirst().invoke()
+        assertEquals(0, disabledSetupCalls)
+
+        var paused = false
+        var pausedSetupCalls = 0
+        val pausedFixture = fixture(
+            setup = StandbyAudioSetup {
+                pausedSetupCalls++
+                StandbyAudioSetupResult.Ready(FakeInput())
+            },
+            paused = { paused },
+            reserveProcessAdmission = { null },
+            retryScheduler = StandbyRetryScheduler { _, _ -> false },
+        )
+        pausedFixture.controller.setEnabled(true)
+        paused = true
+        pausedFixture.fallbackScheduled.removeFirst().invoke()
+        assertEquals(0, pausedSetupCalls)
+
+        var recordingSetupCalls = 0
+        val recording = fixture(
+            setup = StandbyAudioSetup {
+                recordingSetupCalls++
+                StandbyAudioSetupResult.Ready(FakeInput())
+            },
+            reserveProcessAdmission = { null },
+            retryScheduler = StandbyRetryScheduler { _, _ -> false },
+        )
+        recording.controller.setEnabled(true)
+        assertTrue(recording.controller.beginRecording().admitted)
+        recording.fallbackScheduled.removeFirst().invoke()
+        assertEquals(0, recordingSetupCalls)
+        assertTrue(recording.unavailable.isEmpty())
+    }
+
+    @Test
+    fun `process-busy retries do not consume the AudioRecord generation budget`() {
+        var processBusy = true
+        var setupFailures = 0
+        val ordinaryRetries = ArrayDeque<() -> Unit>()
+        val fixture = fixture(
+            setup = StandbyAudioSetup {
+                setupFailures++
+                StandbyAudioSetupResult.Failure(StandbyAudioFailureReason.CONSTRUCTION)
+            },
+            reserveProcessAdmission = { if (processBusy) null else ({}) },
+            retryScheduler = StandbyRetryScheduler { _, task ->
+                if (processBusy) {
+                    false
+                } else {
+                    // Once the lease clears, ordinary AudioRecord failures use the normal queue.
+                    true.also { ordinaryRetries.addLast(task) }
+                }
+            },
+        )
+
+        fixture.controller.setEnabled(true)
+        repeat(5) {
+            fixture.fallbackScheduled.removeFirst().invoke()
+            assertTrue(fixture.unavailable.isEmpty())
+        }
+
+        processBusy = false
+        fixture.fallbackScheduled.removeFirst().invoke()
+        assertEquals(1, setupFailures)
+        assertTrue(fixture.unavailable.isEmpty())
+        repeat(3) { ordinaryRetries.removeFirst().invoke() }
+
+        assertEquals(4, setupFailures)
+        assertEquals(
+            StandbyAudioUnavailable(StandbyAudioFailureReason.CONSTRUCTION, failedGenerations = 4),
+            fixture.unavailable.single(),
+        )
     }
 
     @Test

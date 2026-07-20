@@ -24,6 +24,7 @@ internal enum class StandbyAudioFailureReason {
     UNINITIALIZED,
     START,
     THREAD_LAUNCH,
+    RETRY_SCHEDULER,
     TERMINAL_READ,
 }
 
@@ -57,6 +58,27 @@ internal fun interface StandbyRetryScheduler {
     /** Returns true only when [task] was accepted for delayed execution. */
     fun schedule(delayMs: Long, task: () -> Unit): Boolean
 }
+
+/**
+ * Last-resort async retry lane for a rejected main-loop post. It is intentionally separate from
+ * AudioRecord generation accounting: process ownership contention is not an audio-input failure.
+ */
+private fun threadBackedStandbyRetryScheduler(): StandbyRetryScheduler =
+    StandbyRetryScheduler { delayMs, task ->
+        runCatching {
+            Thread(
+                {
+                    try {
+                        Thread.sleep(delayMs)
+                        runCatching(task)
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                    }
+                },
+                "StandbyAudioRetryFallback",
+            ).start()
+        }.isSuccess
+    }
 
 private class AndroidStandbyAudioInput(private val recorder: AudioRecord) : StandbyAudioInput {
     override fun start() = recorder.startRecording()
@@ -113,6 +135,7 @@ internal class StandbyAudioController(
     private val audioSetup: StandbyAudioSetup,
     private val threadLauncher: StandbyThreadLauncher,
     private val retryScheduler: StandbyRetryScheduler,
+    private val processBusyRetryFallback: StandbyRetryScheduler = threadBackedStandbyRetryScheduler(),
     private val onAvailable: () -> Unit,
     private val onUnavailable: (StandbyAudioUnavailable) -> Unit,
     private val reserveProcessAdmission: () -> (() -> Unit)? = { {} },
@@ -314,11 +337,7 @@ internal class StandbyAudioController(
         runCatching { onLevel(0f) }
         if (!completion.completed) return
         if (retryForProcessBusy) {
-            if (!isPaused() && ownership.meterWanted()) {
-                retryScheduler.schedule(RETRY_BACKOFF_MS) {
-                    if (!isPaused()) start(updateIntent = false)
-                }
-            }
+            scheduleProcessBusyRetry()
             return
         }
         if (completion.retryPending) {
@@ -345,6 +364,39 @@ internal class StandbyAudioController(
         // Transient generations stay invisible; only terminal budget exhaustion is reported.
         if (ownership.meterWanted() && !isPaused()) {
             runCatching { onUnavailable(StandbyAudioUnavailable(failure, failedGenerations)) }
+        }
+    }
+
+    /**
+     * Waits quietly for a foreign process mic lease without charging [failureStreak]. A rejected or
+     * throwing main-loop post moves once to an independent async fallback, preventing both a dead
+     * wanted state and synchronous retry recursion. Every callback rechecks pause, wanted intent,
+     * and recording ownership through [start]'s current-owner reservation.
+     */
+    private fun scheduleProcessBusyRetry() {
+        if (isPaused() || !ownership.meterWanted()) return
+        val retry = {
+            if (!isPaused() && ownership.meterWanted()) start(updateIntent = false)
+        }
+        val scheduled = runCatching {
+            retryScheduler.schedule(RETRY_BACKOFF_MS, retry)
+        }.getOrDefault(false)
+        if (scheduled) return
+
+        val fallbackScheduled = runCatching {
+            processBusyRetryFallback.schedule(RETRY_BACKOFF_MS, retry)
+        }.getOrDefault(false)
+        if (!fallbackScheduled && !isPaused() && ownership.meterWanted()) {
+            // No executor can make progress. Surface an explicit infrastructure state rather than
+            // silently leaving wanted=true with no owner or task; do not mutate the audio budget.
+            runCatching {
+                onUnavailable(
+                    StandbyAudioUnavailable(
+                        StandbyAudioFailureReason.RETRY_SCHEDULER,
+                        failedGenerations = failureStreak.get(),
+                    ),
+                )
+            }
         }
     }
 
