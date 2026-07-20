@@ -539,9 +539,20 @@ class VideoRecorder(private val context: Context) {
 
     private fun runAudio(record: AudioRecord, codec: MediaCodec) {
         if (terminallyQuarantined.get()) return
-        // Guard startRecording() too: if the mic is grabbed between init and here it throws, and an
-        // uncaught throw on this thread would crash the app — bail to video-only instead.
-        if (runCatching { record.startRecording() }.isFailure) {
+        // This worker starts after VideoRecorder.start() has left its setup admission. Linearize the
+        // actual native start against process quarantine, and recheck this recorder's terminal state
+        // inside that process lock. A terminal refusal must leave the quarantined owner untouched.
+        val audioStart = runCatching {
+            startNativeOwnerIfSafe(
+                runNativeAcquisition = UnsafeRecorderQuarantine::runNativeAcquisition,
+                isTerminal = terminallyQuarantined::get,
+                start = record::startRecording,
+            )
+        }
+        // Preserve the pre-existing ownership of an ordinary AudioRecord.startRecording() failure:
+        // audio degrades to video-only. Process/local terminal refusal is different: quarantine owns
+        // the graph, so this thread stops Java-side progression without touching any native owner.
+        if (audioStart.isFailure) {
             onRoute?.invoke(audioUnavailableLabel(audioInputPreference.label))
             synchronized(muxerLock) {
                 expectedTracks = 1
@@ -549,6 +560,7 @@ class VideoRecorder(private val context: Context) {
             }
             return
         }
+        if (audioStart.getOrThrow() == NativeStartOutcome.REFUSED) return
         onRoute?.invoke(AudioInputInspector.routeLabel(audioInputPreference, record.routedDevice ?: record.preferredDevice))
         val info = MediaCodec.BufferInfo()
         var totalSamples = 0L
@@ -663,11 +675,20 @@ class VideoRecorder(private val context: Context) {
     }
 
     private fun maybeStartMuxer() {
-        // Pure gate extracted below so the video-only-degrade accounting is host-testable
-        // (AGG3-53/TEST-3): fa80574 shipped this branch with zero coverage.
-        if (shouldStartMuxer(muxerStarted, videoTrack >= 0, expectedTracks, audioTrack >= 0)) {
-            muxer?.start()
-            muxerStarted = true
+        val ownedMuxer = muxer ?: return
+        // Both drain workers can arrive here after VideoRecorder.start() has left setup admission.
+        // Publish muxerStarted only after the actual native start completed under the process gate.
+        muxerStarted = muxerStartedAfterNativeStart(
+            muxerStarted = muxerStarted,
+            videoTrackReady = videoTrack >= 0,
+            expectedTracks = expectedTracks,
+            audioTrackReady = audioTrack >= 0,
+        ) {
+            startNativeOwnerIfSafe(
+                runNativeAcquisition = UnsafeRecorderQuarantine::runNativeAcquisition,
+                isTerminal = terminallyQuarantined::get,
+                start = ownedMuxer::start,
+            )
         }
     }
 
@@ -975,6 +996,48 @@ internal fun shouldStartMuxer(
     expectedTracks: Int,
     audioTrackReady: Boolean,
 ): Boolean = !muxerStarted && videoTrackReady && (expectedTracks == 1 || audioTrackReady)
+
+/** Result of one native start whose process/local terminal admission is checked atomically. */
+internal enum class NativeStartOutcome { STARTED, REFUSED }
+
+/**
+ * Small Android-free leaf seam for worker-thread native starts.
+ *
+ * [isTerminal] executes inside [runNativeAcquisition], after process admission, so a local terminal
+ * transition cannot be missed between the caller's outer check and [start]. A refusal deliberately
+ * performs no cleanup: once quarantine owns the native graph, stop/release is itself unsafe. Native
+ * start exceptions are not translated or swallowed; the caller retains its existing failure owner.
+ */
+internal fun startNativeOwnerIfSafe(
+    runNativeAcquisition: ((() -> Unit) -> Boolean),
+    isTerminal: () -> Boolean,
+    start: () -> Unit,
+): NativeStartOutcome {
+    var started = false
+    runNativeAcquisition {
+        if (isTerminal()) return@runNativeAcquisition
+        start()
+        started = true
+    }
+    return if (started) NativeStartOutcome.STARTED else NativeStartOutcome.REFUSED
+}
+
+/**
+ * Publishes the muxer-start state only after a ready muxer's real native start succeeds. Refusal
+ * leaves a not-yet-started muxer unpublished; a thrown start exception propagates before mutation.
+ */
+internal fun muxerStartedAfterNativeStart(
+    muxerStarted: Boolean,
+    videoTrackReady: Boolean,
+    expectedTracks: Int,
+    audioTrackReady: Boolean,
+    start: () -> NativeStartOutcome,
+): Boolean {
+    if (!shouldStartMuxer(muxerStarted, videoTrackReady, expectedTracks, audioTrackReady)) {
+        return muxerStarted
+    }
+    return start() == NativeStartOutcome.STARTED
+}
 
 /**
  * Pure gate for stop()'s muxer.stop() failure handling (TR4-2). A stop() throw normally means the
