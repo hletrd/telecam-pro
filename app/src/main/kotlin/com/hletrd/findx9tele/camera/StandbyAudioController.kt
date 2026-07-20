@@ -1,17 +1,99 @@
 package com.hletrd.findx9tele.camera
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.os.Handler
+import android.os.Looper
+import android.util.Log
 import com.hletrd.findx9tele.video.AudioReadOutcome
 import com.hletrd.findx9tele.video.classifyAudioRead
 import com.hletrd.findx9tele.video.standbyMeterShouldRecreate
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.sqrt
+
+internal enum class StandbyAudioFailureReason {
+    INVALID_BUFFER,
+    CONSTRUCTION,
+    UNINITIALIZED,
+    START,
+    THREAD_LAUNCH,
+    TERMINAL_READ,
+}
+
+internal data class StandbyAudioUnavailable(
+    val reason: StandbyAudioFailureReason,
+    val failedGenerations: Int,
+)
+
+internal interface StandbyAudioInput {
+    fun start()
+    fun read(samples: ShortArray): Int
+    fun stop()
+    fun release()
+}
+
+internal sealed interface StandbyAudioSetupResult {
+    data class Ready(val input: StandbyAudioInput) : StandbyAudioSetupResult
+    data class Failure(val reason: StandbyAudioFailureReason) : StandbyAudioSetupResult
+}
+
+internal fun interface StandbyAudioSetup {
+    fun create(): StandbyAudioSetupResult
+}
+
+internal fun interface StandbyThreadLauncher {
+    /** Returns true only when [task] was accepted for execution. */
+    fun launch(name: String, task: () -> Unit): Boolean
+}
+
+internal fun interface StandbyRetryScheduler {
+    /** Returns true only when [task] was accepted for delayed execution. */
+    fun schedule(delayMs: Long, task: () -> Unit): Boolean
+}
+
+private class AndroidStandbyAudioInput(private val recorder: AudioRecord) : StandbyAudioInput {
+    override fun start() = recorder.startRecording()
+    override fun read(samples: ShortArray): Int = recorder.read(samples, 0, samples.size)
+    override fun stop() = recorder.stop()
+    override fun release() = recorder.release()
+}
+
+// The controller checks RECORD_AUDIO immediately before reserving every generation. Extraction into
+// this injectable factory hides that dominating guard from lint, so keep the suppression local.
+@SuppressLint("MissingPermission")
+private fun createAndroidStandbyAudioInput(): StandbyAudioSetupResult {
+    val sampleRate = 48_000
+    val minBuffer = runCatching {
+        AudioRecord.getMinBufferSize(
+            sampleRate,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT,
+        )
+    }.getOrNull()
+    if (minBuffer == null || minBuffer <= 0) {
+        return StandbyAudioSetupResult.Failure(StandbyAudioFailureReason.INVALID_BUFFER)
+    }
+    val recorder = runCatching {
+        AudioRecord(
+            MediaRecorder.AudioSource.CAMCORDER,
+            sampleRate,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT,
+            minBuffer * 2,
+        )
+    }.getOrNull() ?: return StandbyAudioSetupResult.Failure(StandbyAudioFailureReason.CONSTRUCTION)
+    if (recorder.state != AudioRecord.STATE_INITIALIZED) {
+        runCatching { recorder.release() }
+        return StandbyAudioSetupResult.Failure(StandbyAudioFailureReason.UNINITIALIZED)
+    }
+    return StandbyAudioSetupResult.Ready(AndroidStandbyAudioInput(recorder))
+}
 
 /**
  * Sony-style pre-roll level meter used while video mode is armed but not recording.
@@ -21,16 +103,53 @@ import kotlin.math.sqrt
  * ownership. [StandbyMeterOwnership] remains the single admission authority.
  */
 internal class StandbyAudioController(
-    private val context: Context,
     private val audioGain: () -> Float,
     private val onLevel: (Float) -> Unit,
     private val canStart: () -> Boolean,
     private val recorderAbsent: () -> Boolean,
     private val isPaused: () -> Boolean,
+    private val permissionGranted: () -> Boolean,
+    private val audioSetup: StandbyAudioSetup,
+    private val threadLauncher: StandbyThreadLauncher,
+    private val retryScheduler: StandbyRetryScheduler,
+    private val onUnavailable: (StandbyAudioUnavailable) -> Unit,
 ) {
+    internal constructor(
+        context: Context,
+        audioGain: () -> Float,
+        onLevel: (Float) -> Unit,
+        canStart: () -> Boolean,
+        recorderAbsent: () -> Boolean,
+        isPaused: () -> Boolean,
+    ) : this(
+        audioGain = audioGain,
+        onLevel = onLevel,
+        canStart = canStart,
+        recorderAbsent = recorderAbsent,
+        isPaused = isPaused,
+        permissionGranted = {
+            context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        },
+        audioSetup = StandbyAudioSetup(::createAndroidStandbyAudioInput),
+        threadLauncher = StandbyThreadLauncher { name, task ->
+            runCatching { Thread({ task() }, name).start() }.isSuccess
+        },
+        retryScheduler = StandbyRetryScheduler { delayMs, task ->
+            Handler(Looper.getMainLooper()).postDelayed({ task() }, delayMs)
+        },
+        onUnavailable = { unavailable ->
+            Log.w(
+                TAG,
+                "Standby microphone unavailable after ${unavailable.failedGenerations} " +
+                    "failed generations (${unavailable.reason})",
+            )
+        },
+    )
+
     private val ownership = StandbyMeterOwnership<CountDownLatch>()
 
-    // Consecutive AudioRecord generations that died on a terminal read error without one PCM read.
+    // Consecutive AudioRecord generations that failed setup/start/launch or reached a terminal read
+    // without one PCM read. Explicit user intent and a successful PCM read reset the shared budget.
     private val failureStreak = AtomicInteger(0)
 
     fun setEnabled(enabled: Boolean) {
@@ -62,8 +181,7 @@ internal class StandbyAudioController(
 
     /** Starts only if the latest intent still wants metering; internal retries never re-enable it. */
     private fun start(updateIntent: Boolean) {
-        val admittedNow = canStart() &&
-            context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        val admittedNow = canStart() && permissionGranted()
         // The immutable owner and release latch are published before Thread.start. REC can therefore
         // await that exact generation and never admits a second AudioRecord after a timeout.
         val createRelease = { CountDownLatch(1) }
@@ -79,38 +197,35 @@ internal class StandbyAudioController(
                 createRelease = createRelease,
             )
         } ?: return
-        val thread = Thread({
-            var audioRecord: AudioRecord? = null
-            // One PCM read resets the dead-route budget; only a terminal running read charges it.
+        val meterTask: () -> Unit = meterTask@{
+            var audioInput: StandbyAudioInput? = null
+            // One PCM read resets the shared dead-route/setup budget.
             var sawPcm = false
-            var terminalReadError = false
+            var generationFailure: StandbyAudioFailureReason? = null
             try {
                 // Reservation is not start admission: REC can claim while this thread is queued.
-                if (!ownership.ownsAndWants(owner)) return@Thread
-                val sampleRate = 48_000
-                val minBuffer = AudioRecord.getMinBufferSize(
-                    sampleRate,
-                    AudioFormat.CHANNEL_IN_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT,
-                )
-                if (minBuffer <= 0) return@Thread
-                val recorder = runCatching {
-                    AudioRecord(
-                        MediaRecorder.AudioSource.CAMCORDER,
-                        sampleRate,
-                        AudioFormat.CHANNEL_IN_MONO,
-                        AudioFormat.ENCODING_PCM_16BIT,
-                        minBuffer * 2,
-                    )
-                }.getOrNull() ?: return@Thread
-                audioRecord = recorder
-                if (recorder.state != AudioRecord.STATE_INITIALIZED) return@Thread
-                if (!ownership.ownsAndWants(owner)) return@Thread
-                if (runCatching { recorder.startRecording() }.isFailure) return@Thread
+                if (!ownership.ownsAndWants(owner)) return@meterTask
+                when (val setup = runCatching { audioSetup.create() }.getOrElse {
+                    StandbyAudioSetupResult.Failure(StandbyAudioFailureReason.CONSTRUCTION)
+                }) {
+                    is StandbyAudioSetupResult.Failure -> {
+                        generationFailure = setup.reason
+                        return@meterTask
+                    }
+                    is StandbyAudioSetupResult.Ready -> audioInput = setup.input
+                }
+                if (!ownership.ownsAndWants(owner)) return@meterTask
+                if (runCatching { checkNotNull(audioInput).start() }.isFailure) {
+                    generationFailure = StandbyAudioFailureReason.START
+                    return@meterTask
+                }
                 val samples = ShortArray(2048)
                 var lastEmit = 0L
                 while (ownership.ownsAndWants(owner) && recorderAbsent()) {
-                    val readCount = recorder.read(samples, 0, samples.size)
+                    val readCount = runCatching { checkNotNull(audioInput).read(samples) }.getOrElse {
+                        generationFailure = StandbyAudioFailureReason.TERMINAL_READ
+                        break
+                    }
                     // Classify against ownership observed after the blocking read. A negative wake-up
                     // caused by REC handoff is Stopped, not a dead-route failure.
                     val stillWanted = ownership.ownsAndWants(owner)
@@ -121,7 +236,7 @@ internal class StandbyAudioController(
                         }
                         AudioReadOutcome.Retry -> continue
                         is AudioReadOutcome.Failure -> {
-                            terminalReadError = true
+                            generationFailure = StandbyAudioFailureReason.TERMINAL_READ
                             break
                         }
                         AudioReadOutcome.Stopped -> break
@@ -140,35 +255,58 @@ internal class StandbyAudioController(
                 }
             } finally {
                 // Count the latch only after release on every path, including early returns.
-                audioRecord?.let { recorder ->
-                    runCatching { recorder.stop() }
-                    runCatching { recorder.release() }
+                audioInput?.let { input ->
+                    runCatching { input.stop() }
+                    runCatching { input.release() }
                 }
-                val completion = ownership.complete(owner)
-                owner.release.countDown()
-                runCatching { onLevel(0f) }
-                if (completion.retryPending && !isPaused()) {
-                    start(updateIntent = false)
-                } else if (terminalReadError && !isPaused() &&
-                    standbyMeterShouldRecreate(
-                        failedGenerations = failureStreak.incrementAndGet(),
-                        maxRecreates = MAX_RECREATES,
-                    )
-                ) {
-                    // The latch is already released, so this backoff cannot delay REC handoff.
-                    runCatching { Thread.sleep(RETRY_BACKOFF_MS) }
-                    start(updateIntent = false)
-                }
+                completeGeneration(owner, generationFailure)
             }
-        }, "StandbyAudioMeter")
-        runCatching { thread.start() }.onFailure {
-            val completion = ownership.complete(owner)
-            owner.release.countDown()
-            if (completion.retryPending && !isPaused()) start(updateIntent = false)
+        }
+        val launched = runCatching {
+            threadLauncher.launch("StandbyAudioMeter", meterTask)
+        }.getOrDefault(false)
+        if (!launched) {
+            completeGeneration(owner, StandbyAudioFailureReason.THREAD_LAUNCH)
+        }
+    }
+
+    private fun completeGeneration(
+        owner: StandbyMeterOwnership.Owner<CountDownLatch>,
+        failure: StandbyAudioFailureReason?,
+    ) {
+        val completion = ownership.complete(owner)
+        owner.release.countDown()
+        runCatching { onLevel(0f) }
+        if (!completion.completed) return
+        if (completion.retryPending) {
+            if (!isPaused()) start(updateIntent = false)
+            return
+        }
+        if (failure == null) return
+
+        val failedGenerations = failureStreak.incrementAndGet()
+        if (isPaused() || !ownership.meterWanted()) return
+        if (standbyMeterShouldRecreate(failedGenerations, MAX_RECREATES)) {
+            // The owner latch is already released. A delayed callback rechecks wanted/paused/REC
+            // state through reserveCurrentWanted, so it cannot steal the mic from a newer handoff.
+            val scheduled = runCatching {
+                retryScheduler.schedule(RETRY_BACKOFF_MS) {
+                    if (!isPaused()) start(updateIntent = false)
+                }
+            }.getOrDefault(false)
+            // A rejected scheduler must not make a transient failure sticky. Consume the same finite
+            // generation budget synchronously; MAX_RECREATES bounds this fallback recursion.
+            if (!scheduled && !isPaused() && ownership.meterWanted()) start(updateIntent = false)
+            return
+        }
+        // Transient generations stay invisible; only terminal budget exhaustion is reported.
+        if (ownership.meterWanted() && !isPaused()) {
+            runCatching { onUnavailable(StandbyAudioUnavailable(failure, failedGenerations)) }
         }
     }
 
     private companion object {
+        private const val TAG = "StandbyAudioMeter"
         private const val MAX_RECREATES = 3
         private const val RETRY_BACKOFF_MS = 300L
         private const val METER_EMIT_INTERVAL_NS = 100_000_000L
@@ -225,6 +363,10 @@ internal class StandbyMeterOwnership<R> {
 
     @Synchronized
     fun ownsAndWants(owner: Owner<R>): Boolean = wanted && active?.id == owner.id
+
+    /** True only while standby intent still exists outside a recording claim. */
+    @Synchronized
+    fun meterWanted(): Boolean = wanted && !recordingClaimed
 
     @Synchronized
     fun complete(owner: Owner<R>): Completion {
