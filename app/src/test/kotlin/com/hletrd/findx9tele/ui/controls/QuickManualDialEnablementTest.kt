@@ -2,6 +2,7 @@ package com.hletrd.findx9tele.ui.controls
 
 import android.hardware.camera2.CameraMetadata
 import com.hletrd.findx9tele.camera.CameraControlCapabilities
+import com.hletrd.findx9tele.camera.FnSlot
 import com.hletrd.findx9tele.camera.ManualControls
 import com.hletrd.findx9tele.camera.WbMode
 import com.hletrd.findx9tele.camera.controlAvailability
@@ -149,6 +150,29 @@ class QuickManualDialEnablementTest {
         for (type in DialType.entries) {
             assertNull(type.name, reconcileOpenManualDial(type, unavailable))
         }
+    }
+
+    @Test
+    fun `compact entry can retain a deliberately requested ruler`() {
+        val available = controlAvailability(
+            CameraControlCapabilities(hasZoomRatioRange = true),
+            ManualControls(),
+        )
+        assertEquals(DialType.ZOOM, reconcileOpenManualDial(DialType.ZOOM, available))
+    }
+
+    @Test
+    fun `numeric Fn slots open adjustments instead of destructive quick actions`() {
+        val expected = mapOf(
+            FnSlot.FOCUS to DialType.FOCUS,
+            FnSlot.SHUTTER to DialType.SHUTTER,
+            FnSlot.ISO to DialType.ISO,
+            FnSlot.WB to DialType.WB,
+            FnSlot.EV to DialType.EV,
+            FnSlot.ZOOM to DialType.ZOOM,
+        )
+        expected.forEach { (slot, dial) -> assertEquals(slot.name, dial, manualDialForFnSlot(slot)) }
+        assertNull(manualDialForFnSlot(FnSlot.EXPOSURE_MODE))
     }
 
     private fun enabled(

@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.disabled
@@ -131,6 +132,16 @@ internal fun reconcileOpenManualDial(
     availability: ControlAvailability,
 ): DialType? = openDial?.takeIf { quickManualDialEnabled(it, availability) }
 
+internal fun manualDialForFnSlot(slot: FnSlot): DialType? = when (slot) {
+    FnSlot.FOCUS -> DialType.FOCUS
+    FnSlot.SHUTTER -> DialType.SHUTTER
+    FnSlot.ISO -> DialType.ISO
+    FnSlot.WB -> DialType.WB
+    FnSlot.EV -> DialType.EV
+    FnSlot.ZOOM -> DialType.ZOOM
+    else -> null
+}
+
 /** The fixed compact Fn glyph follows the shared animated overlay angle without sign/phase drift. */
 internal fun fnMenuGlyphRotation(overlayRotation: Float): Float = overlayRotation
 
@@ -138,12 +149,14 @@ internal fun fnMenuGlyphRotation(overlayRotation: Float): Float = overlayRotatio
 fun ManualDialCluster(
     state: CameraUiState,
     actions: CameraActions,
-    onRequestWhiteBalanceSheet: () -> Unit,
+    openDial: DialType?,
+    onSelectDial: (DialType) -> Unit,
+    onCloseDial: () -> Unit,
     glyphRotation: Float,
     modifier: Modifier = Modifier,
+    compact: Boolean = false,
     onOpenFnMenu: () -> Unit = {},
 ) {
-    var openDial by remember { mutableStateOf<DialType?>(null) }
     val controls = state.controls
     val caps = state.caps
     // Keyed remember: see TopBar — the projection is pure in (caps, controls) and telemetry ticks
@@ -157,13 +170,13 @@ fun ManualDialCluster(
     // the first composition with the new capability projection; normalized state remains applied.
     LaunchedEffect(openDial, availability) {
         val reconciled = reconcileOpenManualDial(openDial, availability)
-        if (reconciled != openDial) openDial = reconciled
+        if (reconciled != openDial) onCloseDial()
     }
 
     // This handler is composed before the full-screen sheet/Fn/review handlers, so those later
     // topmost surfaces retain priority. With no full-screen modal, Back closes the ruler instead of
     // falling through to the Activity and backgrounding the camera.
-    BackHandler(enabled = manualDialConsumesBack(openDial)) { openDial = null }
+    BackHandler(enabled = manualDialConsumesBack(openDial), onBack = onCloseDial)
 
     // MF assist: while the Focus ruler is open, punch in on the loupe point (last tap, else center)
     // so critical focus at 300 mm is judged on magnified pixels — the auto-magnify every MF-first
@@ -198,64 +211,46 @@ fun ManualDialCluster(
             enter = fadeIn(tween(160)) + expandVertically(tween(180)),
             exit = fadeOut(tween(120)) + shrinkVertically(tween(160)),
         ) {
-            when (displayedDial) {
-                DialType.FOCUS -> FocusRuler(controls = controls, caps = caps, onFocusSlider = actions::onFocusSlider)
-                DialType.SHUTTER -> ShutterRuler(
-                    mode = state.mode,
-                    controls = controls,
-                    caps = caps,
-                    actions = actions,
-                )
-                DialType.ISO -> IsoRuler(controls = controls, caps = caps, onIso = actions::onIso)
-                DialType.WB -> WbRuler(controls = controls, onWbKelvin = actions::onWbKelvin)
-                DialType.EV -> EvRuler(controls = controls, caps = caps, onEv = actions::onExposureCompensation)
-                DialType.ZOOM -> ZoomRuler(
-                    controls = controls,
-                    caps = caps,
-                    teleconverter = state.teleconverterMode,
-                    onZoomRatio = actions::onZoomRatio,
-                )
-                null -> Unit
+            Box(modifier = Modifier.fillMaxWidth()) {
+                when (displayedDial) {
+                    DialType.FOCUS -> FocusRuler(controls = controls, caps = caps, onFocusSlider = actions::onFocusSlider)
+                    DialType.SHUTTER -> ShutterRuler(
+                        mode = state.mode,
+                        controls = controls,
+                        caps = caps,
+                        actions = actions,
+                    )
+                    DialType.ISO -> IsoRuler(controls = controls, caps = caps, onIso = actions::onIso)
+                    DialType.WB -> WbRuler(controls = controls, onWbKelvin = actions::onWbKelvin)
+                    DialType.EV -> EvRuler(controls = controls, caps = caps, onEv = actions::onExposureCompensation)
+                    DialType.ZOOM -> ZoomRuler(
+                        controls = controls,
+                        caps = caps,
+                        teleconverter = state.teleconverterMode,
+                        onZoomRatio = actions::onZoomRatio,
+                    )
+                    null -> Unit
+                }
+                if (compact) {
+                    CompactDialCloseButton(
+                        onClick = onCloseDial,
+                        modifier = Modifier.align(Alignment.TopEnd),
+                    )
+                }
             }
         }
 
-        DialChipRow(
-            state = state,
-            openDial = openDial,
-            onSelect = { type ->
-                when {
-                    type == DialType.WB && controls.wbMode != WbMode.MANUAL -> {
-                        openDial = null
-                        onRequestWhiteBalanceSheet()
-                    }
-                    // Tapping the Shutter dial takes shutter control → Shutter-priority (from P or ISO);
-                    // in Manual it stays Manual (shutter already user-owned).
-                    type == DialType.SHUTTER &&
-                        (controls.exposureMode == ExposureMode.PROGRAM || controls.exposureMode == ExposureMode.ISO) -> {
-                        actions.onExposureMode(ExposureMode.SHUTTER)
-                        openDial = type
-                    }
-                    // Tapping the ISO dial takes ISO control → ISO-priority (from P or S); Manual stays.
-                    type == DialType.ISO &&
-                        (controls.exposureMode == ExposureMode.PROGRAM || controls.exposureMode == ExposureMode.SHUTTER) -> {
-                        actions.onExposureMode(ExposureMode.ISO)
-                        openDial = type
-                    }
-                    // Focus: default is continuous AF, so tapping Focus enters manual.
-                    type == DialType.FOCUS && controls.focusMode != FocusMode.MANUAL -> {
-                        actions.onFocusMode(FocusMode.MANUAL)
-                        openDial = type
-                    }
-                    // EV compensation applies whenever AE meters (P/S/ISO); in full Manual it's inert.
-                    type == DialType.EV && controls.exposureMode == ExposureMode.MANUAL -> openDial = null
-                    else -> openDial = if (openDial == type) null else type
-                }
-            },
-            actions = actions,
-            onOpenFnMenu = onOpenFnMenu,
-            availability = availability,
-            glyphRotation = glyphRotation,
-        )
+        if (!compact) {
+            DialChipRow(
+                state = state,
+                openDial = openDial,
+                onSelect = onSelectDial,
+                actions = actions,
+                onOpenFnMenu = onOpenFnMenu,
+                availability = availability,
+                glyphRotation = glyphRotation,
+            )
+        }
     }
 }
 
@@ -283,16 +278,16 @@ private fun DialChipRow(
     val fnScroll = rememberScrollState()
     Row(
         modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        FnMenuButton(onClick = onOpenFnMenu, glyphRotation = glyphRotation)
+        CompactFnButton(onClick = onOpenFnMenu, glyphRotation = glyphRotation)
         Row(
             modifier = Modifier
                 .weight(1f)
                 .trailingEdgeFadeScrollHint(fnScroll)
                 .horizontalScroll(fnScroll),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             state.activeFnSlots.forEach { slot ->
                 FnDialChip(
@@ -312,13 +307,14 @@ private fun DialChipRow(
 
 /** Sony-familiar, always-visible entry point; dial long-press remains as the expert shortcut. */
 @Composable
-private fun FnMenuButton(onClick: () -> Unit, glyphRotation: Float) {
+internal fun CompactFnButton(
+    onClick: () -> Unit,
+    glyphRotation: Float,
+    modifier: Modifier = Modifier,
+) {
     Box(
-        modifier = Modifier
+        modifier = modifier
             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-            .clip(RoundedCornerShape(50))
-            .background(CameraColors.Pill.copy(alpha = 0.85f))
-            .border(1.dp, CameraColors.Accent.copy(alpha = 0.65f), RoundedCornerShape(50))
             .semantics {
                 contentDescription = "Open function menu"
                 role = Role.Button
@@ -326,13 +322,47 @@ private fun FnMenuButton(onClick: () -> Unit, glyphRotation: Float) {
             .clickable(role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = "Fn",
-            color = CameraColors.Accent,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.rotate(fnMenuGlyphRotation(glyphRotation)),
-        )
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(RoundedCornerShape(50))
+                .background(CameraColors.Pill.copy(alpha = 0.72f))
+                .border(1.dp, CameraColors.Accent.copy(alpha = 0.55f), RoundedCornerShape(50)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = "Fn",
+                color = CameraColors.Accent,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.rotate(fnMenuGlyphRotation(glyphRotation)),
+            )
+        }
+    }
+}
+
+@Composable
+private fun CompactDialCloseButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .size(48.dp)
+            .semantics {
+                contentDescription = "Close adjustment"
+                role = Role.Button
+            }
+            .clickable(role = Role.Button, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(32.dp)
+                .clip(RoundedCornerShape(50))
+                .background(CameraColors.Pill.copy(alpha = 0.72f))
+                .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(50)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("×", color = CameraColors.TextPrimary, fontSize = 16.sp)
+        }
     }
 }
 
@@ -559,10 +589,8 @@ private fun DialChip(
         enabled -> CameraColors.TextPrimary
         else -> CameraColors.TextSecondary
     }
-    // Outer box carries the click + a 48 dp minimum touch height: the pill's 8 dp vertical padding
-    // around 12 sp text only made it ~30 dp tall, under the a11y touch-target floor. The inner Row
-    // stays the VISUAL pill (unchanged look), so the dial row is pixel-identical while the hit area
-    // grows — the same outer-box pattern TeleChip uses in CameraScreen.
+    // Outer box carries the click + a 48 dp minimum touch height. The compact visual pill remains
+    // smaller than its hit area, using the same outer-box pattern as TeleChip in CameraScreen.
     Box(
         modifier = modifier
             .sizeIn(minHeight = 48.dp)
@@ -583,28 +611,28 @@ private fun DialChip(
             modifier = Modifier
                 // Fixed floor width + centered content so a chip's OWN value changes (e.g. "Auto" ↔
                 // "1/125s", "ISO 100" ↔ "ISO 12800") never resize it and shift the whole row.
-                .defaultMinSize(minWidth = 76.dp)
+                .defaultMinSize(minWidth = 64.dp)
                 .clip(RoundedCornerShape(50))
                 .background(bg)
                 .then(
                     if (!active) Modifier.border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(50)) else Modifier,
                 )
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterHorizontally),
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
                 label,
                 color = fg,
-                fontSize = 12.sp,
-                lineHeight = 14.sp,
+                fontSize = 11.sp,
+                lineHeight = 13.sp,
                 fontWeight = FontWeight.SemiBold,
             )
             Text(
                 value,
                 color = fg.copy(alpha = if (active) 1f else 0.75f),
-                fontSize = 12.sp,
-                lineHeight = 14.sp,
+                fontSize = 11.sp,
+                lineHeight = 13.sp,
             )
         }
     }

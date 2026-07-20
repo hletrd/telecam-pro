@@ -89,13 +89,13 @@ class HudContrastTest {
 
     @Test
     fun `every foreground the raised HUD surfaces use clears the floor at the shared alpha`() {
-        // The cycle-2 fix routed StatusInfoPill, MemoryRecallStrip, ExposureMeter, ZoomIndicator,
+        // The cycle-2 fix routed StatusInfoPill, ExposureMeter, ZoomIndicator,
         // RecordingIndicator, the half-press label, and RulerReadout through HUD_TEXT_SCRIM_ALPHA.
         // Pin their actual foregrounds so a future alpha/color tweak can't quietly sink one of
         // them back under 4.5:1 on a white frame.
         val foregrounds = mapOf(
             "white (pill/meter/REC time)" to rgbOf(CameraColors.TextPrimary),
-            "secondary (empty MR label)" to rgbOf(CameraColors.TextSecondary),
+            "secondary HUD text" to rgbOf(CameraColors.TextSecondary),
             "accent blue (zoom readout)" to rgbOf(CameraColors.Accent),
             "manual yellow (ruler readout, half-press label)" to rgbOf(CameraColors.ManualActive),
         )

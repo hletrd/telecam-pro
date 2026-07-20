@@ -34,11 +34,11 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.hletrd.findx9tele.BuildConfig
 import com.hletrd.findx9tele.camera.AfIndication
 import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.CaptureMode
+import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.DriveMode
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.HistogramData
@@ -48,6 +48,7 @@ import com.hletrd.findx9tele.camera.VideoStabMode
 import com.hletrd.findx9tele.camera.WaveformData
 import com.hletrd.findx9tele.camera.displayedStillAspect
 import com.hletrd.findx9tele.camera.largestCenteredRect
+import com.hletrd.findx9tele.camera.teleFinderVisible
 import com.hletrd.findx9tele.camera.videoBitRate
 import com.hletrd.findx9tele.ui.controls.transferLabelShort
 import com.hletrd.findx9tele.ui.controls.videoCodecLabelShort
@@ -369,11 +370,48 @@ fun AudioMeter(level: Float, modifier: Modifier = Modifier) {
  *    (when not single-shot) and self-timer (when armed).
  *  - VIDEO: focal, the resolved recording spec (resolution · fps · codec · Mbps — what the encoder
  *    will actually write), and the transfer function.
- *  - Both: metering pattern (when not matrix) and an EIS tag. The raw camera id is appended on
- *    DEBUG builds only — it is a lens bring-up aid, noise to a photographer.
+ *  - Both: metering pattern (when not matrix), lock state, and non-default stabilization state.
  */
+internal fun compactShootingStatusVisible(state: CameraUiState): Boolean =
+    state.activeMemorySlot != null ||
+        state.mode == CaptureMode.VIDEO ||
+        (state.mode == CaptureMode.PHOTO && compactPhotoFormatLabel(state) != null) ||
+        (state.mode == CaptureMode.PHOTO && state.driveMode != DriveMode.SINGLE) ||
+        (state.mode == CaptureMode.PHOTO && !state.controls.oisEnabled) ||
+        state.controls.meteringMode != MeteringMode.MATRIX ||
+        state.controls.aeLock ||
+        state.controls.awbLock ||
+        state.controls.afLock ||
+        state.punchIn ||
+        teleFinderVisible(
+            enabled = state.teleFinder,
+            teleconverter = state.teleconverterMode,
+            videoMode = state.mode == CaptureMode.VIDEO,
+            aspect = state.aspectRatio,
+            punchIn = state.punchIn,
+        )
+
+internal fun compactPhotoFormatLabel(state: CameraUiState): String? {
+    if (state.mode != CaptureMode.PHOTO) return null
+    val formats = state.photoFormats
+    if (formats.heif && !formats.jpeg && !formats.dngRaw) return null
+    return buildString {
+        if (formats.heif) append("HEIF")
+        if (formats.jpeg) {
+            if (isNotEmpty()) append("+")
+            append("JPEG")
+        }
+        if (formats.dngRaw) {
+            if (isNotEmpty()) append("+")
+            append("DNG")
+        }
+        if (isEmpty()) append("-")
+    }
+}
+
 @Composable
-fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier) {
+fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Boolean = false) {
+    if (compact && !compactShootingStatusVisible(state)) return
     val focal = state.caps?.equivalentFocalMm ?: 0f
     // The afocal teleconverter multiplies the ~70 mm periscope → a ~300 mm effective focal.
     // Round to the nearest 10 mm so the readout reads a clean "300 mm" rather than 296 mm.
@@ -398,41 +436,69 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier) {
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(focalLabel, color = Color.White, style = MaterialTheme.typography.labelMedium)
+        if (!compact) {
+            Text(focalLabel, color = Color.White, style = MaterialTheme.typography.labelMedium)
+        }
         state.activeMemorySlot?.let {
             Text(it.label, color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
         }
         if (state.mode == CaptureMode.VIDEO) {
-            val mbps = videoBitRate(
-                state.videoResolution.width, state.videoResolution.height,
-                state.videoFrameRate.encoderRate,
-                com.hletrd.findx9tele.camera.effectiveBpp(state.bitrateLevel, state.videoCodec), state.videoCodec,
-            ) / 1_000_000
-            Text(
-                "${videoResolutionLabel(state.videoResolution)} ${state.videoFrameRate.label}p " +
-                    "${videoCodecLabelShort(state.videoCodec)} ${mbps}Mb",
-                color = Color.White,
-                style = MaterialTheme.typography.labelMedium,
-            )
-            Text(transferLabelShort(state.transfer), color = Color(0xFF4C9AFF), style = MaterialTheme.typography.labelMedium)
-            if (state.transfer == com.hletrd.findx9tele.camera.ColorTransfer.LOG && state.gammaAssist) {
+            if (!compact) {
+                val mbps = videoBitRate(
+                    state.videoResolution.width, state.videoResolution.height,
+                    state.videoFrameRate.encoderRate,
+                    com.hletrd.findx9tele.camera.effectiveBpp(state.bitrateLevel, state.videoCodec), state.videoCodec,
+                ) / 1_000_000
+                Text(
+                    "${videoResolutionLabel(state.videoResolution)} ${state.videoFrameRate.label}p " +
+                        "${videoCodecLabelShort(state.videoCodec)} ${mbps}Mb",
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            }
+            if (!compact || state.transfer != ColorTransfer.SDR) {
+                Text(transferLabelShort(state.transfer), color = Color(0xFF4C9AFF), style = MaterialTheme.typography.labelMedium)
+            }
+            if (state.transfer == ColorTransfer.LOG && state.gammaAssist) {
                 // Gamma Display Assist active: the monitor is corrected, the file stays log.
                 Text("Assist", color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.labelMedium)
             }
-        } else {
-            val formatLabel = buildString {
-                if (state.photoFormats.heif) append("HEIF")
-                if (state.photoFormats.jpeg) {
-                    if (isNotEmpty()) append("+")
-                    append("JPEG")
-                }
-                if (state.photoFormats.dngRaw) {
-                    if (isNotEmpty()) append("+")
-                    append("DNG")
-                }
-                if (isEmpty()) append("-")
+            if (state.openGate) {
+                Text("4:3", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
             }
-            Text(formatLabel, color = Color.White, style = MaterialTheme.typography.labelMedium)
+            if (!state.recordAudio) {
+                Text("MUTE", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+            }
+            val stabTag = when (state.videoStabMode) {
+                VideoStabMode.STANDARD -> "OIS+"
+                VideoStabMode.ENHANCED -> "STEADY"
+                VideoStabMode.OFF -> "STAB OFF"
+            }
+            Text(
+                stabTag,
+                color = if (state.videoStabMode == VideoStabMode.OFF) Color(0xFFFFD60A) else Color(0xFF4CD964),
+                style = MaterialTheme.typography.labelMedium,
+            )
+        } else {
+            if (!compact) {
+                val formatLabel = buildString {
+                    if (state.photoFormats.heif) append("HEIF")
+                    if (state.photoFormats.jpeg) {
+                        if (isNotEmpty()) append("+")
+                        append("JPEG")
+                    }
+                    if (state.photoFormats.dngRaw) {
+                        if (isNotEmpty()) append("+")
+                        append("DNG")
+                    }
+                    if (isEmpty()) append("-")
+                }
+                Text(formatLabel, color = Color.White, style = MaterialTheme.typography.labelMedium)
+            } else {
+                compactPhotoFormatLabel(state)?.let { formatLabel ->
+                    Text(formatLabel, color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+                }
+            }
             if (state.driveMode != DriveMode.SINGLE) {
                 val driveLabel = when (state.driveMode) {
                     DriveMode.BURST -> "BURST"
@@ -442,7 +508,10 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier) {
                 }
                 Text(driveLabel, color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
             }
-            if (state.timer != ShutterTimer.OFF) {
+            if (!state.controls.oisEnabled) {
+                Text("OIS OFF", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+            }
+            if (!compact && state.timer != ShutterTimer.OFF) {
                 Text("T${state.timer.seconds}s", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
             }
         }
@@ -465,31 +534,18 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier) {
         if (state.controls.afLock) {
             Text("AFL", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
         }
-        if (state.videoStabMode != VideoStabMode.OFF) {
-            val stabTag = when (state.videoStabMode) {
-                VideoStabMode.STANDARD -> "OIS+"
-                VideoStabMode.ENHANCED -> "STEADY"
-                VideoStabMode.OFF -> ""
-            }
-            Text(stabTag, color = Color(0xFF4CD964), style = MaterialTheme.typography.labelMedium)
-        }
         if (state.punchIn) {
             Text("LOUPE", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
         }
-        // Like LOUPE: shown whenever the toggle is ON, independent of the current gate (TELE,
-        // photo, 4:3, zoom floor) — "on but gated off" was otherwise indistinguishable from "off",
-        // and the toggle read as broken when flipped in 16:9 or video.
-        if (state.teleFinder) {
+        if (teleFinderVisible(
+                enabled = state.teleFinder,
+                teleconverter = state.teleconverterMode,
+                videoMode = state.mode == CaptureMode.VIDEO,
+                aspect = state.aspectRatio,
+                punchIn = state.punchIn,
+            )
+        ) {
             Text("PIP", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
-        }
-        if (BuildConfig.DEBUG) {
-            val caps = state.caps
-            val cameraLabel = when {
-                caps == null -> "-"
-                caps.physicalId != null -> "${caps.logicalId}:${caps.physicalId}"
-                else -> caps.logicalId
-            }
-            Text(cameraLabel, color = Color.White.copy(alpha = 0.5f), style = MaterialTheme.typography.labelMedium)
         }
     }
 }

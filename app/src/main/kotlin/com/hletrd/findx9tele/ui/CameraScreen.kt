@@ -9,11 +9,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -121,7 +119,6 @@ import com.hletrd.findx9tele.camera.teleFinderVisible
 import com.hletrd.findx9tele.camera.LensChoice
 import com.hletrd.findx9tele.camera.MediaDeleteScope
 import com.hletrd.findx9tele.camera.MeteringMode
-import com.hletrd.findx9tele.camera.MemorySlot
 import com.hletrd.findx9tele.camera.PhotoFormats
 import com.hletrd.findx9tele.camera.ProcessingLevel
 import com.hletrd.findx9tele.camera.ShutterMode
@@ -131,6 +128,8 @@ import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.camera.WbMode
 import com.hletrd.findx9tele.camera.controlAvailability
 import com.hletrd.findx9tele.camera.controlCapabilities
+import com.hletrd.findx9tele.ui.controls.CompactFnButton
+import com.hletrd.findx9tele.ui.controls.DialType
 import com.hletrd.findx9tele.ui.controls.ManualDialCluster
 import com.hletrd.findx9tele.ui.controls.ProSheet
 import com.hletrd.findx9tele.ui.controls.ProSheetTab
@@ -143,8 +142,11 @@ import com.hletrd.findx9tele.ui.controls.quickFnEnabled
 import com.hletrd.findx9tele.ui.controls.flashModeLabel
 import com.hletrd.findx9tele.ui.controls.fnSlotLabel
 import com.hletrd.findx9tele.ui.controls.fnSlotValue
+import com.hletrd.findx9tele.ui.controls.manualDialForFnSlot
 import com.hletrd.findx9tele.ui.controls.performQuickFn
+import com.hletrd.findx9tele.ui.controls.quickManualDialEnabled
 import com.hletrd.findx9tele.ui.controls.shutterTimerLabel
+import com.hletrd.findx9tele.ui.controls.whiteBalanceFnChipEnabled
 import com.hletrd.findx9tele.ui.overlays.AspectMask
 import com.hletrd.findx9tele.ui.overlays.AudioMeter
 import com.hletrd.findx9tele.ui.overlays.FrameLinesOverlay
@@ -182,8 +184,10 @@ fun CameraScreen(
     modifier: Modifier = Modifier,
 ) {
     var sheetVisible by remember { mutableStateOf(false) }
-    // Sony DISP: one tap declutters the viewfinder (hides OSD/meter/scopes/MR; keeps REC + framing).
-    var dispClean by remember { mutableStateOf(false) }
+    // Start preview-first. DISP adds the detailed OSD and inline dials for deliberate setup; compact
+    // mode still preserves active/critical state and opens one requested ruler at a time.
+    var detailsVisible by remember { mutableStateOf(false) }
+    var openManualDial by remember { mutableStateOf<DialType?>(null) }
     // In-app review overlay (last saved still, pinch-to-zoom for focus check). Open/closed lives in
     // CameraUiState (state.reviewOpen) so MainActivity's hardware-key handlers can refuse to fire
     // the shutter under the overlay. The reviewed uri is FROZEN here at open time so a timer/
@@ -206,6 +210,34 @@ fun CameraScreen(
         currentActions.value.onCameraInputBlockedChange(true)
         sheetInitialTab = tab
         sheetVisible = true
+    }
+
+    fun selectManualDial(type: DialType) {
+        val controls = state.controls
+        when {
+            type == DialType.WB && controls.wbMode != WbMode.MANUAL -> {
+                openManualDial = null
+                openSheet(ProSheetTab.EXPOSURE)
+            }
+            // Taking shutter/ISO/focus ownership follows the same transition whether entry comes
+            // from the detailed strip or the compact Fn grid.
+            type == DialType.SHUTTER &&
+                (controls.exposureMode == ExposureMode.PROGRAM || controls.exposureMode == ExposureMode.ISO) -> {
+                currentActions.value.onExposureMode(ExposureMode.SHUTTER)
+                openManualDial = type
+            }
+            type == DialType.ISO &&
+                (controls.exposureMode == ExposureMode.PROGRAM || controls.exposureMode == ExposureMode.SHUTTER) -> {
+                currentActions.value.onExposureMode(ExposureMode.ISO)
+                openManualDial = type
+            }
+            type == DialType.FOCUS && controls.focusMode != FocusMode.MANUAL -> {
+                currentActions.value.onFocusMode(FocusMode.MANUAL)
+                openManualDial = type
+            }
+            type == DialType.EV && controls.exposureMode == ExposureMode.MANUAL -> openManualDial = null
+            else -> openManualDial = if (openManualDial == type) null else type
+        }
     }
 
     // Counter-rotates compact on-screen glyphs/labels so they stay upright as the phone turns, even
@@ -235,6 +267,19 @@ fun CameraScreen(
             zoomVisible = true
             delay(1400)
             zoomVisible = false
+        }
+    }
+
+    // In auto-exposure modes the full-height meter is feedback, not persistent status. Show it
+    // briefly after an EV change; Manual keeps the live scene meter because it is part of exposure
+    // operation. The compact Fn value remains available without covering the frame at rest.
+    var exposureMeterTransient by remember { mutableStateOf(false) }
+    val exposureCompensationState = rememberUpdatedState(state.controls.exposureCompensation)
+    LaunchedEffect(Unit) {
+        snapshotFlow { exposureCompensationState.value }.drop(1).collectLatest {
+            exposureMeterTransient = true
+            delay(1400)
+            exposureMeterTransient = false
         }
     }
 
@@ -477,8 +522,9 @@ fun CameraScreen(
             )
         }
 
-        if (!dispClean) StatusBar(
+        StatusBar(
             state = state,
+            compact = !detailsVisible,
             // NOT rotated: it's a wide top-left row, so a 90° spin about its center swings it off
             // screen. It stays fixed (readable in portrait); only the compact scopes counter-rotate.
             modifier = Modifier
@@ -559,7 +605,7 @@ fun CameraScreen(
             horizontalAlignment = Alignment.End,
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            if (!dispClean) {
+            if (detailsVisible) {
                 StatusInfoPill(state = state, modifier = Modifier.rotateLayout(overlayRotation))
             }
             if (state.isRecording && !state.isRecordingStarting) {
@@ -567,13 +613,13 @@ fun CameraScreen(
             }
             // Sony-style standby metering: input levels are visible while video is ARMED,
             // not just while rolling (the engine runs a levels-only mic tap in standby).
-            if (state.mode == CaptureMode.VIDEO && state.recordAudio) {
+            if (state.mode == CaptureMode.VIDEO && state.recordAudio && (detailsVisible || state.isRecording)) {
                 AudioMeter(level = state.audioLevel, modifier = Modifier.rotateLayout(overlayRotation))
             }
-            if (!dispClean && state.histogram) {
+            if (detailsVisible && state.histogram) {
                 HistogramOverlay(data = state.histogramData, modifier = Modifier.rotateLayout(overlayRotation))
             }
-            if (!dispClean && state.waveform) {
+            if (detailsVisible && state.waveform) {
                 WaveformOverlay(data = state.waveformData, modifier = Modifier.rotateLayout(overlayRotation))
             }
         }
@@ -636,8 +682,11 @@ fun CameraScreen(
                 currentActions.value.onCameraInputBlockedChange(true)
                 sheetVisible = true // reopen to the remembered last tab
             },
-            dispClean = dispClean,
-            onToggleDisp = { dispClean = !dispClean },
+            compact = !detailsVisible,
+            onToggleDisp = {
+                openManualDial = null
+                detailsVisible = !detailsVisible
+            },
             glyphRotation = overlayRotation,
             modifier = Modifier
                 .align(Alignment.TopCenter)
@@ -647,8 +696,9 @@ fun CameraScreen(
 
         // Exposure meter: pinned to the LEFT edge as a vertical scale (the scopes own the right).
         // A fixed home beats the old jump between top/bottom as the dial opened (feedback).
-        if (!dispClean) ExposureMeter(
+        if (shouldShowExposureMeter(state.controls.exposureMode, exposureMeterTransient)) ExposureMeter(
             state = state,
+            compact = !detailsVisible,
             modifier = Modifier
                 .align(Alignment.CenterStart)
                 // 12 dp start — the ONE left inset every left-anchored element shares (status OSD,
@@ -667,43 +717,44 @@ fun CameraScreen(
         }
 
         val manualPane: @Composable () -> Unit = {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(if (landscapeOperator) 6.dp else 14.dp),
-            ) {
-                if (!dispClean) MemoryRecallStrip(
-                    state = state,
-                    actions = actions,
-                    glyphRotation = overlayRotation,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp),
-                )
-
-                ManualDialCluster(
-                    state = state,
-                    actions = actions,
-                    onRequestWhiteBalanceSheet = { openSheet(ProSheetTab.EXPOSURE) },
-                    glyphRotation = overlayRotation,
-                    onOpenFnMenu = {
-                        currentActions.value.onCameraInputBlockedChange(true)
-                        fnOverlayVisible = true
-                    },
-                    modifier = Modifier.padding(horizontal = 12.dp),
-                )
-            }
+            ManualDialCluster(
+                state = state,
+                actions = actions,
+                openDial = openManualDial,
+                onSelectDial = ::selectManualDial,
+                onCloseDial = { openManualDial = null },
+                glyphRotation = overlayRotation,
+                compact = !detailsVisible,
+                onOpenFnMenu = {
+                    currentActions.value.onCameraInputBlockedChange(true)
+                    fnOverlayVisible = true
+                },
+                modifier = Modifier.padding(horizontal = 12.dp),
+            )
         }
         val capturePane: @Composable () -> Unit = {
             Column(
                 modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(if (landscapeOperator) 4.dp else 10.dp),
+                verticalArrangement = Arrangement.spacedBy(if (landscapeOperator) 4.dp else 8.dp),
             ) {
-                FocalRail(
-                    state = state,
-                    onLens = actions::onLens,
-                    glyphRotation = overlayRotation,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    FocalRail(
+                        state = state,
+                        onLens = actions::onLens,
+                        glyphRotation = overlayRotation,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (!detailsVisible) {
+                        CompactFnButton(
+                            onClick = {
+                                currentActions.value.onCameraInputBlockedChange(true)
+                                fnOverlayVisible = true
+                            },
+                            glyphRotation = overlayRotation,
+                            modifier = Modifier.align(Alignment.CenterStart).padding(start = 12.dp),
+                        )
+                    }
+                }
 
                 ModeCarousel(
                     mode = state.mode,
@@ -758,7 +809,7 @@ fun CameraScreen(
                     .align(Alignment.BottomEnd)
                     .fillMaxWidth(0.82f)
                     .then(operatorChrome)
-                    .padding(top = 12.dp, bottom = 8.dp),
+                    .padding(top = 10.dp, bottom = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.Bottom,
             ) {
@@ -771,10 +822,13 @@ fun CameraScreen(
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .then(operatorChrome)
-                    .padding(top = 28.dp, bottom = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
+                    .padding(top = 12.dp, bottom = 8.dp),
+                verticalArrangement = Arrangement.Top,
             ) {
+                // Keep the dial cluster composed at zero height in compact rest state. Disposing it
+                // on close skipped the MF-assist cleanup and left the auto loupe enabled.
                 manualPane()
+                if (detailsVisible || openManualDial != null) Spacer(modifier = Modifier.height(8.dp))
                 capturePane()
             }
         }
@@ -794,6 +848,7 @@ fun CameraScreen(
         FnOverlay(
             state = state,
             actions = actions,
+            onSelectManualDial = ::selectManualDial,
             onDismiss = { fnOverlayVisible = false },
             glyphRotation = overlayRotation,
         )
@@ -918,7 +973,7 @@ private fun TopBar(
     state: CameraUiState,
     actions: CameraActions,
     onOpenSheet: () -> Unit,
-    dispClean: Boolean,
+    compact: Boolean,
     onToggleDisp: () -> Unit,
     modifier: Modifier = Modifier,
     glyphRotation: Float = 0f,
@@ -941,29 +996,37 @@ private fun TopBar(
             // Compact circular glyphs counter-rotate to stay upright as the phone turns (iPhone-style);
             // the TELE chip is wide text, so it stays fixed to avoid poking out of its slot.
             val glyphSpin = Modifier.rotate(glyphRotation)
-            FlashButton(
-                mode = state.controls.flash,
-                onClick = { actions.onFlash(nextAvailable(state.controls.flash, availability.flashModes)) },
-                enabled = !recordingLocked && availability.flashModes.size > 1,
-                modifier = glyphSpin,
-            )
-            TimerButton(
-                timer = state.timer,
-                onClick = { actions.onTimer(nextTimer(state.timer)) },
-                enabled = !recordingLocked,
-                modifier = glyphSpin,
-            )
-            AspectButton(
-                ratio = state.aspectRatio,
-                onClick = { actions.onAspectRatio(nextAspect(state.aspectRatio)) },
-                enabled = !recordingLocked,
-                modifier = glyphSpin,
-            )
-            GridButton(
-                active = state.grid != GridType.NONE,
-                onClick = { actions.onGridType(if (state.grid == GridType.NONE) GridType.THIRDS else GridType.NONE) },
-                modifier = glyphSpin,
-            )
+            if (state.mode == CaptureMode.PHOTO && (!compact || state.controls.flash != FlashMode.OFF)) {
+                FlashButton(
+                    mode = state.controls.flash,
+                    onClick = { actions.onFlash(nextAvailable(state.controls.flash, availability.flashModes)) },
+                    enabled = !recordingLocked && availability.flashModes.size > 1,
+                    modifier = glyphSpin,
+                )
+            }
+            if (state.mode == CaptureMode.PHOTO && (!compact || state.timer != ShutterTimer.OFF)) {
+                TimerButton(
+                    timer = state.timer,
+                    onClick = { actions.onTimer(nextTimer(state.timer)) },
+                    enabled = !recordingLocked,
+                    modifier = glyphSpin,
+                )
+            }
+            if (state.mode == CaptureMode.PHOTO && (!compact || state.aspectRatio != AspectRatio.W4_3)) {
+                AspectButton(
+                    ratio = state.aspectRatio,
+                    onClick = { actions.onAspectRatio(nextAspect(state.aspectRatio)) },
+                    enabled = !recordingLocked,
+                    modifier = glyphSpin,
+                )
+            }
+            if (!compact) {
+                GridButton(
+                    active = state.grid != GridType.NONE,
+                    onClick = { actions.onGridType(if (state.grid == GridType.NONE) GridType.THIRDS else GridType.NONE) },
+                    modifier = glyphSpin,
+                )
+            }
             TeleChip(
                 active = state.teleconverterMode,
                 enabled = !recordingLocked,
@@ -972,7 +1035,7 @@ private fun TopBar(
         }
         // Counter-rotate the settings glyph so it stays upright as the phone turns (iPhone-style).
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            DispButton(active = dispClean, onClick = onToggleDisp, modifier = Modifier.rotate(glyphRotation))
+            DispButton(active = compact, onClick = onToggleDisp, modifier = Modifier.rotate(glyphRotation))
             GearButton(onClick = onOpenSheet, modifier = Modifier.rotate(glyphRotation))
         }
     }
@@ -1340,88 +1403,11 @@ private fun ZoomIndicator(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun MemoryRecallStrip(
-    state: CameraUiState,
-    actions: CameraActions,
-    glyphRotation: Float,
-    modifier: Modifier = Modifier,
-) {
-    Row(
-        modifier = modifier
-            .clip(RoundedCornerShape(50))
-            .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
-            .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(50))
-            .padding(4.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        MemorySlot.entries.forEach { slot ->
-            val saved = slot in state.savedMemorySlots
-            val active = state.activeMemorySlot == slot
-            val enabled = !state.isRecording
-            val name = state.memorySlotNames[slot] ?: slot.label
-            val summary = state.memorySlotSummaries[slot].orEmpty()
-            val slotDescription = if (name == slot.label) slot.label else "${slot.label}: $name"
-            val bg = when {
-                active -> Color(0xFFFFD60A)
-                saved -> Color.White.copy(alpha = 0.14f)
-                else -> Color.Transparent
-            }
-            val fg = when {
-                active -> Color.Black
-                saved && enabled -> CameraColors.TextPrimary
-                saved -> CameraColors.TextPrimary.copy(alpha = 0.38f)
-                else -> CameraColors.TextSecondary.copy(alpha = if (enabled) 1f else 0.38f)
-            }
-            // TeleChip-style hit-area split: the OUTER box carries the 48 dp minimum touch target,
-            // the click and the semantics (with a labeled long-press action for TalkBack); the
-            // compact visual pill keeps its original size inside — one-handed MR taps on a braced
-            // 300 mm rig mis-hit far less without bloating the strip.
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .sizeIn(minWidth = 48.dp, minHeight = 48.dp) // 48 dp floor (UX policy), like TeleChip
-                    .semantics {
-                        contentDescription = if (saved) {
-                            listOf(slotDescription, summary)
-                                .filter(String::isNotBlank)
-                                .joinToString(". ")
-                        } else {
-                            "${slot.label}, empty"
-                        }
-                        role = Role.Button
-                    }
-                    .combinedClickable(
-                        enabled = enabled,
-                        onClick = {
-                            if (saved) actions.onRecallMemorySlot(slot) else actions.onStoreMemorySlot(slot)
-                        },
-                        onLongClickLabel = "Save current setup to ${slot.label}",
-                        onLongClick = { actions.onStoreMemorySlot(slot) },
-                    ),
-            ) {
-                Text(
-                    text = slot.label,
-                    color = fg,
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier
-                        .rotate(glyphRotation)
-                        .clip(RoundedCornerShape(50))
-                        .background(bg)
-                        .padding(horizontal = 11.dp, vertical = 6.dp),
-                )
-            }
-        }
-    }
-}
-
 @Composable
 private fun FnOverlay(
     state: CameraUiState,
     actions: CameraActions,
+    onSelectManualDial: (DialType) -> Unit,
     onDismiss: () -> Unit,
     glyphRotation: Float = 0f,
 ) {
@@ -1431,6 +1417,9 @@ private fun FnOverlay(
             .distinct()
             .take(12)
             .ifEmpty { FnSlot.DEFAULT }
+    }
+    val availability = remember(state.caps, state.controls) {
+        controlAvailability(state.caps?.controlCapabilities(), state.controls)
     }
     val closeFocusRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) { closeFocusRequester.requestFocus() }
@@ -1472,9 +1461,8 @@ private fun FnOverlay(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                // Short glyphs counter-rotate with device orientation (+dev policy) like the MR strip
-                // directly above this menu; the wide header Row stays screen-fixed (rotating a wide
-                // box pokes it out of its layout slot — Modifier.rotate is draw-only).
+                // Short glyphs counter-rotate with device orientation; the wide header Row stays
+                // screen-fixed because rotating a wide box would poke it out of its layout slot.
                 Text("Fn", color = CameraColors.TextPrimary, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.rotate(glyphRotation))
                 Box(
                     modifier = Modifier
@@ -1502,12 +1490,22 @@ private fun FnOverlay(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     rowSlots.forEach { slot ->
+                        val manualDial = manualDialForFnSlot(slot)
+                        val enabled = quickFnEnabled(slot, state) && when (manualDial) {
+                            DialType.WB -> whiteBalanceFnChipEnabled(state.controls.wbMode, availability)
+                            null -> true
+                            else -> quickManualDialEnabled(manualDial, availability)
+                        }
                         FnOverlayTile(
                             slot = slot,
                             value = fnSlotValue(slot, state),
-                            enabled = quickFnEnabled(slot, state),
+                            enabled = enabled,
                             onClick = {
-                                performQuickFn(slot, state, actions)
+                                if (manualDial != null) {
+                                    onSelectManualDial(manualDial)
+                                } else {
+                                    performQuickFn(slot, state, actions)
+                                }
                                 onDismiss()
                             },
                             glyphRotation = glyphRotation,
@@ -1573,7 +1571,11 @@ private fun FnOverlayTile(
 // surface (the Fn overlay here, plus My Menu / Recent rows in ProSheet).
 
 @Composable
-private fun ExposureMeter(state: CameraUiState, modifier: Modifier = Modifier) {
+private fun ExposureMeter(
+    state: CameraUiState,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
+) {
     // The shared helper returns the final signed stop amount. Do not multiply by the raw Camera2
     // compensation index again: that double-scaled positive values and reversed negative signs.
     val compensationEv = exposureMeterCompensationEv(state)
@@ -1600,7 +1602,7 @@ private fun ExposureMeter(state: CameraUiState, modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text(label, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-        Canvas(modifier = Modifier.width(22.dp).height(150.dp)) {
+        Canvas(modifier = Modifier.width(22.dp).height(if (compact) 96.dp else 150.dp)) {
             val cx = size.width / 2f
             drawLine(Color.White.copy(alpha = 0.34f), Offset(cx, 0f), Offset(cx, size.height), strokeWidth = 1.2.dp.toPx())
             for (i in -3..3) {
@@ -1622,6 +1624,11 @@ private fun ExposureMeter(state: CameraUiState, modifier: Modifier = Modifier) {
         }
     }
 }
+
+internal fun shouldShowExposureMeter(
+    mode: ExposureMode,
+    transient: Boolean,
+): Boolean = mode == ExposureMode.MANUAL || transient
 
 // Pure (plain enum + IntArray) and internal so the MANUAL-mode spot meter's three guard branches
 // and clamp are unit-testable — a wrong needle here misleads every manual exposure decision.
@@ -1744,7 +1751,7 @@ private fun ModeCarousel(
     enabled: Boolean = true,
 ) {
     Row(modifier = modifier.selectableGroup(), horizontalArrangement = Arrangement.Center) {
-        Row(horizontalArrangement = Arrangement.spacedBy(32.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
             // The mode labels are SHORT ("Photo"/"Video"), so — iPhone-style — they DO counter-rotate
             // to stay upright as the phone turns (unlike the wide dial pills, which would overflow their
             // fixed row slots and are kept screen-fixed). The label + its underline rotate as one unit.
@@ -1753,14 +1760,14 @@ private fun ModeCarousel(
                 active = mode == CaptureMode.PHOTO,
                 enabled = enabled,
                 onClick = { onModeChange(CaptureMode.PHOTO) },
-                modifier = Modifier.rotate(glyphRotation),
+                modifier = Modifier.rotateLayout(glyphRotation),
             )
             ModeLabel(
                 text = "Video",
                 active = mode == CaptureMode.VIDEO,
                 enabled = enabled,
                 onClick = { onModeChange(CaptureMode.VIDEO) },
-                modifier = Modifier.rotate(glyphRotation),
+                modifier = Modifier.rotateLayout(glyphRotation),
             )
         }
     }
@@ -1806,7 +1813,7 @@ private fun ModeLabel(text: String, active: Boolean, enabled: Boolean, onClick: 
                 // contrast. Same treatment as every sibling HUD element.
                 .clip(RoundedCornerShape(50))
                 .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
-                .padding(horizontal = 6.dp, vertical = 2.dp),
+                .padding(horizontal = 16.dp, vertical = 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
@@ -1819,10 +1826,10 @@ private fun ModeLabel(text: String, active: Boolean, enabled: Boolean, onClick: 
                 fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
                 fontSize = if (active) 15.sp else 14.sp,
             )
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(modifier = Modifier.height(3.dp))
             Box(
                 modifier = Modifier
-                    .width(18.dp)
+                    .width(20.dp)
                     .height(2.dp)
                     .background(
                         if (active && enabled) CameraColors.TextPrimary else Color.Transparent,
