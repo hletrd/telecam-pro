@@ -12,8 +12,11 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateZoom
@@ -32,6 +35,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -992,7 +996,13 @@ private fun TopBar(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             // Compact circular glyphs counter-rotate to stay upright as the phone turns (iPhone-style);
             // the TELE chip is wide text, so it stays fixed to avoid poking out of its slot.
             val glyphSpin = Modifier.rotate(glyphRotation)
@@ -1403,6 +1413,63 @@ private fun ZoomIndicator(
     }
 }
 
+internal const val FN_OVERLAY_COLUMN_COUNT = 4
+internal const val FN_OVERLAY_MAX_SLOTS = 8
+
+internal enum class FnTileContentAxis {
+    PORTRAIT,
+    HELD_LANDSCAPE_LABEL_FIRST_RAW,
+    HELD_LANDSCAPE_VALUE_FIRST_RAW,
+}
+
+/** Keep the shooting Fn menu mode-specific; My Menu and Recent remain in the settings sheet. */
+internal fun fnOverlaySlots(mode: CaptureMode, activeSlots: List<FnSlot>): List<FnSlot> =
+    activeSlots
+        .distinct()
+        .take(FN_OVERLAY_MAX_SLOTS)
+        .ifEmpty { if (mode == CaptureMode.VIDEO) FnSlot.VIDEO_DEFAULT else FnSlot.PHOTO_DEFAULT }
+
+internal fun fnTileContentAxis(deviceOrientation: Int): FnTileContentAxis =
+    when (((deviceOrientation % 360) + 360) % 360) {
+        // Raw X becomes perceived Y in the portrait-locked landscape hold. The ordering reverses
+        // between quarter turns, so swap the raw children at 90° to keep label-above-value upright.
+        90 -> FnTileContentAxis.HELD_LANDSCAPE_VALUE_FIRST_RAW
+        270 -> FnTileContentAxis.HELD_LANDSCAPE_LABEL_FIRST_RAW
+        else -> FnTileContentAxis.PORTRAIT
+    }
+
+/** Short visual copy for the narrow physical strip; accessibility keeps the complete slot label. */
+internal fun fnOverlayVisualLabel(slot: FnSlot, heldLandscape: Boolean): String = when {
+    !heldLandscape -> fnSlotLabel(slot)
+    slot == FnSlot.STABILIZATION -> "Steady"
+    slot == FnSlot.OPEN_GATE -> "Gate"
+    else -> fnSlotLabel(slot)
+}
+
+/** Short visual values for held-landscape tiles; accessibility keeps the complete value. */
+internal fun fnOverlayVisualValue(slot: FnSlot, value: String, heldLandscape: Boolean): String {
+    if (!heldLandscape) return value
+    return when (slot) {
+        FnSlot.SHUTTER -> value.removePrefix("A ")
+        FnSlot.ISO -> value.replaceFirst("A ", "A")
+        FnSlot.WB -> when (value) {
+            "Daylight" -> "Day"
+            "Tungsten" -> "Tung."
+            else -> value
+        }
+        FnSlot.STABILIZATION -> if (value == "Standard") "Std" else value
+        FnSlot.DRIVE -> if (value == "Timelapse") "TL" else value
+        FnSlot.AUDIO_SCENE -> when (value) {
+            "Standard" -> "Std"
+            "Sound Focus" -> "Focus"
+            "Sound Stage" -> "Stage"
+            else -> value
+        }
+        FnSlot.TELECONVERTER -> value.replace(" mm", "mm")
+        else -> value
+    }
+}
+
 @Composable
 private fun FnOverlay(
     state: CameraUiState,
@@ -1412,12 +1479,10 @@ private fun FnOverlay(
     glyphRotation: Float = 0f,
 ) {
     BackHandler(onBack = onDismiss)
-    val slots = remember(state.activeFnSlots, state.myMenuSlots, state.recentSettingSlots) {
-        (state.activeFnSlots + state.myMenuSlots + state.recentSettingSlots)
-            .distinct()
-            .take(12)
-            .ifEmpty { FnSlot.DEFAULT }
+    val slots = remember(state.mode, state.activeFnSlots) {
+        fnOverlaySlots(state.mode, state.activeFnSlots)
     }
+    val contentAxis = fnTileContentAxis(state.deviceOrientation)
     val availability = remember(state.caps, state.controls) {
         controlAvailability(state.caps?.controlCapabilities(), state.controls)
     }
@@ -1426,7 +1491,7 @@ private fun FnOverlay(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.56f)),
+            .background(Color.Black.copy(alpha = 0.30f)),
     ) {
         Box(
             modifier = Modifier
@@ -1445,7 +1510,9 @@ private fun FnOverlay(
                 .padding(bottom = 154.dp)
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(8.dp))
-                .background(Color(0xF0181818))
+                // The full-screen scrim stays light, but the compact panel itself is opaque so
+                // focal-rail values cannot read as a second line inside held-landscape Fn tiles.
+                .background(Color(0xFF181818))
                 .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(8.dp))
                 .semantics {
                     paneTitle = "Function menu"
@@ -1453,6 +1520,7 @@ private fun FnOverlay(
                 }
                 // Consume blank-panel taps without exposing a nameless dummy Button.
                 .pointerInput(Unit) { detectTapGestures(onTap = {}) }
+                .verticalScroll(rememberScrollState())
                 .padding(10.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -1484,7 +1552,7 @@ private fun FnOverlay(
                     )
                 }
             }
-            slots.chunked(3).forEach { rowSlots ->
+            slots.chunked(FN_OVERLAY_COLUMN_COUNT).forEach { rowSlots ->
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1509,10 +1577,11 @@ private fun FnOverlay(
                                 onDismiss()
                             },
                             glyphRotation = glyphRotation,
+                            contentAxis = contentAxis,
                             modifier = Modifier.weight(1f),
                         )
                     }
-                    repeat(3 - rowSlots.size) {
+                    repeat(FN_OVERLAY_COLUMN_COUNT - rowSlots.size) {
                         Spacer(modifier = Modifier.weight(1f))
                     }
                 }
@@ -1529,14 +1598,15 @@ private fun FnOverlayTile(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     glyphRotation: Float = 0f,
+    contentAxis: FnTileContentAxis = FnTileContentAxis.PORTRAIT,
 ) {
-    // The tile BOX (background/border/48-hit) stays screen-fixed — rotating a wide box pokes it out of
-    // its layout slot. Only the short glyph label/value counter-rotate (+dev policy), matching every
-    // sibling compact-glyph surface (MR strip, mode labels, zoom readout) so the tiles read upright in
-    // a landscape hold instead of sideways — the one menu most likely opened mid-shot.
-    Column(
+    val heldLandscape = contentAxis != FnTileContentAxis.PORTRAIT
+    val visualLabel = fnOverlayVisualLabel(slot, heldLandscape)
+    val visualValue = fnOverlayVisualValue(slot, value, heldLandscape)
+    val foregroundAlpha = if (enabled) 1f else 0.55f
+    Box(
         modifier = modifier
-            .height(58.dp)
+            .heightIn(min = 58.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(Color.White.copy(alpha = if (enabled) 0.09f else 0.04f))
             .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(8.dp))
@@ -1547,24 +1617,59 @@ private fun FnOverlayTile(
             }
             .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 9.dp, vertical = 7.dp),
-        verticalArrangement = Arrangement.SpaceBetween,
+        contentAlignment = Alignment.Center,
     ) {
-        Text(
-            fnSlotLabel(slot),
-            color = CameraColors.TextSecondary.copy(alpha = if (enabled) 1f else 0.55f),
-            style = MaterialTheme.typography.labelSmall,
-            maxLines = 1,
-            modifier = Modifier.rotate(glyphRotation),
-        )
-        Text(
-            value,
-            color = CameraColors.TextPrimary.copy(alpha = if (enabled) 1f else 0.55f),
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.Bold,
-            maxLines = 1,
-            modifier = Modifier.rotate(glyphRotation),
-        )
+        if (heldLandscape) {
+            // The portrait-locked Activity becomes a narrow physical strip when held sideways.
+            // Separating glyphs on the raw X axis stacks them on the held device's Y axis.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (contentAxis == FnTileContentAxis.HELD_LANDSCAPE_VALUE_FIRST_RAW) {
+                    FnOverlayTileValue(visualValue, foregroundAlpha, Modifier.rotateLayout(glyphRotation))
+                    FnOverlayTileLabel(visualLabel, foregroundAlpha, Modifier.rotateLayout(glyphRotation))
+                } else {
+                    FnOverlayTileLabel(visualLabel, foregroundAlpha, Modifier.rotateLayout(glyphRotation))
+                    FnOverlayTileValue(visualValue, foregroundAlpha, Modifier.rotateLayout(glyphRotation))
+                }
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .rotateLayout(glyphRotation),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                FnOverlayTileLabel(visualLabel, foregroundAlpha)
+                FnOverlayTileValue(visualValue, foregroundAlpha)
+            }
+        }
     }
+}
+
+@Composable
+private fun FnOverlayTileLabel(text: String, alpha: Float, modifier: Modifier = Modifier) {
+    Text(
+        text,
+        color = CameraColors.TextSecondary.copy(alpha = alpha),
+        style = MaterialTheme.typography.labelSmall,
+        maxLines = 1,
+        modifier = modifier,
+    )
+}
+
+@Composable
+private fun FnOverlayTileValue(text: String, alpha: Float, modifier: Modifier = Modifier) {
+    Text(
+        text,
+        color = CameraColors.TextPrimary.copy(alpha = alpha),
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = FontWeight.Bold,
+        maxLines = 1,
+        modifier = modifier,
+    )
 }
 
 // quickFnEnabled moved to ControlCycles.kt — one shared per-slot availability for every quick-Fn
@@ -1975,8 +2080,8 @@ private fun SnapshotButton(onClick: () -> Unit, enabled: Boolean, modifier: Modi
     }
 }
 
-/** No-op [CameraActions] used only by [CameraScreenPreview]. */
-private object PreviewCameraActions : CameraActions {
+/** No-op [CameraActions] used only by previews and the debug-only snapshot Activity. */
+internal object PreviewCameraActions : CameraActions {
     override fun onPreviewSurfaceAvailable(surface: Surface, width: Int, height: Int) = Unit
     override fun onReviewOpenChange(open: Boolean, uri: android.net.Uri): Boolean = false
     override fun onCameraInputBlockedChange(blocked: Boolean) = Unit

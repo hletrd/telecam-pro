@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application>
+        <!-- Shell-accessible deterministic screenshot surface. DUMP is signature-only, so ordinary
+             third-party apps cannot launch this exported debug component. It is absent from release. -->
+        <activity
+            android:name="com.hletrd.findx9tele.ui.UiSnapshotActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden|screenLayout|density"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:permission="android.permission.DUMP"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.FindX9TeleCamera"
+            tools:ignore="DiscouragedApi,LockedOrientationActivity" />
+    </application>
+
+</manifest>
