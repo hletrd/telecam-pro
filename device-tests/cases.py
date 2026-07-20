@@ -72,9 +72,10 @@ def capture_still(ctx: Context, timeout_s: float = 25.0) -> list[str]:
 
 # ---------------------------------------------------------------- smoke
 
-@test("launch_preview_live", "smoke")
+@test("launch_preview_live", "smoke", destructive=True)
 def t_launch(ctx: Context) -> None:
     """Cold launch reaches a live viewfinder with the OSD chrome present."""
+    ensure_foreground(ctx)
     ctx.adb.force_stop()
     time.sleep(1)
     mark = ctx.adb.log_mark()
@@ -264,7 +265,7 @@ def t_settings(ctx: Context) -> None:
     ctx.note("tab rail present")
 
 
-@test("mode_persists_across_kill", "full")
+@test("mode_persists_across_kill", "full", destructive=True)
 def t_persist(ctx: Context) -> None:
     """Remember Settings: the selected capture mode survives force-stop + relaunch."""
     ensure_foreground(ctx)
@@ -282,7 +283,7 @@ def t_persist(ctx: Context) -> None:
 
 # ---------------------------------------------------------------- reliability (the mandate)
 
-@test("capture_then_kill_survives", "reliability")
+@test("capture_then_kill_survives", "reliability", destructive=True)
 def t_kill_capture(ctx: Context) -> None:
     """A still whose process dies right after the shot must survive as valid, published files."""
     ensure_foreground(ctx)
@@ -334,7 +335,7 @@ def t_rec_background(ctx: Context) -> None:
     ctx.note(f"clip finalized: {vids[-1]} {info.get('duration', '?')}s")
 
 
-@test("rec_stop_then_kill_published", "reliability")
+@test("rec_stop_then_kill_published", "reliability", destructive=True)
 def t_rec_stop_kill(ctx: Context) -> None:
     """Killing the app right after REC-stop must not lose the clip (publish window durability)."""
     ensure_foreground(ctx)
@@ -362,9 +363,10 @@ def t_rec_stop_kill(ctx: Context) -> None:
     ctx.note(f"clip adopted+published: {vids[-1]}")
 
 
-@test("no_stuck_pending_baseline", "reliability")
+@test("no_stuck_pending_baseline", "reliability", destructive=True)
 def t_pending(ctx: Context) -> None:
     """After a fresh relaunch + sweep, the media dir carries no stale .pending files."""
+    ensure_foreground(ctx)
     ctx.adb.force_stop()
     time.sleep(1)
     ctx.adb.launch(wait_s=8)  # sweep runs during init

@@ -16,12 +16,23 @@ cannot survive. Host-JVM unit tests remain in `app/src/test/` (Gradle).
 # device over wireless ADB (loopback proxy fine); deploy the debug APK first
 python3 device-tests/run.py --serial 127.0.0.1:5599 --tier smoke          # ~30 s, every deploy
 python3 device-tests/run.py --serial 127.0.0.1:5599 --tier full           # ~4 min feature sweep
-python3 device-tests/run.py --serial 127.0.0.1:5599 --tier reliability    # ~2 min kill/interrupt
+python3 device-tests/run.py --serial 127.0.0.1:5599 --tier reliability    # safe cases; kill cases skip
 python3 device-tests/run.py --serial 127.0.0.1:5599 --tier all -k capture # substring filter
+
+# Only after explicit approval to force-stop the app:
+python3 device-tests/run.py --serial 127.0.0.1:5599 --tier reliability --allow-destructive
 ```
 
 Reports (markdown + JUnit XML + pulled evidence files) land in `device-tests/reports/<ts>/`
-(gitignored). Exit code 0 = all pass/skip, 1 = any fail/error, 2 = preflight problem.
+(gitignored). Exit code 0 requires at least one pass and no failures, 1 means fail/error,
+and 2 means preflight failure, no matching cases, or an all-skipped selection.
+
+The runner refuses any device other than PMA110/API 36 and refuses an installed `base.apk`
+whose SHA-256 does not match `app/build/outputs/apk/debug/app-debug.apk` (override the host
+path with `--apk`). Force-stop cases are skipped unless `--allow-destructive` is supplied;
+the flag is an execution guard, not a substitute for obtaining operator approval. Every
+force-stop also fails closed at the call site unless the UI proves the app is idle, so a
+recording left active by an earlier failed case cannot be killed by a later case.
 
 ## Tiers and cases
 

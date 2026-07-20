@@ -24,6 +24,7 @@ class Case:
     tier: str
     fn: object
     doc: str
+    destructive: bool = False
 
 
 @dataclass
@@ -34,10 +35,10 @@ class Result:
     seconds: float = 0.0
 
 
-def test(name: str, tier: str):
+def test(name: str, tier: str, *, destructive: bool = False):
     assert tier in TIERS, tier
     def deco(fn):
-        _REGISTRY.append(Case(name, tier, fn, (fn.__doc__ or "").strip()))
+        _REGISTRY.append(Case(name, tier, fn, (fn.__doc__ or "").strip(), destructive))
         return fn
     return deco
 
@@ -53,8 +54,20 @@ class Context:
         self.notes.append(msg)
 
 
-def run(adb: Adb, tiers: list[str], name_filter: str | None, report_dir: Path) -> int:
+def run(
+    adb: Adb,
+    tiers: list[str],
+    name_filter: str | None,
+    report_dir: Path,
+    *,
+    allow_destructive: bool = False,
+) -> int:
     cases = [c for c in _REGISTRY if c.tier in tiers and (not name_filter or name_filter in c.name)]
+    if not cases:
+        print("No test cases matched the requested tiers/filter.")
+        _write_reports([], report_dir)
+        return 2
+
     results: list[Result] = []
     print(f"Running {len(cases)} case(s), tiers={','.join(tiers)}, device={adb.serial}\n")
     for case in cases:
@@ -62,6 +75,11 @@ def run(adb: Adb, tiers: list[str], name_filter: str | None, report_dir: Path) -
         ctx.evidence.mkdir(parents=True, exist_ok=True)
         print(f"[{case.tier}] {case.name} — {case.doc.splitlines()[0] if case.doc else ''}")
         t0 = time.time()
+        if case.destructive and not allow_destructive:
+            detail = "requires explicit --allow-destructive approval"
+            results.append(Result(case, "skip", detail, time.time() - t0))
+            print(f"  SKIP: {detail}")
+            continue
         try:
             case.fn(ctx)
             res = Result(case, "pass", "; ".join(ctx.notes[-3:]), time.time() - t0)
@@ -77,12 +95,15 @@ def run(adb: Adb, tiers: list[str], name_filter: str | None, report_dir: Path) -
             print(f"  ERROR: {type(e).__name__}: {e}")
         results.append(res)
     _write_reports(results, report_dir)
+    passed = sum(1 for r in results if r.status == "pass")
     bad = sum(1 for r in results if r.status in ("fail", "error"))
+    skipped = sum(1 for r in results if r.status == "skip")
     print(f"\n{len(results)} run: "
-          f"{sum(1 for r in results if r.status == 'pass')} pass, "
-          f"{bad} fail/error, {sum(1 for r in results if r.status == 'skip')} skip")
+          f"{passed} pass, {bad} fail/error, {skipped} skip")
     print(f"Report: {report_dir / 'report.md'}")
-    return 1 if bad else 0
+    if bad:
+        return 1
+    return 0 if passed else 2
 
 
 def _write_reports(results: list[Result], out: Path) -> None:

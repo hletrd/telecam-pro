@@ -47,9 +47,10 @@ class UiNode:
 
 
 class Adb:
-    def __init__(self, serial: str, workdir: Path):
+    def __init__(self, serial: str, workdir: Path, *, allow_destructive: bool = False):
         self.serial = serial
         self.workdir = workdir
+        self.allow_destructive = allow_destructive
         workdir.mkdir(parents=True, exist_ok=True)
 
     # -- transport ---------------------------------------------------------
@@ -102,6 +103,16 @@ class Adb:
         raise AdbError("app did not start")
 
     def force_stop(self) -> None:
+        if not self.allow_destructive:
+            raise AdbError("refusing force-stop without explicit destructive approval")
+        if self.pid() is None:
+            return
+
+        tree = self.ui()
+        if tree.find(desc="Stop recording"):
+            raise AdbError("refusing force-stop while recording is active")
+        if not (tree.find(desc="Take photo") or tree.find(desc="Start recording")):
+            raise AdbError("refusing force-stop because an idle camera state cannot be proven")
         self.shell(f"am force-stop {APP_ID}")
 
     def home(self) -> None:
