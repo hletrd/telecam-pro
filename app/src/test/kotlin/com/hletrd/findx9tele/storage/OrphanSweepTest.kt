@@ -111,9 +111,9 @@ class OrphanSweepTest {
     }
 
     @Test
-    fun `unjournaled HEIF stays pending because headers do not prove a closed payload`() {
+    fun `unjournaled HEIF requires structural ISO BMFF proof`() {
         assertEquals(
-            PendingMediaProbeKind.KEEP_PENDING,
+            PendingMediaProbeKind.HEIF,
             pendingMediaProbeKind("image/heif", isVideoCollection = false),
         )
         assertEquals(

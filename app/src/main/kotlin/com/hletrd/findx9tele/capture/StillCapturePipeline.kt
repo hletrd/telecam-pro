@@ -57,10 +57,11 @@ internal data class ExifShot(
     val takenAtMs: Long,
 )
 
-/** A fully written, durably marked DNG awaiting MediaStore publication on the I/O lane. */
+/** A fully written DNG awaiting MediaStore publication on the I/O lane. */
 internal data class PendingDngPublication(
     val uri: android.net.Uri,
     val captureId: Int,
+    val completionMarkerDurable: Boolean,
 )
 
 /**
@@ -157,9 +158,9 @@ internal class StillCapturePipeline(
             } ?: false
         }.getOrElse { failure -> MediaStoreWriter.delete(context, u); throw failure }
         if (!wrote) { MediaStoreWriter.delete(context, u); emitStatus("HEIF save failed"); return }
-        MediaStoreWriter.markWriteComplete(context, u)
+        val completion = MediaStoreWriter.markWriteComplete(context, u)
         if (!MediaStoreWriter.publish(context, u)) {
-            emitStatus("HEIF save delayed. Will retry.")
+            emitStatus(retainedSaveStatus("HEIF", completion.durable))
             return
         }
         emitMediaSaved(u, spec.captureId)
@@ -186,17 +187,17 @@ internal class StillCapturePipeline(
         // Bitmap.compress strips all metadata, so stamp the exposure EXIF back before publishing
         // (best-effort — a failed EXIF write must never lose the image itself).
         runCatching { writeJpegExif(u, exifShot) }
-        MediaStoreWriter.markWriteComplete(context, u)
+        val completion = MediaStoreWriter.markWriteComplete(context, u)
         if (!MediaStoreWriter.publish(context, u)) {
-            emitStatus("JPEG save delayed. Will retry.")
+            emitStatus(retainedSaveStatus("JPEG", completion.durable))
             return
         }
         emitMediaSaved(u, spec.captureId)
     }
 
     /**
-     * Writes and durably marks RAW synchronously while [raw] is live. The returned publication must
-     * be handed to [publishDng] on the I/O executor; interrupted writes are deleted here.
+     * Writes RAW synchronously while [raw] is live and attempts the bounded durable marker. The
+     * returned publication carries that outcome to [publishDng]; interrupted writes are deleted.
      */
     fun saveDng(
         raw: Image,
@@ -218,8 +219,12 @@ internal class StillCapturePipeline(
                 DngCapture.writeDng(it, raw, chars, result, exifOrientationFor(spec.rotationDegrees))
             }
             outputComplete = true
-            MediaStoreWriter.markWriteComplete(context, uri)
-            return PendingDngPublication(uri = uri, captureId = spec.captureId)
+            val completion = MediaStoreWriter.markWriteComplete(context, uri)
+            return PendingDngPublication(
+                uri = uri,
+                captureId = spec.captureId,
+                completionMarkerDurable = completion.durable,
+            )
         } catch (t: Throwable) {
             // A fully-written DNG is journalled COMPLETE and handed to the publication lane.
             // Interrupted writes remain REGISTERED and are deleted.
@@ -231,11 +236,15 @@ internal class StillCapturePipeline(
     /** Publishes a completed DNG off the camera thread, including retry backoff and callbacks. */
     fun publishDng(pending: PendingDngPublication) {
         if (!MediaStoreWriter.publish(context, pending.uri)) {
-            emitStatus("DNG save delayed. Will retry.")
+            emitStatus(retainedSaveStatus("DNG", pending.completionMarkerDurable))
             return
         }
         emitRawSaved(pending.uri, pending.captureId)
     }
+
+    private fun retainedSaveStatus(kind: String, markerDurable: Boolean): String =
+        if (markerDurable) "$kind save delayed. Will retry."
+        else "$kind save retained. Recovery marker failed."
 
     private fun writeJpegExif(uri: android.net.Uri, shot: ExifShot) {
         MediaStoreWriter.openParcelFd(context, uri, "rw")?.use { pfd ->

@@ -146,6 +146,23 @@ class VideoRecorderMuxerStartTest {
     }
 
     @Test
+    fun `tolerated muxer stop output publishes only after completed validation`() {
+        val base = { validation: FinalizedRecordingValidation ->
+            shouldPublishRecording(
+                muxerStarted = true,
+                wroteVideoSample = true,
+                hasFailure = false,
+                hasUri = true,
+                finalizedValidation = validation,
+            )
+        }
+        assertTrue(base(FinalizedRecordingValidation.NOT_REQUIRED))
+        assertTrue(base(FinalizedRecordingValidation.PASSED))
+        assertFalse(base(FinalizedRecordingValidation.FAILED))
+        assertFalse(base(FinalizedRecordingValidation.SKIPPED))
+    }
+
+    @Test
     fun `muxer stop terminal policy covers all eight boolean combinations`() {
         for (video in booleanArrayOf(false, true)) {
             for (degraded in booleanArrayOf(false, true)) {

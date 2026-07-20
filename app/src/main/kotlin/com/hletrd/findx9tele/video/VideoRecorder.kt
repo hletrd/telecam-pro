@@ -193,6 +193,7 @@ class VideoRecorder(private val context: Context) {
 
     fun stop(): StopResult {
         running = false
+        var finalizedValidation = FinalizedRecordingValidation.NOT_REQUIRED
         runCatching { videoCodec?.signalEndOfInputStream() }
 
         // AudioRecord.read() may still be blocked after running flips false. Stop the input before
@@ -235,7 +236,10 @@ class VideoRecorder(private val context: Context) {
                         if (muxerStopFailureIsTerminal(wroteVideoSample, audioDegradedMidRec, wroteAudioSample)) {
                             recordFailure(t)
                         } else if (com.hletrd.findx9tele.BuildConfig.DEBUG) {
+                            finalizedValidation = FinalizedRecordingValidation.SKIPPED
                             Log.w(TAG, "muxer.stop() failed over sample-less degraded audio track; keeping clip: ${t.message}")
+                        } else {
+                            finalizedValidation = FinalizedRecordingValidation.SKIPPED
                         }
                     }
                 }
@@ -259,27 +263,48 @@ class VideoRecorder(private val context: Context) {
         }
         audioRecord = null
 
+        val outputUri = uri
+        // The tolerated empty-audio-track stop exception is not proof of a finalized container.
+        // Reopen only after muxer/codec/fd owners are closed, and require an extractor-readable
+        // video track. FAILED or accidentally SKIPPED validation can never reach publication.
+        if (finalizedValidation == FinalizedRecordingValidation.SKIPPED) {
+            finalizedValidation = if (
+                outputUri != null && MediaStoreWriter.hasReadableVideoTrack(context, outputUri)
+            ) {
+                FinalizedRecordingValidation.PASSED
+            } else {
+                FinalizedRecordingValidation.FAILED
+            }
+            if (finalizedValidation == FinalizedRecordingValidation.FAILED) {
+                recordFailure(IllegalStateException("Finalized video track validation failed"))
+            }
+        }
+
         // A track alone is not enough: require at least one successfully muxed video sample and no
         // asynchronous VIDEO codec/muxer error (firstFailure). Keep failed or empty recordings out of
         // the gallery. An AUDIO-only mid-REC fault degraded to video-only and never touched
         // firstFailure (see degradeAudioToVideoOnly), so a clean video track still publishes here.
-        val outputUri = uri
         val complete = shouldPublishRecording(
             muxerStarted = muxerStarted,
             wroteVideoSample = wroteVideoSample,
             hasFailure = firstFailure.cause != null,
             hasUri = outputUri != null,
+            finalizedValidation = finalizedValidation,
         )
         val saved = if (complete && outputUri != null) {
             // Persist FINALIZED before the resolver publish call. A provider outage or process death
             // after muxer.stop() must lead launch recovery to adopt this take, never sweep it.
-            MediaStoreWriter.markWriteComplete(context, outputUri)
+            val completion = MediaStoreWriter.markWriteComplete(context, outputUri)
             // publish() retries transient resolver failures internally (CRIT4-5). If it STILL fails,
             // leave the COMPLETE journal entry pending. Launch recovery retries adoption and never
             // deletes the valuable clip merely because MediaProvider is still unavailable.
             MediaStoreWriter.publish(context, outputUri).also { published ->
                 if (!published && com.hletrd.findx9tele.BuildConfig.DEBUG) {
-                    Log.w(TAG, "publish() failed after retries; finalized file retained for recovery: $outputUri")
+                    Log.w(
+                        TAG,
+                        "publish() failed after retries; finalized file retained for recovery " +
+                            "(completionMarker=${completion.durable})",
+                    )
                 }
             }
         } else {
@@ -764,7 +789,8 @@ internal fun shouldStartMuxer(
 /**
  * The stop() save gate, extracted pure (TEST4-5/P4.7): a recording is PUBLISHED only when the
  * muxer started, at least one video sample was muxed, no VIDEO-side failure latched, and the
- * pending uri still exists — anything else is deleted. In particular a start immediately followed
+ * pending uri still exists. A tolerated muxer-stop failure additionally requires PASSED structural
+ * validation; FAILED or SKIPPED cannot publish. In particular a start immediately followed
  * by a stop (the same-executor-tick case the admission latch serializes) has no muxed video sample
  * yet, so the half-created pending file is DELETED, never published to the gallery.
  */
@@ -773,7 +799,15 @@ internal fun shouldPublishRecording(
     wroteVideoSample: Boolean,
     hasFailure: Boolean,
     hasUri: Boolean,
-): Boolean = muxerStarted && wroteVideoSample && !hasFailure && hasUri
+    finalizedValidation: FinalizedRecordingValidation = FinalizedRecordingValidation.NOT_REQUIRED,
+): Boolean = muxerStarted &&
+    wroteVideoSample &&
+    !hasFailure &&
+    hasUri &&
+    (finalizedValidation == FinalizedRecordingValidation.NOT_REQUIRED ||
+        finalizedValidation == FinalizedRecordingValidation.PASSED)
+
+internal enum class FinalizedRecordingValidation { NOT_REQUIRED, PASSED, FAILED, SKIPPED }
 
 internal fun muxerStopFailureIsTerminal(
     wroteVideoSample: Boolean,

@@ -27,6 +27,9 @@ import com.hletrd.findx9tele.gl.glReplacementMayRestartPreview
 import com.hletrd.findx9tele.storage.CaptureFamilyKey
 import com.hletrd.findx9tele.storage.CaptureFamilyMedia
 import com.hletrd.findx9tele.storage.MediaStoreWriter
+import com.hletrd.findx9tele.storage.RecoveryReport
+import com.hletrd.findx9tele.storage.RecoveryRetryDecision
+import com.hletrd.findx9tele.storage.recoveryRetryDecision
 import com.hletrd.findx9tele.video.VideoRecorder
 
 /**
@@ -3402,12 +3405,41 @@ class CameraEngine(private val context: Context) {
     }
 
     /**
-     * Deletes leftover pending MediaStore entries from a prior crash / force-kill (a recording whose
-     * MediaMuxer was never stopped → corrupt, invisible file). Runs on the setup thread so it never
-     * blocks the UI. Call once on launch.
+     * Reconciles prior-process pending media: adopt COMPLETE/structurally proven rows, delete only
+     * proven-incomplete rows, and retain indeterminate rows. Provider failures retry boundedly and
+     * finish with one sanitized transition; Images and Video remain independently failure-isolated.
+     * Runs on the setup thread so it never blocks the UI. Call once on launch.
      */
     fun cleanupOrphans() {
-        setupExecutor.execute { runCatching { MediaStoreWriter.cleanupOrphanedPending(context) } }
+        setupExecutor.execute {
+            var completedAttempts = 0
+            var finalReport = RecoveryReport()
+            var finalDecision = RecoveryRetryDecision.COMPLETE
+            do {
+                completedAttempts += 1
+                finalReport = MediaStoreWriter.cleanupOrphanedPending(context)
+                finalDecision = recoveryRetryDecision(
+                    report = finalReport,
+                    completedAttempts = completedAttempts,
+                    maxAttempts = MAX_MEDIA_RECOVERY_ATTEMPTS,
+                )
+                if (finalDecision == RecoveryRetryDecision.RETRY) {
+                    runCatching { Thread.sleep(MEDIA_RECOVERY_RETRY_BACKOFF_MS * completedAttempts) }
+                }
+            } while (finalDecision == RecoveryRetryDecision.RETRY)
+
+            if (BuildConfig.DEBUG || finalDecision == RecoveryRetryDecision.EXHAUSTED) {
+                val summary = "attempts=$completedAttempts scanned=${finalReport.scanned} " +
+                    "adopted=${finalReport.adopted} deleted=${finalReport.deleted} " +
+                    "retained=${finalReport.retained} errors=${finalReport.errors} " +
+                    "failures=${finalReport.failureClasses.sortedBy { it.name }.joinToString { it.name }}"
+                if (finalDecision == RecoveryRetryDecision.EXHAUSTED) {
+                    Log.w("MediaRecovery", "exhausted $summary")
+                } else {
+                    Log.d("MediaRecovery", "complete $summary")
+                }
+            }
+        }
     }
 
     fun currentRollDegrees(): Float = gyro.currentRollDegrees()
@@ -3709,6 +3741,8 @@ class CameraEngine(private val context: Context) {
         const val MAX_PREVIEW_RECOVERY_ATTEMPTS = 3
         const val PREVIEW_RECOVERY_DELAY_MS = 200L
         const val RECORDER_FINALIZE_RELEASE_TIMEOUT_MS = 7_000L
+        const val MAX_MEDIA_RECOVERY_ATTEMPTS = 3
+        const val MEDIA_RECOVERY_RETRY_BACKOFF_MS = 75L
     }
 }
 

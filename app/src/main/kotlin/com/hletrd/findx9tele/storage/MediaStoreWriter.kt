@@ -10,8 +10,11 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
-import java.io.OutputStream
 import java.io.FileInputStream
+import java.io.IOException
+import java.io.OutputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 /**
  * Thin wrapper around MediaStore for saving photos/videos into DCIM/<subDir> using the
@@ -24,6 +27,8 @@ object MediaStoreWriter {
     private const val PENDING_JOURNAL = "pending_media_journal"
     private const val PENDING_REGISTERED = "registered"
     private const val PENDING_COMPLETE = "complete"
+    private const val COMPLETION_MARK_ATTEMPTS = 3
+    private const val COMPLETION_MARK_BACKOFF_MS = 25L
 
     /**
      * Reconstructs the newest published capture THIS APP saved under its own folder.
@@ -218,11 +223,19 @@ object MediaStoreWriter {
      * recovery can then distinguish a valuable complete take from an interrupted write without
      * guessing from file size alone.
      */
-    fun markWriteComplete(context: Context, uri: Uri): Boolean =
-        context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE)
-            .edit()
-            .putString(uri.toString(), PENDING_COMPLETE)
-            .commit()
+    internal fun markWriteComplete(context: Context, uri: Uri): CompletionMarkResult =
+        markCompletionWithRetry(
+            maxAttempts = COMPLETION_MARK_ATTEMPTS,
+            commit = {
+                context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE)
+                    .edit()
+                    .putString(uri.toString(), PENDING_COMPLETE)
+                    .commit()
+            },
+            backoff = { attempt ->
+                runCatching { Thread.sleep(COMPLETION_MARK_BACKOFF_MS * attempt) }
+            },
+        )
 
     fun openParcelFd(context: Context, uri: Uri, mode: String = "rw"): ParcelFileDescriptor? =
         runCatching { context.contentResolver.openFileDescriptor(uri, mode) }.getOrNull()
@@ -237,8 +250,8 @@ object MediaStoreWriter {
      * artifact must not be stranded pending — and later deleted by the next launch's
      * [cleanupOrphanedPending] sweep — over a one-off provider hiccup. Callers run on background
      * executors (ioExecutor / recorderExecutor), so the bounded sleep never blocks the UI. A
-     * persistent failure still returns false; there is NO republish path afterwards — the pending
-     * file is invisible until the sweep deletes it.
+     * persistent failure still returns false; launch recovery returns an observable report and
+     * retries complete or structurally proven rows instead of silently deleting them.
      */
     fun publish(context: Context, uri: Uri): Boolean {
         val values = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
@@ -297,7 +310,7 @@ object MediaStoreWriter {
      * by publishing it; only a proven incomplete artifact is deleted. Indeterminate rows remain
      * pending for a later launch rather than risking silent data loss. Best-effort; never throws.
      */
-    fun cleanupOrphanedPending(context: Context, subDir: String = "X9Tele") {
+    internal fun cleanupOrphanedPending(context: Context, subDir: String = "X9Tele"): RecoveryReport {
         // Only sweep entries created BEFORE this process: the launch-time sweep runs on the setup
         // executor while an immediate first capture creates its own pending entry on ioExecutor —
         // without the age gate the sweep could delete that in-flight write (two-executor race on
@@ -307,23 +320,22 @@ object MediaStoreWriter {
             elapsedRealtimeMillis = android.os.SystemClock.elapsedRealtime(),
             processStartElapsedRealtimeMillis = android.os.Process.getStartElapsedRealtime(),
         )
-        // Selection/args construction is pure and PINNED BY TEST (OrphanSweepTest): the whole call
-        // below is runCatching-wrapped, so a placeholder/arg-count mismatch or a broken path anchor
-        // would otherwise fail as a silently-swallowed SQLiteException — the sweep no-ops forever
-        // with no crash, no log, and no test failure.
+        // Selection/args construction is pure and PINNED BY TEST (OrphanSweepTest). Each collection
+        // is independently caught and reported, so a broken Images query cannot suppress Video.
         val (selection, args) = orphanSweepSelection(subDir, context.packageName, processStartSecs)
+        var report = RecoveryReport()
         for (base in listOf(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
         )) {
-            runCatching {
+            val collectionResult = runCatching {
                 val queryArgs = Bundle().apply {
                     putString(ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
                     putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, args)
                     // Pending items are hidden from ordinary queries even for the owner; opt in.
                     putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
                 }
-                context.contentResolver.query(
+                val cursor = context.contentResolver.query(
                     base,
                     arrayOf(
                         MediaStore.MediaColumns._ID,
@@ -333,19 +345,21 @@ object MediaStoreWriter {
                     ),
                     queryArgs,
                     null,
-                )?.use { cursor ->
+                ) ?: error("MediaProvider returned no cursor")
+                cursor.use {
                     val idCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
                     val pendingCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.IS_PENDING)
                     val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE)
                     val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
                     while (cursor.moveToNext()) {
                         if (cursor.getInt(pendingCol) != 1) continue
+                        report = report.record(RecoveryEvent.SCANNED)
                         val uri = ContentUris.withAppendedId(base, cursor.getLong(idCol))
                         val journalState = pendingJournalState(context, uri)
                         val sizeBytes = if (cursor.isNull(sizeCol)) 0L else cursor.getLong(sizeCol)
-                        val probe = when {
-                            sizeBytes <= 0L -> PendingProbe.INVALID
-                            journalState == PendingJournalState.COMPLETE -> PendingProbe.VALID
+                        val probeOutcome = when {
+                            sizeBytes <= 0L -> PendingProbeOutcome(PendingProbe.INVALID)
+                            journalState == PendingJournalState.COMPLETE -> PendingProbeOutcome(PendingProbe.VALID)
                             else -> probePendingMedia(
                                 context = context,
                                 uri = uri,
@@ -354,15 +368,30 @@ object MediaStoreWriter {
                                 sizeBytes = sizeBytes,
                             )
                         }
-                        when (orphanDisposition(journalState, probe)) {
-                            OrphanDisposition.ADOPT -> publish(context, uri)
-                            OrphanDisposition.DELETE -> delete(context, uri)
-                            OrphanDisposition.KEEP_PENDING -> Unit
+                        if (probeOutcome.failed) {
+                            report = report.record(RecoveryEvent.PROBE_FAILED)
+                        }
+                        when (orphanDisposition(journalState, probeOutcome.probe)) {
+                            OrphanDisposition.ADOPT -> {
+                                report = report.record(
+                                    if (publish(context, uri)) RecoveryEvent.ADOPTED
+                                    else RecoveryEvent.PUBLISH_FAILED,
+                                )
+                            }
+                            OrphanDisposition.DELETE -> {
+                                report = report.record(
+                                    if (delete(context, uri)) RecoveryEvent.DELETED
+                                    else RecoveryEvent.DELETE_FAILED,
+                                )
+                            }
+                            OrphanDisposition.KEEP_PENDING -> report = report.record(RecoveryEvent.RETAINED)
                         }
                     }
                 }
             }
+            if (collectionResult.isFailure) report = report.record(RecoveryEvent.QUERY_FAILED)
         }
+        return report
     }
 
     private fun registerPending(context: Context, uri: Uri): Uri? {
@@ -395,22 +424,20 @@ object MediaStoreWriter {
         mimeType: String,
         isVideoCollection: Boolean,
         sizeBytes: Long,
-    ): PendingProbe = runCatching {
+    ): PendingProbeOutcome = pendingProbeOutcome {
         when (pendingMediaProbeKind(mimeType, isVideoCollection)) {
             PendingMediaProbeKind.VIDEO -> probeFinalizedVideo(context, uri)
             PendingMediaProbeKind.JPEG -> probeCompleteJpeg(context, uri, sizeBytes)
             PendingMediaProbeKind.DNG -> probeCompleteDng(context, uri, sizeBytes)
-            // HEIF/unknown image containers can expose dimensions before their payload is fully
-            // closed. A bounds-only decode therefore cannot prove completion. Without a durable
-            // COMPLETE marker, retain the private pending row instead of publishing corrupt media.
+            PendingMediaProbeKind.HEIF -> probeCompleteHeif(context, uri)
             PendingMediaProbeKind.KEEP_PENDING -> PendingProbe.INDETERMINATE
         }
-    }.getOrDefault(PendingProbe.INDETERMINATE)
+    }
 
     private fun probeFinalizedVideo(context: Context, uri: Uri): PendingProbe {
         val extractor = MediaExtractor()
         return try {
-            val pfd = openParcelFd(context, uri, "r") ?: return PendingProbe.INDETERMINATE
+            val pfd = openReadableParcelFd(context, uri)
             pfd.use { descriptor ->
                 extractor.setDataSource(descriptor.fileDescriptor)
                 if ((0 until extractor.trackCount).any { index ->
@@ -427,9 +454,34 @@ object MediaStoreWriter {
         }
     }
 
+    /** Reopens a closed recording and requires an extractor-readable video track. */
+    internal fun hasReadableVideoTrack(context: Context, uri: Uri): Boolean =
+        runCatching { probeFinalizedVideo(context, uri) == PendingProbe.VALID }.getOrDefault(false)
+
+    private fun probeCompleteHeif(context: Context, uri: Uri): PendingProbe {
+        val pfd = openReadableParcelFd(context, uri)
+        return pfd.use {
+            FileInputStream(it.fileDescriptor).use { input ->
+                val channel = input.channel
+                val probe = probeHeifIsoBmff(channel.size()) { offset, byteCount ->
+                    val buffer = ByteBuffer.allocate(byteCount)
+                    channel.position(offset)
+                    while (buffer.hasRemaining()) {
+                        if (channel.read(buffer) <= 0) return@probeHeifIsoBmff null
+                    }
+                    buffer.array()
+                }
+                if (probe == PendingProbe.INDETERMINATE) {
+                    throw IOException("HEIF structural probe could not read a complete box header")
+                }
+                probe
+            }
+        }
+    }
+
     private fun probeCompleteJpeg(context: Context, uri: Uri, sizeBytes: Long): PendingProbe {
         if (sizeBytes < 4L) return PendingProbe.INVALID
-        val pfd = openParcelFd(context, uri, "r") ?: return PendingProbe.INDETERMINATE
+        val pfd = openReadableParcelFd(context, uri)
         return pfd.use {
             FileInputStream(it.fileDescriptor).use { input ->
                 val channel = input.channel
@@ -446,7 +498,7 @@ object MediaStoreWriter {
     }
 
     private fun probeCompleteDng(context: Context, uri: Uri, sizeBytes: Long): PendingProbe {
-        val pfd = openParcelFd(context, uri, "r") ?: return PendingProbe.INDETERMINATE
+        val pfd = openReadableParcelFd(context, uri)
         return pfd.use {
             val exif = androidx.exifinterface.media.ExifInterface(it.fileDescriptor)
             val width = exif.getAttributeInt(androidx.exifinterface.media.ExifInterface.TAG_IMAGE_WIDTH, 0)
@@ -468,6 +520,102 @@ object MediaStoreWriter {
         }
     }
 
+    /** A queried row that cannot be reopened is a provider/probe error, not quiet indeterminacy. */
+    private fun openReadableParcelFd(context: Context, uri: Uri): ParcelFileDescriptor =
+        context.contentResolver.openFileDescriptor(uri, "r")
+            ?: throw IOException("MediaProvider returned no file descriptor")
+
+}
+
+internal data class PendingProbeOutcome(
+    val probe: PendingProbe,
+    val failed: Boolean = false,
+)
+
+/** Converts access/parser exceptions into an explicit retained probe failure for launch recovery. */
+internal fun pendingProbeOutcome(probe: () -> PendingProbe): PendingProbeOutcome {
+    val result = runCatching(probe)
+    return PendingProbeOutcome(
+        probe = result.getOrDefault(PendingProbe.INDETERMINATE),
+        failed = result.isFailure,
+    )
+}
+
+internal data class CompletionMarkResult(
+    val durable: Boolean,
+    val attempts: Int,
+)
+
+/** Bounded durable-marker policy with injected seams for commit-failure tests. */
+internal fun markCompletionWithRetry(
+    maxAttempts: Int,
+    commit: () -> Boolean,
+    backoff: (attempt: Int) -> Unit = {},
+): CompletionMarkResult {
+    require(maxAttempts > 0)
+    repeat(maxAttempts) { zeroBasedAttempt ->
+        val attempt = zeroBasedAttempt + 1
+        if (runCatching(commit).getOrDefault(false)) {
+            return CompletionMarkResult(durable = true, attempts = attempt)
+        }
+        if (attempt < maxAttempts) backoff(attempt)
+    }
+    return CompletionMarkResult(durable = false, attempts = maxAttempts)
+}
+
+internal enum class RecoveryFailureClass { QUERY, PROBE, PUBLISH, DELETE }
+
+internal data class RecoveryReport(
+    val scanned: Int = 0,
+    val adopted: Int = 0,
+    val deleted: Int = 0,
+    val retained: Int = 0,
+    val errors: Int = 0,
+    val failureClasses: Set<RecoveryFailureClass> = emptySet(),
+) {
+    val retryRequired: Boolean
+        get() = errors > 0
+
+    internal fun record(event: RecoveryEvent): RecoveryReport = when (event) {
+        RecoveryEvent.SCANNED -> copy(scanned = scanned + 1)
+        RecoveryEvent.ADOPTED -> copy(adopted = adopted + 1)
+        RecoveryEvent.DELETED -> copy(deleted = deleted + 1)
+        RecoveryEvent.RETAINED -> copy(retained = retained + 1)
+        RecoveryEvent.QUERY_FAILED -> failed(RecoveryFailureClass.QUERY, retain = false)
+        RecoveryEvent.PROBE_FAILED -> failed(RecoveryFailureClass.PROBE, retain = false)
+        RecoveryEvent.PUBLISH_FAILED -> failed(RecoveryFailureClass.PUBLISH, retain = true)
+        RecoveryEvent.DELETE_FAILED -> failed(RecoveryFailureClass.DELETE, retain = true)
+    }
+
+    private fun failed(failure: RecoveryFailureClass, retain: Boolean): RecoveryReport = copy(
+        retained = retained + if (retain) 1 else 0,
+        errors = errors + 1,
+        failureClasses = failureClasses + failure,
+    )
+}
+
+internal enum class RecoveryEvent {
+    SCANNED,
+    ADOPTED,
+    DELETED,
+    RETAINED,
+    QUERY_FAILED,
+    PROBE_FAILED,
+    PUBLISH_FAILED,
+    DELETE_FAILED,
+}
+
+internal enum class RecoveryRetryDecision { COMPLETE, RETRY, EXHAUSTED }
+
+/** One-based bounded launch-recovery retry decision, kept pure for provider-failure matrices. */
+internal fun recoveryRetryDecision(
+    report: RecoveryReport,
+    completedAttempts: Int,
+    maxAttempts: Int,
+): RecoveryRetryDecision = when {
+    !report.retryRequired -> RecoveryRetryDecision.COMPLETE
+    completedAttempts < maxAttempts.coerceAtLeast(1) -> RecoveryRetryDecision.RETRY
+    else -> RecoveryRetryDecision.EXHAUSTED
 }
 
 internal enum class MediaDeleteDisposition { DELETED, ALREADY_ABSENT, FAILED }
@@ -482,11 +630,12 @@ internal fun mediaDeleteDisposition(
     else -> MediaDeleteDisposition.FAILED
 }
 
-internal enum class PendingMediaProbeKind { VIDEO, JPEG, DNG, KEEP_PENDING }
+internal enum class PendingMediaProbeKind { VIDEO, JPEG, DNG, HEIF, KEEP_PENDING }
 
 /**
  * Only containers with a conservative terminal-structure probe may bridge a missing COMPLETE
- * marker. In particular, HEIF remains pending: header dimensions do not prove its payload closed.
+ * marker. HEIF requires complete top-level ISO-BMFF box extents plus ftyp/meta/mdat; header image
+ * dimensions alone are never accepted.
  */
 internal fun pendingMediaProbeKind(
     mimeType: String,
@@ -495,6 +644,8 @@ internal fun pendingMediaProbeKind(
     isVideoCollection -> PendingMediaProbeKind.VIDEO
     mimeType.equals("image/jpeg", ignoreCase = true) -> PendingMediaProbeKind.JPEG
     mimeType.contains("dng", ignoreCase = true) -> PendingMediaProbeKind.DNG
+    mimeType.equals("image/heif", ignoreCase = true) ||
+        mimeType.equals("image/heic", ignoreCase = true) -> PendingMediaProbeKind.HEIF
     else -> PendingMediaProbeKind.KEEP_PENDING
 }
 
@@ -513,6 +664,80 @@ internal fun orphanDisposition(
     probe == PendingProbe.VALID -> OrphanDisposition.ADOPT
     probe == PendingProbe.INVALID -> OrphanDisposition.DELETE
     else -> OrphanDisposition.KEEP_PENDING
+}
+
+/**
+ * Structural HEIF completion probe. Reads only bounded box headers/ftyp brands, never pixel data.
+ * A malformed or truncated extent is INVALID; an unreadable header or size-zero/unbounded box is
+ * INDETERMINATE so recovery retains the private row. A valid result requires a HEIF brand and
+ * explicitly bounded, complete ftyp/meta/mdat boxes.
+ */
+internal fun probeHeifIsoBmff(
+    fileSize: Long,
+    readAt: (offset: Long, byteCount: Int) -> ByteArray?,
+): PendingProbe {
+    if (fileSize < 24L) return PendingProbe.INVALID
+    var offset = 0L
+    var boxCount = 0
+    var foundFtyp = false
+    var foundMeta = false
+    var foundMdat = false
+    val heifBrands = setOf("heic", "heix", "hevc", "hevx", "heim", "heis", "mif1", "msf1")
+
+    while (offset < fileSize) {
+        if (++boxCount > 4_096 || fileSize - offset < 8L) return PendingProbe.INVALID
+        val header = readAt(offset, 8) ?: return PendingProbe.INDETERMINATE
+        if (header.size != 8) return PendingProbe.INDETERMINATE
+        val size32 = ByteBuffer.wrap(header, 0, 4).order(ByteOrder.BIG_ENDIAN).int.toLong() and 0xffff_ffffL
+        val type = String(header, 4, 4, Charsets.US_ASCII)
+        val headerSize: Long
+        val boxSize: Long
+        when (size32) {
+            // ISO-BMFF permits size zero to mean "through EOF", but EOF alone cannot distinguish a
+            // cleanly finalized mdat from a process-killed write. Keep it pending unless iloc/item
+            // extents are validated by a future stronger probe.
+            0L -> return PendingProbe.INDETERMINATE
+            1L -> {
+                val extended = readAt(offset + 8L, 8) ?: return PendingProbe.INDETERMINATE
+                if (extended.size != 8) return PendingProbe.INDETERMINATE
+                val signedSize = ByteBuffer.wrap(extended).order(ByteOrder.BIG_ENDIAN).long
+                if (signedSize < 0L) return PendingProbe.INVALID
+                headerSize = 16L
+                boxSize = signedSize
+            }
+            else -> {
+                headerSize = 8L
+                boxSize = size32
+            }
+        }
+        if (boxSize < headerSize || boxSize > fileSize - offset) return PendingProbe.INVALID
+        val payloadSize = boxSize - headerSize
+        when (type) {
+            "ftyp" -> {
+                if (payloadSize < 8L) return PendingProbe.INVALID
+                val brandBytes = readAt(offset + headerSize, minOf(payloadSize, 128L).toInt())
+                    ?: return PendingProbe.INDETERMINATE
+                if (brandBytes.size < 8) return PendingProbe.INDETERMINATE
+                val brands = buildList {
+                    add(String(brandBytes, 0, 4, Charsets.US_ASCII))
+                    var brandOffset = 8
+                    while (brandOffset + 4 <= brandBytes.size) {
+                        add(String(brandBytes, brandOffset, 4, Charsets.US_ASCII))
+                        brandOffset += 4
+                    }
+                }
+                foundFtyp = brands.any(heifBrands::contains)
+            }
+            "meta" -> if (payloadSize >= 4L) foundMeta = true else return PendingProbe.INVALID
+            "mdat" -> if (payloadSize > 0L) foundMdat = true else return PendingProbe.INVALID
+        }
+        offset += boxSize
+    }
+    return if (offset == fileSize && foundFtyp && foundMeta && foundMdat) {
+        PendingProbe.VALID
+    } else {
+        PendingProbe.INVALID
+    }
 }
 
 internal fun parseUnsignedExifValues(raw: String?): List<Long> = raw
