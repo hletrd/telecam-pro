@@ -587,6 +587,46 @@ internal class CameraReadyPublicationGate {
         latestSequence.get() == publication.sequence
 }
 
+/** One ordered tap-point ownership event crossing the engine/ViewModel thread boundary. */
+data class TapFocusPublication(
+    val sequence: Long,
+    val held: Boolean,
+    /** View-normalized reticle point; present only for a submitted held request. */
+    val point: Pair<Float, Float>? = null,
+) {
+    init {
+        require(held == (point != null)) { "A held tap publication must carry exactly one point" }
+    }
+}
+
+/** Camera-thread result of replacing the repeating request for one tap-owned AF/AE point. */
+internal enum class TapFocusSubmissionResult {
+    /** Required CANCEL/START (unless AF Lock owns the lens) and repeating were accepted. */
+    ACCEPTED,
+    /** Nothing from the attempted point reached Camera2, or the prior request was restored. */
+    REJECTED_PREVIOUS_RESTORED,
+    /** A partial request may have reached Camera2 and the prior request could not be restored. */
+    FAILED_UNCERTAIN,
+}
+
+/** Prevents a delayed controller-loss event from clearing a newer accepted tap point. */
+internal class TapFocusPublicationGate {
+    private val latestSequence = java.util.concurrent.atomic.AtomicLong(0)
+
+    /**
+     * Applies one event while this gate owns its ordering boundary. Unlike an observe-then-post
+     * sequence, a newer retirement cannot land between the last ownership check and the UI update;
+     * out-of-order older callbacks are rejected without running [apply].
+     */
+    @Synchronized
+    fun applyIfLatest(publication: TapFocusPublication, apply: () -> Unit): Boolean {
+        if (publication.sequence < latestSequence.get()) return false
+        latestSequence.set(publication.sequence)
+        apply()
+        return true
+    }
+}
+
 /** Keeps a persisted/pre-session request non-empty without guessing which session outputs exist. */
 internal fun PhotoFormats.withDefaultIfEmpty(): PhotoFormats =
     if (wantsProcessedStill || dngRaw) this else copy(heif = true)

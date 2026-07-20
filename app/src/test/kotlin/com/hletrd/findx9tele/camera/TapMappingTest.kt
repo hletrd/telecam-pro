@@ -106,4 +106,35 @@ class TapMappingTest {
         // After 10 fixed steps of 0.12 the center has clamped against the frame edge.
         assertTrue(cx > 0.9f)
     }
+
+    @Test
+    fun rapidDeferredTap_keepsTheEventTimeVisibleLoupeCenter() {
+        val deferred = mapTapFocusGeometry(
+            nx = 0.25f,
+            ny = 0.5f,
+            sensorOrientation = 0,
+            teleconverter = false,
+            punchActive = true,
+            sensorCenter = 0.5f to 0.5f,
+            loupeCenter = 0.5f to 0.5f,
+            previewRotationDegrees = 0,
+        )
+        // If an older in-flight tap later moves the center to 0.6, re-mapping the raw view point
+        // would incorrectly produce 0.5. The deferred snapshot must retain the visible-time 0.4.
+        val futureCenterRemap = mapTapFocusGeometry(
+            nx = 0.25f,
+            ny = 0.5f,
+            sensorOrientation = 0,
+            teleconverter = false,
+            punchActive = true,
+            sensorCenter = 0.6f to 0.5f,
+            loupeCenter = 0.6f to 0.5f,
+            previewRotationDegrees = 0,
+        )
+
+        assertEquals(0.4f, deferred.sensorPoint.first, eps)
+        assertEquals(0.4f, deferred.loupePoint.first, eps)
+        assertEquals(0.5f, futureCenterRemap.sensorPoint.first, eps)
+        assertEquals(0.5f, futureCenterRemap.loupePoint.first, eps)
+    }
 }

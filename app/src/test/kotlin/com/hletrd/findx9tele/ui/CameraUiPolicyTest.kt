@@ -1,8 +1,11 @@
 package com.hletrd.findx9tele.ui
 
 import androidx.compose.ui.semantics.Role
+import com.hletrd.findx9tele.camera.AfIndication
+import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.LensChoice
 import com.hletrd.findx9tele.camera.FocusMode
+import com.hletrd.findx9tele.camera.ManualControls
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -25,7 +28,7 @@ class CameraUiPolicyTest {
     }
 
     @Test
-    fun `an actual focus mode change releases the tap owned point`() {
+    fun `every actual focus mode change clears held or pending tap state`() {
         assertTrue(focusModeChangeClearsTapPoint(FocusMode.CONTINUOUS, FocusMode.MANUAL))
         assertTrue(focusModeChangeClearsTapPoint(FocusMode.AUTO, FocusMode.CONTINUOUS))
         assertFalse(focusModeChangeClearsTapPoint(FocusMode.MACRO, FocusMode.MACRO))
@@ -113,5 +116,28 @@ class CameraUiPolicyTest {
     fun `recording snapshot ignores the Photo self timer`() {
         assertEquals(0, photoShutterDelaySeconds(configuredDelaySeconds = 10, recording = true))
         assertEquals(10, photoShutterDelaySeconds(configuredDelaySeconds = 10, recording = false))
+    }
+
+    @Test
+    fun `new submitted tap starts scanning instead of inheriting the previous verdict`() {
+        for (previous in listOf(AfIndication.FOCUSED, AfIndication.FAILED)) {
+            val updated = submittedTapFocusUiState(
+                CameraUiState(afIndication = previous),
+                0.25f to 0.75f,
+            )
+            assertEquals(0.25f to 0.75f, updated.tapPoint)
+            assertTrue(updated.tapFocusHeld)
+            assertEquals(AfIndication.SCANNING, updated.afIndication)
+        }
+
+        val locked = submittedTapFocusUiState(
+            CameraUiState(
+                controls = ManualControls(afLock = true),
+                afIndication = AfIndication.FAILED,
+            ),
+            0.5f to 0.5f,
+        )
+        assertEquals(AfIndication.IDLE, locked.afIndication)
+        assertTrue(locked.tapFocusHeld)
     }
 }

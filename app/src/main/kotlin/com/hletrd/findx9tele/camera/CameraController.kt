@@ -157,6 +157,10 @@ class CameraController(context: Context) {
     // AF_MODE_AUTO (a one-shot region scan that LOCKS on convergence) instead of CONTINUOUS, so the
     // focus actually holds on the tapped point rather than drifting back.
     @Volatile private var touchAfActive = false
+    // clearMeteringPoint(false) folds the tap-owned key reset into the next request that already has
+    // to be submitted (focus-mode or retained-optics commit). Fast paths must promote that update to
+    // one full rebuild so the cached builder cannot retain the old AE/AF regions invisibly.
+    private var tapResetPending = false
     // Throttle counter for the 3A-state diagnostic log (AE/AF convergence on the standalone tele).
     private var threeAFrame = 0
     // Live AE-resolved (ISO, exposureNs) surfaced to the UI so the Shutter/ISO chips can show what AE
@@ -396,6 +400,7 @@ class CameraController(context: Context) {
 
     /** Camera-thread body of the zoom fast path; submits [ratio] on the repeating stream only. */
     private fun submitZoomFastPath(ratio: Float) {
+        if (tapResetPending) { startPreview(); return }
         val s = session ?: return
         val b = previewBuilder
         val cb = previewCallback
@@ -641,26 +646,51 @@ class CameraController(context: Context) {
         }
     }
 
+    private enum class TapTriggerSubmission {
+        NOT_REQUESTED,
+        ACCEPTED,
+        REJECTED_UNCHANGED,
+        FAILED_UNCERTAIN,
+    }
+
+    private data class PreviewSubmission(
+        val repeatingAccepted: Boolean,
+        val tapTrigger: TapTriggerSubmission,
+    )
+
     /**
      * (Re)issues the repeating preview request. When [afTriggerPending] is set (a fresh tap-to-focus
-     * point) and AF is running (non-MANUAL focus), it first fires ONE triggered capture identical to
-     * the repeating request but carrying CONTROL_AF_TRIGGER_START, so the AF engine converges on the
-     * tapped region; the trigger is then cleared (IDLE) and the repeating request continues to hold
-     * that result. All calls guard nulls so a torn-down session is a no-op.
+     * point) and AF is running (non-MANUAL, unlocked focus), it first fires ONE triggered capture
+     * identical to the repeating request but carrying CONTROL_AF_TRIGGER_START, so the AF engine
+     * converges on the tapped region; the trigger is then cleared (IDLE) and the repeating request
+     * continues to hold that result. AF Lock instead keeps lens ownership while the repeating request
+     * applies only the tap-owned AE region. All calls guard nulls so a torn-down session is a no-op.
      */
-    private fun startPreview(): Boolean {
-        if (closed) return false
+    private fun startPreview(): Boolean = submitPreviewRequest().repeatingAccepted
+
+    /** Detailed sibling used by tap AF so partial CANCEL/START submission is never called success. */
+    private fun submitPreviewRequest(): PreviewSubmission {
+        if (closed) return PreviewSubmission(false, TapTriggerSubmission.REJECTED_UNCHANGED)
         // In high-speed mode the session is a constrained high-speed one; its repeating request must
         // be a burst list, so route there instead of the regular single-request path below.
-        if (highSpeedFps > 0) return startHighSpeedPreview()
-        val camera = device ?: return false
-        val preview = glSurface ?: return false
-        val s = session ?: return false
+        if (highSpeedFps > 0) {
+            val tapRequested = afTriggerPending
+            return PreviewSubmission(
+                repeatingAccepted = startHighSpeedPreview(),
+                tapTrigger = if (tapRequested) {
+                    TapTriggerSubmission.REJECTED_UNCHANGED
+                } else {
+                    TapTriggerSubmission.NOT_REQUESTED
+                },
+            )
+        }
+        val camera = device ?: return PreviewSubmission(false, TapTriggerSubmission.REJECTED_UNCHANGED)
+        val preview = glSurface ?: return PreviewSubmission(false, TapTriggerSubmission.REJECTED_UNCHANGED)
+        val s = session ?: return PreviewSubmission(false, TapTriggerSubmission.REJECTED_UNCHANGED)
         // Process-global and strictly increasing across controller replacements. Device tests use
         // this identity to reject late results from the outgoing Photo/Video request after a mode
         // switch; a mode label alone cannot distinguish an old Photo callback from the new one.
         val requestGeneration = previewRequestSequence.incrementAndGet()
-        latestPreviewRequestGeneration = requestGeneration
         val requestMode = diagnosticRequestMode
         val requestOpticsGeneration = diagnosticOpticsGeneration
         val touchAfUsesAuto = touchAfMayTrigger(
@@ -669,10 +699,15 @@ class CameraController(context: Context) {
             focusMode = controls.focusMode,
             afModes = caps.afModes,
         )
+        val tapPointRequested = afTriggerPending
+        // AF Lock owns the lens while a tap may still replace the AE region. Do not send a bogus
+        // AF trigger against AF_MODE_OFF; the repeating request alone accepts that metering point.
+        val tapAfTriggerRequired = tapAfTriggerRequired(tapPointRequested, touchAfUsesAuto, controls.afLock)
         // The device can be disconnected asynchronously (app backgrounded, another client, HAL) between
         // session config and here; createCaptureRequest/setRepeatingRequest then throw CameraAccess/
         // IllegalState. Guard the whole build+submit so a torn-down session degrades to "no preview
         // this cycle" instead of crashing the camera thread.
+        var tapRequestStarted = false
         return runCatching {
             val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                 addTarget(preview)
@@ -701,6 +736,7 @@ class CameraController(context: Context) {
             lastForwardedResultZoom = Float.NaN
             val callback = object : CameraCaptureSession.CaptureCallback() {
                 private var firstDiagnosticResultPending = true
+                private var firstAfResultPending = true
 
                 override fun onCaptureCompleted(
                     session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult,
@@ -760,7 +796,16 @@ class CameraController(context: Context) {
                             onFocusDistance?.invoke(lastFocusDistance)
                         }
                         val afState = result.get(CaptureResult.CONTROL_AF_STATE)
-                        if (afState != null && afState != lastReportedAfState) {
+                        if (afState != null && shouldPublishAfState(
+                                requestGeneration = requestGeneration,
+                                latestRequestGeneration = latestPreviewRequestGeneration,
+                                firstResultForRequest = firstAfResultPending,
+                                requestAfTrigger = request.get(CaptureRequest.CONTROL_AF_TRIGGER),
+                                afState = afState,
+                                lastReportedAfState = lastReportedAfState,
+                            )
+                        ) {
+                            firstAfResultPending = false
                             lastReportedAfState = afState
                             onAfState?.invoke(afState)
                         }
@@ -786,22 +831,39 @@ class CameraController(context: Context) {
             // region, then fall through to the repeating request (trigger IDLE) so the converged
             // focus is held. Cancel-then-start is more reliable than a bare START when the AF engine
             // is mid-scan (common in CONTINUOUS mode).
-            if (afTriggerPending && touchAfUsesAuto) {
+            if (tapAfTriggerRequired) {
                 if (BuildConfig.DEBUG) Log.i(TAG, "Touch AF: scanning region $meteringPoint")
                 builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_CANCEL)
-                runCatching { s.capture(builder.build(), callback, handler) }
+                s.capture(builder.build(), callback, handler)
+                tapRequestStarted = true
                 builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
-                runCatching { s.capture(builder.build(), callback, handler) }
+                s.capture(builder.build(), callback, handler)
                 builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
             }
-            afTriggerPending = false
+            s.setRepeatingRequest(builder.build(), callback, handler)
+            // Only an accepted repeating request owns the cache/generation. A failed candidate must
+            // leave the prior builder/callback authoritative so its in-flight results stay gated in.
+            latestPreviewRequestGeneration = requestGeneration
             previewBuilder = builder
             previewCallback = callback
-            s.setRepeatingRequest(builder.build(), callback, handler)
-            true
+            val tapTrigger = if (tapPointRequested) {
+                TapTriggerSubmission.ACCEPTED
+            } else {
+                TapTriggerSubmission.NOT_REQUESTED
+            }
+            afTriggerPending = false
+            tapResetPending = false
+            PreviewSubmission(true, tapTrigger)
         }.getOrElse {
             if (BuildConfig.DEBUG) Log.w(TAG, "startPreview skipped: ${it.message}")
-            false
+            PreviewSubmission(
+                repeatingAccepted = false,
+                tapTrigger = when {
+                    !tapPointRequested -> TapTriggerSubmission.NOT_REQUESTED
+                    tapRequestStarted -> TapTriggerSubmission.FAILED_UNCERTAIN
+                    else -> TapTriggerSubmission.REJECTED_UNCHANGED
+                },
+            )
         }
     }
 
@@ -928,11 +990,28 @@ class CameraController(context: Context) {
         if (normalized.wbMode != WbMode.AUTO || normalized.awbLock) {
             pendingCustomWbSample?.let { finishCustomWbSample(it.id, null) }
         }
-        // An explicit focus-mode change ends the tap-to-focus AUTO hold and resumes the chosen mode.
-        if (normalized.focusMode != controls.focusMode) touchAfActive = false
         val previous = controls
+        // An explicit focus-mode change ends the tap-to-focus AUTO hold and resumes the chosen mode.
+        if (normalized.focusMode != previous.focusMode) touchAfActive = false
+        // AF Lock temporarily wins by pinning AF_MODE_OFF, but it does not release the tap-owned
+        // region. Re-arm the one-shot when the lock is lifted so AF_MODE_AUTO actually scans that
+        // surviving point instead of remaining INACTIVE at the formerly pinned distance.
+        if (tapAfShouldRearmAfterUnlock(
+                previousAfLock = previous.afLock,
+                nextAfLock = normalized.afLock,
+                touchAfActive = touchAfActive,
+                meteringPointPresent = meteringPoint != null,
+            )
+        ) {
+            afTriggerPending = true
+        }
         val plan = if (retainedOpticsCommit) {
-            retainedOpticsApplyPlan(previous, normalized, smoothPreviewBoost)
+            retainedOpticsApplyPlan(
+                previous,
+                normalized,
+                smoothPreviewBoostActive = smoothPreviewBoost,
+                tapResetPending = tapResetPending,
+            )
         } else {
             null
         }
@@ -949,6 +1028,11 @@ class CameraController(context: Context) {
                 RetainedOpticsApplyPlan.FULL_REBUILD -> startPreview()
                 null -> error("retained optics plan missing")
             }
+            return
+        }
+
+        if (tapResetPending) {
+            startPreview()
             return
         }
 
@@ -989,6 +1073,7 @@ class CameraController(context: Context) {
 
     /** Camera-thread body: mutate only the sensor keys on the cached repeating builder. */
     private fun applySensorFastPath() {
+        if (tapResetPending) { startPreview(); return }
         val s = session ?: return
         val b = previewBuilder
         val cb = previewCallback
@@ -1103,24 +1188,88 @@ class CameraController(context: Context) {
     /**
      * Sets the tap-to-focus/meter target. [sx],[sy] are SENSOR-normalized (0..1); the caller has
      * already applied the view→sensor rotation. Arms a one-shot AF trigger and rebuilds the preview
-     * so the new AE/AF spot region (and AF convergence) takes effect immediately.
+     * so the new AE/AF spot region (and AF convergence) takes effect immediately. With AF Lock, the
+     * trigger is suppressed and the accepted repeating request updates only the tap-owned AE region.
      */
-    fun setMeteringPoint(sx: Float, sy: Float) {
-        meteringPoint = sx.coerceIn(0f, 1f) to sy.coerceIn(0f, 1f)
-        afTriggerPending = true
-        // Hold AF_MODE_AUTO on this spot until a focus-mode change, a replacing tap, or the
-        // engine's explicit clearMeteringPoint (reset / optics remap). The UI's 2 s reticle timer
-        // is visual-only and does NOT release this hold (AGG4-3).
-        touchAfActive = true
-        postToCamera { startPreview() }
+    internal fun setMeteringPoint(
+        sx: Float,
+        sy: Float,
+        onPreviewSubmitted: (TapFocusSubmissionResult) -> Unit,
+    ): Boolean {
+        if (closed || !::caps.isInitialized) return false
+
+        // Mutate the point on the same serial queue that builds the request. Besides giving the
+        // engine the REAL startPreview result (not merely Handler.post success), this keeps rapid
+        // tap/tap and clear/tap sequences ordered instead of letting one failed task roll back a
+        // newer point that was written from the UI thread.
+        return postToCamera {
+            if (!touchAfMayTrigger(
+                    touchAfActive = true,
+                    maxAfRegions = caps.maxAfRegions,
+                    focusMode = controls.focusMode,
+                    afModes = caps.afModes,
+                )
+            ) {
+                onPreviewSubmitted(TapFocusSubmissionResult.REJECTED_PREVIOUS_RESTORED)
+                return@postToCamera
+            }
+            val previousPoint = meteringPoint
+            val previousTriggerPending = afTriggerPending
+            val previousTouchAfActive = touchAfActive
+            val previousTapResetPending = tapResetPending
+            meteringPoint = sx.coerceIn(0f, 1f) to sy.coerceIn(0f, 1f)
+            afTriggerPending = true
+            // Hold AF_MODE_AUTO on this spot until a focus-mode change, a replacing tap, or the
+            // engine's explicit clearMeteringPoint (reset / optics remap). The UI's 2 s reticle
+            // timer is visual-only and does NOT release this hold (AGG4-3).
+            touchAfActive = true
+            tapResetPending = false
+            val submission = submitPreviewRequest()
+            val result = if (submission.tapTrigger == TapTriggerSubmission.ACCEPTED &&
+                submission.repeatingAccepted
+            ) {
+                TapFocusSubmissionResult.ACCEPTED
+            } else {
+                meteringPoint = previousPoint
+                afTriggerPending = previousTriggerPending
+                touchAfActive = previousTouchAfActive
+                tapResetPending = previousTapResetPending
+                if (submission.tapTrigger == TapTriggerSubmission.FAILED_UNCERTAIN) {
+                    // CANCEL or START may already have changed the AF state. Re-scan the previous
+                    // held point (or submit the default regions) once; only that accepted request
+                    // makes KEEP_PREVIOUS truthful. A second failure is explicitly uncertain and
+                    // the engine retires/clears the owner instead of claiming the old lock.
+                    afTriggerPending = previousTriggerPending ||
+                        (previousPoint != null && previousTouchAfActive)
+                    val rollback = submitPreviewRequest()
+                    val restored = rollback.repeatingAccepted &&
+                        (previousPoint == null || !previousTouchAfActive ||
+                            rollback.tapTrigger == TapTriggerSubmission.ACCEPTED)
+                    if (restored) {
+                        TapFocusSubmissionResult.REJECTED_PREVIOUS_RESTORED
+                    } else {
+                        TapFocusSubmissionResult.FAILED_UNCERTAIN
+                    }
+                } else {
+                    TapFocusSubmissionResult.REJECTED_PREVIOUS_RESTORED
+                }
+            }
+            // ACCEPTED proves Camera2 took the required AF transaction (unless AF Lock owns the
+            // lens) and the repeating request. Convergence remains asynchronous AF telemetry.
+            onPreviewSubmitted(result)
+        }
     }
 
     /** Clears the tap target, restoring the metering-mode regions on the next preview build. */
-    fun clearMeteringPoint() {
-        meteringPoint = null
-        touchAfActive = false
-        afTriggerPending = false
-        postToCamera { startPreview() }
+    fun clearMeteringPoint(rebuildPreview: Boolean = true): Boolean {
+        if (closed) return false
+        return postToCamera {
+            meteringPoint = null
+            touchAfActive = false
+            afTriggerPending = false
+            tapResetPending = true
+            if (rebuildPreview) startPreview()
+        }
     }
 
     fun capturePhoto(wantJpeg: Boolean, wantRaw: Boolean, cb: PhotoCallback) {
@@ -1491,6 +1640,37 @@ internal fun acceptedPhotoSessionOutputs(
     processed = processedReaderPresent,
     raw = rawReaderPresent,
 )
+
+/** Rejects AF telemetry from an outgoing repeating request and seeds each new request once. */
+internal fun shouldPublishAfState(
+    requestGeneration: Long,
+    latestRequestGeneration: Long,
+    firstResultForRequest: Boolean,
+    requestAfTrigger: Int?,
+    afState: Int,
+    lastReportedAfState: Int,
+): Boolean = afTelemetryBelongsToRepeatingRequest(requestAfTrigger) &&
+    requestGeneration == latestRequestGeneration &&
+    (firstResultForRequest || afState != lastReportedAfState)
+
+/** CANCEL/START are transitional control captures; only the IDLE repeating stream owns UI AF state. */
+internal fun afTelemetryBelongsToRepeatingRequest(requestAfTrigger: Int?): Boolean =
+    requestAfTrigger == null || requestAfTrigger == CameraMetadata.CONTROL_AF_TRIGGER_IDLE
+
+/** A held tap resumes its one-shot AUTO scan when AF Lock gives lens ownership back. */
+internal fun tapAfShouldRearmAfterUnlock(
+    previousAfLock: Boolean,
+    nextAfLock: Boolean,
+    touchAfActive: Boolean,
+    meteringPointPresent: Boolean,
+): Boolean = previousAfLock && !nextAfLock && touchAfActive && meteringPointPresent
+
+/** AF Lock retains lens ownership while the tap-owned AE region still enters the repeating request. */
+internal fun tapAfTriggerRequired(
+    tapPointRequested: Boolean,
+    touchAfUsesAuto: Boolean,
+    afLock: Boolean,
+): Boolean = tapPointRequested && touchAfUsesAuto && !afLock
 
 /** What the session fallback ladder enables at a given attempt — see [CameraController]'s ladder doc. */
 internal data class SessionAttemptPlan(

@@ -9,6 +9,7 @@ import android.util.Size
 import android.view.Surface
 import androidx.lifecycle.AndroidViewModel
 import com.hletrd.findx9tele.camera.Antibanding
+import com.hletrd.findx9tele.camera.AfIndication
 import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.AudioInputPreference
 import com.hletrd.findx9tele.camera.BitrateLevel
@@ -52,6 +53,7 @@ import com.hletrd.findx9tele.camera.withDefaultIfEmpty
 import com.hletrd.findx9tele.camera.ProcessingLevel
 import com.hletrd.findx9tele.camera.ShutterMode
 import com.hletrd.findx9tele.camera.ShutterTimer
+import com.hletrd.findx9tele.camera.TapFocusPublicationGate
 import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.camera.VideoFrameRate
 import com.hletrd.findx9tele.camera.WbMode
@@ -73,6 +75,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     private val engine = CameraEngine(app)
     private val cameraReadyPublicationGate = CameraReadyPublicationGate()
+    private val tapFocusPublicationGate = TapFocusPublicationGate()
     private val settingsStore = SettingsStore(app)
     private val _state = MutableStateFlow(CameraUiState())
     val state: StateFlow<CameraUiState> = _state.asStateFlow()
@@ -134,6 +137,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     private val clearStatusRunnable = Runnable { _state.update { it.copy(statusMessage = null) } }
 
     private var reticleHideRunnable: Runnable? = null
+    // Tap publications can originate on camera/setup/main threads while the visual timeout runs on
+    // main. Keep timer ownership and its StateFlow mutation atomic so an already-running old timeout
+    // cannot erase a newer accepted point after removeCallbacks loses that race.
+    private val tapFocusUiTimerLock = Any()
 
     // Owns every processed/raw URI for a capture and tombstones deleted ids so a late save callback
     // cannot resurrect a sibling after the user deleted the frozen review shot.
@@ -259,6 +266,15 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     init {
         engine.onStatus = ::publishStatus
+        engine.onTapFocusChange = tapFocusChange@{ publication ->
+            tapFocusPublicationGate.applyIfLatest(publication) {
+                if (publication.held) {
+                    publication.point?.let(::showTapFocusUi)
+                } else {
+                    clearTapFocusUi()
+                }
+            }
+        }
         // Caps arrive on the setup thread. Reconcile restored/schema-normalized zoom against the
         // selected camera's authoritative range on main before any delayed input can reuse it.
         engine.onCapsReady = { caps, generation ->
@@ -344,7 +360,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 // ABSOLUTE ratio in the failed attempt's scale, so ease target / coalesced base /
                 // throttled landing all invalidate together (same invariant as every optics-remap door).
                 invalidateZoomGlide()
-                clearTapFocus()
+                clearTapFocusUi()
                 // Engine snapshots this hidden bank inside the same generation-owned transaction as
                 // visible optics, so even Ready-callback overlap restores the exact accepted value.
                 photoExposureTimeNs = restoredPhotoExposureTimeNs
@@ -591,7 +607,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // easing toward a target computed in the old scale (or a throttled landing about to fire) would
         // visibly drag the just-recalled framing away from the preset (same invariant as every remap door).
         invalidateZoomGlide()
-        clearTapFocus()
+        clearTapFocusUi()
         // Manual/priority modes need luma analysis even when scopes are hidden: priority AE drives
         // from it, and full manual uses it for the live exposure meter.
         engine.setAeMetering(exposureAnalysisRequired(cSynced))
@@ -893,8 +909,12 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     // ---- Focus ----
     override fun onFocusMode(mode: FocusMode) {
-        if (focusModeChangeClearsTapPoint(_state.value.controls.focusMode, mode)) {
-            clearTapFocus()
+        val before = _state.value
+        if (focusModeChangeClearsTapPoint(before.controls.focusMode, mode)) {
+            // updateControls below already rebuilds the repeating request for the focus-mode delta.
+            // Queue the tap-owned-key clear first, then let that ONE rebuild carry both changes;
+            // two back-to-back swaps stall this HAL's preview for ~340-500 ms.
+            clearTapFocus(rebuildPreview = false)
         }
         updateControls(FnSlot.FOCUS) { c ->
             // AF→MF handoff: entering MANUAL seeds the slider from the LIVE lens position, so fine
@@ -910,8 +930,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         }
     }
     override fun onFocusSlider(slider: Float) {
-        if (focusModeChangeClearsTapPoint(_state.value.controls.focusMode, FocusMode.MANUAL)) {
-            clearTapFocus()
+        val before = _state.value
+        if (focusModeChangeClearsTapPoint(before.controls.focusMode, FocusMode.MANUAL)) {
+            clearTapFocus(rebuildPreview = false)
         }
         val min = _state.value.caps?.minFocusDistanceDiopters ?: 0f
         val d = FocusMapping.sliderToDiopters(slider, min)
@@ -919,36 +940,58 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
     override fun onAfLock(locked: Boolean) = updateControls(FnSlot.FOCUS) { it.copy(afLock = locked) }
     override fun onTapFocus(nx: Float, ny: Float) {
+        // Queue admission alone is not AF HOLD: the engine publishes the point through
+        // onTapFocusChange only after startPreview actually submits it to Camera2.
         engine.setTapPoint(nx, ny)
-        _state.update { it.copy(tapPoint = nx to ny, tapFocusHeld = true) }
-        reticleHideRunnable?.let { mainHandler.removeCallbacks(it) }
-        // The 2 s timer is VISUAL ONLY (keep the viewfinder quiet): it hides the reticle but must
-        // NOT release the AF hold, the metering region, or the loupe center. The tapped focus
-        // holds until a new tap, a focus-mode change, an explicit reset, or an optics remap —
-        // the documented pro-camera lock semantics (AGG4-3; the old timer silently returned AF to
-        // AF-C hunting 2 s after every tap and re-centered the loupe mid-composition).
-        val hide = Runnable {
-            _state.update { it.copy(tapPoint = null) }
-            reticleHideRunnable = null
+    }
+
+    private fun showTapFocusUi(point: Pair<Float, Float>) {
+        synchronized(tapFocusUiTimerLock) {
+            // Apply SCANNING immediately on the camera-thread publication boundary. Camera2 result
+            // callbacks for this request run later on that same serial thread, so a terminal verdict
+            // can no longer be overwritten by a delayed main-queue "start scanning" task.
+            _state.update { submittedTapFocusUiState(it, point) }
+            reticleHideRunnable?.let { mainHandler.removeCallbacks(it) }
+            // The 2 s timer is VISUAL ONLY (keep the viewfinder quiet): it hides the reticle but must
+            // NOT release the AF hold, the metering region, or the loupe center. The tapped focus
+            // holds until a new tap, a focus-mode change, an explicit reset, or an optics remap —
+            // the documented pro-camera lock semantics (AGG4-3; the old timer silently returned AF to
+            // AF-C hunting 2 s after every tap and re-centered the loupe mid-composition).
+            lateinit var hide: Runnable
+            hide = Runnable {
+                synchronized(tapFocusUiTimerLock) {
+                    if (reticleHideRunnable !== hide) return@synchronized
+                    _state.update { it.copy(tapPoint = null) }
+                    reticleHideRunnable = null
+                }
+            }
+            reticleHideRunnable = hide
+            // Handler scheduling/removal is thread-safe; timer ownership above protects the fields
+            // and StateFlow update that Android's queue cannot serialize for us.
+            mainHandler.postDelayed(hide, 2000)
         }
-        reticleHideRunnable = hide
-        mainHandler.postDelayed(hide, 2000)
     }
 
     override fun onResetFocusPoint() = clearTapFocus()
 
     /**
      * The FUNCTIONAL tap-AF release: drops the AF_MODE_AUTO hold + metering region and re-centers
-     * the loupe, plus the visual reticle. Called on explicit reset and from every optics-remap
-     * door (mode/lens/TC/camera-override) — a tapped point is meaningless in the new field of
-     * view, and since the 2 s reticle timer no longer resets the loupe, the doors are what keep a
-     * stale tap-centered loupe from surviving a remap.
+     * the loupe, plus the visual reticle. Called for explicit reset and focus-mode changes. Optics
+     * remap transactions retire the engine half themselves and call [clearTapFocusUi] for the UI
+     * half, allowing the Camera2 reset to fold into the remap's next request.
      */
-    private fun clearTapFocus() {
-        reticleHideRunnable?.let(mainHandler::removeCallbacks)
-        reticleHideRunnable = null
-        engine.clearTapPoint()
-        _state.update { it.copy(tapPoint = null, tapFocusHeld = false) }
+    private fun clearTapFocus(rebuildPreview: Boolean = true) {
+        engine.clearTapPoint(rebuildPreview)
+        clearTapFocusUi()
+    }
+
+    /** UI half of tap-point retirement; engine callbacks can invalidate it after controller loss. */
+    private fun clearTapFocusUi() {
+        synchronized(tapFocusUiTimerLock) {
+            reticleHideRunnable?.let(mainHandler::removeCallbacks)
+            reticleHideRunnable = null
+            _state.update { it.copy(tapPoint = null, tapFocusHeld = false) }
+        }
     }
 
     // ---- Exposure ----
@@ -1221,7 +1264,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // absolute target was set in the old scale, and any throttled quiet-landing / interaction-end
         // that would otherwise submit an old-scale ratio through the outgoing controller (AGG3-10/25).
         invalidateZoomGlide()
-        clearTapFocus()
+        clearTapFocusUi()
         engine.setVideoMode(
             enabled = mode == CaptureMode.VIDEO,
             resolvedLens = optics.lens,
@@ -1337,7 +1380,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // The TC scale flip overwrote the coalesced base and invalidated any hardware-key glide /
         // throttled landing set in the pre-flip scale (same invariant as every optics-remap door).
         invalidateZoomGlide()
-        clearTapFocus()
+        clearTapFocusUi()
         markChanged(FnSlot.TELECONVERTER)
         saveSettingsIfEnabled()
     }
@@ -1366,7 +1409,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // The lens-preset rewrite overwrote the coalesced base and invalidated any hardware-key glide /
         // throttled landing set in the pre-pick scale (same invariant as every optics-remap door).
         invalidateZoomGlide()
-        clearTapFocus()
+        clearTapFocusUi()
         markChanged(FnSlot.TELECONVERTER)
         saveSettingsIfEnabled()
     }
@@ -1730,7 +1773,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // A camera-id override reopens onto a different route (different zoom scale): abandon any
         // in-flight coalesced/gliding zoom the same way every other optics-remap door does.
         invalidateZoomGlide()
-        clearTapFocus()
+        clearTapFocusUi()
         engine.setCameraOverride(id)
         _state.update { it.copy(cameraOverrideId = id) }
     }
@@ -2019,6 +2062,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // left zoomPendingRatio / the 16 ms flush / the interacting flag / zoomInteractionEnd live, so a
         // background mid-pinch leaked a stale base into resume and stuck the boost edge off.
         invalidateZoomGlide()
+        // The controller is about to be closed. Retire its ownership/UI now, queue the ROI clear,
+        // and skip a preview rebuild that could only race the queued close.
+        clearTapFocus(rebuildPreview = false)
         saveSettingsIfEnabled() // persist on background so the next launch restores them
         engine.setStandbyAudioMonitor(false) // release the mic while backgrounded
         engine.pause()
@@ -2055,8 +2101,21 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
 }
 
-internal fun focusModeChangeClearsTapPoint(current: FocusMode, requested: FocusMode): Boolean =
-    current != requested
+internal fun focusModeChangeClearsTapPoint(
+    current: FocusMode,
+    requested: FocusMode,
+): Boolean = current != requested
+
+/** A new accepted AF trigger starts yellow/searching; a prior point's verdict cannot carry over. */
+internal fun submittedTapFocusUiState(
+    current: CameraUiState,
+    point: Pair<Float, Float>,
+): CameraUiState = current.copy(
+    tapPoint = point,
+    tapFocusHeld = true,
+    // AF Lock wins over tap AF: the tap may still move the AE region, but it must not claim a scan.
+    afIndication = if (current.controls.afLock) AfIndication.IDLE else AfIndication.SCANNING,
+)
 
 /**
  * PROGRAM runs app-side for STILLS — the auto min-shutter (1/focal rule) + Auto ISO a real P mode

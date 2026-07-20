@@ -297,6 +297,132 @@ class ReconfigurationGenerationTest {
     }
 
     @Test
+    fun `tap focus admission requires one live accepted AF session`() {
+        val controller = Any()
+        assertTrue(
+            tapPointAdmissionAllowed(
+                currentController = controller,
+                acceptedController = controller,
+                currentSessionGeneration = 9L,
+                acceptedSessionGeneration = 9L,
+                cameraReady = true,
+                paused = false,
+                canHoldFocus = true,
+            ),
+        )
+        assertFalse(
+            tapPointAdmissionAllowed(
+                controller,
+                controller,
+                9L,
+                9L,
+                cameraReady = true,
+                paused = false,
+                canHoldFocus = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `tap publication applies UI inside its latest event boundary`() {
+        val gate = TapFocusPublicationGate()
+        val applied = mutableListOf<String>()
+        val held = TapFocusPublication(sequence = 4L, held = true, point = 0.4f to 0.6f)
+        val retired = TapFocusPublication(sequence = 5L, held = false)
+
+        assertTrue(gate.applyIfLatest(held) { applied += "held" })
+        assertTrue(gate.applyIfLatest(retired) { applied += "retired" })
+        assertFalse(gate.applyIfLatest(held) { applied += "stale" })
+        assertEquals(listOf("held", "retired"), applied)
+    }
+
+    @Test
+    fun `tap hold publishes only after current session preview submission`() {
+        assertEquals(
+            TapFocusCompletionDecision.KEEP_PREVIOUS,
+            tapFocusCompletionDecision(
+                attemptCurrent = true,
+                submission = TapFocusSubmissionResult.REJECTED_PREVIOUS_RESTORED,
+                sessionCurrent = true,
+            ),
+        )
+        assertEquals(
+            TapFocusCompletionDecision.PUBLISH_HELD,
+            tapFocusCompletionDecision(
+                attemptCurrent = true,
+                submission = TapFocusSubmissionResult.ACCEPTED,
+                sessionCurrent = true,
+            ),
+        )
+        assertEquals(
+            TapFocusCompletionDecision.RETIRE,
+            tapFocusCompletionDecision(
+                attemptCurrent = true,
+                submission = TapFocusSubmissionResult.ACCEPTED,
+                sessionCurrent = false,
+            ),
+        )
+        assertEquals(
+            TapFocusCompletionDecision.RETIRE,
+            tapFocusCompletionDecision(
+                attemptCurrent = true,
+                submission = TapFocusSubmissionResult.FAILED_UNCERTAIN,
+                sessionCurrent = true,
+            ),
+        )
+        assertEquals(
+            TapFocusCompletionDecision.IGNORE,
+            tapFocusCompletionDecision(
+                attemptCurrent = false,
+                submission = TapFocusSubmissionResult.ACCEPTED,
+                sessionCurrent = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `tap completion survives preview-only NotReady on the exact accepted session`() {
+        val accepted = Any()
+        val controller = Any()
+
+        // No cameraReady input by design: TextureView output replacement does not invalidate the
+        // accepted Camera2 session or a trigger already submitted to its repeating request.
+        assertTrue(
+            tapFocusSessionOwnerIsCurrent(
+                currentAcceptedSession = accepted,
+                expectedAcceptedSession = accepted,
+                currentController = controller,
+                expectedController = controller,
+                currentSessionGeneration = 12L,
+                expectedSessionGeneration = 12L,
+                paused = false,
+            ),
+        )
+        assertFalse(
+            tapFocusSessionOwnerIsCurrent(
+                currentAcceptedSession = Any(),
+                expectedAcceptedSession = accepted,
+                currentController = controller,
+                expectedController = controller,
+                currentSessionGeneration = 12L,
+                expectedSessionGeneration = 12L,
+                paused = false,
+            ),
+        )
+        assertFalse(
+            tapFocusSessionOwnerIsCurrent(
+                currentAcceptedSession = accepted,
+                expectedAcceptedSession = accepted,
+                currentController = controller,
+                expectedController = controller,
+                currentSessionGeneration = 13L,
+                expectedSessionGeneration = 12L,
+                paused = false,
+            ),
+        )
+    }
+
+    @Test
     fun `terminal commit rejects an older generation after its early check`() {
         val gate = OpticsCommitGate()
         val older = gate.begin { it }

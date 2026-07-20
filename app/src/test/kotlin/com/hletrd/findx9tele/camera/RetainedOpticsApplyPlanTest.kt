@@ -37,6 +37,30 @@ class RetainedOpticsApplyPlanTest {
     }
 
     @Test
+    fun `tap reset folds into exactly one retained full rebuild`() {
+        val zoomed = base.copy(zoomRatio = 3f)
+
+        assertEquals(
+            RetainedOpticsApplyPlan.FULL_REBUILD,
+            retainedOpticsApplyPlan(
+                base,
+                zoomed,
+                smoothPreviewBoostActive = false,
+                tapResetPending = true,
+            ),
+        )
+        assertEquals(
+            RetainedOpticsApplyPlan.FULL_REBUILD,
+            retainedOpticsApplyPlan(
+                base,
+                base,
+                smoothPreviewBoostActive = false,
+                tapResetPending = true,
+            ),
+        )
+    }
+
+    @Test
     fun `idle sensor-only packet keeps the sensor fast path`() {
         assertEquals(
             RetainedOpticsApplyPlan.SENSOR_FAST_PATH,

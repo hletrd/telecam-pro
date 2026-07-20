@@ -108,6 +108,7 @@ class CameraEngine(private val context: Context) {
     @Volatile private var acceptedCameraSession: AcceptedCameraSession? = null
     private val cameraSessionGeneration = java.util.concurrent.atomic.AtomicLong(0)
     private val cameraReadyPublicationSequence = java.util.concurrent.atomic.AtomicLong(0)
+    private val tapFocusPublicationSequence = java.util.concurrent.atomic.AtomicLong(0)
     private val opticsIntentGeneration = java.util.concurrent.atomic.AtomicLong(0)
     private val opticsCommitGate = OpticsCommitGate(opticsIntentGeneration, this)
     // Camera-health signal for the UI (dim the shutter, show a persistent OSD tag while down):
@@ -119,6 +120,10 @@ class CameraEngine(private val context: Context) {
 
     // AF engine state for the reticle color, mapped from the controller's raw CONTROL_AF_STATE.
     var onAfIndication: ((AfIndication) -> Unit)? = null
+    // A tap point is owned by one exact accepted Camera2 session. Controller/session invalidation
+    // publishes a newer false event so a delayed UI task can never leave a stale AF HOLD visible.
+    var onTapFocusChange: ((TapFocusPublication) -> Unit)? = null
+    private var tapFocusOwner: AcceptedCameraSession? = null
 
     /** Captures callback ordering while the caller still owns the engine monitor/state mutation. */
     private fun nextCameraReadyPublication(
@@ -134,9 +139,44 @@ class CameraEngine(private val context: Context) {
         photoOutputs = photoOutputs,
     )
 
+    private fun nextTapFocusPublication(
+        held: Boolean,
+        point: Pair<Float, Float>? = null,
+    ): TapFocusPublication = TapFocusPublication(
+        sequence = tapFocusPublicationSequence.incrementAndGet(),
+        held = held,
+        point = point,
+    )
+
+    /** Engine-monitor-only: retires the exact session that owned the functional tap point. */
+    private fun retireTapFocusLocked(rebuildPreview: Boolean): TapFocusPublication? {
+        val owner = tapFocusOwner
+        val pending = pendingTapFocus
+        if (owner == null && pending == null && deferredTapFocus == null) return null
+        tapFocusOwner = null
+        pendingTapFocus = null
+        deferredTapFocus = null
+        owner?.controller?.clearMeteringPoint(rebuildPreview)
+        pending?.session?.controller
+            ?.takeIf { it !== owner?.controller }
+            ?.clearMeteringPoint(rebuildPreview)
+        resetTapGeometryLocked()
+        return nextTapFocusPublication(held = false)
+    }
+
+    /** Engine-monitor-only sibling of the controller ROI reset. */
+    private fun resetTapGeometryLocked() {
+        loupeCenterTexX = 0.5f
+        loupeCenterTexY = 0.5f
+        loupeCenterSensorX = 0.5f
+        loupeCenterSensorY = 0.5f
+        gl.setPunchInCenter(0.5f, 0.5f)
+    }
+
     private fun invalidateCameraReady() {
-        val publication = synchronized(this) {
+        val (publication, tapPublication) = synchronized(this) {
             val sessionGeneration = cameraSessionGeneration.incrementAndGet()
+            val retiredTap = retireTapFocusLocked(rebuildPreview = false)
             cameraReady = false
             readyController = null
             acceptedCameraSession = null
@@ -144,8 +184,9 @@ class CameraEngine(private val context: Context) {
                 ready = false,
                 opticsGeneration = opticsIntentGeneration.get(),
                 sessionGeneration = sessionGeneration,
-            )
+            ) to retiredTap
         }
+        tapPublication?.let { onTapFocusChange?.invoke(it) }
         onCameraReadyChange?.invoke(publication)
     }
 
@@ -189,6 +230,18 @@ class CameraEngine(private val context: Context) {
         val outputs: PhotoSessionOutputs,
     )
 
+    /** One queued tap awaiting Camera2 request submission on its accepted controller. */
+    private data class PendingTapFocus(
+        val session: AcceptedCameraSession,
+        val viewPoint: Pair<Float, Float>,
+        val sensorPoint: Pair<Float, Float>,
+        val loupePoint: Pair<Float, Float>,
+    )
+
+    private var pendingTapFocus: PendingTapFocus? = null
+    /** Latest already-mapped point while setRepeatingRequest is submitting the preceding tap. */
+    private var deferredTapFocus: PendingTapFocus? = null
+
     private data class OwnedRecording(
         val recorder: VideoRecorder,
         val uri: android.net.Uri?,
@@ -220,7 +273,7 @@ class CameraEngine(private val context: Context) {
     )
 
     private fun <T> beginOpticsTransaction(publishDesiredOptics: () -> T): Pair<OpticsTransaction, T> {
-        val (result, publication) = opticsCommitGate.begin { generation ->
+        val (result, publications) = opticsCommitGate.begin { generation ->
             // A second tap can arrive while the first switch is still preflighting. Both must roll
             // back to the last Ready state, never to the first tap's unaccepted intermediate fields.
             val before = selectRollbackBaseline(cameraReady, currentOpticsSnapshot(), opticsRollbackBaseline)
@@ -231,16 +284,20 @@ class CameraEngine(private val context: Context) {
             val desired = publishDesiredOptics()
             // Desired optics and Not-Ready are one publication. Capture/REC cannot observe g+1's
             // fields while the outgoing controller still presents itself as Ready.
+            val tapPublication = retireTapFocusLocked(rebuildPreview = false)
             cameraReady = false
             readyController = null
             acceptedCameraSession = null
-            (transaction to desired) to nextCameraReadyPublication(
-                ready = false,
-                opticsGeneration = generation,
-                sessionGeneration = cameraSessionGeneration.get(),
+            (transaction to desired) to (
+                nextCameraReadyPublication(
+                    ready = false,
+                    opticsGeneration = generation,
+                    sessionGeneration = cameraSessionGeneration.get(),
+                ) to tapPublication
             )
         }
-        onCameraReadyChange?.invoke(publication)
+        publications.second?.let { onTapFocusChange?.invoke(it) }
+        onCameraReadyChange?.invoke(publications.first)
         return result
     }
 
@@ -937,10 +994,22 @@ class CameraEngine(private val context: Context) {
         // exception — its write landing between a setupExecutor writer's read and write-back
         // silently clobbered the route-normalized packet with one normalized against the
         // OUTGOING caps (the VM's caps snapshot lags onCapsReady by a main-queue hop).
-        synchronized(this) {
+        val tapPublication = synchronized(this) {
+            val retiredTap = if (controls.focusMode != normalized.focusMode) {
+                // setControls is also used by MR restore/caps reconciliation, not only the Focus UI.
+                // Retire under the same monitor as the packet swap so a pending submission cannot
+                // publish AF HOLD between the focus-mode comparison and ownership invalidation.
+                retireTapFocusLocked(rebuildPreview = false)
+            } else {
+                null
+            }
             controls = normalized
             if (!videoMode) photoExposureTimeNs = normalized.exposureTimeNs
+            retiredTap
         }
+        tapPublication?.let { onTapFocusChange?.invoke(it) }
+        // clearMeteringPoint(false), when needed, was queued first on this same controller. This
+        // update performs the single request rebuild carrying both the focus-mode and ROI reset.
         controller?.updateControls(normalized)
     }
 
@@ -1326,35 +1395,140 @@ class CameraEngine(private val context: Context) {
      * crop+center (loupeAdjustedTap, AGG4-11) so AF/metering land on the scene point actually
      * under the finger. EIS shift is not composed (app-side EIS is disabled; shift is 0). Axis
      * signs remain an on-device calibration item.
+     *
+     * Returns true only when one current Ready session accepted the camera-thread task. AF HOLD is
+     * published separately after [CameraController] confirms that Camera2 accepted the required
+     * trigger (unless AF Lock owns the lens) and repeating request; AF convergence remains
+     * asynchronous result telemetry.
      */
-    fun setTapPoint(nx: Float, ny: Float) {
-        val c = caps ?: return
-        // While the loupe MAGNIFIES, the screen shows only a (1-PUNCH_IN_CROP) span of the frame
-        // centered on the current loupe center — a raw full-frame mapping would aim AF/metering
-        // (and the next loupe recenter) at the wrong scene point, off by the magnification and
-        // offset (AGG4-11/P2.8). Compose each space's mapping through that space's own current
-        // center; the loupe scale is isotropic and commutes with the rotations, so composing
-        // AFTER the rotation math is exact.
-        val punchActive = rendererAssists.isPunchInEnabled()
-        val span = 1f - PUNCH_IN_CROP
-        val sensorRaw = viewTapToSensorPoint(nx, ny, c.sensorOrientation, teleconverterMode)
-        val sensor = if (punchActive) {
-            loupeAdjustedTap(sensorRaw.first, sensorRaw.second, loupeCenterSensorX, loupeCenterSensorY, span)
-        } else {
-            sensorRaw
+    fun setTapPoint(nx: Float, ny: Float): Boolean = synchronized(this) {
+        val c = caps ?: return@synchronized false
+        val accepted = acceptedCameraSession ?: return@synchronized false
+        val canHoldFocus = touchAfMayTrigger(
+            touchAfActive = true,
+            maxAfRegions = c.maxAfRegions,
+            focusMode = controls.focusMode,
+            afModes = c.afModes,
+        )
+        if (!tapPointAdmissionAllowed(
+                currentController = controller,
+                acceptedController = accepted.controller,
+                currentSessionGeneration = cameraSessionGeneration.get(),
+                acceptedSessionGeneration = accepted.sessionGeneration,
+                cameraReady = cameraReady,
+                paused = paused,
+                canHoldFocus = canHoldFocus,
+            )
+        ) {
+            return@synchronized false
         }
-        controller?.setMeteringPoint(sensor.first, sensor.second)
-        val loupeRaw = viewTapToLoupeCenter(nx, ny, previewRotationDegrees())
-        val loupe = if (punchActive) {
-            loupeAdjustedTap(loupeRaw.first, loupeRaw.second, loupeCenterTexX, loupeCenterTexY, span)
-        } else {
-            loupeRaw
+        // Map NOW, against the loupe center the user actually sees. If another submission is in
+        // flight, keeping only raw view coordinates and mapping after it completes would compose the
+        // latest tap through a future center the user had not seen when tapping.
+        val geometry = mapTapFocusGeometry(
+            nx = nx,
+            ny = ny,
+            sensorOrientation = c.sensorOrientation,
+            teleconverter = teleconverterMode,
+            punchActive = rendererAssists.isPunchInEnabled(),
+            sensorCenter = loupeCenterSensorX to loupeCenterSensorY,
+            loupeCenter = loupeCenterTexX to loupeCenterTexY,
+            previewRotationDegrees = previewRotationDegrees(),
+        )
+        val attempt = PendingTapFocus(
+            session = accepted,
+            viewPoint = geometry.viewPoint,
+            sensorPoint = geometry.sensorPoint,
+            loupePoint = geometry.loupePoint,
+        )
+        // This HAL can spend ~170-250 ms replacing its repeating request. Preserve rapid user taps
+        // without stacking rebuilds: retain one mapped latest-wins snapshot.
+        if (pendingTapFocus != null) {
+            deferredTapFocus = attempt
+            return@synchronized true
         }
-        loupeCenterTexX = loupe.first
-        loupeCenterTexY = loupe.second
-        loupeCenterSensorX = sensor.first
-        loupeCenterSensorY = sensor.second
-        gl.setPunchInCenter(loupe.first, loupe.second)
+        submitTapFocusLocked(attempt)
+    }
+
+    /** Engine-monitor-only: submits a mapped point after exact accepted-session revalidation. */
+    private fun submitTapFocusLocked(attempt: PendingTapFocus): Boolean {
+        val accepted = attempt.session
+        val c = caps ?: return false
+        if (!tapFocusSessionOwnerIsCurrent(
+                currentAcceptedSession = acceptedCameraSession,
+                expectedAcceptedSession = accepted,
+                currentController = controller,
+                expectedController = accepted.controller,
+                currentSessionGeneration = cameraSessionGeneration.get(),
+                expectedSessionGeneration = accepted.sessionGeneration,
+                paused = paused,
+            ) || !touchAfMayTrigger(
+                touchAfActive = true,
+                maxAfRegions = c.maxAfRegions,
+                focusMode = controls.focusMode,
+                afModes = c.afModes,
+            )
+        ) {
+            return false
+        }
+        val queued = accepted.controller.setMeteringPoint(
+            attempt.sensorPoint.first,
+            attempt.sensorPoint.second,
+        ) { result -> completeTapFocus(attempt, result) }
+        if (queued) pendingTapFocus = attempt
+        return queued
+    }
+
+    /** Camera-thread completion of one queued point; publishes only an actually submitted request. */
+    private fun completeTapFocus(
+        attempt: PendingTapFocus,
+        submission: TapFocusSubmissionResult,
+    ) {
+        val publication = synchronized(this) {
+            val accepted = attempt.session
+            val sessionCurrent = submission == TapFocusSubmissionResult.ACCEPTED &&
+                tapFocusSessionOwnerIsCurrent(
+                    currentAcceptedSession = acceptedCameraSession,
+                    expectedAcceptedSession = accepted,
+                    currentController = controller,
+                    expectedController = accepted.controller,
+                    currentSessionGeneration = cameraSessionGeneration.get(),
+                    expectedSessionGeneration = accepted.sessionGeneration,
+                    paused = paused,
+                )
+            when (tapFocusCompletionDecision(pendingTapFocus === attempt, submission, sessionCurrent)) {
+                TapFocusCompletionDecision.IGNORE -> return@synchronized null
+                TapFocusCompletionDecision.KEEP_PREVIOUS -> {
+                    pendingTapFocus = null
+                    if (tapFocusOwner == null) resetTapGeometryLocked()
+                    val deferred = deferredTapFocus
+                    deferredTapFocus = null
+                    deferred?.let(::submitTapFocusLocked)
+                    return@synchronized null
+                }
+                TapFocusCompletionDecision.RETIRE -> {
+                    val liveRequest = controller === accepted.controller &&
+                        cameraSessionGeneration.get() == accepted.sessionGeneration && !paused
+                    return@synchronized retireTapFocusLocked(rebuildPreview = liveRequest)
+                }
+                TapFocusCompletionDecision.PUBLISH_HELD -> Unit
+            }
+
+            pendingTapFocus = null
+            tapFocusOwner = accepted
+            loupeCenterTexX = attempt.loupePoint.first
+            loupeCenterTexY = attempt.loupePoint.second
+            loupeCenterSensorX = attempt.sensorPoint.first
+            loupeCenterSensorY = attempt.sensorPoint.second
+            // Lifecycle invalidation takes this same monitor, so its later center reset always wins.
+            gl.setPunchInCenter(attempt.loupePoint.first, attempt.loupePoint.second)
+            val heldPublication = nextTapFocusPublication(held = true, point = attempt.viewPoint)
+            val deferred = deferredTapFocus
+            deferredTapFocus = null
+            deferred?.let(::submitTapFocusLocked)
+            heldPublication
+        }
+        publication?.let { onTapFocusChange?.invoke(it) }
     }
 
     // Tap-owned loupe center mirrors in BOTH spaces (AGG4-11): texcoord (what GL magnifies about)
@@ -1366,22 +1540,24 @@ class CameraEngine(private val context: Context) {
 
     /**
      * The FUNCTIONAL tap release: drops the tap-owned AE/AF region and re-centers the loupe.
-     * Called on explicit reset and from the ViewModel's optics-remap doors — NOT from the 2 s
+     * Called on explicit reset and by the engine's optics-remap transaction — NOT from the 2 s
      * reticle timer, which is visual-only (AGG4-3: the tapped focus must HOLD until a new tap,
      * a focus-mode change, an explicit reset, or a remap; the timer used to silently return AF
      * to continuous hunting and re-center the loupe mid-composition).
      */
-    fun clearTapPoint() {
-        controller?.clearMeteringPoint()
-        // The loupe crop is tap-owned state too: without this reset the punch-in magnifier stayed
-        // permanently centered on the LAST tapped point (across mode/lens/TC switches — the remap
-        // doors call through here) while AF/AE correctly returned to their defaults.
-        loupeCenterTexX = 0.5f
-        loupeCenterTexY = 0.5f
-        loupeCenterSensorX = 0.5f
-        loupeCenterSensorY = 0.5f
-        gl.setPunchInCenter(0.5f, 0.5f)
+    fun clearTapPoint(rebuildPreview: Boolean = true) {
+        val tapPublication = synchronized(this) {
+            val hadTapState = tapFocusOwner != null || pendingTapFocus != null || deferredTapFocus != null
+            val publication = retireTapFocusLocked(rebuildPreview)
+            // No tracked point means there is no Camera2 key state to clear. Rebuilding here made
+            // every optics tap pay an extra setRepeatingRequest even when tap AF had never been used.
+            if (!hadTapState) {
+                resetTapGeometryLocked()
+            }
+            publication
+        }
         if (BuildConfig.DEBUG) Log.i("CameraEngine", "TapFocus: cleared")
+        tapPublication?.let { onTapFocusChange?.invoke(it) }
     }
 
     // ---- Drive mode + video parameters ----
@@ -1485,6 +1661,7 @@ class CameraEngine(private val context: Context) {
         val outcome = synchronized(this) {
             if (!activeCameraFailureBelongsToController(controller, failedController)) return
             val sessionGeneration = cameraSessionGeneration.incrementAndGet()
+            val tapPublication = retireTapFocusLocked(rebuildPreview = false)
             cameraReady = false
             readyController = null
             acceptedCameraSession = null
@@ -1503,10 +1680,12 @@ class CameraEngine(private val context: Context) {
                     OwnedRecording(owned, uri, captureId)
                 }
             }
-            publication to ownedRecording
+            Triple(publication, ownedRecording, tapPublication)
         }
         onCameraReadyChange?.invoke(outcome.first)
-        onStatus?.invoke("Camera error: ${failure.message}")
+        outcome.third?.let { onTapFocusChange?.invoke(it) }
+        android.util.Log.e("CameraEngine", "Active camera failure", failure)
+        onStatus?.invoke("Camera error. Recovering.")
         outcome.second?.let { owned ->
             detachAndFinalizeRecording(owned.recorder, owned.uri, owned.captureId)
             gl.setTransfer(transfer)
@@ -3068,6 +3247,7 @@ class CameraEngine(private val context: Context) {
         onCameraReadyChange = null
         onOpticsRollback = null
         onAfIndication = null
+        onTapFocusChange = null
         onStatus = null
         onCapsReady = null
         onVideoSizeChosen = null
@@ -3485,6 +3665,57 @@ internal fun acceptedCameraSessionIsCurrent(
 ): Boolean = cameraReady && !paused && currentController === acceptedController &&
     currentSessionGeneration == acceptedSessionGeneration
 
+/** A viewfinder tap may publish AF HOLD only against a live session that can run region AUTO AF. */
+internal fun tapPointAdmissionAllowed(
+    currentController: Any?,
+    acceptedController: Any?,
+    currentSessionGeneration: Long,
+    acceptedSessionGeneration: Long,
+    cameraReady: Boolean,
+    paused: Boolean,
+    canHoldFocus: Boolean,
+): Boolean = canHoldFocus && acceptedCameraSessionIsCurrent(
+    currentController = currentController,
+    acceptedController = acceptedController,
+    currentSessionGeneration = currentSessionGeneration,
+    acceptedSessionGeneration = acceptedSessionGeneration,
+    cameraReady = cameraReady,
+    paused = paused,
+)
+
+/** Completion/deferred submission owner: preview-output readiness is deliberately not an input. */
+internal fun tapFocusSessionOwnerIsCurrent(
+    currentAcceptedSession: Any?,
+    expectedAcceptedSession: Any,
+    currentController: Any?,
+    expectedController: Any,
+    currentSessionGeneration: Long,
+    expectedSessionGeneration: Long,
+    paused: Boolean,
+): Boolean = currentAcceptedSession === expectedAcceptedSession && !paused &&
+    currentController === expectedController && currentSessionGeneration == expectedSessionGeneration
+
+internal enum class TapFocusCompletionDecision {
+    IGNORE,
+    KEEP_PREVIOUS,
+    PUBLISH_HELD,
+    RETIRE,
+}
+
+/** Queue admission is deliberately absent: only the camera-thread submission result can hold. */
+internal fun tapFocusCompletionDecision(
+    attemptCurrent: Boolean,
+    submission: TapFocusSubmissionResult,
+    sessionCurrent: Boolean,
+): TapFocusCompletionDecision = when {
+    !attemptCurrent -> TapFocusCompletionDecision.IGNORE
+    submission == TapFocusSubmissionResult.REJECTED_PREVIOUS_RESTORED ->
+        TapFocusCompletionDecision.KEEP_PREVIOUS
+    submission == TapFocusSubmissionResult.FAILED_UNCERTAIN -> TapFocusCompletionDecision.RETIRE
+    !sessionCurrent -> TapFocusCompletionDecision.RETIRE
+    else -> TapFocusCompletionDecision.PUBLISH_HELD
+}
+
 /** Fresh Custom-WB gains plus the opaque accepted-session owner that produced them. */
 internal class CustomWbSample internal constructor(
     val gains: WbGains,
@@ -3739,6 +3970,46 @@ internal fun viewTapToLoupeCenter(nx: Float, ny: Float, previewRotationDegrees: 
     val lx = ax * cos - ay * sin
     val ly = ax * sin + ay * cos
     return (lx + 0.5f).coerceIn(0f, 1f) to (ly + 0.5f).coerceIn(0f, 1f)
+}
+
+/** Immutable event-time mapping stored by the rapid-tap latest-wins coalescer. */
+internal data class TapFocusGeometry(
+    val viewPoint: Pair<Float, Float>,
+    val sensorPoint: Pair<Float, Float>,
+    val loupePoint: Pair<Float, Float>,
+)
+
+internal fun mapTapFocusGeometry(
+    nx: Float,
+    ny: Float,
+    sensorOrientation: Int,
+    teleconverter: Boolean,
+    punchActive: Boolean,
+    sensorCenter: Pair<Float, Float>,
+    loupeCenter: Pair<Float, Float>,
+    previewRotationDegrees: Int,
+): TapFocusGeometry {
+    val sensorRaw = viewTapToSensorPoint(nx, ny, sensorOrientation, teleconverter)
+    val loupeRaw = viewTapToLoupeCenter(nx, ny, previewRotationDegrees)
+    if (!punchActive) return TapFocusGeometry(nx to ny, sensorRaw, loupeRaw)
+    val span = 1f - PUNCH_IN_CROP
+    return TapFocusGeometry(
+        viewPoint = nx to ny,
+        sensorPoint = loupeAdjustedTap(
+            sensorRaw.first,
+            sensorRaw.second,
+            sensorCenter.first,
+            sensorCenter.second,
+            span,
+        ),
+        loupePoint = loupeAdjustedTap(
+            loupeRaw.first,
+            loupeRaw.second,
+            loupeCenter.first,
+            loupeCenter.second,
+            span,
+        ),
+    )
 }
 
 /**

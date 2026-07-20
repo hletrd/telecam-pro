@@ -547,8 +547,9 @@ internal fun retainedOpticsApplyPlan(
     previous: ManualControls,
     next: ManualControls,
     smoothPreviewBoostActive: Boolean,
+    tapResetPending: Boolean = false,
 ): RetainedOpticsApplyPlan = when {
-    smoothPreviewBoostActive -> RetainedOpticsApplyPlan.FULL_REBUILD
+    smoothPreviewBoostActive || tapResetPending -> RetainedOpticsApplyPlan.FULL_REBUILD
     previous == next -> RetainedOpticsApplyPlan.NO_OP
     zoomOnlyControlsDelta(previous, next) -> RetainedOpticsApplyPlan.ZOOM_FAST_PATH
     sensorFastPathAdmitted(previous, next) -> RetainedOpticsApplyPlan.SENSOR_FAST_PATH
