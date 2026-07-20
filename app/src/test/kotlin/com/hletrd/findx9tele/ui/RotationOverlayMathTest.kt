@@ -3,7 +3,6 @@ package com.hletrd.findx9tele.ui
 import com.hletrd.findx9tele.camera.AutoExposure
 import com.hletrd.findx9tele.camera.ExposureMode
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -11,10 +10,8 @@ import kotlin.math.abs
 
 /**
  * Pins the pure overlay-rotation math in CameraScreen.kt — the documented already-shipped-wrong-once
- * zone. [shortestRotationTarget] must always take the <=180-degree way around (and keep accumulating
- * an unwrapped target), and [swapsDimensions] must stay boundary-INCLUSIVE at the quadrant edges so a
- * range "cleanup" can't silently un-swap a 90-degree hold. Also pins [manualMeterEv]'s guard branches
- * and clamp.
+ * zone. [shortestRotationTarget] must always take the <=180-degree way around while accumulating an
+ * unwrapped target. Also pins [manualMeterEv]'s guard branches and clamp.
  */
 class RotationOverlayMathTest {
 
@@ -48,28 +45,6 @@ class RotationOverlayMathTest {
                 assertTrue("delta $delta for $current->$desired must be <=180", abs(delta) <= 180f + 1e-4f)
             }
         }
-    }
-
-    // ---- swapsDimensions (boundary-INCLUSIVE at 45/135/225/315) ----
-
-    @Test
-    fun swapsDimensions_trueOnQuadrantHolds() {
-        for (d in listOf(45f, 90f, 135f, 225f, 270f, 315f)) {
-            assertTrue("$d should swap W/H", swapsDimensions(d))
-        }
-    }
-
-    @Test
-    fun swapsDimensions_falseOffTheHolds() {
-        for (d in listOf(0f, 44.9f, 135.1f, 180f, 224.9f, 315.1f, 360f)) {
-            assertFalse("$d should NOT swap W/H", swapsDimensions(d))
-        }
-    }
-
-    @Test
-    fun swapsDimensions_normalizesNegativeInput() {
-        // -90 normalizes to 270 -> a swap.
-        assertTrue(swapsDimensions(-90f))
     }
 
     // ---- manualMeterEv ----

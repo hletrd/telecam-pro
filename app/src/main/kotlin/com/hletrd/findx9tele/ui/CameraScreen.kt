@@ -5,7 +5,6 @@ import android.view.HapticFeedbackConstants
 import android.view.Surface
 import android.view.TextureView
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -62,6 +61,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.FocusRequester
@@ -90,6 +90,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.constrainHeight
+import androidx.compose.ui.unit.constrainWidth
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -111,6 +114,7 @@ import com.hletrd.findx9tele.camera.FlashMode
 import com.hletrd.findx9tele.camera.FnSlot
 import com.hletrd.findx9tele.camera.FocusMode
 import com.hletrd.findx9tele.camera.GridType
+import com.hletrd.findx9tele.camera.HardwareKeyAction
 import com.hletrd.findx9tele.camera.finderRect
 import com.hletrd.findx9tele.camera.finderContainsTopLeftPoint
 import com.hletrd.findx9tele.camera.teleFinderVisible
@@ -157,7 +161,11 @@ import com.hletrd.findx9tele.ui.review.GalleryThumb
 import com.hletrd.findx9tele.ui.review.MediaReviewOverlay
 import com.hletrd.findx9tele.ui.theme.CameraColors
 import com.hletrd.findx9tele.ui.theme.FindX9TeleTheme
+import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.cos
 import kotlin.math.ln
+import kotlin.math.sin
 
 /**
  * Root camera UI, styled after Sony Alpha / Xperia Pro operation: a clear viewfinder at rest, compact
@@ -479,23 +487,61 @@ fun CameraScreen(
                 .padding(start = 12.dp, top = 60.dp),
         )
 
-        if (state.halfPressActive) {
-            Text(
-                text = state.halfPressAction.label,
-                color = CameraColors.ManualActive,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .statusBarsPadding()
-                    .padding(top = 106.dp)
-                    // Compact short label → counter-rotates like the other glyphs ("AF-ON" reads
-                    // upright in a landscape hold).
-                    .rotate(overlayRotation)
-                    .clip(RoundedCornerShape(50))
-                    .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
-                    .padding(horizontal = 12.dp, vertical = 5.dp),
-            )
+        // One measured top-center lane owns every transient/held readout. Its first slot keeps the
+        // focus states below the shooting OSD even when the zoom readout is hidden, while expanding
+        // to the zoom's actual rotated/font-scaled height whenever it is visible.
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .statusBarsPadding()
+                .padding(top = 64.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Box(
+                modifier = Modifier.sizeIn(minHeight = 34.dp),
+                contentAlignment = Alignment.TopCenter,
+            ) {
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = zoomVisible,
+                    enter = fadeIn(tween(120)),
+                    exit = fadeOut(tween(300)),
+                ) {
+                    val mul = zoomDisplayMultiplier(state.teleconverterMode, state.caps?.equivalentFocalMm)
+                    ZoomIndicator(
+                        zoom = state.controls.zoomRatio * mul,
+                        range = state.caps?.zoomRatioRange?.let {
+                            val hi = if (state.teleconverterMode) {
+                                minOf(it.upper * mul, com.hletrd.findx9tele.camera.TELE_MAX_DISPLAY_ZOOM)
+                            } else {
+                                it.upper * mul
+                            }
+                            android.util.Range(minOf(it.lower * mul, hi), hi)
+                        },
+                        numberRotation = overlayRotation,
+                    )
+                }
+            }
+
+            if (showHalfPressLabel(state.halfPressActive, state.halfPressAction, state.tapFocusHeld)) {
+                Text(
+                    text = state.halfPressAction.label,
+                    color = CameraColors.ManualActive,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .rotateLayout(overlayRotation)
+                        .clip(RoundedCornerShape(50))
+                        .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
+                        .padding(horizontal = 12.dp, vertical = 5.dp),
+                )
+            }
+            if (state.tapFocusHeld) {
+                TapFocusHoldChip(
+                    onReset = currentActions.value::onResetFocusPoint,
+                    modifier = Modifier.rotateLayout(overlayRotation),
+                )
+            }
         }
 
         // Scopes/readouts stack in the top-end column. top = 100dp clears the OSD status row (which ends
@@ -598,50 +644,6 @@ fun CameraScreen(
                 .statusBarsPadding()
                 .padding(top = 8.dp),
         )
-
-        if (state.tapFocusHeld) {
-            TapFocusHoldChip(
-                onReset = currentActions.value::onResetFocusPoint,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .statusBarsPadding()
-                    .padding(top = 112.dp),
-            )
-        }
-
-        // Live zoom readout, centered under the TopBar; fades in on pinch/slider change. Moved off the
-        // bottom cluster (it overlapped the MR1/MR2/MR3 strip) — a top-center HUD reads clearly and
-        // stays clear of the manual dials + shutter row.
-        AnimatedVisibility(
-            visible = zoomVisible,
-            enter = fadeIn(tween(120)),
-            exit = fadeOut(tween(300)),
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .statusBarsPadding()
-                .padding(top = 64.dp),
-        ) {
-            // Display MAIN-relative magnification (the stock-app style: 3× at the 3× tele's native,
-            // 10× at the 10×, 13× with the TC) via the ONE shared zoomDisplayMultiplier — the
-            // Fn/My-Menu ZOOM value reads the same helper so the two can never disagree again
-            // (DES4-1: the Fn tile used to show the raw lens-local ratio).
-            val mul = zoomDisplayMultiplier(state.teleconverterMode, state.caps?.equivalentFocalMm)
-            ZoomIndicator(
-                zoom = state.controls.zoomRatio * mul,
-                range = state.caps?.zoomRatioRange?.let {
-                    val hi = if (state.teleconverterMode) {
-                        minOf(it.upper * mul, com.hletrd.findx9tele.camera.TELE_MAX_DISPLAY_ZOOM)
-                    } else {
-                        it.upper * mul
-                    }
-                    // Defensive floor clamp: android.util.Range THROWS on lower > upper. Safe on
-                    // this device's advertised caps, but a future caps profile whose lower*mul
-                    // exceeded the TELE display ceiling would crash EVERY recomposition.
-                    android.util.Range(minOf(it.lower * mul, hi), hi)
-                },
-                numberRotation = overlayRotation,
-            )
-        }
 
         // Exposure meter: pinned to the LEFT edge as a vertical scale (the scopes own the right).
         // A fixed home beats the old jump between top/bottom as the dial opened (feedback).
@@ -831,24 +833,81 @@ internal fun statusDisplayDurationMs(message: String?): Long? = when {
     else -> 2_500L
 }
 
-/**
- * Rotates content by [degrees] AND reserves the ROTATED bounding box in layout — unlike Modifier.rotate,
- * a pure draw transform that keeps the original (unrotated) slot, which made rotated wide scopes overlap
- * their neighbours. For 90°/270° holds it swaps width/height so a stack of rotated scopes lays out
- * without collisions; the content is rotated via the placement layer.
- */
-private fun Modifier.rotateLayout(degrees: Float): Modifier = this.layout { measurable, constraints ->
-    val placeable = measurable.measure(constraints)
-    val swap = swapsDimensions(degrees)
-    val w = if (swap) placeable.height else placeable.width
-    val h = if (swap) placeable.width else placeable.height
-    layout(w, h) {
-        placeable.placeRelativeWithLayer(
-            x = (w - placeable.width) / 2,
-            y = (h - placeable.height) / 2,
-        ) { rotationZ = degrees }
+internal data class RotatedLayoutBounds(val widthPx: Int, val heightPx: Int)
+
+/** Exact axis-aligned bounds for a [widthPx] by [heightPx] rectangle rotated around its centre. */
+internal fun rotatedLayoutBounds(widthPx: Int, heightPx: Int, degrees: Float): RotatedLayoutBounds {
+    require(widthPx >= 0 && heightPx >= 0)
+    if (!degrees.isFinite()) return RotatedLayoutBounds(widthPx, heightPx)
+
+    val normalized = ((degrees.toDouble() % 360.0) + 360.0) % 360.0
+    val radians = Math.toRadians(normalized)
+    fun snapCardinal(value: Double): Double = when {
+        value < 1e-7 -> 0.0
+        1.0 - value < 1e-7 -> 1.0
+        else -> value
     }
+    val cosine = snapCardinal(abs(cos(radians)))
+    val sine = snapCardinal(abs(sin(radians)))
+
+    fun layoutCeil(value: Double): Int = when {
+        value <= 0.0 -> 0
+        value >= Int.MAX_VALUE.toDouble() -> Int.MAX_VALUE
+        else -> ceil(value).toInt()
+    }
+
+    return RotatedLayoutBounds(
+        widthPx = layoutCeil(widthPx * cosine + heightPx * sine),
+        heightPx = layoutCeil(widthPx * sine + heightPx * cosine),
+    )
 }
+
+internal fun constrainedRotatedLayoutBounds(
+    widthPx: Int,
+    heightPx: Int,
+    degrees: Float,
+    constraints: Constraints,
+): RotatedLayoutBounds {
+    val bounds = rotatedLayoutBounds(widthPx, heightPx, degrees)
+    return RotatedLayoutBounds(
+        widthPx = constraints.constrainWidth(bounds.widthPx),
+        heightPx = constraints.constrainHeight(bounds.heightPx),
+    )
+}
+
+internal fun showHalfPressLabel(
+    active: Boolean,
+    action: HardwareKeyAction,
+    tapFocusHeld: Boolean,
+): Boolean = active && !(action == HardwareKeyAction.AF_ON && tapFocusHeld)
+
+/** Rotates content while reserving its exact animated axis-aligned bounds in layout. */
+private fun Modifier.rotateLayout(degrees: Float): Modifier = this
+    // This clip must wrap the custom layout. Putting it after layout() would clip against the
+    // unrotated child's bounds instead of the constraint-valid rotated slot.
+    .clipToBounds()
+    .layout { measurable, constraints ->
+        val placeable = measurable.measure(constraints)
+        val bounds = constrainedRotatedLayoutBounds(
+            widthPx = placeable.width,
+            heightPx = placeable.height,
+            degrees = degrees,
+            constraints = constraints,
+        )
+        val centeredX = (bounds.widthPx - placeable.width) / 2f
+        val centeredY = (bounds.heightPx - placeable.height) / 2f
+        val placementX = centeredX.toInt()
+        val placementY = centeredY.toInt()
+        layout(bounds.widthPx, bounds.heightPx) {
+            placeable.placeWithLayer(x = placementX, y = placementY) {
+                // Preserve half-pixel centering so an unconstrained, ceil-rounded AABB is not
+                // accidentally shaved by the outer clip.
+                translationX = centeredX - placementX
+                translationY = centeredY - placementY
+                rotationZ = degrees
+            }
+        }
+    }
 
 // ---------------------------------------------------------------------------
 // Top bar: quick toggles (flash/timer/aspect/grid/teleconverter) + settings entry point.
@@ -1233,8 +1292,7 @@ private fun StatusInfoPill(state: CameraUiState, modifier: Modifier = Modifier) 
 
 /**
  * Live zoom readout: a "N.N×" pill over a thin bar that fills to the zoom's position within the lens's
- * advertised range. Shown transiently while zooming (pinch or the in-sheet slider), like the stock
- * camera. Screen-fixed (not counter-rotated) — a compact centered HUD reads fine in any hold.
+ * advertised range. The number stays upright as the phone turns; the bar remains screen-fixed.
  */
 @Composable
 private fun ZoomIndicator(
@@ -1260,7 +1318,7 @@ private fun ZoomIndicator(
             fontSize = 15.sp,
             fontWeight = FontWeight.Bold,
             modifier = Modifier
-                .rotate(numberRotation)
+                .rotateLayout(numberRotation)
                 .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA), RoundedCornerShape(50))
                 .padding(horizontal = 12.dp, vertical = 4.dp),
         )
@@ -2016,22 +2074,11 @@ private fun CameraScreenPreview() {
 /**
  * Shortest-path angle unwrap for the glyph counter-rotation animation: accumulates an UNWRAPPED
  * target so the spring always takes the <=180-degree way around (a 350->10 transition moves +20,
- * not -340). Pure and internal — this sits in the documented already-shipped-wrong-once rotation
- * sign zone, so the quadrant boundaries are pinned by unit tests.
+ * not -340). Pure and internal because the rotation sign and wrap cases have regressed before.
  */
 internal fun shortestRotationTarget(current: Float, desiredDegrees: Float): Float {
     var delta = (desiredDegrees - current) % 360f
     if (delta > 180f) delta -= 360f
     if (delta < -180f) delta += 360f
     return current + delta
-}
-
-/**
- * Whether a rotateLayout at [degrees] swaps the reserved width/height (a ~90-degree/~270-degree
- * hold). Boundary-INCLUSIVE at 45/135/225/315 — pinned by tests so a range "cleanup" can't silently
- * un-swap a 90-degree hold.
- */
-internal fun swapsDimensions(degrees: Float): Boolean {
-    val norm = ((degrees % 360f) + 360f) % 360f
-    return norm in 45f..135f || norm in 225f..315f
 }
