@@ -2114,7 +2114,7 @@ class CameraEngine(private val context: Context) {
         acceptedCameraSession === accepted && currentAcceptedCameraSession() === accepted
 
     /** Returns true only when this press was admitted to a real still target. */
-    fun capturePhoto(formats: PhotoFormats): Boolean {
+    fun capturePhoto(formats: PhotoFormats, singleShot: Boolean = false): Boolean {
         // Same gate startRecording has: during a session-key reopen (cameraReady=false) the
         // controller guards make a capture attempt safe but silent — give the user the status
         // instead of a shutter press that does nothing.
@@ -2135,7 +2135,7 @@ class CameraEngine(private val context: Context) {
                 onStatus?.invoke("RAW unavailable")
         }
         val ctrl = accepted.controller
-        when (driveMode) {
+        when (captureDriveMode(driveMode, singleShot)) {
             DriveMode.SINGLE -> {
                 val snapshotLease = if (effFormats.wantsProcessedStill) {
                     singleProcessedSnapshotBudget.tryAcquire()

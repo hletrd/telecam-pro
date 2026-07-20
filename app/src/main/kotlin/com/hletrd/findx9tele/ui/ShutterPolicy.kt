@@ -21,3 +21,7 @@ internal fun dispatchPhotoShutter(
         else -> startCountdown(configuredDelaySeconds)
     }
 }
+
+/** Video snapshots ignore the Photo self-timer; the dedicated REC control is an immediate shutter. */
+internal fun photoShutterDelaySeconds(configuredDelaySeconds: Int, recording: Boolean): Int =
+    if (recording) 0 else configuredDelaySeconds

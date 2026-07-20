@@ -53,6 +53,14 @@ class CameraStateTest {
     }
 
     @Test
+    fun `recording snapshot is single regardless of saved Photo drive`() {
+        DriveMode.entries.forEach { selected ->
+            assertEquals(DriveMode.SINGLE, captureDriveMode(selected, singleShot = true))
+            assertEquals(selected, captureDriveMode(selected, singleShot = false))
+        }
+    }
+
+    @Test
     fun `record stop remains enabled through a camera health transition`() {
         val recording = CameraUiState(
             mode = CaptureMode.VIDEO,

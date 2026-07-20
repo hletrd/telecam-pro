@@ -108,4 +108,10 @@ class CameraUiPolicyTest {
         )
         assertEquals(3, startedAt)
     }
+
+    @Test
+    fun `recording snapshot ignores the Photo self timer`() {
+        assertEquals(0, photoShutterDelaySeconds(configuredDelaySeconds = 10, recording = true))
+        assertEquals(10, photoShutterDelaySeconds(configuredDelaySeconds = 10, recording = false))
+    }
 }

@@ -714,6 +714,7 @@ fun CameraScreen(
                 ShutterRow(
                     mode = state.mode,
                     isRecording = state.isRecording,
+                    isRecordingStarting = state.isRecordingStarting,
                     timerCountdownSec = state.timerCountdownSec,
                     lastMediaUri = state.lastMediaUri,
                     onOpenReview = {
@@ -1776,6 +1777,7 @@ private fun ModeLabel(text: String, active: Boolean, enabled: Boolean, onClick: 
 private fun ShutterRow(
     mode: CaptureMode,
     isRecording: Boolean,
+    isRecordingStarting: Boolean,
     timerCountdownSec: Int,
     lastMediaUri: android.net.Uri?,
     onOpenReview: () -> Unit,
@@ -1799,7 +1801,7 @@ private fun ShutterRow(
             horizontalArrangement = Arrangement.spacedBy(14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (mode == CaptureMode.VIDEO && isRecording) {
+            if (mode == CaptureMode.VIDEO && isRecording && !isRecordingStarting) {
                 SnapshotButton(onClick = onSnapshot, enabled = stillCaptureAvailable)
             }
             ShutterButton(

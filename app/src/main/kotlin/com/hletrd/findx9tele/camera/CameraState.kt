@@ -367,6 +367,10 @@ enum class VendorLogMode(val halValue: Int) { OFF(0), ON(1) }
 /** Shutter drive mode. */
 enum class DriveMode { SINGLE, BURST, AEB, TIMELAPSE }
 
+/** A requested single shot ignores the saved Photo drive mode. */
+internal fun captureDriveMode(selected: DriveMode, singleShot: Boolean): DriveMode =
+    if (singleShot) DriveMode.SINGLE else selected
+
 /**
  * Video codec. HEVC exposes Main10 HLG/Log profiles; AVC is 8-bit SDR only. APV is the professional
  * intra-frame codec (`c2.qti.apv.encoder`, ISO/IEC 21794) — HW-accelerated up to ~2 Gbps, the

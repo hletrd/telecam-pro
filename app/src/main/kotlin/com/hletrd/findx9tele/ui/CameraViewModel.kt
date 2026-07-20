@@ -1600,8 +1600,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
      * instant acknowledgment every press reads as shutter lag or a dead button.
      */
     private fun fireShutterWithFeedback() {
-        val formats = _state.value.photoFormats
-        if (engine.capturePhoto(formats)) {
+        val state = _state.value
+        if (engine.capturePhoto(state.photoFormats, singleShot = state.isRecording)) {
             _state.update { it.copy(shutterFlashTick = it.shutterFlashTick + 1) }
         }
     }
@@ -1629,10 +1629,14 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     override fun onCapturePhoto() {
         val state = _state.value
+        if (state.isRecordingStarting) return
         dispatchPhotoShutter(
             countdownSeconds = state.timerCountdownSec,
             stillCaptureReady = state.stillCaptureReady,
-            configuredDelaySeconds = state.timer.seconds,
+            configuredDelaySeconds = photoShutterDelaySeconds(
+                configuredDelaySeconds = state.timer.seconds,
+                recording = state.isRecording,
+            ),
             cancelCountdown = ::cancelCountdown,
             // The engine's decline path surfaces the authoritative session status when a
             // preview-only session has no still target; no impossible countdown is started.
