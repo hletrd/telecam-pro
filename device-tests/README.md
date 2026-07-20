@@ -3,8 +3,8 @@
 A repeatable, adb-driven functional test suite for TeleCam Pro on the OPPO Find X9 Ultra.
 It codifies the manual device-verification protocol developed across the 2026-07 review
 cycles: UI-tree-driven interaction, logcat assertions, screencap statistics, and pulled-file
-validation. Pure Python 3 stdlib on the host; `ffprobe` is optional (video checks degrade to
-structural MP4 validation without it).
+validation. Pure Python 3 stdlib on the host; `ffprobe` is required for a green video result
+(the structural MP4 fallback is reported as non-green/incomplete).
 
 This suite exists as an **external harness** (not `androidTest`) deliberately: the
 reliability tier kills and backgrounds the app process, which in-process instrumentation
@@ -15,12 +15,15 @@ cannot survive. Host-JVM unit tests remain in `app/src/test/` (Gradle).
 ```bash
 # device over wireless ADB (loopback proxy fine); deploy the debug APK first
 python3 device-tests/run.py --serial 127.0.0.1:5599 --tier smoke          # ~30 s, every deploy
-python3 device-tests/run.py --serial 127.0.0.1:5599 --tier full           # ~4 min feature sweep
-python3 device-tests/run.py --serial 127.0.0.1:5599 --tier reliability    # safe cases; kill cases skip
+python3 device-tests/run.py --serial 127.0.0.1:5599 --tier full           # read-only cases; stateful cases skip
+python3 device-tests/run.py --serial 127.0.0.1:5599 --tier reliability    # approval-gated cases skip
 python3 device-tests/run.py --serial 127.0.0.1:5599 --tier all -k capture # substring filter
 
-# Only after explicit approval to force-stop the app:
-python3 device-tests/run.py --serial 127.0.0.1:5599 --tier reliability --allow-destructive
+# Supply only the effects that the operator explicitly approved:
+python3 device-tests/run.py --serial 127.0.0.1:5599 --tier full --allow-settings
+python3 device-tests/run.py --serial 127.0.0.1:5599 --tier full --allow-settings --allow-media-writes
+python3 device-tests/run.py --serial 127.0.0.1:5599 --tier reliability \
+  --allow-destructive --allow-settings --allow-media-writes
 ```
 
 Reports (markdown + JUnit XML + pulled evidence files) land in `device-tests/reports/<ts>/`
@@ -30,10 +33,13 @@ reported as incomplete.
 
 The runner refuses any device other than PMA110/API 36 and refuses an installed `base.apk`
 whose SHA-256 does not match `app/build/outputs/apk/debug/app-debug.apk` (override the host
-path with `--apk`). Force-stop cases are skipped unless `--allow-destructive` is supplied;
-the flag is an execution guard, not a substitute for obtaining operator approval. Every
-force-stop also fails closed at the call site unless the UI proves the app is idle, so a
-recording left active by an earlier failed case cannot be killed by a later case.
+path with `--apk`). Cases are independently gated when they may launch/force-stop the app
+(`--allow-destructive`), change persisted shooting settings (`--allow-settings`), or create
+photos/videos (`--allow-media-writes`). These flags are execution guards, not substitutes for
+obtaining operator approval. Launch is destructive-gated because app startup may reclaim proven-
+incomplete app-owned pending media. Every force-stop also fails closed at the call site unless the
+UI proves the app is idle, so a recording left active by an earlier failed case cannot be killed by
+a later case.
 
 ## Tiers and cases
 

@@ -440,7 +440,7 @@ def t_3a(ctx: Context) -> None:
 
 # ---------------------------------------------------------------- full: modes/lenses/TC
 
-@test("mode_switch_roundtrip", "full")
+@test("mode_switch_roundtrip", "full", mutates_settings=True)
 def t_modes(ctx: Context) -> None:
     """Photo↔Video flips reconfigure the session without camera errors."""
     pid = ensure_foreground(ctx)
@@ -531,7 +531,7 @@ def t_modes(ctx: Context) -> None:
     ctx.note("photo→video→photo clean")
 
 
-@test("lens_presets", "full")
+@test("lens_presets", "full", mutates_settings=True)
 def t_lenses(ctx: Context) -> None:
     """Each focal-rail preset selects without a camera error; selection state updates."""
     pid = ensure_foreground(ctx)
@@ -552,7 +552,7 @@ def t_lenses(ctx: Context) -> None:
     ctx.note("0.6/1/3/10 presets cycled clean")
 
 
-@test("teleconverter_roundtrip", "full")
+@test("teleconverter_roundtrip", "full", mutates_settings=True)
 def t_tc(ctx: Context) -> None:
     """TC toggle reopens onto the standalone tele and back without errors; OSD reflects it."""
     pid = ensure_foreground(ctx)
@@ -574,7 +574,7 @@ def t_tc(ctx: Context) -> None:
 
 # ---------------------------------------------------------------- full: capture/video
 
-@test("photo_capture_valid_files", "full")
+@test("photo_capture_valid_files", "full", mutates_settings=True, writes_media=True)
 def t_capture(ctx: Context) -> None:
     """A still produces valid HEIF/JPEG file(s); JPEG carries EXIF; ShutterLag completes."""
     ensure_foreground(ctx)
@@ -608,7 +608,7 @@ def t_capture(ctx: Context) -> None:
             assert media.dng_valid(local), f"DNG invalid: {name}"
 
 
-@test("tele_dng_capture", "full")
+@test("tele_dng_capture", "full", mutates_settings=True, writes_media=True)
 def t_dng(ctx: Context) -> None:
     """In TELE mode a capture may include DNG (route-gated); whatever arrives must be valid."""
     pid = ensure_foreground(ctx)
@@ -642,7 +642,7 @@ def t_dng(ctx: Context) -> None:
             time.sleep(3)
 
 
-@test("video_record_validate", "full")
+@test("video_record_validate", "full", mutates_settings=True, writes_media=True)
 def t_video(ctx: Context) -> None:
     """A 65 s 29.97p Main10 HLG take decodes fully with healthy PTS and AAC sync."""
     pid = ensure_foreground(ctx)
@@ -760,7 +760,7 @@ def t_video(ctx: Context) -> None:
 
 # ---------------------------------------------------------------- full: AF + settings
 
-@test("tap_af_lock_persists", "full")
+@test("tap_af_lock_persists", "full", mutates_settings=True)
 def t_tap_af(ctx: Context) -> None:
     """Tap-to-focus engages AF_MODE_AUTO and the hold survives past the 2 s reticle timeout."""
     pid = ensure_foreground(ctx)
@@ -804,7 +804,7 @@ def t_settings(ctx: Context) -> None:
     ctx.note(f"all 9 tabs present; selected={selected[0]}")
 
 
-@test("mode_persists_across_kill", "full", destructive=True)
+@test("mode_persists_across_kill", "full", destructive=True, mutates_settings=True)
 def t_persist(ctx: Context) -> None:
     """Remember Settings: the selected capture mode survives force-stop + relaunch."""
     ensure_foreground(ctx)
@@ -822,7 +822,13 @@ def t_persist(ctx: Context) -> None:
 
 # ---------------------------------------------------------------- reliability (the mandate)
 
-@test("capture_then_kill_survives", "reliability", destructive=True)
+@test(
+    "capture_then_kill_survives",
+    "reliability",
+    destructive=True,
+    mutates_settings=True,
+    writes_media=True,
+)
 def t_kill_capture(ctx: Context) -> None:
     """A still whose process dies right after the shot must survive as valid, published files."""
     ensure_foreground(ctx)
@@ -854,7 +860,13 @@ def t_kill_capture(ctx: Context) -> None:
     ctx.note(f"survived: {new}, no stuck pending")
 
 
-@test("rec_backgrounded_finalizes", "reliability")
+@test(
+    "rec_backgrounded_finalizes",
+    "reliability",
+    destructive=True,
+    mutates_settings=True,
+    writes_media=True,
+)
 def t_rec_background(ctx: Context) -> None:
     """HOME mid-recording must still finalize a playable clip (pause-path finalization)."""
     ensure_foreground(ctx)
@@ -880,7 +892,13 @@ def t_rec_background(ctx: Context) -> None:
     ctx.note(f"clip finalized: {row.display_name} {info.get('video_seconds', '?')}s")
 
 
-@test("rec_stop_then_kill_published", "reliability", destructive=True)
+@test(
+    "rec_stop_then_kill_published",
+    "reliability",
+    destructive=True,
+    mutates_settings=True,
+    writes_media=True,
+)
 def t_rec_stop_kill(ctx: Context) -> None:
     """Killing the app right after REC-stop must not lose the clip (publish window durability)."""
     ensure_foreground(ctx)

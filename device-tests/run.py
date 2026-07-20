@@ -3,7 +3,7 @@
 
 Usage:
   python3 device-tests/run.py --serial 127.0.0.1:5599 --tier smoke
-  python3 device-tests/run.py --serial 127.0.0.1:5599 --tier full --tier reliability
+  python3 device-tests/run.py --serial 127.0.0.1:5599 --tier full --allow-settings
   python3 device-tests/run.py --serial 127.0.0.1:5599 --tier all -k capture
 
 Requires: adb on PATH with the PMA110 connected (wireless-debugging loopback proxy is
@@ -55,6 +55,10 @@ def main() -> int:
                     help="exact host debug APK that must match the installed base.apk")
     ap.add_argument("--allow-destructive", action="store_true",
                     help="allow cases that force-stop the app; requires explicit operator approval")
+    ap.add_argument("--allow-settings", action="store_true",
+                    help="allow cases that change persisted shooting settings; requires explicit approval")
+    ap.add_argument("--allow-media-writes", action="store_true",
+                    help="allow cases that create photos or videos; requires explicit approval")
     args = ap.parse_args()
 
     tiers = args.tier or ["smoke"]
@@ -110,6 +114,8 @@ def main() -> int:
         args.filter,
         report_dir,
         allow_destructive=args.allow_destructive,
+        allow_settings=args.allow_settings,
+        allow_media_writes=args.allow_media_writes,
     )
 
 

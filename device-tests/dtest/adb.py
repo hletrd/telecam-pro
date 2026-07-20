@@ -231,6 +231,11 @@ class Adb:
         return int(out.split()[0]) if out and out.split()[0].isdigit() else None
 
     def launch(self, wait_s: float = 5.0) -> int:
+        if not self.allow_destructive:
+            raise AdbError(
+                "refusing app launch without explicit destructive approval; "
+                "startup may reclaim incomplete app-owned pending media"
+            )
         self.shell("input keyevent KEYCODE_WAKEUP")
         self.shell(f"am start -n {MAIN_ACTIVITY}")
         deadline = time.time() + wait_s + 10

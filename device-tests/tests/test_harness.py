@@ -779,6 +779,23 @@ class ForceStopGuardTest(unittest.TestCase):
 
         self.assertNotIn(f"am force-stop {APP_ID}", adb.commands)
 
+    def test_launch_requires_destructive_guard_because_startup_can_reclaim_pending(self) -> None:
+        adb, temp_dir = self.make_adb(allowed=False, descriptions={"Take photo"})
+        self.addCleanup(temp_dir.cleanup)
+
+        with self.assertRaisesRegex(AdbError, "startup may reclaim"):
+            adb.launch(wait_s=0)
+
+        self.assertFalse(any("am start" in command for command in adb.commands))
+
+    def test_launch_runs_only_with_explicit_destructive_guard(self) -> None:
+        adb, temp_dir = self.make_adb(allowed=True, descriptions={"Take photo"})
+        self.addCleanup(temp_dir.cleanup)
+
+        self.assertEqual(adb.launch(wait_s=0), 123)
+
+        self.assertTrue(any("am start" in command for command in adb.commands))
+
     def test_force_stop_refuses_active_recording(self) -> None:
         adb, temp_dir = self.make_adb(allowed=True, descriptions={"Stop recording"})
         self.addCleanup(temp_dir.cleanup)
@@ -814,7 +831,14 @@ class FrameworkSafetyTest(unittest.TestCase):
     def tearDown(self) -> None:
         framework._REGISTRY[:] = self.original_registry
 
-    def run_suite(self, *, allow_destructive: bool = False, name_filter: str | None = None) -> int:
+    def run_suite(
+        self,
+        *,
+        allow_destructive: bool = False,
+        allow_settings: bool = False,
+        allow_media_writes: bool = False,
+        name_filter: str | None = None,
+    ) -> int:
         with tempfile.TemporaryDirectory() as temp_dir:
             return framework.run(
                 FakeAdb(),
@@ -822,6 +846,8 @@ class FrameworkSafetyTest(unittest.TestCase):
                 name_filter,
                 Path(temp_dir),
                 allow_destructive=allow_destructive,
+                allow_settings=allow_settings,
+                allow_media_writes=allow_media_writes,
             )
 
     def test_destructive_case_is_not_invoked_without_guard(self) -> None:
@@ -844,6 +870,28 @@ class FrameworkSafetyTest(unittest.TestCase):
             called = True
 
         self.assertEqual(self.run_suite(allow_destructive=True), 0)
+        self.assertTrue(called)
+
+    def test_settings_and_media_approvals_are_independent_and_both_required(self) -> None:
+        called = False
+
+        @framework.test(
+            "guarded",
+            "smoke",
+            mutates_settings=True,
+            writes_media=True,
+        )
+        def guarded(_ctx) -> None:
+            nonlocal called
+            called = True
+
+        self.assertEqual(self.run_suite(allow_settings=True), 2)
+        self.assertEqual(self.run_suite(allow_media_writes=True), 2)
+        self.assertFalse(called)
+        self.assertEqual(
+            self.run_suite(allow_settings=True, allow_media_writes=True),
+            0,
+        )
         self.assertTrue(called)
 
     def test_empty_filter_is_non_green(self) -> None:

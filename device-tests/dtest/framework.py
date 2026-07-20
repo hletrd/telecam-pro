@@ -33,6 +33,8 @@ class Case:
     fn: object
     doc: str
     destructive: bool = False
+    mutates_settings: bool = False
+    writes_media: bool = False
 
 
 @dataclass
@@ -43,10 +45,27 @@ class Result:
     seconds: float = 0.0
 
 
-def test(name: str, tier: str, *, destructive: bool = False):
+def test(
+    name: str,
+    tier: str,
+    *,
+    destructive: bool = False,
+    mutates_settings: bool = False,
+    writes_media: bool = False,
+):
     assert tier in TIERS, tier
     def deco(fn):
-        _REGISTRY.append(Case(name, tier, fn, (fn.__doc__ or "").strip(), destructive))
+        _REGISTRY.append(
+            Case(
+                name,
+                tier,
+                fn,
+                (fn.__doc__ or "").strip(),
+                destructive,
+                mutates_settings,
+                writes_media,
+            )
+        )
         return fn
     return deco
 
@@ -69,6 +88,8 @@ def run(
     report_dir: Path,
     *,
     allow_destructive: bool = False,
+    allow_settings: bool = False,
+    allow_media_writes: bool = False,
 ) -> int:
     cases = [c for c in _REGISTRY if c.tier in tiers and (not name_filter or name_filter in c.name)]
     if not cases:
@@ -83,8 +104,15 @@ def run(
         ctx.evidence.mkdir(parents=True, exist_ok=True)
         print(f"[{case.tier}] {case.name} — {case.doc.splitlines()[0] if case.doc else ''}")
         t0 = time.time()
+        missing_approvals = []
         if case.destructive and not allow_destructive:
-            detail = "requires explicit --allow-destructive approval"
+            missing_approvals.append("--allow-destructive")
+        if case.mutates_settings and not allow_settings:
+            missing_approvals.append("--allow-settings")
+        if case.writes_media and not allow_media_writes:
+            missing_approvals.append("--allow-media-writes")
+        if missing_approvals:
+            detail = "requires explicit approval: " + ", ".join(missing_approvals)
             results.append(Result(case, "skip", detail, time.time() - t0))
             print(f"  SKIP: {detail}")
             continue
