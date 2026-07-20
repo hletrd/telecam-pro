@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import copy
 import sys
 import tempfile
 import unittest
+from fractions import Fraction
 from pathlib import Path
+from types import SimpleNamespace
 
 
 DEVICE_TESTS = Path(__file__).resolve().parents[1]
@@ -55,6 +58,45 @@ class GuardAdb(Adb):
         del timeout
         self.commands.append(cmd)
         return ""
+
+
+class RecordingControlTree:
+    def __init__(self, state: str):
+        self.state = state
+
+    def find_desc_exact(self, description: str):
+        if self.state == "recording" and description == "Stop recording":
+            return SimpleNamespace(center=(100, 100))
+        if self.state == "idle" and description == "Start recording":
+            return SimpleNamespace(center=(100, 100))
+        return None
+
+
+class StopRetryAdb:
+    def __init__(self, *, state: str = "recording", drops: int = 1):
+        self.state = state
+        self.drops = drops
+        self.tap_count = 0
+
+    def pid(self) -> int:
+        return 123
+
+    def ui(self) -> RecordingControlTree:
+        return RecordingControlTree(self.state)
+
+    def tap(self, _x: int, _y: int) -> None:
+        self.tap_count += 1
+        if self.tap_count > self.drops:
+            self.state = "idle"
+
+
+class FinalizationAdb:
+    def __init__(self, line: str | None):
+        self.line = line
+
+    def wait_log(self, _mark: str, _pattern: str, timeout_s: float, pid: int):
+        del timeout_s, pid
+        return self.line
 
 
 def media_row(
@@ -198,6 +240,103 @@ class UiSemanticsTest(unittest.TestCase):
 
         self.assertIsNone(cases.active_multi_drive_label(UiTree("<hierarchy />")))
 
+    @staticmethod
+    def video_osd_tree(spec: str, transfer: str) -> UiTree:
+        nodes = []
+        for index, label in enumerate((spec, transfer)):
+            nodes.append(
+                f'<node text="{label}" content-desc="" class="android.widget.TextView" '
+                'checkable="false" checked="false" selected="false" enabled="true" '
+                f'bounds="[0,{index * 20}][400,{index * 20 + 20}]" />'
+            )
+        return UiTree(f"<hierarchy>{''.join(nodes)}</hierarchy>")
+
+    def test_video_target_precondition_requires_visible_2997_hevc_hlg(self) -> None:
+        self.assertIsNone(
+            cases.video_target_precondition_error(
+                self.video_osd_tree("4K 29.97p HEVC 84Mb", "HLG")
+            )
+        )
+        self.assertIn(
+            "requires HEVC 29.97p",
+            cases.video_target_precondition_error(
+                self.video_osd_tree("4K 30p HEVC 84Mb", "HLG")
+            ),
+        )
+        self.assertIn(
+            "requires HLG",
+            cases.video_target_precondition_error(
+                self.video_osd_tree("4K 29.97p HEVC 84Mb", "SDR")
+            ),
+        )
+
+    def test_video_resolution_label_and_recording_spec_crosscheck_fields(self) -> None:
+        self.assertEqual(cases.video_resolution_label(3840, 2160), "4K")
+        self.assertEqual(cases.video_resolution_label(4096, 3072), "4K 4:3")
+        line = (
+            "RecordingSpec: admitted stem=VID_TELECAM_F1_1700000000000_0000000001 "
+            "codec=HEVC source=3840x2160 encoder=2160x3840 bitrate=84000000 "
+            "fps=29.970029970 transfer=HLG audio=true"
+        )
+        match = cases.RECORDING_SPEC.search(line)
+        self.assertIsNotNone(match)
+        self.assertEqual(match.group(7), "84000000")
+        self.assertEqual(match.group(8), "29.970029970")
+        self.assertEqual(match.group(9), "HLG")
+
+
+class RecordingCleanupTest(unittest.TestCase):
+    def test_stop_retries_dropped_tap_until_idle_is_proven(self) -> None:
+        adb = StopRetryAdb(drops=1)
+
+        observed = cases.stop_recording_verified(
+            SimpleNamespace(adb=adb),
+            123,
+            timeout_s=0.1,
+            poll_s=0.001,
+            tap_retry_s=0,
+        )
+
+        self.assertEqual(adb.state, "idle")
+        self.assertEqual(adb.tap_count, 2)
+        self.assertTrue(observed)
+
+    def test_stop_unknown_state_is_unsafe(self) -> None:
+        adb = StopRetryAdb(state="unknown")
+
+        with self.assertRaisesRegex(framework.UnsafeState, "could not prove recording stopped"):
+            cases.stop_recording_verified(
+                SimpleNamespace(adb=adb),
+                123,
+                timeout_s=0.01,
+                poll_s=0.001,
+                tap_retry_s=0,
+            )
+
+    def test_terminal_publish_evidence_is_required_before_continuing(self) -> None:
+        success = SimpleNamespace(
+            adb=FinalizationAdb(
+                "I CameraEngine: RecordingFinalized: captureId=42 saved=true error=none"
+            )
+        )
+        self.assertIn(
+            "saved=true",
+            cases.wait_recording_finalized(success, "mark", 123, 42),
+        )
+
+        failed = SimpleNamespace(
+            adb=FinalizationAdb(
+                "I CameraEngine: RecordingFinalized: captureId=42 "
+                "saved=false error=IllegalStateException"
+            )
+        )
+        with self.assertRaisesRegex(framework.UnsafeState, "did not finalize safely"):
+            cases.wait_recording_finalized(failed, "mark", 123, 42)
+
+        missing = SimpleNamespace(adb=FinalizationAdb(None))
+        with self.assertRaisesRegex(framework.UnsafeState, "was not observed"):
+            cases.wait_recording_finalized(missing, "mark", 123, 42)
+
 
 class MediaStoreTest(unittest.TestCase):
     def test_sips_dimension_parser_reads_full_heif_canvas(self) -> None:
@@ -297,6 +436,175 @@ class MediaStoreTest(unittest.TestCase):
             adb = SequenceMediaAdb(Path(temp_dir), [[malformed]])
             with self.assertRaisesRegex(AdbError, "non-canonical"):
                 adb.wait_new_media_rows(set(), timeout_s=0.1, settle_s=0)
+
+
+class VideoProbeTest(unittest.TestCase):
+    @staticmethod
+    def ffprobe_fixture() -> tuple[dict, dict]:
+        frame_count = 1_948
+        header = {
+            "streams": [
+                {"index": 0, "codec_type": "video"},
+                {
+                    "index": 1,
+                    "codec_type": "audio",
+                    "codec_name": "aac",
+                    "profile": None,
+                    "sample_rate": "48000",
+                    "channels": 2,
+                    "duration": "65.000000",
+                },
+            ],
+            "format": {"duration": "65.000000", "size": "700000000"},
+        }
+        scan = {
+            "streams": [
+                {
+                    "index": 0,
+                    "codec_type": "video",
+                    "codec_name": "hevc",
+                    "profile": "Main 10",
+                    "pix_fmt": "yuv420p10le",
+                    "width": 2160,
+                    "height": 3840,
+                    "r_frame_rate": "30000/1001",
+                    "avg_frame_rate": "30000/1001",
+                    "time_base": "1/30000",
+                    "duration_ts": str(frame_count * 1001),
+                    "nb_frames": str(frame_count),
+                    "nb_read_frames": str(frame_count),
+                    "color_range": "tv",
+                    "color_space": "bt2020nc",
+                    "color_transfer": "arib-std-b67",
+                    "color_primaries": "bt2020",
+                },
+                {
+                    "index": 1,
+                    "codec_type": "audio",
+                    "codec_name": "aac",
+                    "profile": None,
+                    "sample_rate": "48000",
+                    "channels": 2,
+                    "time_base": "1/48000",
+                    "duration_ts": str(3_047 * 1_024),
+                    "duration": "65.002667",
+                    "nb_frames": "N/A",
+                    "nb_read_frames": "3047",
+                },
+            ],
+            "frames": (
+                [
+                    {
+                        "media_type": "video",
+                        "stream_index": 0,
+                        "best_effort_timestamp": str(index * 1001),
+                    }
+                    for index in range(frame_count)
+                ]
+                + [
+                    {
+                        "media_type": "audio",
+                        "stream_index": 1,
+                        "best_effort_timestamp": str(index * 1024),
+                        "nb_samples": 1024,
+                    }
+                    for index in range(3_047)
+                ]
+            ),
+        }
+        return header, scan
+
+    def test_strict_hlg_probe_uses_decoded_pts_and_exact_signalling(self) -> None:
+        header, scan = self.ffprobe_fixture()
+
+        info = media.parse_ffprobe_payload(header, scan)
+
+        self.assertEqual(info["nominal_fps"], Fraction(30_000, 1_001))
+        self.assertEqual(info["observed_fps"], Fraction(30_000, 1_001))
+        self.assertEqual(info["frame_count"], 1_948)
+        self.assertEqual(
+            media.hlg_2997_errors(
+                info,
+                expected_width=2160,
+                expected_height=3840,
+                expected_audio=True,
+            ),
+            [],
+        )
+
+    def test_strict_hlg_probe_rejects_pq_30p_and_missing_decode(self) -> None:
+        header, scan = self.ffprobe_fixture()
+        broken = copy.deepcopy(scan)
+        broken["streams"][0]["color_transfer"] = "smpte2084"
+        broken["streams"][0]["r_frame_rate"] = "30/1"
+        info = media.parse_ffprobe_payload(header, broken)
+
+        errors = media.hlg_2997_errors(
+            info,
+            expected_width=2160,
+            expected_height=3840,
+            expected_audio=True,
+        )
+
+        self.assertTrue(any("transfer" in error for error in errors))
+        self.assertTrue(any("nominal_fps" in error for error in errors))
+        self.assertEqual(
+            media.hlg_2997_errors(
+                {"probe": "structural"},
+                expected_width=2160,
+                expected_height=3840,
+                expected_audio=True,
+            ),
+            ["ffprobe frame decoding was unavailable"],
+        )
+
+    def test_ffprobe_parser_rejects_non_monotonic_or_uncounted_frames(self) -> None:
+        header, scan = self.ffprobe_fixture()
+        non_monotonic = copy.deepcopy(scan)
+        non_monotonic["frames"][2]["best_effort_timestamp"] = "1001"
+        with self.assertRaisesRegex(ValueError, "not strictly increasing"):
+            media.parse_ffprobe_payload(header, non_monotonic)
+
+        uncounted = copy.deepcopy(scan)
+        uncounted["streams"][0]["nb_read_frames"] = "1947"
+        with self.assertRaisesRegex(ValueError, "decoded frame count mismatch"):
+            media.parse_ffprobe_payload(header, uncounted)
+
+    def test_strict_probe_rejects_dropped_video_gap_and_audio_offset(self) -> None:
+        header, scan = self.ffprobe_fixture()
+        dropped = copy.deepcopy(scan)
+        for frame in dropped["frames"][1_000:1_948]:
+            frame["best_effort_timestamp"] = str(int(frame["best_effort_timestamp"]) + 1001)
+        dropped_info = media.parse_ffprobe_payload(header, dropped)
+        dropped_errors = media.hlg_2997_errors(
+            dropped_info,
+            expected_width=2160,
+            expected_height=3840,
+            expected_audio=True,
+        )
+        self.assertTrue(any("maximum_frame_interval" in error for error in dropped_errors))
+
+        delayed_audio = copy.deepcopy(scan)
+        for frame in delayed_audio["frames"][1_948:]:
+            frame["best_effort_timestamp"] = str(
+                int(frame["best_effort_timestamp"]) + 48_000
+            )
+        delayed_info = media.parse_ffprobe_payload(header, delayed_audio)
+        delayed_errors = media.hlg_2997_errors(
+            delayed_info,
+            expected_width=2160,
+            expected_height=3840,
+            expected_audio=True,
+        )
+        self.assertTrue(any("A/V start delta" in error for error in delayed_errors))
+        self.assertTrue(any("A/V end delta" in error for error in delayed_errors))
+
+    def test_ffprobe_parser_requires_counted_audio_frames(self) -> None:
+        header, scan = self.ffprobe_fixture()
+        scan["streams"][1]["nb_read_frames"] = "3046"
+
+        with self.assertRaisesRegex(ValueError, "decoded audio count mismatch"):
+            media.parse_ffprobe_payload(header, scan)
 
 
 class ForceStopGuardTest(unittest.TestCase):
@@ -428,6 +736,21 @@ class FrameworkSafetyTest(unittest.TestCase):
 
         self.assertEqual(exit_code, 1)
         self.assertNotIn(f"am force-stop {APP_ID}", adb.commands)
+
+    def test_unsafe_cleanup_aborts_every_later_case(self) -> None:
+        later_called = False
+
+        @framework.test("unsafe", "smoke")
+        def unsafe(_ctx) -> None:
+            raise framework.UnsafeState("REC state unknown")
+
+        @framework.test("later", "smoke")
+        def later(_ctx) -> None:
+            nonlocal later_called
+            later_called = True
+
+        self.assertEqual(self.run_suite(), 1)
+        self.assertFalse(later_called)
 
 
 if __name__ == "__main__":

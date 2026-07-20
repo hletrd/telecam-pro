@@ -2693,8 +2693,9 @@ class CameraEngine(private val context: Context) {
             previewRotationDegrees(),
         )
         val encoderSize = Size(encW, encH)
+        val requestedBitRate = bitRateFor(size, rate)
         val surface = rec.start(
-            uri, encoderSize, rate.encoderRate, captureRate, bitRateFor(size, rate),
+            uri, encoderSize, rate.encoderRate, captureRate, requestedBitRate,
             fileTransfer, codec, recordAudio, audioGain, orientationHint,
             audioScene, controls.zoomRatio, audioInputPreference,
             onRoute = { route -> onAudioRoute?.invoke(route) },
@@ -2751,6 +2752,16 @@ class CameraEngine(private val context: Context) {
         earlyFailure.get()?.let { handleUnexpectedRecorderFailure(rec, uri, recordingCaptureId, it) }
         encoderAttachResult.get()?.let(::deliverEncoderAttach)
         if (recorder !== rec) return false
+        if (com.hletrd.findx9tele.BuildConfig.DEBUG) {
+            android.util.Log.i(
+                "CameraEngine",
+                "RecordingSpec: admitted stem=${name.substringBeforeLast('.')} " +
+                    "codec=${codec.name} source=${size.width}x${size.height} " +
+                    "encoder=${encoderSize.width}x${encoderSize.height} bitrate=$requestedBitRate " +
+                    "fps=${String.format(java.util.Locale.US, "%.9f", rate.encoderRate)} " +
+                    "transfer=${fileTransfer.name} audio=$recordAudio",
+            )
+        }
         return true
     }
 
@@ -2886,9 +2897,11 @@ class CameraEngine(private val context: Context) {
     }
 
     private fun finishRecording(rec: VideoRecorder, uri: android.net.Uri?, captureId: Int) {
+        var terminalResult: VideoRecorder.StopResult? = null
         try {
             val result = runCatching { rec.stop() }
                 .getOrElse { VideoRecorder.StopResult(saved = false, error = it) }
+            terminalResult = result
             if (result.saved && uri != null) {
                 // Surface only a fully finalized, published clip to the review UI.
                 onMediaSaved?.invoke(uri, captureId)
@@ -2899,6 +2912,14 @@ class CameraEngine(private val context: Context) {
         } finally {
             recorderTeardownInFlight = false
             standbyAudioController.finishRecording()
+            if (com.hletrd.findx9tele.BuildConfig.DEBUG) {
+                val result = terminalResult
+                android.util.Log.i(
+                    "CameraEngine",
+                    "RecordingFinalized: captureId=$captureId saved=${result?.saved == true} " +
+                        "error=${result?.error?.javaClass?.simpleName ?: if (result == null) "unknown" else "none"}",
+                )
+            }
         }
     }
 

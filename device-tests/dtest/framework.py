@@ -22,6 +22,10 @@ class Incomplete(Exception):
     """Raise when a required verification could not run; the suite exits non-green."""
 
 
+class UnsafeState(Exception):
+    """Raise when cleanup cannot prove a safe state; no later case may run."""
+
+
 @dataclass
 class Case:
     name: str
@@ -84,6 +88,7 @@ def run(
             results.append(Result(case, "skip", detail, time.time() - t0))
             print(f"  SKIP: {detail}")
             continue
+        abort_suite = False
         try:
             case.fn(ctx)
             res = Result(case, "pass", "; ".join(ctx.notes[-3:]), time.time() - t0)
@@ -94,6 +99,10 @@ def run(
         except Incomplete as e:
             res = Result(case, "incomplete", str(e), time.time() - t0)
             print(f"  INCOMPLETE: {e}")
+        except UnsafeState as e:
+            res = Result(case, "error", f"unsafe state: {e}", time.time() - t0)
+            abort_suite = True
+            print(f"  ERROR: unsafe state — {e}; aborting remaining cases")
         except AssertionError as e:
             res = Result(case, "fail", f"{e}", time.time() - t0)
             print(f"  FAIL: {e}")
@@ -101,6 +110,8 @@ def run(
             res = Result(case, "error", f"{type(e).__name__}: {e}\n{traceback.format_exc(limit=4)}", time.time() - t0)
             print(f"  ERROR: {type(e).__name__}: {e}")
         results.append(res)
+        if abort_suite:
+            break
     _write_reports(results, report_dir)
     passed = sum(1 for r in results if r.status == "pass")
     bad = sum(1 for r in results if r.status in ("fail", "error"))

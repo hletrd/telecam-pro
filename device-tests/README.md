@@ -46,7 +46,7 @@ recording left active by an earlier failed case cannot be killed by a later case
 | full | `teleconverter_roundtrip` | TC on→off round-trip; OSD `mm TELE` state tracks the toggle |
 | full | `photo_capture_valid_files` | stable owned MediaStore family; pending=0, size/dims/MIME, pulled file validity |
 | full | `tele_dng_capture` | TELE DNG validates as TIFF ≥1 MB; reports non-green incomplete when RAW is not enabled |
-| full | `video_record_validate` | ~5 s clip → ffprobe: HEVC, sane duration, dimensions, audio |
+| full | `video_record_validate` | 65 s HEVC Main10 HLG 29.97p → full-frame decode, PTS cadence, AAC A/V sync |
 | full | `tap_af_lock_persists` | tap-AF engages `afMode=1` and HOLDS past the 2 s reticle timeout |
 | full | `settings_sheet_tabs` | all 9 settings tabs exist with exactly one selected tab |
 | full | `mode_persists_across_kill` | Remember Settings survives force-stop |
@@ -74,6 +74,13 @@ recording left active by an earlier failed case cannot be killed by a later case
   macOS `sips`. This avoids mistaking individual HEIF tiles for the complete image dimensions.
 - Still cases require the persisted drive mode to be Single and report non-green incomplete for
   Burst/AEB/Timelapse. The harness never rewrites the photographer's saved drive setting.
+- The strict video case requires the visible persisted preset to already be HEVC + HLG + 29.97p;
+  it never changes settings. It cross-checks the OSD resolution/bitrate with the admitted encoder
+  spec, decodes both video and AAC frames, and compares A/V start/end PTS. Missing `ffprobe`,
+  audio-off, or a different preset is non-green.
+- REC cleanup retries dropped Stop taps, then requires exact capture-id evidence that codec/audio
+  drain, muxer finalization, and MediaStore publish completed. Any unproven or failed terminal state
+  aborts every remaining case instead of continuing with live/leaked recorder resources.
 
 ## Known non-coverage (deliberate)
 

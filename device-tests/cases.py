@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import re
 import time
+from fractions import Fraction
 
 from dtest.adb import APP_ID, MEDIA_DIR, MEDIA_RELATIVE_PATH, Adb, MediaRow
-from dtest.framework import Context, Incomplete, test
+from dtest.framework import Context, Incomplete, UnsafeState, test
 from dtest import media
 
 FOCAL_PRESETS = ("0.6× lens", "1× lens", "3× lens", "10× lens")
@@ -24,6 +25,21 @@ CAPTURE_SETTLED = re.compile(
     r"CaptureFamily: settled stem=(IMG_TELECAM_F1_[0-9]{13}_[0-9]{10}) "
     r"outputs=([a-z0-9,]+)"
 )
+VIDEO_OSD = re.compile(
+    r"^(?P<resolution>.+) (?P<fps>[0-9]+(?:\.[0-9]+)?)p "
+    r"(?P<codec>HEVC|H\.264|APV) (?P<mbps>[0-9]+)Mb$"
+)
+RECORDING_SPEC = re.compile(
+    r"RecordingSpec: admitted stem=(VID_TELECAM_F1_[0-9]{13}_[0-9]{10}) "
+    r"codec=(HEVC|AVC|APV) source=([0-9]+)x([0-9]+) "
+    r"encoder=([0-9]+)x([0-9]+) bitrate=([0-9]+) "
+    r"fps=([0-9]+\.[0-9]+) transfer=(HLG|LOG|SDR) audio=(true|false)"
+)
+RECORDING_FINALIZED = re.compile(
+    r"RecordingFinalized: captureId=([0-9]+) saved=(true|false) "
+    r"error=([A-Za-z0-9_.$-]+)"
+)
+LONG_VIDEO_SECONDS = 65
 
 
 # ---------------------------------------------------------------- helpers
@@ -69,6 +85,130 @@ def active_multi_drive_label(tree) -> str | None:
         if label == "BURST" or re.fullmatch(r"AEB±\d+", label) or re.fullmatch(r"TL \d+s", label):
             return label
     return None
+
+
+def video_target_precondition_error(tree) -> str | None:
+    """Validate the visible preset without changing the photographer's persisted settings."""
+    osd = [
+        (label, VIDEO_OSD.fullmatch(label))
+        for label in tree.all_labels()
+        if VIDEO_OSD.fullmatch(label)
+    ]
+    if len(osd) != 1:
+        return f"expected one video OSD spec, got {[label for label, _ in osd]}"
+    label, match = osd[0]
+    assert match is not None
+    if match.group("codec") != "HEVC" or match.group("fps") != "29.97":
+        return f"requires HEVC 29.97p, current OSD is {label}"
+    if "HLG" not in tree.all_labels():
+        return "requires HLG transfer; HLG is not present in the video OSD"
+    return None
+
+
+def selected_video_osd(tree):
+    matches = [VIDEO_OSD.fullmatch(label) for label in tree.all_labels()]
+    matches = [match for match in matches if match is not None]
+    return matches[0] if len(matches) == 1 else None
+
+
+def video_resolution_label(width: int, height: int) -> str:
+    """Mirror the app's displayed resolution class for OSD/engine cross-validation."""
+    if height * 4 == width * 3:
+        if height >= 5760:
+            return "8K 4:3"
+        if height >= 2880:
+            return "4K 4:3"
+        if height >= 1920:
+            return "2.5K 4:3"
+        if height >= 1440:
+            return "1080 4:3"
+        return f"{width}×{height}"
+    return {
+        4320: "8K",
+        2160: "4K",
+        1440: "1440p",
+        1080: "1080p",
+        720: "720p",
+    }.get(height, f"{width}×{height}")
+
+
+def stop_recording_verified(
+    ctx: Context,
+    pid: int,
+    *,
+    timeout_s: float = 15.0,
+    poll_s: float = 0.25,
+    tap_retry_s: float = 3.0,
+) -> bool:
+    """Retry Stop until idle UI is visible; process changes are an unsafe suite abort."""
+    deadline = time.monotonic() + timeout_s
+    last_tap = 0.0
+    last_state = "not checked"
+    last_error: Exception | None = None
+    observed_recording = False
+    while time.monotonic() < deadline:
+        try:
+            current_pid = ctx.adb.pid()
+            if current_pid != pid:
+                raise UnsafeState(f"app process changed during REC cleanup: {pid} -> {current_pid}")
+            tree = ctx.adb.ui()
+            start = tree.find_desc_exact("Start recording")
+            stop = tree.find_desc_exact("Stop recording")
+            last_state = f"start={start is not None}, stop={stop is not None}"
+            if start is not None and stop is None:
+                return observed_recording
+            now = time.monotonic()
+            if stop is not None and now - last_tap >= tap_retry_s:
+                observed_recording = True
+                last_tap = now
+                try:
+                    ctx.adb.tap(*stop.center)
+                except Exception as error:  # delivery may have succeeded despite transport failure
+                    last_error = error
+        except UnsafeState:
+            raise
+        except Exception as error:
+            last_error = error
+        time.sleep(poll_s)
+    detail = f"could not prove recording stopped ({last_state})"
+    if last_error is not None:
+        detail += f"; last transport error: {type(last_error).__name__}: {last_error}"
+    raise UnsafeState(detail)
+
+
+def recording_capture_id(admitted) -> int:
+    return int(admitted.group(1).rsplit("_", 1)[1])
+
+
+def wait_recording_finalized(ctx: Context, mark: str, pid: int, capture_id: int) -> str:
+    """Require codec/audio drain, muxer stop, and MediaStore publish before suite continuation."""
+    pattern = (
+        rf"RecordingFinalized: captureId={capture_id} saved=(true|false) "
+        r"error=([A-Za-z0-9_.$-]+)"
+    )
+    line = ctx.adb.wait_log(mark, pattern, timeout_s=45, pid=pid)
+    if line is None:
+        raise UnsafeState(f"recording {capture_id} finalization was not observed")
+    match = RECORDING_FINALIZED.search(line)
+    if match is None or int(match.group(1)) != capture_id:
+        raise UnsafeState(f"malformed recording terminal evidence: {line}")
+    if match.group(2) != "true" or match.group(3) != "none":
+        raise UnsafeState(
+            f"recording {capture_id} did not finalize safely: "
+            f"saved={match.group(2)} error={match.group(3)}"
+        )
+    return line
+
+
+def require_decoded_video(info: dict, *, minimum_seconds: float) -> None:
+    if info.get("probe") != "ffprobe":
+        raise Incomplete("ffprobe is unavailable; frame decoding was not verified")
+    seconds = info.get("video_seconds")
+    assert isinstance(seconds, Fraction) and float(seconds) >= minimum_seconds, (
+        f"decoded video duration is too short: {seconds!r}"
+    )
+    frames = info.get("frame_count")
+    assert isinstance(frames, int) and frames >= 2, f"decoded too few frames: {frames!r}"
 
 
 def capture_still(ctx: Context, timeout_s: float = 25.0) -> list[MediaRow]:
@@ -294,30 +434,115 @@ def t_dng(ctx: Context) -> None:
 
 @test("video_record_validate", "full")
 def t_video(ctx: Context) -> None:
-    """A ~5 s recording finalizes to a playable HEVC/AVC clip with sane duration."""
+    """A 65 s 29.97p Main10 HLG take decodes fully with healthy PTS and AAC sync."""
     pid = ensure_foreground(ctx)
     ensure_video_mode(ctx)
+    preset_tree = ctx.adb.ui()
+    preset_error = video_target_precondition_error(preset_tree)
+    if preset_error is not None:
+        raise Incomplete(f"strict video preset precondition failed: {preset_error}")
+    osd = selected_video_osd(preset_tree)
+    assert osd is not None
     before = {row.key for row in ctx.adb.media_store_rows()}
     mark = ctx.adb.log_mark()
-    ctx.adb.tap_ui(desc="Start recording")
-    time.sleep(5)
-    ctx.adb.tap_ui(desc="Stop recording")
-    new = ctx.adb.wait_new_media_rows(before, min_new=1, timeout_s=25)
+    recording_may_be_active = True
+    admitted = None
+    try:
+        # The start call itself is inside the cleanup boundary: a transport exception can arrive
+        # after the tap reached the phone, so even a raised call may have started REC.
+        ctx.adb.tap_ui(desc="Start recording")
+        admitted_line = ctx.adb.wait_log(mark, RECORDING_SPEC.pattern, timeout_s=12, pid=pid)
+        assert admitted_line, "recording did not publish its admitted encoder spec"
+        admitted = RECORDING_SPEC.search(admitted_line)
+        assert admitted is not None, f"malformed admitted encoder spec: {admitted_line}"
+        assert admitted.group(2) == "HEVC", f"OSD/engine codec mismatch: {admitted_line}"
+        source_width, source_height = int(admitted.group(3)), int(admitted.group(4))
+        encoder_width, encoder_height = int(admitted.group(5)), int(admitted.group(6))
+        assert video_resolution_label(source_width, source_height) == osd.group("resolution"), (
+            f"OSD/engine resolution mismatch: OSD={osd.group('resolution')}, "
+            f"source={source_width}x{source_height}"
+        )
+        assert sorted((source_width, source_height)) == sorted((encoder_width, encoder_height)), (
+            f"source/encoder raster mismatch: {admitted_line}"
+        )
+        admitted_bitrate = int(admitted.group(7))
+        assert admitted_bitrate // 1_000_000 == int(osd.group("mbps")), (
+            f"OSD/engine bitrate mismatch: OSD={osd.group('mbps')}Mb, "
+            f"engine={admitted_bitrate}"
+        )
+        assert admitted.group(9) == "HLG", f"OSD/engine transfer mismatch: {admitted_line}"
+        assert abs(Fraction(admitted.group(8)) - Fraction(30_000, 1_001)) < Fraction(1, 1_000_000), (
+            f"engine did not admit true 30000/1001 fps: {admitted.group(8)}"
+        )
+        if admitted.group(10) != "true":
+            raise Incomplete("strict video preset requires recording audio to be enabled")
+
+        # A long take distinguishes 29.97 from 30 and exercises sustained encoder/muxer ownership.
+        for checkpoint in range(1, 7):
+            time.sleep(10)
+            assert ctx.adb.pid() == pid, f"app process changed during REC at {checkpoint * 10}s"
+            assert ctx.adb.ui().find(desc="Stop recording"), (
+                f"REC UI was lost at {checkpoint * 10}s"
+            )
+            if checkpoint in (2, 5):
+                assert ctx.adb.preview_is_live(), f"preview stalled during REC at {checkpoint * 10}s"
+        time.sleep(LONG_VIDEO_SECONDS - 60)
+        stop_recording_verified(ctx, pid)
+        wait_recording_finalized(ctx, mark, pid, recording_capture_id(admitted))
+        recording_may_be_active = False
+    finally:
+        if recording_may_be_active:
+            observed_recording = stop_recording_verified(ctx, pid)
+            if admitted is None:
+                late_line = ctx.adb.wait_log(mark, RECORDING_SPEC.pattern, timeout_s=3, pid=pid)
+                admitted = RECORDING_SPEC.search(late_line) if late_line else None
+            if admitted is None:
+                # Even if the UI is idle, a returned/failed transport call may have admitted and
+                # asynchronously stopped a recorder. Without its identity+terminal evidence, later
+                # cases cannot safely touch modes, lenses, or lifecycle.
+                detail = "REC UI was observed" if observed_recording else "REC start was attempted"
+                raise UnsafeState(f"{detail}, but admission/finalization identity is unavailable")
+            wait_recording_finalized(ctx, mark, pid, recording_capture_id(admitted))
+
+    assert admitted is not None
+    new = ctx.adb.wait_new_media_rows(before, min_new=1, timeout_s=45)
     vids = [row for row in new if row.collection == "video" and row.mime_type == "video/mp4"]
     assert vids, f"no new clip after REC (new={new})"
     assert len(vids) == 1 and len(new) == 1, f"REC published an unexpected row family: {new}"
     row = vids[0]
     assert_published_row(row)
+    assert row.display_name == f"{admitted.group(1)}.mp4", (
+        f"recording spec/MediaStore family mismatch: spec={admitted.group(1)}, row={row}"
+    )
     local = ctx.adb.pull(
         f"{MEDIA_DIR}/{row.display_name}",
         ctx.evidence / row.display_name,
     )
     info = media.mp4_probe(local)
     ctx.note(f"{row.display_name}: {info}")
-    if info["probe"] == "ffprobe":
-        assert info["codec"] in ("hevc", "h264"), f"unexpected codec {info['codec']}"
-        assert 2.0 < info["duration"] < 15.0, f"duration off: {info['duration']}"
-        assert info["width"] and info["height"], "no dimensions"
+    if info.get("probe") != "ffprobe":
+        raise Incomplete("ffprobe is unavailable; 29.97 HLG frame decoding was not verified")
+    expected_width, expected_height = int(admitted.group(5)), int(admitted.group(6))
+    violations = media.hlg_2997_errors(
+        info,
+        expected_width=expected_width,
+        expected_height=expected_height,
+        expected_audio=True,
+    )
+    assert not violations, "strict 29.97 HLG violations: " + "; ".join(violations)
+    assert (row.width, row.height) == (expected_width, expected_height), (
+        f"MediaStore/encoder dimensions differ: row={row}, spec={admitted_line}"
+    )
+    local_size = local.stat().st_size
+    assert row.size_bytes == local_size == info.get("format_size"), (
+        f"MediaStore/file/container sizes differ: row={row.size_bytes}, "
+        f"file={local_size}, format={info.get('format_size')}"
+    )
+    assert row.duration_ms is not None
+    assert abs(Fraction(row.duration_ms, 1_000) - info["video_seconds"]) <= Fraction(1, 2), (
+        f"MediaStore/video duration differs: row={row.duration_ms}ms, "
+        f"video={float(info['video_seconds']):.3f}s"
+    )
     fatals = ctx.adb.fatal_lines(mark, pid)
     assert not fatals, f"errors during REC: {fatals[:2]}"
     ensure_photo_mode(ctx)
@@ -439,11 +664,10 @@ def t_rec_background(ctx: Context) -> None:
         ctx.evidence / row.display_name,
     )
     info = media.mp4_probe(local)
-    if info["probe"] == "ffprobe":
-        assert info["duration"] > 1.0, f"clip too short: {info}"
+    require_decoded_video(info, minimum_seconds=1.0)
     ctx.adb.launch()
     ensure_photo_mode(ctx)
-    ctx.note(f"clip finalized: {row.display_name} {info.get('duration', '?')}s")
+    ctx.note(f"clip finalized: {row.display_name} {info.get('video_seconds', '?')}s")
 
 
 @test("rec_stop_then_kill_published", "reliability", destructive=True)
@@ -470,8 +694,7 @@ def t_rec_stop_kill(ctx: Context) -> None:
         ctx.evidence / row.display_name,
     )
     info = media.mp4_probe(local)
-    if info["probe"] == "ffprobe":
-        assert info["duration"] > 1.0, f"adopted clip invalid: {info}"
+    require_decoded_video(info, minimum_seconds=1.0)
     time.sleep(6)
     stale = ctx.adb.pending_rows()
     assert not stale, f"stuck IS_PENDING leftovers: {stale}"
