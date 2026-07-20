@@ -281,4 +281,31 @@ class SettingsStoreTest {
         val loaded = SettingsStore(prefs).load()
         assertTrue("zoomRatio must be clamped >= 0.1f", (loaded?.controls?.zoomRatio ?: 0f) >= 0.1f)
     }
+
+    @Test
+    fun load_sanitizesCorruptManualNumbersBeforeCapabilitiesExist() {
+        val prefs = FakePrefs(
+            mutableMapOf(
+                "hasSaved" to true,
+                "focusDiopters" to Float.NaN,
+                "iso" to Int.MAX_VALUE,
+                "exposureCompensation" to Int.MIN_VALUE,
+                "preset_MR1_hasSaved" to true,
+                "preset_MR1_focusDiopters" to Float.POSITIVE_INFINITY,
+                "preset_MR1_iso" to Int.MIN_VALUE,
+                "preset_MR1_exposureCompensation" to Int.MAX_VALUE,
+            ),
+        )
+        val store = SettingsStore(prefs)
+
+        val restored = requireNotNull(store.load()).controls
+        assertEquals(0f, restored.focusDistanceDiopters, 0f)
+        assertEquals(1_000_000, restored.iso)
+        assertEquals(-100, restored.exposureCompensation)
+
+        val recalled = requireNotNull(store.loadPreset(MemorySlot.MR1)).controls
+        assertEquals(0f, recalled.focusDistanceDiopters, 0f)
+        assertEquals(1, recalled.iso)
+        assertEquals(100, recalled.exposureCompensation)
+    }
 }

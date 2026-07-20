@@ -431,6 +431,123 @@ class ControlCapabilityNormalizationTest {
     }
 
     @Test
+    fun `focus ISO and EV normalize below within and above capability bounds`() {
+        val caps = CameraControlCapabilities(
+            focusDistanceMaxDiopters = 8f,
+            isoMin = 100,
+            isoMax = 12_800,
+            evCompensationMin = -9,
+            evCompensationMax = 9,
+        )
+
+        val below = ManualControls(
+            focusDistanceDiopters = -2f,
+            iso = 50,
+            exposureCompensation = -20,
+        ).normalizedFor(caps)
+        assertEquals(0f, below.focusDistanceDiopters, 0f)
+        assertEquals(100, below.iso)
+        assertEquals(-9, below.exposureCompensation)
+
+        val within = ManualControls(
+            focusDistanceDiopters = 2.5f,
+            iso = 1600,
+            exposureCompensation = 3,
+        ).normalizedFor(caps)
+        assertEquals(2.5f, within.focusDistanceDiopters, 0f)
+        assertEquals(1600, within.iso)
+        assertEquals(3, within.exposureCompensation)
+
+        val above = ManualControls(
+            focusDistanceDiopters = 20f,
+            iso = 50_000,
+            exposureCompensation = 20,
+        ).normalizedFor(caps)
+        assertEquals(8f, above.focusDistanceDiopters, 0f)
+        assertEquals(12_800, above.iso)
+        assertEquals(9, above.exposureCompensation)
+    }
+
+    @Test
+    fun `numeric normalization rejects non-finite focus and tolerates absent or inverted caps`() {
+        assertEquals(
+            0f,
+            ManualControls(focusDistanceDiopters = Float.NaN)
+                .normalizedFor(CameraControlCapabilities()).focusDistanceDiopters,
+            0f,
+        )
+        assertEquals(
+            0f,
+            ManualControls(focusDistanceDiopters = Float.POSITIVE_INFINITY)
+                .normalizedFor(CameraControlCapabilities(focusDistanceMaxDiopters = 8f))
+                .focusDistanceDiopters,
+            0f,
+        )
+
+        val requested = ManualControls(
+            focusDistanceDiopters = 2f,
+            iso = 6400,
+            exposureCompensation = 6,
+        )
+        assertEquals(requested, requested.normalizedFor(CameraControlCapabilities()))
+        assertEquals(
+            requested,
+            requested.normalizedFor(
+                CameraControlCapabilities(
+                    focusDistanceMaxDiopters = -1f,
+                    isoMin = 12_800,
+                    isoMax = 100,
+                    evCompensationMin = 9,
+                    evCompensationMax = -9,
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun `wide route and MR packets narrow before publication on the next route`() {
+        val wideCaps = CameraControlCapabilities(
+            focusDistanceMaxDiopters = 20f,
+            isoMin = 50,
+            isoMax = 102_400,
+            evCompensationMin = -18,
+            evCompensationMax = 18,
+        )
+        val narrowCaps = CameraControlCapabilities(
+            focusDistanceMaxDiopters = 5f,
+            isoMin = 100,
+            isoMax = 6400,
+            evCompensationMin = -6,
+            evCompensationMax = 6,
+        )
+        val wideRoutePacket = normalizeControlsForRoute(
+            requested = ManualControls(
+                focusDistanceDiopters = 12f,
+                iso = 51_200,
+                exposureCompensation = 12,
+            ),
+            capabilities = wideCaps,
+            mode = CaptureMode.PHOTO,
+            teleconverter = false,
+            capsLower = 1f,
+            capsUpper = 20f,
+        )
+
+        val narrowed = normalizeRetainedControlsAtCommit(
+            liveControls = wideRoutePacket,
+            capabilities = narrowCaps,
+            mode = CaptureMode.PHOTO,
+            teleconverter = false,
+            capsLower = 1f,
+            capsUpper = 10f,
+        )
+
+        assertEquals(5f, narrowed.focusDistanceDiopters, 0f)
+        assertEquals(6400, narrowed.iso)
+        assertEquals(6, narrowed.exposureCompensation)
+    }
+
+    @Test
     fun `app-side Program flips back to HAL AE when advertised auto flash needs it (TEST4-2)`() {
         // A sparse-route recall can leave programAppSide=true; with flash AUTO requested AND the
         // exact AE auto-flash variant advertised, normalization must return Program to the HAL AE

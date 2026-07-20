@@ -167,14 +167,21 @@ class SettingsStore(private val prefs: SharedPreferences) {
             val d = ManualControls()
             val controls = ManualControls(
                 focusMode = enumOr(safeString("${prefix}focusMode", null), d.focusMode),
-                focusDistanceDiopters = safeFloat("${prefix}focusDiopters", d.focusDistanceDiopters),
+                // Cap untrusted/corrupt preference numbers before route capabilities are available.
+                // The selected route applies its tighter hardware bounds at the capability seam.
+                focusDistanceDiopters = safeFloat("${prefix}focusDiopters", d.focusDistanceDiopters)
+                    .let {
+                        if (it.isFinite()) it.coerceIn(MIN_PERSISTED_FOCUS_DIOPTERS, MAX_PERSISTED_FOCUS_DIOPTERS)
+                        else d.focusDistanceDiopters
+                    },
                 afLock = safeBoolean("${prefix}afLock", d.afLock),
                 exposureMode = enumOr(safeString("${prefix}exposureMode", null), d.exposureMode),
-                iso = safeInt("${prefix}iso", d.iso),
+                iso = safeInt("${prefix}iso", d.iso).coerceIn(MIN_PERSISTED_ISO, MAX_PERSISTED_ISO),
                 exposureTimeNs = safeLong("${prefix}exposureTimeNs", d.exposureTimeNs),
                 shutterMode = enumOr(safeString("${prefix}shutterMode", null), d.shutterMode),
                 shutterAngle = safeFloat("${prefix}shutterAngle", d.shutterAngle),
-                exposureCompensation = safeInt("${prefix}exposureCompensation", d.exposureCompensation),
+                exposureCompensation = safeInt("${prefix}exposureCompensation", d.exposureCompensation)
+                    .coerceIn(MIN_PERSISTED_EV_INDEX, MAX_PERSISTED_EV_INDEX),
                 aeLock = safeBoolean("${prefix}aeLock", d.aeLock),
                 antibanding = enumOr(safeString("${prefix}antibanding", null), d.antibanding),
                 fps = safeInt("${prefix}fps", d.fps),
@@ -351,6 +358,12 @@ class SettingsStore(private val prefs: SharedPreferences) {
     private companion object {
         const val K_REMEMBER = "rememberSettings"
         const val K_HAS = "hasSaved"
+        const val MIN_PERSISTED_FOCUS_DIOPTERS = 0f
+        const val MAX_PERSISTED_FOCUS_DIOPTERS = 100f
+        const val MIN_PERSISTED_ISO = 1
+        const val MAX_PERSISTED_ISO = 1_000_000
+        const val MIN_PERSISTED_EV_INDEX = -100
+        const val MAX_PERSISTED_EV_INDEX = 100
         fun presetPrefix(slot: MemorySlot): String = "preset_${slot.name}_"
     }
 }

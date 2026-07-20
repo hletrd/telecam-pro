@@ -221,11 +221,19 @@ internal fun ManualControls.normalizedFor(caps: CameraControlCapabilities): Manu
         metadata = ColorEffect::metadata,
     ) ?: ColorEffect.NONE
 
-    // NUMERIC exposure joins the enum normalization: the caps-seam range already carries the
-    // device-verified 4 s still ceiling (HAL_SAFE_MAX_STILL_EXPOSURE_NS), and a persisted or
-    // MR-recalled over-ceiling shutter must show the value the camera will actually apply —
-    // the request path always clamped, but the OSD/ruler read THIS field (a restored "5.0s"
-    // chip over a 4.0 s request was the observed truthfulness gap).
+    // Numeric controls join enum normalization at the same capability boundary. Request building
+    // also clamps these values as defense in depth, but the model/UI/persistence packet must already
+    // show the values that Camera2 will receive after an MR recall or route switch.
+    val finiteFocusDistance = focusDistanceDiopters.takeIf(Float::isFinite) ?: 0f
+    val normalizedFocusDistance = caps.focusDistanceMaxDiopters
+        ?.takeIf { it.isFinite() && it >= 0f }
+        ?.let { finiteFocusDistance.coerceIn(0f, it) }
+        ?: finiteFocusDistance
+    val normalizedIso = if (caps.isoMin != null && caps.isoMax != null && caps.isoMin <= caps.isoMax) {
+        iso.coerceIn(caps.isoMin, caps.isoMax)
+    } else {
+        iso
+    }
     val normalizedExposureNs = if (caps.exposureTimeMinNs != null && caps.exposureTimeMaxNs != null &&
         caps.exposureTimeMinNs <= caps.exposureTimeMaxNs
     ) {
@@ -233,9 +241,19 @@ internal fun ManualControls.normalizedFor(caps: CameraControlCapabilities): Manu
     } else {
         exposureTimeNs
     }
+    val normalizedEv = if (caps.evCompensationMin != null && caps.evCompensationMax != null &&
+        caps.evCompensationMin <= caps.evCompensationMax
+    ) {
+        exposureCompensation.coerceIn(caps.evCompensationMin, caps.evCompensationMax)
+    } else {
+        exposureCompensation
+    }
 
     return copy(
+        focusDistanceDiopters = normalizedFocusDistance,
+        iso = normalizedIso,
         exposureTimeNs = normalizedExposureNs,
+        exposureCompensation = normalizedEv,
         focusMode = normalizedFocus,
         afLock = afLock && normalizedFocus != FocusMode.MANUAL && caps.supportsManualFocus &&
             caps.hasFocusDistanceRange &&
