@@ -2345,12 +2345,25 @@ class CameraEngine(private val context: Context) {
     ): CameraController.PhotoCallback {
         require(retainedSnapshotLease == null || formats.wantsProcessedStill)
         val requestSpec = shotSpec(shotControls)
+        val expectedOutputExtensions = buildList {
+            if (formats.heif) add("heic")
+            if (formats.jpeg) add("jpg")
+            if (formats.dngRaw) add("dng")
+        }
+        val familyStem = requestSpec.familyKey.displayName("complete").substringBeforeLast('.')
         val remainingSaveLanes = java.util.concurrent.atomic.AtomicInteger(
             (if (formats.wantsProcessedStill) 1 else 0) + (if (formats.dngRaw) 1 else 0),
         )
         val completionDelivered = java.util.concurrent.atomic.AtomicBoolean(false)
         val finishSequence = {
             if (remainingSaveLanes.get() == 0 && completionDelivered.compareAndSet(false, true)) {
+                if (com.hletrd.findx9tele.BuildConfig.DEBUG) {
+                    android.util.Log.i(
+                        "CameraEngine",
+                        "CaptureFamily: settled stem=$familyStem " +
+                            "outputs=${expectedOutputExtensions.joinToString(",")}",
+                    )
+                }
                 onDone?.invoke()
             }
             Unit

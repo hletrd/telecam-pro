@@ -8,6 +8,7 @@ the review-plan-fix cycles. Keep helpers synchronous and chatty-on-failure.
 from __future__ import annotations
 
 import re
+import shlex
 import struct
 import subprocess
 import time
@@ -18,6 +19,10 @@ from pathlib import Path
 APP_ID = "me.hletrd.telecampro.debug"
 MAIN_ACTIVITY = f"{APP_ID}/com.hletrd.findx9tele.MainActivity"
 MEDIA_DIR = "/sdcard/DCIM/X9Tele"
+MEDIA_RELATIVE_PATH = "DCIM/X9Tele/"
+_CAPTURE_FILE = re.compile(
+    r"^(IMG|VID)_TELECAM_F1_([0-9]{13})_([0-9]{10})\.([A-Za-z0-9]+)$"
+)
 
 # Error signatures worth failing a test over. CAMERA_DISCONNECTED during an intentional
 # force-stop is expected noise, so reliability tests scan scoped windows, not whole runs.
@@ -47,6 +52,118 @@ class UiNode:
     def center(self) -> tuple[int, int]:
         l, t, r, b = self.bounds
         return (l + r) // 2, (t + b) // 2
+
+
+@dataclass(frozen=True)
+class MediaRow:
+    collection: str
+    row_id: int
+    display_name: str
+    mime_type: str
+    relative_path: str
+    is_pending: bool
+    width: int
+    height: int
+    size_bytes: int
+    duration_ms: int | None
+    owner_package_name: str
+
+    @property
+    def key(self) -> tuple[str, int]:
+        return self.collection, self.row_id
+
+    @property
+    def family_key(self) -> tuple[str, int, int] | None:
+        match = _CAPTURE_FILE.fullmatch(self.display_name)
+        if not match:
+            return None
+        prefix = "image" if match.group(1) == "IMG" else "video"
+        if prefix != self.collection:
+            return None
+        return prefix, int(match.group(2)), int(match.group(3))
+
+    @property
+    def metadata_ready(self) -> bool:
+        if self.is_pending or self.size_bytes <= 0:
+            return False
+        if self.mime_type in ("image/heic", "image/jpeg", "video/mp4"):
+            if self.width <= 0 or self.height <= 0:
+                return False
+        if self.mime_type == "video/mp4" and (self.duration_ms or 0) <= 0:
+            return False
+        return True
+
+    @property
+    def metadata_fingerprint(self) -> tuple:
+        return (
+            self.key,
+            self.display_name,
+            self.mime_type,
+            self.relative_path,
+            self.is_pending,
+            self.width,
+            self.height,
+            self.size_bytes,
+            self.duration_ms,
+            self.owner_package_name,
+        )
+
+
+def parse_media_rows(collection: str, output: str) -> list[MediaRow]:
+    rows: list[MediaRow] = []
+    for line in output.splitlines():
+        match = re.match(r"Row: \d+ (.*)", line.strip())
+        if not match:
+            continue
+        fields = {}
+        for field in re.split(r", (?=[a-z_][a-z0-9_]*=)", match.group(1)):
+            if "=" in field:
+                key, value = field.split("=", 1)
+                fields[key] = value
+
+        required = {
+            "_id",
+            "_display_name",
+            "mime_type",
+            "relative_path",
+            "is_pending",
+            "width",
+            "height",
+            "_size",
+            "owner_package_name",
+        }
+        if collection == "video":
+            required.add("duration")
+        missing = sorted(required - fields.keys())
+        if missing:
+            raise AdbError(f"MediaStore {collection} row is missing fields {missing}: {line[:300]}")
+
+        def integer(name: str) -> int:
+            value = fields.get(name, "0")
+            return 0 if value in ("", "NULL") else int(value)
+
+        duration = fields.get("duration")
+        row = MediaRow(
+            collection=collection,
+            row_id=integer("_id"),
+            display_name=fields["_display_name"],
+            mime_type=fields["mime_type"],
+            relative_path=fields["relative_path"],
+            is_pending=integer("is_pending") != 0,
+            width=integer("width"),
+            height=integer("height"),
+            size_bytes=integer("_size"),
+            duration_ms=None if duration in (None, "", "NULL") else int(duration),
+            owner_package_name=fields["owner_package_name"],
+        )
+        if row.row_id <= 0 or not all(
+            (row.display_name, row.mime_type, row.relative_path, row.owner_package_name)
+        ):
+            raise AdbError(f"MediaStore {collection} row has invalid identity fields: {line[:300]}")
+        rows.append(
+            row
+        )
+    return rows
 
 
 class Adb:
@@ -191,25 +308,106 @@ class Adb:
             time.sleep(1)
         return None
 
-    # -- media dir ---------------------------------------------------------
+    # -- MediaStore --------------------------------------------------------
 
-    def media_listing(self) -> list[str]:
-        out = self.shell(f"ls -1 {MEDIA_DIR} 2>/dev/null || true")
-        return [l for l in out.splitlines() if l]
+    def media_store_rows(self) -> list[MediaRow]:
+        base_projection = (
+            "_id:_display_name:mime_type:relative_path:is_pending:width:height:"
+            "_size:owner_package_name"
+        )
+        where = f"relative_path='{MEDIA_RELATIVE_PATH}' AND owner_package_name='{APP_ID}'"
+        # MediaStore hides pending rows by default. The content CLI accepts Bundle extras as
+        # key:type:value; escape the colon inside the Android query-arg key itself.
+        include_pending = shlex.quote(r"android\:query-arg-match-pending:i:1")
+        rows = []
+        for collection, uri, projection in (
+            ("image", "content://media/external/images/media", base_projection),
+            ("video", "content://media/external/video/media", f"{base_projection}:duration"),
+        ):
+            output = self.shell(
+                " ".join(
+                    (
+                        "content query",
+                        f"--uri {uri}",
+                        f"--projection {projection}",
+                        f"--where {shlex.quote(where)}",
+                        f"--sort {shlex.quote('_id ASC')}",
+                        f"--extra {include_pending}",
+                        "2>&1",
+                    )
+                )
+            )
+            if "Error while accessing provider" in output or "Exception:" in output:
+                raise AdbError(f"MediaStore {collection} query failed: {output[:300]}")
+            lines = [line.strip() for line in output.splitlines() if line.strip()]
+            row_lines = [line for line in lines if re.fullmatch(r"Row: \d+ .+", line)]
+            valid_empty = lines == ["No result found."]
+            unexpected = [line for line in lines if line not in row_lines]
+            if (
+                "[ERROR]" in output
+                or not lines
+                or (not valid_empty and (unexpected or not row_lines))
+            ):
+                raise AdbError(
+                    f"MediaStore {collection} query returned unexpected output: "
+                    f"{(unexpected or lines or ['<empty>'])[:2]}"
+                )
+            parsed = parse_media_rows(collection, output)
+            if len(parsed) != len(row_lines):
+                raise AdbError(
+                    f"MediaStore {collection} query lost rows while parsing: "
+                    f"lines={len(row_lines)} parsed={len(parsed)}"
+                )
+            rows.extend(parsed)
+        return sorted(rows, key=lambda row: row.key)
 
-    def pending_files(self) -> list[str]:
-        out = self.shell(f"ls -1a {MEDIA_DIR} 2>/dev/null | grep '^\\.pending' || true")
-        return [l for l in out.splitlines() if l]
+    def pending_rows(self) -> list[MediaRow]:
+        return [row for row in self.media_store_rows() if row.is_pending]
 
-    def wait_new_media(self, before: list[str], min_new: int = 1, timeout_s: float = 20.0) -> list[str]:
-        base = set(before)
+    def wait_new_media_rows(
+        self,
+        before: set[tuple[str, int]],
+        *,
+        min_new: int = 1,
+        timeout_s: float = 20.0,
+        settle_s: float = 8.0,
+    ) -> list[MediaRow]:
         deadline = time.time() + timeout_s
+        stable_since: float | None = None
+        last_fingerprint: tuple | None = None
+        target_family: tuple[str, int, int] | None = None
+        latest: list[MediaRow] = []
         while time.time() < deadline:
-            new = [f for f in self.media_listing() if f not in base]
-            if len(new) >= min_new:
-                return sorted(new)
-            time.sleep(1)
-        return sorted(f for f in self.media_listing() if f not in base)
+            discovered = [row for row in self.media_store_rows() if row.key not in before]
+            families = {row.family_key for row in discovered}
+            if None in families:
+                invalid = [row.display_name for row in discovered if row.family_key is None]
+                raise AdbError(f"new media uses a non-canonical capture family: {invalid}")
+            if len(families) > 1:
+                raise AdbError(f"multiple new capture families appeared: {sorted(families)}")
+            if families:
+                observed_family = next(iter(families))
+                if target_family is None:
+                    target_family = observed_family
+                elif observed_family != target_family:
+                    raise AdbError(
+                        f"capture family changed while waiting: {target_family} -> {observed_family}"
+                    )
+            latest = [row for row in discovered if row.family_key == target_family]
+            fingerprint = tuple(row.metadata_fingerprint for row in latest)
+            publish_complete = (
+                len(latest) >= min_new
+                and all(row.metadata_ready for row in latest)
+            )
+            if publish_complete and fingerprint == last_fingerprint:
+                stable_since = stable_since or time.time()
+                if time.time() - stable_since >= settle_s:
+                    return latest
+            else:
+                stable_since = None
+            last_fingerprint = fingerprint
+            time.sleep(0.5)
+        return latest
 
     # -- UI tree -----------------------------------------------------------
 

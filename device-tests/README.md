@@ -25,7 +25,8 @@ python3 device-tests/run.py --serial 127.0.0.1:5599 --tier reliability --allow-d
 
 Reports (markdown + JUnit XML + pulled evidence files) land in `device-tests/reports/<ts>/`
 (gitignored). Exit code 0 requires at least one pass and no failures, 1 means fail/error,
-and 2 means preflight failure, no matching cases, or an all-skipped selection.
+and 2 means preflight failure, no matching cases, all-skipped, or a required verification
+reported as incomplete.
 
 The runner refuses any device other than PMA110/API 36 and refuses an installed `base.apk`
 whose SHA-256 does not match `app/build/outputs/apk/debug/app-debug.apk` (override the host
@@ -43,8 +44,8 @@ recording left active by an earlier failed case cannot be killed by a later case
 | full | `mode_switch_roundtrip` | photo↔video flips without camera errors (benign −38 teardown excluded) |
 | full | `lens_presets` | 0.6/1/3/10× cycle; exactly one RadioButton is checked after each tap |
 | full | `teleconverter_roundtrip` | TC on→off round-trip; OSD `mm TELE` state tracks the toggle |
-| full | `photo_capture_valid_files` | still → HEIF/JPEG pulled + parsed (dims, JPEG EXIF APP1 present) |
-| full | `tele_dng_capture` | TELE-mode capture; any DNG sibling validates as TIFF ≥1 MB |
+| full | `photo_capture_valid_files` | stable owned MediaStore family; pending=0, size/dims/MIME, pulled file validity |
+| full | `tele_dng_capture` | TELE DNG validates as TIFF ≥1 MB; reports non-green incomplete when RAW is not enabled |
 | full | `video_record_validate` | ~5 s clip → ffprobe: HEVC, sane duration, dimensions, audio |
 | full | `tap_af_lock_persists` | tap-AF engages `afMode=1` and HOLDS past the 2 s reticle timeout |
 | full | `settings_sheet_tabs` | all 9 settings tabs exist with exactly one selected tab |
@@ -52,7 +53,7 @@ recording left active by an earlier failed case cannot be killed by a later case
 | reliability | `capture_then_kill_survives` | kill 0.6 s after shutter → files survive, valid, no stuck pending |
 | reliability | `rec_backgrounded_finalizes` | HOME mid-REC → playable clip finalizes |
 | reliability | `rec_stop_then_kill_published` | kill 0.5 s after stop → clip adopted+published by launch recovery |
-| reliability | `no_stuck_pending_baseline` | fresh launch sweep leaves zero `.pending-*` files |
+| reliability | `no_stuck_pending_baseline` | fresh launch sweep leaves zero owned `IS_PENDING=1` rows |
 
 ## Device facts the harness encodes
 
@@ -67,6 +68,12 @@ recording left active by an earlier failed case cannot be killed by a later case
   DIFFERENCE (sensor noise), never by brightness.
 - `uiautomator dump` is the interaction source of truth — the app's Compose semantics expose
   stable content-descriptions (`Teleconverter`, `Start recording`, `0.6× lens`, …).
+- Image/video evidence is keyed by `(collection, _id)`, not directory filename. Queries include
+  owned pending rows and wait for a stable family with `IS_PENDING=0` and non-zero `_size`.
+- HEIF dimensions are checked twice: MediaStore metadata and the full ImageIO canvas decoded by
+  macOS `sips`. This avoids mistaking individual HEIF tiles for the complete image dimensions.
+- Still cases require the persisted drive mode to be Single and report non-green incomplete for
+  Burst/AEB/Timelapse. The harness never rewrites the photographer's saved drive setting.
 
 ## Known non-coverage (deliberate)
 

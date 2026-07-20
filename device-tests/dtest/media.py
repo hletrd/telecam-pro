@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import struct
 import subprocess
@@ -36,6 +37,30 @@ def jpeg_info(path: Path) -> dict:
 def heic_valid(path: Path) -> bool:
     data = path.read_bytes()
     return len(data) > 100_000 and data[4:8] == b"ftyp" and (b"heic" in data[8:24] or b"mif1" in data[8:24])
+
+
+def sips_dimensions(output: str) -> tuple[int, int] | None:
+    width = re.search(r"^\s*pixelWidth:\s*(\d+)\s*$", output, re.MULTILINE)
+    height = re.search(r"^\s*pixelHeight:\s*(\d+)\s*$", output, re.MULTILINE)
+    if width is None or height is None:
+        return None
+    return int(width.group(1)), int(height.group(1))
+
+
+def image_dimensions(path: Path) -> tuple[int, int] | None:
+    """Decode dimensions with macOS ImageIO via sips; HEIF tile streams fool ffprobe."""
+    sips = shutil.which("sips")
+    if sips is None:
+        return None
+    result = subprocess.run(
+        [sips, "-g", "pixelWidth", "-g", "pixelHeight", str(path)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if result.returncode != 0:
+        raise ValueError(f"sips failed: {result.stderr[:200]}")
+    return sips_dimensions(result.stdout)
 
 
 def dng_valid(path: Path) -> bool:

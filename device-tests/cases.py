@@ -11,14 +11,19 @@ through three independent channels wherever possible: UI tree, logcat, and on-di
 
 from __future__ import annotations
 
+import re
 import time
 
-from dtest.adb import MEDIA_DIR, Adb
-from dtest.framework import Context, Skip, test
+from dtest.adb import APP_ID, MEDIA_DIR, MEDIA_RELATIVE_PATH, Adb, MediaRow
+from dtest.framework import Context, Incomplete, test
 from dtest import media
 
 FOCAL_PRESETS = ("0.6× lens", "1× lens", "3× lens", "10× lens")
 SETTINGS_TABS = ("My", "Shoot", "Exposure", "Focus", "Lens", "Video", "Image", "Assist", "Setup")
+CAPTURE_SETTLED = re.compile(
+    r"CaptureFamily: settled stem=(IMG_TELECAM_F1_[0-9]{13}_[0-9]{10}) "
+    r"outputs=([a-z0-9,]+)"
+)
 
 
 # ---------------------------------------------------------------- helpers
@@ -58,9 +63,22 @@ def shutter_node(ctx: Context):
     return n
 
 
-def capture_still(ctx: Context, timeout_s: float = 25.0) -> list[str]:
-    """Tap the shutter (waiting out a running self-timer countdown) and return new files."""
-    before = ctx.adb.media_listing()
+def active_multi_drive_label(tree) -> str | None:
+    """Return the non-Single drive OSD tag without mutating the user's persisted setting."""
+    for label in tree.all_labels():
+        if label == "BURST" or re.fullmatch(r"AEB±\d+", label) or re.fullmatch(r"TL \d+s", label):
+            return label
+    return None
+
+
+def capture_still(ctx: Context, timeout_s: float = 25.0) -> list[MediaRow]:
+    """Tap the shutter and return the complete, stably published MediaStore family."""
+    drive_label = active_multi_drive_label(ctx.adb.ui())
+    if drive_label is not None:
+        raise Incomplete(
+            f"still verification requires Single drive; current persisted drive is {drive_label}"
+        )
+    before = {row.key for row in ctx.adb.media_store_rows()}
     mark = ctx.adb.log_mark()
     ctx.adb.tap(*shutter_node(ctx).center)
     started = ctx.adb.wait_log(mark, r"ShutterLag: started", timeout_s=12)
@@ -68,9 +86,34 @@ def capture_still(ctx: Context, timeout_s: float = 25.0) -> list[str]:
         # A configured self-timer starts a countdown instead; wait it out (max 10 s + margin).
         started = ctx.adb.wait_log(mark, r"ShutterLag: started", timeout_s=13)
     assert started, "capture never started (no ShutterLag log)"
-    new = ctx.adb.wait_new_media(before, min_new=1, timeout_s=timeout_s)
-    assert new, "no new media file appeared after capture"
+    settled_line = ctx.adb.wait_log(mark, CAPTURE_SETTLED.pattern, timeout_s=timeout_s)
+    assert settled_line, "capture save lanes did not report a settled family"
+    settled = CAPTURE_SETTLED.search(settled_line)
+    assert settled is not None, f"malformed capture-family completion log: {settled_line}"
+    stem = settled.group(1)
+    expected_names = {f"{stem}.{extension}" for extension in settled.group(2).split(",")}
+
+    new = ctx.adb.wait_new_media_rows(
+        before,
+        min_new=len(expected_names),
+        timeout_s=timeout_s,
+        settle_s=1.0,
+    )
+    assert new, "no new MediaStore row appeared after capture"
+    assert all(not row.is_pending for row in new), f"capture left pending rows: {new}"
+    actual_names = {row.display_name for row in new}
+    assert actual_names == expected_names, (
+        f"capture family outputs differ: expected={sorted(expected_names)}, "
+        f"actual={sorted(actual_names)}"
+    )
     return new
+
+
+def assert_published_row(row: MediaRow) -> None:
+    assert row.relative_path == MEDIA_RELATIVE_PATH, f"wrong relative path: {row}"
+    assert row.owner_package_name == APP_ID, f"wrong MediaStore owner: {row}"
+    assert not row.is_pending, f"row is still pending: {row}"
+    assert row.size_bytes > 0, f"row has no bytes: {row}"
 
 
 def focal_rail_error(tree, expected: str) -> str | None:
@@ -187,16 +230,31 @@ def t_capture(ctx: Context) -> None:
     ensure_foreground(ctx)
     ensure_photo_mode(ctx)
     new = capture_still(ctx)
-    ctx.note(f"new files: {new}")
-    for name in new:
+    ctx.note(f"new rows: {[(row.key, row.display_name, row.mime_type) for row in new]}")
+    assert all(row.collection == "image" for row in new), f"non-image rows joined still capture: {new}"
+    known_mimes = {"image/heic", "image/jpeg", "image/x-adobe-dng"}
+    assert all(row.mime_type in known_mimes for row in new), f"unexpected still MIME: {new}"
+    for row in new:
+        assert_published_row(row)
+        name = row.display_name
         local = ctx.adb.pull(f"{MEDIA_DIR}/{name}", ctx.evidence / name)
-        if name.lower().endswith(".jpg"):
+        if row.mime_type == "image/jpeg":
             info = media.jpeg_info(local)
             assert info["width"] > 2000 and info["height"] > 2000, f"JPEG dims off: {info}"
             assert info["exif"], "JPEG lacks EXIF APP1"
-        elif name.lower().endswith(".heic"):
+            assert (row.width, row.height) == (info["width"], info["height"]), (
+                f"JPEG MediaStore/file dimensions differ: row={row}, file={info}"
+            )
+        elif row.mime_type == "image/heic":
             assert media.heic_valid(local), f"HEIC invalid: {name}"
-        elif name.lower().endswith(".dng"):
+            assert row.width > 2000 and row.height > 2000, f"HEIC MediaStore dimensions off: {row}"
+            file_dimensions = media.image_dimensions(local)
+            if file_dimensions is None:
+                raise Incomplete("sips is unavailable; HEIF file dimensions were not decoded")
+            assert (row.width, row.height) == file_dimensions, (
+                f"HEIF MediaStore/file dimensions differ: row={row}, file={file_dimensions}"
+            )
+        elif row.mime_type == "image/x-adobe-dng":
             assert media.dng_valid(local), f"DNG invalid: {name}"
 
 
@@ -205,6 +263,7 @@ def t_dng(ctx: Context) -> None:
     """In TELE mode a capture may include DNG (route-gated); whatever arrives must be valid."""
     pid = ensure_foreground(ctx)
     ensure_photo_mode(ctx)
+    mark = ctx.adb.log_mark()
     entered_tele = False
     if ctx.adb.ui().find_contains("mm TELE") is None:
         ctx.adb.tap_ui(desc="Teleconverter")
@@ -213,13 +272,20 @@ def t_dng(ctx: Context) -> None:
     try:
         assert ctx.adb.ui().find_contains("mm TELE"), "could not enter TELE mode"
         new = capture_still(ctx)
-        ctx.note(f"TELE capture: {new}")
-        for name in new:
-            local = ctx.adb.pull(f"{MEDIA_DIR}/{name}", ctx.evidence / name)
-            if name.lower().endswith(".dng"):
-                assert media.dng_valid(local), f"DNG invalid: {name}"
-        fatals = ctx.adb.fatal_lines(ctx.adb.log_mark(), pid)
+        ctx.note(f"TELE capture: {[(row.key, row.display_name, row.mime_type) for row in new]}")
+        dng_rows = [row for row in new if row.mime_type == "image/x-adobe-dng"]
+        for row in new:
+            assert_published_row(row)
+        fatals = ctx.adb.fatal_lines(mark, pid)
         assert not fatals, f"errors: {fatals[:2]}"
+        if not dng_rows:
+            raise Incomplete("TELE capture valid, but DNG output was not enabled; RAW was not verified")
+        for row in dng_rows:
+            local = ctx.adb.pull(
+                f"{MEDIA_DIR}/{row.display_name}",
+                ctx.evidence / row.display_name,
+            )
+            assert media.dng_valid(local), f"DNG invalid: {row.display_name}"
     finally:
         if entered_tele:
             ctx.adb.tap_ui(desc="Teleconverter")
@@ -231,17 +297,23 @@ def t_video(ctx: Context) -> None:
     """A ~5 s recording finalizes to a playable HEVC/AVC clip with sane duration."""
     pid = ensure_foreground(ctx)
     ensure_video_mode(ctx)
-    before = ctx.adb.media_listing()
+    before = {row.key for row in ctx.adb.media_store_rows()}
     mark = ctx.adb.log_mark()
     ctx.adb.tap_ui(desc="Start recording")
     time.sleep(5)
     ctx.adb.tap_ui(desc="Stop recording")
-    new = ctx.adb.wait_new_media(before, min_new=1, timeout_s=25)
-    vids = [f for f in new if f.lower().endswith(".mp4")]
+    new = ctx.adb.wait_new_media_rows(before, min_new=1, timeout_s=25)
+    vids = [row for row in new if row.collection == "video" and row.mime_type == "video/mp4"]
     assert vids, f"no new clip after REC (new={new})"
-    local = ctx.adb.pull(f"{MEDIA_DIR}/{vids[-1]}", ctx.evidence / vids[-1])
+    assert len(vids) == 1 and len(new) == 1, f"REC published an unexpected row family: {new}"
+    row = vids[0]
+    assert_published_row(row)
+    local = ctx.adb.pull(
+        f"{MEDIA_DIR}/{row.display_name}",
+        ctx.evidence / row.display_name,
+    )
     info = media.mp4_probe(local)
-    ctx.note(f"{vids[-1]}: {info}")
+    ctx.note(f"{row.display_name}: {info}")
     if info["probe"] == "ffprobe":
         assert info["codec"] in ("hevc", "h264"), f"unexpected codec {info['codec']}"
         assert 2.0 < info["duration"] < 15.0, f"duration off: {info['duration']}"
@@ -320,7 +392,7 @@ def t_kill_capture(ctx: Context) -> None:
     """A still whose process dies right after the shot must survive as valid, published files."""
     ensure_foreground(ctx)
     ensure_photo_mode(ctx)
-    before = ctx.adb.media_listing()
+    before = {row.key for row in ctx.adb.media_store_rows()}
     mark = ctx.adb.log_mark()
     ctx.adb.tap(*shutter_node(ctx).center)
     assert ctx.adb.wait_log(mark, r"ShutterLag: started", timeout_s=14), "capture never started"
@@ -329,18 +401,20 @@ def t_kill_capture(ctx: Context) -> None:
     ctx.note("killed 0.6 s after shutter")
     time.sleep(1)
     ctx.adb.launch()  # launch recovery adopts/publishes completed pending files
-    new = ctx.adb.wait_new_media(before, min_new=1, timeout_s=30)
+    new = ctx.adb.wait_new_media_rows(before, min_new=1, timeout_s=30)
     assert new, "capture lost after kill — no file survived"
-    for name in new:
+    for row in new:
+        assert_published_row(row)
+        name = row.display_name
         local = ctx.adb.pull(f"{MEDIA_DIR}/{name}", ctx.evidence / name)
-        if name.lower().endswith(".jpg"):
+        if row.mime_type == "image/jpeg":
             media.jpeg_info(local)
-        elif name.lower().endswith(".heic"):
+        elif row.mime_type == "image/heic":
             assert media.heic_valid(local), f"HEIC invalid after kill: {name}"
-        elif name.lower().endswith(".dng"):
+        elif row.mime_type == "image/x-adobe-dng":
             assert media.dng_valid(local), f"DNG invalid after kill: {name}"
     time.sleep(6)
-    stale = ctx.adb.pending_files()
+    stale = ctx.adb.pending_rows()
     assert not stale, f"stuck IS_PENDING leftovers after recovery: {stale}"
     ctx.note(f"survived: {new}, no stuck pending")
 
@@ -350,21 +424,26 @@ def t_rec_background(ctx: Context) -> None:
     """HOME mid-recording must still finalize a playable clip (pause-path finalization)."""
     ensure_foreground(ctx)
     ensure_video_mode(ctx)
-    before = ctx.adb.media_listing()
+    before = {row.key for row in ctx.adb.media_store_rows()}
     ctx.adb.tap_ui(desc="Start recording")
     time.sleep(4)
     ctx.adb.home()
     ctx.note("HOME pressed mid-REC")
-    new = ctx.adb.wait_new_media(before, min_new=1, timeout_s=30)
-    vids = [f for f in new if f.lower().endswith(".mp4")]
+    new = ctx.adb.wait_new_media_rows(before, min_new=1, timeout_s=30)
+    vids = [row for row in new if row.collection == "video" and row.mime_type == "video/mp4"]
     assert vids, f"backgrounded recording produced no clip (new={new})"
-    local = ctx.adb.pull(f"{MEDIA_DIR}/{vids[-1]}", ctx.evidence / vids[-1])
+    row = vids[-1]
+    assert_published_row(row)
+    local = ctx.adb.pull(
+        f"{MEDIA_DIR}/{row.display_name}",
+        ctx.evidence / row.display_name,
+    )
     info = media.mp4_probe(local)
     if info["probe"] == "ffprobe":
         assert info["duration"] > 1.0, f"clip too short: {info}"
     ctx.adb.launch()
     ensure_photo_mode(ctx)
-    ctx.note(f"clip finalized: {vids[-1]} {info.get('duration', '?')}s")
+    ctx.note(f"clip finalized: {row.display_name} {info.get('duration', '?')}s")
 
 
 @test("rec_stop_then_kill_published", "reliability", destructive=True)
@@ -372,7 +451,7 @@ def t_rec_stop_kill(ctx: Context) -> None:
     """Killing the app right after REC-stop must not lose the clip (publish window durability)."""
     ensure_foreground(ctx)
     ensure_video_mode(ctx)
-    before = ctx.adb.media_listing()
+    before = {row.key for row in ctx.adb.media_store_rows()}
     ctx.adb.tap_ui(desc="Start recording")
     time.sleep(4)
     ctx.adb.tap_ui(desc="Stop recording")
@@ -381,18 +460,23 @@ def t_rec_stop_kill(ctx: Context) -> None:
     ctx.note("killed 0.5 s after REC stop")
     time.sleep(1)
     ctx.adb.launch()  # sweep must adopt/publish, never delete
-    new = ctx.adb.wait_new_media(before, min_new=1, timeout_s=30)
-    vids = [f for f in new if f.lower().endswith(".mp4")]
+    new = ctx.adb.wait_new_media_rows(before, min_new=1, timeout_s=30)
+    vids = [row for row in new if row.collection == "video" and row.mime_type == "video/mp4"]
     assert vids, "clip lost when killed after stop"
-    local = ctx.adb.pull(f"{MEDIA_DIR}/{vids[-1]}", ctx.evidence / vids[-1])
+    row = vids[-1]
+    assert_published_row(row)
+    local = ctx.adb.pull(
+        f"{MEDIA_DIR}/{row.display_name}",
+        ctx.evidence / row.display_name,
+    )
     info = media.mp4_probe(local)
     if info["probe"] == "ffprobe":
         assert info["duration"] > 1.0, f"adopted clip invalid: {info}"
     time.sleep(6)
-    stale = ctx.adb.pending_files()
+    stale = ctx.adb.pending_rows()
     assert not stale, f"stuck IS_PENDING leftovers: {stale}"
     ensure_photo_mode(ctx)
-    ctx.note(f"clip adopted+published: {vids[-1]}")
+    ctx.note(f"clip adopted+published: {row.display_name}")
 
 
 @test("no_stuck_pending_baseline", "reliability", destructive=True)
@@ -402,6 +486,6 @@ def t_pending(ctx: Context) -> None:
     ctx.adb.force_stop()
     time.sleep(1)
     ctx.adb.launch(wait_s=8)  # sweep runs during init
-    stale = ctx.adb.pending_files()
+    stale = ctx.adb.pending_rows()
     assert not stale, f"stale pending files not reclaimed: {stale}"
     ctx.note("media dir clean of pending leftovers")

@@ -18,6 +18,10 @@ class Skip(Exception):
     """Raise inside a test to mark it skipped (unreachable UI path, missing host tool)."""
 
 
+class Incomplete(Exception):
+    """Raise when a required verification could not run; the suite exits non-green."""
+
+
 @dataclass
 class Case:
     name: str
@@ -30,7 +34,7 @@ class Case:
 @dataclass
 class Result:
     case: Case
-    status: str  # pass | fail | error | skip
+    status: str  # pass | fail | error | skip | incomplete
     detail: str = ""
     seconds: float = 0.0
 
@@ -87,6 +91,9 @@ def run(
         except Skip as e:
             res = Result(case, "skip", str(e), time.time() - t0)
             print(f"  SKIP: {e}")
+        except Incomplete as e:
+            res = Result(case, "incomplete", str(e), time.time() - t0)
+            print(f"  INCOMPLETE: {e}")
         except AssertionError as e:
             res = Result(case, "fail", f"{e}", time.time() - t0)
             print(f"  FAIL: {e}")
@@ -98,11 +105,14 @@ def run(
     passed = sum(1 for r in results if r.status == "pass")
     bad = sum(1 for r in results if r.status in ("fail", "error"))
     skipped = sum(1 for r in results if r.status == "skip")
+    incomplete = sum(1 for r in results if r.status == "incomplete")
     print(f"\n{len(results)} run: "
-          f"{passed} pass, {bad} fail/error, {skipped} skip")
+          f"{passed} pass, {bad} fail/error, {skipped} skip, {incomplete} incomplete")
     print(f"Report: {report_dir / 'report.md'}")
     if bad:
         return 1
+    if incomplete:
+        return 2
     return 0 if passed else 2
 
 
@@ -117,7 +127,7 @@ def _write_reports(results: list[Result], out: Path) -> None:
     tests = len(results)
     failures = sum(1 for r in results if r.status == "fail")
     errors = sum(1 for r in results if r.status == "error")
-    skipped = sum(1 for r in results if r.status == "skip")
+    skipped = sum(1 for r in results if r.status in ("skip", "incomplete"))
     xml = [f'<testsuite name="device-tests" tests="{tests}" failures="{failures}" errors="{errors}" skipped="{skipped}">']
     for r in results:
         xml.append(f'  <testcase classname="{r.case.tier}" name="{escape(r.case.name)}" time="{r.seconds:.1f}">')
@@ -126,7 +136,7 @@ def _write_reports(results: list[Result], out: Path) -> None:
             xml.append(f'    <failure message="{body}"/>')
         elif r.status == "error":
             xml.append(f'    <error message="{body}"/>')
-        elif r.status == "skip":
+        elif r.status in ("skip", "incomplete"):
             xml.append(f'    <skipped message="{body}"/>')
         xml.append("  </testcase>")
     xml.append("</testsuite>")
