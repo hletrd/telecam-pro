@@ -59,6 +59,7 @@ class UiNode:
     checked: bool
     selected: bool
     enabled: bool
+    clickable: bool
 
     @property
     def center(self) -> tuple[int, int]:
@@ -530,6 +531,7 @@ class UiTree:
                     checked=el.get("checked") == "true",
                     selected=el.get("selected") == "true",
                     enabled=el.get("enabled") != "false",
+                    clickable=el.get("clickable") == "true",
                 )
             )
 

@@ -24,6 +24,9 @@ from dtest import media
 FOCAL_PRESETS = ("0.6× lens", "1× lens", "3× lens", "10× lens")
 CAPTURE_MODES = ("Photo mode", "Video mode")
 SETTINGS_TABS = ("My", "Shoot", "Exposure", "Focus", "Lens", "Video", "Image", "Assist", "Setup")
+SETTINGS_TITLES = (
+    "My Menu", "Shooting", "Exposure", "Focus", "Lens", "Video", "Image", "Assist", "Setup"
+)
 FN_TILE_LABELS = {
     "AE", "Focus", "Shutter", "ISO", "WB", "EV", "Zoom", "Stabilization", "Drive",
     "Meter", "Peaking", "Zebra", "Gamma", "Audio", "Grid", "Level", "Loupe", "Tele",
@@ -441,6 +444,10 @@ def _overlap_area(first, second) -> int:
     return max(0, right - left) * max(0, bottom - top)
 
 
+def _minimum_touch_px(metrics: DisplayMetrics) -> int:
+    return math.ceil(48 * metrics.density_dpi / 160) - 2  # tolerate pixel rounding only
+
+
 def camera_chrome_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
     """Pixel-level contract for the fixed Sony/iPhone-familiar shooting controls."""
     errors: list[str] = []
@@ -480,7 +487,7 @@ def camera_chrome_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
     )
 
     named_nodes = [*top, ("Open function menu", fn), *focal, *modes, ("Shutter", shutter), ("Gallery", gallery)]
-    minimum_px = math.ceil(48 * metrics.density_dpi / 160) - 2  # tolerate pixel rounding only
+    minimum_px = _minimum_touch_px(metrics)
     for label, node in named_nodes:
         if node is None:
             continue
@@ -966,18 +973,93 @@ def t_tap_af(ctx: Context) -> None:
 
 @test("settings_sheet_tabs", "full")
 def t_settings(ctx: Context) -> None:
-    """The settings sheet opens with the full tab rail and closes cleanly."""
-    ensure_foreground(ctx)
+    """Every settings tab selects its page; modal semantics and Back behavior stay isolated."""
+    pid = ensure_foreground(ctx)
+    mark = ctx.adb.log_mark()
+    metrics = ctx.adb.display_metrics()
     ctx.adb.tap_ui(desc="Open settings")
-    tree = ctx.adb.ui()
-    tab_nodes = {tab: tree.find(text=tab) for tab in SETTINGS_TABS}
-    missing = [tab for tab, node in tab_nodes.items() if node is None]
-    selected = [tab for tab, node in tab_nodes.items() if node is not None and node.selected]
-    ctx.adb.shell("input keyevent KEYCODE_BACK")
-    time.sleep(1)
-    assert not missing, f"settings tabs missing: {missing}"
-    assert len(selected) == 1, f"expected exactly one selected settings tab, got {selected}"
-    ctx.note(f"all 9 tabs present; selected={selected[0]}")
+    opened = ctx.adb.ui()
+    assert opened.find_desc_exact("Close settings"), "settings modal did not open"
+    minimum_px = _minimum_touch_px(metrics)
+    try:
+        for tab, title in zip(SETTINGS_TABS, SETTINGS_TITLES, strict=True):
+            tree = ctx.adb.ui()
+            tab_nodes = {
+                label: [
+                    node for node in tree.nodes
+                    if node.text.casefold() == label.casefold() and node.clickable
+                ]
+                for label in SETTINGS_TABS
+            }
+            invalid = {label: len(nodes) for label, nodes in tab_nodes.items() if len(nodes) != 1}
+            assert not invalid, f"settings tab nodes are missing or duplicated: {invalid}"
+            target = tab_nodes[tab][0]
+            left, top, right, bottom = target.bounds
+            assert target.enabled, f"settings tab {tab} is disabled"
+            assert 0 <= left < right <= metrics.width_px and 0 <= top < bottom <= metrics.height_px, (
+                f"settings tab {tab} is offscreen: {target.bounds}"
+            )
+            assert right - left >= minimum_px and bottom - top >= minimum_px, (
+                f"settings tab {tab} touch bounds are {right - left}x{bottom - top}px; "
+                f"minimum is {minimum_px}px"
+            )
+
+            if not target.selected:
+                ctx.adb.tap(*target.center)
+                deadline = time.time() + 5
+                while time.time() < deadline:
+                    tree = ctx.adb.ui()
+                    selected = [
+                        label for label in SETTINGS_TABS
+                        if any(
+                            node.text.casefold() == label.casefold()
+                            and node.clickable
+                            and node.selected
+                            for node in tree.nodes
+                        )
+                    ]
+                    if selected == [tab]:
+                        break
+                    time.sleep(0.3)
+                assert selected == [tab], f"settings tab {tab} did not become the sole selection: {selected}"
+            else:
+                selected = [
+                    label for label in SETTINGS_TABS
+                    if tab_nodes[label][0].selected
+                ]
+                assert selected == [tab], f"settings selected state is ambiguous: {selected}"
+
+            rail_right = max(tab_nodes[label][0].bounds[2] for label in SETTINGS_TABS)
+            page_titles = [
+                node for node in tree.nodes
+                if node.text.casefold() == title.casefold()
+                and not node.clickable
+                and node.bounds[0] >= rail_right
+            ]
+            assert page_titles, f"settings tab {tab} did not show page title {title!r}"
+            ctx.adb.screenshot(f"settings_{tab.lower()}")
+
+        modal = ctx.adb.ui()
+        background_descriptions = {
+            *FOCAL_PRESETS,
+            *CAPTURE_MODES,
+            "Take photo",
+            "Start recording",
+            "Open function menu",
+            "Open settings",
+        }
+        leaked = sorted(node.desc for node in modal.nodes if node.desc in background_descriptions)
+        assert not leaked, f"settings modal leaked background camera actions: {leaked}"
+    finally:
+        ctx.adb.shell("input keyevent KEYCODE_BACK")
+        time.sleep(1)
+
+    restored = ctx.adb.ui()
+    assert restored.find(desc="Open settings"), "Back did not restore camera chrome"
+    assert restored.find_desc_exact("Close settings") is None, "Back left the settings modal open"
+    fatals = ctx.adb.fatal_lines(mark, pid)
+    assert not fatals, f"errors during settings traversal: {fatals[:2]}"
+    ctx.note("all 9 tabs selected their page; modal isolated; Back restored camera")
 
 
 @test("function_menu_roundtrip", "full")

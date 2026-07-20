@@ -384,7 +384,7 @@ class UiSemanticsTest(unittest.TestCase):
             is_checked = str(description == checked).lower()
             nodes.append(
                 f'<node text="" content-desc="{description}" class="{class_name}" '
-                f'checkable="true" checked="{is_checked}" selected="false" enabled="true" '
+                f'checkable="true" checked="{is_checked}" selected="false" enabled="true" clickable="true" '
                 f'bounds="[{index * 10},0][{index * 10 + 10},10]" />'
             )
         return f"<hierarchy>{''.join(nodes)}</hierarchy>"
@@ -398,6 +398,7 @@ class UiSemanticsTest(unittest.TestCase):
         self.assertTrue(selected.checkable)
         self.assertTrue(selected.checked)
         self.assertFalse(selected.selected)
+        self.assertTrue(selected.clickable)
 
     def test_focal_contract_requires_exactly_expected_checked_radio(self) -> None:
         self.assertIsNone(cases.focal_rail_error(UiTree(self.focal_xml("10× lens")), "10× lens"))
@@ -421,7 +422,7 @@ class UiSemanticsTest(unittest.TestCase):
             is_checked = str(description == checked).lower()
             nodes.append(
                 f'<node text="" content-desc="{description}" class="{class_name}" '
-                f'checkable="true" checked="{is_checked}" selected="false" enabled="true" '
+                f'checkable="true" checked="{is_checked}" selected="false" enabled="true" clickable="true" '
                 f'bounds="[{index * 50},0][{index * 50 + 48},48]" />'
             )
         return f"<hierarchy>{''.join(nodes)}</hierarchy>"
