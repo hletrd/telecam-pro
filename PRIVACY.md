@@ -1,6 +1,6 @@
 # Privacy Policy — TeleCam Pro
 
-_Last updated: 2026-07-20_
+_Last updated: 2026-07-21_
 
 TeleCam Pro is a camera app for the OPPO Find X9 Ultra. This policy covers its permissions, captured
 media, and data handling.
@@ -15,7 +15,11 @@ cloud sync, or `INTERNET` permission.
 | Permission | Use |
 |---|---|
 | **Camera** | Shows the viewfinder and captures photos and videos. |
-| **Microphone** (`RECORD_AUDIO`) | Adds audio to videos when enabled. |
+| **Microphone** (`RECORD_AUDIO`) | Adds audio to videos when enabled. Before recording, it is also used while the input level meter is visible in armed Video mode. |
+
+Microphone input is processed locally. The visible standby meter reduces its input to a level reading
+and does not save that audio; recorded audio remains in the video file on your device. Neither is
+uploaded, collected by the developer, or shared with third parties.
 
 ## Photos and videos you capture
 

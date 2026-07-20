@@ -68,6 +68,9 @@ FRAMING AND MONITORING
 
 PRIVACY
 • No ads, analytics, tracking, or internet permission.
+• Microphone access is limited to enabled video audio and the visible input level meter while Video
+  mode is armed. Meter input is processed locally and is not saved; nothing is uploaded, collected by
+  the developer, or shared with third parties.
 
 SOURCE
 • Open-source project: github.com/hletrd/telecam-pro
@@ -83,8 +86,11 @@ Requires an OPPO Find X9 Ultra running Android 16. Target model codes: CPH2841 (
 
 - **Does your app collect or share any of the required user data types?** -> **No.**
 - Justification: the app declares no `INTERNET` permission and contains no analytics or ads SDKs.
-  Camera and microphone inputs are used only to create captures saved through Android MediaStore. The
-  release build bundles no OEM SDK; the OPPO CameraUnit/OCS availability probe is debug-only.
+  Camera input supports the local viewfinder and captures. Microphone input is processed locally for
+  enabled video audio and while the visible input level meter is active in armed Video mode; standby
+  meter input is not saved. Captures remain on-device through Android MediaStore, and no input is
+  uploaded, collected by the developer, or shared with third parties. The release build bundles no
+  OEM SDK; the OPPO CameraUnit/OCS availability probe is debug-only.
 - **Is all user data encrypted in transit?** -> N/A (no data transmitted).
 - **Do you provide a way to request data deletion?** -> N/A (no data collected); users delete their own
   photos/videos via the gallery.
