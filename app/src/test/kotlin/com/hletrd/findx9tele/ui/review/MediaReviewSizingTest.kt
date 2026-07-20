@@ -12,14 +12,14 @@ class MediaReviewSizingTest {
         assertEquals(
             MediaDeleteConfirmationCopy(
                 title = "Delete capture?",
-                body = "Delete this capture and all saved formats from device.",
+                body = "All saved formats for this capture will be deleted.",
             ),
             mediaDeleteConfirmationCopy(MediaDeleteScope.CAPTURE_FAMILY, raw = false),
         )
         assertEquals(
             MediaDeleteConfirmationCopy(
                 title = "Delete RAW file?",
-                body = "Delete this file from device.",
+                body = "This file will be deleted.",
             ),
             mediaDeleteConfirmationCopy(MediaDeleteScope.FILE_ONLY, raw = true),
         )

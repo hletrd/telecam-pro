@@ -7,6 +7,7 @@ import android.graphics.Matrix
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.TotalCaptureResult
 import android.media.Image
+import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
 import com.hletrd.findx9tele.camera.AspectRatio
@@ -100,7 +101,7 @@ internal class StillCapturePipeline(
         var rotated: Bitmap? = null
         try {
             val d = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-            if (d == null) { emitStatus("Failed to save photo: decode failed"); return }
+            if (d == null) { emitStatus("Photo save failed"); return }
             decoded = d
             val ar = spec.aspectRatio
             val base = if (ar != AspectRatio.W4_3) { // W4_3 = full sensor, no crop needed
@@ -111,15 +112,19 @@ internal class StillCapturePipeline(
             val r = rotateBitmap(base, spec.rotationDegrees)
             rotated = r
             if (wantHeif) runCatching { writeProcessedHeif(r, spec, exifShot) }
-                .onFailure { emitStatus("Failed to save HEIF: ${it.message}") }
+                .onFailure {
+                    Log.e("StillCapturePipeline", "HEIF save failed", it)
+                    emitStatus("HEIF save failed")
+                }
             if (wantJpeg) runCatching { writeProcessedJpeg(r, spec, exifShot) }
-                .onFailure { emitStatus("Failed to save JPEG: ${it.message}") }
+                .onFailure {
+                    Log.e("StillCapturePipeline", "JPEG save failed", it)
+                    emitStatus("JPEG save failed")
+                }
         } catch (t: Throwable) {
             if (t is ThreadDeath || t is VirtualMachineError && t !is OutOfMemoryError) throw t
-            emitStatus(
-                if (t is OutOfMemoryError) "Failed to save photo: out of memory"
-                else "Failed to save photo: ${t.message ?: "processing error"}",
-            )
+            Log.e("StillCapturePipeline", "Photo processing failed", t)
+            emitStatus("Photo save failed")
         } finally {
             val rr = rotated
             val cc = cropped
@@ -142,7 +147,7 @@ internal class StillCapturePipeline(
             spec.familyKey.displayName("heic"),
             "image/heic",
         )
-        if (u == null) { emitStatus("Failed to save HEIF"); return }
+        if (u == null) { emitStatus("HEIF save failed"); return }
         // The Setup quality slider governs BOTH still containers (it used to silently apply only
         // to JPEG, leaving the DEFAULT photo format pinned at the encoder's 95).
         val quality = spec.jpegQuality
@@ -151,14 +156,13 @@ internal class StillCapturePipeline(
                 HeifCapture.writeHeif(pfd.fileDescriptor, rotated, quality, exifData); true
             } ?: false
         }.getOrElse { failure -> MediaStoreWriter.delete(context, u); throw failure }
-        if (!wrote) { MediaStoreWriter.delete(context, u); emitStatus("Failed to save HEIF"); return }
+        if (!wrote) { MediaStoreWriter.delete(context, u); emitStatus("HEIF save failed"); return }
         MediaStoreWriter.markWriteComplete(context, u)
         if (!MediaStoreWriter.publish(context, u)) {
-            emitStatus("Failed to publish HEIF; will retry")
+            emitStatus("HEIF save delayed. Will retry.")
             return
         }
         emitMediaSaved(u, spec.captureId)
-        emitStatus("Saved")
     }
 
     /**
@@ -171,24 +175,23 @@ internal class StillCapturePipeline(
             spec.familyKey.displayName("jpg"),
             "image/jpeg",
         )
-        if (u == null) { emitStatus("Failed to save JPEG"); return }
+        if (u == null) { emitStatus("JPEG save failed"); return }
         val quality = spec.jpegQuality
         val wrote = runCatching {
             MediaStoreWriter.openOutputStream(context, u)?.use { out ->
                 rotated.compress(Bitmap.CompressFormat.JPEG, quality, out)
             } ?: false
         }.getOrElse { failure -> MediaStoreWriter.delete(context, u); throw failure }
-        if (!wrote) { MediaStoreWriter.delete(context, u); emitStatus("Failed to save JPEG"); return }
+        if (!wrote) { MediaStoreWriter.delete(context, u); emitStatus("JPEG save failed"); return }
         // Bitmap.compress strips all metadata, so stamp the exposure EXIF back before publishing
         // (best-effort — a failed EXIF write must never lose the image itself).
         runCatching { writeJpegExif(u, exifShot) }
         MediaStoreWriter.markWriteComplete(context, u)
         if (!MediaStoreWriter.publish(context, u)) {
-            emitStatus("Failed to publish JPEG; will retry")
+            emitStatus("JPEG save delayed. Will retry.")
             return
         }
         emitMediaSaved(u, spec.captureId)
-        emitStatus("Saved")
     }
 
     /**
@@ -228,11 +231,10 @@ internal class StillCapturePipeline(
     /** Publishes a completed DNG off the camera thread, including retry backoff and callbacks. */
     fun publishDng(pending: PendingDngPublication) {
         if (!MediaStoreWriter.publish(context, pending.uri)) {
-            emitStatus("Failed to publish DNG; will retry")
+            emitStatus("DNG save delayed. Will retry.")
             return
         }
         emitRawSaved(pending.uri, pending.captureId)
-        emitStatus("DNG saved")
     }
 
     private fun writeJpegExif(uri: android.net.Uri, shot: ExifShot) {

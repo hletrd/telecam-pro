@@ -970,11 +970,11 @@ internal fun mediaDeleteConfirmationCopy(
 ): MediaDeleteConfirmationCopy = when (scope) {
     MediaDeleteScope.CAPTURE_FAMILY -> MediaDeleteConfirmationCopy(
         title = if (raw) "Delete RAW capture?" else "Delete capture?",
-        body = "Delete this capture and all saved formats from device.",
+        body = "All saved formats for this capture will be deleted.",
     )
     MediaDeleteScope.FILE_ONLY -> MediaDeleteConfirmationCopy(
         title = if (raw) "Delete RAW file?" else "Delete file?",
-        body = "Delete this file from device.",
+        body = "This file will be deleted.",
     )
 }
 
@@ -1000,12 +1000,6 @@ private fun RawReviewPlaceholder(modifier: Modifier = Modifier) {
             text = "DNG",
             color = CameraColors.TextSecondary,
             style = MaterialTheme.typography.titleMedium,
-        )
-        Text(
-            text = "Pixel preview unavailable",
-            color = CameraColors.TextSecondary,
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(top = 12.dp),
         )
     }
 }

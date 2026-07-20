@@ -129,7 +129,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     // controller callback inert before it can publish gains or a stale status message.
     private var customWbSampleGeneration = 0L
 
-    // Auto-dismisses the transient status toast ("Saved" / "Video saved" / errors) so it doesn't hang
+    // Auto-dismisses the transient status toast ("Video saved" / errors) so it doesn't hang
     // on screen forever (QA: "video saved" stuck). Each new message re-arms the 2 s timer.
     private val clearStatusRunnable = Runnable { _state.update { it.copy(statusMessage = null) } }
 
@@ -316,12 +316,12 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                         preTeleUnifiedZoom = accepted.preTeleUnifiedZoom
                         formatStatus = when {
                             !publication.photoOutputs.hasStillTarget ->
-                                "Still capture unavailable in current session"
+                                "Still capture unavailable"
                             current.photoFormats.wantsProcessedStill &&
                                 !accepted.photoFormats.wantsProcessedStill && accepted.photoFormats.dngRaw ->
-                                "Processed still unavailable; using DNG"
+                                "HEIF/JPEG unavailable; using DNG"
                             current.photoFormats.dngRaw && !accepted.photoFormats.dngRaw ->
-                                "RAW unavailable in current session"
+                                "RAW unavailable"
                             else -> null
                         }
                         current.copy(
@@ -1043,7 +1043,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             mainHandler.post {
                 if (generation != customWbSampleGeneration) return@post
                 if (sample == null) {
-                    showStatus("Custom WB not measured")
+                    showStatus("Custom WB measurement failed")
                     return@post
                 }
                 val applied = engine.consumeCustomWbSampleIfCurrent(sample) { gains ->
@@ -1051,7 +1051,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                         it.copy(wbMode = WbMode.CUSTOM, customWbGains = gains)
                     }
                 }
-                showStatus(if (applied) "Custom WB set" else "Custom WB not measured")
+                showStatus(if (applied) "Custom WB set" else "Custom WB measurement failed")
             }
         }
     }
@@ -1868,8 +1868,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 showStatus(
                     when {
                         survivors.isEmpty() -> "Deleted"
-                        restored != null -> "Some media could not be deleted — retry from review"
-                        else -> "Some media could not be deleted — retry in Gallery"
+                        restored != null -> "Some files could not be deleted. Open the capture and retry."
+                        else -> "Some files could not be deleted. Retry in Gallery."
                     },
                 )
             }
@@ -1901,7 +1901,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     private fun deleteLateCaptureOutput(uri: Uri) {
         ioExecutor.execute {
             if (!MediaStoreWriter.delete(getApplication(), uri)) {
-                mainHandler.post { showStatus("Could not delete a late shot file") }
+                mainHandler.post { showStatus("Capture file could not be deleted") }
             }
         }
     }

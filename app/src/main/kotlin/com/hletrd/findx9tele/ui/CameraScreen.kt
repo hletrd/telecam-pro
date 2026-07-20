@@ -559,7 +559,7 @@ fun CameraScreen(
         }
 
         state.statusMessage?.let { message ->
-            // Centered transient toast ("Saved" / "Video saved" / errors). Previously pinned near the
+            // Centered transient toast ("Video saved" / errors). Previously pinned near the
             // top, where it collided with the OSD status row (300mm / codec / etc.) — QA-reported.
             // This is the channel for capture/permission/storage ERRORS, so its scrim rides the tested
             // contrast floor (05486cb) like every sibling pill — 0.55 cleared 4.5 only by a hair and
@@ -1381,7 +1381,7 @@ private fun FnOverlay(
             modifier = Modifier
                 .fillMaxSize()
                 .semantics {
-                    contentDescription = "Close Fn menu"
+                    contentDescription = "Close function menu"
                     role = Role.Button
                 }
                 .clickable(onClick = onDismiss),

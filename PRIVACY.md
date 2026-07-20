@@ -1,39 +1,32 @@
 # Privacy Policy — TeleCam Pro
 
-_Last updated: 2026-07-16_
+_Last updated: 2026-07-20_
 
-TeleCam Pro ("the app") is a camera app for the OPPO Find X9 Ultra. This policy explains what the app
-does and does not do with your information.
+TeleCam Pro is a camera app for the OPPO Find X9 Ultra. This policy covers its permissions, captured
+media, and data handling.
 
 ## Summary
 
-**The app collects no personal data, sends nothing off your device, and contains no analytics, ads,
-tracking, accounts, or cloud sync.** Everything it does happens locally on your phone.
+TeleCam Pro does not collect or share personal data. It has no ads, analytics, tracking, accounts,
+cloud sync, or `INTERNET` permission.
 
 ## Permissions the app requests
 
-| Permission | Why | Where the data goes |
-|---|---|---|
-| **Camera** | To show the live viewfinder and capture photos and video. | Stays on the device. |
-| **Microphone** (`RECORD_AUDIO`) | To record audio while filming video. | Written into the video file on the device. |
-
-The app declares **no `INTERNET` permission**, so it is technically incapable of transmitting any data
-off the device.
+| Permission | Use |
+|---|---|
+| **Camera** | Shows the viewfinder and captures photos and videos. |
+| **Microphone** (`RECORD_AUDIO`) | Adds audio to videos when enabled. |
 
 ## Photos and videos you capture
 
-Photos and videos are saved to your device's shared media storage in `DCIM/X9Tele` using Android
-MediaStore. They are yours. The app does not upload, back up, index, or transmit them anywhere.
-Uninstalling TeleCam Pro removes its private settings, but it does not remove captures from shared
-storage. Delete captures in TeleCam Pro, a gallery app, or a file manager when you want them removed.
+Photos and videos are saved in `DCIM/X9Tele` through Android MediaStore. Uninstalling TeleCam Pro
+removes its settings but leaves captures in shared media storage. TeleCam Pro does not upload or
+back up captures. Delete them in TeleCam Pro, a gallery app, or a file manager.
 
 ## Data collection and sharing
 
-- **No data collected.** The app does not gather names, contacts, location, identifiers, usage
-  analytics, crash telemetry, or any other personal or device data.
-- **No data shared.** Because nothing is collected and there is no network access, nothing is shared
-  with us or any third party.
-- **No advertising or tracking.**
+The app has no analytics, crash reporting, advertising, or tracking SDKs. It does not collect names,
+contacts, location, identifiers, or usage data.
 
 ## Children
 
@@ -42,10 +35,10 @@ user, including children.
 
 ## Changes to this policy
 
-If this policy changes, the updated version will be published in the app's public repository with a new
-"Last updated" date.
+Policy changes will appear at this URL with a new last-updated date.
 
-Public URL for Google Play: `https://hletrd.github.io/telecam-pro/privacy-policy/`
+TeleCam Pro is an independent app and is not affiliated with, endorsed by, or sponsored by OPPO,
+Hasselblad, or any hardware maker.
 
 ## Contact
 

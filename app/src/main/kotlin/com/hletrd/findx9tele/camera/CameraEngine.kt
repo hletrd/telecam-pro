@@ -805,9 +805,9 @@ class CameraEngine(private val context: Context) {
         when (outcome.first) {
             PreviewRecoveryDecision.IGNORE -> Unit
             PreviewRecoveryDecision.EXHAUSTED ->
-                onStatus?.invoke("Preview failed — reopen the app")
+                onStatus?.invoke("Preview unavailable. Reopen the app.")
             PreviewRecoveryDecision.RETRY -> {
-                onStatus?.invoke("Preview interrupted — recovering")
+                onStatus?.invoke("Preview interrupted. Recovering.")
                 runCatching {
                     timelapseScheduler.schedule(
                         {
@@ -821,7 +821,7 @@ class CameraEngine(private val context: Context) {
                         java.util.concurrent.TimeUnit.MILLISECONDS,
                     )
                 }.onFailure {
-                    onStatus?.invoke("Preview failed — reopen the app")
+                    onStatus?.invoke("Preview unavailable. Reopen the app.")
                 }
             }
         }
@@ -1530,7 +1530,7 @@ class CameraEngine(private val context: Context) {
             // Recovery exhausted: say so instead of silently leaving a black viewfinder behind an
             // interactive-looking UI. cameraReady stays false, so the shutter is dimmed too; a
             // background/foreground cycle (resume()) retries with a fresh attempt budget.
-            onStatus?.invoke("Camera failed — reopen the app")
+            onStatus?.invoke("Camera unavailable. Reopen the app.")
             return
         }
         cameraRecoveryAttempts++
@@ -1555,7 +1555,7 @@ class CameraEngine(private val context: Context) {
         )) {
             ColdStartRetryGate.Failure.Ignore -> Unit
             ColdStartRetryGate.Failure.Exhausted ->
-                onStatus?.invoke("Camera unavailable — retry the app")
+                onStatus?.invoke("Camera unavailable. Reopen the app.")
             is ColdStartRetryGate.Failure.Retry -> {
                 onStatus?.invoke("$reason — retrying")
                 runCatching {
@@ -2125,14 +2125,14 @@ class CameraEngine(private val context: Context) {
         }
         val effFormats = formats.normalizedFor(accepted.outputs)
         if (!effFormats.wantsProcessedStill && !effFormats.dngRaw) {
-            onStatus?.invoke("Still capture unavailable in current session")
+            onStatus?.invoke("Still capture unavailable")
             return false
         }
         when {
             formats.wantsProcessedStill && !effFormats.wantsProcessedStill && effFormats.dngRaw ->
-                onStatus?.invoke("Processed still unavailable; capturing DNG")
+                onStatus?.invoke("HEIF/JPEG unavailable; using DNG")
             formats.dngRaw && !effFormats.dngRaw ->
-                onStatus?.invoke("RAW unavailable in current session")
+                onStatus?.invoke("RAW unavailable")
         }
         val ctrl = accepted.controller
         when (driveMode) {
@@ -2150,7 +2150,8 @@ class CameraEngine(private val context: Context) {
                     photoCallback(effFormats, controls, retainedSnapshotLease = snapshotLease)
                 }.getOrElse { failure ->
                     snapshotLease?.release()
-                    onStatus?.invoke("Capture failed: ${failure.message}")
+                    android.util.Log.e("CameraEngine", "Photo callback creation failed", failure)
+                    onStatus?.invoke("Photo capture failed")
                     return false
                 }
                 val dispatched = runCatching {
@@ -2271,7 +2272,7 @@ class CameraEngine(private val context: Context) {
                             }
                             val formats = requestedFormats.normalizedFor(accepted.outputs)
                             if (!formats.wantsProcessedStill && !formats.dngRaw) {
-                                onStatus?.invoke("Still capture unavailable in current session")
+                                onStatus?.invoke("Still capture unavailable")
                                 stopTimelapse()
                                 return@schedule
                             }
@@ -2430,7 +2431,7 @@ class CameraEngine(private val context: Context) {
                                         try {
                                             val bytes = runCatching { processedSnapshot.jpegBytes() }.getOrNull()
                                             if (bytes == null) {
-                                                reportStatus("Failed to save photo")
+                                                reportStatus("Photo save failed")
                                             } else {
                                                 stillPipeline.saveProcessedStills(
                                                     bytes,
@@ -2446,14 +2447,15 @@ class CameraEngine(private val context: Context) {
                                     }
                                 }
                                 processedQueued = queued.isSuccess
-                                queued.onFailure {
-                                    reportStatus("Failed to queue photo save: ${it.message}")
+                                queued.onFailure { failure ->
+                                    android.util.Log.e("CameraEngine", "Photo save dispatch failed", failure)
+                                    reportStatus("Photo save failed")
                                 }
                             } else {
-                                reportStatus("Failed to save photo")
+                                reportStatus("Photo save failed")
                             }
                         } else {
-                            reportStatus("Failed to save photo: no still image")
+                            reportStatus("Photo capture failed")
                         }
                     }
 
@@ -2465,7 +2467,8 @@ class CameraEngine(private val context: Context) {
                                 stillPipeline.saveDng(raw, rawChars, result, spec)
                             }
                             write.onFailure { failure ->
-                                reportStatus("Failed to save DNG: ${failure.message}")
+                                android.util.Log.e("CameraEngine", "DNG write failed", failure)
+                                reportStatus("DNG save failed")
                             }
                             val pending = write.getOrNull()
                             if (pending != null) {
@@ -2481,11 +2484,11 @@ class CameraEngine(private val context: Context) {
                                 dngPublishQueued = queued.isSuccess
                                 queued.onFailure {
                                     // The bytes are COMPLETE and remain pending for launch recovery.
-                                    reportStatus("Failed to queue DNG publish; will retry")
+                                    reportStatus("DNG save delayed. Will retry.")
                                 }
                             }
                         } else {
-                            reportStatus("Failed to save DNG: no RAW")
+                            reportStatus("DNG capture failed")
                         }
                     }
                     if (!formats.wantsProcessedStill && !formats.dngRaw) {
@@ -2500,7 +2503,8 @@ class CameraEngine(private val context: Context) {
 
             override fun onError(t: Throwable) {
                 try {
-                    reportStatus("Capture failed: ${t.message}")
+                    android.util.Log.e("CameraEngine", "Photo capture failed", t)
+                    reportStatus("Photo capture failed")
                 } finally {
                     finishProcessed()
                     finishDng()
@@ -2598,7 +2602,7 @@ class CameraEngine(private val context: Context) {
         // Expected failures below return false with their own cleanup, but an UNEXPECTED throw
         // between the mic claim and recorder publication must still release the single-mic claim:
         // the executor-level runCatching used to swallow it with the claim stranded — meter dark
-        // and every later REC refused ("Audio meter is stopping") until process restart. Recorder
+        // and every later REC refused until process restart. Recorder
         // partials on a throw rely on VideoRecorder's own setup-failure release + the failure
         // callbacks; the claim release is the invariant this guard owns.
         return try {
@@ -2622,7 +2626,7 @@ class CameraEngine(private val context: Context) {
         } ?: true
         if (!meterReleased) {
             abortRecordingStart()
-            onStatus?.invoke("Audio meter is stopping")
+            onStatus?.invoke("Audio is busy. Try again.")
             return false
         }
         if (recorder != null) {
@@ -2833,7 +2837,8 @@ class CameraEngine(private val context: Context) {
         }
         if (!claimed) return
         detachAndFinalizeRecording(rec, uri, captureId)
-        onStatus?.invoke("Recording stopped: ${failure.message ?: "encoder error"}")
+        android.util.Log.e("CameraEngine", "Recording failed", failure)
+        onStatus?.invoke("Recording failed")
         onRecordingTerminated?.invoke(failure)
         gl.setTransfer(transfer)
     }
@@ -2874,7 +2879,8 @@ class CameraEngine(private val context: Context) {
 
     /** Terminal EGL reset used only when the checked encoder detach transition itself fails. */
     private fun recoverFromEncoderDetachFailure(failure: Throwable, onReleased: () -> Unit) {
-        onStatus?.invoke("Renderer reset: ${failure.message ?: "encoder detach failed"}")
+        android.util.Log.e("CameraEngine", "Renderer reset after encoder detach failure", failure)
+        onStatus?.invoke("Camera error. Recovering.")
         invalidateCameraReady()
         val failedController = synchronized(this) {
             val current = controller

@@ -11,8 +11,8 @@ Use this as the source of truth when filling Play Console > Policy > App content
 - The release build bundles no third-party OEM SDK (the OPPO CameraUnit/OCS availability probe is
   debug-only); the enforceable guarantee is the merged manifest: the app declares no `INTERNET`
   permission, and the build strips one if any dependency ever tries to merge it in
-- Camera and microphone input are processed on device and written only to local user-selected media
-  storage through Android MediaStore
+- Camera and microphone input are used only for capture. Photos and videos are saved in
+  `DCIM/X9Tele` through Android MediaStore.
 - Privacy policy URL: `https://hletrd.github.io/telecam-pro/privacy-policy/`
 
 Google defines Data Safety "collection" as transmitting data off the user's device. On-device access
@@ -39,18 +39,17 @@ Official references:
 
 Do not select any collected or shared data types.
 
-Camera images, video frames, and microphone audio are accessed only to produce local photos/videos on
-the user's device. They are not transmitted off device, uploaded, analyzed by the developer, shared
-with another app by TeleCam Pro, or used for advertising/analytics.
+Camera images, video frames, and microphone audio are used only to create photos and videos on the
+device. TeleCam Pro does not upload them, analyze them for the developer, or use them for advertising
+or analytics.
 
 ## Store Listing Safety Text
 
 Use this wording in any free-text notes if Play review asks for clarification:
 
 ```text
-TeleCam Pro is an offline camera app. It uses Camera permission for the live viewfinder and photo/video
-capture, and Microphone permission only to record audio into videos saved locally on the user's device.
-The app declares no INTERNET permission, so it cannot transmit data off the device, and includes no
-ads, analytics, accounts, cloud sync, or crash-telemetry SDKs. The release build bundles no OEM SDK.
-No user data is collected or shared by the developer.
+TeleCam Pro uses Camera for the viewfinder and photo/video capture, and Microphone only when recording
+video with audio. Captures are saved through Android MediaStore. The app declares no INTERNET
+permission and includes no ads, analytics, accounts, cloud sync, crash telemetry, or OEM SDK. No user
+data is collected or shared by the developer.
 ```

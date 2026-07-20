@@ -384,9 +384,9 @@ private fun PermissionGate(
         ) {
             Text(
                 text = if (permanentlyDenied) {
-                    "Camera access is off. Enable it in Settings."
+                    "Enable camera access in Settings."
                 } else {
-                    "Camera is required. Mic is used for video only."
+                    "Camera access required."
                 },
                 textAlign = TextAlign.Center,
                 style = MaterialTheme.typography.bodyLarge,

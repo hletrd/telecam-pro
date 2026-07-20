@@ -15,9 +15,9 @@ class StatusUrgencyTest {
     @Test
     fun `real failure statuses classify urgent`() {
         // Exact strings CameraViewModel/engine emit today.
-        assertTrue("Capture failed: timeout".isUrgentStatus())
-        assertTrue("Failed to save DNG: no RAW".isUrgentStatus())
-        assertTrue("Still capture unavailable in current session".isUrgentStatus())
+        assertTrue("Photo capture failed".isUrgentStatus())
+        assertTrue("DNG save failed".isUrgentStatus())
+        assertTrue("Still capture unavailable".isUrgentStatus())
         // Found while writing this pin: delete failures matched no keyword and rendered polite —
         // "could not" joined the classifier with this test.
         assertTrue("Could not delete media".isUrgentStatus())
@@ -27,17 +27,17 @@ class StatusUrgencyTest {
 
     @Test
     fun `ordinary statuses stay quiet`() {
-        assertFalse("Saved".isUrgentStatus())
-        assertFalse("DNG saved".isUrgentStatus())
+        assertFalse("Video saved".isUrgentStatus())
+        assertFalse("Custom WB set".isUrgentStatus())
         assertFalse("MR1 loaded".isUrgentStatus())
         assertFalse("Stop REC first".isUrgentStatus())
     }
 
     @Test
     fun `status lifetime is long for failures short for success and neutral for guidance`() {
-        assertEquals(6_000L, statusDisplayDurationMs("Could not publish HEIF"))
+        assertEquals(6_000L, statusDisplayDurationMs("HEIF save failed"))
         assertEquals(1_500L, statusDisplayDurationMs("Video saved"))
-        assertEquals(2_500L, statusDisplayDurationMs("No audio samples — video only"))
+        assertEquals(2_500L, statusDisplayDurationMs("Stop REC first"))
         assertEquals(null, statusDisplayDurationMs(null))
     }
 }

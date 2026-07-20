@@ -2,19 +2,15 @@ package com.hletrd.findx9tele.ui.controls
 
 import android.util.Size
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.progressSemantics
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
 import androidx.compose.ui.semantics.disabled
-import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.ScrollState
@@ -36,7 +32,6 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -82,13 +77,6 @@ import kotlin.math.roundToInt
  * in ProSheet.kt can assemble them freely. Visibility is `internal` (not `private`) so ProSheet.kt
  * and ManualDials.kt, in the same module, can call these directly.
  */
-
-/**
- * Sony-style on-demand help: LONG-PRESS a setting's label to surface a one-line description in the
- * menu's bottom strip (see ProSheet). The provider maps a row's help key to its copy; rows report
- * through this local so the shared components below stay presentational.
- */
-internal val LocalSettingHelp = compositionLocalOf<(String) -> Unit> { {} }
 
 internal data class SettingSemantics(val label: String, val state: String)
 
@@ -191,20 +179,10 @@ internal fun <T> SegmentedSelector(
     onSelect: (T) -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
-    // Distinct help-map key for rows whose display label repeats across tabs (e.g. "Mode").
-    helpKey: String = label,
 ) {
-    val showHelp = LocalSettingHelp.current
     Column(
         modifier = modifier
-            .fillMaxWidth()
-            .pointerInput(helpKey) { detectTapGestures(onLongPress = { showHelp(helpKey) }) }
-            .semantics {
-                onLongClick(label = "Show help") {
-                    showHelp(helpKey)
-                    true
-                }
-            },
+            .fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text(label, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
@@ -246,19 +224,13 @@ internal fun LabeledSlider(
 ) {
     val span = valueRange.endInclusive - valueRange.start
     val fraction = if (span <= 0f) 0f else ((value - valueRange.start) / span).coerceIn(0f, 1f)
-    val showHelp = LocalSettingHelp.current
     val accessibility = sliderSettingSemantics(label, valueLabel)
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .pointerInput(label) { detectTapGestures(onLongPress = { showHelp(label) }) }
             .semantics(mergeDescendants = true) {
                 contentDescription = accessibility.label
                 stateDescription = accessibility.state
-                onLongClick(label = "Show help") {
-                    showHelp(label)
-                    true
-                }
             },
     ) {
         Row(
@@ -383,7 +355,6 @@ private fun CameraSlider(
 }
 
 /** Label + Switch row used by every boolean toggle in the settings menu. */
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun ToggleRow(
     label: String,
@@ -392,28 +363,21 @@ internal fun ToggleRow(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
 ) {
-    val showHelp = LocalSettingHelp.current
     val accessibility = toggleSettingSemantics(label, checked)
     Row(
         modifier = modifier
             .fillMaxWidth()
             .sizeIn(minHeight = 48.dp)
-            .combinedClickable(
+            .clickable(
                 enabled = enabled,
                 role = Role.Switch,
                 onClick = { onCheckedChange(!checked) },
-                onLongClickLabel = "Show help",
-                onLongClick = { showHelp(label) },
             )
             .semantics(mergeDescendants = true) {
                 contentDescription = accessibility.label
                 stateDescription = accessibility.state
                 role = Role.Switch
                 if (!enabled) disabled()
-                onLongClick(label = "Show help") {
-                    showHelp(label)
-                    true
-                }
             },
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
@@ -574,7 +538,7 @@ internal fun lensFocalCaption(
 ): String = when (lens) {
     com.hletrd.findx9tele.camera.LensChoice.ULTRAWIDE -> "14 mm"
     com.hletrd.findx9tele.camera.LensChoice.MAIN -> "23 mm"
-    com.hletrd.findx9tele.camera.LensChoice.TELE3X -> if (teleconverter) "70 mm + TC = 300 mm" else "70 mm"
+    com.hletrd.findx9tele.camera.LensChoice.TELE3X -> if (teleconverter) "300 mm equiv." else "70 mm"
     com.hletrd.findx9tele.camera.LensChoice.TELE10X -> "230 mm"
 }
 
@@ -787,19 +751,19 @@ fun PhotoFormatToggles(
         }
         if (!processedAvailable && !rawAvailable) {
             Text(
-                "Still capture is unavailable in the current camera session.",
+                "Still capture unavailable.",
                 color = CameraColors.TextSecondary,
                 style = MaterialTheme.typography.labelSmall,
             )
         } else if (!rawAvailable) {
             Text(
-                "RAW is unavailable in the current camera session.",
+                "RAW unavailable.",
                 color = CameraColors.TextSecondary,
                 style = MaterialTheme.typography.labelSmall,
             )
         } else if (!processedAvailable) {
             Text(
-                "Processed stills are unavailable; this session captures DNG only.",
+                "HEIF/JPEG unavailable; DNG only.",
                 color = CameraColors.TextSecondary,
                 style = MaterialTheme.typography.labelSmall,
             )

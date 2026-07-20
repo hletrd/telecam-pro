@@ -28,16 +28,13 @@ Open-source manual camera for Find X9 Ultra telephoto.
 ## Full description (≤4000 chars)
 
 ```
-TeleCam Pro is an open-source professional manual camera built for one phone - the OPPO Find X9 Ultra -
-and tuned for its periscope telephoto lens and for 300 mm afocal teleconverters that clamp onto it.
-
-It talks to the camera through Camera2 directly, so you get real manual control and the device's own pro
-video pipeline instead of a generic auto camera.
+TeleCam Pro is an open-source manual camera for the OPPO Find X9 Ultra, tuned for its periscope
+telephoto lens and 300 mm afocal teleconverter. Camera2 provides direct manual controls and access to
+the device's video pipeline.
 
 OPEN SOURCE
 • Source code is public and auditable: github.com/hletrd/telecam-pro
 • No ads, no analytics, no in-app purchases, no account, and no cloud sync.
-• Built for owners who want a focused camera tool, not another tracking surface.
 
 TELECONVERTER MODE
 • One tap selects the 3x periscope lens and enables teleconverter mode: the afocal converter flips the
@@ -45,7 +42,7 @@ TELECONVERTER MODE
 • Uses the device's available Camera2 OIS and video-stabilization modes for long-lens shooting.
 
 FOUR LENSES
-• Ultra-wide, main, 3x and 10x, selected by focal length — switch instantly.
+• Ultra-wide, main, 3x, and 10x focal presets.
 
 FULL MANUAL CONTROL
 • Manual focus with a nonlinear slider tuned near infinity (essential for a collimated teleconverter).
@@ -59,10 +56,10 @@ PHOTO
   device-orientation-aware rotation.
 
 VIDEO
-• HEVC recording with HLG or GL-baked O-Log2 profiles, plus SDR for fast delivery.
+• HEVC recording in HLG, an app-rendered O-Log2 profile, or SDR.
 • Hardware OIS + EIS stabilization to cut motion blur at long focal lengths.
 • Device Sound Focus / Sound Stage audio-scene controls (passed to the device's audio system).
-• 4K UHD, standard and NTSC drop-frame rates, with up to ~99 Mbps target bitrate at 4K30 Max.
+• 4K UHD at standard and fractional NTSC frame rates, with up to ~99 Mbps target bitrate at 4K30 Max.
 
 FRAMING AND MONITORING
 • Focus peaking, zebra, false color, grid, spirit level, punch-in loupe, histogram, waveform, and an
@@ -70,7 +67,7 @@ FRAMING AND MONITORING
 • Separate photo/video Fn menus, My Menu, and MR memory banks for Sony-style operation.
 
 PRIVACY
-• No ads. No analytics. No internet permission. Nothing leaves your device.
+• No ads, analytics, tracking, or internet permission.
 
 SOURCE
 • Open-source project: github.com/hletrd/telecam-pro
@@ -85,10 +82,9 @@ Requires an OPPO Find X9 Ultra running Android 16. Target model codes: CPH2841 (
 ## Data Safety form answers
 
 - **Does your app collect or share any of the required user data types?** -> **No.**
-- Justification: the app declares no `INTERNET` permission — it is technically incapable of
-  transmitting data — and contains no analytics or ads SDKs; camera and microphone input is used only
-  on-device to produce files saved to local storage. The release build bundles no OEM SDK (the OPPO
-  CameraUnit/OCS availability probe is debug-only).
+- Justification: the app declares no `INTERNET` permission and contains no analytics or ads SDKs.
+  Camera and microphone inputs are used only to create captures saved through Android MediaStore. The
+  release build bundles no OEM SDK; the OPPO CameraUnit/OCS availability probe is debug-only.
 - **Is all user data encrypted in transit?** -> N/A (no data transmitted).
 - **Do you provide a way to request data deletion?** -> N/A (no data collected); users delete their own
   photos/videos via the gallery.

@@ -37,7 +37,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -45,7 +44,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.key
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -58,11 +56,9 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.isTraversalGroup
-import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
@@ -112,7 +108,6 @@ import com.hletrd.findx9tele.ui.formatDisplayZoom
 import com.hletrd.findx9tele.ui.formatZoomMultiplier
 import com.hletrd.findx9tele.ui.theme.CameraColors
 import java.util.Locale
-import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
 /**
@@ -153,15 +148,6 @@ internal fun ProSheet(
     onTabChange: (ProSheetTab) -> Unit = {},
 ) {
     var selectedTab by remember { mutableStateOf(initialTab) }
-    // Sony-style on-demand help: long-pressing a row's label surfaces its one-liner here (the strip
-    // at the panel's bottom). Auto-clears; switching tabs clears immediately.
-    var helpTip by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(helpTip) {
-        if (helpTip != null) {
-            delay(6000)
-            helpTip = null
-        }
-    }
     // A fixed, NON-draggable bottom panel — NOT Material3's ModalBottomSheet. The sheet let the whole
     // dialog be dragged upward past its rest position (the "bounce" the user saw), and Material3 1.4.0
     // exposes no way to disable that drag. A plain scrim + anchored panel can't be dragged at all;
@@ -227,9 +213,8 @@ internal fun ProSheet(
                 )
             }
 
-            CompositionLocalProvider(LocalSettingHelp provides { key -> settingHelp(key)?.let { helpTip = it } }) {
             Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
-                TabRail(selected = selectedTab, onSelect = { selectedTab = it; onTabChange(it); helpTip = null })
+                TabRail(selected = selectedTab, onSelect = { selectedTab = it; onTabChange(it) })
                 Box(modifier = Modifier.width(1.dp).fillMaxHeight().background(Color.White.copy(alpha = 0.08f)))
                 // Content scroll. overscrollEffect = null removes the stretch glow at the ends; the
                 // panel itself no longer drags, so there is nothing left to bounce. Weighted Box because
@@ -272,24 +257,6 @@ internal fun ProSheet(
                     }
                 }
             }
-            }
-
-            // Help strip (Sony menu-tips style): empty at rest, then shows the long-pressed row's
-            // one-liner. Fixed single line so the panel doesn't jump — enforced with maxLines,
-            // because several help strings are 55-70 chars and a large system font scale would
-            // otherwise wrap them and grow the bottom-anchored sheet (the exact jump this
-            // comment promises against).
-            Text(
-                text = helpTip.orEmpty(),
-                color = CameraColors.TextPrimary,
-                style = MaterialTheme.typography.labelSmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .semantics { liveRegion = LiveRegionMode.Polite }
-                    .padding(horizontal = 20.dp, vertical = 8.dp),
-            )
         }
     }
 }
@@ -658,7 +625,6 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     // PASM-style: P (auto), S (shutter-priority, app auto-ISO), ISO (iso-priority, app auto-shutter),
     // M (manual). No aperture-priority — the tele aperture is fixed.
     SegmentedSelector(
-        helpKey = "Exposure Mode",
         label = "Mode",
         options = availability.exposureModes,
         selected = controls.exposureMode,
@@ -881,7 +847,6 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
     // (feedback). HAL OIS+EIS path; OIS physically cuts per-frame motion blur at 300 mm.
     SectionHeader("Stabilization")
     SegmentedSelector(
-        helpKey = "Stabilization Mode",
         label = "Mode",
         options = VideoStabMode.entries,
         selected = state.videoStabMode,
@@ -1027,7 +992,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         enabled = state.recordAudio && recordingMutable,
     )
     LabelValueRow(
-        label = if (state.isRecording) "Audio Route" else "Input",
+        label = "Route",
         valueLabel = state.audioRouteLabel,
     )
     // Directional audio: Sound Focus aims the mic array at the framed subject and tightens with zoom;
@@ -1175,10 +1140,8 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
         enabled = state.rememberSettings,
     )
     SectionHeader("Photo Fn")
-    Text("Up to 8.", color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
     FnSlotEditor(selected = state.photoFnSlots, onSet = actions::onSetPhotoFnSlots)
     SectionHeader("Video Fn")
-    Text("Up to 8.", color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
     FnSlotEditor(selected = state.videoFnSlots, onSet = actions::onSetVideoFnSlots)
     SectionHeader("My Menu")
     FnSlotEditor(selected = state.myMenuSlots, onSet = actions::onSetMyMenuSlots)
@@ -1392,66 +1355,3 @@ private fun openPrivacyPolicy(context: Context) {
 }
 
 private const val PRIVACY_POLICY_URL = "https://hletrd.github.io/telecam-pro/privacy-policy/"
-
-
-/**
- * One-line descriptions for the long-press help strip. Keyed by the row's label ([SegmentedSelector]
- * helpKey where labels repeat). Only NON-obvious settings get an entry — a row without one shows
- * nothing, which is the correct amount of text for "Resolution". Keep lines under ~70 chars.
- */
-private fun settingHelp(key: String): String? = when (key) {
-    "Exposure Mode" -> "P auto · S you fix shutter · ISO you fix ISO · M full manual"
-    "AE Lock" -> "Freezes auto exposure at its current level"
-    "Flicker" -> "Matches shutter to mains lighting to avoid banding"
-    "Shutter" -> "Speed = time (1/125s) · Angle = cinema style (180° = ½ frame)"
-    "Step" -> "EV increment used by the exposure dials"
-    "ISO" -> "Sensor gain — higher is brighter but noisier"
-    "Metering" -> "Matrix = whole frame · Center = weighted middle · Spot = point"
-    "Spot Size" -> "Size of the tap-AF / spot metering area"
-    "WB" -> "Color balance preset; Custom captures a white/grey card"
-    "Kelvin" -> "Manual color temperature — low is warm, high is cool"
-    "Tint" -> "Green–magenta shift on top of the temperature"
-    "AWB Lock" -> "Freezes auto white balance at its current gains"
-    "AF" -> "MF manual · AF one-shot · AF-C continuous · Macro close-up"
-    "AF Lock" -> "Holds the current focus distance"
-    "Peaking" -> "Outlines in-focus edges — the manual-focus aid"
-    "Peaking Level" -> "Edge sensitivity for peaking"
-    "Peaking Color" -> "Highlight color for peaking edges"
-    "Lens" -> "0.6× ultrawide · 1× main · 3× tele · 10× periscope"
-    "Teleconverter" -> "Corrects the 300 mm afocal adapter (180° flip). 3× lens only"
-    "Stabilization Mode" -> "Off · Standard OIS+EIS · Active = strongest, slight crop"
-    "OIS" -> "Optical (lens-shift) stabilization for stills"
-    "Codec" -> "HEVC = efficient · AVC = most compatible"
-    "Open Gate 4:3" -> "Records the full 4:3 sensor for reframing in post"
-    "FPS" -> "Recording frame rate — NTSC rates (29.97/59.94) are drop-frame"
-    "Bitrate" -> "Data per second of footage — higher is better and bigger"
-    "Input" -> "Microphone source — auto, built-in, or external"
-    "Scene" -> "Mic tuning profile for the environment"
-    "Gain" -> "Microphone input level"
-    "Gamma Disp. Assist" -> "Preview shows normal color while the FILE records O-Log"
-    "Frame Lines" -> "Marker box for a delivery crop (cinema, square, vertical)"
-    "Zebra" -> "Stripes over highlights brighter than the IRE level"
-    "Zebra IRE" -> "Brightness threshold where zebra stripes appear"
-    "False Color" -> "Exposure map — grey = mid, green = skin, red = clipping"
-    "Histogram" -> "Live brightness distribution scope"
-    "Waveform" -> "Broadcast-style luma scope, left-to-right of the frame"
-    "Grid" -> "Composition guides (thirds, golden, square, center)"
-    "Level" -> "Electronic horizon for keeping shots level"
-    "Punch-In" -> "Magnifies the frame to check manual focus"
-    "Tele Finder" -> "Corner PIP of the full frame while zoomed. TELE photo, 4:3 only"
-    "Sharpness" -> "Edge enhancement applied by the ISP"
-    "NR" -> "Noise reduction — Off keeps the most fine detail"
-    "Color" -> "Color rendering effect (mono, negative…)"
-    "Aspect" -> "4:3 = full sensor · 16:9 = center crop"
-    "Zoom" -> "Digital zoom on top of the selected lens"
-    "JPEG Quality" -> "Compression quality for JPEG files"
-    "Drive" -> "Single · burst · bracket · interval shooting"
-    "Interval" -> "Time between interval-timer shots"
-    "Self-Timer" -> "Delay before the shutter fires"
-    "Full Press" -> "What the camera button / volume keys trigger"
-    "Half Press" -> "Camera-button half-press action (when the OS delivers it)"
-    "Remember" -> "Restores all settings on the next launch"
-    "Preserve Lens" -> "Restores the last selected camera lens on launch"
-    "Preserve TELE" -> "Restores the TELE toggle on launch"
-    else -> null
-}
