@@ -26,27 +26,88 @@ class MediaDurabilityPolicyTest {
     }
 
     @Test
-    fun `complete HEIF box extents and required boxes are structurally valid`() {
-        val bytes = heifBytes()
-        assertEquals(PendingProbe.VALID, probe(bytes))
+    fun `HEIF primary item with a supported in-mdat extent is structurally valid`() {
+        assertEquals(PendingProbe.VALID, probe(locatedHeif()))
+        assertEquals(
+            PendingProbe.VALID,
+            probe(
+                locatedHeif(
+                    primaryItemId = 70_000,
+                    locationItemId = 70_000,
+                    pitmVersion = 1,
+                    ilocVersion = 2,
+                ),
+            ),
+        )
     }
 
     @Test
-    fun `truncated missing and unreadable HEIF structures never adopt`() {
-        val complete = heifBytes()
-        assertEquals(PendingProbe.INVALID, probe(complete.copyOf(complete.size - 1)))
-        assertEquals(
-            PendingProbe.INVALID,
-            probe(box("ftyp", "heic\u0000\u0000\u0000\u0000mif1".toByteArray()) + box("meta", ByteArray(4))),
+    fun `missing or mismatched HEIF primary-location metadata is invalid`() {
+        val boxedGarbage =
+            box("ftyp", "heic\u0000\u0000\u0000\u0000mif1".toByteArray()) +
+                box("meta", ByteArray(4)) +
+                box("mdat", byteArrayOf(1, 2, 3, 4))
+        val cases = mapOf(
+            "boxed garbage" to boxedGarbage,
+            "missing pitm" to locatedHeif(includePitm = false),
+            "missing iloc" to locatedHeif(includeIloc = false),
+            "primary absent from iloc" to locatedHeif(primaryItemId = 2),
+            "zero primary id" to locatedHeif(primaryItemId = 0, locationItemId = 0),
         )
+
+        cases.forEach { (name, bytes) ->
+            assertEquals(name, PendingProbe.INVALID, probe(bytes))
+        }
+    }
+
+    @Test
+    fun `malformed and out-of-range HEIF primary extents are invalid`() {
+        val cases = mapOf(
+            "extent points into ftyp" to locatedHeif(extentOffset = 0),
+            "extent runs past file" to locatedHeif(extentOffset = 0xffff_fff0L, extentLength = 32),
+            "missing mdat" to locatedHeif(includeMdat = false),
+            "nonzero reserved construction bits" to locatedHeif(ilocVersion = 1, constructionMethod = 0x10),
+        )
+
+        cases.forEach { (name, bytes) ->
+            assertEquals(name, PendingProbe.INVALID, probe(bytes))
+        }
+        val complete = locatedHeif()
+        assertEquals(PendingProbe.INVALID, probe(complete.copyOf(complete.size - 1)))
+    }
+
+    @Test
+    fun `unsupported HEIF versions and construction methods remain pending`() {
+        val cases = mapOf(
+            "meta version" to locatedHeif(metaVersion = 1),
+            "pitm version" to locatedHeif(pitmVersion = 2),
+            "iloc version" to locatedHeif(ilocVersion = 3),
+            "idat construction" to locatedHeif(ilocVersion = 1, constructionMethod = 1),
+            "external data reference" to locatedHeif(dataReferenceIndex = 1),
+            "whole-source zero length" to locatedHeif(extentLength = 0),
+        )
+
+        cases.forEach { (name, bytes) ->
+            assertEquals(name, PendingProbe.INDETERMINATE, probe(bytes))
+            assertEquals(
+                name,
+                OrphanDisposition.KEEP_PENDING,
+                orphanDisposition(PendingJournalState.REGISTERED, probe(bytes)),
+            )
+        }
+    }
+
+    @Test
+    fun `unreadable and unbounded HEIF structures remain pending`() {
+        val complete = locatedHeif()
         assertEquals(
             PendingProbe.INDETERMINATE,
             probeHeifIsoBmff(complete.size.toLong()) { _, _ -> null },
         )
-        val unboundedMdat =
-            box("ftyp", "heic\u0000\u0000\u0000\u0000mif1".toByteArray()) +
-                box("meta", ByteArray(4)) +
-                sizeZeroBox("mdat", byteArrayOf(1))
+        val unboundedMdat = complete.copyOf().apply {
+            val mdatOffset = size - 12
+            fill(0, mdatOffset, mdatOffset + 4)
+        }
         assertEquals(PendingProbe.INDETERMINATE, probe(unboundedMdat))
     }
 
@@ -67,10 +128,23 @@ class MediaDurabilityPolicyTest {
     }
 
     @Test
+    fun `semantic HEIF indeterminacy is retained without becoming a retryable probe error`() {
+        val unsupported = locatedHeif(ilocVersion = 1, constructionMethod = 1)
+        val outcome = pendingProbeOutcome { probe(unsupported) }
+
+        assertEquals(PendingProbe.INDETERMINATE, outcome.probe)
+        assertFalse(outcome.failed)
+        assertEquals(
+            OrphanDisposition.KEEP_PENDING,
+            orphanDisposition(PendingJournalState.REGISTERED, outcome.probe),
+        )
+    }
+
+    @Test
     fun `failed marker plus failed publish is explicit and a later restart can adopt`() {
         val marker = markCompletionWithRetry(maxAttempts = 3, commit = { false })
         assertFalse(marker.durable)
-        val structuralProbe = probe(heifBytes())
+        val structuralProbe = probe(locatedHeif())
         assertEquals(
             OrphanDisposition.ADOPT,
             orphanDisposition(PendingJournalState.REGISTERED, structuralProbe),
@@ -126,15 +200,101 @@ class MediaDurabilityPolicyTest {
         )
     }
 
+    @Test
+    fun `recovery fold preserves transition counts but a clean retry resolves failures`() {
+        val failedAttempt = RecoveryReport()
+            .record(RecoveryEvent.SCANNED)
+            .record(RecoveryEvent.ADOPTED)
+            .record(RecoveryEvent.QUERY_FAILED)
+        val cleanAttempt = RecoveryReport()
+            .record(RecoveryEvent.SCANNED)
+            .record(RecoveryEvent.DELETED)
+
+        val cumulative = RecoveryReport()
+            .foldRecoveryAttempt(failedAttempt)
+            .foldRecoveryAttempt(cleanAttempt)
+
+        assertEquals(2, cumulative.scanned)
+        assertEquals(1, cumulative.adopted)
+        assertEquals(1, cumulative.deleted)
+        assertEquals(1, cumulative.errors)
+        assertTrue(cumulative.failureClasses.isEmpty())
+        assertFalse(cumulative.retryRequired)
+        assertEquals(
+            RecoveryRetryDecision.COMPLETE,
+            recoveryRetryDecision(cleanAttempt, completedAttempts = 2, maxAttempts = 3),
+        )
+    }
+
     private fun probe(bytes: ByteArray): PendingProbe = probeHeifIsoBmff(bytes.size.toLong()) { offset, count ->
         val start = offset.toInt()
         if (start < 0 || start + count > bytes.size) null else bytes.copyOfRange(start, start + count)
     }
 
-    private fun heifBytes(): ByteArray =
-        box("ftyp", "heic\u0000\u0000\u0000\u0000mif1".toByteArray()) +
-            box("meta", ByteArray(4)) +
-            box("mdat", byteArrayOf(1, 2, 3, 4))
+    /** Minimal supported HEIF structure: ftyp + meta(pitm, iloc) + referenced mdat bytes. */
+    private fun locatedHeif(
+        primaryItemId: Long = 1,
+        locationItemId: Long = 1,
+        extentOffset: Long? = null,
+        extentLength: Long = 4,
+        metaVersion: Int = 0,
+        pitmVersion: Int = 0,
+        ilocVersion: Int = 0,
+        constructionMethod: Int = 0,
+        dataReferenceIndex: Int = 0,
+        includePitm: Boolean = true,
+        includeIloc: Boolean = true,
+        includeMdat: Boolean = true,
+    ): ByteArray {
+        val ftyp = box("ftyp", "heic\u0000\u0000\u0000\u0000mif1".toByteArray())
+        fun meta(primaryExtentOffset: Long): ByteArray {
+            val children = buildList {
+                if (includePitm) {
+                    val itemId = if (pitmVersion == 0) u16(primaryItemId) else u32(primaryItemId)
+                    add(box("pitm", fullBox(pitmVersion, itemId)))
+                }
+                if (includeIloc) {
+                    val itemCount = if (ilocVersion < 2) u16(1) else u32(1)
+                    val itemId = if (ilocVersion < 2) u16(locationItemId) else u32(locationItemId)
+                    val construction = if (ilocVersion == 0) byteArrayOf() else u16(constructionMethod.toLong())
+                    val ilocPayload = fullBox(
+                        ilocVersion,
+                        byteArrayOf(0x44, 0x00) +
+                            itemCount +
+                            itemId +
+                            construction +
+                            u16(dataReferenceIndex.toLong()) +
+                            u16(1) +
+                            u32(primaryExtentOffset) +
+                            u32(extentLength),
+                    )
+                    add(box("iloc", ilocPayload))
+                }
+            }.fold(byteArrayOf()) { accumulated, child -> accumulated + child }
+            return box("meta", fullBox(metaVersion, children))
+        }
+
+        val provisionalMeta = meta(0)
+        val mdatPayloadOffset = ftyp.size.toLong() + provisionalMeta.size + 8L
+        val finalMeta = meta(extentOffset ?: mdatPayloadOffset)
+        val mdat = if (includeMdat) box("mdat", byteArrayOf(1, 2, 3, 4)) else byteArrayOf()
+        return ftyp + finalMeta + mdat
+    }
+
+    private fun fullBox(version: Int, payload: ByteArray): ByteArray =
+        byteArrayOf(version.toByte(), 0, 0, 0) + payload
+
+    private fun u16(value: Long): ByteArray = byteArrayOf(
+        (value ushr 8).toByte(),
+        value.toByte(),
+    )
+
+    private fun u32(value: Long): ByteArray = byteArrayOf(
+        (value ushr 24).toByte(),
+        (value ushr 16).toByte(),
+        (value ushr 8).toByte(),
+        value.toByte(),
+    )
 
     private fun box(type: String, payload: ByteArray): ByteArray {
         require(type.length == 4)
@@ -145,10 +305,5 @@ class MediaDurabilityPolicyTest {
             (size ushr 8).toByte(),
             size.toByte(),
         ) + type.toByteArray(Charsets.US_ASCII) + payload
-    }
-
-    private fun sizeZeroBox(type: String, payload: ByteArray): ByteArray {
-        require(type.length == 4)
-        return byteArrayOf(0, 0, 0, 0) + type.toByteArray(Charsets.US_ASCII) + payload
     }
 }

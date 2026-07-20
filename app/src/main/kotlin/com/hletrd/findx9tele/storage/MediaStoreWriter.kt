@@ -463,7 +463,7 @@ object MediaStoreWriter {
         return pfd.use {
             FileInputStream(it.fileDescriptor).use { input ->
                 val channel = input.channel
-                val probe = probeHeifIsoBmff(channel.size()) { offset, byteCount ->
+                probeHeifIsoBmff(channel.size()) { offset, byteCount ->
                     val buffer = ByteBuffer.allocate(byteCount)
                     channel.position(offset)
                     while (buffer.hasRemaining()) {
@@ -471,10 +471,6 @@ object MediaStoreWriter {
                     }
                     buffer.array()
                 }
-                if (probe == PendingProbe.INDETERMINATE) {
-                    throw IOException("HEIF structural probe could not read a complete box header")
-                }
-                probe
             }
         }
     }
@@ -574,7 +570,7 @@ internal data class RecoveryReport(
     val failureClasses: Set<RecoveryFailureClass> = emptySet(),
 ) {
     val retryRequired: Boolean
-        get() = errors > 0
+        get() = failureClasses.isNotEmpty()
 
     internal fun record(event: RecoveryEvent): RecoveryReport = when (event) {
         RecoveryEvent.SCANNED -> copy(scanned = scanned + 1)
@@ -591,6 +587,20 @@ internal data class RecoveryReport(
         retained = retained + if (retain) 1 else 0,
         errors = errors + 1,
         failureClasses = failureClasses + failure,
+    )
+
+    /**
+     * Adds durable transition counts while making the newest attempt the sole owner of unresolved
+     * failures. A clean retry therefore completes even though the terminal summary retains the
+     * earlier attempt's error count for truthful diagnostics.
+     */
+    internal fun foldRecoveryAttempt(attempt: RecoveryReport): RecoveryReport = RecoveryReport(
+        scanned = scanned + attempt.scanned,
+        adopted = adopted + attempt.adopted,
+        deleted = deleted + attempt.deleted,
+        retained = retained + attempt.retained,
+        errors = errors + attempt.errors,
+        failureClasses = attempt.failureClasses,
     )
 }
 
@@ -634,8 +644,8 @@ internal enum class PendingMediaProbeKind { VIDEO, JPEG, DNG, HEIF, KEEP_PENDING
 
 /**
  * Only containers with a conservative terminal-structure probe may bridge a missing COMPLETE
- * marker. HEIF requires complete top-level ISO-BMFF box extents plus ftyp/meta/mdat; header image
- * dimensions alone are never accepted.
+ * marker. HEIF requires a supported primary-item location whose explicit extents are wholly inside
+ * bounded mdat payloads; header image dimensions or top-level box presence are never accepted.
  */
 internal fun pendingMediaProbeKind(
     mimeType: String,
@@ -667,10 +677,11 @@ internal fun orphanDisposition(
 }
 
 /**
- * Structural HEIF completion probe. Reads only bounded box headers/ftyp brands, never pixel data.
- * A malformed or truncated extent is INVALID; an unreadable header or size-zero/unbounded box is
- * INDETERMINATE so recovery retains the private row. A valid result requires a HEIF brand and
- * explicitly bounded, complete ftyp/meta/mdat boxes.
+ * Structural HEIF completion probe. Reads bounded ISO-BMFF metadata only, never pixel data. A valid
+ * result requires a HEIF brand, one supported primary item, and every explicit primary-item extent
+ * to resolve wholly inside an mdat payload. Malformed or out-of-range structures are INVALID;
+ * unreadable bytes, unbounded boxes, and unsupported meta/pitm/iloc variants are INDETERMINATE so
+ * recovery retains the private row instead of risking deletion.
  */
 internal fun probeHeifIsoBmff(
     fileSize: Long,
@@ -680,64 +691,370 @@ internal fun probeHeifIsoBmff(
     var offset = 0L
     var boxCount = 0
     var foundFtyp = false
-    var foundMeta = false
-    var foundMdat = false
-    val heifBrands = setOf("heic", "heix", "hevc", "hevx", "heim", "heis", "mif1", "msf1")
+    var metaBox: HeifIsoBox? = null
+    val mdatPayloads = mutableListOf<HeifByteRange>()
 
     while (offset < fileSize) {
-        if (++boxCount > 4_096 || fileSize - offset < 8L) return PendingProbe.INVALID
-        val header = readAt(offset, 8) ?: return PendingProbe.INDETERMINATE
-        if (header.size != 8) return PendingProbe.INDETERMINATE
-        val size32 = ByteBuffer.wrap(header, 0, 4).order(ByteOrder.BIG_ENDIAN).int.toLong() and 0xffff_ffffL
-        val type = String(header, 4, 4, Charsets.US_ASCII)
-        val headerSize: Long
-        val boxSize: Long
-        when (size32) {
-            // ISO-BMFF permits size zero to mean "through EOF", but EOF alone cannot distinguish a
-            // cleanly finalized mdat from a process-killed write. Keep it pending unless iloc/item
-            // extents are validated by a future stronger probe.
-            0L -> return PendingProbe.INDETERMINATE
-            1L -> {
-                val extended = readAt(offset + 8L, 8) ?: return PendingProbe.INDETERMINATE
-                if (extended.size != 8) return PendingProbe.INDETERMINATE
-                val signedSize = ByteBuffer.wrap(extended).order(ByteOrder.BIG_ENDIAN).long
-                if (signedSize < 0L) return PendingProbe.INVALID
-                headerSize = 16L
-                boxSize = signedSize
-            }
-            else -> {
-                headerSize = 8L
-                boxSize = size32
-            }
+        if (++boxCount > MAX_HEIF_BOXES) return PendingProbe.INDETERMINATE
+        val box = when (val parsed = readHeifIsoBox(offset, fileSize, readAt)) {
+            is HeifParse.Success -> parsed.value
+            is HeifParse.Failure -> return parsed.probe
         }
-        if (boxSize < headerSize || boxSize > fileSize - offset) return PendingProbe.INVALID
-        val payloadSize = boxSize - headerSize
-        when (type) {
+        when (box.type) {
             "ftyp" -> {
-                if (payloadSize < 8L) return PendingProbe.INVALID
-                val brandBytes = readAt(offset + headerSize, minOf(payloadSize, 128L).toInt())
-                    ?: return PendingProbe.INDETERMINATE
-                if (brandBytes.size < 8) return PendingProbe.INDETERMINATE
-                val brands = buildList {
-                    add(String(brandBytes, 0, 4, Charsets.US_ASCII))
-                    var brandOffset = 8
-                    while (brandOffset + 4 <= brandBytes.size) {
-                        add(String(brandBytes, brandOffset, 4, Charsets.US_ASCII))
-                        brandOffset += 4
-                    }
+                when (val brands = hasHeifBrand(box, readAt)) {
+                    is HeifParse.Success -> foundFtyp = foundFtyp || brands.value
+                    is HeifParse.Failure -> return brands.probe
                 }
-                foundFtyp = brands.any(heifBrands::contains)
             }
-            "meta" -> if (payloadSize >= 4L) foundMeta = true else return PendingProbe.INVALID
-            "mdat" -> if (payloadSize > 0L) foundMdat = true else return PendingProbe.INVALID
+            "meta" -> {
+                if (metaBox != null) return PendingProbe.INVALID
+                metaBox = box
+            }
+            "mdat" -> {
+                if (box.payloadSize <= 0L) return PendingProbe.INVALID
+                mdatPayloads += HeifByteRange(box.payloadOffset, box.payloadSize)
+            }
         }
-        offset += boxSize
+        offset += box.size
     }
-    return if (offset == fileSize && foundFtyp && foundMeta && foundMdat) {
-        PendingProbe.VALID
+
+    if (offset != fileSize || !foundFtyp || metaBox == null || mdatPayloads.isEmpty()) {
+        return PendingProbe.INVALID
+    }
+    val primaryExtents = when (val parsed = parseHeifMeta(metaBox, readAt)) {
+        is HeifParse.Success -> parsed.value
+        is HeifParse.Failure -> return parsed.probe
+    }
+    return if (primaryExtents.all { extent ->
+            extent.length > 0L &&
+                extent.offset <= fileSize - extent.length &&
+                mdatPayloads.any { payload -> extent.isWhollyInside(payload) }
+        }
+    ) PendingProbe.VALID else PendingProbe.INVALID
+}
+
+private const val MAX_HEIF_BOXES = 4_096
+private const val MAX_HEIF_ITEMS = 4_096
+private const val MAX_HEIF_EXTENTS = 4_096
+private const val MAX_HEIF_FTYP_BYTES = 4_096
+
+private val HEIF_BRANDS = setOf("heic", "heix", "hevc", "hevx", "heim", "heis", "mif1", "msf1")
+
+private sealed interface HeifParse<out T> {
+    data class Success<T>(val value: T) : HeifParse<T>
+    data class Failure(val probe: PendingProbe) : HeifParse<Nothing>
+}
+
+private data class HeifIsoBox(
+    val type: String,
+    val offset: Long,
+    val size: Long,
+    val headerSize: Long,
+) {
+    val payloadOffset: Long get() = offset + headerSize
+    val payloadSize: Long get() = size - headerSize
+    val endOffset: Long get() = offset + size
+}
+
+private data class HeifByteRange(val offset: Long, val length: Long) {
+    fun isWhollyInside(container: HeifByteRange): Boolean {
+        if (offset < container.offset) return false
+        val relativeOffset = offset - container.offset
+        return relativeOffset <= container.length && length <= container.length - relativeOffset
+    }
+}
+
+private fun readHeifIsoBox(
+    offset: Long,
+    parentEnd: Long,
+    readAt: (offset: Long, byteCount: Int) -> ByteArray?,
+): HeifParse<HeifIsoBox> {
+    if (offset < 0L || parentEnd < offset || parentEnd - offset < 8L) {
+        return HeifParse.Failure(PendingProbe.INVALID)
+    }
+    val header = readAt(offset, 8)
+        ?: return HeifParse.Failure(PendingProbe.INDETERMINATE)
+    if (header.size != 8) return HeifParse.Failure(PendingProbe.INDETERMINATE)
+    val size32 = ByteBuffer.wrap(header, 0, 4).order(ByteOrder.BIG_ENDIAN).int.toLong() and 0xffff_ffffL
+    val type = String(header, 4, 4, Charsets.US_ASCII)
+    val headerSize: Long
+    val boxSize: Long
+    when (size32) {
+        // Although ISO-BMFF defines zero as "through parent/EOF", a crash-truncated final box has
+        // the same shape. The recovery probe deliberately declines to decide.
+        0L -> return HeifParse.Failure(PendingProbe.INDETERMINATE)
+        1L -> {
+            if (parentEnd - offset < 16L) return HeifParse.Failure(PendingProbe.INVALID)
+            val extended = readAt(offset + 8L, 8)
+                ?: return HeifParse.Failure(PendingProbe.INDETERMINATE)
+            if (extended.size != 8) return HeifParse.Failure(PendingProbe.INDETERMINATE)
+            boxSize = ByteBuffer.wrap(extended).order(ByteOrder.BIG_ENDIAN).long
+            if (boxSize < 0L) return HeifParse.Failure(PendingProbe.INVALID)
+            headerSize = 16L
+        }
+        else -> {
+            boxSize = size32
+            headerSize = 8L
+        }
+    }
+    if (boxSize < headerSize || boxSize > parentEnd - offset) {
+        return HeifParse.Failure(PendingProbe.INVALID)
+    }
+    return HeifParse.Success(HeifIsoBox(type, offset, boxSize, headerSize))
+}
+
+private fun hasHeifBrand(
+    box: HeifIsoBox,
+    readAt: (offset: Long, byteCount: Int) -> ByteArray?,
+): HeifParse<Boolean> {
+    if (box.payloadSize < 8L || (box.payloadSize - 8L) % 4L != 0L) {
+        return HeifParse.Failure(PendingProbe.INVALID)
+    }
+    if (box.payloadSize > MAX_HEIF_FTYP_BYTES) {
+        return HeifParse.Failure(PendingProbe.INDETERMINATE)
+    }
+    val bytes = readAt(box.payloadOffset, box.payloadSize.toInt())
+        ?: return HeifParse.Failure(PendingProbe.INDETERMINATE)
+    if (bytes.size != box.payloadSize.toInt()) {
+        return HeifParse.Failure(PendingProbe.INDETERMINATE)
+    }
+    val brands = buildList {
+        add(String(bytes, 0, 4, Charsets.US_ASCII))
+        var offset = 8
+        while (offset + 4 <= bytes.size) {
+            add(String(bytes, offset, 4, Charsets.US_ASCII))
+            offset += 4
+        }
+    }
+    return HeifParse.Success(brands.any(HEIF_BRANDS::contains))
+}
+
+private fun parseHeifMeta(
+    meta: HeifIsoBox,
+    readAt: (offset: Long, byteCount: Int) -> ByteArray?,
+): HeifParse<List<HeifByteRange>> {
+    if (meta.payloadSize < 4L) return HeifParse.Failure(PendingProbe.INVALID)
+    val fullBox = when (val parsed = readHeifUnsigned(meta.payloadOffset, 4, meta.endOffset, readAt)) {
+        is HeifParse.Success -> parsed.value
+        is HeifParse.Failure -> return parsed
+    }
+    val version = (fullBox ushr 24).toInt()
+    val flags = fullBox and 0x00ff_ffffL
+    if (version != 0) return HeifParse.Failure(PendingProbe.INDETERMINATE)
+    if (flags != 0L) return HeifParse.Failure(PendingProbe.INVALID)
+
+    var childOffset = meta.payloadOffset + 4L
+    var childCount = 0
+    var pitm: HeifIsoBox? = null
+    var iloc: HeifIsoBox? = null
+    while (childOffset < meta.endOffset) {
+        if (++childCount > MAX_HEIF_BOXES) return HeifParse.Failure(PendingProbe.INDETERMINATE)
+        val child = when (val parsed = readHeifIsoBox(childOffset, meta.endOffset, readAt)) {
+            is HeifParse.Success -> parsed.value
+            is HeifParse.Failure -> return parsed
+        }
+        when (child.type) {
+            "pitm" -> {
+                if (pitm != null) return HeifParse.Failure(PendingProbe.INVALID)
+                pitm = child
+            }
+            "iloc" -> {
+                if (iloc != null) return HeifParse.Failure(PendingProbe.INVALID)
+                iloc = child
+            }
+        }
+        childOffset += child.size
+    }
+    if (childOffset != meta.endOffset || pitm == null || iloc == null) {
+        return HeifParse.Failure(PendingProbe.INVALID)
+    }
+    val primaryItemId = when (val parsed = parsePrimaryItemId(pitm, readAt)) {
+        is HeifParse.Success -> parsed.value
+        is HeifParse.Failure -> return parsed
+    }
+    return parsePrimaryItemExtents(iloc, primaryItemId, readAt)
+}
+
+private fun parsePrimaryItemId(
+    pitm: HeifIsoBox,
+    readAt: (offset: Long, byteCount: Int) -> ByteArray?,
+): HeifParse<Long> {
+    if (pitm.payloadSize < 4L) return HeifParse.Failure(PendingProbe.INVALID)
+    val fullBox = when (val parsed = readHeifUnsigned(pitm.payloadOffset, 4, pitm.endOffset, readAt)) {
+        is HeifParse.Success -> parsed.value
+        is HeifParse.Failure -> return parsed
+    }
+    val version = (fullBox ushr 24).toInt()
+    val flags = fullBox and 0x00ff_ffffL
+    if (version !in 0..1) return HeifParse.Failure(PendingProbe.INDETERMINATE)
+    if (flags != 0L) return HeifParse.Failure(PendingProbe.INVALID)
+    val itemIdSize = if (version == 0) 2 else 4
+    if (pitm.payloadSize != 4L + itemIdSize) return HeifParse.Failure(PendingProbe.INVALID)
+    return when (val parsed = readHeifUnsigned(pitm.payloadOffset + 4L, itemIdSize, pitm.endOffset, readAt)) {
+        is HeifParse.Success -> if (parsed.value != 0L) parsed else HeifParse.Failure(PendingProbe.INVALID)
+        is HeifParse.Failure -> parsed
+    }
+}
+
+private fun parsePrimaryItemExtents(
+    iloc: HeifIsoBox,
+    primaryItemId: Long,
+    readAt: (offset: Long, byteCount: Int) -> ByteArray?,
+): HeifParse<List<HeifByteRange>> {
+    val reader = HeifBoundedReader(iloc.payloadOffset, iloc.endOffset, readAt)
+    val fullBox = reader.readUnsigned(4) ?: return HeifParse.Failure(reader.failure!!)
+    val version = (fullBox ushr 24).toInt()
+    val flags = fullBox and 0x00ff_ffffL
+    if (version !in 0..2) return HeifParse.Failure(PendingProbe.INDETERMINATE)
+    if (flags != 0L) return HeifParse.Failure(PendingProbe.INVALID)
+
+    val sizePair = reader.readUnsigned(1)?.toInt()
+        ?: return HeifParse.Failure(reader.failure!!)
+    val baseAndIndexPair = reader.readUnsigned(1)?.toInt()
+        ?: return HeifParse.Failure(reader.failure!!)
+    val offsetSize = sizePair ushr 4
+    val lengthSize = sizePair and 0x0f
+    val baseOffsetSize = baseAndIndexPair ushr 4
+    val indexSize = if (version == 0) 0 else baseAndIndexPair and 0x0f
+    if (version == 0 && baseAndIndexPair and 0x0f != 0) {
+        return HeifParse.Failure(PendingProbe.INVALID)
+    }
+    val legalFieldSizes = setOf(0, 4, 8)
+    if (offsetSize !in legalFieldSizes || lengthSize !in legalFieldSizes ||
+        baseOffsetSize !in legalFieldSizes || indexSize !in legalFieldSizes
+    ) {
+        return HeifParse.Failure(PendingProbe.INVALID)
+    }
+
+    val itemCount = reader.readUnsigned(if (version < 2) 2 else 4)
+        ?: return HeifParse.Failure(reader.failure!!)
+    if (itemCount > MAX_HEIF_ITEMS) return HeifParse.Failure(PendingProbe.INDETERMINATE)
+
+    var primaryFound = false
+    var totalExtents = 0L
+    val primaryExtents = mutableListOf<HeifByteRange>()
+    repeat(itemCount.toInt()) {
+        val itemId = reader.readUnsigned(if (version < 2) 2 else 4)
+            ?: return HeifParse.Failure(reader.failure!!)
+        val constructionMethod = if (version == 0) {
+            0
+        } else {
+            val construction = reader.readUnsigned(2)?.toInt()
+                ?: return HeifParse.Failure(reader.failure!!)
+            if (construction and 0xfff0 != 0) return HeifParse.Failure(PendingProbe.INVALID)
+            construction and 0x0f
+        }
+        val dataReferenceIndex = reader.readUnsigned(2)
+            ?: return HeifParse.Failure(reader.failure!!)
+        val isPrimary = itemId == primaryItemId
+        if (isPrimary && primaryFound) return HeifParse.Failure(PendingProbe.INVALID)
+        if (isPrimary && constructionMethod != 0) {
+            return HeifParse.Failure(PendingProbe.INDETERMINATE)
+        }
+        if (isPrimary && dataReferenceIndex != 0L) {
+            return HeifParse.Failure(PendingProbe.INDETERMINATE)
+        }
+        val baseOffset = if (isPrimary) {
+            reader.readUnsigned(baseOffsetSize) ?: return HeifParse.Failure(reader.failure!!)
+        } else {
+            if (!reader.skip(baseOffsetSize)) return HeifParse.Failure(reader.failure!!)
+            0L
+        }
+        val extentCount = reader.readUnsigned(2)
+            ?: return HeifParse.Failure(reader.failure!!)
+        totalExtents += extentCount
+        if (totalExtents > MAX_HEIF_EXTENTS) return HeifParse.Failure(PendingProbe.INDETERMINATE)
+        if (extentCount == 0L) return HeifParse.Failure(PendingProbe.INVALID)
+        if (isPrimary && lengthSize == 0) return HeifParse.Failure(PendingProbe.INDETERMINATE)
+
+        repeat(extentCount.toInt()) {
+            if (!reader.skip(indexSize)) return HeifParse.Failure(reader.failure!!)
+            if (isPrimary) {
+                val extentOffset = reader.readUnsigned(offsetSize)
+                    ?: return HeifParse.Failure(reader.failure!!)
+                val extentLength = reader.readUnsigned(lengthSize)
+                    ?: return HeifParse.Failure(reader.failure!!)
+                // A zero length means "the whole source" in ISO-BMFF. It is valid syntax, but not
+                // an explicit crash-safe bound, so keep the row pending rather than adopting it.
+                if (extentLength == 0L) return HeifParse.Failure(PendingProbe.INDETERMINATE)
+                if (baseOffset > Long.MAX_VALUE - extentOffset) {
+                    return HeifParse.Failure(PendingProbe.INVALID)
+                }
+                primaryExtents += HeifByteRange(baseOffset + extentOffset, extentLength)
+            } else {
+                if (!reader.skip(offsetSize + lengthSize)) return HeifParse.Failure(reader.failure!!)
+            }
+        }
+        if (isPrimary) primaryFound = true
+    }
+    if (reader.cursor != iloc.endOffset) return HeifParse.Failure(PendingProbe.INVALID)
+    return if (primaryFound && primaryExtents.isNotEmpty()) {
+        HeifParse.Success(primaryExtents)
     } else {
-        PendingProbe.INVALID
+        HeifParse.Failure(PendingProbe.INVALID)
     }
+}
+
+private class HeifBoundedReader(
+    start: Long,
+    private val end: Long,
+    private val readAt: (offset: Long, byteCount: Int) -> ByteArray?,
+) {
+    var cursor: Long = start
+        private set
+    var failure: PendingProbe? = null
+        private set
+
+    fun readUnsigned(byteCount: Int): Long? {
+        if (failure != null) return null
+        if (byteCount !in 0..8) {
+            failure = PendingProbe.INDETERMINATE
+            return null
+        }
+        if (byteCount == 0) return 0L
+        if (cursor < 0L || end < cursor || byteCount.toLong() > end - cursor) {
+            failure = PendingProbe.INVALID
+            return null
+        }
+        val bytes = readAt(cursor, byteCount)
+        if (bytes == null || bytes.size != byteCount) {
+            failure = PendingProbe.INDETERMINATE
+            return null
+        }
+        var value = 0L
+        for (byte in bytes) {
+            val unsigned = byte.toInt() and 0xff
+            if (value > (Long.MAX_VALUE - unsigned) / 256L) {
+                failure = PendingProbe.INVALID
+                return null
+            }
+            value = value * 256L + unsigned
+        }
+        cursor += byteCount
+        return value
+    }
+
+    fun skip(byteCount: Int): Boolean {
+        if (failure != null) return false
+        if (byteCount < 0 || cursor < 0L || end < cursor || byteCount.toLong() > end - cursor) {
+            failure = PendingProbe.INVALID
+            return false
+        }
+        cursor += byteCount
+        return true
+    }
+}
+
+private fun readHeifUnsigned(
+    offset: Long,
+    byteCount: Int,
+    end: Long,
+    readAt: (offset: Long, byteCount: Int) -> ByteArray?,
+): HeifParse<Long> {
+    val reader = HeifBoundedReader(offset, end, readAt)
+    val value = reader.readUnsigned(byteCount)
+    return if (value != null) HeifParse.Success(value) else HeifParse.Failure(reader.failure!!)
 }
 
 internal fun parseUnsignedExifValues(raw: String?): List<Long> = raw

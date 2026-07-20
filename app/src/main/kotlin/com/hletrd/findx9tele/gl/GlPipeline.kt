@@ -12,6 +12,7 @@ import com.hletrd.findx9tele.camera.PUNCH_IN_CROP
 import com.hletrd.findx9tele.camera.finderRect
 import com.hletrd.findx9tele.camera.HistogramData
 import com.hletrd.findx9tele.camera.WaveformData
+import com.hletrd.findx9tele.video.UnsafeRecorderQuarantine
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.CancellationException
@@ -22,6 +23,32 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+
+/** A process-owned lease that can atomically reject an encoder EGL ownership commit. */
+class EncoderOutputAdmission(
+    private val validity: () -> Boolean,
+    private val commitBlock: ((() -> Unit) -> Boolean),
+) {
+    fun isValid(): Boolean = validity()
+    fun commit(block: () -> Unit): Boolean = commitBlock(block)
+}
+
+/** Installs a prepared native output only while its external admission lease still owns the commit. */
+internal fun <T> installPreparedEncoderOutput(
+    candidate: T,
+    admission: EncoderOutputAdmission?,
+    install: (T) -> Unit,
+    discard: (T) -> Unit,
+): Boolean {
+    val installed = if (admission == null) {
+        install(candidate)
+        true
+    } else {
+        admission.commit { install(candidate) }
+    }
+    if (!installed) discard(candidate)
+    return installed
+}
 
 /**
  * Owns the GL render thread. The camera renders into [inputSurface] (an external SurfaceTexture);
@@ -201,12 +228,15 @@ class GlPipeline {
             // already-broken-EGL device is strictly safer than a possible process-wide display
             // teardown; EglCore's constructor is atomic, so there is no core to run the checked
             // release on and nothing of ours is current on this thread.
-            egl = runCatching { EglCore(tenBit = tenBit) }.getOrElse { failure ->
-                if (com.hletrd.findx9tele.BuildConfig.DEBUG) {
-                    android.util.Log.e("GlPipeline", "EGL init failed; preview stays Not-Ready", failure)
+            val admitted = UnsafeRecorderQuarantine.runNativeAcquisition {
+                egl = runCatching { EglCore(tenBit = tenBit) }.getOrElse { failure ->
+                    if (com.hletrd.findx9tele.BuildConfig.DEBUG) {
+                        android.util.Log.e("GlPipeline", "EGL init failed; preview stays Not-Ready", failure)
+                    }
+                    null
                 }
-                null
             }
+            if (!admitted) egl = null
         }
     }
 
@@ -231,13 +261,22 @@ class GlPipeline {
         dispatchWithResult(
             post = { task -> h.post(task) },
             block = {
-                applied = applyPreviewOutput(
-                    generation = generation,
-                    surface = surface,
-                    width = width,
-                    height = height,
-                    signal = signal.takeIf { surface != null },
-                )
+                if (surface == null) {
+                    applied = applyPreviewOutput(generation, null, width, height, null)
+                } else {
+                    val admitted = UnsafeRecorderQuarantine.runNativeAcquisition {
+                        applied = applyPreviewOutput(
+                            generation = generation,
+                            surface = surface,
+                            width = width,
+                            height = height,
+                            signal = signal,
+                        )
+                    }
+                    if (!admitted) {
+                        throw CancellationException("Recorder quarantine refused preview EGL acquisition")
+                    }
+                }
             },
             // EGL/native-window failures are contained on the GL thread. A successful attachment
             // stays pending until drawFrame presents its first real preview frame; bind-only
@@ -441,6 +480,7 @@ class GlPipeline {
         surface: Surface?,
         width: Int,
         height: Int,
+        admission: EncoderOutputAdmission? = null,
         onRuntimeFailure: ((Throwable) -> Unit)? = null,
         onApplied: ((Result<Unit>) -> Unit)? = null,
     ) {
@@ -483,6 +523,9 @@ class GlPipeline {
         dispatchWithResult(
             post = { task -> h.post(task) },
             block = {
+                if (admission?.isValid() == false) {
+                    throw CancellationException("Recorder admission was quarantined before EGL attach")
+                }
                 val core = checkNotNull(egl) { "EGL context is not ready" }
                 clearEncoderOutput(
                     core,
@@ -492,30 +535,53 @@ class GlPipeline {
                 // eglCreateWindowSurface proves allocation only. Bind the candidate now so a dead
                 // codec/native window fails inside this result boundary, then restore preview (or
                 // no current output) before publishing ownership.
-                val candidate = prepareEglOutput(
-                    create = { core.createWindowSurface(surface) },
-                    makeCandidateCurrent = core::makeCurrent,
-                    restoreCurrent = { restorePreviewOrNothing(core) },
-                    discardCandidate = { failedCandidate ->
-                        // Candidate may be current when bind succeeded but preview restoration
-                        // failed. Unbind before destroying it while preserving the primary failure.
+                lateinit var candidate: EGLSurface
+                val nativePrepared = UnsafeRecorderQuarantine.runNativeAcquisition {
+                    candidate = prepareEglOutput(
+                        create = { core.createWindowSurface(surface) },
+                        makeCandidateCurrent = core::makeCurrent,
+                        restoreCurrent = { restorePreviewOrNothing(core) },
+                        discardCandidate = { failedCandidate ->
+                            // Candidate may be current when bind succeeded but preview restoration
+                            // failed. Unbind before destroying it while preserving the primary failure.
+                            try {
+                                detachEglOutput(
+                                    hasFallback = false,
+                                    makeFallbackCurrent = {},
+                                    makeNothingCurrent = core::releaseCurrentOwnership,
+                                    destroy = { core.releaseSurface(failedCandidate) },
+                                )
+                            } catch (cleanupFailure: Throwable) {
+                                orphanedEglOutputs.retain(failedCandidate)
+                                throw cleanupFailure
+                            }
+                        },
+                    )
+                }
+                if (!nativePrepared) {
+                    throw CancellationException("Recorder quarantine refused encoder EGL acquisition")
+                }
+                val installed = installPreparedEncoderOutput(
+                    candidate = candidate,
+                    admission = admission,
+                    install = { accepted ->
+                        encoderW = width
+                        encoderH = height
+                        encoderEgl = accepted
+                        encoderSignal = signal
+                    },
+                    discard = { revoked ->
                         try {
-                            detachEglOutput(
-                                hasFallback = false,
-                                makeFallbackCurrent = {},
-                                makeNothingCurrent = core::releaseCurrentOwnership,
-                                destroy = { core.releaseSurface(failedCandidate) },
-                            )
+                            core.releaseSurface(revoked)
                         } catch (cleanupFailure: Throwable) {
-                            orphanedEglOutputs.retain(failedCandidate)
+                            orphanedEglOutputs.retain(revoked)
                             throw cleanupFailure
                         }
                     },
                 )
-                encoderW = width
-                encoderH = height
-                encoderEgl = candidate
-                encoderSignal = signal
+                if (!installed) {
+                    throw CancellationException("Recorder admission was quarantined during EGL attach")
+                }
                 scheduleCheckedDelay(
                     postDelayed = { task, delayMs -> h.postDelayed(task, delayMs) },
                     delayMs = ENCODER_FIRST_FRAME_TIMEOUT_MS,

@@ -15,6 +15,24 @@ import org.junit.Test
 class RecordingAdmissionLatchTest {
 
     @Test
+    fun `candidate publication is refused atomically once teardown begins`() {
+        assertTrue(recordingCandidateMayPublish(true, false, true, true, true))
+        assertFalse(recordingCandidateMayPublish(true, true, true, true, true))
+        assertFalse(recordingCandidateMayPublish(false, false, true, true, true))
+        assertFalse(recordingCandidateMayPublish(true, false, false, true, true))
+        assertFalse(recordingCandidateMayPublish(true, false, true, false, true))
+        assertFalse(recordingCandidateMayPublish(true, false, true, true, false))
+    }
+
+    @Test
+    fun `prepared encoder output commits only for the live terminal recorder owner`() {
+        assertTrue(recordingAttachMayCommit(true, true, true))
+        assertFalse(recordingAttachMayCommit(false, true, true))
+        assertFalse(recordingAttachMayCommit(true, false, true))
+        assertFalse(recordingAttachMayCommit(true, true, false))
+    }
+
+    @Test
     fun `second admission is refused while one is in flight`() {
         val latch = RecordingAdmissionLatch()
         assertTrue(latch.tryBeginAdmission())

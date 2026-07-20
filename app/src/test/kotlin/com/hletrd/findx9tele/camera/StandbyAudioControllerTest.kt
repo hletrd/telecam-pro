@@ -25,33 +25,111 @@ class StandbyAudioControllerTest {
     private data class Fixture(
         val controller: StandbyAudioController,
         val scheduled: ArrayDeque<() -> Unit>,
+        val available: MutableList<Unit>,
         val unavailable: MutableList<StandbyAudioUnavailable>,
     )
 
     private fun fixture(
         setup: StandbyAudioSetup,
         paused: () -> Boolean = { false },
+        recorderAbsent: () -> Boolean = { false },
+        canStart: () -> Boolean = { true },
         threadLauncher: StandbyThreadLauncher = StandbyThreadLauncher { _, task -> task(); true },
+        reserveProcessAdmission: () -> (() -> Unit)? = { {} },
+        runNativeAcquisition: ((() -> Unit) -> Boolean) = { block -> block(); true },
     ): Fixture {
         val scheduled = ArrayDeque<() -> Unit>()
+        val available = mutableListOf<Unit>()
         val unavailable = mutableListOf<StandbyAudioUnavailable>()
         return Fixture(
             controller = StandbyAudioController(
                 audioGain = { 1f },
                 onLevel = {},
-                canStart = { true },
+                canStart = canStart,
                 // A ready fake exits after setup/start without entering the blocking read loop.
-                recorderAbsent = { false },
+                recorderAbsent = recorderAbsent,
                 isPaused = paused,
                 permissionGranted = { true },
                 audioSetup = setup,
                 threadLauncher = threadLauncher,
                 retryScheduler = StandbyRetryScheduler { _, task -> scheduled.addLast(task); true },
+                onAvailable = { available += Unit },
                 onUnavailable = unavailable::add,
+                reserveProcessAdmission = reserveProcessAdmission,
+                runNativeAcquisition = runNativeAcquisition,
             ),
             scheduled = scheduled,
+            available = available,
             unavailable = unavailable,
         )
+    }
+
+    @Test
+    fun `foreign process recorder blocks standby before native setup and retries quietly`() {
+        var setupCalls = 0
+        val fixture = fixture(
+            setup = StandbyAudioSetup {
+                setupCalls++
+                error("process admission must dominate setup")
+            },
+            reserveProcessAdmission = { null },
+        )
+
+        fixture.controller.setEnabled(true)
+
+        assertEquals(0, setupCalls)
+        assertEquals(1, fixture.scheduled.size)
+        assertTrue(fixture.unavailable.isEmpty())
+    }
+
+    @Test
+    fun `standby releases its process lease only after input release`() {
+        val events = mutableListOf<String>()
+        val input = object : StandbyAudioInput {
+            override fun start() { events += "start" }
+            override fun read(samples: ShortArray): Int = error("fixture exits before read")
+            override fun stop() { events += "stop" }
+            override fun release() { events += "input-release" }
+        }
+        val fixture = fixture(
+            setup = StandbyAudioSetup { StandbyAudioSetupResult.Ready(input) },
+            reserveProcessAdmission = {
+                events += "process-reserve"
+                { events += "process-release" }
+            },
+        )
+
+        fixture.controller.setEnabled(true)
+
+        assertEquals(
+            listOf("process-reserve", "start", "stop", "input-release", "process-release"),
+            events,
+        )
+    }
+
+    @Test
+    fun `first PCM reports recovery exactly once`() {
+        var keepReading = true
+        val input = object : StandbyAudioInput {
+            override fun start() = Unit
+            override fun read(samples: ShortArray): Int {
+                samples[0] = 100
+                samples[1] = -100
+                keepReading = false
+                return 2
+            }
+            override fun stop() = Unit
+            override fun release() = Unit
+        }
+        val fixture = fixture(
+            setup = StandbyAudioSetup { StandbyAudioSetupResult.Ready(input) },
+            recorderAbsent = { keepReading },
+        )
+
+        fixture.controller.setEnabled(true)
+
+        assertEquals(1, fixture.available.size)
+        assertTrue(fixture.unavailable.isEmpty())
     }
 
     @Test
@@ -210,5 +288,47 @@ class StandbyAudioControllerTest {
 
         assertEquals(1, attempts)
         assertTrue(fixture.unavailable.isEmpty())
+    }
+
+    @Test
+    fun `queued generation rechecks terminal admission before creating AudioRecord`() {
+        var allowed = true
+        var setupCalls = 0
+        var queuedTask: (() -> Unit)? = null
+        val fixture = fixture(
+            setup = StandbyAudioSetup {
+                setupCalls++
+                StandbyAudioSetupResult.Ready(FakeInput())
+            },
+            canStart = { allowed },
+            threadLauncher = StandbyThreadLauncher { _, task ->
+                queuedTask = task
+                true
+            },
+        )
+        fixture.controller.setEnabled(true)
+
+        allowed = false
+        checkNotNull(queuedTask).invoke()
+
+        assertEquals(0, setupCalls)
+    }
+
+    @Test
+    fun `admission revoked during setup releases input without starting it`() {
+        var allowed = true
+        val input = FakeInput()
+        val fixture = fixture(
+            setup = StandbyAudioSetup {
+                allowed = false
+                StandbyAudioSetupResult.Ready(input)
+            },
+            canStart = { allowed },
+        )
+
+        fixture.controller.setEnabled(true)
+
+        assertEquals(0, input.starts)
+        assertEquals(1, input.releases)
     }
 }

@@ -23,6 +23,7 @@ import android.os.HandlerThread
 import android.util.Log
 import android.view.Surface
 import com.hletrd.findx9tele.BuildConfig
+import com.hletrd.findx9tele.video.UnsafeRecorderQuarantine
 import java.util.concurrent.Executor
 
 /**
@@ -202,6 +203,8 @@ class CameraController(context: Context) {
         // thread once the device handle is live.
         deferSession: Boolean = false,
         onDeviceOpened: (() -> Unit)? = null,
+        runNativeAcquisition: ((() -> Unit) -> Boolean) =
+            UnsafeRecorderQuarantine::runNativeAcquisition,
         onReady: Ready,
         onError: ErrorCb,
     ) {
@@ -233,8 +236,9 @@ class CameraController(context: Context) {
         // opening from a background proc state (e.g. relaunched behind the keyguard / while the screen
         // just woke), or SecurityException. Guard it so that lifecycle race surfaces as an onError
         // status instead of crashing the app; the next foreground resume() reopens cleanly.
-        runCatching {
-            manager.openCamera(selection.logicalId, executor, object : CameraDevice.StateCallback() {
+        val openAdmitted = runNativeAcquisition {
+            runCatching {
+                manager.openCamera(selection.logicalId, executor, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
                     if (closed) { runCatching { camera.close() }; return } // closed before open completed
                     device = camera
@@ -244,7 +248,14 @@ class CameraController(context: Context) {
                         deferredError = onError
                         onDeviceOpened?.invoke()
                     } else {
-                        runCatching { configureSession(onReady, onError) }.onFailure { onError.onError(it) }
+                        val sessionAdmitted = runNativeAcquisition {
+                            runCatching { configureSession(onReady, onError) }
+                                .onFailure { onError.onError(it) }
+                        }
+                        if (!sessionAdmitted) {
+                            runCatching { camera.close() }
+                            onError.onError(IllegalStateException("native acquisition closed before session"))
+                        }
                     }
                 }
                 override fun onDisconnected(camera: CameraDevice) {
@@ -271,8 +282,12 @@ class CameraController(context: Context) {
                     onError.onError(IllegalStateException("Camera error $error"))
                     close()
                 }
-            })
-        }.onFailure { onError.onError(it) }
+                })
+            }.onFailure { onError.onError(it) }
+        }
+        if (!openAdmitted) {
+            onError.onError(IllegalStateException("native acquisition closed before camera open"))
+        }
     }
 
     // Callbacks parked by a deferSession open until the old camera releases the preview surface.
@@ -287,7 +302,12 @@ class CameraController(context: Context) {
             if (deferredReady !== ready || deferredError !== err) return@postToCamera
             deferredReady = null
             deferredError = null
-            runCatching { configureSession(ready, err) }.onFailure { err.onError(it) }
+            val sessionAdmitted = UnsafeRecorderQuarantine.runNativeAcquisition {
+                runCatching { configureSession(ready, err) }.onFailure { err.onError(it) }
+            }
+            if (!sessionAdmitted) {
+                err.onError(IllegalStateException("native acquisition closed before deferred session"))
+            }
         }
         if (!accepted) {
             deferredReady = null

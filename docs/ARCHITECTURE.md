@@ -49,11 +49,12 @@ Two critical consequences of the afocal converter drive the entire design:
 | `ManualControls.kt` | Immutable snapshot of all pro capture parameters (focus, ISO, shutter, white balance, metering, processing). `normalizeControlsForRoute` applies one exact capability/zoom boundary to live and recalled packets before accepted Engine/UI/request publication. Also owns the sensor fast-path admission predicate (`sensorFastPathAdmitted`, wrapping `sensorOnlyControlsDelta` — a live tap-AF/AF-lock override rides the fast path and is re-applied, not refused), the retained-optics exact-controls/boost-off plan, and the shared sensor-key request derivation (`applySensorValueControls`). |
 | `RotationMath.kt` | Pure, unit-tested functions for preview/capture/EXIF rotation math and the video muxer orientation hint (extracted from CameraEngine). |
 | `RendererConfig.kt` | One immutable snapshot of every renderer-only assist (peaking, zebra, false color, punch-in, tele finder, …) with a store that replays the complete snapshot into each fresh GL generation. |
-| `RendererAssists.kt` | Owns `RendererConfigStore`, resolves Tele Finder intent, and is the single setter/replay facade between CameraEngine and GlPipeline. Every setter records state before posting so a dropped old-generation GL command is restored by `replayAll()` on the next generation. |
+| `RendererAssists.kt` | Owns `RendererConfigStore`, resolves Loupe Overview intent, and is the single setter/replay facade between CameraEngine and GlPipeline. Every setter records state before posting so a dropped old-generation GL command is restored by `replayAll()` on the next generation. |
 | `StandbyAudioController.kt` | Owns the armed-video standby meter lifecycle, bounded AudioRecord recreation, and exact `StandbyMeterOwnership` handoff to REC. All engine dependencies are live lambdas so a retired meter generation cannot reclaim a newer intent. |
 | `OpticsConstraints.kt` | Pure admission/rollback rules for optics transactions (mode/lens/TC transitions, structural-reconfigure decisions), unit-tested off-device. |
 | `ZoomSubmitPlan.kt` | Pure HAL zoom-submit decision (throttle window + mid-gesture wide-aim clamp), extracted from `CameraEngine.setZoomRatio` and unit-tested. |
 | `RecordingAdmissionLatch.kt` | Monitor-owning REC stop-during-start latch (`tryBeginAdmission`/`requestStop`/`completeAdmission`), extracted from CameraEngine and race-tested. |
+| `RecordingTeardownCoordinator.kt` | Android-free terminal owner for encoder detach: arms independent recovery/hard deadlines before submission, admits recovery once, and selects exactly one strict finalization or quarantine while making rejection and late callbacks inert. |
 | `AutoExposure.kt` | Pure, unit-tested app-side AE math: SHUTTER/ISO-priority drive functions and the photo-P program line (`driveProgram`), metered off the GL luma histogram. |
 | `OcsProbe.kt` | Debug-source-set-only OPPO CameraUnit/OCS availability probe (release builds compile a no-op stub and do not link the OEM SDK). |
 | `VendorTagInspector.kt` | Debug-only Camera2 capability logger for device-specific request/session keys. |
@@ -71,14 +72,14 @@ Two critical consequences of the afocal converter drive the entire design:
 | `DngCapture.kt` | Writes DNG (RAW sensor frame) using DngCreator. Sets EXIF orientation tag (cannot pixel-rotate Bayer CFA). Synchronous in the photo callback while the raw Image is live. |
 | **video/** | |
 | `AudioReadPolicy.kt` | Pure classification of `AudioRecord.read` return codes (PCM / transient retry / normal stop / terminal failure) shared by the recorder loop and the standby meter, plus the meter's bounded-recreate budget rule. |
-| `VideoRecorder.kt` | MediaCodec HEVC/AVC encoder + AAC audio encoder + MediaMuxer. Exactly-once owner of the codec input Surface: clean release follows verified EGL detach and partial setup also releases; a still-live drain takes the documented no-release abandon path. Video input comes from GL already flipped; audio runs separately with software PCM gain. A mid-REC negative `AudioRecord.read` degrades to video-only; only VIDEO faults delete. The one tolerated sample-less-audio `muxer.stop()` failure is published only after native owners close and MediaExtractor reopens an actual video track. The encoder buffer takes `RotationMath.encoderSurfaceSize` — swapped to the DISPLAYED portrait aspect for the 90° sensor so `coverScale` records exactly the viewfinder field. |
+| `VideoRecorder.kt` | MediaCodec HEVC/AVC encoder + AAC audio encoder + MediaMuxer. Exactly-once owner of the codec input Surface: clean release follows verified EGL detach and partial setup also releases. If detach cannot prove native release, an independent watchdog terminally quarantines the complete native graph process-long, ends Java/audio work without releasing codec/muxer/fd/Surface, and refuses another camera/REC graph until process restart. Video input comes from GL already flipped; audio runs separately with normalized software PCM gain. A mid-REC negative `AudioRecord.read` degrades to video-only; only VIDEO faults delete. The one tolerated sample-less-audio `muxer.stop()` failure is published only after native owners close and MediaExtractor reopens an actual video track. The encoder buffer takes `RotationMath.encoderSurfaceSize` — swapped to the DISPLAYED portrait aspect for the 90° sensor so `coverScale` records exactly the viewfinder field. |
 | `AudioInputInspector.kt` | Resolves the preferred recording input (built-in / wired / USB / BT) against connected AudioDeviceInfo entries; provides the route labels shown in the UI. |
 | `ColorProfiles.kt` | Builds MediaFormat specs for HEVC Main10 (Rec.2020 + HLG/Log) and AVC 8-bit SDR. Tags dynamic range, color space, transfer function. |
 | `EncoderCaps.kt` | Scans MediaCodecList and exposes the hardware AVC/HEVC encoders that are stable with MediaMuxer. |
 | **storage/** | |
 | `CaptureFamily.kt` | Versioned, timestamped capture-family identity embedded in every new output filename. HEIF/JPEG/DNG siblings reuse one exact key; video owns a one-file family. Legacy names are deliberately not inferred by timestamp proximity. |
 | `LatestCaptureReducer.kt` | Android-free reducer for owned Images/Video rows. Selects the newest capture first, then a displayable sibling inside only that capture, and distinguishes proven capture-family deletion from legacy file-only deletion. |
-| `MediaStoreWriter.kt` | Scoped-storage wrapper with a durable per-URI `REGISTERED`/`COMPLETE` journal. It retries COMPLETE markers boundedly, creates/publishes pending DCIM/X9Tele rows, and structurally probes JPEG/DNG/video plus HEIF top-level ISO-BMFF extents (`ftyp`/`meta`/`mdat`) without bitmap decode. Launch recovery adopts COMPLETE/valid rows, deletes only proven-invalid rows, retains indeterminate/error rows, continues across collection failures, and returns a sanitized `RecoveryReport` for bounded provider retry. Delete count zero is existence-probed so an already-absent row is success. |
+| `MediaStoreWriter.kt` | Scoped-storage wrapper with a durable per-URI `REGISTERED`/`COMPLETE` journal. It retries COMPLETE markers boundedly, creates/publishes pending DCIM/X9Tele rows, and structurally probes JPEG/DNG/video. HEIF proof requires bounded `meta` children, a matching `pitm`/`iloc` primary item, supported construction/reference fields, and explicit extents wholly inside `mdat`. Launch recovery adopts COMPLETE/valid rows, deletes only proven-invalid rows, retains indeterminate/error rows, continues across collection failures, and returns a sanitized `RecoveryReport` for bounded provider retry. Delete count zero is existence-probed so an already-absent row is success. |
 | `SettingsStore.kt` | SharedPreferences persistence of ManualControls + ExtraSettings across launches, gated by a "Remember Settings" toggle (default ON); enums stored by name, defensive load. Lens and TELE restoration have separate default-on preserve toggles. |
 | **focus/** | |
 | `FocusMapping.kt` | Maps the UI slider (0..1) bidirectionally to LENS_FOCUS_DISTANCE with `diopters = minFocusDiopters * slider^3`. There is no additive offset, preserving exact infinity at slider 0 while concentrating travel near it. |
@@ -191,14 +192,16 @@ Two critical consequences of the afocal converter drive the entire design:
 | **mainHandler work** (main-thread Handler) | CameraViewModel | Lifecycle-owned periodic record/level/orientation/info updates, bounded zoom easing, and transient countdown/reticle work. `onStart` owns recurring registration and `onStop` removes it. |
 | **gl-pipeline** HandlerThread | GlPipeline | EGL operations, texture sampling, rendering, GL shader execution. |
 | **camera** HandlerThread | CameraController | Camera2 lifecycle and capture callbacks. Copies JPEG/YUV data before cache-only EXIF composition while the Image is live, and invokes the synchronous DNG byte write while the RAW Image is valid. |
-| **setupExecutor** (single-thread) | CameraEngine | Post-GL-input Camera2 route/capability preflight, lightweight physical-lens EXIF prefetch, serialized generation-owned mode/lens/session reconfiguration, and bounded recovery work. Debug diagnostics are queued behind the initial route/open work. |
+| **setupExecutor** (single-thread) | CameraEngine | Post-GL-input Camera2 route/capability preflight, lightweight physical-lens EXIF prefetch, and serialized generation-owned mode/lens/session reconfiguration. Debug diagnostics are queued behind the initial route/open work. |
 | **ioExecutor** (single-thread) | CameraEngine / StillCapturePipeline | Deferred processed-still decoding, crop/rotation, shared HEIF/JPEG EXIF composition, encoding, processed publication, and retrying DNG publication after the live-Image write is complete. |
+| **media-recovery executor** (single-thread) | CameraEngine | Launch-only pending-row scans, structural probes, and bounded provider retry/backoff. Its typed completion gates the latest-family query, so recovery can adopt the review item without ever delaying Camera2 startup. |
 | **recording-finalization executor** (single-thread) | CameraEngine | Dedicated, rejection-safe recorder stop/muxer finalization so still encoding cannot delay clip completion. Release waits a bounded interval for this lane before GL/executor teardown. |
+| **recording-teardown watchdog** (scheduled daemon) | CameraEngine | Independent detach-recovery and hard-quarantine deadlines; exactly one strict-finalize or quarantine terminal owner wins and late callbacks are inert. |
 | **timelapseScheduler** (scheduled) | CameraEngine | Interval-driven timelapse capture trigger every N seconds. |
 | **analysisExecutor** (one single-thread executor per GL generation) | GlPipeline | Histogram/waveform computation from that generation's isolated FBO/readback snapshot. Retirement invalidates callback authority without waiting indefinitely for old math. |
 | **audio-capture** (implicit thread) | VideoRecorder | AudioRecord polling loop and PCM-to-AAC encoding. |
 | **video-drain** (implicit thread) | VideoRecorder | MediaCodec output buffer draining and MediaMuxer writes. |
-| **StandbyAudioMeter** (thread) | CameraEngine | Levels-only AudioRecord tap while video is armed but not rolling. A synchronized ownership gate reserves one immutable owner/release latch before thread start; REC opens the mic only after that exact owner releases. Invalid buffer, construction/state, start, thread-launch, and terminal-read failures consume one shared bounded generation budget with backed-off recreation; any successful PCM read resets it. Retries recheck wanted/paused/REC ownership and unavailable is reported only after exhaustion. |
+| **StandbyAudioMeter** (thread) | CameraEngine | Levels-only AudioRecord tap only while the detailed armed-Video meter is visible, unobscured, and not rolling. A synchronized ownership gate reserves one immutable owner/release latch before thread start; REC opens the mic only after that exact owner releases. Invalid buffer, construction/state, start, thread-launch, and terminal-read failures consume one shared bounded generation budget with backed-off recreation; any successful PCM read resets it and clears unavailable UI. Retries recheck visible intent/paused/REC ownership and typed unavailability is surfaced only after exhaustion. |
 
 **Cross-thread visibility and ownership seams:**
 
@@ -234,9 +237,14 @@ Accessed from GL + audio/video threads:
   The input callback snapshots the latest desired route, stale generations cannot publish, and a bounded
   `ColdStartRetryGate` lets a transient selection/capability failure recover without recreating the
   preview surface.
-- **Terminal GL acquisition**: `TerminalAcquisitionGate` linearizes cold `gl.start` and its input
-  callback with engine release. Release closes the gate before its final `gl.stop`; it either waits
-  for an in-flight acquisition and owns that generation's stop, or prevents the acquisition entirely.
+- **Terminal native acquisition**: `TerminalAcquisitionGate` linearizes GL start, preview binding,
+  Camera2 open/deferred-session start, and lifecycle recovery with both engine release and unsafe-
+  recorder quarantine. Release or quarantine closes the gate before later acquisition can begin;
+  the process-wide gate executes actual EGL, Camera2, codec/muxer, and `AudioRecord` create/start
+  calls under the same close boundary, so quarantine either waits for an admitted acquisition or
+  rejects it before native entry. The process-wide flag applies the same refusal to a newly created
+  Engine and standby `AudioRecord`. In-flight gated work drains before close returns, and every late
+  callback is inert.
 - **Output-surface ownership and preview health**: every preview bind/detach synchronously increments
   a generation before it queues GL work. A stale native window is rejected before EGL mutation.
   Create/bind/init and runtime draw/swap failures complete the exact preview signal once; the Engine
@@ -279,19 +287,30 @@ Accessed from GL + audio/video threads:
   prefetched on `setupExecutor`, so callback resolution is cache-only and falls back to selected-route
   metadata without a CameraService lookup.
 - **Recording admission and failure**: VideoRecorder owns its video/audio threads and muxer lock; GL
-  writes frames to its exactly-once-owned codec input Surface. REC snapshots the accepted
-  controller/session, rechecks it after mic handoff, and publishes recorder ownership atomically
-  against camera failure. Admission runs on the serial **recorder executor**, never main (the
+  writes frames to its exactly-once-owned codec input Surface. REC first reserves one process-wide
+  epoch lease, snapshots the accepted controller/session, and rechecks both after mic handoff,
+  pending-row creation, and codec setup. Recorder ownership is published through that same lease
+  atomically against camera failure and irreversible quarantine. Admission runs on the serial
+  **recorder executor**, never main (the
   bounded mic-release wait, MediaStore pending insert, and codec/muxer/AudioRecord construction
   cost ~100-700 ms); only the in-flight gate is synchronous, the UI publishes optimistic starting
-  state that the result callback resets on refusal, and a stop arriving mid-admission is latched
+  state that an attempt-generation-owned main-thread callback resets on refusal, and a stop arriving mid-admission is latched
   and executed on the same executor the moment the recorder publishes (never raced against an
-  unpublished owner). Encoder attach is queued before publication; UI remains in a stoppable
+  unpublished owner). Publication precedes the asynchronous encoder handoff; EGL prepares a
+  candidate surface privately, then installs its in-memory ownership through the process lease or
+  destroys the revoked candidate. UI remains in a stoppable
   `isRecordingStarting` state until the first
   successful real encoder swap, so tally/timer never imply a phantom recording. Clean finalization
   releases the Surface only after checked EGL unbind/destroy, before codec release/ownership clear;
-  partial setup also releases exactly once. A timed-out live drain deliberately abandons Surface,
-  codec, muxer, and fd native resources rather than racing release against native code. An active
+  partial setup also releases exactly once. An Android-free coordinator arms both watchdogs before
+  submitting detach, starts identity-owned recovery once for a failure/missed callback, and accepts
+  only strict resource release as fallback finalization. If detach reaches the hard deadline or GL
+  recovery ends ABANDONED, it quarantines Surface, codec, muxer, and fd process-long rather than
+  racing release against native code; all later GL/preview/Camera/microphone/REC admission is refused
+  with restart status. A codec/audio drain still alive after the bounded join returns a typed
+  quarantine-required result without clearing owners or the pending row; strict finalization never
+  releases that process lease. Scheduler rejection takes the same fail-closed path before detach submission.
+  An active
   Camera2 failure claims the matching recorder, orders GL detach before finalization, reports
   termination, then permits bounded camera recovery. A negative `AudioRecord.read` while running
   records the first failure and stops empty AAC submission; a negative result after stop is normal EOS.
@@ -316,7 +335,13 @@ Accessed from GL + audio/video threads:
 - **Microphone admission**: `StandbyMeterOwnership` keeps reservation, intent, owner identity, and
   release-latch handoff on one monitor. Late meter threads recheck ownership before opening
   AudioRecord; REC fails a bounded release wait instead of creating a second owner; finalizer retries
-  recheck current intent and cannot override a newer disable or background transition.
+  recheck current intent and cannot override a newer disable or background transition. Compose DISP
+  visibility and modal state explicitly own standby intent. A second process-level owner lease
+  admits exactly one standby `AudioRecord` across overlapping Engine/ViewModel generations; only the
+  same Engine may atomically hand its standby lease to pending REC, while foreign standby/REC retries
+  until strict release. Thus clean/obscured viewfinder modes have
+  no hidden 10 Hz microphone/StateFlow work. Exhaustion remains visible until successful PCM or an
+  explicit audio-input selection starts a fresh budget.
 
 ---
 
@@ -512,13 +537,14 @@ cached repeating builder gets only its sensor keys re-derived via the same
 drags are additionally frame-gated at the source (`RulerSlider` publishes ≤60 Hz with an exact
 landing on drag end; the ruler's own canvas still follows the finger per event).
 
-### Tele Finder PIP (legacy single-stream assist)
+### Loupe Overview (same-stream assist)
 
-An Assist toggle (default OFF, persisted) draws a bottom-left corner viewport re-drawing the FULL
+The `Loupe Overview` Assist toggle (default OFF, persisted) draws a bottom-left corner viewport re-drawing the FULL
 current camera frame while the main view is magnified. **Single-stream honesty**: the HAL's
 `CONTROL_ZOOM_RATIO` crop is baked into the one camera texture, so the PIP can only be wider than
 the main view while GL zoom compensation (mid-gesture) or punch-in magnifies past the delivered
-field — a true unzoomed/wide finder is a BACKLOG design item (second stream or HAL-zoom-cap split).
+field. This is deliberately not labeled PIP or 1x; a true unzoomed/wide finder is a BACKLOG design
+item (second stream or HAL-zoom-cap split).
 Gating is ONE shared, unit-tested predicate (`teleFinderResolved`/`teleFinderVisible` in
 `CameraState.kt`): toggle && TELE && **photo mode** && 4:3, plus an ACTIVE punch-in loupe — the
 honest gate axis since cycle 4 (the old raw `FINDER_MIN_ZOOM` floor showed a corner box that
@@ -532,7 +558,7 @@ in `RendererConfig` for GL-generation replay, and geometry flows from ONE pure s
 shared by the GL scissor box and the Compose border so both stay pixel-aligned (RTL-safe absolute
 anchor). The GL draw is failure-isolated (`runCatching` + `try/finally { glDisable(GL_SCISSOR_TEST) }`
 — scissor is CONTEXT state; a leak would clip the encoder/analysis draws, and a finder-only error
-must never fail preview health). A compact `PIP` OSD tag appears only while the resolved legacy
+must never fail preview health). A compact `OVERVIEW` OSD tag appears only while the same-stream
 viewport is actually visible.
 
 This is not the requested always-on 1x finder for 3x/10x/TELE. PMA110 advertises only `[0,1]` as a
@@ -689,7 +715,12 @@ Result: 8-bit SDR MP4, which AVC can encode natively.
 
 **Audio (AAC, 192 kbps):**
 
-Captured via AudioRecord on a separate thread. Software PCM gain applied (user-settable, 0.5× to 2.0× × post-gain). AAC LC encoder. Live RMS level throttled to ~10 Hz for the UI level meter. Every AAC setup degradation publishes the selected route as unavailable before continuing video-only; the UI sets `Starting...` before engine callbacks so that terminal label is not overwritten.
+Captured via AudioRecord on a separate thread. Software PCM gain is normalized to 0×..2× at
+persistence, engine, recorder-admission, and PCM boundaries (1× passthrough). AAC LC encoder. Live
+RMS is throttled to ~10 Hz only while recording or while the visible detailed standby meter owns it.
+Every AAC setup degradation publishes the selected route as unavailable before continuing video-only;
+standby exhaustion does likewise until successful PCM or explicit route intent. The UI sets
+`Starting...` before engine callbacks so that terminal label is not overwritten.
 
 ---
 
@@ -806,11 +837,15 @@ latestOwnCapture(context) → RestoredCapture
 
 Canonical names also stamp `DATE_TAKEN` from admission time. Relaunch recovery probes JPEG, video,
 DNG, and HEIF terminal structure while the row is still private. HEIF proof walks bounded top-level
-ISO-BMFF headers and requires explicitly sized complete extents plus `ftyp`/`meta`/non-empty `mdat`;
-size-zero boxes and header dimensions alone never authorize adoption. A `COMPLETE` journal record always authorizes adoption; legacy or
+ISO-BMFF headers and requires `ftyp`, one bounded `meta`, a matching primary item in supported
+`pitm`/`iloc`, and every explicit nonzero extent wholly inside an `mdat` payload. Unknown versions,
+external references, unbounded boxes, and parser-limit cases remain pending; malformed/missing/
+out-of-range required metadata is invalid. A `COMPLETE` journal record always authorizes adoption; legacy or
 `REGISTERED` rows are adopted only when structurally valid, deleted only when definitively invalid,
-and otherwise retained with an explicit report. Provider failures retry boundedly, preserving
-partial bytes privately without turning a transient publication failure into data loss.
+and otherwise retained with an explicit report. A dedicated recovery lane folds transition counts
+across attempts but lets only the last attempt own unresolved failure classes; its completion then
+queries the latest published family. Provider failures retry boundedly, preserving partial bytes
+privately without turning a transient publication failure into data loss.
 
 ---
 
@@ -831,7 +866,9 @@ Settings are persisted across app launches via `SettingsStore.kt` (SharedPrefere
 "Remember Settings" toggle that **defaults ON**. On launch, saved pro settings are restored from storage 
 and pushed to the engine before the camera starts. Fresh installs open on the 1× main lens with TELE
 off; separate default-on Setup toggles decide whether the saved lens and TELE state are restored. Enums
-are stored by name for forward compatibility, and loads are defensive (unknown values revert to defaults).
+are stored by name for forward compatibility. Loads are total: unknown enums revert to defaults;
+non-finite/range-invalid shutter angle, custom-WB gains, zoom/focus, and audio gain are normalized;
+Photo/Video/My Menu Fn lists are distinct, capped at eight, and use their mode fallback when empty.
 
 **UI layout (ProSheet.kt):**
 
@@ -847,7 +884,7 @@ The fixed settings panel has nine left-rail tabs:
 5. **Lens** — 0.6x/1x/3x/10x selection, TELE mode, stabilization mode, and OIS.
 6. **Video** — codec, transfer, resolution, FPS, bitrate, Open Gate, and audio.
 7. **Image** — edge sharpness, noise reduction, and color-effect processing.
-8. **Assist** — gamma display assist, frame lines, zebra, false color, scopes, grid, level, punch-in, and the Tele Finder PIP toggle.
+8. **Assist** — gamma display assist, frame lines, zebra, false color, scopes, grid, level, punch-in, and Loupe Overview.
 9. **Setup** — privacy, persistence, Fn/My Menu customization, hardware-key assignments, and the
    diagnostic camera override reset when one is active.
 
@@ -861,15 +898,18 @@ exposure mode, focus, shutter, ISO, WB, and EV; the video default adds gamma, st
 scene choices. Capability-dependent taps cycle only through the selected route's advertised choices.
 The shooting-screen Fn overlay renders only that active mode's distinct configured slots (maximum
 eight, with its mode-specific default as the empty fallback); it never merges My Menu or Recent.
-Its default four-column/two-row grid uses measured, counter-rotated label/value layout in a held-
-landscape portrait window, grows above a 58 dp minimum, and scrolls when window/font constraints
-require it. Full accessibility labels/state remain intact when narrow visual aliases are used.
+Portrait uses a raw bottom 4x2 grid. Held 90/270 use raw 2x4 Start/End trays whose slot reordering
+produces the same physical bottom 4x2 reading order, with one-line visual ellipsis under constraint.
+The portrait panel scrolls when window/font constraints require it. Every tile merges its full label,
+value, enabled state, and click action into one accessibility node; the touch-only scrim is unnamed
+and the explicit Close target is the sole close action.
 The WB chip can open the preset sheet whenever more than one advertised mode exists; only MANUAL WB
 requires the Kelvin ruler. Compact view keeps a 36 dp visual Fn button inside a 48 dp hit target on
 the focal rail; `DISP` reveals the full configurable strip. In the Fn grid, numeric
-focus/shutter/ISO/WB/EV/zoom tiles open their ruler instead of cycling or resetting a value. Only the
-requested ruler remains visible, with an explicit close control. A caps change closes an invalid open
-ruler while keeping the normalized value applied.
+focus/shutter/ISO/WB/EV/zoom tiles open their ruler instead of cycling or resetting a value. Those
+numeric/sheet transitions dismiss Fn; quick cycles/toggles update in place for consecutive setup.
+Only the requested ruler remains visible, with an explicit close control. A caps change closes an
+invalid open ruler while keeping the normalized value applied.
 
 **Control application:**
 

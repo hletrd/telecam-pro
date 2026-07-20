@@ -18,6 +18,8 @@ import com.hletrd.findx9tele.camera.PeakingLevel
 import com.hletrd.findx9tele.camera.ShutterTimer
 import com.hletrd.findx9tele.camera.VideoStabMode
 import com.hletrd.findx9tele.camera.ZebraLevel
+import com.hletrd.findx9tele.camera.normalizeAudioGain
+import com.hletrd.findx9tele.camera.normalizeFnSlots
 import com.hletrd.findx9tele.camera.GridType
 import com.hletrd.findx9tele.camera.HardwareKeyAction
 import com.hletrd.findx9tele.camera.LensChoice
@@ -154,6 +156,7 @@ class SettingsStore(private val prefs: SharedPreferences) {
 
     private fun safeFloat(key: String, default: Float): Float =
         runCatching { prefs.getFloat(key, default) }.getOrDefault(default)
+            .let { if (it.isFinite()) it else default }
 
     private fun safeLong(key: String, default: Long): Long =
         runCatching { prefs.getLong(key, default) }.getOrDefault(default)
@@ -179,7 +182,7 @@ class SettingsStore(private val prefs: SharedPreferences) {
                 iso = safeInt("${prefix}iso", d.iso).coerceIn(MIN_PERSISTED_ISO, MAX_PERSISTED_ISO),
                 exposureTimeNs = safeLong("${prefix}exposureTimeNs", d.exposureTimeNs),
                 shutterMode = enumOr(safeString("${prefix}shutterMode", null), d.shutterMode),
-                shutterAngle = safeFloat("${prefix}shutterAngle", d.shutterAngle),
+                shutterAngle = safeFloat("${prefix}shutterAngle", d.shutterAngle).coerceIn(1f, 360f),
                 exposureCompensation = safeInt("${prefix}exposureCompensation", d.exposureCompensation)
                     .coerceIn(MIN_PERSISTED_EV_INDEX, MAX_PERSISTED_EV_INDEX),
                 aeLock = safeBoolean("${prefix}aeLock", d.aeLock),
@@ -194,10 +197,10 @@ class SettingsStore(private val prefs: SharedPreferences) {
                 afSpotSize = enumOr(safeString("${prefix}afSpotSize", null), d.afSpotSize),
                 customWbGains = if (safeBoolean("${prefix}hasCustomWb", false)) {
                     WbGains(
-                        r = safeFloat("${prefix}customWbR", 1f),
-                        gEven = safeFloat("${prefix}customWbGe", 1f),
-                        gOdd = safeFloat("${prefix}customWbGo", 1f),
-                        b = safeFloat("${prefix}customWbB", 1f),
+                        r = safeFloat("${prefix}customWbR", 1f).coerceIn(1f, MAX_PERSISTED_WB_GAIN),
+                        gEven = safeFloat("${prefix}customWbGe", 1f).coerceIn(1f, MAX_PERSISTED_WB_GAIN),
+                        gOdd = safeFloat("${prefix}customWbGo", 1f).coerceIn(1f, MAX_PERSISTED_WB_GAIN),
+                        b = safeFloat("${prefix}customWbB", 1f).coerceIn(1f, MAX_PERSISTED_WB_GAIN),
                     )
                 } else {
                     null
@@ -250,18 +253,24 @@ class SettingsStore(private val prefs: SharedPreferences) {
                 videoResolution = safeString("${prefix}videoResolution", null) ?: ed.videoResolution,
                 openGate = safeBoolean("${prefix}openGate", ed.openGate),
                 recordAudio = safeBoolean("${prefix}recordAudio", ed.recordAudio),
-                audioGain = safeFloat("${prefix}audioGain", ed.audioGain),
+                audioGain = normalizeAudioGain(safeFloat("${prefix}audioGain", ed.audioGain)),
                 audioScene = enumOr(safeString("${prefix}audioScene", null), ed.audioScene),
                 audioInputPreference = enumOr(safeString("${prefix}audioInputPreference", null), ed.audioInputPreference),
-                photoFnSlots = enumListOr(
-                    safeString("${prefix}photoFnSlots", null) ?: safeString("${prefix}fnSlots", null),
+                photoFnSlots = normalizeFnSlots(
+                    enumListOr(
+                        safeString("${prefix}photoFnSlots", null) ?: safeString("${prefix}fnSlots", null),
+                        ed.photoFnSlots,
+                    ),
                     ed.photoFnSlots,
                 ),
-                videoFnSlots = enumListOr(
-                    safeString("${prefix}videoFnSlots", null),
+                videoFnSlots = normalizeFnSlots(
+                    enumListOr(safeString("${prefix}videoFnSlots", null), ed.videoFnSlots),
                     ed.videoFnSlots,
                 ),
-                myMenuSlots = enumListOr(safeString("${prefix}myMenuSlots", null), ed.myMenuSlots),
+                myMenuSlots = normalizeFnSlots(
+                    enumListOr(safeString("${prefix}myMenuSlots", null), ed.myMenuSlots),
+                    ed.myMenuSlots,
+                ),
                 volumeKeyAction = enumOr(safeString("${prefix}volumeKeyAction", null), ed.volumeKeyAction),
                 halfPressAction = enumOr(safeString("${prefix}halfPressAction", null), ed.halfPressAction),
                 gammaAssist = safeBoolean("${prefix}gammaAssist", ed.gammaAssist),
@@ -364,6 +373,9 @@ class SettingsStore(private val prefs: SharedPreferences) {
         const val MAX_PERSISTED_ISO = 1_000_000
         const val MIN_PERSISTED_EV_INDEX = -100
         const val MAX_PERSISTED_EV_INDEX = 100
+        // Camera2 guarantees white-balance gains in 1..3; retain generous device-specific samples
+        // while bounding corrupted preferences before RggbChannelVector/request construction.
+        const val MAX_PERSISTED_WB_GAIN = 32f
         fun presetPrefix(slot: MemorySlot): String = "preset_${slot.name}_"
     }
 }

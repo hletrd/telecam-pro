@@ -1,5 +1,6 @@
 package com.hletrd.findx9tele.video
 
+import com.hletrd.findx9tele.camera.normalizeAudioGain
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import org.junit.Assert.assertEquals
@@ -66,5 +67,18 @@ class AudioGainTest {
         assertEquals(listOf<Short>(2000, -2000, 2000), samplesOf(buf, 3).toList())
         assertTrue(level.isFinite())
         assertTrue(level in 0f..1f)
+    }
+
+    @Test
+    fun `non-finite and out-of-range gain is normalized at PCM boundary`() {
+        assertEquals(1f, normalizeAudioGain(Float.NaN), 0f)
+        assertEquals(1f, normalizeAudioGain(Float.POSITIVE_INFINITY), 0f)
+        assertEquals(0f, normalizeAudioGain(-1f), 0f)
+        assertEquals(2f, normalizeAudioGain(3f), 0f)
+
+        val buf = pcmBuffer(1000, -1000)
+        val level = applyGainAndLevel(buf, 4, Float.NaN)
+        assertEquals(listOf<Short>(1000, -1000), samplesOf(buf, 2).toList())
+        assertTrue(level.isFinite())
     }
 }

@@ -156,6 +156,21 @@ enum class WbMode { AUTO, INCANDESCENT, FLUORESCENT, DAYLIGHT, CLOUDY, SHADE, CU
 /** Measured custom white balance: raw R/G_even/G_odd/B channel gains (Camera2 RggbChannelVector). */
 data class WbGains(val r: Float, val gEven: Float, val gOdd: Float, val b: Float)
 
+/** Total boundary for persisted/UI/recorder gain input (1 = passthrough, 0..2 supported). */
+internal fun normalizeAudioGain(value: Float): Float =
+    if (value.isFinite()) value.coerceIn(0f, 2f) else 1f
+
+/** One canonical bounded slot policy shared by persistence, restore, editors, and both Fn bars. */
+internal fun normalizeFnSlots(
+    slots: List<FnSlot>,
+    fallback: List<FnSlot>,
+    limit: Int = 8,
+): List<FnSlot> {
+    val safeLimit = limit.coerceAtLeast(1)
+    return slots.distinct().take(safeLimit)
+        .ifEmpty { fallback.distinct().take(safeLimit) }
+}
+
 /**
  * Coarse AF-engine state for the tap-AF reticle color (Sony green-on-lock / red-on-fail). Mapped
  * from CaptureResult.CONTROL_AF_STATE by [fromHal] — plain int constants, so the mapping is

@@ -198,4 +198,24 @@ class VideoRecorderMuxerStartTest {
             }
         }
     }
+
+    @Test
+    fun `any live drain requires process quarantine`() {
+        assertEquals(
+            NativeGraphDisposition.RELEASED,
+            nativeGraphDispositionForDrainState(false, false),
+        )
+        assertEquals(
+            NativeGraphDisposition.QUARANTINE_REQUIRED,
+            nativeGraphDispositionForDrainState(true, false),
+        )
+        assertEquals(
+            NativeGraphDisposition.QUARANTINE_REQUIRED,
+            nativeGraphDispositionForDrainState(false, true),
+        )
+        assertEquals(
+            NativeGraphDisposition.QUARANTINE_REQUIRED,
+            nativeGraphDispositionForDrainState(true, true),
+        )
+    }
 }

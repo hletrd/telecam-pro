@@ -263,6 +263,27 @@ class SettingsStoreTest {
     }
 
     @Test
+    fun load_canonicalizesFnListsToDistinctMaximumEightWithFallback() {
+        val raw = listOf(
+            FnSlot.ISO, FnSlot.WB, FnSlot.EV, FnSlot.FOCUS, FnSlot.SHUTTER,
+            FnSlot.EXPOSURE_MODE, FnSlot.TRANSFER, FnSlot.STABILIZATION,
+            FnSlot.AUDIO_SCENE, FnSlot.ISO,
+        ).joinToString(",") { it.name }
+        val prefs = FakePrefs(
+            mutableMapOf(
+                "hasSaved" to true,
+                "photoFnSlots" to raw,
+                "videoFnSlots" to "NOPE,INVALID",
+            ),
+        )
+
+        val extras = requireNotNull(SettingsStore(prefs).load()).extras
+        assertEquals(8, extras.photoFnSlots.size)
+        assertEquals(8, extras.photoFnSlots.distinct().size)
+        assertEquals(ExtraSettings().videoFnSlots, extras.videoFnSlots)
+    }
+
+    @Test
     fun presets_roundTripPerSlot_noCrossSlotBleed() {
         val store = SettingsStore(FakePrefs())
         val cA = nonDefaultControls.copy(iso = 200)
@@ -288,24 +309,39 @@ class SettingsStoreTest {
             mutableMapOf(
                 "hasSaved" to true,
                 "focusDiopters" to Float.NaN,
+                "shutterAngle" to -10f,
                 "iso" to Int.MAX_VALUE,
                 "exposureCompensation" to Int.MIN_VALUE,
+                "hasCustomWb" to true,
+                "customWbR" to 0f,
+                "customWbGe" to 100f,
+                "customWbGo" to Float.NaN,
+                "customWbB" to Float.POSITIVE_INFINITY,
+                "audioGain" to Float.NaN,
                 "preset_MR1_hasSaved" to true,
                 "preset_MR1_focusDiopters" to Float.POSITIVE_INFINITY,
+                "preset_MR1_shutterAngle" to 999f,
                 "preset_MR1_iso" to Int.MIN_VALUE,
                 "preset_MR1_exposureCompensation" to Int.MAX_VALUE,
+                "preset_MR1_audioGain" to -5f,
             ),
         )
         val store = SettingsStore(prefs)
 
         val restored = requireNotNull(store.load()).controls
         assertEquals(0f, restored.focusDistanceDiopters, 0f)
+        assertEquals(1f, restored.shutterAngle, 0f)
         assertEquals(1_000_000, restored.iso)
         assertEquals(-100, restored.exposureCompensation)
+        assertEquals(WbGains(1f, 32f, 1f, 1f), restored.customWbGains)
+        assertEquals(1f, requireNotNull(store.load()).extras.audioGain, 0f)
 
-        val recalled = requireNotNull(store.loadPreset(MemorySlot.MR1)).controls
+        val recalledPacket = requireNotNull(store.loadPreset(MemorySlot.MR1))
+        val recalled = recalledPacket.controls
         assertEquals(0f, recalled.focusDistanceDiopters, 0f)
+        assertEquals(360f, recalled.shutterAngle, 0f)
         assertEquals(1, recalled.iso)
         assertEquals(100, recalled.exposureCompensation)
+        assertEquals(0f, recalledPacket.extras.audioGain, 0f)
     }
 }

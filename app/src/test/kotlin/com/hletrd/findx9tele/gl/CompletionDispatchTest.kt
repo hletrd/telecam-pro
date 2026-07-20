@@ -270,6 +270,31 @@ class CompletionDispatchTest {
     }
 
     @Test
+    fun `revoked encoder admission discards prepared output without installing it`() {
+        var valid = true
+        var installed: String? = null
+        var discarded: String? = null
+        val admission = EncoderOutputAdmission(
+            validity = { valid },
+            commitBlock = { block ->
+                if (!valid) false else true.also { block() }
+            },
+        )
+        valid = false
+
+        val accepted = installPreparedEncoderOutput(
+            candidate = "egl-candidate",
+            admission = admission,
+            install = { installed = it },
+            discard = { discarded = it },
+        )
+
+        assertFalse(accepted)
+        assertEquals(null, installed)
+        assertEquals("egl-candidate", discarded)
+    }
+
+    @Test
     fun `first real swap publishes ready then later failure is runtime`() {
         val attachments = mutableListOf<Result<Unit>>()
         val runtime = mutableListOf<Throwable>()

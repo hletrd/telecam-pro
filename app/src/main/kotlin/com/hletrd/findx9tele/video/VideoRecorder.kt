@@ -21,9 +21,13 @@ import com.hletrd.findx9tele.camera.AudioScene
 import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.RotationMath
 import com.hletrd.findx9tele.camera.VideoCodec
+import com.hletrd.findx9tele.camera.normalizeAudioGain
 import com.hletrd.findx9tele.storage.MediaStoreWriter
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.Collections
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 import kotlin.math.roundToInt
@@ -44,7 +48,11 @@ class VideoRecorder(private val context: Context) {
     data class StopResult(
         val saved: Boolean,
         val error: Throwable? = null,
+        val nativeGraphDisposition: NativeGraphDisposition = NativeGraphDisposition.RELEASED,
     )
+
+    /** Process-wide REC lease, released only after strict finalization; assigned before native setup. */
+    internal var processAdmissionToken: UnsafeRecorderAdmissionToken? = null
 
     private var videoCodec: MediaCodec? = null
     private var audioCodec: MediaCodec? = null
@@ -66,6 +74,10 @@ class VideoRecorder(private val context: Context) {
     private val muxerLock = Any()
 
     @Volatile private var running = false
+    // An encoder whose EGL input ownership could not be proven released is never stopped/released
+    // in-process. Quarantine still needs to end Java-side work and microphone capture promptly;
+    // this flag lets both drain loops leave without touching the unsafe native graph.
+    private val terminallyQuarantined = AtomicBoolean(false)
     private val firstFailure = FirstFailureSignal()
     private var onFailure: ((Throwable) -> Unit)? = null
     @Volatile private var wroteVideoSample = false
@@ -118,7 +130,7 @@ class VideoRecorder(private val context: Context) {
         onFailure: ((Throwable) -> Unit)? = null,
     ): Surface? {
         this.uri = uri
-        this.audioGain = audioGain
+        this.audioGain = normalizeAudioGain(audioGain)
         this.audioScene = audioScene
         this.audioZoom = audioZoom
         this.audioOrientation = RotationMath.videoOrientationHint(orientationHint)
@@ -205,17 +217,22 @@ class VideoRecorder(private val context: Context) {
         // A drain thread still alive after its join timeout is wedged INSIDE the codec/muxer (e.g. a
         // dequeueOutputBuffer that never returns). Releasing those objects out from under it races
         // native MediaCodec/MediaMuxer state — a JVM-level catch does not stop a native SIGSEGV — so
-        // on a wedge we mark the recording failed and deliberately LEAK codec/muxer/fd instead of
-        // releasing them (rare error path; the clip is deleted below either way).
-        val drainWedged = videoThread?.isAlive == true || audioThread?.isAlive == true
+        // on a wedge we report a typed quarantine outcome without releasing or clearing owners.
+        val drainWedged = nativeGraphDispositionForDrainState(
+            videoDrainAlive = videoThread?.isAlive == true,
+            audioDrainAlive = audioThread?.isAlive == true,
+        ) == NativeGraphDisposition.QUARANTINE_REQUIRED
         if (drainWedged) {
-            recordFailure(IllegalStateException("Encoder drain timed out"))
-            // DELIBERATE NATIVE-RESOURCE ABANDON: a live drain may still be executing inside this
-            // codec's native graph. Surface.release(), MediaCodec.release(), MediaMuxer.release(),
-            // or fd close could race that thread and SIGSEGV the process, so drop Java ownership
-            // without invoking any release callback. Process death is the only safe reclamation for
-            // this rare terminal path; the pending clip is still deleted below.
-            inputSurfaceOwner.abandon()
+            val timeout = IllegalStateException("Encoder drain timed out")
+            recordFailure(timeout)
+            // Keep every graph owner and the still-open pending row intact. CameraEngine retains
+            // this recorder process-long and closes process admission; clearing Java references
+            // here would let a known-live drain coexist with the next recording.
+            return StopResult(
+                saved = false,
+                error = firstFailure.cause ?: timeout,
+                nativeGraphDisposition = NativeGraphDisposition.QUARANTINE_REQUIRED,
+            )
         }
 
         if (!drainWedged) {
@@ -335,6 +352,32 @@ class VideoRecorder(private val context: Context) {
         return StopResult(saved = saved, error = firstFailure.cause)
     }
 
+    /**
+     * Ends app/audio activity without releasing any codec, muxer, descriptor, or input Surface.
+     *
+     * This is the terminal fallback when CameraEngine cannot prove that EGL relinquished the
+     * codec's native window. Releasing those native owners could race a wedged GL thread and crash
+     * the process. We instead make the worker loops observe a terminal flag, request AudioRecord
+     * stop on a daemon helper (so a vendor stop wedge cannot strand engine state), zero the meter,
+     * and retain this recorder process-long through [UnsafeRecorderQuarantine].
+     */
+    internal fun quarantineUnsafeNativeGraph(): Boolean {
+        if (!terminallyQuarantined.compareAndSet(false, true)) return false
+        running = false
+        runCatching { onLevel?.invoke(0f) }
+        onFailure = null
+        val ownedAudio = audioRecord
+        val stopAudio = Runnable { runCatching { ownedAudio?.stop() } }
+        runCatching {
+            Thread(stopAudio, "unsafe-recorder-mic-stop").apply { isDaemon = true }.start()
+        }.onFailure {
+            // Thread creation is exceptional. Keep convergence honest even if the synchronous
+            // fallback blocks: this method itself is invoked off main by the watchdog lane.
+            stopAudio.run()
+        }
+        return true
+    }
+
     private fun drainVideo() {
         val codec = videoCodec ?: return
         val info = MediaCodec.BufferInfo()
@@ -352,7 +395,9 @@ class VideoRecorder(private val context: Context) {
 
     private fun drainVideoLoop(codec: MediaCodec, info: MediaCodec.BufferInfo) {
         while (true) {
+            if (terminallyQuarantined.get()) return
             val idx = codec.dequeueOutputBuffer(info, TIMEOUT_US)
+            if (terminallyQuarantined.get()) return
             when {
                 // Do not exit on !running here: the encoder may not have emitted its EOS buffer
                 // yet, and breaking early would truncate the tail. stop() bounds this loop via
@@ -493,6 +538,7 @@ class VideoRecorder(private val context: Context) {
     }
 
     private fun runAudio(record: AudioRecord, codec: MediaCodec) {
+        if (terminallyQuarantined.get()) return
         // Guard startRecording() too: if the mic is grabbed between init and here it throws, and an
         // uncaught throw on this thread would crash the app — bail to video-only instead.
         if (runCatching { record.startRecording() }.isFailure) {
@@ -511,12 +557,14 @@ class VideoRecorder(private val context: Context) {
         var eosAttempts = 0
 
         while (true) {
+            if (terminallyQuarantined.get()) return
             if (!sentEos) {
                 val inIdx = codec.dequeueInputBuffer(TIMEOUT_US)
                 if (inIdx >= 0) {
                     val buf = codec.getInputBuffer(inIdx)
                     buf?.clear()
                     val read = if (running && buf != null) record.read(buf, buf.capacity()) else 0
+                    if (terminallyQuarantined.get()) return
                     // Read may block while stop() flips running and calls AudioRecord.stop(). Judge
                     // the returned code against the state observed AFTER that call: a negative stop
                     // wake-up is normal EOS, but any negative code while still running is terminal.
@@ -694,6 +742,158 @@ class VideoRecorder(private val context: Context) {
 }
 
 /**
+ * Process-lifetime retention for a recorder whose native graph is unsafe to release.
+ *
+ * A fresh Activity/ViewModel must not silently create another camera/recorder graph while the old
+ * one may still own EGL/codec/microphone resources. There is intentionally no reset API: process
+ * restart is the only safe reclamation boundary after this rare terminal fault.
+ */
+internal class UnsafeRecorderAdmissionToken internal constructor(
+    internal val epoch: Long,
+    internal val owner: Any,
+)
+
+internal class UnsafeStandbyAdmissionToken internal constructor(
+    internal val epoch: Long,
+    internal val owner: Any,
+)
+
+/** Process-global linearization between REC publication/native handoff and terminal quarantine. */
+internal class RecorderQuarantineAdmissionGate {
+    private val lock = Any()
+    private val epoch = AtomicLong(0L)
+    private val quarantined = AtomicBoolean(false)
+    private var pendingToken: Long? = null
+    private var activeToken: Long? = null
+    private var standbyToken: UnsafeStandbyAdmissionToken? = null
+
+    fun snapshot(owner: Any): UnsafeRecorderAdmissionToken? = synchronized(lock) {
+        val foreignStandby = standbyToken?.owner?.let { it !== owner } == true
+        if (quarantined.get() || pendingToken != null || activeToken != null || foreignStandby) {
+            null
+        } else {
+            UnsafeRecorderAdmissionToken(epoch.incrementAndGet(), owner).also {
+                pendingToken = it.epoch
+            }
+        }
+    }
+
+    /** Exactly one process standby mic, and never while any recorder admission owns the process. */
+    fun reserveStandby(owner: Any): UnsafeStandbyAdmissionToken? = synchronized(lock) {
+        if (quarantined.get() || pendingToken != null || activeToken != null || standbyToken != null) {
+            null
+        } else {
+            UnsafeStandbyAdmissionToken(epoch.incrementAndGet(), owner).also { standbyToken = it }
+        }
+    }
+
+    fun finishStandby(token: UnsafeStandbyAdmissionToken) = synchronized(lock) {
+        if (standbyToken?.epoch == token.epoch && standbyToken?.owner === token.owner) {
+            standbyToken = null
+            epoch.incrementAndGet()
+        }
+    }
+
+    fun isCurrent(token: UnsafeRecorderAdmissionToken): Boolean = synchronized(lock) {
+        !quarantined.get() && (pendingToken == token.epoch || activeToken == token.epoch)
+    }
+
+    fun commit(token: UnsafeRecorderAdmissionToken, block: () -> Unit): Boolean = synchronized(lock) {
+        if (!isCurrent(token)) return@synchronized false
+        block()
+        true
+    }
+
+    /** Linearizes native create/open/start with irreversible process quarantine. */
+    fun runNativeIfSafe(block: () -> Unit): Boolean = synchronized(lock) {
+        if (quarantined.get()) return@synchronized false
+        block()
+        true
+    }
+
+    fun publish(token: UnsafeRecorderAdmissionToken, block: () -> Boolean): Boolean = synchronized(lock) {
+        if (quarantined.get() || pendingToken != token.epoch || activeToken != null) {
+            return@synchronized false
+        }
+        if (!block()) return@synchronized false
+        pendingToken = null
+        activeToken = token.epoch
+        true
+    }
+
+    /** Clears a setup lease only; a successfully published owner remains process-exclusive. */
+    fun abandonPending(token: UnsafeRecorderAdmissionToken) = synchronized(lock) {
+        if (pendingToken == token.epoch) {
+            pendingToken = null
+            epoch.incrementAndGet()
+        }
+    }
+
+    /** Strict recorder finalization releases the one process-wide active recording lease. */
+    fun finish(token: UnsafeRecorderAdmissionToken?) = synchronized(lock) {
+        if (token != null && activeToken == token.epoch) {
+            activeToken = null
+            epoch.incrementAndGet()
+        }
+    }
+
+    /** Irreversible. Publication under [commit] either finishes before this or is rejected after it. */
+    fun close(): Boolean = synchronized(lock) {
+        if (quarantined.getAndSet(true)) return@synchronized false
+        epoch.incrementAndGet()
+        pendingToken = null
+        activeToken = null
+        standbyToken = null
+        true
+    }
+
+    fun isQuarantined(): Boolean = quarantined.get()
+}
+
+internal object UnsafeRecorderQuarantine {
+    private val admissionGate = RecorderQuarantineAdmissionGate()
+    private val retained = Collections.synchronizedList(mutableListOf<VideoRecorder>())
+
+    fun snapshotAdmission(owner: Any): UnsafeRecorderAdmissionToken? = admissionGate.snapshot(owner)
+
+    fun reserveStandbyAdmission(owner: Any): UnsafeStandbyAdmissionToken? =
+        admissionGate.reserveStandby(owner)
+
+    fun finishStandbyAdmission(token: UnsafeStandbyAdmissionToken) {
+        admissionGate.finishStandby(token)
+    }
+
+    fun isAdmissionCurrent(token: UnsafeRecorderAdmissionToken): Boolean = admissionGate.isCurrent(token)
+
+    fun commitAdmission(token: UnsafeRecorderAdmissionToken, block: () -> Unit): Boolean =
+        admissionGate.commit(token, block)
+
+    fun runNativeAcquisition(block: () -> Unit): Boolean = admissionGate.runNativeIfSafe(block)
+
+    fun publishAdmission(token: UnsafeRecorderAdmissionToken, block: () -> Boolean): Boolean =
+        admissionGate.publish(token, block)
+
+    fun abandonPendingAdmission(token: UnsafeRecorderAdmissionToken) {
+        admissionGate.abandonPending(token)
+    }
+
+    fun finishAdmission(token: UnsafeRecorderAdmissionToken?) {
+        admissionGate.finish(token)
+    }
+
+    fun retain(recorder: VideoRecorder): Boolean {
+        // Publish the irreversible process gate before recorder-side callbacks or AudioRecord.stop:
+        // either may re-enter UI/Engine code, and no fresh native owner may be admitted in that gap.
+        admissionGate.close()
+        val newlyQuarantined = recorder.quarantineUnsafeNativeGraph()
+        if (newlyQuarantined) retained += recorder
+        return newlyQuarantined
+    }
+
+    fun isActive(): Boolean = admissionGate.isQuarantined()
+}
+
+/**
  * Thread-safe first-failure latch used by [VideoRecorder]'s independent audio/video drain threads.
  * The first cause wins and its observer is invoked exactly once; observer exceptions are contained
  * so a UI/engine callback can never crash the encoder thread that reported the real failure.
@@ -809,6 +1009,18 @@ internal fun shouldPublishRecording(
 
 internal enum class FinalizedRecordingValidation { NOT_REQUIRED, PASSED, FAILED, SKIPPED }
 
+enum class NativeGraphDisposition { RELEASED, QUARANTINE_REQUIRED }
+
+/** A live drain makes every codec/muxer/fd owner unsafe to release or forget in this process. */
+internal fun nativeGraphDispositionForDrainState(
+    videoDrainAlive: Boolean,
+    audioDrainAlive: Boolean,
+): NativeGraphDisposition = if (videoDrainAlive || audioDrainAlive) {
+    NativeGraphDisposition.QUARANTINE_REQUIRED
+} else {
+    NativeGraphDisposition.RELEASED
+}
+
 internal fun muxerStopFailureIsTerminal(
     wroteVideoSample: Boolean,
     audioDegradedMidRec: Boolean,
@@ -846,6 +1058,7 @@ internal fun audioUnavailableLabel(preferenceLabel: String): String = "$preferen
  * before the buffer is queued to the encoder. Top-level (pure java.nio) so it is unit-testable.
  */
 internal fun applyGainAndLevel(buf: ByteBuffer, byteCount: Int, gain: Float): Float {
+    val safeGain = normalizeAudioGain(gain)
     val samples = buf.duplicate().apply {
         order(ByteOrder.LITTLE_ENDIAN)
         position(0)
@@ -854,7 +1067,7 @@ internal fun applyGainAndLevel(buf: ByteBuffer, byteCount: Int, gain: Float): Fl
     val count = samples.remaining()
     if (count == 0) return 0f
     var sumSquares = 0.0
-    if (gain == 1f) {
+    if (safeGain == 1f) {
         // Unity gain (the default): the rewrite loop is a no-op transform — skip the per-sample
         // put() and only accumulate the RMS the level meter needs.
         for (i in 0 until count) {
@@ -863,7 +1076,7 @@ internal fun applyGainAndLevel(buf: ByteBuffer, byteCount: Int, gain: Float): Fl
         }
     } else {
         for (i in 0 until count) {
-            val amplified = (samples[i] * gain).roundToInt()
+            val amplified = (samples[i] * safeGain).roundToInt()
                 .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
                 .toShort()
             samples.put(i, amplified)

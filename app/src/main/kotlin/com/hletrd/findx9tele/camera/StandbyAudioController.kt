@@ -11,6 +11,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import com.hletrd.findx9tele.video.AudioReadOutcome
+import com.hletrd.findx9tele.video.UnsafeRecorderQuarantine
 import com.hletrd.findx9tele.video.classifyAudioRead
 import com.hletrd.findx9tele.video.standbyMeterShouldRecreate
 import java.util.concurrent.CountDownLatch
@@ -112,7 +113,10 @@ internal class StandbyAudioController(
     private val audioSetup: StandbyAudioSetup,
     private val threadLauncher: StandbyThreadLauncher,
     private val retryScheduler: StandbyRetryScheduler,
+    private val onAvailable: () -> Unit,
     private val onUnavailable: (StandbyAudioUnavailable) -> Unit,
+    private val reserveProcessAdmission: () -> (() -> Unit)? = { {} },
+    private val runNativeAcquisition: ((() -> Unit) -> Boolean) = { block -> block(); true },
 ) {
     internal constructor(
         context: Context,
@@ -121,6 +125,15 @@ internal class StandbyAudioController(
         canStart: () -> Boolean,
         recorderAbsent: () -> Boolean,
         isPaused: () -> Boolean,
+        processOwner: Any,
+        onAvailable: () -> Unit = {},
+        onUnavailable: (StandbyAudioUnavailable) -> Unit = { unavailable ->
+            Log.w(
+                TAG,
+                "Standby microphone unavailable after ${unavailable.failedGenerations} " +
+                    "failed generations (${unavailable.reason})",
+            )
+        },
     ) : this(
         audioGain = audioGain,
         onLevel = onLevel,
@@ -137,13 +150,14 @@ internal class StandbyAudioController(
         retryScheduler = StandbyRetryScheduler { delayMs, task ->
             Handler(Looper.getMainLooper()).postDelayed({ task() }, delayMs)
         },
-        onUnavailable = { unavailable ->
-            Log.w(
-                TAG,
-                "Standby microphone unavailable after ${unavailable.failedGenerations} " +
-                    "failed generations (${unavailable.reason})",
-            )
+        onAvailable = onAvailable,
+        onUnavailable = onUnavailable,
+        reserveProcessAdmission = {
+            UnsafeRecorderQuarantine.reserveStandbyAdmission(processOwner)?.let { admission ->
+                { UnsafeRecorderQuarantine.finishStandbyAdmission(admission) }
+            }
         },
+        runNativeAcquisition = UnsafeRecorderQuarantine::runNativeAcquisition,
     )
 
     private val ownership = StandbyMeterOwnership<CountDownLatch>()
@@ -199,29 +213,47 @@ internal class StandbyAudioController(
         } ?: return
         val meterTask: () -> Unit = meterTask@{
             var audioInput: StandbyAudioInput? = null
+            var releaseProcessAdmission: (() -> Unit)? = null
+            var processBusy = false
             // One PCM read resets the shared dead-route/setup budget.
             var sawPcm = false
             var generationFailure: StandbyAudioFailureReason? = null
             try {
                 // Reservation is not start admission: REC can claim while this thread is queued.
-                if (!ownership.ownsAndWants(owner)) return@meterTask
-                when (val setup = runCatching { audioSetup.create() }.getOrElse {
-                    StandbyAudioSetupResult.Failure(StandbyAudioFailureReason.CONSTRUCTION)
-                }) {
+                if (!ownership.ownsAndWants(owner) || !canStart()) return@meterTask
+                releaseProcessAdmission = reserveProcessAdmission()
+                if (releaseProcessAdmission == null) {
+                    processBusy = true
+                    return@meterTask
+                }
+                var setup: StandbyAudioSetupResult? = null
+                val setupAdmitted = runNativeAcquisition {
+                    setup = runCatching { audioSetup.create() }.getOrElse {
+                        StandbyAudioSetupResult.Failure(StandbyAudioFailureReason.CONSTRUCTION)
+                    }
+                }
+                if (!setupAdmitted) return@meterTask
+                when (val result = checkNotNull(setup)) {
                     is StandbyAudioSetupResult.Failure -> {
-                        generationFailure = setup.reason
+                        generationFailure = result.reason
                         return@meterTask
                     }
-                    is StandbyAudioSetupResult.Ready -> audioInput = setup.input
+                    is StandbyAudioSetupResult.Ready -> audioInput = result.input
                 }
-                if (!ownership.ownsAndWants(owner)) return@meterTask
-                if (runCatching { checkNotNull(audioInput).start() }.isFailure) {
+                if (!ownership.ownsAndWants(owner) || !canStart()) return@meterTask
+                var startFailed = false
+                val startAdmitted = runNativeAcquisition {
+                    startFailed = runCatching { checkNotNull(audioInput).start() }.isFailure
+                }
+                if (!startAdmitted) return@meterTask
+                if (startFailed) {
                     generationFailure = StandbyAudioFailureReason.START
                     return@meterTask
                 }
+                if (!ownership.ownsAndWants(owner) || !canStart()) return@meterTask
                 val samples = ShortArray(2048)
                 var lastEmit = 0L
-                while (ownership.ownsAndWants(owner) && recorderAbsent()) {
+                while (ownership.ownsAndWants(owner) && recorderAbsent() && canStart()) {
                     val readCount = runCatching { checkNotNull(audioInput).read(samples) }.getOrElse {
                         generationFailure = StandbyAudioFailureReason.TERMINAL_READ
                         break
@@ -233,6 +265,7 @@ internal class StandbyAudioController(
                         is AudioReadOutcome.Pcm -> if (!sawPcm) {
                             sawPcm = true
                             failureStreak.set(0)
+                            runCatching(onAvailable)
                         }
                         AudioReadOutcome.Retry -> continue
                         is AudioReadOutcome.Failure -> {
@@ -259,7 +292,8 @@ internal class StandbyAudioController(
                     runCatching { input.stop() }
                     runCatching { input.release() }
                 }
-                completeGeneration(owner, generationFailure)
+                runCatching { releaseProcessAdmission?.invoke() }
+                completeGeneration(owner, generationFailure, retryForProcessBusy = processBusy)
             }
         }
         val launched = runCatching {
@@ -273,11 +307,20 @@ internal class StandbyAudioController(
     private fun completeGeneration(
         owner: StandbyMeterOwnership.Owner<CountDownLatch>,
         failure: StandbyAudioFailureReason?,
+        retryForProcessBusy: Boolean = false,
     ) {
         val completion = ownership.complete(owner)
         owner.release.countDown()
         runCatching { onLevel(0f) }
         if (!completion.completed) return
+        if (retryForProcessBusy) {
+            if (!isPaused() && ownership.meterWanted()) {
+                retryScheduler.schedule(RETRY_BACKOFF_MS) {
+                    if (!isPaused()) start(updateIntent = false)
+                }
+            }
+            return
+        }
         if (completion.retryPending) {
             if (!isPaused()) start(updateIntent = false)
             return

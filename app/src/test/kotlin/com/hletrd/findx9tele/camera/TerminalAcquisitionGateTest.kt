@@ -11,6 +11,23 @@ import org.junit.Test
 class TerminalAcquisitionGateTest {
 
     @Test
+    fun `quarantine rejects every native acquisition family`() {
+        val attempted = mutableListOf<String>()
+        val families = listOf("GL", "preview", "Camera2", "standby microphone")
+
+        families.forEach { family ->
+            if (nativeAcquisitionAllowed(acquisitionOpen = false, recorderQuarantined = true)) {
+                attempted += family
+            }
+        }
+
+        assertTrue(attempted.isEmpty())
+        assertFalse(nativeAcquisitionAllowed(acquisitionOpen = true, recorderQuarantined = true))
+        assertFalse(nativeAcquisitionAllowed(acquisitionOpen = false, recorderQuarantined = false))
+        assertTrue(nativeAcquisitionAllowed(acquisitionOpen = true, recorderQuarantined = false))
+    }
+
+    @Test
     fun `closed gate rejects later acquisition`() {
         val gate = TerminalAcquisitionGate()
         val ran = AtomicBoolean(false)
