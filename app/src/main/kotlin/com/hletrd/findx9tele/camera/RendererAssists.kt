@@ -10,7 +10,7 @@ import com.hletrd.findx9tele.gl.GlPipeline
  * [replayAll] is the single generation-replay authority invoked by CameraEngine's input-ready
  * callback.
  */
-internal class RendererAssists(private val gl: GlPipeline) {
+internal class RendererAssists(private val currentGl: () -> GlPipeline) {
     private val config = RendererConfigStore()
 
     // Remembered independently from RendererConfig because only the resolved
@@ -29,27 +29,29 @@ internal class RendererAssists(private val gl: GlPipeline) {
 
     fun setFalseColor(enabled: Boolean) {
         config.update { it.copy(falseColor = enabled) }
-        gl.setFalseColor(enabled)
+        currentGl().setFalseColor(enabled)
     }
 
     fun setPeaking(enabled: Boolean) {
         config.update { it.copy(peaking = enabled) }
-        gl.setPeaking(enabled)
+        currentGl().setPeaking(enabled)
     }
 
     fun setZebra(enabled: Boolean) {
         config.update { it.copy(zebra = enabled) }
-        gl.setZebra(enabled)
+        currentGl().setZebra(enabled)
     }
 
     // Threshold and color share one GL call, so either setter replays both from one snapshot.
-    private fun applyPeaking(snapshot: RendererConfig = config.snapshot()) =
-        gl.setPeakingParams(
-            snapshot.peakingLevel.threshold,
-            snapshot.peakingColor.r,
-            snapshot.peakingColor.g,
-            snapshot.peakingColor.b,
-        )
+    private fun applyPeaking(
+        snapshot: RendererConfig = config.snapshot(),
+        gl: GlPipeline = currentGl(),
+    ) = gl.setPeakingParams(
+        snapshot.peakingLevel.threshold,
+        snapshot.peakingColor.r,
+        snapshot.peakingColor.g,
+        snapshot.peakingColor.b,
+    )
 
     fun setPeakingLevel(level: PeakingLevel) {
         val snapshot = config.update { it.copy(peakingLevel = level) }
@@ -63,12 +65,12 @@ internal class RendererAssists(private val gl: GlPipeline) {
 
     fun setZebraLevel(level: ZebraLevel) {
         config.update { it.copy(zebraLevel = level) }
-        gl.setZebraThreshold(level.threshold)
+        currentGl().setZebraThreshold(level.threshold)
     }
 
     fun setAnalysis(histogram: Boolean, waveform: Boolean) {
         config.update { it.copy(histogram = histogram, waveform = waveform) }
-        gl.setAnalysisEnabled(histogram, waveform)
+        currentGl().setAnalysisEnabled(histogram, waveform)
     }
 
     /**
@@ -78,17 +80,17 @@ internal class RendererAssists(private val gl: GlPipeline) {
     fun setAeMetering(enabled: Boolean) {
         if (aeMetering == enabled) return
         aeMetering = enabled
-        gl.setAeMetering(enabled)
+        currentGl().setAeMetering(enabled)
     }
 
     fun setGammaAssist(enabled: Boolean) {
         gammaAssist = enabled
-        gl.setGammaAssist(enabled)
+        currentGl().setGammaAssist(enabled)
     }
 
     fun setPunchIn(enabled: Boolean) {
         config.update { it.copy(punchIn = enabled) }
-        gl.setPunchIn(enabled)
+        currentGl().setPunchIn(enabled)
     }
 
     fun setTeleFinderIntent(enabled: Boolean) {
@@ -99,15 +101,18 @@ internal class RendererAssists(private val gl: GlPipeline) {
 
     fun setTeleFinderResolved(enabled: Boolean) {
         config.update { it.copy(teleFinder = enabled) }
-        gl.setTeleFinder(enabled)
+        currentGl().setTeleFinder(enabled)
     }
 
     /** Replays all desired handler-backed assists into exactly one fresh GL generation. */
-    fun replayAll(snapshot: RendererConfig = config.snapshot()) {
+    fun replayAll(
+        gl: GlPipeline = currentGl(),
+        snapshot: RendererConfig = config.snapshot(),
+    ) {
         gl.setAeMetering(aeMetering)
         gl.setGammaAssist(gammaAssist)
         gl.setPeaking(snapshot.peaking)
-        applyPeaking(snapshot)
+        applyPeaking(snapshot, gl)
         gl.setZebra(snapshot.zebra)
         gl.setZebraThreshold(snapshot.zebraLevel.threshold)
         gl.setFalseColor(snapshot.falseColor)

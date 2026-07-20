@@ -21,6 +21,7 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Owns the GL render thread. The camera renders into [inputSurface] (an external SurfaceTexture);
@@ -36,6 +37,11 @@ class GlPipeline {
     private var thread: HandlerThread? = null
     private var handler: Handler? = null
     private var resourceReleaseHub: ResourceReleaseHub? = null
+    // Once a bounded stop abandons a still-live native thread, this object is terminal. A fresh
+    // GlPipeline instance may replace it, but start() must never overwrite the fields that the old
+    // SurfaceTexture listener and queued tasks still close over.
+    @Volatile
+    private var terminallyAbandoned = false
     private var egl: EglCore? = null
     private var unsafeOutputAbandoned = false
     private val renderer = FlipRenderer()
@@ -167,7 +173,7 @@ class GlPipeline {
         // onPreviewSurfaceAvailable) re-dispatches on the single-threaded setupExecutor only AFTER
         // stop() has blocked-joined the GL thread and nulled `thread`, so this guard never refuses a
         // real restart — it only rejects an unbalanced re-entry that would leak the prior generation.
-        if (thread != null) return
+        if (thread != null || terminallyAbandoned) return
         this.tenBit = tenBit
         this.onInputReady = onInputReady
         analysisGeneration?.retire()
@@ -943,10 +949,10 @@ class GlPipeline {
         }
     }
 
-    fun stop(
+    internal fun stop(
         onStopped: (() -> Unit)? = null,
         onResourcesReleased: (() -> Unit)? = null,
-    ) {
+    ): GlStopOutcome {
         val ownedAnalysis = analysisGeneration
         ownedAnalysis?.retire()
         val ownedThread = thread
@@ -975,24 +981,32 @@ class GlPipeline {
         }
 
         if (ownedThread == null || ownedHandler == null) {
+            if (terminallyAbandoned) {
+                completion.run()
+                return GlStopOutcome.ABANDONED
+            }
             val safeToCleanHere = ownedThread == null || !ownedThread.isAlive
             if (!safeToCleanHere) {
                 completion.run()
-                return
+                terminallyAbandoned = true
+                return GlStopOutcome.ABANDONED
             }
-            releaseGenerationResources()
+            val resourcesReleased = releaseGenerationResources()
             completion.run()
             if (thread === ownedThread) thread = null
             if (handler === ownedHandler) handler = null
             if (resourceReleaseHub === ownedReleaseHub) resourceReleaseHub = null
-            return
+            return glStopOutcome(threadExited = true, resourcesReleased = resourcesReleased).also {
+                if (it == GlStopOutcome.ABANDONED) terminallyAbandoned = true
+            }
         }
 
         // stop() can be called from a GL callback. Running cleanup directly avoids posting behind
         // ourselves and then deadlocking while waiting for that queued task on the same thread.
         if (Thread.currentThread() === ownedThread) {
+            var resourcesReleased = false
             try {
-                releaseGenerationResources()
+                resourcesReleased = releaseGenerationResources()
             } finally {
                 completion.run()
                 runCatching { ownedThread.quitSafely() }
@@ -1000,15 +1014,21 @@ class GlPipeline {
                 if (handler === ownedHandler) handler = null
                 if (resourceReleaseHub === ownedReleaseHub) resourceReleaseHub = null
             }
-            return
+            // We cannot join the current GL thread, and quitSafely may still drain queued work.
+            // Retire the object even after a successful release so that work cannot cross into a
+            // restarted generation on the same mutable facade.
+            return glStopOutcome(threadExited = false, resourcesReleased = resourcesReleased).also {
+                if (it == GlStopOutcome.ABANDONED) terminallyAbandoned = true
+            }
         }
 
+        val resourceReleaseResult = AtomicReference<Boolean?>(null)
         val cleanup = Runnable {
             try {
                 // If a bounded stop timed out and a new generation has since started, this old
                 // Runnable must not tear down the replacement generation's EGL state.
-                if (thread === ownedThread) {
-                    releaseGenerationResources()
+                if (thread === ownedThread && !terminallyAbandoned) {
+                    resourceReleaseResult.set(releaseGenerationResources())
                 }
             } finally {
                 completion.run()
@@ -1038,30 +1058,31 @@ class GlPipeline {
         if (threadExited && !cleanupCompleted) {
             // The task was rejected, or the looper died after accepting it. With the owned thread
             // now gone no GL work can race this caller-side fallback cleanup.
-            releaseGenerationResources()
+            resourceReleaseResult.set(releaseGenerationResources())
         }
         // A wedged GL thread may outlive the bounded wait. Deliver completion once so release cannot
         // hang indefinitely; the late cleanup Runnable (if accepted) will observe the same one-shot.
         completion.run()
-        if (threadExited) {
+        val outcome = glStopOutcome(
+            threadExited = threadExited,
+            resourcesReleased = resourceReleaseResult.get() == true || ownedReleaseHub?.isReleased() == true,
+        )
+        if (outcome == GlStopOutcome.STOPPED) {
             if (thread === ownedThread) thread = null
             if (handler === ownedHandler) handler = null
             if (resourceReleaseHub === ownedReleaseHub) resourceReleaseHub = null
-        } else if (thread === ownedThread) {
+        } else {
             // DELIBERATE GENERATION ABANDON (DBG4-3): the GL thread is wedged inside native code
-            // past the bounded stop. Leaving `thread` set made start()'s double-start guard no-op
-            // every later start — a permanently dead viewfinder until process death (the pre-guard
-            // code leaked the wedge but recovered a working preview). Drop the ownership references
-            // (the VideoRecorder drain-wedge abandon pattern) so a fresh start() can spawn a new
-            // generation; the wedged thread and its GL/EGL resources are leaked ON PURPOSE. Its
-            // late cleanup Runnable identity-checks `thread === ownedThread` (now false) and will
-            // not touch the replacement. If the wedge ever clears, its residual queued tasks hit
-            // checked/runCatching EGL paths against surfaces owned elsewhere — contained errors,
-            // strictly better than a guaranteed dead preview.
-            thread = null
+            // past the bounded stop, OR checked EGL ownership/output release failed even though the
+            // thread exited. Either state is unsafe for reuse. Drop the ownership references (the
+            // VideoRecorder drain-wedge pattern) and make this object permanently terminal. CameraEngine
+            // installs a separate GlPipeline, so late work stays confined to the retired instance.
+            terminallyAbandoned = true
+            if (thread === ownedThread) thread = null
             if (handler === ownedHandler) handler = null
             if (resourceReleaseHub === ownedReleaseHub) resourceReleaseHub = null
         }
+        return outcome
     }
 
     /** Releases all GL-owned resources. Runs on the GL thread, or after that thread has exited. */
@@ -1148,6 +1169,15 @@ class GlPipeline {
         const val ENCODER_FIRST_FRAME_TIMEOUT_MS = 2_000L
     }
 }
+
+internal enum class GlStopOutcome { STOPPED, ABANDONED }
+
+/** Pure stop classification: both thread exit and checked native-output release are required. */
+internal fun glStopOutcome(
+    threadExited: Boolean,
+    resourcesReleased: Boolean,
+): GlStopOutcome =
+    if (threadExited && resourcesReleased) GlStopOutcome.STOPPED else GlStopOutcome.ABANDONED
 
 internal data class AnalysisTargetSize(val width: Int, val height: Int)
 internal data class AnalysisFrame(val crop: Float, val centerX: Float, val centerY: Float)
@@ -1442,6 +1472,8 @@ internal class ResourceReleaseHub {
         pending.forEach { runCatching(it) }
         return true
     }
+
+    fun isReleased(): Boolean = synchronized(this) { released }
 
     /** At most one stop caller may mutate a generation's EGL state, including fallback cleanup. */
     fun runCleanup(cleanup: () -> Boolean): Boolean {

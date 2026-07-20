@@ -19,7 +19,11 @@ import com.hletrd.findx9tele.capture.ShotSpec
 import com.hletrd.findx9tele.capture.StillCapturePipeline
 import com.hletrd.findx9tele.capture.HeifCapture
 import com.hletrd.findx9tele.capture.StillSnapshot
+import com.hletrd.findx9tele.gl.AtomicOwnerSlot
 import com.hletrd.findx9tele.gl.GlPipeline
+import com.hletrd.findx9tele.gl.GlStopOutcome
+import com.hletrd.findx9tele.gl.glInputTransactionMayProceed
+import com.hletrd.findx9tele.gl.glReplacementMayRestartPreview
 import com.hletrd.findx9tele.storage.CaptureFamilyKey
 import com.hletrd.findx9tele.storage.CaptureFamilyMedia
 import com.hletrd.findx9tele.storage.MediaStoreWriter
@@ -33,8 +37,10 @@ import com.hletrd.findx9tele.video.VideoRecorder
 class CameraEngine(private val context: Context) {
 
     private val manager = context.getSystemService(CameraManager::class.java)
-    private val gl = GlPipeline()
-    private val rendererAssists = RendererAssists(gl)
+    private val glOwners = AtomicOwnerSlot(GlPipeline()) { GlPipeline() }
+    private val gl: GlPipeline
+        get() = glOwners.current()
+    private val rendererAssists = RendererAssists(glOwners::current)
     // Terminal owner for every operation that can acquire a fresh GL generation. release() closes
     // it before its one GL stop, so a queued cold start cannot resurrect resources afterward.
     private val terminalAcquisitionGate = TerminalAcquisitionGate()
@@ -52,6 +58,9 @@ class CameraEngine(private val context: Context) {
     @Volatile private var controller: CameraController? = null
     @Volatile private var recorder: VideoRecorder? = null
     private val recorderOwnershipLock = Any()
+    // The encoder EGL surface must detach from the exact pipeline instance that attached it. A
+    // replacement pipeline is deliberately unreachable from an old recorder teardown callback.
+    @Volatile private var activeRecordingGl: GlPipeline? = null
     @Volatile private var recorderFinalizationLatch: java.util.concurrent.CountDownLatch? = null
     // URI (+ capture-sequence id) of the clip currently being recorded, so stop can surface it
     // (thumbnail/review) tagged like any other capture.
@@ -246,6 +255,7 @@ class CameraEngine(private val context: Context) {
         val recorder: VideoRecorder,
         val uri: android.net.Uri?,
         val captureId: Int,
+        val gl: GlPipeline,
     )
 
     private data class OpticsTransaction(val generation: Long, val before: OpticsSnapshot)
@@ -642,17 +652,25 @@ class CameraEngine(private val context: Context) {
                 // HLG10 10-bit preview + full-res JPEG/RAW crashes this HAL (configureStreams Broken
                 // pipe -32); use an SDR preview session. Video still tags HLG/Log in the encoder.
                 val tenBit = false
+                val ownedGl = glOwners.current()
                 glInputPending = true
-                gl.start(tenBit) { _ ->
+                ownedGl.start(tenBit) { _ ->
+                    // A bounded native wedge can retire this whole GlPipeline object and install a
+                    // replacement. Its late input callback must not open a camera onto the new
+                    // generation's Engine state.
+                    if (!glOwners.owns(ownedGl)) return@start
                     terminalAcquisitionGate.runIfOpen inputReady@{
+                        if (!glOwners.owns(ownedGl)) return@inputReady
                         glInputPending = false
                         if (paused) return@inputReady
-                        gl.setEisProvider { gyro.currentCorrection() }
-                        gl.setAnalysisCallback { h, w -> onAnalysis?.invoke(h, w) }
+                        ownedGl.setEisProvider { gyro.currentCorrection() }
+                        ownedGl.setAnalysisCallback { h, w ->
+                            if (glOwners.owns(ownedGl)) onAnalysis?.invoke(h, w)
+                        }
                         // Re-seed desired GL state that may have been set before the handler existed.
-                        gl.setNativeLog(false)
-                        gl.setTransfer(transfer)
-                        rendererAssists.replayAll()
+                        ownedGl.setNativeLog(false)
+                        ownedGl.setTransfer(transfer)
+                        rendererAssists.replayAll(ownedGl)
                         gyro.start()
                         // Capture route + token after GL input exists. A newer intent invalidates it.
                         val desired = currentOpticsReconfiguration()
@@ -660,6 +678,7 @@ class CameraEngine(private val context: Context) {
                         maybeLogCameraCapabilities()
                     }
                 }
+                if (!glOwners.owns(ownedGl)) return@runIfOpen
                 synchronized(this) {
                     // Publish start state BEFORE binding: a TextureView surface destroyed+recreated
                     // during GL startup then takes the started fast path and binds the fresh surface.
@@ -774,12 +793,17 @@ class CameraEngine(private val context: Context) {
         height: Int,
         surfaceGeneration: Long,
     ) {
-        gl.setPreviewOutput(
+        val ownedGl = glOwners.current()
+        ownedGl.setPreviewOutput(
             surface = surface,
             width = width,
             height = height,
-            onReady = { handlePreviewReady(surface, surfaceGeneration) },
-            onFailure = { failure -> handlePreviewFailure(surface, surfaceGeneration, failure) },
+            onReady = {
+                handlePreviewReady(ownedGl, surface, surfaceGeneration)
+            },
+            onFailure = { failure ->
+                handlePreviewFailure(ownedGl, surface, surfaceGeneration, failure)
+            },
         )
     }
 
@@ -808,8 +832,13 @@ class CameraEngine(private val context: Context) {
         publication?.let { onCameraReadyChange?.invoke(it) }
     }
 
-    private fun handlePreviewReady(surface: Surface, surfaceGeneration: Long) {
+    private fun handlePreviewReady(
+        ownedGl: GlPipeline,
+        surface: Surface,
+        surfaceGeneration: Long,
+    ) {
         val publication = synchronized(this) {
+            if (!glOwners.owns(ownedGl)) return@synchronized null
             if (surfaceGeneration != previewSurfaceGeneration.get() || previewSurface !== surface) {
                 return@synchronized null
             }
@@ -837,12 +866,14 @@ class CameraEngine(private val context: Context) {
     }
 
     private fun handlePreviewFailure(
+        ownedGl: GlPipeline,
         surface: Surface,
         surfaceGeneration: Long,
         failure: Throwable,
     ) {
         val outcome = synchronized(this) {
-            val ownerCurrent = surfaceGeneration == previewSurfaceGeneration.get() && previewSurface === surface
+            val ownerCurrent = glOwners.owns(ownedGl) &&
+                surfaceGeneration == previewSurfaceGeneration.get() && previewSurface === surface
             val decision = previewRecoveryDecision(
                 ownerCurrent = ownerCurrent,
                 started = started,
@@ -880,7 +911,8 @@ class CameraEngine(private val context: Context) {
                 runCatching {
                     timelapseScheduler.schedule(
                         {
-                            if (surfaceGeneration == previewSurfaceGeneration.get() &&
+                            if (glOwners.owns(ownedGl) &&
+                                surfaceGeneration == previewSurfaceGeneration.get() &&
                                 previewSurface === surface && started && !paused
                             ) {
                                 bindPreviewSurface(surface, previewSurfaceW, previewSurfaceH, surfaceGeneration)
@@ -899,7 +931,7 @@ class CameraEngine(private val context: Context) {
         }
     }
 
-    private fun wireController(): CameraController {
+    private fun wireController(ownedGl: GlPipeline): CameraController {
         // A fresh controller means a fresh gesture world: clear the interaction flag so a glide
         // that was cut short by a remap door (whose invalidate deliberately skips the boost-off
         // rebuild) cannot leave the NEXT gesture's leading edge seeing a stale mid-gesture state
@@ -912,24 +944,41 @@ class CameraEngine(private val context: Context) {
         // setHalZoom could clobber the new generation's GL zoom compensation for a frame during a
         // reopen (the same replaced-controller-is-inert rule the error path already follows).
         ctrl.onExposure = { iso, exp -> if (controller === ctrl) onExposureInfo?.invoke(iso, exp) }
-        ctrl.onZoomResult = { rz -> if (controller === ctrl) gl.setHalZoom(rz) }
+        ctrl.onZoomResult = { rz ->
+            if (controller === ctrl && glOwners.owns(ownedGl)) ownedGl.setHalZoom(rz)
+        }
         ctrl.onFocusDistance = { d -> if (controller === ctrl) onFocusDistance?.invoke(d) }
         ctrl.onAfState = { hal -> if (controller === ctrl) onAfIndication?.invoke(AfIndication.fromHal(hal)) }
         return ctrl
     }
 
-    private fun openCamera(input: Surface, transaction: OpticsTransaction? = null) {
-        if (paused) return // don't grab the camera while backgrounded (queued GL continuation, etc.)
+    private fun openCamera(
+        ownedGl: GlPipeline,
+        input: Surface,
+        transaction: OpticsTransaction? = null,
+    ) {
+        // The SurfaceTexture belongs to exactly one GL object. A queued open from a retired object
+        // must never configure Camera2 against that old native window.
+        if (paused || !glInputTransactionMayProceed(
+                ownerCurrent = glOwners.owns(ownedGl),
+                engineStarted = started,
+                inputCurrent = ownedGl.inputSurface === input,
+            )
+        ) return
         val expectedOpticsGeneration = transaction?.generation ?: opticsIntentGeneration.get()
         if (!reconfigurationOwnsGeneration(opticsIntentGeneration.get(), expectedOpticsGeneration)) return
         val sel = selection ?: return
         val c = caps ?: return
-        seedGlZoom()
+        seedGlZoom(ownedGl)
         invalidateCameraReady()
         controller?.close() // idempotent: closes any prior controller so two never race for the device
-        val ctrl = wireController()
+        val ctrl = wireController(ownedGl)
         val installedPublication = synchronized(this) {
-            if (paused || !reconfigurationOwnsGeneration(
+            if (paused || !glInputTransactionMayProceed(
+                    ownerCurrent = glOwners.owns(ownedGl),
+                    engineStarted = started,
+                    inputCurrent = ownedGl.inputSurface === input,
+                ) || !reconfigurationOwnsGeneration(
                     opticsIntentGeneration.get(),
                     expectedOpticsGeneration,
                 )
@@ -972,6 +1021,15 @@ class CameraEngine(private val context: Context) {
             pinAutoFps = videoMode,
             diagnosticOpticsGeneration = expectedOpticsGeneration,
             onReady = { outputs ->
+                if (!glInputTransactionMayProceed(
+                        ownerCurrent = glOwners.owns(ownedGl),
+                        engineStarted = started,
+                        inputCurrent = ownedGl.inputSurface === input,
+                    )
+                ) {
+                    ctrl.close()
+                    return@open
+                }
                 // Generation, controller identity, rollback acceptance, and Ready publication are
                 // one commit. A superseding intent cannot land between the check and publication.
                 // Status messages auto-expire in the ViewModel; an untagged old success must not
@@ -984,7 +1042,16 @@ class CameraEngine(private val context: Context) {
                 )
             },
             onError = { failure ->
-                handleActiveCameraFailure(ctrl, failure)
+                if (glInputTransactionMayProceed(
+                        ownerCurrent = glOwners.owns(ownedGl),
+                        engineStarted = started,
+                        inputCurrent = ownedGl.inputSurface === input,
+                    )
+                ) {
+                    handleActiveCameraFailure(ctrl, failure)
+                } else {
+                    ctrl.close()
+                }
             },
         )
     }
@@ -1685,11 +1752,13 @@ class CameraEngine(private val context: Context) {
             val ownedRecording = synchronized(recorderOwnershipLock) {
                 recorder?.let { owned ->
                     recorder = null
+                    val ownedGl = checkNotNull(activeRecordingGl) { "Recorder has no GL owner" }
+                    activeRecordingGl = null
                     val uri = activeRecordingUri
                     val captureId = activeRecordingCaptureId
                     activeRecordingUri = null
                     activeRecordingCaptureId = 0 // stale-until-overwritten otherwise (ARCH-8)
-                    OwnedRecording(owned, uri, captureId)
+                    OwnedRecording(owned, uri, captureId, ownedGl)
                 }
             }
             Triple(publication, ownedRecording, tapPublication)
@@ -1699,8 +1768,8 @@ class CameraEngine(private val context: Context) {
         android.util.Log.e("CameraEngine", "Active camera failure", failure)
         onStatus?.invoke("Camera error. Recovering.")
         outcome.second?.let { owned ->
-            detachAndFinalizeRecording(owned.recorder, owned.uri, owned.captureId)
-            gl.setTransfer(transfer)
+            detachAndFinalizeRecording(owned.gl, owned.recorder, owned.uri, owned.captureId)
+            owned.gl.setTransfer(transfer)
             onRecordingTerminated?.invoke(failure)
         }
         // The recorder has been claimed before recovery checks its invariant, so a failed Camera2
@@ -1979,7 +2048,8 @@ class CameraEngine(private val context: Context) {
             overrideId = id
         }
         if (!started) return
-        val input = gl.inputSurface ?: run {
+        val ownedGl = glOwners.current()
+        val input = ownedGl.inputSurface ?: run {
             // An optics intent that lands between GL start and input-Surface creation is valid and
             // remains Not-Ready. The input callback snapshots the latest generation and converges it.
             if (glInputPending) return
@@ -1996,6 +2066,12 @@ class CameraEngine(private val context: Context) {
         // the app under HAL contention. Runs on the single-thread setupExecutor so it serializes with
         // the initial open and other reopens.
         setupExecutor.execute {
+            if (!glInputTransactionMayProceed(
+                    ownerCurrent = glOwners.owns(ownedGl),
+                    engineStarted = started,
+                    inputCurrent = ownedGl.inputSurface === input,
+                )
+            ) return@execute
             if (!ownsOpticsTransaction(transaction)) return@execute
             if (paused || recorder != null) return@execute
             val recoverColdPreflight = startup || controller == null
@@ -2034,9 +2110,14 @@ class CameraEngine(private val context: Context) {
             // A concurrent eviction of the OLD device is harmless: `controller` is already the new
             // one, so the old error handler's identity guard no-ops and its close() self-runs.
             val old = controller
-            val next = wireController()
+            val next = wireController(ownedGl)
             val candidatePublication = synchronized(this) {
-                if (!ownsOpticsTransaction(transaction)) {
+                if (!glInputTransactionMayProceed(
+                        ownerCurrent = glOwners.owns(ownedGl),
+                        engineStarted = started,
+                        inputCurrent = ownedGl.inputSurface === input,
+                    ) || !ownsOpticsTransaction(transaction)
+                ) {
                     null
                 } else {
                     controller = next
@@ -2080,19 +2161,33 @@ class CameraEngine(private val context: Context) {
                 deferSession = true,
                 onDeviceOpened = { deviceOk.set(true); deviceUp.countDown() },
                 onReady = { outputs ->
-                    commitOpticsReady(
-                        expectedGeneration = transaction.generation,
-                        expectedController = next,
-                        photoOutputs = outputs,
-                        expectedSessionGeneration = candidatePublication.sessionGeneration,
-                    )
+                    if (glInputTransactionMayProceed(
+                            ownerCurrent = glOwners.owns(ownedGl),
+                            engineStarted = started,
+                            inputCurrent = ownedGl.inputSurface === input,
+                        )
+                    ) {
+                        commitOpticsReady(
+                            expectedGeneration = transaction.generation,
+                            expectedController = next,
+                            photoOutputs = outputs,
+                            expectedSessionGeneration = candidatePublication.sessionGeneration,
+                        )
+                    } else {
+                        next.close()
+                    }
                 },
                 onError = { failure ->
                     deviceUp.countDown() // an open-phase failure also releases the latch (fallback)
                     // A concurrent-open refusal is expected on devices that cannot dual-open a
                     // shared sensor; the setup task below owns that local sequential fallback.
                     // Only an error AFTER the next device opened is a real active-controller fault.
-                    if (deviceOk.get()) {
+                    if (deviceOk.get() && glInputTransactionMayProceed(
+                            ownerCurrent = glOwners.owns(ownedGl),
+                            engineStarted = started,
+                            inputCurrent = ownedGl.inputSurface === input,
+                        )
+                    ) {
                         handleActiveCameraFailure(next, failure)
                     }
                 },
@@ -2103,6 +2198,19 @@ class CameraEngine(private val context: Context) {
             // The blocking wait is an ownership boundary: pause, REC, or a newer reopen may have
             // superseded this attempt while the setup thread was parked. Do not publish sizes or
             // start a deferred session from an obsolete device; release every local handle.
+            if (!glInputTransactionMayProceed(
+                    ownerCurrent = glOwners.owns(ownedGl),
+                    engineStarted = started,
+                    inputCurrent = ownedGl.inputSurface === input,
+                )
+            ) {
+                next.close()
+                old?.close()
+                synchronized(this) {
+                    if (controller === next) controller = null
+                }
+                return@execute
+            }
             if (!ownsOpticsTransaction(transaction)) {
                 next.close()
                 synchronized(this) {
@@ -2133,7 +2241,7 @@ class CameraEngine(private val context: Context) {
             // Update the GL stream size only now — the old camera was still producing into the
             // shared SurfaceTexture; resizing it earlier would distort its final frames.
             emitPreviewAspect(deliveredGeneration)
-            gl.setCameraPreviewSize(previewStreamSize.width, previewStreamSize.height)
+            ownedGl.setCameraPreviewSize(previewStreamSize.width, previewStreamSize.height)
             old?.close()
             if (deviceOk.get()) {
                 next.startDeferredSession()
@@ -2144,7 +2252,7 @@ class CameraEngine(private val context: Context) {
                     if (controller === next) controller = null
                 }
                 if (paused || recorder != null) return@execute
-                openCamera(input, transaction)
+                openCamera(ownedGl, input, transaction)
             }
         }
     }
@@ -2191,9 +2299,9 @@ class CameraEngine(private val context: Context) {
      * AND hal to the requested ratio holds the last frame steady; the first real capture result
      * then reports the HAL's true (still-ramping) zoom and the crop masks the rest of the ramp.
      */
-    private fun seedGlZoom() {
-        gl.setZoomTarget(controls.zoomRatio)
-        gl.setHalZoom(controls.zoomRatio)
+    private fun seedGlZoom(ownedGl: GlPipeline = glOwners.current()) {
+        ownedGl.setZoomTarget(controls.zoomRatio)
+        ownedGl.setHalZoom(controls.zoomRatio)
     }
 
     /**
@@ -2829,6 +2937,7 @@ class CameraEngine(private val context: Context) {
             onStatus?.invoke("Camera reconfiguring")
             return false
         }
+        val ownedGl = glOwners.current()
         val recordingCaptureId = captureSeq.incrementAndGet()
         val familyKey = CaptureFamilyKey(
             media = CaptureFamilyMedia.VIDEO,
@@ -2873,15 +2982,19 @@ class CameraEngine(private val context: Context) {
             // Both codec-drain and GL-output failures can beat recorder publication. Retain the
             // first one, then replay through the same identity-owned claim after admission.
             earlyFailure.compareAndSet(null, failure)
-            handleUnexpectedRecorderFailure(rec, uri, recordingCaptureId, failure)
+            handleUnexpectedRecorderFailure(ownedGl, rec, uri, recordingCaptureId, failure)
         }
         fun deliverEncoderAttach(result: Result<Unit>) {
-            val owned = synchronized(recorderOwnershipLock) { recorder === rec }
+            val owned = synchronized(recorderOwnershipLock) {
+                recorder === rec && activeRecordingGl === ownedGl && glOwners.owns(ownedGl)
+            }
             if (!owned || !encoderAttachDelivered.compareAndSet(false, true)) return
             result.fold(
-                onSuccess = { onRecordingStarted?.invoke() },
+                onSuccess = {
+                    if (glOwners.owns(ownedGl)) onRecordingStarted?.invoke()
+                },
                 onFailure = { failure ->
-                    handleUnexpectedRecorderFailure(rec, uri, recordingCaptureId, failure)
+                    handleUnexpectedRecorderFailure(ownedGl, rec, uri, recordingCaptureId, failure)
                 },
             )
         }
@@ -2917,10 +3030,10 @@ class CameraEngine(private val context: Context) {
             abortRecordingStart()
             onStatus?.invoke("REC failed"); return false
         }
-        gl.setTransfer(glTransfer)
+        ownedGl.setTransfer(glTransfer)
         // Queue EGL attach before publishing recorder ownership. Any failure is retained and replayed
         // after admission, while stop/failure detach is necessarily queued behind this attach.
-        gl.setEncoderOutput(
+        ownedGl.setEncoderOutput(
             surface,
             encoderSize.width,
             encoderSize.height,
@@ -2932,7 +3045,7 @@ class CameraEngine(private val context: Context) {
             deliverEncoderAttach(result)
         }
         val admitted = synchronized(this) {
-            if (!ownsAcceptedRecordingSession(acceptedSession)) {
+            if (!glOwners.owns(ownedGl) || !ownsAcceptedRecordingSession(acceptedSession)) {
                 false
             } else {
                 synchronized(recorderOwnershipLock) {
@@ -2940,6 +3053,7 @@ class CameraEngine(private val context: Context) {
                         false
                     } else {
                         recorder = rec
+                        activeRecordingGl = ownedGl
                         activeRecordingUri = uri
                         activeRecordingCaptureId = recordingCaptureId
                         true
@@ -2950,14 +3064,16 @@ class CameraEngine(private val context: Context) {
         if (!admitted) {
             // Camera failure or a new session won admission. The prepared codec still needs the same
             // ordered EGL-detach/finalize path before its MediaStore row can converge.
-            detachAndFinalizeRecording(rec, uri, recordingCaptureId)
-            gl.setTransfer(transfer)
+            detachAndFinalizeRecording(ownedGl, rec, uri, recordingCaptureId)
+            ownedGl.setTransfer(transfer)
             onStatus?.invoke("Camera reconfiguring")
             return false
         }
         // A drain thread can fail before start() returns and before recorder ownership is published.
         // Re-run the same identity-guarded claim after publication so that early failure is not lost.
-        earlyFailure.get()?.let { handleUnexpectedRecorderFailure(rec, uri, recordingCaptureId, it) }
+        earlyFailure.get()?.let {
+            handleUnexpectedRecorderFailure(ownedGl, rec, uri, recordingCaptureId, it)
+        }
         encoderAttachResult.get()?.let(::deliverEncoderAttach)
         if (recorder !== rec) return false
         if (com.hletrd.findx9tele.BuildConfig.DEBUG) {
@@ -2981,14 +3097,16 @@ class CameraEngine(private val context: Context) {
         // Admission still queued/in flight on the recorder executor → the latch takes the stop
         // and the admission completion runs it there (exactly-once, ordered behind the start).
         if (recAdmission.requestStop()) return
-        val (rec, uri, captureId) = synchronized(recorderOwnershipLock) {
+        val ownedRecording = synchronized(recorderOwnershipLock) {
             val owned = recorder ?: return
             recorder = null
+            val ownedGl = checkNotNull(activeRecordingGl) { "Recorder has no GL owner" }
+            activeRecordingGl = null
             val ownedUri = activeRecordingUri
             val ownedCaptureId = activeRecordingCaptureId
             activeRecordingUri = null
             activeRecordingCaptureId = 0 // stale-until-overwritten otherwise (ARCH-8)
-            Triple(owned, ownedUri, ownedCaptureId)
+            OwnedRecording(owned, ownedUri, ownedCaptureId, ownedGl)
         }
         // ORDERED teardown: finishRecording (rec.stop() → codec release; joins the drain threads up
         // to seconds, so it stays OFF the main thread on ioExecutor) dispatches from the completion
@@ -2996,10 +3114,15 @@ class CameraEngine(private val context: Context) {
         // cleared. The old fire-and-forget post had no happens-before edge with the independent
         // ioExecutor — a queued drawFrame could still makeCurrent() the encoder surface while the
         // codec that owns it was being released (uncaught EGL failure on the GL thread).
-        detachAndFinalizeRecording(rec, uri, captureId)
+        detachAndFinalizeRecording(
+            ownedRecording.gl,
+            ownedRecording.recorder,
+            ownedRecording.uri,
+            ownedRecording.captureId,
+        )
         // Restore the preview curve startRecording overrode: an AVC recording pushes null (SDR) into
         // GL and nothing else re-applies the LOG/HLG preview render until the next transfer change.
-        gl.setTransfer(transfer)
+        ownedRecording.gl.setTransfer(transfer)
     }
 
     // True from stop/pause dispatching the async rec.stop() until its AudioRecord is actually
@@ -3009,16 +3132,18 @@ class CameraEngine(private val context: Context) {
     @Volatile private var recorderTeardownInFlight = false
 
     private fun handleUnexpectedRecorderFailure(
+        ownedGl: GlPipeline,
         rec: VideoRecorder,
         uri: android.net.Uri,
         captureId: Int,
         failure: Throwable,
     ) {
         val claimed = synchronized(recorderOwnershipLock) {
-            if (recorder !== rec) {
+            if (recorder !== rec || activeRecordingGl !== ownedGl) {
                 false
             } else {
                 recorder = null
+                activeRecordingGl = null
                 if (activeRecordingUri == uri) {
                     activeRecordingUri = null
                     activeRecordingCaptureId = 0 // stale-until-overwritten otherwise (ARCH-8)
@@ -3027,14 +3152,19 @@ class CameraEngine(private val context: Context) {
             }
         }
         if (!claimed) return
-        detachAndFinalizeRecording(rec, uri, captureId)
+        detachAndFinalizeRecording(ownedGl, rec, uri, captureId)
         android.util.Log.e("CameraEngine", "Recording failed", failure)
         onStatus?.invoke("Recording failed")
         onRecordingTerminated?.invoke(failure)
-        gl.setTransfer(transfer)
+        ownedGl.setTransfer(transfer)
     }
 
-    private fun detachAndFinalizeRecording(rec: VideoRecorder, uri: android.net.Uri?, captureId: Int) {
+    private fun detachAndFinalizeRecording(
+        ownedGl: GlPipeline,
+        rec: VideoRecorder,
+        uri: android.net.Uri?,
+        captureId: Int,
+    ) {
         recorderTeardownInFlight = true
         val completed = java.util.concurrent.CountDownLatch(1)
         recorderFinalizationLatch = completed
@@ -3055,32 +3185,39 @@ class CameraEngine(private val context: Context) {
                     .onFailure { task.run() }
             }
         }
-        gl.setEncoderOutput(null, 0, 0) { result ->
+        ownedGl.setEncoderOutput(null, 0, 0) { result ->
             result.fold(
                 onSuccess = { dispatchFinalization() },
                 onFailure = { failure ->
                     // A failed unbind/destroy result is NOT permission to release MediaCodec. Reset
                     // the EGL owner first; only the strict checked resource-release signal (not the
                     // bounded stop notification) can become the fallback finalization boundary.
-                    recoverFromEncoderDetachFailure(failure, dispatchFinalization)
+                    recoverFromEncoderDetachFailure(ownedGl, failure, dispatchFinalization)
                 },
             )
         }
     }
 
     /** Terminal EGL reset used only when the checked encoder detach transition itself fails. */
-    private fun recoverFromEncoderDetachFailure(failure: Throwable, onReleased: () -> Unit) {
+    private fun recoverFromEncoderDetachFailure(
+        ownedGl: GlPipeline,
+        failure: Throwable,
+        onReleased: () -> Unit,
+    ) {
         android.util.Log.e("CameraEngine", "Renderer reset after encoder detach failure", failure)
-        onStatus?.invoke("Camera error. Recovering.")
-        invalidateCameraReady()
+        if (glOwners.owns(ownedGl)) {
+            onStatus?.invoke("Camera error. Recovering.")
+            invalidateCameraReady()
+        }
         val failedController = synchronized(this) {
+            if (!glOwners.owns(ownedGl)) return@synchronized null
             val current = controller
             controller = null
             current
         }
         val reset = Runnable {
             failedController?.close()
-            gl.stop(onResourcesReleased = afterResourcesReleased(onReleased))
+            stopGlOwner(ownedGl, afterResourcesReleased(ownedGl, onReleased))
         }
         if (runCatching { setupExecutor.execute(reset) }.isFailure) {
             // Release may already own the setup executor. A fresh helper keeps CameraController.close
@@ -3088,12 +3225,60 @@ class CameraEngine(private val context: Context) {
             runCatching { Thread(reset, "egl-reset-fallback").start() }
                 .onFailure {
                     runCatching { failedController?.close() }
-                    gl.stop(onResourcesReleased = afterResourcesReleased(onReleased))
+                    stopGlOwner(ownedGl, afterResourcesReleased(ownedGl, onReleased))
                 }
         }
     }
 
-    private fun afterResourcesReleased(onReleased: () -> Unit): () -> Unit = {
+    /** Replaces only the exact native owner that timed out; a stale stop cannot displace a newer GL. */
+    private fun stopGlOwner(
+        ownedGl: GlPipeline,
+        onResourcesReleased: (() -> Unit)? = null,
+    ): GlStopOutcome {
+        val outcome = ownedGl.stop(onResourcesReleased = onResourcesReleased)
+        var replaced = false
+        if (outcome == GlStopOutcome.ABANDONED) {
+            synchronized(this) {
+                if (glOwners.replaceIfOwned(ownedGl) == null) return@synchronized
+                started = false
+                starting = false
+                glInputPending = false
+                replaced = true
+            }
+        }
+        if (replaced) {
+            android.util.Log.e(
+                "CameraEngine",
+                "Abandoned retired GL owner; installed isolated replacement",
+            )
+            // ABANDONED deliberately never emits the strict native-release callback. Start the
+            // isolated replacement from the still-live TextureView now; waiting for that callback
+            // or a lifecycle resume would leave an otherwise usable foreground preview black.
+            val liveSurface = previewSurface
+            if (glReplacementMayRestartPreview(
+                    replaced = true,
+                    paused = paused,
+                    acquisitionOpen = terminalAcquisitionGate.isOpen(),
+                    hasPreviewSurface = liveSurface != null,
+                )
+            ) {
+                onPreviewSurfaceAvailable(
+                    checkNotNull(liveSurface),
+                    previewSurfaceW,
+                    previewSurfaceH,
+                )
+            }
+        }
+        return outcome
+    }
+
+    private fun afterResourcesReleased(ownedGl: GlPipeline, onReleased: () -> Unit): () -> Unit = released@{
+        // Recorder finalization belongs to this old EGL owner and remains valid. Engine start state,
+        // however, may only be mutated by the currently installed pipeline instance.
+        if (!glOwners.owns(ownedGl)) {
+            onReleased()
+            return@released
+        }
         synchronized(this) {
             started = false
             starting = false
@@ -3148,21 +3333,26 @@ class CameraEngine(private val context: Context) {
         val ownedRecording = synchronized(recorderOwnershipLock) {
             recorder?.let { owned ->
                 recorder = null
+                val ownedGl = checkNotNull(activeRecordingGl) { "Recorder has no GL owner" }
+                activeRecordingGl = null
                 val ownedUri = activeRecordingUri
                 val ownedCaptureId = activeRecordingCaptureId
                 activeRecordingUri = null
                 activeRecordingCaptureId = 0 // stale-until-overwritten otherwise (ARCH-8)
-                Triple(owned, ownedUri, ownedCaptureId)
+                OwnedRecording(owned, ownedUri, ownedCaptureId, ownedGl)
             }
         }
-        val rec = ownedRecording?.first
-        val pausedClipUri = ownedRecording?.second
-        val pausedClipCaptureId = ownedRecording?.third ?: 0
-        if (rec != null) {
+        if (ownedRecording != null) {
             // Same ordered teardown as stopRecording: release the codec only after the GL thread
             // confirmed the encoder EGL surface is cleared.
-            detachAndFinalizeRecording(rec, pausedClipUri, pausedClipCaptureId)
-            gl.setTransfer(transfer) // restore the preview curve startRecording overrode (AVC → null)
+            detachAndFinalizeRecording(
+                ownedRecording.gl,
+                ownedRecording.recorder,
+                ownedRecording.uri,
+                ownedRecording.captureId,
+            )
+            // Restore the preview curve startRecording overrode (AVC → null) on the exact renderer.
+            ownedRecording.gl.setTransfer(transfer)
         }
         gyro.stop()
         // Close OFF the main thread: close() blocks until the HAL device releases (bounded 1.5 s
@@ -3292,11 +3482,13 @@ class CameraEngine(private val context: Context) {
         synchronized(recorderOwnershipLock) {
             recorder?.let { rec ->
                 recorder = null
+                val ownedGl = checkNotNull(activeRecordingGl) { "Recorder has no GL owner" }
+                activeRecordingGl = null
                 val uri = activeRecordingUri
                 val captureId = activeRecordingCaptureId
                 activeRecordingUri = null
                 activeRecordingCaptureId = 0 // stale-until-overwritten otherwise (ARCH-8)
-                detachAndFinalizeRecording(rec, uri, captureId)
+                detachAndFinalizeRecording(ownedGl, rec, uri, captureId)
             }
         }
         recorderFinalizationLatch?.let {
@@ -3309,7 +3501,7 @@ class CameraEngine(private val context: Context) {
             current
         }
         ctrl?.close()
-        gl.stop()
+        stopGlOwner(glOwners.current())
         starting = false
         setupExecutor.shutdown()
         ioExecutor.shutdown()
