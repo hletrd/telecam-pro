@@ -1983,7 +1983,8 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
     metrics = ctx.adb.display_metrics()
     try:
         for orientation in (0, 90, 270):
-            idle = launch_ui_snapshot(ctx, orientation=orientation)
+            launch_ui_snapshot(ctx, orientation=orientation)
+            idle = ctx.adb.ui(f"snapshot_idle_{orientation}")
             idle_errors = camera_chrome_layout_errors(
                 idle,
                 metrics,
@@ -1998,7 +1999,7 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
             ctx.adb.screenshot(f"snapshot_idle_{orientation}")
 
             ctx.adb.tap_ui(desc="Open function menu")
-            menu = ctx.adb.ui()
+            menu = ctx.adb.ui(f"snapshot_fn_{orientation}")
             menu_errors = function_menu_layout_errors(
                 menu,
                 metrics,
@@ -2016,7 +2017,7 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
                 before = ctx.adb.exec_out("screencap")
                 ctx.adb.tap(*gamma.center)
                 time.sleep(0.9)
-                sticky = ctx.adb.ui()
+                sticky = ctx.adb.ui("snapshot_fn_0_sticky")
                 assert sticky.find_desc_exact("Close function menu"), (
                     "Gamma quick action dismissed the Fn modal"
                 )
@@ -2032,7 +2033,7 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
             restored = ctx.adb.ui()
             assert restored.find_desc_exact("Open function menu"), "Back did not dismiss snapshot Fn"
             ctx.adb.tap_ui(desc="Open settings")
-            settings = ctx.adb.ui()
+            settings = ctx.adb.ui(f"snapshot_settings_{orientation}")
             settings_errors = settings_modal_layout_errors(settings, metrics)
             assert not settings_errors, (
                 f"snapshot Settings {orientation}° violations: " + "; ".join(settings_errors)
@@ -2040,7 +2041,8 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
             ctx.adb.screenshot(f"snapshot_settings_{orientation}")
             ctx.adb.shell("input keyevent KEYCODE_BACK")
 
-            memory = launch_ui_snapshot(ctx, orientation=orientation, scenario="memory")
+            launch_ui_snapshot(ctx, orientation=orientation, scenario="memory")
+            memory = ctx.adb.ui(f"snapshot_memory_{orientation}")
             memory_labels = memory.all_labels()
             assert sum(label == "MR1" for label in memory_labels) == 1, (
                 f"active memory is not one compact MR1 tag: {sorted(memory_labels)}"
@@ -2052,7 +2054,7 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
             launch_ui_snapshot(ctx, orientation=orientation, scenario="adjustment")
             ctx.adb.tap_ui(desc="Open function menu")
             ctx.adb.tap_ui(desc="ISO")
-            adjustment = ctx.adb.ui()
+            adjustment = ctx.adb.ui(f"snapshot_adjustment_{orientation}")
             adjustment_errors = adjustment_layout_errors(adjustment, metrics)
             assert not adjustment_errors, (
                 f"snapshot adjustment {orientation}° violations: " +
@@ -2061,7 +2063,8 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
             assert "ISO 400" in adjustment.all_labels(), "ISO ruler omitted its truthful readout"
             ctx.adb.screenshot(f"snapshot_adjustment_{orientation}")
 
-            loupe = launch_ui_snapshot(ctx, orientation=orientation, scenario="loupe")
+            launch_ui_snapshot(ctx, orientation=orientation, scenario="loupe")
+            loupe = ctx.adb.ui(f"snapshot_loupe_{orientation}")
             overview_nodes = [node for node in loupe.nodes if node.desc == "Loupe overview"]
             assert len(overview_nodes) == 1, (
                 f"Loupe overview region count is {len(overview_nodes)}, expected one"

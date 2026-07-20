@@ -182,6 +182,51 @@ class DfAdb(Adb):
 
 
 class RunnerHelpersTest(unittest.TestCase):
+    def test_ui_persists_named_hierarchy_evidence_and_rejects_unsafe_names(self) -> None:
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<hierarchy rotation="0"><node text="MR1" bounds="[0,0][48,48]" /></hierarchy>'
+        )
+
+        class UiEvidenceAdb(Adb):
+            commands: list[str]
+
+            def __init__(self, serial: str, workdir: Path):
+                super().__init__(serial, workdir)
+                self.commands = []
+
+            def shell(self, cmd: str, timeout: int = 60) -> str:
+                del timeout
+                self.commands.append(cmd)
+                return ""
+
+            def exec_out(self, cmd: str, timeout: int = 60) -> bytes:
+                del timeout
+                self.commands.append(cmd)
+                return xml.encode()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workdir = Path(temp_dir)
+            adb = UiEvidenceAdb("test-serial", workdir)
+
+            tree = adb.ui("snapshot_fn_270")
+
+            self.assertIn("MR1", tree.all_labels())
+            self.assertEqual(
+                (workdir / "snapshot_fn_270.xml").read_text(encoding="utf-8"),
+                xml,
+            )
+            self.assertEqual(
+                adb.commands[:2],
+                [
+                    "uiautomator dump /sdcard/window_dump.xml >/dev/null 2>&1 || uiautomator dump",
+                    "cat /sdcard/window_dump.xml",
+                ],
+            )
+            with self.assertRaisesRegex(AdbError, "invalid UI evidence name"):
+                adb.ui("../escape")
+            self.assertFalse((workdir.parent / "escape.xml").exists())
+
     def test_base_apk_path_prefers_base_split(self) -> None:
         output = "\n".join(
             (

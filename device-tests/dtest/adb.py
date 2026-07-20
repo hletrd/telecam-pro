@@ -537,9 +537,13 @@ class Adb:
 
     # -- UI tree -----------------------------------------------------------
 
-    def ui(self) -> "UiTree":
+    def ui(self, evidence_name: str | None = None) -> "UiTree":
         self.shell("uiautomator dump /sdcard/window_dump.xml >/dev/null 2>&1 || uiautomator dump")
         xml = self.exec_out("cat /sdcard/window_dump.xml").decode(errors="replace")
+        if evidence_name is not None:
+            if re.fullmatch(r"[A-Za-z0-9_.-]+", evidence_name) is None:
+                raise AdbError(f"invalid UI evidence name: {evidence_name!r}")
+            (self.workdir / f"{evidence_name}.xml").write_text(xml, encoding="utf-8")
         return UiTree(xml)
 
     def tap_ui(self, *, desc: str | None = None, text: str | None = None, retries: int = 3) -> UiNode:
