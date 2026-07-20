@@ -75,6 +75,9 @@ class Context:
     adb: Adb
     evidence: Path
     notes: list[str] = field(default_factory=list)
+    # Capability comes from the case's static effect declaration, not ambient runner flags. A
+    # nominally read-only case therefore cannot escalate into app startup based on device state.
+    can_launch: bool = False
 
     def note(self, msg: str) -> None:
         print(f"    · {msg}")
@@ -100,7 +103,11 @@ def run(
     results: list[Result] = []
     print(f"Running {len(cases)} case(s), tiers={','.join(tiers)}, device={adb.serial}\n")
     for case in cases:
-        ctx = Context(adb=adb, evidence=report_dir / "evidence" / case.name)
+        ctx = Context(
+            adb=adb,
+            evidence=report_dir / "evidence" / case.name,
+            can_launch=case.destructive and allow_destructive,
+        )
         ctx.evidence.mkdir(parents=True, exist_ok=True)
         print(f"[{case.tier}] {case.name} — {case.doc.splitlines()[0] if case.doc else ''}")
         t0 = time.time()

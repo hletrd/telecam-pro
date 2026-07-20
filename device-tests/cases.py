@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 
 from dtest.adb import APP_ID, MEDIA_DIR, MEDIA_RELATIVE_PATH, Adb, DisplayMetrics, MediaRow, UiNode
-from dtest.framework import Context, Incomplete, UnsafeState, test
+from dtest.framework import Context, Incomplete, Skip, UnsafeState, test
 from dtest import media
 
 FOCAL_PRESETS = ("0.6× lens", "1× lens", "3× lens", "10× lens")
@@ -117,10 +117,14 @@ class PhotoSettingMarkers:
 def ensure_foreground(ctx: Context) -> int:
     pid = ctx.adb.pid()
     if pid is None:
+        if not ctx.can_launch:
+            raise Skip("app is not already foreground; read-only case does not launch it")
         pid = ctx.adb.launch()
     ctx.adb.shell("input keyevent KEYCODE_WAKEUP")
     tree = ctx.adb.ui()
     if not (tree.find(desc="Open settings") or tree.find(desc="Photo mode")):
+        if not ctx.can_launch:
+            raise Skip("app is not already foreground; read-only case does not launch it")
         ctx.adb.launch(wait_s=4)
     return ctx.adb.pid() or 0
 
@@ -1110,6 +1114,31 @@ def camera_chrome_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
     return errors
 
 
+def function_menu_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
+    """Constrained-window contract for the production Fn tile grid."""
+    errors: list[str] = []
+    tiles = [node for node in tree.nodes if node.desc in FN_TILE_LABELS]
+    if not 1 <= len(tiles) <= 8:
+        errors.append(f"Fn tiles: expected 1..8 nodes, got {len(tiles)}")
+
+    minimum_px = _minimum_touch_px(metrics)
+    for tile in tiles:
+        left, top, right, bottom = tile.bounds
+        if not (0 <= left < right <= metrics.width_px and 0 <= top < bottom <= metrics.height_px):
+            errors.append(f"Fn {tile.desc}: out of screen bounds {tile.bounds}")
+            continue
+        if right - left < minimum_px or bottom - top < minimum_px:
+            errors.append(
+                f"Fn {tile.desc}: touch bounds {right - left}x{bottom - top}px < {minimum_px}px"
+            )
+
+    for index, first in enumerate(tiles):
+        for second in tiles[index + 1:]:
+            if _overlap_area(first, second) > 0:
+                errors.append(f"Fn tiles overlap: {first.desc} and {second.desc}")
+    return errors
+
+
 # ---------------------------------------------------------------- smoke
 
 @test("launch_preview_live", "smoke", destructive=True)
@@ -1644,6 +1673,9 @@ def t_function_menu(ctx: Context) -> None:
     ctx.adb.tap(*opener.center)
     menu = ctx.adb.ui()
     assert menu.find_desc_exact("Close function menu"), "Fn overlay did not expose its close control"
+    metrics = ctx.adb.display_metrics()
+    layout_errors = function_menu_layout_errors(menu, metrics)
+    assert not layout_errors, "Fn overlay layout violations: " + "; ".join(layout_errors)
     tiles = [node for node in menu.nodes if node.desc in FN_TILE_LABELS and node.enabled]
     assert tiles, "Fn overlay exposed no enabled setting tile"
     ctx.adb.screenshot("function_menu")
@@ -1655,7 +1687,10 @@ def t_function_menu(ctx: Context) -> None:
     assert restored.find(desc="Open settings"), "camera chrome was not restored after Fn dismiss"
     fatals = ctx.adb.fatal_lines(mark, pid)
     assert not fatals, f"errors during Fn open/dismiss: {fatals[:2]}"
-    ctx.note(f"Fn opened with {len(tiles)} enabled tiles and Back restored camera")
+    ctx.note(
+        f"Fn opened with {len(tiles)} enabled tiles; all tiles in-bounds, >=48dp, "
+        "non-overlapping; Back restored camera"
+    )
 
 
 @test("mode_persists_across_kill", "full", destructive=True, mutates_settings=True)

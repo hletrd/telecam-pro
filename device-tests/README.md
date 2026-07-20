@@ -14,12 +14,13 @@ cannot survive. Host-JVM unit tests remain in `app/src/test/` (Gradle).
 
 ```bash
 # device over wireless ADB (loopback proxy fine); deploy the debug APK first
-python3 device-tests/run.py --serial 127.0.0.1:5599 --tier smoke          # ~30 s, every deploy
-python3 device-tests/run.py --serial 127.0.0.1:5599 --tier full           # read-only cases; stateful cases skip
+python3 device-tests/run.py --serial 127.0.0.1:5599 --tier smoke          # app already foreground
+python3 device-tests/run.py --serial 127.0.0.1:5599 --tier full           # app already foreground; stateful cases skip
 python3 device-tests/run.py --serial 127.0.0.1:5599 --tier reliability    # approval-gated cases skip
 python3 device-tests/run.py --serial 127.0.0.1:5599 --tier all -k capture # substring filter
 
 # Supply only the effects that the operator explicitly approved:
+python3 device-tests/run.py --serial 127.0.0.1:5599 --tier smoke --allow-destructive
 python3 device-tests/run.py --serial 127.0.0.1:5599 --tier full --allow-settings
 python3 device-tests/run.py --serial 127.0.0.1:5599 --tier full --allow-settings --allow-media-writes
 python3 device-tests/run.py --serial 127.0.0.1:5599 --tier reliability \
@@ -40,6 +41,11 @@ obtaining operator approval. Launch is destructive-gated because app startup may
 incomplete app-owned pending media. Every force-stop also fails closed at the call site unless the
 UI proves the app is idle, so a recording left active by an earlier failed case cannot be killed by
 a later case.
+
+Read-only cases require the app to be already foreground. If it is stopped or another surface is
+foreground, they deterministically skip instead of conditionally escalating into a launch. Cases
+that statically declare the destructive effect can launch only when `--allow-destructive` is also
+present; the smoke command with that flag is the intentional cold-start path.
 
 ## Tiers and cases
 

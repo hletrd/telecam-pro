@@ -412,6 +412,65 @@ class UiSemanticsTest(unittest.TestCase):
         self.assertTrue(any("top bar" in error and "overlap" in error for error in overlap))
 
     @staticmethod
+    def function_menu_xml(
+        *,
+        count: int = 8,
+        short_first: bool = False,
+        overlap_second: bool = False,
+        out_of_bounds_last: bool = False,
+    ) -> str:
+        labels = tuple(sorted(cases.FN_TILE_LABELS))[:count]
+        nodes = []
+        for index, description in enumerate(labels):
+            column = index % 4
+            row = index // 4
+            left = 8 + column * 86
+            top = 600 + row * 66
+            if overlap_second and index == 1:
+                left = 8
+            width = 30 if short_first and index == 0 else 78
+            right = left + width
+            if out_of_bounds_last and index == len(labels) - 1:
+                right = 370
+            nodes.append(
+                f'<node text="" content-desc="{description}" class="android.widget.Button" '
+                f'checkable="false" checked="false" selected="false" enabled="true" '
+                f'clickable="true" bounds="[{left},{top}][{right},{top + 58}]" />'
+            )
+        return f"<hierarchy>{''.join(nodes)}</hierarchy>"
+
+    def test_function_menu_layout_contract_checks_count_size_bounds_and_overlap(self) -> None:
+        metrics = DisplayMetrics(360, 800, 160)
+        self.assertEqual(
+            cases.function_menu_layout_errors(UiTree(self.function_menu_xml()), metrics),
+            [],
+        )
+
+        too_many = cases.function_menu_layout_errors(
+            UiTree(self.function_menu_xml(count=9)),
+            metrics,
+        )
+        self.assertTrue(any("expected 1..8" in error for error in too_many))
+
+        short = cases.function_menu_layout_errors(
+            UiTree(self.function_menu_xml(short_first=True)),
+            metrics,
+        )
+        self.assertTrue(any("touch bounds" in error for error in short))
+
+        overlap = cases.function_menu_layout_errors(
+            UiTree(self.function_menu_xml(overlap_second=True)),
+            metrics,
+        )
+        self.assertTrue(any("overlap" in error for error in overlap))
+
+        out_of_bounds = cases.function_menu_layout_errors(
+            UiTree(self.function_menu_xml(out_of_bounds_last=True)),
+            metrics,
+        )
+        self.assertTrue(any("out of screen bounds" in error for error in out_of_bounds))
+
+    @staticmethod
     def focal_xml(checked: str, *, radio_role: bool = True) -> str:
         nodes = []
         class_name = "android.widget.RadioButton" if radio_role else "android.widget.Button"
@@ -1312,6 +1371,34 @@ class ForceStopGuardTest(unittest.TestCase):
 
         self.assertIn(f"am force-stop {APP_ID}", adb.commands)
 
+    def test_read_only_foreground_helper_skips_without_launching(self) -> None:
+        adb, temp_dir = self.make_adb(allowed=False, descriptions=set())
+        self.addCleanup(temp_dir.cleanup)
+        context = framework.Context(adb, Path(temp_dir.name), can_launch=False)
+
+        with self.assertRaisesRegex(
+            framework.Skip,
+            "app is not already foreground; read-only case does not launch it",
+        ):
+            cases.ensure_foreground(context)
+
+        self.assertFalse(any("am start" in command for command in adb.commands))
+
+    def test_declared_and_approved_launch_capability_restores_foreground(self) -> None:
+        adb, temp_dir = self.make_adb(allowed=True, descriptions=set())
+        self.addCleanup(temp_dir.cleanup)
+        context = framework.Context(adb, Path(temp_dir.name), can_launch=True)
+
+        def launch_without_wait(wait_s: float = 5.0) -> int:
+            del wait_s
+            adb.commands.append(f"am start -n {APP_ID}/com.hletrd.findx9tele.MainActivity")
+            return 123
+        adb.launch = launch_without_wait  # type: ignore[method-assign]
+
+        self.assertEqual(cases.ensure_foreground(context), 123)
+
+        self.assertTrue(any("am start" in command for command in adb.commands))
+
 
 class FrameworkSafetyTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -1352,15 +1439,15 @@ class FrameworkSafetyTest(unittest.TestCase):
         self.assertFalse(called)
 
     def test_destructive_case_runs_only_with_explicit_guard(self) -> None:
-        called = False
+        launch_capability = None
 
         @framework.test("guarded", "smoke", destructive=True)
-        def guarded(_ctx) -> None:
-            nonlocal called
-            called = True
+        def guarded(ctx) -> None:
+            nonlocal launch_capability
+            launch_capability = ctx.can_launch
 
         self.assertEqual(self.run_suite(allow_destructive=True), 0)
-        self.assertTrue(called)
+        self.assertTrue(launch_capability)
 
     def test_settings_and_media_approvals_are_independent_and_both_required(self) -> None:
         called = False
