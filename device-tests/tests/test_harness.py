@@ -24,7 +24,6 @@ from dtest.adb import (  # noqa: E402
     AdbError,
     DisplayMetrics,
     MediaRow,
-    UiNode,
     UiTree,
     parse_df_available_bytes,
     parse_media_rows,
@@ -528,6 +527,111 @@ class UiSemanticsTest(unittest.TestCase):
         self.assertTrue(any("scrim must be touch-only" in error for error in scrim_close))
 
     @staticmethod
+    def held_function_menu_xml(
+        orientation: int,
+        *,
+        wrong_order: bool = False,
+        wrong_anchor: bool = False,
+    ) -> str:
+        physical_order = [
+            "AE", "Focus", "Shutter", "ISO",
+            "WB", "Gamma", "Stabilization", "Audio",
+        ]
+        if wrong_order:
+            physical_order[0], physical_order[1] = physical_order[1], physical_order[0]
+        if orientation == 90:
+            raw_order = [
+                physical_order[4], physical_order[0],
+                physical_order[5], physical_order[1],
+                physical_order[6], physical_order[2],
+                physical_order[7], physical_order[3],
+            ]
+            columns = (60, 146) if wrong_anchor else (8, 94)
+        else:
+            raw_order = [
+                physical_order[3], physical_order[7],
+                physical_order[2], physical_order[6],
+                physical_order[1], physical_order[5],
+                physical_order[0], physical_order[4],
+            ]
+            columns = (132, 218) if wrong_anchor else (184, 270)
+        nodes = []
+        for index, description in enumerate(raw_order):
+            left = columns[index % 2]
+            top = 200 + index // 2 * 66
+            nodes.append(
+                f'<node text="" content-desc="{description}" class="android.widget.Button" '
+                'checkable="false" checked="false" selected="false" enabled="true" '
+                f'clickable="true" focusable="true" bounds="[{left},{top}][{left + 78},{top + 58}]" />'
+            )
+        close_left = columns[0]
+        nodes.append(
+            '<node text="" content-desc="Close function menu" class="android.widget.Button" '
+            'checkable="false" checked="false" selected="false" enabled="true" '
+            f'clickable="true" focusable="true" bounds="[{close_left},140][{close_left + 48},188]" />'
+        )
+        return f"<hierarchy>{''.join(nodes)}</hierarchy>"
+
+    def test_held_function_menu_contract_checks_physical_order_and_raw_anchor(self) -> None:
+        metrics = DisplayMetrics(360, 800, 160)
+        expected = (
+            "AE", "Focus", "Shutter", "ISO",
+            "WB", "Gamma", "Stabilization", "Audio",
+        )
+        for orientation in (90, 270):
+            with self.subTest(orientation=orientation):
+                self.assertEqual(
+                    cases.function_menu_layout_errors(
+                        UiTree(self.held_function_menu_xml(orientation)),
+                        metrics,
+                        device_orientation=orientation,
+                        expected_physical_order=expected,
+                    ),
+                    [],
+                )
+                wrong_order = cases.function_menu_layout_errors(
+                    UiTree(self.held_function_menu_xml(orientation, wrong_order=True)),
+                    metrics,
+                    device_orientation=orientation,
+                    expected_physical_order=expected,
+                )
+                self.assertTrue(any("physical order" in error for error in wrong_order))
+                wrong_anchor = cases.function_menu_layout_errors(
+                    UiTree(self.held_function_menu_xml(orientation, wrong_anchor=True)),
+                    metrics,
+                    device_orientation=orientation,
+                    expected_physical_order=expected,
+                )
+                self.assertTrue(any("anchored" in error for error in wrong_anchor))
+
+    @staticmethod
+    def fn_entry_xml(*, at_end: bool = False) -> str:
+        left = 300 if at_end else 12
+        return (
+            '<hierarchy><node text="" content-desc="Open function menu" '
+            'class="android.widget.Button" checkable="false" checked="false" '
+            'selected="false" enabled="true" clickable="true" focusable="true" '
+            f'bounds="[{left},600][{left + 48},648]" /></hierarchy>'
+        )
+
+    def test_fn_entry_contract_keeps_both_held_directions_in_bottom_reach_zone(self) -> None:
+        metrics = DisplayMetrics(360, 800, 160)
+        self.assertEqual(
+            cases.fn_entry_layout_errors(UiTree(self.fn_entry_xml()), metrics, 0),
+            [],
+        )
+        self.assertEqual(
+            cases.fn_entry_layout_errors(UiTree(self.fn_entry_xml()), metrics, 90),
+            [],
+        )
+        self.assertEqual(
+            cases.fn_entry_layout_errors(UiTree(self.fn_entry_xml(at_end=True)), metrics, 270),
+            [],
+        )
+        wrong = cases.fn_entry_layout_errors(UiTree(self.fn_entry_xml()), metrics, 270)
+        self.assertTrue(any("raw End edge" in error for error in wrong))
+
+    @staticmethod
     def focal_xml(checked: str, *, radio_role: bool = True) -> str:
         nodes = []
         class_name = "android.widget.RadioButton" if radio_role else "android.widget.Button"
@@ -628,30 +732,74 @@ class UiSemanticsTest(unittest.TestCase):
         self.assertEqual(drives, {"Burst"})
         self.assertEqual(timers, {"10s"})
 
-    def test_settings_scrim_dismiss_point_stays_outside_anchored_panel(self) -> None:
-        scrim = UiNode(
-            text="",
-            desc="Close settings",
-            class_name="android.view.View",
-            bounds=(0, 0, 1440, 3200),
-            checkable=False,
-            checked=False,
-            selected=False,
-            enabled=True,
-            clickable=True,
-        )
+    @staticmethod
+    def settings_modal_xml(*, duplicate_scrim: bool = False, short_close: bool = False) -> str:
+        size = 30 if short_close else 48
+        nodes = [
+            '<node text="" content-desc="Close settings" class="android.widget.Button" '
+            'checkable="false" checked="false" selected="false" enabled="true" '
+            f'clickable="true" focusable="true" bounds="[300,20][{300 + size},{20 + size}]" />'
+        ]
+        if duplicate_scrim:
+            nodes.append(
+                '<node text="" content-desc="Close settings" class="android.widget.Button" '
+                'checkable="false" checked="false" selected="false" enabled="true" '
+                'clickable="true" focusable="true" bounds="[0,0][360,800]" />'
+            )
+        return f"<hierarchy>{''.join(nodes)}</hierarchy>"
+
+    def test_settings_modal_contract_requires_one_explicit_48dp_close(self) -> None:
+        metrics = DisplayMetrics(360, 800, 160)
         self.assertEqual(
-            cases.settings_scrim_dismiss_point(DisplayMetrics(1440, 3200, 480), scrim),
-            (720, 160),
+            cases.settings_modal_layout_errors(UiTree(self.settings_modal_xml()), metrics),
+            [],
+        )
+        duplicate = cases.settings_modal_layout_errors(
+            UiTree(self.settings_modal_xml(duplicate_scrim=True)), metrics,
+        )
+        self.assertTrue(any("expected one" in error for error in duplicate))
+        short = cases.settings_modal_layout_errors(
+            UiTree(self.settings_modal_xml(short_close=True)), metrics,
+        )
+        self.assertTrue(any("touch bounds" in error for error in short))
+
+    def test_adjustment_contract_keeps_one_close_in_the_lower_control_band(self) -> None:
+        metrics = DisplayMetrics(360, 800, 160)
+        good = UiTree(
+            '<hierarchy><node text="" content-desc="Close adjustment" '
+            'class="android.widget.Button" checkable="false" checked="false" '
+            'selected="false" enabled="true" clickable="true" focusable="true" '
+            'bounds="[300,600][348,648]" /></hierarchy>'
+        )
+        self.assertEqual(cases.adjustment_layout_errors(good, metrics), [])
+
+        too_high = UiTree(
+            '<hierarchy><node text="" content-desc="Close adjustment" '
+            'class="android.widget.Button" checkable="false" checked="false" '
+            'selected="false" enabled="true" clickable="true" focusable="true" '
+            'bounds="[300,100][348,148]" /></hierarchy>'
+        )
+        self.assertTrue(
+            any("lower control band" in error for error in cases.adjustment_layout_errors(too_high, metrics))
         )
 
-        landscape_scrim = UiNode(**{**scrim.__dict__, "bounds": (0, 0, 3200, 1440)})
+    def test_raw_region_changed_pixel_count_is_bounded_to_the_requested_rect(self) -> None:
+        width, height = 4, 3
+        before_pixels = bytearray(width * height * 4)
+        after_pixels = bytearray(before_pixels)
+        inside = (1 * width + 2) * 4
+        outside = (0 * width + 0) * 4
+        after_pixels[inside] = 255
+        after_pixels[outside] = 255
+        header = struct.pack("<4I", width, height, 1, 0)
+
         self.assertEqual(
-            cases.settings_scrim_dismiss_point(
-                DisplayMetrics(3200, 1440, 480),
-                landscape_scrim,
+            cases.raw_region_changed_pixel_count(
+                header + before_pixels,
+                header + after_pixels,
+                (1, 1, 4, 3),
             ),
-            (320, 720),
+            1,
         )
 
     def test_snapshot_extension_mime_mapping_is_exact(self) -> None:

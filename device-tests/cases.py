@@ -12,6 +12,7 @@ through three independent channels wherever possible: UI tree, logcat, and on-di
 from __future__ import annotations
 
 import re
+import struct
 import time
 import math
 from dataclasses import dataclass
@@ -33,6 +34,10 @@ FN_TILE_LABELS = {
     "Open Gate", "Frame",
 }
 FN_NUMERIC_TILE_LABELS = {"Focus", "Shutter", "ISO", "WB", "EV", "Zoom"}
+FN_DEFAULT_PHYSICAL_ORDER = (
+    "AE", "Focus", "Shutter", "ISO", "WB", "Gamma", "Stabilization", "Audio",
+)
+SNAPSHOT_ACTIVITY = f"{APP_ID}/com.hletrd.findx9tele.ui.UiSnapshotActivity"
 CAPTURE_SETTLED = re.compile(
     r"CaptureFamily: settled stem=(IMG_TELECAM_F1_[0-9]{13}_[0-9]{10}) "
     r"outputs=([a-z0-9,]+)"
@@ -145,6 +150,23 @@ def ensure_video_mode(ctx: Context) -> None:
         return
     ctx.adb.tap_ui(desc="Video mode")
     time.sleep(1.5)
+
+
+def launch_ui_snapshot(ctx: Context, *, orientation: int, scenario: str = "default"):
+    """Open the debug-only, HAL-free production-composable snapshot surface."""
+    ctx.adb.shell(
+        f"am start -W -n {SNAPSHOT_ACTIVITY} --ei device_orientation {orientation} "
+        f"--es snapshot_scenario {scenario}"
+    )
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        tree = ctx.adb.ui()
+        if tree.find_desc_exact("Open function menu") is not None:
+            return tree
+        time.sleep(0.25)
+    raise AssertionError(
+        f"snapshot scenario {scenario!r} orientation={orientation} did not expose camera chrome"
+    )
 
 
 def newest_mode_three_a(
@@ -312,18 +334,13 @@ def _settings_option(ctx: Context, label: str, *, max_scrolls: int = 12) -> None
     raise AssertionError(f"settings option {label!r} was not reachable")
 
 
-def _close_settings_via_scrim(ctx: Context) -> None:
+def _close_settings_with_back(ctx: Context) -> None:
+    """Dismiss settings without requiring a fake full-screen accessibility action."""
     tree = ctx.adb.ui()
     close_nodes = [node for node in tree.nodes if node.desc == "Close settings"]
-    if not close_nodes:
-        raise AssertionError("settings sheet exposed no close target")
-    # The full-screen scrim is safer under ADB's reconnect replay than the X: a replay in its
-    # exposed band becomes a harmless viewfinder tap instead of reopening the settings button.
-    scrim = max(
-        close_nodes,
-        key=lambda node: (node.bounds[2] - node.bounds[0]) * (node.bounds[3] - node.bounds[1]),
-    )
-    ctx.adb.tap(*settings_scrim_dismiss_point(ctx.adb.display_metrics(), scrim))
+    if len(close_nodes) != 1:
+        raise AssertionError(f"settings sheet exposed {len(close_nodes)} close targets; expected one")
+    ctx.adb.shell("input keyevent KEYCODE_BACK")
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         tree = ctx.adb.ui()
@@ -334,30 +351,10 @@ def _close_settings_via_scrim(ctx: Context) -> None:
     raise AssertionError("settings sheet did not close back to the camera")
 
 
-def settings_scrim_dismiss_point(
-    metrics: DisplayMetrics,
-    scrim: UiNode,
-) -> tuple[int, int]:
-    """Return a point in the sheet's exposed scrim, never in its anchored panel.
-
-    Portrait uses a 90%-height bottom panel, so the full-screen semantics node's centre is covered by
-    the panel. Landscape uses a 72%-width end panel. The remaining top/left bands are real scrim and
-    replay as harmless viewfinder taps if ADB delivered the first attempt before reconnecting.
-    """
-    left, top, right, bottom = scrim.bounds
-    width = right - left
-    height = bottom - top
-    if width <= 0 or height <= 0:
-        raise AssertionError(f"settings scrim has invalid bounds: {scrim.bounds}")
-    if metrics.width_px <= metrics.height_px:
-        return left + width // 2, top + min(height - 1, max(0, height // 20))
-    return left + min(width - 1, max(0, width // 10)), top + height // 2
-
-
 def set_photo_settings(ctx: Context, *, drive: str, timer: str) -> None:
     """Set exact Photo drive/timer chips through the idempotent settings UI."""
     if ctx.adb.ui().find_desc_exact("Close settings") is not None:
-        _close_settings_via_scrim(ctx)
+        _close_settings_with_back(ctx)
     ensure_photo_mode(ctx)
     ctx.adb.tap_ui(desc="Open settings")
     try:
@@ -374,13 +371,13 @@ def set_photo_settings(ctx: Context, *, drive: str, timer: str) -> None:
         _settings_option(ctx, timer)
     finally:
         if ctx.adb.ui().find_desc_exact("Close settings") is not None:
-            _close_settings_via_scrim(ctx)
+            _close_settings_with_back(ctx)
 
 
 def read_photo_settings(ctx: Context) -> PhotoSettingMarkers:
     """Read exact selected Shooting-sheet chips; OSD absence must never be inferred as Single."""
     if ctx.adb.ui().find_desc_exact("Close settings") is not None:
-        _close_settings_via_scrim(ctx)
+        _close_settings_with_back(ctx)
     ensure_photo_mode(ctx)
     ctx.adb.tap_ui(desc="Open settings")
     try:
@@ -412,7 +409,7 @@ def read_photo_settings(ctx: Context) -> PhotoSettingMarkers:
         )
     finally:
         if ctx.adb.ui().find_desc_exact("Close settings") is not None:
-            _close_settings_via_scrim(ctx)
+            _close_settings_with_back(ctx)
 
 
 def restore_photo_settings(ctx: Context, expected: PhotoSettingMarkers) -> None:
@@ -1057,6 +1054,7 @@ def camera_chrome_layout_errors(
     metrics: DisplayMetrics,
     *,
     detailed: bool | None = None,
+    device_orientation: int | None = None,
 ) -> list[str]:
     """Pixel-level contract for the fixed Sony/iPhone-familiar shooting controls."""
     errors: list[str] = []
@@ -1174,10 +1172,170 @@ def camera_chrome_layout_errors(
             errors.append(
                 f"idle shutter is not centered: x={shutter.center[0]}, screen={metrics.width_px}"
             )
+    if device_orientation is not None:
+        errors.extend(fn_entry_layout_errors(tree, metrics, device_orientation))
     return errors
 
 
-def function_menu_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
+def _normalized_orientation(device_orientation: int) -> int:
+    return device_orientation % 360
+
+
+def _physical_point(
+    x: int,
+    y: int,
+    metrics: DisplayMetrics,
+    device_orientation: int,
+) -> tuple[int, int]:
+    """Map portrait-locked raw display coordinates into the held physical view."""
+    orientation = _normalized_orientation(device_orientation)
+    if orientation == 90:
+        return y, metrics.width_px - x
+    if orientation == 270:
+        return metrics.height_px - y, x
+    if orientation == 180:
+        return metrics.width_px - x, metrics.height_px - y
+    return x, y
+
+
+def _physical_bounds(
+    node: UiNode,
+    metrics: DisplayMetrics,
+    device_orientation: int,
+) -> tuple[int, int, int, int]:
+    left, top, right, bottom = node.bounds
+    corners = [
+        _physical_point(x, y, metrics, device_orientation)
+        for x, y in ((left, top), (right, top), (left, bottom), (right, bottom))
+    ]
+    return (
+        min(point[0] for point in corners),
+        min(point[1] for point in corners),
+        max(point[0] for point in corners),
+        max(point[1] for point in corners),
+    )
+
+
+def raw_region_changed_pixel_count(
+    before: bytes,
+    after: bytes,
+    bounds: tuple[int, int, int, int],
+) -> int:
+    """Count changed RGBA pixels in one raw Android screencap region."""
+    if len(before) < 16 or len(after) < 16:
+        raise ValueError("raw screencap is missing its 16-byte header")
+    before_header = struct.unpack_from("<4I", before, 0)
+    after_header = struct.unpack_from("<4I", after, 0)
+    if before_header[:2] != after_header[:2]:
+        raise ValueError(f"screencap dimensions changed: {before_header[:2]} -> {after_header[:2]}")
+    width, height = before_header[:2]
+    expected_bytes = 16 + width * height * 4
+    if len(before) < expected_bytes or len(after) < expected_bytes:
+        raise ValueError("raw screencap pixel payload is truncated")
+    left, top, right, bottom = bounds
+    left = min(width, max(0, left))
+    right = min(width, max(left, right))
+    top = min(height, max(0, top))
+    bottom = min(height, max(top, bottom))
+    changed = 0
+    for y in range(top, bottom):
+        row_offset = 16 + y * width * 4
+        for x in range(left, right):
+            offset = row_offset + x * 4
+            if before[offset:offset + 4] != after[offset:offset + 4]:
+                changed += 1
+    return changed
+
+
+def fn_entry_layout_errors(
+    tree,
+    metrics: DisplayMetrics,
+    device_orientation: int,
+) -> list[str]:
+    """The direct Fn entry stays in the same physical bottom reach zone as its held tray."""
+    errors: list[str] = []
+    entries = [node for node in tree.nodes if node.desc == "Open function menu"]
+    if len(entries) != 1:
+        return [f"Fn entry: expected one action node, got {len(entries)}"]
+    entry = entries[0]
+    errors.extend(_described_action_errors(tree, entry, "Fn entry"))
+    left, top, right, bottom = entry.bounds
+    minimum_px = _minimum_touch_px(metrics)
+    if not (0 <= left < right <= metrics.width_px and 0 <= top < bottom <= metrics.height_px):
+        errors.append(f"Fn entry: out of screen bounds {entry.bounds}")
+        return errors
+    if right - left < minimum_px or bottom - top < minimum_px:
+        errors.append(f"Fn entry: touch bounds {right - left}x{bottom - top}px < {minimum_px}px")
+
+    orientation = _normalized_orientation(device_orientation)
+    expected_raw_end = orientation == 270
+    raw_third = metrics.width_px / 3
+    if expected_raw_end and entry.center[0] < metrics.width_px - raw_third:
+        errors.append(f"Fn entry: 270° must use the raw End edge, center={entry.center[0]}")
+    if not expected_raw_end and entry.center[0] > raw_third:
+        errors.append(
+            f"Fn entry: {orientation}° must use the raw Start edge, center={entry.center[0]}"
+        )
+
+    _, physical_y = _physical_point(*entry.center, metrics, orientation)
+    physical_height = metrics.width_px if orientation in (90, 270) else metrics.height_px
+    if physical_y < physical_height * 2 / 3:
+        errors.append(
+            f"Fn entry: outside physical bottom reach zone at {orientation}° "
+            f"(y={physical_y}, height={physical_height})"
+        )
+    return errors
+
+
+def settings_modal_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
+    """One explicit 48 dp close action; the visual scrim is touch-only."""
+    close_nodes = [node for node in tree.nodes if node.desc == "Close settings"]
+    if len(close_nodes) != 1:
+        return [f"Settings close: expected one explicit action node, got {len(close_nodes)}"]
+    close = close_nodes[0]
+    errors = _described_action_errors(tree, close, "Settings close")
+    left, top, right, bottom = close.bounds
+    minimum_px = _minimum_touch_px(metrics)
+    if not (0 <= left < right <= metrics.width_px and 0 <= top < bottom <= metrics.height_px):
+        errors.append(f"Settings close: out of screen bounds {close.bounds}")
+    elif right - left < minimum_px or bottom - top < minimum_px:
+        errors.append(
+            f"Settings close: touch bounds {right - left}x{bottom - top}px < {minimum_px}px"
+        )
+    if close.bounds == (0, 0, metrics.width_px, metrics.height_px):
+        errors.append("Settings close: full-screen scrim must be touch-only")
+    return errors
+
+
+def adjustment_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
+    """Compact manual ruler owns one coherent close action inside the lower control band."""
+    close_nodes = [node for node in tree.nodes if node.desc == "Close adjustment"]
+    if len(close_nodes) != 1:
+        return [f"Adjustment close: expected one action node, got {len(close_nodes)}"]
+    close = close_nodes[0]
+    errors = _described_action_errors(tree, close, "Adjustment close")
+    left, top, right, bottom = close.bounds
+    minimum_px = _minimum_touch_px(metrics)
+    if not (0 <= left < right <= metrics.width_px and 0 <= top < bottom <= metrics.height_px):
+        errors.append(f"Adjustment close: out of screen bounds {close.bounds}")
+    elif right - left < minimum_px or bottom - top < minimum_px:
+        errors.append(
+            f"Adjustment close: touch bounds {right - left}x{bottom - top}px < {minimum_px}px"
+        )
+    if top < metrics.height_px // 2:
+        errors.append(f"Adjustment close: escaped the lower control band {close.bounds}")
+    if tree.find_desc_exact("Close function menu") is not None:
+        errors.append("Adjustment ruler and Fn modal are visible at the same time")
+    return errors
+
+
+def function_menu_layout_errors(
+    tree,
+    metrics: DisplayMetrics,
+    *,
+    device_orientation: int | None = None,
+    expected_physical_order: tuple[str, ...] | None = None,
+) -> list[str]:
     """Constrained-window and one-action-node contract for the production Fn tile grid."""
     errors: list[str] = []
     tiles = [node for node in tree.nodes if node.desc in FN_TILE_LABELS]
@@ -1209,6 +1367,51 @@ def function_menu_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
         errors.extend(_described_action_errors(tree, close, "Fn close"))
         if close.bounds == (0, 0, metrics.width_px, metrics.height_px):
             errors.append("Fn close: full-screen scrim must be touch-only")
+
+    if device_orientation is not None and _normalized_orientation(device_orientation) in (90, 270):
+        orientation = _normalized_orientation(device_orientation)
+        edge_tolerance = math.ceil(40 * metrics.density_dpi / 160)
+        panel_nodes = [*tiles, *close_nodes]
+        if panel_nodes:
+            if orientation == 90 and min(node.bounds[0] for node in panel_nodes) > edge_tolerance:
+                errors.append("Fn tray: 90° raw panel is not Start-anchored")
+            if orientation == 270 and metrics.width_px - max(
+                node.bounds[2] for node in panel_nodes
+            ) > edge_tolerance:
+                errors.append("Fn tray: 270° raw panel is not End-anchored")
+
+            physical_bottom = max(
+                _physical_bounds(node, metrics, orientation)[3] for node in panel_nodes
+            )
+            if metrics.width_px - physical_bottom > edge_tolerance:
+                errors.append(
+                    f"Fn tray: {orientation}° is not in the physical bottom zone "
+                    f"(gap={metrics.width_px - physical_bottom}px)"
+                )
+
+        if expected_physical_order is not None:
+            if len(tiles) != len(expected_physical_order):
+                errors.append(
+                    "Fn tray: physical-order check expected "
+                    f"{len(expected_physical_order)} tiles, got {len(tiles)}"
+                )
+            elif len(tiles) != 8:
+                errors.append(f"Fn tray: held 4x2 check requires 8 tiles, got {len(tiles)}")
+            else:
+                physical = [
+                    (tile.desc, *_physical_point(*tile.center, metrics, orientation))
+                    for tile in tiles
+                ]
+                by_y = sorted(physical, key=lambda item: (item[2], item[1]))
+                top_row = sorted(by_y[:4], key=lambda item: item[1])
+                bottom_row = sorted(by_y[4:], key=lambda item: item[1])
+                if max(item[2] for item in top_row) >= min(item[2] for item in bottom_row):
+                    errors.append("Fn tray: held tiles do not form two separated physical rows")
+                actual_order = tuple(item[0] for item in (*top_row, *bottom_row))
+                if actual_order != expected_physical_order:
+                    errors.append(
+                        f"Fn tray: physical order {actual_order} != {expected_physical_order}"
+                    )
     return errors
 
 
@@ -1655,6 +1858,8 @@ def t_settings(ctx: Context) -> None:
     opened = ctx.adb.ui()
     assert opened.find_desc_exact("Close settings"), "settings modal did not open"
     minimum_px = _minimum_touch_px(metrics)
+    modal_errors = settings_modal_layout_errors(opened, metrics)
+    assert not modal_errors, "settings modal layout violations: " + "; ".join(modal_errors)
     try:
         for tab, title in zip(SETTINGS_TABS, SETTINGS_TITLES, strict=True):
             tree = ctx.adb.ui()
@@ -1768,6 +1973,111 @@ def t_function_menu(ctx: Context) -> None:
     ctx.note(
         f"Fn opened with {len(tiles)} enabled tiles and {len(quick_tiles)} in-place actions; "
         "all tiles own actions, are in-bounds, >=48dp, non-overlapping; Back restored camera"
+    )
+
+
+@test("debug_snapshot_ui_contract", "full", destructive=True)
+def t_debug_snapshot_ui_contract(ctx: Context) -> None:
+    """HAL-free portrait and held UI prove Fn, modal, MR, ruler, and Loupe contracts."""
+    metrics = ctx.adb.display_metrics()
+    try:
+        for orientation in (0, 90, 270):
+            idle = launch_ui_snapshot(ctx, orientation=orientation)
+            idle_errors = camera_chrome_layout_errors(
+                idle,
+                metrics,
+                detailed=False,
+                device_orientation=orientation,
+            )
+            assert not idle_errors, (
+                f"snapshot idle {orientation}° violations: " + "; ".join(idle_errors)
+            )
+            assert idle.find_desc_exact("Close adjustment") is None
+            assert not any(label in {"MR1", "MR2", "MR3"} for label in idle.all_labels())
+            ctx.adb.screenshot(f"snapshot_idle_{orientation}")
+
+            ctx.adb.tap_ui(desc="Open function menu")
+            menu = ctx.adb.ui()
+            menu_errors = function_menu_layout_errors(
+                menu,
+                metrics,
+                device_orientation=orientation,
+                expected_physical_order=(
+                    FN_DEFAULT_PHYSICAL_ORDER if orientation in (90, 270) else None
+                ),
+            )
+            assert not menu_errors, (
+                f"snapshot Fn {orientation}° violations: " + "; ".join(menu_errors)
+            )
+            if orientation == 0:
+                gamma = menu.find_desc_exact("Gamma")
+                assert gamma and gamma.enabled, "snapshot Gamma quick action is unavailable"
+                before = ctx.adb.exec_out("screencap")
+                ctx.adb.tap(*gamma.center)
+                time.sleep(0.9)
+                sticky = ctx.adb.ui()
+                assert sticky.find_desc_exact("Close function menu"), (
+                    "Gamma quick action dismissed the Fn modal"
+                )
+                assert sticky.find_desc_exact("Gamma"), "Gamma quick action disappeared after update"
+                after = ctx.adb.exec_out("screencap")
+                changed = raw_region_changed_pixel_count(before, after, gamma.bounds)
+                assert changed >= 20, f"Gamma quick action produced no visible value update ({changed}px)"
+                ctx.adb.screenshot("snapshot_fn_0_sticky")
+            else:
+                ctx.adb.screenshot(f"snapshot_fn_{orientation}")
+            ctx.adb.shell("input keyevent KEYCODE_BACK")
+
+            restored = ctx.adb.ui()
+            assert restored.find_desc_exact("Open function menu"), "Back did not dismiss snapshot Fn"
+            ctx.adb.tap_ui(desc="Open settings")
+            settings = ctx.adb.ui()
+            settings_errors = settings_modal_layout_errors(settings, metrics)
+            assert not settings_errors, (
+                f"snapshot Settings {orientation}° violations: " + "; ".join(settings_errors)
+            )
+            ctx.adb.screenshot(f"snapshot_settings_{orientation}")
+            ctx.adb.shell("input keyevent KEYCODE_BACK")
+
+            memory = launch_ui_snapshot(ctx, orientation=orientation, scenario="memory")
+            memory_labels = memory.all_labels()
+            assert sum(label == "MR1" for label in memory_labels) == 1, (
+                f"active memory is not one compact MR1 tag: {sorted(memory_labels)}"
+            )
+            assert not ({"MR2", "MR3"} & memory_labels), "inactive MR banks leaked onto viewfinder"
+            assert memory.find_desc_exact("Close adjustment") is None
+            ctx.adb.screenshot(f"snapshot_memory_{orientation}")
+
+            launch_ui_snapshot(ctx, orientation=orientation, scenario="adjustment")
+            ctx.adb.tap_ui(desc="Open function menu")
+            ctx.adb.tap_ui(desc="ISO")
+            adjustment = ctx.adb.ui()
+            adjustment_errors = adjustment_layout_errors(adjustment, metrics)
+            assert not adjustment_errors, (
+                f"snapshot adjustment {orientation}° violations: " +
+                "; ".join(adjustment_errors)
+            )
+            assert "ISO 400" in adjustment.all_labels(), "ISO ruler omitted its truthful readout"
+            ctx.adb.screenshot(f"snapshot_adjustment_{orientation}")
+
+            loupe = launch_ui_snapshot(ctx, orientation=orientation, scenario="loupe")
+            overview_nodes = [node for node in loupe.nodes if node.desc == "Loupe overview"]
+            assert len(overview_nodes) == 1, (
+                f"Loupe overview region count is {len(overview_nodes)}, expected one"
+            )
+            assert not overview_nodes[0].clickable, "Loupe overview incorrectly owns a focus action"
+            assert "OVERVIEW" in loupe.all_labels(), "visible overview omitted the OVERVIEW truth tag"
+            assert not any("pip" in label.casefold() for label in loupe.all_labels()), (
+                "Loupe scenario exposed a user-facing PIP claim"
+            )
+            ctx.adb.screenshot(f"snapshot_loupe_{orientation}")
+    finally:
+        # The fixture never opens Camera2. Restore the suite's normal foreground camera surface.
+        ctx.adb.launch(wait_s=3)
+
+    ctx.note(
+        "HAL-free 0/90/270 snapshots: Fn physical order/reach + sticky Gamma, one Settings close, "
+        "single MR1 tag, bounded ISO ruler, and truthful non-interactive Loupe Overview"
     )
 
 
