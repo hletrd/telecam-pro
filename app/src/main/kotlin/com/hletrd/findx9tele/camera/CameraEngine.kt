@@ -682,10 +682,22 @@ class CameraEngine(private val context: Context) {
         }
     }
 
-    /** Debug-only Camera2 capability log, queued behind initial camera route/open work. */
+    /**
+     * Debug-only Camera2 capability log, queued behind initial camera work and the OEM SDK's startup
+     * log storm. ColorOS rate-limits each process during that burst, which otherwise drops the
+     * concurrent-camera evidence before adb can read it.
+     */
     private fun maybeLogCameraCapabilities() {
         if (!com.hletrd.findx9tele.BuildConfig.DEBUG) return
-        setupExecutor.execute { runCatching { VendorTagInspector.logAll(manager) } }
+        timelapseScheduler.schedule(
+            {
+                runCatching {
+                    setupExecutor.execute { runCatching { VendorTagInspector.logAll(manager) } }
+                }
+            },
+            5,
+            java.util.concurrent.TimeUnit.SECONDS,
+        )
     }
 
     /** Apply afocal preview rotation and the selected HAL stabilization mode; keep GL EIS disabled. */
