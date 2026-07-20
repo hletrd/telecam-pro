@@ -10,7 +10,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -153,8 +152,6 @@ internal fun ProSheet(
     // exposes no way to disable that drag. A plain scrim + anchored panel can't be dragged at all;
     // it's dismissed only by the X, a scrim tap, or the system Back gesture.
     BackHandler(enabled = true, onBack = onDismiss)
-    // Interaction source for the indication-free scrim dismiss target.
-    val scrimInteraction = remember { MutableInteractionSource() }
     val closeFocusRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) { closeFocusRequester.requestFocus() }
 
@@ -165,11 +162,13 @@ internal fun ProSheet(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black.copy(alpha = 0.5f))
-                .semantics {
-                    contentDescription = "Close settings"
-                    role = Role.Button
+                // Outside taps remain a convenient touch dismissal, but the scrim is deliberately
+                // absent from accessibility traversal. The explicit 48 dp X below is the sole
+                // named Close-settings action, so switch/keyboard users do not encounter a
+                // duplicate full-screen button before the actual settings panel.
+                .pointerInput(onDismiss) {
+                    detectTapGestures(onTap = { onDismiss() })
                 }
-                .clickable(interactionSource = scrimInteraction, indication = null, onClick = onDismiss),
         )
 
         val panelModifier = if (sideLayout) {
