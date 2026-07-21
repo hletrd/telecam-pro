@@ -7,21 +7,27 @@ import org.junit.Test
 
 /**
  * Pins the single geometry rule the TELE finder PIP shares between the GL scissor/viewport
- * (pixels) and the Compose border overlay (dp): fraction of the FULL box, inset by the margin of
- * the short edge from the bottom-left. The regression this protects: the original Compose chain
- * applied `padding` BEFORE `fillMaxWidth`, sizing the border from padding-reduced constraints —
- * ~6% smaller than the GL content box.
+ * (pixels) and the Compose border overlay (dp): fraction of the FULL box, with independent side and
+ * bottom clearances measured against the short edge. The regression this protects: the original
+ * Compose chain applied `padding` BEFORE `fillMaxWidth`, sizing the border from padding-reduced
+ * constraints — ~6% smaller than the GL content box.
  */
 class FinderGeometryTest {
 
     @Test
-    fun `box is the fraction of the full box, inset by the short-edge margin`() {
-        val r = finderRect(boxWidth = 1000f, boxHeight = 750f, fraction = 0.30f, margin = 0.03f)
+    fun `box is the fraction of the full box with independent short-edge insets`() {
+        val r = finderRect(
+            boxWidth = 1000f,
+            boxHeight = 750f,
+            fraction = 0.30f,
+            sideMargin = 0.03f,
+            bottomMargin = 0.10f,
+        )
         assertEquals(300f, r.width, 1e-4f)
         assertEquals(225f, r.height, 1e-4f)
-        // Short edge is 750 → inset 22.5 on both axes.
+        // Short edge is 750 → 22.5 side inset and 75 bottom inset.
         assertEquals(22.5f, r.x, 1e-4f)
-        assertEquals(22.5f, r.y, 1e-4f)
+        assertEquals(75f, r.y, 1e-4f)
     }
 
     @Test
@@ -29,8 +35,8 @@ class FinderGeometryTest {
         val r = finderRect(boxWidth = 1080f, boxHeight = 1440f)
         assertEquals(1080f * FINDER_FRACTION, r.width, 1e-3f)
         assertEquals(1440f * FINDER_FRACTION, r.height, 1e-3f)
-        assertEquals(1080f * FINDER_MARGIN, r.x, 1e-3f)
-        assertEquals(1080f * FINDER_MARGIN, r.y, 1e-3f)
+        assertEquals(1080f * FINDER_SIDE_MARGIN, r.x, 1e-3f)
+        assertEquals(1080f * FINDER_BOTTOM_MARGIN, r.y, 1e-3f)
     }
 
     @Test
@@ -48,13 +54,41 @@ class FinderGeometryTest {
     }
 
     @Test
-    fun `size does not depend on the margin`() {
+    fun `size does not depend on either margin`() {
         // The regression case: the border must be fraction-of-FULL-box, not
         // fraction-of-(box minus 2 margins).
-        val noMargin = finderRect(boxWidth = 1000f, boxHeight = 1500f, margin = 0f)
-        val withMargin = finderRect(boxWidth = 1000f, boxHeight = 1500f, margin = 0.03f)
+        val noMargin = finderRect(
+            boxWidth = 1000f,
+            boxHeight = 1500f,
+            sideMargin = 0f,
+            bottomMargin = 0f,
+        )
+        val withMargin = finderRect(
+            boxWidth = 1000f,
+            boxHeight = 1500f,
+            sideMargin = 0.03f,
+            bottomMargin = 0.14f,
+        )
         assertEquals(noMargin.width, withMargin.width, 1e-4f)
         assertEquals(noMargin.height, withMargin.height, 1e-4f)
+    }
+
+    @Test
+    fun `side and bottom margins move only their own axes`() {
+        val baseline = finderRect(
+            boxWidth = 1000f,
+            boxHeight = 1500f,
+            sideMargin = 0.03f,
+            bottomMargin = 0.03f,
+        )
+        val raised = finderRect(
+            boxWidth = 1000f,
+            boxHeight = 1500f,
+            sideMargin = 0.03f,
+            bottomMargin = 0.14f,
+        )
+        assertEquals(baseline.x, raised.x, 1e-4f)
+        assertEquals(110f, raised.y - baseline.y, 1e-4f)
     }
 
     @Test

@@ -939,6 +939,39 @@ class UiSemanticsTest(unittest.TestCase):
             with self.subTest(label=label):
                 self.assertTrue(cases.loupe_copy_errors({label, "1× lens"}))
 
+    def test_loupe_layout_contract_requires_preview_bounded_control_clear_region(self) -> None:
+        metrics = DisplayMetrics(width_px=400, height_px=800, density_dpi=160)
+
+        def tree(overview_bounds: str, *, actionable: bool = False) -> UiTree:
+            return UiTree(
+                '<hierarchy>'
+                '<node text="" content-desc="" class="android.view.TextureView" '
+                'bounds="[0,100][400,700]" />'
+                f'<node text="" content-desc="Loupe overview" class="android.view.View" '
+                f'clickable="{str(actionable).lower()}" focusable="false" '
+                f'bounds="{overview_bounds}" />'
+                '<node text="" content-desc="Open function menu" class="android.widget.Button" '
+                'clickable="true" focusable="true" bounds="[0,620][100,700]" />'
+                '</hierarchy>'
+            )
+
+        self.assertEqual(cases.loupe_layout_errors(tree("[10,300][130,560]"), metrics), [])
+        self.assertTrue(any(
+            "overlaps" in error
+            for error in cases.loupe_layout_errors(tree("[10,500][130,650]"), metrics)
+        ))
+        self.assertTrue(any(
+            "escape preview" in error
+            for error in cases.loupe_layout_errors(tree("[10,50][130,300]"), metrics)
+        ))
+        self.assertTrue(any(
+            "must not own" in error
+            for error in cases.loupe_layout_errors(
+                tree("[10,300][130,560]", actionable=True),
+                metrics,
+            )
+        ))
+
     def test_raw_region_changed_pixel_count_is_bounded_to_the_requested_rect(self) -> None:
         width, height = 4, 3
         before_pixels = bytearray(width * height * 4)

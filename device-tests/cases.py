@@ -1425,6 +1425,44 @@ def loupe_copy_errors(labels: set[str]) -> list[str]:
     return errors
 
 
+def loupe_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
+    """Keep the non-interactive same-stream overview inside preview and off direct controls."""
+    errors = []
+    overviews = [node for node in tree.nodes if node.desc == "Loupe overview"]
+    if len(overviews) != 1:
+        return [f"Loupe overview: expected one region, got {len(overviews)}"]
+    overview = overviews[0]
+    if overview.clickable or overview.focusable:
+        errors.append("Loupe overview: region must not own an action or focus")
+
+    left, top, right, bottom = overview.bounds
+    if not (0 <= left < right <= metrics.width_px and 0 <= top < bottom <= metrics.height_px):
+        errors.append(f"Loupe overview: out of screen bounds {overview.bounds}")
+
+    previews = [node for node in tree.nodes if node.class_name.endswith("TextureView")]
+    if len(previews) != 1:
+        errors.append(f"Loupe overview: expected one preview surface, got {len(previews)}")
+    else:
+        preview = previews[0]
+        pl, pt, pr, pb = preview.bounds
+        if not (pl <= left < right <= pr and pt <= top < bottom <= pb):
+            errors.append(
+                f"Loupe overview: bounds {overview.bounds} escape preview {preview.bounds}"
+            )
+
+    overlaps = [
+        node for node in tree.nodes
+        if node is not overview
+        and (node.desc or node.text)
+        and (node.clickable or node.focusable)
+        and _overlap_area(overview, node) > 0
+    ]
+    if overlaps:
+        labels = [node.desc or node.text for node in overlaps]
+        errors.append(f"Loupe overview: overlaps named actionable chrome {labels}")
+    return errors
+
+
 def function_menu_layout_errors(
     tree,
     metrics: DisplayMetrics,
@@ -2168,11 +2206,8 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
 
             launch_ui_snapshot(ctx, orientation=orientation, scenario="loupe")
             loupe = ctx.adb.ui(f"snapshot_loupe_{orientation}")
-            overview_nodes = [node for node in loupe.nodes if node.desc == "Loupe overview"]
-            assert len(overview_nodes) == 1, (
-                f"Loupe overview region count is {len(overview_nodes)}, expected one"
-            )
-            assert not overview_nodes[0].clickable, "Loupe overview incorrectly owns a focus action"
+            loupe_layout = loupe_layout_errors(loupe, metrics)
+            assert not loupe_layout, "; ".join(loupe_layout)
             assert "OVERVIEW" in loupe.all_labels(), "visible overview omitted the OVERVIEW truth tag"
             assert loupe.find_desc_exact("Close adjustment") is None, (
                 "Loupe scenario retained a prior manual-adjustment ruler"

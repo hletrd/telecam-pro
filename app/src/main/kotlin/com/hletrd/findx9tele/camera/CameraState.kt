@@ -248,7 +248,8 @@ const val TELE_MAX_DISPLAY_ZOOM = 60f
 // project, not a GL change). Fractions of the preview box, shared between the GL draw (content)
 // and the Compose overlay (border) through [finderRect] so both boxes stay pixel-aligned.
 const val FINDER_FRACTION = 0.30f
-const val FINDER_MARGIN = 0.03f
+const val FINDER_SIDE_MARGIN = 0.03f
+const val FINDER_BOTTOM_MARGIN = 0.14f
 // The punch-in loupe's texcoord crop: the magnified preview samples a (1-crop) span of the frame
 // (0.6 → 2.5× magnification). Shared between the GL draw (gl/GlPipeline) and the tap-mapping
 // composition in CameraEngine (P2.8/AGG4-11) so the two cannot drift.
@@ -291,19 +292,27 @@ data class FinderRect(val x: Float, val y: Float, val width: Float, val height: 
 
 /**
  * The one geometry rule for the finder PIP, shared by the GL scissor/viewport (pixels) and the
- * Compose border overlay (dp): a [fraction]-sized box of the FULL preview box, inset by [margin]
- * of the short edge from the bottom-left corner. Both consumers MUST derive their rect from here —
- * the original Compose modifier chain (`padding` before `fillMaxWidth`) sized the border from
- * padding-reduced constraints and drew it ~6% smaller than the GL content box.
+ * Compose border overlay (dp): a [fraction]-sized box of the FULL preview box, inset from the left
+ * by [sideMargin] and from the bottom by [bottomMargin], both as fractions of the short edge. The
+ * larger bottom clearance keeps the same-stream overview above the persistent Fn/lens rail. Both
+ * consumers MUST derive their rect from here — the original Compose modifier chain (`padding` before
+ * `fillMaxWidth`) sized the border from padding-reduced constraints and drew it ~6% smaller than the
+ * GL content box.
  */
 fun finderRect(
     boxWidth: Float,
     boxHeight: Float,
     fraction: Float = FINDER_FRACTION,
-    margin: Float = FINDER_MARGIN,
+    sideMargin: Float = FINDER_SIDE_MARGIN,
+    bottomMargin: Float = FINDER_BOTTOM_MARGIN,
 ): FinderRect {
-    val inset = minOf(boxWidth, boxHeight) * margin
-    return FinderRect(inset, inset, boxWidth * fraction, boxHeight * fraction)
+    val shortEdge = minOf(boxWidth, boxHeight)
+    return FinderRect(
+        x = shortEdge * sideMargin,
+        y = shortEdge * bottomMargin,
+        width = boxWidth * fraction,
+        height = boxHeight * fraction,
+    )
 }
 
 /**
