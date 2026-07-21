@@ -162,11 +162,18 @@ def ensure_video_mode(ctx: Context) -> None:
     time.sleep(1.5)
 
 
-def launch_ui_snapshot(ctx: Context, *, orientation: int, scenario: str = "default"):
+def launch_ui_snapshot(
+    ctx: Context,
+    *,
+    orientation: int,
+    scenario: str = "default",
+    rtl: bool = False,
+):
     """Open the debug-only, HAL-free production-composable snapshot surface."""
     ctx.adb.shell(
         f"am start -W --activity-reorder-to-front -n {SNAPSHOT_ACTIVITY} "
         f"--ei device_orientation {orientation} "
+        f"--ez snapshot_rtl {str(rtl).lower()} "
         f"--es snapshot_scenario {scenario}"
     )
     deadline = time.monotonic() + 8
@@ -1389,6 +1396,35 @@ def adjustment_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
     return errors
 
 
+def snapshot_gamma_state_errors(tree, expected: str) -> list[str]:
+    """Require one non-actionable debug probe with the exact current Gamma value."""
+    prefix = "Snapshot Gamma "
+    probes = [node for node in tree.nodes if node.desc.startswith(prefix)]
+    if len(probes) != 1:
+        return [f"Snapshot Gamma: expected one state probe, got {len(probes)}"]
+    probe = probes[0]
+    errors = []
+    if probe.desc != f"{prefix}{expected}":
+        errors.append(f"Snapshot Gamma: {probe.desc!r} != {expected!r}")
+    if probe.clickable or probe.focusable:
+        errors.append("Snapshot Gamma: debug state probe must not own an action or focus")
+    return errors
+
+
+def loupe_copy_errors(labels: set[str]) -> list[str]:
+    """Reject second-stream/true-1x claims while allowing the real `1x lens` rail label."""
+    errors = []
+    for label in sorted(labels):
+        normalized = label.casefold().replace("×", "x")
+        if "pip" in normalized:
+            errors.append(f"Loupe copy makes a PIP claim: {label!r}")
+        if re.search(r"\b1\s*x\s*(overview|finder|feed|camera)\b", normalized) or re.search(
+            r"\b(overview|finder|feed|camera)\s*1\s*x\b", normalized,
+        ):
+            errors.append(f"Loupe copy makes a true-1x claim: {label!r}")
+    return errors
+
+
 def function_menu_layout_errors(
     tree,
     metrics: DisplayMetrics,
@@ -2059,6 +2095,8 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
             )
             assert idle.find_desc_exact("Close adjustment") is None
             assert not any(label in {"MR1", "MR2", "MR3"} for label in idle.all_labels())
+            gamma_errors = snapshot_gamma_state_errors(idle, "HLG")
+            assert not gamma_errors, "; ".join(gamma_errors)
             ctx.adb.screenshot(f"snapshot_idle_{orientation}")
 
             ctx.adb.tap_ui(desc="Open function menu")
@@ -2085,6 +2123,8 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
                     "Gamma quick action dismissed the Fn modal"
                 )
                 assert sticky.find_desc_exact("Gamma"), "Gamma quick action disappeared after update"
+                gamma_errors = snapshot_gamma_state_errors(sticky, "O-Log")
+                assert not gamma_errors, "; ".join(gamma_errors)
                 after = ctx.adb.exec_out("screencap")
                 changed = raw_region_changed_pixel_count(before, after, gamma.bounds)
                 assert changed >= 20, f"Gamma quick action produced no visible value update ({changed}px)"
@@ -2134,17 +2174,54 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
             )
             assert not overview_nodes[0].clickable, "Loupe overview incorrectly owns a focus action"
             assert "OVERVIEW" in loupe.all_labels(), "visible overview omitted the OVERVIEW truth tag"
-            assert not any("pip" in label.casefold() for label in loupe.all_labels()), (
-                "Loupe scenario exposed a user-facing PIP claim"
+            assert loupe.find_desc_exact("Close adjustment") is None, (
+                "Loupe scenario retained a prior manual-adjustment ruler"
             )
+            assert loupe.find_desc_exact("Close function menu") is None, (
+                "Loupe scenario retained the Fn modal"
+            )
+            assert "ISO 400" not in loupe.all_labels(), "Loupe scenario retained the ISO ruler"
+            gamma_errors = snapshot_gamma_state_errors(loupe, "HLG")
+            assert not gamma_errors, "; ".join(gamma_errors)
+            copy_errors = loupe_copy_errors(loupe.all_labels())
+            assert not copy_errors, "; ".join(copy_errors)
             ctx.adb.screenshot(f"snapshot_loupe_{orientation}")
+
+            if orientation in (90, 270):
+                launch_ui_snapshot(ctx, orientation=orientation, rtl=True)
+                rtl_idle = ctx.adb.ui()
+                assert rtl_idle.find_desc_exact("Snapshot layout Rtl"), (
+                    "RTL snapshot request did not reach the production-composable host"
+                )
+                rtl_errors = camera_chrome_layout_errors(
+                    rtl_idle,
+                    metrics,
+                    detailed=False,
+                    device_orientation=orientation,
+                )
+                assert not rtl_errors, (
+                    f"snapshot RTL idle {orientation}° violations: " + "; ".join(rtl_errors)
+                )
+                ctx.adb.tap_ui(desc="Open function menu")
+                rtl_menu = ctx.adb.ui(f"snapshot_fn_rtl_{orientation}")
+                rtl_menu_errors = function_menu_layout_errors(
+                    rtl_menu,
+                    metrics,
+                    device_orientation=orientation,
+                    expected_physical_order=FN_DEFAULT_PHYSICAL_ORDER,
+                )
+                assert not rtl_menu_errors, (
+                    f"snapshot RTL Fn {orientation}° violations: " +
+                    "; ".join(rtl_menu_errors)
+                )
+                ctx.adb.screenshot(f"snapshot_fn_rtl_{orientation}")
     finally:
         # The fixture never opens Camera2. Restore the suite's normal foreground camera surface.
         ctx.adb.launch(wait_s=3)
 
     ctx.note(
-        "HAL-free 0/90/270 snapshots: Fn physical order/reach + sticky Gamma, one Settings close, "
-        "single MR1 tag, bounded ISO ruler, and truthful non-interactive Loupe Overview"
+        "HAL-free 0/90/270 snapshots: Fn physical order/reach + exact sticky Gamma, RTL held Fn, "
+        "one Settings close, single MR1 tag, isolated ISO ruler, and truthful Loupe Overview"
     )
 
 

@@ -913,6 +913,32 @@ class UiSemanticsTest(unittest.TestCase):
             any("lower control band" in error for error in cases.adjustment_layout_errors(too_high, metrics))
         )
 
+    def test_snapshot_gamma_contract_requires_one_exact_non_actionable_probe(self) -> None:
+        good = UiTree(
+            '<hierarchy><node text="" content-desc="Snapshot Gamma O-Log" '
+            'class="android.view.View" checkable="false" checked="false" selected="false" '
+            'enabled="true" clickable="false" focusable="false" bounds="[0,0][1,1]" /></hierarchy>'
+        )
+        self.assertEqual(cases.snapshot_gamma_state_errors(good, "O-Log"), [])
+        self.assertTrue(cases.snapshot_gamma_state_errors(good, "HLG"))
+
+        duplicate = UiTree(
+            '<hierarchy><node text="" content-desc="Snapshot Gamma HLG" bounds="[0,0][1,1]" />'
+            '<node text="" content-desc="Snapshot Gamma O-Log" bounds="[1,0][2,1]" /></hierarchy>'
+        )
+        self.assertTrue(any("expected one" in error for error in cases.snapshot_gamma_state_errors(
+            duplicate, "O-Log",
+        )))
+
+    def test_loupe_copy_contract_allows_lens_rail_but_rejects_false_feed_claims(self) -> None:
+        self.assertEqual(
+            cases.loupe_copy_errors({"Loupe overview", "OVERVIEW", "1× lens"}),
+            [],
+        )
+        for label in ("1x overview", "OVERVIEW 1×", "1x camera feed", "Loupe PIP"):
+            with self.subTest(label=label):
+                self.assertTrue(cases.loupe_copy_errors({label, "1× lens"}))
+
     def test_raw_region_changed_pixel_count_is_bounded_to_the_requested_rect(self) -> None:
         width, height = 4, 3
         before_pixels = bytearray(width * height * 4)

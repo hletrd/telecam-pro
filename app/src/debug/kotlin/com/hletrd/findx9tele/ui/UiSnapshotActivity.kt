@@ -9,10 +9,25 @@ import android.util.Size
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.absoluteOffset
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.dp
 import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.CameraCaps
 import com.hletrd.findx9tele.camera.CameraUiState
@@ -31,42 +46,57 @@ import com.hletrd.findx9tele.ui.theme.FindX9TeleTheme
  */
 class UiSnapshotActivity : ComponentActivity() {
     private var snapshotRequest by mutableStateOf(SnapshotRequest())
+    private var snapshotGeneration by mutableLongStateOf(0L)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        snapshotRequest = intent.snapshotRequest()
+        acceptSnapshotIntent(intent)
         setContent {
             FindX9TeleTheme {
                 val request = snapshotRequest
-                var snapshotState by remember(request) {
-                    mutableStateOf(snapshotState(request.scenario, request.orientation))
-                }
-                // The Gamma tile is a safe, deterministic interaction probe: it updates the real
-                // composable in place while this HAL-free fixture keeps every camera action a no-op.
-                val snapshotActions = remember(request) {
-                    object : CameraActions by PreviewCameraActions {
-                        override fun onTransfer(transfer: ColorTransfer) {
-                            snapshotState = snapshotState.copy(transfer = transfer)
+                val generation = snapshotGeneration
+                val layoutDirection = if (request.rtl) LayoutDirection.Rtl else LayoutDirection.Ltr
+                CompositionLocalProvider(LocalLayoutDirection provides layoutDirection) {
+                    // A new intent is a new evidence scene even when its extras equal the preceding
+                    // request. Key the whole stateful production subtree, not only the fixture data.
+                    key(generation) {
+                        var snapshotState by remember {
+                            mutableStateOf(snapshotState(request.scenario, request.orientation))
                         }
+                        // The Gamma tile is a safe, deterministic interaction probe: it updates the
+                        // real composable while every physical-camera action remains a no-op.
+                        val snapshotActions = remember {
+                            object : CameraActions by PreviewCameraActions {
+                                override fun onTransfer(transfer: ColorTransfer) {
+                                    snapshotState = snapshotState.copy(transfer = transfer)
+                                }
 
-                        override fun onExposureMode(mode: ExposureMode) {
-                            snapshotState = snapshotState.copy(
-                                controls = snapshotState.controls.copy(exposureMode = mode),
+                                override fun onExposureMode(mode: ExposureMode) {
+                                    snapshotState = snapshotState.copy(
+                                        controls = snapshotState.controls.copy(exposureMode = mode),
+                                    )
+                                }
+
+                                override fun onIso(iso: Int) {
+                                    snapshotState = snapshotState.copy(
+                                        controls = snapshotState.controls.copy(iso = iso),
+                                    )
+                                }
+                            }
+                        }
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            CameraScreen(
+                                state = snapshotState,
+                                actions = snapshotActions,
                             )
-                        }
-
-                        override fun onIso(iso: Int) {
-                            snapshotState = snapshotState.copy(
-                                controls = snapshotState.controls.copy(iso = iso),
+                            SnapshotStateProbe(
+                                transfer = snapshotState.transfer,
+                                layoutDirection = layoutDirection,
                             )
                         }
                     }
                 }
-                CameraScreen(
-                    state = snapshotState,
-                    actions = snapshotActions,
-                )
             }
         }
     }
@@ -74,11 +104,17 @@ class UiSnapshotActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        acceptSnapshotIntent(intent)
+    }
+
+    private fun acceptSnapshotIntent(intent: Intent) {
         snapshotRequest = intent.snapshotRequest()
+        snapshotGeneration++
     }
 
     companion object {
         const val EXTRA_DEVICE_ORIENTATION = "device_orientation"
+        const val EXTRA_LAYOUT_DIRECTION_RTL = "snapshot_rtl"
         const val EXTRA_SCENARIO = "snapshot_scenario"
 
         const val SCENARIO_DEFAULT = "default"
@@ -91,12 +127,40 @@ class UiSnapshotActivity : ComponentActivity() {
 private data class SnapshotRequest(
     val scenario: String? = null,
     val orientation: Int = 0,
+    val rtl: Boolean = false,
 )
 
 private fun Intent.snapshotRequest(): SnapshotRequest = SnapshotRequest(
     scenario = getStringExtra(UiSnapshotActivity.EXTRA_SCENARIO),
     orientation = getIntExtra(UiSnapshotActivity.EXTRA_DEVICE_ORIENTATION, 0),
+    rtl = getBooleanExtra(UiSnapshotActivity.EXTRA_LAYOUT_DIRECTION_RTL, false),
 )
+
+@Composable
+private fun SnapshotStateProbe(transfer: ColorTransfer, layoutDirection: LayoutDirection) {
+    // UIAutomator omits AccessibilityNodeInfo.stateDescription. These nonvisual, non-actionable,
+    // debug-only nodes let device acceptance prove exact state without weakening production tile
+    // semantics or using OCR/pixel-change guesses.
+    Box(modifier = Modifier.size(2.dp)) {
+        Spacer(
+            modifier = Modifier
+                .size(1.dp)
+                .semantics { contentDescription = "Snapshot Gamma ${snapshotTransferLabel(transfer)}" },
+        )
+        Spacer(
+            modifier = Modifier
+                .absoluteOffset(x = 1.dp)
+                .size(1.dp)
+                .semantics { contentDescription = "Snapshot layout $layoutDirection" },
+        )
+    }
+}
+
+private fun snapshotTransferLabel(transfer: ColorTransfer): String = when (transfer) {
+    ColorTransfer.HLG -> "HLG"
+    ColorTransfer.LOG -> "O-Log"
+    ColorTransfer.SDR -> "SDR"
+}
 
 /**
  * HAL-free fixtures for screenshot and accessibility evidence. Every scenario feeds the shipping
