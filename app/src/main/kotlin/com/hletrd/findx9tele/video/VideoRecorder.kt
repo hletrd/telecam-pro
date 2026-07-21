@@ -69,8 +69,12 @@ class VideoRecorder(private val context: Context) {
     private var audioTrack = -1
     private var expectedTracks = 1
     // Written under muxerLock (compound check-then-start), but read by awaitMuxerStart()'s spin
-    // loop WITHOUT the lock from the other drain thread — @Volatile provides that JMM edge.
-    @Volatile private var muxerStarted = false
+    // loop WITHOUT the lock from the other drain thread — @Volatile provides that JMM edge. A
+    // terminal attempt is retained as well as success so neither drain worker can retry a refused
+    // or throwing MediaMuxer.start().
+    @Volatile private var muxerStartState = MuxerStartState.WAITING
+    private val muxerStarted: Boolean
+        get() = muxerStartState == MuxerStartState.STARTED
     private val muxerLock = Any()
 
     @Volatile private var running = false
@@ -342,7 +346,7 @@ class VideoRecorder(private val context: Context) {
         uri = null
         videoTrack = -1
         audioTrack = -1
-        muxerStarted = false
+        muxerStartState = MuxerStartState.WAITING
         wroteVideoSample = false
         wroteAudioSample = false
         audioDegradedMidRec = false
@@ -677,9 +681,10 @@ class VideoRecorder(private val context: Context) {
     private fun maybeStartMuxer() {
         val ownedMuxer = muxer ?: return
         // Both drain workers can arrive here after VideoRecorder.start() has left setup admission.
-        // Publish muxerStarted only after the actual native start completed under the process gate.
-        muxerStarted = muxerStartedAfterNativeStart(
-            muxerStarted = muxerStarted,
+        // Publish the immutable result before reporting a failure so re-entrant teardown/audio
+        // degradation observes a terminal attempt and cannot touch MediaMuxer.start() again.
+        val transition = transitionMuxerStart(
+            state = muxerStartState,
             videoTrackReady = videoTrack >= 0,
             expectedTracks = expectedTracks,
             audioTrackReady = audioTrack >= 0,
@@ -690,6 +695,8 @@ class VideoRecorder(private val context: Context) {
                 start = ownedMuxer::start,
             )
         }
+        muxerStartState = transition.state
+        transition.failure?.let(::recordFailure)
     }
 
     /**
@@ -699,7 +706,7 @@ class VideoRecorder(private val context: Context) {
      * emitted a format) — callers must skip the sample write in that case.
      */
     private fun awaitMuxerStart(): Boolean {
-        while (running && !muxerStarted) Thread.sleep(2)
+        while (running && muxerStartState == MuxerStartState.WAITING) Thread.sleep(2)
         return muxerStarted
     }
 
@@ -979,7 +986,7 @@ internal class ExactlyOnceResourceOwner<T : Any> {
 }
 
 /**
- * Pure MediaMuxer-start gate, extracted from [VideoRecorder.maybeStartMuxer] so the video-only
+ * Pure MediaMuxer-start readiness gate, extracted from [VideoRecorder.maybeStartMuxer] so the video-only
  * degrade accounting is host-testable (AGG3-53/TEST-3 — fa80574 shipped it with zero coverage). The
  * one shared muxer may start only ONCE ([muxerStarted] false), only after the video track exists
  * ([videoTrackReady] — a MediaMuxer started with no video track produces an unplayable file), and —
@@ -996,6 +1003,24 @@ internal fun shouldStartMuxer(
     expectedTracks: Int,
     audioTrackReady: Boolean,
 ): Boolean = !muxerStarted && videoTrackReady && (expectedTracks == 1 || audioTrackReady)
+
+/** One-shot lifecycle of the recording's shared MediaMuxer native start. */
+internal enum class MuxerStartState { WAITING, STARTED, TERMINAL }
+
+/**
+ * Immutable result of advancing [MuxerStartState]. A failure is carried only by the transition that
+ * first made the state terminal, letting the recorder publish TERMINAL before notifying its
+ * clip-level [FirstFailureSignal]. Subsequent calls are inert and therefore cannot notify or start
+ * the same native owner twice.
+ */
+internal data class MuxerStartTransition(
+    val state: MuxerStartState,
+    val failure: Throwable? = null,
+) {
+    init {
+        require(failure == null || state == MuxerStartState.TERMINAL)
+    }
+}
 
 /** Result of one native start whose process/local terminal admission is checked atomically. */
 internal enum class NativeStartOutcome { STARTED, REFUSED }
@@ -1023,20 +1048,31 @@ internal fun startNativeOwnerIfSafe(
 }
 
 /**
- * Publishes the muxer-start state only after a ready muxer's real native start succeeds. Refusal
- * leaves a not-yet-started muxer unpublished; a thrown start exception propagates before mutation.
+ * Advances a ready muxer exactly once. Success publishes STARTED; process/local terminal refusal
+ * publishes TERMINAL without cleanup; a thrown native start is contained and carried on the one
+ * transition to TERMINAL for the recorder's clip-level failure owner. WAITING that is not ready and
+ * either completed state are inert.
  */
-internal fun muxerStartedAfterNativeStart(
-    muxerStarted: Boolean,
+internal fun transitionMuxerStart(
+    state: MuxerStartState,
     videoTrackReady: Boolean,
     expectedTracks: Int,
     audioTrackReady: Boolean,
     start: () -> NativeStartOutcome,
-): Boolean {
-    if (!shouldStartMuxer(muxerStarted, videoTrackReady, expectedTracks, audioTrackReady)) {
-        return muxerStarted
+): MuxerStartTransition {
+    if (state != MuxerStartState.WAITING ||
+        !shouldStartMuxer(false, videoTrackReady, expectedTracks, audioTrackReady)
+    ) {
+        return MuxerStartTransition(state)
     }
-    return start() == NativeStartOutcome.STARTED
+    return try {
+        when (start()) {
+            NativeStartOutcome.STARTED -> MuxerStartTransition(MuxerStartState.STARTED)
+            NativeStartOutcome.REFUSED -> MuxerStartTransition(MuxerStartState.TERMINAL)
+        }
+    } catch (failure: Exception) {
+        MuxerStartTransition(MuxerStartState.TERMINAL, failure)
+    }
 }
 
 /**

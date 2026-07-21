@@ -6,6 +6,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -106,21 +107,28 @@ class NativeStartAdmissionTest {
     }
 
     @Test
-    fun `muxer state publishes only after real successful native start`() {
+    fun `not-ready muxer remains waiting without touching native start`() {
         var starts = 0
-        val refused = muxerStartedAfterNativeStart(
-            muxerStarted = false,
-            videoTrackReady = true,
+        val transition = transitionMuxerStart(
+            state = MuxerStartState.WAITING,
+            videoTrackReady = false,
             expectedTracks = 1,
             audioTrackReady = false,
         ) {
-            NativeStartOutcome.REFUSED
+            starts++
+            NativeStartOutcome.STARTED
         }
-        assertFalse(refused)
-        assertEquals(0, starts)
 
-        val started = muxerStartedAfterNativeStart(
-            muxerStarted = refused,
+        assertEquals(MuxerStartState.WAITING, transition.state)
+        assertNull(transition.failure)
+        assertEquals(0, starts)
+    }
+
+    @Test
+    fun `successful muxer start publishes once and repeated call is inert`() {
+        var starts = 0
+        var transition = transitionMuxerStart(
+            state = MuxerStartState.WAITING,
             videoTrackReady = true,
             expectedTracks = 1,
             audioTrackReady = false,
@@ -128,22 +136,92 @@ class NativeStartAdmissionTest {
             starts++
             NativeStartOutcome.STARTED
         }
-        assertTrue(started)
+        assertEquals(MuxerStartState.STARTED, transition.state)
+        assertNull(transition.failure)
         assertEquals(1, starts)
 
-        val expected = IllegalArgumentException("muxer start failed")
-        var publishedAfterThrow = false
-        val thrown = assertThrows(IllegalArgumentException::class.java) {
-            publishedAfterThrow = muxerStartedAfterNativeStart(
-                muxerStarted = false,
-                videoTrackReady = true,
-                expectedTracks = 1,
-                audioTrackReady = false,
-            ) {
-                throw expected
-            }
+        transition = transitionMuxerStart(
+            state = transition.state,
+            videoTrackReady = true,
+            expectedTracks = 1,
+            audioTrackReady = false,
+        ) {
+            starts++
+            NativeStartOutcome.STARTED
         }
-        assertSame(expected, thrown)
-        assertFalse(publishedAfterThrow)
+
+        assertEquals(MuxerStartState.STARTED, transition.state)
+        assertNull(transition.failure)
+        assertEquals(1, starts)
+    }
+
+    @Test
+    fun `refused muxer start is terminal and cannot retry native owner`() {
+        var starts = 0
+        var transition = transitionMuxerStart(
+            state = MuxerStartState.WAITING,
+            videoTrackReady = true,
+            expectedTracks = 1,
+            audioTrackReady = false,
+        ) {
+            starts++
+            NativeStartOutcome.REFUSED
+        }
+        assertEquals(MuxerStartState.TERMINAL, transition.state)
+        assertNull(transition.failure)
+
+        transition = transitionMuxerStart(
+            state = transition.state,
+            videoTrackReady = true,
+            expectedTracks = 1,
+            audioTrackReady = false,
+        ) {
+            starts++
+            NativeStartOutcome.STARTED
+        }
+
+        assertEquals(MuxerStartState.TERMINAL, transition.state)
+        assertNull(transition.failure)
+        assertEquals(1, starts)
+    }
+
+    @Test
+    fun `throwing audio-initiated muxer start notifies once and degrade re-entry cannot retry`() {
+        val signal = FirstFailureSignal()
+        val expected = IllegalArgumentException("muxer start failed")
+        var notifications = 0
+        var starts = 0
+        var transition = transitionMuxerStart(
+            state = MuxerStartState.WAITING,
+            videoTrackReady = true,
+            expectedTracks = 2,
+            audioTrackReady = true,
+        ) {
+            starts++
+            throw expected
+        }
+        assertEquals(MuxerStartState.TERMINAL, transition.state)
+        assertSame(expected, transition.failure)
+        transition.failure?.let { signal.record(it) { notifications++ } }
+
+        // This is the former escape path: the audio worker catches its initial start throw,
+        // degrades expectedTracks to one, and re-enters maybeStartMuxer. TERMINAL makes that call a
+        // no-op, so the same native owner cannot throw again outside the worker's catch boundary.
+        transition = transitionMuxerStart(
+            state = transition.state,
+            videoTrackReady = true,
+            expectedTracks = 1,
+            audioTrackReady = true,
+        ) {
+            starts++
+            throw AssertionError("native start retried")
+        }
+        transition.failure?.let { signal.record(it) { notifications++ } }
+
+        assertEquals(MuxerStartState.TERMINAL, transition.state)
+        assertNull(transition.failure)
+        assertSame(expected, signal.cause)
+        assertEquals(1, starts)
+        assertEquals(1, notifications)
     }
 }
