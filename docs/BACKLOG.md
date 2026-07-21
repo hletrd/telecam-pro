@@ -2,7 +2,8 @@
 
 Current release board. Read after `CLAUDE.md`; use `ARCHITECTURE.md` for implementation details.
 Historical investigation notes are snapshots under `docs/reviews/` and `.context/reviews/`, not
-active TODO lists. Last synced by review-plan-fix cycle 2 (2026-07-21); per-file history via `git log -- docs/BACKLOG.md`.
+active TODO lists. Last synced by [review-plan-fix Cycle 5](plans/2026-07-21-rpf-cycle5.md)
+(2026-07-21); per-file history via `git log -- docs/BACKLOG.md`.
 
 ## Release State
 
