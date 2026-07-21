@@ -32,6 +32,14 @@ Reports (markdown + JUnit XML + pulled evidence files) land in `device-tests/rep
 and 2 means preflight failure, no matching cases, all-skipped, or a required verification
 reported as incomplete.
 
+**CLI report attestation contract:** every report directory also contains
+`run-attestation.json` and `run-attestation.sha256`. The JSON records the git revision, device
+identity, host and installed APK SHA-256 values, exact approval flags, captured pre-run and verified
+post-run state, and a path-sorted list of SHA-256 hashes for report artifacts. A restoration failure
+or pre/post state mismatch makes the CLI result non-green rather than producing only a warning. The
+SHA-256 sidecar protects the attestation bytes against unnoticed alteration; it is an integrity check,
+not a signature or proof of who produced the report.
+
 The runner refuses any device other than PMA110/API 36 and refuses an installed `base.apk`
 whose SHA-256 does not match `app/build/outputs/apk/debug/app-debug.apk` (override the host
 path with `--apk`). Cases are independently gated when they may launch/force-stop the app
