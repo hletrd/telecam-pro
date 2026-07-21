@@ -1288,23 +1288,72 @@ def fn_entry_layout_errors(
     return errors
 
 
+def settings_tab_nodes(tree) -> dict[str, list[UiNode]]:
+    """Return each settings-tab action by its exact merged accessibility name."""
+    return {
+        label: [
+            node for node in tree.nodes
+            if node.desc.casefold() == label.casefold()
+        ]
+        for label in SETTINGS_TABS
+    }
+
+
 def settings_modal_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
-    """One explicit 48 dp close action; the visual scrim is touch-only."""
+    """One close action and nine coherent named 48 dp tab targets."""
+    errors: list[str] = []
     close_nodes = [node for node in tree.nodes if node.desc == "Close settings"]
     if len(close_nodes) != 1:
-        return [f"Settings close: expected one explicit action node, got {len(close_nodes)}"]
-    close = close_nodes[0]
-    errors = _described_action_errors(tree, close, "Settings close")
-    left, top, right, bottom = close.bounds
+        errors.append(f"Settings close: expected one explicit action node, got {len(close_nodes)}")
+    else:
+        close = close_nodes[0]
+        errors.extend(_described_action_errors(tree, close, "Settings close"))
+        left, top, right, bottom = close.bounds
+        minimum_px = _minimum_touch_px(metrics)
+        if not (0 <= left < right <= metrics.width_px and 0 <= top < bottom <= metrics.height_px):
+            errors.append(f"Settings close: out of screen bounds {close.bounds}")
+        elif right - left < minimum_px or bottom - top < minimum_px:
+            errors.append(
+                f"Settings close: touch bounds {right - left}x{bottom - top}px < {minimum_px}px"
+            )
+        if close.bounds == (0, 0, metrics.width_px, metrics.height_px):
+            errors.append("Settings close: full-screen scrim must be touch-only")
+
     minimum_px = _minimum_touch_px(metrics)
-    if not (0 <= left < right <= metrics.width_px and 0 <= top < bottom <= metrics.height_px):
-        errors.append(f"Settings close: out of screen bounds {close.bounds}")
-    elif right - left < minimum_px or bottom - top < minimum_px:
-        errors.append(
-            f"Settings close: touch bounds {right - left}x{bottom - top}px < {minimum_px}px"
-        )
-    if close.bounds == (0, 0, metrics.width_px, metrics.height_px):
-        errors.append("Settings close: full-screen scrim must be touch-only")
+    tabs = settings_tab_nodes(tree)
+    for label, nodes in tabs.items():
+        if len(nodes) != 1:
+            errors.append(f"Settings tab {label}: expected one named node, got {len(nodes)}")
+            continue
+        node = nodes[0]
+        left, top, right, bottom = node.bounds
+        if not (0 <= left < right <= metrics.width_px and 0 <= top < bottom <= metrics.height_px):
+            errors.append(f"Settings tab {label}: out of screen bounds {node.bounds}")
+        elif right - left < minimum_px or bottom - top < minimum_px:
+            errors.append(
+                f"Settings tab {label}: touch bounds {right - left}x{bottom - top}px < {minimum_px}px"
+            )
+        if not node.enabled:
+            errors.append(f"Settings tab {label}: disabled")
+        if not node.focusable:
+            errors.append(f"Settings tab {label}: named node is not focusable")
+        # Android omits the click action from the already-selected Tab. Its selected state is the
+        # coherent outcome; every other tab must directly own its activation action.
+        if not node.selected and not node.clickable:
+            errors.append(f"Settings tab {label}: unselected named node is not clickable")
+        split = [
+            peer for peer in tree.nodes
+            if peer is not node
+            and peer.bounds == node.bounds
+            and (peer.clickable or peer.focusable)
+            and peer.desc != node.desc
+        ]
+        if split:
+            errors.append(f"Settings tab {label}: equal-bounds split semantics")
+
+    selected_tabs = [label for label, nodes in tabs.items() if len(nodes) == 1 and nodes[0].selected]
+    if len(selected_tabs) != 1:
+        errors.append(f"Settings tabs: expected one selected tab, got {selected_tabs}")
     return errors
 
 
@@ -1864,13 +1913,9 @@ def t_settings(ctx: Context) -> None:
     try:
         for tab, title in zip(SETTINGS_TABS, SETTINGS_TITLES, strict=True):
             tree = ctx.adb.ui()
-            tab_nodes = {
-                label: [
-                    node for node in tree.nodes
-                    if node.text.casefold() == label.casefold() and node.clickable
-                ]
-                for label in SETTINGS_TABS
-            }
+            current_errors = settings_modal_layout_errors(tree, metrics)
+            assert not current_errors, "settings modal layout violations: " + "; ".join(current_errors)
+            tab_nodes = settings_tab_nodes(tree)
             invalid = {label: len(nodes) for label, nodes in tab_nodes.items() if len(nodes) != 1}
             assert not invalid, f"settings tab nodes are missing or duplicated: {invalid}"
             target = tab_nodes[tab][0]
@@ -1892,8 +1937,7 @@ def t_settings(ctx: Context) -> None:
                     selected = [
                         label for label in SETTINGS_TABS
                         if any(
-                            node.text.casefold() == label.casefold()
-                            and node.clickable
+                            node.desc.casefold() == label.casefold()
                             and node.selected
                             for node in tree.nodes
                         )

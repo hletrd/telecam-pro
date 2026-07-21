@@ -63,6 +63,7 @@ import androidx.compose.ui.semantics.isTraversalGroup
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
@@ -325,10 +326,25 @@ private fun TabRail(selected: ProSheetTab, onSelect: (ProSheetTab) -> Unit, modi
 @Composable
 private fun TabRailItem(tab: ProSheetTab, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val fg = if (selected) CameraColors.TextPrimary else CameraColors.TextSecondary
+    val activate = onClick
     Column(
         modifier = modifier
             .fillMaxWidth()
             .background(if (selected) Color.White.copy(alpha = 0.10f) else Color.Transparent)
+            // Keep the visible icon/label and the Tab action on one accessibility node. Without
+            // this merge Android exported an unnamed focusable parent plus a separate inert Text,
+            // so switch/TalkBack users could focus a tab without hearing which tab it was.
+            .focusable()
+            .clearAndSetSemantics {
+                contentDescription = tab.label
+                stateDescription = if (selected) "Selected" else "Not selected"
+                role = Role.Tab
+                this.selected = selected
+                onClick {
+                    activate()
+                    true
+                }
+            }
             .selectable(selected = selected, role = Role.Tab, onClick = onClick)
             .padding(vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,

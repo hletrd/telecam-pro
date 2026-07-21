@@ -778,7 +778,15 @@ class UiSemanticsTest(unittest.TestCase):
         self.assertEqual(timers, {"10s"})
 
     @staticmethod
-    def settings_modal_xml(*, duplicate_scrim: bool = False, short_close: bool = False) -> str:
+    def settings_modal_xml(
+        *,
+        duplicate_scrim: bool = False,
+        short_close: bool = False,
+        unnamed_tab: str | None = None,
+        short_tab: str | None = None,
+        split_tab: str | None = None,
+        two_selected: bool = False,
+    ) -> str:
         size = 30 if short_close else 48
         nodes = [
             '<node text="" content-desc="Close settings" class="android.widget.Button" '
@@ -791,9 +799,29 @@ class UiSemanticsTest(unittest.TestCase):
                 'checkable="false" checked="false" selected="false" enabled="true" '
                 'clickable="true" focusable="true" bounds="[0,0][360,800]" />'
             )
+        for index, label in enumerate(cases.SETTINGS_TABS):
+            left = 8
+            top = 90 + index * 72
+            width = 30 if label == short_tab else 72
+            selected = label == "My" or (two_selected and label == "Shoot")
+            clickable = not selected
+            description = "" if label == unnamed_tab else label
+            bounds = f"[{left},{top}][{left + width},{top + 58}]"
+            nodes.append(
+                f'<node text="" content-desc="{description}" class="android.view.View" '
+                'checkable="false" checked="false" '
+                f'selected="{str(selected).lower()}" enabled="true" '
+                f'clickable="{str(clickable).lower()}" focusable="true" bounds="{bounds}" />'
+            )
+            if label == split_tab:
+                nodes.append(
+                    '<node text="" content-desc="" class="android.view.View" '
+                    'checkable="false" checked="false" selected="false" enabled="true" '
+                    f'clickable="true" focusable="true" bounds="{bounds}" />'
+                )
         return f"<hierarchy>{''.join(nodes)}</hierarchy>"
 
-    def test_settings_modal_contract_requires_one_explicit_48dp_close(self) -> None:
+    def test_settings_modal_contract_requires_named_tabs_and_one_explicit_48dp_close(self) -> None:
         metrics = DisplayMetrics(360, 800, 160)
         self.assertEqual(
             cases.settings_modal_layout_errors(UiTree(self.settings_modal_xml()), metrics),
@@ -807,6 +835,22 @@ class UiSemanticsTest(unittest.TestCase):
             UiTree(self.settings_modal_xml(short_close=True)), metrics,
         )
         self.assertTrue(any("touch bounds" in error for error in short))
+        unnamed = cases.settings_modal_layout_errors(
+            UiTree(self.settings_modal_xml(unnamed_tab="Video")), metrics,
+        )
+        self.assertTrue(any("Settings tab Video: expected one named node" in error for error in unnamed))
+        short_tab = cases.settings_modal_layout_errors(
+            UiTree(self.settings_modal_xml(short_tab="Exposure")), metrics,
+        )
+        self.assertTrue(any("Settings tab Exposure: touch bounds" in error for error in short_tab))
+        split = cases.settings_modal_layout_errors(
+            UiTree(self.settings_modal_xml(split_tab="Focus")), metrics,
+        )
+        self.assertTrue(any("Settings tab Focus: equal-bounds split semantics" in error for error in split))
+        ambiguous = cases.settings_modal_layout_errors(
+            UiTree(self.settings_modal_xml(two_selected=True)), metrics,
+        )
+        self.assertTrue(any("expected one selected tab" in error for error in ambiguous))
 
     def test_adjustment_contract_keeps_one_close_in_the_lower_control_band(self) -> None:
         metrics = DisplayMetrics(360, 800, 160)
