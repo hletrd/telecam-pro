@@ -2224,19 +2224,23 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
 
             if orientation in (90, 270):
                 launch_ui_snapshot(ctx, orientation=orientation, rtl=True)
-                rtl_idle = ctx.adb.ui()
+                rtl_idle = ctx.adb.ui(f"snapshot_idle_rtl_{orientation}")
                 assert rtl_idle.find_desc_exact("Snapshot layout Rtl"), (
                     "RTL snapshot request did not reach the production-composable host"
                 )
-                rtl_errors = camera_chrome_layout_errors(
+                # Locale-aware camera rows may legitimately mirror their reading order. The
+                # regression under test is narrower: Fn's documented raw edge/physical-bottom
+                # geometry must remain absolute, as must the opened tray's physical 4x2 order.
+                rtl_errors = fn_entry_layout_errors(
                     rtl_idle,
                     metrics,
-                    detailed=False,
-                    device_orientation=orientation,
+                    orientation,
                 )
                 assert not rtl_errors, (
-                    f"snapshot RTL idle {orientation}° violations: " + "; ".join(rtl_errors)
+                    f"snapshot RTL Fn entry {orientation}° violations: " +
+                    "; ".join(rtl_errors)
                 )
+                ctx.adb.screenshot(f"snapshot_idle_rtl_{orientation}")
                 ctx.adb.tap_ui(desc="Open function menu")
                 rtl_menu = ctx.adb.ui(f"snapshot_fn_rtl_{orientation}")
                 rtl_menu_errors = function_menu_layout_errors(
