@@ -662,6 +662,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         engine.setAnalysis(e.histogram, e.waveform)
         engine.setPunchIn(e.punchIn)
         engine.setTeleFinder(e.teleFinder)
+        engine.setHiResStill(e.hiResStill)
         engine.setVideoCodec(safeCodec)
         engine.setBitrateLevel(e.bitrateLevel)
         engine.setOpenGate(e.openGate)
@@ -699,6 +700,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 level = e.level,
                 punchIn = e.punchIn,
                 teleFinder = e.teleFinder,
+                hiResStill = e.hiResStill,
                 videoCodec = safeCodec,
                 bitrateLevel = e.bitrateLevel,
                 videoFrameRate = safeFrameRate,
@@ -761,6 +763,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             level = s.level,
             punchIn = s.punchIn,
             teleFinder = s.teleFinder,
+            hiResStill = s.hiResStill,
             videoCodec = s.videoCodec,
             bitrateLevel = s.bitrateLevel,
             videoFrameRate = s.videoFrameRate,
@@ -1344,6 +1347,15 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 activeMemorySlot = null,
             )
         }
+        scheduleSettingsSave()
+    }
+    override fun onToggleHiResStill(enabled: Boolean) {
+        // Flipping admission rebuilds the Camera2 session (the still reader size is fixed at
+        // configureStreams) — the same mid-REC gate every session-reconfiguring control has.
+        if (rejectIfRecording("Stop REC first")) return
+        cancelCountdown()
+        engine.setHiResStill(enabled)
+        _state.update { it.copy(hiResStill = enabled, activeMemorySlot = null) }
         scheduleSettingsSave()
     }
     override fun onAspectRatio(ratio: AspectRatio) {

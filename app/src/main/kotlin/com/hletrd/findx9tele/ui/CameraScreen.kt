@@ -2325,6 +2325,7 @@ internal object PreviewCameraActions : CameraActions {
     override fun onModeChange(mode: CaptureMode) = Unit
     override fun onTransfer(transfer: ColorTransfer) = Unit
     override fun onSetPhotoFormats(formats: PhotoFormats) = Unit
+    override fun onToggleHiResStill(enabled: Boolean) = Unit
     override fun onAspectRatio(ratio: AspectRatio) = Unit
     override fun onToggleRecordAudio(enabled: Boolean) = Unit
     override fun onAudioGain(gain: Float) = Unit

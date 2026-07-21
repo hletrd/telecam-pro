@@ -287,6 +287,22 @@ fun teleFinderVisible(
     punchIn: Boolean,
 ): Boolean = teleFinderResolved(enabled, teleconverter, videoMode, aspect) && punchIn
 
+/**
+ * The ONE hi-res-still admission predicate (same single-implementation discipline as
+ * [teleFinderResolved]): the engine resolves it in one place and re-resolves at every optics door.
+ * Photo-only (a 200MP reader has no business in a video session), 4:3-only (the hi-res save path
+ * is a byte PASSTHROUGH — no bitmap decode at 200MP, so the 16:9 center crop cannot be applied),
+ * standalone-only (the logical camera's gralloc rejects big blob allocations), and only when the
+ * selected camera actually advertises a full-sensor size.
+ */
+internal fun hiResAdmitted(
+    requested: Boolean,
+    videoMode: Boolean,
+    aspect: AspectRatio,
+    standalone: Boolean,
+    advertised: Boolean,
+): Boolean = requested && !videoMode && aspect == AspectRatio.W4_3 && standalone && advertised
+
 /** Finder-PIP box in the preview box's own units, measured from the bottom-left corner. */
 data class FinderRect(val x: Float, val y: Float, val width: Float, val height: Float)
 
@@ -587,6 +603,11 @@ data class PhotoFormats(
 data class PhotoSessionOutputs(
     val processed: Boolean = false,
     val raw: Boolean = false,
+    // True only when the ACCEPTED session's processed reader is the full-sensor hi-res one — never
+    // the requested intent (the fallback ladder drops hi-res first, so intent and session truth
+    // routinely diverge). Downstream honesty keys off this: format collapse to passthrough JPEG,
+    // the OSD HR tag, and the still request's SENSOR_PIXEL_MODE.
+    val hiRes: Boolean = false,
 ) {
     val hasStillTarget: Boolean get() = processed || raw
 }
@@ -661,6 +682,11 @@ internal fun PhotoFormats.withDefaultIfEmpty(): PhotoFormats =
  * empty set instead of inventing an unavailable capture target.
  */
 internal fun PhotoFormats.normalizedFor(outputs: PhotoSessionOutputs): PhotoFormats {
+    // Hi-res session: the ONLY still lane is the passthrough HAL JPEG. HEIF would decode the
+    // ~200MP JPEG into an ~800 MB ARGB bitmap for its pixel-rotate re-encode (guaranteed OOM),
+    // and RAW was force-dropped by the session plan (a 200MP blob + RAW in one session is the
+    // over-demanding combo this HAL punishes), so both collapse regardless of the request.
+    if (outputs.hiRes) return PhotoFormats(heif = false, jpeg = outputs.processed, dngRaw = false)
     val supported = PhotoFormats(
         heif = heif && outputs.processed,
         jpeg = jpeg && outputs.processed,
@@ -755,6 +781,10 @@ data class CameraUiState(
     val punchIn: Boolean = false,
     // TELE finder PIP Assist toggle (default OFF; see FINDER_* above for the honest contract).
     val teleFinder: Boolean = false,
+    // Hi-res still INTENT (the user toggle). Accepted truth is photoSessionOutputs.hiRes only —
+    // the session plan drops hi-res first on configure failure, and [hiResAdmitted] gates it to
+    // photo + 4:3 + standalone + advertised, so intent and session truth routinely diverge.
+    val hiResStill: Boolean = false,
     // Sony-style customization: Fn row, My Menu, recent changed settings and MR banks.
     val photoFnSlots: List<FnSlot> = FnSlot.PHOTO_DEFAULT,
     val videoFnSlots: List<FnSlot> = FnSlot.VIDEO_DEFAULT,

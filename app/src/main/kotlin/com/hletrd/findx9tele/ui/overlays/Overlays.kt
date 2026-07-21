@@ -378,6 +378,9 @@ internal fun compactShootingStatusVisible(state: CameraUiState): Boolean =
         (state.mode == CaptureMode.PHOTO && compactPhotoFormatLabel(state) != null) ||
         (state.mode == CaptureMode.PHOTO && state.driveMode != DriveMode.SINGLE) ||
         (state.mode == CaptureMode.PHOTO && !state.controls.oisEnabled) ||
+        // Accepted hi-res is a non-default capture state — the HR tag must stay reachable in the
+        // compact strip too, not only while some other tag happens to force it visible.
+        state.photoSessionOutputs.hiRes ||
         state.controls.meteringMode != MeteringMode.MATRIX ||
         state.controls.aeLock ||
         state.controls.awbLock ||
@@ -498,6 +501,11 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                 compactPhotoFormatLabel(state)?.let { formatLabel ->
                     Text(formatLabel, color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
                 }
+            }
+            if (state.photoSessionOutputs.hiRes) {
+                // ACCEPTED-session truth, never the toggle intent (the ladder drops hi-res first) —
+                // the same honesty rule as the finder PIP tag.
+                Text("HR", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
             }
             if (state.driveMode != DriveMode.SINGLE) {
                 val driveLabel = when (state.driveMode) {

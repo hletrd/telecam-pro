@@ -33,6 +33,11 @@ internal data class ShotSpec(
     val familyKey: CaptureFamilyKey,
     val requestedAtMs: Long,
     val takenAtMs: Long,
+    // Fired against a hi-res (full-sensor) session: the processed JPEG saves PASSTHROUGH — the
+    // decode→crop→rotate lane would inflate a ~200MP JPEG to an ~800 MB ARGB bitmap (OOM), so
+    // orientation travels in EXIF like DNG and the 16:9 crop cannot apply (the 4:3 admission gate
+    // upstream guarantees it is never wanted).
+    val hiRes: Boolean = false,
 )
 
 /**
@@ -97,6 +102,20 @@ internal class StillCapturePipeline(
         wantJpeg: Boolean,
     ) {
         if (!wantHeif && !wantJpeg) return
+        if (spec.hiRes) {
+            // Hi-res passthrough lane (see [ShotSpec.hiRes]): the HAL JPEG bytes are written
+            // UNMODIFIED and only EXIF (incl. the rotation as an orientation TAG) is stamped after.
+            // HEIF is unavailable here — format normalization already collapsed it, and running it
+            // anyway would be the exact 200MP decode this branch exists to avoid.
+            if (wantJpeg) {
+                runCatching { writePassthroughJpeg(bytes, spec, exifShot) }
+                    .onFailure {
+                        Log.e("StillCapturePipeline", "JPEG save failed", it)
+                        emitStatus("JPEG save failed")
+                    }
+            }
+            return
+        }
         var decoded: Bitmap? = null
         var cropped: Bitmap? = null
         var rotated: Bitmap? = null
@@ -196,6 +215,38 @@ internal class StillCapturePipeline(
     }
 
     /**
+     * Hi-res JPEG lane: the HAL bytes go to disk verbatim (no decode, no crop, no pixel rotate),
+     * then EXIF is stamped with TAG_ORIENTATION carrying the full capture rotation — the DNG
+     * approach, because at ~200MP the ordinary pixel-upright pass is a guaranteed OOM. Same
+     * publish-or-delete policy as [writeProcessedJpeg].
+     */
+    private fun writePassthroughJpeg(bytes: ByteArray, spec: ShotSpec, exifShot: ExifShot) {
+        val u = MediaStoreWriter.createPendingImage(
+            context,
+            spec.familyKey.displayName("jpg"),
+            "image/jpeg",
+        )
+        if (u == null) { emitStatus("JPEG save failed"); return }
+        val wrote = runCatching {
+            MediaStoreWriter.openOutputStream(context, u)?.use { out ->
+                out.write(bytes)
+                true
+            } ?: false
+        }.getOrElse { failure -> MediaStoreWriter.delete(context, u); throw failure }
+        if (!wrote) { MediaStoreWriter.delete(context, u); emitStatus("JPEG save failed"); return }
+        // Best-effort like the processed lane — a failed EXIF write must never lose the image. The
+        // orientation tag is the one exception a viewer NEEDS for uprightness, but a passthrough
+        // with EXIF missing still beats a deleted take.
+        runCatching { writeJpegExif(u, exifShot, exifOrientationFor(spec.rotationDegrees)) }
+        val completion = MediaStoreWriter.markWriteComplete(context, u)
+        if (!MediaStoreWriter.publish(context, u)) {
+            emitStatus(retainedSaveStatus("JPEG", completion.durable))
+            return
+        }
+        emitMediaSaved(u, spec.captureId)
+    }
+
+    /**
      * Writes RAW synchronously while [raw] is live and attempts the bounded durable marker. The
      * returned publication carries that outcome to [publishDng]; interrupted writes are deleted.
      */
@@ -246,10 +297,20 @@ internal class StillCapturePipeline(
         if (markerDurable) "$kind save delayed. Will retry."
         else "$kind save retained. Recovery marker failed."
 
-    private fun writeJpegExif(uri: android.net.Uri, shot: ExifShot) {
+    private fun writeJpegExif(
+        uri: android.net.Uri,
+        shot: ExifShot,
+        // NORMAL for the processed lane (pixels are rotated upright before encode); the hi-res
+        // passthrough lane overrides with the capture rotation's tag, DNG-style.
+        orientation: Int = RotationMath.ORIENTATION_NORMAL,
+    ) {
         MediaStoreWriter.openParcelFd(context, uri, "rw")?.use { pfd ->
             val exif = androidx.exifinterface.media.ExifInterface(pfd.fileDescriptor)
             applyExifAttributes(exif, shot)
+            exif.setAttribute(
+                androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION,
+                orientation.toString(),
+            )
             exif.saveAttributes()
         }
     }

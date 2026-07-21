@@ -61,6 +61,31 @@ class PhotoFormatsTest {
     }
 
     @Test
+    fun `hi-res session collapses every request to passthrough jpeg only`() {
+        // HEIF would decode the ~200MP JPEG into an ~800 MB bitmap (OOM) and RAW was force-dropped
+        // by the session plan, so neither may survive normalization regardless of the request.
+        val hiRes = PhotoSessionOutputs(processed = true, raw = false, hiRes = true)
+
+        assertEquals(
+            PhotoFormats(heif = false, jpeg = true, dngRaw = false),
+            PhotoFormats(heif = true, jpeg = false, dngRaw = true).normalizedFor(hiRes),
+        )
+        assertEquals(
+            PhotoFormats(heif = false, jpeg = true, dngRaw = false),
+            PhotoFormats(heif = false, jpeg = false, dngRaw = true).normalizedFor(hiRes),
+        )
+    }
+
+    @Test
+    fun `defensive hi-res without a processed reader yields no output`() {
+        assertEquals(
+            PhotoFormats(heif = false, jpeg = false, dngRaw = false),
+            PhotoFormats(heif = true, jpeg = true, dngRaw = true)
+                .normalizedFor(PhotoSessionOutputs(processed = false, raw = false, hiRes = true)),
+        )
+    }
+
+    @Test
     fun `pre-session persisted request becomes non-empty without assuming raw availability`() {
         assertEquals(
             PhotoFormats(heif = true),

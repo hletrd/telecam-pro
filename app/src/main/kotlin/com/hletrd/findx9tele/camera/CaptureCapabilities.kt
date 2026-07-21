@@ -118,6 +118,22 @@ data class CameraCaps(
     val rawSize: Size?,
     val supportedDynamicRangeProfiles: Set<Long>,
     val largestJpegSize: Size?,
+    /**
+     * Full-sensor (remosaic, e.g. 200MP) still size, null when the camera advertises none. Two
+     * PUBLIC-API sources, in priority order: the standard ULTRA_HIGH_RESOLUTION_SENSOR path (the
+     * largest JPEG in SCALER_STREAM_CONFIGURATION_MAP_MAXIMUM_RESOLUTION), else a vendor-exposed
+     * remosaic size sitting in the REGULAR stream map ([pickVendorHiResSize] — the size the
+     * [largestJpegSize] active-array filter deliberately excludes for the binned path). Hi-res is
+     * session-gated (standalone-only, first-drop on the fallback ladder) — advertising here alone
+     * never admits it.
+     */
+    val hiResJpegSize: Size?,
+    /**
+     * True when [hiResJpegSize] came from the standard ultra-high-res path: the STILL request must
+     * then carry SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION or the HAL serves the binned readout into the
+     * full-size buffer. The vendor path sets nothing extra (the size itself selects remosaic).
+     */
+    val hiResUsesMaxResolutionMode: Boolean,
     // Largest YUV_420_888 still size within the camera's own active array. On the LOGICAL
     // multicamera the still path uses YUV instead of JPEG: this device's gralloc rejects the
     // ~42 MB JPEG blob allocation on the plain logical session ("SnapAlloc: ValidateDescriptor
@@ -223,6 +239,29 @@ data class CameraCaps(
                 .filter { activeArray == null || (it.width <= activeArray.width() && it.height <= activeArray.height()) }
                 .maxByOrNull { it.width.toLong() * it.height }
                 ?: jpegCandidates.maxByOrNull { it.width.toLong() * it.height }
+            // Full-sensor (remosaic) still size, both public-API paths. Standard: the ultra-high-res
+            // capability's dedicated maximum-resolution stream map. Vendor: some OEM HALs skip that
+            // capability and advertise the remosaic JPEG size directly in the REGULAR map — exactly
+            // the ≥2×-active-array sizes the [jpegSize] filter above must keep EXCLUDING for the
+            // binned path (allocating them on an ordinary session is the gralloc-wedge class).
+            // Defensive reads: a vendor map/characteristics hiccup must degrade to "not advertised",
+            // never fail the whole capability read.
+            val maxResJpeg: Size? = if (has(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_ULTRA_HIGH_RESOLUTION_SENSOR)) {
+                runCatching {
+                    chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP_MAXIMUM_RESOLUTION)
+                        ?.getOutputSizes(ImageFormat.JPEG)
+                        ?.maxByOrNull { it.width.toLong() * it.height }
+                }.getOrNull()
+            } else {
+                null
+            }
+            val vendorHiResJpeg: Size? = pickVendorHiResSize(
+                jpegCandidates = jpegCandidates.map { it.width to it.height },
+                activeArrayW = activeArray?.width() ?: 0,
+                activeArrayH = activeArray?.height() ?: 0,
+            )?.let { (w, h) -> jpegCandidates.first { it.width == w && it.height == h } }
+            val hiResJpeg = maxResJpeg ?: vendorHiResJpeg
+
             val yuvCandidates = map?.getOutputSizes(ImageFormat.YUV_420_888)?.toList().orEmpty()
             val yuvSize = yuvCandidates
                 .filter { activeArray == null || (it.width <= activeArray.width() && it.height <= activeArray.height()) }
@@ -303,6 +342,8 @@ data class CameraCaps(
                 rawSize = rawSize,
                 supportedDynamicRangeProfiles = dynamicProfiles,
                 largestJpegSize = jpegSize,
+                hiResJpegSize = hiResJpeg,
+                hiResUsesMaxResolutionMode = maxResJpeg != null,
                 largestYuvSize = yuvSize,
                 isLogicalMultiCamera = has(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA),
                 oisAvailable = oisModes.contains(CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON),
@@ -438,6 +479,26 @@ internal fun autoFpsBounds(ranges: List<Pair<Int, Int>>, maxFps: Int): Pair<Int,
  */
 internal fun matchesStreamAspect(width: Int, height: Int, fourByThree: Boolean): Boolean =
     if (fourByThree) height * 4 == width * 3 else height * 16 == width * 9
+
+/**
+ * Vendor-exposed remosaic detection: the largest JPEG candidate whose pixel area is at least twice
+ * the active array's — the active array IS the binned readout, so a genuine full-sensor remosaic
+ * size (4× area at a 2×2 binner) clears 2× while ordinary near-array sizes (4096×3072 vs 4080×3064)
+ * never do. Null when the active array is unknown: without the baseline the 2× test is meaningless
+ * and guessing would admit a session-crashing blob. Plain pairs — android.util.Size getters throw
+ * on the JVM (same reason as [pickStreamSize]).
+ */
+internal fun pickVendorHiResSize(
+    jpegCandidates: List<Pair<Int, Int>>,
+    activeArrayW: Int,
+    activeArrayH: Int,
+): Pair<Int, Int>? {
+    if (activeArrayW <= 0 || activeArrayH <= 0) return null
+    val arrayArea = activeArrayW.toLong() * activeArrayH
+    return jpegCandidates
+        .filter { (w, h) -> w.toLong() * h >= 2L * arrayArea }
+        .maxByOrNull { (w, h) -> w.toLong() * h }
+}
 
 /**
  * Pure core of the engine's fallback stream-size selection: the largest matching-aspect size at or

@@ -64,6 +64,9 @@ data class ExtraSettings(
     val level: Boolean = false,
     val punchIn: Boolean = false,
     val teleFinder: Boolean = false,
+    // Hi-res still INTENT; the engine re-resolves admission (photo + 4:3 + standalone + advertised)
+    // against the restored route, so restoring true on an inapplicable route is harmless.
+    val hiResStill: Boolean = false,
     val videoCodec: VideoCodec = VideoCodec.HEVC,
     val bitrateLevel: BitrateLevel = BitrateLevel.ULTRA,
     val videoFrameRate: VideoFrameRate = VideoFrameRate.DEFAULT,
@@ -247,6 +250,7 @@ class SettingsStore(private val prefs: SharedPreferences) {
                 level = safeBoolean("${prefix}level", ed.level),
                 punchIn = safeBoolean("${prefix}punchIn", ed.punchIn),
                 teleFinder = safeBoolean("${prefix}teleFinder", ed.teleFinder),
+                hiResStill = safeBoolean("${prefix}hiResStill", ed.hiResStill),
                 videoCodec = enumOr(safeString("${prefix}videoCodec", null), ed.videoCodec),
                 bitrateLevel = enumOr(safeString("${prefix}bitrateLevel", null), ed.bitrateLevel),
                 videoFrameRate = enumOr(safeString("${prefix}videoFrameRate", null), ed.videoFrameRate),
@@ -341,6 +345,7 @@ class SettingsStore(private val prefs: SharedPreferences) {
         putBoolean("${prefix}level", e.level)
         putBoolean("${prefix}punchIn", e.punchIn)
         putBoolean("${prefix}teleFinder", e.teleFinder)
+        putBoolean("${prefix}hiResStill", e.hiResStill)
         putString("${prefix}videoCodec", e.videoCodec.name)
         putString("${prefix}bitrateLevel", e.bitrateLevel.name)
         putString("${prefix}videoFrameRate", e.videoFrameRate.name)

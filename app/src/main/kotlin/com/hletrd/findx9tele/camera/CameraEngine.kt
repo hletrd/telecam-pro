@@ -400,6 +400,19 @@ class CameraEngine(private val context: Context) {
         beforeReadyPublication: ((generation: Long) -> Unit)? = null,
         terminalMutation: () -> Unit,
     ) {
+        // A fast commit retains the accepted session's still readers VERBATIM, but the hi-res
+        // admission axis (photo-only) can flip on exactly these same-route doors — e.g. a
+        // photo↔video mode flip on the standalone 3× with an unchanged stream size. Re-publishing
+        // the old reader truth under the new intent would either strand a 200MP reader in a video
+        // session or deny an admitted hi-res still, so when the freshly resolved admission no
+        // longer matches the session being retained, converge through the full reconfigure (the
+        // desired-state fields were already published under this transaction's monitor).
+        if (resolvedHiResStill() != transaction.before.photoSessionOutputs.hiRes &&
+            ownsOpticsTransaction(transaction) && !paused && recorder == null
+        ) {
+            reconfigureCamera(cameraId, transaction)
+            return
+        }
         convergeFastPathCommit(
             commit = {
                 commitOpticsReady(
@@ -579,6 +592,12 @@ class CameraEngine(private val context: Context) {
     private val gyro = com.hletrd.findx9tele.stab.GyroEis(context)
     @Volatile private var teleconverterMode = false
     @Volatile private var videoMode = false
+    // Hi-res still INTENT (user toggle, persisted). Resolution to an actual session demand happens
+    // in exactly one place ([resolvedHiResStill], the shared hiResAdmitted predicate) and is pushed
+    // to the controller before every configure; the doors that can flip the resolved value without
+    // a reconfigure of their own (the toggle itself, aspect, and same-route fast commits) each
+    // re-resolve and converge through the session reconfigure paths below.
+    @Volatile private var hiResStillIntent = false
     private val modeIntentGeneration = java.util.concurrent.atomic.AtomicLong(0)
     private val lensIntentGeneration = java.util.concurrent.atomic.AtomicLong(0)
     // HAL-native log (vendor com.oplus.log.video.mode). Session key → changing it reopens the camera.
@@ -1044,6 +1063,9 @@ class CameraEngine(private val context: Context) {
         terminalAcquisitionGate.runIfOpen cameraOpen@{
             if (UnsafeRecorderQuarantine.isActive()) return@cameraOpen
             openStarted = true
+            // Same pre-configure resolve as the dual-open path: this sequential fallback must not
+            // silently drop an admitted hi-res session (or keep one video mode denies).
+            ctrl.hiResStill = resolvedHiResStill(sel, c)
             ctrl.open(
                 selection = sel,
                 caps = c,
@@ -1905,9 +1927,47 @@ class CameraEngine(private val context: Context) {
 
     /** Still-photo center-crop aspect ratio; applies to HEIF and JPEG. W4_3 = no crop. */
     fun setAspectRatio(a: AspectRatio) {
+        val hiResBefore = resolvedHiResStill()
         aspectRatio = a
         // The finder PIP is 4:3-only (see pushTeleFinder); keep its resolved flag in step.
         pushTeleFinder()
+        // Hi-res is 4:3-only too, but unlike the finder flag it is SESSION state (the still reader
+        // size fixes at configureStreams): a 4:3↔16:9 flip that changes the resolved admission
+        // must rebuild the session, or a 16:9 selection would keep silently shooting uncropped
+        // 4:3 hi-res passthrough frames.
+        if (resolvedHiResStill() != hiResBefore) reopenForSession()
+    }
+
+    /**
+     * The ONE engine-side hi-res resolution ([hiResAdmitted]): defaults describe the CURRENT route;
+     * reconfigure passes its freshly selected route explicitly. Standalone here means the full
+     * standalone-camera truth — an unrouted selection of a non-logical camera (both halves of the
+     * documented blob-allocation/RAW crash classes).
+     */
+    private fun resolvedHiResStill(
+        sel: TeleSelection? = selection,
+        c: CameraCaps? = caps,
+    ): Boolean = hiResAdmitted(
+        requested = hiResStillIntent,
+        videoMode = videoMode,
+        aspect = aspectRatio,
+        standalone = sel != null && sel.physicalId == null && c?.isLogicalMultiCamera == false,
+        advertised = c?.hiResJpegSize != null,
+    )
+
+    /**
+     * Hi-res still intent. When the RESOLVED admission for the current route changes, the session
+     * must rebuild (the still reader size is fixed at configureStreams) — through the same
+     * generation-owned reopen door every other session-affecting toggle uses, never a bespoke
+     * close/open shortcut. A toggle that does not change the resolved value (video mode, 16:9, a
+     * camera that advertises nothing) costs no reopen; mode/lens/TC/aspect doors re-resolve on
+     * their own paths.
+     */
+    fun setHiResStill(enabled: Boolean) {
+        if (hiResStillIntent == enabled) return
+        val before = resolvedHiResStill()
+        hiResStillIntent = enabled
+        if (resolvedHiResStill() != before) reopenForSession()
     }
 
     /**
@@ -2200,6 +2260,10 @@ class CameraEngine(private val context: Context) {
             terminalAcquisitionGate.runIfOpen cameraOpen@{
                 if (UnsafeRecorderQuarantine.isActive()) return@cameraOpen
                 openStarted = true
+                // Resolved against the freshly selected route, BEFORE configure (the deferred
+                // session included) — the controller only re-checks the standalone/advertised
+                // halves defensively at its reader seam.
+                next.hiResStill = resolvedHiResStill(sel, c)
                 next.open(
                     selection = sel,
                     caps = c,
@@ -2529,7 +2593,12 @@ class CameraEngine(private val context: Context) {
                     return false
                 }
                 val callback = runCatching {
-                    photoCallback(effFormats, controls, retainedSnapshotLease = snapshotLease)
+                    photoCallback(
+                        effFormats,
+                        controls,
+                        hiRes = accepted.outputs.hiRes,
+                        retainedSnapshotLease = snapshotLease,
+                    )
                 }.getOrElse { failure ->
                     snapshotLease?.release()
                     android.util.Log.e("CameraEngine", "Photo callback creation failed", failure)
@@ -2566,7 +2635,7 @@ class CameraEngine(private val context: Context) {
             accepted.controller.capturePhoto(
                 formats.wantsProcessedStill,
                 formats.dngRaw,
-                photoCallback(formats, controls) { fire(shot + 1) },
+                photoCallback(formats, controls, hiRes = accepted.outputs.hiRes) { fire(shot + 1) },
             )
         }
         fire(0)
@@ -2600,7 +2669,7 @@ class CameraEngine(private val context: Context) {
                 ctrl.capturePhoto(
                     formats.wantsProcessedStill,
                     formats.dngRaw,
-                    photoCallback(formats, stepControls) { fire(i + 1) },
+                    photoCallback(formats, stepControls, hiRes = accepted.outputs.hiRes) { fire(i + 1) },
                 )
             }
             fire(0)
@@ -2625,7 +2694,7 @@ class CameraEngine(private val context: Context) {
             ctrl.capturePhoto(
                 formats.wantsProcessedStill,
                 formats.dngRaw,
-                photoCallback(formats, stepControls) { fire(i + 1) },
+                photoCallback(formats, stepControls, hiRes = accepted.outputs.hiRes) { fire(i + 1) },
             )
         }
         fire(0)
@@ -2661,7 +2730,7 @@ class CameraEngine(private val context: Context) {
                             accepted.controller.capturePhoto(
                                 formats.wantsProcessedStill,
                                 formats.dngRaw,
-                                photoCallback(formats, controls) {
+                                photoCallback(formats, controls, hiRes = accepted.outputs.hiRes) {
                                     if (timelapseRun.owns(generation)) schedule(period)
                                 },
                             )
@@ -2697,7 +2766,7 @@ class CameraEngine(private val context: Context) {
     )
     private val singleProcessedSnapshotBudget = ProcessedSnapshotBudget()
 
-    private fun shotSpec(shotControls: ManualControls): ShotSpec {
+    private fun shotSpec(shotControls: ManualControls, hiRes: Boolean): ShotSpec {
         val shotCaps = caps
         val shotTeleconverter = teleconverterMode
         val requestedAtMs = System.currentTimeMillis()
@@ -2725,6 +2794,7 @@ class CameraEngine(private val context: Context) {
             ),
             requestedAtMs = requestedAtMs,
             takenAtMs = requestedAtMs,
+            hiRes = hiRes,
         )
     }
 
@@ -2736,11 +2806,15 @@ class CameraEngine(private val context: Context) {
     private fun photoCallback(
         formats: PhotoFormats,
         shotControls: ManualControls,
+        // Accepted-session truth ([PhotoSessionOutputs.hiRes]) snapshotted at dispatch: the save
+        // lane must pick passthrough-vs-decode from the session the shot actually fired against,
+        // not whatever session is accepted when the image lands.
+        hiRes: Boolean,
         retainedSnapshotLease: ProcessedSnapshotBudget.Lease? = null,
         onDone: (() -> Unit)? = null,
     ): CameraController.PhotoCallback {
         require(retainedSnapshotLease == null || formats.wantsProcessedStill)
-        val requestSpec = shotSpec(shotControls)
+        val requestSpec = shotSpec(shotControls, hiRes)
         val expectedOutputExtensions = buildList {
             if (formats.heif) add("heic")
             if (formats.jpeg) add("jpg")

@@ -572,6 +572,28 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         rawAvailable = state.photoSessionOutputs.raw,
         onSetPhotoFormats = actions::onSetPhotoFormats,
     )
+    // Hi-res still: visible only when the SELECTED camera is a standalone route that actually
+    // advertises a full-sensor size (the logical seamless camera never qualifies — its gralloc
+    // rejects big blobs). The row shows the INTENT; the OSD HR tag shows accepted session truth.
+    val hiResSize = caps?.hiResJpegSize
+        ?.takeIf { caps.physicalId == null && !caps.isLogicalMultiCamera }
+    if (hiResSize != null) {
+        val hiResEnabled = !state.isRecording &&
+            state.mode == CaptureMode.PHOTO && state.aspectRatio == AspectRatio.W4_3
+        ToggleRow(
+            label = "High resolution",
+            checked = state.hiResStill,
+            onCheckedChange = actions::onToggleHiResStill,
+            enabled = hiResEnabled,
+        )
+        val mp = (hiResSize.width.toLong() * hiResSize.height / 1_000_000).toInt()
+        Text(
+            "${hiResSize.width}×${hiResSize.height} (${mp}MP). " +
+                "Full-sensor still. JPEG only, 4:3, RAW off. Reduces low-light quality.",
+            color = CameraColors.TextSecondary,
+            style = MaterialTheme.typography.labelSmall,
+        )
+    }
     SegmentedSelector(
         label = "Aspect",
         options = AspectRatio.entries,

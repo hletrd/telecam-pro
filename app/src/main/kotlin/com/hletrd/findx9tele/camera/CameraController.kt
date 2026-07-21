@@ -128,6 +128,15 @@ class CameraController(context: Context) {
     // hints this device exposes through Camera2: Hasselblad telephoto mode + effective zoom ~= 300/70.
     // These are best-effort and fully guarded.
     private var teleconverterMode = false
+    // Engine-RESOLVED hi-res admission ([hiResAdmitted]: photo + 4:3 + standalone + advertised),
+    // set BEFORE configure like [teleconverterMode]. @Volatile because the engine writes it on
+    // setupExecutor while the fallback ladder re-reads it on the camera thread. The plan drops
+    // hi-res on the FIRST failed attempt; [hiResReaderActive] below carries the per-session truth.
+    @Volatile var hiResStill = false
+    // True only while the CURRENT configure attempt built its processed reader at the full-sensor
+    // size — camera-thread-owned, reset every attempt, and the sole source for both the accepted
+    // Ready outputs and the still request's SENSOR_PIXEL_MODE.
+    private var hiResReaderActive = false
     // Video preview/recording must honor the selected fps even under auto exposure. Photo preview
     // leaves this false so AE can lower its frame rate for a brighter low-light view.
     private var pinAutoFps = false
@@ -473,6 +482,7 @@ class CameraController(context: Context) {
         runCatching { rawReader?.close() }
         jpegReader = null
         rawReader = null
+        hiResReaderActive = false
 
         // High-speed (slow-motion) uses a dedicated constrained session with ONLY the GL surface;
         // it cannot coexist with the JPEG/RAW still readers, so it is a separate path.
@@ -489,6 +499,7 @@ class CameraController(context: Context) {
             standalone = selection.physicalId == null,
             logicalMultiCamera = caps.isLogicalMultiCamera,
             teleconverterMode = teleconverterMode,
+            wantHiRes = hiResStill,
         )
         val useHlg = plan.useHlg
         val useJpeg = plan.useJpeg
@@ -509,7 +520,16 @@ class CameraController(context: Context) {
             // pipeline re-encodes through a Bitmap either way). Standalone cameras keep the proven
             // HAL-JPEG path.
             val useYuv = caps.isLogicalMultiCamera
-            val size = if (useYuv) caps.largestYuvSize else caps.largestJpegSize
+            // Hi-res admission RE-CHECKED at the seam (defensive, same discipline as the RAW gate
+            // above): standalone only — the plan already gates, but a big blob reaching a routed or
+            // logical session is exactly the gralloc/HAL-crash class this file exists to prevent.
+            val useHiRes = plan.useHiResStill && selection.physicalId == null &&
+                !caps.isLogicalMultiCamera && caps.hiResJpegSize != null
+            val size = when {
+                useHiRes -> caps.hiResJpegSize
+                useYuv -> caps.largestYuvSize
+                else -> caps.largestJpegSize
+            }
             size?.let {
                 val reader = ImageReader.newInstance(
                     it.width, it.height,
@@ -518,6 +538,7 @@ class CameraController(context: Context) {
                 )
                 reader.setOnImageAvailableListener({ r -> onImage(r, isRaw = false) }, handler)
                 jpegReader = reader
+                hiResReaderActive = useHiRes
                 configs.add(OutputConfiguration(reader.surface).apply {
                     selection.physicalId?.let { pid -> setPhysicalCameraId(pid) }
                 })
@@ -544,12 +565,13 @@ class CameraController(context: Context) {
                 override fun onConfigured(s: CameraCaptureSession) {
                     if (closed) { runCatching { s.close() }; return } // closed before config completed
                     session = s
-                    if (BuildConfig.DEBUG) Log.i(TAG, "Session configured (fallback=$attempt, hlg=$useHlg, jpeg=$useJpeg, raw=$useRaw, vendorLog=$vendorLogMode)")
+                    if (BuildConfig.DEBUG) Log.i(TAG, "Session configured (fallback=$attempt, hlg=$useHlg, jpeg=$useJpeg, raw=$useRaw, hiRes=$hiResReaderActive, vendorLog=$vendorLogMode)")
                     when (sessionStartDelivery(startPreview())) {
                         SessionStartDelivery.READY -> onReady.onReady(
                             acceptedPhotoSessionOutputs(
                                 processedReaderPresent = jpegReader != null,
                                 rawReaderPresent = rawReader != null,
+                                hiResReaderPresent = hiResReaderActive,
                             ),
                         )
                         SessionStartDelivery.ERROR ->
@@ -1373,8 +1395,19 @@ class CameraController(context: Context) {
                     applyVendorLog()
                     applyTeleconverterHints()
                     applyMetering(this, requestControls)
-                    // We rotate pixels ourselves (HEIF) / tag DNG orientation; keep JPEG upright.
+                    // We rotate pixels ourselves (HEIF) / tag DNG + hi-res-JPEG orientation; keep
+                    // the HAL out of rotation entirely.
                     set(CaptureRequest.JPEG_ORIENTATION, 0)
+                    // Standard ultra-high-res path only: the still must OPT IN to the full-sensor
+                    // readout or the HAL serves the binned image into the hi-res buffer. The
+                    // vendor path needs nothing (the reader size itself selects remosaic), and the
+                    // REPEATING request stays default pixel mode — only this still crosses over.
+                    if (hiResReaderActive && caps.hiResUsesMaxResolutionMode) {
+                        set(
+                            CaptureRequest.SENSOR_PIXEL_MODE,
+                            CameraMetadata.SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION,
+                        )
+                    }
                     // Zero-shutter-lag: with the HAL AE owning exposure the HAL may serve the still
                     // from its ring buffer (capture start ≈ tap instead of a full pipeline drain —
                     // measured ~0.8 s in low light). Ignored by spec when AE is OFF (manual /
@@ -1656,9 +1689,13 @@ internal fun customWbResultBelongsToRequest(
 internal fun acceptedPhotoSessionOutputs(
     processedReaderPresent: Boolean,
     rawReaderPresent: Boolean,
+    hiResReaderPresent: Boolean = false,
 ): PhotoSessionOutputs = PhotoSessionOutputs(
     processed = processedReaderPresent,
     raw = rawReaderPresent,
+    // Session truth, not intent: hiRes only when the processed reader that SURVIVED configure is
+    // the full-sensor one (the ladder's later attempts rebuild it at the ordinary size).
+    hiRes = processedReaderPresent && hiResReaderPresent,
 )
 
 /** Rejects AF telemetry from an outgoing repeating request and seeds each new request once. */
@@ -1698,6 +1735,7 @@ internal data class SessionAttemptPlan(
     val useJpeg: Boolean,
     val useRaw: Boolean,
     val useVendorOperationMode: Boolean = false,
+    val useHiResStill: Boolean = false,
 )
 
 /**
@@ -1705,6 +1743,8 @@ internal data class SessionAttemptPlan(
  * HAL-crash-critical ordering is unit-testable off-device. TELE tries both operation modes with
  * capture streams before either preview-only last resort. [standalone] is the
  * `selection.physicalId == null` RAW gate (RAW via physical routing SIGSEGVs this QTI HAL).
+ * [wantHiRes] rides ONLY attempt 0 (TELE: the first vendor-mode attempt) and is the FIRST thing
+ * dropped: attempt 1 re-tries the ordinary streams before the ladder degrades anything else.
  */
 internal fun sessionAttemptPlan(
     attempt: Int,
@@ -1713,6 +1753,7 @@ internal fun sessionAttemptPlan(
     standalone: Boolean,
     logicalMultiCamera: Boolean = false,
     teleconverterMode: Boolean = false,
+    wantHiRes: Boolean = false,
 ): SessionAttemptPlan {
     val (streamAttempt, vendorMode) = if (teleconverterMode) {
         when (attempt) {
@@ -1728,6 +1769,7 @@ internal fun sessionAttemptPlan(
     } else {
         attempt to false
     }
+    val hiRes = wantHiRes && attempt == 0
     return SessionAttemptPlan(
     useHlg = wantHlg && streamAttempt < 2,
     useJpeg = streamAttempt < 3,
@@ -1736,8 +1778,12 @@ internal fun sessionAttemptPlan(
     // LOGICAL camera a still with the RAW target errors the whole camera device ~5 s after the
     // shot (device-observed CAMERA_ERROR(3), 2026-07-14) — no image ever arrives. DNG therefore
     // exists only in TELE mode (standalone 3×) and on any explicit standalone selection.
-    useRaw = streamAttempt < 1 && supportsRaw && standalone && !logicalMultiCamera,
+    // Hi-res additionally FORCES RAW off on its one attempt: a 200MP blob + RAW in one session is
+    // exactly the over-demanding stream combo this HAL punishes, and the maximum-resolution map
+    // need not carry RAW at all.
+    useRaw = streamAttempt < 1 && supportsRaw && standalone && !logicalMultiCamera && !hiRes,
     useVendorOperationMode = vendorMode,
+    useHiResStill = hiRes,
     )
 }
 

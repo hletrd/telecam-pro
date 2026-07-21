@@ -101,6 +101,98 @@ class SessionFallbackLadderTest {
     }
 
     @Test
+    fun `hi-res rides attempt 0 with RAW forced off`() {
+        // A 200MP blob + RAW in one session is the over-demanding combo this HAL punishes, so the
+        // one hi-res attempt must NEVER carry RAW even with full standalone RAW support.
+        val p = sessionAttemptPlan(
+            attempt = 0,
+            wantHlg = true,
+            supportsRaw = true,
+            standalone = true,
+            wantHiRes = true,
+        )
+        assertTrue(p.useHiResStill)
+        assertFalse(p.useRaw)
+        assertTrue(p.useJpeg)
+        assertTrue(p.useHlg)
+    }
+
+    @Test
+    fun `hi-res is the first thing dropped - attempt 1 equals the existing table`() {
+        // The retry after a failed hi-res configure must degrade ONLY hi-res; every later rung is
+        // byte-identical to the ladder without the request.
+        for (attempt in 1..3) {
+            assertEquals(
+                sessionAttemptPlan(attempt, wantHlg = true, supportsRaw = true, standalone = true),
+                sessionAttemptPlan(
+                    attempt,
+                    wantHlg = true,
+                    supportsRaw = true,
+                    standalone = true,
+                    wantHiRes = true,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `unwanted hi-res changes nothing at attempt 0`() {
+        assertEquals(
+            sessionAttemptPlan(0, wantHlg = true, supportsRaw = true, standalone = true),
+            sessionAttemptPlan(0, wantHlg = true, supportsRaw = true, standalone = true, wantHiRes = false),
+        )
+    }
+
+    @Test
+    fun `tele hi-res rides only the first vendor-mode attempt`() {
+        val vendor0 = sessionAttemptPlan(
+            attempt = 0,
+            wantHlg = true,
+            supportsRaw = true,
+            standalone = true,
+            teleconverterMode = true,
+            wantHiRes = true,
+        )
+        assertTrue(vendor0.useVendorOperationMode)
+        assertTrue(vendor0.useHiResStill)
+        assertFalse(vendor0.useRaw)
+        // Every later TELE rung — including the regular-mode retry of the same stream set at
+        // attempt 3 — is exactly the existing table (hi-res never re-enters mid-ladder).
+        for (attempt in 1..7) {
+            assertEquals(
+                sessionAttemptPlan(attempt, true, true, true, teleconverterMode = true),
+                sessionAttemptPlan(attempt, true, true, true, teleconverterMode = true, wantHiRes = true),
+            )
+        }
+    }
+
+    @Test
+    fun `accepted hi-res truth requires the processed reader`() {
+        assertTrue(
+            acceptedPhotoSessionOutputs(
+                processedReaderPresent = true,
+                rawReaderPresent = false,
+                hiResReaderPresent = true,
+            ).hiRes,
+        )
+        // Defensive: a hi-res flag without a surviving processed reader must not claim hi-res.
+        assertFalse(
+            acceptedPhotoSessionOutputs(
+                processedReaderPresent = false,
+                rawReaderPresent = true,
+                hiResReaderPresent = true,
+            ).hiRes,
+        )
+        assertFalse(
+            acceptedPhotoSessionOutputs(
+                processedReaderPresent = true,
+                rawReaderPresent = false,
+                hiResReaderPresent = false,
+            ).hiRes,
+        )
+    }
+
+    @Test
     fun `accepted reader set reports actual still outputs`() {
         assertEquals(
             PhotoSessionOutputs(processed = true, raw = true),

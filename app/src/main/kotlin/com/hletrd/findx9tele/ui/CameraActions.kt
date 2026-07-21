@@ -86,6 +86,8 @@ interface CameraActions {
     fun onModeChange(mode: CaptureMode)
     fun onTransfer(transfer: ColorTransfer)
     fun onSetPhotoFormats(formats: PhotoFormats)
+    /** Hi-res (full-sensor) still INTENT; accepted truth is photoSessionOutputs.hiRes. */
+    fun onToggleHiResStill(enabled: Boolean)
     fun onAspectRatio(ratio: AspectRatio)
     fun onToggleRecordAudio(enabled: Boolean)
     fun onAudioGain(gain: Float)
