@@ -22,6 +22,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.semantics.contentDescription
@@ -93,6 +94,7 @@ class UiSnapshotActivity : ComponentActivity() {
                             SnapshotStateProbe(
                                 transfer = snapshotState.transfer,
                                 layoutDirection = layoutDirection,
+                                modifier = Modifier.align(AbsoluteAlignment.TopLeft),
                             )
                         }
                     }
@@ -137,22 +139,32 @@ private fun Intent.snapshotRequest(): SnapshotRequest = SnapshotRequest(
 )
 
 @Composable
-private fun SnapshotStateProbe(transfer: ColorTransfer, layoutDirection: LayoutDirection) {
+private fun SnapshotStateProbe(
+    transfer: ColorTransfer,
+    layoutDirection: LayoutDirection,
+    modifier: Modifier = Modifier,
+) {
     // UIAutomator omits AccessibilityNodeInfo.stateDescription. These nonvisual, non-actionable,
     // debug-only nodes let device acceptance prove exact state without weakening production tile
     // semantics or using OCR/pixel-change guesses.
-    Box(modifier = Modifier.size(2.dp)) {
-        Spacer(
-            modifier = Modifier
-                .size(1.dp)
-                .semantics { contentDescription = "Snapshot Gamma ${snapshotTransferLabel(transfer)}" },
-        )
-        Spacer(
-            modifier = Modifier
-                .absoluteOffset(x = 1.dp)
-                .size(1.dp)
-                .semantics { contentDescription = "Snapshot layout $layoutDirection" },
-        )
+    // Keep the tiny probes in a raw LTR coordinate space so neither node is laid out beyond the
+    // two-dp host when the production subtree itself is intentionally rendered RTL.
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+        Box(modifier = modifier.size(2.dp)) {
+            Spacer(
+                modifier = Modifier
+                    .size(1.dp)
+                    .semantics {
+                        contentDescription = "Snapshot Gamma ${snapshotTransferLabel(transfer)}"
+                    },
+            )
+            Spacer(
+                modifier = Modifier
+                    .absoluteOffset(x = 1.dp)
+                    .size(1.dp)
+                    .semantics { contentDescription = "Snapshot layout $layoutDirection" },
+            )
+        }
     }
 }
 
