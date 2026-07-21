@@ -18,7 +18,16 @@ import math
 from dataclasses import dataclass
 from fractions import Fraction
 
-from dtest.adb import APP_ID, MEDIA_DIR, MEDIA_RELATIVE_PATH, Adb, DisplayMetrics, MediaRow, UiNode
+from dtest.adb import (
+    APP_ID,
+    MAIN_ACTIVITY,
+    MEDIA_DIR,
+    MEDIA_RELATIVE_PATH,
+    Adb,
+    DisplayMetrics,
+    MediaRow,
+    UiNode,
+)
 from dtest.framework import Context, Incomplete, Skip, UnsafeState, test
 from dtest import media
 
@@ -122,7 +131,7 @@ class PhotoSettingMarkers:
 
 def ensure_foreground(ctx: Context) -> int:
     pid = ctx.adb.pid()
-    if pid is None:
+    if pid is None or ctx.adb.resumed_activity() != MAIN_ACTIVITY:
         if not ctx.can_launch:
             raise Skip("app is not already foreground; read-only case does not launch it")
         pid = ctx.adb.launch()

@@ -19,6 +19,7 @@ from dtest import framework  # noqa: E402
 from dtest import media  # noqa: E402
 from dtest.adb import (  # noqa: E402
     APP_ID,
+    MAIN_ACTIVITY,
     MEDIA_RELATIVE_PATH,
     Adb,
     AdbError,
@@ -47,13 +48,24 @@ class FakeTree:
 
 
 class GuardAdb(Adb):
-    def __init__(self, workdir: Path, *, allow_destructive: bool, descriptions: set[str]):
+    def __init__(
+        self,
+        workdir: Path,
+        *,
+        allow_destructive: bool,
+        descriptions: set[str],
+        resumed_component: str | None = MAIN_ACTIVITY,
+    ):
         super().__init__("test-serial", workdir, allow_destructive=allow_destructive)
         self.descriptions = descriptions
+        self.resumed_component = resumed_component
         self.commands: list[str] = []
 
     def pid(self) -> int | None:
         return 123
+
+    def resumed_activity(self) -> str | None:
+        return self.resumed_component
 
     def ui(self) -> FakeTree:
         return FakeTree(self.descriptions)
@@ -182,6 +194,20 @@ class DfAdb(Adb):
 
 
 class RunnerHelpersTest(unittest.TestCase):
+    def test_resumed_activity_parses_and_expands_android_component(self) -> None:
+        class ActivityAdb(Adb):
+            def shell(self, cmd: str, timeout: int = 60) -> str:
+                del cmd, timeout
+                return (
+                    "topResumedActivity=ActivityRecord{123 u0 "
+                    "me.example/.MainActivity t42}"
+                )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            adb = ActivityAdb("test-serial", Path(temp_dir))
+
+            self.assertEqual(adb.resumed_activity(), "me.example/me.example.MainActivity")
+
     def test_ui_persists_named_hierarchy_evidence_and_rejects_unsafe_names(self) -> None:
         xml = (
             '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -1639,7 +1665,10 @@ class ForceStopGuardTest(unittest.TestCase):
 
         self.assertEqual(adb.launch(wait_s=0), 123)
 
-        self.assertTrue(any("am start" in command for command in adb.commands))
+        self.assertIn(
+            f"am start --activity-reorder-to-front -n {MAIN_ACTIVITY}",
+            adb.commands,
+        )
 
     def test_force_stop_refuses_active_recording(self) -> None:
         adb, temp_dir = self.make_adb(allowed=True, descriptions={"Stop recording"})
@@ -1680,6 +1709,24 @@ class ForceStopGuardTest(unittest.TestCase):
 
         self.assertFalse(any("am start" in command for command in adb.commands))
 
+    def test_read_only_foreground_helper_rejects_snapshot_activity_chrome(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            adb = GuardAdb(
+                Path(temp_dir),
+                allow_destructive=False,
+                descriptions={"Open settings"},
+                resumed_component=cases.SNAPSHOT_ACTIVITY,
+            )
+            context = framework.Context(adb, Path(temp_dir), can_launch=False)
+
+            with self.assertRaisesRegex(
+                framework.Skip,
+                "app is not already foreground; read-only case does not launch it",
+            ):
+                cases.ensure_foreground(context)
+
+            self.assertFalse(any("am start" in command for command in adb.commands))
+
     def test_declared_and_approved_launch_capability_restores_foreground(self) -> None:
         adb, temp_dir = self.make_adb(allowed=True, descriptions=set())
         self.addCleanup(temp_dir.cleanup)
@@ -1687,7 +1734,7 @@ class ForceStopGuardTest(unittest.TestCase):
 
         def launch_without_wait(wait_s: float = 5.0) -> int:
             del wait_s
-            adb.commands.append(f"am start -n {APP_ID}/com.hletrd.findx9tele.MainActivity")
+            adb.commands.append(f"am start --activity-reorder-to-front -n {MAIN_ACTIVITY}")
             return 123
         adb.launch = launch_without_wait  # type: ignore[method-assign]
 

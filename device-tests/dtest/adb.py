@@ -270,6 +270,22 @@ class Adb:
         out = self.shell(f"pidof {APP_ID} || true")
         return int(out.split()[0]) if out and out.split()[0].isdigit() else None
 
+    def resumed_activity(self) -> str | None:
+        """Return the exact foreground component, expanding Android's `.Class` shorthand."""
+        output = self.shell("dumpsys activity activities")
+        for line in output.splitlines():
+            if "ResumedActivity" not in line:
+                continue
+            match = re.search(r"\bu\d+\s+([A-Za-z0-9_.]+/[A-Za-z0-9_.$]+)(?:\s|})", line)
+            if match is None:
+                continue
+            component = match.group(1)
+            package_name, class_name = component.split("/", 1)
+            if class_name.startswith("."):
+                class_name = package_name + class_name
+            return f"{package_name}/{class_name}"
+        return None
+
     def launch(self, wait_s: float = 5.0) -> int:
         if not self.allow_destructive:
             raise AdbError(
@@ -277,15 +293,18 @@ class Adb:
                 "startup may reclaim incomplete app-owned pending media"
             )
         self.shell("input keyevent KEYCODE_WAKEUP")
-        self.shell(f"am start -n {MAIN_ACTIVITY}")
+        self.shell(f"am start --activity-reorder-to-front -n {MAIN_ACTIVITY}")
         deadline = time.time() + wait_s + 10
+        last_resumed: str | None = None
         while time.time() < deadline:
             p = self.pid()
-            if p:
+            last_resumed = self.resumed_activity()
+            if p and last_resumed == MAIN_ACTIVITY:
                 time.sleep(wait_s)  # let the camera session configure
-                return p
+                if self.pid() == p and self.resumed_activity() == MAIN_ACTIVITY:
+                    return p
             time.sleep(0.5)
-        raise AdbError("app did not start")
+        raise AdbError(f"main activity did not reach foreground (resumed={last_resumed!r})")
 
     def force_stop(self) -> None:
         if not self.allow_destructive:
