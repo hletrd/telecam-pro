@@ -27,6 +27,7 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.absolutePadding
 import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
@@ -48,6 +49,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
@@ -61,6 +63,7 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.Modifier
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.ui.draw.alpha
@@ -99,6 +102,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.constrainHeight
 import androidx.compose.ui.unit.constrainWidth
 import androidx.compose.ui.unit.dp
@@ -766,11 +770,11 @@ fun CameraScreen(
                             glyphRotation = overlayRotation,
                             modifier = when (entryAnchor) {
                                 FnEntryAnchor.START -> Modifier
-                                    .align(Alignment.CenterStart)
-                                    .padding(start = 12.dp)
+                                    .align(AbsoluteAlignment.CenterLeft)
+                                    .absolutePadding(left = 12.dp)
                                 FnEntryAnchor.END -> Modifier
-                                    .align(Alignment.CenterEnd)
-                                    .padding(end = 12.dp)
+                                    .align(AbsoluteAlignment.CenterRight)
+                                    .absolutePadding(right = 12.dp)
                             },
                         )
                     }
@@ -1466,6 +1470,8 @@ private fun ZoomIndicator(
 internal const val FN_OVERLAY_COLUMN_COUNT = 4
 internal const val FN_OVERLAY_HELD_COLUMN_COUNT = 2
 internal const val FN_OVERLAY_MAX_SLOTS = 8
+internal const val FN_OVERLAY_HELD_WIDTH_DP = 148
+internal const val FN_OVERLAY_SCRIM_ALPHA = 0.22f
 
 internal enum class FnOverlayAnchor { BOTTOM_CENTER, CENTER_START, CENTER_END }
 
@@ -1602,7 +1608,7 @@ private fun FnOverlay(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.30f)),
+            .background(Color.Black.copy(alpha = FN_OVERLAY_SCRIM_ALPHA)),
     ) {
         Box(
             modifier = Modifier
@@ -1619,100 +1625,113 @@ private fun FnOverlay(
                 .padding(bottom = 154.dp)
                 .fillMaxWidth()
             FnOverlayAnchor.CENTER_START -> Modifier
-                .align(Alignment.CenterStart)
-                .padding(start = 14.dp, top = 14.dp, bottom = 14.dp)
-                .width(232.dp)
+                .align(AbsoluteAlignment.CenterLeft)
+                .absolutePadding(left = 14.dp, top = 14.dp, bottom = 14.dp)
+                .width(FN_OVERLAY_HELD_WIDTH_DP.dp)
             FnOverlayAnchor.CENTER_END -> Modifier
-                .align(Alignment.CenterEnd)
-                .padding(end = 14.dp, top = 14.dp, bottom = 14.dp)
-                .width(232.dp)
+                .align(AbsoluteAlignment.CenterRight)
+                .absolutePadding(right = 14.dp, top = 14.dp, bottom = 14.dp)
+                .width(FN_OVERLAY_HELD_WIDTH_DP.dp)
         }
-        Column(
-            modifier = panelPlacement
-                .clip(RoundedCornerShape(8.dp))
-                // The full-screen scrim stays light, but the compact panel itself is opaque so
-                // focal-rail values cannot read as a second line inside held-landscape Fn tiles.
-                .background(Color(0xFF181818))
-                .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(8.dp))
-                .semantics {
-                    paneTitle = "Function menu"
-                    isTraversalGroup = true
-                }
-                // Consume blank-panel taps without exposing a nameless dummy Button.
-                .pointerInput(Unit) { detectTapGestures(onTap = {}) }
-                .verticalScroll(rememberScrollState())
-                .padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+        // Raw placement, grid order, and label/value axes describe physical camera controls rather
+        // than reading order. Keep that coordinate space absolute under RTL locales; each Text still
+        // applies Unicode bidi shaping to its own localized content.
+        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+            Column(
+                modifier = panelPlacement
+                    .clip(RoundedCornerShape(8.dp))
+                    // The full-screen scrim stays light, but the compact panel itself is opaque so
+                    // focal-rail values cannot read as a second line inside held-landscape Fn tiles.
+                    .background(Color(0xFF181818))
+                    .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(8.dp))
+                    .semantics {
+                        paneTitle = "Function menu"
+                        isTraversalGroup = true
+                    }
+                    // Consume blank-panel taps without exposing a nameless dummy Button.
+                    .pointerInput(Unit) { detectTapGestures(onTap = {}) }
+                    .verticalScroll(rememberScrollState())
+                    .padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                // Short glyphs counter-rotate with device orientation; the wide header Row stays
-                // screen-fixed because rotating a wide box would poke it out of its layout slot.
-                Text("Fn", color = CameraColors.TextPrimary, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.rotate(glyphRotation))
-                Box(
-                    modifier = Modifier
-                        .focusRequester(closeFocusRequester)
-                        .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-                        .clip(RoundedCornerShape(50))
-                        .focusable()
-                        .clearAndSetSemantics {
-                            contentDescription = "Close function menu"
-                            role = Role.Button
-                            onClick {
-                                dismiss()
-                                true
-                            }
-                        }
-                        .clickable(role = Role.Button, onClick = onDismiss),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        "Close",
-                        color = CameraColors.TextSecondary,
-                        style = MaterialTheme.typography.labelMedium,
-                        modifier = Modifier.rotate(glyphRotation).padding(horizontal = 10.dp, vertical = 5.dp),
-                    )
-                }
-            }
-            gridRows.forEach { rowSlots ->
                 Row(
-                    // Preserve empty raw cells/rows for custom lists shorter than eight. Without
-                    // the row floor an all-null held row collapses and changes the perceived 4x2
-                    // slot position even though fnOverlayGridRows intentionally retained it.
-                    modifier = Modifier.fillMaxWidth().heightIn(min = 58.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    rowSlots.forEach { slot ->
-                        if (slot == null) {
-                            Spacer(modifier = Modifier.weight(1f))
-                        } else {
-                            val manualDial = manualDialForFnSlot(slot)
-                            val enabled = quickFnEnabled(slot, state) && when (manualDial) {
-                                DialType.WB -> whiteBalanceFnChipEnabled(state.controls.wbMode, availability)
-                                null -> true
-                                else -> quickManualDialEnabled(manualDial, availability)
+                    // Short glyphs counter-rotate with device orientation; the wide header Row stays
+                    // screen-fixed because rotating a wide box would poke it out of its layout slot.
+                    Text(
+                        "Fn",
+                        color = CameraColors.TextPrimary,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.rotate(glyphRotation),
+                    )
+                    Box(
+                        modifier = Modifier
+                            .focusRequester(closeFocusRequester)
+                            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                            .clip(RoundedCornerShape(50))
+                            .focusable()
+                            .clearAndSetSemantics {
+                                contentDescription = "Close function menu"
+                                role = Role.Button
+                                onClick {
+                                    dismiss()
+                                    true
+                                }
                             }
-                            FnOverlayTile(
-                                slot = slot,
-                                value = fnSlotValue(slot, state),
-                                enabled = enabled,
-                                onClick = {
-                                    if (manualDial != null) {
-                                        onSelectManualDial(manualDial)
-                                        onDismiss()
-                                    } else {
-                                        // Cycle/toggle actions keep the context visible so several
-                                        // shooting choices can be prepared in one Fn visit.
-                                        performQuickFn(slot, state, actions)
-                                    }
-                                },
-                                glyphRotation = glyphRotation,
-                                contentAxis = contentAxis,
-                                modifier = Modifier.weight(1f),
-                            )
+                            .clickable(role = Role.Button, onClick = onDismiss),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            "Close",
+                            color = CameraColors.TextSecondary,
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier
+                                .rotate(glyphRotation)
+                                .padding(horizontal = 10.dp, vertical = 5.dp),
+                        )
+                    }
+                }
+                gridRows.forEach { rowSlots ->
+                    Row(
+                        // Preserve empty raw cells/rows for custom lists shorter than eight. Without
+                        // the row floor an all-null held row collapses and changes the perceived 4x2
+                        // slot position even though fnOverlayGridRows intentionally retained it.
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 58.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        rowSlots.forEach { slot ->
+                            if (slot == null) {
+                                Spacer(modifier = Modifier.weight(1f))
+                            } else {
+                                val manualDial = manualDialForFnSlot(slot)
+                                val enabled = quickFnEnabled(slot, state) && when (manualDial) {
+                                    DialType.WB -> whiteBalanceFnChipEnabled(state.controls.wbMode, availability)
+                                    null -> true
+                                    else -> quickManualDialEnabled(manualDial, availability)
+                                }
+                                FnOverlayTile(
+                                    slot = slot,
+                                    value = fnSlotValue(slot, state),
+                                    enabled = enabled,
+                                    onClick = {
+                                        if (manualDial != null) {
+                                            onSelectManualDial(manualDial)
+                                            onDismiss()
+                                        } else {
+                                            // Cycle/toggle actions keep the context visible so several
+                                            // shooting choices can be prepared in one Fn visit.
+                                            performQuickFn(slot, state, actions)
+                                        }
+                                    },
+                                    glyphRotation = glyphRotation,
+                                    contentAxis = contentAxis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                            }
                         }
                     }
                 }

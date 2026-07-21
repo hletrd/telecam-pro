@@ -46,6 +46,7 @@ FN_NUMERIC_TILE_LABELS = {"Focus", "Shutter", "ISO", "WB", "EV", "Zoom"}
 FN_DEFAULT_PHYSICAL_ORDER = (
     "AE", "Focus", "Shutter", "ISO", "WB", "Gamma", "Stabilization", "Audio",
 )
+FN_HELD_MAX_DEPTH_FRACTION = 0.40
 SNAPSHOT_ACTIVITY = f"{APP_ID}/com.hletrd.findx9tele.ui.UiSnapshotActivity"
 CAPTURE_SETTLED = re.compile(
     r"CaptureFamily: settled stem=(IMG_TELECAM_F1_[0-9]{13}_[0-9]{10}) "
@@ -1439,13 +1440,22 @@ def function_menu_layout_errors(
             ) > edge_tolerance:
                 errors.append("Fn tray: 270° raw panel is not End-anchored")
 
-            physical_bottom = max(
-                _physical_bounds(node, metrics, orientation)[3] for node in panel_nodes
-            )
+            physical_panel_bounds = [
+                _physical_bounds(node, metrics, orientation) for node in panel_nodes
+            ]
+            physical_top = min(bounds[1] for bounds in physical_panel_bounds)
+            physical_bottom = max(bounds[3] for bounds in physical_panel_bounds)
             if metrics.width_px - physical_bottom > edge_tolerance:
                 errors.append(
                     f"Fn tray: {orientation}° is not in the physical bottom zone "
                     f"(gap={metrics.width_px - physical_bottom}px)"
+                )
+            physical_depth = physical_bottom - physical_top
+            maximum_depth = math.ceil(metrics.width_px * FN_HELD_MAX_DEPTH_FRACTION)
+            if physical_depth > maximum_depth:
+                errors.append(
+                    f"Fn tray: {orientation}° consumes {physical_depth}px of the "
+                    f"{metrics.width_px}px physical short edge (max={maximum_depth}px)"
                 )
 
         if expected_physical_order is not None:

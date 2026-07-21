@@ -603,6 +603,7 @@ class UiSemanticsTest(unittest.TestCase):
         *,
         wrong_order: bool = False,
         wrong_anchor: bool = False,
+        oversized_depth: bool = False,
     ) -> str:
         physical_order = [
             "AE", "Focus", "Shutter", "ISO",
@@ -617,7 +618,10 @@ class UiSemanticsTest(unittest.TestCase):
                 physical_order[6], physical_order[2],
                 physical_order[7], physical_order[3],
             ]
-            columns = (60, 146) if wrong_anchor else (8, 94)
+            if oversized_depth:
+                columns = (8, 94)
+            else:
+                columns = (60, 116) if wrong_anchor else (8, 64)
         else:
             raw_order = [
                 physical_order[3], physical_order[7],
@@ -625,7 +629,11 @@ class UiSemanticsTest(unittest.TestCase):
                 physical_order[1], physical_order[5],
                 physical_order[0], physical_order[4],
             ]
-            columns = (132, 218) if wrong_anchor else (184, 270)
+            if oversized_depth:
+                columns = (188, 274)
+            else:
+                columns = (196, 252) if wrong_anchor else (248, 304)
+        tile_width = 78 if oversized_depth else 48
         nodes = []
         for index, description in enumerate(raw_order):
             left = columns[index % 2]
@@ -633,7 +641,7 @@ class UiSemanticsTest(unittest.TestCase):
             nodes.append(
                 f'<node text="" content-desc="{description}" class="android.widget.Button" '
                 'checkable="false" checked="false" selected="false" enabled="true" '
-                f'clickable="true" focusable="true" bounds="[{left},{top}][{left + 78},{top + 58}]" />'
+                f'clickable="true" focusable="true" bounds="[{left},{top}][{left + tile_width},{top + 58}]" />'
             )
         close_left = columns[0]
         nodes.append(
@@ -674,6 +682,13 @@ class UiSemanticsTest(unittest.TestCase):
                     expected_physical_order=expected,
                 )
                 self.assertTrue(any("anchored" in error for error in wrong_anchor))
+                oversized = cases.function_menu_layout_errors(
+                    UiTree(self.held_function_menu_xml(orientation, oversized_depth=True)),
+                    metrics,
+                    device_orientation=orientation,
+                    expected_physical_order=expected,
+                )
+                self.assertTrue(any("physical short edge" in error for error in oversized))
 
     @staticmethod
     def fn_entry_xml(*, at_end: bool = False) -> str:

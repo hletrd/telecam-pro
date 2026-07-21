@@ -3,9 +3,19 @@ package com.hletrd.findx9tele.ui
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.FnSlot
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FnOverlayPolicyTest {
+
+    @Test
+    fun `held tray stays compact while preserving two 48dp raw columns`() {
+        val innerWidth = FN_OVERLAY_HELD_WIDTH_DP - 20
+        val tileWidth = (innerWidth - 8) / FN_OVERLAY_HELD_COLUMN_COUNT
+
+        assertTrue(tileWidth >= 48)
+        assertTrue(FN_OVERLAY_SCRIM_ALPHA <= 0.25f)
+    }
 
     @Test
     fun `Fn overlay preserves active order while deduplicating and capping at eight`() {

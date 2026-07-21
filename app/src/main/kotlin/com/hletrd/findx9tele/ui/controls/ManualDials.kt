@@ -46,6 +46,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
@@ -62,9 +63,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hletrd.findx9tele.camera.CameraCaps
@@ -318,37 +321,41 @@ private fun DialChipRow(
     // (user-reported margin weirdness). The fade lives in the shared trailingEdgeFadeScrollHint,
     // applied to every horizontally scrolling chip row app-wide (SegmentedSelector included).
     val fnScroll = rememberScrollState()
-    Row(
-        modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        val entryAnchor = fnEntryAnchor(state.deviceOrientation)
-        if (entryAnchor == FnEntryAnchor.START) {
-            CompactFnButton(onClick = onOpenFnMenu, glyphRotation = glyphRotation)
-        }
+    // This row is portrait-window camera geometry: Start/End come from the held-device policy, not
+    // the locale's reading direction. Unicode bidi still shapes localized Text content correctly.
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
         Row(
-            modifier = Modifier
-                .weight(1f)
-                .trailingEdgeFadeScrollHint(fnScroll)
-                .horizontalScroll(fnScroll),
+            modifier = modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            state.activeFnSlots.forEach { slot ->
-                FnDialChip(
-                    slot = slot,
-                    state = state,
-                    openDial = openDial,
-                    evStepValue = evStepValue,
-                    onSelect = onSelect,
-                    actions = actions,
-                    onOpenFnMenu = onOpenFnMenu,
-                    availability = availability,
-                )
+            val entryAnchor = fnEntryAnchor(state.deviceOrientation)
+            if (entryAnchor == FnEntryAnchor.START) {
+                CompactFnButton(onClick = onOpenFnMenu, glyphRotation = glyphRotation)
             }
-        }
-        if (entryAnchor == FnEntryAnchor.END) {
-            CompactFnButton(onClick = onOpenFnMenu, glyphRotation = glyphRotation)
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .trailingEdgeFadeScrollHint(fnScroll)
+                    .horizontalScroll(fnScroll),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                state.activeFnSlots.forEach { slot ->
+                    FnDialChip(
+                        slot = slot,
+                        state = state,
+                        openDial = openDial,
+                        evStepValue = evStepValue,
+                        onSelect = onSelect,
+                        actions = actions,
+                        onOpenFnMenu = onOpenFnMenu,
+                        availability = availability,
+                    )
+                }
+            }
+            if (entryAnchor == FnEntryAnchor.END) {
+                CompactFnButton(onClick = onOpenFnMenu, glyphRotation = glyphRotation)
+            }
         }
     }
 }
