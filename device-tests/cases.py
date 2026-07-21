@@ -1498,6 +1498,13 @@ def function_menu_layout_errors(
         errors.append(f"Fn close: expected one explicit action node, got {len(close_nodes)}")
     else:
         close = close_nodes[0]
+        left, top, right, bottom = close.bounds
+        if not (0 <= left < right <= metrics.width_px and 0 <= top < bottom <= metrics.height_px):
+            errors.append(f"Fn close: out of screen bounds {close.bounds}")
+        elif right - left < minimum_px or bottom - top < minimum_px:
+            errors.append(
+                f"Fn close: touch bounds {right - left}x{bottom - top}px < {minimum_px}px"
+            )
         errors.extend(_described_action_errors(tree, close, "Fn close"))
         if close.bounds == (0, 0, metrics.width_px, metrics.height_px):
             errors.append("Fn close: full-screen scrim must be touch-only")
@@ -1505,20 +1512,33 @@ def function_menu_layout_errors(
     if device_orientation is not None and _normalized_orientation(device_orientation) in (90, 270):
         orientation = _normalized_orientation(device_orientation)
         edge_tolerance = math.ceil(40 * metrics.density_dpi / 160)
-        panel_nodes = [*tiles, *close_nodes]
-        if panel_nodes:
-            if orientation == 90 and min(node.bounds[0] for node in panel_nodes) > edge_tolerance:
+        action_nodes = [*tiles, *close_nodes]
+        panel_nodes = [
+            node for node in tree.nodes
+            if node.class_name == "android.widget.ScrollView"
+            and all(
+                node.bounds[0] <= action.bounds[0]
+                and node.bounds[1] <= action.bounds[1]
+                and action.bounds[2] <= node.bounds[2]
+                and action.bounds[3] <= node.bounds[3]
+                for action in action_nodes
+            )
+        ]
+        if len(panel_nodes) != 1:
+            errors.append(
+                "Fn tray: expected one enclosing android.widget.ScrollView panel, "
+                f"got {len(panel_nodes)}"
+            )
+        else:
+            panel = panel_nodes[0]
+            if orientation == 90 and panel.bounds[0] > edge_tolerance:
                 errors.append("Fn tray: 90° raw panel is not Start-anchored")
-            if orientation == 270 and metrics.width_px - max(
-                node.bounds[2] for node in panel_nodes
-            ) > edge_tolerance:
+            if orientation == 270 and metrics.width_px - panel.bounds[2] > edge_tolerance:
                 errors.append("Fn tray: 270° raw panel is not End-anchored")
 
-            physical_panel_bounds = [
-                _physical_bounds(node, metrics, orientation) for node in panel_nodes
-            ]
-            physical_top = min(bounds[1] for bounds in physical_panel_bounds)
-            physical_bottom = max(bounds[3] for bounds in physical_panel_bounds)
+            physical_panel_bounds = _physical_bounds(panel, metrics, orientation)
+            physical_top = physical_panel_bounds[1]
+            physical_bottom = physical_panel_bounds[3]
             if metrics.width_px - physical_bottom > edge_tolerance:
                 errors.append(
                     f"Fn tray: {orientation}° is not in the physical bottom zone "

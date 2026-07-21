@@ -516,6 +516,8 @@ class UiSemanticsTest(unittest.TestCase):
         split_first_action: bool = False,
         focusable: bool = True,
         full_screen_close: bool = False,
+        short_close: bool = False,
+        out_of_bounds_close: bool = False,
     ) -> str:
         labels = tuple(sorted(cases.FN_TILE_LABELS))[:count]
         nodes = []
@@ -543,7 +545,13 @@ class UiSemanticsTest(unittest.TestCase):
                     'checkable="false" checked="false" selected="false" enabled="true" '
                     f'clickable="true" focusable="true" bounds="[{left},{top}][{right},{top + 58}]" />'
                 )
-        close_bounds = "[0,0][360,800]" if full_screen_close else "[304,540][352,588]"
+        close_bounds = "[304,540][352,588]"
+        if full_screen_close:
+            close_bounds = "[0,0][360,800]"
+        elif short_close:
+            close_bounds = "[304,540][334,570]"
+        elif out_of_bounds_close:
+            close_bounds = "[330,540][378,588]"
         nodes.append(
             '<node text="" content-desc="Close function menu" class="android.widget.Button" '
             'checkable="false" checked="false" selected="false" enabled="true" '
@@ -597,6 +605,16 @@ class UiSemanticsTest(unittest.TestCase):
         )
         self.assertTrue(any("scrim must be touch-only" in error for error in scrim_close))
 
+        short_close = cases.function_menu_layout_errors(
+            UiTree(self.function_menu_xml(short_close=True)), metrics,
+        )
+        self.assertTrue(any("Fn close: touch bounds" in error for error in short_close))
+
+        out_of_bounds_close = cases.function_menu_layout_errors(
+            UiTree(self.function_menu_xml(out_of_bounds_close=True)), metrics,
+        )
+        self.assertTrue(any("Fn close: out of screen bounds" in error for error in out_of_bounds_close))
+
     @staticmethod
     def held_function_menu_xml(
         orientation: int,
@@ -604,6 +622,8 @@ class UiSemanticsTest(unittest.TestCase):
         wrong_order: bool = False,
         wrong_anchor: bool = False,
         oversized_depth: bool = False,
+        missing_panel: bool = False,
+        ambiguous_panel: bool = False,
     ) -> str:
         physical_order = [
             "AE", "Focus", "Shutter", "ISO",
@@ -618,10 +638,13 @@ class UiSemanticsTest(unittest.TestCase):
                 physical_order[6], physical_order[2],
                 physical_order[7], physical_order[3],
             ]
+            columns = (60, 116) if wrong_anchor else (8, 64)
             if oversized_depth:
-                columns = (8, 94)
+                panel_bounds = (0, 132, 160, 464)
+            elif wrong_anchor:
+                panel_bounds = (52, 132, 168, 464)
             else:
-                columns = (60, 116) if wrong_anchor else (8, 64)
+                panel_bounds = (4, 132, 116, 464)
         else:
             raw_order = [
                 physical_order[3], physical_order[7],
@@ -629,11 +652,14 @@ class UiSemanticsTest(unittest.TestCase):
                 physical_order[1], physical_order[5],
                 physical_order[0], physical_order[4],
             ]
+            columns = (196, 252) if wrong_anchor else (248, 304)
             if oversized_depth:
-                columns = (188, 274)
+                panel_bounds = (200, 132, 360, 464)
+            elif wrong_anchor:
+                panel_bounds = (192, 132, 308, 464)
             else:
-                columns = (196, 252) if wrong_anchor else (248, 304)
-        tile_width = 78 if oversized_depth else 48
+                panel_bounds = (244, 132, 356, 464)
+        tile_width = 48
         nodes = []
         for index, description in enumerate(raw_order):
             left = columns[index % 2]
@@ -649,7 +675,20 @@ class UiSemanticsTest(unittest.TestCase):
             'checkable="false" checked="false" selected="false" enabled="true" '
             f'clickable="true" focusable="true" bounds="[{close_left},140][{close_left + 48},188]" />'
         )
-        return f"<hierarchy>{''.join(nodes)}</hierarchy>"
+        panel_left, panel_top, panel_right, panel_bottom = panel_bounds
+        panel_open = (
+            '<node text="" content-desc="" class="android.widget.ScrollView" '
+            'checkable="false" checked="false" selected="false" enabled="true" '
+            'clickable="false" focusable="false" '
+            f'bounds="[{panel_left},{panel_top}][{panel_right},{panel_bottom}]">'
+        )
+        if missing_panel:
+            panel_xml = "".join(nodes)
+        else:
+            panel_xml = f"{panel_open}{''.join(nodes)}</node>"
+            if ambiguous_panel:
+                panel_xml = f"{panel_open}</node>{panel_xml}"
+        return f"<hierarchy>{panel_xml}</hierarchy>"
 
     def test_held_function_menu_contract_checks_physical_order_and_raw_anchor(self) -> None:
         metrics = DisplayMetrics(360, 800, 160)
@@ -682,13 +721,39 @@ class UiSemanticsTest(unittest.TestCase):
                     expected_physical_order=expected,
                 )
                 self.assertTrue(any("anchored" in error for error in wrong_anchor))
+                oversized_tree = UiTree(
+                    self.held_function_menu_xml(orientation, oversized_depth=True)
+                )
+                self.assertTrue(all(
+                    tile.bounds[2] - tile.bounds[0] == 48
+                    for tile in oversized_tree.nodes if tile.desc in cases.FN_TILE_LABELS
+                ))
                 oversized = cases.function_menu_layout_errors(
-                    UiTree(self.held_function_menu_xml(orientation, oversized_depth=True)),
+                    oversized_tree,
                     metrics,
                     device_orientation=orientation,
                     expected_physical_order=expected,
                 )
                 self.assertTrue(any("physical short edge" in error for error in oversized))
+
+                missing_panel = cases.function_menu_layout_errors(
+                    UiTree(self.held_function_menu_xml(orientation, missing_panel=True)),
+                    metrics,
+                    device_orientation=orientation,
+                    expected_physical_order=expected,
+                )
+                self.assertTrue(any(
+                    "enclosing android.widget.ScrollView" in error
+                    for error in missing_panel
+                ))
+
+                ambiguous_panel = cases.function_menu_layout_errors(
+                    UiTree(self.held_function_menu_xml(orientation, ambiguous_panel=True)),
+                    metrics,
+                    device_orientation=orientation,
+                    expected_physical_order=expected,
+                )
+                self.assertTrue(any("panel, got 2" in error for error in ambiguous_panel))
 
     @staticmethod
     def fn_entry_xml(*, at_end: bool = False) -> str:
