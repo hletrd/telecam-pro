@@ -320,13 +320,18 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   Leaving returns to the rear mode-home (`resolveNonTeleId`). Lens presets and the TC toggle REFUSE
   while FRONT (`backOpticsDoorRefusal`, one seam for engine + VM); MR recall/settings restore EXIT
   front atomically (`setResolvedOptics` sets facing=BACK — recalled packets are rear-route optics);
-  facing is never persisted (fresh launch is always BACK — the app exists for the rear tele). The
-  PREVIEW mirrors via an attribute-texcoord x-inversion (`gl/texCoordQuad` → per-draw `mirrorX`,
-  pushed as route state by `applyStabilization` beside the rotation pair); the encoder/analysis
-  draws and every saved file stay UNMIRRORED (framework convention; a "save mirrored" toggle is a
-  possible future option). Capture rotation FRONT = `(sensor − device) % 360`, afocal never applies
-  (`RotationMath.captureRotationDegrees(..., frontFacing)`); preview rotation stays 0. Front
-  tap-AF un-flips the tapped view x before content mapping (`mapTapFocusGeometry(mirrorX)`). RAW,
+  facing is never persisted (fresh launch is always BACK — the app exists for the rear tele).
+  **MIRROR ROLES ARE INVERTED from the naive design (device-diagnosed 2026-07-23): this front HAL
+  PRE-MIRRORS its SurfaceTexture stream.** The `frontStreamPreMirrored` trace proved the flag
+  reaches the GL thread while the selfie still read unmirrored — our texcoord mirror was CANCELING
+  the stream's own. So the PREVIEW draw adds NO mirror (the pre-mirrored stream IS the
+  selfie-mirror view), the ENCODER/ANALYSIS draws apply the x-inversion (`gl/texCoordQuad` →
+  `mirrorX`) to write the TRUE scene into files, stills are untouched HAL buffers (correct either
+  way), and tap-AF needs NO un-flip (displayed x == texture x; `mapTapFocusGeometry(mirrorX=false)`).
+  Pushed as route state by `applyStabilization` (`gl.setFrontStreamPreMirrored`). On a multi-device
+  build this inversion becomes a DeviceProfile quirk flag. Capture rotation FRONT =
+  `(sensor − device) % 360`, afocal never applies
+  (`RotationMath.captureRotationDegrees(..., frontFacing)`); preview rotation stays 0. RAW,
   hi-res, flash, and the finder PIP all resolve off the existing capability/route axes — no
   facing special cases in those predicates.
 - **Video caps come from the device, not hardcodes.** `video/EncoderCaps.kt` scans `MediaCodecList`.

@@ -216,4 +216,54 @@ class CameraUiPolicyTest {
         assertEquals(AfIndication.IDLE, locked.afIndication)
         assertTrue(locked.tapFocusHeld)
     }
+
+    // previewTopPx: the 4:3 preview biases up just enough to clear the rest-state bottom cluster;
+    // 16:9 (which can never clear it) keeps the centered placement; degenerate falls back to center.
+    // Numbers are the PMA110 portrait window (1440x3168) with a ~742px cluster and ~460px top floor.
+
+    @Test
+    fun `four by three preview clears the bottom cluster`() {
+        val top = previewTopPx(
+            availableHeightPx = 3168,
+            previewHeightPx = 1920,
+            topChromeMinPx = 460,
+            bottomReservePx = 742,
+        )
+        assertEquals(3168 - 742 - 1920, top)          // 506: preview bottom == cluster top
+        assertTrue(top < (3168 - 1920) / 2)           // above center, below the chrome floor
+        assertTrue(top >= 460)
+    }
+
+    @Test
+    fun `sixteen by nine preview stays centered when it cannot clear`() {
+        val top = previewTopPx(
+            availableHeightPx = 3168,
+            previewHeightPx = 2560,
+            topChromeMinPx = 460,
+            bottomReservePx = 742,
+        )
+        assertEquals((3168 - 2560) / 2, top)          // clearing would need top < chrome floor
+    }
+
+    @Test
+    fun `oversized preview falls back to the centered position`() {
+        val top = previewTopPx(
+            availableHeightPx = 2000,
+            previewHeightPx = 1990,
+            topChromeMinPx = 460,
+            bottomReservePx = 742,
+        )
+        assertEquals((2000 - 1990) / 2, top)
+    }
+
+    @Test
+    fun `unmeasured cluster keeps the preview at or above center never below`() {
+        val top = previewTopPx(
+            availableHeightPx = 3168,
+            previewHeightPx = 1920,
+            topChromeMinPx = 460,
+            bottomReservePx = 0,
+        )
+        assertEquals((3168 - 1920) / 2, top)          // no reserve yet -> centered, not sunk
+    }
 }

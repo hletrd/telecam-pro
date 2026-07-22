@@ -27,6 +27,7 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.absolutePadding
 import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.aspectRatio
@@ -42,6 +43,8 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
@@ -54,6 +57,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -62,6 +66,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.Modifier
@@ -105,6 +110,7 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.constrainHeight
 import androidx.compose.ui.unit.constrainWidth
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -186,6 +192,8 @@ import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.ln
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.sin
 
 /**
@@ -306,16 +314,38 @@ fun CameraScreen(
         // orientation pipeline is implemented and device-verified together.
         val landscapeOperator = false
         val displayedPreviewAspect = state.previewAspect.coerceAtLeast(0.01f)
+        // Rest-state height of the bottom cluster, feeding [previewTopPx]. Frozen while a manual
+        // dial is open: the cluster growing upward must overlay the preview like every transient
+        // panel, not shove the viewfinder around mid-interaction.
+        var bottomClusterRestHeightPx by remember { mutableIntStateOf(0) }
         // The viewfinder is LETTERBOXED, not cover-cropped: the TextureView (plus every overlay that
-        // must align with the image frame) lives in a centered box sized to the displayed preview
-        // aspect, so the FULL capture field is always visible. Letterboxing at the Compose layer —
-        // instead of scaling down inside GL — keeps three things correct for free: the GL surface is
-        // exactly content-aspect so FlipRenderer's "cover" is a 1:1 fit (no crop), tap coordinates
+        // must align with the image frame) lives in a box sized to the displayed preview aspect, so
+        // the FULL capture field is always visible. Letterboxing at the Compose layer — instead of
+        // scaling down inside GL — keeps three things correct for free: the GL surface is exactly
+        // content-aspect so FlipRenderer's "cover" is a 1:1 fit (no crop), tap coordinates
         // normalize directly to the visible frame, and the AE/scope luma readback never sees black
-        // bars (they exist only outside this box).
+        // bars (they exist only outside this box). VERTICAL PLACEMENT is adaptive, not centered:
+        // see [previewTopPx] — the 4:3 preview biases upward so the bottom cluster (focal rail /
+        // Fn / mode / shutter) sits below the image instead of straddling its bottom edge. The
+        // offset only moves the box; every overlay and tap normalization is box-relative.
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val density = LocalDensity.current
+            val previewHeightPx = (constraints.maxWidth / displayedPreviewAspect).toInt()
+            val topOffsetPx = previewTopPx(
+                availableHeightPx = constraints.maxHeight,
+                previewHeightPx = previewHeightPx,
+                // Status bar + the 56dp top icon row + the OSD strip line + breathing room. A dp
+                // constant (not a measured top bar) keeps the preview from re-laying-out when the
+                // OSD strip toggles; the strip overlays the letterbox area harmlessly either way.
+                topChromeMinPx = with(density) {
+                    WindowInsets.statusBars.getTop(this) + 100.dp.roundToPx()
+                },
+                bottomReservePx = bottomClusterRestHeightPx,
+            )
         Box(
             modifier = Modifier
-                .align(Alignment.Center)
+                .align(Alignment.TopCenter)
+                .offset { IntOffset(0, topOffsetPx) }
                 .aspectRatio(displayedPreviewAspect),
         ) {
             val finderVisible = teleFinderVisible(
@@ -499,6 +529,7 @@ fun CameraScreen(
                     )
                 }
             }
+        }
         }
 
         // Emphasized REC display (Sony FX): a thin red frame while rolling — unmissable, even in
@@ -857,7 +888,13 @@ fun CameraScreen(
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .then(operatorChrome)
-                    .padding(top = 12.dp, bottom = 8.dp),
+                    .padding(top = 12.dp, bottom = 8.dp)
+                    // Rest-state measurement for the preview's adaptive top ([previewTopPx]); a
+                    // dial-open growth spike must not re-place the viewfinder, so only the closed
+                    // state records.
+                    .onSizeChanged {
+                        if (openManualDial == null) bottomClusterRestHeightPx = it.height
+                    },
                 verticalArrangement = Arrangement.Top,
             ) {
                 // Keep the dial cluster composed at zero height in compact rest state. Disposing it
@@ -1975,6 +2012,29 @@ private fun log2(value: Float): Float = (ln(value.toDouble()) / ln(2.0)).toFloat
 // ---------------------------------------------------------------------------
 // Bottom cluster: mode carousel + shutter row (the manual dial cluster lives in ManualDials.kt).
 // ---------------------------------------------------------------------------
+
+/**
+ * Top y of the letterboxed preview box. Unconditional vertical CENTERING left the 4:3 preview's
+ * bottom edge cutting through the focal rail / Fn row — the bottom cluster is bottom-anchored, so
+ * chrome straddled the image boundary and read as clipped. Instead, bias the preview UP just far
+ * enough that the rest-state bottom cluster starts at (or below) the preview's bottom edge:
+ *  - never above [topChromeMinPx] (the status bar + top icon row + OSD strip must stay clear),
+ *  - never below the centered position (the preview may only move UP from center, so 16:9 — which
+ *    can never clear the cluster — keeps its centered placement and the cluster overlays it fully
+ *    INSIDE the image, same as before),
+ *  - degenerate (preview taller than the space) falls back to the centered position.
+ */
+internal fun previewTopPx(
+    availableHeightPx: Int,
+    previewHeightPx: Int,
+    topChromeMinPx: Int,
+    bottomReservePx: Int,
+): Int {
+    val centerTop = (availableHeightPx - previewHeightPx) / 2
+    val clearingTop = availableHeightPx - bottomReservePx - previewHeightPx
+    if (centerTop <= topChromeMinPx) return centerTop
+    return min(centerTop, max(topChromeMinPx, clearingTop))
+}
 
 internal data class FocalRailState(
     val selected: Boolean,

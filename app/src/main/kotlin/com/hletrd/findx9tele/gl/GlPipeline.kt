@@ -112,7 +112,11 @@ class GlPipeline {
     // replay path setRotationDegrees rides, so the documented "posted before start() is dropped"
     // trap is covered without a config-store field. Preview-only: encoder/analysis draws never
     // mirror (files stay unmirrored by convention; the meter stays framing-identical to capture).
-    private var previewMirrorX = false
+    // DEVICE FACT (PMA110): the front HAL PRE-mirrors its SurfaceTexture stream. The preview
+    // therefore draws WITHOUT any mirror of its own (the stream already shows the selfie-mirror
+    // view), and the encoder/analysis draws apply the x-inversion instead so files and metering
+    // keep the TRUE scene. See CameraEngine.applyStabilization for the diagnosis trail.
+    private var frontStreamPreMirrored = false
     private var gammaAssist = false
     // True while the HAL-native O-Log2 stream is engaged: the frames arriving here are ALREADY log
     // (scene-referred), so the preview passes through (flat) or de-logs for Gamma Display Assist.
@@ -424,7 +428,15 @@ class GlPipeline {
     fun setSensorOrientation(deg: Int) = post { renderer.setSensorOrientation(deg) }
 
     /** Selfie PREVIEW mirror (front route only); the encoder/analysis draws stay unmirrored. */
-    fun setPreviewMirror(enabled: Boolean) = post { previewMirrorX = enabled }
+    fun setFrontStreamPreMirrored(enabled: Boolean) = post {
+        frontStreamPreMirrored = enabled
+        // Kept as the diagnosis trail for the inverted mirror roles: this trace proved the flag
+        // reaches the GL thread while the selfie still read unmirrored — the stream itself is
+        // pre-mirrored, so the preview draw needs no mirror and the encoder must un-mirror.
+        if (com.hletrd.findx9tele.BuildConfig.DEBUG) {
+            android.util.Log.i("GlPipeline", "frontStreamPreMirrored=$enabled")
+        }
+    }
     fun setTransfer(t: ColorTransfer?) = post { transfer = t }
 
     /** Gamma Display Assist: monitor shows the normal 709-ish image while the FILE stays log. */
@@ -793,9 +805,10 @@ class GlPipeline {
                     peakThreshold = peakThreshold, peakR = peakR, peakG = peakG, peakB = peakB, zebraThreshold = zebraThreshold,
                     delogAssist = nativeLog && gammaAssist,
                     zoomComp = zoomTarget / halZoom.coerceAtLeast(0.01f),
-                    // The ONLY mirrored draw: the encoder/analysis draws below deliberately omit
-                    // mirrorX so files and metering keep the true (unmirrored) scene.
-                    mirrorX = previewMirrorX,
+                    // NO preview mirror on this device: the front stream arrives pre-mirrored
+                    // (device fact above), which IS the selfie-mirror view. The encoder/analysis
+                    // draws below apply the inversion instead to record the true scene.
+                    mirrorX = false,
                 )
                 // TELE finder PIP (opt-in, resolved by CameraEngine.pushTeleFinder): a corner
                 // viewport re-drawing the FULL current camera frame while the main view is
@@ -831,11 +844,10 @@ class GlPipeline {
                                 // the whole frame, not the loupe/stab framing).
                                 zoomComp = 1f,
                                 viewportX = fx, viewportY = fy,
-                                // Preview-space sibling draw: follows the preview mirror (moot
-                                // today — the finder requires TC, which the front route forces
-                                // off — but a mismatched PIP orientation would be wrong if that
-                                // ever changed).
-                                mirrorX = previewMirrorX,
+                                // Preview-space sibling draw: like the main preview, no mirror
+                                // of our own (moot today — the finder requires TC, which the front
+                                // route forces off).
+                                mirrorX = false,
                             )
                         } finally {
                             GLES20.glDisable(GLES20.GL_SCISSOR_TEST)
@@ -889,7 +901,9 @@ class GlPipeline {
         if (ownedEncoder != EGL14.EGL_NO_SURFACE && ownedSignal?.isActive() == true) {
             try {
                 core.makeCurrent(ownedEncoder)
-                renderer.draw(stMatrix, encoderW, encoderH, transfer, false, false, false, sx, sy, roll, crop)
+                // Un-mirror the pre-mirrored front stream so the FILE keeps the true scene
+                // (rear routes pass false and are untouched).
+                renderer.draw(stMatrix, encoderW, encoderH, transfer, false, false, false, sx, sy, roll, crop, mirrorX = frontStreamPreMirrored)
                 // Rebase to the first recorded frame so video PTS starts near 0 like the audio track.
                 val ts = st.timestamp
                 if (!encoderBaseSet && ts > 0L) { encoderBaseNs = ts; encoderBaseSet = true }
@@ -1008,7 +1022,10 @@ class GlPipeline {
             }
             // Re-draw the scene (same transform/EIS/crop as the preview, minus peaking/zebra/false-
             // color so assist overlays never pollute the meter) into the small target and read THAT.
-            renderer.draw(stMatrix, w, h, transfer, false, false, false, sx, sy, roll, crop, centerX, centerY)
+            // Same un-mirror as the encoder: luma stats are mirror-invariant, but keeping the
+            // analysis geometry file-true costs nothing and avoids a surprise if a spatial
+            // consumer (zone metering) ever lands here.
+            renderer.draw(stMatrix, w, h, transfer, false, false, false, sx, sy, roll, crop, centerX, centerY, mirrorX = frontStreamPreMirrored)
             buf.rewind()
             GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)

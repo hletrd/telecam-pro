@@ -800,10 +800,16 @@ class CameraEngine(private val context: Context) {
         // Selfie mirror is ROUTE state plumbed exactly like the rotation pair above: re-pushed on
         // every session (re)config/rollback, which also covers a replacement GL generation (this
         // method runs after each reconfigure, so a fresh pipeline can never start with a stale
-        // mirror — the documented "posted before start() is dropped" trap). Preview-only; the
-        // encoder/analysis draws stay unmirrored (saved files show the true scene — the framework
-        // front-camera convention; a "save mirrored" toggle is a possible future option).
-        gl.setPreviewMirror(facing == CameraFacing.FRONT)
+        // flag — the documented "posted before start() is dropped" trap).
+        // DEVICE FACT (PMA110, diagnosed 2026-07-23): the front HAL PRE-MIRRORS the SurfaceTexture
+        // stream itself. The previewMirror trace proved our texcoord mirror verifiably reached the
+        // GL thread, yet the selfie still read unmirrored on screen — our mirror was CANCELING the
+        // stream's own. So the roles INVERT from the naive design: the preview draw adds NO mirror
+        // (the stream already displays the selfie-mirror view), while the ENCODER/ANALYSIS draws
+        // apply the inversion to write the TRUE scene into files (stills are untouched HAL buffers
+        // and stay correct either way). Tap mapping follows the same fact — displayed x == texture
+        // x, so no un-flip. On a future multi-device build this becomes a DeviceProfile quirk.
+        gl.setFrontStreamPreMirrored(facing == CameraFacing.FRONT)
         // TELE finder PIP: re-resolve on every session (re)config and tele change, like rotation
         // (the user toggle, TELE state, or aspect may all have changed since the last push).
         pushTeleFinder()
@@ -1618,7 +1624,11 @@ class CameraEngine(private val context: Context) {
             sensorCenter = loupeCenterSensorX to loupeCenterSensorY,
             loupeCenter = loupeCenterTexX to loupeCenterTexY,
             previewRotationDegrees = previewRotationDegrees(),
-            mirrorX = facing == CameraFacing.FRONT,
+            // No un-flip on this device: the front stream is PRE-mirrored by the HAL and the GL
+            // preview adds no mirror of its own (see applyStabilization), so displayed x == texture
+            // x and the plain mapping already lands on the tapped subject — user-verified before
+            // the preview-mirror roles inverted, and the geometry is unchanged by that inversion.
+            mirrorX = false,
         )
         val attempt = PendingTapFocus(
             session = accepted,

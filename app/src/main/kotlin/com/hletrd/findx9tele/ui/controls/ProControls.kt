@@ -201,7 +201,9 @@ internal fun <T> SegmentedSelector(
                         selected = isSelected,
                         onClick = { onSelect(option) },
                         enabled = enabled,
-                        label = { Text(labelFor(option)) },
+                        // Single line always: a squeezed chip must scroll into space, never wrap
+                        // its label mid-word (the TransferSelector "Log/C3" break class).
+                        label = { Text(labelFor(option), maxLines = 1, softWrap = false) },
                         colors = pixelChipColors(),
                         border = pixelChipBorder(isSelected),
                     )
@@ -694,7 +696,17 @@ fun TransferSelector(
 ) {
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text("Transfer", color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        // Scrollable like SegmentedSelector: five entries exceed the sheet width, and a fixed Row
+        // squeezed the last visible chip until its label broke mid-word ("Log/C3") while SDR fell
+        // off entirely. maxLines=1 keeps any future squeeze from ever wrapping a chip label again.
+        val optionScroll = rememberScrollState()
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .trailingEdgeFadeScrollHint(optionScroll)
+                .horizontalScroll(optionScroll),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
             ColorTransfer.entries.forEach { option ->
                 val isSelected = transfer == option
                 MinTouchTargetChip {
@@ -702,7 +714,7 @@ fun TransferSelector(
                         selected = isSelected,
                         onClick = { onTransfer(option) },
                         enabled = enabled,
-                        label = { Text(transferLabel(option)) },
+                        label = { Text(transferLabel(option), maxLines = 1, softWrap = false) },
                         colors = pixelChipColors(),
                         border = pixelChipBorder(isSelected),
                     )
