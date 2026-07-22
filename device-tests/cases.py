@@ -226,7 +226,13 @@ def newest_session_acceptance(
     candidates: list[SessionAcceptance] = []
     for line in log.splitlines():
         match = SESSION_ACCEPTED.search(line)
-        if match is None or match.group(5) != mode or match.group(7) != "true":
+        # ready= on the acceptance line is TIMING, not health: per the engine contract, Ready
+        # commits only after the route's first successful real-camera-frame swap, so a cold-opened
+        # route (photo→video crosses to another camera id) legitimately logs ready=false here and
+        # flips Ready afterwards with no second acceptance line (device-observed both values for
+        # the same VIDEO route, 2026-07-22). Acceptance is the evidence this parser owns; LIVENESS
+        # is proven by the generation-owned 3A wait every caller performs immediately after.
+        if match is None or match.group(5) != mode:
             continue
         evidence = SessionAcceptance(
             line=line,
@@ -2181,7 +2187,9 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
                     "Gamma quick action dismissed the Fn modal"
                 )
                 assert sticky.find_desc_exact("Gamma"), "Gamma quick action disappeared after update"
-                gamma_errors = snapshot_gamma_state_errors(sticky, "O-Log")
+                # One cycle tap from the snapshot's HLG start lands on S-Log3 (the O-Log2 option
+                # was replaced by the standard log profiles, 2026-07-22 — see ControlCycles).
+                gamma_errors = snapshot_gamma_state_errors(sticky, "S-Log3")
                 assert not gamma_errors, "; ".join(gamma_errors)
                 after = ctx.adb.exec_out("screencap")
                 changed = raw_region_changed_pixel_count(before, after, gamma.bounds)
