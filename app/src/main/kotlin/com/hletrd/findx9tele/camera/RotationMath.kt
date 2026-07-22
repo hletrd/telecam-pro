@@ -24,11 +24,37 @@ object RotationMath {
     /** Normalize any degree value to [0,360). */
     fun normalize(degrees: Int): Int = ((degrees % 360) + 360) % 360
 
-    /** CW degrees the GL renderer adds on top of the SurfaceTexture transform (afocal flip only). */
+    /**
+     * CW degrees the GL renderer adds on top of the SurfaceTexture transform (afocal flip only).
+     * FRONT needs no term of its own: the SurfaceTexture transform already carries the front
+     * sensor's orientation, the afocal converter is a rear-lens accessory (the facing door forces
+     * teleconverterMode off), and the selfie mirror is a separate texcoord axis
+     * ([com.hletrd.findx9tele.gl.texCoordQuad]), so the front preview rotation is simply 0.
+     */
     fun previewRotationDegrees(teleconverterMode: Boolean): Int = if (teleconverterMode) AFOCAL_FLIP else 0
 
-    /** Total CW rotation to save a still upright: sensor + afocal(tele) + device orientation, normalized. */
-    fun captureRotationDegrees(sensorOrientation: Int, teleconverterMode: Boolean, deviceOrientation: Int): Int {
+    /** Rear-camera form of [captureRotationDegrees]; kept so existing callers/tests pin the back matrix. */
+    fun captureRotationDegrees(sensorOrientation: Int, teleconverterMode: Boolean, deviceOrientation: Int): Int =
+        captureRotationDegrees(sensorOrientation, teleconverterMode, deviceOrientation, frontFacing = false)
+
+    /**
+     * Total CW rotation to save a still upright.
+     *  - BACK: sensor + afocal(tele) + device orientation, normalized — the device-verified matrix.
+     *  - FRONT: sensor − device orientation, normalized; the afocal term NEVER applies (the
+     *    converter clamps onto the rear 3×). The sign flips because a front sensor faces the
+     *    opposite direction, so the device's physical CW tilt is CCW relative to its image — the
+     *    standard Camera2 front JPEG-orientation formula. DEVICE-VERIFICATION-PENDING: like the
+     *    back signs before it, this needs a held, lit portrait/landscape output check on the
+     *    PMA110 front camera; if the check flips it, this seam (and its test matrix) is the one
+     *    place that changes.
+     */
+    fun captureRotationDegrees(
+        sensorOrientation: Int,
+        teleconverterMode: Boolean,
+        deviceOrientation: Int,
+        frontFacing: Boolean,
+    ): Int {
+        if (frontFacing) return normalize(sensorOrientation - deviceOrientation)
         val base = sensorOrientation + if (teleconverterMode) AFOCAL_FLIP else 0
         return normalize(base + deviceOrientation)
     }

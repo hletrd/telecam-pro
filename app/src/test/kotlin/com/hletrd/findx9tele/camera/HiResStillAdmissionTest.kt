@@ -51,6 +51,16 @@ class HiResStillAdmissionTest {
     }
 
     @Test
+    fun `the front route is decided by the standalone-advertised axes, not a facing special case`() {
+        // The facing door has no axis here on purpose: the front selection is standalone-shaped
+        // (physicalId == null, not a logical composite), so admission reduces to "advertises a
+        // full-sensor size". The PMA110 front is expected to advertise none → denied; a
+        // hypothetical advertising front would be admitted like any rear standalone, never crash-
+        // gated by facing itself.
+        assertFalse(admitted(standalone = true, advertised = false))
+    }
+
+    @Test
     fun `single failing axis defeats an otherwise-full grant`() {
         // Exhaustive 2^5 sweep: admission is exactly the conjunction, no hidden interaction.
         for (requested in booleanArrayOf(false, true))

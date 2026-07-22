@@ -6,6 +6,31 @@ import androidx.compose.runtime.Immutable
 /** Photo vs video capture mode. */
 enum class CaptureMode { PHOTO, VIDEO }
 
+/**
+ * Which side's camera the session is on. FRONT is a first-class optics door (its own generation-
+ * owned transaction, like mode/lens/TC), but deliberately a BASIC one: the teleconverter, the
+ * back focal rail, RAW-on-TELE, and the finder PIP are all rear-optics concepts and are forced
+ * off / hidden while FRONT. Facing is NEVER persisted — this app exists for the rear tele, and a
+ * relaunch that surprised the operator with a selfie camera would be wrong — so a fresh launch is
+ * always BACK and SettingsStore carries no facing field.
+ */
+enum class CameraFacing { BACK, FRONT }
+
+/** Why a back-only optics door (TC toggle, lens preset) refused, in refusal priority order. */
+internal enum class BackOpticsRefusal { NONE, RECORDING, FRONT_ROUTE }
+
+/**
+ * The ONE gate for optics doors that only exist on the rear camera (the TC toggle and the focal
+ * rail's lens presets). Shared by the engine's defensive check and the ViewModel's user-facing
+ * refusal message so the two can't disagree; RECORDING outranks FRONT_ROUTE because "Stop REC
+ * first" is the actionable step even while FRONT (the flip door itself is recording-gated too).
+ */
+internal fun backOpticsDoorRefusal(recording: Boolean, frontFacing: Boolean): BackOpticsRefusal = when {
+    recording -> BackOpticsRefusal.RECORDING
+    frontFacing -> BackOpticsRefusal.FRONT_ROUTE
+    else -> BackOpticsRefusal.NONE
+}
+
 /** Truthful scope promised by the media-review delete confirmation. */
 enum class MediaDeleteScope { CAPTURE_FAMILY, FILE_ONLY }
 
@@ -768,6 +793,10 @@ data class CameraUiState(
     // Selected rear lens. Default 1× main for a normal app launch. Lens picks are zoom presets
     // and do NOT bundle teleconverter mode (see [LensChoice]); the TELE toggle owns the converter.
     val lens: LensChoice = LensChoice.MAIN,
+    // FRONT hides the rear-only chrome (TELE chip, focal rail) and mirrors the PREVIEW only; saved
+    // files stay unmirrored. Not persisted — fresh launch is always BACK (see [CameraFacing]).
+    // [lens] keeps the last rear band across a front trip so flipping back restores that preset.
+    val facing: CameraFacing = CameraFacing.BACK,
     // Teleconverter mode: manual (not auto-detected). ON = afocal 180° flip; locked to the 3× lens.
     val teleconverterMode: Boolean = false,
     // Stabilization. Default ENHANCED = HAL OIS+EIS ("super steady"): at 300 mm it reduces the

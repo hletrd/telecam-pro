@@ -515,6 +515,7 @@ private fun FnDialChip(
                 controls.zoomRatio,
                 state.teleconverterMode,
                 state.caps?.equivalentFocalMm,
+                frontFacing = state.facing == com.hletrd.findx9tele.camera.CameraFacing.FRONT,
             ),
             active = openDial == DialType.ZOOM,
             enabled = policyEnabled && quickManualDialEnabled(DialType.ZOOM, availability),

@@ -23,12 +23,18 @@ internal data class ZoomBounds(val lower: Float, val upper: Float)
  * Shooting-tab slider and Zoom ruler are EDIT surfaces on the lens-local scale outside TELE and
  * deliberately keep their own base.)
  */
-internal fun zoomDisplayMultiplier(teleconverter: Boolean, equivalentFocalMm: Float?): Float =
-    if (teleconverter) {
-        TELE_DISPLAY_BASE
-    } else {
-        (equivalentFocalMm ?: LensChoice.MAIN.targetEquivMm) / LensChoice.MAIN.targetEquivMm
-    }
+internal fun zoomDisplayMultiplier(
+    teleconverter: Boolean,
+    equivalentFocalMm: Float?,
+    frontFacing: Boolean = false,
+): Float = when {
+    // The main-relative scale is a REAR concept (which rear lens the unified zoom sits on). The
+    // front camera has no place on it — front-equiv ÷ main-equiv would read "0.9×" at the selfie
+    // 1× — so front zoom displays as its honest lens-local ratio.
+    frontFacing -> 1f
+    teleconverter -> TELE_DISPLAY_BASE
+    else -> (equivalentFocalMm ?: LensChoice.MAIN.targetEquivMm) / LensChoice.MAIN.targetEquivMm
+}
 
 /** Camera-style zoom typography shared by every read-only zoom surface. */
 internal fun formatZoomMultiplier(zoom: Float): String = "%.1f×".format(Locale.US, zoom)
@@ -38,8 +44,9 @@ internal fun formatDisplayZoom(
     localZoomRatio: Float,
     teleconverter: Boolean,
     equivalentFocalMm: Float?,
+    frontFacing: Boolean = false,
 ): String = formatZoomMultiplier(
-    localZoomRatio * zoomDisplayMultiplier(teleconverter, equivalentFocalMm),
+    localZoomRatio * zoomDisplayMultiplier(teleconverter, equivalentFocalMm, frontFacing),
 )
 
 /** One zoom range shared by input targets and the value that can actually be applied. */
@@ -148,7 +155,12 @@ internal fun restoredRouteUsesCurrentCaps(
     targetMode: CaptureMode,
     targetLens: LensChoice,
     targetTeleconverter: Boolean,
+    currentFrontFacing: Boolean = false,
 ): Boolean {
+    // A recall always targets a REAR route (facing is never persisted, and setResolvedOptics exits
+    // FRONT). While FRONT the current mode/lens fields can coincidentally equal the target's, but
+    // the live caps describe the front camera — never authoritative for the recalled route.
+    if (currentFrontFacing) return false
     if (
         !cameraReady || currentOverrideId != null || currentMode != targetMode ||
         currentTeleconverter != targetTeleconverter
@@ -218,6 +230,7 @@ internal fun remapModeOptics(
     lens: LensChoice,
     teleconverter: Boolean,
     controls: ManualControls,
+    frontFacing: Boolean = false,
 ): ModeOptics {
     // PROGRAM is app-owned in Photo but normally HAL-owned in Video. Clear the Photo-derived flag
     // on an actual Video entry; route capability normalization may re-enable it later when a sparse
@@ -228,7 +241,9 @@ internal fun remapModeOptics(
         controls
     }
     val modeControls = targetControls.normalizedForCaptureMode(toMode)
-    if (fromMode == toMode || teleconverter) return ModeOptics(lens, modeControls)
+    // FRONT is one camera in both modes with lens-local zoom throughout — like TELE, the unified↔
+    // local remap does not apply (it would rewrite the retained rear band from a front-local ratio).
+    if (fromMode == toMode || teleconverter || frontFacing) return ModeOptics(lens, modeControls)
     return if (toMode == CaptureMode.VIDEO) {
         val band = LensChoice.forZoom(modeControls.zoomRatio)
         ModeOptics(

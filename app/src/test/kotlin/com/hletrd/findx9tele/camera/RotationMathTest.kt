@@ -89,6 +89,29 @@ class RotationMathTest {
     }
 
     @Test
+    fun `front capture rotation is sensor minus device and the afocal term never applies`() {
+        // The front matrix (sensorOrientation 270, the typical front value). Sign is the standard
+        // Camera2 front formula and DEVICE-VERIFICATION-PENDING like every rotation sign before it;
+        // a device-corrected flip lands here as an intentional matrix change.
+        assertEquals(270, RotationMath.captureRotationDegrees(270, false, 0, frontFacing = true))
+        assertEquals(180, RotationMath.captureRotationDegrees(270, false, 90, frontFacing = true))
+        assertEquals(90, RotationMath.captureRotationDegrees(270, false, 180, frontFacing = true))
+        assertEquals(0, RotationMath.captureRotationDegrees(270, false, 270, frontFacing = true))
+        // A (route-impossible) teleconverter flag is inert on the front path: the converter is a
+        // rear-3× accessory and the facing door forces it off, but even a stale flag must not
+        // rotate a selfie by 180°.
+        assertEquals(270, RotationMath.captureRotationDegrees(270, true, 0, frontFacing = true))
+    }
+
+    @Test
+    fun `back capture matrix through the facing-aware overload matches the rear form`() {
+        // frontFacing=false must be byte-identical to the historical rear matrix pinned above.
+        assertEquals(270, RotationMath.captureRotationDegrees(90, true, 0, frontFacing = false))
+        assertEquals(0, RotationMath.captureRotationDegrees(90, true, 90, frontFacing = false))
+        assertEquals(90, RotationMath.captureRotationDegrees(90, false, 0, frontFacing = false))
+    }
+
+    @Test
     fun `encoder surface size swaps to the displayed aspect for the 90deg sensor (ARCH4-1)`() {
         // The framing contract: the encoder buffer matches the DISPLAYED (portrait) aspect so
         // coverScale nets (1,1) and the file records the viewfinder field. 4K UHD and Open Gate:
@@ -98,5 +121,15 @@ class RotationMathTest {
         assertEquals(2160 to 3840, RotationMath.encoderSurfaceSize(3840, 2160, 90, 180))
         // A hypothetical 0deg sensor keeps the stream shape.
         assertEquals(3840 to 2160, RotationMath.encoderSurfaceSize(3840, 2160, 0, 0))
+    }
+
+    @Test
+    fun `encoder surface size also swaps for the front 270deg sensor`() {
+        // The front sensor is in the same 90-class as the rear (270 % 180 == 90), and front video
+        // never adds a content rotation (no afocal), so the encoder buffer swaps to portrait —
+        // the identical ARCH4-1 framing contract, no front special case.
+        org.junit.Assert.assertTrue(RotationMath.contentAspectSwapped(270, 0))
+        assertEquals(2160 to 3840, RotationMath.encoderSurfaceSize(3840, 2160, 270, 0))
+        assertEquals(1080 to 1920, RotationMath.encoderSurfaceSize(1920, 1080, 270, 0))
     }
 }

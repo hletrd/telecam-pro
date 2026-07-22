@@ -104,4 +104,45 @@ class CameraSelector2Test {
         val targets = LensChoice.entries.map { it.targetEquivMm }
         assertEquals(targets.size, targets.toSet().size)
     }
+
+    // ---- pickFrontBest: the front (selfie) camera resolver ----
+
+    private fun front(id: String, logical: Boolean, area: Long) = FrontCandidate(id, logical, area)
+
+    @Test
+    fun `front pick prefers a plain id over a logical composite even with a smaller array`() {
+        // Same discipline as pickBest's standalone preference: a plain front id opens safely;
+        // a logical composite is only the fallback.
+        val best = CameraSelector2.pickFrontBest(
+            listOf(front("7", logical = true, area = 50_000_000), front("1", logical = false, area = 12_000_000)),
+        )!!
+        assertEquals("1", best.id)
+    }
+
+    @Test
+    fun `front pick takes the largest active array among plain ids`() {
+        val best = CameraSelector2.pickFrontBest(
+            listOf(front("6", logical = false, area = 8_000_000), front("1", logical = false, area = 12_582_912)),
+        )!!
+        assertEquals("1", best.id)
+    }
+
+    @Test
+    fun `front pick falls back to a logical front when it is the only candidate`() {
+        // A logical front is still opened PLAINLY (never physical routing), which is safe.
+        val best = CameraSelector2.pickFrontBest(listOf(front("7", logical = true, area = 0)))!!
+        assertEquals("7", best.id)
+    }
+
+    @Test
+    fun `front pick is deterministic on a full tie`() {
+        val tied = listOf(front("9", logical = false, area = 12_000_000), front("1", logical = false, area = 12_000_000))
+        assertEquals("1", CameraSelector2.pickFrontBest(tied)!!.id)
+        assertEquals("1", CameraSelector2.pickFrontBest(tied.reversed())!!.id)
+    }
+
+    @Test
+    fun `front pick returns null when the device exposes no front camera`() {
+        assertNull(CameraSelector2.pickFrontBest(emptyList()))
+    }
 }

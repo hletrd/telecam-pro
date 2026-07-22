@@ -42,12 +42,12 @@ Two critical consequences of the afocal converter drive the entire design:
 | `CameraEngine.kt` | Facade orchestrating Camera2, GL, capture encoders, video recorder, sensors, and storage. Serializes camera reconfiguration, owns asynchronous save/finalization lanes, and publishes cross-thread state through volatile seams plus synchronized ownership gates. |
 | `CameraController.kt` | Camera2 session lifecycle, capability-safe request building, and fallback plans across stream sets and session operation modes. Sets a mode only when its exact value is advertised and applies AE/AF regions independently only when each maximum region count is positive. Callback-driven, runs on a camera HandlerThread; framework callback admission is serialized against `quitSafely` so late `onClosed` work never posts to a dead OPPO queue. |
 | `CameraCallbackDispatchGate.kt` | Android-free close/admission gate ordering Camera2 executor posts before teardown, or rejecting them for the controller's inline late-callback cleanup after close begins. |
-| `CameraSelector2.kt` | Detects the telephoto physical lens: finds the camera with focal length closest to 70 mm, prefers standalone ID over physical sub-camera routing. |
+| `CameraSelector2.kt` | Detects the telephoto physical lens: finds the camera with focal length closest to 70 mm, prefers standalone ID over physical sub-camera routing. Also resolves the front (selfie) camera (`pickFront`/`pickFrontBest`): enumerates LENS_FACING_FRONT, prefers a plain (non-logical) id, largest active array on tie — always opened plainly, never via physical routing, and never hardcoded. |
 | `CameraState.kt` | Enums plus `CameraUiState` — the shared UI and runtime-state language. |
 | `CaptureCapabilities.kt` | Flattens Camera2 characteristics into exact advertised mode sets plus maximum AE/AF region counts, alongside manual-sensor, RAW, HDR, focus, and stream capabilities. |
 | `ControlAvailability.kt` | Projects those exact mode arrays, manual/range facts, and AE/AF region maxima into enum choices and admission flags shared by settings, top-bar/Fn cycles, and quick rulers. Sparse routes use a neutral singleton; before caps arrive, the current singleton remains visible but disabled. |
 | `ManualControls.kt` | Immutable snapshot of all pro capture parameters (focus, ISO, shutter, white balance, metering, processing). `normalizeControlsForRoute` applies one exact capability/zoom boundary to live and recalled packets before accepted Engine/UI/request publication. Also owns the sensor fast-path admission predicate (`sensorFastPathAdmitted`, wrapping `sensorOnlyControlsDelta` — a live tap-AF/AF-lock override rides the fast path and is re-applied, not refused), the retained-optics exact-controls/boost-off plan, and the shared sensor-key request derivation (`applySensorValueControls`). |
-| `RotationMath.kt` | Pure, unit-tested functions for preview/capture/EXIF rotation math and the video muxer orientation hint (extracted from CameraEngine). |
+| `RotationMath.kt` | Pure, unit-tested functions for preview/capture/EXIF rotation math and the video muxer orientation hint (extracted from CameraEngine). Capture rotation is facing-aware: BACK = sensor + afocal(tele) + device; FRONT = sensor − device with the afocal term never applied (sign device-verification-pending, like every rotation sign before it). |
 | `RendererConfig.kt` | One immutable snapshot of every renderer-only assist (peaking, zebra, false color, punch-in, tele finder, …) with a store that replays the complete snapshot into each fresh GL generation. |
 | `RendererAssists.kt` | Owns `RendererConfigStore`, resolves Loupe Overview intent, and is the single setter/replay facade between CameraEngine and GlPipeline. Every setter records state before posting so a dropped old-generation GL command is restored by `replayAll()` on the next generation. |
 | `StandbyAudioController.kt` | Owns the armed-video standby meter lifecycle, bounded AudioRecord recreation, and exact `StandbyMeterOwnership` handoff to REC. All engine dependencies are live lambdas so a retired meter generation cannot reclaim a newer intent. |
@@ -60,7 +60,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `VendorTagInspector.kt` | Debug-only Camera2 capability logger for device-specific request/session keys. |
 | **gl/** | |
 | `GlPipeline.kt` | One object owns one native GL generation and checked preview/encoder EGLSurface lifetimes. Outgoing outputs are unbound before destruction; preview and encoder readiness publish only after a real swap. Each object owns and retires its analysis executor, busy gate, FBO/buffer snapshot, callbacks, and native fields. `stop()` reports STOPPED only when the thread exits and checked native-output release succeeds; timeout or unsafe release permanently ABANDONS the object. `CameraEngine` compare-and-swaps a fresh object into `AtomicOwnerSlot`, restarts it from a live foreground preview, captures the exact owner/input for every preview/Camera2/recorder transaction, and identity-gates late callbacks. `RendererAssists` resolves/replays config into the current object once per operation. Thus a leaked old handler can touch only its own retired EGL state, never replacement state. |
-| `FlipRenderer.kt` | Low-level OpenGL ES fullscreen quad renderer with texture-coordinate rotation (inverse of image rotation) to flip the 180° afocal image. Applies the SDR-to-HLG mapping or a log-profile encoding (S-Log3 / S-Log3.Cine / LogC3) in the fragment shader and handles focus peaking/zebra. |
+| `FlipRenderer.kt` | Low-level OpenGL ES fullscreen quad renderer with texture-coordinate rotation (inverse of image rotation) to flip the 180° afocal image. Applies the SDR-to-HLG mapping or a log-profile encoding (S-Log3 / S-Log3.Cine / LogC3) in the fragment shader and handles focus peaking/zebra. A per-draw `mirrorX` selects the x-inverted attribute texcoord quad (pure `texCoordQuad`) for the selfie preview mirror; only the preview draw ever sets it. |
 | `EglCore.kt` | Checked EGL/GLES setup, binding, presentation, buffer swap, unbind, surface destruction, and display teardown. Supports a 10-bit config, while v1 deliberately starts the stable 8-bit config. |
 | `Shaders.kt` / `SdrToHlgMapping.kt` / `LogProfiles.kt` | Shader source plus Android-free reference constants for the BT.2408-9 display-referred SDR-to-HLG sequence and the S-Log3/LogC3 log profiles (curves + BT.709→gamut matrices, single-sourced into the GLSL); also owns the dormant O-Log2 de-log assist, peaking/zebra, and punch-in shader paths. |
 | **stab/** | |
@@ -391,6 +391,14 @@ while tilting the phone into landscape saves with the correct pixel orientation,
 in the portrait-locked preview (which does not rotate). The rotation functions are unit-tested; a lit,
 deliberately held portrait/landscape saved-file check remains useful field verification.
 
+**Front camera:** the facing-aware overload `captureRotationDegrees(sensor, tele, device,
+frontFacing = true)` uses `(sensorOrientation − deviceOrientation) % 360` — the sign flips because
+the front sensor faces the opposite direction — and the afocal term never applies (the converter is
+a rear accessory; the facing door forces TC off). Preview rotation stays 0 on FRONT (the
+SurfaceTexture transform carries the front sensor orientation; the selfie mirror is a separate
+texcoord-x axis, `gl/texCoordQuad`, preview-only). Both front signs are
+**DEVICE-VERIFICATION-PENDING** on the PMA110 front camera.
+
 **HEIF (pixel-rotated):**
 1. Owned JPEG/YUV snapshot → decode/convert to Bitmap.
 2. Bitmap.createBitmap(..., Matrix.postRotate(captureRotationDegrees), ...) → new rotated Bitmap.
@@ -491,9 +499,12 @@ Which camera is open depends on MODE, not just lens (`CameraEngine.resolveNonTel
 | Photo, TC off | **Logical camera 0** (physIds 3/2/4/5) | Unified main-relative 0.6–20×; the HAL crosses physical lenses internally (seamless pinch, no reopen). Lens picks = zoom presets; chip highlight follows `LensChoice.forZoom`. |
 | Video, TC off | **Standalone lens** matching the band | Lens-local 1–10× digital; lens changes reopen. The logical camera's EIS (Standard AND Active) leaks its uncorrected warp margin (~6% of width) into the stream — preview AND recorded file — so video must not live there. |
 | TC on (any mode) | **Standalone 3× (camera 4)** | Lens-local 1–10×; afocal 180° flip; RAW/DNG is offered only when that standalone session advertises RAW. |
+| FRONT (any mode) | **Front camera** (`pickFront`, expected id 1 — never hardcoded) | Lens-local zoom; one camera in both modes (mode flips change stream size only). A first-class optics door (`setFrontCamera`): entering forces TC off in the same transaction, lens presets/TC refuse while FRONT (`backOpticsDoorRefusal`), MR recall/settings restore exit FRONT (recalled packets are rear-route optics), and facing is never persisted (fresh launch = BACK). Preview mirrors via a texcoord x-inversion (`gl.setPreviewMirror`, replayed by `applyStabilization` like the rotation pair); saved files stay unmirrored. |
 
 `setVideoMode` remaps the zoom value between the unified and lens-local scales so framing carries
-across a mode flip (mirrored into UI state by `onModeChange`).
+across a mode flip (mirrored into UI state by `onModeChange`); while FRONT that remap is identity
+(`remapModeOptics(frontFacing)` — front zoom is lens-local in both modes and the retained rear
+band must survive the trip).
 
 **Zoom application pipeline** (why it's smooth): pinch/dial events are COALESCED in the ViewModel
 (leading apply + 16 ms trailing flush of the newest value, ~60 Hz — per-event application recomposed the
@@ -523,9 +534,9 @@ mid-gesture ~1.2×-wide aim), and a QUIET-WINDOW landing (`landExactZoom`, ~250 
 flush) lands the exact ratio on the HAL well before the 700 ms fps-boost tail ends, so a recorded
 clip stops carrying the wide framing after finger-up. Scale-remap invalidation of
 `ZoomGlideState.pendingRatio`/`.easeTarget` (via `invalidateZoomGlide()`) covers ALL the remap doors: `onModeChange`,
-`onToggleTeleconverter`, `onLens`, `onStop`, **`onOpticsRollback`, `applyLoaded` (settings/MR
-recall), and the debug `onCameraOverride`** — the last three were the doors 6affe20 originally
-missed. The glide's per-tick math is the pure `zoomEaseStep` (`ui/ZoomMath.kt`, unit-tested).
+`onToggleTeleconverter`, `onLens`, `onToggleFrontCamera`, `onStop`, **`onOpticsRollback`,
+`applyLoaded` (settings/MR recall), and the debug `onCameraOverride`** — the last three were the
+doors 6affe20 originally missed. The glide's per-tick math is the pure `zoomEaseStep` (`ui/ZoomMath.kt`, unit-tested).
 
 This zoom coalescer is separate from the general `ManualControls` packet throttle, which applies the
 newest full-control snapshot every 40 ms (25 Hz) during continuous dial input. The controller pairs

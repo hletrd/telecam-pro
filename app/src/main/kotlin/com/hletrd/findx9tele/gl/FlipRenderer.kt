@@ -40,9 +40,12 @@ class FlipRenderer {
         // x, y   (triangle strip)
         floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f),
     )
-    private val texCoords: FloatBuffer = floatBuffer(
-        floatArrayOf(0f, 0f, 1f, 0f, 0f, 1f, 1f, 1f),
-    )
+    private val texCoords: FloatBuffer = floatBuffer(texCoordQuad(mirrorX = false))
+    // Selfie preview mirror: the attribute texcoords enter the rot chain BEFORE the SurfaceTexture
+    // matrix, and attr x is display x, so inverting attr x here mirrors the DISPLAYED image
+    // horizontally regardless of the sensor orientation the stMatrix bakes in (no sign guesswork
+    // per sensor). The x→1−x inversion lives in the pure, tested [texCoordQuad].
+    private val texCoordsMirroredX: FloatBuffer = floatBuffer(texCoordQuad(mirrorX = true))
 
     private val mvp = FloatArray(16)
     private val rot = FloatArray(16)
@@ -135,6 +138,11 @@ class FlipRenderer {
         // because the internal glClear is framebuffer-wide otherwise.
         viewportX: Int = 0,
         viewportY: Int = 0,
+        // Selfie PREVIEW mirror (route state, not an assist): only the preview draw sets it — the
+        // encoder and analysis draws stay unmirrored (files follow the framework convention of
+        // saving the true scene; luma stats are mirror-invariant but stay out for consistency),
+        // exactly the zoomComp/punch-in preview-only isolation pattern.
+        mirrorX: Boolean = false,
     ) {
         GLES20.glViewport(viewportX, viewportY, targetWidth, targetHeight)
         GLES20.glClearColor(0f, 0f, 0f, 1f)
@@ -188,7 +196,10 @@ class FlipRenderer {
         GLES20.glEnableVertexAttribArray(aPosition)
         GLES20.glVertexAttribPointer(aPosition, 2, GLES20.GL_FLOAT, false, 0, quad)
         GLES20.glEnableVertexAttribArray(aTexCoord)
-        GLES20.glVertexAttribPointer(aTexCoord, 2, GLES20.GL_FLOAT, false, 0, texCoords)
+        GLES20.glVertexAttribPointer(
+            aTexCoord, 2, GLES20.GL_FLOAT, false, 0,
+            if (mirrorX) texCoordsMirroredX else texCoords,
+        )
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
 
@@ -233,6 +244,20 @@ class FlipRenderer {
         check(status[0] == GLES20.GL_TRUE) { "Shader compile failed: ${GLES20.glGetShaderInfoLog(shader)}" }
         return shader
     }
+}
+
+/**
+ * The quad's attribute texcoords (triangle-strip order, matching the −1..1 position quad), with an
+ * optional horizontal mirror. Mirroring here — x→1−x per vertex, y untouched — happens BEFORE the
+ * rot chain and the SurfaceTexture matrix, so it flips the DISPLAYED image about the display's
+ * vertical axis for ANY sensor orientation (the selfie mirror convention). Pure and top-level so
+ * the inversion is unit-testable without GL.
+ */
+internal fun texCoordQuad(mirrorX: Boolean): FloatArray {
+    val plain = floatArrayOf(0f, 0f, 1f, 0f, 0f, 1f, 1f, 1f)
+    if (!mirrorX) return plain
+    for (i in plain.indices step 2) plain[i] = 1f - plain[i]
+    return plain
 }
 
 /**

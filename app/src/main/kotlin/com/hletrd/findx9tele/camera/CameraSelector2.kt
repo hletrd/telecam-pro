@@ -18,6 +18,18 @@ data class TeleSelection(
 )
 
 /**
+ * One enumerated LENS_FACING_FRONT camera id. Kept Android-free (id + two plain facts) so
+ * [CameraSelector2.pickFrontBest] is JVM-unit-testable like [CameraSelector2.pickBest].
+ */
+data class FrontCandidate(
+    val id: String,
+    /** True when the id advertises physical sub-ids; it is still only ever opened PLAINLY. */
+    val logicalMultiCamera: Boolean,
+    /** SENSOR_INFO_ACTIVE_ARRAY_SIZE area in pixels; 0 when unreadable. */
+    val activeArrayArea: Long,
+)
+
+/**
  * Selects the lens the teleconverter mounts on: the back camera whose 35mm-equivalent focal length
  * is CLOSEST to [TARGET_EQUIV_MM] (the 3x/70mm periscope) — NOT the longest lens.
  *
@@ -114,6 +126,50 @@ object CameraSelector2 {
      * [select] so it is JVM-unit-testable (no CameraManager / CameraCharacteristics needed).
      */
     fun pickBest(candidates: List<TeleSelection>): TeleSelection? = pickClosest(candidates, TARGET_EQUIV_MM)
+
+    /**
+     * The front (selfie) camera, opened PLAINLY like every other selection — never via
+     * setPhysicalCameraId routing (the QTI-HAL crash class documented on [pickBest]). Returns a
+     * standalone-shaped [TeleSelection] (physicalId = null) so the whole session/controller path is
+     * unchanged; null when the device exposes no readable front camera. Nothing is hardcoded: on
+     * the Find X9 Ultra the front is expected to be id "1" (4096×3072), but the id comes from
+     * enumeration every time.
+     */
+    fun pickFront(manager: CameraManager): TeleSelection? {
+        val best = pickFrontBest(frontCandidatesOf(manager)) ?: return null
+        return TeleSelection(best.id, null, equivFocalOf(manager, best.id))
+    }
+
+    /** Enumerates every LENS_FACING_FRONT id as a plainly-openable candidate (no physical routing). */
+    fun frontCandidatesOf(manager: CameraManager): List<FrontCandidate> {
+        val candidates = ArrayList<FrontCandidate>()
+        // Same degrade-to-empty policy as candidatesOf: a camera-service hiccup must not crash.
+        val ids = runCatching { manager.cameraIdList }.getOrDefault(emptyArray())
+        for (id in ids) {
+            val chars = runCatching { manager.getCameraCharacteristics(id) }.getOrNull() ?: continue
+            if (chars.get(CameraCharacteristics.LENS_FACING) != CameraMetadata.LENS_FACING_FRONT) continue
+            val activeArray = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+            candidates.add(
+                FrontCandidate(
+                    id = id,
+                    logicalMultiCamera = chars.physicalCameraIds.isNotEmpty(),
+                    activeArrayArea = (activeArray?.width()?.toLong() ?: 0L) * (activeArray?.height() ?: 0),
+                ),
+            )
+        }
+        return candidates
+    }
+
+    /**
+     * Pure front-camera pick: prefer a PLAIN (non-logical) front id — the same "open the standalone,
+     * never a routed/logical composite when a plain id exists" discipline as [pickBest] — then the
+     * largest active array (the real sensor), then the lowest id for determinism. A logical front is
+     * still returned when it is the only candidate (it is opened plainly, which is safe).
+     */
+    fun pickFrontBest(candidates: List<FrontCandidate>): FrontCandidate? =
+        candidates.minWithOrNull(
+            compareBy({ if (it.logicalMultiCamera) 1 else 0 }, { -it.activeArrayArea }, { it.id }),
+        )
 
     private fun equivFocalOf(manager: CameraManager, id: String): Float {
         val chars = runCatching { manager.getCameraCharacteristics(id) }.getOrNull() ?: return 0f

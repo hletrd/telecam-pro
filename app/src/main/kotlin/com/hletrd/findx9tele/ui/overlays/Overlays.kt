@@ -426,7 +426,10 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
         state.teleconverterMode -> "$effFocal mm TELE"
         // Seamless zoom: the logical camera's equiv focal is the MAIN lens's (23 mm) and the unified
         // zoom is main-relative, so the EFFECTIVE focal is their product — 14 mm at 0.6×, 230 mm at
-        // 10× — tracking the lens the HAL actually has active, like the TELE readout does.
+        // 10× — tracking the lens the HAL actually has active, like the TELE readout does. FRONT
+        // rides this same seam unchanged: its caps equiv is the front lens's own and its zoom is
+        // lens-local, so the product is the honest selfie focal (no TELE multiplier possible —
+        // teleconverterMode is forced off on the front route).
         else -> "%.0f mm".format(Locale.US, focal * state.controls.zoomRatio.coerceAtLeast(0.01f))
     }
     Row(

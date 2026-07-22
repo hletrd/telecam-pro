@@ -13,9 +13,12 @@ import com.hletrd.findx9tele.camera.AfIndication
 import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.AudioInputPreference
 import com.hletrd.findx9tele.camera.BitrateLevel
+import com.hletrd.findx9tele.camera.BackOpticsRefusal
 import com.hletrd.findx9tele.camera.CameraCaps
 import com.hletrd.findx9tele.camera.CameraEngine
+import com.hletrd.findx9tele.camera.CameraFacing
 import com.hletrd.findx9tele.camera.CameraReadyPublicationGate
+import com.hletrd.findx9tele.camera.backOpticsDoorRefusal
 import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorEffect
@@ -358,7 +361,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             }
         }
         engine.onOpticsRollback = {
-                mode, lens, teleconverter, controls, restoredPhotoExposureTimeNs, overrideId, generation ->
+                mode, lens, teleconverter, facing, controls, restoredPhotoExposureTimeNs, overrideId, generation ->
             mainHandler.post {
                 if (!engine.isOpticsGenerationCurrent(generation)) return@post
                 cancelPendingControls()
@@ -376,6 +379,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                         mode = mode,
                         lens = lens,
                         teleconverterMode = teleconverter,
+                        facing = facing,
                         controls = controls,
                         cameraOverrideId = overrideId,
                     )
@@ -599,6 +603,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             targetMode = e.mode,
             targetLens = restoredLens,
             targetTeleconverter = restoredTeleconverter,
+            currentFrontFacing = currentState.facing == CameraFacing.FRONT,
         )
         val lastCapsExp = currentState.caps
             ?.takeIf { currentCapsDescribeTarget }
@@ -683,6 +688,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 mode = e.mode,
                 lens = restoredLens,
                 teleconverterMode = restoredTeleconverter,
+                // Recall/restore packets are rear-route optics; the engine's setResolvedOptics
+                // exits FRONT in the same transaction, so the UI mirrors that here (MR recall
+                // stays available while FRONT — it flips back as part of the recall).
+                facing = CameraFacing.BACK,
                 videoStabMode = e.videoStabMode,
                 aspectRatio = e.aspectRatio,
                 timer = e.timer,
@@ -845,6 +854,23 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         return true
     }
 
+    /**
+     * Refusal for the REAR-only optics doors (lens presets, TC toggle) — the shared, tested
+     * [backOpticsDoorRefusal] decision mapped to the two standard status strings, so the ViewModel
+     * and the engine's defensive twin can never disagree on when or why these doors refuse.
+     */
+    private fun rejectBackOnlyOpticsDoor(): Boolean {
+        val message = when (
+            backOpticsDoorRefusal(_state.value.isRecording, _state.value.facing == CameraFacing.FRONT)
+        ) {
+            BackOpticsRefusal.RECORDING -> "Stop REC first"
+            BackOpticsRefusal.FRONT_ROUTE -> "Switch to rear camera first"
+            BackOpticsRefusal.NONE -> return false
+        }
+        showStatus(message)
+        return true
+    }
+
     fun onAppStatus(message: String) = showStatus(message)
 
     /** Recomputes [ManualControls.programAppSide] after mode/flash/exposure-mode changes, seeding a smooth handoff. */
@@ -870,7 +896,16 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     /** Handheld-safe shutter target for app-side PROGRAM: the 1/(35mm-equivalent focal) rule. */
     private fun preferredProgramShutterNs(s: CameraUiState): Long =
-        preferredProgramShutterNs(s.lens.targetEquivMm, s.teleconverterMode)
+        if (s.facing == CameraFacing.FRONT) {
+            // [s.lens] retains the REAR band across a front trip; the front lens's own measured
+            // equiv (from the accepted route's caps) is the honest 1/focal input, TC never applies.
+            preferredProgramShutterNs(
+                s.caps?.equivalentFocalMm?.takeIf { it > 0f } ?: LensChoice.MAIN.targetEquivMm,
+                teleconverterMode = false,
+            )
+        } else {
+            preferredProgramShutterNs(s.lens.targetEquivMm, s.teleconverterMode)
+        }
 
     private fun audioInputStatus(preference: AudioInputPreference = _state.value.audioInputPreference) =
         AudioInputInspector.status(getApplication(), preference)
@@ -1219,7 +1254,14 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // video zoom is lens-local. Persistence rides the debounced settings save.
         if (!leadingWide) engine.setZoomRatio(z)
         val s = _state.value
-        val lensBand = if (!s.teleconverterMode && s.mode == CaptureMode.PHOTO) LensChoice.forZoom(z) else s.lens
+        // The chip band tracks the unified zoom only on the rear seamless camera; front zoom is
+        // lens-local and must not remap the retained rear band (same guard as the engine's
+        // reconcileControlsWithCaps).
+        val lensBand = if (!s.teleconverterMode && s.mode == CaptureMode.PHOTO && s.facing == CameraFacing.BACK) {
+            LensChoice.forZoom(z)
+        } else {
+            s.lens
+        }
         _state.update { it.copy(controls = it.controls.copy(zoomRatio = z), lens = lensBand) }
         // A pending throttled full-apply captured OLDER controls — refresh its zoom so it can't
         // briefly snap the ratio back when it lands.
@@ -1306,6 +1348,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             lens = before.lens,
             teleconverter = before.teleconverterMode,
             controls = exposureState.controls,
+            frontFacing = before.facing == CameraFacing.FRONT,
         )
         _state.update {
             it.copy(mode = mode, lens = optics.lens, controls = optics.controls)
@@ -1403,7 +1446,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         saveSettingsIfEnabled()
     }
     override fun onToggleTeleconverter(enabled: Boolean) {
-        if (rejectIfRecording("Stop REC first")) return
+        if (rejectBackOnlyOpticsDoor()) return
         cancelCountdown()
         drainPendingControls()
         // TELE pins the STANDALONE 3× camera (the converter's host lens; digital-only zoom, afocal
@@ -1450,7 +1493,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     private var preTeleUnifiedZoom = Float.NaN
 
     override fun onLens(choice: LensChoice) {
-        if (rejectIfRecording("Stop REC first")) return
+        if (rejectBackOnlyOpticsDoor()) return
         cancelCountdown()
         drainPendingControls()
         // A lens pick is a ZOOM PRESET on the logical seamless camera (no reopen, no black gap).
@@ -1475,6 +1518,44 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         markChanged(FnSlot.TELECONVERTER)
         saveSettingsIfEnabled()
     }
+
+    override fun onToggleFrontCamera() {
+        // The flip itself is recording-gated only; FRONT is where it leads, not a refusal input.
+        if (rejectIfRecording("Stop REC first")) return
+        cancelCountdown()
+        drainPendingControls()
+        val entering = _state.value.facing == CameraFacing.BACK
+        // Mirrors the engine transaction exactly (like onToggleTeleconverter mirrors setLens):
+        // entering forces TC off and front-local 1×; leaving lands on the retained rear band's
+        // mode home (unified preset in photo, lens-local 1× in video). Deliberately NO explicit
+        // settings save: facing is session-only, so a kill while FRONT restores the last REAR
+        // setup — the outcome the "fresh launch is BACK" rule wants.
+        engine.setFrontCamera(entering)
+        _state.update {
+            if (entering) {
+                it.copy(
+                    facing = CameraFacing.FRONT,
+                    teleconverterMode = false,
+                    controls = it.controls.copy(zoomRatio = 1f),
+                    activeMemorySlot = null,
+                )
+            } else {
+                it.copy(
+                    facing = CameraFacing.BACK,
+                    controls = it.controls.copy(
+                        zoomRatio = if (it.mode == CaptureMode.VIDEO) 1f else it.lens.zoomPreset,
+                    ),
+                    activeMemorySlot = null,
+                )
+            }
+        }
+        // A front trip drops the pre-TELE return snapshot (engine does the same in its transaction).
+        preTeleUnifiedZoom = Float.NaN
+        // The facing flip rewrote the zoom scale — full remap-door hygiene, same as mode/lens/TC.
+        invalidateZoomGlide()
+        clearTapFocusUi()
+    }
+
     override fun onVideoCodec(codec: VideoCodec) {
         if (rejectIfRecording("Stop REC first")) return
         engine.setVideoCodec(codec)
@@ -1547,7 +1628,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             capsLower = range?.lower,
             capsUpper = range?.upper,
         )
-        val lens = if (current.mode == CaptureMode.PHOTO && !current.teleconverterMode) {
+        val lens = if (
+            current.mode == CaptureMode.PHOTO && !current.teleconverterMode &&
+            current.facing == CameraFacing.BACK
+        ) {
             LensChoice.forZoom(normalizedControls.zoomRatio)
         } else {
             current.lens

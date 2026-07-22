@@ -55,6 +55,15 @@ class TeleFinderVisibilityTest {
     }
 
     @Test
+    fun `front route resolves false through the forced-off converter axis`() {
+        // The gate deliberately has NO facing axis: entering FRONT forces teleconverterMode=false
+        // in the same optics transaction and the TC toggle refuses while FRONT, so tc=false IS the
+        // front truth — even a stale enabled toggle with the loupe up cannot draw the PIP there.
+        assertFalse(teleFinderResolved(true, false, false, AspectRatio.W4_3))
+        assertFalse(teleFinderVisible(true, false, false, AspectRatio.W4_3, punchIn = true))
+    }
+
+    @Test
     fun `video mode never shows the finder regardless of the photo aspect setting`() {
         // The 4:3 gate is the STILL aspect; in video it used to make the overview appear/vanish with an
         // unrelated photo setting. Photo-only closes that semantic surprise.

@@ -117,6 +117,7 @@ import com.hletrd.findx9tele.camera.Antibanding
 import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.AutoExposure
 import com.hletrd.findx9tele.camera.BitrateLevel
+import com.hletrd.findx9tele.camera.CameraFacing
 import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorEffect
@@ -565,7 +566,11 @@ fun CameraScreen(
                     enter = fadeIn(tween(120)),
                     exit = fadeOut(tween(300)),
                 ) {
-                    val mul = zoomDisplayMultiplier(state.teleconverterMode, state.caps?.equivalentFocalMm)
+                    val mul = zoomDisplayMultiplier(
+                        state.teleconverterMode,
+                        state.caps?.equivalentFocalMm,
+                        frontFacing = state.facing == CameraFacing.FRONT,
+                    )
                     ZoomIndicator(
                         zoom = state.controls.zoomRatio * mul,
                         range = state.caps?.zoomRatioRange?.let {
@@ -755,12 +760,17 @@ fun CameraScreen(
                 verticalArrangement = Arrangement.spacedBy(if (landscapeOperator) 4.dp else 8.dp),
             ) {
                 Box(modifier = Modifier.fillMaxWidth()) {
-                    FocalRail(
-                        state = state,
-                        onLens = actions::onLens,
-                        glyphRotation = overlayRotation,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
+                    // GONE while FRONT (not disabled): the 0.6/1/3/10 presets are rear-lens
+                    // concepts — the selfie route has exactly one lens, so a disabled rail would
+                    // advertise choices that cannot exist (same rationale as the TELE chip).
+                    if (state.facing == CameraFacing.BACK) {
+                        FocalRail(
+                            state = state,
+                            onLens = actions::onLens,
+                            glyphRotation = overlayRotation,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
                     if (!detailsVisible) {
                         val entryAnchor = fnEntryAnchor(state.deviceOrientation)
                         CompactFnButton(
@@ -1066,14 +1076,27 @@ private fun TopBar(
                     modifier = glyphSpin,
                 )
             }
-            TeleChip(
-                active = state.teleconverterMode,
-                enabled = !recordingLocked,
-                onClick = { actions.onToggleTeleconverter(!state.teleconverterMode) },
-            )
+            // GONE (not disabled) while FRONT: the converter is a rear-3× accessory, so the chip is
+            // a rear-only concept with no meaningful disabled state on the selfie route — the same
+            // reasoning UX_POLICY applies to states that cannot exist (vs capability-dimmed
+            // controls like flash, which stay visible-disabled).
+            if (state.facing == CameraFacing.BACK) {
+                TeleChip(
+                    active = state.teleconverterMode,
+                    enabled = !recordingLocked,
+                    onClick = { actions.onToggleTeleconverter(!state.teleconverterMode) },
+                )
+            }
         }
         // Counter-rotate the settings glyph so it stays upright as the phone turns (iPhone-style).
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            // Fixed (non-scrolling) slot like DISP/settings: flipping must stay reachable while the
+            // leading chip row is scrolled, and it never disappears in compact mode.
+            FlipCameraButton(
+                onClick = actions::onToggleFrontCamera,
+                enabled = !recordingLocked,
+                modifier = Modifier.rotate(glyphRotation),
+            )
             DispButton(active = compact, onClick = onToggleDisp, modifier = Modifier.rotate(glyphRotation))
             GearButton(onClick = onOpenSheet, modifier = Modifier.rotate(glyphRotation))
         }
@@ -1314,6 +1337,45 @@ private fun TeleChip(active: Boolean, onClick: () -> Unit, modifier: Modifier = 
 
 /** Test seam pinning TELE's idle plate to the app-wide, bright-frame contrast floor. */
 internal fun teleChipIdleScrimAlpha(): Float = HUD_TEXT_SCRIM_ALPHA
+
+/** Standard camera-flip glyph: two half-circle arrows chasing each other (front/rear switch). */
+@Composable
+private fun FlipCameraButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
+    ChromeIconButton(onClick = onClick, contentDescription = "Switch camera", modifier = modifier, enabled = enabled) {
+        Canvas(Modifier.size(18.dp)) {
+            val color = CameraColors.TextPrimary.copy(alpha = if (enabled) 1f else 0.38f)
+            val sw = 1.4.dp.toPx()
+            val inset = size.minDimension * 0.14f
+            val arcSize = Size(size.width - 2 * inset, size.height - 2 * inset)
+            val arcTopLeft = Offset(inset, inset)
+            // Two opposing 120° arcs; each ends in a small filled arrowhead pointing along its sweep.
+            drawArc(color, startAngle = -160f, sweepAngle = 120f, useCenter = false, topLeft = arcTopLeft, size = arcSize, style = Stroke(width = sw))
+            drawArc(color, startAngle = 20f, sweepAngle = 120f, useCenter = false, topLeft = arcTopLeft, size = arcSize, style = Stroke(width = sw))
+            val r = arcSize.width / 2f
+            fun arrowHead(angleDeg: Float, tangentDeg: Float) {
+                val rad = Math.toRadians(angleDeg.toDouble())
+                val tip = Offset(
+                    center.x + r * kotlin.math.cos(rad).toFloat(),
+                    center.y + r * kotlin.math.sin(rad).toFloat(),
+                )
+                val tRad = Math.toRadians(tangentDeg.toDouble())
+                val dir = Offset(kotlin.math.cos(tRad).toFloat(), kotlin.math.sin(tRad).toFloat())
+                val normal = Offset(-dir.y, dir.x)
+                val len = size.minDimension * 0.18f
+                val head = Path().apply {
+                    moveTo(tip.x + dir.x * len * 0.7f, tip.y + dir.y * len * 0.7f)
+                    lineTo(tip.x - normal.x * len * 0.5f, tip.y - normal.y * len * 0.5f)
+                    lineTo(tip.x + normal.x * len * 0.5f, tip.y + normal.y * len * 0.5f)
+                    close()
+                }
+                drawPath(head, color)
+            }
+            // Arrowheads at each arc's end, tangent to the circle in the sweep direction.
+            arrowHead(angleDeg = -40f, tangentDeg = 50f)
+            arrowHead(angleDeg = 140f, tangentDeg = 230f)
+        }
+    }
+}
 
 @Composable
 private fun GearButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
@@ -2366,6 +2428,7 @@ internal object PreviewCameraActions : CameraActions {
     override fun onHardwareHalfPress(active: Boolean) = Unit
 
     override fun onLens(choice: com.hletrd.findx9tele.camera.LensChoice) = Unit
+    override fun onToggleFrontCamera() = Unit
     override fun onCameraOverride(id: String?) = Unit
     override fun onToggleRememberSettings(enabled: Boolean) = Unit
     override fun onTogglePreserveLensSelection(enabled: Boolean) = Unit

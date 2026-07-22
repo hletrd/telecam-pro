@@ -1329,6 +1329,7 @@ internal fun fnSlotValue(slot: FnSlot, state: CameraUiState): String {
             c.zoomRatio,
             state.teleconverterMode,
             state.caps?.equivalentFocalMm,
+            frontFacing = state.facing == com.hletrd.findx9tele.camera.CameraFacing.FRONT,
         )
         FnSlot.STABILIZATION -> state.videoStabMode.label
         FnSlot.DRIVE -> driveModeLabel(state.driveMode)

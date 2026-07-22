@@ -311,6 +311,24 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   hunting 2 s after every tap). AF reaches FOCUSED on device.
 - **Aspect ratio is only 4:3 or 16:9.** The sensor is 4:3-native: `AspectRatio.W4_3` = full readout
   (no crop, the default + the no-crop sentinel), `W16_9` = its center crop. Full/1:1/portrait removed.
+- **Front (selfie) camera is a first-class optics door with BASIC scope (2026-07-22; rotation/mirror
+  signs DEVICE-VERIFICATION-PENDING).** `CameraEngine.setFrontCamera` is a full generation-owned
+  transaction (never a transaction-less close/open): entering FRONT forces the teleconverter off in
+  the same publication, resets zoom to front-lens-local 1×, and reconfigures onto
+  `CameraSelector2.pickFront` (enumerated LENS_FACING_FRONT, plain-id-preferred, largest array on
+  tie — expected id "1" on PMA110 but NEVER hardcoded; opened plainly, no physical routing).
+  Leaving returns to the rear mode-home (`resolveNonTeleId`). Lens presets and the TC toggle REFUSE
+  while FRONT (`backOpticsDoorRefusal`, one seam for engine + VM); MR recall/settings restore EXIT
+  front atomically (`setResolvedOptics` sets facing=BACK — recalled packets are rear-route optics);
+  facing is never persisted (fresh launch is always BACK — the app exists for the rear tele). The
+  PREVIEW mirrors via an attribute-texcoord x-inversion (`gl/texCoordQuad` → per-draw `mirrorX`,
+  pushed as route state by `applyStabilization` beside the rotation pair); the encoder/analysis
+  draws and every saved file stay UNMIRRORED (framework convention; a "save mirrored" toggle is a
+  possible future option). Capture rotation FRONT = `(sensor − device) % 360`, afocal never applies
+  (`RotationMath.captureRotationDegrees(..., frontFacing)`); preview rotation stays 0. Front
+  tap-AF un-flips the tapped view x before content mapping (`mapTapFocusGeometry(mirrorX)`). RAW,
+  hi-res, flash, and the finder PIP all resolve off the existing capability/route axes — no
+  facing special cases in those predicates.
 - **Video caps come from the device, not hardcodes.** `video/EncoderCaps.kt` scans `MediaCodecList`.
   Only **HEVC + AVC** are offered (both HW). **AV1 was removed** (the only AV1 encoder here is SW
   `c2.android.av1.encoder` — too slow/low-res to ship). **APV** (`VideoCodec.APV`, HW

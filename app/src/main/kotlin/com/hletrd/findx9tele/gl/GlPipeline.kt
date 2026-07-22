@@ -106,6 +106,13 @@ class GlPipeline {
     private var encoderBaseSet = false
 
     private var transfer: ColorTransfer? = null
+    // Selfie preview mirror. ROUTE state like the rotation/sensor-orientation pair (NOT a
+    // RendererAssists entry): CameraEngine.applyStabilization re-pushes it on every session
+    // (re)config and rollback, which is also what re-seeds a replacement GL generation — the same
+    // replay path setRotationDegrees rides, so the documented "posted before start() is dropped"
+    // trap is covered without a config-store field. Preview-only: encoder/analysis draws never
+    // mirror (files stay unmirrored by convention; the meter stays framing-identical to capture).
+    private var previewMirrorX = false
     private var gammaAssist = false
     // True while the HAL-native O-Log2 stream is engaged: the frames arriving here are ALREADY log
     // (scene-referred), so the preview passes through (flat) or de-logs for Gamma Display Assist.
@@ -415,6 +422,9 @@ class GlPipeline {
 
     fun setRotationDegrees(deg: Int) = post { renderer.setRotationDegrees(deg) }
     fun setSensorOrientation(deg: Int) = post { renderer.setSensorOrientation(deg) }
+
+    /** Selfie PREVIEW mirror (front route only); the encoder/analysis draws stay unmirrored. */
+    fun setPreviewMirror(enabled: Boolean) = post { previewMirrorX = enabled }
     fun setTransfer(t: ColorTransfer?) = post { transfer = t }
 
     /** Gamma Display Assist: monitor shows the normal 709-ish image while the FILE stays log. */
@@ -783,6 +793,9 @@ class GlPipeline {
                     peakThreshold = peakThreshold, peakR = peakR, peakG = peakG, peakB = peakB, zebraThreshold = zebraThreshold,
                     delogAssist = nativeLog && gammaAssist,
                     zoomComp = zoomTarget / halZoom.coerceAtLeast(0.01f),
+                    // The ONLY mirrored draw: the encoder/analysis draws below deliberately omit
+                    // mirrorX so files and metering keep the true (unmirrored) scene.
+                    mirrorX = previewMirrorX,
                 )
                 // TELE finder PIP (opt-in, resolved by CameraEngine.pushTeleFinder): a corner
                 // viewport re-drawing the FULL current camera frame while the main view is
@@ -818,6 +831,11 @@ class GlPipeline {
                                 // the whole frame, not the loupe/stab framing).
                                 zoomComp = 1f,
                                 viewportX = fx, viewportY = fy,
+                                // Preview-space sibling draw: follows the preview mirror (moot
+                                // today — the finder requires TC, which the front route forces
+                                // off — but a mismatched PIP orientation would be wrong if that
+                                // ever changed).
+                                mirrorX = previewMirrorX,
                             )
                         } finally {
                             GLES20.glDisable(GLES20.GL_SCISSOR_TEST)

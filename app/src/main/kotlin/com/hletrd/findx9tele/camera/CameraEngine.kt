@@ -142,7 +142,7 @@ class CameraEngine(private val context: Context) {
     // black viewfinder behind a fully interactive-looking shutter with zero indication.
     var onCameraReadyChange: ((CameraReadyPublication) -> Unit)? = null
     /** Restores UI optics when a current-generation camera switch fails before closing the old one. */
-    var onOpticsRollback: ((CaptureMode, LensChoice, Boolean, ManualControls, Long, String?, generation: Long) -> Unit)? = null
+    var onOpticsRollback: ((CaptureMode, LensChoice, Boolean, CameraFacing, ManualControls, Long, String?, generation: Long) -> Unit)? = null
 
     // AF engine state for the reticle color, mapped from the controller's raw CONTROL_AF_STATE.
     var onAfIndication: ((AfIndication) -> Unit)? = null
@@ -227,7 +227,11 @@ class CameraEngine(private val context: Context) {
             capsUpper = range?.upper,
         )
         if (!videoMode) photoExposureTimeNs = controls.exposureTimeNs
-        if (!videoMode && !teleconverterMode) lensChoice = LensChoice.forZoom(controls.zoomRatio)
+        // The lens band is a REAR unified-zoom concept; front zoom is lens-local and must not
+        // remap the retained rear band (it is what "leave FRONT" returns to).
+        if (!videoMode && !teleconverterMode && facing == CameraFacing.BACK) {
+            lensChoice = LensChoice.forZoom(controls.zoomRatio)
+        }
         seedGlZoom()
     }
 
@@ -235,6 +239,7 @@ class CameraEngine(private val context: Context) {
         val videoMode: Boolean,
         val lens: LensChoice,
         val teleconverter: Boolean,
+        val facing: CameraFacing,
         val controls: ManualControls,
         val photoExposureTimeNs: Long,
         val overrideId: String?,
@@ -284,6 +289,7 @@ class CameraEngine(private val context: Context) {
         videoMode = videoMode,
         lens = lensChoice,
         teleconverter = teleconverterMode,
+        facing = facing,
         controls = controls,
         photoExposureTimeNs = photoExposureTimeNs,
         overrideId = overrideId,
@@ -469,6 +475,7 @@ class CameraEngine(private val context: Context) {
                 mode = if (before.videoMode) CaptureMode.VIDEO else CaptureMode.PHOTO,
                 lens = before.lens,
                 teleconverter = before.teleconverter,
+                facing = before.facing,
                 controls = before.controls,
                 photoExposureTimeNs = before.photoExposureTimeNs,
                 overrideId = before.overrideId,
@@ -479,6 +486,9 @@ class CameraEngine(private val context: Context) {
         videoMode = restored.mode == CaptureMode.VIDEO
         lensChoice = restored.lens
         teleconverterMode = restored.teleconverter
+        // A failed FRONT open (or a failed exit) restores the exact prior facing with the rest of
+        // the packet; applyStabilization below then re-pushes the matching preview mirror.
+        facing = restored.facing
         controls = restored.controls
         photoExposureTimeNs = restored.photoExposureTimeNs
         overrideId = restored.overrideId
@@ -495,6 +505,7 @@ class CameraEngine(private val context: Context) {
             restored.mode,
             restored.lens,
             restored.teleconverter,
+            restored.facing,
             restored.controls,
             restored.photoExposureTimeNs,
             restored.overrideId,
@@ -589,9 +600,20 @@ class CameraEngine(private val context: Context) {
     private fun cachedLogicalBack(): String? =
         cachedLogicalBackId ?: CameraSelector2.logicalBackId(manager)?.also { cachedLogicalBackId = it }
 
+    // Static-per-device like the focal→id cache: the front enumeration never changes at runtime and
+    // costs several Binder IPCs, so resolve it once on setupExecutor and reuse.
+    @Volatile private var cachedFrontSelection: TeleSelection? = null
+
+    private fun cachedFront(): TeleSelection? =
+        cachedFrontSelection ?: CameraSelector2.pickFront(manager)?.also { cachedFrontSelection = it }
+
     private val gyro = com.hletrd.findx9tele.stab.GyroEis(context)
     @Volatile private var teleconverterMode = false
     @Volatile private var videoMode = false
+    // FRONT is a first-class optics door (setFrontCamera). Never persisted — fresh launch is BACK
+    // (see CameraFacing) — and never combined with TELE: entering FRONT forces the converter off.
+    @Volatile private var facing = CameraFacing.BACK
+    private val facingIntentGeneration = java.util.concurrent.atomic.AtomicLong(0)
     // Hi-res still INTENT (user toggle, persisted). Resolution to an actual session demand happens
     // in exactly one place ([resolvedHiResStill], the shared hiResAdmitted predicate) and is pushed
     // to the controller before every configure; the doors that can flip the resolved value without
@@ -775,6 +797,13 @@ class CameraEngine(private val context: Context) {
         // that ~90° SurfaceTexture rotation swaps the displayed width/height.
         gl.setSensorOrientation(c.sensorOrientation)
         gl.setRotationDegrees(previewRotationDegrees())
+        // Selfie mirror is ROUTE state plumbed exactly like the rotation pair above: re-pushed on
+        // every session (re)config/rollback, which also covers a replacement GL generation (this
+        // method runs after each reconfigure, so a fresh pipeline can never start with a stale
+        // mirror — the documented "posted before start() is dropped" trap). Preview-only; the
+        // encoder/analysis draws stay unmirrored (saved files show the true scene — the framework
+        // front-camera convention; a "save mirrored" toggle is a possible future option).
+        gl.setPreviewMirror(facing == CameraFacing.FRONT)
         // TELE finder PIP: re-resolve on every session (re)config and tele change, like rotation
         // (the user toggle, TELE state, or aspect may all have changed since the last push).
         pushTeleFinder()
@@ -1239,10 +1268,12 @@ class CameraEngine(private val context: Context) {
                 rollbackOptics(transaction, "Stop REC first; mode unchanged")
                 return@execute
             }
-            val id = if (teleconverterMode) {
-                cachedIdForFocal(LensChoice.TELE3X.targetEquivMm)
-            } else {
-                resolveNonTeleId(lensChoice)
+            // FRONT keeps its one camera across the mode flip (photo/video are stream-size, not
+            // camera, changes there); the rear split keeps its documented tele/mode-home routing.
+            val id = when {
+                facing == CameraFacing.FRONT -> cachedFront()?.logicalId
+                teleconverterMode -> cachedIdForFocal(LensChoice.TELE3X.targetEquivMm)
+                else -> resolveNonTeleId(lensChoice)
             }
             if (id == null) {
                 rollbackOptics(transaction, "Camera unavailable; mode unchanged")
@@ -1293,7 +1324,7 @@ class CameraEngine(private val context: Context) {
                                 capsUpper = range?.upper,
                             )
                             if (!enabled) photoExposureTimeNs = controls.exposureTimeNs
-                            if (!enabled && !teleconverterMode) {
+                            if (!enabled && !teleconverterMode && facing == CameraFacing.BACK) {
                                 lensChoice = LensChoice.forZoom(controls.zoomRatio)
                             }
                             seedGlZoom()
@@ -1337,6 +1368,12 @@ class CameraEngine(private val context: Context) {
             videoMode = enabledVideo
             lensChoice = resolvedLens
             teleconverterMode = resolvedTeleconverter
+            // MR recall / settings restore EXITS the front camera in this same atomic publication:
+            // recalled packets are rear-route optics (lens band, TC state, unified/lens-local zoom
+            // semantics — facing itself is deliberately never persisted), so applying one while
+            // FRONT would pair front hardware with rear-scale values. One transaction, no
+            // intermediate front-with-recalled-optics state.
+            facing = CameraFacing.BACK
             controls = modeControls
             photoExposureTimeNs = resolvedPhotoExposureTimeNs.coerceAtLeast(1L)
             recalledVideoSize?.let { requestedVideoSize = it }
@@ -1581,6 +1618,7 @@ class CameraEngine(private val context: Context) {
             sensorCenter = loupeCenterSensorX to loupeCenterSensorY,
             loupeCenter = loupeCenterTexX to loupeCenterTexY,
             previewRotationDegrees = previewRotationDegrees(),
+            mirrorX = facing == CameraFacing.FRONT,
         )
         val attempt = PendingTapFocus(
             session = accepted,
@@ -2037,7 +2075,15 @@ class CameraEngine(private val context: Context) {
         // preset. An explicit lens pick (onLens) must NOT restore — the user chose a new framing.
         restorePreTele: Boolean = false,
     ) {
-        if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
+        // Lens presets and the TC toggle (which routes through here) are REAR-only doors: while
+        // FRONT they refuse instead of silently flipping the route out from under the operator —
+        // the flip button is the one exit. Defensive twin of the ViewModel's gate, through the same
+        // shared decision so their answers cannot drift.
+        when (backOpticsDoorRefusal(recorder != null, facing == CameraFacing.FRONT)) {
+            BackOpticsRefusal.RECORDING -> { onStatus?.invoke("Stop REC first"); return }
+            BackOpticsRefusal.FRONT_ROUTE -> { onStatus?.invoke("Switch to rear camera first"); return }
+            BackOpticsRefusal.NONE -> Unit
+        }
         val intentGeneration = lensIntentGeneration.incrementAndGet()
         val (transaction, resolved) = beginOpticsTransaction {
             val intent = resolveLensOpticsIntent(
@@ -2125,6 +2171,61 @@ class CameraEngine(private val context: Context) {
     }
 
     /**
+     * The FRONT (selfie) camera door — a first-class optics transaction like setLens/setVideoMode,
+     * NOT a transaction-less close/open. Order inside the desired packet matters and is deliberate:
+     * entering FRONT forces the teleconverter OFF in the SAME publication (the converter is a
+     * rear-3× accessory; a front session with the afocal 180° or the TC session type would be
+     * nonsense), so no intermediate front+TC state is ever observable. Zoom becomes front-lens-local
+     * 1× on entry; leaving returns to the retained rear band's home framing (unified preset in
+     * photo, lens-local 1× in video — resolveNonTeleId's mode-split homes). Remap-door hygiene:
+     * beginOpticsTransaction retires tap focus, pushTeleFinder re-resolves (false — TC just went
+     * off), the ViewModel invalidates its zoom glide at the same door, and hi-res is re-resolved by
+     * reconfigureCamera's route-explicit resolvedHiResStill(sel, c) — the facing door ALWAYS
+     * reconfigures, so that resolve IS the explicit re-resolve the other doors perform inline.
+     * A failed open rolls back facing with the rest of the packet through rollbackOptics.
+     */
+    fun setFrontCamera(enabled: Boolean) {
+        if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
+        if ((facing == CameraFacing.FRONT) == enabled) return
+        val intentGeneration = facingIntentGeneration.incrementAndGet()
+        val transaction = beginOpticsTransaction {
+            facing = if (enabled) CameraFacing.FRONT else CameraFacing.BACK
+            if (enabled) teleconverterMode = false
+            controls = controls.copy(
+                zoomRatio = if (enabled || videoMode) 1f else lensChoice.zoomPreset,
+            )
+            // A front trip drops the pre-TELE return framing: the snapshot is an absolute ratio in
+            // a rear scale, and TELE does not survive the trip (leaving FRONT lands on the plain
+            // rear home, TC off), so a stale restore target must not linger.
+            preTeleUnifiedZoom = Float.NaN
+            overrideId = null
+        }.first
+        // TC state changed above (entering) or the finder inputs must re-resolve anyway (leaving):
+        // resolve synchronously so the GL PIP cannot outlive the facing flip while the async
+        // reconfigure is still queued — the same door discipline as setLens/setVideoMode.
+        pushTeleFinder()
+        setupExecutor.execute {
+            if (!ownsOpticsTransaction(transaction) ||
+                facingIntentGeneration.get() != intentGeneration || paused || recorder != null
+            ) return@execute
+            val id = if (enabled) {
+                cachedFront()?.logicalId
+            } else {
+                resolveNonTeleId(lensChoice)
+            }
+            if (id == null) {
+                rollbackOptics(
+                    transaction,
+                    if (enabled) "Front camera unavailable" else "Camera unavailable; facing unchanged",
+                )
+                return@execute
+            }
+            // Facing always changes the physical camera — no same-route fast path exists here.
+            reconfigureCamera(id, transaction)
+        }
+    }
+
+    /**
      * The non-teleconverter camera id for the CURRENT capture mode. PHOTO lives on the LOGICAL
      * multicamera — seamless 0.6–20× pinch, stills device-verified clean. VIDEO pins the matching
      * STANDALONE lens: the logical camera's EIS (Standard AND Active) leaks its uncorrected warp
@@ -2144,7 +2245,12 @@ class CameraEngine(private val context: Context) {
         // Switching the physical lens mid-recording reconfigures the camera under the encoder and
         // gaps/corrupts the clip. Refuse until recording stops; the UI also gates this.
         if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
-        val transaction = beginOpticsTransaction { overrideId = id }.first
+        // A debug override pins an explicit rear-route id; it is not the facing door, so it also
+        // drops FRONT (selectCurrentLens would otherwise ignore the pinned id while facing FRONT).
+        val transaction = beginOpticsTransaction {
+            facing = CameraFacing.BACK
+            overrideId = id
+        }.first
         reconfigureCamera(id, transaction)
     }
 
@@ -2405,6 +2511,11 @@ class CameraEngine(private val context: Context) {
     }
 
     private fun selectCurrentLens(): TeleSelection? {
+        // FRONT owns the whole selection: the rear override/focal resolvers below are meaningless
+        // for it, and the facing door already cleared overrideId in its transaction. Standalone-
+        // shaped (physicalId == null), so every downstream session/capture axis behaves like the
+        // proven rear standalone path.
+        if (facing == CameraFacing.FRONT) return cachedFront()
         val id = overrideId
             ?: (if (!teleconverterMode) resolveNonTeleId(lensChoice) else null)
             ?: cachedIdForFocal(lensChoice.targetEquivMm)
@@ -2770,6 +2881,7 @@ class CameraEngine(private val context: Context) {
     private fun shotSpec(shotControls: ManualControls, hiRes: Boolean): ShotSpec {
         val shotCaps = caps
         val shotTeleconverter = teleconverterMode
+        val shotFrontFacing = facing == CameraFacing.FRONT
         val requestedAtMs = System.currentTimeMillis()
         val captureId = captureSeq.incrementAndGet()
         val rotation = shotCaps?.let {
@@ -2777,6 +2889,7 @@ class CameraEngine(private val context: Context) {
                 it.sensorOrientation,
                 shotTeleconverter,
                 gyro.currentDeviceOrientation(),
+                frontFacing = shotFrontFacing,
             )
         } ?: 0
         return ShotSpec(
@@ -2796,6 +2909,7 @@ class CameraEngine(private val context: Context) {
             requestedAtMs = requestedAtMs,
             takenAtMs = requestedAtMs,
             hiRes = hiRes,
+            frontFacing = shotFrontFacing,
         )
     }
 
@@ -3993,7 +4107,12 @@ class CameraEngine(private val context: Context) {
      */
     private fun captureRotationDegrees(): Int {
         val c = caps ?: return 0
-        return RotationMath.captureRotationDegrees(c.sensorOrientation, teleconverterMode, gyro.currentDeviceOrientation())
+        return RotationMath.captureRotationDegrees(
+            c.sensorOrientation,
+            teleconverterMode,
+            gyro.currentDeviceOrientation(),
+            frontFacing = facing == CameraFacing.FRONT,
+        )
     }
 
 
@@ -4104,20 +4223,25 @@ class CameraEngine(private val context: Context) {
             if (it.denominator == 0) 1f / 3f else it.numerator.toFloat() / it.denominator
         } ?: (1f / 3f)
         val activeLensId = activeId ?: spec.selection?.let { it.physicalId ?: it.logicalId }
-        val lensName = when (activeLensId) {
-            "3" -> "ultra-wide"
-            "2" -> "wide"
-            "4" -> "tele"
-            "5" -> "periscope tele"
+        // The id map below names REAR lenses; a front shot must not fall into its "tele" default
+        // (the front id is enumerated, never assumed, so facing — not an id table — decides).
+        val lensName = when {
+            spec.frontFacing -> "front"
+            activeLensId == "3" -> "ultra-wide"
+            activeLensId == "2" -> "wide"
+            activeLensId == "4" -> "tele"
+            activeLensId == "5" -> "periscope tele"
             else -> "tele"
         }
         // Marketing focal like the stock sample ("70mm", not the computed 69.4): the lens band's
         // nominal equiv. f-stop truncated to one decimal (stock: "f/2.2" for the 2.26 aperture).
-        val marketingMm = when (activeLensId) {
-            "3" -> LensChoice.ULTRAWIDE.targetEquivMm
-            "2" -> LensChoice.MAIN.targetEquivMm
-            "4" -> LensChoice.TELE3X.targetEquivMm
-            "5" -> LensChoice.TELE10X.targetEquivMm
+        // The front has no rear marketing band — its own measured equiv is the honest value.
+        val marketingMm = when {
+            spec.frontFacing -> lensEquiv
+            activeLensId == "3" -> LensChoice.ULTRAWIDE.targetEquivMm
+            activeLensId == "2" -> LensChoice.MAIN.targetEquivMm
+            activeLensId == "4" -> LensChoice.TELE3X.targetEquivMm
+            activeLensId == "5" -> LensChoice.TELE10X.targetEquivMm
             else -> lensEquiv
         }
         val fTrunc = kotlin.math.floor(lensF * 10f) / 10f
@@ -4479,6 +4603,9 @@ internal data class OpticsIntentState(
     val overrideId: String?,
     val photoExposureTimeNs: Long = controls.exposureTimeNs,
     val requestedVideoSize: Size? = null,
+    // Facing rolls back with the packet like every other optics axis: a refused FRONT entry must
+    // restore BACK (and vice versa) under the exact owning generation, never optimistically.
+    val facing: CameraFacing = CameraFacing.BACK,
 )
 
 /** Returns the exact pre-intent optics only while that intent still owns the current generation. */
@@ -4704,9 +4831,15 @@ internal fun mapTapFocusGeometry(
     sensorCenter: Pair<Float, Float>,
     loupeCenter: Pair<Float, Float>,
     previewRotationDegrees: Int,
+    // Selfie preview mirror: the DISPLAYED image is x-flipped, so the tapped view x must un-flip
+    // (nx → 1−nx) before the sensor/loupe content mappings — otherwise front tap-AF meters the
+    // horizontally opposite scene point. The reticle viewPoint stays the raw tap (UI space).
+    // Same on-device sign caveat as the rest of this mapping.
+    mirrorX: Boolean = false,
 ): TapFocusGeometry {
-    val sensorRaw = viewTapToSensorPoint(nx, ny, sensorOrientation, teleconverter)
-    val loupeRaw = viewTapToLoupeCenter(nx, ny, previewRotationDegrees)
+    val cx = if (mirrorX) 1f - nx else nx
+    val sensorRaw = viewTapToSensorPoint(cx, ny, sensorOrientation, teleconverter)
+    val loupeRaw = viewTapToLoupeCenter(cx, ny, previewRotationDegrees)
     if (!punchActive) return TapFocusGeometry(nx to ny, sensorRaw, loupeRaw)
     val span = 1f - PUNCH_IN_CROP
     return TapFocusGeometry(

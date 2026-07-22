@@ -26,6 +26,9 @@
   over the viewfinder. See [`docs/UX_POLICY.md`](docs/UX_POLICY.md).
 - **Seamless zoom (photo)**: pinch sweeps **0.6×→20×** across all four lenses (UW 14 mm / main 23 mm / 3× 70 mm / 10× 230 mm) in one session on the logical multicamera — the HAL crosses the optics at their native ratios and fills between them digitally, iPhone-style; lens buttons are zoom presets, and the OSD reads the live effective focal. Video pins the matching standalone lens (the logical camera's EIS leaks a warp band into recordings — device-isolated), with lens-local digital zoom. The TELE toggle pins the standalone 3× for converter shooting.
 - **Afocal 180° flip**: The teleconverter is afocal, so images arrive flipped 180° → preview/photos/videos all corrected (GL texcoord rotation for preview, pixel rotation for HEIF/JPEG, EXIF tag for DNG).
+- **Front camera with flip button — basic capture**: photo and video on the selfie camera with a
+  mirrored preview (saved files unmirrored, the standard convention). The teleconverter, focal rail,
+  and other rear-optics features stay rear-only; the app always launches on the rear camera.
 - **Full manual control**: Focus (nonlinear slider tuned near infinity), ISO, shutter (speed or cine
   angle), WB (presets + Kelvin/tint), EV, metering, drive modes (single/burst/AEB/timelapse).
   Stop-snapping dials have haptic detents; AF→MF handoff seeds the manual slider from AF's live lens

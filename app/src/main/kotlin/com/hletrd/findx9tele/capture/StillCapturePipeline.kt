@@ -38,6 +38,9 @@ internal data class ShotSpec(
     // orientation travels in EXIF like DNG and the 16:9 crop cannot apply (the 4:3 admission gate
     // upstream guarantees it is never wanted).
     val hiRes: Boolean = false,
+    // Snapshotted at dispatch like [teleconverter]: a facing flip mid-save must not relabel this
+    // shot's EXIF lens model or rotation. Front stills save UNMIRRORED (only the preview mirrors).
+    val frontFacing: Boolean = false,
 )
 
 /**

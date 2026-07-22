@@ -310,6 +310,48 @@ class ZoomMathTest {
         )
     }
 
+    // ---- FRONT (selfie) route: display scale, mode remap, and caps authority ----
+
+    @Test fun `front zoom displays lens-local, never main-relative`() {
+        // front-equiv ÷ main-equiv would read "0.9×" at the selfie 1× — the honest front display
+        // is the plain local ratio.
+        assertEquals(1f, zoomDisplayMultiplier(teleconverter = false, equivalentFocalMm = 20f, frontFacing = true), 0f)
+        assertEquals("2.0×", formatDisplayZoom(2f, teleconverter = false, equivalentFocalMm = 20f, frontFacing = true))
+    }
+
+    @Test fun `front mode flip keeps lens-local zoom and the retained rear band`() {
+        // The unified↔local remap is a REAR concept; on the single front camera it would rewrite
+        // the retained rear band (what "leave FRONT" returns to) from a front-local ratio.
+        val optics = remapModeOptics(
+            fromMode = CaptureMode.PHOTO,
+            toMode = CaptureMode.VIDEO,
+            lens = LensChoice.MAIN,
+            teleconverter = false,
+            controls = ManualControls(zoomRatio = 5f),
+            frontFacing = true,
+        )
+        assertEquals(LensChoice.MAIN, optics.lens)
+        assertEquals(5f, optics.controls.zoomRatio, 0f)
+    }
+
+    @Test fun `front route caps are never authoritative for a recalled rear packet`() {
+        // While FRONT the current mode/lens fields can coincidentally equal the recalled target's,
+        // but the live caps describe the front camera.
+        assertFalse(
+            restoredRouteUsesCurrentCaps(
+                cameraReady = true,
+                currentMode = CaptureMode.PHOTO,
+                currentLens = LensChoice.MAIN,
+                currentTeleconverter = false,
+                currentOverrideId = null,
+                targetMode = CaptureMode.PHOTO,
+                targetLens = LensChoice.MAIN,
+                targetTeleconverter = false,
+                currentFrontFacing = true,
+            ),
+        )
+    }
+
     // ---- TEST4-6: the non-teleconverter branch of effectiveZoomBounds ----
 
     @Test

@@ -108,6 +108,46 @@ class TapMappingTest {
     }
 
     @Test
+    fun mirroredTap_unflipsViewXForContentMappingsButKeepsTheReticlePoint() {
+        // Selfie preview: the DISPLAYED image is x-flipped, so a tap at view x=0.25 sits over the
+        // scene point an unmirrored view shows at x=0.75. Sensor/loupe mappings must use the
+        // unflipped coordinate; the reticle (viewPoint) stays at the raw tap in UI space.
+        val mirrored = mapTapFocusGeometry(
+            nx = 0.25f,
+            ny = 0.4f,
+            sensorOrientation = 0,
+            teleconverter = false,
+            punchActive = false,
+            sensorCenter = 0.5f to 0.5f,
+            loupeCenter = 0.5f to 0.5f,
+            previewRotationDegrees = 0,
+            mirrorX = true,
+        )
+        assertEquals(0.75f, mirrored.sensorPoint.first, eps)
+        assertEquals(0.4f, mirrored.sensorPoint.second, eps)
+        assertEquals(0.75f, mirrored.loupePoint.first, eps)
+        assertEquals(0.25f, mirrored.viewPoint.first, eps)
+        assertEquals(0.4f, mirrored.viewPoint.second, eps)
+    }
+
+    @Test
+    fun mirrorOff_isTheExistingRearMapping() {
+        val plain = mapTapFocusGeometry(
+            nx = 0.25f,
+            ny = 0.4f,
+            sensorOrientation = 0,
+            teleconverter = false,
+            punchActive = false,
+            sensorCenter = 0.5f to 0.5f,
+            loupeCenter = 0.5f to 0.5f,
+            previewRotationDegrees = 0,
+            mirrorX = false,
+        )
+        assertEquals(0.25f, plain.sensorPoint.first, eps)
+        assertEquals(0.25f, plain.loupePoint.first, eps)
+    }
+
+    @Test
     fun rapidDeferredTap_keepsTheEventTimeVisibleLoupeCenter() {
         val deferred = mapTapFocusGeometry(
             nx = 0.25f,

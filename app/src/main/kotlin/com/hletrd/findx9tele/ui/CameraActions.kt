@@ -134,6 +134,9 @@ interface CameraActions {
     // it already is AND the pick is its 3× host lens; onToggleTeleconverter owns converter state.
     fun onLens(choice: com.hletrd.findx9tele.camera.LensChoice)
 
+    /** Flip between the rear route and the BASIC front (selfie) camera; never persisted. */
+    fun onToggleFrontCamera()
+
     // Settings
     fun onCameraOverride(id: String?)
     fun onToggleRememberSettings(enabled: Boolean)
