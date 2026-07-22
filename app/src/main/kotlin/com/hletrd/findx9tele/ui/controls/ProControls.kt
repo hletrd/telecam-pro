@@ -660,22 +660,30 @@ internal fun formatFocusDistance(diopters: Float): String {
 /** Transfer-function display label: what the footage IS, not just the enum name. */
 internal fun transferLabel(transfer: ColorTransfer): String = when (transfer) {
     ColorTransfer.HLG -> "HLG"
-    // LOG = the GL-baked official O-Log2 OETF. The native HAL log key is INERT for third-party
-    // Camera2 on this device (settled 2026-07-09) — see CLAUDE.md / CameraEngine.setTransfer.
-    ColorTransfer.LOG -> "O-Log"
+    // The log profiles are GL-baked standard curves applied to the display-referred SDR stream
+    // (the architecture inherited from the removed O-Log2 option). The native HAL log key is INERT
+    // for third-party Camera2 on this device (settled 2026-07-09) — see CLAUDE.md /
+    // CameraEngine.setTransfer.
+    ColorTransfer.SLOG3 -> "S-Log3"
+    ColorTransfer.SLOG3_CINE -> "S-Log3.Cine"
+    ColorTransfer.LOGC3 -> "LogC3"
     ColorTransfer.SDR -> "SDR"
 }
 
 /** Compact transfer name for the video-mode quick chip and the OSD. */
 internal fun transferLabelShort(transfer: ColorTransfer): String = when (transfer) {
     ColorTransfer.HLG -> "HLG"
-    ColorTransfer.LOG -> "O-Log"
+    ColorTransfer.SLOG3 -> "SLOG3"
+    // SG3C = the community-standard shorthand for S-Gamut3.Cine (the full name won't fit the OSD).
+    ColorTransfer.SLOG3_CINE -> "SG3C"
+    ColorTransfer.LOGC3 -> "LOGC3"
     ColorTransfer.SDR -> "SDR"
 }
 
 /**
- * HLG / LOG / SDR transfer-function selector. Only HEVC's Main10 encoder profile carries the
- * HLG/LOG tag — the capture source stays SDR/8-bit (see CLAUDE.md; not an end-to-end 10-bit claim).
+ * HLG / S-Log3 / S-Log3.Cine / LogC3 / SDR transfer-function selector. Only HEVC's Main10 encoder
+ * profile carries the HLG/log tag — the capture source stays SDR/8-bit (see CLAUDE.md; not an
+ * end-to-end 10-bit claim).
  */
 @Composable
 fun TransferSelector(

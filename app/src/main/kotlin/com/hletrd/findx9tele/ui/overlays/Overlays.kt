@@ -462,7 +462,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
             if (!compact || state.transfer != ColorTransfer.SDR) {
                 Text(transferLabelShort(state.transfer), color = Color(0xFF4C9AFF), style = MaterialTheme.typography.labelMedium)
             }
-            if (state.transfer == ColorTransfer.LOG && state.gammaAssist) {
+            if (state.transfer.isLog && state.gammaAssist) {
                 // Gamma Display Assist active: the monitor is corrected, the file stays log.
                 Text("Assist", color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.labelMedium)
             }

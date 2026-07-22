@@ -83,7 +83,6 @@ import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorEffect
-import com.hletrd.findx9tele.camera.ColorTransfer
 import com.hletrd.findx9tele.camera.DriveMode
 import com.hletrd.findx9tele.camera.FnSlot
 import com.hletrd.findx9tele.camera.HardwareKeyAction
@@ -1093,13 +1092,13 @@ private fun ProcessingTab(state: CameraUiState, actions: CameraActions) {
 private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
     TabTitle("Assist")
     SectionHeader("Monitor")
-    // Gamma Display Assist (Sony): only meaningful while the Gamma is O-Log — the monitor shows the
-    // normal image, the recorded file stays log.
+    // Gamma Display Assist (Sony): only meaningful while the Gamma is a log profile — the monitor
+    // shows the normal image, the recorded file stays log.
     ToggleRow(
         label = "Gamma Disp. Assist",
         checked = state.gammaAssist,
         onCheckedChange = actions::onToggleGammaAssist,
-        enabled = state.transfer == ColorTransfer.LOG,
+        enabled = state.transfer.isLog,
     )
     SegmentedSelector(
         label = "Frame Lines",
@@ -1154,6 +1153,14 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
         label = "Privacy Policy",
         valueLabel = "View",
         onClick = { openPrivacyPolicy(context) },
+    )
+    // Trademark attribution for the named log profiles offered in the Video tab — a legal
+    // footnote, deliberately non-interactive and dim (small text like SectionHeader).
+    Text(
+        "S-Log is a trademark of Sony Group Corporation. ARRI and LogC are trademarks of ARRI AG. " +
+            "This app is not affiliated with or endorsed by Sony or ARRI.",
+        color = CameraColors.TextSecondary,
+        style = MaterialTheme.typography.labelSmall,
     )
     SectionHeader("Startup")
     ToggleRow(

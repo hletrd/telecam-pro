@@ -5,7 +5,7 @@
 <h1>TeleCam Pro</h1>
 
 <p><b>Professional manual camera for the OPPO Find X9 Ultra periscope telephoto and 300&nbsp;mm afocal teleconverters</b><br/>
-4-lens switcher, afocal 180° flip, HAL OIS+EIS, SDR-to-HLG / O-Log2 profiles, directional audio</p>
+4-lens switcher, afocal 180° flip, HAL OIS+EIS, SDR-to-HLG / S-Log3 / LogC3 profiles, directional audio</p>
 
 <p>
 <img src="https://img.shields.io/badge/Android-16%20(API%2036)-3DDC84?logo=android&logoColor=white" alt="Android 16" />
@@ -42,17 +42,20 @@
   every known sibling; legacy files that cannot prove grouping explicitly delete only that file. The
   fresh-launch review compares photos, RAW-only captures, and videos. All saved formats carry
   gravity-derived orientation correction.
-- **Video**: HEVC Main10 profiles for **HLG / O-Log2** plus 8-bit HEVC/AVC SDR. HLG uses the
-  display-referred SDR-to-HLG mapping from ITU-R BT.2408-9 (SDR reference white → 75% HLG); it
-  cannot recover highlights already removed by the ISP's SDR tone mapping. The stable v1 Camera2 and
-  EGL input is SDR/8-bit, so neither HLG nor O-Log2 is marketed as end-to-end 10-bit capture. 4K UHD
+- **Video**: HEVC Main10 profiles for **HLG / S-Log3 / S-Log3.Cine / LogC3** plus 8-bit HEVC/AVC
+  SDR. HLG uses the display-referred SDR-to-HLG mapping from ITU-R BT.2408-9 (SDR reference white →
+  75% HLG); the log profiles bake the standard curve + gamut matrix onto the same display-referred
+  SDR stream (grading convenience, not scene-referred camera log); none can recover highlights
+  already removed by the ISP's SDR tone mapping. The stable v1 Camera2 and
+  EGL input is SDR/8-bit, so neither HLG nor the log profiles are marketed as end-to-end 10-bit capture. 4K UHD
   max (HEVC/AVC HW ceiling); 24/25/30/60 fps class + NTSC drop-frame
   (23.976/29.97/59.94); **Low → Max bitrate presets up to ~120 Mbps at 4K**; Open-Gate
   4:3-aspect recording (2560×1920 verified on the tele); AAC 48 kHz stereo.
 - **Video stabilization = HAL OIS+EIS** (the stock "super steady" path): OIS physically cuts per-frame motion blur at 300 mm (Off / Standard / Active — the in-app labels).
 - **Vendor/HAL stability**: unstable or unmuxable device paths such as Auto HDR, high-speed 120 fps,
-  AV1 software encode, APV MP4 muxing, and native vendor log are excluded from the shipped UI. O-Log2
-  is the GL-baked shipping path.
+  AV1 software encode, APV MP4 muxing, and native vendor log are excluded from the shipped UI. The
+  GL-baked S-Log3 / S-Log3.Cine / LogC3 profiles are the shipping log path (they replaced the
+  earlier GL O-Log2 option).
 - **Aspect ratios**: 4:3 (full sensor) / 16:9 (center crop). Sony-style mode-aware OSD.
 - **Capture aids**: focus peaking (adjustable sensitivity/color), zebra, false color, grid, spirit
   level, a movable punch-in loupe, and an opt-in **Loupe Overview** (a same-stream reference to the
@@ -148,7 +151,7 @@ not just session setup logs:
 
 | Feature | Key | Status |
 |---|---|---|
-| Native log | `com.oplus.log.video.mode` (session key) | ⛔ HAL accepts the key, but third-party Camera2 output remains 709; GL O-Log2 ships |
+| Native log | `com.oplus.log.video.mode` (session key) | ⛔ HAL accepts the key, but third-party Camera2 output remains 709; GL S-Log3/LogC3 ship |
 | Video stabilization | `CONTROL_VIDEO_STABILIZATION_MODE` + `com.oplus.video.stabilization.mode` | ✅ `ois=1, vstab=2` verified |
 | Directional audio | `vendor_audiorecord_effect_type` / `focus_angle` … | ✅ HAL `track_support=true` |
 | Auto HDR / Ideal RAW / APV / AV1 / high-speed 120 / in-sensor zoom / macro / custom-LUT | — | ⛔ not exposed in the shipped UI; excluded after device compatibility checks |

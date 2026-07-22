@@ -21,7 +21,7 @@
 
 ## Overview
 
-A professional single-device camera app for the **OPPO Find X9 Ultra** (Android 16 / API 36) that uses Camera2 to control the rear 3× periscope telephoto lens through a **Hasselblad "Earth Explorer" afocal 300 mm teleconverter** (≈4.286× magnification: 300 mm ÷ 70 mm). The app captures processed HEIF/JPEG stills, plus RAW/DNG when TELE uses a RAW-capable standalone 3× camera, and HEVC video with HLG, O-Log2, or SDR profiles. For HAL stability, the shipping Camera2 and EGL input path is display-referred SDR/8-bit. HLG maps that SDR signal according to ITU-R BT.2408-9 and cannot recover ISP-removed highlights; HLG/O-Log2 uses an HEVC Main10 container profile but is not an end-to-end 10-bit source pipeline.
+A professional single-device camera app for the **OPPO Find X9 Ultra** (Android 16 / API 36) that uses Camera2 to control the rear 3× periscope telephoto lens through a **Hasselblad "Earth Explorer" afocal 300 mm teleconverter** (≈4.286× magnification: 300 mm ÷ 70 mm). The app captures processed HEIF/JPEG stills, plus RAW/DNG when TELE uses a RAW-capable standalone 3× camera, and HEVC video with HLG, log (S-Log3 / S-Log3.Cine / LogC3), or SDR profiles. For HAL stability, the shipping Camera2 and EGL input path is display-referred SDR/8-bit. HLG maps that SDR signal according to ITU-R BT.2408-9 and cannot recover ISP-removed highlights; the log profiles bake standard curves onto the same display-referred SDR stream (grading convenience, not scene-referred camera log); HLG/log use an HEVC Main10 container profile but are not an end-to-end 10-bit source pipeline.
 
 The UI/UX reference is **Sony Alpha / Sony Xperia Pro camera operation**. Use Fn access, My Menu, MR
 banks, PASM-style exposure, compact OSD, peaking, zebra, histogram, waveform, and review zoom. Keep
@@ -60,9 +60,9 @@ Two critical consequences of the afocal converter drive the entire design:
 | `VendorTagInspector.kt` | Debug-only Camera2 capability logger for device-specific request/session keys. |
 | **gl/** | |
 | `GlPipeline.kt` | One object owns one native GL generation and checked preview/encoder EGLSurface lifetimes. Outgoing outputs are unbound before destruction; preview and encoder readiness publish only after a real swap. Each object owns and retires its analysis executor, busy gate, FBO/buffer snapshot, callbacks, and native fields. `stop()` reports STOPPED only when the thread exits and checked native-output release succeeds; timeout or unsafe release permanently ABANDONS the object. `CameraEngine` compare-and-swaps a fresh object into `AtomicOwnerSlot`, restarts it from a live foreground preview, captures the exact owner/input for every preview/Camera2/recorder transaction, and identity-gates late callbacks. `RendererAssists` resolves/replays config into the current object once per operation. Thus a leaked old handler can touch only its own retired EGL state, never replacement state. |
-| `FlipRenderer.kt` | Low-level OpenGL ES fullscreen quad renderer with texture-coordinate rotation (inverse of image rotation) to flip the 180° afocal image. Applies the SDR-to-HLG mapping or O-Log2 encoding in the fragment shader and handles focus peaking/zebra. |
+| `FlipRenderer.kt` | Low-level OpenGL ES fullscreen quad renderer with texture-coordinate rotation (inverse of image rotation) to flip the 180° afocal image. Applies the SDR-to-HLG mapping or a log-profile encoding (S-Log3 / S-Log3.Cine / LogC3) in the fragment shader and handles focus peaking/zebra. |
 | `EglCore.kt` | Checked EGL/GLES setup, binding, presentation, buffer swap, unbind, surface destruction, and display teardown. Supports a 10-bit config, while v1 deliberately starts the stable 8-bit config. |
-| `Shaders.kt` / `SdrToHlgMapping.kt` | Shader source plus Android-free reference constants for the BT.2408-9 display-referred SDR-to-HLG sequence; also owns O-Log2, peaking/zebra, and punch-in shader paths. |
+| `Shaders.kt` / `SdrToHlgMapping.kt` / `LogProfiles.kt` | Shader source plus Android-free reference constants for the BT.2408-9 display-referred SDR-to-HLG sequence and the S-Log3/LogC3 log profiles (curves + BT.709→gamut matrices, single-sourced into the GLSL); also owns the dormant O-Log2 de-log assist, peaking/zebra, and punch-in shader paths. |
 | **stab/** | |
 | `GyroEis.kt` | Sensor helper for gravity-derived device orientation and the horizon overlay. It retains residual-shake math, but the shipping GL path disables app-side EIS in favor of HAL OIS+EIS. |
 | **capture/** | |
@@ -437,7 +437,7 @@ assumption — a logical-camera bisect is a recorded residual (docs/BACKLOG.md).
 
 **Shipping session fallback plan (`CameraController.configureSession`):**
 
-The Camera2 input is deliberately SDR/8-bit (`tenBitHlg=false`). HLG/O-Log2 is applied later in GL and
+The Camera2 input is deliberately SDR/8-bit (`tenBitHlg=false`). HLG/log is applied later in GL and
 tagged in the encoder container; the historical HLG10 input-stream branch remains dormant and must not
 be described as the shipping source pipeline.
 
@@ -629,7 +629,7 @@ unused.
 
 | Codec | Encoder profile | Color Space | Transfer | Container | Notes |
 |---|---|---|---|---|---|
-| HEVC (H.265) | Main10 profile (SDR: Main) | Rec.2020 (SDR: Rec.709) | HLG / O-Log2 / SDR | MP4 | Primary HW encoder. Shipping source/EGL is 8-bit; Main10 is the output profile, not an end-to-end 10-bit claim. |
+| HEVC (H.265) | Main10 profile (SDR: Main) | Rec.2020 (SDR: Rec.709) | HLG / S-Log3 / S-Log3.Cine / LogC3 / SDR | MP4 | Primary HW encoder. Shipping source/EGL is 8-bit; Main10 is the output profile, not an end-to-end 10-bit claim. |
 | AVC (H.264) | 8-bit | Rec.709 | SDR | MP4 | Fallback; forces GL SDR (no HLG/Log); HW. |
 | APV | — | — | — | — | HW `c2.qti.apv.encoder` (pro all-intra ≤2 Gbps) EXISTS but **gated out** — MediaMuxer rejects APV-in-MP4 (breaks the encoder mid-drain). |
 | Dolby Vision | 10-bit | Rec.2020 | Dolby Vision | MP4 | HW `c2.qti.dv.encoder` detected (`hasDolbyVision`); not wired (clean DV-in-MP4 muxing non-trivial). |
@@ -658,15 +658,15 @@ HEVC Main10 profile → MediaCodec configured with:
 ColorProfiles.videoFormat(
     codec=VideoCodec.HEVC,
     width, height, fps, bitRate,
-    transfer=ColorTransfer.HLG or LOG
+    transfer=ColorTransfer.HLG or a log profile (SLOG3 / SLOG3_CINE / LOGC3)
 )
 // Sets:
 //   MediaFormat.KEY_MIME = "video/hevc"
 //   MediaFormat.KEY_PROFILE = MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10
 //   MediaFormat.KEY_BIT_RATE = bitRate
 //   MediaFormat.KEY_COLOR_STANDARD = MediaFormat.COLOR_STANDARD_BT2020  (Rec.2020)
-//   MediaFormat.KEY_COLOR_TRANSFER = COLOR_TRANSFER_HLG or COLOR_TRANSFER_SDR_VIDEO (O-Log2)
-//   MediaFormat.KEY_COLOR_RANGE = LIMITED (HLG) or FULL (O-Log2)
+//   MediaFormat.KEY_COLOR_TRANSFER = COLOR_TRANSFER_HLG or COLOR_TRANSFER_SDR_VIDEO (log profiles)
+//   MediaFormat.KEY_COLOR_RANGE = LIMITED (HLG) or FULL (log profiles)
 ```
 
 **Shipping GL pipeline:**
@@ -686,11 +686,15 @@ Color-profile rendering happens in the fragment shader:
     This preserves a valid HLG signal but cannot recover highlights removed by the ISP's SDR tone map.
     CPU/shader anchors are host-tested; final appearance after this mapping still requires playback on
     a real HDR display and is not inferred from compilation or container tags.
-  - **O-Log2 (LOG)**: OPPO's official O-Log2 curve (white-paper constants), applied after γ2.2
-    linearization of the SDR stream + Rec.709→BT.2020 matrix (O-Gamut). Grades with OPPO's public
-    O-Log2 LUTs; no above-white headroom (HAL-native log is vendor-gated — see CLAUDE.md).
+  - **Log profiles (SLOG3 / SLOG3_CINE / LOGC3)**: standard curves applied to the display-referred
+    SDR stream — BT.1886 2.4 decode → linear BT.709→gamut 3×3 matrix (S-Gamut3, S-Gamut3.Cine, or
+    ARRI Wide Gamut 3) → defensive lower clamp → the S-Log3 or LogC3 EI800 OETF (constants
+    single-sourced from `LogProfiles.kt`). Grades with standard S-Log3/LogC3 workflows, but the
+    source is the ISP's tone-mapped SDR stream, so there is no above-white headroom — this is NOT
+    scene-referred camera log (HAL-native log is vendor-gated — see CLAUDE.md). Replaced the
+    former GL O-Log2 option (persisted "LOG" migrates to SLOG3_CINE).
   - **SDR**: no shader curve; HEVC Main 8-bit BT.709 limited-range for zero-grading footage.
-- **Output**: 8-bit EGL surface to a Main10-profile encoder for HLG/O-Log2.
+- **Output**: 8-bit EGL surface to a Main10-profile encoder for HLG/log.
 
 **Fragment shader (Shaders.kt):**
 ```glsl
@@ -698,8 +702,12 @@ Color-profile rendering happens in the fragment shader:
 vec3 color = texture(camera, uv).rgb;  // display-referred SDR [0, 1]
 if (transfer == HLG) {
     color = hlgOetf(inverseHlgOotf(toBt2020(bt1886Decode(color)) * referenceWhiteScale));
-} else if (transfer == LOG) {
-    color = olog2(toBt2020(gamma22Decode(color)));
+} else if (transfer == SLOG3) {
+    color = slog3(gamutFloor(toSGamut3(bt1886Decode(color))));
+} else if (transfer == SLOG3_CINE) {
+    color = slog3(gamutFloor(toSGamut3Cine(bt1886Decode(color))));
+} else if (transfer == LOGC3) {
+    color = logc3(gamutFloor(toAwg3(bt1886Decode(color))));
 }
 // v1 output precision remains 8-bit for HAL stability
 ```

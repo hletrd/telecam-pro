@@ -30,12 +30,13 @@ class AnalysisTargetSizeTest {
     }
 
     @Test
-    fun `analysis readback always meters display-referred, LOG preview included`() {
-        // AGG4-9/P3.4: the scopes/AE meter must not move when the user toggles LOG — metering the
-        // flat O-Log2 preview curve put 18% grey at ~0.4868 instead of 0.18 and settled the
-        // app-side AE ~1.5 stops off.
-        assertEquals(null, analysisReadbackTransfer(com.hletrd.findx9tele.camera.ColorTransfer.LOG))
-        assertEquals(null, analysisReadbackTransfer(com.hletrd.findx9tele.camera.ColorTransfer.HLG))
+    fun `analysis readback always meters display-referred, log previews included`() {
+        // AGG4-9/P3.4: the scopes/AE meter must not move when the user toggles a log profile —
+        // metering the flat preview curve put 18% grey at the curve's grey anchor instead of 0.18
+        // and settled the app-side AE ~1.5 stops off (found on the since-removed O-Log2 option).
+        for (transfer in com.hletrd.findx9tele.camera.ColorTransfer.entries) {
+            assertEquals(null, analysisReadbackTransfer(transfer))
+        }
         assertEquals(null, analysisReadbackTransfer(null))
     }
 }

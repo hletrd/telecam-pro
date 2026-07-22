@@ -324,21 +324,31 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   background, restored on launch (pushed to the engine pre-start). Fresh launch defaults to the 1×
   main lens with TELE off; separate default-on Setup toggles preserve the last lens selection and
   TELE mode when restoring saved settings.
-- **LOG = GL O-Log2; the native log key is INERT for third-party Camera2 (settled 2026-07-09).**
-  `com.oplus.log.video.mode` is advertised in the tele's request+session keys and the HAL ACCEPTS it
-  ("applied" logs), but it changes NOTHING a third-party session can see: with the key set (as session
-  parameter + on every request), the preview AND the recorded clip stay display-referred 709 — tested
-  with both `TEMPLATE_PREVIEW` and `TEMPLATE_RECORD` repeating requests on device, judged in a lit
-  scene. (Earlier "the file recorded as log" was the BT.2020 full-range container tag being misread by
-  players as a washed look; an "applied" log line only means the HAL didn't reject the key.) So
-  `ColorTransfer.LOG` bakes the official O-Log2 OETF in GL (white paper constants in `Shaders.kt`,
-  uTransfer=2; 18 % grey → the 0.4868 anchor, LUT-accurate): the encoder gets the curve, the preview
-  renders it flat, and **Gamma Display Assist** shows the normal display-referred image instead
-  (assist = skip the forward curve; the file always gets it). The de-log shader (uTransfer=3, exact
+- **Log = GL S-Log3 / S-Log3.Cine / LogC3; the native log key is INERT for third-party Camera2
+  (settled 2026-07-09).** `com.oplus.log.video.mode` is advertised in the tele's request+session
+  keys and the HAL ACCEPTS it ("applied" logs), but it changes NOTHING a third-party session can
+  see: with the key set (as session parameter + on every request), the preview AND the recorded clip
+  stay display-referred 709 — tested with both `TEMPLATE_PREVIEW` and `TEMPLATE_RECORD` repeating
+  requests on device, judged in a lit scene. (Earlier "the file recorded as log" was the BT.2020
+  full-range container tag being misread by players as a washed look; an "applied" log line only
+  means the HAL didn't reject the key.) So the log profiles bake standard curves in GL
+  (`LogProfiles.kt` single-sources constants into `Shaders.kt`): BT.1886 2.4 decode → linear
+  BT.709→gamut 3×3 (S-Gamut3 / S-Gamut3.Cine / ARRI Wide Gamut 3, D65→D65 so rows sum to 1) →
+  defensive −0.0099 floor → the S-Log3 (uTransfer=2/4; 18 % grey → 420/1023 ≈ 0.4106) or LogC3
+  EI800 (uTransfer=5; 18 % grey → ≈ 0.3910) OETF. Like O-Log2 before them these are
+  display-referred SDR-source curves, NOT scene-referred camera log — the ISP has already
+  tone-mapped the stream and no highlight latitude is recovered. The encoder gets the curve, the
+  preview renders it flat, and **Gamma Display Assist** shows the normal display-referred image
+  instead (assist = skip the forward curve; the file always gets it; `ColorTransfer.isLog` is the
+  one gate for all three). The user-facing O-Log2 option (`ColorTransfer.LOG`) was REMOVED
+  2026-07-22 ("not a standard"); SettingsStore migrates a persisted `"LOG"` to `SLOG3_CINE`, and
+  its forward OETF left `Shaders.kt` with it. The O-Log2-shaped de-log shader (uTransfer=3, exact
   inverse incl. the toe root) and `vendorLogMode`/`setNativeLog` plumbing stay DORMANT for a future
-  CameraUnit-authenticated scene-referred stream. NOTE: leaving `KEY_COLOR_TRANSFER` unset on a BT2020
-  full-range HEVC format makes the QTI encoder tag the VUI **ST2084 (PQ)** — players then tone-map log
-  footage as HDR. Tag a transfer explicitly, always.
+  CameraUnit-authenticated scene-referred stream (which owns its own curve/tagging decisions).
+  NOTE: leaving `KEY_COLOR_TRANSFER` unset on a BT2020 full-range HEVC format makes the QTI encoder
+  tag the VUI **ST2084 (PQ)** — players then tone-map log footage as HDR. Tag a transfer
+  explicitly, always; all three log profiles share one container policy (BT.2020 full-range +
+  explicit SDR-class transfer). A trademark footnote for Sony/ARRI sits in the Setup tab.
 
 - **Video stabilization = HAL OIS+EIS via the device's own path (verified 2026-07-07).** For VIDEO the
   shutter is fixed (e.g. 1/60 s), so per-frame MOTION BLUR is set by the shutter and only **OIS**
@@ -387,9 +397,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
 - **GlPipeline drops anything posted before `start()` — re-seed GL state in the start callback.**
   `GlPipeline.post` is `handler?.post`, silently a no-op until the GL thread exists. Any GL state set
   during settings restore MUST be re-applied inside the `gl.start` callback in `CameraEngine`.
-  LOG transfer, AE metering, and gamma assist are re-seeded there; renderer-only assists live in one
+  Log transfer, AE metering, and gamma assist are re-seeded there; renderer-only assists live in one
   `RendererConfigStore` snapshot and the complete snapshot is replayed for every GL generation. Symptom when
-  missed: "works only after the first recording pushes it" (the LOG-preview bug).
+  missed: "works only after the first recording pushes it" (the log-preview bug).
 - **Cold startup is GL-first and latest-intent owned.** Start the GL generation before blocking
   Camera2 selection/capability preflight; when its input arrives, resolve the latest desired optics
   generation. A stale startup result must never roll back or publish over a newer route, and transient

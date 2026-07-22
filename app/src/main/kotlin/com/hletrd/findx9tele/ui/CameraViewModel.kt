@@ -918,7 +918,9 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
 
     private fun transferSummary(t: ColorTransfer): String = when (t) {
         ColorTransfer.HLG -> "HLG"
-        ColorTransfer.LOG -> "O-Log"
+        ColorTransfer.SLOG3 -> "S-Log3"
+        ColorTransfer.SLOG3_CINE -> "S-Log3.Cine"
+        ColorTransfer.LOGC3 -> "LogC3"
         ColorTransfer.SDR -> "SDR"
     }
 

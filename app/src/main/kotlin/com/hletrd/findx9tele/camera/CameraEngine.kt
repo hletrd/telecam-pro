@@ -1419,12 +1419,12 @@ class CameraEngine(private val context: Context) {
     }
 
     /**
-     * Selects the color transfer — the single source of truth. LOG = the GL-baked O-Log2 OETF (the
-     * shipping path): the encoder receives the official curve and the preview renders it flat. The
-     * device's native HAL log key (`com.oplus.log.video.mode`) is INERT for third-party Camera2
-     * (device-settled 2026-07-09 — see the body comment), so [vendorLogMode] stays OFF; the dormant
-     * native-log plumbing (pass-through + de-log shader) is kept only for a future
-     * CameraUnit-authenticated scene-referred stream.
+     * Selects the color transfer — the single source of truth. The log profiles (S-Log3 /
+     * S-Log3.Cine / LogC3) are GL-baked curves (the shipping path): the encoder receives the curve
+     * and the preview renders it flat. The device's native HAL log key (`com.oplus.log.video.mode`)
+     * is INERT for third-party Camera2 (device-settled 2026-07-09 — see the body comment), so
+     * [vendorLogMode] stays OFF; the dormant native-log plumbing (pass-through + de-log shader) is
+     * kept only for a future CameraUnit-authenticated scene-referred stream.
      *
      * Changing the OETF mid-recording would tag the file with the start transfer but bake a different
      * curve into the second half, so the GL curve is only pushed when idle (the field still updates
@@ -1432,15 +1432,16 @@ class CameraEngine(private val context: Context) {
      */
     fun setTransfer(t: ColorTransfer) {
         transfer = t
-        // LOG = the GL O-Log2 OETF (proven path). The native com.oplus.log.video.mode key was tried
-        // twice and is effectively INERT for a third-party Camera2 session: the HAL accepts it
-        // ("applied" logs) but neither the preview nor the RECORDED stream is scene-referred —
-        // device-tested 2026-07-09 with TEMPLATE_PREVIEW and TEMPLATE_RECORD repeating requests (the
-        // clip came out plain 709; the earlier "file looked log" was the BT.2020 full-range container
-        // tag being misread by players as a washed look). So the GL path stays: encoder gets the
-        // official O-Log2 curve, the preview shows it flat, and Gamma Display Assist shows the normal
-        // display-referred image instead. vendorLogMode stays OFF (dormant, with the de-log shader,
-        // for a future CameraUnit-authenticated scene-referred path).
+        // Log = a GL-baked standard curve (proven architecture, inherited from the removed O-Log2
+        // option). The native com.oplus.log.video.mode key was tried twice and is effectively INERT
+        // for a third-party Camera2 session: the HAL accepts it ("applied" logs) but neither the
+        // preview nor the RECORDED stream is scene-referred — device-tested 2026-07-09 with
+        // TEMPLATE_PREVIEW and TEMPLATE_RECORD repeating requests (the clip came out plain 709; the
+        // earlier "file looked log" was the BT.2020 full-range container tag being misread by
+        // players as a washed look). So the GL path stays: encoder gets the selected curve, the
+        // preview shows it flat, and Gamma Display Assist shows the normal display-referred image
+        // instead. vendorLogMode stays OFF (dormant, with the de-log shader, for a future
+        // CameraUnit-authenticated scene-referred path).
         gl.setNativeLog(false)
         val wasNativeLog = vendorLogMode != VendorLogMode.OFF
         vendorLogMode = VendorLogMode.OFF
@@ -3144,12 +3145,15 @@ class CameraEngine(private val context: Context) {
             codec == VideoCodec.HEVC || codec == VideoCodec.APV -> transfer
             else -> null
         }
-        // File color tags: when the HAL emits O-Log2 the container MUST be tagged as the LOG profile
-        // (BT.2020 full-range, SDR-class transfer) regardless of the TF chip, so players don't
-        // HDR-tone-map it and OPPO's O-Log2 LUTs round-trip. Otherwise use the selected transfer on
-        // the 10-bit paths (HEVC/APV); AVC is always SDR.
+        // File color tags: when the (DORMANT) native path emits O-Log2 the container MUST carry the
+        // log-class policy (BT.2020 full-range + explicit SDR-class transfer, never unset — the QTI
+        // PQ-mistag trap) regardless of the TF chip, so players don't HDR-tone-map it. All three
+        // log-class ColorTransfer members map to that identical tag set, so SLOG3_CINE serves as
+        // the internal marker since the user-facing O-Log2 entry was removed; a future CameraUnit
+        // activation owns its own curve/tagging decision (native O-Log2 is none of the GL curves).
+        // Otherwise use the selected transfer on the 10-bit paths (HEVC/APV); AVC is always SDR.
         val fileTransfer = when {
-            vendorLogMode != VendorLogMode.OFF -> ColorTransfer.LOG
+            vendorLogMode != VendorLogMode.OFF -> ColorTransfer.SLOG3_CINE
             codec == VideoCodec.HEVC || codec == VideoCodec.APV -> transfer
             else -> ColorTransfer.SDR
         }

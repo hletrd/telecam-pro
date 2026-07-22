@@ -222,7 +222,13 @@ class SettingsStore(private val prefs: SharedPreferences) {
             )
             val ed = ExtraSettings()
             val extras = ExtraSettings(
-                transfer = enumOr(safeString("${prefix}transfer", null), ed.transfer),
+                // Legacy alias: pre-2026-07-22 builds persisted the removed O-Log2 option as
+                // "LOG". Map it to S-Log3.Cine (the closest shipped log profile) explicitly —
+                // plain enumOr would silently drop a log shooter back to the HLG default.
+                transfer = when (val raw = safeString("${prefix}transfer", null)) {
+                    "LOG" -> ColorTransfer.SLOG3_CINE
+                    else -> enumOr(raw, ed.transfer)
+                },
                 heif = safeBoolean("${prefix}heif", ed.heif),
                 jpeg = safeBoolean("${prefix}jpeg", ed.jpeg),
                 dngRaw = safeBoolean("${prefix}dngRaw", ed.dngRaw),

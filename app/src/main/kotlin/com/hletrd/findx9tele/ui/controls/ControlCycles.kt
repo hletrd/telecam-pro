@@ -78,8 +78,10 @@ internal fun nextMeteringMode(mode: MeteringMode): MeteringMode = when (mode) {
 }
 
 internal fun nextTransfer(transfer: ColorTransfer): ColorTransfer = when (transfer) {
-    ColorTransfer.HLG -> ColorTransfer.LOG
-    ColorTransfer.LOG -> ColorTransfer.SDR
+    ColorTransfer.HLG -> ColorTransfer.SLOG3
+    ColorTransfer.SLOG3 -> ColorTransfer.SLOG3_CINE
+    ColorTransfer.SLOG3_CINE -> ColorTransfer.LOGC3
+    ColorTransfer.LOGC3 -> ColorTransfer.SDR
     ColorTransfer.SDR -> ColorTransfer.HLG
 }
 

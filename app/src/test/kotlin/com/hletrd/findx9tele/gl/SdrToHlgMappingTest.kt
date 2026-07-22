@@ -92,17 +92,6 @@ class SdrToHlgMappingTest {
         assertTrue("HLG OETF must be last", hlgOetf > inverseOotf)
     }
 
-    @Test
-    fun `LOG branch keeps its existing gamma and O-Log2 sequence`() {
-        val shader = Shaders.FRAGMENT
-        val logBranch = shader.substringAfter("} else if (uTransfer == 2) {")
-            .substringBefore("} else if (uTransfer == 3) {")
-        val decode = logBranch.indexOf("vec3 lin = pow(clamp(color, 0.0, 1.0), vec3(2.2));")
-        val encode = logBranch.indexOf("color = olog2(toRec2020(lin));")
-        assertTrue("LOG gamma decode must be unchanged", decode >= 0)
-        assertTrue("O-Log2 encode must still follow gamut conversion", encode > decode)
-    }
-
     private fun assertRgb(expected: Rgb, actual: Rgb, tolerance: Double = 1e-12) {
         assertEquals("red", expected.red, actual.red, tolerance)
         assertEquals("green", expected.green, actual.green, tolerance)

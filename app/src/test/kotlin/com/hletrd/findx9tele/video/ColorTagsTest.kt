@@ -39,12 +39,26 @@ class ColorTagsTest {
     }
 
     @Test
-    fun hevc_log_isMain10Bt2020FullTaggedSdr() {
-        val tags = hevcColorTagsFor(ColorTransfer.LOG)
-        assertEquals(MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10, tags.profile)
-        assertEquals(MediaFormat.COLOR_STANDARD_BT2020, tags.standard)
-        assertEquals(MediaFormat.COLOR_RANGE_FULL, tags.range)
-        assertEquals(MediaFormat.COLOR_TRANSFER_SDR_VIDEO, tags.transfer)
+    fun hevc_everyLogProfile_isMain10Bt2020FullTaggedSdr() {
+        // One shared log-class container policy: which curve was baked (S-Log3 / S-Log3.Cine /
+        // LogC3) is a grading decision, not a container one — and the transfer must never be the
+        // unset/PQ default.
+        for (t in ColorTransfer.entries.filter { it.isLog }) {
+            val tags = hevcColorTagsFor(t)
+            assertEquals("$t profile", MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10, tags.profile)
+            assertEquals("$t standard", MediaFormat.COLOR_STANDARD_BT2020, tags.standard)
+            assertEquals("$t range", MediaFormat.COLOR_RANGE_FULL, tags.range)
+            assertEquals("$t transfer", MediaFormat.COLOR_TRANSFER_SDR_VIDEO, tags.transfer)
+        }
+    }
+
+    @Test
+    fun logClassMembership_isExactlyTheThreeLogProfiles() {
+        // isLog drives the assist gate, the flat preview, and the tag policy above — pin it.
+        assertEquals(
+            listOf(ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3),
+            ColorTransfer.entries.filter { it.isLog },
+        )
     }
 
     @Test
@@ -66,7 +80,9 @@ class ColorTagsTest {
             assertNotEquals(MediaFormat.COLOR_TRANSFER_ST2084, tags.transfer)
         }
         assertEquals(MediaFormat.COLOR_TRANSFER_HLG, apvColorTagsFor(ColorTransfer.HLG).transfer)
-        assertEquals(MediaFormat.COLOR_TRANSFER_SDR_VIDEO, apvColorTagsFor(ColorTransfer.LOG).transfer)
+        for (t in ColorTransfer.entries.filter { it.isLog }) {
+            assertEquals(MediaFormat.COLOR_TRANSFER_SDR_VIDEO, apvColorTagsFor(t).transfer)
+        }
         assertEquals(MediaFormat.COLOR_TRANSFER_SDR_VIDEO, apvColorTagsFor(ColorTransfer.SDR).transfer)
     }
 

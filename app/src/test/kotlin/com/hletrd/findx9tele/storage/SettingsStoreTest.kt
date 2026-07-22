@@ -150,6 +150,28 @@ class SettingsStoreTest {
     )
 
     @Test
+    fun legacyPersistedLogNameMigratesToSlog3Cine() {
+        // Pre-2026-07-22 builds persisted the removed O-Log2 option as "LOG". The defensive enum
+        // load must map it to SLOG3_CINE explicitly — the generic unknown-name fallback would
+        // silently drop a log shooter back to the HLG default. Presets share loadWithPrefix, so
+        // the alias must hold under a preset prefix too.
+        val prefs = FakePrefs()
+        prefs.edit()
+            .putBoolean("hasSaved", true)
+            .putString("transfer", "LOG")
+            .putBoolean("preset_MR1_hasSaved", true)
+            .putString("preset_MR1_transfer", "LOG")
+            .commit()
+        val store = SettingsStore(prefs)
+
+        assertEquals(ColorTransfer.SLOG3_CINE, store.load()?.extras?.transfer)
+        assertEquals(ColorTransfer.SLOG3_CINE, store.loadPreset(MemorySlot.MR1)?.extras?.transfer)
+        // A genuinely unknown name still degrades to the field default, not the log alias.
+        prefs.edit().putString("transfer", "NOT_A_TRANSFER").commit()
+        assertEquals(ExtraSettings().transfer, store.load()?.extras?.transfer)
+    }
+
+    @Test
     fun rememberToggleCommitsBothValuesSynchronously() {
         val prefs = FakePrefs()
         val store = SettingsStore(prefs)
@@ -166,7 +188,7 @@ class SettingsStoreTest {
     }
 
     private val nonDefaultExtras = ExtraSettings(
-        transfer = ColorTransfer.LOG,
+        transfer = ColorTransfer.LOGC3,
         heif = false,
         jpeg = true,
         dngRaw = false,

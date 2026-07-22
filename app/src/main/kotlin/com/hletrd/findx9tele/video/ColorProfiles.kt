@@ -10,8 +10,9 @@ import com.hletrd.findx9tele.camera.VideoCodec
  *
  * - HEVC: Main10 profile tagged Rec.2020, except SDR which is Main (8-bit) BT.709.
  *   - HLG: tagged with the HLG transfer so HDR players render it directly.
- *   - LOG: our GL pipeline bakes a flat log curve; there is no standard "log" transfer id, so the
- *          stream is tagged BT.2020 full-range with an explicit SDR-class transfer (grade manually).
+ *   - Log profiles (S-Log3 / S-Log3.Cine / LogC3): our GL pipeline bakes the flat curve; no CICP
+ *     code exists for a log curve, so the stream is tagged BT.2020 full-range with an explicit
+ *     SDR-class transfer (grade manually) — one shared log-class policy for all three.
  *   - SDR: plain Rec.709/SDR — the GL pipeline applies no curve (camera frames are already SDR),
  *          for footage that plays correctly everywhere with zero grading.
  *
@@ -156,11 +157,13 @@ internal fun hevcColorTagsFor(transfer: ColorTransfer): VideoColorTags = when (t
         transfer = MediaFormat.COLOR_TRANSFER_HLG,
     )
     // No CICP code exists for a log curve. Tag SDR like other phone log formats: players show the
-    // flat log image as-is and graders assign the O-Log2 IDT/LUT manually. (Device ffprobe note:
-    // on this QTI encoder "SDR transfer + BT2020 full range" lands in the container as CICP 14 —
+    // flat log image as-is and graders assign the profile's IDT/LUT manually. One log-class policy
+    // for all three profiles — which curve was baked is a grading decision, not a container one.
+    // (Device ffprobe note, from the O-Log2 era this policy is inherited from verbatim: on this
+    // QTI encoder "SDR transfer + BT2020 full range" lands in the container as CICP 14 —
     // bt2020-10, functionally identical to BT.709 per H.273 — NOT the literal SDR code point, and
     // crucially not the ST2084/PQ mistag this tag exists to prevent.)
-    ColorTransfer.LOG -> VideoColorTags(
+    ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3 -> VideoColorTags(
         profile = MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10,
         standard = MediaFormat.COLOR_STANDARD_BT2020,
         range = MediaFormat.COLOR_RANGE_FULL,
@@ -188,7 +191,7 @@ internal fun apvColorTagsFor(transfer: ColorTransfer): VideoColorTags = when (tr
         range = MediaFormat.COLOR_RANGE_FULL,
         transfer = MediaFormat.COLOR_TRANSFER_HLG,
     )
-    ColorTransfer.LOG, ColorTransfer.SDR -> VideoColorTags(
+    ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3, ColorTransfer.SDR -> VideoColorTags(
         profile = null,
         standard = MediaFormat.COLOR_STANDARD_BT2020,
         range = MediaFormat.COLOR_RANGE_FULL,

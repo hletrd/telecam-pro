@@ -10,10 +10,28 @@ enum class CaptureMode { PHOTO, VIDEO }
 enum class MediaDeleteScope { CAPTURE_FAMILY, FILE_ONLY }
 
 /**
- * Video transfer function. HLG = HDR-viewable; LOG = flat, for grading (our GL applies the curve);
+ * Video transfer function. HLG = HDR-viewable; the [isLog] members are flat, for grading (our GL
+ * bakes the industry-standard curve + gamut matrix — see [com.hletrd.findx9tele.gl.LogProfiles]);
  * SDR = plain Rec.709 with no GL curve — HEVC Main 8-bit, for footage that needs zero grading.
+ *
+ * The log profiles replaced the former O-Log2 option (`LOG`, removed 2026-07-22: not a standard —
+ * SettingsStore migrates the persisted "LOG" name to [SLOG3_CINE]). All three share one log-class
+ * behavior: encoder gets the curve, preview renders it flat, Gamma Display Assist skips the forward
+ * curve on the monitor only, and the container is tagged BT.2020 full-range with an explicit
+ * SDR-class transfer (see [com.hletrd.findx9tele.video.hevcColorTagsFor]). Like the old option,
+ * these are display-referred SDR-source curves — the ISP has already tone-mapped the stream, so
+ * this is grading convenience, NOT scene-referred camera log with recovered highlight latitude.
  */
-enum class ColorTransfer { HLG, LOG, SDR }
+enum class ColorTransfer(val isLog: Boolean = false) {
+    HLG,
+    /** Sony S-Log3 transfer in S-Gamut3 primaries. */
+    SLOG3(isLog = true),
+    /** Sony S-Log3 transfer in the smaller, grading-friendlier S-Gamut3.Cine primaries. */
+    SLOG3_CINE(isLog = true),
+    /** ARRI LogC3 (EI 800) transfer in ARRI Wide Gamut 3 primaries. */
+    LOGC3(isLog = true),
+    SDR,
+}
 
 /** Focus behaviour. MANUAL drives LENS_FOCUS_DISTANCE; others use the AF engine. */
 enum class FocusMode { MANUAL, AUTO, CONTINUOUS, MACRO }
@@ -398,9 +416,12 @@ enum class LensChoice(val targetEquivMm: Float, val label: String, val zoomPrese
  *
  * CAVEAT: the resulting log is not a drop-in for OPPO's published O-Log2 LUT — it appears
  * scene-referred WITHOUT baked white balance (warm ambient reads warm), which a colorist neutralizes
- * in grade. For a LUT-accurate deliverable, the GL O-Log2 path ([ColorTransfer.LOG]) is exact. This
- * mode is for maximum latitude / minimal in-camera processing. Deliberately NOT persisted: an
- * experimental device mode must never survive a relaunch.
+ * in grade. The user-facing GL O-Log2 option (`ColorTransfer.LOG`) that once offered a LUT-accurate
+ * deliverable was removed 2026-07-22 in favor of the standard S-Log3/LogC3 profiles; a future
+ * activation of this native path owns its own curve and container-tagging decisions (the de-log
+ * assist shader [olog2Inv] remains O-Log2-shaped for it). This mode is for maximum latitude /
+ * minimal in-camera processing. Deliberately NOT persisted: an experimental device mode must never
+ * survive a relaunch.
  */
 enum class VendorLogMode(val halValue: Int) { OFF(0), ON(1) }
 

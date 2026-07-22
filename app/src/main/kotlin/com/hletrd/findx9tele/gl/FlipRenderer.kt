@@ -167,7 +167,9 @@ class FlipRenderer {
             when {
                 delogAssist -> 3
                 transfer == ColorTransfer.HLG -> 1
-                transfer == ColorTransfer.LOG -> 2
+                transfer == ColorTransfer.SLOG3 -> 2
+                transfer == ColorTransfer.SLOG3_CINE -> 4
+                transfer == ColorTransfer.LOGC3 -> 5
                 // SDR = no OETF, same as the preview/null path (the camera frames are already SDR).
                 else -> 0
             },

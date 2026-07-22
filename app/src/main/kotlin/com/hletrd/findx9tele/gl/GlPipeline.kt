@@ -764,15 +764,15 @@ class GlPipeline {
         // draw below stays centered so recordings are unaffected.
         val loupeX = if (punchIn) punchInX else 0.5f
         val loupeY = if (punchIn) punchInY else 0.5f
-        // Show the LOG (O-Log2) curve FLAT in the live preview so the user can monitor that they're on a
-        // log profile — previously the preview was hardcoded to SDR (null) and only the encoder got the
-        // curve, so LOG never looked flat on screen. HLG/SDR keep a natural SDR preview (an HLG curve on
-        // this SDR preview surface would just look washed; HDR is monitored on an HDR display, not here).
-        // LOG = GL O-Log2: the preview renders the same flat curve the encoder bakes, or — with Gamma
-        // Display Assist ON — skips it and shows the normal display-referred image (the FILE always
-        // gets the curve). HLG/SDR keep the natural SDR preview. delogAssist stays dormant: it is only
-        // for a true scene-referred (native/CameraUnit) stream, which third-party Camera2 cannot get.
-        val previewTransfer = if (transfer == ColorTransfer.LOG && !gammaAssist) ColorTransfer.LOG else null
+        // Show the selected log curve (S-Log3/S-Log3.Cine/LogC3) FLAT in the live preview so the user
+        // can monitor that they're on a log profile — previously the preview was hardcoded to SDR
+        // (null) and only the encoder got the curve, so log never looked flat on screen. The preview
+        // renders the same flat curve the encoder bakes, or — with Gamma Display Assist ON — skips it
+        // and shows the normal display-referred image (the FILE always gets the curve). HLG/SDR keep
+        // the natural SDR preview (an HLG curve on this SDR preview surface would just look washed;
+        // HDR is monitored on an HDR display, not here). delogAssist stays dormant: it is only for a
+        // true scene-referred (native/CameraUnit) stream, which third-party Camera2 cannot get.
+        val previewTransfer = transfer?.takeIf { it.isLog && !gammaAssist }
         val ownedPreview = previewEgl
         val ownedPreviewSignal = previewSignal
         if (ownedPreview != EGL14.EGL_NO_SURFACE) {
@@ -906,11 +906,12 @@ class GlPipeline {
                 runAnalysisReadback(
                     generation = analysis,
                     core = core,
-                    // ALWAYS display-referred (null), never previewTransfer (AGG4-9/P3.4): with LOG
-                    // active the preview renders the flat O-Log2 curve, and metering THAT put 18%
-                    // grey at the ~0.4868 log anchor instead of 0.18 — the app-side AE loop settled
-                    // ~1.5 stops off and the histogram/waveform/zebra read the encode curve rather
-                    // than the scene. The meter must not move when the user toggles LOG.
+                    // ALWAYS display-referred (null), never previewTransfer (AGG4-9/P3.4): with a
+                    // log profile active the preview renders the flat curve, and metering THAT put
+                    // 18% grey at the log grey anchor (~0.41 S-Log3 / ~0.39 LogC3; ~0.4868 on the
+                    // removed O-Log2, where the bug was found) instead of 0.18 — the app-side AE
+                    // loop settled ~1.5 stops off and the histogram/waveform/zebra read the encode
+                    // curve rather than the scene. The meter must not move with the log toggle.
                     transfer = analysisReadbackTransfer(previewTransfer),
                     sx = sx,
                     sy = sy,
@@ -1253,11 +1254,11 @@ internal fun analysisFrame(captureCrop: Float): AnalysisFrame = AnalysisFrame(ca
 
 /**
  * The transfer for the scopes/AE analysis re-draw: ALWAYS display-referred (null), whatever the
- * PREVIEW currently renders (AGG4-9/P3.4). With LOG selected the preview shows the flat O-Log2
+ * PREVIEW currently renders (AGG4-9/P3.4). With a log profile selected the preview shows the flat
  * curve for monitoring, but the METER must read scene brightness in the same domain the AE loop's
- * targets are defined in — metering the log curve put 18% grey at the ~0.4868 anchor instead of
- * 0.18 and settled the app-side AE ~1.5 stops off. Pure seam so a host test pins that toggling
- * LOG cannot move the metered domain.
+ * targets are defined in — metering the log curve put 18% grey at the curve's grey anchor (~0.41
+ * S-Log3 / ~0.39 LogC3) instead of 0.18 and settled the app-side AE ~1.5 stops off. Pure seam so
+ * a host test pins that toggling a log profile cannot move the metered domain.
  */
 internal fun analysisReadbackTransfer(previewTransfer: ColorTransfer?): ColorTransfer? = null
 

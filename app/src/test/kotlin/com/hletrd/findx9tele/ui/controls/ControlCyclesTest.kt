@@ -119,8 +119,10 @@ class ControlCyclesTest {
 
     @Test
     fun transferCycle() {
-        assertEquals(ColorTransfer.LOG, nextTransfer(ColorTransfer.HLG))
-        assertEquals(ColorTransfer.SDR, nextTransfer(ColorTransfer.LOG))
+        assertEquals(ColorTransfer.SLOG3, nextTransfer(ColorTransfer.HLG))
+        assertEquals(ColorTransfer.SLOG3_CINE, nextTransfer(ColorTransfer.SLOG3))
+        assertEquals(ColorTransfer.LOGC3, nextTransfer(ColorTransfer.SLOG3_CINE))
+        assertEquals(ColorTransfer.SDR, nextTransfer(ColorTransfer.LOGC3))
         assertEquals(ColorTransfer.HLG, nextTransfer(ColorTransfer.SDR))
         assertClosedCycle(ColorTransfer.entries, ::nextTransfer)
     }
