@@ -371,6 +371,15 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   on TELE off) — no AUTH_CODE needed. Lint WrongConstant is suppressed on configureSession with
   justification. UNVERIFIED: whether the OIS profile actually differs at 300 mm (needs a physical
   shake A/B with the converter mounted); result metadata reads identically either way.
+- **200MP remosaic is NOT exposed to third-party Camera2 (probed 2026-07-22).** `dumpsys
+  media.camera` (116k lines, full characteristics for all 7 HAL devices): every camera's
+  `pixelArraySize`/`activeArraySize` IS the binned ~12.5 MP readout (4080×3064 / 4096×3072), the
+  `ULTRA_HIGH_RESOLUTION_SENSOR` capability appears nowhere, `pixelArraySizeMaximumResolution` has
+  no values (key-index mention only), and no stream configuration anywhere exceeds 20 MP. The
+  200 MP full-res path lives behind the stock app's private CameraUnit stack. The capability-gated
+  Hi-Res feature (e943807) is therefore DORMANT on PMA110 — its toggle appears only if a future
+  firmware or a different device advertises a hi-res size; do not expect it here and do not
+  re-probe without cause.
 - **300 mm teleconverter OIS integration depends on OPPO CameraUnit availability (2026-07-08).**
   The 4.3× teleconverter stabilization profile appears to use CameraUnit extension parameters that
   are not exposed through raw Camera2 request/result keys. The app applies the public Camera2 overlap
