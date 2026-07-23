@@ -854,8 +854,8 @@ data class CameraUiState(
     val volumeKeyAction: HardwareKeyAction = HardwareKeyAction.SHUTTER,
     val halfPressAction: HardwareKeyAction = HardwareKeyAction.AF_ON,
     val halfPressActive: Boolean = false,
-    // Gamma Display Assist (Sony): while shooting O-Log, the MONITOR shows the normal 709-ish image
-    // and only the FILE stays log. Off = judge the flat log directly.
+    // Gamma Display Assist (Sony): while shooting a log profile, the MONITOR shows the normal
+    // 709-ish image and only the FILE stays log. Off = judge the flat log directly.
     val gammaAssist: Boolean = false,
     // Delivery-framing markers over the viewfinder.
     val frameLines: FrameLineType = FrameLineType.OFF,

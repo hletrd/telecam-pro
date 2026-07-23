@@ -123,9 +123,15 @@ data class CameraCaps(
      * PUBLIC-API sources, in priority order: the standard ULTRA_HIGH_RESOLUTION_SENSOR path (the
      * largest JPEG in SCALER_STREAM_CONFIGURATION_MAP_MAXIMUM_RESOLUTION), else a vendor-exposed
      * remosaic size sitting in the REGULAR stream map ([pickVendorHiResSize] — the size the
-     * [largestJpegSize] active-array filter deliberately excludes for the binned path). Hi-res is
-     * session-gated (standalone-only, first-drop on the fallback ladder) — advertising here alone
-     * never admits it.
+     * [largestJpegSize] active-array filter deliberately excludes for the binned path). NOTE a
+     * THIRD documented path exists (SENSOR_PIXEL_MODE javadoc): the key "may also be present on
+     * devices which do not support the ULTRA_HIGH_RESOLUTION_SENSOR capability", and on such
+     * devices the MAXIMUM_RESOLUTION stream map "will always be present" — the capability-gated
+     * read here misses that class of device, and the vendor fallback would not set the
+     * then-required pixel mode. Latent for this single-device app (PMA110 advertises neither,
+     * probed 2026-07-22); revisit before any multi-device build. Hi-res is session-gated
+     * (standalone-only, first-drop on the fallback ladder) — advertising here alone never
+     * admits it.
      */
     val hiResJpegSize: Size?,
     /**
