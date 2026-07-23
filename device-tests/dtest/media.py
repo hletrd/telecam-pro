@@ -43,7 +43,19 @@ def jpeg_info(path: Path) -> dict:
 
 def heic_valid(path: Path) -> bool:
     data = path.read_bytes()
-    return len(data) > 100_000 and data[4:8] == b"ftyp" and (b"heic" in data[8:24] or b"mif1" in data[8:24])
+    return len(data) > 100_000 and heic_structure_valid(path)
+
+
+def heic_structure_valid(path: Path) -> bool:
+    """ftyp/brand-only HEIC check, no size heuristic: a near-black exposure legitimately
+    compresses to tens of KB (device fact 2026-07-24 — a dark TELE manual shot was 56 KB),
+    so parity validators pair this with a full sips dimension decode instead of a size floor."""
+    data = path.read_bytes()
+    return (
+        len(data) > 16
+        and data[4:8] == b"ftyp"
+        and (b"heic" in data[8:24] or b"mif1" in data[8:24])
+    )
 
 
 def sips_dimensions(output: str) -> tuple[int, int] | None:

@@ -2674,7 +2674,9 @@ def media_row_file_parity_errors(row: MediaRow, local) -> list[str]:
                 f"!= row {row.width}x{row.height}"
             )
     elif row.mime_type == "image/heic":
-        if not media.heic_valid(local):
+        # Structural check only — the sips decode below is the real payload validator, and a
+        # near-black manual exposure legitimately compresses under heic_valid's size heuristic.
+        if not media.heic_structure_valid(local):
             errors.append(f"{row.display_name}: HEIC structure invalid")
         dimensions = media.image_dimensions(local)
         if dimensions is None:
@@ -3457,7 +3459,10 @@ def t_tele_dng_parity(ctx: Context) -> None:
             step_ev=step_ev,
             label="ISO ruler",
         )
-        if mode_original == "M":
+        # controls.iso is ONE shared field across exposure modes: in M and ISO-priority the USER
+        # owns it (the M dial showed exactly that persisted value), so it must be restored; in
+        # P/S the app-side loop rewrites it continuously and there is nothing of the user's to keep.
+        if mode_original in ("M", "ISO"):
             manual_iso_original = iso_initial
 
         open_manual_dial(ctx, "Shutter", "Shutter speed")
@@ -3480,7 +3485,8 @@ def t_tele_dng_parity(ctx: Context) -> None:
             step_ev=step_ev,
             label="Shutter ruler",
         )
-        if mode_original == "M":
+        # Same shared-field reasoning as ISO: the user owns the shutter in M and S-priority.
+        if mode_original in ("M", "S"):
             manual_shutter_original = shutter_initial
         close_manual_dial(ctx)
         dial_open = False
@@ -3553,13 +3559,42 @@ def t_tele_dng_parity(ctx: Context) -> None:
         fatals = ctx.adb.fatal_lines(mark, pid)
         assert not fatals, f"errors during TELE DNG parity: {fatals[:2]}"
     finally:
+        # Restore ORDER is load-bearing:
+        #  1. angle toggle while still M (the Speed/Angle control is enabled only in S/M);
+        #  2. output formats while still TELE (the DNG chip is enabled only where RAW is);
+        #  3. TC off;
+        #  4. exposure mode;
+        #  5. user-owned dial values LAST, on the restored route+mode — each camera's EV ladder
+        #     includes its own range bounds, so a home-route bound value (e.g. the logical
+        #     camera's ISO 9100 ceiling) is unreachable while the TELE ladder is active
+        #     (device-diagnosed 2026-07-24).
         if dial_open:
             cleanup_transport_or_unsafe(
                 "could not close the adjustment dial", lambda: close_manual_dial(ctx)
             )
+        if speed_toggled_from_angle:
+            cleanup_transport_or_unsafe(
+                "could not restore the shutter ANGLE mode",
+                lambda: _restore_shutter_mode_angle(ctx),
+            )
+        if (
+            formats_original is not None
+            and formats_desired is not None
+            and formats_desired != formats_original
+        ):
+            cleanup_transport_or_unsafe(
+                "could not restore the photo output formats",
+                lambda: set_photo_output_formats(ctx, formats_original),
+            )
+        restore_teleconverter_off_verified(ctx, pid, tele_evidence)
+        if mode_original is not None and mode_original != "M":
+            cleanup_transport_or_unsafe(
+                "could not restore the exposure mode",
+                lambda: set_exposure_mode(ctx, mode_original),
+            )
         if step_ev is not None:
-            # Manual values are the photographer's own state only in M; in P/S/ISO the app-side
-            # loop rewrites them continuously, so restoring the MODE is the complete restore.
+            # The dial is user-driven for exactly these fields in the restored mode
+            # (ISO dial in M/ISO-priority, shutter dial in M/S-priority).
             if manual_iso_original is not None and manual_iso_original != TELE_DNG_TARGET_ISO:
                 cleanup_transport_or_unsafe(
                     "could not restore the manual ISO",
@@ -3570,27 +3605,6 @@ def t_tele_dng_parity(ctx: Context) -> None:
                     "could not restore the manual shutter",
                     lambda: _restore_shutter_value(ctx, manual_shutter_original, step_ev),
                 )
-        if speed_toggled_from_angle:
-            cleanup_transport_or_unsafe(
-                "could not restore the shutter ANGLE mode",
-                lambda: _restore_shutter_mode_angle(ctx),
-            )
-        if mode_original is not None and mode_original != "M":
-            cleanup_transport_or_unsafe(
-                "could not restore the exposure mode",
-                lambda: set_exposure_mode(ctx, mode_original),
-            )
-        if (
-            formats_original is not None
-            and formats_desired is not None
-            and formats_desired != formats_original
-        ):
-            # Restore while still on the TELE route: the DNG chip is enabled only where RAW is.
-            cleanup_transport_or_unsafe(
-                "could not restore the photo output formats",
-                lambda: set_photo_output_formats(ctx, formats_original),
-            )
-        restore_teleconverter_off_verified(ctx, pid, tele_evidence)
 
 
 def record_container_truth_clip(
