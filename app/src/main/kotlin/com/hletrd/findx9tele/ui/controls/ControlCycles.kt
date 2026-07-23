@@ -2,6 +2,7 @@ package com.hletrd.findx9tele.ui.controls
 
 import com.hletrd.findx9tele.camera.AspectRatio
 import com.hletrd.findx9tele.camera.AudioScene
+import com.hletrd.findx9tele.camera.CameraFacing
 import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorTransfer
@@ -192,7 +193,10 @@ internal fun nextAspect(ratio: AspectRatio): AspectRatio = when (ratio) {
  */
 internal fun quickFnEnabled(slot: FnSlot, state: CameraUiState): Boolean = when (slot) {
     FnSlot.TRANSFER -> !state.isRecording && state.videoCodec == VideoCodec.HEVC
-    FnSlot.TELECONVERTER -> !state.isRecording
+    // The TC toggle is a rear-only optics door: onToggleTeleconverter also refuses while FRONT
+    // (backOpticsDoorRefusal), so the tile must dim on the selfie route or it renders hot and
+    // only toasts on tap — exactly the drift this predicate's contract forbids.
+    FnSlot.TELECONVERTER -> !state.isRecording && state.facing == CameraFacing.BACK
     FnSlot.OPEN_GATE -> state.mode == CaptureMode.VIDEO && !state.isRecording
     FnSlot.STABILIZATION -> !state.isRecording
     FnSlot.AUDIO_SCENE -> !state.isRecording

@@ -1,5 +1,6 @@
 package com.hletrd.findx9tele.ui.controls
 
+import com.hletrd.findx9tele.camera.CameraFacing
 import com.hletrd.findx9tele.camera.CameraUiState
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.FnSlot
@@ -24,6 +25,14 @@ class QuickFnEnabledTest {
             assertTrue("$slot idle", quickFnEnabled(slot, idle))
             assertFalse("$slot recording", quickFnEnabled(slot, recording.copy(mode = CaptureMode.VIDEO)))
         }
+    }
+
+    @Test
+    fun `teleconverter tile dims on the selfie route`() {
+        // onToggleTeleconverter refuses while FRONT (backOpticsDoorRefusal) — the tile must not
+        // render hot and merely toast on tap (the exact drift this predicate's contract forbids).
+        assertFalse(quickFnEnabled(FnSlot.TELECONVERTER, idle.copy(facing = CameraFacing.FRONT)))
+        assertTrue(quickFnEnabled(FnSlot.TELECONVERTER, idle.copy(facing = CameraFacing.BACK)))
     }
 
     @Test
