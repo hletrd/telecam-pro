@@ -137,6 +137,28 @@ class ReconfigurationGenerationTest {
     }
 
     @Test
+    fun `rollback keeps the routed target and the diagnostic pin distinct`() {
+        // overrideId is the engine's ROUTED target (non-null after any door); userPin is only a
+        // genuine setCameraOverride pin — the value the UI may surface as an active override.
+        // A rollback that republished the routed id as the pin permanently showed the Setup
+        // Camera ID row and refused the same-route recall fast path (cycle-6 code-review F5).
+        val routineDoor = OpticsIntentState(
+            mode = CaptureMode.PHOTO,
+            lens = LensChoice.TELE3X,
+            teleconverter = true,
+            controls = ManualControls(),
+            overrideId = "4",
+            userPin = null,
+        )
+        val restoredRoutine = rollbackOpticsState(7, 7, routineDoor)
+        assertEquals("4", restoredRoutine?.overrideId)
+        assertNull(restoredRoutine?.userPin)
+
+        val pinnedDoor = routineDoor.copy(overrideId = "2", userPin = "2")
+        assertEquals("2", rollbackOpticsState(7, 7, pinnedDoor)?.userPin)
+    }
+
+    @Test
     fun `superseded rollback returns no snapshot`() {
         val snapshot = OpticsIntentState(
             CaptureMode.PHOTO,

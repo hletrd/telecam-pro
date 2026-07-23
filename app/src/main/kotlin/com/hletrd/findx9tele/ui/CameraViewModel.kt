@@ -361,7 +361,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
             }
         }
         engine.onOpticsRollback = {
-                mode, lens, teleconverter, facing, controls, restoredPhotoExposureTimeNs, overrideId, generation ->
+                mode, lens, teleconverter, facing, controls, restoredPhotoExposureTimeNs, userPin, generation ->
             mainHandler.post {
                 if (!engine.isOpticsGenerationCurrent(generation)) return@post
                 cancelPendingControls()
@@ -381,7 +381,10 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                         teleconverterMode = teleconverter,
                         facing = facing,
                         controls = controls,
-                        cameraOverrideId = overrideId,
+                        // The engine publishes only a GENUINE diagnostic pin here (its routed-target
+                        // pin stays internal) — so a routine failed door can no longer surface the
+                        // Setup Camera ID row or poison the same-route recall fast path.
+                        cameraOverrideId = userPin,
                     )
                 }
                 refreshProgramAppSide()

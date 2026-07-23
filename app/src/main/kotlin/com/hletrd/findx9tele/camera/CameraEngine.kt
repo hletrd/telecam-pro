@@ -112,6 +112,15 @@ class CameraEngine(private val context: Context) {
     @Volatile private var transfer = ColorTransfer.HLG
     @Volatile private var lensChoice: LensChoice = LensChoice.MAIN
     @Volatile private var overrideId: String? = null
+    // The GENUINE diagnostic pin (setCameraOverride), distinct from [overrideId]: after any door,
+    // [overrideId] holds the ROUTED target id as an engine-internal pin, but the UI treats a
+    // non-null override as "a diagnostic camera override is active" (Setup's Camera ID row, and
+    // the settings/MR same-route fast path refuses while one is set). Publishing the routed pin
+    // through a rollback permanently surfaced the diagnostic row after any failed optics
+    // transaction (cycle-6 code-review F5) — rollback publishes THIS field instead. Maintained
+    // only where pin semantics live: set by setCameraOverride, cleared by the doors that own
+    // automatic routing (mode/lens/facing/settings-recall), never touched by route commits.
+    @Volatile private var userCameraPin: String? = null
     @Volatile private var started = false
     // Set true synchronously on the calling thread once startup setup is dispatched, so a second
     // onPreviewSurfaceAvailable arriving before setup completes doesn't launch a duplicate start.
@@ -243,6 +252,7 @@ class CameraEngine(private val context: Context) {
         val controls: ManualControls,
         val photoExposureTimeNs: Long,
         val overrideId: String?,
+        val userPin: String?,
         val selection: TeleSelection?,
         val caps: CameraCaps?,
         val videoSize: Size,
@@ -293,6 +303,7 @@ class CameraEngine(private val context: Context) {
         controls = controls,
         photoExposureTimeNs = photoExposureTimeNs,
         overrideId = overrideId,
+        userPin = userCameraPin,
         selection = selection,
         caps = caps,
         videoSize = videoSize,
@@ -479,6 +490,7 @@ class CameraEngine(private val context: Context) {
                 controls = before.controls,
                 photoExposureTimeNs = before.photoExposureTimeNs,
                 overrideId = before.overrideId,
+                userPin = before.userPin,
                 requestedVideoSize = before.requestedVideoSize,
             ),
         ) ?: return
@@ -492,6 +504,7 @@ class CameraEngine(private val context: Context) {
         controls = restored.controls
         photoExposureTimeNs = restored.photoExposureTimeNs
         overrideId = restored.overrideId
+        userCameraPin = restored.userPin
         selection = before.selection
         caps = before.caps
         videoSize = before.videoSize
@@ -508,7 +521,9 @@ class CameraEngine(private val context: Context) {
             restored.facing,
             restored.controls,
             restored.photoExposureTimeNs,
-            restored.overrideId,
+            // The UI's cameraOverrideId means "diagnostic pin active" — publish the pin, never
+            // the engine's routed-target overrideId (which is non-null after any door).
+            restored.userPin,
             transaction.generation,
         )
         before.caps?.let { onCapsReady?.invoke(it, transaction.generation) }
@@ -1242,6 +1257,7 @@ class CameraEngine(private val context: Context) {
                 photoExposureTimeNs = resolvedPhotoExposureTimeNs.coerceAtLeast(1L)
                 // A mode intent owns automatic routing. Clear the resolved outgoing id atomically.
                 overrideId = null
+                userCameraPin = null
             }.first
         } else {
             synchronized(this) {
@@ -1386,6 +1402,7 @@ class CameraEngine(private val context: Context) {
             preTeleUnifiedZoom = Float.NaN
             // Settings/MR replaces automatic routing; the snapshot retains an override for rollback.
             overrideId = null
+            userCameraPin = null
         }.first
         // Self-contained finder resolve: TC/mode just changed above, and relying on the restore
         // block's TRAILING setAspectRatio/setTeleFinder calls made correctness depend on adjacent
@@ -2112,6 +2129,7 @@ class CameraEngine(private val context: Context) {
             controls = intent.controls
             preTeleUnifiedZoom = intent.preTeleUnifiedZoom
             overrideId = null
+            userCameraPin = null
             intent
         }
         // The optics packet above already updated [teleconverterMode]; resolve the finder PIP now
@@ -2209,6 +2227,7 @@ class CameraEngine(private val context: Context) {
             // rear home, TC off), so a stale restore target must not linger.
             preTeleUnifiedZoom = Float.NaN
             overrideId = null
+            userCameraPin = null
         }.first
         // TC state changed above (entering) or the finder inputs must re-resolve anyway (leaving):
         // resolve synchronously so the GL PIP cannot outlive the facing flip while the async
@@ -2260,6 +2279,7 @@ class CameraEngine(private val context: Context) {
         val transaction = beginOpticsTransaction {
             facing = CameraFacing.BACK
             overrideId = id
+            userCameraPin = id
         }.first
         reconfigureCamera(id, transaction)
     }
@@ -4611,6 +4631,11 @@ internal data class OpticsIntentState(
     val teleconverter: Boolean,
     val controls: ManualControls,
     val overrideId: String?,
+    // The diagnostic-pin half of the override pair: [overrideId] is the engine's ROUTED target,
+    // this is only ever a genuine setCameraOverride pin — the value the UI may present as an
+    // active override (a rollback restoring the routed id here surfaced the diagnostic row after
+    // every failed door, cycle-6 code-review F5).
+    val userPin: String? = null,
     val photoExposureTimeNs: Long = controls.exposureTimeNs,
     val requestedVideoSize: Size? = null,
     // Facing rolls back with the packet like every other optics axis: a refused FRONT entry must
