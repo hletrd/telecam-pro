@@ -594,4 +594,33 @@ class ControlCapabilityNormalizationTest {
         assertTrue(fallback.programAppSide)
         assertEquals(FlashMode.OFF, fallback.flash)
     }
+
+    @Test
+    fun `af and ae locks survive normalization only on a route that can hold them`() {
+        // AF lock needs AF_MODE_OFF + a manual-focus distance to freeze; AE lock needs the exact
+        // HAL-AE variant the current flash selects. A route with both keeps a recalled lock truthful.
+        val holdingCaps = CameraControlCapabilities(
+            supportsManualFocus = true,
+            hasFocusDistanceRange = true,
+            afModes = intArrayOf(
+                CameraMetadata.CONTROL_AF_MODE_OFF,
+                CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE,
+            ),
+            awbModes = intArrayOf(CameraMetadata.CONTROL_AWB_MODE_AUTO),
+            aeModes = intArrayOf(CameraMetadata.CONTROL_AE_MODE_ON),
+        )
+        val held = ManualControls(afLock = true, aeLock = true).normalizedFor(holdingCaps)
+        assertEquals(FocusMode.CONTINUOUS, held.focusMode)
+        assertTrue(held.afLock)
+        assertEquals(ExposureMode.PROGRAM, held.exposureMode)
+        assertFalse(held.programAppSide)
+        assertTrue(held.aeLock)
+
+        // Without AF_MODE_OFF the frozen-distance hold cannot be expressed; the lock must drop
+        // instead of publishing a state the request builder cannot honor.
+        val noAfOff = holdingCaps.copy(
+            afModes = intArrayOf(CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE),
+        )
+        assertFalse(ManualControls(afLock = true).normalizedFor(noAfOff).afLock)
+    }
 }

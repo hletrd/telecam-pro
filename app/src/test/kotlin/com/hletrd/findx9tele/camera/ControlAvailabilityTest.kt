@@ -223,6 +223,23 @@ class ControlAvailabilityTest {
                     }
     }
 
+    @Test
+    fun `EV dial follows the app-side loop in shutter and ISO priority`() {
+        val caps = fullCaps()
+
+        // S/ISO priority: the app-side loop drives the other side, so EV has a real lane whenever
+        // manual AE exists on the route — not the HAL compensation key, but the same dial truth.
+        listOf(ExposureMode.SHUTTER, ExposureMode.ISO).forEach { mode ->
+            val normalized = ManualControls(exposureMode = mode).normalizedFor(caps)
+            assertEquals(mode, normalized.exposureMode)
+            assertTrue(controlAvailability(caps, normalized).evDialEnabled)
+        }
+
+        // MANUAL owns both sides of the exposure; the EV dial has nothing to drive.
+        val manual = ManualControls(exposureMode = ExposureMode.MANUAL).normalizedFor(caps)
+        assertFalse(controlAvailability(caps, manual).evDialEnabled)
+    }
+
     private fun fullCaps() = CameraControlCapabilities(
         supportsManualFocus = true,
         supportsManualSensor = true,

@@ -1,6 +1,7 @@
 package com.hletrd.findx9tele.camera
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -271,5 +272,29 @@ class ExposureMathTest {
         )
         assertTrue(e <= PREVIEW_SAFE_MAX_EXPOSURE_NS)
         assertEquals(0, iso)
+    }
+
+    @Test
+    fun `malformed sensor range leaves the requested exposure untouched`() {
+        // A min above max is an invalid advertisement; clamping into it would fabricate a value
+        // the sensor never offered, so the request keeps the app-owned exposure verbatim.
+        val c = ManualControls(shutterMode = ShutterMode.SPEED, exposureTimeNs = 8_000_000L)
+        assertEquals(8_000_000L, c.clampedEffectiveExposureNs(minNs = 10L, maxNs = 5L))
+        assertEquals(8_000_000L, c.clampedEffectiveExposureNs(minNs = null, maxNs = 5L))
+        assertEquals(8_000_000L, c.clampedEffectiveExposureNs(minNs = 10L, maxNs = null))
+    }
+
+    @Test
+    fun `priority modes report exactly which side the app-side loop drives`() {
+        // SHUTTER: user owns the shutter, the loop drives ISO; ISO mode is the mirror image.
+        assertTrue(ManualControls(exposureMode = ExposureMode.SHUTTER).autoIsoDriven)
+        assertFalse(ManualControls(exposureMode = ExposureMode.SHUTTER).autoShutterDriven)
+        assertTrue(ManualControls(exposureMode = ExposureMode.ISO).autoShutterDriven)
+        assertFalse(ManualControls(exposureMode = ExposureMode.ISO).autoIsoDriven)
+        // PROGRAM and MANUAL drive neither: HAL AE or the user owns both values.
+        assertFalse(ManualControls(exposureMode = ExposureMode.PROGRAM).autoIsoDriven)
+        assertFalse(ManualControls(exposureMode = ExposureMode.PROGRAM).autoShutterDriven)
+        assertFalse(ManualControls(exposureMode = ExposureMode.MANUAL).autoIsoDriven)
+        assertFalse(ManualControls(exposureMode = ExposureMode.MANUAL).autoShutterDriven)
     }
 }

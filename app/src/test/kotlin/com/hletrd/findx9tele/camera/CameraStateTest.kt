@@ -1,5 +1,6 @@
 package com.hletrd.findx9tele.camera
 
+import android.hardware.camera2.CameraMetadata
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -82,5 +83,61 @@ class CameraStateTest {
         )
 
         assertTrue(countdown.primaryShutterEnabled)
+    }
+
+    @Test
+    fun `AF indication maps every HAL state and treats unknown as idle`() {
+        assertEquals(
+            AfIndication.SCANNING,
+            AfIndication.fromHal(CameraMetadata.CONTROL_AF_STATE_ACTIVE_SCAN),
+        )
+        assertEquals(
+            AfIndication.SCANNING,
+            AfIndication.fromHal(CameraMetadata.CONTROL_AF_STATE_PASSIVE_SCAN),
+        )
+        assertEquals(
+            AfIndication.FOCUSED,
+            AfIndication.fromHal(CameraMetadata.CONTROL_AF_STATE_FOCUSED_LOCKED),
+        )
+        assertEquals(
+            AfIndication.FOCUSED,
+            AfIndication.fromHal(CameraMetadata.CONTROL_AF_STATE_PASSIVE_FOCUSED),
+        )
+        assertEquals(
+            AfIndication.FAILED,
+            AfIndication.fromHal(CameraMetadata.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED),
+        )
+        assertEquals(
+            AfIndication.FAILED,
+            AfIndication.fromHal(CameraMetadata.CONTROL_AF_STATE_PASSIVE_UNFOCUSED),
+        )
+        // INACTIVE and any future HAL value both fold to the quiet reticle state.
+        assertEquals(
+            AfIndication.IDLE,
+            AfIndication.fromHal(CameraMetadata.CONTROL_AF_STATE_INACTIVE),
+        )
+        assertEquals(AfIndication.IDLE, AfIndication.fromHal(-1))
+    }
+
+    @Test
+    fun `Fn bank general default is the photo bank`() {
+        assertEquals(FnSlot.PHOTO_DEFAULT, FnSlot.DEFAULT)
+    }
+
+    @Test
+    fun `only the 3x periscope is the teleconverter mount lens`() {
+        // The Hasselblad clamp fits the 70 mm periscope only; the gate must never widen.
+        assertEquals(
+            listOf(LensChoice.TELE3X),
+            LensChoice.entries.filter { it.isTeleconverterLens },
+        )
+        assertEquals("3×", LensChoice.TELE3X.label)
+    }
+
+    @Test
+    fun `dormant vendor log plumbing keeps its HAL wire values`() {
+        // CameraUnit-reserved; the enum stays truthful even while nothing selects it.
+        assertEquals(0, VendorLogMode.OFF.halValue)
+        assertEquals(1, VendorLogMode.ON.halValue)
     }
 }

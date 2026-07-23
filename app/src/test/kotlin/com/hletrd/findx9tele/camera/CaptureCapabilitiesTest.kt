@@ -114,6 +114,32 @@ class CaptureCapabilitiesTest {
     }
 
     @Test
+    fun `degenerate lens or sensor geometry yields a zero equivalent focal`() {
+        // A zero focal length or an empty sensor diagonal cannot produce a truthful 35mm-equiv;
+        // EXIF gets 0 rather than an invented number.
+        assertEquals(
+            0f,
+            lensExifMetadataOf(
+                focalLengthMm = 0f,
+                apertureF = 2.26f,
+                sensorWidthMm = 12.0f,
+                sensorHeightMm = 9.0f,
+            ).equivalentFocalMm,
+            0f,
+        )
+        assertEquals(
+            0f,
+            lensExifMetadataOf(
+                focalLengthMm = 20.1f,
+                apertureF = 2.26f,
+                sensorWidthMm = 0f,
+                sensorHeightMm = 0f,
+            ).equivalentFocalMm,
+            0f,
+        )
+    }
+
+    @Test
     fun `still exposure caps-seam clamp holds the device-verified 4s ceiling (TEST4-17)`() {
         // The single most safety-critical constant of cycle 3: this seam is what keeps a 5s+
         // selection (CAMERA_ERROR(3) shot loss) unselectable everywhere downstream.
