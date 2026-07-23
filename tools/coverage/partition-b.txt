@@ -40,6 +40,12 @@ com/hletrd/findx9tele/camera/ManualControlsKt#applyFlash
 com/hletrd/findx9tele/camera/ManualControlsKt#applyZoom
 com/hletrd/findx9tele/camera/ManualControlsKt#kelvinTintToRggbGains
 com/hletrd/findx9tele/camera/ManualControlsKt#normalizedFor#camera/CameraCaps;
+# Kotlin synthetic default-argument bridges of the B extensions above: exact-name method rules do
+# not match the compiler's `$default` suffix, yet each bridge shares the CaptureRequest.Builder
+# receiver (no host constructor) and delegates straight into builder.set, which throws on the
+# android.jar stubs — the same framework-boundedness as its target method.
+com/hletrd/findx9tele/camera/ManualControlsKt#applyManualControls$default
+com/hletrd/findx9tele/camera/ManualControlsKt#applyExposure$default
 com/hletrd/findx9tele/camera/CaptureCapabilitiesKt#readLensExifMetadata
 com/hletrd/findx9tele/camera/CaptureCapabilitiesKt#controlCapabilities
 com/hletrd/findx9tele/camera/VideoFrameRate$Companion#availableFor#Landroid/util/Size;
