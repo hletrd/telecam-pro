@@ -64,18 +64,19 @@ present; the smoke command with that flag is the intentional cold-start path.
 | full | `camera_chrome_layout` | top/Fn/focal/mode/gallery/shutter bounds ≥48 dp, ordered, non-overlapping, centered |
 | full | `mode_switch_roundtrip` | photo↔video sessions plus exactly one checked RadioButton mode, without camera errors |
 | full | `lens_presets` | 0.6/1/3/10× cycle; exactly one RadioButton is checked after each tap |
-| full | `teleconverter_roundtrip` | TC on→off round-trip; OSD `mm TELE` state tracks the toggle |
+| full | `teleconverter_roundtrip` | TC on→off round-trip; owned session acceptance + 3A `tele=`/`effZoom=` telemetry proves each leg (the compact OSD deliberately hides the focal tag) |
 | full | `photo_capture_valid_files` | stable owned MediaStore family; pending=0, size/dims/MIME, pulled file validity |
 | full | `tele_dng_capture` | TELE DNG validates as TIFF ≥1 MB; reports non-green incomplete when RAW is not enabled |
 | full | `video_record_validate` | 65 s HEVC Main10 HLG 29.97p → full-frame decode, PTS cadence, AAC A/V sync |
 | full | `tap_af_hold_visible_and_reset` | tap-AF holds past reticle fade with visible reset, then restores prior AF mode |
 | full | `settings_sheet_tabs` | all 9 tabs select matching pages; 48 dp/on-screen; modal isolated; Back restores camera |
 | full | `function_menu_roundtrip` | visible Fn entry → enabled tiles → Back restores camera chrome |
+| full | `debug_snapshot_ui_contract` | destructive: HAL-free snapshot activity at 0/90/270° (+RTL held) proves Fn physical order/reach, sticky Gamma cycle, settings modal, MR tag, ruler isolation, Loupe truth |
 | full | `mode_persists_across_kill` | Remember Settings survives force-stop |
 | reliability | `rec_teardown_soak` | 5×4 s back-to-back REC/finalize/re-arm before any pull; exact five-row delta, full decode/cadence/audio contract, pending=0 |
 | reliability | `recording_snapshot_preserves_video` | forces Burst+10 s Photo settings, proves one prompt mid-REC still, restores both, validates exact still+MP4 delta/codec/audio |
-| reliability | `capture_then_kill_survives` | kill 0.6 s after shutter → files survive, valid, no stuck pending |
-| reliability | `rec_backgrounded_finalizes` | HOME mid-REC → playable clip finalizes |
+| reliability | `capture_then_kill_survives` | kill shortly after shutter (0.6 s aim; the idle-proof dump adds ~2-3 s — measured delta reported) → files survive, valid, no stuck pending |
+| reliability | `rec_backgrounded_finalizes` | HOME mid-REC → admitted-spec identity, finalization evidence, playable ≥3.5 s clip, no stuck pending |
 | reliability | `rec_stop_then_kill_published` | kill 0.5 s after stop → clip adopted+published by launch recovery |
 | reliability | `no_stuck_pending_baseline` | fresh launch sweep leaves zero owned `IS_PENDING=1` rows |
 
@@ -111,8 +112,21 @@ present; the smoke command with that flag is the intentional cold-start path.
 - Real two-finger pinch (adb cannot inject multitouch) — zoom is exercised via presets;
   pinch feel needs a human. Instrumented Espresso tests could add this later.
 - Hardware camera-control button (`adb input keyevent` does not reach the app — device fact).
-- Manual-exposure ruler drags (S/M-mode 4 s ceiling shots) and O-Log2 transfer selection:
-  deep settings-drag flows, deliberately left out of v1 to keep the suite non-flaky; the
-  underlying clamps are host-tested in `app/src/test/`.
+- Manual-exposure ruler drags (S/M-mode 4 s ceiling shots): deep settings-drag flows,
+  deliberately left out of v1 to keep the suite non-flaky; the underlying clamps are
+  host-tested in `app/src/test/`.
+- Front (selfie) camera — flip, capture, and saved-still mirror truth were manually
+  QA-verified on device 2026-07-23 (`.context/reviews/qa-adversary.md`: front HEIF+JPEG pair
+  with legible unmirrored subject text, clean 3A, rear chrome restored after rapid flips).
+  No automated case yet; the rotation/mirror device signs are still listed as
+  verification-pending in `docs/BACKLOG.md`.
+- Hi-res (200 MP remosaic) stills — dormant on PMA110: the capability is not exposed to
+  third-party Camera2 (probed 2026-07-22, see CLAUDE.md), so there is nothing on this device
+  for a case to exercise. The admission seams are host-tested in `app/src/test/`.
+- Log-profile recording validation — the suite's strict video case device-validates only the
+  HLG preset; S-Log3 / S-Log3.Cine / LogC3 clips have no automated contract. An S-Log3.Cine
+  clip was manually ffprobe-verified 2026-07-23 (BT.2020 full-range container, explicit
+  SDR-class transfer tag). `RECORDING_SPEC` still matches all five transfer names so a
+  persisted log profile fails honestly instead of timing out.
 - Visual quality judgments (HLG look, OIS effectiveness, uprightness in hand) — human checks,
   tracked in `docs/BACKLOG.md`.
