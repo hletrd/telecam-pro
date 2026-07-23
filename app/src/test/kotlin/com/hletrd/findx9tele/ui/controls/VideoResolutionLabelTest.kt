@@ -31,9 +31,17 @@ class VideoResolutionLabelTest {
 
     @Test
     fun `16-9 sizes keep their exact-height names`() {
+        assertEquals("8K", videoResolutionLabelFor(7680, 4320))
         assertEquals("4K", videoResolutionLabelFor(3840, 2160))
         assertEquals("1080p", videoResolutionLabelFor(1920, 1080))
         assertEquals("720p", videoResolutionLabelFor(1280, 720))
         assertEquals("1440p", videoResolutionLabelFor(2560, 1440))
+    }
+
+    @Test
+    fun `non 4-3 sizes off the height classes fall back to the honest raw size`() {
+        // Anamorphic/scope-shaped heights have no K-name class: never invent one.
+        assertEquals("3840×1644", videoResolutionLabelFor(3840, 1644))
+        assertEquals("2048×858", videoResolutionLabelFor(2048, 858))
     }
 }
