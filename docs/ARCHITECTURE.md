@@ -44,7 +44,9 @@ Two critical consequences of the afocal converter drive the entire design:
 | `CameraCallbackDispatchGate.kt` | Android-free close/admission gate ordering Camera2 executor posts before teardown, or rejecting them for the controller's inline late-callback cleanup after close begins. |
 | `CameraSelector2.kt` | Detects the telephoto physical lens: finds the camera with focal length closest to 70 mm, prefers standalone ID over physical sub-camera routing. Also resolves the front (selfie) camera (`pickFront`/`pickFrontBest`): enumerates LENS_FACING_FRONT, prefers a plain (non-logical) id, largest active array on tie — always opened plainly, never via physical routing, and never hardcoded. |
 | `CameraState.kt` | Enums plus `CameraUiState` — the shared UI and runtime-state language. |
-| `CaptureCapabilities.kt` | Flattens Camera2 characteristics into exact advertised mode sets plus maximum AE/AF region counts, alongside manual-sensor, RAW, HDR, focus, and stream capabilities. |
+| `CaptureCapabilities.kt` | Flattens Camera2 characteristics into exact advertised mode sets plus maximum AE/AF region counts, alongside manual-sensor, RAW, HDR, focus, and stream capabilities — including the full-sensor hi-res still facts (`hiResJpegSize` from the standard ultra-high-res path or the `pickVendorHiResSize` vendor fallback; `hiResUsesMaxResolutionMode` records whether the still request must carry `SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION`). |
+| `NumericBounds.kt` | Fail-open clamp against a finite, ordered vendor range: a transiently malformed HAL range returns the requested value instead of throwing on the camera thread. |
+| `ProcessedSnapshotBudget.kt` | Android-free, thread-safe admission budget for retained processed still snapshots (one running SINGLE save plus one waiting full-resolution snapshot). |
 | `ControlAvailability.kt` | Projects those exact mode arrays, manual/range facts, and AE/AF region maxima into enum choices and admission flags shared by settings, top-bar/Fn cycles, and quick rulers. Sparse routes use a neutral singleton; before caps arrive, the current singleton remains visible but disabled. |
 | `ManualControls.kt` | Immutable snapshot of all pro capture parameters (focus, ISO, shutter, white balance, metering, processing). `normalizeControlsForRoute` applies one exact capability/zoom boundary to live and recalled packets before accepted Engine/UI/request publication. Also owns the sensor fast-path admission predicate (`sensorFastPathAdmitted`, wrapping `sensorOnlyControlsDelta` — a live tap-AF/AF-lock override rides the fast path and is re-applied, not refused), the retained-optics exact-controls/boost-off plan, and the shared sensor-key request derivation (`applySensorValueControls`). |
 | `RotationMath.kt` | Pure, unit-tested functions for preview/capture/EXIF rotation math and the video muxer orientation hint (extracted from CameraEngine). Capture rotation is facing-aware: BACK = sensor + afocal(tele) + device; FRONT = sensor − device with the afocal term never applied (sign device-verification-pending, like every rotation sign before it). |
@@ -61,13 +63,16 @@ Two critical consequences of the afocal converter drive the entire design:
 | **gl/** | |
 | `GlPipeline.kt` | One object owns one native GL generation and checked preview/encoder EGLSurface lifetimes. Outgoing outputs are unbound before destruction; preview and encoder readiness publish only after a real swap. Each object owns and retires its analysis executor, busy gate, FBO/buffer snapshot, callbacks, and native fields. `stop()` reports STOPPED only when the thread exits and checked native-output release succeeds; timeout or unsafe release permanently ABANDONS the object. `CameraEngine` compare-and-swaps a fresh object into `AtomicOwnerSlot`, restarts it from a live foreground preview, captures the exact owner/input for every preview/Camera2/recorder transaction, and identity-gates late callbacks. `RendererAssists` resolves/replays config into the current object once per operation. Thus a leaked old handler can touch only its own retired EGL state, never replacement state. |
 | `FlipRenderer.kt` | Low-level OpenGL ES fullscreen quad renderer with texture-coordinate rotation (inverse of image rotation) to flip the 180° afocal image. Applies the SDR-to-HLG mapping or a log-profile encoding (S-Log3 / S-Log3.Cine / LogC3) in the fragment shader and handles focus peaking/zebra. A per-draw `mirrorX` selects the x-inverted attribute texcoord quad (pure `texCoordQuad`); which draws set it derives from `FrontMirrorConvention` — the PMA110 front HAL PRE-mirrors its stream (device-diagnosed 2026-07-23), so the PREVIEW draw never sets it and only the ENCODER/ANALYSIS draws do, un-mirroring files and scopes back to the true scene. |
+| `FrontMirrorConvention.kt` | ONE authority for the front pre-mirrored-stream device fact (`FRONT_STREAM_PRE_MIRRORED`): derives the preview/encoder/analysis draw mirror roles and the tap display axis so a future re-diagnosis is a one-constant edit, never three drifting literals. |
+| `AtomicOwnerSlot.kt` | Identity-owned atomic slot for replaceable native-resource facades: a late completion may replace only the exact object it stopped, so a stale generation cannot displace its replacement. |
 | `EglCore.kt` | Checked EGL/GLES setup, binding, presentation, buffer swap, unbind, surface destruction, and display teardown. Supports a 10-bit config, while v1 deliberately starts the stable 8-bit config. |
 | `Shaders.kt` / `SdrToHlgMapping.kt` / `LogProfiles.kt` | Shader source plus Android-free reference constants for the BT.2408-9 display-referred SDR-to-HLG sequence and the S-Log3/LogC3 log profiles (curves + BT.709→gamut matrices, single-sourced into the GLSL); also owns the dormant O-Log2 de-log assist, peaking/zebra, and punch-in shader paths. |
 | **stab/** | |
 | `GyroEis.kt` | Sensor helper for gravity-derived device orientation and the horizon overlay. It retains residual-shake math, but the shipping GL path disables app-side EIS in favor of HAL OIS+EIS. |
 | **capture/** | |
 | `StillSnapshot.kt` | YUV_420_888→NV21 repack (row-wise arraycopy fast paths + generic fallback) and lazy JPEG encode for logical-camera stills, which cannot use the HAL JPEG path. |
-| `StillCapturePipeline.kt` | Owns processed-still decode/crop/rotation, isolated HEIF/JPEG encoders, shared shot EXIF composition, DNG write orchestration, and MediaStore write-state transitions. Processed work runs on ioExecutor; DNG bytes are written synchronously while the RAW Image is live, then `publishDng` runs on ioExecutor. |
+| `StillCapturePipeline.kt` | Owns processed-still decode/crop/rotation, isolated HEIF/JPEG encoders, shared shot EXIF composition, DNG write orchestration, and MediaStore write-state transitions. Processed work runs on ioExecutor; DNG bytes are written synchronously while the RAW Image is live, then `publishDng` runs on ioExecutor. Hi-res shots take the passthrough-JPEG lane (`writePassthroughJpeg`): HAL bytes go to disk verbatim with the capture rotation as an EXIF orientation TAG only — no decode/crop/pixel-rotate (a ~200MP pixel-upright pass is a guaranteed OOM); in-app review honors that EXIF orientation when decoding. |
+| `HeifExif.kt` | Pure JPEG APP1 EXIF payload extraction (`Exif\0\0` + TIFF data) for `HeifWriter.addExifData`; the marker walk is host-tested independently of Android's ExifInterface. |
 | `HeifCapture.kt` | Encodes HEIF from a Bitmap after crop and `captureRotationDegrees()` pixel rotation, injecting the same shot EXIF APP1 payload used for JPEG. Writes via the ioExecutor off the camera thread. |
 | `DngCapture.kt` | Writes DNG (RAW sensor frame) using DngCreator. Sets EXIF orientation tag (cannot pixel-rotate Bayer CFA). Synchronous in the photo callback while the raw Image is live. |
 | **video/** | |
@@ -89,21 +94,23 @@ Two critical consequences of the afocal converter drive the entire design:
 | `CameraViewModel.kt` | StateFlow<CameraUiState> owner. Turns CameraActions into CameraEngine calls, publishes capability-normalized controls, applies gesture changes with a trailing throttle, and coordinates capture-id review ownership. |
 | `CaptureOutputTracker.kt` | Bounded, synchronized ownership map for monotonic capture ids and every processed/RAW sibling. Selects the truthful review owner, upgrades RAW placeholders, tombstones whole captures before deletion, and seeds a reconstructed prior-process family below every live capture id. One open-review family can be pinned outside ordinary bounded history until close/delete. |
 | `CameraActions.kt` | Callback interface for stateless UI commands such as focus, exposure, tap AF, lens, recording, persistence, and review actions. |
+| `ShutterPolicy.kt` | Pure photo-shutter activation resolution: countdown cancellation has first refusal, self-timer vs immediate fire, and the video-snapshot exemption from the Photo self-timer. |
+| `ZoomGlideState.kt` | The Android-free half of the zoom-interaction lifecycle: coalesced `pendingRatio`, hardware-glide `easeTarget`, `interacting`, `flushScheduled`, plus `invalidateForRemap()` and the zoom-OUT `isLeadingEdgeToWide` decision. Every optics-scale remap door invalidates through the ViewModel's single `invalidateZoomGlide()` wrapper (host-tested). |
 | **ui/controls/** | |
 | `ManualDials.kt` | Horizontal scrolling dials for quick access to focus, shutter, ISO, white balance, EV, and zoom — the "Fn" layer. Entry is admitted by `ControlAvailability`, and a ruler closes if a route change removes its required exact mode/range. The WB chip can open preset choices without a Kelvin ruler; MANUAL WB still requires that ruler. |
 | `ProSheet.kt` | Fixed Sony-style settings panel with a 9-tab left rail: My, Shoot, Exposure, Focus, Lens, Video, Image, Assist, and Setup. The rail is one selectable group whose items expose selected state and `Role.Tab`. Capability-dependent selectors contain advertised choices when present; an empty set falls back to a disabled neutral singleton, and otherwise-invalid entry points are disabled. |
 | `ProControls.kt` | Reusable Compose controls including rulers, segmented choices, toggles, sliders, and value rows. All are two-way bound to CameraUiState. |
+| `ControlCycles.kt` | Shared tap-cycle and auto-exposure readout logic used by ManualDials, ProSheet, and CameraScreen. Capability-dependent cycles advance only through `ControlAvailability` choices (single copy — no drift). |
 | **ui/overlays/** | |
 | `Overlays.kt` | Compose overlays: reticle (tap-to-focus), histogram/waveform, grid, spirit level, peaking, zebra, punch-in zoom indicator, AE/AWB/AF lock tags. Stateless off CameraUiState. |
-| `MediaReview.kt` | In-app review of the last capture: zoomable processed photos, rotating video playback, and a truthful non-decoding RAW/DNG metadata tile. Delete copy promises all saved formats only for a proven canonical family; legacy rows explicitly delete one file. Visible semantic Play/Pause and zoom-cycle controls remain available where applicable. |
-| `ControlCycles.kt` | Shared tap-cycle and auto-exposure readout logic used by ManualDials, ProSheet, and CameraScreen. Capability-dependent cycles advance only through `ControlAvailability` choices (single copy — no drift). |
-| `ZoomGlideState.kt` | The Android-free half of the zoom-interaction lifecycle: coalesced `pendingRatio`, hardware-glide `easeTarget`, `interacting`, `flushScheduled`, plus `invalidateForRemap()` and the zoom-OUT `isLeadingEdgeToWide` decision. Every optics-scale remap door invalidates through the ViewModel's single `invalidateZoomGlide()` wrapper (host-tested). |
+| **ui/review/** | |
+| `MediaReview.kt` | In-app review of the last capture: zoomable processed photos (EXIF-orientation-honoring decode — required by the hi-res passthrough lane, a no-op for the pixel-upright processed lane), rotating video playback, and a truthful non-decoding RAW/DNG metadata tile. Delete copy promises all saved formats only for a proven canonical family; legacy rows explicitly delete one file. Visible semantic Play/Pause and zoom-cycle controls remain available where applicable. |
 | **ui/theme/** | |
 | `Theme.kt` | Material3 dark theme tuned for a Sony-style pro camera surface, typography, color palette, text field/button shapes. |
 | **(app root — `com.hletrd.findx9tele`)** | |
 | `MainActivity.kt` | Entry point. Requests CAMERA/RECORD_AUDIO permissions at runtime (ColorOS blocks pm grant). CAMERA request history distinguishes fresh/cancelled prompts from fixed denial before offering Settings. Hosts the Compose root and ViewModel. Lifecycle: `onStart` calls the ViewModel's `onStart`, which resumes the engine; `onStop` calls the ViewModel's `onStop`, which pauses it. |
 | `CameraPermissionPolicy.kt` | Pure CAMERA-permission decision table: fresh install / cancelled prompt / genuine permanent denial, driven only by completed request history plus rationale state. |
-| `HardwareInputPolicy.kt` | Pure mapping of the camera-control button's key events (full press, capacitive zoom slides in both OEM code families, half-press if ever delivered) to configurable `HardwareKeyAction`s. |
+| `HardwareInputPolicy.kt` | Pure camera-key EDGE ownership only (`cameraKeyDecision` / `updateAggregateCameraKeyOwnership`): pairs key-down claims with their key-ups across the aliased camera keycodes. The OEM keycode families and their dispatch to configurable actions live in `MainActivity.kt`; the `HardwareKeyAction` enum lives in `camera/CameraState.kt`. |
 | `TeleCameraApp.kt` | Application class, kept minimal. No wiring needed; all setup in MainActivity/ViewModel. |
 
 ---
@@ -461,6 +468,12 @@ be described as the shipping source pipeline.
 - A standalone session starts with preview + HAL JPEG and adds RAW only when the camera advertises it
   and the current TELE capture is eligible. Fallback drops RAW before dropping the processed-still stream,
   and preview-only is the final stream plan.
+- When the hi-res still is admitted (`hiResAdmitted` — capability-gated, standalone-only; dormant on
+  PMA110), `sessionAttemptPlan` PREPENDS a hi-res rung: attempt 0 is the hi-res variant of the full
+  plan with **RAW forced off** (a full-sensor blob plus RAW is exactly the over-demanding stream
+  combo this HAL punishes), and every later attempt maps onto the ORDINARY ladder shifted by one —
+  a rejected hi-res combo therefore falls back to full-WITH-RAW before anything else degrades.
+  `maxSessionAttempt(tele, wantHiRes)` stretches the exhaustion bound by one when hi-res is wanted.
 - TELE first tries the stock-camera operation mode `0x80b4` with full/degraded capture streams, then
   tries `SESSION_REGULAR` with full/degraded capture streams. Vendor and regular preview-only plans
   are the two terminal attempts. Non-TELE sessions use `SESSION_REGULAR` directly.
@@ -474,6 +487,22 @@ be described as the shipping source pipeline.
 
 This ordering preserves a processed capture whenever possible, keeps unsupported DNG out of logical
 sessions, and avoids implying that a Main10 container originated as a 10-bit Camera2 preview stream.
+
+**Hi-res remosaic stills (capability-gated; DORMANT on PMA110):** `CaptureCapabilities` resolves a
+full-sensor still size from the standard `ULTRA_HIGH_RESOLUTION_SENSOR` path (largest JPEG in the
+maximum-resolution stream map, with `hiResUsesMaxResolutionMode` requiring
+`SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION` on the still request) or from a vendor-exposed remosaic size
+in the regular map (`pickVendorHiResSize`). Admission is ONE predicate (`hiResAdmitted`,
+re-resolved at every optics door); a ProSheet Shooting-tab toggle appears only when the route
+advertises a size, and the `HR` OSD tag keys on ACCEPTED session truth —
+`acceptedPhotoSessionOutputs(processed, raw, hiRes)` reports hi-res only when the processed reader
+that survived configure is the full-sensor one. Same-route fast commits compare the resolved intent
+against the CONFIGURED intent (`AcceptedCameraSession.hiResConfigured`), so a ladder-dropped hi-res
+does not force a full ~0.5 s reconfigure on every later fast door. The saved still takes
+`StillCapturePipeline`'s passthrough-JPEG lane (bytes verbatim, EXIF orientation TAG only — no
+200MP decode); RAW is mutually exclusive with hi-res on the session plan. PMA110 exposes none of
+this to third-party Camera2 (probed 2026-07-22 — see CLAUDE.md), so on the target device the
+toggle never appears and the ladder runs without the hi-res rung.
 
 **Auto-exposure frame-rate policy:**
 
@@ -904,7 +933,8 @@ The fixed settings panel has nine left-rail tabs:
 
 1. **My** — operator-selected shortcuts.
 2. **Shooting** — HEIF/JPEG/DNG selection, aspect, zoom, JPEG quality, drive/interval, self-timer,
-   and MR save/recall.
+   MR save/recall, and the hi-res still toggle (visible only when the route advertises a hi-res
+   size; dormant on PMA110).
 3. **Exposure** — PASM-like mode, AE lock, flicker, shutter mode/step, ISO, metering, WB/custom WB,
    and AWB lock. EV remains on the quick Fn surface.
 4. **Focus** — AF/MF mode, tap-AF spot size/lock, and peaking level/color. Manual focus distance
