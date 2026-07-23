@@ -60,7 +60,10 @@ RECORDING_SPEC = re.compile(
     r"RecordingSpec: admitted stem=(VID_TELECAM_F1_[0-9]{13}_[0-9]{10}) "
     r"codec=(HEVC|AVC|APV) source=([0-9]+)x([0-9]+) "
     r"encoder=([0-9]+)x([0-9]+) bitrate=([0-9]+) "
-    r"fps=([0-9]+\.[0-9]+) transfer=(HLG|LOG|SDR) audio=(true|false)"
+    # transfer= carries ColorTransfer.name: the O-Log2 "LOG" option was replaced by the
+    # standard log profiles (2026-07-22); a stale alternation here made every recording
+    # case time out with a misleading "no admitted spec" whenever a log profile persisted.
+    r"fps=([0-9]+\.[0-9]+) transfer=(HLG|SLOG3|SLOG3_CINE|LOGC3|SDR) audio=(true|false)"
 )
 RECORDING_FINALIZED = re.compile(
     r"RecordingFinalized: captureId=([0-9]+) saved=(true|false) "
@@ -71,6 +74,11 @@ MODE_THREE_A = re.compile(
     r"requestGeneration=([0-9]+) mode=(PHOTO|VIDEO)\b"
 )
 AF_MODE = re.compile(r"\bafMode=([0-9]+)\b")
+# The 3A line's trailing route facts: "(req=N tele=true|false effZoom=4.285714)".
+TELE_STATE = re.compile(r"\btele=(true|false) effZoom=([0-9]+(?:\.[0-9]+)?)\)")
+# The afocal converter turns the 70 mm tele into ~300 mm: 300/70 ≈ 4.2857 is the TELE
+# effective-zoom floor (lens-local digital zoom can only raise it above that).
+TELE_MIN_EFFECTIVE_ZOOM = 300 / 70 - 0.01
 SESSION_ACCEPTED = re.compile(
     r"CameraSessionAccepted: controllerId=([0-9]+) opticsGeneration=([0-9]+) "
     r"sessionGeneration=([0-9]+) requestGeneration=([0-9]+) "
@@ -297,6 +305,64 @@ def wait_session_acceptance(
     return None
 
 
+def three_a_tele_state(evidence: ModeThreeAEvidence) -> tuple[bool, float]:
+    """Parse the authoritative tele=/effZoom= route facts out of an owned 3A telemetry line."""
+    match = TELE_STATE.search(evidence.line)
+    assert match, f"3A telemetry omitted tele/effZoom state: {evidence.line}"
+    return match.group(1) == "true", float(match.group(2))
+
+
+def toggle_teleconverter(
+    ctx: Context,
+    pid: int,
+    after: ModeThreeAEvidence,
+) -> ModeThreeAEvidence:
+    """Toggle TC and wait for the reopened route's owned acceptance + 3A, never a bare sleep.
+
+    The compact OSD deliberately hides the focal/TELE tag (Sony-style, non-default state only),
+    so OSD text is NOT a valid TC-state signal at app baseline; the 3A telemetry's tele=/effZoom=
+    facts are the mode-independent evidence (device-root-caused 2026-07-23).
+    """
+    mark = ctx.adb.log_mark()
+    ctx.adb.tap_ui(desc="Teleconverter")
+    acceptance = wait_session_acceptance(
+        ctx,
+        mark,
+        pid,
+        "PHOTO",
+        after_optics_generation=after.optics_generation,
+        timeout_s=20,
+    )
+    assert acceptance, "TC toggle's reopened route was never accepted by the camera engine"
+    evidence = wait_mode_three_a(
+        ctx,
+        mark,
+        pid,
+        "PHOTO",
+        after_request_generation=after.request_generation,
+        controller_id=acceptance.controller_id,
+        optics_generation=acceptance.optics_generation,
+        timeout_s=20,
+    )
+    assert evidence, "accepted TC route did not produce an owned 3A result"
+    return evidence
+
+
+def restore_teleconverter_off_verified(
+    ctx: Context,
+    pid: int,
+    after: ModeThreeAEvidence,
+) -> None:
+    """Leave TELE during cleanup; an unproven TC state must abort the suite, not linger."""
+    evidence = cleanup_transport_or_unsafe(
+        "could not restore the teleconverter to its off state",
+        lambda: toggle_teleconverter(ctx, pid, after),
+    )
+    tele, _ = three_a_tele_state(evidence)
+    if tele:
+        raise UnsafeState("teleconverter restore left TELE engaged")
+
+
 def shutter_node(ctx: Context):
     tree = ctx.adb.ui()
     n = tree.find(desc="Take photo") or tree.find(desc="Shutter") or tree.find(desc="Capture")
@@ -382,7 +448,9 @@ def set_photo_settings(ctx: Context, *, drive: str, timer: str) -> None:
     ensure_photo_mode(ctx)
     ctx.adb.tap_ui(desc="Open settings")
     try:
-        ctx.adb.tap_ui(text="Shoot")
+        # The tab rail exposes labels ONLY via content-desc (text is always empty on device);
+        # a text= query can never match it — see settings_tab_nodes, which matches desc too.
+        ctx.adb.tap_ui(desc="Shoot")
         metrics = ctx.adb.display_metrics()
         x = metrics.width_px * 4 // 5
         top = metrics.height_px // 3
@@ -405,7 +473,8 @@ def read_photo_settings(ctx: Context) -> PhotoSettingMarkers:
     ensure_photo_mode(ctx)
     ctx.adb.tap_ui(desc="Open settings")
     try:
-        ctx.adb.tap_ui(text="Shoot")
+        # Same device fact as set_photo_settings: the tab rail is content-desc-only.
+        ctx.adb.tap_ui(desc="Shoot")
         metrics = ctx.adb.display_metrics()
         x = metrics.width_px * 4 // 5
         top = metrics.height_px // 3
@@ -1765,22 +1834,30 @@ def t_lenses(ctx: Context) -> None:
 
 @test("teleconverter_roundtrip", "full", mutates_settings=True)
 def t_tc(ctx: Context) -> None:
-    """TC toggle reopens onto the standalone tele and back without errors; OSD reflects it."""
+    """TC toggle reopens onto the standalone tele and back; owned 3A telemetry proves each leg."""
     pid = ensure_foreground(ctx)
     ensure_photo_mode(ctx)
     mark = ctx.adb.log_mark()
-    was_tele = ctx.adb.ui().find_contains("mm TELE") is not None
-    ctx.adb.tap_ui(desc="Teleconverter")
-    time.sleep(3)
-    now_tele = ctx.adb.ui().find_contains("mm TELE") is not None
-    assert now_tele != was_tele, "TC toggle did not change the OSD TELE state"
-    ctx.adb.tap_ui(desc="Teleconverter")
-    time.sleep(3)
-    back = ctx.adb.ui().find_contains("mm TELE") is not None
-    assert back == was_tele, "TC toggle did not return to the original state"
+    baseline = wait_mode_three_a(ctx, mark, pid, "PHOTO", timeout_s=20)
+    assert baseline, "no baseline Photo 3A before the TC toggle"
+    was_tele, was_zoom = three_a_tele_state(baseline)
+    toggled = toggle_teleconverter(ctx, pid, baseline)
+    now_tele, now_zoom = three_a_tele_state(toggled)
+    assert now_tele != was_tele, (
+        f"TC toggle did not change the 3A tele state: {was_tele} -> {now_tele}"
+    )
+    if now_tele:
+        assert now_zoom >= TELE_MIN_EFFECTIVE_ZOOM, (
+            f"TELE route reports effZoom={now_zoom}, expected >= ~4.2857 (300 mm / 70 mm)"
+        )
+    back = toggle_teleconverter(ctx, pid, toggled)
+    back_tele, _ = three_a_tele_state(back)
+    assert back_tele == was_tele, "TC toggle did not return to the original state"
     fatals = ctx.adb.fatal_lines(mark, pid)
     assert not fatals, f"errors during TC round-trip: {fatals[:2]}"
-    ctx.note(f"TELE {was_tele}→{now_tele}→{back} clean")
+    ctx.note(
+        f"TELE {was_tele}(effZoom={was_zoom})→{now_tele}(effZoom={now_zoom})→{back_tele} clean"
+    )
 
 
 # ---------------------------------------------------------------- full: capture/video
@@ -1825,13 +1902,19 @@ def t_dng(ctx: Context) -> None:
     pid = ensure_foreground(ctx)
     ensure_photo_mode(ctx)
     mark = ctx.adb.log_mark()
+    baseline = wait_mode_three_a(ctx, mark, pid, "PHOTO", timeout_s=20)
+    assert baseline, "no baseline Photo 3A before TELE entry"
+    tele_evidence = baseline
     entered_tele = False
-    if ctx.adb.ui().find_contains("mm TELE") is None:
-        ctx.adb.tap_ui(desc="Teleconverter")
-        time.sleep(3)
+    if not three_a_tele_state(baseline)[0]:
+        tele_evidence = toggle_teleconverter(ctx, pid, baseline)
         entered_tele = True
     try:
-        assert ctx.adb.ui().find_contains("mm TELE"), "could not enter TELE mode"
+        now_tele, now_zoom = three_a_tele_state(tele_evidence)
+        assert now_tele, "could not enter TELE mode (3A telemetry still reports tele=false)"
+        assert now_zoom >= TELE_MIN_EFFECTIVE_ZOOM, (
+            f"TELE route reports effZoom={now_zoom}, expected >= ~4.2857 (300 mm / 70 mm)"
+        )
         new = capture_still(ctx)
         ctx.note(f"TELE capture: {[(row.key, row.display_name, row.mime_type) for row in new]}")
         dng_rows = [row for row in new if row.mime_type == "image/x-adobe-dng"]
@@ -1849,8 +1932,7 @@ def t_dng(ctx: Context) -> None:
             assert media.dng_valid(local), f"DNG invalid: {row.display_name}"
     finally:
         if entered_tele:
-            ctx.adb.tap_ui(desc="Teleconverter")
-            time.sleep(3)
+            restore_teleconverter_off_verified(ctx, pid, tele_evidence)
 
 
 @test("video_record_validate", "full", mutates_settings=True, writes_media=True)

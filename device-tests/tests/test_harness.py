@@ -1107,6 +1107,53 @@ class UiSemanticsTest(unittest.TestCase):
         self.assertEqual(match.group(8), "29.970029970")
         self.assertEqual(match.group(9), "HLG")
 
+    def test_recording_spec_matches_every_shipping_transfer_name(self) -> None:
+        # ColorTransfer.name values after the log-profile rename; "LOG" was removed 2026-07-22
+        # and must never match again (a stale alternation timed the recording cases out).
+        for transfer in ("HLG", "SLOG3", "SLOG3_CINE", "LOGC3", "SDR"):
+            with self.subTest(transfer=transfer):
+                line = (
+                    "RecordingSpec: admitted stem=VID_TELECAM_F1_1700000000000_0000000001 "
+                    "codec=HEVC source=3840x2160 encoder=2160x3840 bitrate=84000000 "
+                    f"fps=29.970029970 transfer={transfer} audio=true"
+                )
+                match = cases.RECORDING_SPEC.search(line)
+                self.assertIsNotNone(match)
+                self.assertEqual(match.group(9), transfer)
+                self.assertEqual(match.group(10), "true")
+        self.assertIsNone(
+            cases.RECORDING_SPEC.search(
+                "RecordingSpec: admitted stem=VID_TELECAM_F1_1700000000000_0000000001 "
+                "codec=HEVC source=3840x2160 encoder=2160x3840 bitrate=84000000 "
+                "fps=29.970029970 transfer=LOG audio=true"
+            )
+        )
+
+    def test_three_a_tele_state_parses_route_facts_and_rejects_omission(self) -> None:
+        def evidence(tail: str) -> cases.ModeThreeAEvidence:
+            return cases.ModeThreeAEvidence(
+                line=(
+                    "CameraController: 3A: controllerId=2 opticsGeneration=2 "
+                    f"requestGeneration=9 mode=PHOTO aeState=2 ois=1 vstab=2 {tail}"
+                ),
+                controller_id=2,
+                optics_generation=2,
+                request_generation=9,
+            )
+
+        self.assertEqual(
+            cases.three_a_tele_state(evidence("(req=2 tele=true effZoom=4.285714)")),
+            (True, 4.285714),
+        )
+        self.assertEqual(
+            cases.three_a_tele_state(evidence("(req=0 tele=false effZoom=1.0)")),
+            (False, 1.0),
+        )
+        self.assertGreaterEqual(4.285714, cases.TELE_MIN_EFFECTIVE_ZOOM)
+        self.assertLess(1.0, cases.TELE_MIN_EFFECTIVE_ZOOM)
+        with self.assertRaises(AssertionError):
+            cases.three_a_tele_state(evidence("(req=2)"))
+
     def test_mode_3a_rejects_outgoing_and_pre_video_photo_results(self) -> None:
         log = "\n".join(
             (
