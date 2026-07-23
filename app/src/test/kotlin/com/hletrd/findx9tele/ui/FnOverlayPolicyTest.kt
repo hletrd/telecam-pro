@@ -158,9 +158,10 @@ class FnOverlayPolicyTest {
         // Drive abbreviates only "Timelapse".
         assertEquals("TL", fnOverlayVisualValue(FnSlot.DRIVE, "Timelapse", true))
         assertEquals("Burst", fnOverlayVisualValue(FnSlot.DRIVE, "Burst", true))
-        // Audio scene: the three device scenes map to short strip copy.
+        // Audio scene: the three device scenes map to short strip copy; unknown values pass through.
         assertEquals("Std", fnOverlayVisualValue(FnSlot.AUDIO_SCENE, "Standard", true))
         assertEquals("Stage", fnOverlayVisualValue(FnSlot.AUDIO_SCENE, "Sound Stage", true))
+        assertEquals("Ext", fnOverlayVisualValue(FnSlot.AUDIO_SCENE, "Ext", true))
         // Slots with no abbreviation table pass their value through untouched.
         assertEquals("Thirds", fnOverlayVisualValue(FnSlot.GRID, "Thirds", true))
         // An ordinary slot keeps the complete label even in the held tray.
