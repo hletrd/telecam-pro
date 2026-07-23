@@ -1083,6 +1083,14 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         onTransfer = actions::onTransfer,
         enabled = codec == VideoCodec.HEVC && recordingMutable,
     )
+    // One terse source caveat (cycle-6 A26/D-08): the named log curves are real math, but they bake
+    // onto the already-tone-mapped SDR stream — no scene-referred latitude is recovered (CLAUDE.md
+    // "must not be marketed as such"). Same caption idiom as the hi-res/stabilization rows.
+    Text(
+        "Curve applied to the SDR camera stream.",
+        color = CameraColors.TextSecondary,
+        style = MaterialTheme.typography.labelSmall,
+    )
 
     SectionHeader("Audio")
     ToggleRow(
