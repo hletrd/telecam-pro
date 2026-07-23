@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shlex
 import subprocess
 import sys
@@ -49,6 +50,14 @@ def sha256_file(path: Path) -> str:
 def base_apk_path(pm_path_output: str) -> str | None:
     paths = [line.removeprefix("package:") for line in pm_path_output.splitlines() if line.startswith("package:")]
     return next((path for path in paths if path.endswith("/base.apk")), paths[0] if paths else None)
+
+
+def installed_apk_sha256(sha256sum_output: str) -> str | None:
+    """Parse ``sha256sum`` output defensively; empty/malformed output must refuse, not traceback."""
+    fields = sha256sum_output.split(maxsplit=1)
+    if not fields or re.fullmatch(r"[0-9a-fA-F]{64}", fields[0]) is None:
+        return None
+    return fields[0].lower()
 
 
 def utc_now() -> str:
@@ -198,8 +207,19 @@ def main() -> int:
     if "all" in tiers:
         tiers = list(TIERS)
 
-    # Preflight: device reachable and the debug app installed.
-    probe = subprocess.run(["adb", "-s", args.serial, "get-state"], capture_output=True, text=True)
+    # Preflight: device reachable and the debug app installed. The adb client can hang on a
+    # half-dead TCP transport, so even this first probe is deadline-bounded.
+    try:
+        probe = subprocess.run(
+            ["adb", "-s", args.serial, "get-state"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"device {args.serial} probe timed out\nhint: adb connect {args.serial}",
+              file=sys.stderr)
+        return 2
     if probe.returncode != 0 or probe.stdout.strip() != "device":
         print(f"device {args.serial} not ready: {probe.stderr.strip() or probe.stdout.strip()}\n"
               f"hint: adb connect {args.serial}", file=sys.stderr)
@@ -233,7 +253,14 @@ def main() -> int:
         print(f"expected APK does not exist: {expected_apk}", file=sys.stderr)
         return 2
     expected_sha = sha256_file(expected_apk)
-    actual_sha = adb.shell(f"sha256sum {shlex.quote(installed_apk)}").split(maxsplit=1)[0].lower()
+    sha_output = adb.shell(f"sha256sum {shlex.quote(installed_apk)}")
+    actual_sha = installed_apk_sha256(sha_output)
+    if actual_sha is None:
+        print(
+            f"could not hash the installed APK on-device: {sha_output[:200] or '<empty>'!r}",
+            file=sys.stderr,
+        )
+        return 2
     if actual_sha != expected_sha:
         print(
             f"refusing stale/mismatched install: host={expected_sha}, installed={actual_sha or '?'}",

@@ -9,6 +9,7 @@ import xml.etree.ElementTree as ET
 from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 
 DEVICE_TESTS = Path(__file__).resolve().parents[1]
@@ -277,6 +278,20 @@ class RunnerHelpersTest(unittest.TestCase):
                 "0941d239425b174d99d3eb516e36fcff357b668a7ad24e5e481531f59a5ec28f",
             )
 
+    def test_installed_apk_sha256_parses_and_rejects_malformed_output(self) -> None:
+        digest = "a1" * 32
+        self.assertEqual(
+            runner.installed_apk_sha256(f"{digest.upper()}  /data/app/example/base.apk"),
+            digest,
+        )
+        for malformed in (
+            "",
+            "sha256sum: /data/app/example/base.apk: Permission denied",
+            "abc123  /data/app/example/base.apk",
+        ):
+            with self.subTest(malformed=malformed):
+                self.assertIsNone(runner.installed_apk_sha256(malformed))
+
     def test_display_metrics_use_screencap_size_and_active_density_override(self) -> None:
         class MetricsAdb(Adb):
             def exec_out(self, cmd: str, timeout: int = 60) -> bytes:
@@ -317,6 +332,114 @@ class RunnerHelpersTest(unittest.TestCase):
             with self.subTest(malformed=malformed):
                 with self.assertRaises(AdbError):
                     parse_df_available_bytes(malformed)
+
+
+class HarnessRobustnessTest(unittest.TestCase):
+    class ScriptedScreencapAdb(Adb):
+        def __init__(self, workdir: Path, payloads: list[bytes]):
+            super().__init__("test-serial", workdir)
+            self.payloads = list(payloads)
+
+        def exec_out(self, cmd: str, timeout: int = 60) -> bytes:
+            del cmd, timeout
+            return self.payloads.pop(0)
+
+    @staticmethod
+    def frame(width: int, height: int, pixel: bytes) -> bytes:
+        return struct.pack("<4I", width, height, 1, 0) + pixel * (width * height)
+
+    def test_preview_is_live_does_not_treat_length_mismatch_as_live(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            adb = self.ScriptedScreencapAdb(
+                Path(temp_dir),
+                [
+                    self.frame(128, 128, b"\x10\x10\x10\xff"),
+                    self.frame(128, 127, b"\x10\x10\x10\xff"),
+                    self.frame(128, 128, b"\x10\x10\x10\xff"),
+                    self.frame(128, 126, b"\x10\x10\x10\xff"),
+                ],
+            )
+            with patch("dtest.adb.time.sleep"):
+                with self.assertRaisesRegex(AdbError, "length mismatch"):
+                    adb.preview_is_live()
+
+    def test_preview_is_live_retries_a_mismatched_pair_then_compares(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            live_adb = self.ScriptedScreencapAdb(
+                Path(temp_dir),
+                [
+                    self.frame(128, 128, b"\x10\x10\x10\xff"),
+                    self.frame(128, 127, b"\x10\x10\x10\xff"),
+                    self.frame(128, 128, b"\x10\x10\x10\xff"),
+                    self.frame(128, 128, b"\x20\x20\x20\xff"),
+                ],
+            )
+            frozen_adb = self.ScriptedScreencapAdb(
+                Path(temp_dir),
+                [
+                    self.frame(128, 128, b"\x10\x10\x10\xff"),
+                    self.frame(128, 127, b"\x10\x10\x10\xff"),
+                    self.frame(128, 128, b"\x10\x10\x10\xff"),
+                    self.frame(128, 128, b"\x10\x10\x10\xff"),
+                ],
+            )
+            with patch("dtest.adb.time.sleep"):
+                self.assertTrue(live_adb.preview_is_live())
+                self.assertFalse(frozen_adb.preview_is_live())
+
+    def test_screen_stats_raises_on_header_only_screencap(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            adb = self.ScriptedScreencapAdb(
+                Path(temp_dir),
+                [struct.pack("<4I", 1440, 3168, 1, 0)],
+            )
+            with self.assertRaisesRegex(AdbError, "no pixel payload"):
+                adb.screen_stats()
+
+    def test_screenshot_rejects_names_that_could_escape_the_evidence_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workdir = Path(temp_dir) / "evidence"
+            adb = self.ScriptedScreencapAdb(workdir, [b"PNG"])
+            with self.assertRaisesRegex(AdbError, "invalid screenshot name"):
+                adb.screenshot("../escape")
+            self.assertFalse((workdir.parent / "escape.png").exists())
+            self.assertEqual(adb.screenshot("ok_shot-1.x"), workdir / "ok_shot-1.x.png")
+
+    def test_launch_ui_snapshot_refuses_without_destructive_capability(self) -> None:
+        class ExplodingAdb:
+            def shell(self, cmd: str, timeout: int = 60) -> str:
+                raise AssertionError("must not reach am start without destructive approval")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ctx = framework.Context(
+                adb=ExplodingAdb(),
+                evidence=Path(temp_dir),
+                can_launch=False,
+            )
+            with self.assertRaisesRegex(AdbError, "destructive approval"):
+                cases.launch_ui_snapshot(ctx, orientation=0)
+
+    def test_jpeg_walker_skips_fill_bytes_and_lengthless_markers(self) -> None:
+        jpeg = b"".join(
+            (
+                b"\xff\xd8",  # SOI
+                b"\xff",  # 0xFF fill byte padding before the real APP1 marker
+                b"\xff\xe1\x00\x08Exif\x00\x00",  # APP1 Exif
+                b"\xff\x01",  # TEM: length-less
+                b"\xff\xd0",  # RST0: length-less
+                b"\xff\xc0\x00\x11\x08"  # SOF0, length 17, 8-bit precision
+                + struct.pack(">HH", 3064, 4080)  # height, width
+                + b"\x03" + b"\x01\x11\x00" * 3,  # 3 components
+                b"\xff\xda" + b"\x00" * 8,  # SOS terminates the walk
+            )
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fixture = Path(temp_dir) / "capture.jpg"
+            fixture.write_bytes(jpeg)
+            info = media.jpeg_info(fixture)
+        self.assertEqual((info["width"], info["height"]), (4080, 3064))
+        self.assertTrue(info["exif"])
+        self.assertEqual(info["bytes"], len(jpeg))
 
 
 class LogcatSafetyTest(unittest.TestCase):

@@ -242,9 +242,13 @@ class Adb:
             # One reconnect attempt: the loopback proxy drops with "protocol fault"
             # and a plain re-connect recovers it every time (never kill-server).
             if "protocol fault" in err or "device offline" in err or "not found" in err:
-                subprocess.run(["adb", "connect", self.serial], capture_output=True, timeout=15)
-                time.sleep(2)
-                out = subprocess.run(cmd, capture_output=True, timeout=timeout)
+                try:
+                    subprocess.run(["adb", "connect", self.serial], capture_output=True, timeout=15)
+                    time.sleep(2)
+                    out = subprocess.run(cmd, capture_output=True, timeout=timeout)
+                except subprocess.TimeoutExpired as e:
+                    # The retry must fail with the same typed error as the first attempt.
+                    raise AdbError(f"adb timeout during reconnect retry: {' '.join(args)}") from e
             if out.returncode != 0:
                 raise AdbError(f"adb {' '.join(args)} failed: {err[:300]}")
         return out.stdout if binary else out.stdout.decode(errors="replace")
@@ -359,11 +363,17 @@ class Adb:
             o = i * 4
             r, g, b = px[o], px[o + 1], px[o + 2]
             vals.append(0.299 * r + 0.587 * g + 0.114 * b)
+        if not vals:
+            # A 16-byte header with no pixel payload passes the length guard above.
+            raise AdbError(f"screencap returned no pixel payload ({len(raw)} bytes, {w}x{h})")
         mean = sum(vals) / len(vals)
         var = sum((v - mean) ** 2 for v in vals) / len(vals)
         return mean, var ** 0.5
 
     def screenshot(self, name: str) -> Path:
+        # Same evidence-name discipline as ui(): a name with a separator would escape workdir.
+        if re.fullmatch(r"[A-Za-z0-9_.-]+", name) is None:
+            raise AdbError(f"invalid screenshot name: {name!r}")
         out = self.workdir / f"{name}.png"
         out.write_bytes(self.exec_out("screencap -p"))
         return out
@@ -373,11 +383,16 @@ class Adb:
 
         Samples the middle half of the frame — the top rows are static chrome/status bar.
         """
-        a = self.exec_out("screencap")
-        time.sleep(0.7)
-        b = self.exec_out("screencap")
-        if len(a) != len(b):
-            return True
+        for attempt in range(2):
+            a = self.exec_out("screencap")
+            time.sleep(0.7)
+            b = self.exec_out("screencap")
+            if len(a) == len(b):
+                break
+            # A truncated transfer or a display change is NOT liveness evidence; retry once
+            # for a comparable pair, then fail loudly instead of optimistically passing.
+            if attempt == 1:
+                raise AdbError(f"screencap pair length mismatch: {len(a)} vs {len(b)} bytes")
         lo = 16 + (len(a) - 16) // 4
         hi = 16 + 3 * (len(a) - 16) // 4
         diff = sum(1 for i in range(lo, hi, 613) if a[i] != b[i])

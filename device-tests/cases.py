@@ -24,6 +24,7 @@ from dtest.adb import (
     MEDIA_DIR,
     MEDIA_RELATIVE_PATH,
     Adb,
+    AdbError,
     DisplayMetrics,
     MediaRow,
     UiNode,
@@ -178,6 +179,12 @@ def launch_ui_snapshot(
     rtl: bool = False,
 ):
     """Open the debug-only, HAL-free production-composable snapshot surface."""
+    # Defense-in-depth parity with Adb.launch: this raw `am start` bypasses that guard, so the
+    # helper itself must refuse unless the calling case declared + received destructive approval.
+    if not ctx.can_launch:
+        raise AdbError(
+            "refusing snapshot activity launch without explicit destructive approval"
+        )
     ctx.adb.shell(
         f"am start -W --activity-reorder-to-front -n {SNAPSHOT_ACTIVITY} "
         f"--ei device_orientation {orientation} "
@@ -1088,7 +1095,9 @@ def _restore_capture_mode_verified(ctx: Context, initial_mode: str, pid: int) ->
             timeout_s=20,
         )
         if acceptance is None:
-            raise UnsafeState(f"restored {initial_mode} route never committed Ready")
+            # Acceptance, not Ready: this parser deliberately does not check ready= (see the
+            # SESSION_ACCEPTED comment); liveness is proven by the owned 3A wait just below.
+            raise UnsafeState(f"restored {initial_mode} route was never accepted")
         evidence = wait_mode_three_a(
             ctx,
             transition_mark,
@@ -1769,7 +1778,8 @@ def t_modes(ctx: Context) -> None:
         "VIDEO",
         after_optics_generation=baseline.optics_generation,
     )
-    assert video_acceptance, "Video route was not committed Ready by the camera engine"
+    # Acceptance, not Ready — the parser deliberately does not check ready= (see SESSION_ACCEPTED).
+    assert video_acceptance, "Video route was never accepted by the camera engine"
     video_evidence = wait_mode_three_a(
         ctx,
         mark,
@@ -1795,7 +1805,7 @@ def t_modes(ctx: Context) -> None:
         "PHOTO",
         after_optics_generation=video_acceptance.optics_generation,
     )
-    assert photo_acceptance, "Photo route was not committed Ready after Video"
+    assert photo_acceptance, "Photo route was never accepted after Video"
     recovered = wait_mode_three_a(
         ctx,
         recovery_mark,
@@ -2980,9 +2990,14 @@ def t_kill_capture(ctx: Context) -> None:
     mark = ctx.adb.log_mark()
     ctx.adb.tap(*shutter_node(ctx).center)
     assert ctx.adb.wait_log(mark, r"ShutterLag: started", timeout_s=14), "capture never started"
-    time.sleep(0.6)  # inside the write/publish window
+    started_seen_at = time.monotonic()
+    time.sleep(0.6)  # aim inside the write/publish window
     ctx.adb.force_stop()
-    ctx.note("killed 0.6 s after shutter")
+    # The idle-proof uiautomator dump inside force_stop adds ~2-3 s, so the true shutter→kill
+    # delta is well above the 0.6 s sleep; report the measured value (a lower bound — the
+    # shutter start itself was observed with up to ~1 s of logcat poll latency).
+    kill_delta_s = time.monotonic() - started_seen_at
+    ctx.note(f"killed {kill_delta_s:.1f}s after the observed shutter start (0.6s aim + idle proof)")
     time.sleep(1)
     ctx.adb.launch()  # launch recovery adopts/publishes completed pending files
     new = ctx.adb.wait_new_media_rows(before, min_new=1, timeout_s=30)
@@ -3012,26 +3027,46 @@ def t_kill_capture(ctx: Context) -> None:
 )
 def t_rec_background(ctx: Context) -> None:
     """HOME mid-recording must still finalize a playable clip (pause-path finalization)."""
-    ensure_foreground(ctx)
+    pid = ensure_foreground(ctx)
     ensure_video_mode(ctx)
     before = {row.key for row in ctx.adb.media_store_rows()}
+    mark = ctx.adb.log_mark()
     ctx.adb.tap_ui(desc="Start recording")
+    # Sibling rigor (rec_teardown_soak/rec_stop_then_kill): the dropped-tap device fact means a
+    # bare sleep can background an idle camera and then "fail" with a misleading no-clip message.
+    admitted_line = ctx.adb.wait_log(mark, RECORDING_SPEC.pattern, timeout_s=12, pid=pid)
+    assert admitted_line, "backgrounded REC did not publish an admitted encoder spec"
+    admitted = RECORDING_SPEC.search(admitted_line)
+    assert admitted is not None, f"malformed admitted encoder spec: {admitted_line}"
+    wait_recording_running(ctx, pid)
     time.sleep(4)
     ctx.adb.home()
     ctx.note("HOME pressed mid-REC")
+    wait_recording_finalized(ctx, mark, pid, recording_capture_id(admitted))
     new = ctx.adb.wait_new_media_rows(before, min_new=1, timeout_s=30)
     vids = [row for row in new if row.collection == "video" and row.mime_type == "video/mp4"]
     assert vids, f"backgrounded recording produced no clip (new={new})"
-    row = vids[-1]
+    assert len(vids) == 1 and len(new) == 1, f"backgrounded REC published an unexpected family: {new}"
+    row = vids[0]
     assert_published_row(row)
+    assert row.display_name == f"{admitted.group(1)}.mp4", (
+        f"recording spec/MediaStore family mismatch: spec={admitted.group(1)}, row={row}"
+    )
     local = ctx.adb.pull(
         f"{MEDIA_DIR}/{row.display_name}",
         ctx.evidence / row.display_name,
     )
     info = media.mp4_probe(local)
-    require_decoded_video(info, minimum_seconds=1.0)
+    # An honest minimum for the nominal 4 s take (the soak uses the same 4 s → 3.5 s margin);
+    # 1.0 s would pass a clip truncated to a fraction of the recorded interval.
+    require_decoded_video(info, minimum_seconds=3.5)
     ctx.adb.launch()
     ensure_photo_mode(ctx)
+    time.sleep(6)
+    stale = ctx.adb.pending_rows()
+    assert not stale, f"stuck IS_PENDING leftovers after backgrounded finalize: {stale}"
+    fatals = ctx.adb.fatal_lines(mark, pid)
+    assert not fatals, f"errors during backgrounded finalize: {fatals[:2]}"
     ctx.note(f"clip finalized: {row.display_name} {info.get('video_seconds', '?')}s")
 
 

@@ -24,8 +24,14 @@ def jpeg_info(path: Path) -> dict:
             i += 1
             continue
         marker = data[i + 1]
+        if marker == 0xFF:
+            i += 1  # 0xFF fill byte(s) may pad before the real marker byte — skip singly
+            continue
         if marker == 0xD9 or marker == 0xDA:
             break
+        if marker == 0x01 or 0xD0 <= marker <= 0xD7:
+            i += 2  # TEM/RSTn are length-less; reading a bogus segment length here mis-walks
+            continue
         seg_len = struct.unpack_from(">H", data, i + 2)[0]
         if marker == 0xE1 and data[i + 4 : i + 8] == b"Exif":
             has_exif = True
