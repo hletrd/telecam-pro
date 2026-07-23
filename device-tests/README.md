@@ -73,6 +73,9 @@ present; the smoke command with that flag is the intentional cold-start path.
 | full | `function_menu_roundtrip` | visible Fn entry → enabled tiles → Back restores camera chrome |
 | full | `debug_snapshot_ui_contract` | destructive: HAL-free snapshot activity at 0/90/270° (+RTL held) proves Fn physical order/reach, sticky Gamma cycle, settings modal, MR tag, ruler isolation, Loupe truth |
 | full | `mode_persists_across_kill` | Remember Settings survives force-stop |
+| full | `per_lens_still_geometry` | each rear preset (logical route) + front camera still == that accepted camera's dumpsys-advertised binned array; row↔file parity; 200MP stays dormant |
+| full | `tele_dng_parity` | TELE DNG is the advertised RAW16 plane (16-bit, SamplesPerPixel 1, CFA) and DNG+JPEG EXIF ISO/ExposureTime match a UI-set manual request (ISO 800, ~1/100 s) |
+| full | `video_container_truth` | SDR + HLG clips (plus the persisted log preset) carry the documented container color policy (never the ST2084/PQ mistag); admitted-spec transfer, decode, row↔file parity |
 | reliability | `rec_teardown_soak` | 5×4 s back-to-back REC/finalize/re-arm before any pull; exact five-row delta, full decode/cadence/audio contract, pending=0 |
 | reliability | `recording_snapshot_preserves_video` | forces Burst+10 s Photo settings, proves one prompt mid-REC still, restores both, validates exact still+MP4 delta/codec/audio |
 | reliability | `capture_then_kill_survives` | kill shortly after shutter (0.6 s aim; the idle-proof dump adds ~2-3 s — measured delta reported) → files survive, valid, no stuck pending |
@@ -112,21 +115,23 @@ present; the smoke command with that flag is the intentional cold-start path.
 - Real two-finger pinch (adb cannot inject multitouch) — zoom is exercised via presets;
   pinch feel needs a human. Instrumented Espresso tests could add this later.
 - Hardware camera-control button (`adb input keyevent` does not reach the app — device fact).
-- Manual-exposure ruler drags (S/M-mode 4 s ceiling shots): deep settings-drag flows,
-  deliberately left out of v1 to keep the suite non-flaky; the underlying clamps are
-  host-tested in `app/src/test/`.
-- Front (selfie) camera — flip, capture, and saved-still mirror truth were manually
-  QA-verified on device 2026-07-23 (`.context/reviews/qa-adversary.md`: front HEIF+JPEG pair
-  with legible unmirrored subject text, clean 3A, rear chrome restored after rapid flips).
-  No automated case yet; the rotation/mirror device signs are still listed as
-  verification-pending in `docs/BACKLOG.md`.
+- Manual-exposure LONG shots (S/M-mode 4 s ceiling): still a human/host concern — the 4 s
+  HAL ceiling clamps are host-tested in `app/src/test/`. `tele_dng_parity` (cycle 7) does
+  drive the ISO/shutter rulers with closed-loop tick drags (readout re-read after every
+  swipe; probed 42 px/stop, ~28 px slop, LEFT = higher), but only to short, safe stops.
+- Front (selfie) camera mirror/rotation SIGNS — `per_lens_still_geometry` now automates the
+  front flip, capture, geometry, and accepted-route facts (cycle 7), but the saved-still
+  MIRROR truth (unmirrored subject text) remains a human check: it was manually QA-verified
+  2026-07-23 (`.context/reviews/qa-adversary.md`) and the signs stay verification-pending in
+  `docs/BACKLOG.md`.
 - Hi-res (200 MP remosaic) stills — dormant on PMA110: the capability is not exposed to
   third-party Camera2 (probed 2026-07-22, see CLAUDE.md), so there is nothing on this device
   for a case to exercise. The admission seams are host-tested in `app/src/test/`.
-- Log-profile recording validation — the suite's strict video case device-validates only the
-  HLG preset; S-Log3 / S-Log3.Cine / LogC3 clips have no automated contract. An S-Log3.Cine
-  clip was manually ffprobe-verified 2026-07-23 (BT.2020 full-range container, explicit
-  SDR-class transfer tag). `RECORDING_SPEC` still matches all five transfer names so a
-  persisted log profile fails honestly instead of timing out.
+- Log-profile PICTURE validation — `video_container_truth` (cycle 7) now device-validates the
+  container color policy for SDR, HLG, and whichever log profile is persisted (S-Log3.Cine
+  verified 2026-07-24: BT.2020 full-range, CICP-14/bt2020-10 SDR-class transfer, never
+  ST2084/PQ). The remaining non-coverage is the log CURVE's visual correctness (a grading
+  judgment) and the two log profiles not currently persisted; `RECORDING_SPEC` still matches
+  all five transfer names so any persisted profile fails honestly instead of timing out.
 - Visual quality judgments (HLG look, OIS effectiveness, uprightness in hand) — human checks,
   tracked in `docs/BACKLOG.md`.
