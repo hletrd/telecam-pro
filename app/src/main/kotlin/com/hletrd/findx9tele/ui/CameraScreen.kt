@@ -921,6 +921,7 @@ fun CameraScreen(
             initialTab = sheetInitialTab,
             onTabChange = { sheetInitialTab = it },
             onDismiss = { sheetVisible = false },
+            onSelectManualDial = ::selectManualDial,
         )
     }
 

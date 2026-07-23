@@ -81,6 +81,7 @@ import com.hletrd.findx9tele.camera.AudioScene
 import com.hletrd.findx9tele.camera.AudioInputPreference
 import com.hletrd.findx9tele.camera.BitrateLevel
 import com.hletrd.findx9tele.camera.CameraUiState
+import com.hletrd.findx9tele.camera.CameraFacing
 import com.hletrd.findx9tele.camera.CaptureMode
 import com.hletrd.findx9tele.camera.ColorEffect
 import com.hletrd.findx9tele.camera.DriveMode
@@ -101,6 +102,7 @@ import com.hletrd.findx9tele.camera.VideoCodec
 import com.hletrd.findx9tele.camera.VideoStabMode
 import com.hletrd.findx9tele.camera.VideoFrameRate
 import com.hletrd.findx9tele.camera.WbMode
+import com.hletrd.findx9tele.camera.ControlAvailability
 import com.hletrd.findx9tele.camera.controlAvailability
 import com.hletrd.findx9tele.camera.controlCapabilities
 import com.hletrd.findx9tele.camera.videoBitRate
@@ -148,6 +150,11 @@ internal fun ProSheet(
     modifier: Modifier = Modifier,
     initialTab: ProSheetTab = ProSheetTab.SHOOTING,
     onTabChange: (ProSheetTab) -> Unit = {},
+    // Dial-backed My Menu / Recent rows route HERE (close the sheet, open that value's ruler) —
+    // the same transition the Fn overlay tile uses. performQuickFn's cycle fallback RESET these
+    // values instead (zoom→1×, EV→0, exposure-MODE flips) with no affordance saying so: the same
+    // FnSlot behaved differently per surface (cycle-6 designer D-01).
+    onSelectManualDial: (DialType) -> Unit = {},
 ) {
     var selectedTab by remember { mutableStateOf(initialTab) }
     // A fixed, NON-draggable bottom panel — NOT Material3's ModalBottomSheet. The sheet let the whole
@@ -245,7 +252,17 @@ internal fun ProSheet(
                         verticalArrangement = Arrangement.spacedBy(20.dp),
                     ) {
                         when (selectedTab) {
-                            ProSheetTab.MY_MENU -> MyMenuTab(state, actions)
+                            ProSheetTab.MY_MENU -> MyMenuTab(
+                                state,
+                                actions,
+                                // Dismiss FIRST: the WB transition may re-open the sheet at the
+                                // Exposure tab (manualDialTransition.openExposureSheet), and a
+                                // trailing dismiss would immediately close that reopen.
+                                openDial = { dial ->
+                                    onDismiss()
+                                    onSelectManualDial(dial)
+                                },
+                            )
                             ProSheetTab.SHOOTING -> ShootingTab(state, actions)
                             ProSheetTab.EXPOSURE -> ExposureColorTab(state, actions)
                             ProSheetTab.FOCUS -> FocusTab(state, actions)
@@ -465,31 +482,57 @@ private fun TabTitle(text: String) {
 }
 
 @Composable
-private fun MyMenuTab(state: CameraUiState, actions: CameraActions) {
+private fun MyMenuTab(
+    state: CameraUiState,
+    actions: CameraActions,
+    openDial: (DialType) -> Unit,
+) {
+    // Same availability gate as the Fn overlay tiles: a dial-backed row must not open a ruler its
+    // mode/caps cannot honor (the exact predicate pair FnOverlay uses).
+    val availability = remember(state.caps, state.controls) {
+        controlAvailability(state.caps?.controlCapabilities(), state.controls)
+    }
     TabTitle("My Menu")
     if (state.myMenuSlots.isEmpty()) {
         Text("Empty", color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
     } else {
         state.myMenuSlots.forEach { slot ->
-            LabelValueRow(
-                label = fnSlotLabel(slot),
-                valueLabel = fnSlotValue(slot, state),
-                enabled = quickFnEnabled(slot, state),
-                onClick = { performQuickFn(slot, state, actions) },
-            )
+            QuickFnRow(slot, state, actions, availability, openDial)
         }
     }
     if (state.recentSettingSlots.isNotEmpty()) {
         SectionHeader("Recent")
         state.recentSettingSlots.forEach { slot ->
-            LabelValueRow(
-                label = fnSlotLabel(slot),
-                valueLabel = fnSlotValue(slot, state),
-                enabled = quickFnEnabled(slot, state),
-                onClick = { performQuickFn(slot, state, actions) },
-            )
+            QuickFnRow(slot, state, actions, availability, openDial)
         }
     }
+}
+
+@Composable
+private fun QuickFnRow(
+    slot: FnSlot,
+    state: CameraUiState,
+    actions: CameraActions,
+    availability: ControlAvailability,
+    openDial: (DialType) -> Unit,
+) {
+    // Dial-backed slots open their value's ruler (like the Fn overlay tile); only genuine
+    // cycle/toggle slots fall through to performQuickFn. The old unconditional performQuickFn
+    // path silently RESET dial values from a row that read like a status line (D-01).
+    val manualDial = manualDialForFnSlot(slot)
+    val enabled = quickFnEnabled(slot, state) && when (manualDial) {
+        DialType.WB -> whiteBalanceFnChipEnabled(state.controls.wbMode, availability)
+        null -> true
+        else -> quickManualDialEnabled(manualDial, availability)
+    }
+    LabelValueRow(
+        label = fnSlotLabel(slot),
+        valueLabel = fnSlotValue(slot, state),
+        enabled = enabled,
+        onClick = {
+            if (manualDial != null) openDial(manualDial) else performQuickFn(slot, state, actions)
+        },
+    )
 }
 
 @Composable
@@ -856,8 +899,13 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
     // Both onLens and onToggleTeleconverter refuse mid-REC deeper in the ViewModel (a full optics-
     // generation reopen — the afocal 180° flip — would tear the recording); these rows used to stay
     // visually hot and only silently no-op (a "Stop REC first" toast) on tap, inconsistent with My
-    // Menu's dimmed-and-guarded quick-Fn rows (3825ae2).
+    // Menu's dimmed-and-guarded quick-Fn rows (3825ae2). Both are also rear-only optics doors
+    // (backOpticsDoorRefusal): on the selfie route they must dim like the viewfinder's
+    // TeleChip/FocalRail go GONE — a bright row whose refusal lives only in a toast is the same
+    // anti-pattern.
+    val rearRoute = state.facing == CameraFacing.BACK
     val recordingMutable = !state.isRecording
+    val rearOpticsMutable = recordingMutable && rearRoute
     TabTitle("Lens")
     SectionHeader("Optics")
     // Lens picks are ZOOM PRESETS on the seamless logical camera — they do NOT bundle the
@@ -869,10 +917,10 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
         selected = state.lens,
         labelFor = ::lensLabel,
         onSelect = actions::onLens,
-        enabled = recordingMutable,
+        enabled = rearOpticsMutable,
     )
     Text(
-        lensFocalCaption(state.lens, state.teleconverterMode),
+        if (rearRoute) lensFocalCaption(state.lens, state.teleconverterMode) else "Rear camera only.",
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.labelSmall,
     )
@@ -880,10 +928,10 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
         label = "Teleconverter",
         checked = state.teleconverterMode,
         onCheckedChange = actions::onToggleTeleconverter,
-        enabled = recordingMutable,
+        enabled = rearOpticsMutable,
     )
     Text(
-        "3× lens only.",
+        if (rearRoute) "3× lens only." else "Rear camera only.",
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.labelSmall,
     )
