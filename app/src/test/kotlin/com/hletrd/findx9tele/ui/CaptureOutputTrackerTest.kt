@@ -311,6 +311,97 @@ class CaptureOutputTrackerTest {
         assertFalse(tracker.isCurrentReviewOutput("shot.heic"))
     }
 
+    @Test
+    fun retriedPriorSeed_replacesTheExistingPriorFamilyWithoutMerging() {
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
+        tracker.seedPriorCapture(
+            listOf(
+                PriorCaptureOutput("first.heic", CaptureOutputKind.DISPLAYABLE),
+                PriorCaptureOutput("first.dng", CaptureOutputKind.RAW),
+            ),
+            preferredOutput = "first.heic",
+        )
+
+        // A caller retrying restoration re-resolves a different family: replacement is
+        // deterministic — the two prior families must never merge into one delete group.
+        assertTrue(
+            tracker.seedPriorCapture(
+                listOf(PriorCaptureOutput("second.heic", CaptureOutputKind.DISPLAYABLE)),
+                preferredOutput = "second.heic",
+            ),
+        )
+        assertTrue(tracker.isCurrentReviewOutput("second.heic"))
+        // The first family was fully unlinked: its outputs now delete as unknown single files.
+        assertEquals(setOf("first.heic"), tracker.takeForDelete("first.heic"))
+        assertFalse(tracker.isCurrentReviewOutput("first.heic"))
+    }
+
+    @Test
+    fun tombstoneCapOverflow_forgetsOnlyTheOldestDeletedCapture() {
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4, maxTombstones = 1)
+        tracker.record(1, "one.heic", CaptureOutputKind.DISPLAYABLE)
+        tracker.record(2, "two.heic", CaptureOutputKind.DISPLAYABLE)
+        tracker.takeForDelete("one.heic")
+        // The second delete overflows the 1-entry tombstone budget and evicts capture 1's stone.
+        tracker.takeForDelete("two.heic")
+
+        assertEquals(
+            CaptureOutputDecision.DELETE,
+            tracker.record(2, "late-two.jpg", CaptureOutputKind.DISPLAYABLE),
+        )
+        // Capture 1's tombstone aged out: its late sibling is treated as a fresh output again
+        // (bounded memory is the contract — only the newest deletions stay rejected).
+        assertEquals(
+            CaptureOutputDecision.REVIEW,
+            tracker.record(1, "late-one.jpg", CaptureOutputKind.DISPLAYABLE),
+        )
+    }
+
+    @Test
+    fun fileOnlyRestore_returnsNullWhenALiveCaptureClaimedTheOutputDuringBinderIo() {
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
+        val plan = tracker.beginDelete("external.jpg")
+        // During the asynchronous MediaStore attempt a live capture claims the same output; the
+        // file-only re-seed must fail instead of demoting the live family to the prior slot.
+        tracker.record(1, "external.jpg", CaptureOutputKind.DISPLAYABLE)
+
+        assertEquals(null, tracker.restoreDeleteSurvivors(plan, setOf("external.jpg")))
+        assertTrue(tracker.isCurrentReviewOutput("external.jpg"))
+        assertEquals(
+            CaptureOutputDecision.TRACK_ONLY,
+            tracker.record(1, "external.dng", CaptureOutputKind.RAW),
+        )
+    }
+
+    @Test
+    fun retriedRestore_replacesTheStillPresentRestoredFamilyEntry() {
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
+        tracker.record(41, "shot.heic", CaptureOutputKind.DISPLAYABLE)
+        tracker.record(41, "shot.jpg", CaptureOutputKind.DISPLAYABLE)
+        tracker.record(41, "shot.dng", CaptureOutputKind.RAW)
+        val plan = tracker.beginDelete("shot.heic")
+
+        // First resolver pass restores two survivors; a retry of the same plan then confirms only
+        // one. The still-present restored family must be REPLACED, its dropped sibling unlinked.
+        assertEquals("shot.jpg", tracker.restoreDeleteSurvivors(plan, setOf("shot.jpg", "shot.dng")))
+        assertEquals("shot.jpg", tracker.restoreDeleteSurvivors(plan, setOf("shot.jpg")))
+        assertTrue(tracker.isCurrentReviewOutput("shot.jpg"))
+        assertEquals(setOf("shot.jpg"), tracker.takeForDelete("shot.jpg"))
+    }
+
+    @Test
+    fun rawOnlySurvivors_withoutThePreferredOutput_fallBackToTheFirstRetained() {
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
+        tracker.record(51, "shot.heic", CaptureOutputKind.DISPLAYABLE)
+        tracker.record(51, "shot.dng", CaptureOutputKind.RAW)
+        val plan = tracker.beginDelete("shot.heic")
+
+        // Only the RAW sibling survived: with the preferred (displayable) owner gone and no other
+        // displayable survivor, review truthfully falls back to the RAW file itself.
+        assertEquals("shot.dng", tracker.restoreDeleteSurvivors(plan, setOf("shot.dng")))
+        assertTrue(tracker.isCurrentReviewOutput("shot.dng"))
+    }
+
     // The exact post-delete interleaving from the cycle-10 review: a late sibling of an id the
     // tracker evicts DURING its own record() must never become the review owner — the UI would
     // publish a URI whose family no longer exists, pinForReview would fail, and delete would

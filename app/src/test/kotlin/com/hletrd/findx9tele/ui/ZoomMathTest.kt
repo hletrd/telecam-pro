@@ -381,4 +381,17 @@ class ZoomMathTest {
         )
         assertEquals(30f, normalized * TELE_DISPLAY_BASE, 0.001f)
     }
+
+    @Test
+    fun `rear-route callers omitting frontFacing get the rear main-relative scale`() {
+        // The frontFacing parameter defaults to false: the many rear-only call sites use the
+        // synthetic default bridge, which must resolve to exactly the rear display scale.
+        assertEquals(TELE_DISPLAY_BASE, zoomDisplayMultiplier(true, null), 0f)
+        assertEquals(1f, zoomDisplayMultiplier(false, null), 0f)
+        assertEquals(
+            LensChoice.TELE10X.targetEquivMm / LensChoice.MAIN.targetEquivMm,
+            zoomDisplayMultiplier(false, LensChoice.TELE10X.targetEquivMm),
+            0f,
+        )
+    }
 }
