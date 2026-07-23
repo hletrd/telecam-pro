@@ -1129,7 +1129,10 @@ fun RulerSlider(
         modifier = modifier
             .fillMaxWidth()
             .height(56.dp)
-            .background(Color.Black.copy(alpha = 0.35f), RoundedCornerShape(16.dp))
+            // The tested HUD floor, not 0.35: the ruler band sits directly over the live preview
+            // and its minor ticks (0.28 white) washed out against bright scenes — same class as
+            // the 05486cb scrim sweep, which this control originally missed.
+            .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA), RoundedCornerShape(16.dp))
             // TalkBack: a bare Canvas is invisible to accessibility services — every manual dial
             // rides this control, so expose it as an adjustable value with a set action.
             .progressSemantics(value = fraction.coerceIn(0f, 1f), valueRange = 0f..1f)

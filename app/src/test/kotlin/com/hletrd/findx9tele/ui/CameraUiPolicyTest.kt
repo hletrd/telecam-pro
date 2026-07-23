@@ -80,13 +80,6 @@ class CameraUiPolicyTest {
         assertEquals(fallback, normalizeFnSlots(emptyList(), fallback))
     }
 
-    @Test
-    fun `active TELE reveal waits for a finite measured trailing scroll edge`() {
-        assertNull(topBarTeleRevealTarget(active = false, maxScroll = 120))
-        assertNull(topBarTeleRevealTarget(active = true, maxScroll = 0))
-        assertNull(topBarTeleRevealTarget(active = true, maxScroll = Int.MAX_VALUE))
-        assertEquals(120, topBarTeleRevealTarget(active = true, maxScroll = 120))
-    }
 
     @Test
     fun `mode carousel exposes one mutually exclusive radio choice`() {

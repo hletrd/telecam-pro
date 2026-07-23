@@ -566,16 +566,27 @@ fun CameraScreen(
             )
         }
 
-        StatusBar(
-            state = state,
-            compact = !detailsVisible,
-            // NOT rotated: it's a wide top-left row, so a 90° spin about its center swings it off
+        Row(
+            // NOT rotated: it's a wide top row, so a 90° spin about its center swings it off
             // screen. It stays fixed (readable in portrait); only the compact scopes counter-rotate.
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .statusBarsPadding()
-                .padding(start = 12.dp, top = 60.dp),
-        )
+                .fillMaxWidth()
+                .padding(start = 12.dp, end = 12.dp, top = 60.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Top,
+        ) {
+            StatusBar(
+                state = state,
+                compact = !detailsVisible,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            // Battery/shots-remaining lives in the chrome row, not floating inside the image: on
+            // the 4:3 layout the old in-preview TopEnd anchor left it hovering over the frame
+            // (user-reported as visual clutter).
+            if (detailsVisible) StatusInfoPill(state = state)
+        }
 
         // One measured top-center lane owns every transient/held readout. Its first slot keeps the
         // focus states below the shooting OSD even when the zoom readout is hidden, while expanding
@@ -653,9 +664,6 @@ fun CameraScreen(
             horizontalAlignment = Alignment.End,
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            if (detailsVisible) {
-                StatusInfoPill(state = state, modifier = Modifier.rotateLayout(overlayRotation))
-            }
             if (state.isRecording && !state.isRecordingStarting) {
                 RecordingIndicator(elapsedMs = state.recordElapsedMs, modifier = Modifier.rotateLayout(overlayRotation))
             }
@@ -1058,12 +1066,6 @@ private fun TopBar(
         controlAvailability(state.caps?.controlCapabilities(), state.controls)
     }
     val topBarScroll = rememberScrollState()
-    LaunchedEffect(state.teleconverterMode, topBarScroll) {
-        snapshotFlow { topBarTeleRevealTarget(state.teleconverterMode, topBarScroll.maxValue) }
-            .filterNotNull()
-            .first()
-            .let { topBarScroll.animateScrollTo(it) }
-    }
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -1113,10 +1115,14 @@ private fun TopBar(
                     modifier = glyphSpin,
                 )
             }
+        }
+        // Counter-rotate the settings glyph so it stays upright as the phone turns (iPhone-style).
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            // FIXED slot (like flip/DISP/gear), not the scrolling row: as the last scrolling item
+            // the chip vanished off-screen whenever photo full-DISP filled the row — the app's
+            // headline function must keep one stable, always-visible home in every rear mode.
             // GONE (not disabled) while FRONT: the converter is a rear-3× accessory, so the chip is
-            // a rear-only concept with no meaningful disabled state on the selfie route — the same
-            // reasoning UX_POLICY applies to states that cannot exist (vs capability-dimmed
-            // controls like flash, which stay visible-disabled).
+            // a rear-only concept with no meaningful disabled state on the selfie route.
             if (state.facing == CameraFacing.BACK) {
                 TeleChip(
                     active = state.teleconverterMode,
@@ -1124,9 +1130,6 @@ private fun TopBar(
                     onClick = { actions.onToggleTeleconverter(!state.teleconverterMode) },
                 )
             }
-        }
-        // Counter-rotate the settings glyph so it stays upright as the phone turns (iPhone-style).
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             // Fixed (non-scrolling) slot like DISP/settings: flipping must stay reachable while the
             // leading chip row is scrolled, and it never disappears in compact mode.
             FlipCameraButton(
@@ -1139,10 +1142,6 @@ private fun TopBar(
         }
     }
 }
-
-/** A measured trailing edge is the only valid auto-reveal target; Int.MAX_VALUE is pre-layout. */
-internal fun topBarTeleRevealTarget(active: Boolean, maxScroll: Int): Int? =
-    maxScroll.takeIf { active && it in 1 until Int.MAX_VALUE }
 
 /** Persistent, directly dismissible feedback for the tap-owned AF/AE point after its reticle fades. */
 @Composable
@@ -1336,7 +1335,10 @@ private fun TeleChip(active: Boolean, onClick: () -> Unit, modifier: Modifier = 
     }
     val fg = when {
         active -> Color.Black.copy(alpha = if (enabled) 1f else 0.55f)
-        else -> CameraColors.TextPrimary.copy(alpha = if (enabled) 1f else 0.38f)
+        // Idle label reads OFF at a glance: full-brightness white on the scrim pill looked like an
+        // engaged state (user-reported) — the dim secondary weight marks it as an available toggle,
+        // with the filled white pill reserved for TC actually ON.
+        else -> CameraColors.TextPrimary.copy(alpha = if (enabled) 0.62f else 0.30f)
     }
     // Outer box carries the click + semantics at the 48 dp minimum touch target (every sibling
     // top-bar control already gets 48 dp); the 36 dp pill stays the VISUAL, so the layout look is

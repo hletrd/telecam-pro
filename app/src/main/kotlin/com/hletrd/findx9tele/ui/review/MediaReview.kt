@@ -849,8 +849,11 @@ fun MediaReviewOverlay(
                 actionLabel = videoPlaybackActionLabel(playing),
                 stateLabel = videoPlaybackStateDescription(playing),
                 onClick = { toggleVideoPlayback() },
+                // Bottom-END, not center: the centered slot overlapped the bottom-left metadata
+                // panel's filename line (user-reported); the right corner is the one free anchor
+                // (close top-left, delete top-right, metadata bottom-left).
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
+                    .align(Alignment.BottomEnd)
                     .navigationBarsPadding()
                     .padding(14.dp),
             ) {
@@ -861,8 +864,9 @@ fun MediaReviewOverlay(
                 actionLabel = reviewZoomActionLabel(scale),
                 stateLabel = reviewZoomStateDescription(scale),
                 onClick = { setReviewScale(nextReviewScale(scale)) },
+                // Same bottom-end anchor as the playback control (metadata owns bottom-left).
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
+                    .align(Alignment.BottomEnd)
                     .navigationBarsPadding()
                     .padding(14.dp),
             ) {
