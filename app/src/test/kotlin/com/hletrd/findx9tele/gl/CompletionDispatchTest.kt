@@ -355,6 +355,96 @@ class CompletionDispatchTest {
     }
 
     @Test
+    fun `accepted delayed task schedules with its exact delay and runs on demand`() {
+        var scheduled: Pair<Runnable, Long>? = null
+        var ran = false
+
+        scheduleCheckedDelay(
+            postDelayed = { runnable, delayMs ->
+                scheduled = runnable to delayMs
+                true
+            },
+            delayMs = 250L,
+            action = { ran = true },
+        )
+
+        assertEquals(250L, scheduled?.second)
+        assertFalse("scheduling must not run the action inline", ran)
+        scheduled?.first?.run()
+        assertTrue(ran)
+    }
+
+    @Test
+    fun `egl detach with no fallback unbinds to nothing before destroy`() {
+        val order = mutableListOf<String>()
+
+        detachEglOutput(
+            hasFallback = false,
+            makeFallbackCurrent = { order += "fallback" },
+            makeNothingCurrent = { order += "none" },
+            destroy = { order += "destroy" },
+        )
+
+        assertEquals(listOf("none", "destroy"), order)
+    }
+
+    @Test
+    fun `terminal encoder signal reports nothing on a repeated cancel or late failure`() {
+        val attachments = mutableListOf<Result<Unit>>()
+        val runtime = mutableListOf<Throwable>()
+        val signal = EncoderOutputSignal(attachments::add, runtime::add)
+
+        assertTrue(signal.cancel(IllegalStateException("detach")))
+        assertFalse(signal.cancel(IllegalStateException("late cancel")))
+        assertFalse(signal.fail(IllegalStateException("late failure")))
+
+        assertEquals(1, attachments.size)
+        assertEquals("detach", attachments.single().exceptionOrNull()?.message)
+        assertTrue(runtime.isEmpty())
+    }
+
+    @Test
+    fun `abandoned retained outputs are never released`() {
+        val outputs = RetainedOutputs<String>()
+        outputs.retain("preview")
+        outputs.retain("encoder")
+
+        // Shutdown abandonment: a drain thread may still be inside native code, so the retained
+        // handles must be forgotten, not released.
+        outputs.abandon()
+
+        val released = mutableListOf<String>()
+        assertTrue(outputs.releaseAllBestEffort { released += it })
+        assertTrue(released.isEmpty())
+    }
+
+    @Test
+    fun `release hub reports its terminal state`() {
+        val hub = ResourceReleaseHub()
+
+        assertFalse(hub.isReleased())
+        assertTrue(hub.release())
+        assertTrue(hub.isReleased())
+        assertFalse(hub.release())
+    }
+
+    @Test
+    fun `encoder admission validity delegates to the process lease`() {
+        var valid = true
+        val admission = EncoderOutputAdmission(
+            validity = { valid },
+            commitBlock = { block ->
+                block()
+                true
+            },
+        )
+
+        assertTrue(admission.isValid())
+        valid = false
+        assertFalse(admission.isValid())
+    }
+
+    @Test
     fun `ready and failure race keeps attachment exactly once`() {
         repeat(100) {
             val attachments = AtomicInteger()

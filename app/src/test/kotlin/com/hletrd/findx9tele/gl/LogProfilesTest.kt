@@ -219,6 +219,17 @@ class LogProfilesTest {
 
     // ---- helpers ----
 
+    @Test
+    fun `dormant O-Log2 inverse boundary is the forward toe evaluated at its switch point`() {
+        // P(R = OLOG2_TOE_MAX_R) = TOE_SCALE·(R + TOE_OFFSET)². The boundary used to be a second
+        // hand-computed literal (0.20856) whose arithmetic squared the wrong sum (P6.7/CR4-8);
+        // pin the derived value against an independent evaluation of the forward toe.
+        val toeAtSwitch = Shaders.OLOG2_TOE_SCALE *
+            (Shaders.OLOG2_TOE_MAX_R + Shaders.OLOG2_TOE_OFFSET).pow(2)
+        assertEquals(toeAtSwitch, Shaders.OLOG2_INV_BOUNDARY, 0.0)
+        assertEquals(0.1841888797965, Shaders.OLOG2_INV_BOUNDARY, 1e-12)
+    }
+
     private fun sGamut3Matrix() = doubleArrayOf(
         LogProfiles.SG3_R_FROM_R, LogProfiles.SG3_R_FROM_G, LogProfiles.SG3_R_FROM_B,
         LogProfiles.SG3_G_FROM_R, LogProfiles.SG3_G_FROM_G, LogProfiles.SG3_G_FROM_B,
