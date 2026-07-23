@@ -6,7 +6,7 @@ import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
-from xml.sax.saxutils import escape
+from xml.sax.saxutils import quoteattr
 
 from .adb import Adb
 
@@ -171,19 +171,32 @@ def _write_reports(results: list[Result], out: Path) -> None:
     (out / "report.md").write_text("\n".join(lines) + "\n")
 
     tests = len(results)
-    failures = sum(1 for r in results if r.status == "fail")
+    # `incomplete` means a REQUIRED verification did not run and the CLI exits 2; the XML must
+    # report it as a failure-class result, never as <skipped>, or CI reads a non-green run green.
+    failures = sum(1 for r in results if r.status in ("fail", "incomplete"))
     errors = sum(1 for r in results if r.status == "error")
-    skipped = sum(1 for r in results if r.status in ("skip", "incomplete"))
-    xml = [f'<testsuite name="device-tests" tests="{tests}" failures="{failures}" errors="{errors}" skipped="{skipped}">']
+    skipped = sum(1 for r in results if r.status == "skip")
+    xml = [
+        f'<testsuite name="device-tests" tests="{tests}" failures="{failures}" '
+        f'errors="{errors}" skipped="{skipped}">'
+    ]
     for r in results:
-        xml.append(f'  <testcase classname="{r.case.tier}" name="{escape(r.case.name)}" time="{r.seconds:.1f}">')
-        body = escape(r.detail[:2000])
+        # quoteattr supplies its own surrounding quotes and escapes `"` — escape() does not,
+        # so a detail containing a double quote used to break the XML exactly on failing runs.
+        xml.append(
+            f"  <testcase classname={quoteattr(r.case.tier)} "
+            f"name={quoteattr(r.case.name)} time={quoteattr(f'{r.seconds:.1f}')}>"
+        )
+        body = r.detail[:2000]
         if r.status == "fail":
-            xml.append(f'    <failure message="{body}"/>')
+            xml.append(f"    <failure message={quoteattr(body)}/>")
         elif r.status == "error":
-            xml.append(f'    <error message="{body}"/>')
-        elif r.status in ("skip", "incomplete"):
-            xml.append(f'    <skipped message="{body}"/>')
+            xml.append(f"    <error message={quoteattr(body)}/>")
+        elif r.status == "incomplete":
+            message = "incomplete (required verification did not run): " + body
+            xml.append(f'    <failure type="incomplete" message={quoteattr(message)}/>')
+        elif r.status == "skip":
+            xml.append(f"    <skipped message={quoteattr(body)}/>")
         xml.append("  </testcase>")
     xml.append("</testsuite>")
     (out / "junit.xml").write_text("\n".join(xml) + "\n")

@@ -5,6 +5,7 @@ import struct
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
@@ -1880,6 +1881,64 @@ class ForceStopGuardTest(unittest.TestCase):
         self.assertEqual(cases.ensure_foreground(context), 123)
 
         self.assertTrue(any("am start" in command for command in adb.commands))
+
+
+class ReportWriterTest(unittest.TestCase):
+    @staticmethod
+    def result(status: str, detail: str, name: str = "case") -> framework.Result:
+        case = framework.Case(name, "smoke", lambda _ctx: None, "doc")
+        return framework.Result(case, status, detail, 1.234)
+
+    def write(self, results: list[framework.Result]) -> ET.Element:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir)
+            framework._write_reports(results, out)
+            return ET.fromstring((out / "junit.xml").read_text())
+
+    def test_failure_detail_with_double_quotes_yields_valid_parseable_xml(self) -> None:
+        detail = 'width=3840, expected "2160" & label=<raw> \'q\''
+        root = self.write([self.result("fail", detail, name='quoted "name" <case>')])
+        self.assertEqual(root.get("tests"), "1")
+        self.assertEqual(root.get("failures"), "1")
+        testcase = root.find("testcase")
+        assert testcase is not None
+        self.assertEqual(testcase.get("classname"), "smoke")
+        self.assertEqual(testcase.get("name"), 'quoted "name" <case>')
+        failure = testcase.find("failure")
+        assert failure is not None
+        self.assertEqual(failure.get("message"), detail)
+
+    def test_error_detail_with_double_quotes_yields_valid_parseable_xml(self) -> None:
+        detail = 'AdbError: UI node not found (desc=None text=\'Shoot\'); "visible"'
+        root = self.write([self.result("error", detail)])
+        self.assertEqual(root.get("errors"), "1")
+        error = root.find("testcase/error")
+        assert error is not None
+        self.assertEqual(error.get("message"), detail)
+
+    def test_incomplete_maps_to_failure_class_element_not_skipped(self) -> None:
+        # The CLI exits 2 on incomplete; the junit.xml must not read green to CI.
+        root = self.write(
+            [
+                self.result("incomplete", 'ffprobe unavailable "strict"'),
+                self.result("skip", "requires explicit approval"),
+                self.result("pass", "clean"),
+            ]
+        )
+        self.assertEqual(root.get("tests"), "3")
+        self.assertEqual(root.get("failures"), "1")
+        self.assertEqual(root.get("errors"), "0")
+        self.assertEqual(root.get("skipped"), "1")
+        incomplete_case, skip_case, pass_case = root.findall("testcase")
+        self.assertIsNone(incomplete_case.find("skipped"))
+        failure = incomplete_case.find("failure")
+        assert failure is not None
+        self.assertEqual(failure.get("type"), "incomplete")
+        self.assertIn('ffprobe unavailable "strict"', failure.get("message"))
+        self.assertIsNone(skip_case.find("failure"))
+        self.assertIsNotNone(skip_case.find("skipped"))
+        self.assertIsNone(pass_case.find("failure"))
+        self.assertIsNone(pass_case.find("skipped"))
 
 
 class FrameworkSafetyTest(unittest.TestCase):
