@@ -44,6 +44,45 @@ class HeifExifTest {
     }
 
     @Test
+    fun `skips stray non-marker garbage one byte at a time before APP1`() {
+        // A byte that is not 0xFF between segments is not a marker lead — the scan must advance
+        // by exactly one so the FF E1 that follows is still recognized at its own offset.
+        val payload = byteArrayOf(0x45, 0x78, 0x69, 0x66, 0, 0, 5)
+        val segmentLength = payload.size + 2
+        val jpeg = byteArrayOf(
+            0xff.toByte(), 0xd8.toByte(),
+            0x41, 0x42, // stray garbage, no 0xFF lead
+            0xff.toByte(), 0xe1.toByte(),
+            (segmentLength ushr 8).toByte(), segmentLength.toByte(),
+            *payload,
+            0xff.toByte(), 0xd9.toByte(),
+        )
+
+        assertArrayEquals(payload, extractExifApp1(jpeg))
+    }
+
+    @Test
+    fun `steps over length-less stuffed TEM and RST codes without a length read`() {
+        // FF 00 (stuffed), FF 01 (TEM), and FF D0..D7 (RST) carry NO two-byte segment length.
+        // Reading a length there would consume arbitrary bytes and lose the real APP1.
+        val payload = byteArrayOf(0x45, 0x78, 0x69, 0x66, 0, 0, 9)
+        val segmentLength = payload.size + 2
+        val jpeg = byteArrayOf(
+            0xff.toByte(), 0xd8.toByte(),
+            0xff.toByte(), 0x00, // stuffed byte
+            0xff.toByte(), 0x01, // TEM
+            0xff.toByte(), 0xd0.toByte(), // RST0
+            0xff.toByte(), 0xd7.toByte(), // RST7
+            0xff.toByte(), 0xe1.toByte(),
+            (segmentLength ushr 8).toByte(), segmentLength.toByte(),
+            *payload,
+            0xff.toByte(), 0xd9.toByte(),
+        )
+
+        assertArrayEquals(payload, extractExifApp1(jpeg))
+    }
+
+    @Test
     fun `rejects truncated or non EXIF APP1`() {
         assertNull(extractExifApp1(byteArrayOf(0xff.toByte(), 0xd8.toByte(), 0xff.toByte())))
         assertNull(
