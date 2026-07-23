@@ -263,12 +263,19 @@ class CameraEngine(private val context: Context) {
         val readyController: CameraController?,
         val sessionGeneration: Long,
         val photoSessionOutputs: PhotoSessionOutputs,
+        val hiResConfigured: Boolean,
     )
 
     private data class AcceptedCameraSession(
         val controller: CameraController,
         val sessionGeneration: Long,
         val outputs: PhotoSessionOutputs,
+        // The hi-res INTENT this session was configured with (controller.hiResStill at commit) —
+        // distinct from outputs.hiRes, the session TRUTH. When the ladder drops hi-res
+        // (configured=true, truth=false), fast same-route doors must compare against the
+        // CONFIGURED intent: comparing against truth made every fast commit reconfigure — and
+        // re-fail hi-res — forever (cycle-6 tracer T9 / code-review F12).
+        val hiResConfigured: Boolean = false,
     )
 
     /** One queued tap awaiting Camera2 request submission on its accepted controller. */
@@ -314,6 +321,7 @@ class CameraEngine(private val context: Context) {
         readyController = readyController,
         sessionGeneration = cameraSessionGeneration.get(),
         photoSessionOutputs = acceptedCameraSession?.outputs ?: PhotoSessionOutputs(),
+        hiResConfigured = acceptedCameraSession?.hiResConfigured ?: false,
     )
 
     private fun <T> beginOpticsTransaction(publishDesiredOptics: () -> T): Pair<OpticsTransaction, T> {
@@ -378,6 +386,7 @@ class CameraEngine(private val context: Context) {
                 controller = expectedController,
                 sessionGeneration = sessionGeneration,
                 outputs = photoOutputs,
+                hiResConfigured = expectedController.hiResStill,
             )
             val effectiveReady = previewReady
             cameraReady = effectiveReady
@@ -422,9 +431,12 @@ class CameraEngine(private val context: Context) {
         // photo↔video mode flip on the standalone 3× with an unchanged stream size. Re-publishing
         // the old reader truth under the new intent would either strand a 200MP reader in a video
         // session or deny an admitted hi-res still, so when the freshly resolved admission no
-        // longer matches the session being retained, converge through the full reconfigure (the
-        // desired-state fields were already published under this transaction's monitor).
-        if (resolvedHiResStill() != transaction.before.photoSessionOutputs.hiRes &&
+        // longer matches the intent the retained session was CONFIGURED with, converge through the
+        // full reconfigure (the desired-state fields were already published under this
+        // transaction's monitor). Compared against the CONFIGURED intent, not accepted truth: a
+        // ladder-dropped hi-res (intent true, truth false) must not force a full — and identically
+        // failing — reconfigure on every subsequent fast door (tracer T9 / code-review F12).
+        if (resolvedHiResStill() != transaction.before.hiResConfigured &&
             ownsOpticsTransaction(transaction) && !paused && recorder == null
         ) {
             reconfigureCamera(cameraId, transaction)
@@ -545,6 +557,7 @@ class CameraEngine(private val context: Context) {
                 controller = restoredController,
                 sessionGeneration = before.sessionGeneration,
                 outputs = before.photoSessionOutputs,
+                hiResConfigured = restoredController.hiResStill,
             )
             val effectiveReady = previewReady
             cameraReady = effectiveReady
