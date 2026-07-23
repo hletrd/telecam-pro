@@ -753,17 +753,35 @@ private fun formatFocusRelative(diopters: Float, minDiopters: Float): String {
 }
 
 @Composable
-private fun RulerReadout(value: String, modifier: Modifier = Modifier) {
+private fun RulerReadout(value: String, modifier: Modifier = Modifier, autoValue: Boolean = false) {
     Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         // The one number the photographer is actively adjusting sits near the TOP of the bottom
         // cluster's gradient, where the scrim is nearly transparent — over sky/snow it competed
         // with scene luminance unprotected while every audited HUD sibling had a tested pill.
         Text(
-            text = value,
+            text = if (autoValue) {
+                buildAnnotatedString {
+                    // Same qualifier-badge treatment as the DialChip values (64c3d4c): smaller and
+                    // dimmer than the value, so "A 1/250s" stops reading as one glued blob — the
+                    // ruler readout was the last surface still gluing a full-size "A " (cycle-6
+                    // D-05). Accessibility hears the honest word below, like the chips.
+                    withStyle(
+                        SpanStyle(fontSize = 11.sp, color = CameraColors.ManualActive.copy(alpha = 0.7f)),
+                    ) {
+                        append("A ")
+                    }
+                    append(value)
+                }
+            } else {
+                AnnotatedString(value)
+            },
             color = CameraColors.ManualActive,
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
             modifier = Modifier
+                .clearAndSetSemantics {
+                    contentDescription = if (autoValue) "Auto $value" else value
+                }
                 .clip(RoundedCornerShape(50))
                 .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
                 .padding(horizontal = 14.dp, vertical = 2.dp),
@@ -810,7 +828,7 @@ private fun ShutterRuler(
             val fraction = ((controls.shutterAngle - 1f) / 359f).coerceIn(0f, 1f)
             val readout = "%.0f°  (%s)".format(Locale.US, controls.shutterAngle, formatShutterSpeed(controls.effectiveExposureNsForDisplay()))
             val describedReadout = if (controls.autoShutterDriven) "Auto $readout" else readout
-            RulerReadout(if (controls.autoShutterDriven) "A $readout" else readout)
+            RulerReadout(readout, autoValue = controls.autoShutterDriven)
             RulerSlider(
                 fraction = fraction,
                 onFractionChange = { f -> actions.onShutterAngle((1f + f * 359f).coerceIn(1f, 360f)) },
@@ -834,7 +852,7 @@ private fun ShutterRuler(
             }
             val fraction = if (n <= 1) 0f else idx.toFloat() / (n - 1)
             val readout = formatShutterSpeed(controls.exposureTimeNs)
-            RulerReadout(if (controls.autoShutterDriven) "A $readout" else readout)
+            RulerReadout(readout, autoValue = controls.autoShutterDriven)
             RulerSlider(
                 fraction = fraction,
                 onFractionChange = { f -> actions.onShutterNs(stops[(f * (n - 1)).roundToInt().coerceIn(0, n - 1)]) },
@@ -996,7 +1014,7 @@ private fun IsoRuler(controls: ManualControls, caps: CameraCaps?, onIso: (Int) -
     val fraction = if (n <= 1) 0f else idx.toFloat() / (n - 1)
     val readout = if (controls.autoIsoDriven) "Auto ISO ${controls.iso}" else "ISO ${controls.iso}"
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        RulerReadout(if (controls.autoIsoDriven) "A ISO ${controls.iso}" else "ISO ${controls.iso}")
+        RulerReadout("ISO ${controls.iso}", autoValue = controls.autoIsoDriven)
         RulerSlider(
             fraction = fraction,
             onFractionChange = { f -> onIso(stops[(f * (n - 1)).roundToInt().coerceIn(0, n - 1)]) },
