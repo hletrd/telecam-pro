@@ -160,13 +160,78 @@ header: `CameraEngine` is final, so they inject a REAL, never-resumed engine thr
 inert by design). `RobolectricEglSentinels` backfills the `EGL14` sentinel statics the sandbox
 leaves null.
 
-## Instrumented coverage (spike verdict, 2026-07-23 — not yet adopted)
+## Instrumented coverage (ADOPTED as infra, coverage cycle 7 phase 4)
 
-- `enableAndroidTestCoverage = true` + `:app:createDebugAndroidTestCoverageReport` on the PMA110;
-  AGP 9.3's experimental `createCoverageReport` (behind
-  `android.experimental.reportAggregationSupport=true`) can merge unit + instrumented into one
-  report. Requires adding the `androidTest` source set + runner deps, all through
-  `gradle/verification-metadata.xml`.
+An `app/src/androidTest` **smoke tier** and property-gated instrumented coverage now exist. This
+tier is deliberately shallow: **`device-tests/` remains the functional authority** — the
+instrumented suite exists to drive real MainActivity → CameraViewModel → CameraEngine →
+Camera2/GL code paths in-process so instrumented coverage attributes real lines, not to re-test
+behavior.
+
+**The property gate.** `enableAndroidTestCoverage` is bound to a Gradle property, NOT default-on:
+
+```kotlin
+enableAndroidTestCoverage = providers.gradleProperty("androidTestCoverage").orNull == "true"
+```
+
+The flag makes AGP JaCoCo-**instrument the debug APK bytecode**. The default debug build must stay
+uninstrumented so `device-tests/` perf checks and any APK-sha attestation run against clean
+bytecode. Verified: without `-PandroidTestCoverage=true`, `assembleDebug`'s task graph contains
+**no jacoco task**; with it, `:app:generateDebugJacocoPropertiesFile` + `:app:jacocoDebug` enter
+the graph and the per-variant `:app:createDebugAndroidTestCoverageReport` is registered. Always
+build/install a CLEAN (no-property) debug APK when leaving the device at baseline.
+
+**The smoke suite** (`app/src/androidTest/kotlin/.../MainActivitySmokeTest.kt`, 4 tests): launch
+reaches RESUMED; `cameraReady` after cold launch; a recreate cycle (the portrait-locked activity's
+rotation analog); a background/foreground `moveToState` cycle through `vm.onStop/onStart →
+engine.pause/resume`. Readiness is observed through the SAME `CameraViewModel` instance
+`MainActivity`'s `viewModels()` holds (shared `ViewModelStore`, `ViewModelProvider(activity)` —
+**no production seam added**). No captures, no control changes, no settings mutations; a `@Before`
+wake + dismiss-keyguard keeps the suite independent of operator screen state. `GrantPermissionRule`
+is deliberately absent — CAMERA/RECORD_AUDIO are hand-managed on ColorOS (`pm grant` fails there)
+and must never be dropped. Deps are lean: `androidx.test:runner` 1.7.0 + `androidx.test.ext:junit`
+1.3.0 + `androidx.test:core` 1.7.0 + `junit`, no compose BOM (the suite reads the StateFlow
+directly), all through `gradle/verification-metadata.xml`.
+
+**Task names (AGP 9.3, variant = debug).**
+
+- Per-leg instrumented (connected): `:app:createDebugAndroidTestCoverageReport`
+  (`-PandroidTestCoverage=true`) — runs `connectedDebugAndroidTest`, writes `.ec` under
+  `app/build/outputs/code_coverage/debugAndroidTest/connected/<device>/` and HTML under
+  `app/build/reports/coverage/androidTest/debug/connected/`.
+- Per-leg unit (host): `:app:createDebugUnitTestCoverageReport` → `.exec` at
+  `app/build/outputs/unit_test_code_coverage/debugUnitTest/testDebugUnitTest.exec`, XML at
+  `app/build/reports/coverage/test/debug/report.xml` (what `partition_report.py` consumes).
+- Merged: AGP 9.3's experimental **`createCoverageReport`** (per-module; `createAggregatedCoverageReport`
+  adds project deps — same content for this single-module app), gated behind
+  `android.experimental.reportAggregationSupport=true` (set in `gradle.properties`). It emits **HTML
+  only** at `app/build/reports/code_coverage_html_report/` and, per the AGP docs, is **NOT generated
+  if any relevant test fails**. The classic XML fallback (spike recipe) is a manual `JacocoReport`
+  over the unit `*.exec` + connected `**/*.ec`; it must reproduce AGP's own class-exclusion set or
+  its OVERALL denominator will not match the per-leg reports.
+
+**The merged-report basis-labeling rule (honest numbers).** The merged OVERALL is a **different
+measurement basis** than the host-only OVERALL — it mixes host-JVM unit coverage with on-device
+instrumented smoke coverage. Always report it clearly labeled as
+**"merged (host unit + instrumented smoke)"** and NEVER substitute it for the host-only OVERALL /
+Partition A numbers (the two-numbers contract above still governs the host-only report). An
+instrumented smoke run raises the OVERALL and the Partition B numbers only; it never dilutes the
+Partition A claim (device-drivable classes stay in Partition B until they can genuinely hold ~100%
+under host tests — same policy as the Robolectric classes).
+
+**PMA110 device caveat (connected leg currently BLOCKED, 2026-07-24).** The connected instrumented
+run cannot complete on this device: the instrumented test APK `me.hletrd.telecampro.debug.test` is
+a new package with **no launcher activity**, so ColorOS's `OPlusPackageInstallerActivity` flags it
+"No Home screen icon" and offers only **"Exit installation"** — there is no automatable
+continue/install-anyway action, and even `adb install` funnels through the same confirmation (which
+also bounces the wireless-adb TLS transport, surfacing to UTP as
+`AndroidTestApkInstallerPlugin: device offline`, 0 tests run). Disabling `package_verifier_enable`
+does NOT help — it is an OPlus-specific risk gate. The `install -r` UPDATE path for the already-
+trusted **app** package is unaffected (that is how `device-tests/` drives the device). Consequence:
+the build infra + smoke suite are committed and host-green, but no `.ec` files and therefore **no
+merged number** can be produced until this gate is cleared (likely needs an OPPO/HeyTap-account
+"Install via USB" enrollment or a device with the risk gate off). Until then, quote only the
+host-only numbers; do not fabricate a merged figure.
 
 ## Future seam work (identified, deliberately deferred)
 
