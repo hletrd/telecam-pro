@@ -296,10 +296,6 @@ internal class StillCapturePipeline(
         emitRawSaved(pending.uri, pending.captureId)
     }
 
-    private fun retainedSaveStatus(kind: String, markerDurable: Boolean): String =
-        if (markerDurable) "$kind save delayed. Will retry."
-        else "$kind save retained. Recovery marker failed."
-
     private fun writeJpegExif(
         uri: android.net.Uri,
         shot: ExifShot,
@@ -351,85 +347,7 @@ internal class StillCapturePipeline(
         exif: androidx.exifinterface.media.ExifInterface,
         shot: ExifShot,
     ) {
-        fun set(tag: String, value: String) = exif.setAttribute(tag, value)
-
-        if (shot.iso > 0) set(androidx.exifinterface.media.ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY, shot.iso.toString())
-        if (shot.expNs > 0) {
-            val sec = shot.expNs / 1_000_000_000.0
-            set(androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_TIME, sec.toString())
-            // APEX shutter speed = -log2(t), rational, matching the stock sample (6.908 at 1/120).
-            val apex = -Math.log(sec) / Math.log(2.0)
-            set(
-                androidx.exifinterface.media.ExifInterface.TAG_SHUTTER_SPEED_VALUE,
-                "${Math.round(apex * 1000)}/1000",
-            )
-        }
-        if (shot.lensApertureF > 0f) {
-            set(androidx.exifinterface.media.ExifInterface.TAG_F_NUMBER, shot.lensApertureF.toString())
-            // APEX aperture = 2·log2(F) (stock: 2.35 at f/2.2).
-            val apexAv = 2.0 * Math.log(shot.lensApertureF.toDouble()) / Math.log(2.0)
-            set(
-                androidx.exifinterface.media.ExifInterface.TAG_APERTURE_VALUE,
-                "${Math.round(apexAv * 100)}/100",
-            )
-            set(
-                androidx.exifinterface.media.ExifInterface.TAG_MAX_APERTURE_VALUE,
-                "${Math.round(apexAv * 100)}/100",
-            )
-        }
-        if (shot.lensFocalMm > 0f) {
-            // Real lens focal (20.1 mm on the 3×), rational millimeters like the stock sample.
-            set(
-                androidx.exifinterface.media.ExifInterface.TAG_FOCAL_LENGTH,
-                "${Math.round(shot.lensFocalMm * 1000)}/1000",
-            )
-        }
-        if (shot.focal35mm > 0) {
-            set(
-                androidx.exifinterface.media.ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM,
-                shot.focal35mm.toString(),
-            )
-        }
-        set(
-            androidx.exifinterface.media.ExifInterface.TAG_DIGITAL_ZOOM_RATIO,
-            "${Math.round(shot.digitalZoom * 10000)}/10000",
-        )
-        // EV bias in sixths, the stock sample's denominator (0/6).
-        set(
-            androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_BIAS_VALUE,
-            "${Math.round(shot.evBiasStops * 6)}/6",
-        )
-        set(
-            androidx.exifinterface.media.ExifInterface.TAG_METERING_MODE,
-            when (shot.meteringMode) {
-                MeteringMode.MATRIX -> "5" // pattern
-                MeteringMode.CENTER -> "2" // center-weighted (the stock default)
-                MeteringMode.SPOT -> "3"
-            },
-        )
-        // 0x1 = fired; 0x10 = "did not fire, compulsory off" (the stock sample's value).
-        set(androidx.exifinterface.media.ExifInterface.TAG_FLASH, if (shot.flashFired) "1" else "16")
-        set(androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_PROGRAM, shot.exposureProgram.toString())
-        set(androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_MODE, if (shot.manualExposure) "1" else "0")
-        set(androidx.exifinterface.media.ExifInterface.TAG_WHITE_BALANCE, if (shot.manualWb) "1" else "0")
-        set(androidx.exifinterface.media.ExifInterface.TAG_LENS_MODEL, shot.lensModel)
-        set(androidx.exifinterface.media.ExifInterface.TAG_COLOR_SPACE, "1") // sRGB
-
-        val dt = java.text.SimpleDateFormat("yyyy:MM:dd HH:mm:ss", java.util.Locale.US)
-            .format(java.util.Date(shot.takenAtMs))
-        val offset = java.text.SimpleDateFormat("XXX", java.util.Locale.US)
-            .format(java.util.Date(shot.takenAtMs))
-        set(androidx.exifinterface.media.ExifInterface.TAG_DATETIME, dt)
-        set(androidx.exifinterface.media.ExifInterface.TAG_DATETIME_ORIGINAL, dt)
-        set(androidx.exifinterface.media.ExifInterface.TAG_DATETIME_DIGITIZED, dt)
-        set(androidx.exifinterface.media.ExifInterface.TAG_OFFSET_TIME, offset)
-        set(androidx.exifinterface.media.ExifInterface.TAG_OFFSET_TIME_ORIGINAL, offset)
-        // Pixels are rotated upright before encode — the orientation tag must say NORMAL,
-        // not the invalid 0 exifinterface leaves when the tag was never present.
-        set(androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION, "1")
-        // The stock sample writes the MARKET name, not the ro.product.model code (PMA110).
-        set(androidx.exifinterface.media.ExifInterface.TAG_MAKE, "OPPO")
-        set(androidx.exifinterface.media.ExifInterface.TAG_MODEL, "OPPO Find X9 Ultra")
+        exifAttributeList(shot).forEach { (tag, value) -> exif.setAttribute(tag, value) }
     }
 
     private fun rotateBitmap(src: Bitmap, degrees: Int): Bitmap {
@@ -446,4 +364,95 @@ internal class StillCapturePipeline(
         val (x, y, cropW, cropH) = centerCropBox(src.width, src.height, ratioW, ratioH)
         return Bitmap.createBitmap(src, x, y, cropW, cropH)
     }
+}
+
+/** Truthful retained-take status for a completed artifact whose MediaStore publish failed. */
+internal fun retainedSaveStatus(kind: String, markerDurable: Boolean): String =
+    if (markerDurable) "$kind save delayed. Will retry."
+    else "$kind save retained. Recovery marker failed."
+
+/**
+ * The complete tag→value list one [ExifShot] stamps into a processed still, hoisted out of the
+ * ExifInterface apply loop (the [heifExifDimensionAttributes] precedent) so the APEX/rational math
+ * pinned against the stock camera's 3× reference sample is host-testable. Pure java.* + TAG_*
+ * String constants only; [StillCapturePipeline.applyExifAttributes] replays it verbatim.
+ */
+internal fun exifAttributeList(shot: ExifShot): List<Pair<String, String>> = buildList {
+    if (shot.iso > 0) add(androidx.exifinterface.media.ExifInterface.TAG_PHOTOGRAPHIC_SENSITIVITY to shot.iso.toString())
+    if (shot.expNs > 0) {
+        val sec = shot.expNs / 1_000_000_000.0
+        add(androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_TIME to sec.toString())
+        // APEX shutter speed = -log2(t), rational, matching the stock sample (6.908 at 1/120).
+        val apex = -Math.log(sec) / Math.log(2.0)
+        add(
+            androidx.exifinterface.media.ExifInterface.TAG_SHUTTER_SPEED_VALUE to
+                "${Math.round(apex * 1000)}/1000",
+        )
+    }
+    if (shot.lensApertureF > 0f) {
+        add(androidx.exifinterface.media.ExifInterface.TAG_F_NUMBER to shot.lensApertureF.toString())
+        // APEX aperture = 2·log2(F) (stock: 2.35 at f/2.2).
+        val apexAv = 2.0 * Math.log(shot.lensApertureF.toDouble()) / Math.log(2.0)
+        add(
+            androidx.exifinterface.media.ExifInterface.TAG_APERTURE_VALUE to
+                "${Math.round(apexAv * 100)}/100",
+        )
+        add(
+            androidx.exifinterface.media.ExifInterface.TAG_MAX_APERTURE_VALUE to
+                "${Math.round(apexAv * 100)}/100",
+        )
+    }
+    if (shot.lensFocalMm > 0f) {
+        // Real lens focal (20.1 mm on the 3×), rational millimeters like the stock sample.
+        add(
+            androidx.exifinterface.media.ExifInterface.TAG_FOCAL_LENGTH to
+                "${Math.round(shot.lensFocalMm * 1000)}/1000",
+        )
+    }
+    if (shot.focal35mm > 0) {
+        add(
+            androidx.exifinterface.media.ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM to
+                shot.focal35mm.toString(),
+        )
+    }
+    add(
+        androidx.exifinterface.media.ExifInterface.TAG_DIGITAL_ZOOM_RATIO to
+            "${Math.round(shot.digitalZoom * 10000)}/10000",
+    )
+    // EV bias in sixths, the stock sample's denominator (0/6).
+    add(
+        androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_BIAS_VALUE to
+            "${Math.round(shot.evBiasStops * 6)}/6",
+    )
+    add(
+        androidx.exifinterface.media.ExifInterface.TAG_METERING_MODE to
+            when (shot.meteringMode) {
+                MeteringMode.MATRIX -> "5" // pattern
+                MeteringMode.CENTER -> "2" // center-weighted (the stock default)
+                MeteringMode.SPOT -> "3"
+            },
+    )
+    // 0x1 = fired; 0x10 = "did not fire, compulsory off" (the stock sample's value).
+    add(androidx.exifinterface.media.ExifInterface.TAG_FLASH to if (shot.flashFired) "1" else "16")
+    add(androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_PROGRAM to shot.exposureProgram.toString())
+    add(androidx.exifinterface.media.ExifInterface.TAG_EXPOSURE_MODE to if (shot.manualExposure) "1" else "0")
+    add(androidx.exifinterface.media.ExifInterface.TAG_WHITE_BALANCE to if (shot.manualWb) "1" else "0")
+    add(androidx.exifinterface.media.ExifInterface.TAG_LENS_MODEL to shot.lensModel)
+    add(androidx.exifinterface.media.ExifInterface.TAG_COLOR_SPACE to "1") // sRGB
+
+    val dt = java.text.SimpleDateFormat("yyyy:MM:dd HH:mm:ss", java.util.Locale.US)
+        .format(java.util.Date(shot.takenAtMs))
+    val offset = java.text.SimpleDateFormat("XXX", java.util.Locale.US)
+        .format(java.util.Date(shot.takenAtMs))
+    add(androidx.exifinterface.media.ExifInterface.TAG_DATETIME to dt)
+    add(androidx.exifinterface.media.ExifInterface.TAG_DATETIME_ORIGINAL to dt)
+    add(androidx.exifinterface.media.ExifInterface.TAG_DATETIME_DIGITIZED to dt)
+    add(androidx.exifinterface.media.ExifInterface.TAG_OFFSET_TIME to offset)
+    add(androidx.exifinterface.media.ExifInterface.TAG_OFFSET_TIME_ORIGINAL to offset)
+    // Pixels are rotated upright before encode — the orientation tag must say NORMAL,
+    // not the invalid 0 exifinterface leaves when the tag was never present.
+    add(androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION to "1")
+    // The stock sample writes the MARKET name, not the ro.product.model code (PMA110).
+    add(androidx.exifinterface.media.ExifInterface.TAG_MAKE to "OPPO")
+    add(androidx.exifinterface.media.ExifInterface.TAG_MODEL to "OPPO Find X9 Ultra")
 }
