@@ -117,6 +117,9 @@ class SessionAcceptance:
     optics_generation: int
     session_generation: int
     request_generation: int
+    # The engine's accepted Camera2 id — the route-truth join key for the data-validity cases
+    # (geometry expectations come from dumpsys per-id arrays, never from a hardcoded id).
+    camera_id: str = "?"
 
 
 @dataclass(frozen=True)
@@ -260,6 +263,7 @@ def newest_session_acceptance(
             optics_generation=int(match.group(2)),
             session_generation=int(match.group(3)),
             request_generation=int(match.group(4)),
+            camera_id=match.group(6),
         )
         if evidence.optics_generation > after_optics_generation:
             candidates.append(evidence)
@@ -2506,6 +2510,1208 @@ def t_persist(ctx: Context) -> None:
     ensure_photo_mode(ctx)
     assert is_video, "video mode was not restored after kill (Remember Settings broken?)"
     ctx.note("mode persisted across force-stop")
+
+
+# ---------------------------------------------------------------- full: data validity / binning
+# Cycle-7 phase-5 mandate: binned outputs must match advertised geometry EXACTLY and their data
+# and metadata must be valid. Expectations come LIVE from `dumpsys media.camera` per accepted
+# camera id (never a hardcoded id); the documented 4080x3064 / 4096x3072 pair (CLAUDE.md probe
+# 2026-07-22) is reported as a cross-check. 200MP remosaic is settled NOT exposed on PMA110.
+
+DOCUMENTED_BINNED_ARRAYS = frozenset({(4080, 3064), (4096, 3072)})
+BINNED_ARRAY_MAX_PIXELS = 20_000_000  # any larger advertised array would resurrect the hi-res fact
+CAMERA_STATIC_HEADER = re.compile(
+    r"== Camera HAL device device@[0-9.]+/[A-Za-z0-9_]+/([0-9]+) \(v[0-9.]+\) "
+    r"static information: =="
+)
+_STREAM_CONFIG_ROW = re.compile(r"\[([0-9]+) ([0-9]+) ([0-9]+) (INPUT|OUTPUT) \]")
+_HAL_FORMAT_RAW16 = 32  # HAL_PIXEL_FORMAT_RAW16 == ImageFormat.RAW_SENSOR
+
+# The 3A telemetry's sensor facts: the repeating request's applied ISO/exposure. In MANUAL these
+# are exactly the requested still values, so EXIF parity compares against them.
+THREE_A_SENSOR = re.compile(r"\biso=([0-9]+) expNs=([0-9]+)\b")
+ISO_READOUT = re.compile(r"(?:Auto )?ISO ([0-9]+)")
+TELE_DNG_TARGET_ISO = 800
+TELE_DNG_TARGET_EXPOSURE_S = Fraction(1, 100)
+# Manual ruler device facts (probed 2026-07-24): ticks are 12 dp apart, ~8 dp of the first motion
+# is consumed as touch slop, and dragging LEFT reveals HIGHER values (content follows the finger).
+RULER_TICK_DP = 12
+RULER_SLOP_DP = 8
+
+PHOTO_OUTPUT_LABELS = ("HEIF", "JPEG", "DNG")
+ASPECT_LABELS = ("4:3", "16:9")
+EXPOSURE_MODE_LABELS = ("P", "S", "ISO", "M")
+EXPOSURE_STEP_EV = {"1/3 EV": 1.0 / 3.0, "1/2 EV": 0.5, "1 EV": 1.0}
+VIDEO_CODEC_LABELS = ("HEVC", "H.264")
+TRANSFER_LABELS = ("HLG", "S-Log3", "S-Log3.Cine", "LogC3", "SDR")
+TRANSFER_SPEC_NAMES = {
+    "HLG": "HLG",
+    "S-Log3": "SLOG3",
+    "S-Log3.Cine": "SLOG3_CINE",
+    "LogC3": "LOGC3",
+    "SDR": "SDR",
+}
+VIDEO_TRUTH_CLIP_SECONDS = 6
+# H.273 SDR-class transfer names as ffprobe prints them. The QTI encoder writes "SDR transfer +
+# BT2020 full range" into the container as CICP 14 (bt2020-10 — functionally BT.709), which is the
+# documented log-profile policy; the regression this list guards is the ST2084/HLG mistag.
+SDR_CLASS_TRANSFERS = frozenset({"bt709", "smpte170m", "bt470bg", "bt2020-10", "bt2020-12"})
+HDR_MISTAG_TRANSFERS = frozenset({"smpte2084", "arib-std-b67"})
+
+
+@dataclass(frozen=True)
+class CameraGeometry:
+    camera_id: str
+    facing: str
+    pixel_array: tuple[int, int]
+    active_array: tuple[int, int]
+    raw16_sizes: tuple[tuple[int, int], ...]
+    physical_ids: tuple[str, ...]
+
+
+def _static_key_values(body: str, name: str) -> list[str] | None:
+    match = re.search(
+        re.escape(name) + r" \([0-9a-f]+\): \w+\[[0-9]+\]\s*\n\s*\[([^\]]*)\]",
+        body,
+    )
+    return match.group(1).split() if match else None
+
+
+def parse_camera_geometry(text: str) -> dict[str, CameraGeometry]:
+    """Per-camera advertised geometry from `dumpsys media.camera` static sections (read-only)."""
+    sections = CAMERA_STATIC_HEADER.split(text)
+    cameras: dict[str, CameraGeometry] = {}
+    for index in range(1, len(sections) - 1, 2):
+        camera_id, body = sections[index], sections[index + 1]
+        facing = _static_key_values(body, "android.lens.facing")
+        pixel = _static_key_values(body, "android.sensor.info.pixelArraySize")
+        active = _static_key_values(body, "android.sensor.info.activeArraySize")
+        if not facing or not pixel or len(pixel) < 2 or not active or len(active) < 4:
+            continue
+        stream_block = re.search(
+            r"android\.scaler\.availableStreamConfigurations \([0-9a-f]+\): int32\[[0-9]+\]"
+            r"\s*\n((?:\s*\[[^\]]*\]\s*\n)+)",
+            body,
+        )
+        raw16 = set()
+        if stream_block is not None:
+            for fmt, width, height, direction in _STREAM_CONFIG_ROW.findall(stream_block.group(1)):
+                if int(fmt) == _HAL_FORMAT_RAW16 and direction == "OUTPUT":
+                    raw16.add((int(width), int(height)))
+        physical = _static_key_values(body, "android.logicalMultiCamera.physicalIds")
+        cameras[camera_id] = CameraGeometry(
+            camera_id=camera_id,
+            facing=facing[0],
+            pixel_array=(int(pixel[0]), int(pixel[1])),
+            active_array=(int(active[2]) - int(active[0]), int(active[3]) - int(active[1])),
+            raw16_sizes=tuple(sorted(raw16)),
+            physical_ids=tuple(physical) if physical else (),
+        )
+    return cameras
+
+
+def camera_geometry(ctx: Context) -> dict[str, CameraGeometry]:
+    cameras = parse_camera_geometry(ctx.adb.shell("dumpsys media.camera", timeout=120))
+    assert len(cameras) >= 3, f"dumpsys media.camera exposed only {sorted(cameras)}"
+    return cameras
+
+
+def rear_logical_geometry(cameras: dict[str, CameraGeometry]) -> CameraGeometry:
+    """The BACK logical multicamera — the documented non-TELE photo still route."""
+    logical = [cam for cam in cameras.values() if cam.facing == "BACK" and cam.physical_ids]
+    assert len(logical) == 1, (
+        f"expected one BACK logical multicamera, got {[cam.camera_id for cam in logical]}"
+    )
+    return logical[0]
+
+
+def front_camera_geometry(cameras: dict[str, CameraGeometry]) -> CameraGeometry:
+    fronts = [cam for cam in cameras.values() if cam.facing == "FRONT"]
+    assert len(fronts) == 1, f"expected one FRONT camera, got {[cam.camera_id for cam in fronts]}"
+    return fronts[0]
+
+
+def still_row_geometry_errors(
+    rows: list[MediaRow],
+    expected: tuple[int, int],
+    route_label: str,
+) -> list[str]:
+    """Processed still rows must equal the route's advertised binned array up to pixel rotation.
+
+    HEIF/JPEG outputs are pixel-rotated by captureRotationDegrees (portrait swaps W/H), so the
+    dimension MULTISET is the rotation-independent geometry contract.
+    """
+    errors = []
+    processed = [row for row in rows if row.mime_type in ("image/heic", "image/jpeg")]
+    if not processed:
+        errors.append(f"{route_label}: capture produced no processed still row")
+    for row in processed:
+        if sorted((row.width, row.height)) != sorted(expected):
+            errors.append(
+                f"{route_label}: {row.display_name} is {row.width}x{row.height}, "
+                f"advertised binned array is {expected[0]}x{expected[1]}"
+            )
+    return errors
+
+
+def media_row_file_parity_errors(row: MediaRow, local) -> list[str]:
+    """MediaStore row <-> pulled file parity: pending flag, byte size, and pixel dimensions."""
+    errors = []
+    if row.is_pending:
+        errors.append(f"{row.display_name}: row is still pending")
+    actual_bytes = local.stat().st_size
+    if actual_bytes != row.size_bytes:
+        errors.append(
+            f"{row.display_name}: row _size={row.size_bytes} but pulled file is {actual_bytes} bytes"
+        )
+    if row.mime_type == "image/jpeg":
+        info = media.jpeg_info(local)
+        if not info["exif"]:
+            errors.append(f"{row.display_name}: JPEG lacks EXIF APP1")
+        if (info["width"], info["height"]) != (row.width, row.height):
+            errors.append(
+                f"{row.display_name}: JPEG file {info['width']}x{info['height']} "
+                f"!= row {row.width}x{row.height}"
+            )
+    elif row.mime_type == "image/heic":
+        if not media.heic_valid(local):
+            errors.append(f"{row.display_name}: HEIC structure invalid")
+        dimensions = media.image_dimensions(local)
+        if dimensions is None:
+            raise Incomplete("sips is unavailable; HEIF file dimensions were not decoded")
+        if dimensions != (row.width, row.height):
+            errors.append(
+                f"{row.display_name}: HEIF file {dimensions} != row {row.width}x{row.height}"
+            )
+    elif row.mime_type == "image/x-adobe-dng":
+        if not media.dng_valid(local):
+            errors.append(f"{row.display_name}: DNG structure invalid")
+        else:
+            info = media.dng_info(local)
+            # The DNG is NOT pixel-rotated (EXIF orientation tag instead); MediaStore may index
+            # either orientation, so compare as a multiset and only when the row carries dims.
+            if row.width > 0 and sorted((row.width, row.height)) != sorted(
+                (info["width"], info["height"])
+            ):
+                errors.append(
+                    f"{row.display_name}: DNG file {info['width']}x{info['height']} "
+                    f"!= row {row.width}x{row.height}"
+                )
+    return errors
+
+
+def video_row_parity_errors(row: MediaRow, local, info: dict) -> list[str]:
+    """MediaStore row <-> pulled clip parity against the decoded container facts."""
+    errors = []
+    size = local.stat().st_size
+    if not (row.size_bytes == size == info.get("format_size")):
+        errors.append(
+            f"{row.display_name}: sizes differ row={row.size_bytes} file={size} "
+            f"container={info.get('format_size')}"
+        )
+    if (row.width, row.height) != (info.get("width"), info.get("height")):
+        errors.append(
+            f"{row.display_name}: dims differ row={row.width}x{row.height} "
+            f"decoded={info.get('width')}x{info.get('height')}"
+        )
+    seconds = info.get("video_seconds")
+    if row.duration_ms is None or not isinstance(seconds, Fraction) or (
+        abs(Fraction(row.duration_ms, 1_000) - seconds) > Fraction(1, 2)
+    ):
+        errors.append(
+            f"{row.display_name}: duration differs row={row.duration_ms}ms decoded={seconds}"
+        )
+    return errors
+
+
+def exposure_parity_error(
+    label: str,
+    exif_exposure: Fraction | None,
+    requested_ns: int,
+) -> str | None:
+    """EXIF ExposureTime must match the requested sensor exposure within format rounding."""
+    if exif_exposure is None:
+        return f"{label}: EXIF omitted ExposureTime"
+    requested = Fraction(requested_ns, 1_000_000_000)
+    if abs(exif_exposure - requested) > max(requested / 100, Fraction(1, 8192)):
+        return (
+            f"{label}: EXIF ExposureTime {float(exif_exposure):.6f}s "
+            f"vs requested {float(requested):.6f}s"
+        )
+    return None
+
+
+def video_container_policy_errors(info: dict, spec_transfer: str) -> list[str]:
+    """Container color truth per ColorProfiles.kt: HLG=BT2020-limited-HLG, SDR=BT709-limited,
+    log profiles=BT2020-full + SDR-class transfer. The ST2084/PQ (or HLG) mistag on a log/SDR
+    stream is the documented regression this validator exists to catch."""
+    if info.get("probe") != "ffprobe":
+        return ["ffprobe frame decoding was unavailable"]
+    errors: list[str] = []
+
+    def exact(field: str, expected: object) -> None:
+        if info.get(field) != expected:
+            errors.append(f"{field}={info.get(field)!r}, expected {expected!r}")
+
+    transfer = info.get("transfer")
+    if spec_transfer == "HLG":
+        exact("profile", "Main 10")
+        exact("pix_fmt", "yuv420p10le")
+        exact("color_range", "tv")
+        exact("color_space", "bt2020nc")
+        exact("primaries", "bt2020")
+        exact("transfer", "arib-std-b67")
+    elif spec_transfer == "SDR":
+        exact("profile", "Main")
+        exact("pix_fmt", "yuv420p")
+        exact("color_range", "tv")
+        exact("color_space", "bt709")
+        exact("primaries", "bt709")
+        if transfer not in SDR_CLASS_TRANSFERS:
+            errors.append(
+                f"transfer={transfer!r}, expected an SDR-class transfer "
+                f"{sorted(SDR_CLASS_TRANSFERS)}"
+            )
+    elif spec_transfer in ("SLOG3", "SLOG3_CINE", "LOGC3"):
+        exact("profile", "Main 10")
+        exact("pix_fmt", "yuv420p10le")
+        exact("color_range", "pc")
+        exact("color_space", "bt2020nc")
+        exact("primaries", "bt2020")
+        if transfer in HDR_MISTAG_TRANSFERS:
+            errors.append(
+                f"transfer={transfer!r}: the documented ST2084/HLG mistag on a log stream"
+            )
+        elif transfer not in SDR_CLASS_TRANSFERS:
+            errors.append(
+                f"transfer={transfer!r}, expected an SDR-class transfer "
+                f"{sorted(SDR_CLASS_TRANSFERS)}"
+            )
+    else:
+        raise ValueError(f"unknown transfer spec: {spec_transfer!r}")
+    return errors
+
+
+def shutter_readout_seconds(label: str) -> Fraction | None:
+    """Parse a shutter ruler readout ('1/100s', '0.5s', '4.0s', '10s') into seconds."""
+    match = re.fullmatch(r"(?:Auto )?1/([0-9]+)s", label)
+    if match:
+        return Fraction(1, int(match.group(1)))
+    match = re.fullmatch(r"(?:Auto )?([0-9]+(?:\.[0-9]+)?)s", label)
+    if match:
+        return Fraction(match.group(1))
+    return None
+
+
+# ---- settings-chip drivers (chips live inside checkable containers; see selected_option_labels)
+
+
+def _open_settings_tab(ctx: Context, tab: str) -> None:
+    if ctx.adb.ui().find_desc_exact("Close settings") is not None:
+        _close_settings_with_back(ctx)
+    ctx.adb.tap_ui(desc="Open settings")
+    # The tab rail exposes labels ONLY via content-desc (device fact shared with set_photo_settings).
+    ctx.adb.tap_ui(desc=tab)
+
+
+def _chip_option_nodes(tree, label: str) -> list[UiNode]:
+    """Text nodes that sit inside a checkable chip container — never section headers/OSD text."""
+    checkable_regions = [node.bounds for node in tree.nodes if node.checkable]
+    return [
+        node for node in tree.nodes
+        if node.text == label
+        and any(_bounds_contain(region, node.bounds) for region in checkable_regions)
+    ]
+
+
+def _settings_chip_states(
+    ctx: Context,
+    labels: set[str],
+    *,
+    max_scrolls: int = 8,
+) -> dict[str, bool]:
+    """Selected-state per chip on the OPEN settings tab, rewinding then scrolling into view."""
+    metrics = ctx.adb.display_metrics()
+    x = metrics.width_px * 4 // 5
+    top = metrics.height_px // 3
+    bottom = metrics.height_px * 4 // 5
+    for _ in range(8):
+        ctx.adb.shell(f"input swipe {x} {top} {x} {bottom} 200")
+        time.sleep(0.1)
+    for _ in range(max_scrolls):
+        tree = ctx.adb.ui()
+        states: dict[str, bool] = {}
+        for label in labels:
+            if len(_chip_option_nodes(tree, label)) == 1:
+                states[label] = label in selected_option_labels(tree, {label})
+        if set(states) == set(labels):
+            return states
+        ctx.adb.shell(f"input swipe {x} {bottom} {x} {top} 250")
+        time.sleep(0.35)
+    raise AssertionError(f"settings chips {sorted(labels)} were not all reachable")
+
+
+def _set_chip(ctx: Context, label: str, want_selected: bool) -> None:
+    tree = ctx.adb.ui()
+    nodes = _chip_option_nodes(tree, label)
+    assert len(nodes) == 1, f"chip {label!r}: expected one option node, got {len(nodes)}"
+    node = nodes[0]
+    if (label in selected_option_labels(tree, {label})) == want_selected:
+        return
+    assert node.enabled, f"chip {label!r} is disabled; cannot change it"
+    ctx.adb.tap(*node.center)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if (label in selected_option_labels(ctx.adb.ui(), {label})) == want_selected:
+            return
+        time.sleep(0.3)
+    raise AssertionError(f"chip {label!r} did not reach selected={want_selected}")
+
+
+def read_photo_output_formats(ctx: Context) -> frozenset[str]:
+    _open_settings_tab(ctx, "Shoot")
+    try:
+        states = _settings_chip_states(ctx, set(PHOTO_OUTPUT_LABELS))
+        selected = frozenset(label for label, on in states.items() if on)
+        assert selected & {"HEIF", "JPEG"}, f"no processed output selected: {states}"
+        return selected
+    finally:
+        _close_settings_with_back(ctx)
+
+
+def set_photo_output_formats(ctx: Context, desired: frozenset[str]) -> None:
+    assert desired & {"HEIF", "JPEG"}, f"refusing an output set without a processed still: {sorted(desired)}"
+    _open_settings_tab(ctx, "Shoot")
+    try:
+        _settings_chip_states(ctx, set(PHOTO_OUTPUT_LABELS))  # scrolls the chips into view
+        for label in ("HEIF", "JPEG", "DNG"):  # enable first — DNG requires a processed sibling
+            if label in desired:
+                _set_chip(ctx, label, True)
+        for label in ("DNG", "JPEG", "HEIF"):  # then release extras, DNG before processed
+            if label not in desired:
+                _set_chip(ctx, label, False)
+    finally:
+        _close_settings_with_back(ctx)
+    actual = read_photo_output_formats(ctx)
+    assert actual == desired, (
+        f"output formats did not persist: wanted {sorted(desired)}, got {sorted(actual)}"
+    )
+
+
+def read_selected_aspect(ctx: Context) -> str:
+    _open_settings_tab(ctx, "Shoot")
+    try:
+        states = _settings_chip_states(ctx, set(ASPECT_LABELS))
+        selected = [label for label, on in states.items() if on]
+        assert len(selected) == 1, f"ambiguous aspect selection: {states}"
+        return selected[0]
+    finally:
+        _close_settings_with_back(ctx)
+
+
+def set_selected_aspect(ctx: Context, label: str) -> None:
+    _open_settings_tab(ctx, "Shoot")
+    try:
+        _settings_chip_states(ctx, set(ASPECT_LABELS))
+        _set_chip(ctx, label, True)
+    finally:
+        _close_settings_with_back(ctx)
+
+
+def read_exposure_mode_and_step(ctx: Context) -> tuple[str, str]:
+    _open_settings_tab(ctx, "Exposure")
+    try:
+        states = _settings_chip_states(
+            ctx,
+            set(EXPOSURE_MODE_LABELS) | set(EXPOSURE_STEP_EV),
+        )
+        modes = [label for label in EXPOSURE_MODE_LABELS if states.get(label)]
+        steps = [label for label in EXPOSURE_STEP_EV if states.get(label)]
+        assert len(modes) == 1 and len(steps) == 1, f"ambiguous exposure mode/step: {states}"
+        return modes[0], steps[0]
+    finally:
+        _close_settings_with_back(ctx)
+
+
+def set_exposure_mode(ctx: Context, letter: str) -> None:
+    _open_settings_tab(ctx, "Exposure")
+    try:
+        _settings_chip_states(ctx, set(EXPOSURE_MODE_LABELS))
+        _set_chip(ctx, letter, True)
+    finally:
+        _close_settings_with_back(ctx)
+
+
+def _transfer_anchor_nodes(tree) -> list[UiNode]:
+    return [node for node in tree.nodes if node.text in TRANSFER_LABELS]
+
+
+def _transfer_row_sweep(ctx: Context, y: int, *, toward_end: bool) -> None:
+    metrics = ctx.adb.display_metrics()
+    lo, hi = metrics.width_px // 4, metrics.width_px * 3 // 4
+    if toward_end:
+        ctx.adb.shell(f"input swipe {hi} {y} {lo} {y} 250")
+    else:
+        ctx.adb.shell(f"input swipe {lo} {y} {hi} {y} 250")
+    time.sleep(0.35)
+
+
+def _transfer_row_y(ctx: Context) -> int:
+    """Vertical position of the horizontally-scrollable transfer chip row (SDR can be off-row)."""
+    metrics = ctx.adb.display_metrics()
+    x = metrics.width_px * 4 // 5
+    top = metrics.height_px // 3
+    bottom = metrics.height_px * 4 // 5
+    for _ in range(8):
+        anchors = _transfer_anchor_nodes(ctx.adb.ui())
+        if anchors:
+            return anchors[0].center[1]
+        ctx.adb.shell(f"input swipe {x} {bottom} {x} {top} 250")
+        time.sleep(0.35)
+    raise AssertionError("transfer chips are not reachable on the Video tab")
+
+
+def read_video_codec_and_transfer(ctx: Context) -> tuple[str, str]:
+    _open_settings_tab(ctx, "Video")
+    try:
+        codec_states = _settings_chip_states(ctx, set(VIDEO_CODEC_LABELS))
+        codecs = [label for label, on in codec_states.items() if on]
+        assert len(codecs) == 1, f"ambiguous codec selection: {codec_states}"
+        y = _transfer_row_y(ctx)
+        for _ in range(4):
+            _transfer_row_sweep(ctx, y, toward_end=False)  # rewind the row to its start
+        seen: set[str] = set()
+        selected: set[str] = set()
+        for _ in range(5):
+            tree = ctx.adb.ui()
+            seen |= {node.text for node in _transfer_anchor_nodes(tree)}
+            selected |= selected_option_labels(tree, set(TRANSFER_LABELS))
+            if seen == set(TRANSFER_LABELS):
+                break
+            _transfer_row_sweep(ctx, y, toward_end=True)
+        assert seen == set(TRANSFER_LABELS), f"transfer chips never fully enumerated: {sorted(seen)}"
+        assert len(selected) == 1, f"ambiguous transfer selection: {sorted(selected)}"
+        return codecs[0], next(iter(selected))
+    finally:
+        _close_settings_with_back(ctx)
+
+
+def select_video_transfer(ctx: Context, label: str) -> None:
+    assert label in TRANSFER_LABELS, label
+    _open_settings_tab(ctx, "Video")
+    try:
+        metrics = ctx.adb.display_metrics()
+        y = _transfer_row_y(ctx)
+        for _ in range(4):
+            _transfer_row_sweep(ctx, y, toward_end=False)
+        for _ in range(8):
+            tree = ctx.adb.ui()
+            node = next(
+                (
+                    n for n in _chip_option_nodes(tree, label)
+                    if 0 <= n.center[0] < metrics.width_px
+                ),
+                None,
+            )
+            if node is not None:
+                _set_chip(ctx, label, True)
+                return
+            _transfer_row_sweep(ctx, y, toward_end=True)
+        raise AssertionError(f"transfer chip {label!r} was not reachable")
+    finally:
+        _close_settings_with_back(ctx)
+
+
+# ---- manual ruler drivers (Fn dial cluster)
+
+
+def _ruler_node(tree, ruler_desc: str) -> UiNode | None:
+    """The ruler Canvas surfaces as a SeekBar via progressSemantics — the Speed/Angle toggle can
+    share the same content description, so the class filter is load-bearing."""
+    nodes = [
+        node for node in tree.nodes
+        if node.desc == ruler_desc and node.class_name.endswith("SeekBar")
+    ]
+    return nodes[0] if len(nodes) == 1 else None
+
+
+def open_manual_dial(ctx: Context, tile: str, ruler_desc: str) -> None:
+    if ctx.adb.ui().find_desc_exact("Close adjustment") is not None:
+        close_manual_dial(ctx)
+    ctx.adb.tap_ui(desc="Open function menu")
+    ctx.adb.tap_ui(desc=tile)
+    deadline = time.monotonic() + 6
+    while time.monotonic() < deadline:
+        tree = ctx.adb.ui()
+        if tree.find_desc_exact("Close adjustment") and _ruler_node(tree, ruler_desc):
+            return
+        time.sleep(0.3)
+    raise AssertionError(f"Fn {tile} did not open the {ruler_desc!r} adjustment ruler")
+
+
+def close_manual_dial(ctx: Context) -> None:
+    node = ctx.adb.ui().find_desc_exact("Close adjustment")
+    if node is not None:
+        ctx.adb.tap(*node.center)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if ctx.adb.ui().find_desc_exact("Close adjustment") is None:
+            return
+        time.sleep(0.3)
+    raise AssertionError("adjustment dial did not close")
+
+
+def _iso_ruler_value(tree) -> int | None:
+    values = {
+        int(match.group(1))
+        for label in tree.all_labels()
+        if (match := ISO_READOUT.fullmatch(label)) is not None
+    }
+    return next(iter(values)) if len(values) == 1 else None
+
+
+def _shutter_ruler_value(tree) -> Fraction | None:
+    values = {
+        seconds
+        for label in tree.all_labels()
+        if (seconds := shutter_readout_seconds(label)) is not None
+    }
+    return next(iter(values)) if len(values) == 1 else None
+
+
+def _drive_ruler_to_stop(
+    ctx: Context,
+    *,
+    ruler_desc: str,
+    read_value,
+    target,
+    accept,
+    step_ev: float,
+    label: str,
+    max_attempts: int = 12,
+):
+    """Closed-loop tick drags on an EV-snapped ruler until ``accept(current)`` holds.
+
+    Returns (initial_value, final_value). Every iteration re-reads the readout and re-plans, so
+    slop under-shoot self-corrects; the drag SIGN is also observed and flipped if the ruler
+    direction ever inverts (defensive — probed direction is LEFT = higher).
+    """
+    metrics = ctx.adb.display_metrics()
+    tick_px = math.ceil(RULER_TICK_DP * metrics.density_dpi / 160)
+    slop_px = math.ceil(RULER_SLOP_DP * metrics.density_dpi / 160)
+    left_increases = True
+    initial = None
+    previous = None
+    previous_direction = 0
+    for _ in range(max_attempts):
+        tree = ctx.adb.ui()
+        ruler = _ruler_node(tree, ruler_desc)
+        assert ruler is not None, f"{label}: ruler control {ruler_desc!r} is not on screen"
+        current = read_value(tree)
+        assert current is not None, f"{label}: ruler readout is not readable"
+        if initial is None:
+            initial = current
+        if previous is not None and previous_direction != 0 and current != previous:
+            moved_up = current > previous
+            if moved_up != (previous_direction > 0):
+                left_increases = not left_increases
+        if accept(current):
+            return initial, current
+        ev_delta = math.log2(float(target) / float(current))
+        ticks = max(1, min(24, round(abs(ev_delta) / step_ev)))
+        left, top, right, bottom = ruler.bounds
+        y = (top + bottom) // 2
+        span = right - left - 80
+        assert span > tick_px, f"{label}: ruler bounds too narrow: {ruler.bounds}"
+        dx = min(ticks * tick_px + slop_px, span)
+        wants_higher = ev_delta > 0
+        drag_left = wants_higher == left_increases
+        if drag_left:
+            start_x, end_x = left + 40 + dx, left + 40
+        else:
+            start_x, end_x = right - 40 - dx, right - 40
+        previous = current
+        previous_direction = 1 if wants_higher else -1
+        ctx.adb.shell(f"input swipe {start_x} {y} {end_x} {y} {max(300, dx * 2)}")
+        time.sleep(0.9)
+    raise AssertionError(
+        f"{label}: ruler did not reach the target after {max_attempts} drags "
+        f"(initial={initial}, last={previous})"
+    )
+
+
+def _restore_iso_value(ctx: Context, target: int, step_ev: float) -> None:
+    open_manual_dial(ctx, "ISO", "ISO")
+    try:
+        _drive_ruler_to_stop(
+            ctx,
+            ruler_desc="ISO",
+            read_value=_iso_ruler_value,
+            target=target,
+            accept=lambda current: current == target,
+            step_ev=step_ev,
+            label="ISO restore",
+        )
+    finally:
+        close_manual_dial(ctx)
+
+
+def _restore_shutter_value(ctx: Context, target: Fraction, step_ev: float) -> None:
+    open_manual_dial(ctx, "Shutter", "Shutter speed")
+    try:
+        _drive_ruler_to_stop(
+            ctx,
+            ruler_desc="Shutter speed",
+            read_value=_shutter_ruler_value,
+            target=target,
+            accept=lambda current: current == target,
+            step_ev=step_ev,
+            label="Shutter restore",
+        )
+    finally:
+        close_manual_dial(ctx)
+
+
+def _shutter_mode_toggle(tree, mode_desc: str) -> UiNode | None:
+    return next(
+        (
+            node for node in tree.nodes
+            if node.desc == mode_desc and not node.class_name.endswith("SeekBar")
+        ),
+        None,
+    )
+
+
+def _restore_shutter_mode_angle(ctx: Context) -> None:
+    open_manual_dial(ctx, "Shutter", "Shutter speed")
+    try:
+        toggle = _shutter_mode_toggle(ctx.adb.ui(), "Shutter angle")
+        assert toggle is not None, "Shutter angle toggle is not visible"
+        ctx.adb.tap(*toggle.center)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            node = _shutter_mode_toggle(ctx.adb.ui(), "Shutter angle")
+            if node is not None and node.selected:
+                return
+            time.sleep(0.3)
+        raise AssertionError("Shutter angle mode was not restored")
+    finally:
+        close_manual_dial(ctx)
+
+
+def restore_lens_preset(ctx: Context, lens: str) -> None:
+    ctx.adb.tap_ui(desc=lens)
+    deadline = time.time() + 6
+    error = "lens restore did not settle"
+    while time.time() < deadline:
+        error = focal_rail_error(ctx.adb.ui(), lens)
+        if error is None:
+            return
+        time.sleep(0.4)
+    raise AssertionError(error)
+
+
+def switch_camera_verified(
+    ctx: Context,
+    pid: int,
+    *,
+    after_optics_generation: int,
+    expect_facing: str,
+    cameras: dict[str, CameraGeometry],
+) -> tuple[SessionAcceptance, ModeThreeAEvidence]:
+    """Cross the facing door and prove the accepted route faces the expected way (dumpsys join)."""
+    mark = ctx.adb.log_mark()
+    ctx.adb.tap_ui(desc="Switch camera")
+    acceptance = wait_session_acceptance(
+        ctx,
+        mark,
+        pid,
+        "PHOTO",
+        after_optics_generation=after_optics_generation,
+        timeout_s=20,
+    )
+    assert acceptance, f"{expect_facing} switch was never accepted by the camera engine"
+    geometry = cameras.get(acceptance.camera_id)
+    assert geometry is not None, (
+        f"accepted camera {acceptance.camera_id} has no dumpsys static section"
+    )
+    assert geometry.facing == expect_facing, (
+        f"accepted camera {acceptance.camera_id} faces {geometry.facing}, expected {expect_facing}"
+    )
+    evidence = wait_mode_three_a(
+        ctx,
+        mark,
+        pid,
+        "PHOTO",
+        controller_id=acceptance.controller_id,
+        optics_generation=acceptance.optics_generation,
+        timeout_s=20,
+    )
+    assert evidence, f"accepted {expect_facing} route produced no owned 3A result"
+    return acceptance, evidence
+
+
+def _pull_and_check_rows(ctx: Context, rows: list[MediaRow]) -> list[str]:
+    errors: list[str] = []
+    for row in rows:
+        assert_published_row(row)
+        local = ctx.adb.pull(f"{MEDIA_DIR}/{row.display_name}", ctx.evidence / row.display_name)
+        errors.extend(media_row_file_parity_errors(row, local))
+    return errors
+
+
+@test("per_lens_still_geometry", "full", mutates_settings=True, writes_media=True)
+def t_per_lens_still_geometry(ctx: Context) -> None:
+    """Every accepted still route delivers exactly its advertised binned array (200MP stays dormant).
+
+    Routing facts under test (CLAUDE.md): photo rear presets are ZOOM presets on the LOGICAL
+    seamless camera — the still geometry for 0.6/1/3/10x is therefore the LOGICAL camera's binned
+    array, not the per-physical-lens arrays; TELE pins standalone 4 (covered by tele_dng_parity);
+    the front door opens the enumerated FRONT camera.
+    """
+    pid = ensure_foreground(ctx)
+    ensure_photo_mode(ctx)
+    cameras = camera_geometry(ctx)
+    logical = rear_logical_geometry(cameras)
+    front = front_camera_geometry(cameras)
+    arrays = sorted({cam.pixel_array for cam in cameras.values()})
+    oversized = [
+        cam.camera_id for cam in cameras.values()
+        if cam.pixel_array[0] * cam.pixel_array[1] > BINNED_ARRAY_MAX_PIXELS
+    ]
+    assert not oversized, (
+        f"cameras advertise beyond-binned arrays (revisit the dormant hi-res fact): {oversized}"
+    )
+    assert DOCUMENTED_BINNED_ARRAYS <= set(arrays), (
+        f"documented binned arrays {sorted(DOCUMENTED_BINNED_ARRAYS)} not all advertised: {arrays}"
+    )
+    ctx.note(
+        f"advertised arrays {arrays}; logical={logical.camera_id} {logical.pixel_array}, "
+        f"front={front.camera_id} {front.pixel_array} "
+        f"(documented pair {sorted(DOCUMENTED_BINNED_ARRAYS)})"
+    )
+
+    mark = ctx.adb.log_mark()
+    baseline = wait_mode_three_a(ctx, mark, pid, "PHOTO", timeout_s=20)
+    assert baseline, "no baseline Photo 3A before the geometry sweep"
+    if three_a_tele_state(baseline)[0]:
+        # Rear presets are the NON-TELE photo route; leave TELE (also the suite's baseline state).
+        baseline = toggle_teleconverter(ctx, pid, baseline)
+        assert not three_a_tele_state(baseline)[0], "could not leave TELE before the sweep"
+
+    rail = ctx.adb.ui()
+    checked = [
+        description for description in FOCAL_PRESETS
+        if (node := rail.find_desc_exact(description)) is not None and node.checked
+    ]
+    assert len(checked) == 1, f"expected one checked lens preset, got {checked}"
+    initial_lens = checked[0]
+
+    aspect_original = read_selected_aspect(ctx)
+    aspect_changed = False
+    on_front = False
+    try:
+        if aspect_original != "4:3":
+            # 4:3 is the full-readout sentinel; a 16:9 crop cannot witness array geometry.
+            set_selected_aspect(ctx, "4:3")
+            aspect_changed = True
+        for lens in FOCAL_PRESETS:
+            ctx.adb.tap_ui(desc=lens)
+            deadline = time.time() + 6
+            error = "lens selection did not settle"
+            while time.time() < deadline:
+                error = focal_rail_error(ctx.adb.ui(), lens)
+                if error is None:
+                    break
+                time.sleep(0.4)
+            assert error is None, error
+            # Presets are zoom moves on the SAME logical session (no reopen), so route sanity is
+            # the freshest telemetry still reporting tele=false rather than a new acceptance.
+            preset_mark = ctx.adb.log_mark()
+            evidence = wait_mode_three_a(ctx, preset_mark, pid, "PHOTO", timeout_s=15)
+            assert evidence, f"{lens}: no 3A telemetry after the preset"
+            assert not three_a_tele_state(evidence)[0], f"{lens}: preset reports tele=true"
+            new = capture_still(ctx)
+            errors = still_row_geometry_errors(new, logical.pixel_array, lens)
+            errors.extend(_pull_and_check_rows(ctx, new))
+            assert not errors, f"{lens}: " + "; ".join(errors)
+            ctx.note(
+                f"{lens}: logical camera {logical.camera_id} delivered "
+                f"{sorted({(row.width, row.height) for row in new})} == advertised "
+                f"{logical.pixel_array} (pixel-rotated)"
+            )
+        acceptance, front_evidence = switch_camera_verified(
+            ctx,
+            pid,
+            after_optics_generation=baseline.optics_generation,
+            expect_facing="FRONT",
+            cameras=cameras,
+        )
+        on_front = True
+        assert not three_a_tele_state(front_evidence)[0], "front route reports tele=true"
+        expected_front = cameras[acceptance.camera_id].pixel_array
+        new = capture_still(ctx)
+        errors = still_row_geometry_errors(new, expected_front, "front")
+        errors.extend(_pull_and_check_rows(ctx, new))
+        assert not errors, "front: " + "; ".join(errors)
+        ctx.note(
+            f"front: accepted camera {acceptance.camera_id} delivered "
+            f"{sorted({(row.width, row.height) for row in new})} == advertised {expected_front}"
+        )
+        rear_acceptance, baseline = switch_camera_verified(
+            ctx,
+            pid,
+            after_optics_generation=acceptance.optics_generation,
+            expect_facing="BACK",
+            cameras=cameras,
+        )
+        on_front = False
+        assert rear_acceptance.camera_id == logical.camera_id, (
+            f"rear return accepted camera {rear_acceptance.camera_id}, "
+            f"expected the logical {logical.camera_id}"
+        )
+    finally:
+        if on_front:
+            cleanup_transport_or_unsafe(
+                "could not leave the front camera",
+                lambda: ctx.adb.tap_ui(desc="Switch camera"),
+            )
+            time.sleep(2)
+            tree = cleanup_transport_or_unsafe("front-return UI state unavailable", ctx.adb.ui)
+            if tree.find_desc_exact("Take photo") is None:
+                raise UnsafeState("front-camera return could not be proven")
+        cleanup_transport_or_unsafe(
+            "could not restore the entry lens preset",
+            lambda: restore_lens_preset(ctx, initial_lens),
+        )
+        if aspect_changed:
+            cleanup_transport_or_unsafe(
+                "could not restore the persisted aspect",
+                lambda: set_selected_aspect(ctx, aspect_original),
+            )
+    fatals = ctx.adb.fatal_lines(mark, pid)
+    assert not fatals, f"errors during the geometry sweep: {fatals[:2]}"
+
+
+@test("tele_dng_parity", "full", mutates_settings=True, writes_media=True)
+def t_tele_dng_parity(ctx: Context) -> None:
+    """The TELE DNG is the advertised 16-bit CFA plane and its EXIF matches the manual request."""
+    pid = ensure_foreground(ctx)
+    ensure_photo_mode(ctx)
+    cameras = camera_geometry(ctx)
+    mark = ctx.adb.log_mark()
+    baseline = wait_mode_three_a(ctx, mark, pid, "PHOTO", timeout_s=20)
+    assert baseline, "no baseline Photo 3A before TELE entry"
+    if three_a_tele_state(baseline)[0]:
+        # Own the acceptance evidence by re-entering; the case ends at TC off (suite baseline).
+        baseline = toggle_teleconverter(ctx, pid, baseline)
+        assert not three_a_tele_state(baseline)[0], "could not reach the TC-off baseline"
+    tele_mark = ctx.adb.log_mark()
+    tele_evidence = toggle_teleconverter(ctx, pid, baseline)
+    now_tele, now_zoom = three_a_tele_state(tele_evidence)
+    assert now_tele and now_zoom >= TELE_MIN_EFFECTIVE_ZOOM, (
+        f"TELE entry failed (tele={now_tele}, effZoom={now_zoom})"
+    )
+    acceptance = newest_session_acceptance(ctx.adb.logcat_since(tele_mark, pid), "PHOTO")
+    assert acceptance is not None, "TELE toggle produced no owned acceptance"
+    tele_camera = cameras.get(acceptance.camera_id)
+    assert tele_camera is not None and tele_camera.facing == "BACK", (
+        f"accepted TELE camera {acceptance.camera_id} has no BACK dumpsys section"
+    )
+    assert tele_camera.raw16_sizes, (
+        f"TELE camera {acceptance.camera_id} advertises no RAW16 output"
+    )
+    raw_plane = max(tele_camera.raw16_sizes, key=lambda size: size[0] * size[1])
+    ctx.note(
+        f"TELE route camera {acceptance.camera_id}: advertised RAW16={raw_plane}, "
+        f"array={tele_camera.pixel_array} (documented pair {sorted(DOCUMENTED_BINNED_ARRAYS)}; "
+        f"the 2026-07-10 release note said 4080x3064 — pin the live truth)"
+    )
+
+    formats_original: frozenset[str] | None = None
+    formats_desired: frozenset[str] | None = None
+    mode_original: str | None = None
+    step_ev: float | None = None
+    speed_toggled_from_angle = False
+    manual_iso_original: int | None = None
+    manual_shutter_original: Fraction | None = None
+    dial_open = False
+    try:
+        formats_original = read_photo_output_formats(ctx)
+        formats_desired = frozenset(formats_original | {"JPEG", "DNG"})
+        if formats_desired != formats_original:
+            set_photo_output_formats(ctx, formats_desired)
+        mode_original, step_label = read_exposure_mode_and_step(ctx)
+        step_ev = EXPOSURE_STEP_EV[step_label]
+        if mode_original != "M":
+            set_exposure_mode(ctx, "M")
+
+        open_manual_dial(ctx, "ISO", "ISO")
+        dial_open = True
+        iso_initial, _ = _drive_ruler_to_stop(
+            ctx,
+            ruler_desc="ISO",
+            read_value=_iso_ruler_value,
+            target=TELE_DNG_TARGET_ISO,
+            accept=lambda current: current == TELE_DNG_TARGET_ISO,
+            step_ev=step_ev,
+            label="ISO ruler",
+        )
+        if mode_original == "M":
+            manual_iso_original = iso_initial
+
+        open_manual_dial(ctx, "Shutter", "Shutter speed")
+        angle = _shutter_mode_toggle(ctx.adb.ui(), "Shutter angle")
+        if angle is not None and angle.selected:
+            speed_toggle = _shutter_mode_toggle(ctx.adb.ui(), "Shutter speed")
+            assert speed_toggle is not None, "Shutter speed toggle is not visible"
+            ctx.adb.tap(*speed_toggle.center)
+            speed_toggled_from_angle = True
+            time.sleep(0.8)
+        target_s = float(TELE_DNG_TARGET_EXPOSURE_S)
+        shutter_initial, _ = _drive_ruler_to_stop(
+            ctx,
+            ruler_desc="Shutter speed",
+            read_value=_shutter_ruler_value,
+            target=TELE_DNG_TARGET_EXPOSURE_S,
+            # The EV ladder is anchored at 1 s, so an exact 1/100 s stop only exists for some
+            # steps; accept the NEAREST stop and read the exact ns from the engine's telemetry.
+            accept=lambda current: abs(math.log2(float(current) / target_s)) <= step_ev * 0.55,
+            step_ev=step_ev,
+            label="Shutter ruler",
+        )
+        if mode_original == "M":
+            manual_shutter_original = shutter_initial
+        close_manual_dial(ctx)
+        dial_open = False
+
+        settle_mark = ctx.adb.log_mark()
+        request = None
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            evidence = newest_mode_three_a(ctx.adb.logcat_since(settle_mark, pid), "PHOTO")
+            if evidence is not None:
+                sensor = THREE_A_SENSOR.search(evidence.line)
+                if sensor is not None and int(sensor.group(1)) == TELE_DNG_TARGET_ISO:
+                    request = sensor
+                    break
+            time.sleep(0.5)
+        assert request is not None, "manual ISO 800 never reached the repeating-request telemetry"
+        requested_exposure_ns = int(request.group(2))
+        assert 6_000_000 <= requested_exposure_ns <= 14_000_000, (
+            f"manual shutter landed at {requested_exposure_ns}ns, expected the ~1/100s stop"
+        )
+
+        new = capture_still(ctx)
+        by_extension = {
+            row.display_name.rsplit(".", 1)[-1].casefold(): row for row in new
+        }
+        assert "dng" in by_extension, (
+            f"TELE capture produced no DNG despite the enabled format: {sorted(by_extension)}"
+        )
+        assert "jpg" in by_extension, (
+            f"TELE capture produced no JPEG sibling: {sorted(by_extension)}"
+        )
+        errors: list[str] = []
+        pulled = {}
+        for row in new:
+            assert_published_row(row)
+            local = ctx.adb.pull(
+                f"{MEDIA_DIR}/{row.display_name}", ctx.evidence / row.display_name
+            )
+            pulled[row.display_name] = local
+            errors.extend(media_row_file_parity_errors(row, local))
+
+        dng = media.dng_info(pulled[by_extension["dng"].display_name])
+        if (dng["width"], dng["height"]) != raw_plane:
+            errors.append(
+                f"DNG plane {dng['width']}x{dng['height']} != advertised RAW16 {raw_plane}"
+            )
+        if dng["bits_per_sample"] != 16:
+            errors.append(f"DNG BitsPerSample={dng['bits_per_sample']}, expected 16")
+        if dng["samples_per_pixel"] != 1:
+            errors.append(f"DNG SamplesPerPixel={dng['samples_per_pixel']}, expected 1 (CFA)")
+        if not dng["cfa"]:
+            errors.append(f"DNG photometric={dng['photometric']}, expected CFA 32803")
+        if dng["iso"] != TELE_DNG_TARGET_ISO:
+            errors.append(f"DNG EXIF ISO={dng['iso']}, requested {TELE_DNG_TARGET_ISO}")
+        parity = exposure_parity_error("DNG", dng["exposure_time"], requested_exposure_ns)
+        if parity is not None:
+            errors.append(parity)
+        jpeg = media.jpeg_exif_info(pulled[by_extension["jpg"].display_name])
+        if jpeg["iso"] != TELE_DNG_TARGET_ISO:
+            errors.append(f"JPEG EXIF ISO={jpeg['iso']}, requested {TELE_DNG_TARGET_ISO}")
+        parity = exposure_parity_error("JPEG", jpeg["exposure_time"], requested_exposure_ns)
+        if parity is not None:
+            errors.append(parity)
+        assert not errors, "TELE DNG parity violations: " + "; ".join(errors)
+        ctx.note(
+            f"DNG {dng['width']}x{dng['height']} 16-bit CFA; EXIF ISO {dng['iso']} / "
+            f"{float(dng['exposure_time']):.6f}s vs requested {TELE_DNG_TARGET_ISO} / "
+            f"{requested_exposure_ns}ns (JPEG EXIF in parity)"
+        )
+        fatals = ctx.adb.fatal_lines(mark, pid)
+        assert not fatals, f"errors during TELE DNG parity: {fatals[:2]}"
+    finally:
+        if dial_open:
+            cleanup_transport_or_unsafe(
+                "could not close the adjustment dial", lambda: close_manual_dial(ctx)
+            )
+        if step_ev is not None:
+            # Manual values are the photographer's own state only in M; in P/S/ISO the app-side
+            # loop rewrites them continuously, so restoring the MODE is the complete restore.
+            if manual_iso_original is not None and manual_iso_original != TELE_DNG_TARGET_ISO:
+                cleanup_transport_or_unsafe(
+                    "could not restore the manual ISO",
+                    lambda: _restore_iso_value(ctx, manual_iso_original, step_ev),
+                )
+            if manual_shutter_original is not None:
+                cleanup_transport_or_unsafe(
+                    "could not restore the manual shutter",
+                    lambda: _restore_shutter_value(ctx, manual_shutter_original, step_ev),
+                )
+        if speed_toggled_from_angle:
+            cleanup_transport_or_unsafe(
+                "could not restore the shutter ANGLE mode",
+                lambda: _restore_shutter_mode_angle(ctx),
+            )
+        if mode_original is not None and mode_original != "M":
+            cleanup_transport_or_unsafe(
+                "could not restore the exposure mode",
+                lambda: set_exposure_mode(ctx, mode_original),
+            )
+        if (
+            formats_original is not None
+            and formats_desired is not None
+            and formats_desired != formats_original
+        ):
+            # Restore while still on the TELE route: the DNG chip is enabled only where RAW is.
+            cleanup_transport_or_unsafe(
+                "could not restore the photo output formats",
+                lambda: set_photo_output_formats(ctx, formats_original),
+            )
+        restore_teleconverter_off_verified(ctx, pid, tele_evidence)
+
+
+def record_container_truth_clip(
+    ctx: Context,
+    pid: int,
+    *,
+    transfer_label: str,
+    seconds: int,
+) -> None:
+    """One short clip under the given transfer: admitted spec, decode, color policy, row parity."""
+    spec_name = TRANSFER_SPEC_NAMES[transfer_label]
+    before = {row.key for row in ctx.adb.media_store_rows()}
+    mark = ctx.adb.log_mark()
+    admitted = None
+    recording_may_be_active = True
+    try:
+        ctx.adb.tap_ui(desc="Start recording")
+        admitted_line = ctx.adb.wait_log(mark, RECORDING_SPEC.pattern, timeout_s=12, pid=pid)
+        assert admitted_line, f"{transfer_label}: recorder did not publish an admitted spec"
+        admitted = RECORDING_SPEC.search(admitted_line)
+        assert admitted is not None, f"{transfer_label}: malformed admission: {admitted_line}"
+        assert admitted.group(9) == spec_name, (
+            f"{transfer_label}: admitted transfer={admitted.group(9)}, expected {spec_name} — "
+            "the selected chip did not reach the recorder"
+        )
+        wait_recording_running(ctx, pid)
+        assert_recording_continues(ctx, pid, seconds)
+        observed = stop_recording_verified(ctx, pid)
+        assert observed, f"{transfer_label}: REC ended before the requested Stop"
+        wait_recording_finalized(ctx, mark, pid, recording_capture_id(admitted))
+        recording_may_be_active = False
+    finally:
+        if recording_may_be_active:
+            observed = stop_recording_verified(ctx, pid)
+            if admitted is None:
+                admitted = recover_recording_admission(
+                    ctx, mark, pid, f"container truth {transfer_label}"
+                )
+            if admitted is None:
+                detail = "REC UI was observed" if observed else "REC start was attempted"
+                raise UnsafeState(
+                    f"{transfer_label}: {detail}, but admission/finalization identity is unavailable"
+                )
+            wait_recording_finalized(ctx, mark, pid, recording_capture_id(admitted))
+
+    new = ctx.adb.wait_new_media_rows(before, min_new=1, timeout_s=45)
+    vids = [row for row in new if row.collection == "video" and row.mime_type == "video/mp4"]
+    assert len(vids) == 1 and len(new) == 1, f"{transfer_label}: unexpected row family: {new}"
+    row = vids[0]
+    assert_published_row(row)
+    assert row.display_name == f"{admitted.group(1)}.mp4", (
+        f"{transfer_label}: spec/MediaStore family mismatch: {admitted.group(1)} vs {row}"
+    )
+    local = ctx.adb.pull(f"{MEDIA_DIR}/{row.display_name}", ctx.evidence / row.display_name)
+    info = media.mp4_probe(local)
+    require_decoded_video(
+        info,
+        minimum_seconds=seconds - 2.0,
+        expected_fps=Fraction(admitted.group(8)),
+    )
+    errors = media.recording_contract_errors(
+        info,
+        expected_codec=admitted.group(2),
+        expected_width=int(admitted.group(5)),
+        expected_height=int(admitted.group(6)),
+        expected_audio=admitted.group(10) == "true",
+    )
+    errors.extend(video_container_policy_errors(info, spec_name))
+    errors.extend(video_row_parity_errors(row, local, info))
+    assert not errors, f"{transfer_label}: " + "; ".join(errors)
+    ctx.note(
+        f"{transfer_label}: {row.display_name} profile={info.get('profile')} "
+        f"range={info.get('color_range')} space={info.get('color_space')} "
+        f"transfer={info.get('transfer')} primaries={info.get('primaries')}"
+    )
+
+
+@test("video_container_truth", "full", mutates_settings=True, writes_media=True)
+def t_video_container_truth(ctx: Context) -> None:
+    """SDR and HLG clips (plus a persisted log preset) carry the documented container color policy."""
+    pid = ensure_foreground(ctx)
+    entry_tree = ctx.adb.ui()
+    if entry_tree.find_desc_exact("Stop recording"):
+        raise UnsafeState("container truth entered while REC was active")
+    initial_mode = "VIDEO" if entry_tree.find_desc_exact("Start recording") else "PHOTO"
+    suite_mark = ctx.adb.log_mark()
+    require_recording_storage(
+        ctx,
+        REC_SOAK_MAX_MBPS,
+        3 * VIDEO_TRUTH_CLIP_SECONDS,
+        label="container truth clips",
+    )
+    ensure_video_mode(ctx)
+    codec, original_transfer = read_video_codec_and_transfer(ctx)
+    if codec != "HEVC":
+        restore_capture_mode_verified(ctx, initial_mode, pid)
+        raise Incomplete(
+            f"container truth requires the HEVC preset (Transfer is HEVC-only); codec is {codec}"
+        )
+    # End on the persisted transfer so the final leg restores it by construction; a persisted log
+    # preset adds a third leg that guards the documented log-container policy directly.
+    legs = [label for label in ("SDR", "HLG") if label != original_transfer]
+    legs.append(original_transfer)
+    try:
+        for label in legs:
+            select_video_transfer(ctx, label)
+            record_container_truth_clip(
+                ctx,
+                pid,
+                transfer_label=label,
+                seconds=VIDEO_TRUTH_CLIP_SECONDS,
+            )
+    finally:
+        cleanup_transport_or_unsafe(
+            "could not restore the persisted video transfer",
+            lambda: select_video_transfer(ctx, original_transfer),
+        )
+        restore_capture_mode_verified(ctx, initial_mode, pid)
+    fatals = ctx.adb.fatal_lines(suite_mark, pid)
+    assert not fatals, f"errors during container truth: {fatals[:2]}"
+    ctx.note(f"legs {legs} verified; persisted transfer restored to {original_transfer}")
 
 
 # ---------------------------------------------------------------- reliability (the mandate)
