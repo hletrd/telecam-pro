@@ -106,16 +106,16 @@ class GlPipeline {
     private var encoderBaseSet = false
 
     private var transfer: ColorTransfer? = null
-    // Selfie preview mirror. ROUTE state like the rotation/sensor-orientation pair (NOT a
+    // Front-route stream-mirror fact. ROUTE state like the rotation/sensor-orientation pair (NOT a
     // RendererAssists entry): CameraEngine.applyStabilization re-pushes it on every session
     // (re)config and rollback, which is also what re-seeds a replacement GL generation — the same
     // replay path setRotationDegrees rides, so the documented "posted before start() is dropped"
-    // trap is covered without a config-store field. Preview-only: encoder/analysis draws never
-    // mirror (files stay unmirrored by convention; the meter stays framing-identical to capture).
+    // trap is covered without a config-store field.
     // DEVICE FACT (PMA110): the front HAL PRE-mirrors its SurfaceTexture stream. The preview
     // therefore draws WITHOUT any mirror of its own (the stream already shows the selfie-mirror
     // view), and the encoder/analysis draws apply the x-inversion instead so files and metering
-    // keep the TRUE scene. See CameraEngine.applyStabilization for the diagnosis trail.
+    // keep the TRUE scene. Per-draw roles derive from FrontMirrorConvention (never restate them
+    // as literals); see CameraEngine.applyStabilization for the diagnosis trail.
     private var frontStreamPreMirrored = false
     private var gammaAssist = false
     // True while the HAL-native O-Log2 stream is engaged: the frames arriving here are ALREADY log
@@ -427,7 +427,12 @@ class GlPipeline {
     fun setRotationDegrees(deg: Int) = post { renderer.setRotationDegrees(deg) }
     fun setSensorOrientation(deg: Int) = post { renderer.setSensorOrientation(deg) }
 
-    /** Selfie PREVIEW mirror (front route only); the encoder/analysis draws stay unmirrored. */
+    /**
+     * Front-route pre-mirrored-stream fact (PMA110 device diagnosis): when set, the PREVIEW draws
+     * the stream as-is (it already IS the selfie-mirror view) and the ENCODER/ANALYSIS draws apply
+     * the un-mirror so files and metering keep the TRUE scene. Per-draw roles derive from
+     * [FrontMirrorConvention].
+     */
     fun setFrontStreamPreMirrored(enabled: Boolean) = post {
         frontStreamPreMirrored = enabled
         // Kept as the diagnosis trail for the inverted mirror roles: this trace proved the flag

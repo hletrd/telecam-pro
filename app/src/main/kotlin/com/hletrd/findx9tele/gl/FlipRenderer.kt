@@ -138,10 +138,12 @@ class FlipRenderer {
         // because the internal glClear is framebuffer-wide otherwise.
         viewportX: Int = 0,
         viewportY: Int = 0,
-        // Selfie PREVIEW mirror (route state, not an assist): only the preview draw sets it — the
-        // encoder and analysis draws stay unmirrored (files follow the framework convention of
-        // saving the true scene; luma stats are mirror-invariant but stay out for consistency),
-        // exactly the zoomComp/punch-in preview-only isolation pattern.
+        // Selfie mirror axis (route state, not an assist). WHICH draws set it derives from
+        // FrontMirrorConvention: this front HAL PRE-mirrors its stream, so the PREVIEW draw passes
+        // false (the delivered texture already IS the selfie-mirror view) and the ENCODER/ANALYSIS
+        // draws pass true to un-mirror — files and scopes keep the true scene per the framework
+        // convention. Do not hand a literal to any call site; consume the convention's derived
+        // values so a future re-diagnosis stays a one-constant edit.
         mirrorX: Boolean = false,
     ) {
         GLES20.glViewport(viewportX, viewportY, targetWidth, targetHeight)

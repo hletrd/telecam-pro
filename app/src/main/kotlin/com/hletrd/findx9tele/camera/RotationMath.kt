@@ -28,8 +28,9 @@ object RotationMath {
      * CW degrees the GL renderer adds on top of the SurfaceTexture transform (afocal flip only).
      * FRONT needs no term of its own: the SurfaceTexture transform already carries the front
      * sensor's orientation, the afocal converter is a rear-lens accessory (the facing door forces
-     * teleconverterMode off), and the selfie mirror is a separate texcoord axis
-     * ([com.hletrd.findx9tele.gl.texCoordQuad]), so the front preview rotation is simply 0.
+     * teleconverterMode off), and the selfie-mirror axis is owned entirely by the GL draw roles
+     * ([com.hletrd.findx9tele.gl.FrontMirrorConvention] decides which draws mirror; rotation never
+     * does), so the front preview rotation is simply 0.
      */
     fun previewRotationDegrees(teleconverterMode: Boolean): Int = if (teleconverterMode) AFOCAL_FLIP else 0
 
