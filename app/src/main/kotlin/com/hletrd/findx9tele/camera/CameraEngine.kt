@@ -1417,7 +1417,13 @@ class CameraEngine(private val context: Context) {
                 modeIntentGeneration.get() != modeGeneration ||
                 lensIntentGeneration.get() != lensGeneration
             ) return@execute
-            if (paused || recorder != null) return@execute
+            if (paused) return@execute
+            if (recorder != null) {
+                // Same symmetric rollback as setVideoMode: a silent return leaves the desired
+                // packet published and Not-Ready latched with no convergence path (tracer T8).
+                rollbackOptics(transaction, "Stop REC first; recalled optics unchanged")
+                return@execute
+            }
             val id = if (resolvedTeleconverter) {
                 cachedIdForFocal(LensChoice.TELE3X.targetEquivMm)
             } else {
@@ -2140,8 +2146,14 @@ class CameraEngine(private val context: Context) {
         // Resolve the camera id ON setupExecutor (dozen-plus Binder IPCs; also orders resolve→reopen).
         setupExecutor.execute {
             if (!ownsOpticsTransaction(transaction) ||
-                lensIntentGeneration.get() != intentGeneration || paused || recorder != null
+                lensIntentGeneration.get() != intentGeneration || paused
             ) return@execute
+            if (recorder != null) {
+                // Symmetric with setVideoMode's recheck: silent return latched Not-Ready with the
+                // new lens published over the old streaming camera (tracer T8).
+                rollbackOptics(transaction, "Stop REC first; lens unchanged")
+                return@execute
+            }
             // The TC state is SESSION-scoped: the session TYPE (0x80b4, the stock TC operation mode
             // that engages the real 300 mm OIS profile), the Hasselblad hints, and the afocal flip
             // are all fixed at configureStreams. Flipping TELE on the SAME camera id (the video 3×
@@ -2235,8 +2247,14 @@ class CameraEngine(private val context: Context) {
         pushTeleFinder()
         setupExecutor.execute {
             if (!ownsOpticsTransaction(transaction) ||
-                facingIntentGeneration.get() != intentGeneration || paused || recorder != null
+                facingIntentGeneration.get() != intentGeneration || paused
             ) return@execute
+            if (recorder != null) {
+                // Symmetric with setVideoMode's recheck: silent return latched Not-Ready with the
+                // new facing published over the old streaming camera (tracer T8).
+                rollbackOptics(transaction, "Stop REC first; camera unchanged")
+                return@execute
+            }
             val id = if (enabled) {
                 cachedFront()?.logicalId
             } else {
@@ -3525,7 +3543,15 @@ class CameraEngine(private val context: Context) {
             handleUnexpectedRecorderFailure(ownedGl, rec, uri, recordingCaptureId, it)
         }
         encoderAttachResult.get()?.let(::deliverEncoderAttach)
-        if (recorder !== rec) return false
+        if (recorder !== rec) {
+            // A pause/stop/failure claimed and finalized this recorder between publication and
+            // here: its ordered teardown already restored the preview curve, and the
+            // setTransfer(glTransfer) above re-applied the RECORDING curve with no recording left
+            // to own it — the preview would render the recording transfer until the next transfer
+            // change or mode flip (tracer T3). Re-restore the current preview transfer.
+            ownedGl.setTransfer(transfer)
+            return false
+        }
         if (!UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission)) {
             handleUnexpectedRecorderFailure(
                 ownedGl,
