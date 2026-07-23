@@ -329,6 +329,11 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                     // callback is queued for main. Both generations bind its output snapshot.
                     if (!engine.isCameraReadyPublicationCurrent(publication)) return@post
                     var formatStatus: String? = null
+                    // Captured inside the transform, assigned after it (tracer T10): update()
+                    // retries on CAS contention, and writing the field mid-transform feeds run 1's
+                    // output into run 2's `preTeleUnifiedZoom` input.
+                    var acceptedPreTele = Float.NaN
+                    var acceptedApplied = false
                     _state.update { current ->
                         if (!cameraReadyPublicationGate.owns(publication)) return@update current
                         // RAW truth and the pre-TELE return baseline change only when a camera intent
@@ -339,7 +344,8 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                             preTeleUnifiedZoom = preTeleUnifiedZoom,
                             photoFormats = current.photoFormats,
                         )
-                        preTeleUnifiedZoom = accepted.preTeleUnifiedZoom
+                        acceptedPreTele = accepted.preTeleUnifiedZoom
+                        acceptedApplied = true
                         formatStatus = when {
                             !publication.photoOutputs.hasStillTarget ->
                                 "Still capture unavailable"
@@ -356,6 +362,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                             photoFormats = accepted.photoFormats,
                         )
                     }
+                    if (acceptedApplied) preTeleUnifiedZoom = acceptedPreTele
                     if (cameraReadyPublicationGate.owns(publication)) formatStatus?.let(::showStatus)
                 }
             }
@@ -798,7 +805,21 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
 
     private fun saveSettingsIfEnabled() {
-        if (_state.value.rememberSettings) settingsStore.save(_state.value.controls, currentExtras())
+        val s = _state.value
+        if (!s.rememberSettings) return
+        // Facing is session-only (never persisted; fresh launch is BACK), so a save landing while
+        // FRONT — the background onStop save, or any debounced control change — must persist the
+        // REAR optics the next launch will actually restore. The live front-session values (TC
+        // forced off, front-local 1×) silently overwrote the retained TELE/zoom setup captured at
+        // front entry (cycle-6 debugger F6).
+        val substituteRear = s.facing == CameraFacing.FRONT && !preFrontRearZoom.isNaN()
+        val controls = if (substituteRear) s.controls.copy(zoomRatio = preFrontRearZoom) else s.controls
+        val extras = if (substituteRear) {
+            currentExtras().copy(teleconverter = preFrontRearTeleconverter)
+        } else {
+            currentExtras()
+        }
+        settingsStore.save(controls, extras)
     }
 
     private fun readBatteryPct(): Int = runCatching {
@@ -1456,13 +1477,19 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // flip). OFF restores the EXACT pre-TELE framing — lens band + ratio in whatever mode is
         // active (mirrors the engine's unified-zoom snapshot; user-required round-trip fidelity).
         engine.setLens(com.hletrd.findx9tele.camera.LensChoice.TELE3X, enabled, restorePreTele = !enabled)
+        // Captured inside the transform, ASSIGNED after it: MutableStateFlow.update retries on CAS
+        // contention, and a field write inside the lambda makes the second run read the first run's
+        // output (tracer T10 — idempotent today only by accident of the current math).
+        var capturedPreTele = Float.NaN
+        var enteredTele = false
         _state.update {
             if (enabled) {
-                preTeleUnifiedZoom = if (it.mode == CaptureMode.VIDEO) {
+                capturedPreTele = if (it.mode == CaptureMode.VIDEO) {
                     it.lens.zoomPreset * it.controls.zoomRatio.coerceAtLeast(1f)
                 } else {
                     it.controls.zoomRatio
                 }
+                enteredTele = true
                 it.copy(
                     teleconverterMode = true,
                     lens = com.hletrd.findx9tele.camera.LensChoice.TELE3X,
@@ -1485,6 +1512,7 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
                 )
             }
         }
+        if (enteredTele) preTeleUnifiedZoom = capturedPreTele
         // The TC scale flip overwrote the coalesced base and invalidated any hardware-key glide /
         // throttled landing set in the pre-flip scale (same invariant as every optics-remap door).
         invalidateZoomGlide()
@@ -1494,6 +1522,11 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
     }
     // UI mirror of the engine's pre-TELE framing snapshot (unified main-relative zoom).
     private var preTeleUnifiedZoom = Float.NaN
+    // Last REAR optics captured at FRONT entry, substituted into settings saves while FRONT (see
+    // saveSettingsIfEnabled). NaN zoom = no snapshot; stale values while rear are simply unused
+    // (substitution is gated on facing == FRONT) and re-entry overwrites them.
+    private var preFrontRearTeleconverter = false
+    private var preFrontRearZoom = Float.NaN
 
     override fun onLens(choice: LensChoice) {
         if (rejectBackOnlyOpticsDoor()) return
@@ -1532,7 +1565,13 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         // entering forces TC off and front-local 1×; leaving lands on the retained rear band's
         // mode home (unified preset in photo, lens-local 1× in video). Deliberately NO explicit
         // settings save: facing is session-only, so a kill while FRONT restores the last REAR
-        // setup — the outcome the "fresh launch is BACK" rule wants.
+        // setup — the outcome the "fresh launch is BACK" rule wants. saveSettingsIfEnabled
+        // substitutes this snapshot while FRONT so an incidental save (background, control
+        // change) keeps that promise instead of persisting the front-session TC-off/1×.
+        if (entering) {
+            preFrontRearTeleconverter = _state.value.teleconverterMode
+            preFrontRearZoom = _state.value.controls.zoomRatio
+        }
         engine.setFrontCamera(entering)
         _state.update {
             if (entering) {
