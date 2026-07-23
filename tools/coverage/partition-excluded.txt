@@ -1,0 +1,16 @@
+# Excluded from BOTH coverage partitions (reported by size in partition_report.py output so the
+# exclusion is never invisible). Rationale per entry — see docs/TESTING.md:
+#  - PreviewCameraActions: all-no-op CameraActions stub used only by the @Preview composable;
+#    "covering" 86 empty bodies would be coverage theater.
+#  - UiSnapshotActivity*/SnapshotRequest: debug-only screenshot-QA harness; exercised on-device by
+#    device-tests case debug_snapshot_ui_contract, never ships in release.
+#  - OcsProbe: debug-only OPPO CameraUnit availability probe over the vendor SDK; release variant
+#    is a silent stub. Device-bound by definition and debug-only.
+com/hletrd/findx9tele/ui/PreviewCameraActions
+com/hletrd/findx9tele/ui/UiSnapshotActivity
+com/hletrd/findx9tele/ui/UiSnapshotActivity$*
+com/hletrd/findx9tele/ui/UiSnapshotActivityKt
+com/hletrd/findx9tele/ui/UiSnapshotActivityKt$*
+com/hletrd/findx9tele/ui/SnapshotRequest
+com/hletrd/findx9tele/camera/OcsProbe
+com/hletrd/findx9tele/camera/OcsProbe$*

@@ -1,0 +1,132 @@
+# Partition B — device-bound glue (methodology + honest-number contract: docs/TESTING.md).
+# Matched against JaCoCo class names in app/build/reports/coverage/test/debug/report.xml by
+# tools/coverage/partition_report.py. Syntax: class glob | Class#method | Class#method#descSubstr |
+# !Class (force-A exception). Every entry's justification is FRAMEWORK-BOUNDEDNESS on the host JVM
+# (android.jar throwing stubs) — never test difficulty. Class-level entries are wholly framework
+# glue (or Compose emission files whose remaining pure helpers are conservatively surrendered to B;
+# that direction can only understate Partition A). Method-level entries split mixed classes where
+# the pure core is host-tested but sibling methods take framework-typed receivers/params.
+
+# ---- top-level: Activity/Application/Compose glue -------------------------------------------
+com/hletrd/findx9tele/MainActivity
+com/hletrd/findx9tele/MainActivity$*
+com/hletrd/findx9tele/MainActivityKt
+com/hletrd/findx9tele/MainActivityKt$*
+com/hletrd/findx9tele/ComposableSingletons$MainActivityKt
+com/hletrd/findx9tele/ComposableSingletons$MainActivityKt$*
+com/hletrd/findx9tele/TeleCameraApp
+
+# ---- camera: Camera2 session/HAL/GL/audio glue ----------------------------------------------
+com/hletrd/findx9tele/camera/CameraEngine
+com/hletrd/findx9tele/camera/CameraEngine$*
+com/hletrd/findx9tele/camera/CameraController
+com/hletrd/findx9tele/camera/CameraController$*
+com/hletrd/findx9tele/camera/CameraCaps
+com/hletrd/findx9tele/camera/CameraCaps$*
+com/hletrd/findx9tele/camera/VendorTagInspector
+com/hletrd/findx9tele/camera/VendorTagInspector$*
+# RendererAssists depends on concrete GlPipeline (ctor throws on host: EGL stubs); a renderer-sink
+# interface seam would convert it to A — deferred, tracked in docs/TESTING.md future work.
+com/hletrd/findx9tele/camera/RendererAssists
+com/hletrd/findx9tele/camera/AndroidStandbyAudioInput
+# Mixed classes — framework-typed methods only; the pure cores stay in A:
+com/hletrd/findx9tele/camera/ManualControlsKt#applyManualControls
+com/hletrd/findx9tele/camera/ManualControlsKt#applySensorValueControls
+com/hletrd/findx9tele/camera/ManualControlsKt#applyFocus
+com/hletrd/findx9tele/camera/ManualControlsKt#applyExposure
+com/hletrd/findx9tele/camera/ManualControlsKt#applyWhiteBalance
+com/hletrd/findx9tele/camera/ManualControlsKt#applyProcessing
+com/hletrd/findx9tele/camera/ManualControlsKt#applyFlash
+com/hletrd/findx9tele/camera/ManualControlsKt#applyZoom
+com/hletrd/findx9tele/camera/ManualControlsKt#kelvinTintToRggbGains
+com/hletrd/findx9tele/camera/ManualControlsKt#normalizedFor#camera/CameraCaps;
+com/hletrd/findx9tele/camera/CaptureCapabilitiesKt#readLensExifMetadata
+com/hletrd/findx9tele/camera/CaptureCapabilitiesKt#controlCapabilities
+com/hletrd/findx9tele/camera/VideoFrameRate$Companion#availableFor#Landroid/util/Size;
+com/hletrd/findx9tele/camera/CameraSelector2#select
+com/hletrd/findx9tele/camera/CameraSelector2#candidatesOf
+com/hletrd/findx9tele/camera/CameraSelector2#logicalBackId
+com/hletrd/findx9tele/camera/CameraSelector2#overrideIdForFocal
+com/hletrd/findx9tele/camera/CameraSelector2#pickFront
+com/hletrd/findx9tele/camera/CameraSelector2#frontCandidatesOf
+com/hletrd/findx9tele/camera/CameraSelector2#equivFocalOf
+com/hletrd/findx9tele/camera/StandbyAudioController#<init>#Landroid/content/Context;
+com/hletrd/findx9tele/camera/StandbyAudioControllerKt#createAndroidStandbyAudioInput
+
+# ---- gl: EGL/GLES glue (pure seams live in *Kt facades, which stay A) -----------------------
+com/hletrd/findx9tele/gl/EglCore
+com/hletrd/findx9tele/gl/EglCore$*
+com/hletrd/findx9tele/gl/FlipRenderer
+com/hletrd/findx9tele/gl/FlipRenderer$*
+com/hletrd/findx9tele/gl/GlPipeline
+com/hletrd/findx9tele/gl/GlPipeline$*
+
+# ---- capture: Image/Bitmap/DngCreator/HeifWriter glue ---------------------------------------
+com/hletrd/findx9tele/capture/DngCapture
+com/hletrd/findx9tele/capture/DngCapture$*
+com/hletrd/findx9tele/capture/HeifCapture
+com/hletrd/findx9tele/capture/HeifCapture$*
+com/hletrd/findx9tele/capture/HeifCaptureKt
+com/hletrd/findx9tele/capture/StillCapturePipeline
+com/hletrd/findx9tele/capture/StillCapturePipeline$*
+com/hletrd/findx9tele/capture/StillSnapshot
+com/hletrd/findx9tele/capture/StillSnapshot$*
+com/hletrd/findx9tele/capture/PendingDngPublication
+
+# ---- storage: ContentResolver/MediaStore glue (decision fns in MediaStoreWriterKt stay A) ---
+com/hletrd/findx9tele/storage/MediaStoreWriter
+com/hletrd/findx9tele/storage/MediaStoreWriter$*
+com/hletrd/findx9tele/storage/SettingsStore#<init>#Landroid/content/Context;
+
+# ---- video: MediaCodec/MediaMuxer/AudioRecord glue ------------------------------------------
+!com/hletrd/findx9tele/video/VideoRecorder$StopResult
+com/hletrd/findx9tele/video/VideoRecorder
+com/hletrd/findx9tele/video/VideoRecorder$*
+com/hletrd/findx9tele/video/UnsafeRecorderQuarantine#retain
+com/hletrd/findx9tele/video/ColorProfiles
+com/hletrd/findx9tele/video/EncoderCaps
+com/hletrd/findx9tele/video/EncoderCaps$*
+com/hletrd/findx9tele/video/AudioInputInspector#status
+com/hletrd/findx9tele/video/AudioInputInspector#preferredDevice
+com/hletrd/findx9tele/video/AudioInputInspector#routeLabel
+com/hletrd/findx9tele/video/AudioInputInspector#inputDevices
+com/hletrd/findx9tele/video/AudioInputInspector#matches
+
+# ---- stab: SensorManager glue (math seams in GyroEisKt stay A) ------------------------------
+com/hletrd/findx9tele/stab/GyroEis
+com/hletrd/findx9tele/stab/GyroEis$*
+
+# ---- ui: ViewModel (Handler/Looper/engine glue) + Compose emission files --------------------
+# CameraViewModel pure policy lives in CameraViewModelKt (A); the class body is Robolectric/device
+# territory (see docs/TESTING.md phase notes).
+com/hletrd/findx9tele/ui/CameraViewModel
+com/hletrd/findx9tele/ui/CameraViewModel$*
+com/hletrd/findx9tele/ui/CameraScreenKt
+com/hletrd/findx9tele/ui/CameraScreenKt$*
+com/hletrd/findx9tele/ui/ComposableSingletons$CameraScreenKt
+com/hletrd/findx9tele/ui/ComposableSingletons$CameraScreenKt$*
+com/hletrd/findx9tele/ui/controls/ManualDialsKt
+com/hletrd/findx9tele/ui/controls/ManualDialsKt$*
+com/hletrd/findx9tele/ui/controls/ProControlsKt
+com/hletrd/findx9tele/ui/controls/ProControlsKt$*
+com/hletrd/findx9tele/ui/controls/ComposableSingletons$ProControlsKt
+com/hletrd/findx9tele/ui/controls/ComposableSingletons$ProControlsKt$*
+com/hletrd/findx9tele/ui/controls/ProSheetKt
+com/hletrd/findx9tele/ui/controls/ProSheetKt$*
+com/hletrd/findx9tele/ui/controls/ComposableSingletons$ProSheetKt
+com/hletrd/findx9tele/ui/controls/ComposableSingletons$ProSheetKt$*
+com/hletrd/findx9tele/ui/overlays/OverlaysKt
+com/hletrd/findx9tele/ui/overlays/OverlaysKt$*
+com/hletrd/findx9tele/ui/overlays/ComposableSingletons$OverlaysKt*
+com/hletrd/findx9tele/ui/review/MediaReviewKt
+com/hletrd/findx9tele/ui/review/MediaReviewKt$*
+com/hletrd/findx9tele/ui/review/ComposableSingletons$MediaReviewKt
+com/hletrd/findx9tele/ui/review/ComposableSingletons$MediaReviewKt$*
+com/hletrd/findx9tele/ui/review/VideoPlaybackHandle
+com/hletrd/findx9tele/ui/review/VideoPlaybackHandle$*
+com/hletrd/findx9tele/ui/review/VideoInfo
+com/hletrd/findx9tele/ui/review/ReviewMetadata
+com/hletrd/findx9tele/ui/review/GalleryThumbContent
+com/hletrd/findx9tele/ui/review/ReviewMediaState
+com/hletrd/findx9tele/ui/review/ReviewMediaState$*
+com/hletrd/findx9tele/ui/theme/ThemeKt
