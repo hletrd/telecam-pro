@@ -1395,6 +1395,14 @@ class CameraController(context: Context) {
                     applyVendorLog()
                     applyTeleconverterHints()
                     applyMetering(this, requestControls)
+                    // The still must carry the SAME AF key state the repeating request holds — the
+                    // one applier both repeating paths use (full rebuild + sensor fast path). Without
+                    // it, an AF-locked still flips this single request back to the controls-derived
+                    // AF mode (resetting the AF state machine and freeing the lens DURING exactly
+                    // the exposure the lock protects), and a tap-AF hold fires the still in
+                    // CONTINUOUS instead of the held AUTO (cycle-6 code-review F6). Regions rode in
+                    // via applyMetering; this adds only the mode/distance override, never a trigger.
+                    applyAfOverrides(this)
                     // We rotate pixels ourselves (HEIF) / tag DNG + hi-res-JPEG orientation; keep
                     // the HAL out of rotation entirely.
                     set(CaptureRequest.JPEG_ORIENTATION, 0)
