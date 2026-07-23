@@ -125,6 +125,49 @@ class FnOverlayPolicyTest {
     }
 
     @Test
+    fun `portrait keeps the bottom 4-column tray in both upright orientations`() {
+        listOf(0, 180).forEach {
+            assertEquals(
+                FnOverlayLayoutPolicy(FN_OVERLAY_COLUMN_COUNT, FnOverlayAnchor.BOTTOM_CENTER),
+                fnOverlayLayoutPolicy(it),
+            )
+        }
+    }
+
+    @Test
+    fun `portrait rows chunk in reading order and pad the last row with blanks`() {
+        val slots = FnSlot.PHOTO_DEFAULT
+
+        assertEquals(
+            listOf(
+                listOf<FnSlot?>(slots[0], slots[1], slots[2], slots[3]),
+                listOf<FnSlot?>(slots[4], slots[5], null, null),
+            ),
+            fnOverlayGridRows(slots, 0),
+        )
+    }
+
+    @Test
+    fun `held landscape abbreviations cover every special value table`() {
+        // WB presets with dedicated compact aliases; everything else passes through.
+        assertEquals("Day", fnOverlayVisualValue(FnSlot.WB, "Daylight", true))
+        assertEquals("Tung.", fnOverlayVisualValue(FnSlot.WB, "Tungsten", true))
+        assertEquals("Cloudy", fnOverlayVisualValue(FnSlot.WB, "Cloudy", true))
+        // Stabilization abbreviates only the long "Standard".
+        assertEquals("Active", fnOverlayVisualValue(FnSlot.STABILIZATION, "Active", true))
+        // Drive abbreviates only "Timelapse".
+        assertEquals("TL", fnOverlayVisualValue(FnSlot.DRIVE, "Timelapse", true))
+        assertEquals("Burst", fnOverlayVisualValue(FnSlot.DRIVE, "Burst", true))
+        // Audio scene: the three device scenes map to short strip copy.
+        assertEquals("Std", fnOverlayVisualValue(FnSlot.AUDIO_SCENE, "Standard", true))
+        assertEquals("Stage", fnOverlayVisualValue(FnSlot.AUDIO_SCENE, "Sound Stage", true))
+        // Slots with no abbreviation table pass their value through untouched.
+        assertEquals("Thirds", fnOverlayVisualValue(FnSlot.GRID, "Thirds", true))
+        // An ordinary slot keeps the complete label even in the held tray.
+        assertEquals("ISO", fnOverlayVisualLabel(FnSlot.ISO, true))
+    }
+
+    @Test
     fun `held landscape copy is compact without changing portrait copy`() {
         assertEquals("Stabilization", fnOverlayVisualLabel(FnSlot.STABILIZATION, false))
         assertEquals("Steady", fnOverlayVisualLabel(FnSlot.STABILIZATION, true))
