@@ -2739,6 +2739,7 @@ class CameraEngine(private val context: Context) {
                         effFormats,
                         controls,
                         hiRes = accepted.outputs.hiRes,
+                        optics = snapshotShotOptics(),
                         retainedSnapshotLease = snapshotLease,
                     )
                 }.getOrElse { failure ->
@@ -2772,12 +2773,17 @@ class CameraEngine(private val context: Context) {
      * in a tight loop, which would clobber that slot while a capture is still resolving its images.
      */
     private fun captureBurst(accepted: AcceptedCameraSession, formats: PhotoFormats) {
+        // One optics identity for the whole chain: continuations run from save completions off
+        // the main thread, where re-reading the live fields raced the optics doors (T1).
+        val chainOptics = snapshotShotOptics()
         fun fire(shot: Int) {
             if (shot >= BURST_COUNT || !acceptedSessionIsCurrent(accepted)) return
             accepted.controller.capturePhoto(
                 formats.wantsProcessedStill,
                 formats.dngRaw,
-                photoCallback(formats, controls, hiRes = accepted.outputs.hiRes) { fire(shot + 1) },
+                photoCallback(formats, controls, hiRes = accepted.outputs.hiRes, optics = chainOptics) {
+                    fire(shot + 1)
+                },
             )
         }
         fire(0)
@@ -2793,7 +2799,8 @@ class CameraEngine(private val context: Context) {
      */
     private fun captureAeb(accepted: AcceptedCameraSession, formats: PhotoFormats) {
         val ctrl = accepted.controller
-        val c = caps
+        val chainOptics = snapshotShotOptics()
+        val c = chainOptics.caps
         val original = controls
         if (!original.autoExposure && c?.supportsManualSensor == true) {
             val base = original.effectiveExposureNs()
@@ -2811,7 +2818,9 @@ class CameraEngine(private val context: Context) {
                 ctrl.capturePhoto(
                     formats.wantsProcessedStill,
                     formats.dngRaw,
-                    photoCallback(formats, stepControls, hiRes = accepted.outputs.hiRes) { fire(i + 1) },
+                    photoCallback(
+                        formats, stepControls, hiRes = accepted.outputs.hiRes, optics = chainOptics,
+                    ) { fire(i + 1) },
                 )
             }
             fire(0)
@@ -2836,7 +2845,9 @@ class CameraEngine(private val context: Context) {
             ctrl.capturePhoto(
                 formats.wantsProcessedStill,
                 formats.dngRaw,
-                photoCallback(formats, stepControls, hiRes = accepted.outputs.hiRes) { fire(i + 1) },
+                photoCallback(
+                    formats, stepControls, hiRes = accepted.outputs.hiRes, optics = chainOptics,
+                ) { fire(i + 1) },
             )
         }
         fire(0)
@@ -2872,7 +2883,15 @@ class CameraEngine(private val context: Context) {
                             accepted.controller.capturePhoto(
                                 formats.wantsProcessedStill,
                                 formats.dngRaw,
-                                photoCallback(formats, controls, hiRes = accepted.outputs.hiRes) {
+                                // Each tick is its own chain: this lambda runs on the timelapse
+                                // scheduler thread, so the tick snapshots its optics under the
+                                // monitor like every other dispatch (T1).
+                                photoCallback(
+                                    formats,
+                                    controls,
+                                    hiRes = accepted.outputs.hiRes,
+                                    optics = snapshotShotOptics(),
+                                ) {
                                     if (timelapseRun.owns(generation)) schedule(period)
                                 },
                             )
@@ -2908,26 +2927,48 @@ class CameraEngine(private val context: Context) {
     )
     private val singleProcessedSnapshotBudget = ProcessedSnapshotBudget()
 
-    private fun shotSpec(shotControls: ManualControls, hiRes: Boolean): ShotSpec {
-        val shotCaps = caps
-        val shotTeleconverter = teleconverterMode
-        val shotFrontFacing = facing == CameraFacing.FRONT
+    /**
+     * Optics identity for one still CHAIN (single shot, all BURST/AEB frames, one timelapse tick),
+     * snapshotted under the engine monitor at dispatch. Burst/AEB continuations run from save
+     * completions on the camera/io threads, where re-reading the individual volatiles raced the
+     * optics doors (main thread): a door's `beginOpticsTransaction` publishes NEW tele/facing/caps
+     * under the monitor while the OLD session still exposes the in-flight frame (controller
+     * replacement is queued behind it), so a mid-door continuation composed the new route's
+     * rotation/EXIF onto the old route's pixels — an upside-down/mislabeled file (cycle-6 tracer
+     * T1/T2). One snapshot per chain describes the route the chain actually fires on; a door
+     * landing mid-chain stops the chain via [acceptedSessionIsCurrent] before the next fire.
+     */
+    private data class ShotOptics(
+        val caps: CameraCaps?,
+        val selection: TeleSelection?,
+        val teleconverter: Boolean,
+        val frontFacing: Boolean,
+        val aspectRatio: AspectRatio,
+    )
+
+    private fun snapshotShotOptics(): ShotOptics = synchronized(this) {
+        ShotOptics(caps, selection, teleconverterMode, facing == CameraFacing.FRONT, aspectRatio)
+    }
+
+    private fun shotSpec(shotControls: ManualControls, hiRes: Boolean, optics: ShotOptics): ShotSpec {
         val requestedAtMs = System.currentTimeMillis()
         val captureId = captureSeq.incrementAndGet()
-        val rotation = shotCaps?.let {
+        // Device orientation stays LIVE per shot (gravity, not an optics axis) — frames of one
+        // burst share the chain's route but may straddle a physical re-hold like any two shots.
+        val rotation = optics.caps?.let {
             RotationMath.captureRotationDegrees(
                 it.sensorOrientation,
-                shotTeleconverter,
+                optics.teleconverter,
                 gyro.currentDeviceOrientation(),
-                frontFacing = shotFrontFacing,
+                frontFacing = optics.frontFacing,
             )
         } ?: 0
         return ShotSpec(
             controls = shotControls,
-            caps = shotCaps,
-            selection = selection,
-            teleconverter = shotTeleconverter,
-            aspectRatio = aspectRatio,
+            caps = optics.caps,
+            selection = optics.selection,
+            teleconverter = optics.teleconverter,
+            aspectRatio = optics.aspectRatio,
             jpegQuality = shotControls.jpegQuality.coerceIn(1, 100),
             rotationDegrees = rotation,
             captureId = captureId,
@@ -2939,7 +2980,7 @@ class CameraEngine(private val context: Context) {
             requestedAtMs = requestedAtMs,
             takenAtMs = requestedAtMs,
             hiRes = hiRes,
-            frontFacing = shotFrontFacing,
+            frontFacing = optics.frontFacing,
         )
     }
 
@@ -2955,11 +2996,14 @@ class CameraEngine(private val context: Context) {
         // lane must pick passthrough-vs-decode from the session the shot actually fired against,
         // not whatever session is accepted when the image lands.
         hiRes: Boolean,
+        // The chain-owned optics identity (see [ShotOptics]) — continuations must reuse the
+        // dispatch-time snapshot, never re-read the live volatiles.
+        optics: ShotOptics,
         retainedSnapshotLease: ProcessedSnapshotBudget.Lease? = null,
         onDone: (() -> Unit)? = null,
     ): CameraController.PhotoCallback {
         require(retainedSnapshotLease == null || formats.wantsProcessedStill)
-        val requestSpec = shotSpec(shotControls, hiRes)
+        val requestSpec = shotSpec(shotControls, hiRes, optics)
         val expectedOutputExtensions = buildList {
             if (formats.heif) add("heic")
             if (formats.jpeg) add("jpg")
