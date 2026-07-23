@@ -3516,13 +3516,21 @@ class CameraEngine(private val context: Context) {
             },
             commitBlock = { block ->
                 var installed = false
-                val processOwned = UnsafeRecorderQuarantine.commitAdmission(processAdmission) {
-                    // Lock order is process lease -> terminal gate -> recorder owner. release()
-                    // closes the terminal gate before claiming recorder ownership, while pause and
-                    // failure claim recorder ownership directly. Either teardown observes a fully
-                    // installed EGL owner and queues detach after this task, or this commit rejects
-                    // the private candidate before it can outlive the recorder it targets.
-                    terminalAcquisitionGate.runIfOpen {
+                // Lock order is terminal gate -> process lease -> recorder owner. The REVERSE
+                // (process lease outermost) was the app's single ABBA inversion: every camera
+                // open runs runNativeAcquisition (process lock) INSIDE runIfOpen (gate monitor),
+                // so this path taking the process lock first could deadlock a mid-REC
+                // camera-failure recovery against the encoder attach — GL thread, setupExecutor,
+                // and the teardown watchdog all wedged (cycle-6 tracer T6). Semantics are
+                // unchanged: a closed gate skips the commit entirely (installed stays false,
+                // same rejection the in-block gate check used to produce), and a stale process
+                // admission still rejects the private candidate before it can outlive the
+                // recorder it targets. release() closes the terminal gate before claiming
+                // recorder ownership, while pause and failure claim recorder ownership directly;
+                // either teardown observes a fully installed EGL owner and queues detach after
+                // this task, or this commit rejects the candidate.
+                terminalAcquisitionGate.runIfOpen {
+                    UnsafeRecorderQuarantine.commitAdmission(processAdmission) {
                         synchronized(recorderOwnershipLock) {
                             if (recordingAttachMayCommit(
                                     acquisitionOpen = true,
@@ -3536,7 +3544,7 @@ class CameraEngine(private val context: Context) {
                         }
                     }
                 }
-                processOwned && installed
+                installed
             },
         )
         // Ownership is published before the asynchronous EGL handoff. A lease revocation therefore

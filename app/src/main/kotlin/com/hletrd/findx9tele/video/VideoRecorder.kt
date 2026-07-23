@@ -832,11 +832,22 @@ internal class RecorderQuarantineAdmissionGate {
         true
     }
 
-    /** Linearizes native create/open/start with irreversible process quarantine. */
-    fun runNativeIfSafe(block: () -> Unit): Boolean = synchronized(lock) {
-        if (quarantined.get()) return@synchronized false
+    /**
+     * Refuses new native create/open/start after irreversible process quarantine. The NATIVE CALL
+     * runs OUTSIDE the lock: holding the process-global lock across seconds-long Binder/driver
+     * work (manager.openCamera, codec/muxer construction, EGL init, AudioRecord create)
+     * serialized every native acquisition process-wide and was the enabling half of the T6 ABBA
+     * inversion (cycle-6 tracer T6/T7). A close() landing while a call is in flight is
+     * semantically unchanged: the quarantine CAUSE predates the close, an already-running native
+     * call cannot be un-called under either ordering, and its RESULT is refused downstream by the
+     * token checks (isCurrent/commit/publish all re-check under the lock). close() therefore no
+     * longer waits for in-flight natives — only ADMISSION (snapshot/commit/publish) linearizes
+     * with quarantine.
+     */
+    fun runNativeIfSafe(block: () -> Unit): Boolean {
+        if (quarantined.get()) return false
         block()
-        true
+        return true
     }
 
     fun publish(token: UnsafeRecorderAdmissionToken, block: () -> Boolean): Boolean = synchronized(lock) {
