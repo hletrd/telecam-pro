@@ -68,6 +68,9 @@ android {
             // debug-only camera capability logs under the release id).
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
+            // Host-JVM unit-test line coverage (JaCoCo via AGP). Debug-only: the flag adds a
+            // coverage-instrumented unit-test task, never touches the APK bytecode we ship.
+            enableUnitTestCoverage = true
         }
         release {
             // R8/minify intentionally OFF for v1 (Play does not require it; keeps the Camera2/HAL
