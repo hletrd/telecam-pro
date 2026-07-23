@@ -318,6 +318,27 @@ class SettingsStoreTest {
     }
 
     @Test
+    fun presets_reportSavedSlotsAndInfoWithTruthfulFallbacks() {
+        // MR3 simulates an older-version preset whose name/summary keys were never written.
+        val prefs = FakePrefs(mutableMapOf("preset_MR3_hasSaved" to true))
+        val store = SettingsStore(prefs)
+        store.savePreset(MemorySlot.MR1, nonDefaultControls, nonDefaultExtras, "Birds", "1/300 ISO A")
+        store.savePreset(MemorySlot.MR2, nonDefaultControls, nonDefaultExtras, "   ", "moon")
+
+        assertEquals(setOf(MemorySlot.MR1, MemorySlot.MR2, MemorySlot.MR3), store.savedPresetSlots())
+        val info = store.savedPresetInfo()
+        assertEquals(SettingsStore.PresetInfo("Birds", "1/300 ISO A"), info[MemorySlot.MR1])
+        // A blank saved name falls back to the slot label; a missing summary reads empty. Neither
+        // may drop the slot — the MR bank row must still show a recallable entry.
+        assertEquals(SettingsStore.PresetInfo("MR2", "moon"), info[MemorySlot.MR2])
+        assertEquals(SettingsStore.PresetInfo("MR3", ""), info[MemorySlot.MR3])
+
+        val empty = SettingsStore(FakePrefs())
+        assertTrue(empty.savedPresetSlots().isEmpty())
+        assertTrue(empty.savedPresetInfo().isEmpty())
+    }
+
+    @Test
     fun load_clampsPersistedZoomRatio() {
         // A persisted non-positive zoom would feed the zoom-ease ticker's log-space math a 0 -> clamp.
         val prefs = FakePrefs(mutableMapOf("hasSaved" to true, "zoomRatio" to 0f))

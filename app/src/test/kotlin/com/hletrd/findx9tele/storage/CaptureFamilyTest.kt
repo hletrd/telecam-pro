@@ -35,6 +35,12 @@ class CaptureFamilyTest {
 
         assertEquals(video, CaptureFamilyKey.parse(video.displayName("mp4"))?.familyKey)
         assertEquals("VID_TELECAM_F1_1752676496123_0000000042.mp4", video.displayName("mp4"))
+        // A video family owns exactly ONE file — its bounded restore query must not fan out to
+        // still extensions.
+        assertEquals(
+            listOf("VID_TELECAM_F1_1752676496123_0000000042.mp4"),
+            video.knownOutputDisplayNames(),
+        )
     }
 
     @Test

@@ -268,6 +268,84 @@ class LatestCaptureReducerTest {
         assertEquals(RestoredDeleteScope.CAPTURE_FAMILY, restored?.deleteScope)
     }
 
+    @Test
+    fun `legacy rows without a taken timestamp rank by added seconds then modified seconds`() {
+        // fallbackCaptureMillis ladder: dateTaken (null/0 is absent) -> dateAdded×1000 -> modified.
+        val addedWins = plainRow("added-only", id = 1L, taken = null, added = 5L, modified = 1L)
+        val takenLoses = plainRow("has-taken", id = 9L, taken = 4_000L, added = 3L, modified = 9L)
+        // If the dateAdded rung were skipped, added-only would rank by modified (1 000 ms) and lose.
+        assertEquals(
+            "added-only",
+            restoreLatestCapture(listOf(takenLoses, addedWins))?.preferred?.output,
+        )
+
+        // Zero taken AND zero added fall through to modified seconds.
+        val modifiedWins = plainRow("modified-only", id = 2L, taken = 0L, added = 0L, modified = 7L)
+        val modifiedLoses = plainRow("older-modified", id = 99L, taken = null, added = 0L, modified = 3L)
+        assertEquals(
+            "modified-only",
+            restoreLatestCapture(listOf(modifiedLoses, modifiedWins))?.preferred?.output,
+        )
+    }
+
+    @Test
+    fun `unknown processed extensions rank below known stills within a family`() {
+        val key = stillKey(at = 11_000L, sequence = 1L)
+        val webp = familyRow("odd.webp", key, "webp", id = 9L, mime = "image/webp")
+        val heic = familyRow("photo.heic", key, "heic", id = 1L)
+
+        val restored = restoreLatestCapture(listOf(webp, heic))
+
+        assertEquals("photo.heic", restored?.preferred?.output)
+        assertEquals(listOf("photo.heic", "odd.webp"), restored?.outputs?.map { it.output })
+    }
+
+    @Test
+    fun `duplicate video family rows order by row identity`() {
+        // Two rows carrying the SAME versioned video name model a provider double-index; both are
+        // plain VIDEO display candidates and the newer row id owns review.
+        val key = videoKey(at = 12_000L, sequence = 2L)
+        val older = familyRow("older-row", key, "mp4", id = 3L, mime = "video/mp4")
+        val newer = familyRow("newer-row", key, "mp4", id = 8L, mime = "video/mp4")
+
+        val restored = restoreLatestCapture(listOf(older, newer))
+
+        assertEquals("newer-row", restored?.preferred?.output)
+        assertEquals(listOf("newer-row", "older-row"), restored?.outputs?.map { it.output })
+    }
+
+    @Test
+    fun `rows identical through row id still resolve deterministically`() {
+        // Exercises the deepest newest-row tie-breakers (collection ordinal + display name): two
+        // siblings sharing every date AND the row id can still elect one canonical newest row.
+        val key = stillKey(at = 13_000L, sequence = 3L)
+        val heic = familyRow("photo.heic", key, "heic", id = 5L)
+        val jpeg = familyRow("photo.jpg", key, "jpg", id = 5L, mime = "image/jpeg")
+
+        val restored = restoreLatestCapture(listOf(heic, jpeg))
+
+        assertEquals("photo.heic", restored?.preferred?.output)
+        assertEquals(2, restored?.outputs?.size)
+    }
+
+    private fun plainRow(
+        output: String,
+        id: Long,
+        taken: Long?,
+        added: Long,
+        modified: Long,
+    ) = StoredMediaRow(
+        output = output,
+        collection = StoredMediaCollection.IMAGE,
+        rowId = id,
+        displayName = "$output.jpg", // legacy name: never parses to a family
+        mimeType = "image/jpeg",
+        dateTakenEpochMillis = taken,
+        dateAddedEpochSeconds = added,
+        dateModifiedEpochSeconds = modified,
+        isPending = false,
+    )
+
     private fun stillKey(at: Long, sequence: Long) =
         CaptureFamilyKey(CaptureFamilyMedia.STILL, at, sequence)
 
