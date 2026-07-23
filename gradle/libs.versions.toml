@@ -12,6 +12,16 @@ coroutines = "1.11.0"
 # the earlier "no stable 1.1.0 exists" note that justified the 1.2.0-alpha01 pin was wrong.
 heifwriter = "1.1.0"
 junit = "4.13.2"
+# Latest stable (verified against Maven Central 2026-07; 4.17 is still beta and only needed for
+# simulated SDK 37 — irrelevant while targetSdk stays 36). Simulated SDK 36 requires JDK 21 (met).
+robolectric = "4.16.1"
+# The android-all runtime jar Robolectric 4.16.1 pins for simulated SDK 36 (DefaultSdkProvider).
+# Declared as a REAL Gradle dependency (see app/build.gradle.kts robolectricJars) so the ~40 MB
+# framework jar rides gradle/verification-metadata.xml instead of Robolectric's own side-channel
+# Maven fetch. MUST be bumped in lockstep with the robolectric version above (a mismatch fails the
+# unit-test task with the expected coordinate in the message).
+robolectricAndroidAll = "16-robolectric-13921718-i7"
+androidxTestCore = "1.7.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -29,7 +39,15 @@ androidx-exifinterface = { group = "androidx.exifinterface", name = "exifinterfa
 oplus-ocs-camera = { group = "com.oplus.ocs", name = "camera", version = "1.1.0" }
 oplus-ocs-base = { group = "com.oplus.ocs", name = "base", version = "1.0.16" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
+kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
+robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
+robolectric-android-all-instrumented = { group = "org.robolectric", name = "android-all-instrumented", version.ref = "robolectricAndroidAll" }
+androidx-test-core = { group = "androidx.test", name = "core", version.ref = "androidxTestCore" }
+# BOM-managed (androidx-compose-bom above): ui-test-junit4 supplies createComposeRule for host
+# (Robolectric) Compose tests; ui-test-manifest supplies the ComponentActivity it launches.
+androidx-compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
+androidx-compose-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
 
 [plugins]
 # Kotlin support is built into AGP 9+, so the org.jetbrains.kotlin.android plugin is intentionally omitted.

@@ -1,8 +1,14 @@
 import java.util.Properties
+import org.gradle.testing.jacoco.plugins.JacocoTaskExtension
 
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
+    // Applied explicitly (AGP would apply it lazily for enableUnitTestCoverage) so the
+    // JacocoTaskExtension exists on Test tasks BEFORE the configureEach below runs — AGP's own
+    // deferred apply registers the extension after script-body configureEach actions, which fails
+    // task creation with "Extension of type 'JacocoTaskExtension' does not exist".
+    jacoco
 }
 
 // Release signing is driven by a gitignored `keystore.properties` at the repo root (see
@@ -101,6 +107,14 @@ android {
         buildConfig = true
     }
 
+    testOptions {
+        unitTests {
+            // Required for Robolectric: merges Android resources/assets/manifest into the host
+            // unit-test classpath (also what compose ui-test's ComponentActivity manifest rides on).
+            isIncludeAndroidResources = true
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
@@ -109,6 +123,39 @@ android {
 
 kotlin {
     jvmToolchain(21)
+}
+
+// Robolectric loads app classes through its sandbox classloader WITHOUT a code-source location, and
+// the JaCoCo agent skips location-less classes by default — so Robolectric-driven line coverage
+// silently reads 0% unless the agent is told to include them (robolectric#2230/#5575). The
+// jdk.internal exclusion is required on JDK 9+ or the agent trips over JDK internals. Existing
+// pure-JVM tests are unaffected by either flag.
+tasks.withType<Test>().configureEach {
+    configure<JacocoTaskExtension> {
+        isIncludeNoLocationClasses = true
+        excludes = listOf("jdk.internal.*")
+    }
+}
+
+// --- Robolectric android-all under dependency verification -------------------------------------
+// At first test run Robolectric's own MavenArtifactFetcher (NOT Gradle: it ignores Gradle repos,
+// caches, and verification-metadata.xml) downloads the ~40 MB pre-instrumented framework jar for
+// each simulated SDK straight from Maven Central into ~/.m2 — a side channel outside this repo's
+// dependency-verification perimeter. Instead, declare the exact jar Robolectric 4.16.1 pins for
+// simulated SDK 36 as a REAL Gradle dependency, copy it into the build dir, and run the tests
+// offline against that dir — so its sha256 lives in gradle/verification-metadata.xml like any
+// other dependency. The pinned version must move in lockstep with Robolectric upgrades; on drift
+// the test task fails with the expected coordinate printed in the message.
+val robolectricJars: Configuration by configurations.creating
+val robolectricJarsDir = layout.buildDirectory.dir("robolectric-jars")
+val fetchRobolectricJars by tasks.registering(Copy::class) {
+    from(robolectricJars)
+    into(robolectricJarsDir)
+}
+tasks.withType<Test>().configureEach {
+    dependsOn(fetchRobolectricJars)
+    systemProperty("robolectric.offline", "true")
+    systemProperty("robolectric.dependency.dir", robolectricJarsDir.get().asFile.path)
 }
 
 composeCompiler {
@@ -143,6 +190,18 @@ dependencies {
     debugImplementation(libs.oplus.ocs.base)
 
     testImplementation(libs.junit)
+    // Robolectric host tests (CameraViewModel and friends). The BOM must be re-applied to the test
+    // configuration — the implementation(platform(...)) above does not flow into testImplementation.
+    testImplementation(platform(libs.androidx.compose.bom))
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.androidx.compose.ui.test.junit4)
+    // Supplies the ComponentActivity createComposeRule launches; the debug variant's merged
+    // manifest is what Robolectric unit tests see.
+    debugImplementation(libs.androidx.compose.ui.test.manifest)
+    // The verified offline android-all framework jar (see the robolectricJars block above).
+    robolectricJars(libs.robolectric.android.all.instrumented)
 }
 
 if (!hasReleaseSigning) {
