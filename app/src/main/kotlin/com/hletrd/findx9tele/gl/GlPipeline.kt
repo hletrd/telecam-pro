@@ -662,6 +662,23 @@ class GlPipeline {
         signal.fail(detachFailure ?: failure)
     }
 
+    // Cached finder box: pure in (previewW, previewH), recomputed only when the size changes — a
+    // per-frame data-object allocation in the PIP draw loop sat below the PERF4-4 bar (cycle-6
+    // PR-3). GL-thread confined.
+    private var finderRectForW = -1f
+    private var finderRectForH = -1f
+    private var finderRectCache: com.hletrd.findx9tele.camera.FinderRect? = null
+
+    private fun finderRectFor(w: Float, h: Float): com.hletrd.findx9tele.camera.FinderRect {
+        val cached = finderRectCache
+        if (cached != null && finderRectForW == w && finderRectForH == h) return cached
+        return finderRect(w, h).also {
+            finderRectCache = it
+            finderRectForW = w
+            finderRectForH = h
+        }
+    }
+
     /** Restores the viewfinder target; a failed restore still makes nothing current before escaping. */
     private fun restorePreviewOrNothing(core: EglCore) {
         if (previewEgl == EGL14.EGL_NO_SURFACE) {
@@ -826,7 +843,7 @@ class GlPipeline {
                 // (AGG4-29/P3.4) — the PIP shows the FULL delivered frame while the loupe magnifies,
                 // the one case the single stream makes it genuinely wider than the main view.
                 if (teleFinder && punchIn && previewW > 0 && previewH > 0) {
-                    val rect = finderRect(previewW.toFloat(), previewH.toFloat())
+                    val rect = finderRectFor(previewW.toFloat(), previewH.toFloat())
                     // Bottom-left corner in GL's bottom-left-origin pixel space (the Compose border
                     // mirrors the same rect from its top-left-origin space via the shared seam).
                     val fx = rect.x.toInt()
@@ -899,6 +916,7 @@ class GlPipeline {
         val ownedEncoder = encoderEgl
         val ownedSignal = encoderSignal
         if (ownedEncoder != EGL14.EGL_NO_SURFACE && ownedSignal?.isActive() == true) {
+            var encoderFrameSwapped = false
             try {
                 core.makeCurrent(ownedEncoder)
                 // Un-mirror the pre-mirrored front stream so the FILE keeps the true scene
@@ -909,16 +927,42 @@ class GlPipeline {
                 if (!encoderBaseSet && ts > 0L) { encoderBaseNs = ts; encoderBaseSet = true }
                 core.setPresentationTime(ownedEncoder, if (encoderBaseSet) ts - encoderBaseNs else 0L)
                 core.swapBuffers(ownedEncoder)
+                encoderFrameSwapped = true
                 // Never leave the codec window current between frames. Apart from making detach
                 // truthful, this ensures a stop triggered by the ready callback is queued only
                 // after EGL has relinquished the native producer.
                 restorePreviewOrNothing(core)
                 ownedSignal.ready()
             } catch (failure: Throwable) {
-                // Encoder output is optional to preview. Contain every runtime EGL/renderer error,
-                // detach this exact output, and converge the identity-owned recorder instead of
-                // letting an uncaught HandlerThread exception kill the process.
-                failEncoderOutput(core, ownedSignal, failure)
+                if (!encoderFrameSwapped) {
+                    // Encoder output is optional to preview. Contain every runtime EGL/renderer
+                    // error, detach this exact output, and converge the identity-owned recorder
+                    // instead of letting an uncaught HandlerThread exception kill the process.
+                    failEncoderOutput(core, ownedSignal, failure)
+                } else {
+                    // The encoder frame swapped cleanly — this failure is the PREVIEW surface
+                    // refusing to come back current, not a recorder fault. Attributing it to the
+                    // recorder claimed and ended a healthy recording (cycle-6 code-review F8).
+                    // Route it through preview health exactly like the preview-draw branch above:
+                    // publish the identity-owned failure, detach the broken preview, and only a
+                    // failed detach (unresolvable native-window ownership) makes encoder
+                    // continuation unsafe.
+                    ownedSignal.ready()
+                    previewSignal?.fail(failure)
+                    val detachFailure = runCatching { clearPreviewOutput(core) }.exceptionOrNull()
+                    if (detachFailure != null) {
+                        val activeEncoderSignal = encoderSignal
+                        if (activeEncoderSignal?.isActive() == true) {
+                            failEncoderOutput(core, activeEncoderSignal, detachFailure)
+                        }
+                        val poisoned = previewEgl
+                        if (poisoned != EGL14.EGL_NO_SURFACE) orphanedEglOutputs.retain(poisoned)
+                        previewEgl = EGL14.EGL_NO_SURFACE
+                        previewSurface = null
+                        previewSignal?.cancel()
+                        previewSignal = null
+                    }
+                }
             }
         }
 
