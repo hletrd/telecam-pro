@@ -117,25 +117,56 @@ EXIF matches request values, and video dimensions/fps/codec/container tags are w
 Those live in `device-tests/` validators. The capability-gated Hi-Res feature stays dormant by
 design with tests.
 
-## Robolectric and instrumented coverage (spike verdicts, 2026-07-23)
+## Robolectric (ADOPTED, coverage cycle 7 phase 3)
 
-Researched for moving `CameraViewModel`/Compose policy into host-testable range and for a merged
-overall number; adoption is tracked in the cycle backlog:
+Robolectric hosts the tests that need a working Looper/Handler/SystemClock/SharedPreferences/
+Application in one move — starting with `CameraViewModel`'s class body (the 2026-07-23 spike's
+verdicts all held; the spike record lives in the cycle context).
 
-- **Robolectric 4.16.1** works on this toolchain (AGP 9.x built-in Kotlin, Gradle 9.6, JDK 21,
-  simulated SDK 36). Two mandatory build details: `JacocoTaskExtension.isIncludeNoLocationClasses
-  = true` + `excludes = ["jdk.internal.*"]` (otherwise Robolectric-driven coverage silently reads
-  0%), and `testOptions.unitTests.isIncludeAndroidResources = true`. The runtime-fetched
-  `android-all-instrumented` jar bypasses Gradle dependency verification unless pinned as a
-  Gradle configuration with `robolectric.offline` (the hardening this repo's
-  verification-metadata posture requires). `CameraViewModel` needs one constructor-injection
-  seam for the engine before Robolectric can drive it (it constructs the real `CameraEngine`
-  in a field initializer today).
-- **Instrumented coverage**: `enableAndroidTestCoverage = true` +
-  `:app:createDebugAndroidTestCoverageReport` on the PMA110; AGP 9.3's experimental
-  `createCoverageReport` (behind `android.experimental.reportAggregationSupport=true`) can merge
-  unit + instrumented into one report. Requires adding the `androidTest` source set + runner
-  deps, all through `gradle/verification-metadata.xml`.
+**Build specifics** (all in `app/build.gradle.kts` / `gradle/libs.versions.toml`):
+
+- **Robolectric 4.16.1**, `androidx.test:core` 1.7.0, `kotlinx-coroutines-test` (repo coroutines
+  pin), plus BOM-managed `ui-test-junit4`/`ui-test-manifest` on the test configurations (the BOM is
+  re-applied to `testImplementation`; `implementation(platform(...))` does not flow into it).
+  Compose host tests are deliberately NOT written yet — the deps landed with the infra, usage is a
+  separately gated decision.
+- `testOptions.unitTests.isIncludeAndroidResources = true`, and the simulated SDK is pinned
+  explicitly at 36 in `app/src/test/resources/robolectric.properties`.
+- **The 0%-coverage trap is closed**: every `Test` task sets
+  `JacocoTaskExtension.isIncludeNoLocationClasses = true` + `excludes = ["jdk.internal.*"]` —
+  Robolectric's sandbox classloader strips code-source locations and the agent otherwise skips
+  those classes SILENTLY. The `jacoco` plugin is applied explicitly in the plugins block because
+  AGP's own deferred apply registers the extension after script-body `configureEach` actions.
+  Verified working: the first Robolectric commit attributes 476 covered lines to the
+  `CameraViewModel` class body.
+
+**Offline android-all verification posture**: Robolectric normally fetches its ~40 MB simulated-
+framework jar through its own Maven side channel (ignoring Gradle repos, caches, and
+`verification-metadata.xml`). This repo instead declares the exact 4.16.1 pin
+(`org.robolectric:android-all-instrumented:16-robolectric-13921718-i7`) in a `robolectricJars`
+Gradle configuration, copies it into `build/robolectric-jars`, and runs unit tests with
+`robolectric.offline=true` + `robolectric.dependency.dir` — so the runtime jar's sha256 sits in
+`gradle/verification-metadata.xml` like every other dependency. The pin moves in lockstep with
+Robolectric upgrades; on drift the test task fails with the expected coordinate in its message.
+
+**Partition policy for Robolectric-driven classes**: a class Robolectric can drive REMAINS in
+Partition B until it can genuinely hold ~100% under host tests — the Partition A claim is never
+diluted by adding partially-covered classes to it. Robolectric coverage therefore contributes to
+the OVERALL and Partition B numbers only (`CameraViewModel` stays in `partition-b.txt`; the
+adoption run moved B 1.43% → 11.26% and OVERALL 25.07% → 32.34% while A's composition and
+denominator were unchanged). Robolectric-based tests document their engine strategy in the test
+header: `CameraEngine` is final, so they inject a REAL, never-resumed engine through
+`CameraViewModel`'s constructor seam (the camera only opens on `resume()`; the pre-open engine is
+inert by design). `RobolectricEglSentinels` backfills the `EGL14` sentinel statics the sandbox
+leaves null.
+
+## Instrumented coverage (spike verdict, 2026-07-23 — not yet adopted)
+
+- `enableAndroidTestCoverage = true` + `:app:createDebugAndroidTestCoverageReport` on the PMA110;
+  AGP 9.3's experimental `createCoverageReport` (behind
+  `android.experimental.reportAggregationSupport=true`) can merge unit + instrumented into one
+  report. Requires adding the `androidTest` source set + runner deps, all through
+  `gradle/verification-metadata.xml`.
 
 ## Future seam work (identified, deliberately deferred)
 
