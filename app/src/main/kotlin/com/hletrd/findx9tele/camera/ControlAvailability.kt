@@ -28,6 +28,8 @@ internal data class ControlAvailability(
     val aeLockEnabled: Boolean,
     val awbLockEnabled: Boolean,
     val customWbCaptureEnabled: Boolean,
+    /** Projected hi-res ROUTE fact: a standalone route advertising a full-sensor size (cycle-6 F3). */
+    val hiResAdvertisedStandalone: Boolean,
 )
 
 /**
@@ -61,6 +63,7 @@ internal fun controlAvailability(
             aeLockEnabled = false,
             awbLockEnabled = false,
             customWbCaptureEnabled = false,
+            hiResAdvertisedStandalone = false,
         )
     }
 
@@ -145,8 +148,31 @@ internal fun controlAvailability(
         // a new measurement, even though AWB_OFF is available for applying the captured gains.
         customWbCaptureEnabled = manualWbAvailable && normalized.wbMode == WbMode.AUTO &&
             !normalized.awbLock && caps.awbModes.has(CameraMetadata.CONTROL_AWB_MODE_AUTO),
+        hiResAdvertisedStandalone = caps.hiResAdvertisedStandalone,
     )
 }
+
+/**
+ * Hi-res settings-row enablement: joins the LIVE mode/aspect axes to the projected route fact
+ * THROUGH the one admission predicate ([hiResAdmitted]) instead of restating its conjunction
+ * (cycle-6 architect F3 — ProSheet's inline re-derivation was a third encoding of the axes).
+ * `requested = true` because this row IS the intent entry point; recording locks the row like
+ * every other session-shape toggle.
+ */
+internal fun hiResToggleEnabled(
+    availability: ControlAvailability,
+    videoMode: Boolean,
+    aspect: AspectRatio,
+    recording: Boolean,
+): Boolean = !recording && hiResAdmitted(
+    requested = true,
+    videoMode = videoMode,
+    aspect = aspect,
+    // The projection folds standalone && advertised into one route fact; feeding the folded value
+    // to both axes preserves the conjunction exactly.
+    standalone = availability.hiResAdvertisedStandalone,
+    advertised = availability.hiResAdvertisedStandalone,
+)
 
 private fun IntArray.has(value: Int): Boolean = exactAdvertisedMode(value, this) != null
 

@@ -105,6 +105,7 @@ import com.hletrd.findx9tele.camera.WbMode
 import com.hletrd.findx9tele.camera.ControlAvailability
 import com.hletrd.findx9tele.camera.controlAvailability
 import com.hletrd.findx9tele.camera.controlCapabilities
+import com.hletrd.findx9tele.camera.hiResToggleEnabled
 import com.hletrd.findx9tele.camera.videoBitRate
 import com.hletrd.findx9tele.video.EncoderCaps
 import com.hletrd.findx9tele.ui.CameraActions
@@ -606,6 +607,11 @@ private fun MemoryPresetRow(
 @Composable
 private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
     val caps = state.caps
+    // Same capability projection every other tab consumes (PERF4-8 remember pattern); the hi-res
+    // row reads its route fact from here instead of re-deriving admission axes from raw caps.
+    val availability = remember(state.caps, state.controls) {
+        controlAvailability(state.caps?.controlCapabilities(), state.controls)
+    }
     TabTitle("Shooting")
     SectionHeader("Format")
     PhotoFormatToggles(
@@ -616,25 +622,32 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
     )
     // Hi-res still: visible only when the SELECTED camera is a standalone route that actually
     // advertises a full-sensor size (the logical seamless camera never qualifies — its gralloc
-    // rejects big blobs). The row shows the INTENT; the OSD HR tag shows accepted session truth.
-    val hiResSize = caps?.hiResJpegSize
-        ?.takeIf { caps.physicalId == null && !caps.isLogicalMultiCamera }
-    if (hiResSize != null) {
-        val hiResEnabled = !state.isRecording &&
-            state.mode == CaptureMode.PHOTO && state.aspectRatio == AspectRatio.W4_3
+    // rejects big blobs). Both facts arrive as ONE projected route fact, and enablement joins the
+    // live mode/aspect axes through the shared hiResAdmitted predicate (cycle-6 architect F3 — the
+    // old inline conjunction here was a third encoding of the admission axes). The row shows the
+    // INTENT; the OSD HR tag shows accepted session truth.
+    if (availability.hiResAdvertisedStandalone) {
         ToggleRow(
             label = "High resolution",
             checked = state.hiResStill,
             onCheckedChange = actions::onToggleHiResStill,
-            enabled = hiResEnabled,
+            enabled = hiResToggleEnabled(
+                availability = availability,
+                videoMode = state.mode == CaptureMode.VIDEO,
+                aspect = state.aspectRatio,
+                recording = state.isRecording,
+            ),
         )
-        val mp = (hiResSize.width.toLong() * hiResSize.height / 1_000_000).toInt()
-        Text(
-            "${hiResSize.width}×${hiResSize.height} (${mp}MP). " +
-                "Full-sensor still. JPEG only, 4:3, RAW off. Reduces low-light quality.",
-            color = CameraColors.TextSecondary,
-            style = MaterialTheme.typography.labelSmall,
-        )
+        // The advertised dimensions are display copy only; every admission axis stays projected.
+        caps?.hiResJpegSize?.let { hiResSize ->
+            val mp = (hiResSize.width.toLong() * hiResSize.height / 1_000_000).toInt()
+            Text(
+                "${hiResSize.width}×${hiResSize.height} (${mp}MP). " +
+                    "Full-sensor still. JPEG only, 4:3, RAW off. Reduces low-light quality.",
+                color = CameraColors.TextSecondary,
+                style = MaterialTheme.typography.labelSmall,
+            )
+        }
     }
     SegmentedSelector(
         label = "Aspect",

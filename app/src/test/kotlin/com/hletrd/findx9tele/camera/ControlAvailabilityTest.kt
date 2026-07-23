@@ -190,6 +190,39 @@ class ControlAvailabilityTest {
         )
     }
 
+    @Test
+    fun `hi-res route fact projects only from advertised standalone caps`() {
+        // Cycle-6 architect F3: the ProSheet row must see the route fact through the projection,
+        // so an absent-caps route and a non-advertising route both deny it there.
+        assertFalse(controlAvailability(null, ManualControls()).hiResAdvertisedStandalone)
+        assertFalse(controlAvailability(fullCaps(), ManualControls()).hiResAdvertisedStandalone)
+        assertTrue(
+            controlAvailability(fullCaps().copy(hiResAdvertisedStandalone = true), ManualControls())
+                .hiResAdvertisedStandalone,
+        )
+    }
+
+    @Test
+    fun `hi-res toggle enablement rides the shared admission predicate plus the recording lock`() {
+        for (routeFact in booleanArrayOf(false, true))
+            for (video in booleanArrayOf(false, true))
+                for (fourThree in booleanArrayOf(false, true))
+                    for (recording in booleanArrayOf(false, true)) {
+                        val aspect = if (fourThree) AspectRatio.W4_3 else AspectRatio.W16_9
+                        val availability = controlAvailability(
+                            fullCaps().copy(hiResAdvertisedStandalone = routeFact),
+                            ManualControls(),
+                        )
+                        // Exactly [hiResAdmitted]'s truth table over the folded route fact, with
+                        // the recording lock as the row's one extra axis — no hidden interaction.
+                        assertEquals(
+                            "route=$routeFact video=$video aspect=$aspect recording=$recording",
+                            !recording && routeFact && !video && fourThree,
+                            hiResToggleEnabled(availability, video, aspect, recording),
+                        )
+                    }
+    }
+
     private fun fullCaps() = CameraControlCapabilities(
         supportsManualFocus = true,
         supportsManualSensor = true,

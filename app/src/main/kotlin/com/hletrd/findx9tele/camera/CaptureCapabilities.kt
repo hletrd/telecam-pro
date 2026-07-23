@@ -404,6 +404,11 @@ internal data class CameraControlCapabilities(
     val effectModes: IntArray = IntArray(0),
     val edgeModes: IntArray = IntArray(0),
     val noiseReductionModes: IntArray = IntArray(0),
+    // Hi-res ROUTE fact for the settings projection (cycle-6 architect F3): the selected camera
+    // advertises a full-sensor size AND is a standalone route (plain id, not the logical
+    // multicamera whose gralloc rejects the big blob). Folds the standalone+advertised axes of
+    // [hiResAdmitted]; the LIVE mode/aspect axes stay with the UI via [hiResToggleEnabled].
+    val hiResAdvertisedStandalone: Boolean = false,
 )
 
 internal fun CameraCaps.controlCapabilities(): CameraControlCapabilities = CameraControlCapabilities(
@@ -432,6 +437,7 @@ internal fun CameraCaps.controlCapabilities(): CameraControlCapabilities = Camer
     effectModes = effectModes,
     edgeModes = edgeModes,
     noiseReductionModes = noiseReductionModes,
+    hiResAdvertisedStandalone = hiResJpegSize != null && physicalId == null && !isLogicalMultiCamera,
 )
 
 /**
