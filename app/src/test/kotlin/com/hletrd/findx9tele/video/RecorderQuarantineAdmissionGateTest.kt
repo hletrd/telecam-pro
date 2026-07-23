@@ -3,6 +3,7 @@ package com.hletrd.findx9tele.video
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -23,6 +24,21 @@ class RecorderQuarantineAdmissionGateTest {
         assertTrue(gate.isQuarantined())
         assertFalse(gate.close())
         assertTrue(gate.snapshot(Any()) == null)
+    }
+
+    @Test
+    fun `a current pending token commits exactly once`() {
+        val gate = RecorderQuarantineAdmissionGate()
+        val token = checkNotNull(gate.snapshot(Any()))
+        var commits = 0
+
+        assertTrue(gate.commit(token) { commits++ })
+
+        assertEquals(1, commits)
+        // The commit is a guarded execution, not a consumption: the lease stays current.
+        assertTrue(gate.isCurrent(token))
+        assertTrue(gate.commit(token) { commits++ })
+        assertEquals(2, commits)
     }
 
     @Test

@@ -218,4 +218,23 @@ class VideoRecorderMuxerStartTest {
             nativeGraphDispositionForDrainState(true, true),
         )
     }
+
+    @Test
+    fun `stop result defaults to a cleanly released native graph`() {
+        val clean = VideoRecorder.StopResult(saved = true)
+        assertTrue(clean.saved)
+        assertEquals(null, clean.error)
+        assertEquals(NativeGraphDisposition.RELEASED, clean.nativeGraphDisposition)
+
+        // A hung drain reports the explicit quarantine disposition alongside its first failure.
+        val hung = VideoRecorder.StopResult(
+            saved = false,
+            error = IllegalStateException("drain timeout"),
+            nativeGraphDisposition = NativeGraphDisposition.QUARANTINE_REQUIRED,
+        )
+        assertFalse(hung.saved)
+        assertEquals("drain timeout", hung.error?.message)
+        assertEquals(NativeGraphDisposition.QUARANTINE_REQUIRED, hung.nativeGraphDisposition)
+        assertEquals(hung, hung.copy())
+    }
 }

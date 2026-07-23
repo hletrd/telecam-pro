@@ -45,6 +45,46 @@ class AudioInputInspectorTest {
         assertFalse(AudioInputInspector.isBluetoothInput(AudioDeviceInfo.TYPE_UNKNOWN))
     }
 
+    // ---- matchesAudioPreference: the pure per-preference match ----
+
+    @Test
+    fun matchesAudioPreference_autoNeverMatchesAConcretePort() {
+        // AUTO means "system default route" — preferredDevice() must return null, so the match
+        // itself is false for every type.
+        for (type in listOf(
+            AudioDeviceInfo.TYPE_BUILTIN_MIC,
+            AudioDeviceInfo.TYPE_WIRED_HEADSET,
+            AudioDeviceInfo.TYPE_USB_DEVICE,
+            AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+            AudioDeviceInfo.TYPE_UNKNOWN,
+        )) {
+            assertFalse(
+                "AUTO must not match type $type",
+                matchesAudioPreference(type, com.hletrd.findx9tele.camera.AudioInputPreference.AUTO),
+            )
+        }
+    }
+
+    @Test
+    fun matchesAudioPreference_concretePreferencesMatchTheirExactTypeSets() {
+        val builtIn = com.hletrd.findx9tele.camera.AudioInputPreference.BUILT_IN
+        val usb = com.hletrd.findx9tele.camera.AudioInputPreference.USB
+        val bluetooth = com.hletrd.findx9tele.camera.AudioInputPreference.BLUETOOTH
+
+        assertTrue(matchesAudioPreference(AudioDeviceInfo.TYPE_BUILTIN_MIC, builtIn))
+        assertFalse(matchesAudioPreference(AudioDeviceInfo.TYPE_WIRED_HEADSET, builtIn))
+
+        assertTrue(matchesAudioPreference(AudioDeviceInfo.TYPE_USB_DEVICE, usb))
+        assertTrue(matchesAudioPreference(AudioDeviceInfo.TYPE_USB_ACCESSORY, usb))
+        assertTrue(matchesAudioPreference(AudioDeviceInfo.TYPE_USB_HEADSET, usb))
+        assertFalse(matchesAudioPreference(AudioDeviceInfo.TYPE_BUILTIN_MIC, usb))
+
+        assertTrue(matchesAudioPreference(AudioDeviceInfo.TYPE_BLUETOOTH_SCO, bluetooth))
+        assertTrue(matchesAudioPreference(AudioDeviceInfo.TYPE_BLE_HEADSET, bluetooth))
+        assertTrue(matchesAudioPreference(AudioDeviceInfo.TYPE_HEARING_AID, bluetooth))
+        assertFalse(matchesAudioPreference(AudioDeviceInfo.TYPE_USB_DEVICE, bluetooth))
+    }
+
     // ---- resolveAudioInputStatus (TEST4-18/CR4-9): the pure status decision ----
 
     @Test
@@ -90,6 +130,21 @@ class AudioInputInspectorTest {
         )
         assertTrue(s.available)
         org.junit.Assert.assertEquals("Auto · Phone mic", s.label)
+    }
+
+    @Test
+    fun status_autoWithOnlyUnrecognizedPorts_labelsTheFirstPort() {
+        // No recognized external mic AND no builtin: AUTO still records via the system default
+        // route, so the label falls back to the first port rather than lying "no mic detected".
+        val s = resolveAudioInputStatus(
+            listOf(
+                AudioInputPortInfo(AudioDeviceInfo.TYPE_FM_TUNER, "FM"),
+                AudioInputPortInfo(AudioDeviceInfo.TYPE_TELEPHONY, null),
+            ),
+            com.hletrd.findx9tele.camera.AudioInputPreference.AUTO,
+        )
+        assertTrue(s.available)
+        org.junit.Assert.assertEquals("Auto · Mic · FM", s.label)
     }
 
     @Test
