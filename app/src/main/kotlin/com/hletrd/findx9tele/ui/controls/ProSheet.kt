@@ -1233,8 +1233,10 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
     )
     // Trademark attribution for the named log profiles offered in the Video tab — a legal
     // footnote, deliberately non-interactive and dim (small text like SectionHeader).
+    // ARRI marks are registered to the Cine Technik entity, not an "ARRI AG" (cycle-6 DS-8).
     Text(
-        "S-Log is a trademark of Sony Group Corporation. ARRI and LogC are trademarks of ARRI AG. " +
+        "S-Log is a trademark of Sony Group Corporation. LogC is a trademark of " +
+            "Arnold & Richter Cine Technik GmbH & Co. Betriebs KG (ARRI). " +
             "This app is not affiliated with or endorsed by Sony or ARRI.",
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.labelSmall,
