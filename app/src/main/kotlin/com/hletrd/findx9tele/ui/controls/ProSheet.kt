@@ -1312,14 +1312,14 @@ internal fun fnSlotValue(slot: FnSlot, state: CameraUiState): String {
         FnSlot.EXPOSURE_MODE -> c.exposureMode.letter
         FnSlot.FOCUS -> focusModeLabel(c.focusMode)
         FnSlot.SHUTTER -> when {
-            c.exposureMode == ExposureMode.PROGRAM -> "A ${autoShutterText(state)}"
-            c.autoShutterDriven -> "A ${formatShutterSpeed(c.exposureTimeNs)}"
+            c.exposureMode == ExposureMode.PROGRAM -> "Auto ${autoShutterText(state)}"
+            c.autoShutterDriven -> "Auto ${formatShutterSpeed(c.exposureTimeNs)}"
             c.shutterMode == ShutterMode.ANGLE -> "%.0f°".format(Locale.US, c.shutterAngle)
             else -> formatShutterSpeed(c.exposureTimeNs)
         }
         FnSlot.ISO -> when {
-            c.exposureMode == ExposureMode.PROGRAM -> "A ${autoIsoText(state)}"
-            c.autoIsoDriven -> "A ${c.iso}"
+            c.exposureMode == ExposureMode.PROGRAM -> "Auto ${autoIsoText(state)}"
+            c.autoIsoDriven -> "Auto ${c.iso}"
             else -> c.iso.toString()
         }
         FnSlot.WB -> if (c.wbMode == WbMode.MANUAL) "${c.wbKelvin}K" else wbModeLabel(c.wbMode)

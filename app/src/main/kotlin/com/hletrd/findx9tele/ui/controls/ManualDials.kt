@@ -65,7 +65,11 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
@@ -471,11 +475,12 @@ private fun FnDialChip(
         FnSlot.SHUTTER -> DialChip(
             label = "SS",
             value = when {
-                controls.exposureMode == ExposureMode.PROGRAM -> "A${autoShutterText(state)}"
-                controls.autoShutterDriven -> "A${formatShutterSpeed(controls.exposureTimeNs)}"
+                controls.exposureMode == ExposureMode.PROGRAM -> autoShutterText(state)
+                controls.autoShutterDriven -> formatShutterSpeed(controls.exposureTimeNs)
                 controls.shutterMode == ShutterMode.ANGLE -> "%.0f°".format(Locale.US, controls.shutterAngle)
                 else -> formatShutterSpeed(controls.exposureTimeNs)
             },
+            autoValue = controls.exposureMode == ExposureMode.PROGRAM || controls.autoShutterDriven,
             active = openDial == DialType.SHUTTER,
             enabled = policyEnabled && quickManualDialEnabled(DialType.SHUTTER, availability),
             onClick = { onSelect(DialType.SHUTTER) },
@@ -484,10 +489,11 @@ private fun FnDialChip(
         FnSlot.ISO -> DialChip(
             label = "ISO",
             value = when {
-                controls.exposureMode == ExposureMode.PROGRAM -> "A${autoIsoText(state)}"
-                controls.autoIsoDriven -> "A${controls.iso}"
+                controls.exposureMode == ExposureMode.PROGRAM -> autoIsoText(state)
+                controls.autoIsoDriven -> controls.iso.toString()
                 else -> controls.iso.toString()
             },
+            autoValue = controls.exposureMode == ExposureMode.PROGRAM || controls.autoIsoDriven,
             active = openDial == DialType.ISO,
             enabled = policyEnabled && quickManualDialEnabled(DialType.ISO, availability),
             onClick = { onSelect(DialType.ISO) },
@@ -650,6 +656,10 @@ private fun DialChip(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     modifier: Modifier = Modifier,
+    // Auto-driven value ("A9100" class): the qualifier renders as a smaller, dimmer A so the
+    // actual value stays scannable ("A9100" read as one blob — user-reported), and accessibility
+    // hears the honest word instead of a letter glued to digits.
+    autoValue: Boolean = false,
 ) {
     val activate = onClick
     val bg = if (active) CameraColors.TextPrimary else CameraColors.Pill.copy(alpha = 0.7f)
@@ -666,7 +676,7 @@ private fun DialChip(
             .focusable()
             .clearAndSetSemantics {
                 contentDescription = label
-                stateDescription = value
+                stateDescription = if (autoValue) "Auto $value" else value
                 role = Role.Button
                 if (!enabled) disabled()
                 onClick {
@@ -705,9 +715,21 @@ private fun DialChip(
                 lineHeight = 13.sp,
                 fontWeight = FontWeight.SemiBold,
             )
+            val valueColor = fg.copy(alpha = if (active) 1f else 0.75f)
             Text(
-                value,
-                color = fg.copy(alpha = if (active) 1f else 0.75f),
+                if (autoValue) {
+                    buildAnnotatedString {
+                        // Two-thirds size + extra dimming: reads as a qualifier badge on the value,
+                        // like the exposure-mode letters on a Sony top plate.
+                        withStyle(SpanStyle(fontSize = 8.sp, color = valueColor.copy(alpha = valueColor.alpha * 0.7f))) {
+                            append("A ")
+                        }
+                        append(value)
+                    }
+                } else {
+                    AnnotatedString(value)
+                },
+                color = valueColor,
                 fontSize = 11.sp,
                 lineHeight = 13.sp,
             )
