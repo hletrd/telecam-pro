@@ -57,6 +57,22 @@ com/hletrd/findx9tele/camera/CameraSelector2#pickFront
 com/hletrd/findx9tele/camera/CameraSelector2#frontCandidatesOf
 com/hletrd/findx9tele/camera/CameraSelector2#equivFocalOf
 com/hletrd/findx9tele/camera/StandbyAudioController#<init>#Landroid/content/Context;
+# Compiler-generated closure bodies OF that Context constructor, which JaCoCo attributes as
+# separate `_init_$lambda$N` methods: the onAvailable {} and Log.w onUnavailable defaults
+# (android.util.Log throws on host), Context.checkSelfPermission, the meter Thread launcher,
+# the Handler(Looper.getMainLooper()) retry scheduler, and the UnsafeRecorderQuarantine wiring.
+# Context is unconstructable on the host JVM (stub ctor throws), so none of these closures can
+# ever be created or invoked by a host test — the same framework-boundedness as the ctor entry.
+# ($lambda$0/$lambda$1 are the PRIMARY ctor's defaults and stay A: host tests execute them.)
+com/hletrd/findx9tele/camera/StandbyAudioController#_init_$lambda$2
+com/hletrd/findx9tele/camera/StandbyAudioController#_init_$lambda$3
+com/hletrd/findx9tele/camera/StandbyAudioController#_init_$lambda$4
+com/hletrd/findx9tele/camera/StandbyAudioController#_init_$lambda$5
+com/hletrd/findx9tele/camera/StandbyAudioController#_init_$lambda$5$0$0
+com/hletrd/findx9tele/camera/StandbyAudioController#_init_$lambda$6
+com/hletrd/findx9tele/camera/StandbyAudioController#_init_$lambda$6$0
+com/hletrd/findx9tele/camera/StandbyAudioController#_init_$lambda$7
+com/hletrd/findx9tele/camera/StandbyAudioController#_init_$lambda$7$0$0
 com/hletrd/findx9tele/camera/StandbyAudioControllerKt#createAndroidStandbyAudioInput
 
 # ---- gl: EGL/GLES glue (pure seams live in *Kt facades, which stay A) -----------------------
