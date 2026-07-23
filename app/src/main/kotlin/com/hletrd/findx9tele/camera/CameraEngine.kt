@@ -1661,10 +1661,14 @@ class CameraEngine(private val context: Context) {
             loupeCenter = loupeCenterTexX to loupeCenterTexY,
             previewRotationDegrees = previewRotationDegrees(),
             // No un-flip on this device: the front stream is PRE-mirrored by the HAL and the GL
-            // preview adds no mirror of its own (see applyStabilization), so displayed x == texture
-            // x and the plain mapping already lands on the tapped subject — user-verified before
-            // the preview-mirror roles inverted, and the geometry is unchanged by that inversion.
-            mirrorX = false,
+            // preview adds no mirror of its own, so displayed x == texture x and the plain mapping
+            // already lands on the tapped subject — user-verified before the preview-mirror roles
+            // inverted, and the geometry is unchanged by that inversion. Derived from the ONE
+            // FrontMirrorConvention authority so a re-diagnosed mirror role cannot leave this seam
+            // and the GL draw roles disagreeing (cycle-6 architect F4).
+            mirrorX = com.hletrd.findx9tele.gl.FrontMirrorConvention.tapDisplayMirrorX(
+                facing == CameraFacing.FRONT,
+            ),
         )
         val attempt = PendingTapFocus(
             session = accepted,

@@ -823,9 +823,10 @@ class GlPipeline {
                     delogAssist = nativeLog && gammaAssist,
                     zoomComp = zoomTarget / halZoom.coerceAtLeast(0.01f),
                     // NO preview mirror on this device: the front stream arrives pre-mirrored
-                    // (device fact above), which IS the selfie-mirror view. The encoder/analysis
-                    // draws below apply the inversion instead to record the true scene.
-                    mirrorX = false,
+                    // (FrontMirrorConvention), which IS the selfie-mirror view. The
+                    // encoder/analysis draws below apply the inversion instead to record the true
+                    // scene. All four draw roles derive from the ONE convention constant.
+                    mirrorX = FrontMirrorConvention.previewDrawMirrorX(frontStreamPreMirrored),
                 )
                 // TELE finder PIP (opt-in, resolved by CameraEngine.pushTeleFinder): a corner
                 // viewport re-drawing the FULL current camera frame while the main view is
@@ -921,7 +922,7 @@ class GlPipeline {
                 core.makeCurrent(ownedEncoder)
                 // Un-mirror the pre-mirrored front stream so the FILE keeps the true scene
                 // (rear routes pass false and are untouched).
-                renderer.draw(stMatrix, encoderW, encoderH, transfer, false, false, false, sx, sy, roll, crop, mirrorX = frontStreamPreMirrored)
+                renderer.draw(stMatrix, encoderW, encoderH, transfer, false, false, false, sx, sy, roll, crop, mirrorX = FrontMirrorConvention.encoderDrawMirrorX(frontStreamPreMirrored))
                 // Rebase to the first recorded frame so video PTS starts near 0 like the audio track.
                 val ts = st.timestamp
                 if (!encoderBaseSet && ts > 0L) { encoderBaseNs = ts; encoderBaseSet = true }
@@ -1069,7 +1070,7 @@ class GlPipeline {
             // Same un-mirror as the encoder: luma stats are mirror-invariant, but keeping the
             // analysis geometry file-true costs nothing and avoids a surprise if a spatial
             // consumer (zone metering) ever lands here.
-            renderer.draw(stMatrix, w, h, transfer, false, false, false, sx, sy, roll, crop, centerX, centerY, mirrorX = frontStreamPreMirrored)
+            renderer.draw(stMatrix, w, h, transfer, false, false, false, sx, sy, roll, crop, centerX, centerY, mirrorX = FrontMirrorConvention.encoderDrawMirrorX(frontStreamPreMirrored))
             buf.rewind()
             GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)

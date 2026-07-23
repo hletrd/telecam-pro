@@ -2,15 +2,42 @@ package com.hletrd.findx9tele.gl
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Pins the selfie preview-mirror texcoord seam ([texCoordQuad]). The mirror is applied to the
- * ATTRIBUTE texcoords — before the rot chain and the SurfaceTexture matrix — so an x-per-vertex
- * inversion here is a display-horizontal mirror for ANY sensor orientation; a sign change on the
- * wrong axis would compile clean and only show on device, which is why the corners are pinned.
+ * Pins the front-mirror texcoord seam ([texCoordQuad]) and the [FrontMirrorConvention] role
+ * derivations. The x-inversion is applied to the ATTRIBUTE texcoords — before the rot chain and
+ * the SurfaceTexture matrix — so an x-per-vertex inversion here is a display-horizontal mirror
+ * for ANY sensor orientation. WHICH draws set it is the inverted-role device fact (the PMA110
+ * front HAL pre-mirrors its stream, 29559a8): the preview passes the stream through and the
+ * encoder/analysis draws un-mirror — all derived from the one convention constant.
  */
 class PreviewMirrorTest {
+
+    @Test
+    fun `front mirror roles derive coherently from the one convention constant`() {
+        // Exactly ONE draw side carries the selfie mirror on the front route — whichever way the
+        // device fact points, preview and encoder must disagree, and the tap axis must follow the
+        // preview role (three independent literals drifted here before; cycle-6 architect F4).
+        assertTrue(
+            FrontMirrorConvention.previewDrawMirrorX(true) !=
+                FrontMirrorConvention.encoderDrawMirrorX(true),
+        )
+        assertEquals(
+            FrontMirrorConvention.previewDrawMirrorX(true),
+            FrontMirrorConvention.tapDisplayMirrorX(true),
+        )
+        // Rear routes never mirror on any seam.
+        assertFalse(FrontMirrorConvention.previewDrawMirrorX(false))
+        assertFalse(FrontMirrorConvention.encoderDrawMirrorX(false))
+        assertFalse(FrontMirrorConvention.tapDisplayMirrorX(false))
+        // The current device fact: pre-mirrored stream → preview pass-through, encoder un-mirrors.
+        assertTrue(FrontMirrorConvention.FRONT_STREAM_PRE_MIRRORED)
+        assertFalse(FrontMirrorConvention.previewDrawMirrorX(true))
+        assertTrue(FrontMirrorConvention.encoderDrawMirrorX(true))
+    }
 
     @Test
     fun `unmirrored quad is the identity texcoord corners in triangle-strip order`() {
