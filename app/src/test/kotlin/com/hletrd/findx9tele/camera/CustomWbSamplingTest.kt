@@ -3,6 +3,7 @@ package com.hletrd.findx9tele.camera
 import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureResult
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -87,6 +88,18 @@ class CustomWbSamplingTest {
                 awbLocked = true,
             ),
         )
+    }
+
+    @Test
+    fun `a sample freezes its converged gains and exact owner token`() {
+        // The callback thread hands main exactly this pair; identity (not equality) is what the
+        // main-thread recheck compares against the installed accepted session.
+        val gains = WbGains(1.9f, 1f, 1f, 2.4f)
+        val owner = Any()
+        val sample = CustomWbSample(gains, owner)
+
+        assertSame(gains, sample.gains)
+        assertSame(owner, sample.ownerToken)
     }
 
     private fun eligible(

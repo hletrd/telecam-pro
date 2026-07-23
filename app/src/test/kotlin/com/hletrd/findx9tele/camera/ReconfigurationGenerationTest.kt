@@ -253,6 +253,89 @@ class ReconfigurationGenerationTest {
     }
 
     @Test
+    fun `re-entering tele keeps the original pre-tele baseline`() {
+        // TC already on: the digital tele zoom is TC-local, so the exit framing must still be
+        // the zoom the user held BEFORE the first TC entry, never the current TC-local ratio.
+        val resolved = resolveLensOpticsIntent(
+            mode = CaptureMode.PHOTO,
+            currentLens = LensChoice.TELE3X,
+            currentTeleconverter = true,
+            currentControls = ManualControls(zoomRatio = 4f),
+            currentPreTeleUnifiedZoom = 7f,
+            requestedLens = LensChoice.TELE3X,
+            requestedTeleconverter = true,
+            restorePreTele = false,
+        )
+
+        assertTrue(resolved.teleconverter)
+        assertEquals(7f, resolved.preTeleUnifiedZoom)
+        assertEquals(1f, resolved.controls.zoomRatio)
+    }
+
+    @Test
+    fun `tele entry from video remaps the lens-local zoom into the unified baseline`() {
+        // Video zoom is lens-local; the pre-tele baseline is unified (main-relative), so entry
+        // multiplies through the active lens preset. A sub-1 local remnant clamps to the preset.
+        val resolved = resolveLensOpticsIntent(
+            mode = CaptureMode.VIDEO,
+            currentLens = LensChoice.TELE10X,
+            currentTeleconverter = false,
+            currentControls = ManualControls(zoomRatio = 1.5f),
+            currentPreTeleUnifiedZoom = Float.NaN,
+            requestedLens = LensChoice.TELE3X,
+            requestedTeleconverter = true,
+            restorePreTele = false,
+        )
+        assertEquals(15f, resolved.preTeleUnifiedZoom)
+
+        val clamped = resolveLensOpticsIntent(
+            mode = CaptureMode.VIDEO,
+            currentLens = LensChoice.TELE10X,
+            currentTeleconverter = false,
+            currentControls = ManualControls(zoomRatio = 0.5f),
+            currentPreTeleUnifiedZoom = Float.NaN,
+            requestedLens = LensChoice.TELE3X,
+            requestedTeleconverter = true,
+            restorePreTele = false,
+        )
+        assertEquals(10f, clamped.preTeleUnifiedZoom)
+    }
+
+    @Test
+    fun `tele exit without a restorable baseline lands the requested photo preset`() {
+        // restorePreTele off (or a NaN baseline) falls to the requested lens preset; in PHOTO the
+        // unified value IS the zoom ratio (the logical camera's main-relative scale).
+        val resolved = resolveLensOpticsIntent(
+            mode = CaptureMode.PHOTO,
+            currentLens = LensChoice.TELE3X,
+            currentTeleconverter = true,
+            currentControls = ManualControls(zoomRatio = 3f),
+            currentPreTeleUnifiedZoom = 7f,
+            requestedLens = LensChoice.MAIN,
+            requestedTeleconverter = false,
+            restorePreTele = false,
+        )
+        assertEquals(LensChoice.MAIN, resolved.lens)
+        assertFalse(resolved.teleconverter)
+        assertEquals(1f, resolved.controls.zoomRatio)
+        assertTrue(resolved.preTeleUnifiedZoom.isNaN())
+
+        // restore requested but the baseline never captured: same preset landing, no NaN leak.
+        val noBaseline = resolveLensOpticsIntent(
+            mode = CaptureMode.PHOTO,
+            currentLens = LensChoice.TELE3X,
+            currentTeleconverter = true,
+            currentControls = ManualControls(zoomRatio = 3f),
+            currentPreTeleUnifiedZoom = Float.NaN,
+            requestedLens = LensChoice.TELE10X,
+            requestedTeleconverter = false,
+            restorePreTele = true,
+        )
+        assertEquals(LensChoice.TELE10X, noBaseline.lens)
+        assertEquals(10f, noBaseline.controls.zoomRatio)
+    }
+
+    @Test
     fun `superseding generation rejects the older complete intent`() {
         val older = 41L
         val newer = 42L

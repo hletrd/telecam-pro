@@ -1,7 +1,9 @@
 package com.hletrd.findx9tele.storage
 
+import com.hletrd.findx9tele.camera.MediaRecoveryCompletion
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -198,6 +200,24 @@ class MediaDurabilityPolicyTest {
             RecoveryRetryDecision.COMPLETE,
             recoveryRetryDecision(RecoveryReport(), 1, 3),
         )
+    }
+
+    @Test
+    fun `engine recovery completion carries report attempt and decision as one packet`() {
+        // The engine publishes one immutable completion snapshot per cleanupOrphans pass; the
+        // decision must ride WITH the exact report/attempt pair that produced it.
+        val report = RecoveryReport()
+            .record(RecoveryEvent.SCANNED)
+            .record(RecoveryEvent.PUBLISH_FAILED)
+        val completion = MediaRecoveryCompletion(
+            report = report,
+            attempts = 2,
+            decision = recoveryRetryDecision(report, 2, 3),
+        )
+
+        assertSame(report, completion.report)
+        assertEquals(2, completion.attempts)
+        assertEquals(RecoveryRetryDecision.RETRY, completion.decision)
     }
 
     @Test

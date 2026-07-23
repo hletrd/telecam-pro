@@ -303,6 +303,66 @@ class RecordingTeardownTerminalGateTest {
         assertEquals(RecordingTeardownTerminal.FINALIZE, coordinator.current())
     }
 
+    @Test
+    fun `synchronously throwing detach submission starts recovery and refuses the start`() {
+        // submitDetach posts to the GL thread; a dead/rejecting executor throws HERE, not in a
+        // callback. That is a detach failure like any other: recovery owns it, start reports false.
+        val scheduler = DeterministicScheduler()
+        val submitFailure = IllegalStateException("GL queue rejected detach")
+        val recoveryFailures = mutableListOf<Throwable>()
+        val terminals = mutableListOf<TerminalEvent>()
+        val coordinator = coordinator(
+            scheduler = scheduler,
+            onRecoveryRequired = recoveryFailures::add,
+            onTerminal = { terminal, failure -> terminals += TerminalEvent(terminal, failure) },
+        )
+
+        assertFalse(coordinator.start { throw submitFailure })
+
+        assertSame(submitFailure, recoveryFailures.single())
+        assertTrue(coordinator.hasStartedRecovery())
+        // Recovery is in flight, not terminal: strict release may still finalize this recorder.
+        assertNull(coordinator.current())
+        assertTrue(terminals.isEmpty())
+        assertEquals(listOf(DETACH_TIMEOUT_MS, HARD_TIMEOUT_MS), scheduler.delays())
+    }
+
+    @Test
+    fun `hard deadline firing inside schedule is terminal before installation`() {
+        // A degenerate watchdog may run its action synchronously inside schedule() (zero-delay
+        // executor, or a clock already past the deadline). The quarantine terminal then lands
+        // BEFORE armDeadline can install the cancellation — which must be cancelled, not leaked,
+        // and the already-terminal coordinator must refuse the installation and the detach submit.
+        val cancelCounts = mutableListOf<AtomicInteger>()
+        var scheduleCalls = 0
+        val scheduler = RecordingTeardownScheduler { _, action ->
+            scheduleCalls++
+            val cancels = AtomicInteger().also(cancelCounts::add)
+            if (scheduleCalls == 2) action() // the hard deadline fires during scheduling
+            RecordingTeardownCancellation { cancels.incrementAndGet() }
+        }
+        val recoveryFailures = mutableListOf<Throwable>()
+        val terminals = mutableListOf<TerminalEvent>()
+        var submitted = false
+        val coordinator = coordinator(
+            scheduler = scheduler,
+            onRecoveryRequired = recoveryFailures::add,
+            onTerminal = { terminal, failure -> terminals += TerminalEvent(terminal, failure) },
+        )
+
+        assertFalse(coordinator.start { submitted = true })
+
+        assertFalse(submitted)
+        assertTrue(recoveryFailures.isEmpty())
+        assertEquals(RecordingTeardownTerminal.QUARANTINE, coordinator.current())
+        // Exactly one terminal (the in-schedule hard timeout); the follow-up "watchdog
+        // unavailable" finish is inert against the already-claimed terminal.
+        assertEquals(RecordingTeardownTerminal.QUARANTINE, terminals.single().terminal)
+        assertTrue(terminals.single().failure is TimeoutException)
+        // Both the installed detach deadline and the never-installed hard cancellation cancel once.
+        assertEquals(listOf(1, 1), cancelCounts.map { it.get() })
+    }
+
     private fun coordinator(
         scheduler: RecordingTeardownScheduler,
         onRecoveryRequired: (Throwable) -> Unit,

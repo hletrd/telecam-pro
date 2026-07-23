@@ -63,4 +63,20 @@ class ColdStartRetryGateTest {
         assertFalse(gate.claim(scheduled.token, currentGeneration = 11, canRun = true))
         assertTrue(gate.failed(11, 11, canRun = true) is ColdStartRetryGate.Failure.Retry)
     }
+
+    @Test
+    fun `abandon releases only the exactly scheduled owner`() {
+        val gate = ColdStartRetryGate(maxAttempts = 2)
+        val scheduled = gate.failed(13, 13, canRun = true) as ColdStartRetryGate.Failure.Retry
+
+        // A stale token (an older abandoned timer firing late) must not release the live owner.
+        gate.abandon(ColdStartRetryGate.Token(id = 99, generation = 13))
+        assertEquals(ColdStartRetryGate.Failure.Ignore, gate.failed(13, 13, canRun = true))
+
+        // Abandoning the real owner clears the schedule: its claim dies and a new failure may
+        // schedule again within the same attempt budget.
+        gate.abandon(scheduled.token)
+        assertFalse(gate.claim(scheduled.token, currentGeneration = 13, canRun = true))
+        assertTrue(gate.failed(13, 13, canRun = true) is ColdStartRetryGate.Failure.Retry)
+    }
 }

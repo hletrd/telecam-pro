@@ -21,4 +21,20 @@ class PreviewModeIntentGateTest {
         assertFalse(gate.request(returnedPhoto.copy()))
         assertTrue(gate.isCurrent(returnedPhoto))
     }
+
+    @Test
+    fun resetRearmsTheGateWithAFreshBaselineOwner() {
+        val baseline = PreviewModeIntent(pinAutoFps = false, opticsGeneration = 3)
+        val video = PreviewModeIntent(pinAutoFps = true, opticsGeneration = 4)
+        val gate = PreviewModeIntentGate(PreviewModeIntent(pinAutoFps = false, opticsGeneration = 2))
+
+        assertTrue(gate.request(video))
+        gate.reset(baseline)
+
+        // Reset installs the exact baseline instance and revokes the queued intent's ownership,
+        // so the same (equal) toggle becomes requestable again afterwards.
+        assertTrue(gate.isCurrent(baseline))
+        assertFalse(gate.isCurrent(video))
+        assertTrue(gate.request(video))
+    }
 }
