@@ -962,8 +962,14 @@ def midrec_still_cadence_errors(info: dict, *, expected_fps: Fraction) -> list[s
     """
     nominal = info.get("nominal_fps")
     errors = []
-    if nominal != expected_fps:
-        errors.append(f"nominal_fps={nominal!r}, expected {expected_fps}")
+    # Same ±1% container-nominal band as require_decoded_video: this muxer derives
+    # r_frame_rate from actual frame timing (device-observed 359/12 ≈ 29.92 for a 29.97
+    # admission whose take contains the still gap), so exact equality over-pins it.
+    if not (
+        isinstance(nominal, Fraction)
+        and expected_fps * Fraction(99, 100) <= nominal <= expected_fps * Fraction(101, 100)
+    ):
+        errors.append(f"nominal_fps={nominal!r}, expected about {expected_fps}")
     intervals = info.get("frame_intervals")
     if not isinstance(intervals, list) or not intervals or not all(
         isinstance(interval, Fraction) for interval in intervals

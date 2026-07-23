@@ -1485,8 +1485,17 @@ class RecordingCleanupTest(unittest.TestCase):
         errors = cases.midrec_still_cadence_errors(sparse, expected_fps=fps)
         self.assertTrue(any("decoded only" in error for error in errors))
 
+        # This muxer derives the container nominal from frame timing: 359/12 ≈ 29.92 was
+        # device-observed for a 29.97 admission with the still gap — inside the ±1% band.
+        timing_derived_nominal = info(still_gap)
+        timing_derived_nominal["nominal_fps"] = Fraction(359, 12)
+        self.assertEqual(
+            cases.midrec_still_cadence_errors(timing_derived_nominal, expected_fps=fps),
+            [],
+        )
+
         wrong_nominal = info(steady)
-        wrong_nominal["nominal_fps"] = Fraction(30)
+        wrong_nominal["nominal_fps"] = Fraction(28)
         errors = cases.midrec_still_cadence_errors(wrong_nominal, expected_fps=fps)
         self.assertTrue(any("nominal_fps" in error for error in errors))
 
