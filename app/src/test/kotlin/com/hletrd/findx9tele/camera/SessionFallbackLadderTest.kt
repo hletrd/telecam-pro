@@ -118,12 +118,25 @@ class SessionFallbackLadderTest {
     }
 
     @Test
-    fun `hi-res is the first thing dropped - attempt 1 equals the existing table`() {
-        // The retry after a failed hi-res configure must degrade ONLY hi-res; every later rung is
-        // byte-identical to the ladder without the request.
-        for (attempt in 1..3) {
+    fun `hi-res failure falls back to the FULL session including RAW`() {
+        // The hi-res rung is PREPENDED: a rejected hi-res combo must retry the ordinary full plan
+        // (RAW alive) before the ladder degrades anything else. The old mapping reused the
+        // ordinary indices, whose attempt 1 already had RAW off — a rejected hi-res session
+        // silently lost RAW for the whole session (cycle-6 debugger F3).
+        assertEquals(
+            SessionAttemptPlan(useHlg = true, useJpeg = true, useRaw = true),
+            sessionAttemptPlan(1, wantHlg = true, supportsRaw = true, standalone = true, wantHiRes = true),
+        )
+    }
+
+    @Test
+    fun `hi-res shifts the ordinary ladder by exactly one`() {
+        // Every post-hi-res attempt is byte-identical to the ordinary ladder one rung earlier —
+        // an INDEPENDENT expectation (different inputs on the two sides), not the function
+        // compared against itself (cycle-6 test-review F-A1).
+        for (attempt in 1..4) {
             assertEquals(
-                sessionAttemptPlan(attempt, wantHlg = true, supportsRaw = true, standalone = true),
+                sessionAttemptPlan(attempt - 1, wantHlg = true, supportsRaw = true, standalone = true),
                 sessionAttemptPlan(
                     attempt,
                     wantHlg = true,
@@ -156,14 +169,57 @@ class SessionFallbackLadderTest {
         assertTrue(vendor0.useVendorOperationMode)
         assertTrue(vendor0.useHiResStill)
         assertFalse(vendor0.useRaw)
-        // Every later TELE rung — including the regular-mode retry of the same stream set at
-        // attempt 3 — is exactly the existing table (hi-res never re-enters mid-ladder).
-        for (attempt in 1..7) {
+        // Every later TELE rung maps onto the ordinary TELE ladder shifted by one (hi-res never
+        // re-enters mid-ladder, and the first fallback is vendor-full WITH RAW).
+        assertEquals(
+            sessionAttemptPlan(0, true, true, true, teleconverterMode = true),
+            sessionAttemptPlan(1, true, true, true, teleconverterMode = true, wantHiRes = true),
+        )
+        for (attempt in 1..8) {
             assertEquals(
-                sessionAttemptPlan(attempt, true, true, true, teleconverterMode = true),
+                sessionAttemptPlan(attempt - 1, true, true, true, teleconverterMode = true),
                 sessionAttemptPlan(attempt, true, true, true, teleconverterMode = true, wantHiRes = true),
             )
         }
+    }
+
+    @Test
+    fun `tele degraded rungs pin the documented order`() {
+        // Vendor full/degraded, THEN regular full/degraded, preview-only last (CLAUDE.md). The
+        // vendor-degraded and regular rungs (1/2/4/5) were previously unpinned — a reorder would
+        // have passed the suite (cycle-6 test-review F-A1).
+        assertEquals(
+            SessionAttemptPlan(useHlg = true, useJpeg = true, useRaw = false, useVendorOperationMode = true),
+            sessionAttemptPlan(1, true, true, true, teleconverterMode = true),
+        )
+        assertEquals(
+            SessionAttemptPlan(useHlg = false, useJpeg = true, useRaw = false, useVendorOperationMode = true),
+            sessionAttemptPlan(2, true, true, true, teleconverterMode = true),
+        )
+        assertEquals(
+            SessionAttemptPlan(useHlg = true, useJpeg = true, useRaw = false, useVendorOperationMode = false),
+            sessionAttemptPlan(4, true, true, true, teleconverterMode = true),
+        )
+        assertEquals(
+            SessionAttemptPlan(useHlg = false, useJpeg = true, useRaw = false, useVendorOperationMode = false),
+            sessionAttemptPlan(5, true, true, true, teleconverterMode = true),
+        )
+    }
+
+    @Test
+    fun `exhaustion boundary matches the ladder length`() {
+        // The bound must include the preview-only rungs — and stretch by ONE when the hi-res rung
+        // is prepended, or the last resort falls off the shifted ladder.
+        assertEquals(3, maxSessionAttempt(teleconverterMode = false, wantHiRes = false))
+        assertEquals(7, maxSessionAttempt(teleconverterMode = true, wantHiRes = false))
+        assertEquals(4, maxSessionAttempt(teleconverterMode = false, wantHiRes = true))
+        assertEquals(8, maxSessionAttempt(teleconverterMode = true, wantHiRes = true))
+        // The last in-bounds attempt of each ladder is its preview-only last resort.
+        val plainLast = sessionAttemptPlan(4, true, true, true, wantHiRes = true)
+        assertFalse(plainLast.useJpeg)
+        val teleLast = sessionAttemptPlan(8, true, true, true, teleconverterMode = true, wantHiRes = true)
+        assertFalse(teleLast.useJpeg)
+        assertFalse(teleLast.useVendorOperationMode)
     }
 
     @Test

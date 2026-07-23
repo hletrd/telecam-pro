@@ -581,7 +581,7 @@ class CameraController(context: Context) {
                 override fun onConfigureFailed(s: CameraCaptureSession) {
                     // Advance the fallback ladder and retry; give up once it is exhausted.
                     configAttempt = attempt + 1
-                    val maxAttempt = if (teleconverterMode) MAX_TELE_CONFIG_ATTEMPT else MAX_CONFIG_ATTEMPT
+                    val maxAttempt = maxSessionAttempt(teleconverterMode, hiResStill)
                     if (configAttempt > maxAttempt) {
                         Log.e(TAG, "Session configure failed; fallback ladder exhausted")
                         onError.onError(IllegalStateException("session configure failed"))
@@ -612,7 +612,7 @@ class CameraController(context: Context) {
         // onConfigureFailed does (the high-speed path already guards this same call).
         runCatching { camera.createCaptureSession(sessionConfig) }.onFailure { failure ->
             configAttempt = attempt + 1
-            val maxAttempt = if (teleconverterMode) MAX_TELE_CONFIG_ATTEMPT else MAX_CONFIG_ATTEMPT
+            val maxAttempt = maxSessionAttempt(teleconverterMode, hiResStill)
             if (configAttempt > maxAttempt) {
                 Log.e(TAG, "createCaptureSession threw; fallback ladder exhausted", failure)
                 onError.onError(failure)
@@ -1643,11 +1643,6 @@ class CameraController(context: Context) {
         // Sensor fast-path pacing: every repeating-request swap gaps this HAL ~180 ms (measured),
         // so high-churn sensor submits hold the same >=200 ms floor as the zoom fast path.
         const val SENSOR_SUBMIT_MIN_INTERVAL_MS = 200L
-        // Highest fallback index (attempt 3 = preview-only). Beyond this the session can't be built.
-        const val MAX_CONFIG_ATTEMPT = 3
-        // TELE tries the same four stream plans once with vendor operation mode 0x80b4 and once
-        // with SESSION_REGULAR, so an unsupported vendor mode cannot kill an otherwise-valid view.
-        const val MAX_TELE_CONFIG_ATTEMPT = 7
         // Max time close() waits for the camera thread to release the HAL device before a reopen.
         // Device close is normally well under this; the cap keeps a wedged close from hanging the UI.
         const val CLOSE_JOIN_TIMEOUT_MS = 1500L
@@ -1766,8 +1761,12 @@ internal data class SessionAttemptPlan(
  * HAL-crash-critical ordering is unit-testable off-device. TELE tries both operation modes with
  * capture streams before either preview-only last resort. [standalone] is the
  * `selection.physicalId == null` RAW gate (RAW via physical routing SIGSEGVs this QTI HAL).
- * [wantHiRes] rides ONLY attempt 0 (TELE: the first vendor-mode attempt) and is the FIRST thing
- * dropped: attempt 1 re-tries the ordinary streams before the ladder degrades anything else.
+ * [wantHiRes] rides a PREPENDED attempt-0 rung (the hi-res variant of the full plan, RAW forced
+ * off) and is the FIRST thing dropped: every later attempt maps onto the ORDINARY ladder shifted
+ * by one, so a rejected hi-res combo falls back to full-WITH-RAW before anything else degrades.
+ * (The old mapping reused the ordinary indices, whose attempt 1 already had RAW off — a rejected
+ * hi-res session silently cost the whole session its RAW rung; cycle-6 debugger F3. The ladder is
+ * one attempt LONGER when hi-res is wanted: see [maxSessionAttempt].)
  */
 internal fun sessionAttemptPlan(
     attempt: Int,
@@ -1778,8 +1777,10 @@ internal fun sessionAttemptPlan(
     teleconverterMode: Boolean = false,
     wantHiRes: Boolean = false,
 ): SessionAttemptPlan {
+    val hiRes = wantHiRes && attempt == 0
+    val ladderAttempt = if (wantHiRes && attempt > 0) attempt - 1 else attempt
     val (streamAttempt, vendorMode) = if (teleconverterMode) {
-        when (attempt) {
+        when (ladderAttempt) {
             0 -> 0 to true
             1 -> 1 to true
             2 -> 2 to true
@@ -1790,9 +1791,8 @@ internal fun sessionAttemptPlan(
             else -> 3 to false
         }
     } else {
-        attempt to false
+        ladderAttempt to false
     }
-    val hiRes = wantHiRes && attempt == 0
     return SessionAttemptPlan(
     useHlg = wantHlg && streamAttempt < 2,
     useJpeg = streamAttempt < 3,
@@ -1809,6 +1809,21 @@ internal fun sessionAttemptPlan(
     useHiResStill = hiRes,
     )
 }
+
+/**
+ * Exhaustion boundary matching [sessionAttemptPlan]'s table: the hi-res rung is PREPENDED, so a
+ * hi-res-wanting configure sequence owns one extra attempt — a fixed bound would cut the
+ * preview-only last resort off the end of the shifted ladder.
+ */
+internal fun maxSessionAttempt(teleconverterMode: Boolean, wantHiRes: Boolean): Int =
+    (if (teleconverterMode) MAX_TELE_CONFIG_ATTEMPT else MAX_CONFIG_ATTEMPT) +
+        (if (wantHiRes) 1 else 0)
+
+// Highest fallback index (ordinary attempt 3 = preview-only; TELE runs the four stream plans in
+// both operation modes). File-level so the unit-testable ladder math ([sessionAttemptPlan],
+// [maxSessionAttempt]) and the in-class retry handlers share one authority.
+internal const val MAX_CONFIG_ATTEMPT = 3
+internal const val MAX_TELE_CONFIG_ATTEMPT = 7
 
 /**
  * Pure ROI math behind tap/center/spot metering, extracted (like [sessionAttemptPlan]) so the
