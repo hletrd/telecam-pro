@@ -236,6 +236,10 @@ def parse_ffprobe_payload(header: dict, scan: dict) -> dict:
         "video_end": video_end,
         "minimum_frame_interval": Fraction(min(frame_delta_ticks)) * time_base,
         "maximum_frame_interval": Fraction(max(frame_delta_ticks)) * time_base,
+        # The full per-frame interval sequence, for cases whose cadence contract must
+        # localize an expected in-stream interruption (mid-REC still) instead of only
+        # bounding the global extremes.
+        "frame_intervals": [Fraction(delta) * time_base for delta in frame_delta_ticks],
         "color_range": video.get("color_range"),
         "color_space": video.get("color_space"),
         "transfer": video.get("color_transfer"),

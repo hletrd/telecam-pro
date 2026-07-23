@@ -1007,6 +1007,37 @@ class UiSemanticsTest(unittest.TestCase):
         self.assertEqual(drives, {"Burst"})
         self.assertEqual(timers, {"10s"})
 
+    def test_photo_setting_selection_reads_the_checkable_chip_container(self) -> None:
+        # Device-dumped Compose structure (2026-07-23): checked= lives on the checkable chip
+        # CONTAINER; the visible label is a separate non-checkable text descendant. The
+        # selected (non-checkable) tab-rail node must not leak selection onto page content.
+        def chip(label: str, bounds: str, text_bounds: str, checked: bool) -> str:
+            return (
+                f'<node text="" content-desc="" class="android.view.View" '
+                f'checkable="true" checked="{str(checked).lower()}" selected="false" '
+                f'enabled="true" bounds="{bounds}">'
+                f'<node text="{label}" content-desc="" class="android.widget.TextView" '
+                f'checkable="false" checked="false" selected="false" enabled="true" '
+                f'bounds="{text_bounds}" /></node>'
+            )
+
+        xml = (
+            "<hierarchy>"
+            '<node text="" content-desc="Shoot" class="android.view.View" '
+            'checkable="false" checked="false" selected="true" enabled="true" '
+            'bounds="[0,966][266,1196]" />'
+            + chip("Single", "[333,2488][563,2656]", "[389,2544][507,2600]", True)
+            + chip("Burst", "[584,2488][797,2656]", "[640,2544][741,2600]", False)
+            + chip("Off", "[333,2792][505,2960]", "[389,2848][449,2904]", False)
+            + chip("10s", "[715,2792][900,2960]", "[771,2848][844,2904]", True)
+            + "</hierarchy>"
+        )
+
+        drives, timers = cases.selected_photo_setting_options(UiTree(xml))
+
+        self.assertEqual(drives, {"Single"})
+        self.assertEqual(timers, {"10s"})
+
     @staticmethod
     def settings_modal_xml(
         *,
@@ -1405,6 +1436,63 @@ class RecordingCleanupTest(unittest.TestCase):
         over_cap = self.admitted_spec(bitrate=251_000_000)
         errors = cases.recording_admission_errors(over_cap, osd)
         self.assertTrue(any("safety cap" in error for error in errors))
+
+    def test_midrec_cadence_allows_one_bounded_still_interruption_only(self) -> None:
+        fps = Fraction(30_000, 1_001)
+        target = Fraction(1_001, 30_000)
+
+        def info(intervals: list[Fraction]) -> dict:
+            seconds = sum(intervals, Fraction(0)) + target
+            return {
+                "probe": "ffprobe",
+                "nominal_fps": fps,
+                "frame_intervals": intervals,
+                "video_seconds": seconds,
+                "frame_count": len(intervals) + 1,
+            }
+
+        steady = [target] * 300
+        self.assertEqual(
+            cases.midrec_still_cadence_errors(info(steady), expected_fps=fps),
+            [],
+        )
+
+        # The device-measured shape: one 0.689 s gap plus one 0.067 s recovery interval.
+        still_gap = [*steady[:150], Fraction(6893, 10_000), Fraction(668, 10_000), *steady[150:]]
+        self.assertEqual(
+            cases.midrec_still_cadence_errors(info(still_gap), expected_fps=fps),
+            [],
+        )
+
+        two_interruptions = [*steady[:100], Fraction(1, 2), *steady[100:200], Fraction(1, 2), *steady[200:]]
+        errors = cases.midrec_still_cadence_errors(info(two_interruptions), expected_fps=fps)
+        self.assertTrue(any("2 separate cadence interruptions" in error for error in errors))
+
+        over_budget = [*steady[:150], Fraction(2), *steady[150:]]
+        errors = cases.midrec_still_cadence_errors(info(over_budget), expected_fps=fps)
+        self.assertTrue(any("expected <= 1.5s" in error for error in errors))
+
+        smeared = [*steady[:150], *([Fraction(1, 10)] * 8), *steady[150:]]
+        errors = cases.midrec_still_cadence_errors(info(smeared), expected_fps=fps)
+        self.assertTrue(any("spans 8 intervals" in error for error in errors))
+
+        implausibly_fast = [*steady, target / 4]
+        errors = cases.midrec_still_cadence_errors(info(implausibly_fast), expected_fps=fps)
+        self.assertTrue(any("minimum_frame_interval" in error for error in errors))
+
+        sparse = info(still_gap)
+        sparse["frame_count"] = len(still_gap) // 2
+        errors = cases.midrec_still_cadence_errors(sparse, expected_fps=fps)
+        self.assertTrue(any("decoded only" in error for error in errors))
+
+        wrong_nominal = info(steady)
+        wrong_nominal["nominal_fps"] = Fraction(30)
+        errors = cases.midrec_still_cadence_errors(wrong_nominal, expected_fps=fps)
+        self.assertTrue(any("nominal_fps" in error for error in errors))
+
+        no_intervals = {**info(steady), "frame_intervals": None}
+        errors = cases.midrec_still_cadence_errors(no_intervals, expected_fps=fps)
+        self.assertIn("decoded frame intervals are unavailable", errors)
 
     def test_short_video_decode_requires_admitted_fps_and_frame_cadence(self) -> None:
         healthy = {
@@ -1858,6 +1946,8 @@ class VideoProbeTest(unittest.TestCase):
         self.assertEqual(info["nominal_fps"], Fraction(30_000, 1_001))
         self.assertEqual(info["observed_fps"], Fraction(30_000, 1_001))
         self.assertEqual(info["frame_count"], 1_948)
+        self.assertEqual(len(info["frame_intervals"]), 1_947)
+        self.assertEqual(set(info["frame_intervals"]), {Fraction(1_001, 30_000)})
         self.assertEqual(
             media.hlg_2997_errors(
                 info,

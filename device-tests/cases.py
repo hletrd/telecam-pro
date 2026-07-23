@@ -95,6 +95,11 @@ REC_SNAPSHOT_EXTRA_BYTES = 512 * 1024 ** 2
 REC_STORAGE_VBR_MULTIPLIER = 2
 REC_SNAPSHOT_PROMPT_SECONDS = 4.0
 REC_SNAPSHOT_TERMINAL_SETTLE_SECONDS = 3.0
+# One still-owned encoder interruption budget: the 500 ms preview-safe still exposure plus
+# capture handoff overhead (device-measured 0.689 s + one 0.067 s recovery interval in a dark
+# scene, 2026-07-23). Pathological stalls are still failures.
+REC_SNAPSHOT_MAX_STILL_GAP_SECONDS = Fraction(3, 2)
+REC_SNAPSHOT_MAX_STILL_GAP_INTERVALS = 3
 
 
 @dataclass(frozen=True)
@@ -389,12 +394,45 @@ PHOTO_DRIVE_OPTIONS = {"Single", "Burst", "AEB", "Timelapse"}
 PHOTO_TIMER_OPTIONS = {"Off", "3s", "10s"}
 
 
+def _bounds_contain(
+    outer: tuple[int, int, int, int],
+    inner: tuple[int, int, int, int],
+) -> bool:
+    return (
+        outer[0] <= inner[0]
+        and outer[1] <= inner[1]
+        and inner[2] <= outer[2]
+        and inner[3] <= outer[3]
+    )
+
+
+def selected_option_labels(tree, labels: set[str]) -> set[str]:
+    """Return option labels whose own node OR enclosing checkable chip is checked.
+
+    The settings chips publish checked= on the checkable chip CONTAINER while the visible
+    label is a separate non-checkable text descendant (device-dumped 2026-07-23), so a flat
+    text-node state read can never see a selection. The flattened UI tree has no ancestry,
+    so containment stands in for it: only checkable+checked regions participate, which keeps
+    the selected (non-checkable) tab-rail node from leaking selection onto page content.
+    """
+    checked_regions = [
+        node.bounds for node in tree.nodes if node.checkable and node.checked
+    ]
+    selected = set()
+    for node in tree.nodes:
+        if node.text not in labels:
+            continue
+        if (
+            node.selected
+            or node.checked
+            or any(_bounds_contain(region, node.bounds) for region in checked_regions)
+        ):
+            selected.add(node.text)
+    return selected
+
+
 def selected_photo_setting_options(tree) -> tuple[set[str], set[str]]:
-    selected = {
-        node.text
-        for node in tree.nodes
-        if node.text and (node.selected or node.checked)
-    }
+    selected = selected_option_labels(tree, PHOTO_DRIVE_OPTIONS | PHOTO_TIMER_OPTIONS)
     return selected & PHOTO_DRIVE_OPTIONS, selected & PHOTO_TIMER_OPTIONS
 
 
@@ -417,12 +455,10 @@ def _settings_option(ctx: Context, label: str, *, max_scrolls: int = 12) -> None
             ctx.adb.tap(*target.center)
             deadline = time.monotonic() + 4
             while time.monotonic() < deadline:
-                selected = [
-                    node for node in ctx.adb.ui().nodes
-                    if node.text.casefold() == label.casefold()
-                    and (node.selected or node.checked)
-                ]
-                if selected:
+                # Selection state lives on the checkable chip container, not the tapped
+                # text node — read it the same way selected_photo_setting_options does.
+                # Verify against the node's exact text (candidates matched casefolded).
+                if target.text in selected_option_labels(ctx.adb.ui(), {target.text}):
                     return
                 time.sleep(0.25)
             raise AssertionError(f"settings option {label!r} did not become selected")
@@ -912,6 +948,72 @@ def require_decoded_video(
         f"decoded frame cadence has a gap: {maximum_interval!r}, "
         f"expected <= {maximum_healthy_interval}"
     )
+
+
+def midrec_still_cadence_errors(info: dict, *, expected_fps: Fraction) -> list[str]:
+    """Cadence contract for a take containing exactly one in-stream still interruption.
+
+    The mid-REC still shares the ONE camera stream, so the encoder feed legitimately gaps
+    once while the still frame is exposed and handed off — requiring soak-grade continuous
+    cadence here asserts something the single-stream design never promises (device evidence
+    2026-07-23: one 0.689 s gap + one 0.067 s recovery interval, perfect 1001/30000 cadence
+    everywhere else). Everything OUTSIDE one bounded contiguous interruption must hold the
+    admitted cadence; a second interruption, an over-budget one, or a sparse decode still fails.
+    """
+    nominal = info.get("nominal_fps")
+    errors = []
+    if nominal != expected_fps:
+        errors.append(f"nominal_fps={nominal!r}, expected {expected_fps}")
+    intervals = info.get("frame_intervals")
+    if not isinstance(intervals, list) or not intervals or not all(
+        isinstance(interval, Fraction) for interval in intervals
+    ):
+        return [*errors, "decoded frame intervals are unavailable"]
+
+    target_interval = Fraction(1, 1) / expected_fps
+    if min(intervals) < target_interval / 2:
+        errors.append(
+            f"minimum_frame_interval={min(intervals)!r}, expected >= {target_interval / 2}"
+        )
+    healthy_maximum = target_interval * Fraction(3, 2)
+    runs: list[list[Fraction]] = []
+    for previous, interval in zip([None, *intervals], intervals):
+        if interval > healthy_maximum:
+            if runs and previous is not None and previous > healthy_maximum:
+                runs[-1].append(interval)
+            else:
+                runs.append([interval])
+    if len(runs) > 1:
+        errors.append(
+            f"{len(runs)} separate cadence interruptions, expected at most the one still-owned gap"
+        )
+    if runs:
+        widest = max(runs, key=lambda run: sum(run, Fraction(0)))
+        if len(widest) > REC_SNAPSHOT_MAX_STILL_GAP_INTERVALS:
+            errors.append(
+                f"still-owned interruption spans {len(widest)} intervals, "
+                f"expected <= {REC_SNAPSHOT_MAX_STILL_GAP_INTERVALS}"
+            )
+        if sum(widest, Fraction(0)) > REC_SNAPSHOT_MAX_STILL_GAP_SECONDS:
+            errors.append(
+                f"still-owned interruption is {float(sum(widest, Fraction(0))):.3f}s, "
+                f"expected <= {float(REC_SNAPSHOT_MAX_STILL_GAP_SECONDS):.1f}s"
+            )
+    seconds = info.get("video_seconds")
+    frames = info.get("frame_count")
+    if isinstance(seconds, Fraction) and isinstance(frames, int):
+        interruption_total = sum((sum(run, Fraction(0)) for run in runs), Fraction(0))
+        minimum_frames = math.ceil(
+            (seconds - interruption_total) * expected_fps * Fraction(95, 100)
+        )
+        if frames < minimum_frames:
+            errors.append(
+                f"decoded only {frames} frames; expected at least {minimum_frames} "
+                "outside the still-owned interruption"
+            )
+    else:
+        errors.append("decoded duration/frame count are unavailable")
+    return errors
 
 
 def capture_still(ctx: Context, timeout_s: float = 25.0) -> list[MediaRow]:
@@ -2904,10 +3006,15 @@ def t_recording_snapshot(ctx: Context) -> None:
             ctx.evidence / published_video.display_name,
         )
         video_info = media.mp4_probe(video_local)
-        require_decoded_video(
+        # Duration/decode health first; cadence goes through the still-aware contract because
+        # the mid-REC still legitimately interrupts the single camera stream exactly once.
+        require_decoded_video(video_info, minimum_seconds=2.5)
+        cadence_errors = midrec_still_cadence_errors(
             video_info,
-            minimum_seconds=2.5,
             expected_fps=Fraction(admitted.group(8)),
+        )
+        assert not cadence_errors, (
+            "mid-REC video cadence violations: " + "; ".join(cadence_errors)
         )
         expected_dimensions = (int(admitted.group(5)), int(admitted.group(6)))
         contract_errors = media.recording_contract_errors(
