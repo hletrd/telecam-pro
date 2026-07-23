@@ -229,6 +229,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
 - **Session fallback ladder** in `CameraController.configureSession`: non-TELE is full → drop RAW →
   drop HLG → preview-only. TELE tries vendor full/degraded plans, then regular full/degraded plans,
   and reserves both preview-only variants for last. Keep it; different capability combos fail on this HAL.
+  When hi-res is wanted (capability-gated; dormant on PMA110) the ladder PREPENDS a hi-res rung:
+  attempt 0 is the full plan's hi-res variant with RAW forced off, and every later attempt maps
+  onto the ORDINARY ladder shifted by one — a failed hi-res attempt falls back to full-WITH-RAW
+  first, and `maxSessionAttempt` stretches the exhaustion bound by one.
   Ready state reports the processed/RAW readers from the session that actually succeeded, not the
   aspirational attempt. Photo and in-REC snapshot admission follow that accepted output mask;
   preview-only still permits video REC/Stop.
@@ -311,8 +315,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   hunting 2 s after every tap). AF reaches FOCUSED on device.
 - **Aspect ratio is only 4:3 or 16:9.** The sensor is 4:3-native: `AspectRatio.W4_3` = full readout
   (no crop, the default + the no-crop sentinel), `W16_9` = its center crop. Full/1:1/portrait removed.
-- **Front (selfie) camera is a first-class optics door with BASIC scope (2026-07-22; rotation/mirror
-  signs DEVICE-VERIFICATION-PENDING).** `CameraEngine.setFrontCamera` is a full generation-owned
+- **Front (selfie) camera is a first-class optics door with BASIC scope (2026-07-22; mirror roles
+  device-diagnosed 2026-07-23 — only the capture-ROTATION sign remains
+  DEVICE-VERIFICATION-PENDING).** `CameraEngine.setFrontCamera` is a full generation-owned
   transaction (never a transaction-less close/open): entering FRONT forces the teleconverter off in
   the same publication, resets zoom to front-lens-local 1×, and reconfigures onto
   `CameraSelector2.pickFront` (enumerated LENS_FACING_FRONT, plain-id-preferred, largest array on
@@ -332,7 +337,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   build this inversion becomes a DeviceProfile quirk flag. Capture rotation FRONT =
   `(sensor − device) % 360`, afocal never applies
   (`RotationMath.captureRotationDegrees(..., frontFacing)`); preview rotation stays 0. RAW,
-  hi-res, flash, and the finder PIP all resolve off the existing capability/route axes — no
+  hi-res, flash, and the Loupe Overview all resolve off the existing capability/route axes — no
   facing special cases in those predicates.
 - **Video caps come from the device, not hardcodes.** `video/EncoderCaps.kt` scans `MediaCodecList`.
   Only **HEVC + AVC** are offered (both HW). **AV1 was removed** (the only AV1 encoder here is SW
@@ -402,14 +407,17 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   200 MP full-res path lives behind the stock app's private CameraUnit stack. The capability-gated
   Hi-Res feature (e943807) is therefore DORMANT on PMA110 — its toggle appears only if a future
   firmware or a different device advertises a hi-res size; do not expect it here and do not
-  re-probe without cause.
+  re-probe without cause. On a capable device: hi-res rides the PREPENDED ladder rung (RAW forced
+  off on that one attempt; a rejected hi-res session falls back to full-with-RAW), fast commits
+  compare intent against the CONFIGURED session (`hiResConfigured`), the still saves via the
+  EXIF-orientation-only passthrough-JPEG lane, and the `HR` OSD tag keys on accepted-session truth.
 - **300 mm teleconverter OIS integration depends on OPPO CameraUnit availability (2026-07-08).**
   The 4.3× teleconverter stabilization profile appears to use CameraUnit extension parameters that
   are not exposed through raw Camera2 request/result keys. The app applies the public Camera2 overlap
   (`com.oplus.camera.mode=40`, `com.oplus.original.zoomRatio` 4.286×) and runs `OcsProbe` in debug
   builds as a read-only CameraUnit availability check. Enabling the full CameraUnit path requires the
-  official OPPO developer registration flow and an AUTH_CODE; see `docs/BACKLOG.md` item #4 for the
-  checklist and SDK notes.
+  official OPPO developer registration flow and an AUTH_CODE; see the "Authenticated CameraUnit
+  path" entry under Deferred Beyond v1 in `docs/BACKLOG.md` for the checklist and SDK notes.
 - **The camera-control button: slides arrive as STANDARD `KEYCODE_ZOOM_IN`/`OUT` (live-verified
   2026-07-09).** Full mechanical press = standard `KEYCODE_CAMERA` (→ shutter, `onKeyDown`). The
   capacitive slide is re-emitted to the FOCUSED app as **KEYCODE_ZOOM_IN (168) / KEYCODE_ZOOM_OUT

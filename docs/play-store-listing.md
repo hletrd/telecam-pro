@@ -77,9 +77,9 @@ SOURCE
 
 TeleCam Pro is an independent app and is not affiliated with, endorsed by, or sponsored by OPPO,
 Hasselblad, or any hardware maker. Product names are used only to describe hardware compatibility.
-S-Log is a trademark of Sony Group Corporation; ARRI and LogC are trademarks of ARRI AG. The log
-profiles are the app's own implementations of the published curve specifications, named only to
-describe grading-workflow compatibility.
+S-Log is a trademark of Sony Group Corporation; LogC is a trademark of Arnold & Richter Cine
+Technik GmbH & Co. Betriebs KG (ARRI). The log profiles are the app's own implementations of the
+published curve specifications, named only to describe grading-workflow compatibility.
 
 Requires an OPPO Find X9 Ultra running Android 16. Target model codes: CPH2841 (global) and PMA110
 (China/import). It will not work on other devices.

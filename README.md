@@ -73,6 +73,10 @@
   being discarded (device-verified on PMA110). A mid-recording microphone failure degrades the clip
   to video-only rather than losing the take.
 
+> S-Log is a trademark of Sony Group Corporation; LogC is a trademark of Arnold & Richter Cine
+> Technik GmbH & Co. Betriebs KG (ARRI). The log profiles are the app's own implementations of the
+> published curve specifications, named only to describe grading-workflow compatibility.
+
 ## Open source
 
 TeleCam Pro is free and open source. The source code is public at
