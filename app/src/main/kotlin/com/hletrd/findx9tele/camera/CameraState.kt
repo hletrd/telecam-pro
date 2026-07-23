@@ -711,7 +711,10 @@ internal class TapFocusPublicationGate {
      */
     @Synchronized
     fun applyIfLatest(publication: TapFocusPublication, apply: () -> Unit): Boolean {
-        if (publication.sequence < latestSequence.get()) return false
+        // Equality is idempotent, matching CameraReadyPublicationGate: sequences are minted by
+        // incrementAndGet (first is 1 against the 0 seed), so an EQUAL sequence can only be a
+        // re-delivery of an already-applied publication and must not re-run [apply].
+        if (publication.sequence <= latestSequence.get()) return false
         latestSequence.set(publication.sequence)
         apply()
         return true
