@@ -2,8 +2,8 @@
 
 Current release board. Read after `CLAUDE.md`; use `ARCHITECTURE.md` for implementation details.
 Historical investigation notes are snapshots under `docs/reviews/` and `.context/reviews/`, not
-active TODO lists. Last synced by [review-plan-fix Cycle 5](plans/2026-07-21-rpf-cycle5.md)
-(2026-07-21); per-file history via `git log -- docs/BACKLOG.md`.
+active TODO lists. Last synced by [review-plan-fix Cycle 6](plans/2026-07-23-rpf-cycle6.md)
+(2026-07-23); per-file history via `git log -- docs/BACKLOG.md`.
 
 ## Release State
 
@@ -95,6 +95,12 @@ These are manual Play Console operations, not repository implementation work:
 Use `docs/play-console-submit.md` as the operator checklist. The account was created in 2015, so the
 new-personal-account closed-test rule does not apply; an internal test remains the release gate.
 
+**Owner actions outside this repo (recorded by cycle 6, 2026-07-23):** the GitHub repository About
+tagline currently claims "Raw / Log video" (cycle-6 security F-2) — RAW is stills-only (DNG) and
+the log profiles are display-referred SDR bakes, so reword the tagline to match the listing's
+honest copy. D-2 below also still stands: confirm the Play/privacy contact mailbox is real and
+monitored and that the GitHub Pages privacy-policy URL is live before submission.
+
 ## Residual Field Checks
 
 These do not require a code or metadata change unless the result exposes a defect:
@@ -114,6 +120,46 @@ These do not require a code or metadata change unless the result exposes a defec
   level-overlay responsiveness feel after the roll-alpha retune (0.93); the mid-REC dead-mic
   meter zeroing (hard to trigger on demand — code-inspected); held portrait/landscape playback of
   the new PORTRAIT-buffer video files in external galleries (orientation-hint sign, U1).
+- Added by review-plan-fix cycle 6 (2026-07-23; the phone was desk-bound via a remote proxy this
+  cycle, so every held-device item below is NEEDS-HUMAN):
+  - **RELEASE-GATING — capture-rotation device-orientation term sign A/B, BOTH facings.** Cycle-6
+    debugger F1: a pure-math derivation from the device-confirmed GyroEis CCW-positive convention
+    (`atan2(x, y)` → CCW/left landscape yields dev=90; independently anchored by the 2026-07-08
+    device-confirmed `+dev` glyph counter-rotation) concludes the standard Camera2 formulas in
+    GyroEis terms are BACK = sensor − dev and FRONT = sensor + dev —
+    `RotationMath.captureRotationDegrees` has the device term's sign exactly swapped for BOTH
+    facings. If correct, every LANDSCAPE-held still saves 180° rotated (portrait and upside-down
+    portrait are unaffected, which is why no field check has ever caught it), and
+    `RotationMath.videoOrientationHint` shares the question (likely needs `(360 − dev) % 360`, and
+    it has no front-facing branch — code-reviewer F1). Per the repo's device-verification rule the
+    sign flip did NOT land this cycle. Exact check: in a lit scene, DELIBERATELY hold the phone in
+    both landscape directions (rear, then front), capture stills (HEIF + DNG where eligible) and a
+    short clip each, and inspect in an EXTERNAL gallery. If landscape stills display 180° rotated,
+    flip the device-orientation term in `captureRotationDegrees` (one seam + its test matrix) and
+    re-run the comparison.
+  - **Front VIDEO file mirror truth.** Front STILL mirror truth WAS device-verified 2026-07-23
+    (cycle-6 QA: a pulled front JPEG showed legible, unreversed "LG/WHISEN" text after a viewing
+    180° — the saved file keeps the true scene). The encoder un-mirror path is shared with video,
+    but no front CLIP has been pulled and checked: record a front video of legible text and
+    confirm it reads unreversed in an external player.
+  - **Front tap-AF aim — NOT moot.** Cycle-6 probe: the front camera (id "1") ADVERTISES
+    `android.control.maxRegions = [AE=1, AWB=0, AF=1]`, so tap-AF/AE regions are live on the front
+    route. Debugger F2's suspected sensor-half mirror error stands: the display half of the tap
+    mapping is correct, but `viewTapToSensorPoint` undoes only rotation, never the mirror, so the
+    metering region may land at the horizontally OPPOSITE active-array point. Check: tap a subject
+    near the LEFT edge of the selfie preview against a depth-separated background and confirm
+    focus/exposure drives from the tapped subject, not its horizontal mirror. If wrong, the sensor
+    half needs the `1−nx` un-flip (seam: `gl/FrontMirrorConvention` + `mapTapFocusGeometry`).
+  - **Log-profile on-device check PARTIALLY CLOSED.** An S-Log3.Cine 4K clip was ffprobe-verified
+    2026-07-23 (HEVC Main10, `color_transfer=bt2020-10` — confirmed NOT PQ/ST2084, the exact
+    mistag the explicit-transfer container policy exists to prevent). Still open: playback
+    appearance of the HLG/log output on a real HDR/reference display.
+  - **Hi-res dormancy device checks (dormant on PMA110; live code).** Before releasing on any
+    device that actually advertises a hi-res size: (1) audit the passthrough-JPEG EXIF lane — HAL
+    bytes go to disk verbatim, so verify no unexpected maker-note/GPS payload survives that the
+    processed lane's re-stamp would have dropped (cycle-6 security F-5); (2) time the still
+    watchdog against a real full-sensor capture — remosaic delivery may exceed the current
+    exposure-derived margins (cycle-6 tracer T5).
 - Added by the 2026-07-10 review cycle (code changed since the recorded release AAB — re-run the
   full release gate and refresh `docs/play-console-submit.md`'s hash before upload):
   one HEIF capture on heifwriter 1.1.0 (stable, was 1.2.0-alpha01); waveform overlay visual parity
@@ -202,11 +248,21 @@ loop — have their own dated plans under `docs/plans/`), so the 2026-07-10 defe
 - **D-1** muxer orientation-hint SIGN (already in Residual Field Checks above).
 - **D-2** confirm the Play/privacy contact mailbox is real and monitored (owner decision;
   `play-store-listing.md` / `play-console-submit.md` / `PRIVACY.md` / `privacy-policy/index.html`).
-- **D-3** Shaders O-Log2 inverse-threshold discrepancy — decide with OPPO's white paper in hand;
-  do not hot-patch the shipping OETF blind.
+- **D-3** (restated by cycle 6, 2026-07-23) O-Log2 is DORMANT-DE-LOG-ONLY: the user-facing option
+  was removed 2026-07-22 and its forward OETF left `Shaders.kt` with it — only the dormant Gamma
+  Display Assist inverse (uTransfer=3) remains, reserved for a future CameraUnit-authenticated
+  scene-referred stream. The inverse-threshold discrepancy therefore concerns dormant code only,
+  and its numeric test coverage is now string-only (the numeric pin left with the forward curve —
+  cycle-6 test-review F-A2). Decide with OPPO's white paper in hand before reviving it; nothing
+  shipping depends on it.
 - **D-4** structural refactors (state triplication/applyExtras, CameraEngine split, AE-loop move,
   CameraSession seam, caps projection out of CameraUiState, telemetry-flow split, typed engine
-  events) — MUST land before the CameraUnit / item-#4 v2 work.
+  events) — MUST land before the CameraUnit / "Authenticated CameraUnit path" v2 work. Cycle-6
+  sizes at review baseline: CameraEngine.kt 4889 lines (+221 that cycle; ~5000+ after the cycle-6
+  fixes), CameraScreen.kt 2526 (+126), CameraViewModel.kt 2318 (+98), CameraState.kt 931 (+80).
+  FACING is now the FOURTH hand-copied optics axis (mode/lens/TC/facing): every door hand-repeats
+  the same invariant checklist and the ViewModel hand-mirrors every engine transaction (cycle-6
+  architect F1/F2) — the gap between this trend and the "must land before v2" order is widening.
 - **D-5..D-9** implementations are landed: downsampled analysis readback, REC admission off main,
   single-decode HEIF+JPEG, GL frame coalescing / cached request builder / waveform draw reuse, and
   DNG publication on `ioExecutor` after the required synchronous live-RAW write. Their remaining
