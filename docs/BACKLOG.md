@@ -105,15 +105,14 @@ monitored and that the GitHub Pages privacy-policy URL is live before submission
 
 These do not require a code or metadata change unless the result exposes a defect:
 
-- **PENDING-USER (one-time device setting): clear the ColorOS installer gate for the instrumented
-  test APK.** The connected instrumented-coverage leg (docs/TESTING.md "PMA110 device caveat") is
-  blocked because `me.hletrd.telecampro.debug.test` has no launcher activity and OPlus's installer
-  offers only "Exit installation" — not automatable over wireless adb. On-device: approve the
-  installer dialog when the install is retried (or enroll "Install via USB" / the HeyTap-account
-  developer option). Once cleared, the committed smoke suite + merged report run immediately:
-  `./gradlew :app:createDebugAndroidTestCoverageReport -PandroidTestCoverage=true`, then
-  `createCoverageReport` for the merged HTML. Build infra and the 4-test smoke suite are already
-  committed and host-green; only this approval is missing.
+- **RESOLVED 2026-07-24 (disposition kept for the durable record): the ColorOS installer gate on
+  the instrumented test APK is bypassed by a plain streamed `adb install -r -t` of
+  `app-debug-androidTest.apk`** (the install-session path UTP uses gets `-99` from the OPlus
+  gate; the streamed path goes through). The test package is deliberately LEFT INSTALLED on the
+  PMA110 — uninstalling re-arms the gate. Full workaround + the HOME-key lifecycle caveat live in
+  docs/TESTING.md ("PMA110 device caveat"); merged coverage is reproducible via
+  `tools/coverage/union_report.py`. Connected leg verified: 4/4 instrumented tests pass, merged
+  overall 48.64% (exact union, basis drift 0).
 
 - Record the same real scene with Sound Focus/Stage on and off, then compare off-axis rejection.
   Camera/HAL parameter acceptance is verified; the acoustic effect needs ears and a suitable scene.

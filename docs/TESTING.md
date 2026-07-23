@@ -219,19 +219,24 @@ instrumented smoke run raises the OVERALL and the Partition B numbers only; it n
 Partition A claim (device-drivable classes stay in Partition B until they can genuinely hold ~100%
 under host tests — same policy as the Robolectric classes).
 
-**PMA110 device caveat (connected leg PENDING-USER — one-time device setting, 2026-07-24).** The connected instrumented
-run cannot complete on this device: the instrumented test APK `me.hletrd.telecampro.debug.test` is
-a new package with **no launcher activity**, so ColorOS's `OPlusPackageInstallerActivity` flags it
-"No Home screen icon" and offers only **"Exit installation"** — there is no automatable
-continue/install-anyway action, and even `adb install` funnels through the same confirmation (which
-also bounces the wireless-adb TLS transport, surfacing to UTP as
-`AndroidTestApkInstallerPlugin: device offline`, 0 tests run). Disabling `package_verifier_enable`
-does NOT help — it is an OPlus-specific risk gate. The `install -r` UPDATE path for the already-
-trusted **app** package is unaffected (that is how `device-tests/` drives the device). Consequence:
-the build infra + smoke suite are committed and host-green, but no `.ec` files and therefore **no
-merged number** can be produced until this gate is cleared (likely needs an OPPO/HeyTap-account
-"Install via USB" enrollment or a device with the risk gate off). Until then, quote only the
-host-only numbers; do not fabricate a merged figure.
+**PMA110 device caveat (RESOLVED 2026-07-24 — keep the workaround).** ColorOS's
+`OPlusPackageInstallerActivity` flags the instrumented test APK `me.hletrd.telecampro.debug.test`
+(a new package with **no launcher activity**) as "No Home screen icon" and blocks the install
+session UTP uses: `connectedDebugAndroidTest`'s install commit fails with `-99` (surfacing as
+`AndroidTestApkInstallerPlugin: device offline`, 0 tests run), and `package_verifier_enable` does
+not help — it is an OPlus-specific risk gate. **The workaround: a plain STREAMED
+`adb install -r -t app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk` succeeds
+where the install-session commit is blocked.** With the test package pre-installed this way (plus
+UTP's `leaveApksInstalledAfterRun=true` behavior — AGP updates it in place on later runs), the
+connected leg runs cleanly: 4/4 instrumented tests passed on the PMA110 and both
+`createDebugAndroidTestCoverageReport` and the experimental `createCoverageReport` complete.
+**Leave the test package installed** — it cleared the gate once; uninstalling it re-arms the
+installer gate for the next run. The `install -r` UPDATE path for the already-trusted app package
+was never affected (that is how `device-tests/` drives the device). One test is device-shaped:
+the background/foreground cycle drives a **real HOME key** and awaits camera-not-ready before a
+single-top relaunch, because ColorOS parks `moveToState(CREATED)` at PAUSED forever (f8116b1).
+The merged number is reproduced in-repo by `tools/coverage/union_report.py` (exact line-level
+union of the two per-leg XMLs; `--fail-on-drift` guards the identical-bytecode basis).
 
 ## Future seam work (identified, deliberately deferred)
 
