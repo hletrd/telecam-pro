@@ -1198,7 +1198,8 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
     )
     ToggleRow(label = "Level", checked = state.level, onCheckedChange = actions::onToggleLevel)
     SectionHeader("Focus Aids")
-    ToggleRow(label = "Punch-In", checked = state.punchIn, onCheckedChange = actions::onTogglePunchIn)
+    // "Loupe" app-wide (cycle-6 D-04): Fn chip, key-action label, and LOUPE OSD tag already use it.
+    ToggleRow(label = "Loupe", checked = state.punchIn, onCheckedChange = actions::onTogglePunchIn)
     SectionHeader("TELE")
     // Loupe Overview is a same-stream full-frame reference, never an automatic 1x camera feed.
     // Exact predicate: enabled + Photo + 4:3 + TELE + active punch-in. Default remains off.

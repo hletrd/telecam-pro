@@ -172,7 +172,9 @@ enum class HardwareKeyAction(val label: String) {
     SHUTTER("Shutter/REC"),
     AF_ON("AF-ON"),
     AEL("AEL"),
-    PUNCH_IN("Punch-In"),
+    // Label unified on "Loupe" app-wide (cycle-6 D-04; matches the Fn chip and the LOUPE OSD tag).
+    // The enum NAME stays PUNCH_IN — persistence stores names, and renaming would drop the setting.
+    PUNCH_IN("Loupe"),
     ZOOM_IN("Zoom In"),
     ZOOM_OUT("Zoom Out"),
     NONE("None"),
