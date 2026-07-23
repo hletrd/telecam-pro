@@ -170,18 +170,7 @@ class FlipRenderer {
         GLES20.glUniformMatrix4fv(uMvp, 1, false, mvp, 0)
         GLES20.glUniformMatrix4fv(uTexMatrix, 1, false, texMatrix, 0)
         GLES20.glUniform1i(uTexture, 0)
-        GLES20.glUniform1i(
-            uTransfer,
-            when {
-                delogAssist -> 3
-                transfer == ColorTransfer.HLG -> 1
-                transfer == ColorTransfer.SLOG3 -> 2
-                transfer == ColorTransfer.SLOG3_CINE -> 4
-                transfer == ColorTransfer.LOGC3 -> 5
-                // SDR = no OETF, same as the preview/null path (the camera frames are already SDR).
-                else -> 0
-            },
-        )
+        GLES20.glUniform1i(uTransfer, shaderTransferCode(transfer, delogAssist))
         GLES20.glUniform1i(uPeaking, if (peaking) 1 else 0)
         GLES20.glUniform1f(uPeakThreshold, peakThreshold)
         GLES20.glUniform3f(uPeakColor, peakR, peakG, peakB)
@@ -298,4 +287,24 @@ internal fun coverScaleInto(
     if (displayedAspect > viewAspect) ex = displayedAspect / viewAspect else ey = viewAspect / displayedAspect
     out[0] = ex
     out[1] = ey
+}
+
+/**
+ * ColorTransfer -> fragment-shader `uTransfer` branch code, as ONE exhaustive mapping. The old
+ * inline `when` ended in `else -> 0`, so a future ColorTransfer member compiled clean while
+ * silently rendering as SDR — unlike the container-tag side (ColorProfiles), where the exhaustive
+ * `when` breaks the build. `delogAssist` wins: the dormant native-log monitor de-log replaces the
+ * forward curve entirely (branch 3), whatever the selected transfer is.
+ */
+internal fun shaderTransferCode(transfer: ColorTransfer?, delogAssist: Boolean): Int = when {
+    delogAssist -> 3
+    transfer == null -> 0 // preview/null path: camera frames are already SDR
+    else -> when (transfer) {
+        ColorTransfer.HLG -> 1
+        ColorTransfer.SLOG3 -> 2
+        ColorTransfer.SLOG3_CINE -> 4
+        ColorTransfer.LOGC3 -> 5
+        // SDR = no OETF, same as the null path.
+        ColorTransfer.SDR -> 0
+    }
 }
