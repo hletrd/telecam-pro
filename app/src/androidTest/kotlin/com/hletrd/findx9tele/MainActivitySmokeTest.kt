@@ -80,10 +80,17 @@ class MainActivitySmokeTest {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             val vm = viewModelOf(scenario)
             awaitCameraReady(vm, phase = "pre-background")
-            // CREATED = stopped-but-not-destroyed: exercises MainActivity.onStop → vm.onStop →
-            // engine.pause (the background door that must never race the session, CLAUDE.md).
-            scenario.moveToState(Lifecycle.State.CREATED)
-            scenario.moveToState(Lifecycle.State.RESUMED)
+            // A REAL home press, not moveToState(CREATED): ColorOS parks the synthetic
+            // background transition at PAUSED and never delivers the stop, so ActivityScenario
+            // times out ("last lifecycle transition = PAUSED", device-observed 2026-07-24). The
+            // home key drives the true MainActivity.onStop → vm.onStop → engine.pause door
+            // (CLAUDE.md lifecycle chain); losing cameraReady proves the stop actually landed.
+            shell("input keyevent KEYCODE_HOME")
+            awaitCameraReleased(vm)
+            // Foreground the SAME instance (single-top; a plain am start would stack a second
+            // MainActivity whose separate ViewModel/engine would fight this one for the camera).
+            val pkg = InstrumentationRegistry.getInstrumentation().targetContext.packageName
+            shell("am start --activity-single-top -n $pkg/com.hletrd.findx9tele.MainActivity")
             awaitCameraReady(vm, phase = "post-foreground")
         }
     }
@@ -97,6 +104,15 @@ class MainActivitySmokeTest {
             vm = ViewModelProvider(activity)[CameraViewModel::class.java]
         }
         return vm
+    }
+
+    private fun awaitCameraReleased(vm: CameraViewModel) {
+        val deadline = SystemClock.elapsedRealtime() + CAMERA_READY_TIMEOUT_MS
+        while (SystemClock.elapsedRealtime() < deadline) {
+            if (!vm.state.value.cameraReady) return
+            SystemClock.sleep(POLL_MS)
+        }
+        fail("camera still ready ${CAMERA_READY_TIMEOUT_MS} ms after HOME — onStop never landed")
     }
 
     private fun awaitCameraReady(vm: CameraViewModel, phase: String) {
