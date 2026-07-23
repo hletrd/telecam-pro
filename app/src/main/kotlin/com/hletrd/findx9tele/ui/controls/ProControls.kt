@@ -303,16 +303,32 @@ private fun CameraSlider(
                     val down = awaitFirstDown()
                     val pad = 8.dp.toPx()
                     val trackSpan = (size.width - 2f * pad).coerceAtLeast(1f)
-                    fun emit(x: Float) = onFraction(((x - pad) / trackSpan).coerceIn(0f, 1f))
-                    emit(down.position.x)
+                    fun fractionAt(x: Float) = ((x - pad) / trackSpan).coerceIn(0f, 1f)
+                    // Publication is FRAME-GATED (~60 Hz) with an exact landing on release — the
+                    // same gate RulerSlider carries: per-event emission re-normalized controls and
+                    // re-published the whole CameraUiState at the panel's 120 Hz input rate on
+                    // every settings slider (cycle-6 PR-2), the documented pre-coalescer jank
+                    // mechanism the viewfinder rulers were already cured of twice.
+                    var latest = fractionAt(down.position.x)
+                    var emitted = latest
+                    var lastEmitMs = android.os.SystemClock.uptimeMillis()
+                    onFraction(latest)
                     down.consume()
                     while (true) {
                         val event = awaitPointerEvent()
                         val change = event.changes.firstOrNull() ?: break
                         if (!change.pressed) break
-                        emit(change.position.x)
+                        latest = fractionAt(change.position.x)
                         change.consume()
+                        val now = android.os.SystemClock.uptimeMillis()
+                        if (now - lastEmitMs >= 16) {
+                            lastEmitMs = now
+                            emitted = latest
+                            onFraction(latest)
+                        }
                     }
+                    // Land the exact final value the gate may have swallowed.
+                    if (emitted != latest) onFraction(latest)
                 }
             },
     ) {

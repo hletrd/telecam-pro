@@ -2165,8 +2165,18 @@ class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
         val updated = (current.caps?.let(requested::normalizedFor) ?: requested)
             .normalizedForCaptureMode(current.mode)
         engine.setAeMetering(exposureAnalysisRequired(updated))
-        _state.update { it.copy(controls = updated) }
-        slot?.let(::markChanged)
+        // ONE emission per publication: the recent-slot bookkeeping used to ride a SECOND
+        // _state.update (markChanged) on every slider/ruler event, doubling StateFlow emissions
+        // and full-tree recompositions during continuous drags (cycle-6 PR-2).
+        _state.update {
+            if (slot == null) {
+                it.copy(controls = updated)
+            } else {
+                val recent = (listOf(slot) + it.recentSettingSlots.filterNot { s -> s == slot })
+                    .take(RECENT_SETTING_LIMIT)
+                it.copy(controls = updated, recentSettingSlots = recent, activeMemorySlot = null)
+            }
+        }
         pendingControls = updated
         // Trailing throttle: apply at most every 40 ms with the newest value, but DON'T cancel a
         // pending apply — so a sustained gesture keeps landing updates live instead of only at the
