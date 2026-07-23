@@ -5,6 +5,13 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.ArrayDeque
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+
+// The production name of the thread-backed process-busy retry fallback (StandbyAudioController.kt).
+private const val FALLBACK_THREAD_NAME = "StandbyAudioRetryFallback"
 
 class StandbyAudioControllerTest {
     private class FakeInput(private val failStart: Boolean = false) : StandbyAudioInput {
@@ -505,5 +512,372 @@ class StandbyAudioControllerTest {
 
         assertEquals(0, input.starts)
         assertEquals(1, input.releases)
+    }
+
+    @Test
+    fun `disable clears standby intent before any generation starts`() {
+        var setupCalls = 0
+        val fixture = fixture(
+            setup = StandbyAudioSetup {
+                setupCalls++
+                StandbyAudioSetupResult.Ready(FakeInput())
+            },
+        )
+
+        fixture.controller.setEnabled(false)
+
+        assertEquals(0, setupCalls)
+        assertTrue(fixture.scheduled.isEmpty())
+        assertTrue(fixture.unavailable.isEmpty())
+    }
+
+    @Test
+    fun `aborted recording admission restarts the standby meter immediately`() {
+        var setupCalls = 0
+        val fixture = fixture(
+            setup = StandbyAudioSetup {
+                setupCalls++
+                StandbyAudioSetupResult.Ready(FakeInput())
+            },
+        )
+        fixture.controller.setEnabled(true)
+        assertEquals(1, setupCalls)
+
+        assertTrue(fixture.controller.beginRecording().admitted)
+        fixture.controller.abortRecording()
+
+        // The claim never changed intent, so the abort restores it and re-arms a fresh generation.
+        assertEquals(2, setupCalls)
+        assertTrue(fixture.unavailable.isEmpty())
+    }
+
+    @Test
+    fun `finished recording rechecks intent instead of restoring it`() {
+        var setupCalls = 0
+        val fixture = fixture(
+            setup = StandbyAudioSetup {
+                setupCalls++
+                StandbyAudioSetupResult.Ready(FakeInput())
+            },
+        )
+        fixture.controller.setEnabled(true)
+        assertTrue(fixture.controller.beginRecording().admitted)
+
+        fixture.controller.finishRecording()
+
+        // beginRecording consumed the standby intent; finish only releases recorder admission, so
+        // the restart recheck finds no wanted meter until arming re-enables it explicitly.
+        assertEquals(1, setupCalls)
+        fixture.controller.setEnabled(true)
+        assertEquals(2, setupCalls)
+    }
+
+    @Test
+    fun `throwing audio setup charges the construction budget like a failure result`() {
+        var attempts = 0
+        val fixture = fixture(
+            setup = StandbyAudioSetup {
+                attempts++
+                error("injected setup throw")
+            },
+        )
+
+        fixture.controller.setEnabled(true)
+        repeat(3) {
+            assertTrue(fixture.unavailable.isEmpty())
+            fixture.scheduled.removeFirst().invoke()
+        }
+
+        assertEquals(4, attempts)
+        assertEquals(
+            StandbyAudioUnavailable(StandbyAudioFailureReason.CONSTRUCTION, failedGenerations = 4),
+            fixture.unavailable.single(),
+        )
+    }
+
+    @Test
+    fun `throwing read ends the generation as a terminal dead route`() {
+        class ThrowingReadInput : StandbyAudioInput {
+            var stops = 0
+            var releases = 0
+            override fun start() = Unit
+            override fun read(samples: ShortArray): Int = error("injected read throw")
+            override fun stop() { stops++ }
+            override fun release() { releases++ }
+        }
+
+        val inputs = mutableListOf<ThrowingReadInput>()
+        val fixture = fixture(
+            setup = StandbyAudioSetup {
+                StandbyAudioSetupResult.Ready(ThrowingReadInput().also(inputs::add))
+            },
+            recorderAbsent = { true },
+        )
+
+        fixture.controller.setEnabled(true)
+        repeat(3) {
+            assertTrue(fixture.unavailable.isEmpty())
+            fixture.scheduled.removeFirst().invoke()
+        }
+
+        assertEquals(4, inputs.size)
+        assertTrue(inputs.all { it.stops == 1 && it.releases == 1 })
+        assertEquals(
+            StandbyAudioUnavailable(StandbyAudioFailureReason.TERMINAL_READ, failedGenerations = 4),
+            fixture.unavailable.single(),
+        )
+    }
+
+    @Test
+    fun `zero length read retries the loop without ending the generation`() {
+        var reads = 0
+        var keepReading = true
+        val input = object : StandbyAudioInput {
+            override fun start() = Unit
+            override fun read(samples: ShortArray): Int {
+                reads++
+                return if (reads == 1) {
+                    0 // a transient empty read must spin the loop, not kill the route
+                } else {
+                    samples[0] = 120
+                    keepReading = false
+                    1
+                }
+            }
+            override fun stop() = Unit
+            override fun release() = Unit
+        }
+        val fixture = fixture(
+            setup = StandbyAudioSetup { StandbyAudioSetupResult.Ready(input) },
+            recorderAbsent = { keepReading },
+        )
+
+        fixture.controller.setEnabled(true)
+
+        assertEquals(2, reads)
+        assertEquals(1, fixture.available.size)
+        assertTrue(fixture.unavailable.isEmpty())
+        assertTrue(fixture.scheduled.isEmpty())
+    }
+
+    @Test
+    fun `negative read on a wanted route is terminal and consumes the budget`() {
+        val fixture = fixture(
+            setup = StandbyAudioSetup {
+                StandbyAudioSetupResult.Ready(object : StandbyAudioInput {
+                    override fun start() = Unit
+                    override fun read(samples: ShortArray): Int = -3
+                    override fun stop() = Unit
+                    override fun release() = Unit
+                })
+            },
+            recorderAbsent = { true },
+        )
+
+        fixture.controller.setEnabled(true)
+        repeat(3) {
+            assertTrue(fixture.unavailable.isEmpty())
+            fixture.scheduled.removeFirst().invoke()
+        }
+
+        assertEquals(
+            StandbyAudioUnavailable(StandbyAudioFailureReason.TERMINAL_READ, failedGenerations = 4),
+            fixture.unavailable.single(),
+        )
+    }
+
+    @Test
+    fun `negative wake-up after REC handoff stops cleanly without failure charge`() {
+        var claim: StandbyMeterOwnership.RecordingClaim<*>? = null
+        var controllerRef: StandbyAudioController? = null
+        val input = object : StandbyAudioInput {
+            var stops = 0
+            var releases = 0
+            override fun start() = Unit
+            override fun read(samples: ShortArray): Int {
+                // REC claims the mic while this read blocks; the negative wake-up that follows is
+                // the handoff, not a dead route — no budget charge, no retry.
+                claim = checkNotNull(controllerRef).beginRecording()
+                return -1
+            }
+            override fun stop() { stops++ }
+            override fun release() { releases++ }
+        }
+        val fixture = fixture(
+            setup = StandbyAudioSetup { StandbyAudioSetupResult.Ready(input) },
+            recorderAbsent = { true },
+        )
+        controllerRef = fixture.controller
+
+        fixture.controller.setEnabled(true)
+
+        assertTrue(checkNotNull(claim).admitted)
+        assertEquals(1, input.stops)
+        assertEquals(1, input.releases)
+        assertTrue(fixture.unavailable.isEmpty())
+        assertTrue(fixture.scheduled.isEmpty())
+    }
+
+    @Test
+    fun `re-enable during a live generation restarts one fresh generation after completion`() {
+        var setupCalls = 0
+        var keepReading = true
+        var controllerRef: StandbyAudioController? = null
+        val firstInput = object : StandbyAudioInput {
+            override fun start() = Unit
+            override fun read(samples: ShortArray): Int {
+                // The user toggles the meter while this generation is live: the reserve sees an
+                // active owner and latches a restart instead of racing a second AudioRecord.
+                checkNotNull(controllerRef).setEnabled(true)
+                keepReading = false
+                samples[0] = 40
+                return 1
+            }
+            override fun stop() = Unit
+            override fun release() = Unit
+        }
+        val fixture = fixture(
+            setup = StandbyAudioSetup {
+                setupCalls++
+                StandbyAudioSetupResult.Ready(if (setupCalls == 1) firstInput else FakeInput())
+            },
+            recorderAbsent = { keepReading },
+        )
+        controllerRef = fixture.controller
+
+        fixture.controller.setEnabled(true)
+
+        assertEquals(2, setupCalls)
+        assertTrue(fixture.unavailable.isEmpty())
+    }
+
+    @Test
+    fun `primary constructor defaults admit and complete a generation standalone`() {
+        // Omits reserveProcessAdmission/runNativeAcquisition/processBusyRetryFallback so the
+        // production defaults themselves execute: unguarded admission (with its no-op release),
+        // direct native acquisition, and the thread-backed fallback constructed at init.
+        val input = FakeInput()
+        var levels = 0
+        val controller = StandbyAudioController(
+            audioGain = { 1f },
+            onLevel = { levels++ },
+            canStart = { true },
+            recorderAbsent = { false },
+            isPaused = { false },
+            permissionGranted = { true },
+            audioSetup = StandbyAudioSetup { StandbyAudioSetupResult.Ready(input) },
+            threadLauncher = StandbyThreadLauncher { _, task -> task(); true },
+            retryScheduler = StandbyRetryScheduler { _, _ -> true },
+            onAvailable = {},
+            onUnavailable = {},
+        )
+
+        controller.setEnabled(true)
+
+        assertEquals(1, input.starts)
+        assertEquals(1, input.stops)
+        assertEquals(1, input.releases)
+        assertTrue(levels >= 1)
+    }
+
+    @Test
+    fun `default process-busy fallback thread delivers the retry after the backoff`() {
+        val processBusy = AtomicBoolean(true)
+        val setupCalls = AtomicInteger()
+        // One zero-level per completed generation: the busy probe, then the real run.
+        val zeroLevels = CountDownLatch(2)
+        val input = FakeInput()
+        val controller = StandbyAudioController(
+            audioGain = { 1f },
+            onLevel = { if (it == 0f) zeroLevels.countDown() },
+            canStart = { true },
+            recorderAbsent = { false },
+            isPaused = { false },
+            permissionGranted = { true },
+            audioSetup = StandbyAudioSetup {
+                setupCalls.incrementAndGet()
+                StandbyAudioSetupResult.Ready(input)
+            },
+            threadLauncher = StandbyThreadLauncher { _, task -> task(); true },
+            // The main lane is dead; only the default named fallback thread can carry the retry.
+            retryScheduler = StandbyRetryScheduler { _, _ -> false },
+            onAvailable = {},
+            onUnavailable = {},
+            reserveProcessAdmission = { if (processBusy.get()) null else ({}) },
+        )
+
+        controller.setEnabled(true)
+        assertEquals(0, setupCalls.get())
+        processBusy.set(false)
+
+        assertTrue(zeroLevels.await(5, TimeUnit.SECONDS))
+        assertEquals(1, setupCalls.get())
+        assertEquals(1, input.starts)
+        assertEquals(1, input.releases)
+    }
+
+    @Test
+    fun `interrupting the fallback thread abandons its queued retry`() {
+        awaitNoFallbackThread()
+        val fallbackRetryObserved = AtomicInteger()
+        val setupCalls = AtomicInteger()
+        val controller = StandbyAudioController(
+            audioGain = { 1f },
+            onLevel = {},
+            canStart = { true },
+            recorderAbsent = { false },
+            isPaused = {
+                // The retry closure checks pause first; seeing it from the fallback thread proves
+                // the sleep completed and the task ran — the interrupt must prevent exactly that.
+                if (Thread.currentThread().name == FALLBACK_THREAD_NAME) {
+                    fallbackRetryObserved.incrementAndGet()
+                }
+                false
+            },
+            permissionGranted = { true },
+            audioSetup = StandbyAudioSetup {
+                setupCalls.incrementAndGet()
+                StandbyAudioSetupResult.Ready(FakeInput())
+            },
+            threadLauncher = StandbyThreadLauncher { _, task -> task(); true },
+            retryScheduler = StandbyRetryScheduler { _, _ -> false },
+            onAvailable = {},
+            onUnavailable = {},
+            reserveProcessAdmission = { null },
+        )
+
+        controller.setEnabled(true)
+        val fallback = checkNotNull(findFallbackThread()) {
+            "the default fallback thread must be parked in its backoff sleep"
+        }
+
+        fallback.interrupt()
+        fallback.join(5_000)
+
+        assertFalse(fallback.isAlive)
+        assertEquals(0, fallbackRetryObserved.get())
+        assertEquals(0, setupCalls.get())
+    }
+
+    private fun findFallbackThread(): Thread? {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+        while (System.nanoTime() < deadline) {
+            Thread.getAllStackTraces().keys
+                .firstOrNull { it.name == FALLBACK_THREAD_NAME && it.isAlive }
+                ?.let { return it }
+            Thread.sleep(1)
+        }
+        return null
+    }
+
+    private fun awaitNoFallbackThread() {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (System.nanoTime() < deadline) {
+            val alive = Thread.getAllStackTraces().keys
+                .filter { it.name == FALLBACK_THREAD_NAME && it.isAlive }
+            if (alive.isEmpty()) return
+            alive.forEach { it.join(50) }
+        }
+        error("a previous test's fallback thread never exited")
     }
 }
