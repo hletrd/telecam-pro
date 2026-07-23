@@ -17,7 +17,15 @@ internal fun extractExifApp1(jpeg: ByteArray): ByteArray? {
         }
         val marker = jpeg[offset + 1].toInt() and 0xff
         if (marker == 0xda || marker == 0xd9) return null
-        if (marker == 0x00 || marker == 0xff || marker in 0xd0..0xd7) {
+        if (marker == 0xff) {
+            // 0xFF fill byte, not a marker: the byte AFTER it may itself start the real marker
+            // (FF FF E1 ...), so advance by ONE — a two-byte step consumed the real marker's lead
+            // byte and landed mid-segment.
+            offset += 1
+            continue
+        }
+        if (marker == 0x00 || marker == 0x01 || marker in 0xd0..0xd7) {
+            // Stuffed byte (FF 00), TEM, and RST are length-less two-byte codes.
             offset += 2
             continue
         }

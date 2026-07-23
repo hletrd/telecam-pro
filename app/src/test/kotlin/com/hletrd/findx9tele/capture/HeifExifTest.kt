@@ -25,6 +25,25 @@ class HeifExifTest {
     }
 
     @Test
+    fun `walks 0xFF fill bytes without consuming the real marker`() {
+        // FF FF FF E1: fill bytes pad the real APP1 marker. A two-byte step from the first fill
+        // byte consumed the second FF AND the E1, landing mid-segment (cycle-6 code-review F10) —
+        // each fill byte must advance the scan by exactly one.
+        val payload = byteArrayOf(0x45, 0x78, 0x69, 0x66, 0, 0, 7)
+        val segmentLength = payload.size + 2
+        val jpeg = byteArrayOf(
+            0xff.toByte(), 0xd8.toByte(),
+            0xff.toByte(), 0xff.toByte(), // fill run
+            0xff.toByte(), 0xe1.toByte(),
+            (segmentLength ushr 8).toByte(), segmentLength.toByte(),
+            *payload,
+            0xff.toByte(), 0xd9.toByte(),
+        )
+
+        assertArrayEquals(payload, extractExifApp1(jpeg))
+    }
+
+    @Test
     fun `rejects truncated or non EXIF APP1`() {
         assertNull(extractExifApp1(byteArrayOf(0xff.toByte(), 0xd8.toByte(), 0xff.toByte())))
         assertNull(
