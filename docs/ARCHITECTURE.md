@@ -60,7 +60,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `VendorTagInspector.kt` | Debug-only Camera2 capability logger for device-specific request/session keys. |
 | **gl/** | |
 | `GlPipeline.kt` | One object owns one native GL generation and checked preview/encoder EGLSurface lifetimes. Outgoing outputs are unbound before destruction; preview and encoder readiness publish only after a real swap. Each object owns and retires its analysis executor, busy gate, FBO/buffer snapshot, callbacks, and native fields. `stop()` reports STOPPED only when the thread exits and checked native-output release succeeds; timeout or unsafe release permanently ABANDONS the object. `CameraEngine` compare-and-swaps a fresh object into `AtomicOwnerSlot`, restarts it from a live foreground preview, captures the exact owner/input for every preview/Camera2/recorder transaction, and identity-gates late callbacks. `RendererAssists` resolves/replays config into the current object once per operation. Thus a leaked old handler can touch only its own retired EGL state, never replacement state. |
-| `FlipRenderer.kt` | Low-level OpenGL ES fullscreen quad renderer with texture-coordinate rotation (inverse of image rotation) to flip the 180° afocal image. Applies the SDR-to-HLG mapping or a log-profile encoding (S-Log3 / S-Log3.Cine / LogC3) in the fragment shader and handles focus peaking/zebra. A per-draw `mirrorX` selects the x-inverted attribute texcoord quad (pure `texCoordQuad`) for the selfie preview mirror; only the preview draw ever sets it. |
+| `FlipRenderer.kt` | Low-level OpenGL ES fullscreen quad renderer with texture-coordinate rotation (inverse of image rotation) to flip the 180° afocal image. Applies the SDR-to-HLG mapping or a log-profile encoding (S-Log3 / S-Log3.Cine / LogC3) in the fragment shader and handles focus peaking/zebra. A per-draw `mirrorX` selects the x-inverted attribute texcoord quad (pure `texCoordQuad`); which draws set it derives from `FrontMirrorConvention` — the PMA110 front HAL PRE-mirrors its stream (device-diagnosed 2026-07-23), so the PREVIEW draw never sets it and only the ENCODER/ANALYSIS draws do, un-mirroring files and scopes back to the true scene. |
 | `EglCore.kt` | Checked EGL/GLES setup, binding, presentation, buffer swap, unbind, surface destruction, and display teardown. Supports a 10-bit config, while v1 deliberately starts the stable 8-bit config. |
 | `Shaders.kt` / `SdrToHlgMapping.kt` / `LogProfiles.kt` | Shader source plus Android-free reference constants for the BT.2408-9 display-referred SDR-to-HLG sequence and the S-Log3/LogC3 log profiles (curves + BT.709→gamut matrices, single-sourced into the GLSL); also owns the dormant O-Log2 de-log assist, peaking/zebra, and punch-in shader paths. |
 | **stab/** | |
@@ -395,9 +395,16 @@ deliberately held portrait/landscape saved-file check remains useful field verif
 frontFacing = true)` uses `(sensorOrientation − deviceOrientation) % 360` — the sign flips because
 the front sensor faces the opposite direction — and the afocal term never applies (the converter is
 a rear accessory; the facing door forces TC off). Preview rotation stays 0 on FRONT (the
-SurfaceTexture transform carries the front sensor orientation; the selfie mirror is a separate
-texcoord-x axis, `gl/texCoordQuad`, preview-only). Both front signs are
-**DEVICE-VERIFICATION-PENDING** on the PMA110 front camera.
+SurfaceTexture transform carries the front sensor orientation). **Mirror roles are INVERTED from
+the naive design (device-diagnosed 2026-07-23): the front HAL PRE-mirrors its SurfaceTexture
+stream.** The preview draw therefore adds NO mirror of its own (the pre-mirrored stream already IS
+the selfie-mirror view) and the ENCODER/ANALYSIS draws apply the texcoord x-inversion
+(`gl/texCoordQuad` via `mirrorX`) to write the TRUE scene into files and scopes. Every draw role
+plus the tap display axis derives from ONE authority, `gl/FrontMirrorConvention.kt`
+(`FRONT_STREAM_PRE_MIRRORED`), pushed as route state by `GlPipeline.setFrontStreamPreMirrored`
+from `applyStabilization`. The front capture-ROTATION sign remains
+**DEVICE-VERIFICATION-PENDING** on the PMA110 front camera (and the device-orientation term's sign
+for BOTH facings is a release-gating residual check — see `docs/BACKLOG.md`).
 
 **HEIF (pixel-rotated):**
 1. Owned JPEG/YUV snapshot → decode/convert to Bitmap.
@@ -499,7 +506,7 @@ Which camera is open depends on MODE, not just lens (`CameraEngine.resolveNonTel
 | Photo, TC off | **Logical camera 0** (physIds 3/2/4/5) | Unified main-relative 0.6–20×; the HAL crosses physical lenses internally (seamless pinch, no reopen). Lens picks = zoom presets; chip highlight follows `LensChoice.forZoom`. |
 | Video, TC off | **Standalone lens** matching the band | Lens-local 1–10× digital; lens changes reopen. The logical camera's EIS (Standard AND Active) leaks its uncorrected warp margin (~6% of width) into the stream — preview AND recorded file — so video must not live there. |
 | TC on (any mode) | **Standalone 3× (camera 4)** | Lens-local 1–10×; afocal 180° flip; RAW/DNG is offered only when that standalone session advertises RAW. |
-| FRONT (any mode) | **Front camera** (`pickFront`, expected id 1 — never hardcoded) | Lens-local zoom; one camera in both modes (mode flips change stream size only). A first-class optics door (`setFrontCamera`): entering forces TC off in the same transaction, lens presets/TC refuse while FRONT (`backOpticsDoorRefusal`), MR recall/settings restore exit FRONT (recalled packets are rear-route optics), and facing is never persisted (fresh launch = BACK). Preview mirrors via a texcoord x-inversion (`gl.setPreviewMirror`, replayed by `applyStabilization` like the rotation pair); saved files stay unmirrored. |
+| FRONT (any mode) | **Front camera** (`pickFront`, expected id 1 — never hardcoded) | Lens-local zoom; one camera in both modes (mode flips change stream size only). A first-class optics door (`setFrontCamera`): entering forces TC off in the same transaction, lens presets/TC refuse while FRONT (`backOpticsDoorRefusal`), MR recall/settings restore exit FRONT (recalled packets are rear-route optics), and facing is never persisted (fresh launch = BACK). Mirror truth: the front HAL PRE-mirrors its stream, so the PREVIEW draws it as-is (the stream IS the selfie-mirror view) and the ENCODER/ANALYSIS draws un-mirror — saved files keep the true scene. Roles derive from `gl/FrontMirrorConvention.kt`; the fact is pushed as route state by `gl.setFrontStreamPreMirrored` (replayed by `applyStabilization` like the rotation pair). |
 
 `setVideoMode` remaps the zoom value between the unified and lens-local scales so framing carries
 across a mode flip (mirrored into UI state by `onModeChange`); while FRONT that remap is identity
