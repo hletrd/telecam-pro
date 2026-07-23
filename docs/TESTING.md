@@ -219,7 +219,7 @@ instrumented smoke run raises the OVERALL and the Partition B numbers only; it n
 Partition A claim (device-drivable classes stay in Partition B until they can genuinely hold ~100%
 under host tests — same policy as the Robolectric classes).
 
-**PMA110 device caveat (connected leg currently BLOCKED, 2026-07-24).** The connected instrumented
+**PMA110 device caveat (connected leg PENDING-USER — one-time device setting, 2026-07-24).** The connected instrumented
 run cannot complete on this device: the instrumented test APK `me.hletrd.telecampro.debug.test` is
 a new package with **no launcher activity**, so ColorOS's `OPlusPackageInstallerActivity` flags it
 "No Home screen icon" and offers only **"Exit installation"** — there is no automatable
