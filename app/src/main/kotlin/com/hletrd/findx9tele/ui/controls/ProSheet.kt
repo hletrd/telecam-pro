@@ -1162,6 +1162,13 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.labelSmall,
     )
+    // Bundled-typeface attribution (SIL OFL requires the license to travel with the font; the
+    // full text ships in the repo at docs/licenses/inter-OFL.txt).
+    Text(
+        "UI typeface: Inter, © The Inter Project Authors, SIL Open Font License 1.1.",
+        color = CameraColors.TextSecondary,
+        style = MaterialTheme.typography.labelSmall,
+    )
     SectionHeader("Startup")
     ToggleRow(
         label = "Remember Settings",
