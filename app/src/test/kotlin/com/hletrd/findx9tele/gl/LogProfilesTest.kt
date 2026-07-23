@@ -177,6 +177,36 @@ class LogProfilesTest {
     }
 
     @Test
+    fun `zebra and false color meter the display-referred signal, not the encode curve`() {
+        // The log OETFs compress display white to ~0.57-0.60 — below every zebra preset
+        // (0.70-1.00) and the false-color near-clip bands. Metered on the post-transfer
+        // output, both overlays go dead the moment a log profile is selected (cycle-6
+        // debugger F4). The shader must meter the display-referred `meter` signal, which
+        // only the dormant native-log assist branch may reassign (there the de-logged
+        // monitor image IS the display-referred rendition).
+        val shader = Shaders.FRAGMENT
+        assertTrue("display-referred meter seam must exist", shader.contains("vec3 meter = base;"))
+        assertTrue(
+            "zebra must meter the display-referred signal",
+            shader.contains("luma(clamp(meter, 0.0, 1.0)) > uZebraThreshold"),
+        )
+        assertTrue(
+            "false color must meter the display-referred signal",
+            shader.contains("float L = luma(clamp(meter, 0.0, 1.0));"),
+        )
+        // No overlay may read the post-transfer `color` as its exposure signal.
+        assertFalse(shader.contains("luma(clamp(color, 0.0, 1.0)) > uZebraThreshold"))
+        assertFalse(shader.contains("float L = luma(color);"))
+        // The only reassignment lives inside the dormant assist branch (uTransfer == 3).
+        val reassignIndex = shader.indexOf("meter = color;")
+        val dormantBranch = shader.indexOf("uTransfer == 3")
+        val falseColorBlock = shader.indexOf("if (uFalseColor == 1)")
+        assertTrue("dormant assist must republish its de-logged image as the meter signal", reassignIndex >= 0)
+        assertTrue(reassignIndex > dormantBranch && reassignIndex < falseColorBlock)
+        assertTrue(shader.indexOf("meter = color;", reassignIndex + 1) == -1)
+    }
+
+    @Test
     fun `forward O-Log2 is gone while the dormant inverse survives`() {
         val shader = Shaders.FRAGMENT
         assertFalse("the removed forward O-Log2 OETF must not resurface", shader.contains("vec3 olog2("))

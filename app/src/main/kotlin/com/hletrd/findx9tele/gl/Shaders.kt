@@ -169,6 +169,15 @@ object Shaders {
         void main() {
             vec3 base = texture2D(uTexture, vTexCoord).rgb;
             vec3 color = base;
+            // Exposure signal for the zebra / false-color overlays: ALWAYS the display-referred
+            // rendition, never the encode curve. The log OETFs compress display white to ~0.57-0.60
+            // (S-Log3 0.596, LogC3 0.571), which sits BELOW every zebra preset (0.70-1.00) and the
+            // false-color near-clip bands — metered post-transfer, the overlays go dead the moment
+            // a log profile is selected. Same domain rule the analysis readback already enforces
+            // (analysisReadbackTransfer: the meter must not move with the log toggle). Only the
+            // dormant native-log assist reassigns this: there the INPUT is the log stream and the
+            // de-logged monitor image is the display-referred rendition.
+            vec3 meter = base;
 
             if (uTransfer == 1) {
                 // Simplified display-referred SDR-to-HLG mapping (ITU-R BT.2408-9 §5.1.3.4):
@@ -201,11 +210,12 @@ object Shaders {
                 // branch only ever runs on the preview.
                 vec3 lin = max(olog2Inv(clamp(color, 0.0, 1.0)), vec3(0.0));
                 color = pow(clamp(toRec709(lin), 0.0, 1.0), vec3(1.0 / 2.2));
+                meter = color;
             }
 
-            // False color: map exposure (luma) to IRE-style bands.
+            // False color: map exposure (luma) to IRE-style bands (display-referred, see meter).
             if (uFalseColor == 1) {
-                float L = luma(color);
+                float L = luma(clamp(meter, 0.0, 1.0));
                 if (L < 0.03) color = vec3(0.15, 0.0, 0.5);
                 else if (L < 0.10) color = vec3(0.0, 0.4, 0.85);
                 else if (L < 0.42) color = vec3(0.32, 0.32, 0.32);
@@ -232,9 +242,11 @@ object Shaders {
             // its large window coords overflowed the mantissa and mod(...) degenerated — the stripes
             // never drew (QA: "zebra toggles on but shows nothing"). Reconstructed pixel coords stay
             // highp, so the modulo is exact and the stripes render. Luma is clamped so an out-of-range
-            // sample can't slip past the threshold test.
+            // sample can't slip past the threshold test. Metered on the display-referred signal
+            // (meter), so the thresholds keep their IRE meaning under the log profiles and the
+            // stripes read the SCENE, not the false-color band map.
             if (uZebra == 1) {
-                if (luma(clamp(color, 0.0, 1.0)) > uZebraThreshold) {
+                if (luma(clamp(meter, 0.0, 1.0)) > uZebraThreshold) {
                     float px = vTexCoord.x / max(uTexel.x, 1e-6);
                     float py = vTexCoord.y / max(uTexel.y, 1e-6);
                     float stripe = mod(px + py, 24.0);
