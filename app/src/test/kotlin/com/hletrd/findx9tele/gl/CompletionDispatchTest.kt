@@ -429,6 +429,49 @@ class CompletionDispatchTest {
     }
 
     @Test
+    fun `prepared encoder output installs directly without an admission lease`() {
+        val installed = mutableListOf<String>()
+        val discarded = mutableListOf<String>()
+
+        assertTrue(
+            installPreparedEncoderOutput(
+                candidate = "surface",
+                admission = null,
+                install = installed::add,
+                discard = discarded::add,
+            ),
+        )
+
+        assertEquals(listOf("surface"), installed)
+        assertTrue(discarded.isEmpty())
+    }
+
+    @Test
+    fun `current admission lease commits the prepared output install`() {
+        val installed = mutableListOf<String>()
+        val discarded = mutableListOf<String>()
+        val admission = EncoderOutputAdmission(
+            validity = { true },
+            commitBlock = { block ->
+                block()
+                true
+            },
+        )
+
+        assertTrue(
+            installPreparedEncoderOutput(
+                candidate = "surface",
+                admission = admission,
+                install = installed::add,
+                discard = discarded::add,
+            ),
+        )
+
+        assertEquals(listOf("surface"), installed)
+        assertTrue(discarded.isEmpty())
+    }
+
+    @Test
     fun `encoder admission validity delegates to the process lease`() {
         var valid = true
         val admission = EncoderOutputAdmission(

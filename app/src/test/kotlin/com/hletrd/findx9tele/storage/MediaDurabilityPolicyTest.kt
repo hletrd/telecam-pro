@@ -182,6 +182,38 @@ class MediaDurabilityPolicyTest {
     }
 
     @Test
+    fun `an unreadable byte at every pitm and iloc field keeps the row pending`() {
+        // Field-granular continuation of the stage matrix above: every readUnsigned inside the
+        // pitm/iloc walk must propagate INDETERMINATE, not INVALID, when its bytes cannot be read.
+        val bytes = locatedHeif()
+        val pitm = boxOffset(bytes, "pitm")
+        val iloc = boxOffset(bytes, "iloc")
+        val fields = mapOf(
+            "pitm child box header" to pitm,
+            "pitm item id" to pitm + 8L + 4L,
+            "iloc size pair" to iloc + 8L + 4L,
+            "iloc base-and-index pair" to iloc + 8L + 5L,
+            "iloc item count" to iloc + 8L + 6L,
+            "iloc data-reference index" to iloc + 8L + 10L,
+            "iloc extent count" to iloc + 8L + 12L,
+            "iloc extent offset" to iloc + 8L + 14L,
+            "iloc extent length" to iloc + 8L + 18L,
+        )
+
+        fields.forEach { (name, offset) ->
+            assertEquals(name, PendingProbe.INDETERMINATE, probe(bytes, nullAt = offset))
+        }
+
+        // Version 1 adds the construction-method field between item id and data reference.
+        val v1 = locatedHeif(ilocVersion = 1)
+        assertEquals(
+            "iloc construction method",
+            PendingProbe.INDETERMINATE,
+            probe(v1, nullAt = boxOffset(v1, "iloc") + 8L + 10L),
+        )
+    }
+
+    @Test
     fun `malformed and oversized ftyp brand boxes resolve conservatively`() {
         // Structurally impossible brand payloads are INVALID...
         assertEquals(PendingProbe.INVALID, probe(box("ftyp", ByteArray(6)) + box("mdat", byteArrayOf(1))))

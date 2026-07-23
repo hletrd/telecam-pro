@@ -318,11 +318,14 @@ class LatestCaptureReducerTest {
     fun `rows identical through row id still resolve deterministically`() {
         // Exercises the deepest newest-row tie-breakers (collection ordinal + display name): two
         // siblings sharing every date AND the row id can still elect one canonical newest row.
+        // A second, older family forces the group comparison that ranks the tied candidates
+        // (a lone group is returned without ever computing its rank).
         val key = stillKey(at = 13_000L, sequence = 3L)
         val heic = familyRow("photo.heic", key, "heic", id = 5L)
         val jpeg = familyRow("photo.jpg", key, "jpg", id = 5L, mime = "image/jpeg")
+        val older = familyRow("older.heic", stillKey(at = 1_000L, sequence = 1L), "heic", id = 1L)
 
-        val restored = restoreLatestCapture(listOf(heic, jpeg))
+        val restored = restoreLatestCapture(listOf(heic, jpeg, older))
 
         assertEquals("photo.heic", restored?.preferred?.output)
         assertEquals(2, restored?.outputs?.size)
