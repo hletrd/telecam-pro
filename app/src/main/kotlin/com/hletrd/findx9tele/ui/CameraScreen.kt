@@ -2274,23 +2274,28 @@ private fun ShutterRow(
             onClick = onOpenReview,
             modifier = Modifier.align(Alignment.CenterStart).rotate(glyphRotation),
         )
-        Row(
-            modifier = Modifier.align(Alignment.Center),
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (mode == CaptureMode.VIDEO && isRecording && !isRecordingStarting) {
-                SnapshotButton(onClick = onSnapshot, enabled = stillCaptureAvailable)
-            }
-            ShutterButton(
-                mode = mode,
-                isRecording = isRecording,
-                timerCountdownSec = timerCountdownSec,
-                onClick = onShutter,
-                cameraHealthy = cameraHealthy,
-                enabled = shutterEnabled,
+        // The shutter/stop control is anchored at the EXACT box center so it never moves when the
+        // in-REC snapshot dot appears (cycle-6 D-10: the old centered Row re-centered the pair at
+        // REC start, shifting the control ~31 dp at the moment the thumb is on it). The dot offsets
+        // from the fixed shutter instead: 38 dp shutter half + 14 dp gap + 24 dp dot half = 76 dp.
+        if (mode == CaptureMode.VIDEO && isRecording && !isRecordingStarting) {
+            SnapshotButton(
+                onClick = onSnapshot,
+                enabled = stillCaptureAvailable,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .offset(x = (-76).dp),
             )
         }
+        ShutterButton(
+            mode = mode,
+            isRecording = isRecording,
+            timerCountdownSec = timerCountdownSec,
+            onClick = onShutter,
+            cameraHealthy = cameraHealthy,
+            enabled = shutterEnabled,
+            modifier = Modifier.align(Alignment.Center),
+        )
     }
 }
 
