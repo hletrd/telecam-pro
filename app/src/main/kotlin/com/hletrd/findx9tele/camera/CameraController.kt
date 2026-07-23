@@ -605,7 +605,22 @@ class CameraController(context: Context) {
             sp.applyVendorLog()
             sessionConfig.setSessionParameters(sp.build())
         }.onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "session params with vendor stabilization/log failed: ${it.message}") }
-        camera.createCaptureSession(sessionConfig)
+        // createCaptureSession can throw SYNCHRONOUSLY (realistic: a future ColorOS rejecting the
+        // vendor sessionType 0x80b4 with IllegalArgumentException instead of onConfigureFailed).
+        // Uncaught, that surfaces as terminal onError WITHOUT advancing the ladder — the exact
+        // degradation path built to absorb vendor-mode rejection never runs. Advance it like
+        // onConfigureFailed does (the high-speed path already guards this same call).
+        runCatching { camera.createCaptureSession(sessionConfig) }.onFailure { failure ->
+            configAttempt = attempt + 1
+            val maxAttempt = if (teleconverterMode) MAX_TELE_CONFIG_ATTEMPT else MAX_CONFIG_ATTEMPT
+            if (configAttempt > maxAttempt) {
+                Log.e(TAG, "createCaptureSession threw; fallback ladder exhausted", failure)
+                onError.onError(failure)
+            } else {
+                if (BuildConfig.DEBUG) Log.w(TAG, "createCaptureSession threw at fallback $attempt; retrying at $configAttempt: ${failure.message}")
+                runCatching { configureSession(onReady, onError) }.onFailure { onError.onError(it) }
+            }
+        }
     }
 
     /**
