@@ -297,7 +297,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   swap. The muxer hint still carries device tilt only. Pre-cycle-4 "verified" video facts below
   describe container/codec truthfully but predate this framing fix.
 - **Release output files verified on PMA110 (2026-07-10).** A serialized rapid double-shutter test
-  produced exactly one valid DNG+HEIF pair (DNG 4080×3064, 16-bit). A 4K HLG clip was HEVC Main10
+  produced exactly one valid DNG+HEIF pair (that 07-10 DNG measured 4080×3064 pre-RAW-re-route;
+  since the 07-14 TELE-only RAW gating, TELE DNG is **4096×3072, 16-bit** — standalone cam 4's
+  advertised RAW16 array, device-measured 2026-07-24 by `tele_dng_parity`). A 4K HLG clip was HEVC Main10
   3840×2160 at 30000/1001 with AAC 48 kHz stereo; Open Gate produced HEVC Main10 2560×1920 4:3 at
   30000/1001 with AAC. The release smoke test had no crash or ANR. **Saved-file uprightness in a
   deliberately held, lit portrait/landscape pose remains a residual field check** — see
