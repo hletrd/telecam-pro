@@ -62,14 +62,26 @@ bucket by the committed filters in `tools/coverage/`:
    (`Class#method[#descSubstring]` entries — e.g. `ManualControlsKt`'s tested normalization logic
    stays A while its `CaptureRequest.Builder` extensions are B) or the pure block is extracted to
    a non-composable file (behavior-locked moves, each its own commit).
-5. **Accepted residuals are documented.** A small set of defensive-unreachable lines is accepted
-   inside Partition A's 0.5% headroom rather than chased with contrived tests, e.g.:
-   `SettingsStore` L181 (non-finite guard behind `safeFloat`, already guaranteed finite),
-   `CaptureFamilyKey$Companion` regex-unreachable `else`/ctor-throw branches,
-   `LatestCaptureReducer`'s `?: return null` after a non-empty `maxWithOrNull` and the deepest
-   tie-break `?: error(...)`, `ManualControlsKt`'s 2-line `normalizedFor(CameraCaps)`-adjacent
-   glue where an overload cannot be split further. The partition report's gap list is the
-   running inventory.
+5. **Accepted residuals are documented.** A small set of lines is accepted inside Partition A's
+   0.5% headroom rather than chased with contrived tests. The complete inventory as of the
+   cycle-7 close (10 lines, A = 99.75%):
+   - `gl/AnalysisGenerationOwner` 2 — tryAcquire's post-CAS retired double-check; a genuine race
+     window covered only when the 100-iteration stress test happens to interleave, so its line
+     coverage is nondeterministic run to run (A may read 99.70–99.75%). No deterministic host
+     test exists without an injection seam.
+   - `storage/HeifBoundedReader` 2 — `byteCount !in 0..8` guard unreachable through
+     `probeHeifIsoBmff` (every call site passes a fixed or already-validated count; the class is
+     private so no other entry exists).
+   - `storage/CaptureFamilyKey$Companion` 2 — regex-unreachable `else`/ctor-throw branches.
+   - `storage/LatestCaptureReducerKt` 2 — `?: return null` after a non-empty `maxWithOrNull` and
+     the deepest tie-break `?: error(...)`.
+   - `storage/SettingsStore` 1 — non-finite guard behind `safeFloat`, already guaranteed finite.
+   - `ui/controls/FnQuickActionsKt` 1 — performQuickFn's shutter speed↔angle flip argument,
+     reachable only via `availability.shutterDialEnabled`, which requires a real framework
+     `CameraCaps` (unconstructable on host). A future seam could take `ControlAvailability`
+     directly; deferred as a signature change.
+   The partition report's gap list is the running inventory; additions require the same
+   framework-bound or proven-unreachable justification.
 
 ### Method-level split inventory (mixed classes)
 
