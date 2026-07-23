@@ -488,10 +488,10 @@ private fun FnDialChip(
         )
         FnSlot.ISO -> DialChip(
             label = "ISO",
-            value = when {
-                controls.exposureMode == ExposureMode.PROGRAM -> autoIsoText(state)
-                controls.autoIsoDriven -> controls.iso.toString()
-                else -> controls.iso.toString()
+            value = if (controls.exposureMode == ExposureMode.PROGRAM) {
+                autoIsoText(state)
+            } else {
+                controls.iso.toString()
             },
             autoValue = controls.exposureMode == ExposureMode.PROGRAM || controls.autoIsoDriven,
             active = openDial == DialType.ISO,
