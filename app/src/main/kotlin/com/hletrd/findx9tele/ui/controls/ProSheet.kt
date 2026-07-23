@@ -573,7 +573,14 @@ private fun MemoryPresetRow(
             .clip(RoundedCornerShape(8.dp))
             .background(if (active) Color(0xFFFFD60A).copy(alpha = 0.18f) else Color.White.copy(alpha = 0.05f))
             .border(1.dp, Color.White.copy(alpha = if (active) 0.28f else 0.10f), RoundedCornerShape(8.dp))
-            .clickable(enabled = saved && !locked, onClick = onRecall)
+            // Role + label on the primary recall action (cycle-6 D-11): without them the row read
+            // as an anonymous clickable while its Save chip was fully labeled.
+            .clickable(
+                enabled = saved && !locked,
+                role = Role.Button,
+                onClickLabel = "Recall ${slot.label}",
+                onClick = onRecall,
+            )
             .padding(horizontal = 12.dp, vertical = 9.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -1256,8 +1263,10 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
     SectionHeader("My Menu")
     FnSlotEditor(selected = state.myMenuSlots, onSet = actions::onSetMyMenuSlots)
     SectionHeader("Keys")
+    // This one assignment governs the camera button's FULL press AND the volume keys
+    // (MainActivity routes both to it) — say so in the label (cycle-6 D-13).
     SegmentedSelector(
-        label = "Full Press",
+        label = "Full Press / Volume",
         options = HardwareKeyAction.entries,
         selected = state.volumeKeyAction,
         labelFor = ::hardwareKeyActionLabel,
@@ -1308,13 +1317,14 @@ private fun FnSlotEditor(selected: List<FnSlot>, onSet: (List<FnSlot>) -> Unit) 
     }
     val available = FnSlot.entries.filterNot { it in normalized }
     available.forEach { slot ->
-        ToggleRow(
-            label = "Add ${fnSlotLabel(slot)}",
-            checked = false,
-            onCheckedChange = { enabled ->
-                if (enabled && normalized.size < 8) onSet(normalized + slot)
-            },
+        // Button-role action row, not a Switch: the old ToggleRow's checked state could never be
+        // true (an added slot leaves this list), so TalkBack announced "Off" for what is an add
+        // action (cycle-6 D-11). LabelValueRow is the app's plain-action row idiom.
+        LabelValueRow(
+            label = fnSlotLabel(slot),
+            valueLabel = "Add",
             enabled = normalized.size < 8,
+            onClick = { if (normalized.size < 8) onSet(normalized + slot) },
         )
     }
 }
