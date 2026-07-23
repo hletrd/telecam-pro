@@ -76,9 +76,15 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
 /** Holds [CameraUiState] and turns [CameraActions] into [CameraEngine] calls. UI-thread only. */
-class CameraViewModel(app: Application) : AndroidViewModel(app), CameraActions {
+// The engine is a defaulted constructor parameter (the ONE test seam this class exposes): host
+// tests inject or observe it while production behavior is unchanged. @JvmOverloads emits the
+// plain (Application) overload that androidx's reflective AndroidViewModelFactory requires — the
+// viewModels() construction path never sees the two-arg constructor.
+class CameraViewModel @JvmOverloads constructor(
+    app: Application,
+    private val engine: CameraEngine = CameraEngine(app),
+) : AndroidViewModel(app), CameraActions {
 
-    private val engine = CameraEngine(app)
     private val cameraReadyPublicationGate = CameraReadyPublicationGate()
     private val tapFocusPublicationGate = TapFocusPublicationGate()
     private val settingsStore = SettingsStore(app)
