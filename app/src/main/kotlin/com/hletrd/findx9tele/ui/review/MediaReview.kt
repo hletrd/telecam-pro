@@ -1,6 +1,7 @@
 package com.hletrd.findx9tele.ui.review
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
@@ -250,11 +251,46 @@ private suspend fun loadBitmap(context: Context, uri: Uri, maxDim: Int): ImageBi
                 while (longest / sample > maxDim) sample *= 2
             }
             val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-            context.contentResolver.openInputStream(uri)?.use {
+            val decoded = context.contentResolver.openInputStream(uri)?.use {
                 BitmapFactory.decodeStream(it, null, opts)
-            }?.asImageBitmap()
+            } ?: return@runCatching null
+            applyExifOrientation(context, uri, decoded).asImageBitmap()
         }.getOrNull()
     }
+
+/**
+ * Honors the file's EXIF orientation on the decoded pixels. The ordinary processed lanes
+ * pre-rotate pixels and stamp ORIENTATION_NORMAL (no-op here), but the hi-res passthrough lane
+ * deliberately writes the HAL JPEG unrotated with the correction ONLY in EXIF (a ~200MP
+ * decode-rotate would OOM the save path) — a plain decode showed those stills rotated in review
+ * and its thumbnail while external viewers were correct (cycle-6 feature-dev review). The decode
+ * above is already inSampleSize-capped, so the rotate runs on the bounded preview bitmap.
+ */
+private fun applyExifOrientation(context: Context, uri: Uri, decoded: Bitmap): Bitmap {
+    val orientation = runCatching {
+        context.contentResolver.openInputStream(uri)?.use { stream ->
+            androidx.exifinterface.media.ExifInterface(stream)
+                .getAttributeInt(
+                    androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION,
+                    androidx.exifinterface.media.ExifInterface.ORIENTATION_NORMAL,
+                )
+        }
+    }.getOrNull() ?: androidx.exifinterface.media.ExifInterface.ORIENTATION_NORMAL
+    val matrix = android.graphics.Matrix()
+    when (orientation) {
+        androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+        androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+        androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+        // Mirrored orientations never come from our save lanes (parity-preserving rotations only);
+        // leave them un-transformed rather than guessing a flip axis.
+        else -> return decoded
+    }
+    val rotated = runCatching {
+        Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true)
+    }.getOrNull() ?: return decoded
+    if (rotated !== decoded) decoded.recycle()
+    return rotated
+}
 
 private suspend fun loadReviewMedia(context: Context, uri: Uri): ReviewMediaState {
     val mimeType = withContext(Dispatchers.IO) {
