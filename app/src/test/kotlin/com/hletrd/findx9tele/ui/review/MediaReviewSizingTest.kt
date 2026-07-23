@@ -59,17 +59,19 @@ class MediaReviewSizingTest {
 
     @Test
     fun `still zoom cycle exposes the next visible action`() {
+        // The button's visual label is arrow-prefixed: it names the NEXT magnification while the
+        // top pill names the CURRENT one, and a bare "N×" made the two contradict (cycle-6 D-12).
         assertEquals(4f, nextReviewScale(1f))
         assertEquals("Zoom 4×", reviewZoomActionLabel(1f))
-        assertEquals("4×", reviewZoomControlLabel(1f))
+        assertEquals("→4×", reviewZoomControlLabel(1f))
 
         assertEquals(8f, nextReviewScale(4f))
         assertEquals("Zoom 8×", reviewZoomActionLabel(4f))
-        assertEquals("8×", reviewZoomControlLabel(4f))
+        assertEquals("→8×", reviewZoomControlLabel(4f))
 
         assertEquals(1f, nextReviewScale(8f))
         assertEquals("Reset zoom", reviewZoomActionLabel(8f))
-        assertEquals("1×", reviewZoomControlLabel(8f))
+        assertEquals("→1×", reviewZoomControlLabel(8f))
     }
 
     @Test

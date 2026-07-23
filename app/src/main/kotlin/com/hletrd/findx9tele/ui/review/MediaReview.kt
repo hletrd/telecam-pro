@@ -1123,8 +1123,12 @@ internal fun reviewZoomActionLabel(scale: Float): String = when (nextReviewScale
     else -> "Reset zoom"
 }
 
+/** Visual label on the corner zoom button: the magnification the NEXT press applies, arrow-prefixed
+ *  so it cannot be misread as the CURRENT scale the top pill shows — a bare "N×" on a button reads
+ *  as current state, and the two readouts contradicted on screen (cycle-6 D-12). The accessibility
+ *  action/state strings above stay the honest current/next pair. */
 internal fun reviewZoomControlLabel(scale: Float): String =
-    if (nextReviewScale(scale) <= 1f) "1×" else reviewScaleLabel(nextReviewScale(scale))
+    "→" + reviewScaleLabel(nextReviewScale(scale))
 
 internal fun reviewZoomStateDescription(scale: Float): String =
     "Magnification ${reviewScaleLabel(scale)}"
