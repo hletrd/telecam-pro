@@ -3607,6 +3607,26 @@ def t_tele_dng_parity(ctx: Context) -> None:
                 )
 
 
+def assert_recording_ui_continues(ctx: Context, pid: int, seconds: float) -> None:
+    """REC semantics must persist for the interval — WITHOUT the screencap-noise preview check.
+
+    The container-truth legs record log/SDR transfers of whatever scene exists (a dark, flat-lying
+    phone rendering a log curve quantizes to a nearly static screencap — device-observed 2026-07-24
+    false 'preview froze'), so encoder-feed liveness is proven afterwards by the full-decode
+    cadence contract on the pulled clip instead of two screenshots differing.
+    """
+    deadline = time.monotonic() + seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.75, remaining))
+        assert ctx.adb.pid() == pid, "app process changed during the REC interval"
+        tree = ctx.adb.ui()
+        assert tree.find_desc_exact("Stop recording"), "REC stopped before the requested interval"
+        assert tree.find_desc_exact("Recording"), "first-frame REC semantics disappeared early"
+
+
 def record_container_truth_clip(
     ctx: Context,
     pid: int,
@@ -3631,7 +3651,7 @@ def record_container_truth_clip(
             "the selected chip did not reach the recorder"
         )
         wait_recording_running(ctx, pid)
-        assert_recording_continues(ctx, pid, seconds)
+        assert_recording_ui_continues(ctx, pid, seconds)
         observed = stop_recording_verified(ctx, pid)
         assert observed, f"{transfer_label}: REC ended before the requested Stop"
         wait_recording_finalized(ctx, mark, pid, recording_capture_id(admitted))
