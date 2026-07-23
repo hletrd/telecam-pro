@@ -22,6 +22,12 @@ robolectric = "4.16.1"
 # unit-test task with the expected coordinate in the message).
 robolectricAndroidAll = "16-robolectric-13921718-i7"
 androidxTestCore = "1.7.0"
+# Newest STABLE androidx.test on Google Maven (verified 2026-07; only alphas exist beyond these).
+# runner supplies AndroidJUnitRunner for the on-device instrumented smoke tier; ext-junit supplies
+# the AndroidJUnit4 runner class. androidx.test:rules is intentionally absent — no rule is used
+# (GrantPermissionRule is BANNED for CAMERA/RECORD_AUDIO here: grants are hand-managed on ColorOS).
+androidxTestRunner = "1.7.0"
+androidxTestExtJunit = "1.3.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -44,6 +50,8 @@ junit = { group = "junit", name = "junit", version.ref = "junit" }
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
 robolectric-android-all-instrumented = { group = "org.robolectric", name = "android-all-instrumented", version.ref = "robolectricAndroidAll" }
 androidx-test-core = { group = "androidx.test", name = "core", version.ref = "androidxTestCore" }
+androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }
+androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxTestExtJunit" }
 # BOM-managed (androidx-compose-bom above): ui-test-junit4 supplies createComposeRule for host
 # (Robolectric) Compose tests; ui-test-manifest supplies the ComponentActivity it launches.
 androidx-compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }

@@ -51,6 +51,11 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
+
+        // On-device instrumented smoke tier (app/src/androidTest). The external device-tests/
+        // harness owns functional depth; the instrumented suite exists to exercise real code
+        // paths for line coverage (docs/TESTING.md).
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
@@ -77,6 +82,13 @@ android {
             // Host-JVM unit-test line coverage (JaCoCo via AGP). Debug-only: the flag adds a
             // coverage-instrumented unit-test task, never touches the APK bytecode we ship.
             enableUnitTestCoverage = true
+            // Instrumented (connected) coverage is PROPERTY-GATED, never default-on: this flag
+            // makes AGP JaCoCo-instrument the debug APK's BYTECODE, and the default debug build
+            // must stay uninstrumented so device-tests/ perf checks and APK-sha attestation always
+            // run against clean bytecode. Enable per coverage run:
+            //   ./gradlew :app:createDebugAndroidTestCoverageReport -PandroidTestCoverage=true
+            enableAndroidTestCoverage =
+                providers.gradleProperty("androidTestCoverage").orNull == "true"
         }
         release {
             // R8/minify intentionally OFF for v1 (Play does not require it; keeps the Camera2/HAL
@@ -202,6 +214,14 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     // The verified offline android-all framework jar (see the robolectricJars block above).
     robolectricJars(libs.robolectric.android.all.instrumented)
+
+    // On-device instrumented smoke tier (app/src/androidTest). Deliberately LEAN — no compose
+    // BOM/assertions here: the suite drives MainActivity via ActivityScenario and observes the
+    // ViewModel's StateFlow directly; device-tests/ owns functional depth (docs/TESTING.md).
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.core)
 }
 
 if (!hasReleaseSigning) {
