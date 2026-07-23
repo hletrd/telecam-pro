@@ -41,7 +41,10 @@ class LogProfilesTest {
     @Test
     fun `LogC3 pins the documented anchors`() {
         assertEquals(0.391007, LogProfiles.logc3Oetf(0.18), 1e-6)
-        assertEquals(LogProfiles.LOGC3_F, LogProfiles.logc3Oetf(0.0), 0.0)
+        // The zero anchor asserts the published LITERAL, not LOGC3_F itself — comparing the
+        // constant to the constant (the linear branch is E*x + F, so oetf(0) == F by definition)
+        // could never catch a transcribed F (cycle-6 test-review F-A3).
+        assertEquals(0.092809, LogProfiles.logc3Oetf(0.0), 1e-9)
     }
 
     @Test
