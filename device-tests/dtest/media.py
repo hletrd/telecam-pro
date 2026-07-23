@@ -75,6 +75,199 @@ def dng_valid(path: Path) -> bool:
     return len(data) > 1_000_000 and data[:4] in (b"II*\x00", b"MM\x00*")
 
 
+# ---- TIFF / EXIF structure (stdlib) ----------------------------------------------------------
+# A DNG is TIFF/EP: Android's DngCreator writes the CFA raw image plus EXIF metadata across IFD0,
+# optional SubIFDs (tag 0x14A) and the Exif IFD (tag 0x8769). The parser below walks all of them
+# defensively (bounds-checked offsets, visited set, entry caps) because a truncated pull must fail
+# loudly, never loop or index out of bounds. The same walker parses the TIFF payload of a JPEG
+# APP1 Exif segment, so DNG and JPEG parity checks share one tag decoder.
+
+TIFF_TAG_NEW_SUBFILE_TYPE = 0x00FE
+TIFF_TAG_IMAGE_WIDTH = 0x0100
+TIFF_TAG_IMAGE_LENGTH = 0x0101
+TIFF_TAG_BITS_PER_SAMPLE = 0x0102
+TIFF_TAG_PHOTOMETRIC = 0x0106
+TIFF_TAG_SAMPLES_PER_PIXEL = 0x0115
+TIFF_TAG_SUB_IFDS = 0x014A
+TIFF_TAG_EXIF_IFD = 0x8769
+EXIF_TAG_EXPOSURE_TIME = 0x829A
+EXIF_TAG_ISO = 0x8827  # PhotographicSensitivity (a.k.a. ISOSpeedRatings)
+TIFF_PHOTOMETRIC_CFA = 32803
+
+_TIFF_TYPE_SIZES = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8}
+_MAX_IFDS = 64
+_MAX_ENTRIES_PER_IFD = 4096
+
+
+def _tiff_values(endian: str, kind: int, count: int, raw: bytes) -> list:
+    """Decode one IFD entry's value payload into python scalars/Fractions."""
+    if kind in (1, 6, 7):
+        return list(raw[:count])
+    if kind == 2:
+        return [raw[:count].split(b"\x00", 1)[0].decode(errors="replace")]
+    if kind in (3, 8):
+        return list(struct.unpack(f"{endian}{count}{'H' if kind == 3 else 'h'}", raw[: 2 * count]))
+    if kind in (4, 9, 11):
+        code = {4: "I", 9: "i", 11: "f"}[kind]
+        return list(struct.unpack(f"{endian}{count}{code}", raw[: 4 * count]))
+    if kind in (5, 10):
+        code = "I" if kind == 5 else "i"
+        flat = struct.unpack(f"{endian}{2 * count}{code}", raw[: 8 * count])
+        return [
+            Fraction(flat[2 * index], flat[2 * index + 1]) if flat[2 * index + 1] else None
+            for index in range(count)
+        ]
+    if kind == 12:
+        return list(struct.unpack(f"{endian}{count}d", raw[: 8 * count]))
+    raise ValueError(f"unsupported TIFF entry type {kind}")
+
+
+def _tiff_ifd(data: bytes, endian: str, offset: int) -> tuple[dict[int, list], int]:
+    """Parse one IFD at ``offset`` into {tag: values}; return it with the next-IFD offset."""
+    if offset <= 0 or offset + 2 > len(data):
+        raise ValueError(f"IFD offset {offset} escapes the TIFF payload ({len(data)} bytes)")
+    (count,) = struct.unpack_from(f"{endian}H", data, offset)
+    if count == 0 or count > _MAX_ENTRIES_PER_IFD:
+        raise ValueError(f"implausible IFD entry count {count} at offset {offset}")
+    end = offset + 2 + count * 12
+    if end + 4 > len(data):
+        raise ValueError(f"IFD at {offset} is truncated ({count} entries, {len(data)} bytes)")
+    entries: dict[int, list] = {}
+    for index in range(count):
+        tag, kind, value_count = struct.unpack_from(f"{endian}HHI", data, offset + 2 + index * 12)
+        size = _TIFF_TYPE_SIZES.get(kind)
+        if size is None or value_count > len(data):
+            continue  # unknown/absurd entry: skip the tag, keep walking the rest
+        total = size * value_count
+        inline = data[offset + 2 + index * 12 + 8 : offset + 2 + index * 12 + 12]
+        if total <= 4:
+            raw = inline
+        else:
+            (value_offset,) = struct.unpack(f"{endian}I", inline)
+            if value_offset + total > len(data):
+                continue
+            raw = data[value_offset : value_offset + total]
+        entries[tag] = _tiff_values(endian, kind, value_count, raw)
+    (next_offset,) = struct.unpack_from(f"{endian}I", data, end)
+    return entries, next_offset
+
+
+def tiff_ifds(data: bytes) -> list[dict[int, list]]:
+    """All IFDs of a TIFF payload: the IFD0 chain plus SubIFDs and the Exif IFD, in walk order."""
+    if len(data) < 8 or data[:4] not in (b"II*\x00", b"MM\x00*"):
+        raise ValueError("not a TIFF payload")
+    endian = "<" if data[:2] == b"II" else ">"
+    (first,) = struct.unpack_from(f"{endian}I", data, 4)
+    pending = [first]
+    visited: set[int] = set()
+    ifds: list[dict[int, list]] = []
+    while pending and len(ifds) < _MAX_IFDS:
+        offset = pending.pop(0)
+        if offset in visited or offset <= 0:
+            continue
+        visited.add(offset)
+        entries, next_offset = _tiff_ifd(data, endian, offset)
+        ifds.append(entries)
+        if next_offset:
+            pending.append(next_offset)
+        for child_tag in (TIFF_TAG_SUB_IFDS, TIFF_TAG_EXIF_IFD):
+            for child in entries.get(child_tag, []):
+                if isinstance(child, int):
+                    pending.append(child)
+    if not ifds:
+        raise ValueError("TIFF payload contains no parseable IFD")
+    return ifds
+
+
+def _first_int(entries: dict[int, list], tag: int) -> int | None:
+    values = entries.get(tag)
+    if not values or not isinstance(values[0], int):
+        return None
+    return values[0]
+
+
+def _exif_facts(ifds: list[dict[int, list]]) -> tuple[int | None, Fraction | None]:
+    """First ISO/ExposureTime found across the IFDs (TIFF/EP puts them in IFD0, EXIF in ExifIFD)."""
+    iso = None
+    exposure = None
+    for scan in ifds:
+        iso = iso if iso is not None else _first_int(scan, EXIF_TAG_ISO)
+        if exposure is None:
+            values = scan.get(EXIF_TAG_EXPOSURE_TIME)
+            if values and isinstance(values[0], Fraction):
+                exposure = values[0]
+    return iso, exposure
+
+
+def tiff_image_info(data: bytes) -> dict:
+    """Structure + EXIF facts of a TIFF/DNG payload.
+
+    The *raw* image IFD is selected as the CFA-photometric IFD when present (a DNG's actual
+    sensor plane), else the largest-area IFD — DngCreator layouts differ on whether IFD0 is the
+    full image or a thumbnail with the raw in a SubIFD, and the selector must not care.
+    """
+    ifds = tiff_ifds(data)
+    candidates = []
+    for entries in ifds:
+        width = _first_int(entries, TIFF_TAG_IMAGE_WIDTH)
+        height = _first_int(entries, TIFF_TAG_IMAGE_LENGTH)
+        if width and height:
+            candidates.append((entries, width, height))
+    if not candidates:
+        raise ValueError("TIFF payload advertises no image dimensions")
+    cfa = [
+        item for item in candidates
+        if _first_int(item[0], TIFF_TAG_PHOTOMETRIC) == TIFF_PHOTOMETRIC_CFA
+    ]
+    entries, width, height = cfa[0] if cfa else max(candidates, key=lambda item: item[1] * item[2])
+
+    iso, exposure = _exif_facts(ifds)
+    return {
+        "width": width,
+        "height": height,
+        "bits_per_sample": _first_int(entries, TIFF_TAG_BITS_PER_SAMPLE),
+        "samples_per_pixel": _first_int(entries, TIFF_TAG_SAMPLES_PER_PIXEL),
+        "photometric": _first_int(entries, TIFF_TAG_PHOTOMETRIC),
+        "cfa": bool(cfa),
+        "ifd_count": len(ifds),
+        "iso": iso,
+        "exposure_time": exposure,
+    }
+
+
+def dng_info(path: Path) -> dict:
+    return tiff_image_info(path.read_bytes())
+
+
+def jpeg_exif_info(path: Path) -> dict:
+    """ISO + ExposureTime from a JPEG's APP1 Exif segment via the shared TIFF walker."""
+    data = path.read_bytes()
+    if data[:2] != b"\xff\xd8":
+        raise ValueError("not a JPEG")
+    i = 2
+    while i + 4 < len(data):
+        if data[i] != 0xFF:
+            i += 1
+            continue
+        marker = data[i + 1]
+        if marker == 0xFF:
+            i += 1
+            continue
+        if marker in (0xD9, 0xDA):
+            break
+        if marker == 0x01 or 0xD0 <= marker <= 0xD7:
+            i += 2
+            continue
+        seg_len = struct.unpack_from(">H", data, i + 2)[0]
+        if marker == 0xE1 and data[i + 4 : i + 10] == b"Exif\x00\x00":
+            # No dimension requirement here: a JPEG's EXIF TIFF payload often omits
+            # ImageWidth/Length (SOF owns the raster), so only the metadata facts are read.
+            iso, exposure = _exif_facts(tiff_ifds(data[i + 10 : i + 2 + seg_len]))
+            return {"iso": iso, "exposure_time": exposure}
+        i += 2 + seg_len
+    raise ValueError("JPEG has no APP1 Exif segment")
+
+
 def _fraction(value: object, field: str) -> Fraction:
     if value in (None, "", "N/A", "0/0"):
         raise ValueError(f"ffprobe omitted {field}")
