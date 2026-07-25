@@ -101,10 +101,6 @@ class MainActivity : ComponentActivity() {
         window.decorView.filterTouchesWhenObscured = true
         refreshPermissionState()
 
-        // Debug-only CameraUnit availability check. Query-only, off the main thread; see OcsProbe.
-        // TODO: remove once the 300 mm OIS integration path is settled.
-        Thread { me.hletrd.findx9tele.camera.OcsProbe.run(applicationContext) }.start()
-
         setContent {
             FindX9TeleTheme {
                 val state by vm.state.collectAsState()

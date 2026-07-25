@@ -822,9 +822,12 @@ class CameraEngine(private val context: Context) {
     }
 
     /**
-     * Debug-only Camera2 capability log, queued behind initial camera work and the OEM SDK's startup
-     * log storm. ColorOS rate-limits each process during that burst, which otherwise drops the
-     * concurrent-camera evidence before adb can read it.
+     * Debug-only Camera2 capability log, deliberately queued behind the initial camera work. ColorOS
+     * rate-limits each process (300-row quota) during the cold-start burst, which otherwise drops the
+     * concurrent-camera evidence before adb can read it. The 5 s delay originally ALSO cleared the
+     * OPPO OCS SDK's startup log storm; that SDK was removed 2026-07-25, so the remaining reason is
+     * the camera stack's own burst — shorten the delay only with a device measurement, never by
+     * reasoning from this comment alone.
      */
     private fun maybeLogCameraCapabilities() {
         if (!me.hletrd.findx9tele.BuildConfig.DEBUG) return

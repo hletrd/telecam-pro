@@ -11,9 +11,11 @@ import me.hletrd.findx9tele.BuildConfig
  *
  * Marks are BUFFERED and emitted as ONE line at [finish], never one Log call per milestone. That is
  * not tidiness — it is required on this device: ColorOS enforces a per-process log quota
- * (`LOG_FLOWCTRL: LOGS OVER PROC QUOTA(300) ... DROPPED`, device-observed 2026-07-25) and the OPPO
- * CameraUnit SDK that debug builds pull in through `OcsProbe` burns hundreds of rows during exactly
- * this window, so per-mark logging is silently eaten before it ever reaches logcat.
+ * (`LOG_FLOWCTRL: LOGS OVER PROC QUOTA(300) ... DROPPED`, device-observed 2026-07-25). The 200+-row
+ * offender that made this measurable was the OPPO CameraUnit/OCS SDK the debug build pulled in
+ * through `OcsProbe`; removing it (2026-07-25) bought headroom back but did NOT remove the quota —
+ * it is process-wide, and the camera stack's own cold-start chatter still lands in this window.
+ * Do NOT "simplify" this back to per-mark logging: the marks get silently eaten before logcat.
  *
  * DEBUG-only. [begin] is idempotent per cold start — the FIRST caller wins, so a re-entrant start
  * cannot reset the clock mid-measurement and report a fake-fast number.
