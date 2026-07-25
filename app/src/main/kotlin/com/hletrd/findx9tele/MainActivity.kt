@@ -70,10 +70,32 @@ class MainActivity : ComponentActivity() {
     private val ownedShutterKeys = mutableSetOf<Int>()
     private val ownedHalfPressKeys = mutableSetOf<Int>()
 
+    /**
+     * DEBUG-only shell hook: API 36 rejects adb-shell broadcasts to NOT_EXPORTED receivers
+     * (device-confirmed 2026-07-25 — result=0, enqueued, never delivered), so shell-driven debug
+     * toggles ride intent extras on this exported launcher activity instead. Deliver to the
+     * RUNNING instance with FLAG_ACTIVITY_SINGLE_TOP:
+     *   adb shell am start -n me.hletrd.telecampro.debug/com.hletrd.findx9tele.MainActivity \
+     *       -f 0x20000000 --ez zsl_spike true        # cycle-8 S4a streaming spike on/off
+     *   ... -f 0x20000000 --ef debug_zoom 3.0         # zoom injection (device-test hook)
+     * Inert in release builds (the ViewModel methods re-check BuildConfig.DEBUG).
+     */
+    private fun handleDebugIntent(intent: Intent?) {
+        if (!BuildConfig.DEBUG || intent == null) return
+        if (intent.hasExtra("zsl_spike")) vm.debugSetZslSpike(intent.getBooleanExtra("zsl_spike", false))
+        if (intent.hasExtra("debug_zoom")) vm.debugApplyZoom(intent.getFloatExtra("debug_zoom", -1f))
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleDebugIntent(intent)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        handleDebugIntent(intent)
         // Drop obscured touches before they reach camera/settings/delete consent surfaces. This is
         // Android's view-level tapjacking defense and needs no overlay permission or network access.
         window.decorView.filterTouchesWhenObscured = true

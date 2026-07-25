@@ -440,7 +440,11 @@ class CameraViewModel @JvmOverloads constructor(
         }
         // DEBUG-only app-local zoom injection hook. Keep a receiver reference so ViewModel teardown
         // unregisters it; NOT_EXPORTED prevents arbitrary apps/shell broadcasts from controlling
-        // camera framing while the process is alive.
+        // camera framing while the process is alive. NOTE (device-confirmed 2026-07-25): on API 36
+        // NOT_EXPORTED also rejects adb-shell broadcasts (result=0, enqueued, never delivered), so
+        // shell-driven debugging goes through MainActivity's DEBUG intent-extra hook instead
+        // (`am start ... -f 0x20000000 --ez/-e ...` → debugSetZslSpike/debugApplyZoom below); these
+        // receivers remain for app-internal senders.
         if (com.hletrd.findx9tele.BuildConfig.DEBUG) {
             val receiver = object : android.content.BroadcastReceiver() {
                 override fun onReceive(c: android.content.Context?, i: android.content.Intent?) {
@@ -1299,6 +1303,20 @@ class CameraViewModel @JvmOverloads constructor(
     // glide state lives in the [zoomGlide] holder (declared above init) so every optics-scale remap
     // door invalidates it through the single invalidateZoomGlide() owner (AGG3-51).
 
+
+    // DEBUG shell hooks (called from MainActivity's intent-extra path — the exported launcher
+    // activity is the one component adb `am start` can reach; API 36 blocks shell broadcasts to
+    // the NOT_EXPORTED debug receivers above). Both no-op in release via the callers' DEBUG gate;
+    // the spike additionally re-checks BuildConfig.DEBUG inside CameraController.setZslSpike.
+    internal fun debugSetZslSpike(enabled: Boolean) {
+        if (!com.hletrd.findx9tele.BuildConfig.DEBUG) return
+        engine.setZslSpike(enabled)
+    }
+
+    internal fun debugApplyZoom(ratio: Float) {
+        if (!com.hletrd.findx9tele.BuildConfig.DEBUG) return
+        if (ratio > 0f) applyZoomRatio(ratio)
+    }
 
     private fun applyZoomRatio(ratio: Float): Float {
         val s = _state.value
