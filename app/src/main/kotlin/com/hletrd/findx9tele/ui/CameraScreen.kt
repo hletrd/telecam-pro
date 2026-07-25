@@ -2084,7 +2084,12 @@ private fun ShutterButton(
                 onClick = activate,
             ),
     ) {
-        drawCircle(color = Color.White, radius = size.minDimension / 2f, style = Stroke(width = 4.dp.toPx()))
+        // Inset the ring by half the stroke: a centered stroke at minDimension/2 hangs 2 dp outside
+        // the canvas, and the unhealthy-dim `alpha(0.35f)` forces a clipping composition layer
+        // (alpha < 1 implies clip in Compose) — the overhang got sliced only while dimmed, reading
+        // as a faceted ring on the video shutter (user-reported 2026-07-25).
+        val ringStroke = 4.dp.toPx()
+        drawCircle(color = Color.White, radius = (size.minDimension - ringStroke) / 2f, style = Stroke(width = ringStroke))
         when {
             mode == CaptureMode.PHOTO -> drawCircle(color = Color.White, radius = size.minDimension * 0.38f)
             mode == CaptureMode.VIDEO && !isRecording -> drawCircle(color = CameraColors.Record, radius = size.minDimension * 0.38f)
