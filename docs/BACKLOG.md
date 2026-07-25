@@ -81,6 +81,25 @@ PMA110 and release-artifact evidence is **NOT RUN / pending**.
   correlation 0.992, span ratio ~0.87. Older "Verified" video entries in this file predate this
   finding — their container/codec facts stand, their implied framing does not.
 
+### Landed 2026-07-25 — cycle 8 responsiveness (unit-verified; device evidence PENDING)
+
+Plan: [`plans/2026-07-25-rpf-cycle8.md`](plans/2026-07-25-rpf-cycle8.md); live status in
+`.context/cycle8/status.md`. All slices gate-green (incl. coverage A ≥ 99.5%), device
+verification not yet run:
+
+1. **Preview brightness simulation** — AE-OFF previews ride a 1/15 s fluidity cap
+   (`PREVIEW_FLUIDITY_MAX_EXPOSURE_NS`); the residual shortfall past ISO headroom renders as
+   bounded (≤×16) linear GL gain (`uDigitalGain`); zebra/false-color/scopes/AE meter the
+   simulated still exposure; files and stills untouched; the 500 ms HAL-safety clamp stays outer.
+2. **AE step schedule** — `maxStepStops` = 0.5×|err| in [0.30, 1.20]; big scene changes converge
+   ~2× faster; steady-state smoothness unchanged.
+3. **Macro TOO CLOSE tag** — AF failed/hunting near `LENS_INFO_MINIMUM_FOCUS_DISTANCE` raises a
+   compact amber OSD tag (700 ms hold) with an optional closer-lens suffix.
+4. **Pseudo-ZSL S4a spike (debug-only)** — `DEBUG_ZSL_SPIKE` broadcast streams the full-res
+   logical YUV reader on the repeating request with fps logs (stills refused while on); the S4b
+   pick-latest ring is GATED on this measurement. The ZSL probe found YUV/PRIVATE reprocessing
+   ADVERTISED on cams 0–5 (evidence: `.context/cycle8/zsl-probe-2026-07-25.md`).
+
 ## Before Production
 
 These are manual Play Console operations, not repository implementation work:
@@ -188,6 +207,16 @@ These do not require a code or metadata change unless the result exposes a defec
   a product decision on a separate video session that lacks the current RAW/manual Camera2 surface.
 - **Optional product work:** configurable keep-screen-on, geotagging, custom save locations, slow-
   motion playback metadata, and advanced focus/bracketing workflows.
+- **TELE pseudo-ZSL (cycle-8 deferral):** the ring design targets the LOGICAL photo route only;
+  the standalone TELE keeps its proven HAL-JPEG capture. Extending ZSL there needs a full-res YUV
+  repeating target INSIDE the vendor 0x80b4 session — a session-shape change on the proven TELE
+  path. Reassess only after the S4a streaming-spike evidence and with an explicit session plan.
+- **True ZSL via reprocessable session (cycle-8 deferral):** YUV_REPROCESSING/PRIVATE_REPROCESSING
+  are ADVERTISED on cameras 0–5 (`maxNumInputStreams=1`, YUV/PRIVATE 4096×3072 INPUT → JPEG/YUV;
+  probe: `.context/cycle8/zsl-probe-2026-07-25.md`), but an input stream is a new session shape on
+  a HAL with a record of fatally over-advertising, and the reprocess JPEG output on camera 0 needs
+  the exact blob reader gralloc already rejects there. Debug-gated device spike only, behind an
+  explicit device window.
 - **True wide-field TELE finder (design item, owner decision needed):** the shipped `Loupe Overview`
   assist (default OFF) honestly re-draws the FULL current camera frame — the single
   Camera2 stream already carries the HAL's `CONTROL_ZOOM_RATIO` crop, so no GL work can show a

@@ -194,10 +194,19 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   2026-07-18).** Two independent HAL facts: (1) a multi-second `SENSOR_EXPOSURE_TIME` on the
   REPEATING request wedges the still handoff — the queued still sits inert behind the in-flight
   long frame and the device errors `CAMERA_ERROR(3)` after ~one exposure (shot silently lost,
-  3/3 repro at 6.3 s) — so `previewExposureTrade` unconditionally caps the preview exposure at
-  `PREVIEW_SAFE_MAX_EXPOSURE_NS` (500 ms) in EVERY AE-OFF mode, trading brightness into ISO while
-  headroom lasts (PROGRAM keeps its 1/30 s neutral target; the old trade SKIPPED entirely at the
-  ISO ceiling, which is exactly how 6.3 s reached the wire in the dark). (2) With the repeating
+  3/3 repro at 6.3 s) — so `previewExposureTrade` caps the preview exposure in EVERY AE-OFF mode.
+  Since cycle 8 the cap previews actually ride is the tighter `PREVIEW_FLUIDITY_MAX_EXPOSURE_NS`
+  (1/15 s — a ≥15 fps finder AND ~0.53 s pipeline lag instead of seconds); brightness beyond ISO
+  headroom is a GL PREVIEW brightness simulation, not sensor exposure: the trade returns the
+  residual shortfall (≤×16, `TradedPreviewExposure.digitalGain`) and the preview shader multiplies
+  it in linear light (`uDigitalGain`) — display, zebra/false-color, peaking, scopes, AND the
+  app-side AE meter all read the SIMULATED still exposure (the analysis readback stays unboosted;
+  a 256-entry display LUT is applied CPU-side exactly once — AE metering the dimmed wire preview
+  would ratchet the intended exposure), while files and the STILL request never see any of it.
+  `PREVIEW_SAFE_MAX_EXPOSURE_NS` (500 ms) REMAINS as the outer safety invariant (PROGRAM keeps its
+  1/30 s neutral trade target; the pre-fix trade SKIPPED entirely at the ISO ceiling, which is
+  exactly how 6.3 s reached the wire in the dark). Brightness-sim appearance is
+  DEVICE-VERIFICATION-PENDING (cycle 8). (2) With the repeating
   stream safely short, a STILL request above 4 s STILL errors the device the same way — the
   advertised exposure upper (≥20 s) is a lie; 2/3.2/4 s complete with correct EXIF, 5/6.3 s are
   reproducibly fatal. `HAL_SAFE_MAX_STILL_EXPOSURE_NS` (4 s) clamps the advertised range at the
@@ -286,7 +295,12 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   video-P and AUTO/ON-flash-P on the HAL AE (flash metering needs AE ON). The GL luma readback is
   force-enabled whenever the app-side loop needs it (`gl.setAeMetering`). `autoExposure` is a derived
   `val` (`== PROGRAM && !programAppSide`); the capture path treats all app-side modes identically
-  (AE off, sensor values set) because the loop keeps `iso`/`exposureTimeNs` fresh.
+  (AE off, sensor values set) because the loop keeps `iso`/`exposureTimeNs` fresh. Since cycle 8 the
+  loop's per-tick clamp is ERROR-SCHEDULED (`maxStepStops` = 0.5×|error| in [0.30, 1.20] stops):
+  ≤0.6-stop errors keep the user-tuned 0.30 smoothness ceiling, big scene changes converge in ~9
+  ticks instead of ~17, and steps stay strictly below the remaining error (no overshoot); the loop
+  meters the SIMULATED (gain-compensated) luma so a fluidity-capped dark preview cannot ratchet the
+  intended exposure.
 - **Controls apply is a THROTTLE, not a debounce.** `CameraViewModel.updateControls` applies the newest
   value every 40 ms (25 Hz) *while* a gesture continues (a debounce starved: continuous pinch reset the
   timer so zoom only landed on finger-up; the earlier 80 ms window quantized the hardware slide-zoom
