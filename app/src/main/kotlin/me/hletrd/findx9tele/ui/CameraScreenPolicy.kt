@@ -87,6 +87,31 @@ internal fun constrainedRotatedLayoutBounds(
     )
 }
 
+/**
+ * True once [degrees] is past the 45° crossover, i.e. the rotated child's own width axis now runs
+ * mostly along the PARENT'S height. Same |sin| > |cos| crossover [rotatedLayoutBounds] already
+ * turns on, so the measure axis flips exactly where the reserved AABB does.
+ */
+internal fun rotatedMeasureAxisSwapped(degrees: Float): Boolean {
+    if (!degrees.isFinite()) return false
+    val radians = Math.toRadians(((degrees.toDouble() % 360.0) + 360.0) % 360.0)
+    return abs(sin(radians)) > abs(cos(radians))
+}
+
+/**
+ * The child's own measurement space when its draw is quarter-turned: a rotated `Text`'s glyph run
+ * extends along the parent's HEIGHT, but Compose still ellipsizes it against whatever maxWidth it
+ * was measured with. Held-landscape Fn tiles are ~42 dp wide and ~58 dp tall, so measuring the
+ * rotated value against the tile's WIDTH truncated exactly the readouts (shutter, ISO) the tray
+ * exists to show. Swapping is min/max-safe: min<=max holds per axis, so the swapped pair is valid.
+ */
+internal fun swappedMeasureConstraints(constraints: Constraints): Constraints = Constraints(
+    minWidth = constraints.minHeight,
+    maxWidth = constraints.maxHeight,
+    minHeight = constraints.minWidth,
+    maxHeight = constraints.maxWidth,
+)
+
 internal fun showHalfPressLabel(
     active: Boolean,
     action: HardwareKeyAction,
@@ -191,8 +216,11 @@ internal fun fnOverlayVisualLabel(slot: FnSlot, heldLandscape: Boolean): String 
 internal fun fnOverlayVisualValue(slot: FnSlot, value: String, heldLandscape: Boolean): String {
     if (!heldLandscape) return value
     return when (slot) {
-        FnSlot.SHUTTER -> value.removePrefix("A ")
-        FnSlot.ISO -> value.replaceFirst("A ", "A")
+        // fnSlotValue emits "Auto 1/60s" / "Auto 12750" — never "A 1/60". The old "A " prefixes
+        // matched nothing, so BOTH branches were no-ops in production and the two most-consulted
+        // readouts ellipsized in the 148 dp held tray. Keep the auto MARKER (whether the shutter is
+        // auto-driven is exactly what a photographer reads here) but spend one character on it.
+        FnSlot.SHUTTER, FnSlot.ISO -> value.replaceFirst("Auto ", "A")
         FnSlot.WB -> when (value) {
             "Daylight" -> "Day"
             "Tungsten" -> "Tung."

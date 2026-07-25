@@ -972,7 +972,14 @@ private fun Modifier.rotateLayout(degrees: Float): Modifier = this
     // unrotated child's bounds instead of the constraint-valid rotated slot.
     .clipToBounds()
     .layout { measurable, constraints ->
-        val placeable = measurable.measure(constraints)
+        // Measure on the axis the child's own width will RUN along after the rotation. Past the 45°
+        // crossover that is the parent's height, and measuring against the parent's width instead
+        // is what ellipsized the held-landscape Fn readouts inside a tile that had ample room along
+        // its long side. The AABB below still uses the ORIGINAL constraints — the reserved slot has
+        // to satisfy the parent, only the child's own measurement space turns with it.
+        val childConstraints =
+            if (rotatedMeasureAxisSwapped(degrees)) swappedMeasureConstraints(constraints) else constraints
+        val placeable = measurable.measure(childConstraints)
         val bounds = constrainedRotatedLayoutBounds(
             widthPx = placeable.width,
             heightPx = placeable.height,

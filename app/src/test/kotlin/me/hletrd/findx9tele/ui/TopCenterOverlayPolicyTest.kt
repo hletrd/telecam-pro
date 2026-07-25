@@ -103,4 +103,35 @@ class TopCenterOverlayPolicyTest {
             assertFalse(action.name, showHalfPressLabel(active = false, action, tapFocusHeld = true))
         }
     }
+
+    @Test
+    fun `the measure axis turns with the child at the same 45 degree crossover as the bounds`() {
+        // Below the crossover the child still measures on the parent's width.
+        listOf(0f, 30f, 44f, 180f, 360f, -30f).forEach {
+            assertFalse("degrees=$it", rotatedMeasureAxisSwapped(it))
+        }
+        // Past it the rotated glyph run extends along the parent's height.
+        listOf(46f, 90f, 120f, 270f, -90f, 450f).forEach {
+            assertTrue("degrees=$it", rotatedMeasureAxisSwapped(it))
+        }
+        // Exactly 45 degrees is square: neither axis dominates, so nothing swaps.
+        assertFalse(rotatedMeasureAxisSwapped(45f))
+        assertFalse(rotatedMeasureAxisSwapped(Float.NaN))
+    }
+
+    @Test
+    fun `swapped measure constraints exchange both bounds per axis and stay valid`() {
+        val swapped = swappedMeasureConstraints(
+            Constraints(minWidth = 10, maxWidth = 120, minHeight = 20, maxHeight = 160),
+        )
+        assertEquals(20, swapped.minWidth)
+        assertEquals(160, swapped.maxWidth)
+        assertEquals(10, swapped.minHeight)
+        assertEquals(120, swapped.maxHeight)
+        // An unbounded axis survives the swap rather than collapsing to a finite maximum.
+        val unbounded = swappedMeasureConstraints(Constraints(maxWidth = 100))
+        assertTrue(unbounded.hasBoundedHeight)
+        assertEquals(100, unbounded.maxHeight)
+        assertFalse(unbounded.hasBoundedWidth)
+    }
 }

@@ -1,7 +1,9 @@
 package me.hletrd.findx9tele.ui
 
+import me.hletrd.findx9tele.camera.CameraUiState
 import me.hletrd.findx9tele.camera.CaptureMode
 import me.hletrd.findx9tele.camera.FnSlot
+import me.hletrd.findx9tele.ui.controls.fnSlotValue
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -174,9 +176,21 @@ class FnOverlayPolicyTest {
         assertEquals("Steady", fnOverlayVisualLabel(FnSlot.STABILIZATION, true))
         assertEquals("Gate", fnOverlayVisualLabel(FnSlot.OPEN_GATE, true))
 
-        assertEquals("A 12750", fnOverlayVisualValue(FnSlot.ISO, "A 12750", false))
-        assertEquals("A12750", fnOverlayVisualValue(FnSlot.ISO, "A 12750", true))
-        assertEquals("1/60", fnOverlayVisualValue(FnSlot.SHUTTER, "A 1/60", true))
+        // Feed the strings fnSlotValue ACTUALLY emits, never hand-written ones: the previous
+        // literals ("A 12750" / "A 1/60") were the only inputs the old "A " prefixes matched, so
+        // the test passed while both branches were dead in production.
+        val autoIso = fnSlotValue(FnSlot.ISO, CameraUiState())
+        val autoShutter = fnSlotValue(FnSlot.SHUTTER, CameraUiState())
+        assertTrue("expected an Auto-prefixed ISO value, got $autoIso", autoIso.startsWith("Auto "))
+        assertTrue("expected an Auto-prefixed shutter value, got $autoShutter", autoShutter.startsWith("Auto "))
+        assertEquals(autoIso, fnOverlayVisualValue(FnSlot.ISO, autoIso, false))
+        assertEquals("A" + autoIso.removePrefix("Auto "), fnOverlayVisualValue(FnSlot.ISO, autoIso, true))
+        assertEquals(
+            "A" + autoShutter.removePrefix("Auto "),
+            fnOverlayVisualValue(FnSlot.SHUTTER, autoShutter, true),
+        )
+        // A manual (non-auto) value has no marker to compact and passes through untouched.
+        assertEquals("1/250s", fnOverlayVisualValue(FnSlot.SHUTTER, "1/250s", true))
         assertEquals("Std", fnOverlayVisualValue(FnSlot.STABILIZATION, "Standard", true))
         assertEquals("Focus", fnOverlayVisualValue(FnSlot.AUDIO_SCENE, "Sound Focus", true))
         assertEquals("300mm", fnOverlayVisualValue(FnSlot.TELECONVERTER, "300 mm", true))
