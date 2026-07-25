@@ -3,6 +3,7 @@ package me.hletrd.findx9tele.ui.controls
 import me.hletrd.findx9tele.camera.AspectRatio
 import me.hletrd.findx9tele.camera.AudioScene
 import me.hletrd.findx9tele.camera.CameraUiState
+import me.hletrd.findx9tele.camera.CaptureMode
 import me.hletrd.findx9tele.camera.ColorTransfer
 import me.hletrd.findx9tele.camera.DriveMode
 import me.hletrd.findx9tele.camera.ExposureMode
@@ -257,5 +258,42 @@ class ControlCyclesTest {
             ),
             1e-6f,
         )
+    }
+
+    @Test
+    fun `video narrows the flash button to the lamp and reads a leftover metering mode as off`() {
+        val advertised = listOf(FlashMode.OFF, FlashMode.AUTO, FlashMode.ON, FlashMode.TORCH)
+        assertEquals(advertised, flashChoicesFor(CaptureMode.PHOTO, advertised))
+        assertEquals(
+            listOf(FlashMode.OFF, FlashMode.TORCH),
+            flashChoicesFor(CaptureMode.VIDEO, advertised),
+        )
+        // A route with no lamp offers nothing to cycle in video, so the button stays disabled.
+        assertEquals(
+            listOf(FlashMode.OFF),
+            flashChoicesFor(CaptureMode.VIDEO, listOf(FlashMode.OFF)),
+        )
+        // controls.flash survives the mode switch: AUTO/ON must READ as off in video, TORCH as torch.
+        assertEquals(FlashMode.OFF, flashDisplayMode(CaptureMode.VIDEO, FlashMode.AUTO))
+        assertEquals(FlashMode.OFF, flashDisplayMode(CaptureMode.VIDEO, FlashMode.ON))
+        assertEquals(FlashMode.TORCH, flashDisplayMode(CaptureMode.VIDEO, FlashMode.TORCH))
+        assertEquals(FlashMode.AUTO, flashDisplayMode(CaptureMode.PHOTO, FlashMode.AUTO))
+        // One tap from the displayed value reaches the lamp rather than an unreachable AUTO.
+        assertEquals(
+            FlashMode.TORCH,
+            nextAvailable(
+                flashDisplayMode(CaptureMode.VIDEO, FlashMode.AUTO),
+                flashChoicesFor(CaptureMode.VIDEO, advertised),
+            ),
+        )
+    }
+
+    @Test
+    fun `the grid toggle restores the last non-default grid instead of collapsing to thirds`() {
+        assertEquals(GridType.NONE, toggledGridType(GridType.GOLDEN, GridType.GOLDEN))
+        assertEquals(GridType.GOLDEN, toggledGridType(GridType.NONE, GridType.GOLDEN))
+        assertEquals(GridType.CENTER, toggledGridType(GridType.NONE, GridType.CENTER))
+        // First-ever use (nothing remembered yet) still lands on the documented default.
+        assertEquals(GridType.THIRDS, toggledGridType(GridType.NONE, GridType.NONE))
     }
 }

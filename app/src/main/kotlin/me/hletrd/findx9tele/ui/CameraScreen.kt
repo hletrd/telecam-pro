@@ -59,6 +59,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -153,12 +154,16 @@ import me.hletrd.findx9tele.ui.controls.ProSheet
 import me.hletrd.findx9tele.ui.controls.ProSheetTab
 import me.hletrd.findx9tele.ui.controls.aspectRatioLabel
 import me.hletrd.findx9tele.ui.controls.exposureMeterCompensationEv
+import me.hletrd.findx9tele.ui.controls.flashChoicesFor
+import me.hletrd.findx9tele.ui.controls.flashDisplayMode
 import me.hletrd.findx9tele.ui.controls.nextAspect
 import me.hletrd.findx9tele.ui.controls.nextAvailable
 import me.hletrd.findx9tele.ui.controls.nextTimer
+import me.hletrd.findx9tele.ui.controls.toggledGridType
 import me.hletrd.findx9tele.ui.controls.quickFnEnabled
 import me.hletrd.findx9tele.ui.controls.flashModeLabel
 import me.hletrd.findx9tele.ui.controls.fnSlotLabel
+import me.hletrd.findx9tele.ui.controls.gridTypeLabel
 import me.hletrd.findx9tele.ui.controls.fnSlotValue
 import me.hletrd.findx9tele.ui.controls.manualDialForFnSlot
 import me.hletrd.findx9tele.ui.controls.manualDialTransition
@@ -997,6 +1002,11 @@ private fun TopBar(
         controlAvailability(state.caps?.controlCapabilities(), state.controls)
     }
     val topBarScroll = rememberScrollState()
+    // The grid toggle is two-state but the setting is five-state: remember what "on" meant so an
+    // off→on round trip restores GOLDEN/SQUARE/CENTER instead of collapsing every choice to THIRDS.
+    // Session-scoped on purpose — the grid TYPE itself is the persisted value (SettingsStore).
+    var lastActiveGrid by rememberSaveable { mutableStateOf(GridType.THIRDS) }
+    LaunchedEffect(state.grid) { if (state.grid != GridType.NONE) lastActiveGrid = state.grid }
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -1015,11 +1025,19 @@ private fun TopBar(
             // Compact circular glyphs counter-rotate to stay upright as the phone turns (iPhone-style);
             // the TELE chip is wide text, so it stays fixed to avoid poking out of its slot.
             val glyphSpin = Modifier.rotate(glyphRotation)
-            if (state.mode == CaptureMode.PHOTO && (!compact || state.controls.flash != FlashMode.OFF)) {
+            // Flash lives in BOTH modes: torch is a video light and rides the repeating request
+            // identically, but the button used to be gated to PHOTO and there is no FLASH Fn slot
+            // or menu row — so a video light was unreachable AND unindicated, and a TORCH left over
+            // from photo stayed lit with no control. flashChoicesFor narrows video to OFF/TORCH
+            // (AE flash metering is still-only) and flashDisplayMode makes a leftover AUTO/ON read
+            // as OFF there instead of claiming a metering mode video can never use.
+            val flashChoices = flashChoicesFor(state.mode, availability.flashModes)
+            val flashDisplay = flashDisplayMode(state.mode, state.controls.flash)
+            if (!compact || flashDisplay != FlashMode.OFF) {
                 FlashButton(
-                    mode = state.controls.flash,
-                    onClick = { actions.onFlash(nextAvailable(state.controls.flash, availability.flashModes)) },
-                    enabled = !recordingLocked && availability.flashModes.size > 1,
+                    mode = flashDisplay,
+                    onClick = { actions.onFlash(nextAvailable(flashDisplay, flashChoices)) },
+                    enabled = !recordingLocked && flashChoices.size > 1,
                     modifier = glyphSpin,
                 )
             }
@@ -1041,8 +1059,8 @@ private fun TopBar(
             }
             if (!compact) {
                 GridButton(
-                    active = state.grid != GridType.NONE,
-                    onClick = { actions.onGridType(if (state.grid == GridType.NONE) GridType.THIRDS else GridType.NONE) },
+                    type = state.grid,
+                    onClick = { actions.onGridType(toggledGridType(state.grid, lastActiveGrid)) },
                     modifier = glyphSpin,
                 )
             }
@@ -1244,9 +1262,17 @@ private fun AspectButton(ratio: AspectRatio, onClick: () -> Unit, modifier: Modi
 }
 
 @Composable
-private fun GridButton(active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun GridButton(type: GridType, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val active = type != GridType.NONE
     val color = if (active) CameraColors.TextPrimary else CameraColors.TextSecondary
-    ChromeIconButton(onClick = onClick, contentDescription = if (active) "Grid on" else "Grid off", modifier = modifier) {
+    // Name the grid, not just on/off: the glyph draws thirds whichever type is active, so "Grid on"
+    // told a TalkBack user nothing about which of the five is framing their shot.
+    ChromeIconButton(
+        onClick = onClick,
+        contentDescription = "Grid",
+        stateDescription = gridTypeLabel(type),
+        modifier = modifier,
+    ) {
         Canvas(Modifier.size(16.dp)) {
             val sw = 1.2.dp.toPx()
             drawRect(color, topLeft = Offset.Zero, size = this.size, style = Stroke(width = sw))

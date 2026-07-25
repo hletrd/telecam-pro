@@ -347,7 +347,9 @@ class CameraViewModel @JvmOverloads constructor(
             Log.i(
                 "FocusConfidence",
                 "candidate=$candidate afLimit=$afLimit frameDetail=$frameDetail " +
-                    "verdict=${lastFocusDetail?.verdict} ageMs=" +
+                    "verdict=${lastFocusDetail?.verdict} tiles=${lastFocusDetail?.judgeableTiles}" +
+                    "/${lastFocusDetail?.totalTiles} soft=${lastFocusDetail?.softTiles} " +
+                    "bestRatio=${lastFocusDetail?.bestRatio} ageMs=" +
                     (if (lastFocusDetail == null) -1L else now - lastFocusDetailAtMs) +
                     " af=${s.afIndication} focusMode=${s.controls.focusMode}" +
                     " expNs=${s.liveExposureNs} handheldNs=${preferredProgramShutterNs(s)}",

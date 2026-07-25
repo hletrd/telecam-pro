@@ -100,6 +100,18 @@ internal fun nextGridType(type: GridType): GridType = when (type) {
     GridType.CENTER -> GridType.NONE
 }
 
+/**
+ * What the top-bar grid TOGGLE should apply. It is a two-state control (on/off) sitting next to a
+ * five-state Fn cycle and an AssistsTab picker, and it used to hardcode THIRDS on the way back on —
+ * so one off→on round trip silently destroyed a GOLDEN/SQUARE/CENTER choice. Restore the last
+ * non-NONE type instead; THIRDS remains the first-ever default.
+ */
+internal fun toggledGridType(current: GridType, lastActive: GridType): GridType = when {
+    current != GridType.NONE -> GridType.NONE
+    lastActive != GridType.NONE -> lastActive
+    else -> GridType.THIRDS
+}
+
 internal fun nextFrameLine(type: FrameLineType): FrameLineType = when (type) {
     FrameLineType.OFF -> FrameLineType.CINEMA
     FrameLineType.CINEMA -> FrameLineType.SQUARE
@@ -163,6 +175,25 @@ internal fun nextFlashMode(mode: FlashMode): FlashMode = when (mode) {
     FlashMode.ON -> FlashMode.TORCH
     FlashMode.TORCH -> FlashMode.OFF
 }
+
+/**
+ * The flash choices the top-bar button offers in [mode], narrowed from the route's advertised list.
+ * VIDEO has no AE flash metering to drive, so only the constant lamp (the video light) is
+ * meaningful there — AUTO/ON are still-only. Torch itself is mode-agnostic on the wire
+ * (`FLASH_MODE_TORCH` on the repeating request), which is why video had a working light and no way
+ * to reach it: the button was gated to PHOTO and there is no FLASH Fn slot or menu row.
+ */
+internal fun flashChoicesFor(mode: CaptureMode, advertised: List<FlashMode>): List<FlashMode> =
+    if (mode == CaptureMode.PHOTO) advertised
+    else advertised.filter { it == FlashMode.OFF || it == FlashMode.TORCH }
+
+/**
+ * What the button REPRESENTS in [mode]. `controls.flash` survives a mode switch, so an AUTO/ON left
+ * over from photo must read (and cycle) as OFF in video rather than claiming a metering mode video
+ * can never use.
+ */
+internal fun flashDisplayMode(mode: CaptureMode, flash: FlashMode): FlashMode =
+    if (mode == CaptureMode.PHOTO || flash == FlashMode.TORCH) flash else FlashMode.OFF
 
 internal fun nextTimer(timer: ShutterTimer): ShutterTimer = when (timer) {
     ShutterTimer.OFF -> ShutterTimer.SEC3
