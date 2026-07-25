@@ -4,10 +4,14 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 ## Upload Artifact
 
-> **UPLOAD-READY (2026-07-25).** The PMA110 release device matrix PASSED on the post-chrome-fix
-> build, and the final signed artifacts below (rebuilt from main incl. the draw-only 055bc04 ring
-> inset; matrix explicitly not re-required for it) passed every artifact check. Upload the AAB whose
-> SHA-256 matches this sheet exactly — regenerate this block if the source moves again.
+> **UPLOAD-READY (2026-07-25, final).** Built from the dedicated release worktree at 9541697 —
+> includes the device-CONFIRMED capture-rotation sign fix (a209830; landscape-held stills saved
+> 180° rotated before it) and the draw-only ring inset (055bc04); cycle-8 responsiveness work is
+> deliberately EXCLUDED from v1. Evidence basis: the full release matrix passed on the same source
+> lineage, and the rotation fix itself was device-verified by the held-orientation still matrix
+> (rear portrait + both rear landscape directions + front portrait + front landscape, all upright).
+> Upload the AAB whose SHA-256 matches this sheet exactly — regenerate this block if the source
+> moves again.
 
 - Signed Android App Bundle:
   `app/build/outputs/bundle/release/app-release.aab`
@@ -20,12 +24,14 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 Do not upload debug APKs or any unsigned/stale release bundle.
 
-### Final v1 upload artifacts (built + verified 2026-07-25, from main incl. 07000f8 + 055bc04)
+### Final v1 upload artifacts (built + verified 2026-07-25 from release worktree @ 9541697)
 
+- Artifact location: `.claude/worktrees/release-v1/app/build/outputs/bundle/release/app-release.aab`
 - AAB SHA-256 (signed with the regenerated upload key):
-  `7339e00de9032157ae0cb8b9af99b12cab40c648c7b07ff50b630b4f979fa39f`
+  `a737483fb621b0d64b5859976b126fbc513960b0755ed38f641d202fd1f8f2b2`
 - Matching release APK SHA-256:
-  `0697c687cd3cdbe4f13a76604e0922e775032d77aee03af69d2ff1607c234eaf`
+  `8efa65e25d94991b4a9cb3e4c9aa59bde86fa72f15efb27dd00344bb94360995`
+- Superseded same-day candidates (do not upload): AAB `7339e00d…` / `b45a3b8e…` (pre-rotation-fix).
 - `bundletool 1.18.3 validate`: passed; AAB `jarsigner -verify`: verified
 - APK signing: v2 signature valid, 1 signer, certificate matches the upload certificate above
 - APK alignment: 16 KiB zip alignment passed (`zipalign -c -P 16 4`)
