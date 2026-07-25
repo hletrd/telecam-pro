@@ -1067,6 +1067,7 @@ private fun TopBar(
                 onClick = actions::onToggleFrontCamera,
                 enabled = !recordingLocked,
                 modifier = Modifier.rotate(glyphRotation),
+                frontFacing = state.facing == CameraFacing.FRONT,
             )
             DispButton(active = compact, onClick = onToggleDisp, modifier = Modifier.rotate(glyphRotation))
             GearButton(onClick = onOpenSheet, modifier = Modifier.rotate(glyphRotation))
@@ -1124,6 +1125,7 @@ private fun ChromeIconButton(
     contentDescription: String,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    stateDescription: String? = null,
     content: @Composable BoxScope.() -> Unit,
 ) {
     val activate = onClick
@@ -1134,6 +1136,10 @@ private fun ChromeIconButton(
             .focusable()
             .clearAndSetSemantics {
                 this.contentDescription = contentDescription
+                // Optional: for the chrome buttons whose glyph does not name the state it is IN
+                // (the flip button's arrows look the same on either camera), the state has to be
+                // spoken separately — clearAndSetSemantics drops anything the children exported.
+                stateDescription?.let { this.stateDescription = it }
                 role = Role.Button
                 if (!enabled) disabled()
                 onClick {
@@ -1307,8 +1313,21 @@ private fun TeleChip(active: Boolean, onClick: () -> Unit, modifier: Modifier = 
 
 /** Standard camera-flip glyph: two half-circle arrows chasing each other (front/rear switch). */
 @Composable
-private fun FlipCameraButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
-    ChromeIconButton(onClick = onClick, contentDescription = "Switch camera", modifier = modifier, enabled = enabled) {
+private fun FlipCameraButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    frontFacing: Boolean = false,
+) {
+    ChromeIconButton(
+        onClick = onClick,
+        contentDescription = "Switch camera",
+        modifier = modifier,
+        enabled = enabled,
+        // The glyph is the same on both cameras, so without this a TalkBack user has no way at all
+        // to tell which camera is live — and entering FRONT silently forces the teleconverter off.
+        stateDescription = if (frontFacing) "Front camera" else "Rear camera",
+    ) {
         Canvas(Modifier.size(18.dp)) {
             val color = CameraColors.TextPrimary.copy(alpha = if (enabled) 1f else 0.38f)
             val sw = 1.4.dp.toPx()

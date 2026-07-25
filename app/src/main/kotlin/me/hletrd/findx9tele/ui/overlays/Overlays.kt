@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import me.hletrd.findx9tele.camera.AfIndication
 import me.hletrd.findx9tele.camera.AspectRatio
+import me.hletrd.findx9tele.camera.CameraFacing
 import me.hletrd.findx9tele.camera.CameraUiState
 import me.hletrd.findx9tele.camera.CaptureMode
 import me.hletrd.findx9tele.camera.ColorTransfer
@@ -375,6 +376,10 @@ fun AudioMeter(level: Float, modifier: Modifier = Modifier) {
  */
 internal fun compactShootingStatusVisible(state: CameraUiState): Boolean =
     state.activeMemorySlot != null ||
+        // FRONT changes what the app IS (the teleconverter is forced off, the tele chip and focal
+        // rail disappear). Sighted users read it from the vanished chrome and the mirrored image;
+        // without a tag there was no readout of it at all, and no non-visual way to know.
+        state.facing == CameraFacing.FRONT ||
         state.mode == CaptureMode.VIDEO ||
         (state.mode == CaptureMode.PHOTO && compactPhotoFormatLabel(state) != null) ||
         (state.mode == CaptureMode.PHOTO && state.driveMode != DriveMode.SINGLE) ||
@@ -453,6 +458,11 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
         }
         state.activeMemorySlot?.let {
             Text(it.label, color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+        }
+        // Facing: the one state that changes what the app is for. Rear is the norm and stays
+        // untagged (UX_POLICY: keep the viewfinder quiet); FRONT is the exception and says so.
+        if (state.facing == CameraFacing.FRONT) {
+            Text("FRONT", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
         }
         if (state.mode == CaptureMode.VIDEO) {
             if (!compact) {

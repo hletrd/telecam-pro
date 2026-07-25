@@ -1,5 +1,6 @@
 package me.hletrd.findx9tele.ui.overlays
 
+import me.hletrd.findx9tele.camera.CameraFacing
 import me.hletrd.findx9tele.camera.CameraUiState
 import me.hletrd.findx9tele.camera.CaptureMode
 import me.hletrd.findx9tele.camera.ColorTransfer
@@ -35,6 +36,8 @@ class CompactStatusVisibilityTest {
             // so a tag that only shows when another tag is up is a tag that never shows.
             "focus confidence (AF limit)" to base.copy(focusConfidence = FocusConfidenceSource.AF_LIMIT),
             "focus confidence (frame detail)" to base.copy(focusConfidence = FocusConfidenceSource.FRAME_DETAIL),
+            // Facing is the one state that changes what the app is for; rear stays untagged.
+            "front camera" to base.copy(facing = CameraFacing.FRONT),
         )
         cases.forEach { (label, state) -> assertTrue(label, compactShootingStatusVisible(state)) }
     }
