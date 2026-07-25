@@ -1,24 +1,36 @@
 package me.hletrd.findx9tele.focus
 
 import me.hletrd.findx9tele.camera.AfIndication
+import me.hletrd.findx9tele.camera.FocusConfidenceSource
 import me.hletrd.findx9tele.camera.FocusMode
+import me.hletrd.findx9tele.camera.FrameDetail
 import me.hletrd.findx9tele.camera.LensChoice
 import me.hletrd.findx9tele.camera.LensExifMetadata
 import kotlin.math.abs
 
 /**
- * Macro too-close detection (cycle 8). Camera2 exposes no "subject inside minimum focus distance"
- * signal, so this is a heuristic: AF has given a non-FOCUSED verdict (FAILED, or still SCANNING —
- * a genuine too-close subject often keeps CONTINUOUS AF hunting forever instead of failing) while
- * the lens sits racked near its close limit (LENS_FOCUS_DISTANCE ≥ ~85% of
- * LENS_INFO_MINIMUM_FOCUS_DISTANCE). Both are already live in CameraUiState; the hold below turns
- * the flickery instantaneous signal into a stable OSD tag per UX_POLICY (quiet viewfinder — a
- * compact "TOO CLOSE" tag in the OSD row, never a banner/toast).
+ * Focus-confidence detection: the OSD's one honest statement about whether the viewfinder is
+ * resolving the subject. TWO independent proofs feed one tag, one hold, one OSD slot.
  *
- * HONESTY (device-observed 2026-07-25): the heuristic is deliberately conservative — it can MISS,
- * it must never false-fire. This HAL can false-lock FOCUSED on a featureless surface at point
- * blank (contrast AF has nothing to judge), and a FOCUSED verdict correctly shows no tag; the tag
- * only appears when AF itself admits it cannot resolve the subject.
+ * 1. [macroTooCloseCandidate] (cycle 8, AF_LIMIT) — AF gave a non-FOCUSED verdict while the lens
+ *    sat racked near its close limit (LENS_FOCUS_DISTANCE ≥ ~85% of
+ *    LENS_INFO_MINIMUM_FOCUS_DISTANCE). That really does prove the subject is inside the minimum
+ *    focus distance, so it may say TOO CLOSE and may advise a closer-focusing lens.
+ * 2. [frameDefocusCandidate] (cycle 9, FRAME_DETAIL) — the app's own pixels resolved no fine
+ *    detail (gl/FocusDetail.kt). Proves only "unresolved", so it says SOFT and advises nothing.
+ *
+ * WHY BOTH (device-measured 2026-07-25, PMA110): with a subject ~9 cm away on the TELE route
+ * (advertised minimum focus 120 cm) the preview is completely defocused, yet the HAL reports
+ * `afState = FOCUSED_LOCKED` with `LENS_FOCUS_DISTANCE = 0.0068` diopters — racked to INFINITY.
+ * It neither admits failure nor racks near, so proof 1 is structurally unreachable on this device.
+ * Proof 1 is nonetheless KEPT: it is a strictly stronger claim and remains live on routes whose AF
+ * is honest (this device's other rear lenses advertise 6.67 dpt / 15 cm, one ultrawide 25 dpt /
+ * 4 cm), and it would be a bad trade to delete a strong proof because one lens lies.
+ *
+ * HONESTY: both are deliberately conservative — they MAY MISS, they must NEVER false-fire. A
+ * FOCUSED verdict on a featureless surface correctly shows no tag; so does a frame the detail
+ * metric cannot judge. Per UX_POLICY this is one compact amber tag in the OSD row, in the same
+ * register as AEL/AFL/LOUPE — never a banner, chip, or coach mark.
  */
 
 /** Fraction of the min-focus diopter limit the lens must exceed to count as "racked near it". */
@@ -47,24 +59,137 @@ internal fun macroTooCloseCandidate(
         liveFocusDiopters >= minFocusDiopters * MACRO_NEAR_LIMIT_RATIO &&
         (afIndication == AfIndication.FAILED || afIndication == AfIndication.SCANNING)
 
-/**
- * Debounce/hold for the candidate signal: TRUE only after the candidate has persisted [holdMs]
- * (injected clock — host-testable), FALSE the instant it clears. Single-thread confined (main).
- */
-internal class MacroProximityHold(private val holdMs: Long = MACRO_HOLD_MS) {
-    private var candidateSinceMs: Long? = null
+/** Newest frame-detail statistics older than this cannot speak for the live preview. */
+internal const val FOCUS_DETAIL_MAX_AGE_MS = 1_000L
 
-    fun update(candidate: Boolean, nowMs: Long): Boolean {
-        if (!candidate) {
-            candidateSinceMs = null
-            return false
+/**
+ * Multiple of the handheld-rule shutter above which an analysed frame's own motion blur becomes
+ * indistinguishable from defocus, so the detail proof is refused.
+ *
+ * Conservative on purpose. The handheld rule targets roughly one circle of confusion (~3 px at 4K)
+ * while the detail metric's floor is ~200 sensor px, so physics only makes the two ambiguous around
+ * ~50x — refusing at 16x refuses about 3x earlier than required. It lands where it matters:
+ * PREVIEW_FLUIDITY_MAX_EXPOSURE_NS caps the finder at 1/15 s, and 16x the 3.33 ms rule at 300 mm is
+ * ~53 ms, so the detector is refused across exactly the dark-preview regime where a hand-held
+ * 300 mm frame is smeared anyway (and where the metric's own noise suppression has already given
+ * up).
+ */
+internal const val FOCUS_DETAIL_MAX_SHUTTER_FACTOR = 16L
+
+/**
+ * The instantaneous FRAME_DETAIL signal, before the hold. [FrameDetail.SOFT] is necessary and
+ * nowhere near sufficient; every gate below removes a state in which unresolved detail has a
+ * legitimate cause other than "the viewfinder is not resolving the subject".
+ *
+ * @param detail newest frame verdict, null before the first analysis frame.
+ * @param detailAgeMs age of that verdict. Covers Not-Ready, a paused/dead GL generation, and a
+ *   preview that simply stopped delivering real frames — all of which freeze [detail] at its last
+ *   value with nothing else to notice.
+ * @param exposureNs the exposure the ANALYSED FRAME actually rode, i.e. result metadata
+ *   (`CameraUiState.liveExposureNs`), NOT `controls.effectiveExposureNs()`. previewExposureTrade
+ *   caps the preview at 1/15 s while the intended STILL exposure can be seconds; gating on intent
+ *   would wrongly refuse the detector whenever a long still was dialled in.
+ */
+internal fun frameDefocusCandidate(
+    detail: FrameDetail?,
+    detailAgeMs: Long,
+    focusMode: FocusMode,
+    afIndication: AfIndication,
+    recording: Boolean,
+    recordingStarting: Boolean,
+    zoomInteracting: Boolean,
+    exposureNs: Long?,
+    handheldShutterNs: Long,
+): Boolean {
+    // Only SOFT may arm. UNJUDGEABLE is NOT weak evidence — it is the metric declining to speak.
+    if (detail != FrameDetail.SOFT) return false
+    if (detailAgeMs < 0L || detailAgeMs > FOCUS_DETAIL_MAX_AGE_MS) return false
+    // MANUAL focus: the user owns the distance, and deliberate defocus is a creative state.
+    // AUTO/CONTINUOUS/MACRO all admit — a MACRO mode that still cannot resolve is worth saying.
+    if (focusMode == FocusMode.MANUAL) return false
+    // A lens mid-sweep is defocused BY DESIGN. Note this INVERTS the AF_LIMIT predicate, which
+    // treats persistent scanning as evidence. Because a refusal also resets the hold, the 700 ms
+    // window only begins after the scan ends — which doubles as the mechanical/ISP settle wait,
+    // so there is no second timer to get wrong and the tag cannot blink through every AF hunt.
+    if (afIndication == AfIndication.SCANNING) return false
+    // The OSD must not grow an element mid-take, and panning during REC is exactly when the
+    // motion-blur ambiguity is worst. ARMED video (neither flag) admits — that is where it helps.
+    if (recording || recordingStarting) return false
+    // Each throttled HAL zoom submit gaps this stream ~180 ms and the HAL re-converges afterwards,
+    // producing genuinely soft REAL frames that say nothing about the subject distance.
+    if (zoomInteracting) return false
+    val exposure = exposureNs ?: return false
+    if (exposure <= 0L) return false
+    return exposure <= handheldShutterNs.coerceAtLeast(1L) * FOCUS_DETAIL_MAX_SHUTTER_FACTOR
+}
+
+/**
+ * The two proofs, OR-ed, with AF_LIMIT winning: it establishes strictly more (an actual distance
+ * relation), so when both hold the stronger wording is the truthful one.
+ */
+internal fun focusConfidenceCandidate(
+    afLimit: Boolean,
+    frameDetail: Boolean,
+): FocusConfidenceSource? = when {
+    afLimit -> FocusConfidenceSource.AF_LIMIT
+    frameDetail -> FocusConfidenceSource.FRAME_DETAIL
+    else -> null
+}
+
+/**
+ * Debounce/hold for the candidate signal: the source is published only after it has persisted
+ * [holdMs] (injected clock — host-testable), and cleared the instant it goes away. Single-thread
+ * confined (main).
+ *
+ * Latches a VALUE, not a boolean: a change of source re-arms from zero, so an interval that only
+ * ever proved AF_LIMIT cannot donate its elapsed time to a later FRAME_DETAIL interval (they are
+ * different claims and would print different text).
+ */
+internal class FocusConfidenceHold(private val holdMs: Long = MACRO_HOLD_MS) {
+    private var latched: FocusConfidenceSource? = null
+    private var sinceMs: Long = 0L
+
+    fun update(candidate: FocusConfidenceSource?, nowMs: Long): FocusConfidenceSource? {
+        if (candidate == null) {
+            latched = null
+            return null
         }
-        val since = candidateSinceMs ?: nowMs.also { candidateSinceMs = it }
-        return nowMs - since >= holdMs
+        if (latched != candidate) {
+            latched = candidate
+            sinceMs = nowMs
+            return null
+        }
+        return if (nowMs - sinceMs >= holdMs) candidate else null
     }
 
     /** True while a candidate is pending but not yet shown — the caller schedules a re-check. */
-    fun pending(nowMs: Long): Boolean = candidateSinceMs?.let { nowMs - it < holdMs } == true
+    fun pending(nowMs: Long): Boolean = latched != null && nowMs - sinceMs < holdMs
+
+    /** Drops the latch outright: used at optics-generation doors, where the evidence is stale. */
+    fun reset() {
+        latched = null
+    }
+}
+
+/**
+ * The OSD text for a held source. Each proof gets exactly the wording it can defend:
+ *
+ * - AF_LIMIT proved a distance relation, so `TOO CLOSE`, and it may carry the `▸ <lens>` suffix
+ *   naming a genuinely closer-focusing lens.
+ * - FRAME_DETAIL proved only that the frame resolves nothing fine. `SOFT` is true in EVERY state
+ *   that path can reach — gross defocus (too close, or focus racked wrong), a soft subject, haze,
+ *   a fogged converter, isotropic shake that survived the exposure gate — and it is Sony-native
+ *   vocabulary. It deliberately takes NO lens suffix: `▸ 1×` is a distance remedy, and recommending
+ *   it would smuggle back the causal claim the metric cannot make. `DEFOCUS`/`NO FOCUS` are
+ *   rejected for the same reason; `TOO CLOSE` here would simply be false in the haze/shake cases.
+ */
+internal fun focusConfidenceLabel(
+    source: FocusConfidenceSource?,
+    closerLensLabel: String?,
+): String? = when (source) {
+    null -> null
+    FocusConfidenceSource.FRAME_DETAIL -> "SOFT"
+    FocusConfidenceSource.AF_LIMIT -> closerLensLabel?.let { "TOO CLOSE ▸ $it" } ?: "TOO CLOSE"
 }
 
 /**

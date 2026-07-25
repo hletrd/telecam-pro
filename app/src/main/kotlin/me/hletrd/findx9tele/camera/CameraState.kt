@@ -787,11 +787,12 @@ data class CameraUiState(
     val shutterFlashTick: Int = 0,
     // AF engine state (from CONTROL_AF_STATE) coloring the tap-AF reticle.
     val afIndication: AfIndication = AfIndication.IDLE,
-    // Macro too-close tag (cycle 8): AF failed/hunting with the lens racked near its minimum focus
-    // distance, held ~700 ms so AF hunting can't flicker it (focus/MacroProximity.kt). Rendered as
-    // a compact amber OSD tag; [macroCloserLensLabel] optionally names a rear lens that focuses
-    // closer (resolved per route from the per-lens metadata cache, null when none qualifies).
-    val macroTooClose: Boolean = false,
+    // Focus-confidence tag: which proof (if any) currently holds, after the ~700 ms hold that keeps
+    // AF hunting from flickering it (focus/MacroProximity.kt). Rendered as ONE compact amber OSD
+    // tag whose TEXT follows the proof — AF_LIMIT may say TOO CLOSE, FRAME_DETAIL may only say
+    // SOFT. [macroCloserLensLabel] names a rear lens that focuses closer (resolved per route from
+    // the per-lens metadata cache, null when none qualifies); only AF_LIMIT may show it.
+    val focusConfidence: FocusConfidenceSource? = null,
     val macroCloserLensLabel: String? = null,
     // Live camera health: false while opening/reconfiguring/recovering (and after recovery gives
     // up). The shutter dims on it so a dead session never hides behind a ready-looking button.

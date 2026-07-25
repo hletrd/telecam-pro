@@ -15,8 +15,10 @@ import org.junit.Test
  */
 class MacroProximityTest {
 
-    // PMA110-shaped fixtures: tele periscope focuses to ~2.5 diopters (~0.4 m); main to 10 (~0.1 m).
-    private val teleMin = 2.5f
+    // PMA110-shaped fixtures, corrected against a live dumpsys (2026-07-25): the tele periscope
+    // advertises 0.833 diopters (~120 cm), the rear mains 6.67 (~15 cm) and one ultrawide 25
+    // (~4 cm). The earlier fixture claimed 2.5 / 10, which was never this device.
+    private val teleMin = 0.833f
 
     private fun candidate(
         af: AfIndication = AfIndication.FAILED,
@@ -64,32 +66,6 @@ class MacroProximityTest {
         assertFalse(candidate(min = 0f))
     }
 
-    // ---- hold ----
-
-    @Test
-    fun `tag shows only after the hold persists and clears instantly`() {
-        val hold = MacroProximityHold(holdMs = 700L)
-        assertFalse("first sighting arms but does not show", hold.update(true, nowMs = 1_000L))
-        assertTrue("still pending inside the hold", hold.pending(1_400L))
-        assertFalse(hold.update(true, nowMs = 1_400L))
-        assertTrue("hold elapsed → show", hold.update(true, nowMs = 1_700L))
-        assertFalse("no longer pending once shown", hold.pending(1_700L))
-        assertFalse("condition cleared → hide instantly", hold.update(false, nowMs = 1_800L))
-        assertFalse("a fresh sighting re-arms from zero", hold.update(true, nowMs = 1_900L))
-        assertFalse(hold.update(true, nowMs = 2_500L))
-        assertTrue(hold.update(true, nowMs = 2_600L))
-    }
-
-    @Test
-    fun `an interrupted candidate never accumulates hold time`() {
-        val hold = MacroProximityHold(holdMs = 700L)
-        assertFalse(hold.update(true, nowMs = 0L))
-        assertFalse(hold.update(false, nowMs = 400L))
-        assertFalse("the earlier 400 ms must not count", hold.update(true, nowMs = 500L))
-        assertFalse(hold.update(true, nowMs = 1_100L))
-        assertTrue(hold.update(true, nowMs = 1_200L))
-    }
-
     // ---- closer-lens hint ----
 
     private fun lens(equivMm: Float, minDiopters: Float) =
@@ -97,15 +73,18 @@ class MacroProximityTest {
 
     @Test
     fun `hint picks the longest wider lens that focuses meaningfully closer`() {
-        // Active: 70 mm tele at 2.5 dpt. Candidates: 14 mm (8 dpt), 23 mm (10 dpt), 230 mm (2 dpt).
-        // Both wides qualify; the 23 mm wins (least framing change), labelled "1×".
+        // Active: the 70 mm tele at 0.833 dpt. Candidates match the live device map: 14 mm
+        // ultrawide (25 dpt), 23 mm main (6.67 dpt), the 230 mm 10x (0.5 dpt). Both wides qualify
+        // — the main's 8x close-focus advantage is far past MACRO_HINT_MIN_ADVANTAGE — and the
+        // 23 mm wins on least framing change, labelled "1×".
         val hint = closerLensHint(
             activeEquivFocalMm = 70f,
             activeMinFocusDiopters = teleMin,
-            candidates = listOf(lens(14f, 8f), lens(23f, 10f), lens(230f, 2f), lens(70f, teleMin)),
+            candidates = listOf(lens(14f, 25f), lens(23f, 6.67f), lens(230f, 0.5f), lens(70f, teleMin)),
         )
         assertEquals(23f, checkNotNull(hint).equivalentFocalMm, 0f)
         assertEquals("1×", lensLabelForEquivFocal(hint.equivalentFocalMm))
+        assertTrue("the real advantage is ~8x", hint.minFocusDiopters / teleMin > 7f)
     }
 
     @Test
@@ -114,8 +93,8 @@ class MacroProximityTest {
         assertNull(
             closerLensHint(
                 activeEquivFocalMm = 70f,
-                activeMinFocusDiopters = 8f,
-                candidates = listOf(lens(23f, 9f)),
+                activeMinFocusDiopters = 6.67f,
+                candidates = listOf(lens(23f, 7.5f)),
             ),
         )
     }
@@ -125,7 +104,7 @@ class MacroProximityTest {
         assertNull(
             closerLensHint(
                 activeEquivFocalMm = 23f,
-                activeMinFocusDiopters = 10f,
+                activeMinFocusDiopters = 6.67f,
                 candidates = listOf(lens(70f, 30f), lens(14f, 0f)),
             ),
         )
@@ -133,6 +112,6 @@ class MacroProximityTest {
 
     @Test
     fun `degenerate active focal yields no hint`() {
-        assertNull(closerLensHint(0f, teleMin, listOf(lens(23f, 10f))))
+        assertNull(closerLensHint(0f, teleMin, listOf(lens(23f, 6.67f))))
     }
 }

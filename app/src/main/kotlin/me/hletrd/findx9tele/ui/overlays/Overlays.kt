@@ -50,6 +50,7 @@ import me.hletrd.findx9tele.camera.displayedStillAspect
 import me.hletrd.findx9tele.camera.largestCenteredRect
 import me.hletrd.findx9tele.camera.teleFinderVisible
 import me.hletrd.findx9tele.camera.videoBitRate
+import me.hletrd.findx9tele.focus.focusConfidenceLabel
 import me.hletrd.findx9tele.ui.controls.transferLabelShort
 import me.hletrd.findx9tele.ui.controls.videoCodecLabelShort
 import me.hletrd.findx9tele.ui.controls.videoResolutionLabel
@@ -545,16 +546,13 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
         if (state.controls.afLock) {
             Text("AFL", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
         }
-        // Macro too-close (cycle 8): AF failed/hunting with the lens racked against its minimum
-        // focus distance — the subject is nearer than this lens can focus. The optional suffix
-        // names a rear lens that focuses closer. Amber compact tag per the row's Sony-style
-        // language; the 700 ms hold lives in the ViewModel (focus/MacroProximity.kt).
-        if (state.macroTooClose) {
-            Text(
-                state.macroCloserLensLabel?.let { "TOO CLOSE ▸ $it" } ?: "TOO CLOSE",
-                color = Color(0xFFFFD60A),
-                style = MaterialTheme.typography.labelMedium,
-            )
+        // Focus confidence: ONE compact amber tag whose text follows whichever proof holds —
+        // TOO CLOSE (AF admitted defeat with the lens racked at its close limit, optionally
+        // suffixed with a genuinely closer-focusing lens) or SOFT (the frame itself resolved no
+        // fine detail, which cannot establish distance and so advises nothing). Same Sony-style
+        // register as AEL/AFL; the wording rule and the 700 ms hold live in focus/MacroProximity.kt.
+        focusConfidenceLabel(state.focusConfidence, state.macroCloserLensLabel)?.let { tag ->
+            Text(tag, color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
         }
         if (state.punchIn) {
             Text("LOUPE", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)

@@ -65,7 +65,8 @@ import me.hletrd.findx9tele.camera.WbMode
 import me.hletrd.findx9tele.camera.ZebraLevel
 import me.hletrd.findx9tele.focus.FocusMapping
 import me.hletrd.findx9tele.focus.MACRO_HOLD_MS
-import me.hletrd.findx9tele.focus.MacroProximityHold
+import me.hletrd.findx9tele.focus.FocusConfidenceHold
+import me.hletrd.findx9tele.focus.focusConfidenceCandidate
 import me.hletrd.findx9tele.focus.macroTooCloseCandidate
 import me.hletrd.findx9tele.storage.ExtraSettings
 import me.hletrd.findx9tele.storage.MediaStoreWriter
@@ -276,29 +277,32 @@ class CameraViewModel @JvmOverloads constructor(
         }
     }
 
-    // Macro too-close tag (cycle 8): the hold turns the flickery instantaneous AF/lens-position
-    // signal into a stable OSD tag (700 ms persist, instant clear — focus/MacroProximity.kt).
+    // Focus-confidence tag (cycle 8 AF_LIMIT): the hold turns the flickery instantaneous AF/lens-
+    // position signal into a stable OSD tag (700 ms persist, instant clear — focus/MacroProximity.kt).
     // Main-thread confined; AF/focus-distance callbacks post the refresh here, and a pending
     // candidate schedules exactly one delayed re-check so a static too-close scene (no further
     // AF/lens events) still flips the tag on when the hold elapses.
-    private val macroHold = MacroProximityHold()
-    private val macroRefreshRunnable = Runnable { refreshMacroTooClose() }
+    private val focusConfidenceHold = FocusConfidenceHold()
+    private val focusConfidenceRefreshRunnable = Runnable { refreshFocusConfidence() }
 
-    private fun refreshMacroTooClose() {
+    private fun refreshFocusConfidence() {
         val s = _state.value
-        val candidate = macroTooCloseCandidate(
+        val afLimit = macroTooCloseCandidate(
             afIndication = s.afIndication,
             focusMode = s.controls.focusMode,
             liveFocusDiopters = s.liveFocusDiopters,
             minFocusDiopters = s.caps?.minFocusDistanceDiopters ?: 0f,
         )
+        val candidate = focusConfidenceCandidate(afLimit = afLimit, frameDetail = false)
         val now = SystemClock.uptimeMillis()
-        val show = macroHold.update(candidate, now)
-        if (macroHold.pending(now)) {
-            mainHandler.removeCallbacks(macroRefreshRunnable)
-            mainHandler.postDelayed(macroRefreshRunnable, MACRO_HOLD_MS + 20)
+        val show = focusConfidenceHold.update(candidate, now)
+        if (focusConfidenceHold.pending(now)) {
+            mainHandler.removeCallbacks(focusConfidenceRefreshRunnable)
+            mainHandler.postDelayed(focusConfidenceRefreshRunnable, MACRO_HOLD_MS + 20)
         }
-        if (s.macroTooClose != show) _state.update { it.copy(macroTooClose = show) }
+        // Emit ONLY on a latched change: this refresh runs on every AF/lens event, and an
+        // unconditional _state.update would re-run the whole root recomposition (PERF4-7).
+        if (s.focusConfidence != show) _state.update { it.copy(focusConfidence = show) }
     }
 
     // One shared background lane for the ViewModel's own MediaStore/StatFs work (PERF4-6/PERF4-9):
@@ -331,7 +335,7 @@ class CameraViewModel @JvmOverloads constructor(
                 // caps delivery, and re-evaluate the tag against the new route's min focus.
                 val hintLabel = engine.closerFocusingLensLabel(caps)
                 _state.update { it.copy(macroCloserLensLabel = hintLabel) }
-                refreshMacroTooClose()
+                refreshFocusConfidence()
             }
         }
         engine.onVideoSizeChosen = { size, generation ->
@@ -476,7 +480,7 @@ class CameraViewModel @JvmOverloads constructor(
         // macro too-close evaluation is main-thread confined (its hold keeps time state).
         engine.onAfIndication = { ind ->
             _state.update { it.copy(afIndication = ind) }
-            mainHandler.post(macroRefreshRunnable)
+            mainHandler.post(focusConfidenceRefreshRunnable)
         }
         engine.onAnalysis = { h, w ->
             // Publish scope data into UI state only when something actually renders it (the
@@ -552,7 +556,7 @@ class CameraViewModel @JvmOverloads constructor(
         // thread → StateFlow is thread-safe, same as the exposure readout above).
         engine.onFocusDistance = { d ->
             _state.update { it.copy(liveFocusDiopters = d) }
-            mainHandler.post(macroRefreshRunnable)
+            mainHandler.post(focusConfidenceRefreshRunnable)
         }
         // Every successful processed/video output participates in capture-id-ordered review
         // ownership. It upgrades a RAW placeholder for the same capture, but cannot displace a newer
@@ -1102,7 +1106,7 @@ class CameraViewModel @JvmOverloads constructor(
             }
         }
         // A mode flip changes the too-close candidate (MANUAL excludes it) without any AF event.
-        mainHandler.post(macroRefreshRunnable)
+        mainHandler.post(focusConfidenceRefreshRunnable)
     }
     override fun onFocusSlider(slider: Float) {
         val before = _state.value
@@ -1113,7 +1117,7 @@ class CameraViewModel @JvmOverloads constructor(
         val d = FocusMapping.sliderToDiopters(slider, min)
         updateControls(FnSlot.FOCUS) { it.copy(focusDistanceDiopters = d, focusMode = FocusMode.MANUAL) }
         // Slider entry into MANUAL clears the too-close candidate without any AF event.
-        mainHandler.post(macroRefreshRunnable)
+        mainHandler.post(focusConfidenceRefreshRunnable)
     }
     override fun onAfLock(locked: Boolean) = updateControls(FnSlot.FOCUS) { it.copy(afLock = locked) }
     override fun onTapFocus(nx: Float, ny: Float) {
