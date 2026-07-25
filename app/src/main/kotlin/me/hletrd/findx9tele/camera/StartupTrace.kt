@@ -23,25 +23,33 @@ object StartupTrace {
 
     // Guarded by the object monitor: marks arrive from main (resume), setupExecutor (open/configure)
     // and the camera thread (first result), so the buffer needs real mutual exclusion.
+    // Injected clock: android.os.SystemClock is NOT mocked on the host JVM, so the arming state
+    // machine would be untestable bound directly to it (the same injected-clock seam the macro
+    // hysteresis uses). Production never reassigns it.
+    internal var elapsedMs: () -> Long = { SystemClock.elapsedRealtime() }
+
+    // Same reason as the clock: android.util.Log is not mocked on the host, so the emit path needs
+    // a seam or finish() cannot be exercised at all. Production never reassigns it.
+    internal var emit: (String) -> Unit = { Log.i(TAG, it) }
+
     private var originMs = 0L
     private var running = false
-    private val marks = StringBuilder(96)
+    private val marks = mutableListOf<Pair<String, Long>>()
 
     /** Marks t=0 for a cold start. No-op if a measurement is already running. */
     @Synchronized
     fun begin() {
         if (!BuildConfig.DEBUG || running) return
         running = true
-        originMs = SystemClock.elapsedRealtime()
-        marks.setLength(0)
+        originMs = elapsedMs()
+        marks.clear()
     }
 
     /** Records `label` with milliseconds since [begin]. Silent when no measurement is armed. */
     @Synchronized
     fun mark(label: String) {
         if (!BuildConfig.DEBUG || !running) return
-        if (marks.isNotEmpty()) marks.append(" → ")
-        marks.append(label).append(' ').append(SystemClock.elapsedRealtime() - originMs)
+        marks += label to (elapsedMs() - originMs)
     }
 
     /** Emits the whole cold start as one line and disarms, so only the first frame is measured. */
@@ -50,7 +58,7 @@ object StartupTrace {
         if (!BuildConfig.DEBUG || !running) return
         mark(label)
         running = false
-        Log.i(TAG, "cold start (ms since resume): $marks")
+        emit("cold start (ms since resume): " + marks.joinToString(" → ") { "${it.first} ${it.second}" })
     }
 
     /** Arms the next cold start (a real close/reopen, not a fast commit). */
@@ -58,6 +66,10 @@ object StartupTrace {
     fun reset() {
         if (!BuildConfig.DEBUG) return
         running = false
-        marks.setLength(0)
+        marks.clear()
     }
+
+    /** Host-test view of the buffered marks (label to elapsed-ms), in order. */
+    @Synchronized
+    internal fun marksForTest(): List<Pair<String, Long>> = marks.toList()
 }
