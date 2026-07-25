@@ -385,6 +385,13 @@ internal data class TradedPreviewExposure(
     val exposureNs: Long,
     val iso: Int,
     val digitalGain: Float,
+    /**
+     * The residual BEFORE the [PREVIEW_MAX_DIGITAL_GAIN] clamp. Equal to [digitalGain] in every
+     * ordinary case; larger only when the preview cannot simulate the intended brightness at all.
+     * The app-side AE loop needs that distinction: it meters the simulated preview, so past the
+     * clamp the frame it reads is permanently darker than the exposure it already intends.
+     */
+    val requestedGain: Float,
 )
 
 /**
@@ -422,15 +429,17 @@ internal fun previewExposureTrade(
     // on the GL gain instead of carrying a HAL-lethal long frame (the exact skipped-trade path
     // that shipped the 6.3 s crash).
     exposureNs = exposureNs.coerceAtMost(hardCapNs)
-    if (exposureNs <= 0L) return TradedPreviewExposure(exposureNs, tradedIso, 1f)
+    if (exposureNs <= 0L) return TradedPreviewExposure(exposureNs, tradedIso, 1f, 1f)
     // Residual shortfall = wanted brightness ÷ wire brightness (exposure×ISO products). The ISO
     // factor uses the ORIGINAL iso so a brightness-neutral trade nets exactly 1.0.
     val isoFactor = if (iso > 0 && tradedIso > 0) iso.toDouble() / tradedIso else 1.0
     val gain = (wantExposureNs.toDouble() / exposureNs) * isoFactor
+    val requested = gain.toFloat().coerceAtLeast(1f)
     return TradedPreviewExposure(
         exposureNs = exposureNs,
         iso = tradedIso,
-        digitalGain = gain.toFloat().coerceIn(1f, PREVIEW_MAX_DIGITAL_GAIN),
+        digitalGain = requested.coerceAtMost(PREVIEW_MAX_DIGITAL_GAIN),
+        requestedGain = requested,
     )
 }
 
@@ -716,16 +725,40 @@ private fun programNeutralCapNs(c: ManualControls): Long? =
  * Callers publish this after every preview submit (full rebuild AND sensor fast path); stills,
  * encoder draws, and the analysis readback never consume it.
  */
-internal fun previewDigitalGain(c: ManualControls, control: CameraControlCapabilities): Float {
-    if (!manualAeAdmitted(c, control)) return 1f
-    val isoUpper = control.isoMax ?: return 1f
+internal fun previewDigitalGain(c: ManualControls, control: CameraControlCapabilities): Float =
+    previewTradeFor(c, control)?.digitalGain ?: 1f
+
+/** The trade for [c] on this route, or null when no preview trade applies (HAL AE / no manual sensor). */
+private fun previewTradeFor(
+    c: ManualControls,
+    control: CameraControlCapabilities,
+): TradedPreviewExposure? {
+    if (!manualAeAdmitted(c, control)) return null
+    val isoUpper = control.isoMax ?: return null
     return previewExposureTrade(
         wantExposureNs = c.effectiveExposureNs(),
         iso = c.iso,
         isoUpper = isoUpper,
         neutralCapNs = programNeutralCapNs(c),
-    ).digitalGain
+    )
 }
+
+/**
+ * True when the GL preview can NO LONGER represent the intended brightness: the trade's residual
+ * exceeded [PREVIEW_MAX_DIGITAL_GAIN] and was clamped, so the displayed (and metered) frame is
+ * darker than the exposure the app already intends.
+ *
+ * The app-side AE loop meters that simulated preview. Past the clamp, raising the intent cannot
+ * brighten what the loop reads — the wire exposure is already pinned at the fluidity cap and the
+ * ISO at its ceiling — so the error never shrinks and the loop walks the intent all the way to the
+ * HAL-safe 4 s still ceiling, overexposing the actual capture by up to log2(4 s / correct) stops.
+ * Reachable in ISO priority at max ISO in a scene needing more than ~16x the fluidity cap. The loop
+ * uses this to freeze UPWARD motion only; a brightening scene is still metered truthfully.
+ */
+internal fun previewBrightnessSimulationSaturated(
+    c: ManualControls,
+    control: CameraControlCapabilities,
+): Boolean = (previewTradeFor(c, control)?.requestedGain ?: 1f) > PREVIEW_MAX_DIGITAL_GAIN
 
 private fun CaptureRequest.Builder.applyExposure(
     c: ManualControls,

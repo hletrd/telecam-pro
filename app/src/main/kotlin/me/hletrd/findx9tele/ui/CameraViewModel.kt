@@ -50,6 +50,7 @@ import me.hletrd.findx9tele.camera.PendingControlsDisposition
 import me.hletrd.findx9tele.camera.acceptedOpticsAuxState
 import me.hletrd.findx9tele.camera.controlAvailability
 import me.hletrd.findx9tele.camera.controlCapabilities
+import me.hletrd.findx9tele.camera.previewBrightnessSimulationSaturated
 import me.hletrd.findx9tele.camera.normalizeControlsForRoute
 import me.hletrd.findx9tele.camera.normalizeAudioGain
 import me.hletrd.findx9tele.camera.normalizeFnSlots
@@ -2016,7 +2017,6 @@ class CameraViewModel @JvmOverloads constructor(
         performHardwareAction(_state.value.volumeKeyAction, active)
     }
 
-    /** Backward-compatible entry for existing callers: one-shot full press. */
     /**
      * Fires the capture AND blinks the viewfinder immediately. The still takes pipeline-depth ×
      * frame-duration before it even starts exposing (~0.9 s measured in low light) — with no
@@ -2029,7 +2029,10 @@ class CameraViewModel @JvmOverloads constructor(
         }
     }
 
-    fun onHardwareShutter() = onHardwareFullKey(active = true)
+    // NOTE: no one-shot onHardwareShutter() alias here. [onHardwareFullKey] dispatches the
+    // USER-REASSIGNED action, and AEL/PUNCH_IN are MOMENTARY — they need the matching
+    // active = false. A press-only alias named "shutter" would latch AE lock or the loupe on with
+    // no release path under those bindings. MainActivity always sends both edges.
 
     override fun onHardwareHalfPress(active: Boolean) {
         _state.update { it.copy(halfPressActive = active) }
@@ -2402,15 +2405,25 @@ class CameraViewModel @JvmOverloads constructor(
         val exposureUpperNs = expRange?.let {
             exposureUpperBoundForCaptureMode(s.mode, c.fps, it.upper)
         }
+        // Once the preview's brightness SIMULATION saturates, the metered frame is permanently
+        // darker than the exposure already intended (wire exposure pinned at the fluidity cap, ISO
+        // at its ceiling, GL gain clamped at x16). The error then never shrinks and every tick asks
+        // for more — a ratchet that walks the intent to the 4 s HAL-safe still ceiling and
+        // overexposes the real capture. Freeze UPWARD motion there; a brightening scene is still
+        // metered truthfully and may come down. Preserves the cycle-8 fluidity cap and the
+        // ISO-headroom trade exactly — only the unmeterable direction is refused.
+        val brightnessSimSaturated = previewBrightnessSimulationSaturated(c, caps.controlCapabilities())
         when (c.exposureMode) {
             ExposureMode.SHUTTER -> if (isoRange != null) {
                 AutoExposure.driveIso(luma, c.iso, isoRange.lower, isoRange.upper, evStops)?.let { newIso ->
-                    updateControls { it.copy(iso = newIso) }
+                    if (!brightnessSimSaturated || newIso <= c.iso) updateControls { it.copy(iso = newIso) }
                 }
             }
             ExposureMode.ISO -> if (expRange != null && exposureUpperNs != null && exposureUpperNs >= expRange.lower) {
                 AutoExposure.driveShutterNs(luma, c.effectiveExposureNs(), expRange.lower, exposureUpperNs, evStops)?.let { newNs ->
-                    updateControls { it.copy(exposureTimeNs = newNs) }
+                    if (!brightnessSimSaturated || newNs <= c.effectiveExposureNs()) {
+                        updateControls { it.copy(exposureTimeNs = newNs) }
+                    }
                 }
             }
             ExposureMode.PROGRAM -> if (c.programAppSide && isoRange != null && expRange != null &&
@@ -2420,7 +2433,12 @@ class CameraViewModel @JvmOverloads constructor(
                     luma, c.iso, c.effectiveExposureNs(), preferredProgramShutterNs(s),
                     isoRange.lower, isoRange.upper, expRange.lower, exposureUpperNs, evStops,
                 )?.let { (newIso, newNs) ->
-                    updateControls { it.copy(iso = newIso, exposureTimeNs = newNs) }
+                    // Compare the BRIGHTNESS product: the program line trades one axis against the
+                    // other, so either alone can rise while the exposure as a whole falls.
+                    val brighter = newIso.toLong() * newNs > c.iso.toLong() * c.effectiveExposureNs()
+                    if (!brightnessSimSaturated || !brighter) {
+                        updateControls { it.copy(iso = newIso, exposureTimeNs = newNs) }
+                    }
                 }
             }
             else -> Unit

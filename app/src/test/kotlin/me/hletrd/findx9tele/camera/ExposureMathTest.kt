@@ -350,6 +350,39 @@ class ExposureMathTest {
     }
 
     @Test
+    fun `saturation is reported only past the clamp so the AE loop can freeze upward motion`() {
+        // Below the bound the residual is representable — the loop must stay free to drive.
+        val representable = ManualControls(
+            exposureMode = ExposureMode.ISO,
+            shutterMode = ShutterMode.SPEED,
+            exposureTimeNs = 2_000_000_000L,
+            iso = 3_200,
+        )
+        assertFalse(previewBrightnessSimulationSaturated(representable, manualSensorControl()))
+
+        // ISO priority pinned at the ceiling in a scene needing far more than 16x the fluidity cap:
+        // the preview is permanently darker than the intent, so the metered error can never shrink
+        // and an unfrozen loop would walk the exposure to the 4 s HAL-safe still ceiling.
+        val saturated = representable.copy(exposureTimeNs = 6_300_000_000L, iso = 12_750)
+        assertTrue(previewBrightnessSimulationSaturated(saturated, manualSensorControl()))
+        assertEquals(PREVIEW_MAX_DIGITAL_GAIN, previewDigitalGain(saturated, manualSensorControl()), 0f)
+
+        // A route the trade never applies to cannot be "saturated" — HAL AE owns brightness there.
+        assertFalse(
+            previewBrightnessSimulationSaturated(
+                saturated.copy(exposureMode = ExposureMode.PROGRAM, programAppSide = false),
+                manualSensorControl(),
+            ),
+        )
+        assertFalse(
+            previewBrightnessSimulationSaturated(
+                saturated,
+                manualSensorControl().copy(supportsManualSensor = false),
+            ),
+        )
+    }
+
+    @Test
     fun `gain is unity for HAL-AE program`() {
         // Video-P / flash-metered P run the HAL AE (autoExposure == true): the boost must never
         // engage — the HAL owns preview brightness there.
