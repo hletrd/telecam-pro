@@ -4,9 +4,10 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 ## Upload Artifact
 
-> Upload gate: the 2026-07-25 candidate below has passed every artifact check; the current-source
-> **PMA110 release device matrix is the remaining gate** before upload. Update this banner when the
-> matrix passes.
+> Upload gate: the **PMA110 release device matrix PASSED 2026-07-25** (evidence below) on the
+> post-chrome-fix build. One cosmetic commit (055bc04, shutter-ring inset) landed after that build:
+> rebuild the signed AAB/APK once from current main, re-record the two hashes below, and upload.
+> No further device matrix is required for that rebuild (055bc04 is a draw-only inset).
 
 - Signed Android App Bundle:
   `app/build/outputs/bundle/release/app-release.aab`
