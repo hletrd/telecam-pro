@@ -4,10 +4,10 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 ## Upload Artifact
 
-> Upload gate: the **PMA110 release device matrix PASSED 2026-07-25** (evidence below) on the
-> post-chrome-fix build. One cosmetic commit (055bc04, shutter-ring inset) landed after that build:
-> rebuild the signed AAB/APK once from current main, re-record the two hashes below, and upload.
-> No further device matrix is required for that rebuild (055bc04 is a draw-only inset).
+> **UPLOAD-READY (2026-07-25).** The PMA110 release device matrix PASSED on the post-chrome-fix
+> build, and the final signed artifacts below (rebuilt from main incl. the draw-only 055bc04 ring
+> inset; matrix explicitly not re-required for it) passed every artifact check. Upload the AAB whose
+> SHA-256 matches this sheet exactly — regenerate this block if the source moves again.
 
 - Signed Android App Bundle:
   `app/build/outputs/bundle/release/app-release.aab`
@@ -20,21 +20,33 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 Do not upload debug APKs or any unsigned/stale release bundle.
 
-### Current v1 candidate (artifacts verified 2026-07-25; device matrix pending)
+### Final v1 upload artifacts (built + verified 2026-07-25, from main incl. 07000f8 + 055bc04)
 
-- AAB SHA-256 (built from main at the cycle-7 close, signed with the regenerated upload key):
-  `b45a3b8e46d09e5d6f5e67b252d9ee2389554b0b532c7ea76d1eb0060b1bc6d1`
+- AAB SHA-256 (signed with the regenerated upload key):
+  `7339e00de9032157ae0cb8b9af99b12cab40c648c7b07ff50b630b4f979fa39f`
 - Matching release APK SHA-256:
-  `23ecbcf28745d975ab46124a60a29d255d9b8e2d77b03eb2d91fd5002b038c8e`
+  `0697c687cd3cdbe4f13a76604e0922e775032d77aee03af69d2ff1607c234eaf`
 - `bundletool 1.18.3 validate`: passed; AAB `jarsigner -verify`: verified
 - APK signing: v2 signature valid, 1 signer, certificate matches the upload certificate above
 - APK alignment: 16 KiB zip alignment passed (`zipalign -c -P 16 4`)
 - Release gate: `lintRelease` 0 errors / 5 known-intentional warnings; host unit suite green at HEAD
-
 - Manifest: target/min SDK 36, no `INTERNET`, no `DEBUGGABLE`
-- The 2026-07-10 PMA110 smoke test (DNG+HEIF photo, 4K HLG/AAC video, Open Gate 4:3, settings
-  persistence, no crash/ANR) is historical evidence from a superseded build/certificate; the
-  current-candidate PMA110 release matrix is **pending** and gates the upload.
+
+### PMA110 release device matrix — PASSED 2026-07-25 (post-chrome-fix build, same source lineage)
+
+- Fresh install + runtime-permission flow (CAMERA, then RECORD_AUDIO) verified; with the mic still
+  denied, REC admission refused cleanly (no phantom file) and recorded video-only-degrade never
+  misfired; after the grant, full AV recording worked.
+- Photo: HEIF 3064×4080. TELE: DNG+HEIF family with one filename key; DNG 4096×3072, 16-bit,
+  SamplesPerPixel 1, CFA, sane EXIF (ISO 12800, 1/10 s dark-room AE).
+- Video: HEVC Main10 (`yuv420p10le`) 2160×3840 portrait, HLG `arib-std-b67` + `bt2020nc`/`bt2020`
+  (no PQ mistag), AAC track present, 21.9 s clean full decode.
+- Settings persistence across force-stop: VIDEO mode + HLG + STEADY + TELE all restored.
+- Zero app crashes/ANRs. Incident note: a vendor QTI camera HAL process (`provider-service_64`)
+  SIGABRT crash-looped under force-stop→instant-relaunch stress (`SensorDevice::InitializeHardware`);
+  the app auto-restarted, held Not-Ready honestly, and recovered fully once the HAL settled —
+  device/vendor-level, not an app defect.
+- The 2026-07-10 smoke sheet remains historical evidence from a superseded build/certificate.
 
 ### Historical v1 candidate (2026-07-10; superseded — DO NOT UPLOAD)
 
