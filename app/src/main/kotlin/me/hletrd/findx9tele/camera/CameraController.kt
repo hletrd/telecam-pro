@@ -1167,13 +1167,42 @@ class CameraController(context: Context) {
 
     private val zslRing = ArrayDeque<ZslRingEntry>()
     // Results can outrun their images (or vice versa); keep a few recent ones to pair either way.
-    private val zslRecentResults = ArrayDeque<TotalCaptureResult>()
+    // Keyed by the timestamp zslRingAttachResult already extracted ONCE: pairing used to call
+    // TotalCaptureResult.get(SENSOR_TIMESTAMP) per candidate per streamed frame — a framework
+    // lookup plus a boxed Long up to 6x at ~30 fps (~180 allocations/s) on the camera thread, the
+    // same steady-state cost class this file already documents for COLOR_CORRECTION_GAINS
+    // (PERF4-3). One extraction per result, none per pairing.
+    private class ZslResultEntry(val timestampNs: Long, val result: TotalCaptureResult)
+
+    private val zslRecentResults = ArrayDeque<ZslResultEntry>()
     // Set when a repeating submit with the ZSL target aboard is refused: retry once without it —
     // a streaming refusal must degrade to "no ZSL on this controller", never "no preview".
     private var zslStreamingBroken = false
 
     private fun zslStreamingActive(): Boolean =
         !zslStreamingBroken && caps.isLogicalMultiCamera && !hiResReaderActive && jpegReader != null
+
+    /**
+     * "Now" in the SENSOR_TIMESTAMP clock domain THIS camera advertises, not an assumed one. Frame
+     * age is a subtraction between the two, so reading the wrong base is not a rounding error: with
+     * a REALTIME source read as monotonic (or the reverse) every age comes out shifted by the
+     * accumulated deep-sleep time — hours after an overnight standby — and ZSL silently stops
+     * admitting forever, the only symptom being a missing DEBUG line. UNKNOWN means System.nanoTime.
+     */
+    private fun sensorClockNowNs(): Long =
+        if (caps.timestampSource == CameraMetadata.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME) {
+            android.os.SystemClock.elapsedRealtimeNanos()
+        } else {
+            // Once per controller, and only where it changes behavior: a non-REALTIME source is the
+            // one shape that would otherwise be invisible in the ShutterLag logs.
+            if (!timestampSourceReported) {
+                timestampSourceReported = true
+                Log.i(TAG, "SENSOR_TIMESTAMP source=${caps.timestampSource} (not REALTIME) — ZSL ages read System.nanoTime")
+            }
+            System.nanoTime()
+        }
+
+    private var timestampSourceReported = false
 
     private fun zslRingFlush() {
         while (zslRing.isNotEmpty()) runCatching { zslRing.removeFirst().image.close() }
@@ -1182,9 +1211,7 @@ class CameraController(context: Context) {
 
     private fun zslRingAdd(image: Image) {
         val entry = ZslRingEntry(image, image.timestamp)
-        entry.result = zslRecentResults.firstOrNull {
-            it.get(CaptureResult.SENSOR_TIMESTAMP) == entry.timestampNs
-        }
+        entry.result = zslRecentResults.firstOrNull { it.timestampNs == entry.timestampNs }?.result
         zslRing.addLast(entry)
         while (zslRing.size > ZSL_RING_DEPTH) runCatching { zslRing.removeFirst().image.close() }
     }
@@ -1192,7 +1219,7 @@ class CameraController(context: Context) {
     /** Pairs a repeating-request result with its ring frame (called from the preview callback). */
     private fun zslRingAttachResult(result: TotalCaptureResult) {
         val ts = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
-        zslRecentResults.addLast(result)
+        zslRecentResults.addLast(ZslResultEntry(ts, result))
         while (zslRecentResults.size > 6) zslRecentResults.removeFirst()
         zslRing.lastOrNull { it.timestampNs == ts }?.let { it.result = result }
     }
@@ -1244,7 +1271,7 @@ class CameraController(context: Context) {
             gestureActive = smoothPreviewBoost,
         )
         if (!zslIntentEligible(intent)) return false
-        val nowNs = android.os.SystemClock.elapsedRealtimeNanos()
+        val nowNs = sensorClockNowNs()
         for (i in zslRing.indices.reversed()) {
             val entry = zslRing[i]
             val r = entry.result ?: continue

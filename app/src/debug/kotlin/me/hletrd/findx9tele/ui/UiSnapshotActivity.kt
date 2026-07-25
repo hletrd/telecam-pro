@@ -246,6 +246,7 @@ private fun snapshotCameraCaps(): CameraCaps = CameraCaps(
     hiResJpegSize = null,
     hiResUsesMaxResolutionMode = false,
     largestYuvSize = Size(4080, 3064),
+    timestampSource = CameraMetadata.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME,
     isLogicalMultiCamera = true,
     oisAvailable = true,
     flashAvailable = false,

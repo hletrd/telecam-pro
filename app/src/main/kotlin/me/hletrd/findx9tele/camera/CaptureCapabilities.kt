@@ -150,6 +150,17 @@ data class CameraCaps(
     // ~42 MB JPEG blob allocation on the plain logical session ("SnapAlloc: ValidateDescriptor
     // invalid" — the image never arrives and the shot dies), while YUV buffers allocate fine.
     val largestYuvSize: Size?,
+    /**
+     * SENSOR_INFO_TIMESTAMP_SOURCE. REALTIME means SENSOR_TIMESTAMP shares
+     * `SystemClock.elapsedRealtimeNanos()`; UNKNOWN means it shares `System.nanoTime()` (monotonic,
+     * excludes deep sleep). The pseudo-ZSL ring computes a frame AGE by subtracting the timestamp
+     * from "now", so reading it from the wrong clock is not a rounding error: after an overnight
+     * standby the two bases differ by the accumulated sleep time, every age comes out as hours, and
+     * ZSL silently stops admitting with no symptom but a missing DEBUG line. PMA110 reports REALTIME
+     * today (device-verified 2026-07-25: a 94 ms age served); this makes that an assumption the code
+     * checks rather than one it inherits.
+     */
+    val timestampSource: Int,
     val isLogicalMultiCamera: Boolean,
     val oisAvailable: Boolean,
     val flashAvailable: Boolean,
@@ -181,9 +192,12 @@ data class CameraCaps(
     val highSpeedConfigs: Map<Size, Int>,
 ) {
     val supportsManualFocus: Boolean get() = minFocusDistanceDiopters > 0f
-    val maxFocalMm: Float get() = focalLengthsMm.maxOrNull() ?: 0f
     fun supportsHlg10(): Boolean = supportedDynamicRangeProfiles.contains(DynamicRangeProfiles.HLG10)
-    fun hasEffect(mode: Int): Boolean = effectModes.contains(mode)
+    // NOTE: no maxFocalMm helper. CameraSelector2 deliberately picks the lens CLOSEST to 70 mm, not
+    // the longest (that is the 230 mm 10x) — a "max focal" accessor invites exactly that selection
+    // bug. Effect support is likewise not a helper here: ControlAvailability and ManualControls both
+    // resolve effects through the exact-advertised-value seam, which is what request normalization
+    // uses, so a second contains() shortcut could only drift from it.
 
     internal fun lensExifMetadata(): LensExifMetadata =
         LensExifMetadata(lensFocalLengthMm, lensApertureF, equivalentFocalMm, minFocusDistanceDiopters)
@@ -356,6 +370,8 @@ data class CameraCaps(
                 hiResJpegSize = hiResJpeg,
                 hiResUsesMaxResolutionMode = maxResJpeg != null,
                 largestYuvSize = yuvSize,
+                timestampSource = chars.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE)
+                    ?: CameraMetadata.SENSOR_INFO_TIMESTAMP_SOURCE_UNKNOWN,
                 isLogicalMultiCamera = has(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA),
                 oisAvailable = oisModes.contains(CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON),
                 flashAvailable = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true,
