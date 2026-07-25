@@ -462,11 +462,20 @@ All rotation math (preview, capture, EXIF orientation mapping) is pure and unit-
 (`CAMERA_ERROR(3)`) and silently loses the shot. `HAL_SAFE_MAX_STILL_EXPOSURE_NS` (4 s) is applied
 at the single caps seam (`clampStillExposureRange`, host-tested), so the shutter ruler ladder,
 request clamps, AEB brackets, numeric normalization (`normalizedFor`), and the exposure-aware
-still watchdog all inherit one truth. Independently, the REPEATING (preview) request is capped at
-`PREVIEW_SAFE_MAX_EXPOSURE_NS` (500 ms) via the brightness-neutral `previewExposureTrade`
-(exposure→ISO), because a long repeating exposure stalls the stream and starves session
-transitions; S/ISO/M previews above 500 ms are brightness-accurate but deliberately NOT
-noise/motion-blur-WYSIWYG (the alternative is a sub-1 fps viewfinder). The 4 s ceiling was
+still watchdog all inherit one truth. Independently, the REPEATING (preview) request is capped by
+`previewExposureTrade` at `min(PREVIEW_FLUIDITY_MAX_EXPOSURE_NS, PREVIEW_SAFE_MAX_EXPOSURE_NS)`,
+because a long repeating exposure stalls the stream and starves session transitions.
+`PREVIEW_SAFE_MAX_EXPOSURE_NS` (500 ms) is the outer HAL-safety invariant and always wins; the cap
+previews actually ride is the tighter FLUIDITY one (1/15 s — a ≥15 fps finder and ~0.53 s pipeline
+lag instead of seconds). The brightness ladder is: exposure up to that cap → ISO while the
+advertised headroom lasts (brightness-neutral) → a GL PREVIEW digital gain of up to ×16
+(`TradedPreviewExposure.digitalGain`, applied in linear light by the preview/finder draws and by a
+256-entry CPU LUT on the analysis snapshot, so zebra/false-colour/peaking/scopes AND the app-side AE
+meter all read the SIMULATED still exposure) → honestly darker. Files, the encoder draw, and the
+STILL request never see the gain, and once the residual saturates at ×16 the app-side AE loop
+freezes its UPWARD motion (`previewBrightnessSimulationSaturated`) because the metered frame can no
+longer represent the intent. S/ISO/M previews are therefore brightness-accurate up to that bound but
+deliberately NOT noise/motion-blur-WYSIWYG (the alternative is a sub-1 fps viewfinder). The 4 s ceiling was
 bisected on the standalone TELE camera only and is applied to EVERY route as a conservative
 assumption — a logical-camera bisect is a recorded residual (docs/BACKLOG.md).
 

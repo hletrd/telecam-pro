@@ -306,6 +306,56 @@ Full records in `docs/plans/2026-07-17-rpf-cycle1.md` § Deferrals:
   focus/ISO/shutter drags. Residual: on-device confirmation that dial-drag preview cadence
   improved rides the normal per-cycle device verification.
 
+## Deferrals from the 2026-07-26 functional + UI review triage (durable record)
+
+Everything else from that review was fixed in the same run; these are the items that need device
+evidence or a design decision, with enough detail to act on without re-deriving them.
+
+- **P3 — the always-on full-res YUV ZSL target's memory/thermal cost (needs a device soak).**
+  `CameraController` raises the LOGICAL route's processed reader from `maxImages = 2` to
+  `ZSL_RING_DEPTH + 2` at `caps.largestYuvSize` (4080×3064 ≈ 18.7 MB/buffer): ~94 MB of graphics
+  memory instead of ~37 MB, held for the whole photo session, and the reader is on the REPEATING
+  request, so the HAL writes ~18.7 MB × ~30 fps ≈ 560 MB/s whenever the photo viewfinder is up —
+  whether or not the user ever shoots. These are the app's largest allocations. The 10-min soak
+  already run measured +0.3 °C, but covered NEITHER a low-memory device state NOR a long idle
+  viewfinder. Check: (1) a 30-min idle photo viewfinder with `dumpsys meminfo` + thermal sampling;
+  (2) the same under memory pressure (several heavy apps resident) watching for a gralloc failure or
+  a session reconfigure. Mitigations if it bites, in order: `ZSL_RING_DEPTH = 2` (still ~66 ms of
+  history at 30 fps, far above the measured 0 ms serve latency), and/or detach the ZSL target while
+  ProSheet or review is open.
+- **P4 — a tap-to-focus fires two extra full-res YUV frames into the ring (needs measurement).**
+  The AF CANCEL and START one-shots are submitted from the SAME cached builder that carries the ZSL
+  target, so every tap costs two extra ~18.7 MB frames through the reader plus two extra
+  `zslRingAdd`/close cycles on the camera thread. Correctness is unaffected (legitimate frames,
+  legitimate results). Deferred rather than fixed because building the two triggers from a
+  ZSL-less copy touches the device-verified tap-AF submit path for an unmeasured win. Check: trace
+  camera-thread time and `Image` churn across a burst of taps; fix only if it shows.
+- **UI13 — the dormant `landscapeOperator` two-pane layout.** ~15 lines of unreachable Compose
+  emission plus two dead spacing ternaries in the app's hottest file, gated by a hardcoded `false`.
+  KEPT deliberately: the comment records that it is dormant pending the orientation pipeline (GL
+  sampling, capture masks, tap mapping and encoder framing all share a portrait-window contract),
+  and deleting it would discard that design. Revisit together with that pipeline, not before.
+- **UI16 — no 700-weight Inter is bundled, so `FontWeight.Bold` renders as SemiBold.**
+  `app/src/main/res/font/` has Regular/Medium/SemiBold only, while ~22 call sites ask for Bold
+  (`CameraScreen` ×11, `MediaReview` ×5, `ProSheet` ×3, `ManualDials` ×2, `ProControls` ×1). Font
+  matching resolves 700 → 600, so Bold and SemiBold are pixel-identical today. The one concrete
+  consequence: `FocalRail`'s selected-state emphasis is `Bold` vs `SemiBold`, so that weight step
+  cannot render and only the filled pill carries the selection. The Theme KDoc now states this
+  honestly. NOT fixed here because both options are design calls needing eyes on the device:
+  bundling `inter_bold.ttf` (+~110 KB, OFL, same family) changes the weight of all 22 sites at once,
+  and collapsing the sites to SemiBold needs a new unselected weight for FocalRail.
+- **The green AF reticle can claim focus on a visibly defocused frame (correctness, not cosmetic).**
+  `FocusReticle` draws the green bracket and announces "Focus locked" straight off
+  `AfIndication.FOCUSED`. On the TELE route this HAL reports `afState = FOCUSED_LOCKED` with the
+  lens racked to infinity while a 9 cm subject is completely defocused (device-measured
+  2026-07-25), so the reticle is currently the only UI element that can make a FALSE POSITIVE claim
+  about the capture. No UI-layer change fixes it — it needs a different truth source. The obvious
+  candidate now exists: `gl/FocusDetail.kt` already produces a per-frame judgement, and
+  `state.focusConfidence == FRAME_DETAIL` is exactly "the frame resolved no fine detail". Proposed
+  shape (needs device work, and must not regress the honest routes): suppress the GREEN state — not
+  the reticle — while the frame-detail verdict is SOFT, leaving the neutral bracket. Blocked on the
+  frame-detail detector's own first device verification.
+
 ## Verification Quick Reference
 
 ```bash
