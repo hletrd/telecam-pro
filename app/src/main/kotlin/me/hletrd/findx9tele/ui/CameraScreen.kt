@@ -305,6 +305,17 @@ fun CameraScreen(
         }
     }
 
+    // The VIEWFINDER is physical camera geometry, not text flow: the loupe-overview border is
+    // AbsoluteAlignment.BottomLeft, the Fn entry chip and tray are AbsoluteAlignment + absolutePadding
+    // (both already force Ltr locally), and the GL scissor box is in raw window coordinates — while
+    // the status OSD, the scopes column, the exposure meter and the gallery thumb are locale-relative
+    // Start/End. Under an RTL system language the HUD therefore HALF-mirrored: the exposure meter
+    // (documented as pinned to the LEFT edge, "the scopes own the right") swapped with the scopes
+    // while the absolutely-placed elements stayed put. One Ltr scope over the whole viewfinder keeps
+    // the two coordinate systems from disagreeing — the same reasoning already applied twice locally,
+    // applied once at the root. ProSheet / FnOverlay / MediaReview are emitted OUTSIDE this Box and
+    // stay locale-relative: they are reading surfaces, not camera geometry.
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -922,6 +933,7 @@ fun CameraScreen(
             }
         }
     }
+    } // end of the viewfinder's Ltr scope
 
     if (sheetVisible) {
         ProSheet(
