@@ -886,13 +886,14 @@ class CameraEngine(private val context: Context) {
      */
     private fun previewRotationDegrees(): Int = RotationMath.previewRotationDegrees(teleconverterMode)
 
-    fun setTeleconverterMode(enabled: Boolean) {
-        if (teleconverterMode == enabled) return
-        // TELE is a CAMERA SWITCH, not just the afocal flip: ON pins the standalone 3× (the
-        // converter's host lens — digital-only zoom, session-key Hasselblad/zoom hints); OFF returns
-        // to the logical seamless-zoom camera at the 3× preset so the framing carries over.
-        setLens(LensChoice.TELE3X, enabled)
-    }
+    // NOTE: there is deliberately no setTeleconverterMode(Boolean) convenience here. TELE is a
+    // CAMERA SWITCH, not just the afocal flip, and the ONE correct entry point is
+    // CameraViewModel.onToggleTeleconverter → setLens(TELE3X, enabled, restorePreTele = !enabled).
+    // A wrapper that forwarded to setLens(TELE3X, enabled) took restorePreTele's `false` default and
+    // therefore discarded the pre-TELE framing snapshot on TC-off — landing pinned at the 3× preset,
+    // the exact user-reported regression [preTeleUnifiedZoom] exists to prevent — and it updated
+    // engine state only, leaving the UI mirror and the live ZoomGlideState ease target stale. Route
+    // TC toggles through the ViewModel.
 
     fun setVideoStabMode(m: VideoStabMode) {
         if (videoStabMode == m) return
@@ -2125,19 +2126,16 @@ class CameraEngine(private val context: Context) {
     /**
      * Selects the video capture resolution and recreates the Camera2 session so the producer stream,
      * SurfaceTexture buffer and encoder all agree on the same dimensions.
+     *
+     * This is the INTERACTIVE picker only. A memory/settings RECALL does not come through here: it
+     * rides [setResolvedOptics]'s `recalledVideoSize`, which assigns [requestedVideoSize] INSIDE
+     * `beginOpticsTransaction` alongside facing/lens/teleconverter/controls. A bare recall setter
+     * that wrote the field outside any transaction is exactly the transaction-less shortcut that can
+     * pair an outgoing caps snapshot with a newer optics generation — do not reintroduce one.
      */
-    fun setRecalledVideoResolution(s: Size) {
-        // A memory/settings recall can target a different camera whose caps have not arrived yet.
-        // Store the request only; chooseVideoSize validates it against that target during reconfigure.
-        applyVideoResolutionRequest(s, VideoSizeRequestSource.RECALL)
-    }
-
-    fun setVideoResolution(s: Size): Boolean =
-        applyVideoResolutionRequest(s, VideoSizeRequestSource.INTERACTIVE)
-
-    private fun applyVideoResolutionRequest(s: Size, source: VideoSizeRequestSource): Boolean {
+    fun setVideoResolution(s: Size): Boolean {
         val offered = caps?.let { if (openGate) it.openGateVideoSizes else it.availableVideoSizes }
-        if (validatesVideoSizeAgainstCurrentCaps(source) && offered != null && s !in offered) {
+        if (offered != null && s !in offered) {
             onStatus?.invoke("Resolution unavailable on this camera")
             return false
         }
@@ -2146,7 +2144,6 @@ class CameraEngine(private val context: Context) {
         // still offers it (and falls back to auto when it doesn't, e.g. after an openGate aspect
         // flip or a lens without that mode).
         requestedVideoSize = s
-        if (source == VideoSizeRequestSource.RECALL) return true
         if (videoSize == s) return true
         applyVideoSize(s)
         return true

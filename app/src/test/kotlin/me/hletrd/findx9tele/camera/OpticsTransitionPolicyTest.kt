@@ -68,12 +68,6 @@ class OpticsTransitionPolicyTest {
     }
 
     @Test
-    fun `recalled size waits for target caps while interactive size validates now`() {
-        assertFalse(validatesVideoSizeAgainstCurrentCaps(VideoSizeRequestSource.RECALL))
-        assertTrue(validatesVideoSizeAgainstCurrentCaps(VideoSizeRequestSource.INTERACTIVE))
-    }
-
-    @Test
     fun `photo recall on same logical route uses request fast path`() {
         assertFalse(
             resolvedOpticsRequiresReconfigure(

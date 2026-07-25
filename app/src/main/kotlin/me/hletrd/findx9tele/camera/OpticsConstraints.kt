@@ -30,12 +30,6 @@ internal fun acceptedOpticsAuxState(
     photoFormats = photoFormats.normalizedFor(photoOutputs),
 )
 
-internal enum class VideoSizeRequestSource { INTERACTIVE, RECALL }
-
-/** Recall validates after target caps arrive; a live picker must validate immediately. */
-internal fun validatesVideoSizeAgainstCurrentCaps(source: VideoSizeRequestSource): Boolean =
-    source == VideoSizeRequestSource.INTERACTIVE
-
 /** Clamps normalized optics again once the selected camera's live zoom range is authoritative. */
 internal fun reconcileZoomWithCaps(
     mode: CaptureMode,
