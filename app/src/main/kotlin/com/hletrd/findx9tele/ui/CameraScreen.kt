@@ -884,7 +884,9 @@ fun CameraScreen(
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .then(operatorChrome)
-                    .padding(top = 12.dp, bottom = 8.dp)
+                    // bottom 20: the gesture-nav inset on this panel is thin, and 8 dp left the
+                    // shutter nearly touching the home-bar swipe zone (user-reported 2026-07-25).
+                    .padding(top = 12.dp, bottom = 20.dp)
                     // Rest-state measurement for the preview's adaptive top ([previewTopPx]); a
                     // dial-open growth spike must not re-place the viewfinder, so only the closed
                     // state records.
