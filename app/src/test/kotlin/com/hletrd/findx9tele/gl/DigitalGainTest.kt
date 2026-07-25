@@ -1,5 +1,6 @@
 package com.hletrd.findx9tele.gl
 
+import com.hletrd.findx9tele.camera.WaveformData
 import kotlin.math.pow
 import kotlin.math.roundToInt
 import org.junit.Assert.assertEquals
