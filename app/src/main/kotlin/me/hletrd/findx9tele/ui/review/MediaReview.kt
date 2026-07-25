@@ -837,6 +837,10 @@ fun MediaReviewOverlay(
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
+                    // Same nav-bar inset its sibling on this edge already takes (the bottom-end
+                    // action button): without it the two bottom-anchored elements sat at different
+                    // heights and the filename line landed inside the gesture-nav swipe zone.
+                    .navigationBarsPadding()
                     .padding(14.dp)
                     .clip(RoundedCornerShape(10.dp))
                     // Sits directly over the reviewed (often bright) photo, so it rides the same tested
@@ -1148,6 +1152,9 @@ internal fun reviewMetadataLine(raw: Boolean, width: Int, height: Int, sizeBytes
 
 private fun formatBytes(bytes: Long): String {
     if (bytes <= 0L) return "--"
-    val mib = bytes / (1024.0 * 1024.0)
-    return "%.1f MB".format(java.util.Locale.US, mib)
+    // DECIMAL megabytes, matching the label and the rest of the app: StatusInfoPill's
+    // remaining-shots budget is decimal (8/6/26 MB per file), so the binary divisor made a 26 MB DNG
+    // report as "24.8 MB" in review — two byte bases for the same file, one of them mislabelled.
+    val mb = bytes / 1_000_000.0
+    return "%.1f MB".format(java.util.Locale.US, mb)
 }

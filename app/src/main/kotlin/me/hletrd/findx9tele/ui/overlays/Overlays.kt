@@ -18,6 +18,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
@@ -44,6 +45,7 @@ import me.hletrd.findx9tele.camera.DriveMode
 import me.hletrd.findx9tele.camera.GridType
 import me.hletrd.findx9tele.camera.HistogramData
 import me.hletrd.findx9tele.camera.MeteringMode
+import me.hletrd.findx9tele.camera.PhotoFormats
 import me.hletrd.findx9tele.camera.ShutterTimer
 import me.hletrd.findx9tele.camera.VideoStabMode
 import me.hletrd.findx9tele.camera.WaveformData
@@ -405,43 +407,57 @@ internal fun compactShootingStatusVisible(state: CameraUiState): Boolean =
             punchIn = state.punchIn,
         )
 
+/** The one HEIF(+JPEG)(+DNG) string. Both StatusBar branches used to build it separately. */
+internal fun photoFormatLabel(formats: PhotoFormats): String = buildString {
+    if (formats.heif) append("HEIF")
+    if (formats.jpeg) {
+        if (isNotEmpty()) append("+")
+        append("JPEG")
+    }
+    if (formats.dngRaw) {
+        if (isNotEmpty()) append("+")
+        append("DNG")
+    }
+    if (isEmpty()) append("-")
+}
+
+/** Compact strip: the default HEIF-only combination is not an output-changing state, so it is silent. */
 internal fun compactPhotoFormatLabel(state: CameraUiState): String? {
     if (state.mode != CaptureMode.PHOTO) return null
     val formats = state.photoFormats
     if (formats.heif && !formats.jpeg && !formats.dngRaw) return null
-    return buildString {
-        if (formats.heif) append("HEIF")
-        if (formats.jpeg) {
-            if (isNotEmpty()) append("+")
-            append("JPEG")
-        }
-        if (formats.dngRaw) {
-            if (isNotEmpty()) append("+")
-            append("DNG")
-        }
-        if (isEmpty()) append("-")
-    }
+    return photoFormatLabel(formats)
 }
 
 @Composable
 fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Boolean = false) {
     if (compact && !compactShootingStatusVisible(state)) return
-    val focal = state.caps?.equivalentFocalMm ?: 0f
-    // The afocal teleconverter multiplies the ~70 mm periscope → a ~300 mm effective focal.
-    // Round to the nearest 10 mm so the readout reads a clean "300 mm" rather than 296 mm.
-    // TELE effective focal follows the digital zoom on the NOMINAL 300 mm base (constant scale,
-    // matching the 13/30/60× pill marks): 300 mm at 13×, 690 at 30×, 1380 at 60×.
-    val effFocal = ((300f * state.controls.zoomRatio.coerceAtLeast(1f)) / 10f).roundToInt() * 10
-    val focalLabel = when {
-        focal <= 0f -> "--"
-        state.teleconverterMode -> "$effFocal mm TELE"
-        // Seamless zoom: the logical camera's equiv focal is the MAIN lens's (23 mm) and the unified
-        // zoom is main-relative, so the EFFECTIVE focal is their product — 14 mm at 0.6×, 230 mm at
-        // 10× — tracking the lens the HAL actually has active, like the TELE readout does. FRONT
-        // rides this same seam unchanged: its caps equiv is the front lens's own and its zoom is
-        // lens-local, so the product is the honest selfie focal (no TELE multiplier possible —
-        // teleconverterMode is forced off on the front route).
-        else -> "%.0f mm".format(Locale.US, focal * state.controls.zoomRatio.coerceAtLeast(0.01f))
+    // PERF: StatusBar takes the WHOLE CameraUiState, so it recomposes at telemetry rate (audio
+    // level, roll, REC timer). Both derivations below are keyed remembers for the same reason its
+    // two siblings already are — StatusInfoPill (PERF4-2) and TopBar's availability projection —
+    // and the focal label is computed only in the branch that renders it.
+    val focalLabel = if (compact) {
+        null
+    } else {
+        val focal = state.caps?.equivalentFocalMm ?: 0f
+        remember(focal, state.controls.zoomRatio, state.teleconverterMode) {
+            // The afocal teleconverter multiplies the ~70 mm periscope → a ~300 mm effective focal.
+            // Round to the nearest 10 mm so the readout reads a clean "300 mm" rather than 296 mm.
+            // TELE effective focal follows the digital zoom on the NOMINAL 300 mm base (constant
+            // scale, matching the 13/30/60× pill marks): 300 mm at 13×, 690 at 30×, 1380 at 60×.
+            val effFocal = ((300f * state.controls.zoomRatio.coerceAtLeast(1f)) / 10f).roundToInt() * 10
+            when {
+                focal <= 0f -> "--"
+                state.teleconverterMode -> "$effFocal mm TELE"
+                // Seamless zoom: the logical camera's equiv focal is the MAIN lens's (23 mm) and the
+                // unified zoom is main-relative, so the EFFECTIVE focal is their product — 14 mm at
+                // 0.6×, 230 mm at 10× — tracking the lens the HAL actually has active, like the TELE
+                // readout does. FRONT rides this same seam unchanged: its caps equiv is the front
+                // lens's own and its zoom is lens-local, so the product is the honest selfie focal
+                // (no TELE multiplier possible — teleconverterMode is forced off on the front route).
+                else -> "%.0f mm".format(Locale.US, focal * state.controls.zoomRatio.coerceAtLeast(0.01f))
+            }
+        }
     }
     Row(
         modifier = modifier
@@ -453,8 +469,8 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
         horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (!compact) {
-            Text(focalLabel, color = Color.White, style = MaterialTheme.typography.labelMedium)
+        focalLabel?.let {
+            Text(it, color = Color.White, style = MaterialTheme.typography.labelMedium)
         }
         state.activeMemorySlot?.let {
             Text(it.label, color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
@@ -466,17 +482,18 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
         }
         if (state.mode == CaptureMode.VIDEO) {
             if (!compact) {
-                val mbps = videoBitRate(
-                    state.videoResolution.width, state.videoResolution.height,
-                    state.videoFrameRate.encoderRate,
-                    me.hletrd.findx9tele.camera.effectiveBpp(state.bitrateLevel, state.videoCodec), state.videoCodec,
-                ) / 1_000_000
-                Text(
+                val spec = remember(
+                    state.videoResolution, state.videoFrameRate, state.videoCodec, state.bitrateLevel,
+                ) {
+                    val mbps = videoBitRate(
+                        state.videoResolution.width, state.videoResolution.height,
+                        state.videoFrameRate.encoderRate,
+                        me.hletrd.findx9tele.camera.effectiveBpp(state.bitrateLevel, state.videoCodec), state.videoCodec,
+                    ) / 1_000_000
                     "${videoResolutionLabel(state.videoResolution)} ${state.videoFrameRate.label}p " +
-                        "${videoCodecLabelShort(state.videoCodec)} ${mbps}Mb",
-                    color = Color.White,
-                    style = MaterialTheme.typography.labelMedium,
-                )
+                        "${videoCodecLabelShort(state.videoCodec)} ${mbps}Mb"
+                }
+                Text(spec, color = Color.White, style = MaterialTheme.typography.labelMedium)
             }
             if (!compact || state.transfer != ColorTransfer.SDR) {
                 Text(transferLabelShort(state.transfer), color = Color(0xFF4C9AFF), style = MaterialTheme.typography.labelMedium)
@@ -503,19 +520,11 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
             )
         } else {
             if (!compact) {
-                val formatLabel = buildString {
-                    if (state.photoFormats.heif) append("HEIF")
-                    if (state.photoFormats.jpeg) {
-                        if (isNotEmpty()) append("+")
-                        append("JPEG")
-                    }
-                    if (state.photoFormats.dngRaw) {
-                        if (isNotEmpty()) append("+")
-                        append("DNG")
-                    }
-                    if (isEmpty()) append("-")
-                }
-                Text(formatLabel, color = Color.White, style = MaterialTheme.typography.labelMedium)
+                Text(
+                    photoFormatLabel(state.photoFormats),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelMedium,
+                )
             } else {
                 compactPhotoFormatLabel(state)?.let { formatLabel ->
                     Text(formatLabel, color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)

@@ -2134,7 +2134,11 @@ private fun ShutterButton(
             .scale(shutterScale)
             // Camera down (opening, reconfiguring, or recovery exhausted): the tap would be
             // declined anyway — dim the button so it stops LOOKING ready in front of a black
-            // viewfinder. Still tappable: the decline path surfaces its own status message.
+            // viewfinder. It is also DISABLED in that state (shutterEnabled folds in cameraReady,
+            // so the only healthy-false-but-enabled case is a running self-timer, whose tap
+            // cancels): the tap is swallowed, not declined with a message. The dimming IS the
+            // feedback — an earlier version of this comment promised a status message that the
+            // enabled=shutterEnabled clickable below can never reach.
             .alpha(if (cameraHealthy) 1f else 0.35f)
             .focusable()
             .clearAndSetSemantics {

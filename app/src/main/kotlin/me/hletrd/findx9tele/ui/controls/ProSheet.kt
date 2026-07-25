@@ -1121,7 +1121,10 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     )
     LabeledSlider(
         label = "Gain",
-        valueLabel = formatZoomMultiplier(state.audioGain),
+        // NOT formatZoomMultiplier: that formatter is documented as the shared ZOOM typography, and
+        // coupling a gain readout to it means any future zoom-only change (a suffix, a clamp, a
+        // locale rule) silently reformats audio gain.
+        valueLabel = "%.1f×".format(Locale.US, state.audioGain),
         value = state.audioGain,
         onValueChange = actions::onAudioGain,
         valueRange = 0f..2f,
@@ -1217,6 +1220,14 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
     // Loupe Overview is a same-stream full-frame reference, never an automatic 1x camera feed.
     // Exact predicate: enabled + Photo + 4:3 + TELE + active punch-in. Default remains off.
     ToggleRow(label = "Loupe Overview", checked = state.teleFinder, onCheckedChange = actions::onToggleTeleFinder)
+    // Every sibling toggle with non-obvious preconditions carries one of these (UX_POLICY: menu rows
+    // are the sanctioned place for that copy, never the viewfinder). Without it, toggling this in
+    // video, at 16:9, or with the loupe off does nothing visible and says nothing about why.
+    Text(
+        "Photo, 4:3, TELE, Loupe on.",
+        color = CameraColors.TextSecondary,
+        style = MaterialTheme.typography.labelSmall,
+    )
 }
 
 @Composable

@@ -19,7 +19,12 @@ import me.hletrd.findx9tele.R
 object CameraColors {
     /** True-black viewfinder background. */
     val Background = Color(0xFF000000)
-    /** Base color for translucent chrome scrims (top bar, bottom cluster gradient). Callers apply alpha 0.40-0.55. */
+    /**
+     * Base color for translucent chrome scrims (top bar, bottom cluster gradient). Callers apply
+     * [me.hletrd.findx9tele.ui.overlays.HUD_TEXT_SCRIM_ALPHA] — NOT a hand-picked value. The old
+     * "0.40-0.55" note here invited exactly the regression HudContrastTest exists to prevent: it
+     * asserts 0.45 and 0.55 FAIL the 4.5:1 floor over a white frame.
+     */
     val ChromeScrim = Color(0xFF000000)
     /** Solid pill/chip background (ghost chips, sheet surface). */
     val Pill = Color(0xFF1C1C1E)
@@ -56,9 +61,16 @@ private val TeleDarkColorScheme = darkColorScheme(
 /**
  * Inter (SIL Open Font License 1.1 — bundled, license at docs/licenses/inter-OFL.txt): a
  * professional UI face with unambiguous licensing, replacing whatever sans the OEM ships (ColorOS
- * substitutes its own default, so the chrome looked different from any design reference). Only the
- * three weights the UI actually uses are bundled (~1.2 MB total). Korean never renders in-app
- * (everything user-facing is English), so no CJK subset is needed; system fallback would cover it.
+ * substitutes its own default, so the chrome looked different from any design reference). Three
+ * weights are bundled (~1.2 MB total). Korean never renders in-app (everything user-facing is
+ * English), so no CJK subset is needed; system fallback would cover it.
+ *
+ * NOTE the family stops at SemiBold(600) while ~22 call sites ask for [FontWeight.Bold] (700).
+ * Font matching resolves those to SemiBold, so `Bold` and `SemiBold` render IDENTICALLY today —
+ * which silently flattens FocalRail's selected/unselected weight step (the filled pill still
+ * carries the selection). Bundling a real Bold would change the weight of every one of those 22
+ * sites at once, so it is a deliberate design call with a device check attached rather than a
+ * drive-by (docs/BACKLOG.md).
  */
 private val Inter = FontFamily(
     Font(R.font.inter_regular, FontWeight.Normal),
