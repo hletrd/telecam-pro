@@ -93,8 +93,14 @@ verification not yet run:
    simulated still exposure; files and stills untouched; the 500 ms HAL-safety clamp stays outer.
 2. **AE step schedule** — `maxStepStops` = 0.5×|err| in [0.30, 1.20]; big scene changes converge
    ~2× faster; steady-state smoothness unchanged.
-3. **Macro TOO CLOSE tag** — AF failed/hunting near `LENS_INFO_MINIMUM_FOCUS_DISTANCE` raises a
-   compact amber OSD tag (700 ms hold) with an optional closer-lens suffix.
+3. **Focus-confidence tag** — one compact amber OSD tag (700 ms hold), two proofs. `AF_LIMIT`
+   (AF failed/hunting near `LENS_INFO_MINIMUM_FOCUS_DISTANCE`) shows `TOO CLOSE` with an optional
+   closer-lens suffix. `FRAME_DETAIL` (`gl/FocusDetail.kt`, a pure curvature-ratio metric riding
+   the existing analysis readback) shows `SOFT` and no suffix — it proves the frame resolves no
+   fine detail, not that the subject is too close. Added because the TELE HAL false-locks
+   `FOCUSED` at infinity on a ~9 cm subject, which makes `AF_LIMIT` unreachable on that route
+   (see CLAUDE.md). **Device check needed**: subject ~9 cm on TELE must raise `SOFT`; a flat wall,
+   a dark scene, and a sharp normal scene must all stay clear.
 4. **Pseudo-ZSL S4a spike (debug-only)** — `DEBUG_ZSL_SPIKE` broadcast streams the full-res
    logical YUV reader on the repeating request with fps logs (stills refused while on); the S4b
    pick-latest ring is GATED on this measurement. The ZSL probe found YUV/PRIVATE reprocessing

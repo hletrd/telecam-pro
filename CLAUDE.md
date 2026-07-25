@@ -333,6 +333,45 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   change, an explicit reset, or an optics-remap door (mode/lens/TC/camera-override) — the 2 s
   reticle timer is VISUAL-ONLY and does not release it (cycle 4; it used to return AF to AF-C
   hunting 2 s after every tap). AF reaches FOCUSED on device.
+- **The HAL FALSE-LOCKS `FOCUSED` at INFINITY on a point-blank subject (device-measured
+  2026-07-25).** With a subject ~9 cm from the lens on the TELE route (whose advertised minimum
+  focus is **120 cm**) the preview is visibly, completely defocused — yet the HAL reports
+  `afState = 4` (`FOCUSED_LOCKED`) with `LENS_FOCUS_DISTANCE = 0.0068` diopters (≈146 m, i.e. racked
+  to **infinity**, the opposite end of the range). It neither admits failure nor racks near. So the
+  cycle-8 `macroTooCloseCandidate` predicate — which requires `AfIndication.FAILED/SCANNING` **and**
+  the lens near its close limit — is **structurally unable to fire on this device**, and no amount
+  of threshold tuning changes that. Advertised minimum focus distances (live `dumpsys`, this
+  device): most rear cameras **6.67 dpt (15 cm)**, one ultrawide **25 dpt (4 cm)**, the periscope
+  tele **0.833 dpt (120 cm)**. The predicate is KEPT (it proves strictly more, and it is live on the
+  honest lenses); the missing coverage is supplied by the app's own pixels instead — see below.
+- **The frame-detail detector proves "unresolved", NOT "too close" (`gl/FocusDetail.kt`,
+  host-tested, DEVICE-VERIFICATION-PENDING).** Because of the false-lock above, focus confidence is
+  measured from the **existing** scopes/AE analysis readback (no second readback, no new GL pass —
+  it is a pure CPU **rider** that computes only when that readback already runs, so it is silent in
+  video-P / flash-metered P where none does). Per 16×16 tile, per axis, it takes the RMS **second
+  difference** (curvature) at a fine lag and coarse lags {4, 8, 16, 32} and votes on
+  `R = s_1 / max(s_coarse)`.
+  - **CAN prove**: the frame carries coarse structure across ≥30% of itself and essentially no tile
+    resolves anything finer than ~12 analysis px (~200 sensor px, ~5% of frame width).
+  - **CANNOT prove**: *why*. A single frame cannot separate defocus from a soft subject, haze, a
+    fogged converter, or isotropic shake. The OSD therefore says **`SOFT`**, never `TOO CLOSE`, and
+    carries **no** `▸ <lens>` suffix on this path — that suffix is a distance remedy and would
+    smuggle back the causal claim. Only `AF_LIMIT` may say `TOO CLOSE ▸ 1×`.
+  - **Deliberate design facts** (each cost a wrong turn to find): curvature, not gradient — a ramp
+    is locally linear at every scale, so a first-difference ratio returns exactly `1/k` on a sky
+    gradient (guaranteed false fire), while curvature is identically zero there. **No noise
+    subtraction** — a per-frame noise floor estimated from the tiles IS the real fine content on a
+    sharp uniformly textured frame, which reproducibly false-fired on an in-focus scene; without it,
+    white noise lands in every lag equally and RAISES `R`, so grain suppresses the detector by
+    construction. Lag **32** is load-bearing: capped at 16, modelled ~9 cm defocus came out
+    UNJUDGEABLE. The metric takes **no `lut` parameter** so the digital-gain display LUT cannot
+    reach it — an optics verdict must not move with a brightness simulation.
+  - **Known MISSES, accepted**: a dark/grainy preview (noise suppresses it, and the exposure gate
+    refuses above 16× the handheld rule anyway), a featureless subject (unjudgeable), video-P /
+    flash-P (no readback), and anything softer than ~5% of frame width.
+  - Admission adds: MANUAL focus, mid-`SCANNING`, recording/starting, an active zoom gesture, and
+    statistics older than 1 s all refuse, and each refusal **resets** the 700 ms hold — which is why
+    the settle wait after an AF scan needs no second timer.
 - **Aspect ratio is only 4:3 or 16:9.** The sensor is 4:3-native: `AspectRatio.W4_3` = full readout
   (no crop, the default + the no-crop sentinel), `W16_9` = its center crop. Full/1:1/portrait removed.
 - **Front (selfie) camera is a first-class optics door with BASIC scope (2026-07-22; mirror roles
@@ -617,8 +656,10 @@ CameraEngine ├─ CameraSelector2  pick tele (closest-to-70mm, standalone; pic
              ├─ StandbyAudioController single-owner armed-video level meter lifecycle
              ├─ GlPipeline       checked EGL ownership + afocal 180° + color + scopes/AE luma
              │    └─ FlipRenderer / EglCore / Shaders / SdrToHlgMapping
+             │    └─ FocusDetail  pure curvature-ratio frame-detail metric (rides the readback)
              ├─ GyroEis          gravity roll + held-device orientation (GL shake warp disabled)
              ├─ AutoExposure     app-side S/ISO-priority AE loop (meters GL luma; pure+tested)
+             ├─ focus/MacroProximity focus-confidence proofs + hold + OSD wording (pure+tested)
              ├─ capture/StillCapturePipeline (processed + RAW save orchestration)
              │    └─ HeifCapture (pixel-rotate/EXIF) + DngCapture (EXIF orient)
              ├─ video/VideoRecorder (exactly-once input Surface; HEVC/AVC + AAC/muxer)
