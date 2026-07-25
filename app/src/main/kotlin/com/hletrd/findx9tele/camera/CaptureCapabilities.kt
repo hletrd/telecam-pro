@@ -32,11 +32,14 @@ internal fun clampStillExposureRange(
     ceilingNs: Long = HAL_SAFE_MAX_STILL_EXPOSURE_NS,
 ): Pair<Long, Long> = minOf(lowerNs, ceilingNs) to minOf(upperNs, ceilingNs)
 
-/** Immutable optics subset safe to cache before a still callback needs physical-lens EXIF. */
+/** Immutable optics subset safe to cache before a still callback needs physical-lens EXIF.
+ *  [minFocusDiopters] rides along for the macro too-close hint (larger = focuses nearer;
+ *  0 = fixed-focus/unknown) — same one-read-per-lens cache, no extra Binder round trips. */
 internal data class LensExifMetadata(
     val focalLengthMm: Float,
     val apertureF: Float,
     val equivalentFocalMm: Float,
+    val minFocusDiopters: Float = 0f,
 )
 
 /** Pure lens-metadata calculation shared by broad capability reads and lightweight EXIF prefetch. */
@@ -45,6 +48,7 @@ internal fun lensExifMetadataOf(
     apertureF: Float,
     sensorWidthMm: Float,
     sensorHeightMm: Float,
+    minFocusDiopters: Float = 0f,
 ): LensExifMetadata {
     val diagonalMm = hypot(sensorWidthMm, sensorHeightMm)
     val equivalentFocalMm = if (diagonalMm > 0f && focalLengthMm > 0f) {
@@ -52,7 +56,7 @@ internal fun lensExifMetadataOf(
     } else {
         0f
     }
-    return LensExifMetadata(focalLengthMm, apertureF, equivalentFocalMm)
+    return LensExifMetadata(focalLengthMm, apertureF, equivalentFocalMm, minFocusDiopters)
 }
 
 /**
@@ -70,6 +74,7 @@ internal fun readLensExifMetadata(manager: CameraManager, cameraId: String): Len
                 ?.firstOrNull() ?: 0f,
             sensorWidthMm = physical?.width ?: 0f,
             sensorHeightMm = physical?.height ?: 0f,
+            minFocusDiopters = chars.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f,
         )
     }.getOrNull()
 
@@ -181,7 +186,7 @@ data class CameraCaps(
     fun hasEffect(mode: Int): Boolean = effectModes.contains(mode)
 
     internal fun lensExifMetadata(): LensExifMetadata =
-        LensExifMetadata(lensFocalLengthMm, lensApertureF, equivalentFocalMm)
+        LensExifMetadata(lensFocalLengthMm, lensApertureF, equivalentFocalMm, minFocusDistanceDiopters)
 
     /** Distinct fixed frame rates whose advertised lower and upper bounds are equal, sorted. */
     val availableFps: List<Int>

@@ -625,6 +625,24 @@ class CameraEngine(private val context: Context) {
         }
     }
 
+    /**
+     * Macro-hint input for the VM: the rear lens (from the same per-lens metadata cache the EXIF
+     * prefetch fills) that focuses meaningfully closer than [active], as its preset label — or
+     * null when nothing qualifies. The front enumeration is excluded: its cache entry would
+     * otherwise masquerade as a rear wide lens by focal alone. Pure lookup over concurrent caches;
+     * callers pass the generation-guarded caps they just received (onCapsReady), not engine state.
+     */
+    fun closerFocusingLensLabel(active: CameraCaps): String? {
+        val front = cachedFrontSelection
+        val frontIds = setOfNotNull(front?.logicalId, front?.physicalId)
+        val hint = com.hletrd.findx9tele.focus.closerLensHint(
+            activeEquivFocalMm = active.lensExifMetadata().equivalentFocalMm,
+            activeMinFocusDiopters = active.minFocusDistanceDiopters,
+            candidates = lensExifCache.filterKeys { it !in frontIds }.values,
+        ) ?: return null
+        return com.hletrd.findx9tele.focus.lensLabelForEquivFocal(hint.equivalentFocalMm)
+    }
+
     private fun cachedIdForFocal(equivMm: Float): String? =
         idForFocalCache[equivMm]
             ?: CameraSelector2.overrideIdForFocal(manager, equivMm)?.also { idForFocalCache[equivMm] = it }
