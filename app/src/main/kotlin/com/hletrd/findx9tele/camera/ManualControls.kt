@@ -324,10 +324,21 @@ private const val PREVIEW_MAX_EXPOSURE_NS = 33_333_333L
 // sits inert behind the in-flight long frame and the device errors with CAMERA_ERROR(3) after ~one
 // exposure duration — device-reproduced 3/3 at 6.3 s (S mode, and P mode with the ISO ceiling
 // exhausted so the neutral trade above was skipped); the 0.8 s control repeated fine. 500 ms keeps
-// a ≥2 fps live view with safety margin under the proven 0.8 s. The STILL request is untouched and
-// carries the true exposure — only the viewfinder trades exposure for ISO (brightness-neutrally
-// while headroom lasts, then honestly darker).
+// safety margin under the proven 0.8 s. The STILL request is untouched and carries the true
+// exposure. Since cycle 8 the tighter fluidity ceiling below is what previews actually ride; this
+// bound REMAINS as the outer invariant so no future cap change can reintroduce the lethal frame.
 internal const val PREVIEW_SAFE_MAX_EXPOSURE_NS = 500_000_000L
+
+// Fluidity ceiling for the AE-OFF preview (cycle 8). Riding exposure toward the 500 ms safety
+// ceiling for brightness made the dark viewfinder a 2 fps slideshow AND stretched shutter lag to
+// multiple seconds (lag = pipeline depth × frame duration). 1/15 s is the slowest cadence that
+// still reads as a live finder (motion followable, AF/pan usable) and bounds dark-scene pipeline
+// lag to ~0.53 s. Brightness beyond ISO headroom is simulated by the GL preview instead: the trade
+// returns the residual shortfall as a linear digital gain, bounded ×16 (4 stops — the 500→66.7 ms
+// shortfall is 7.5×, so the simulated view is never darker than the old capped view) so noise
+// stays sane; past ×16 the preview honestly darkens.
+internal const val PREVIEW_FLUIDITY_MAX_EXPOSURE_NS = 66_666_667L
+internal const val PREVIEW_MAX_DIGITAL_GAIN = 16f
 
 private const val NANOS_PER_SECOND = 1_000_000_000L
 
@@ -361,36 +372,61 @@ internal fun exposureUpperBoundForCaptureMode(
 }
 
 /**
- * Preview-only exposure→ISO trade for the repeating request, pure for host tests.
- * [neutralCapNs] is the mode's fps-motivated target (PROGRAM's 1/30 s) or null for user-owned
- * S/ISO/M modes (WYSIWYG below the safety ceiling); [safetyCapNs] is the unconditional HAL bound.
- * Returns the exposure/ISO pair the REPEATING request should carry.
+ * The wire exposure/ISO for the REPEATING request plus the residual [digitalGain] the GL preview
+ * must multiply in linear light to simulate the still's true brightness. 1.0 whenever the wire
+ * values already carry the full brightness.
+ */
+internal data class TradedPreviewExposure(
+    val exposureNs: Long,
+    val iso: Int,
+    val digitalGain: Float,
+)
+
+/**
+ * Preview-only exposure policy for the repeating request, pure for host tests.
+ * [neutralCapNs] is the mode's fps-motivated trade target (PROGRAM's 1/30 s) or null for
+ * user-owned S/ISO/M modes; [fluidityCapNs] is the hard preview-exposure ceiling every AE-OFF
+ * mode rides (see PREVIEW_FLUIDITY_MAX_EXPOSURE_NS); [safetyCapNs] is the unconditional HAL
+ * bound and always wins. The brightness ladder: exposure up to the cap → ISO while headroom
+ * lasts → GL digital gain up to ×16 → honestly darker. Stills never pass through here.
  */
 internal fun previewExposureTrade(
     wantExposureNs: Long,
     iso: Int,
     isoUpper: Int,
     neutralCapNs: Long?,
+    fluidityCapNs: Long = PREVIEW_FLUIDITY_MAX_EXPOSURE_NS,
     safetyCapNs: Long = PREVIEW_SAFE_MAX_EXPOSURE_NS,
-): Pair<Long, Int> {
-    val capNs = neutralCapNs ?: safetyCapNs
-    if (wantExposureNs <= capNs || iso <= 0) {
-        // Below every applicable ceiling (or no usable ISO to trade against): WYSIWYG.
-        return wantExposureNs.coerceAtMost(safetyCapNs) to iso
-    }
-    // Brightness-neutral first: shorten exposure and raise ISO by the same factor, bounded by the
-    // advertised ISO headroom. The 1.05 floor avoids churning the request for sub-tenth-stop trades.
+): TradedPreviewExposure {
+    // The fluidity ceiling is deliberately tighter than the HAL-safety ceiling; min() keeps the
+    // safety invariant authoritative even if a future tuning pass loosens the fluidity constant.
+    val hardCapNs = minOf(fluidityCapNs, safetyCapNs)
+    val capNs = neutralCapNs?.coerceAtMost(hardCapNs) ?: hardCapNs
     var exposureNs = wantExposureNs
     var tradedIso = iso
-    val scale = minOf(wantExposureNs.toDouble() / capNs, isoUpper.toDouble() / iso)
-    if (scale > 1.05) {
-        exposureNs = (wantExposureNs / scale).toLong()
-        tradedIso = (iso * scale).toInt().coerceAtMost(isoUpper)
+    if (wantExposureNs > capNs && iso > 0) {
+        // Brightness-neutral first: shorten exposure and raise ISO by the same factor, bounded by
+        // the advertised ISO headroom. The 1.05 floor avoids churning for sub-tenth-stop trades.
+        val scale = minOf(wantExposureNs.toDouble() / capNs, isoUpper.toDouble() / iso)
+        if (scale > 1.05) {
+            exposureNs = (wantExposureNs / scale).toLong()
+            tradedIso = (iso * scale).toInt().coerceAtMost(isoUpper)
+        }
     }
-    // The safety clamp is NOT conditional on headroom — with the ISO ceiling exhausted the preview
-    // gets darker instead of carrying a HAL-lethal long frame (the exact skipped-trade path that
-    // shipped the 6.3 s crash).
-    return exposureNs.coerceAtMost(safetyCapNs) to tradedIso
+    // The clamp is NOT conditional on headroom — with the ISO ceiling exhausted the preview leans
+    // on the GL gain instead of carrying a HAL-lethal long frame (the exact skipped-trade path
+    // that shipped the 6.3 s crash).
+    exposureNs = exposureNs.coerceAtMost(hardCapNs)
+    if (exposureNs <= 0L) return TradedPreviewExposure(exposureNs, tradedIso, 1f)
+    // Residual shortfall = wanted brightness ÷ wire brightness (exposure×ISO products). The ISO
+    // factor uses the ORIGINAL iso so a brightness-neutral trade nets exactly 1.0.
+    val isoFactor = if (iso > 0 && tradedIso > 0) iso.toDouble() / tradedIso else 1.0
+    val gain = (wantExposureNs.toDouble() / exposureNs) * isoFactor
+    return TradedPreviewExposure(
+        exposureNs = exposureNs,
+        iso = tradedIso,
+        digitalGain = gain.toFloat().coerceIn(1f, PREVIEW_MAX_DIGITAL_GAIN),
+    )
 }
 
 fun ManualControls.effectiveExposureNs(): Long =
@@ -502,9 +538,10 @@ fun CaptureRequest.Builder.applyManualControls(
     c: ManualControls,
     caps: CameraCaps,
     pinAutoFps: Boolean = false,
-    // PREVIEW requests only: cap the app-side P exposure at 1/30 s (ISO raised brightness-
-    // neutrally) so the live view never becomes a 10-15 fps slideshow in dim light; the STILL
-    // request keeps the true program exposure. See applyExposure.
+    // PREVIEW requests only: cap the AE-OFF exposure at the fluidity ceiling (1/15 s; PROGRAM
+    // aims tighter at 1/30 s), trading brightness into ISO then GL digital gain so the live view
+    // never becomes a slideshow in dim light; the STILL request keeps the true exposure. See
+    // applyExposure / previewExposureTrade.
     previewExposureCap: Boolean = false,
     // VIDEO only: app-owned S/ISO/M exposure may not stretch the sensor frame beyond 1/fps.
     enforceFrameRate: Boolean = false,
@@ -646,6 +683,44 @@ private fun CaptureRequest.Builder.applyFocus(c: ManualControls, caps: CameraCap
     }
 }
 
+/**
+ * The exact admission [applyExposure] uses for its AE-OFF branch, on the Android-type-free
+ * projection so hosts can test it. Extracted so [previewDigitalGain] can never disagree with the
+ * request build about WHEN the preview trade (and therefore the GL gain) is in effect.
+ */
+internal fun manualAeAdmitted(c: ManualControls, control: CameraControlCapabilities): Boolean =
+    !c.autoExposure && control.supportsManualSensor &&
+        control.hasIsoRange && control.hasExposureTimeRange &&
+        exactAdvertisedMode(CameraMetadata.CONTROL_AE_MODE_OFF, control.aeModes) != null
+
+// The Range-typed twin delegates through the faithful projection — one admission, two spellings.
+private fun manualAeAdmitted(c: ManualControls, caps: CameraCaps): Boolean =
+    manualAeAdmitted(c, caps.controlCapabilities())
+
+/** PROGRAM aims its neutral trade at 1/30 s; user-owned S/ISO/M modes have no neutral target. */
+private fun programNeutralCapNs(c: ManualControls): Long? =
+    if (c.exposureMode == ExposureMode.PROGRAM) PREVIEW_MAX_EXPOSURE_NS else null
+
+/**
+ * The linear digital gain the GL PREVIEW draw must apply for [c] on this route — the residual of
+ * the SAME [previewExposureTrade] the repeating request just carried (same admission, same
+ * inputs), so the simulated brightness and the wire values cannot drift. 1.0 whenever the wire
+ * exposure already carries the full brightness: HAL-AE modes (video-P, flash-metered P), routes
+ * without manual-sensor support, and any want-exposure that fits under the fluidity ceiling.
+ * Callers publish this after every preview submit (full rebuild AND sensor fast path); stills,
+ * encoder draws, and the analysis readback never consume it.
+ */
+internal fun previewDigitalGain(c: ManualControls, control: CameraControlCapabilities): Float {
+    if (!manualAeAdmitted(c, control)) return 1f
+    val isoUpper = control.isoMax ?: return 1f
+    return previewExposureTrade(
+        wantExposureNs = c.effectiveExposureNs(),
+        iso = c.iso,
+        isoUpper = isoUpper,
+        neutralCapNs = programNeutralCapNs(c),
+    ).digitalGain
+}
+
 private fun CaptureRequest.Builder.applyExposure(
     c: ManualControls,
     caps: CameraCaps,
@@ -654,13 +729,10 @@ private fun CaptureRequest.Builder.applyExposure(
     enforceFrameRate: Boolean = false,
 ) {
     val isoRange = caps.isoRange
-    val exposureRange = caps.exposureTimeRange
-    val manualAe = !c.autoExposure && caps.supportsManualSensor &&
-        isoRange != null && exposureRange != null &&
-        exactAdvertisedMode(CameraMetadata.CONTROL_AE_MODE_OFF, caps.aeModes) != null
+    val manualAe = manualAeAdmitted(c, caps)
     if (manualAe) {
         val admittedIsoRange = checkNotNull(isoRange)
-        val admittedExposureRange = checkNotNull(exposureRange)
+        val admittedExposureRange = checkNotNull(caps.exposureTimeRange)
         set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
         var iso = c.iso
         var wantExposureNs = c.effectiveExposureNs()
@@ -668,20 +740,23 @@ private fun CaptureRequest.Builder.applyExposure(
         //  - PROGRAM: its line legitimately parks the STILL exposure at 1/14-1/10 s in dim light,
         //    but a preview at that exposure IS a 10-15 fps viewfinder — trade exposure for ISO
         //    BRIGHTNESS-NEUTRALLY toward 1/30 s, bounded by ISO headroom.
-        //  - ALL AE-OFF modes: the PREVIEW_SAFE_MAX_EXPOSURE_NS clamp applies UNCONDITIONALLY —
-        //    a multi-second repeating frame wedges this HAL's still handoff (CAMERA_ERROR(3),
-        //    lost shot, device-reproduced at 6.3 s). S/ISO/M stay WYSIWYG below that ceiling;
-        //    above it the preview brightens via ISO while headroom lasts, then honestly darkens.
+        //  - ALL AE-OFF modes: the PREVIEW_FLUIDITY_MAX_EXPOSURE_NS ceiling applies (with
+        //    PREVIEW_SAFE_MAX_EXPOSURE_NS as the outer HAL-safety invariant — a multi-second
+        //    repeating frame wedges this HAL's still handoff, CAMERA_ERROR(3), device-reproduced
+        //    at 6.3 s). Below the fluidity ceiling S/ISO/M stay WYSIWYG; above it exposure trades
+        //    into ISO while headroom lasts and the RESIDUAL shortfall becomes the GL preview's
+        //    linear digital gain (previewDigitalGain — the same trade — feeds the renderer), so
+        //    the finder stays fluid AND simulates the still's brightness. The STILL carries the
+        //    true exposure either way.
         if (previewExposureCap) {
-            val neutralCap = if (c.exposureMode == ExposureMode.PROGRAM) PREVIEW_MAX_EXPOSURE_NS else null
-            val (tradedExposure, tradedIso) = previewExposureTrade(
+            val traded = previewExposureTrade(
                 wantExposureNs = wantExposureNs,
                 iso = iso,
                 isoUpper = admittedIsoRange.upper,
-                neutralCapNs = neutralCap,
+                neutralCapNs = programNeutralCapNs(c),
             )
-            wantExposureNs = tradedExposure
-            iso = tradedIso
+            wantExposureNs = traded.exposureNs
+            iso = traded.iso
         }
         set(
             CaptureRequest.SENSOR_SENSITIVITY,
@@ -792,9 +867,7 @@ private fun CaptureRequest.Builder.applyProcessing(c: ManualControls, caps: Came
  *      ON → AE_MODE_ON_ALWAYS_FLASH, TORCH → AE_MODE_ON + FLASH_MODE_TORCH.
  */
 private fun CaptureRequest.Builder.applyFlash(c: ManualControls, caps: CameraCaps) {
-    val aeManual = !c.autoExposure && caps.supportsManualSensor &&
-        caps.isoRange != null && caps.exposureTimeRange != null &&
-        exactAdvertisedMode(CameraMetadata.CONTROL_AE_MODE_OFF, caps.aeModes) != null
+    val aeManual = manualAeAdmitted(c, caps)
     if (aeManual) {
         if (caps.flashAvailable) {
             when (c.flash) {

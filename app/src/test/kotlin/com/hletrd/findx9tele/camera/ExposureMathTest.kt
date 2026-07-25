@@ -204,74 +204,194 @@ class ExposureMathTest {
     }
 
     // ---- previewExposureTrade: the REPEATING-request exposure policy ----
-    // Pins the QA-1 fix: a multi-second SENSOR_EXPOSURE_TIME on the repeating request wedges this
-    // HAL's still handoff (CAMERA_ERROR(3) after ~one exposure, shot lost — device-reproduced at
-    // 6.3 s). The safety clamp must hold in EVERY mode and EVERY headroom state; the neutral trade
-    // must stay brightness-neutral while ISO headroom lasts.
+    // Pins the QA-1 fix AND the cycle-8 fluidity policy: a multi-second SENSOR_EXPOSURE_TIME on
+    // the repeating request wedges this HAL's still handoff (CAMERA_ERROR(3) after ~one exposure,
+    // shot lost — device-reproduced at 6.3 s), and any preview exposure past 1/15 s is a
+    // slideshow with pipeline-deep shutter lag. The ladder under test: exposure to the cap → ISO
+    // while headroom lasts (brightness-neutral, gain 1.0) → GL digital gain ≤ ×16 → honest dark.
 
     @Test
-    fun `user modes below the safety ceiling stay WYSIWYG`() {
-        // S mode at 1/4 s: no neutral cap, under the 500 ms safety ceiling — untouched.
-        val (e, iso) = previewExposureTrade(
-            wantExposureNs = 250_000_000L, iso = 400, isoUpper = 12_800, neutralCapNs = null,
+    fun `user modes below the fluidity ceiling stay WYSIWYG with unity gain`() {
+        // S mode at 1/30 s: under the 1/15 s fluidity ceiling — untouched, nothing simulated.
+        val t = previewExposureTrade(
+            wantExposureNs = 33_333_333L, iso = 400, isoUpper = 12_800, neutralCapNs = null,
         )
-        assertEquals(250_000_000L, e)
-        assertEquals(400, iso)
+        assertEquals(33_333_333L, t.exposureNs)
+        assertEquals(400, t.iso)
+        assertEquals(1f, t.digitalGain, 0f)
     }
 
     @Test
     fun `user mode long exposure trades brightness-neutrally into ISO headroom`() {
-        // S 6.3 s at ISO 100 (upper 12800): scale = min(12.6, 128) = 12.6 → exposure lands at the
-        // 500 ms ceiling with the SAME EV (exposure×ISO product preserved within rounding).
-        val want = 6_300_000_000L
-        val (e, iso) = previewExposureTrade(
-            wantExposureNs = want, iso = 100, isoUpper = 12_800, neutralCapNs = null,
+        // S 1/4 s at ISO 400 (upper 12800): headroom covers the full 3.75× shortfall → the wire
+        // lands at the fluidity ceiling with the SAME EV (exposure×ISO preserved) and NO gain.
+        val want = 250_000_000L
+        val t = previewExposureTrade(
+            wantExposureNs = want, iso = 400, isoUpper = 12_800, neutralCapNs = null,
         )
-        assertTrue("exposure clamped to the safety ceiling", e <= PREVIEW_SAFE_MAX_EXPOSURE_NS)
-        val wantEv = want.toDouble() * 100
-        val gotEv = e.toDouble() * iso
+        assertTrue("exposure rides the fluidity ceiling", t.exposureNs <= PREVIEW_FLUIDITY_MAX_EXPOSURE_NS)
+        val wantEv = want.toDouble() * 400
+        val gotEv = t.exposureNs.toDouble() * t.iso
         assertTrue("EV preserved within 10%", gotEv > wantEv * 0.9 && gotEv < wantEv * 1.1)
+        assertEquals("fully covered by ISO — nothing left to simulate", 1f, t.digitalGain, 0.06f)
     }
 
     @Test
-    fun `exhausted ISO headroom still clamps the repeating exposure`() {
+    fun `residual shortfall past ISO headroom becomes bounded digital gain`() {
+        // S 2 s at ISO 3200 (upper 12800): ISO covers 4× of the 30× shortfall; the remaining 7.5×
+        // is returned for the GL preview to simulate — within the ×16 bound, so no honest-dark tail.
+        val t = previewExposureTrade(
+            wantExposureNs = 2_000_000_000L, iso = 3_200, isoUpper = 12_800, neutralCapNs = null,
+        )
+        assertTrue(t.exposureNs <= PREVIEW_FLUIDITY_MAX_EXPOSURE_NS)
+        assertEquals(12_800, t.iso)
+        assertEquals(7.5f, t.digitalGain, 0.1f)
+    }
+
+    @Test
+    fun `exhausted ISO headroom still clamps the repeating exposure and caps the gain`() {
         // The exact shipped failure: P/S at 6.3 s with ISO already at the ceiling → the old code
-        // skipped the trade entirely and put 6.3 s on the wire. The clamp must be unconditional.
-        val (e, iso) = previewExposureTrade(
+        // skipped the trade entirely and put 6.3 s on the wire. The clamp must be unconditional;
+        // the 94.5× shortfall saturates at the ×16 gain bound and the preview honestly darkens.
+        val t = previewExposureTrade(
             wantExposureNs = 6_300_000_000L, iso = 12_750, isoUpper = 12_800, neutralCapNs = null,
         )
-        assertTrue("no long frame ever reaches the repeating request", e <= PREVIEW_SAFE_MAX_EXPOSURE_NS)
-        assertTrue(iso <= 12_800)
+        assertTrue("no long frame ever reaches the repeating request", t.exposureNs <= PREVIEW_FLUIDITY_MAX_EXPOSURE_NS)
+        assertTrue(t.iso <= 12_800)
+        assertEquals(PREVIEW_MAX_DIGITAL_GAIN, t.digitalGain, 0f)
+    }
+
+    @Test
+    fun `safety ceiling stays authoritative over a loosened fluidity constant`() {
+        // If a future tuning pass raises the fluidity cap past the HAL-safety bound, safety must
+        // win — the 6.3 s wedge can never come back through a constant change.
+        val t = previewExposureTrade(
+            wantExposureNs = 6_300_000_000L, iso = 12_800, isoUpper = 12_800, neutralCapNs = null,
+            fluidityCapNs = 2_000_000_000L,
+        )
+        assertTrue(t.exposureNs <= PREVIEW_SAFE_MAX_EXPOSURE_NS)
     }
 
     @Test
     fun `program mode keeps its 1 over 30s neutral target when headroom allows`() {
-        // P at 1/10 s, ISO 800 (upper 12800): scale = min(3.0, 16) = 3.0 → ~1/30 s at ISO 2400.
-        val (e, iso) = previewExposureTrade(
+        // P at 1/10 s, ISO 800 (upper 12800): scale = min(3.0, 16) = 3.0 → ~1/30 s at ISO 2400,
+        // nothing left to simulate.
+        val t = previewExposureTrade(
             wantExposureNs = 100_000_000L, iso = 800, isoUpper = 12_800, neutralCapNs = 33_333_333L,
         )
-        assertTrue("preview restored to ~1/30 s", e in 29_000_000L..34_000_000L)
-        assertTrue("ISO carries the traded stops", iso in 2_300..2_500)
+        assertTrue("preview restored to ~1/30 s", t.exposureNs in 29_000_000L..34_000_000L)
+        assertTrue("ISO carries the traded stops", t.iso in 2_300..2_500)
+        assertEquals(1f, t.digitalGain, 0.01f)
     }
 
     @Test
-    fun `program mode with no headroom keeps the honest slow preview under the safety ceiling`() {
-        // P at 1/10 s with the ISO ceiling exhausted: no neutral trade possible; 1/10 s is safe,
-        // so the preview honestly slows (pre-existing night-view behavior preserved).
-        val (e, iso) = previewExposureTrade(
+    fun `program mode with no headroom rides the fluidity ceiling with gain`() {
+        // P at 1/10 s with the ISO ceiling exhausted: no neutral trade possible; the wire drops to
+        // the 1/15 s fluidity ceiling and the 1.5× shortfall is simulated in GL (the pre-cycle-8
+        // behavior kept the honest 10 fps slow preview — now it is fluid AND equally bright).
+        val t = previewExposureTrade(
             wantExposureNs = 100_000_000L, iso = 12_800, isoUpper = 12_800, neutralCapNs = 33_333_333L,
         )
-        assertEquals(100_000_000L, e)
-        assertEquals(12_800, iso)
+        assertEquals(PREVIEW_FLUIDITY_MAX_EXPOSURE_NS, t.exposureNs)
+        assertEquals(12_800, t.iso)
+        assertEquals(1.5f, t.digitalGain, 0.01f)
+    }
+
+    @Test
+    fun `program want between neutral and fluidity with no headroom stays WYSIWYG`() {
+        // P at 1/20 s at the ISO ceiling: above the 1/30 s neutral aim but under the fluidity
+        // ceiling — no trade possible, no cap bites, no simulation needed.
+        val t = previewExposureTrade(
+            wantExposureNs = 50_000_000L, iso = 12_800, isoUpper = 12_800, neutralCapNs = 33_333_333L,
+        )
+        assertEquals(50_000_000L, t.exposureNs)
+        assertEquals(1f, t.digitalGain, 0.01f)
     }
 
     @Test
     fun `non positive ISO cannot trade but is still clamped safe`() {
-        val (e, iso) = previewExposureTrade(
+        // Degenerate zero ISO: no trade possible, but the fluidity clamp still holds and the gain
+        // (exposure-ratio only) saturates at the bound — the finder shows SOMETHING rather than a
+        // wedge-risk long frame.
+        val t = previewExposureTrade(
             wantExposureNs = 6_300_000_000L, iso = 0, isoUpper = 12_800, neutralCapNs = null,
         )
-        assertTrue(e <= PREVIEW_SAFE_MAX_EXPOSURE_NS)
-        assertEquals(0, iso)
+        assertTrue(t.exposureNs <= PREVIEW_FLUIDITY_MAX_EXPOSURE_NS)
+        assertEquals(0, t.iso)
+        assertEquals(PREVIEW_MAX_DIGITAL_GAIN, t.digitalGain, 0f)
+    }
+
+    // ---- previewDigitalGain: the GL-side twin of the wire trade ----
+
+    private fun manualSensorControl(isoMax: Int = 12_800) = CameraControlCapabilities(
+        supportsManualSensor = true,
+        hasIsoRange = true,
+        isoMin = 100,
+        isoMax = isoMax,
+        hasExposureTimeRange = true,
+        exposureTimeMinNs = 100_000L,
+        exposureTimeMaxNs = 4_000_000_000L,
+        aeModes = intArrayOf(
+            android.hardware.camera2.CameraMetadata.CONTROL_AE_MODE_OFF,
+            android.hardware.camera2.CameraMetadata.CONTROL_AE_MODE_ON,
+        ),
+    )
+
+    @Test
+    fun `gain follows the wire trade for an AE-OFF long exposure`() {
+        // M 2 s at ISO 3200: identical inputs to the wire-side test above → identical 7.5× residual.
+        val c = ManualControls(
+            exposureMode = ExposureMode.MANUAL,
+            shutterMode = ShutterMode.SPEED,
+            exposureTimeNs = 2_000_000_000L,
+            iso = 3_200,
+        )
+        assertEquals(7.5f, previewDigitalGain(c, manualSensorControl()), 0.1f)
+    }
+
+    @Test
+    fun `gain is unity for HAL-AE program`() {
+        // Video-P / flash-metered P run the HAL AE (autoExposure == true): the boost must never
+        // engage — the HAL owns preview brightness there.
+        val c = ManualControls(
+            exposureMode = ExposureMode.PROGRAM,
+            programAppSide = false,
+            exposureTimeNs = 2_000_000_000L,
+            iso = 3_200,
+        )
+        assertEquals(1f, previewDigitalGain(c, manualSensorControl()), 0f)
+    }
+
+    @Test
+    fun `gain is unity without manual-sensor support or AE_OFF advertisement`() {
+        val c = ManualControls(
+            exposureMode = ExposureMode.MANUAL,
+            shutterMode = ShutterMode.SPEED,
+            exposureTimeNs = 2_000_000_000L,
+            iso = 3_200,
+        )
+        assertEquals(1f, previewDigitalGain(c, manualSensorControl().copy(supportsManualSensor = false)), 0f)
+        assertEquals(
+            1f,
+            previewDigitalGain(
+                c,
+                manualSensorControl().copy(
+                    aeModes = intArrayOf(android.hardware.camera2.CameraMetadata.CONTROL_AE_MODE_ON),
+                ),
+            ),
+            0f,
+        )
+    }
+
+    @Test
+    fun `gain is unity when the exposure fits under the fluidity ceiling`() {
+        val c = ManualControls(
+            exposureMode = ExposureMode.SHUTTER,
+            shutterMode = ShutterMode.SPEED,
+            exposureTimeNs = 8_000_000L,
+            iso = 3_200,
+        )
+        assertEquals(1f, previewDigitalGain(c, manualSensorControl()), 0f)
     }
 
     @Test
