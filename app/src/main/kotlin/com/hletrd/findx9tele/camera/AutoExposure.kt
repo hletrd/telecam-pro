@@ -27,16 +27,28 @@ object AutoExposure {
      */
     const val TARGET_LUMA = 0.45f
 
-    // Log-domain proportional gain: each tick moves GAIN of the measured error, so it converges in a
-    // few ticks (~0.5 s at 6 Hz) without overshoot. The per-tick clamp bounds a huge scene change to
-    // one stop per tick so a lens cap on/off ramps smoothly instead of snapping. The deadband holds
-    // the value once we're within ~1/12 stop so a noisy meter doesn't jitter ISO/shutter forever.
-    // Tuned for VISUALLY SMOOTH transitions (user: 1-stop ticks read as visible steps): smaller
-    // per-tick cap with slightly higher gain ≈ the same convergence time in many small slides
-    // (~1.8 stops/s at the 6 Hz meter) instead of a few big jumps.
+    // Log-domain proportional gain: each tick moves GAIN of the measured error, so it converges in
+    // a few ticks (~0.5 s at 6 Hz) without overshoot. The deadband holds the value once we're
+    // within ~1/12 stop so a noisy meter doesn't jitter ISO/shutter forever.
+    //
+    // The per-tick clamp is ERROR-SCHEDULED (cycle 8): near the target it keeps the tuned
+    // 0.30-stop ceiling (user: 1-stop ticks read as visible steps — steady-state smoothness is
+    // sacred), but for a big scene change (lens cap, window pan) it opens up to 0.5×|error| capped
+    // at 1.2 stops, so a 5-stop error converges in ~9 ticks instead of ~17. Behavior is IDENTICAL
+    // to the old fixed clamp for errors ≤ 0.6 stop (0.5×0.6 = the same 0.30 ceiling), and steps
+    // stay strictly below the remaining error, so the approach still cannot overshoot. This
+    // matters most in the dark, where the cycle-8 fluidity cap raised the meter cadence from
+    // ~0.4 Hz (500 ms frames) to ~3 Hz — fast ticks × scheduled steps is what makes low-light AE
+    // feel immediate.
     private const val GAIN = 0.6f
     private const val MAX_STEP_STOPS = 0.30f
+    private const val MAX_FAR_STEP_STOPS = 1.20f
+    private const val FAR_STEP_SLOPE = 0.5f
     private const val DEADBAND_STOPS = 0.05f
+
+    /** The per-tick step ceiling for a given error magnitude (stops) — the schedule above. */
+    internal fun maxStepStops(errorMagnitudeStops: Float): Float =
+        (FAR_STEP_SLOPE * errorMagnitudeStops).coerceIn(MAX_STEP_STOPS, MAX_FAR_STEP_STOPS)
 
     /** Mean luma (0..1) of a 256-bin luma histogram. Returns 0 for an empty/degenerate histogram. */
     fun meanLuma(luma: IntArray): Float {
@@ -52,15 +64,19 @@ object AutoExposure {
 
     /**
      * The correction in stops to apply this tick: how far (log2) the measured [mean] is from the
-     * EV-shifted target, scaled by [GAIN] and clamped to ±[MAX_STEP_STOPS]. Positive = brighten (raise
-     * ISO / lengthen shutter). Returns null inside the deadband (converged → no update).
+     * EV-shifted target, scaled by [GAIN] and clamped to the error-scheduled ±[maxStepStops].
+     * Positive = brighten (raise ISO / lengthen shutter). Returns null inside the deadband
+     * (converged → no update).
      */
     internal fun correctionStops(mean: Float, evCompStops: Float): Float? {
-        if (mean <= 0f) return MAX_STEP_STOPS // pitch black meter → open up (per-tick cap)
+        // Pitch-black meter: the error is unbounded (log of ~0), so open up at the far cap — the
+        // schedule's own answer for an arbitrarily large error.
+        if (mean <= 0f) return MAX_FAR_STEP_STOPS
         val target = (TARGET_LUMA * pow2(evCompStops).toFloat()).coerceIn(0.02f, 0.95f)
         val errorStops = log2(target / mean)
         if (kotlin.math.abs(errorStops) < DEADBAND_STOPS) return null
-        return (errorStops * GAIN).coerceIn(-MAX_STEP_STOPS, MAX_STEP_STOPS)
+        val cap = maxStepStops(kotlin.math.abs(errorStops))
+        return (errorStops * GAIN).coerceIn(-cap, cap)
     }
 
     // Bounds are plain Int/Long (not android.util.Range): Range's getters throw "not mocked" on the

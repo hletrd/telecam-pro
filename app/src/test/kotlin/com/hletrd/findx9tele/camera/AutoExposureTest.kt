@@ -64,11 +64,63 @@ class AutoExposureTest {
     }
 
     @Test
-    fun correction_isClampedToMaxStep() {
-        // A pitch-dark meter must not demand more than the documented 0.30-stop per-tick clamp
-        // (P7.1/TEST4-15: the old 1.0-stop assertion silently tolerated a 3x-too-fast AE swing).
+    fun correction_isClampedToScheduledMaxStep() {
+        // A near-black meter (~8.8 stops of error) rides the schedule's FAR cap — no tick may
+        // exceed 1.20 stops however large the error (the cycle-8 schedule replaced the fixed
+        // 0.30 clamp; P7.1's concern — an unbounded swing — still holds at the new ceiling).
         val c = AutoExposure.correctionStops(0.001f, 0f)!!
-        assertTrue("per-tick step must be <= 0.30 stop, was $c", c <= 0.30f + 1e-4f)
+        assertTrue("per-tick step must be <= 1.20 stops, was $c", c <= 1.20f + 1e-4f)
+        assertTrue("a huge error should use the far cap, was $c", c >= 1.20f - 1e-4f)
+    }
+
+    // ---- cycle-8 error-scheduled step clamp ----
+
+    @Test
+    fun schedule_smallErrors_keepTheTunedNearClamp() {
+        // Errors <= 0.6 stop behave EXACTLY like the pre-schedule loop: proportional 0.6×error,
+        // ceiling 0.30 (steady-state smoothness is user-tuned — 1-stop ticks read as steps).
+        assertEquals(0.30f, AutoExposure.maxStepStops(0.2f), 1e-6f)
+        assertEquals(0.30f, AutoExposure.maxStepStops(0.6f), 1e-6f)
+        // err 0.4: raw 0.24 < cap → pure proportional, same as before the schedule.
+        val mean = AutoExposure.TARGET_LUMA / 1.32f // ≈ 0.4 stop below target
+        val c = AutoExposure.correctionStops(mean, 0f)!!
+        assertEquals(0.4f * 0.6f, c, 0.02f)
+    }
+
+    @Test
+    fun schedule_growsWithError_andCapsAtFar() {
+        assertEquals(0.5f, AutoExposure.maxStepStops(1.0f), 1e-6f)
+        assertEquals(1.0f, AutoExposure.maxStepStops(2.0f), 1e-6f)
+        assertEquals(1.20f, AutoExposure.maxStepStops(2.4f), 1e-6f)
+        assertEquals(1.20f, AutoExposure.maxStepStops(10f), 1e-6f)
+    }
+
+    @Test
+    fun schedule_stepNeverReachesTheRemainingError() {
+        // No overshoot by construction: the applied step is min(0.6×err, 0.5×err-capped) < err for
+        // every error outside the deadband. Sweep a wide error range and assert strictness.
+        var err = 0.06f
+        while (err < 12f) {
+            val mean = AutoExposure.TARGET_LUMA / Math.pow(2.0, err.toDouble()).toFloat()
+            val c = AutoExposure.correctionStops(mean, 0f)
+            if (c != null) assertTrue("step $c must stay below error $err", c < err)
+            err *= 1.5f
+        }
+    }
+
+    @Test
+    fun schedule_fiveStopError_convergesWithinTenTicks() {
+        // The point of the schedule: a lens-cap-off / window-pan scene change (5 stops) settles in
+        // ~9 ticks (~1.5 s at the 6 Hz meter, ~3 s at the dark-scene 3 Hz floor) instead of ~17.
+        var err = 5f
+        var ticks = 0
+        while (ticks < 10) {
+            val mean = AutoExposure.TARGET_LUMA / Math.pow(2.0, err.toDouble()).toFloat()
+            val c = AutoExposure.correctionStops(mean, 0f) ?: break
+            err -= c
+            ticks++
+        }
+        assertTrue("5-stop error must settle inside 10 ticks, residual $err after $ticks", err < 0.06f)
     }
 
     @Test
@@ -218,9 +270,9 @@ class AutoExposureTest {
     // ---- cycle-2 additions ----
 
     @Test
-    fun correction_pitchBlackMean_returnsMaxStep() {
-        // mean <= 0 (a fully-black meter) takes the "open up" branch → the per-tick cap MAX_STEP_STOPS.
-        assertEquals(0.30f, AutoExposure.correctionStops(0f, 0f)!!, 1e-6f)
+    fun correction_pitchBlackMean_returnsFarCap() {
+        // mean <= 0 (a fully-black meter) is an unbounded error → the schedule's far cap.
+        assertEquals(1.20f, AutoExposure.correctionStops(0f, 0f)!!, 1e-6f)
     }
 
     @Test
