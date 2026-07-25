@@ -940,3 +940,52 @@ data class WaveformData(
     val rows: Int,
     val bins: IntArray,
 )
+
+/**
+ * What the frame-detail metric (gl/FocusDetail.kt) could establish about ONE analysis frame.
+ *
+ * - [UNJUDGEABLE]: not enough tiles carried coarse structure on both axes to judge anything —
+ *   blank wall, clear sky, smooth gradient, crushed/blown exposure, or a 1-D-only pattern.
+ * - [RESOLVED]: fine-scale energy is present relative to coarse. That is EITHER real detail OR
+ *   grain; the metric does not separate them, and does not need to — both mean "do not claim the
+ *   frame resolves nothing".
+ * - [SOFT]: coarse structure is present across the frame and essentially no tile resolves anything
+ *   fine. The ONLY verdict that may arm the OSD tag.
+ */
+enum class FrameDetail { UNJUDGEABLE, RESOLVED, SOFT }
+
+/**
+ * One frame's detail verdict plus the counters that make a device bring-up pass diagnosable from a
+ * single log line — which of the coarse floor, the coverage rule, or the ratio refused. Deliberate:
+ * ColorOS drops app logs over a 300-row-per-process quota, so the instrument has to be one line on
+ * verdict CHANGE, not a per-tick dump.
+ *
+ * @Immutable: constructed once by the analysis executor before publication.
+ */
+@Immutable
+data class FocusDetailData(
+    val verdict: FrameDetail,
+    val totalTiles: Int,
+    val judgeableTiles: Int,
+    val softTiles: Int,
+    /** Highest fine/coarse ratio any judgeable tile reached — the frame's best evidence of detail. */
+    val bestRatio: Float,
+) {
+    val sharpTiles: Int get() = judgeableTiles - softTiles
+
+    companion object {
+        /** Nothing could be judged (degenerate buffer, or no tile passed the gates). */
+        val UNJUDGED = FocusDetailData(FrameDetail.UNJUDGEABLE, 0, 0, 0, 0f)
+    }
+}
+
+/**
+ * Which proof raised the focus-confidence OSD tag. They are NOT interchangeable — see
+ * focus/MacroProximity.kt for the wording each one licenses.
+ *
+ * - [AF_LIMIT]: AF declined a verdict while the lens sat racked against its close limit. That is a
+ *   real distance proof, so it may say TOO CLOSE and may name a closer-focusing lens.
+ * - [FRAME_DETAIL]: the app's own pixels resolved no fine detail. Says only SOFT: a single frame
+ *   cannot separate defocus from haze, a fogged converter, or isotropic shake.
+ */
+enum class FocusConfidenceSource { AF_LIMIT, FRAME_DETAIL }
