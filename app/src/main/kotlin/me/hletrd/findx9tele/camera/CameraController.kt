@@ -493,6 +493,7 @@ class CameraController(context: Context) {
         jpegReader = null
         rawReader = null
         hiResReaderActive = false
+        zslReaderDeep = false
 
         // High-speed (slow-motion) uses a dedicated constrained session with ONLY the GL surface;
         // it cannot coexist with the JPEG/RAW still readers, so it is a separate path.
@@ -540,19 +541,26 @@ class CameraController(context: Context) {
                 useYuv -> caps.largestYuvSize
                 else -> caps.largestJpegSize
             }
+            // The logical YUV reader feeds the pseudo-ZSL ring, which HOLDS ZSL_RING_DEPTH acquired
+            // images while the repeating stream keeps producing — depth + one being-acquired + one
+            // HAL margin. Standalone HAL-JPEG keeps the proven 2. The deep reader is ~5×19 MB of
+            // gralloc at 4096×3072 and is ALWAYS ON in release, so [SessionAttemptPlan.useDeepZslReader]
+            // makes it a LADDER RUNG: see that field's doc for why the runtime zslStreamingBroken
+            // fallback does not cover a configure-time rejection.
+            val deepZsl = useYuv && plan.useDeepZslReader
             size?.let {
                 val reader = ImageReader.newInstance(
                     it.width, it.height,
                     if (useYuv) ImageFormat.YUV_420_888 else ImageFormat.JPEG,
-                    // The logical YUV reader feeds the pseudo-ZSL ring, which HOLDS
-                    // ZSL_RING_DEPTH acquired images while the repeating stream keeps producing —
-                    // depth + one being-acquired + one HAL margin. Standalone HAL-JPEG keeps the
-                    // proven 2. (Gralloc footprint ~5×19 MB at 4096×3072 — device-verify item.)
-                    if (useYuv) ZSL_RING_DEPTH + 2 else 2,
+                    if (deepZsl) ZSL_RING_DEPTH + 2 else 2,
                 )
                 reader.setOnImageAvailableListener({ r -> onImage(r, isRaw = false) }, handler)
                 jpegReader = reader
                 hiResReaderActive = useHiRes
+                // Per-session truth, not intent: a 2-image reader physically cannot sustain a
+                // 3-deep ring plus the in-flight producer buffer, so ZSL must stay off on the
+                // degraded rung rather than starve the repeating stream.
+                zslReaderDeep = deepZsl
                 configs.add(OutputConfiguration(reader.surface).apply {
                     selection.physicalId?.let { pid -> setPhysicalCameraId(pid) }
                 })
@@ -1149,10 +1157,12 @@ class CameraController(context: Context) {
     }
 
     // ---- cycle-8 pseudo-ZSL: full-res YUV ring on the LOGICAL photo route ----
-    // The route's YUV still reader streams on the repeating request (S4a device-measured
-    // 2026-07-25: 29-31 fps lit / 14-16 fps at the dark fluidity cap over 5-minute soaks, zero
-    // FrameGap stalls ≥200 ms, zero camera errors, +0.3°C battery — the load-bearing unknown is
-    // settled). A ring of the last ZSL_RING_DEPTH frames + their TotalCaptureResults feeds the
+    // The route's YUV still reader streams on the repeating request; the S4a soak settled the
+    // load-bearing unknown (sustained fps, no stalls, no camera errors, negligible thermal) and the
+    // S4b serve check settled the behavior. Exact device numbers, and WHY a dark shot correctly
+    // refuses to serve, live once in CLAUDE.md's pseudo-ZSL bullet — do not restate them here, and
+    // do not read the dark refusal as a gap.
+    // A ring of the last ZSL_RING_DEPTH frames + their TotalCaptureResults feeds the
     // zero-lag serve path in capturePhoto; admission (ZslAdmission.kt) guarantees a served frame
     // IS the requested still. Everything here is CAMERA-THREAD CONFINED (reader listener, capture
     // callbacks, and capturePhoto all run on [handler]).
@@ -1179,8 +1189,13 @@ class CameraController(context: Context) {
     // a streaming refusal must degrade to "no ZSL on this controller", never "no preview".
     private var zslStreamingBroken = false
 
+    // Per-session truth: did the ACCEPTED session get the deep (ZSL_RING_DEPTH + 2) still reader?
+    // False on a degraded rung, where the reader holds only the proven 2 images.
+    private var zslReaderDeep = false
+
     private fun zslStreamingActive(): Boolean =
-        !zslStreamingBroken && caps.isLogicalMultiCamera && !hiResReaderActive && jpegReader != null
+        !zslStreamingBroken && zslReaderDeep &&
+            caps.isLogicalMultiCamera && !hiResReaderActive && jpegReader != null
 
     /**
      * "Now" in the SENSOR_TIMESTAMP clock domain THIS camera advertises, not an assumed one. Frame
@@ -2021,6 +2036,27 @@ internal data class SessionAttemptPlan(
     val useRaw: Boolean,
     val useVendorOperationMode: Boolean = false,
     val useHiResStill: Boolean = false,
+    /**
+     * Whether this attempt may allocate the DEEP (ZSL_RING_DEPTH + 2) still reader that the
+     * pseudo-ZSL ring needs, versus the proven 2-image reader. Only meaningful where the reader is
+     * YUV (the logical photo route); standalone HAL-JPEG always takes 2.
+     *
+     * Why this is a ladder rung and not left to the runtime fallback: `zslStreamingBroken` handles a
+     * REFUSED REPEATING SUBMIT, which can only happen after configure already SUCCEEDED. A
+     * gralloc/HAL rejection of the ~5×19 MB allocation lands in `onConfigureFailed` instead, and on
+     * the logical camera the ordinary ladder had NOTHING to degrade there: RAW is already forced off
+     * by `logicalMultiCamera`, so attempt 1 ("drop RAW") was byte-identical to attempt 0, and with
+     * the shipping SDR session (`wantHlg` false) attempt 2 was identical too — three identical
+     * retries, then preview-only. A deep-reader rejection would therefore have cost the session ALL
+     * stills rather than just ZSL. This reuses that degenerate rung: attempt 0 asks for the deep
+     * reader, every later attempt takes the shallow one, so the first thing a rejection costs is
+     * zero-lag serving and nothing else.
+     *
+     * Deliberately keyed on the FULL-plan rung (`ladderAttempt == 0`) rather than the TELE table's
+     * `streamAttempt`, so degradation under allocation pressure is MONOTONIC — once dropped, a later
+     * attempt never re-deepens. It does not lengthen the ladder, so `maxSessionAttempt` is unchanged.
+     */
+    val useDeepZslReader: Boolean = false,
 )
 
 /**
@@ -2074,6 +2110,10 @@ internal fun sessionAttemptPlan(
     useRaw = streamAttempt < 1 && supportsRaw && standalone && !logicalMultiCamera && !hiRes,
     useVendorOperationMode = vendorMode,
     useHiResStill = hiRes,
+    // The deep pseudo-ZSL reader rides the FULL plan only — see [SessionAttemptPlan.useDeepZslReader].
+    // Hi-res and deep-ZSL can never coexist (hi-res is standalone-only, the deep reader is
+    // logical-only), so the hi-res rung taking attempt 0 costs the ZSL rung nothing.
+    useDeepZslReader = ladderAttempt == 0 && !hiRes,
     )
 }
 

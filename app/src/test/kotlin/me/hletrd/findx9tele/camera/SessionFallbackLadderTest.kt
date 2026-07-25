@@ -15,7 +15,10 @@ class SessionFallbackLadderTest {
     @Test
     fun `attempt 0 is the full session`() {
         val p = sessionAttemptPlan(attempt = 0, wantHlg = true, supportsRaw = true, standalone = true)
-        assertEquals(SessionAttemptPlan(useHlg = true, useJpeg = true, useRaw = true), p)
+        assertEquals(
+            SessionAttemptPlan(useHlg = true, useJpeg = true, useRaw = true, useDeepZslReader = true),
+            p,
+        )
     }
 
     @Test
@@ -84,7 +87,9 @@ class SessionFallbackLadderTest {
 
         assertTrue(vendor.useVendorOperationMode)
         assertFalse(regular.useVendorOperationMode)
-        assertEquals(vendor.copy(useVendorOperationMode = false), regular)
+        // Identical streams, different operation mode — except the deep-ZSL rung, which is
+        // deliberately NOT re-offered after any fallback (see the monotonic-degradation test).
+        assertEquals(vendor.copy(useVendorOperationMode = false, useDeepZslReader = false), regular)
         assertTrue(regular.useJpeg)
         assertTrue(regular.useRaw)
     }
@@ -124,7 +129,7 @@ class SessionFallbackLadderTest {
         // ordinary indices, whose attempt 1 already had RAW off — a rejected hi-res session
         // silently lost RAW for the whole session (cycle-6 debugger F3).
         assertEquals(
-            SessionAttemptPlan(useHlg = true, useJpeg = true, useRaw = true),
+            SessionAttemptPlan(useHlg = true, useJpeg = true, useRaw = true, useDeepZslReader = true),
             sessionAttemptPlan(1, wantHlg = true, supportsRaw = true, standalone = true, wantHiRes = true),
         )
     }
@@ -220,6 +225,83 @@ class SessionFallbackLadderTest {
         val teleLast = sessionAttemptPlan(8, true, true, true, teleconverterMode = true, wantHiRes = true)
         assertFalse(teleLast.useJpeg)
         assertFalse(teleLast.useVendorOperationMode)
+    }
+
+    @Test
+    fun `the deep pseudo-ZSL reader is a real rung on the logical photo route`() {
+        // The whole reason this rung exists. The runtime zslStreamingBroken fallback only covers a
+        // refused REPEATING SUBMIT, which presupposes configure already SUCCEEDED; a gralloc
+        // rejection of the ~5x19 MB deep reader lands in onConfigureFailed instead. On the logical
+        // camera the ordinary ladder had nothing to degrade there — RAW is already forced off, so
+        // attempt 1 was byte-identical to attempt 0, and in the shipping SDR session (wantHlg
+        // false) attempt 2 was identical too. Without this field a deep-reader rejection cost the
+        // session ALL stills; with it the first thing it costs is zero-lag serving and nothing else.
+        val logical = { attempt: Int ->
+            sessionAttemptPlan(
+                attempt = attempt,
+                wantHlg = false,
+                supportsRaw = true,
+                standalone = true,
+                logicalMultiCamera = true,
+            )
+        }
+
+        assertTrue(logical(0).useDeepZslReader)
+        assertFalse(logical(1).useDeepZslReader)
+        // Attempt 1 must now DIFFER from attempt 0 — it was a duplicate retry before this rung.
+        assertTrue(logical(0) != logical(1))
+        // ...and it must differ ONLY in the reader depth: nothing else may degrade this early.
+        assertEquals(logical(0).copy(useDeepZslReader = false), logical(1))
+        // Stills survive the degradation; only the shallow reader is asked for.
+        assertTrue(logical(1).useJpeg)
+    }
+
+    @Test
+    fun `deep-ZSL degradation is monotonic from the full-plan rung onward`() {
+        // Allocation pressure does not go away mid-ladder, so once the deep reader has been dropped
+        // it must never be re-offered — including on the TELE table, whose attempt 3 re-runs the
+        // FULL stream plan in the regular operation mode (inert there, since TELE is
+        // standalone/HAL-JPEG, but the rule is expressed once rather than per route).
+        //
+        // Measured from the FULL-PLAN rung, not attempt 0: the hi-res rung is PREPENDED and carries
+        // no deep reader, so a `false → true` step across that boundary is the ladder starting, not
+        // re-deepening under pressure. (The two can never coexist anyway — hi-res is standalone-only,
+        // the deep reader logical-only.)
+        listOf(false, true).forEach { tele ->
+            listOf(false, true).forEach { hiRes ->
+                var seenFalse = false
+                for (attempt in 0..maxSessionAttempt(tele, hiRes)) {
+                    val plan = sessionAttemptPlan(
+                        attempt = attempt,
+                        wantHlg = true,
+                        supportsRaw = true,
+                        standalone = true,
+                        teleconverterMode = tele,
+                        wantHiRes = hiRes,
+                    )
+                    if (plan.useHiResStill) continue
+                    if (!plan.useDeepZslReader) {
+                        seenFalse = true
+                    } else {
+                        assertFalse("re-deepened at attempt $attempt (tele=$tele hiRes=$hiRes)", seenFalse)
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `the hi-res rung never carries the deep ZSL reader`() {
+        // They can never coexist anyway (hi-res is standalone-only, the deep reader logical-only),
+        // and stacking a 200MP blob on a 5-deep full-res ring is exactly the over-demanding combo
+        // the ladder exists to avoid. The deep rung simply moves to the full plan at attempt 1.
+        val hiResRung = sessionAttemptPlan(0, wantHlg = true, supportsRaw = true, standalone = true, wantHiRes = true)
+        assertTrue(hiResRung.useHiResStill)
+        assertFalse(hiResRung.useDeepZslReader)
+        assertTrue(
+            sessionAttemptPlan(1, wantHlg = true, supportsRaw = true, standalone = true, wantHiRes = true)
+                .useDeepZslReader,
+        )
     }
 
     @Test
