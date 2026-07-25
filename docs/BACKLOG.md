@@ -116,12 +116,14 @@ These do not require a code or metadata change unless the result exposes a defec
 
 - Record the same real scene with Sound Focus/Stage on and off, then compare off-axis rejection.
   Camera/HAL parameter acceptance is verified; the acoustic effect needs ears and a suitable scene.
-- Capture a clearly upright subject while deliberately holding the phone in portrait and both
-  landscape directions. Confirm HEIF display orientation and DNG EXIF orientation in saved files.
-  Rotation math and flat-phone orientation retention are unit-tested; this closes the final visual
-  output check. Also confirm a held-landscape VIDEO clip in an external gallery (the muxer
-  orientation-hint SIGN is unverified — `RotationMath.videoOrientationHint` pins the current
-  mapping and is the one place to flip if wrong).
+- **RESOLVED 2026-07-25 — the held-orientation STILL matrix is device-verified (and it caught the
+  cycle-6 MAJOR for real):** the pre-fix `+dev` matrix saved a landscape-held rear still 180°
+  rotated (laptop shot, keyboard-up); after a209830 (BACK −dev / FRONT +dev, dev being GyroEis
+  CCW-positive) the full matrix passed on device: rear portrait ✓, rear landscape LEFT-90 ✓ and
+  RIGHT-90 ✓ (room shots, both upright with landscape dims), front portrait ✓, front landscape ✓
+  (one direction; the other follows algebraically). REMAINING residual: a held-landscape VIDEO
+  clip in an external gallery — `RotationMath.videoOrientationHint` now carries the same
+  device-confirmed −dev/+dev term, but the container-hint playback check itself has not been run.
 - Added by review-plan-fix cycles 2-4 (2026-07-17/18 runs):
   P-mode brightness-target judgment in a lit room (QA-3); EIS warp-band re-confirmation per the
   established lit-scene frame-extraction method (QA-4); a long-exposure bisect of the LOGICAL

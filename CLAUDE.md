@@ -252,10 +252,14 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   the GL renderer adds **only the afocal 180°** in tele mode (`CameraEngine.previewRotationDegrees()`
   returns 180 in tele, 0 otherwise) — NOT `±sensorOrientation` (both 270° and 90° read 90° off on
   device). It still passes `sensorOrientation` to the renderer purely to pick the preview **aspect**
-  (the ~90° swaps displayed W/H). Captures rotate raw pixels by `sensorOrientation + afocal180 +
-  deviceOrientation(gravity)` (`captureRotationDegrees()`); HEIF pixel-rotates and DNG tags EXIF
-  orientation. `camera/RotationMath.kt` holds this as pure, unit-tested functions. A deliberately held,
-  lit portrait/landscape output check remains the final proof of visual uprightness.
+  (the ~90° swaps displayed W/H). Captures rotate raw pixels by `sensorOrientation + afocal180 −
+  deviceOrientation(gravity)` (`captureRotationDegrees()`; FRONT = `sensor + dev`) — the gravity
+  term is GyroEis CCW-POSITIVE, so it SUBTRACTS on the rear (device-bisected 2026-07-25: the old
+  `+dev` saved every landscape-held rear still 180° rotated; portrait, dev=0, was silently fine).
+  HEIF pixel-rotates and DNG tags EXIF orientation. `camera/RotationMath.kt` holds this as pure,
+  unit-tested functions. DEVICE-VERIFIED 2026-07-25: rear portrait + BOTH rear landscape
+  directions + front portrait + front landscape all upright. The muxer hint carries the same
+  −dev/+dev term; its external-player playback check is the one remaining rotation residual.
 - **Device orientation only updates while the phone is HELD.** `GyroEis.currentDeviceOrientation()`
   derives 0/90/180/270 from gravity, but when the phone is **flat** the in-plane gravity is ~0 and
   `atan2(x,y)` is noise — so it updates the discrete value only when `hypot(x,y) > FLAT_GRAVITY_
