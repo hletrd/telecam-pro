@@ -180,9 +180,13 @@ class PerformQuickFnTest {
     @Test
     fun `cycle slots advance one step through the shared cycle order`() {
         val idle = CameraUiState()
+        // The video-only cycles need a VIDEO state: performQuickFn re-checks quickFnEnabled, which
+        // now carries fnSlotAppliesTo — in photo these taps mutated video settings that could not
+        // affect the still (and STABILIZATION's chip then contradicted the OSD's OIS reading).
+        val idleVideo = idle.copy(mode = CaptureMode.VIDEO)
         assertEquals(
             listOf("onVideoStabMode(${VideoStabMode.OFF})"),
-            dispatched(FnSlot.STABILIZATION, idle), // default ENHANCED -> OFF
+            dispatched(FnSlot.STABILIZATION, idleVideo), // default ENHANCED -> OFF
         )
         assertEquals(listOf("onDriveMode(${DriveMode.BURST})"), dispatched(FnSlot.DRIVE, idle))
         assertEquals(listOf("onGridType(${GridType.GOLDEN})"), dispatched(FnSlot.GRID, idle))
@@ -190,11 +194,15 @@ class PerformQuickFnTest {
             listOf("onFrameLines(${FrameLineType.CINEMA})"),
             dispatched(FnSlot.FRAME_LINES, idle),
         )
-        assertEquals(listOf("onTransfer(${ColorTransfer.SLOG3})"), dispatched(FnSlot.TRANSFER, idle))
+        assertEquals(listOf("onTransfer(${ColorTransfer.SLOG3})"), dispatched(FnSlot.TRANSFER, idleVideo))
         assertEquals(
             listOf("onAudioScene(${AudioScene.SOUND_FOCUS})"),
-            dispatched(FnSlot.AUDIO_SCENE, idle),
+            dispatched(FnSlot.AUDIO_SCENE, idleVideo),
         )
+        // And the same taps are inert in photo, where none of them can change the capture.
+        assertEquals(emptyList<String>(), dispatched(FnSlot.STABILIZATION, idle))
+        assertEquals(emptyList<String>(), dispatched(FnSlot.TRANSFER, idle))
+        assertEquals(emptyList<String>(), dispatched(FnSlot.AUDIO_SCENE, idle))
     }
 
     @Test

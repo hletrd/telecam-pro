@@ -1265,11 +1265,13 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
         enabled = state.rememberSettings,
     )
     SectionHeader("Photo Fn")
-    FnSlotEditor(selected = state.photoFnSlots, onSet = actions::onSetPhotoFnSlots)
+    // Each shooting list only offers slots that can act in ITS mode (fnSlotAppliesTo). My Menu is a
+    // settings surface, not a shooting one, so it keeps the full set.
+    FnSlotEditor(selected = state.photoFnSlots, mode = CaptureMode.PHOTO, onSet = actions::onSetPhotoFnSlots)
     SectionHeader("Video Fn")
-    FnSlotEditor(selected = state.videoFnSlots, onSet = actions::onSetVideoFnSlots)
+    FnSlotEditor(selected = state.videoFnSlots, mode = CaptureMode.VIDEO, onSet = actions::onSetVideoFnSlots)
     SectionHeader("My Menu")
-    FnSlotEditor(selected = state.myMenuSlots, onSet = actions::onSetMyMenuSlots)
+    FnSlotEditor(selected = state.myMenuSlots, mode = null, onSet = actions::onSetMyMenuSlots)
     SectionHeader("Keys")
     // This one assignment governs the camera button's FULL press AND the volume keys
     // (MainActivity routes both to it) — say so in the label (cycle-6 D-13).
@@ -1299,7 +1301,7 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
 }
 
 @Composable
-private fun FnSlotEditor(selected: List<FnSlot>, onSet: (List<FnSlot>) -> Unit) {
+private fun FnSlotEditor(selected: List<FnSlot>, mode: CaptureMode?, onSet: (List<FnSlot>) -> Unit) {
     val normalized = selected.distinct().take(8)
     if (normalized.isNotEmpty()) {
         normalized.forEachIndexed { index, slot ->
@@ -1323,7 +1325,9 @@ private fun FnSlotEditor(selected: List<FnSlot>, onSet: (List<FnSlot>) -> Unit) 
             )
         }
     }
+    // A null [mode] means "no shooting mode owns this list" (My Menu) and offers everything.
     val available = FnSlot.entries.filterNot { it in normalized }
+        .filter { mode == null || fnSlotAppliesTo(it, mode) }
     available.forEach { slot ->
         // Button-role action row, not a Switch: the old ToggleRow's checked state could never be
         // true (an added slot leaves this list), so TalkBack announced "Off" for what is an add

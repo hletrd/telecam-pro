@@ -16,7 +16,9 @@ import org.junit.Test
  */
 class QuickFnEnabledTest {
 
-    private val idle = CameraUiState(isRecording = false, videoCodec = VideoCodec.HEVC)
+    // Video mode: the session-reconfiguring slots below are video-only (fnSlotAppliesTo), so an
+    // idle PHOTO baseline would be testing the mode gate rather than the mid-REC gate.
+    private val idle = CameraUiState(isRecording = false, videoCodec = VideoCodec.HEVC, mode = CaptureMode.VIDEO)
     private val recording = CameraUiState(isRecording = true, videoCodec = VideoCodec.HEVC)
 
     @Test
@@ -24,6 +26,36 @@ class QuickFnEnabledTest {
         for (slot in listOf(FnSlot.TRANSFER, FnSlot.TELECONVERTER, FnSlot.STABILIZATION, FnSlot.AUDIO_SCENE)) {
             assertTrue("$slot idle", quickFnEnabled(slot, idle))
             assertFalse("$slot recording", quickFnEnabled(slot, recording.copy(mode = CaptureMode.VIDEO)))
+        }
+    }
+
+    @Test
+    fun `video-only slots dim in photo wherever they appear`() {
+        // A Photo Fn list persisted before the editor filter existed — and My Menu, which keeps
+        // every slot by design — can still contain these. STABILIZATION is the sharp case: it reads
+        // videoStabMode (Off/Standard/Active) while a photo's stabilization is controls.oisEnabled,
+        // which the OSD reports as OIS OFF, so a hot chip could contradict the OSD for one frame.
+        for (slot in listOf(FnSlot.STABILIZATION, FnSlot.TRANSFER, FnSlot.AUDIO_SCENE, FnSlot.OPEN_GATE)) {
+            assertFalse("$slot in photo", quickFnEnabled(slot, idle.copy(mode = CaptureMode.PHOTO)))
+            assertTrue("$slot in video", quickFnEnabled(slot, idle))
+        }
+        // Slots that act in both modes are untouched by the new axis.
+        for (slot in listOf(FnSlot.ISO, FnSlot.WB, FnSlot.FOCUS, FnSlot.TELECONVERTER)) {
+            assertTrue("$slot in photo", quickFnEnabled(slot, idle.copy(mode = CaptureMode.PHOTO)))
+        }
+    }
+
+    @Test
+    fun `the Fn editor offers only the slots its list can act on`() {
+        for (slot in listOf(FnSlot.STABILIZATION, FnSlot.TRANSFER, FnSlot.AUDIO_SCENE, FnSlot.OPEN_GATE)) {
+            assertFalse("$slot", fnSlotAppliesTo(slot, CaptureMode.PHOTO))
+            assertTrue("$slot", fnSlotAppliesTo(slot, CaptureMode.VIDEO))
+        }
+        for (slot in FnSlot.entries - setOf(
+            FnSlot.STABILIZATION, FnSlot.TRANSFER, FnSlot.AUDIO_SCENE, FnSlot.OPEN_GATE,
+        )) {
+            assertTrue("$slot photo", fnSlotAppliesTo(slot, CaptureMode.PHOTO))
+            assertTrue("$slot video", fnSlotAppliesTo(slot, CaptureMode.VIDEO))
         }
     }
 

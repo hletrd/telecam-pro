@@ -207,6 +207,25 @@ internal fun nextAspect(ratio: AspectRatio): AspectRatio = when (ratio) {
 }
 
 /**
+ * Whether [slot] can do anything at all in [mode] — the axis the Fn slot EDITOR must filter on.
+ * It offered all 20 slots to all three lists (Photo Fn / Video Fn / My Menu), which put four
+ * video-only slots into a Photo Fn list where they are inert or, worse, contradictory:
+ *  - OPEN_GATE renders permanently disabled ([quickFnEnabled] requires VIDEO) — a slot the user
+ *    can add that can never work.
+ *  - TRANSFER and AUDIO_SCENE mutate video-only settings; the chip value changes and nothing about
+ *    the still does.
+ *  - STABILIZATION reads `videoStabMode` (Off/Standard/Active) while the stabilization a PHOTO
+ *    actually applies is `controls.oisEnabled`, which the OSD reports as `OIS OFF` — so the chip
+ *    could read "Active" while the OSD read "OIS OFF" for the same frame.
+ * My Menu is a settings surface rather than a shooting one, so it keeps every slot.
+ */
+internal fun fnSlotAppliesTo(slot: FnSlot, mode: CaptureMode): Boolean = when (slot) {
+    FnSlot.OPEN_GATE, FnSlot.TRANSFER, FnSlot.AUDIO_SCENE, FnSlot.STABILIZATION ->
+        mode == CaptureMode.VIDEO
+    else -> true
+}
+
+/**
  * Per-slot availability for every quick-Fn surface (Fn overlay, My Menu, Recent rows). One shared
  * predicate: the Fn overlay dimmed-and-guarded these slots while My Menu's rows were always-hot —
  * the one path in the app that could toggle the teleconverter (the afocal 180° flip, live into
@@ -221,8 +240,12 @@ internal fun nextAspect(ratio: AspectRatio): AspectRatio = when (ratio) {
  * not yet caught up to. Slots with no `else` branch (EXPOSURE_MODE/FOCUS/SHUTTER/ISO/WB/EV/ZOOM/
  * DRIVE/METERING and the pure-overlay toggles) are genuinely REC-safe: they only rewrite Camera2
  * request-level values or app-side overlay state, never a session/profile reopen.
+ *
+ * It ALSO carries [fnSlotAppliesTo], so a video-only slot dims in photo wherever it appears — the
+ * Fn editor's new filter only governs what can be ADDED, and My Menu plus every already-persisted
+ * photo Fn list can still contain one.
  */
-internal fun quickFnEnabled(slot: FnSlot, state: CameraUiState): Boolean = when (slot) {
+internal fun quickFnEnabled(slot: FnSlot, state: CameraUiState): Boolean = fnSlotAppliesTo(slot, state.mode) && when (slot) {
     FnSlot.TRANSFER -> !state.isRecording && state.videoCodec == VideoCodec.HEVC
     // The TC toggle is a rear-only optics door: onToggleTeleconverter also refuses while FRONT
     // (backOpticsDoorRefusal), so the tile must dim on the selfie route or it renders hot and
