@@ -2,21 +2,34 @@
 
 Current release board. Read after `CLAUDE.md`; use `ARCHITECTURE.md` for implementation details.
 Historical investigation notes are snapshots under `docs/reviews/` and `.context/reviews/`, not
-active TODO lists. Last synced by [review-plan-fix Cycle 6](plans/2026-07-23-rpf-cycle6.md)
-(2026-07-23); per-file history via `git log -- docs/BACKLOG.md`.
+active TODO lists. Last synced 2026-07-25 (cycle 8, plus the namespace/SDK-removal and rotation doc passes);
+per-file history via `git log -- docs/BACKLOG.md`.
 
 ## Release State
 
-Version 1.0 (`versionCode=1`) is a release candidate, **not currently ready for upload**. Source has
-changed since the recorded 2026-07-10 artifact, so the path below and its old hash are historical
-until a new signed bundle is generated and all current release evidence is refreshed:
+Version 1.0 (`versionCode=1`). **A signed, validated v1 artifact EXISTS and its release-device
+matrix PASSED** — but it is frozen on a source lineage `main` has since left, so upload is an owner
+DECISION, not a blocked gate.
 
-`app/build/outputs/bundle/release/app-release.aab`
-
-`docs/play-console-submit.md` marks the old SHA-256 **DO NOT UPLOAD**. Before Play submission, re-run
-the complete debug/release gates, regenerate and validate/sign-check/align-check the AAB/APK, update
-that sheet with the new hashes, and run the current PMA110 release-device matrix. The current-cycle
-PMA110 and release-artifact evidence is **NOT RUN / pending**.
+- **The artifact:** built 2026-07-25 from the dedicated release worktree `.claude/worktrees/release-v1`
+  at `9541697`. `bundletool validate`, `jarsigner -verify`, APK v2 signing, and 16 KiB alignment all
+  passed, and the PMA110 release matrix passed the same day (photo / TELE DNG / video / persistence /
+  permission flow, zero app crashes or ANRs). Exact hashes, the upload certificate, and matrix detail
+  live in `docs/play-console-submit.md` — that sheet is the single home for artifact identity; do not
+  copy hashes here.
+- **Why it is not simply "upload it":** `main` has moved past `9541697` — most consequentially the
+  Kotlin namespace move (`6ae3979`, `com.hletrd.findx9tele` → `me.hletrd.findx9tele`), which changes
+  every class name and the launcher activity component in a release build. `applicationId` is
+  unchanged (`me.hletrd.telecampro`), so Play identity is unaffected. The `com.oplus.ocs` removal
+  (`2b4bc55`) was `debugImplementation`-only and does NOT change release bytes. Cycle-8
+  responsiveness, the pseudo-ZSL ring, and the focus-confidence detector are all post-`9541697` and
+  deliberately excluded from v1.
+- **The one hard blocker either way:** all six Play phone screenshots are STALE / DO-NOT-UPLOAD. The
+  console sequence cannot complete until they are recaptured from whichever exact candidate ships.
+- **Owner decision:** (a) ship the frozen `9541697` artifact as v1 — nothing more to build, recapture
+  screenshots and go; or (b) re-cut v1 from `main`, which requires a new signed AAB, a fresh hash
+  block in `docs/play-console-submit.md`, and a re-run PMA110 matrix, because the namespace move
+  invalidates the "same source lineage" evidence basis.
 
 ### Verified 2026-07-10
 
@@ -81,11 +94,11 @@ PMA110 and release-artifact evidence is **NOT RUN / pending**.
   correlation 0.992, span ratio ~0.87. Older "Verified" video entries in this file predate this
   finding — their container/codec facts stand, their implied framing does not.
 
-### Landed 2026-07-25 — cycle 8 responsiveness (unit-verified; device evidence PENDING)
+### Landed 2026-07-25 — cycle 8 responsiveness (device-verified except the focus tag)
 
 Plan: [`plans/2026-07-25-rpf-cycle8.md`](plans/2026-07-25-rpf-cycle8.md); live status in
-`.context/cycle8/status.md`. All slices gate-green (incl. coverage A ≥ 99.5%), device
-verification not yet run:
+`.context/cycle8/status.md`. All slices gate-green (incl. coverage A ≥ 99.5%). Device evidence was
+received 2026-07-25 for slices 1, 2 and 4; slice 3's own check ran and is recorded in place below:
 
 1. **Preview brightness simulation** — AE-OFF previews ride a 1/15 s fluidity cap
    (`PREVIEW_FLUIDITY_MAX_EXPOSURE_NS`); the residual shortfall past ISO headroom renders as
@@ -121,10 +134,14 @@ verification not yet run:
    MUST include bokeh — a sharp subject on a blurred background — plus flat, dark, grainy, and
    motion-blurred scenes. Until then the FRAME_DETAIL path is effectively dormant on this device
    and `AF_LIMIT` remains the only live proof (itself unreachable on TELE).
-4. **Pseudo-ZSL S4a spike (debug-only)** — `DEBUG_ZSL_SPIKE` broadcast streams the full-res
-   logical YUV reader on the repeating request with fps logs (stills refused while on); the S4b
-   pick-latest ring is GATED on this measurement. The ZSL probe found YUV/PRIVATE reprocessing
-   ADVERTISED on cams 0–5 (evidence: `.context/cycle8/zsl-probe-2026-07-25.md`).
+4. **Pseudo-ZSL — S4a measured, S4b LANDED.** S4a soak and S4b serve numbers are recorded once, in
+   CLAUDE.md's pseudo-ZSL bullet; the ring shipped as `4ec42c0` (pure admission seam) + `7ffb406`
+   (3-deep ring, inline serve, exact-timestamp adoption), and the debug toggle is now fps-logging
+   only. **The dark-shot refusal is the accepted design, not an open defect.** A session-ladder rung
+   later made the deep reader degradable (`SessionAttemptPlan.useDeepZslReader`) so a gralloc
+   rejection of the ~5×19 MB allocation costs zero-lag serving instead of all stills. The ZSL probe
+   also found YUV/PRIVATE reprocessing ADVERTISED on cams 0–5 (evidence:
+   `.context/cycle8/zsl-probe-2026-07-25.md`) — see the true-ZSL deferral below.
 
 ## Before Production
 
@@ -178,21 +195,12 @@ These do not require a code or metadata change unless the result exposes a defec
   the new PORTRAIT-buffer video files in external galleries (orientation-hint sign, U1).
 - Added by review-plan-fix cycle 6 (2026-07-23; the phone was desk-bound via a remote proxy this
   cycle, so every held-device item below is NEEDS-HUMAN):
-  - **RELEASE-GATING — capture-rotation device-orientation term sign A/B, BOTH facings.** Cycle-6
-    debugger F1: a pure-math derivation from the device-confirmed GyroEis CCW-positive convention
-    (`atan2(x, y)` → CCW/left landscape yields dev=90; independently anchored by the 2026-07-08
-    device-confirmed `+dev` glyph counter-rotation) concludes the standard Camera2 formulas in
-    GyroEis terms are BACK = sensor − dev and FRONT = sensor + dev —
-    `RotationMath.captureRotationDegrees` has the device term's sign exactly swapped for BOTH
-    facings. If correct, every LANDSCAPE-held still saves 180° rotated (portrait and upside-down
-    portrait are unaffected, which is why no field check has ever caught it), and
-    `RotationMath.videoOrientationHint` shares the question (likely needs `(360 − dev) % 360`, and
-    it has no front-facing branch — code-reviewer F1). Per the repo's device-verification rule the
-    sign flip did NOT land this cycle. Exact check: in a lit scene, DELIBERATELY hold the phone in
-    both landscape directions (rear, then front), capture stills (HEIF + DNG where eligible) and a
-    short clip each, and inspect in an EXTERNAL gallery. If landscape stills display 180° rotated,
-    flip the device-orientation term in `captureRotationDegrees` (one seam + its test matrix) and
-    re-run the comparison.
+  - **RESOLVED 2026-07-25 — capture-rotation device-orientation term sign, BOTH facings.** Cycle-6
+    debugger F1 was CORRECT: the signs were swapped. `a209830` landed BACK = sensor − dev and
+    FRONT = sensor + dev (dev being the GyroEis CCW-positive gravity read), and the held matrix
+    passed on device — see the RESOLVED entry above for the evidence.
+    `RotationMath.videoOrientationHint` carries the same term; only its EXTERNAL-PLAYER playback
+    check remains open (below).
   - **Front VIDEO file mirror truth.** Front STILL mirror truth WAS device-verified 2026-07-23
     (cycle-6 QA: a pulled front JPEG showed legible, unreversed "LG/WHISEN" text after a viewing
     180° — the saved file keeps the true scene). The encoder un-mirror path is shared with video,
@@ -263,7 +271,9 @@ These do not require a code or metadata change unless the result exposes a defec
 - **TELE pseudo-ZSL (cycle-8 deferral):** the ring design targets the LOGICAL photo route only;
   the standalone TELE keeps its proven HAL-JPEG capture. Extending ZSL there needs a full-res YUV
   repeating target INSIDE the vendor 0x80b4 session — a session-shape change on the proven TELE
-  path. Reassess only after the S4a streaming-spike evidence and with an explicit session plan.
+  path. The S4a streaming evidence now exists (cycle 8 above) and the LOGICAL ring has shipped; what still
+  gates TELE is the session-shape change alone — a full-res YUV repeating target INSIDE the vendor
+  0x80b4 session. Reassess only with an explicit device session plan.
 - **True ZSL via reprocessable session (cycle-8 deferral):** YUV_REPROCESSING/PRIVATE_REPROCESSING
   are ADVERTISED on cameras 0–5 (`maxNumInputStreams=1`, YUV/PRIVATE 4096×3072 INPUT → JPEG/YUV;
   probe: `.context/cycle8/zsl-probe-2026-07-25.md`), but an input stream is a new session shape on
@@ -307,6 +317,11 @@ adb connect <device-ip>:<port>
 adb install -r app/build/outputs/apk/release/app-release.apk
 adb shell am start -n me.hletrd.telecampro/me.hletrd.findx9tele.MainActivity
 ```
+
+The component above is correct for `main`. The pinned v1 release artifact PREDATES the namespace
+move, so an APK built from `.claude/worktrees/release-v1 @ 9541697` launches
+`me.hletrd.telecampro/com.hletrd.findx9tele.MainActivity` instead. The applicationId is identical in
+both, so the mismatch surfaces only as a silent "activity not found".
 
 The wireless-debugging port changes by session. On this multi-homed Mac, direct ADB can report
 `No route to host`; proxy the current phone port to a temporary loopback port, connect to

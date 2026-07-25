@@ -125,6 +125,22 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   4080×3064. `StillSnapshot` repacks YUV_420_888→NV21 on the camera thread and JPEG-encodes lazily
   on the io thread; standalone cameras keep the proven HAL-JPEG path. A capture watchdog
   (`CAPTURE_WATCHDOG_FLOOR_MS` + the exposure-aware margin) fails any shot whose image never arrives so the shutter can never wedge.
+- **Pseudo-ZSL on the LOGICAL photo route: bright shots serve a buffered frame, dark shots
+  deliberately do NOT (2026-07-25).** That route's full-res YUV still reader also streams on the
+  REPEATING request (`zslStreamingActive`), and a 3-deep ring pairs frames with their
+  `TotalCaptureResult` by exact `SENSOR_TIMESTAMP`. S4a soak, device-measured: **29–31 fps lit /
+  14–16 fps at the dark fluidity cap over 5-minute soaks, zero FrameGap stalls ≥200 ms, zero camera
+  errors, +0.3 °C battery.** S4b serve check, device-measured: **a lit 1× photo served 4/4 shutter
+  presses at 0 ms delivery lag**; a dark M-mode 2 s shot served **none** and ran a real capture whose
+  EXIF read a true 2.0 s. **The dark refusal is the DESIGN, not a gap — the user has explicitly
+  accepted it.** `ZslAdmission.kt` admits a buffered frame only when its ACTUAL sensor values match
+  the still's INTENDED values within 1/6 stop (plus zoom within 2 %, age < 250 ms, app-side AE-OFF,
+  processed-only, no AE-flash, no live gesture); in low light the fluidity cap deliberately diverges
+  the preview from intent, so admission MUST fail and a full-quality real capture MUST run. **Do not
+  "fix" the dark path by widening the tolerance** — that silently trades the user's exposure for
+  latency. SINGLE drive only (`allowZsl = !singleShot` excludes the in-REC snapshot);
+  TELE/standalone/video/burst/AEB/front are untouched and keep the legacy blind-adopt path
+  byte-for-byte.
 - **Seamless zoom = the logical camera, PHOTO ONLY (2026-07-14).** Camera 0 (`logicalMultiCamera`,
   physIds 3/2/4/5) spans zoomRatio 0.6–20 with HAL-internal lens crossing — pinch never reopens.
   Lens picks are zoom presets; TELE pins standalone 4 (digital 1–10×) and OFF returns to logical at
@@ -205,8 +221,11 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   would ratchet the intended exposure), while files and the STILL request never see any of it.
   `PREVIEW_SAFE_MAX_EXPOSURE_NS` (500 ms) REMAINS as the outer safety invariant (PROGRAM keeps its
   1/30 s neutral trade target; the pre-fix trade SKIPPED entirely at the ISO ceiling, which is
-  exactly how 6.3 s reached the wire in the dark). Brightness-sim appearance is
-  DEVICE-VERIFICATION-PENDING (cycle 8). (2) With the repeating
+  exactly how 6.3 s reached the wire in the dark). Brightness-sim appearance is DEVICE-VERIFIED
+  2026-07-25: on a dark desk the FrameGap went 500 ms → ~66 ms sustained (a fluid ≥15 fps finder),
+  and an M-mode 2 s want-exposure held that 66 ms cadence at full simulated brightness (mid-band
+  luma 255) while the saved still's EXIF read a TRUE ExposureTime 2.0 s / ISO 1600 — the simulation
+  never reached the file. (2) With the repeating
   stream safely short, a STILL request above 4 s STILL errors the device the same way — the
   advertised exposure upper (≥20 s) is a lie; 2/3.2/4 s complete with correct EXIF, 5/6.3 s are
   reproducibly fatal. `HAL_SAFE_MAX_STILL_EXPOSURE_NS` (4 s) clamps the advertised range at the
@@ -300,7 +319,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   ≤0.6-stop errors keep the user-tuned 0.30 smoothness ceiling, big scene changes converge in ~9
   ticks instead of ~17, and steps stay strictly below the remaining error (no overshoot); the loop
   meters the SIMULATED (gain-compensated) luma so a fluidity-capped dark preview cannot ratchet the
-  intended exposure.
+  intended exposure. DEVICE-VERIFIED 2026-07-25: a 4.6-stop dark↔lit flip converged in ~2 s with zero
+  breathing at rest, settling on wire ISO 9052 / 66.7 ms — the wire ISO sitting ABOVE the user's
+  1600 is the fluidity trade working as designed, not a bug.
 - **Controls apply is a THROTTLE, not a debounce.** `CameraViewModel.updateControls` applies the newest
   value every 40 ms (25 Hz) *while* a gesture continues (a debounce starved: continuous pinch reset the
   timer so zoom only landed on finger-up; the earlier 80 ms window quantized the hardware slide-zoom
@@ -319,9 +340,10 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   since the 07-14 TELE-only RAW gating, TELE DNG is **4096×3072, 16-bit** — standalone cam 4's
   advertised RAW16 array, device-measured 2026-07-24 by `tele_dng_parity`). A 4K HLG clip was HEVC Main10
   3840×2160 at 30000/1001 with AAC 48 kHz stereo; Open Gate produced HEVC Main10 2560×1920 4:3 at
-  30000/1001 with AAC. The release smoke test had no crash or ANR. **Saved-file uprightness in a
-  deliberately held, lit portrait/landscape pose remains a residual field check** — see
-  `docs/BACKLOG.md`.
+  30000/1001 with AAC. The release smoke test had no crash or ANR. Saved-STILL uprightness in
+  deliberately held poses is CLOSED (device-verified 2026-07-25 — see the rotation bullet above);
+  the only rotation residual left is the muxer orientation hint's playback check in an EXTERNAL
+  player. See `docs/BACKLOG.md`.
 - **Photo and video AUTO use different target-FPS policies.** A fixed `[30,30]` range blocks photo
   AE from extending exposure in low light, so photo AUTO uses `CameraCaps.autoFpsRange()` with the
   lowest available floor. Video AUTO must hold the selected recording cadence: without that pin, a
@@ -345,7 +367,13 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   tele **0.833 dpt (120 cm)**. The predicate is KEPT (it proves strictly more, and it is live on the
   honest lenses); the missing coverage is supplied by the app's own pixels instead — see below.
 - **The frame-detail detector proves "unresolved", NOT "too close" (`gl/FocusDetail.kt`,
-  host-tested, DEVICE-VERIFICATION-PENDING).** Because of the false-lock above, focus confidence is
+  host-tested; DEVICE-CHECKED 2026-07-25 — it MISSES the case it was built for, and that is
+  DELIBERATELY LEFT AS IS).** The contract is "may miss, must never false-fire", so a miss does not
+  violate it; relaxing the threshold was tried and REVERTED because it false-fires on
+  shallow-depth-of-field shots, which for a 300 mm telephoto app are the normal photograph. Measured
+  votes, the exact binding constraint, and the deferred way to close it properly live in ONE place —
+  `docs/BACKLOG.md` cycle 8, item 3. Do not re-run the check expecting a defect. Because of the
+  false-lock above, focus confidence is
   measured from the **existing** scopes/AE analysis readback (no second readback, no new GL pass —
   it is a pure CPU **rider** that computes only when that readback already runs, so it is silent in
   video-P / flash-metered P where none does). Per 16×16 tile, per axis, it takes the RMS **second
@@ -375,8 +403,8 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
 - **Aspect ratio is only 4:3 or 16:9.** The sensor is 4:3-native: `AspectRatio.W4_3` = full readout
   (no crop, the default + the no-crop sentinel), `W16_9` = its center crop. Full/1:1/portrait removed.
 - **Front (selfie) camera is a first-class optics door with BASIC scope (2026-07-22; mirror roles
-  device-diagnosed 2026-07-23 — only the capture-ROTATION sign remains
-  DEVICE-VERIFICATION-PENDING).** `CameraEngine.setFrontCamera` is a full generation-owned
+  device-diagnosed 2026-07-23; capture-ROTATION sign device-bisected and verified 2026-07-25).**
+  `CameraEngine.setFrontCamera` is a full generation-owned
   transaction (never a transaction-less close/open): entering FRONT forces the teleconverter off in
   the same publication, resets zoom to front-lens-local 1×, and reconfigures onto
   `CameraSelector2.pickFront` (enumerated LENS_FACING_FRONT, plain-id-preferred, largest array on
@@ -488,9 +516,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   with the SDK, 495 ms without). Do NOT re-quote the release-vs-debug gap (354 ms vs 535 ms) as the
   SDK's cost — that number is debug-BUILD overhead in general and the SDK is only a small part of
   it; the isolated A/B above is the honest figure. The decisive cost was not milliseconds but the
-  200+ log rows it emitted inside the cold-start window, blowing ColorOS's 300-row per-process
-  quota (`LOG_FLOWCTRL ... DROPPED`) and silently eating our own `StartupTrace` instrumentation —
-  a measurement tax that corrupted measurement. Like the 200 MP entry above: **do not re-probe without cause.** CameraUnit
+  200+ log rows it emitted inside the cold-start window, which blew the ColorOS log quota (see that
+  bullet below) and silently ate our own `StartupTrace` instrumentation — a measurement tax that
+  corrupted measurement. Like the 200 MP entry above: **do not re-probe without cause.** CameraUnit
   remains a legitimate deferred OPTION; the full re-enable order (registration → issued AUTH_CODE →
   restore dependency/repo/catalog/verification-metadata → build flag → re-measure) is in the
   "Authenticated CameraUnit path" entry under Deferred Beyond v1 in `docs/BACKLOG.md`. Restore from
@@ -634,6 +662,38 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   `COMPLETE` marker remain synchronous while the RAW `Image` is valid; `saveDng` returns a frozen
   `PendingDngPublication`, and only `publishDng` (including resolver retry backoff and callbacks)
   runs on `ioExecutor`. Queue rejection keeps the complete pending row for launch recovery.
+- **ColorOS enforces a 300-row per-process log quota — diagnostics that log per frame destroy the
+  diagnostics you actually need (device-observed 2026-07-25).** Past the cap the platform prints
+  `LOG_FLOWCTRL: LOGS OVER PROC QUOTA(300) ... DROPPED` and silently eats everything else this
+  process emits. Two live consequences: (1) `GlPipeline`'s `FrameGap` line logs only gaps **>200 ms**,
+  not >50 ms — since the cycle-8 fluidity cap a dark preview runs at a DESIGNED 66.7 ms cadence, so
+  the old 50 ms rule fired ~15 rows/s and spent the whole quota in ~20 s, after which it ate the
+  startup trace and the focus-verdict trace outright; 200 ms still catches the ~180 ms
+  `setRepeatingRequest` stalls and real wedges, and normal cadence is not news. (2) `StartupTrace`
+  BUFFERS its marks and emits the whole cold start as ONE line at `finish()` — a requirement, not
+  tidiness: per-mark logging gets silently eaten before it reaches logcat. Same rule for the
+  `FocusConfidence` trace (change-gated + 2 s heartbeat). **Any new per-frame or per-tick log must be
+  change-gated or thresholded.** (This quota is also what made the removed OPPO CameraUnit SDK's
+  200+ startup rows decisive — see that bullet.)
+- **Cold start is instrumented, and the measured budget is `resume → first camera frame ≈ 544 ms`
+  (debug, 2026-07-25).** `camera/StartupTrace.kt` marks `openCamera → onOpened →
+  createCaptureSession → onConfigured → previewRequestBuilt → firstCameraResult` against a
+  `resume`-origin clock (resume is the earliest point the app itself owns). It is armed idempotently
+  at the first line of `CameraEngine.resume` and DISARMED on every path that returns without a real
+  open — an armed zero-mark trace was otherwise finished by the next ordinary `startPreview` rebuild
+  and printed a fabricated number. **The earlier "~1150 ms of HAL bring-up" figure is RETRACTED**: it
+  was an artifact of quota-dropped log rows (above), not a measurement — do not optimize against it.
+- **`FLASH_STATE` LIES about the torch, and preview LUMA is not a light meter in any AE-active mode
+  (2026-07-25).** This HAL reports `flashState = 3` (FIRED) on frames where the lamp is physically
+  dark, so "state != 3" is NOT a torch discriminator — only a human eye, or a luma read taken under
+  FIXED manual exposure with GL digital gain = 1, can tell. Independently: preview luma cannot
+  indicate scene light whenever an AE loop is running (HAL-AE or the app-side loop) — the loop's
+  whole job is to drive luma back to its target regardless of how much light there is. **The honest
+  indicator is the exposure/ISO the loop SETTLES at**, not the brightness it reaches. Post-cycle-8
+  there is a second trap in the same place: in AE-OFF modes the reported/analysis luma is the
+  digital-gain-SIMULATED signal (up to ×16) while HAL-AE video is unboosted, so raw luma is not even
+  comparable across modes. The DEBUG 3A line logs `flashMode` (what our request carried) and
+  `flashState` (what the HAL claims) so wire truth stays separable from lamp truth.
 - **Debug capability diagnostics queue behind initial camera work.** The debug-only broad capability
   and vendor-tag scan runs on `setupExecutor` only after the initial route/open task is enqueued, so
   diagnostics cannot delay the first Camera2 setup task.
@@ -659,6 +719,8 @@ CameraEngine ├─ CameraSelector2  pick tele (closest-to-70mm, standalone; pic
              │    └─ FocusDetail  pure curvature-ratio frame-detail metric (rides the readback)
              ├─ GyroEis          gravity roll + held-device orientation (GL shake warp disabled)
              ├─ AutoExposure     app-side S/ISO-priority AE loop (meters GL luma; pure+tested)
+             ├─ ZslAdmission     pure pseudo-ZSL serve/refuse predicate (logical photo route)
+             ├─ StartupTrace     buffered debug cold-start stopwatch (one line; quota-safe)
              ├─ focus/MacroProximity focus-confidence proofs + hold + OSD wording (pure+tested)
              ├─ capture/StillCapturePipeline (processed + RAW save orchestration)
              │    └─ HeifCapture (pixel-rotate/EXIF) + DngCapture (EXIF orient)

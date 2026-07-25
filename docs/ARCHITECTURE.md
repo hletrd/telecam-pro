@@ -49,11 +49,13 @@ Two critical consequences of the afocal converter drive the entire design:
 | `ProcessedSnapshotBudget.kt` | Android-free, thread-safe admission budget for retained processed still snapshots (one running SINGLE save plus one waiting full-resolution snapshot). |
 | `ControlAvailability.kt` | Projects those exact mode arrays, manual/range facts, and AE/AF region maxima into enum choices and admission flags shared by settings, top-bar/Fn cycles, and quick rulers. Sparse routes use a neutral singleton; before caps arrive, the current singleton remains visible but disabled. |
 | `ManualControls.kt` | Immutable snapshot of all pro capture parameters (focus, ISO, shutter, white balance, metering, processing). `normalizeControlsForRoute` applies one exact capability/zoom boundary to live and recalled packets before accepted Engine/UI/request publication. Also owns the sensor fast-path admission predicate (`sensorFastPathAdmitted`, wrapping `sensorOnlyControlsDelta` — a live tap-AF/AF-lock override rides the fast path and is re-applied, not refused), the retained-optics exact-controls/boost-off plan, and the shared sensor-key request derivation (`applySensorValueControls`). |
-| `RotationMath.kt` | Pure, unit-tested functions for preview/capture/EXIF rotation math and the video muxer orientation hint (extracted from CameraEngine). Capture rotation is facing-aware: BACK = sensor + afocal(tele) + device; FRONT = sensor − device with the afocal term never applied (sign device-verification-pending, like every rotation sign before it). |
+| `RotationMath.kt` | Pure, unit-tested functions for preview/capture/EXIF rotation math and the video muxer orientation hint (extracted from CameraEngine). Capture rotation is facing-aware: BACK = sensor + afocal(tele) − device; FRONT = sensor + device, with the afocal term never applied. The device term is GyroEis CCW-POSITIVE, which is why it subtracts on the rear and adds on the front (device-bisected and verified 2026-07-25). |
 | `RendererConfig.kt` | One immutable snapshot of every renderer-only assist (peaking, zebra, false color, punch-in, tele finder, …) with a store that replays the complete snapshot into each fresh GL generation. |
 | `RendererAssists.kt` | Owns `RendererConfigStore`, resolves Loupe Overview intent, and is the single setter/replay facade between CameraEngine and GlPipeline. Every setter records state before posting so a dropped old-generation GL command is restored by `replayAll()` on the next generation. |
 | `StandbyAudioController.kt` | Owns the armed-video standby meter lifecycle, bounded AudioRecord recreation, and exact `StandbyMeterOwnership` handoff to REC. All engine dependencies are live lambdas so a retired meter generation cannot reclaim a newer intent. |
 | `OpticsConstraints.kt` | Pure admission/rollback rules for optics transactions (mode/lens/TC transitions, structural-reconfigure decisions), unit-tested off-device. |
+| `ZslAdmission.kt` | Pure serve/refuse predicate for the LOGICAL-route pseudo-ZSL ring: a buffered frame is served only when its ACTUAL sensor values match the still's INTENDED values within 1/6 stop (plus zoom within 2%, age < 250 ms, app-side AE-OFF, processed-only, no AE-flash, no live gesture, SINGLE drive). Refusal in low light is the DESIGN — the fluidity cap deliberately diverges preview from intent there, so a real full-quality capture must run (see CLAUDE.md). |
+| `StartupTrace.kt` | Debug-only cold-start stopwatch against a `resume`-origin clock. BUFFERS its marks and emits ONE line at `finish()` because ColorOS's 300-row per-process log quota silently eats per-mark logging; armed idempotently in `CameraEngine.resume` and disarmed on every path that returns without a real open. |
 | `ZoomSubmitPlan.kt` | Pure HAL zoom-submit decision (throttle window + mid-gesture wide-aim clamp), extracted from `CameraEngine.setZoomRatio` and unit-tested. |
 | `RecordingAdmissionLatch.kt` | Monitor-owning REC stop-during-start latch (`tryBeginAdmission`/`requestStop`/`completeAdmission`), extracted from CameraEngine and race-tested. |
 | `RecordingTeardownCoordinator.kt` | Android-free terminal owner for encoder detach: arms independent recovery/hard deadlines before submission, admits recovery once, and selects exactly one strict finalization or quarantine while making rejection and late callbacks inert. |
@@ -62,6 +64,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | **gl/** | |
 | `GlPipeline.kt` | One object owns one native GL generation and checked preview/encoder EGLSurface lifetimes. Outgoing outputs are unbound before destruction; preview and encoder readiness publish only after a real swap. Each object owns and retires its analysis executor, busy gate, FBO/buffer snapshot, callbacks, and native fields. `stop()` reports STOPPED only when the thread exits and checked native-output release succeeds; timeout or unsafe release permanently ABANDONS the object. `CameraEngine` compare-and-swaps a fresh object into `AtomicOwnerSlot`, restarts it from a live foreground preview, captures the exact owner/input for every preview/Camera2/recorder transaction, and identity-gates late callbacks. `RendererAssists` resolves/replays config into the current object once per operation. Thus a leaked old handler can touch only its own retired EGL state, never replacement state. |
 | `FlipRenderer.kt` | Low-level OpenGL ES fullscreen quad renderer with texture-coordinate rotation (inverse of image rotation) to flip the 180° afocal image. Applies the SDR-to-HLG mapping or a log-profile encoding (S-Log3 / S-Log3.Cine / LogC3) in the fragment shader and handles focus peaking/zebra. A per-draw `mirrorX` selects the x-inverted attribute texcoord quad (pure `texCoordQuad`); which draws set it derives from `FrontMirrorConvention` — the PMA110 front HAL PRE-mirrors its stream (device-diagnosed 2026-07-23), so the PREVIEW draw never sets it and only the ENCODER/ANALYSIS draws do, un-mirroring files and scopes back to the true scene. |
+| `FocusDetail.kt` | Pure curvature-ratio frame-detail metric (RMS second difference at a fine lag vs coarse lags {4,8,16,32}, per 16x16 tile, per axis). Rides the EXISTING scopes/AE analysis readback as a CPU rider — no second readback, no new GL pass. Takes NO `lut` parameter by design, so the digital-gain display simulation cannot move an optics verdict. |
 | `FrontMirrorConvention.kt` | ONE authority for the front pre-mirrored-stream device fact (`FRONT_STREAM_PRE_MIRRORED`): derives the preview/encoder/analysis draw mirror roles and the tap display axis so a future re-diagnosis is a one-constant edit, never three drifting literals. |
 | `AtomicOwnerSlot.kt` | Identity-owned atomic slot for replaceable native-resource facades: a late completion may replace only the exact object it stopped, so a stale generation cannot displace its replacement. |
 | `EglCore.kt` | Checked EGL/GLES setup, binding, presentation, buffer swap, unbind, surface destruction, and display teardown. Supports a 10-bit config, while v1 deliberately starts the stable 8-bit config. |
@@ -76,7 +79,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `DngCapture.kt` | Writes DNG (RAW sensor frame) using DngCreator. Sets EXIF orientation tag (cannot pixel-rotate Bayer CFA). Synchronous in the photo callback while the raw Image is live. |
 | **video/** | |
 | `AudioReadPolicy.kt` | Pure classification of `AudioRecord.read` return codes (PCM / transient retry / normal stop / terminal failure) shared by the recorder loop and the standby meter, plus the meter's bounded-recreate budget rule. |
-| `VideoRecorder.kt` | MediaCodec HEVC/AVC encoder + AAC audio encoder + MediaMuxer. Exactly-once owner of the codec input Surface: clean release follows verified EGL detach and partial setup also releases. If detach cannot prove native release, an independent watchdog terminally quarantines the complete native graph process-long, ends Java/audio work without releasing codec/muxer/fd/Surface, and refuses another camera/REC graph until process restart. Video input comes from GL already flipped; audio runs separately with normalized software PCM gain. A mid-REC negative `AudioRecord.read` degrades to video-only; only VIDEO faults delete. The one tolerated sample-less-audio `muxer.stop()` failure is published only after native owners close and MediaExtractor reopens an actual video track. The encoder buffer takes `RotationMath.encoderSurfaceSize` — swapped to the DISPLAYED portrait aspect for the 90° sensor so `coverScale` records exactly the viewfinder field. |
+| `VideoRecorder.kt` | MediaCodec HEVC/AVC encoder + AAC audio encoder + MediaMuxer. Exactly-once owner of the codec input Surface: clean release follows verified EGL detach and partial setup also releases. If detach cannot prove native release, an independent watchdog terminally quarantines the complete native graph process-long, ends Java/audio work without releasing codec/muxer/fd/Surface, and refuses another camera/REC graph until process restart. Video input comes from GL already flipped; audio runs separately with normalized software PCM gain. A mid-REC negative `AudioRecord.read` degrades to video-only; only VIDEO faults delete. The one tolerated sample-less-audio `muxer.stop()` failure is published only after native owners close and MediaExtractor reopens an actual video track. The encoder buffer takes `RotationMath.encoderSurfaceSize` — swapped to the DISPLAYED portrait aspect for the 90° sensor so `coverScale` records exactly the viewfinder field. The vendor audio-HAL key `vendor_audiorecord_orientation` (which aims the Sound Focus beam / Sound Stage field) is a DIFFERENT DOMAIN from the muxer hint despite the shared input: it takes the RAW gravity device orientation, NOT `RotationMath.videoOrientationHint`. The two were the same function only while the hint was the identity; making the hint −dev on rear routes silently fed the audio HAL the mirrored landscape until they were split. |
 | `AudioInputInspector.kt` | Resolves the preferred recording input (built-in / wired / USB / BT) against connected AudioDeviceInfo entries; provides the route labels shown in the UI. |
 | `ColorProfiles.kt` | Builds MediaFormat specs for HEVC Main10 (Rec.2020 + HLG/Log) and AVC 8-bit SDR. Tags dynamic range, color space, transfer function. |
 | `EncoderCaps.kt` | Scans MediaCodecList and exposes the hardware AVC/HEVC encoders that are stable with MediaMuxer. |
@@ -86,6 +89,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `MediaStoreWriter.kt` | Scoped-storage wrapper with a durable per-URI `REGISTERED`/`COMPLETE` journal. It retries COMPLETE markers boundedly, creates/publishes pending DCIM/X9Tele rows, and structurally probes JPEG/DNG/video. HEIF proof requires bounded `meta` children, a matching `pitm`/`iloc` primary item, supported construction/reference fields, and explicit extents wholly inside `mdat`. Launch recovery adopts COMPLETE/valid rows, deletes only proven-invalid rows, retains indeterminate/error rows, continues across collection failures, and returns a sanitized `RecoveryReport` for bounded provider retry. Delete count zero is existence-probed so an already-absent row is success. |
 | `SettingsStore.kt` | SharedPreferences persistence of ManualControls + ExtraSettings across launches, gated by a "Remember Settings" toggle (default ON); enums stored by name, defensive load. Lens and TELE restoration have separate default-on preserve toggles. |
 | **focus/** | |
+| `MacroProximity.kt` | Focus-confidence proofs and their OSD wording: `AF_LIMIT` (AF failed/hunting near the advertised minimum focus distance) may say `TOO CLOSE` with a closer-lens suffix; `FRAME_DETAIL` may only say `SOFT` with no suffix — it proves the frame resolves no fine detail, never *why*. 700 ms hold; any refusal resets it. |
 | `FocusMapping.kt` | Maps the UI slider (0..1) bidirectionally to LENS_FOCUS_DISTANCE with `diopters = minFocusDiopters * slider^3`. There is no additive offset, preserving exact infinity at slider 0 while concentrating travel near it. |
 | **ui/** | |
 | `ZoomMath.kt` | Pure zoom-scale math shared by engine and UI: effective bounds, TELE magnetic-snap normalization, mode/restore scale remaps, and the hardware-glide ease-step function. |
@@ -94,7 +98,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `CaptureOutputTracker.kt` | Bounded, synchronized ownership map for monotonic capture ids and every processed/RAW sibling. Selects the truthful review owner, upgrades RAW placeholders, tombstones whole captures before deletion, and seeds a reconstructed prior-process family below every live capture id. One open-review family can be pinned outside ordinary bounded history until close/delete. |
 | `CameraActions.kt` | Callback interface for stateless UI commands such as focus, exposure, tap AF, lens, recording, persistence, and review actions. |
 | `ShutterPolicy.kt` | Pure photo-shutter activation resolution: countdown cancellation has first refusal, self-timer vs immediate fire, and the video-snapshot exemption from the Photo self-timer. |
-| `ZoomGlideState.kt` | The Android-free half of the zoom-interaction lifecycle: coalesced `pendingRatio`, hardware-glide `easeTarget`, `interacting`, `flushScheduled`, plus `invalidateForRemap()` and the zoom-OUT `isLeadingEdgeToWide` decision. Every optics-scale remap door invalidates through the ViewModel's single `invalidateZoomGlide()` wrapper (host-tested). |
+| `ZoomGlideState.kt` | The Android-free half of the zoom-interaction lifecycle: coalesced `pendingRatio`, hardware-glide `easeTarget`, `interacting`, `flushScheduled`, plus `invalidateForRemap()` and the zoom-OUT `isLeadingEdgeToWide` decision. Every optics-scale remap door invalidates through the ViewModel's single `invalidateOpticsDerivedState()` owner (host-tested) — which also drops route-scoped focus evidence, since zoom glide and focus confidence share exactly one door set. |
 | **ui/controls/** | |
 | `ManualDials.kt` | Horizontal scrolling dials for quick access to focus, shutter, ISO, white balance, EV, and zoom — the "Fn" layer. Entry is admitted by `ControlAvailability`, and a ruler closes if a route change removes its required exact mode/range. The WB chip can open preset choices without a Kelvin ruler; MANUAL WB still requires that ruler. |
 | `ProSheet.kt` | Fixed Sony-style settings panel with a 9-tab left rail: My, Shoot, Exposure, Focus, Lens, Video, Image, Assist, and Setup. The rail is one selectable group whose items expose selected state and `Role.Tab`. Capability-dependent selectors contain advertised choices when present; an empty set falls back to a disabled neutral singleton, and otherwise-invalid entry points are disabled. |
@@ -169,8 +173,18 @@ Two critical consequences of the afocal converter drive the entire design:
    - **Encoder Surface** (MediaCodec input, if recording) → encoded into MP4.
 
 **Still-photo journey (processed HEIF/JPEG):**
+0. On the LOGICAL photo route only, that same YUV reader ALSO streams on the repeating request into
+   a 3-deep pseudo-ZSL ring (`camera/ZslAdmission.kt` is the pure serve/refuse predicate). An
+   admitted shutter press serves the newest buffered frame INLINE through the same Pending/
+   tryComplete machinery a real capture uses, and `takenAtMs` is backdated by the frame's age so
+   EXIF and file times stay honest. A real capture on that route adopts its image from the ring by
+   EXACT `SENSOR_TIMESTAMP`; standalone/TELE readers never see repeating frames and keep blind
+   adoption. Admission is intentionally strict, so a dark shot refuses and falls through to step 1 —
+   see CLAUDE.md for why that refusal is the design.
 1. Camera2 → processed ImageReader: logical-camera photo sessions use `YUV_420_888`; standalone
-   sessions use the HAL JPEG stream.
+   sessions use the HAL JPEG stream. The logical YUV reader is allocated DEEP (ring depth + 2) only
+   on the full session rung; a configure-time rejection degrades it to the proven 2-image reader
+   (`SessionAttemptPlan.useDeepZslReader`) rather than costing the session all stills.
 2. The camera callback copies the short-lived `Image` into owned JPEG bytes or an owned YUV snapshot.
 3. `ioExecutor` produces a Bitmap, center-crops 16:9 when selected, and pixel-rotates for sensor,
    device orientation, and the afocal 180° correction. It then encodes each requested HEIF/JPEG output;
@@ -204,7 +218,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | **recording-finalization executor** (single-thread) | CameraEngine | Dedicated, rejection-safe recorder stop/muxer finalization so still encoding cannot delay clip completion. Release waits a bounded interval for this lane before GL/executor teardown. |
 | **recording-teardown watchdog** (scheduled daemon) | CameraEngine | Independent detach-recovery and hard-quarantine deadlines; exactly one strict-finalize or quarantine terminal owner wins and late callbacks are inert. |
 | **timelapseScheduler** (scheduled) | CameraEngine | Interval-driven timelapse capture trigger every N seconds. |
-| **analysisExecutor** (one single-thread executor per GL generation) | GlPipeline | Histogram/waveform computation from that generation's isolated FBO/readback snapshot. Retirement invalidates callback authority without waiting indefinitely for old math. |
+| **analysisExecutor** (one single-thread executor per GL generation) | GlPipeline | Histogram/waveform computation from that generation's isolated FBO/readback snapshot. Also runs the pure frame-detail (focus-confidence) metric over the SAME snapshot — a CPU rider, never a second readback, and deliberately WITHOUT the digital-gain display LUT its histogram siblings get, so an optics verdict cannot move with a brightness simulation. It therefore does not compute in modes where no readback runs (video-P, flash-metered P). Retirement invalidates callback authority without waiting indefinitely for old math. |
 | **audio-capture** (implicit thread) | VideoRecorder | AudioRecord polling loop and PCM-to-AAC encoding. |
 | **video-drain** (implicit thread) | VideoRecorder | MediaCodec output buffer draining and MediaMuxer writes. |
 | **StandbyAudioMeter** (thread) | CameraEngine | Levels-only AudioRecord tap only while the detailed armed-Video meter is visible, unobscured, and not rolling. A synchronized ownership gate reserves one immutable owner/release latch before thread start; REC opens the mic only after that exact owner releases. Invalid buffer, construction/state, start, thread-launch, and terminal-read failures consume one shared bounded generation budget with backed-off recreation; any successful PCM read resets it and clears unavailable UI. Retries recheck visible intent/paused/REC ownership and typed unavailability is surfaced only after exhaustion. |
@@ -361,7 +375,7 @@ The afocal teleconverter's 180° flip must be applied to BOTH the preview and ca
 - **Preview** uses texture-coordinate rotation (inverse of image rotation) because GL draws once and the sampled pixels appear rotated.
 - **Captures** use pixel-level rotation (direct) because encoded bytes must be rotated in the image buffer itself.
 
-Additionally, **device orientation** from gravity (GyroEis.currentDeviceOrientation) is added to still captures so a photo framed in landscape saves landscape-correct, even though the UI is portrait-locked.
+Additionally, **device orientation** from gravity (GyroEis.currentDeviceOrientation) is applied to still captures — SUBTRACTED on the rear, ADDED on the front, because the gravity read is CCW-positive — so a photo framed in landscape saves landscape-correct, even though the UI is portrait-locked.
 
 **Preview (GL):**
 
@@ -384,23 +398,27 @@ receives sensorOrientation for aspect calculation, not for image rotation.
 ```kotlin
 // RotationMath.captureRotationDegrees(sensorOrientation, teleconverterMode, deviceOrientation)
 val base = sensorOrientation + (if (teleconverterMode) 180 else 0)
-val total = (base + deviceOrientation) % 360
+val total = (base - deviceOrientation) % 360   // dev is CCW-positive; FRONT uses (sensor + dev)
 // Direct pixel rotation (Matrix.postRotate), no negation
-// Example: phone held upright, teleconverter ON
-//   sensorOrientation=90, teleconverter ON, device orientation=0
-//   base = 90 + 180 = 270°
-//   total = 270° (saves landscape-oriented)
+// Example: phone held in COUNTER-CLOCKWISE (left) landscape, teleconverter ON
+//   sensorOrientation=90, teleconverter ON, device orientation=90 (CCW-positive gravity read)
+//   base  = 90 + 180 = 270°
+//   total = 270 − 90 = 180°
+// The pre-fix `base + dev` gave 0° here — i.e. every landscape-held rear still saved 180° rotated,
+// which is exactly what the device bisect found. Portrait (dev=0) is sign-neutral and hid it.
 ```
 
-Device orientation (from gravity via `GyroEis.currentDeviceOrientation()`) is added so a photo framed
+Device orientation (from gravity via `GyroEis.currentDeviceOrientation()`) is applied so a photo framed
 while tilting the phone into landscape saves with the correct pixel orientation, matching the visual intent
-in the portrait-locked preview (which does not rotate). The rotation functions are unit-tested; a lit,
-deliberately held portrait/landscape saved-file check remains useful field verification.
+in the portrait-locked preview (which does not rotate). The rotation functions are unit-tested AND the
+held matrix is device-verified (2026-07-25: rear portrait, rear landscape both directions, front
+portrait, front landscape — all upright). The only rotation item still open is the muxer orientation
+hint in an external player.
 
 **Front camera:** the facing-aware overload `captureRotationDegrees(sensor, tele, device,
-frontFacing = true)` uses `(sensorOrientation − deviceOrientation) % 360` — the sign flips because
-the front sensor faces the opposite direction — and the afocal term never applies (the converter is
-a rear accessory; the facing door forces TC off). Preview rotation stays 0 on FRONT (the
+frontFacing = true)` uses `(sensorOrientation + deviceOrientation) % 360` — the front term ADDS while
+the rear SUBTRACTS, because the GyroEis gravity read is CCW-positive — and the afocal term never
+applies (the converter is a rear accessory; the facing door forces TC off). Preview rotation stays 0 on FRONT (the
 SurfaceTexture transform carries the front sensor orientation). **Mirror roles are INVERTED from
 the naive design (device-diagnosed 2026-07-23): the front HAL PRE-mirrors its SurfaceTexture
 stream.** The preview draw therefore adds NO mirror of its own (the pre-mirrored stream already IS
@@ -408,9 +426,10 @@ the selfie-mirror view) and the ENCODER/ANALYSIS draws apply the texcoord x-inve
 (`gl/texCoordQuad` via `mirrorX`) to write the TRUE scene into files and scopes. Every draw role
 plus the tap display axis derives from ONE authority, `gl/FrontMirrorConvention.kt`
 (`FRONT_STREAM_PRE_MIRRORED`), pushed as route state by `GlPipeline.setFrontStreamPreMirrored`
-from `applyStabilization`. The front capture-ROTATION sign remains
-**DEVICE-VERIFICATION-PENDING** on the PMA110 front camera (and the device-orientation term's sign
-for BOTH facings is a release-gating residual check — see `docs/BACKLOG.md`).
+from `applyStabilization`. The front capture-ROTATION sign is DEVICE-VERIFIED (2026-07-25): a
+landscape-held front still saved upright, and a wrong sign would have rotated BOTH landscape
+directions 180°, so one direction settles it. The mirror roles above were separately
+device-diagnosed 2026-07-23.
 
 **HEIF (pixel-rotated):**
 1. Owned JPEG/YUV snapshot → decode/convert to Bitmap.
@@ -549,7 +568,7 @@ flush window; compounding against the stale state made zoom crawl-then-jump. The
 takes the controller **fast path** (`CameraController.setZoomRatio`): the cached repeating-request
 builder gets only its zoom keys mutated and resubmitted — no full request re-derivation.
 Scale-remap invalidation covers BOTH pending inputs: every remap door calls
-`invalidateZoomGlide()` → `ZoomGlideState.invalidateForRemap()`, clearing
+`invalidateOpticsDerivedState()` → `ZoomGlideState.invalidateForRemap()`, clearing
 `ZoomGlideState.pendingRatio` AND nulling `ZoomGlideState.easeTarget` (a hardware-slider glide
 target is an absolute number in the OLD scale; surviving a remap it eased toward an un-commanded
 framing). Structural reopens start with a fresh boost-free controller; same-route commits call
@@ -568,7 +587,7 @@ ratio for still requests (`setZoomRatio(halRatio, requestRatio)` — a still mus
 mid-gesture ~1.2×-wide aim), and a QUIET-WINDOW landing (`landExactZoom`, ~250 ms after the last
 flush) lands the exact ratio on the HAL well before the 700 ms fps-boost tail ends, so a recorded
 clip stops carrying the wide framing after finger-up. Scale-remap invalidation of
-`ZoomGlideState.pendingRatio`/`.easeTarget` (via `invalidateZoomGlide()`) covers ALL the remap doors: `onModeChange`,
+`ZoomGlideState.pendingRatio`/`.easeTarget` (via `invalidateOpticsDerivedState()`) covers ALL the remap doors: `onModeChange`,
 `onToggleTeleconverter`, `onLens`, `onToggleFrontCamera`, `onStop`, **`onOpticsRollback`,
 `applyLoaded` (settings/MR recall), and the debug `onCameraOverride`** — the last three were the
 doors 6affe20 originally missed. The glide's per-tick math is the pure `zoomEaseStep` (`ui/ZoomMath.kt`, unit-tested).

@@ -49,7 +49,17 @@ bucket by the committed filters in `tools/coverage/`:
    host JVM and is not claimed.
 2. **The partition is committed and auditable.** The filters live in `tools/coverage/*.txt` with
    per-section rationale comments; the analyzer warns when a filter entry no longer matches
-   anything (rename drift).
+   anything (rename drift). **That warning is the whole safety net, and it is weaker than it looks —
+   treat a filter file as measurement code, not configuration.** It is (a) advisory only:
+   `partition_report.py` prints `WARNING: partition patterns matching nothing` and still exits 0, so
+   only `--fail-under-a` can fail a run; (b) glob-exempt by design — `unused()` skips any pattern
+   containing `*`, so the `Class$*` half of every pair drifts silently; and (c) vacuously green on an
+   empty partition, since `pct()` returns 100.0 for a zero denominator, so a partition matching
+   NOTHING prints `100.00%`. **Any package rename must repoint `tools/coverage/*.txt` in the same
+   change.** Device-observed 2026-07-25: the `me.hletrd` namespace move (`6ae3979`) invalidated every
+   filter in both files at once, and `c239a83` repointed them. A partition claim made from a report
+   whose filters have drifted is not a weaker number — it is a different measurement wearing the
+   same label.
 3. **Classification is by framework-boundedness only.** A class/method goes to B because it
    cannot execute against android.jar throwing stubs (constructor or unavoidable calls into
    framework types) — never because it is merely hard to test. Partition edits must carry that

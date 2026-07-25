@@ -12,6 +12,14 @@ Use this sheet for the parts that must be entered manually in Play Console.
 > (rear portrait + both rear landscape directions + front portrait + front landscape, all upright).
 > Upload the AAB whose SHA-256 matches this sheet exactly — regenerate this block if the source
 > moves again.
+>
+> **SOURCE HAS MOVED (2026-07-25, later the same day).** `main` is now past `9541697`: the Kotlin
+> namespace moved `com.hletrd.findx9tele` → `me.hletrd.findx9tele` (`6ae3979`), which changes every
+> class name and the launcher activity component in a release build. `applicationId` is UNCHANGED
+> (`me.hletrd.telecampro`), and the `com.oplus.ocs` removal (`2b4bc55`) was debug-only, so release
+> bytes are unaffected by it. This artifact therefore remains valid and matrix-passed **as a frozen
+> v1 candidate**, but it is no longer a build of `main`. Either ship it as-is, or re-cut from `main`
+> and regenerate this entire block plus the device matrix below — do not mix the two.
 
 - Signed Android App Bundle:
   `app/build/outputs/bundle/release/app-release.aab`
@@ -31,6 +39,10 @@ Do not upload debug APKs or any unsigned/stale release bundle.
   `a737483fb621b0d64b5859976b126fbc513960b0755ed38f641d202fd1f8f2b2`
 - Matching release APK SHA-256:
   `8efa65e25d94991b4a9cb3e4c9aa59bde86fa72f15efb27dd00344bb94360995`
+- Launch component for THIS artifact: `me.hletrd.telecampro/com.hletrd.findx9tele.MainActivity`
+  (pre-namespace-move). CLAUDE.md and BACKLOG print the post-move `me.hletrd.findx9tele.MainActivity`,
+  which is correct for `main` and wrong for this APK — same applicationId, so the failure mode is a
+  confusing "activity not found".
 - Superseded same-day candidates (do not upload): AAB `7339e00d…` / `b45a3b8e…` (pre-rotation-fix).
 - `bundletool 1.18.3 validate`: passed; AAB `jarsigner -verify`: verified
 - APK signing: v2 signature valid, 1 signer, certificate matches the upload certificate above
@@ -121,8 +133,9 @@ The app requires Android 16 / API 36 and is intentionally single-device.
 
 ## Manual Console Sequence
 
-1. Generate and verify a new signed AAB, update this sheet's hashes, and complete the current PMA110
-   release matrix; only then upload that exact artifact to Internal testing.
+1. Decide the candidate (see the header block): either upload the recorded `9541697` artifact, whose
+   hashes are above and whose matrix passed, or generate a new signed AAB from `main`, regenerate
+   this sheet's hashes, and re-run the PMA110 matrix before uploading that one.
 2. Enter the Store Listing and Data Safety answers from this repository.
 3. Recapture and review all six phone flows from that exact candidate, then upload the icon, feature
    graphic, and the six replacement screenshots; do not use the stale checked-in captures.

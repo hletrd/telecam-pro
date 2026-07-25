@@ -49,8 +49,9 @@ object RotationMath {
      *    old `+dev` term a landscape-held rear still saved 180° rotated (laptop shot, keyboard-up)
      *    while portrait (dev=0, term-neutral) was upright — exactly the cycle-6 analysis.
      *  - FRONT: sensor + device orientation; the afocal term NEVER applies (the converter clamps
-     *    onto the rear 3×). Front PORTRAIT is device-verified (dev=0 — unaffected by the sign);
-     *    front LANDSCAPE still needs its held output check (docs/BACKLOG.md).
+     *    onto the rear 3×). Front PORTRAIT and front LANDSCAPE are BOTH device-verified
+     *    (2026-07-25). One landscape direction settles the sign: a wrong term rotates BOTH
+     *    directions 180°, and rear LEFT-90, rear RIGHT-90 and front landscape all saved upright.
      */
     fun captureRotationDegrees(
         sensorOrientation: Int,

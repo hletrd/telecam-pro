@@ -165,13 +165,15 @@ not just session setup logs:
 
 ## Implementation Status
 
-- ⛔ **Current release stop (2026-07-21): this source is not ready for upload.** Source and UI have
-  changed since the recorded candidate. Do not upload a local AAB or the checked-in Play screenshots.
-  Generate an exact signed candidate, rerun every current host/artifact/PMA110 release gate, and
-  refresh hashes and assets first. [`docs/BACKLOG.md`](docs/BACKLOG.md) is the authoritative release
-  board.
+- 🟡 **Release status (2026-07-25): a signed, matrix-passed v1 artifact exists, frozen at `9541697`;
+  `main` has since moved past it (the Kotlin namespace move).** Do not upload a locally built AAB
+  from `main`, and do not upload the checked-in Play screenshots — those are stale regardless of
+  which candidate ships. [`docs/BACKLOG.md`](docs/BACKLOG.md) is the authoritative release board and
+  states the owner decision.
 
-The entries below are historical 2026-07-10 evidence and do not describe current HEAD:
+The entries below are historical 2026-07-10 evidence, superseded by the 2026-07-25 PMA110 release
+matrix recorded in [`docs/play-console-submit.md`](docs/play-console-submit.md); neither describes
+current HEAD:
 
 - 🗂️ **Historical build & gates**: `./gradlew testDebugUnitTest lintRelease assembleRelease bundleRelease`
   passed for that candidate. `app/src/test/` remains the suite source of truth; rerun it for current
@@ -188,6 +190,7 @@ The entries below are historical 2026-07-10 evidence and do not describe current
 - ⏳ **After a new signed candidate is proven**: upload the signed AAB, enter the listing and Data Safety answers,
   restrict the device catalog to CPH2841/PMA110, run internal testing, and review the pre-launch report.
   The exact operator checklist is in [`docs/play-console-submit.md`](docs/play-console-submit.md).
-- 🔎 **Residual field checks**: directional-audio off-axis acoustic A/B, held portrait/landscape
-  saved-file orientation, and post-mapping HLG appearance on a real HDR display remain pending.
+- 🔎 **Residual field checks**: directional-audio off-axis acoustic A/B, held-landscape VIDEO
+  playback in an external player (the container orientation hint — saved STILL orientation was
+  device-verified 2026-07-25), and post-mapping HLG appearance on a real HDR display remain pending.
 - 📌 **Deferred beyond v1**: R8/minify and Dolby Vision. See [`docs/BACKLOG.md`](docs/BACKLOG.md).
