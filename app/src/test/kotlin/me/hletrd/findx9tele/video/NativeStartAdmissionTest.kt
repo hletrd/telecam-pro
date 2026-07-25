@@ -14,14 +14,29 @@ import org.junit.Test
 
 class NativeStartAdmissionTest {
 
+    /**
+     * A close() landing WHILE a native start is in flight must not block on it, and must not
+     * corrupt that in-flight call's own outcome — the cycle-6 T6/T7 contract documented on
+     * [RecorderQuarantineAdmissionGate.runNativeIfSafe]: the native call deliberately runs OUTSIDE
+     * the process-global lock (holding it across seconds of Binder/driver work was the enabling
+     * half of the ABBA inversion), an already-running native cannot be un-called under either
+     * ordering, and its RESULT is refused downstream by the token checks instead.
+     *
+     * This test used to assert the OPPOSITE (`assertFalse(closeDone)` the instant the closer thread
+     * signalled its intent), i.e. that close() waits for the in-flight native. That contract was
+     * removed with the lock; the assertion only ever passed because the closer thread had not been
+     * scheduled through close() yet, and it failed intermittently under CPU contention. Pin the
+     * real invariants instead: close completes without waiting, the in-flight start still reports
+     * STARTED, and ADMISSION (not the native call) is what quarantine refuses afterwards.
+     */
     @Test
-    fun `admitted native start completes before terminal close`() {
+    fun `terminal close does not wait for an in-flight native start and refuses admission after`() {
         val gate = RecorderQuarantineAdmissionGate()
         val enteredStart = CountDownLatch(1)
         val releaseStart = CountDownLatch(1)
-        val closeAttempted = CountDownLatch(1)
+        val closeDone = CountDownLatch(1)
         val outcome = AtomicReference<NativeStartOutcome>()
-        val closeDone = AtomicBoolean(false)
+        val closeAccepted = AtomicBoolean(false)
         val starter = Thread {
             outcome.set(
                 startNativeOwnerIfSafe(
@@ -35,23 +50,26 @@ class NativeStartAdmissionTest {
             )
         }
         val closer = Thread {
-            closeAttempted.countDown()
-            gate.close()
-            closeDone.set(true)
+            closeAccepted.set(gate.close())
+            closeDone.countDown()
         }
 
         starter.start()
         assertTrue(enteredStart.await(5, TimeUnit.SECONDS))
         closer.start()
-        assertTrue(closeAttempted.await(5, TimeUnit.SECONDS))
-        assertFalse(closeDone.get())
+        // The load-bearing assertion: close returns while `start` is still parked inside the native
+        // call. A close that waited would time out here instead of racing an unsynchronized flag.
+        assertTrue(closeDone.await(5, TimeUnit.SECONDS))
+        assertTrue(closeAccepted.get())
+        assertTrue(gate.isQuarantined())
+
         releaseStart.countDown()
         starter.join(5_000)
         closer.join(5_000)
 
         assertEquals(NativeStartOutcome.STARTED, outcome.get())
-        assertTrue(closeDone.get())
-        assertTrue(gate.isQuarantined())
+        // Quarantine linearizes with ADMISSION, so no new owner can be leased afterwards.
+        assertNull(gate.snapshot(owner = Any()))
     }
 
     @Test
