@@ -37,15 +37,15 @@ val hasReleaseSigning =
         releaseKeyPassword != null
 
 android {
-    namespace = "com.hletrd.findx9tele"
+    namespace = "me.hletrd.findx9tele"
     // Compile against the newest SDK (API 37) required by the latest AndroidX libraries.
     // Runtime target stays Android 16 (API 36) — compileSdk and targetSdk are decoupled.
     compileSdk = 37
 
     defaultConfig {
-        // Public app id (Play URL / Settings / OPPO CameraUnit auth-code binding). The internal
-        // Kotlin/namespace package stays com.hletrd.findx9tele — not user-visible, so it is left to
-        // avoid a repo-wide package move.
+        // Public app id (Play URL / Settings / OPPO CameraUnit auth-code binding). The Kotlin
+        // namespace shares the me.hletrd vendor prefix (repo-wide move 2026-07-25) while keeping the
+        // findx9tele module name; only the applicationId is user-visible.
         applicationId = "me.hletrd.telecampro"
         minSdk = 36
         targetSdk = 36

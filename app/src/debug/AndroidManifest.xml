@@ -6,7 +6,7 @@
         <!-- Shell-accessible deterministic screenshot surface. DUMP is signature-only, so ordinary
              third-party apps cannot launch this exported debug component. It is absent from release. -->
         <activity
-            android:name="com.hletrd.findx9tele.ui.UiSnapshotActivity"
+            android:name="me.hletrd.findx9tele.ui.UiSnapshotActivity"
             android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden|screenLayout|density"
             android:excludeFromRecents="true"
             android:exported="true"

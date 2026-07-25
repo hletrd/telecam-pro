@@ -5,7 +5,7 @@
 # SettingsStore round-trips every enum BY NAME (enumValueOf / Enum.name). R8 renames enum constants
 # unless kept, which would silently corrupt every persisted setting on the first minified build —
 # users would relaunch into defaults with no error. Keep the state enums' names when minifying.
-#-keepclassmembers enum com.hletrd.findx9tele.camera.** {
+#-keepclassmembers enum me.hletrd.findx9tele.camera.** {
 #    public static **[] values();
 #    public static ** valueOf(java.lang.String);
 #    <fields>;

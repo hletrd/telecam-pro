@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 APP_ID = "me.hletrd.telecampro.debug"
-MAIN_ACTIVITY = f"{APP_ID}/com.hletrd.findx9tele.MainActivity"
+MAIN_ACTIVITY = f"{APP_ID}/me.hletrd.findx9tele.MainActivity"
 MEDIA_DIR = "/sdcard/DCIM/X9Tele"
 MEDIA_RELATIVE_PATH = "DCIM/X9Tele/"
 _CAPTURE_FILE = re.compile(

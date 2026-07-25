@@ -107,7 +107,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `MediaReview.kt` | In-app review of the last capture: zoomable processed photos (EXIF-orientation-honoring decode — required by the hi-res passthrough lane, a no-op for the pixel-upright processed lane), rotating video playback, and a truthful non-decoding RAW/DNG metadata tile. Delete copy promises all saved formats only for a proven canonical family; legacy rows explicitly delete one file. Visible semantic Play/Pause and zoom-cycle controls remain available where applicable. |
 | **ui/theme/** | |
 | `Theme.kt` | Material3 dark theme tuned for a Sony-style pro camera surface, typography, color palette, text field/button shapes. |
-| **(app root — `com.hletrd.findx9tele`)** | |
+| **(app root — `me.hletrd.findx9tele`)** | |
 | `MainActivity.kt` | Entry point. Requests CAMERA/RECORD_AUDIO permissions at runtime (ColorOS blocks pm grant). CAMERA request history distinguishes fresh/cancelled prompts from fixed denial before offering Settings. Hosts the Compose root and ViewModel. Lifecycle: `onStart` calls the ViewModel's `onStart`, which resumes the engine; `onStop` calls the ViewModel's `onStop`, which pauses it. |
 | `CameraPermissionPolicy.kt` | Pure CAMERA-permission decision table: fresh install / cancelled prompt / genuine permanent denial, driven only by completed request history plus rationale state. |
 | `HardwareInputPolicy.kt` | Pure camera-key EDGE ownership only (`cameraKeyDecision` / `updateAggregateCameraKeyOwnership`): pairs key-down claims with their key-ups across the aliased camera keycodes. The OEM keycode families and their dispatch to configurable actions live in `MainActivity.kt`; the `HardwareKeyAction` enum lives in `camera/CameraState.kt`. |

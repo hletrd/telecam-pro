@@ -1,0 +1,204 @@
+package me.hletrd.findx9tele.ui.controls
+
+import me.hletrd.findx9tele.camera.AspectRatio
+import me.hletrd.findx9tele.camera.AudioScene
+import me.hletrd.findx9tele.camera.CameraFacing
+import me.hletrd.findx9tele.camera.CameraUiState
+import me.hletrd.findx9tele.camera.CaptureMode
+import me.hletrd.findx9tele.camera.ColorTransfer
+import me.hletrd.findx9tele.camera.DriveMode
+import me.hletrd.findx9tele.camera.ExposureMode
+import me.hletrd.findx9tele.camera.FlashMode
+import me.hletrd.findx9tele.camera.FnSlot
+import me.hletrd.findx9tele.camera.FocusMode
+import me.hletrd.findx9tele.camera.FrameLineType
+import me.hletrd.findx9tele.camera.GridType
+import me.hletrd.findx9tele.camera.MeteringMode
+import me.hletrd.findx9tele.camera.ShutterTimer
+import me.hletrd.findx9tele.camera.VideoCodec
+import me.hletrd.findx9tele.camera.VideoStabMode
+import me.hletrd.findx9tele.camera.WbMode
+
+/**
+ * The SINGLE home of the enum tap-cycle orders and the auto-exposure readout text shared by the
+ * shooting-screen dials (ManualDials), the Fn overlay / My Menu (ProSheet), and the Fn bar
+ * (CameraScreen). These used to exist as verbatim private copies in ProSheet and ManualDials —
+ * which is exactly how the EV readout drifted (one copy hardcoded a 1/3-stop step while every
+ * other EV path derived it from hardware). One copy, no drift.
+ */
+
+/** Cycles only inside a route's advertised choices; a stale current value enters at the first. */
+internal fun <T> nextAvailable(current: T, available: List<T>): T {
+    if (available.isEmpty()) return current
+    val currentIndex = available.indexOf(current)
+    return available[if (currentIndex < 0) 0 else (currentIndex + 1) % available.size]
+}
+
+/** PASM cycle order: Program → Shutter-priority → ISO-priority → Manual → (back to Program). */
+internal fun nextExposureMode(mode: ExposureMode): ExposureMode = when (mode) {
+    ExposureMode.PROGRAM -> ExposureMode.SHUTTER
+    ExposureMode.SHUTTER -> ExposureMode.ISO
+    ExposureMode.ISO -> ExposureMode.MANUAL
+    ExposureMode.MANUAL -> ExposureMode.PROGRAM
+}
+
+internal fun nextFocusMode(mode: FocusMode): FocusMode = when (mode) {
+    FocusMode.CONTINUOUS -> FocusMode.AUTO
+    FocusMode.AUTO -> FocusMode.MANUAL
+    FocusMode.MANUAL -> FocusMode.MACRO
+    FocusMode.MACRO -> FocusMode.CONTINUOUS
+}
+
+internal fun nextWbMode(mode: WbMode): WbMode = when (mode) {
+    WbMode.AUTO -> WbMode.DAYLIGHT
+    WbMode.DAYLIGHT -> WbMode.CLOUDY
+    WbMode.CLOUDY -> WbMode.SHADE
+    WbMode.SHADE -> WbMode.MANUAL
+    WbMode.MANUAL -> WbMode.AUTO
+    // CUSTOM is only ENTERED via "Capture Custom WB"; the Fn cycle steps past it back to AUTO.
+    WbMode.INCANDESCENT, WbMode.FLUORESCENT, WbMode.CUSTOM -> WbMode.AUTO
+}
+
+internal fun nextVideoStabMode(mode: VideoStabMode): VideoStabMode = when (mode) {
+    VideoStabMode.OFF -> VideoStabMode.STANDARD
+    VideoStabMode.STANDARD -> VideoStabMode.ENHANCED
+    VideoStabMode.ENHANCED -> VideoStabMode.OFF
+}
+
+internal fun nextDriveMode(mode: DriveMode): DriveMode = when (mode) {
+    DriveMode.SINGLE -> DriveMode.BURST
+    DriveMode.BURST -> DriveMode.AEB
+    DriveMode.AEB -> DriveMode.TIMELAPSE
+    DriveMode.TIMELAPSE -> DriveMode.SINGLE
+}
+
+internal fun nextMeteringMode(mode: MeteringMode): MeteringMode = when (mode) {
+    MeteringMode.MATRIX -> MeteringMode.CENTER
+    MeteringMode.CENTER -> MeteringMode.SPOT
+    MeteringMode.SPOT -> MeteringMode.MATRIX
+}
+
+internal fun nextTransfer(transfer: ColorTransfer): ColorTransfer = when (transfer) {
+    ColorTransfer.HLG -> ColorTransfer.SLOG3
+    ColorTransfer.SLOG3 -> ColorTransfer.SLOG3_CINE
+    ColorTransfer.SLOG3_CINE -> ColorTransfer.LOGC3
+    ColorTransfer.LOGC3 -> ColorTransfer.SDR
+    ColorTransfer.SDR -> ColorTransfer.HLG
+}
+
+internal fun nextAudioScene(scene: AudioScene): AudioScene = when (scene) {
+    AudioScene.STANDARD -> AudioScene.SOUND_FOCUS
+    AudioScene.SOUND_FOCUS -> AudioScene.SOUND_STAGE
+    AudioScene.SOUND_STAGE -> AudioScene.STANDARD
+}
+
+internal fun nextGridType(type: GridType): GridType = when (type) {
+    GridType.NONE -> GridType.THIRDS
+    GridType.THIRDS -> GridType.GOLDEN
+    GridType.GOLDEN -> GridType.SQUARE
+    GridType.SQUARE -> GridType.CENTER
+    GridType.CENTER -> GridType.NONE
+}
+
+internal fun nextFrameLine(type: FrameLineType): FrameLineType = when (type) {
+    FrameLineType.OFF -> FrameLineType.CINEMA
+    FrameLineType.CINEMA -> FrameLineType.SQUARE
+    FrameLineType.SQUARE -> FrameLineType.VERTICAL
+    FrameLineType.VERTICAL -> FrameLineType.OFF
+}
+
+/** Auto-mode shutter readout: the AE-resolved live value in P, else the (loop-driven) manual field. */
+internal fun autoShutterText(state: CameraUiState): String {
+    val c = state.controls
+    val ns = if (c.autoExposure) state.liveExposureNs else c.exposureTimeNs
+    return ns?.let { formatShutterSpeed(it) } ?: "--"
+}
+
+/** Auto-mode ISO readout companion of [autoShutterText]. */
+internal fun autoIsoText(state: CameraUiState): String {
+    val c = state.controls
+    val iso = if (c.autoExposure) state.liveIso else c.iso
+    return iso?.toString() ?: "--"
+}
+
+/**
+ * EV compensation in stops, derived from the HARDWARE step (CONTROL_AE_COMPENSATION_STEP) with the
+ * conventional 1/3 fallback — the same derivation as the dial chip, the exposure meter, and the EV
+ * ruler. Never hardcode 0.333: a device advertising a 1/2 step would silently misreport EV.
+ */
+internal fun evCompStops(state: CameraUiState): Float {
+    val hardwareStep = state.caps?.evStep
+    return exposureCompensationStops(
+        index = state.controls.exposureCompensation,
+        stepNumerator = hardwareStep?.numerator,
+        stepDenominator = hardwareStep?.denominator,
+    )
+}
+
+/** Pure Camera2 compensation-index conversion, including malformed/missing-step fallback. */
+internal fun exposureCompensationStops(
+    index: Int,
+    stepNumerator: Int?,
+    stepDenominator: Int?,
+): Float {
+    val step = if (stepNumerator != null && stepDenominator != null && stepDenominator != 0) {
+        stepNumerator.toFloat() / stepDenominator.toFloat()
+    } else {
+        1f / 3f
+    }
+    return index * step
+}
+
+/** Final signed value used by the dedicated ±3 EV meter; [evCompStops] is already fully scaled. */
+internal fun exposureMeterCompensationEv(state: CameraUiState): Float =
+    evCompStops(state).coerceIn(-3f, 3f)
+
+// The top-bar quick-tap cycles (flash / self-timer / still aspect). These lived as a second set of
+// private copies in CameraScreen — exactly the split this file's header warns about — and are now
+// in the one shared home with the Fn-dial cycles above.
+
+internal fun nextFlashMode(mode: FlashMode): FlashMode = when (mode) {
+    FlashMode.OFF -> FlashMode.AUTO
+    FlashMode.AUTO -> FlashMode.ON
+    FlashMode.ON -> FlashMode.TORCH
+    FlashMode.TORCH -> FlashMode.OFF
+}
+
+internal fun nextTimer(timer: ShutterTimer): ShutterTimer = when (timer) {
+    ShutterTimer.OFF -> ShutterTimer.SEC3
+    ShutterTimer.SEC3 -> ShutterTimer.SEC10
+    ShutterTimer.SEC10 -> ShutterTimer.OFF
+}
+
+internal fun nextAspect(ratio: AspectRatio): AspectRatio = when (ratio) {
+    AspectRatio.W4_3 -> AspectRatio.W16_9
+    AspectRatio.W16_9 -> AspectRatio.W4_3
+}
+
+/**
+ * Per-slot availability for every quick-Fn surface (Fn overlay, My Menu, Recent rows). One shared
+ * predicate: the Fn overlay dimmed-and-guarded these slots while My Menu's rows were always-hot —
+ * the one path in the app that could toggle the teleconverter (the afocal 180° flip, live into
+ * the recorded file) or the transfer curve mid-recording.
+ *
+ * Coverage is derived from `CameraViewModel`'s own `rejectIfRecording` gates, not guessed: every
+ * slot below routes to an action that already refuses mid-REC there (a session-reconfiguring or
+ * live-discontinuity change), so the UI-level gate here must match exactly or a row stays visually
+ * hot and only silently no-ops (a transient toast) on tap — STABILIZATION (`onVideoStabMode`
+ * rebuilds the repeating request with a new OIS/EIS profile, a visible discontinuity baked into the
+ * file) and AUDIO_SCENE (`onAudioScene`) were the two additional gated actions this predicate had
+ * not yet caught up to. Slots with no `else` branch (EXPOSURE_MODE/FOCUS/SHUTTER/ISO/WB/EV/ZOOM/
+ * DRIVE/METERING and the pure-overlay toggles) are genuinely REC-safe: they only rewrite Camera2
+ * request-level values or app-side overlay state, never a session/profile reopen.
+ */
+internal fun quickFnEnabled(slot: FnSlot, state: CameraUiState): Boolean = when (slot) {
+    FnSlot.TRANSFER -> !state.isRecording && state.videoCodec == VideoCodec.HEVC
+    // The TC toggle is a rear-only optics door: onToggleTeleconverter also refuses while FRONT
+    // (backOpticsDoorRefusal), so the tile must dim on the selfie route or it renders hot and
+    // only toasts on tap — exactly the drift this predicate's contract forbids.
+    FnSlot.TELECONVERTER -> !state.isRecording && state.facing == CameraFacing.BACK
+    FnSlot.OPEN_GATE -> state.mode == CaptureMode.VIDEO && !state.isRecording
+    FnSlot.STABILIZATION -> !state.isRecording
+    FnSlot.AUDIO_SCENE -> !state.isRecording
+    else -> true
+}

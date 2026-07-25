@@ -48,7 +48,7 @@ FN_DEFAULT_PHYSICAL_ORDER = (
     "AE", "Focus", "Shutter", "ISO", "WB", "Gamma", "Stabilization", "Audio",
 )
 FN_HELD_MAX_DEPTH_FRACTION = 0.40
-SNAPSHOT_ACTIVITY = f"{APP_ID}/com.hletrd.findx9tele.ui.UiSnapshotActivity"
+SNAPSHOT_ACTIVITY = f"{APP_ID}/me.hletrd.findx9tele.ui.UiSnapshotActivity"
 CAPTURE_SETTLED = re.compile(
     r"CaptureFamily: settled stem=(IMG_TELECAM_F1_[0-9]{13}_[0-9]{10}) "
     r"outputs=([a-z0-9,]+)"
