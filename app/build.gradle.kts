@@ -194,13 +194,6 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     debugImplementation(libs.androidx.compose.ui.tooling)
 
-    // OPPO CameraUnit / OCS SDK — official OEM extension SDK for stabilization modes and related
-    // camera capabilities. debugImplementation on purpose: its ONLY consumer is the debug-source-set
-    // OcsProbe (release ships a no-op stub), so the closed-source OEM AAR must not ride in the
-    // release AAB it is never invoked from (supply-chain surface + Data-Safety accuracy).
-    debugImplementation(libs.oplus.ocs.camera)
-    debugImplementation(libs.oplus.ocs.base)
-
     testImplementation(libs.junit)
     // Robolectric host tests (CameraViewModel and friends). The BOM must be re-applied to the test
     // configuration — the implementation(platform(...)) above does not flow into testImplementation.

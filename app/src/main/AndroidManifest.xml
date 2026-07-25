@@ -25,10 +25,16 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.FindX9TeleCamera">
 
-        <!-- After registering me.hletrd.telecampro (the applicationId — NOT the Kotlin namespace)
-             + our signing cert on OPPO's CameraUnit developer portal, paste the issued AUTH_CODE
-             here to enable CameraUnit features:
-             <meta-data android:name="com.coloros.ocs.camera.AUTH_CODE" android:value="…" /> -->
+        <!-- CameraUnit is NOT integrated: the com.oplus.ocs SDK dependency, the OPPO
+             OpenCapability maven repo, and the debug-only availability probe were all removed
+             2026-07-25 (see "Authenticated CameraUnit path" in docs/BACKLOG.md). Pasting an
+             AUTH_CODE here alone does NOTHING — the SDK dependency must be restored first, and
+             BACKLOG carries the full re-enable order. Once it is back, and after registering
+             me.hletrd.telecampro (the applicationId — NOT the Kotlin namespace) + our signing
+             cert on OPPO's CameraUnit developer portal, the issued AUTH_CODE goes here:
+             <meta-data android:name="com.coloros.ocs.camera.AUTH_CODE" android:value="…" />
+             None of this affects the shipped TC path: vendor session type 0x80b4 and the plain
+             com.oplus.* Camera2 request keys need no AUTH_CODE and no SDK. -->
 
         <activity
             android:name=".MainActivity"
