@@ -3,10 +3,12 @@ package me.hletrd.findx9tele.ui
 import androidx.compose.ui.semantics.Role
 import me.hletrd.findx9tele.camera.AfIndication
 import me.hletrd.findx9tele.camera.CameraUiState
+import me.hletrd.findx9tele.camera.FocusConfidenceSource
 import me.hletrd.findx9tele.camera.LensChoice
 import me.hletrd.findx9tele.camera.FocusMode
 import me.hletrd.findx9tele.camera.ManualControls
 import me.hletrd.findx9tele.camera.normalizeFnSlots
+import me.hletrd.findx9tele.focus.focusConfidenceLabel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -258,5 +260,41 @@ class CameraUiPolicyTest {
             bottomReservePx = 0,
         )
         assertEquals((3168 - 1920) / 2, top)          // no reserve yet -> centered, not sunk
+    }
+
+    @Test
+    fun `frame-detail math is armed only where the tag could ever appear`() {
+        // Stable, route-level refusals only. The per-frame gates (mid-scan, zoom gesture, stale
+        // stats, exposure) stay in frameDefocusCandidate, because a frame failing one of those is
+        // still worth computing — the next frame may pass.
+        assertTrue(focusDetailAnalysisRequired(FocusMode.CONTINUOUS, recording = false, recordingStarting = false))
+        assertTrue(focusDetailAnalysisRequired(FocusMode.AUTO, recording = false, recordingStarting = false))
+        assertTrue(focusDetailAnalysisRequired(FocusMode.MACRO, recording = false, recordingStarting = false))
+        assertFalse("the user owns focus in MANUAL and pays nothing", focusDetailAnalysisRequired(FocusMode.MANUAL, false, false))
+        assertFalse(focusDetailAnalysisRequired(FocusMode.CONTINUOUS, recording = true, recordingStarting = false))
+        assertFalse(focusDetailAnalysisRequired(FocusMode.CONTINUOUS, recording = false, recordingStarting = true))
+    }
+
+    @Test
+    fun `the focus-confidence OSD tag renders only what its proof supports`() {
+        fun tag(state: CameraUiState) = focusConfidenceLabel(state.focusConfidence, state.macroCloserLensLabel)
+        assertNull("no proof, no tag", tag(CameraUiState()))
+        assertEquals(
+            "TOO CLOSE",
+            tag(CameraUiState(focusConfidence = FocusConfidenceSource.AF_LIMIT)),
+        )
+        assertEquals(
+            "TOO CLOSE ▸ 1×",
+            tag(CameraUiState(focusConfidence = FocusConfidenceSource.AF_LIMIT, macroCloserLensLabel = "1×")),
+        )
+        assertEquals(
+            "SOFT",
+            tag(CameraUiState(focusConfidence = FocusConfidenceSource.FRAME_DETAIL)),
+        )
+        assertEquals(
+            "the detail proof cannot recommend a distance remedy",
+            "SOFT",
+            tag(CameraUiState(focusConfidence = FocusConfidenceSource.FRAME_DETAIL, macroCloserLensLabel = "1×")),
+        )
     }
 }

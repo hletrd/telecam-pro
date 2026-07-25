@@ -3201,7 +3201,31 @@ def _restore_shutter_mode_angle(ctx: Context) -> None:
         close_manual_dial(ctx)
 
 
+def await_focal_rail(ctx: Context, timeout_s: float = 12.0) -> None:
+    """Block until the focal rail is actually on screen.
+
+    The app renders the rail GONE (not disabled) while the FRONT camera is selected — the selfie
+    route has one lens, so a disabled rail would advertise choices that cannot exist. A caller that
+    taps a preset the instant it leaves the front route therefore aims at a node that does not exist
+    yet: the back-route reopen is a full optics transaction and the rail returns only when it
+    completes. That is what aborted the 2026-07-25 suite mid-run (per_lens_still_geometry cleanup
+    raised UnsafeState and skipped every remaining case), so waiting here is the difference between
+    a clean run and losing the tail of the suite.
+    """
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if ctx.adb.ui().find_desc_exact(FOCAL_PRESETS[0]) is not None:
+            return
+        time.sleep(0.4)
+    raise AssertionError(
+        f"focal rail never returned within {timeout_s:.0f}s "
+        "(still on the FRONT route, or the back-route reconfiguration did not finish)"
+    )
+
+
 def restore_lens_preset(ctx: Context, lens: str) -> None:
+    # Wait for the rail to exist before aiming at it (see await_focal_rail).
+    await_focal_rail(ctx)
     ctx.adb.tap_ui(desc=lens)
     deadline = time.time() + 6
     error = "lens restore did not settle"

@@ -25,6 +25,12 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
     @Volatile
     private var gammaAssist = false
 
+    // Remembered for the same reason as [aeMetering]: GlPipeline.post is a silent no-op before
+    // start(), so a value set during settings restore would otherwise only take effect after the
+    // first GL restart — the exact shape of the old log-preview bug.
+    @Volatile
+    private var focusDetail = false
+
     fun isPunchInEnabled(): Boolean = config.snapshot().punchIn
 
     fun setFalseColor(enabled: Boolean) {
@@ -83,6 +89,17 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
         currentGl().setAeMetering(enabled)
     }
 
+    /**
+     * Change-gated for the same reason as [setAeMetering]: the ViewModel recomputes this on every
+     * control mutation (including 60-120 Hz gestures) while the value only moves at a focus-mode or
+     * recording boundary.
+     */
+    fun setFocusDetail(enabled: Boolean) {
+        if (focusDetail == enabled) return
+        focusDetail = enabled
+        currentGl().setFocusDetailEnabled(enabled)
+    }
+
     fun setGammaAssist(enabled: Boolean) {
         gammaAssist = enabled
         currentGl().setGammaAssist(enabled)
@@ -110,6 +127,7 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
         snapshot: RendererConfig = config.snapshot(),
     ) {
         gl.setAeMetering(aeMetering)
+        gl.setFocusDetailEnabled(focusDetail)
         gl.setGammaAssist(gammaAssist)
         gl.setPeaking(snapshot.peaking)
         applyPeaking(snapshot, gl)

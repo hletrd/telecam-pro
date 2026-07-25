@@ -10,7 +10,7 @@ import org.junit.Test
  * Pins the Android-free half of the ViewModel's zoom-interaction lifecycle (P2.1/P2.2):
  *
  *  - `invalidateForRemap()` is the ONE owner every optics-scale remap door and onStop route through
- *    (`invalidateZoomGlide()` in the ViewModel wraps it + cancels the matching Handler timers). Before
+ *    (`invalidateOpticsDerivedState()` in the ViewModel wraps it + cancels the matching Handler timers). Before
  *    this holder existed the invalidation was hand-duplicated across ~10 sites and forgotten at several
  *    (AGG3-10/25/26/51, VER-3, ARCH-4) — these tests fail if any field stops being cleared.
  *  - `isLeadingEdgeToWide()` is the zoom-OUT leading-edge decision (AGG3-9): the first outward gesture

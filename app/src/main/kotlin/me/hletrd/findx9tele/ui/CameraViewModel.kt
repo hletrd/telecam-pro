@@ -32,6 +32,7 @@ import me.hletrd.findx9tele.camera.FrameLineType
 import me.hletrd.findx9tele.camera.effectiveExposureNs
 import me.hletrd.findx9tele.camera.FlashMode
 import me.hletrd.findx9tele.camera.FnSlot
+import me.hletrd.findx9tele.camera.FocusDetailData
 import me.hletrd.findx9tele.camera.FocusMode
 import me.hletrd.findx9tele.camera.GridType
 import me.hletrd.findx9tele.camera.HardwareKeyAction
@@ -67,6 +68,7 @@ import me.hletrd.findx9tele.focus.FocusMapping
 import me.hletrd.findx9tele.focus.MACRO_HOLD_MS
 import me.hletrd.findx9tele.focus.FocusConfidenceHold
 import me.hletrd.findx9tele.focus.focusConfidenceCandidate
+import me.hletrd.findx9tele.focus.frameDefocusCandidate
 import me.hletrd.findx9tele.focus.macroTooCloseCandidate
 import me.hletrd.findx9tele.storage.ExtraSettings
 import me.hletrd.findx9tele.storage.MediaStoreWriter
@@ -168,15 +170,15 @@ class CameraViewModel @JvmOverloads constructor(
     private val captureOutputs = CaptureOutputTracker<Uri>(CAPTURE_OUTPUT_HISTORY)
 
     // The plain zoom-glide state (pending / ease / interacting / flush-scheduled) as one tested holder
-    // so every optics-scale remap door invalidates it through the single invalidateZoomGlide() owner
+    // so every optics-scale remap door invalidates it through the single invalidateOpticsDerivedState() owner
     // (AGG3-51). Declared BEFORE init: applyLoaded()/restoreSettingsIfEnabled() runs during
-    // construction and calls invalidateZoomGlide(), which dereferences this — a later declaration
+    // construction and calls invalidateOpticsDerivedState(), which dereferences this — a later declaration
     // would leave it null and NPE on a launch that restores saved settings.
     private val zoomGlide = ZoomGlideState()
 
     // The 16 ms trailing coalescer flush, held as a NAMED Runnable so a remap door / onStop can
     // cancel it — the old anonymous postDelayed lambda had no reference to remove (AGG3-26).
-    // All four zoom Runnables are declared BEFORE the init block (CRIT4-12): invalidateZoomGlide()
+    // All four zoom Runnables are declared BEFORE the init block (CRIT4-12): invalidateOpticsDerivedState()
     // runs DURING construction (applyLoaded in init), and fields declared below init are still
     // null there — the old layout passed nulls to Handler.removeCallbacks (platform-tolerated),
     // and a `by lazy` variant was WORSE (the lazy delegates are fields too; a construction-time
@@ -277,32 +279,78 @@ class CameraViewModel @JvmOverloads constructor(
         }
     }
 
-    // Focus-confidence tag (cycle 8 AF_LIMIT): the hold turns the flickery instantaneous AF/lens-
-    // position signal into a stable OSD tag (700 ms persist, instant clear — focus/MacroProximity.kt).
-    // Main-thread confined; AF/focus-distance callbacks post the refresh here, and a pending
-    // candidate schedules exactly one delayed re-check so a static too-close scene (no further
-    // AF/lens events) still flips the tag on when the hold elapses.
+    // Focus-confidence tag: the hold turns two flickery instantaneous signals — the AF/lens-position
+    // one (AF_LIMIT) and the frame-detail one (FRAME_DETAIL) — into one stable OSD tag (700 ms
+    // persist, instant clear — focus/MacroProximity.kt). Main-thread confined; AF/focus-distance/
+    // analysis callbacks post the refresh here, and a pending candidate schedules exactly one
+    // delayed re-check so a static scene (no further AF/lens events) still flips the tag on when
+    // the hold elapses.
     private val focusConfidenceHold = FocusConfidenceHold()
     private val focusConfidenceRefreshRunnable = Runnable { refreshFocusConfidence() }
 
+    // Newest frame-detail verdict and when it landed. Main-thread confined (written in the
+    // onAnalysis main post, read only here), so plain fields are correct and cheap.
+    private var lastFocusDetail: FocusDetailData? = null
+    private var lastFocusDetailAtMs: Long = 0L
+
+    // Bumped at every optics door. The GL generation OUTLIVES a route change, so an analysis frame
+    // drawn from the outgoing route can still be in flight when the door opens; its main post would
+    // otherwise land as fresh (< 1 s) evidence and, via the delayed re-check, publish a verdict
+    // about a lens the app is no longer using. Read on the analysis executor, compared on main.
+    @Volatile
+    private var focusEvidenceEpoch: Long = 0L
+
     private fun refreshFocusConfidence() {
         val s = _state.value
+        val now = SystemClock.uptimeMillis()
         val afLimit = macroTooCloseCandidate(
             afIndication = s.afIndication,
             focusMode = s.controls.focusMode,
             liveFocusDiopters = s.liveFocusDiopters,
             minFocusDiopters = s.caps?.minFocusDistanceDiopters ?: 0f,
         )
-        val candidate = focusConfidenceCandidate(afLimit = afLimit, frameDetail = false)
-        val now = SystemClock.uptimeMillis()
+        val frameDetail = frameDefocusCandidate(
+            detail = lastFocusDetail?.verdict,
+            detailAgeMs = if (lastFocusDetail == null) Long.MAX_VALUE else now - lastFocusDetailAtMs,
+            focusMode = s.controls.focusMode,
+            afIndication = s.afIndication,
+            recording = s.isRecording,
+            recordingStarting = s.isRecordingStarting,
+            zoomInteracting = zoomGlide.interacting,
+            // Result metadata, NOT controls.effectiveExposureNs(): the analysed frame rode the
+            // trade-capped PREVIEW exposure, while the intended still can be seconds long.
+            exposureNs = s.liveExposureNs,
+            handheldShutterNs = preferredProgramShutterNs(s),
+        )
+        val candidate = focusConfidenceCandidate(afLimit = afLimit, frameDetail = frameDetail)
         val show = focusConfidenceHold.update(candidate, now)
         if (focusConfidenceHold.pending(now)) {
             mainHandler.removeCallbacks(focusConfidenceRefreshRunnable)
             mainHandler.postDelayed(focusConfidenceRefreshRunnable, MACRO_HOLD_MS + 20)
         }
-        // Emit ONLY on a latched change: this refresh runs on every AF/lens event, and an
-        // unconditional _state.update would re-run the whole root recomposition (PERF4-7).
+        // Emit ONLY on a latched change: this refresh runs on every AF/lens event AND every ~6 Hz
+        // analysis tick, so an unconditional _state.update would re-run the whole root
+        // recomposition at input rate (PERF4-7).
         if (s.focusConfidence != show) _state.update { it.copy(focusConfidence = show) }
+        // Arm the GL-side metric only while the tag could possibly appear. It never forces a
+        // readback (it rides the scope/AE one), so this only decides whether the per-pixel
+        // curvature math runs at all — a MANUAL-focus shooter pays nothing.
+        engine.setFocusDetail(
+            focusDetailAnalysisRequired(s.controls.focusMode, s.isRecording, s.isRecordingStarting),
+        )
+    }
+
+    /**
+     * Drops held focus-confidence evidence at an optics door. Analysis frames belong to a ROUTE: a
+     * TELE frame must never publish a verdict for the 1× route the app just switched to.
+     */
+    private fun invalidateFocusConfidence() {
+        focusEvidenceEpoch++
+        lastFocusDetail = null
+        lastFocusDetailAtMs = 0L
+        focusConfidenceHold.reset()
+        mainHandler.removeCallbacks(focusConfidenceRefreshRunnable)
+        if (_state.value.focusConfidence != null) _state.update { it.copy(focusConfidence = null) }
     }
 
     // One shared background lane for the ViewModel's own MediaStore/StatFs work (PERF4-6/PERF4-9):
@@ -420,7 +468,7 @@ class CameraViewModel @JvmOverloads constructor(
                 // The rollback restored a different optics scale: every in-flight glide value is an
                 // ABSOLUTE ratio in the failed attempt's scale, so ease target / coalesced base /
                 // throttled landing all invalidate together (same invariant as every optics-remap door).
-                invalidateZoomGlide()
+                invalidateOpticsDerivedState()
                 clearTapFocusUi()
                 // Engine snapshots this hidden bank inside the same generation-owned transaction as
                 // visible optics, so even Ready-callback overlap restores the exact accepted value.
@@ -482,7 +530,7 @@ class CameraViewModel @JvmOverloads constructor(
             _state.update { it.copy(afIndication = ind) }
             mainHandler.post(focusConfidenceRefreshRunnable)
         }
-        engine.onAnalysis = { h, w ->
+        engine.onAnalysis = { h, w, f ->
             // Publish scope data into UI state only when something actually renders it (the
             // histogram/waveform overlays or the MANUAL-mode exposure meter). App-side AE reads the
             // callback arg directly, so with scopes hidden the ~6 Hz analysis tick no longer forces
@@ -490,6 +538,21 @@ class CameraViewModel @JvmOverloads constructor(
             val s = _state.value
             if (s.histogram || s.waveform || s.controls.exposureMode == ExposureMode.MANUAL) {
                 _state.update { it.copy(histogramData = h, waveformData = w) }
+            }
+            // Frame-detail verdict: stash it (plain fields, read only on main) and re-evaluate the
+            // focus-confidence tag there. Note this deliberately does NOT ride the scopes-visible
+            // branch above — it is independent of histogram/waveform/MANUAL — and refreshFocus-
+            // Confidence emits only when the LATCHED tag changes, so the ~6 Hz tick cannot re-run
+            // the root recomposition (PERF4-7).
+            if (f != null) {
+                val epoch = focusEvidenceEpoch
+                mainHandler.post {
+                    // Dropped if an optics door opened between the readback and this post.
+                    if (focusEvidenceEpoch != epoch) return@post
+                    lastFocusDetail = f
+                    lastFocusDetailAtMs = SystemClock.uptimeMillis()
+                    refreshFocusConfidence()
+                }
             }
             // Feed the app-side auto-exposure loop only in the modes that DRIVE from it (PERF4-7):
             // SHUTTER, ISO, and app-side photo-P. MANUAL and video-P made this a ~6 Hz main-thread
@@ -725,7 +788,7 @@ class CameraViewModel @JvmOverloads constructor(
         // MR recall / settings restore can change mode/lens/TC — i.e. the zoom SCALE. Any glide still
         // easing toward a target computed in the old scale (or a throttled landing about to fire) would
         // visibly drag the just-recalled framing away from the preset (same invariant as every remap door).
-        invalidateZoomGlide()
+        invalidateOpticsDerivedState()
         clearTapFocusUi()
         // Manual/priority modes need luma analysis even when scopes are hidden: priority AE drives
         // from it, and full manual uses it for the live exposure meter.
@@ -1305,7 +1368,7 @@ class CameraViewModel @JvmOverloads constructor(
     // the fast path landed. Coalesce: apply the first event immediately (no perceived latency),
     // then flush only the NEWEST value every 16 ms (~60 Hz) while the gesture continues. The plain
     // glide state lives in the [zoomGlide] holder (declared above init) so every optics-scale remap
-    // door invalidates it through the single invalidateZoomGlide() owner (AGG3-51).
+    // door invalidates it through the single invalidateOpticsDerivedState() owner (AGG3-51).
 
 
     // DEBUG shell hooks (called from MainActivity's intent-extra path — the exported launcher
@@ -1407,8 +1470,13 @@ class CameraViewModel @JvmOverloads constructor(
     private fun currentZoomBase(): Float = zoomGlide.base(_state.value.controls.zoomRatio)
 
     /**
-     * One-shot teardown of the whole zoom-glide lifecycle, called from EVERY optics-SCALE remap door
-     * (mode / lens / TC / MR-recall / rollback / camera-override) AND onStop. A scale remap makes
+     * One-shot teardown of every piece of ROUTE-SCOPED derived state, called from EVERY optics-SCALE
+     * remap door (mode / lens / TC / MR-recall / rollback / camera-override) AND onStop.
+     *
+     * Two things live here because they share EXACTLY that door set, and splitting them would
+     * recreate the hand-duplicated-door bug called out below:
+     *
+     * 1. The zoom glide. A scale remap makes
      * every in-flight glide value an ABSOLUTE ratio in the OLD scale: the coalesced pending ratio, the
      * hardware-key ease target, and the throttled quiet-landing / interaction-end / 16 ms-flush
      * Runnables would each submit an old-scale ratio (or run a wasted AE/AF rebuild) through whatever
@@ -1417,6 +1485,11 @@ class CameraViewModel @JvmOverloads constructor(
      * forgot at several (AGG3-25/26/51, VER-3, ARCH-4): it clears every plain field via the holder and
      * cancels every matching timer.
      *
+     * 2. The focus-confidence evidence. Frame-detail verdicts and the AF/lens-position candidate both
+     * belong to the ROUTE that produced them: a TELE analysis frame must never publish a verdict for
+     * the 1× route the app just switched to, and a held tag must not survive the door that made its
+     * evidence meaningless. The new route earns its own 700 ms hold from scratch.
+     *
      * It deliberately does NOT call engine.setZoomInteraction(false): a synchronous boost-off would
      * fire setSmoothPreviewBoost(false) → a full startPreview() rebuild on a controller the remap may
      * discard. Resetting the ViewModel-side `interacting` flag is enough. A structural reopen gets a
@@ -1424,12 +1497,13 @@ class CameraViewModel @JvmOverloads constructor(
      * `commitRetainedOpticsControls`, which folds exact controls and boost removal into its one
      * camera-thread request update. `resume()` covers an onStop-mid-gesture lifecycle return.
      */
-    private fun invalidateZoomGlide() {
+    private fun invalidateOpticsDerivedState() {
         zoomGlide.invalidateForRemap()
         mainHandler.removeCallbacks(zoomEaseTicker)
         mainHandler.removeCallbacks(zoomTrailingFlush)
         mainHandler.removeCallbacks(zoomQuietLanding)
         mainHandler.removeCallbacks(zoomInteractionEnd)
+        invalidateFocusConfidence()
     }
 
     override fun onJpegQuality(quality: Int) = updateControls(persist = true) { it.copy(jpegQuality = quality) }
@@ -1466,7 +1540,7 @@ class CameraViewModel @JvmOverloads constructor(
         // The mode remap invalidated the zoom SCALE — the coalesced base, any hardware-key glide whose
         // absolute target was set in the old scale, and any throttled quiet-landing / interaction-end
         // that would otherwise submit an old-scale ratio through the outgoing controller (AGG3-10/25).
-        invalidateZoomGlide()
+        invalidateOpticsDerivedState()
         clearTapFocusUi()
         engine.setVideoMode(
             enabled = mode == CaptureMode.VIDEO,
@@ -1601,7 +1675,7 @@ class CameraViewModel @JvmOverloads constructor(
         if (enteredTele) preTeleUnifiedZoom = capturedPreTele
         // The TC scale flip overwrote the coalesced base and invalidated any hardware-key glide /
         // throttled landing set in the pre-flip scale (same invariant as every optics-remap door).
-        invalidateZoomGlide()
+        invalidateOpticsDerivedState()
         clearTapFocusUi()
         markChanged(FnSlot.TELECONVERTER)
         saveSettingsIfEnabled()
@@ -1635,7 +1709,7 @@ class CameraViewModel @JvmOverloads constructor(
         }
         // The lens-preset rewrite overwrote the coalesced base and invalidated any hardware-key glide /
         // throttled landing set in the pre-pick scale (same invariant as every optics-remap door).
-        invalidateZoomGlide()
+        invalidateOpticsDerivedState()
         clearTapFocusUi()
         markChanged(FnSlot.TELECONVERTER)
         saveSettingsIfEnabled()
@@ -1680,7 +1754,7 @@ class CameraViewModel @JvmOverloads constructor(
         // A front trip drops the pre-TELE return snapshot (engine does the same in its transaction).
         preTeleUnifiedZoom = Float.NaN
         // The facing flip rewrote the zoom scale — full remap-door hygiene, same as mode/lens/TC.
-        invalidateZoomGlide()
+        invalidateOpticsDerivedState()
         clearTapFocusUi()
     }
 
@@ -2057,7 +2131,7 @@ class CameraViewModel @JvmOverloads constructor(
         drainPendingControls()
         // A camera-id override reopens onto a different route (different zoom scale): abandon any
         // in-flight coalesced/gliding zoom the same way every other optics-remap door does.
-        invalidateZoomGlide()
+        invalidateOpticsDerivedState()
         clearTapFocusUi()
         engine.setCameraOverride(id)
         _state.update { it.copy(cameraOverrideId = id) }
@@ -2356,7 +2430,7 @@ class CameraViewModel @JvmOverloads constructor(
         // Full glide teardown (AGG3-26/VER-3/ARCH-4): earlier onStop reset only the ease target and
         // left zoomPendingRatio / the 16 ms flush / the interacting flag / zoomInteractionEnd live, so a
         // background mid-pinch leaked a stale base into resume and stuck the boost edge off.
-        invalidateZoomGlide()
+        invalidateOpticsDerivedState()
         // The controller is about to be closed. Retire its ownership/UI now, queue the ROI clear,
         // and skip a preview rebuild that could only race the queued close.
         clearTapFocus(rebuildPreview = false)
@@ -2447,6 +2521,23 @@ internal fun programShouldRunAppSide(mode: CaptureMode, exposureMode: ExposureMo
 /** Analysis readback is needed only for app-owned exposure or the manual meter. */
 internal fun exposureAnalysisRequired(controls: ManualControls): Boolean =
     controls.exposureMode != ExposureMode.PROGRAM || controls.programAppSide
+
+/**
+ * Whether the frame-detail metric's per-pixel math should run at all.
+ *
+ * Only the STABLE, route-level refusals live here — the ones that hold for as long as a shooting
+ * state lasts. The per-frame gates (mid-scan, zoom gesture, stale statistics, exposure) stay in
+ * [me.hletrd.findx9tele.focus.frameDefocusCandidate], because a frame that fails one of those is
+ * still worth computing: the very next frame may pass.
+ *
+ * This never turns the GL readback ON (the metric rides the scope/AE one), so a false here costs
+ * nothing but a little CPU on the analysis executor, and a true adds no GL work.
+ */
+internal fun focusDetailAnalysisRequired(
+    focusMode: FocusMode,
+    recording: Boolean,
+    recordingStarting: Boolean,
+): Boolean = focusMode != FocusMode.MANUAL && !recording && !recordingStarting
 
 /**
  * Handheld-safe shutter target (ns) for app-side PROGRAM: the 1/(35mm-equivalent focal) rule at the

@@ -9,7 +9,7 @@ package me.hletrd.findx9tele.ui
  *
  * The Handler-bound half (the ease ticker / quiet-landing / interaction-end / 16 ms trailing-flush
  * Runnables and the engine boost flip) stays in the ViewModel; [invalidateForRemap] clears exactly
- * the plain state and the ViewModel's `invalidateZoomGlide()` cancels the matching timers.
+ * the plain state and the ViewModel's `invalidateOpticsDerivedState()` cancels the matching timers.
  */
 internal class ZoomGlideState {
     /**

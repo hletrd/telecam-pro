@@ -698,9 +698,11 @@ class CameraEngine(private val context: Context) {
     // on this ~19.5:9 panel the old full-screen cover cut ~40% of the frame's width, and photo mode
     // additionally previewed a 16:9 field while capturing the full 4:3 sensor.
     var onPreviewAspect: ((Float, generation: Long) -> Unit)? = null
-    // Viewfinder analysis (histogram/waveform) computed on the GL thread; delivered here so the
-    // ViewModel can hoist it into UI state. Either arg is null when its analysis is disabled.
-    var onAnalysis: ((HistogramData?, WaveformData?) -> Unit)? = null
+    // Viewfinder analysis (histogram/waveform/frame-detail) computed off the GL thread; delivered
+    // here so the ViewModel can hoist it into UI state. Each arg is null when its analysis is
+    // disabled — the frame-detail arg is additionally null whenever no scope/AE readback ran at
+    // all, because it deliberately rides that readback rather than triggering one.
+    var onAnalysis: ((HistogramData?, WaveformData?, FocusDetailData?) -> Unit)? = null
     // Live recording-audio level (0..1 RMS, post-gain), throttled by VideoRecorder to ~10 Hz.
     var onAudioLevel: ((Float) -> Unit)? = null
     // Actual AudioRecord route once recording starts, e.g. "USB · DJI Mic Mini".
@@ -783,8 +785,8 @@ class CameraEngine(private val context: Context) {
                         glInputPending = false
                         if (paused || UnsafeRecorderQuarantine.isActive()) return@inputReady
                         ownedGl.setEisProvider { gyro.currentCorrection() }
-                        ownedGl.setAnalysisCallback { h, w ->
-                            if (glOwners.owns(ownedGl)) onAnalysis?.invoke(h, w)
+                        ownedGl.setAnalysisCallback { h, w, f ->
+                            if (glOwners.owns(ownedGl)) onAnalysis?.invoke(h, w, f)
                         }
                         // Re-seed desired GL state that may have been set before the handler existed.
                         ownedGl.setNativeLog(false)
@@ -1604,6 +1606,14 @@ class CameraEngine(private val context: Context) {
 
     fun setAeMetering(enabled: Boolean) {
         rendererAssists.setAeMetering(enabled)
+    }
+
+    /**
+     * Arms the frame-detail (focus-confidence) metric. Adds no GL work: it computes over the
+     * scope/AE readback that was already going to happen, and is silent when none does.
+     */
+    fun setFocusDetail(enabled: Boolean) {
+        rendererAssists.setFocusDetail(enabled)
     }
 
     /** Gamma Display Assist: normal monitor image while recording O-Log (the file stays log). */
@@ -4105,7 +4115,7 @@ class CameraEngine(private val context: Context) {
             invalidateCameraReady()
             return
         }
-        // onStop's invalidateZoomGlide cancels the interaction-end runnable (the only ordinary
+        // onStop's invalidateOpticsDerivedState cancels the interaction-end runnable (the only ordinary
         // clearer of this flag), so a background mid-gesture left it stale-true across the whole
         // next foreground session's first gesture (AGG4-2). Resume covers the no-reopen path
         // (controller still installed); wireController covers every reopen.

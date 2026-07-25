@@ -10,6 +10,7 @@ import android.view.Surface
 import me.hletrd.findx9tele.camera.ColorTransfer
 import me.hletrd.findx9tele.camera.PUNCH_IN_CROP
 import me.hletrd.findx9tele.camera.finderRect
+import me.hletrd.findx9tele.camera.FocusDetailData
 import me.hletrd.findx9tele.camera.HistogramData
 import me.hletrd.findx9tele.camera.WaveformData
 import me.hletrd.findx9tele.video.UnsafeRecorderQuarantine
@@ -161,7 +162,13 @@ class GlPipeline {
     // Force the luma readback on (independent of the user's scope toggles) so the app-side
     // auto-exposure loop in SHUTTER/ISO-priority always has fresh luma to meter from.
     private var analysisAe = false
-    private var analysisCallback: ((HistogramData?, WaveformData?) -> Unit)? = null
+    // Frame-detail (focus-confidence) metric. Deliberately a RIDER, not a trigger: it is NOT in the
+    // readback gate below, so it only ever computes over a snapshot some other consumer already
+    // paid for. Enabling it must not add a single glReadPixels — the documented consequence is that
+    // it is silent in the modes where no scope/AE readback runs at all (video-P, flash-metered P),
+    // which is a MISS we accept rather than new per-frame GL work.
+    private var analysisFocus = false
+    private var analysisCallback: ((HistogramData?, WaveformData?, FocusDetailData?) -> Unit)? = null
     // One immutable owner per GL generation. Buffer/FBO storage and the single-in-flight guard never
     // cross a restart, so a retired analysis task cannot read replacement pixels, publish stale AE,
     // or clear the replacement generation's guard from its finally block.
@@ -494,8 +501,15 @@ class GlPipeline {
     /** Force the luma readback for app-side AE (SHUTTER/ISO priority), independent of scope toggles. */
     fun setAeMetering(enabled: Boolean) = post { analysisAe = enabled }
 
+    /**
+     * Arm the frame-detail metric. Never forces a readback (see [analysisFocus]); it only decides
+     * whether the per-pixel curvature math runs over a snapshot that was going to be taken anyway,
+     * so a MANUAL-focus shooter pays exactly nothing.
+     */
+    fun setFocusDetailEnabled(enabled: Boolean) = post { analysisFocus = enabled }
+
     /** Sink for computed scopes; invoked on the current analysis generation's executor, not GL. */
-    fun setAnalysisCallback(cb: ((HistogramData?, WaveformData?) -> Unit)?) = post {
+    fun setAnalysisCallback(cb: ((HistogramData?, WaveformData?, FocusDetailData?) -> Unit)?) = post {
         analysisCallback = cb
     }
 
@@ -1049,6 +1063,8 @@ class GlPipeline {
         val doHist = analysisHistogram || analysisAe
         val doWave = analysisWaveform
         if (!doHist && !doWave) return
+        // Rider (see [analysisFocus]): computed only when the readback is already happening.
+        val doFocus = analysisFocus
         if (!generation.owner.tryAcquire()) return
         try {
             val target = analysisTargetSize(previewW, previewH)
@@ -1111,8 +1127,12 @@ class GlPipeline {
                     val lut = digitalGainDisplayLut(analysisGain)
                     val hist = if (doHist) computeHistogram(bytes, w, h, lut) else null
                     val wave = if (doWave) computeWaveform(bytes, w, h, lut) else null
+                    // NOTE the missing `lut` argument: the frame-detail metric reads the RAW,
+                    // unboosted snapshot on purpose. Its verdict is about the optics, and must not
+                    // move when a display-only brightness simulation moves (gl/FocusDetail.kt).
+                    val focus = if (doFocus) computeFocusDetail(bytes, w, h) else null
                     if (generation.owner.mayPublish() && analysisGeneration === generation) {
-                        cb.invoke(hist, wave)
+                        cb.invoke(hist, wave, focus)
                     }
                 } catch (_: Throwable) {
                     // Analysis is best-effort; swallow so a bad frame never surfaces to the UI.
