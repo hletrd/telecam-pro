@@ -147,6 +147,7 @@ class CameraViewModel @JvmOverloads constructor(
     // or lifecycle teardown; only the exact attempt that submitted it may reconcile the state.
     private var recordingAttemptGeneration = 0L
     private var debugZoomReceiver: android.content.BroadcastReceiver? = null
+    private var debugZslSpikeReceiver: android.content.BroadcastReceiver? = null
     // Main-thread token for the one-shot Custom-WB sample. Any newer WB action makes an older
     // controller callback inert before it can publish gains or a stale status message.
     private var customWbSampleGeneration = 0L
@@ -451,6 +452,19 @@ class CameraViewModel @JvmOverloads constructor(
             app.registerReceiver(
                 receiver,
                 android.content.IntentFilter("me.hletrd.telecampro.DEBUG_ZOOM"),
+                android.content.Context.RECEIVER_NOT_EXPORTED,
+            )
+            // Cycle-8 S4a: adb-driven pseudo-ZSL streaming-spike toggle (full-res YUV joins the
+            // repeating targets on the logical photo route; stills refused while measuring).
+            val zslReceiver = object : android.content.BroadcastReceiver() {
+                override fun onReceive(c: android.content.Context?, i: android.content.Intent?) {
+                    engine.setZslSpike(i?.getBooleanExtra("enabled", false) ?: false)
+                }
+            }
+            debugZslSpikeReceiver = zslReceiver
+            app.registerReceiver(
+                zslReceiver,
+                android.content.IntentFilter("me.hletrd.telecampro.DEBUG_ZSL_SPIKE"),
                 android.content.Context.RECEIVER_NOT_EXPORTED,
             )
         }
@@ -2335,6 +2349,8 @@ class CameraViewModel @JvmOverloads constructor(
         mainHandler.removeCallbacksAndMessages(null)
         debugZoomReceiver?.let { receiver -> runCatching { getApplication<Application>().unregisterReceiver(receiver) } }
         debugZoomReceiver = null
+        debugZslSpikeReceiver?.let { receiver -> runCatching { getApplication<Application>().unregisterReceiver(receiver) } }
+        debugZslSpikeReceiver = null
         engine.detachCallbacks()
         // Ordered camera/codec/GL release contains bounded joins and can legitimately take seconds.
         // ViewModel teardown runs on main, so transfer ownership to a dedicated non-daemon thread.

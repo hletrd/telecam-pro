@@ -1581,6 +1581,11 @@ class CameraEngine(private val context: Context) {
     }
 
     /** Forces the luma readback for the app-side auto-exposure loop (SHUTTER/ISO priority). */
+    /** DEBUG only: toggles the cycle-8 S4a pseudo-ZSL streaming spike (stills refused while on). */
+    fun setZslSpike(enabled: Boolean) {
+        controller?.setZslSpike(enabled)
+    }
+
     fun setAeMetering(enabled: Boolean) {
         rendererAssists.setAeMetering(enabled)
     }

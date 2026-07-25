@@ -774,6 +774,10 @@ class CameraController(context: Context) {
         return runCatching {
             val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                 addTarget(preview)
+                // DEBUG spike only (null otherwise): stream the full-res YUV reader continuously
+                // to measure pseudo-ZSL feasibility. The cached fast-path builders inherit this
+                // target automatically (they ARE this builder).
+                zslSpikeRepeatingTarget()?.let(::addTarget)
                 applyManualControls(
                     controls,
                     caps,
@@ -1110,6 +1114,49 @@ class CameraController(context: Context) {
         }
     }
 
+    // ---- cycle-8 S4a: pseudo-ZSL streaming spike (DEBUG-only measurement mode) ----
+    // Measures whether this HAL sustains the full-res logical YUV stream as a REPEATING target —
+    // the load-bearing unknown of the pseudo-ZSL ring — before any ring/still plumbing exists.
+    // While enabled: the repeating request additionally targets the existing YUV still reader
+    // (request-level only, session shape unchanged), arriving frames are drained through the
+    // normal no-pending close path with per-second fps logs, and stills are REFUSED — a repeating
+    // YUV frame arriving inside onImage's expected==null adoption window would masquerade as a
+    // still's image, and this toggle must never corrupt the proven capture path.
+    @Volatile private var zslSpikeEnabled = false
+    private var spikeFrames = 0
+    private var spikeWindowStartMs = 0L
+
+    fun setZslSpike(enabled: Boolean) {
+        if (!BuildConfig.DEBUG) return
+        postToCamera {
+            if (zslSpikeEnabled == enabled) return@postToCamera
+            zslSpikeEnabled = enabled
+            spikeFrames = 0
+            spikeWindowStartMs = 0L
+            Log.i(TAG, "ZslSpike: ${if (enabled) "ENABLED (stills refused)" else "disabled"}")
+            startPreview()
+        }
+    }
+
+    /** The extra repeating target while the spike measures — logical photo route only. */
+    private fun zslSpikeRepeatingTarget(): Surface? =
+        if (zslSpikeEnabled && caps.isLogicalMultiCamera && !hiResReaderActive) jpegReader?.surface else null
+
+    private fun onSpikeFrame() {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (spikeWindowStartMs == 0L) {
+            spikeWindowStartMs = now
+            spikeFrames = 0
+        }
+        spikeFrames++
+        val elapsed = now - spikeWindowStartMs
+        if (elapsed >= 1_000L) {
+            Log.i(TAG, "ZslSpike: yuv ${spikeFrames * 1000L / elapsed} fps ($spikeFrames frames / $elapsed ms)")
+            spikeWindowStartMs = now
+            spikeFrames = 0
+        }
+    }
+
     // Camera-thread pacing state for the sensor fast path (see updateControls).
     private var lastSensorSubmitMs = 0L
     private var sensorFastPathQueued = false
@@ -1367,6 +1414,11 @@ class CameraController(context: Context) {
             if (pending != null) {
                 return@postToCamera cb.onError(IllegalStateException("Capture already in progress"))
             }
+            if (zslSpikeEnabled) {
+                // See the spike block above: repeating YUV frames would race the expected==null
+                // adoption window; the measurement mode refuses stills instead of corrupting them.
+                return@postToCamera cb.onError(IllegalStateException("ZSL spike active — stills disabled (debug measurement mode)"))
+            }
 
             // Snapshot once: the timeout and the request must describe the same AEB/manual step even
             // if the UI publishes the next immutable control set while this capture is in flight.
@@ -1535,6 +1587,9 @@ class CameraController(context: Context) {
 
     private fun onImage(reader: ImageReader, isRaw: Boolean) {
         val image = runCatching { reader.acquireNextImage() }.getOrNull() ?: return
+        // Spike accounting only — the frame itself falls through to the normal no-pending close
+        // below (stills are refused while the spike streams, so pending is always null here).
+        if (!isRaw && zslSpikeEnabled) onSpikeFrame()
         val p = pending
         if (p == null) { image.close(); return }
         synchronized(p) {
