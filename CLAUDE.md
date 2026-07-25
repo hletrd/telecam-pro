@@ -355,7 +355,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   way), and tap-AF needs NO un-flip (displayed x == texture x; `mapTapFocusGeometry(mirrorX=false)`).
   Pushed as route state by `applyStabilization` (`gl.setFrontStreamPreMirrored`). On a multi-device
   build this inversion becomes a DeviceProfile quirk flag. Capture rotation FRONT =
-  `(sensor − device) % 360`, afocal never applies
+  `(sensor + device) % 360` — the gravity term is GyroEis CCW-POSITIVE, so it ADDS on the front and
+  SUBTRACTS on the rear; the old `− device` here was the same sign error that saved every
+  landscape-held REAR still 180° rotated (device-bisected 2026-07-25). Afocal never applies
   (`RotationMath.captureRotationDegrees(..., frontFacing)`); preview rotation stays 0. RAW,
   hi-res, flash, and the Loupe Overview all resolve off the existing capability/route axes — no
   facing special cases in those predicates.
@@ -442,11 +444,14 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   `OcsProbe` availability check were deleted because the probe's answer was a CONSTANT of the
   missing AUTH_CODE, not of the device: it returned `errorCode=1004` (AUTHCODE_EXPECTED) on every
   run and could never report anything else without an OPPO developer registration — which is itself
-  the prerequisite for re-adding the SDK. For that constant it cost ~180 ms of DEBUG cold start
-  (device-measured 2026-07-25: release 354 ms vs debug 535 ms to `configure_streams`) and 200+ log
-  rows inside the cold-start window, blowing ColorOS's 300-row per-process quota (`LOG_FLOWCTRL ...
-  DROPPED`) and silently eating our own `StartupTrace` instrumentation — a measurement tax that
-  corrupted measurement. Like the 200 MP entry above: **do not re-probe without cause.** CameraUnit
+  the prerequisite for re-adding the SDK. For that constant it cost ~32 ms of DEBUG cold start
+  (device-measured 2026-07-25, proc-start → `configure_streams` END, median of 4 runs each: 527 ms
+  with the SDK, 495 ms without). Do NOT re-quote the release-vs-debug gap (354 ms vs 535 ms) as the
+  SDK's cost — that number is debug-BUILD overhead in general and the SDK is only a small part of
+  it; the isolated A/B above is the honest figure. The decisive cost was not milliseconds but the
+  200+ log rows it emitted inside the cold-start window, blowing ColorOS's 300-row per-process
+  quota (`LOG_FLOWCTRL ... DROPPED`) and silently eating our own `StartupTrace` instrumentation —
+  a measurement tax that corrupted measurement. Like the 200 MP entry above: **do not re-probe without cause.** CameraUnit
   remains a legitimate deferred OPTION; the full re-enable order (registration → issued AUTH_CODE →
   restore dependency/repo/catalog/verification-metadata → build flag → re-measure) is in the
   "Authenticated CameraUnit path" entry under Deferred Beyond v1 in `docs/BACKLOG.md`. Restore from

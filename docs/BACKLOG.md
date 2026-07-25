@@ -213,9 +213,11 @@ These do not require a code or metadata change unless the result exposes a defec
   its credentials, the four `gradle/verification-metadata.xml` components, and the debug-only
   `OcsProbe` availability check. **Why:** without an AUTH_CODE the probe could only ever return
   `errorCode=1004` (AUTHCODE_EXPECTED) — a constant of the missing registration, not of the device,
-  so it could never be what tells us the answer changed — while costing ~180 ms of debug cold start
-  (release 354 ms vs debug 535 ms to `configure_streams`) and 200+ log rows that blew ColorOS's
-  300-row per-process quota and ate our own `StartupTrace` instrumentation. Re-enable order, which
+  so it could never be what tells us the answer changed — while costing ~32 ms of debug cold start
+  (isolated A/B, proc-start → `configure_streams` END, median of 4 runs each: 527 ms with the SDK,
+  495 ms without; the release-vs-debug 354/535 ms gap is debug-BUILD overhead and must not be
+  quoted as the SDK's cost) and, decisively, 200+ log rows that blew ColorOS's 300-row per-process
+  quota and ate our own `StartupTrace` instrumentation. Re-enable order, which
   is the ONLY sanctioned path:
   1. an AUTH_CODE actually ISSUED (not merely applied for) for applicationId `me.hletrd.telecampro`
      plus the signing cert, via OPPO developer registration;
