@@ -746,7 +746,13 @@ Color-profile rendering happens in the fragment shader:
 **Fragment shader (Shaders.kt):**
 ```glsl
 // Pseudocode
-vec3 color = texture(camera, uv).rgb;  // display-referred SDR [0, 1]
+vec3 color = dgain(texture(camera, uv).rgb);  // display-referred SDR [0, 1]
+// dgain = cycle-8 preview brightness simulation: BT.1886 decode -> ×uDigitalGain (linear) ->
+// clamp -> re-encode, PREVIEW draw only (encoder/analysis pass 1.0). HONESTY: linear values past
+// 1.0 CLIP at white — the simulation cannot show the highlight roll-off a true long exposure
+// would produce (same class of honesty note as the HLG mapping: nothing above the ISP's SDR
+// white exists to recover). Zebra/false-color/peaking and the CPU-LUT'd scopes/AE histogram read
+// the same simulated signal; files and stills never do.
 if (transfer == HLG) {
     color = hlgOetf(inverseHlgOotf(toBt2020(bt1886Decode(color)) * referenceWhiteScale));
 } else if (transfer == SLOG3) {

@@ -337,6 +337,11 @@ internal const val PREVIEW_SAFE_MAX_EXPOSURE_NS = 500_000_000L
 // returns the residual shortfall as a linear digital gain, bounded ×16 (4 stops — the 500→66.7 ms
 // shortfall is 7.5×, so the simulated view is never darker than the old capped view) so noise
 // stays sane; past ×16 the preview honestly darkens.
+// VIDEO invariant: every offered recording rate's frame interval (≥24 fps → ≤41.7 ms) sits BELOW
+// this ceiling, and normalizedForCaptureMode clamps video exposure to one frame — so the gain is
+// structurally 1.0 while recording and the encoder's gain-free draw can never diverge from the
+// displayed brightness mid-REC. Pinned by ExposureMathTest; a future sub-15-fps recording rate
+// would break it and must fail there first.
 internal const val PREVIEW_FLUIDITY_MAX_EXPOSURE_NS = 66_666_667L
 internal const val PREVIEW_MAX_DIGITAL_GAIN = 16f
 

@@ -384,6 +384,24 @@ class ExposureMathTest {
     }
 
     @Test
+    fun `video frame intervals always sit under the fluidity ceiling with unity gain`() {
+        // The mid-REC invariant (team-lead-requested pin): video exposure is clamped to one frame
+        // (normalizedForCaptureMode), and every offered recording rate's interval fits under the
+        // 1/15 s fluidity ceiling — so the brightness-simulation gain is structurally 1.0 while
+        // recording, and the encoder's gain-free draw can never diverge from the display. A future
+        // sub-15-fps recording rate must fail HERE before it silently breaks that.
+        for (fps in intArrayOf(24, 25, 30, 60)) {
+            val interval = checkNotNull(frameIntervalNs(fps))
+            assertTrue("1/$fps s must fit the fluidity ceiling", interval <= PREVIEW_FLUIDITY_MAX_EXPOSURE_NS)
+            val t = previewExposureTrade(
+                wantExposureNs = interval, iso = 6_400, isoUpper = 12_800, neutralCapNs = null,
+            )
+            assertEquals(interval, t.exposureNs)
+            assertEquals("no simulation at any video cadence", 1f, t.digitalGain, 0f)
+        }
+    }
+
+    @Test
     fun `gain is unity when the exposure fits under the fluidity ceiling`() {
         val c = ManualControls(
             exposureMode = ExposureMode.SHUTTER,

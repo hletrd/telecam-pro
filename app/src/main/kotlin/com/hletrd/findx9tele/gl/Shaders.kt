@@ -81,6 +81,9 @@ object Shaders {
         // zebra, and false-color all read the STILL's simulated brightness. Encoder and analysis
         // draws always pass 1.0: files never contain the boost, and the scope/AE readback stays
         // sensor-true (its CPU-side histogram applies the matching LUT exactly once instead).
+        // HONESTY: boosted linear values past 1.0 CLIP at white — the simulation cannot show the
+        // highlight roll-off a true long exposure would produce (same class of note as the HLG
+        // mapping: nothing above the ISP's SDR white exists to recover).
         vec3 dgain(vec3 c) {
             if (uDigitalGain <= 1.001) return c;
             vec3 lin = pow(clamp(c, 0.0, 1.0), vec3(SDR_EOTF_GAMMA)) * uDigitalGain;
