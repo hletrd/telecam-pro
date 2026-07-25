@@ -4,37 +4,42 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 ## Upload Artifact
 
-> **DO NOT UPLOAD THE CURRENT LOCAL AAB OR THE HASHED 2026-07-10 ARTIFACT.** Source has changed since
-> that candidate. Regenerate a signed bundle, repeat every current release gate and artifact check,
-> update both hashes below, and complete the current PMA110 release matrix first. Current artifact
-> regeneration and PMA110 evidence are **NOT RUN / pending**.
+> Upload gate: the 2026-07-25 candidate below has passed every artifact check; the current-source
+> **PMA110 release device matrix is the remaining gate** before upload. Update this banner when the
+> matrix passes.
 
 - Signed Android App Bundle:
   `app/build/outputs/bundle/release/app-release.aab`
 - Version: `versionCode=1`, `versionName=1.0`
 - Package name: `me.hletrd.telecampro`
 - Upload key alias: `telecampro`
-- Upload certificate SHA-256:
-  `A6:D0:A0:3F:B1:48:09:50:8F:CA:27:0F:1B:57:6E:F9:55:DF:FC:CB:D6:19:D4:5D:87:04:38:6A:29:F4:BC:AF`
+- Upload certificate SHA-256 (keystore regenerated 2026-07-25 — the previous certificate was never
+  uploaded to Play, so nothing is bound to it):
+  `9D:FD:B9:03:26:92:38:EF:6D:E4:24:05:26:66:B0:58:14:57:7B:4B:3B:B4:3A:5E:3E:3A:05:57:26:60:E5:84`
 
-Do not upload debug APKs or any unsigned/stale release bundle. The path above is the expected output
-location, not evidence that its present contents are uploadable.
+Do not upload debug APKs or any unsigned/stale release bundle.
 
-### Historical v1 candidate (verified 2026-07-10; stale — DO NOT UPLOAD)
+### Current v1 candidate (artifacts verified 2026-07-25; device matrix pending)
 
-- Historical AAB SHA-256 (does not describe current source):
-  `8230d82f482807e6feae4ae80d6a8052d1633bb8921f4cf6b908d8192224fe62`
-- Historical matching release APK SHA-256:
-  `1b2a9ba978f937f2cbcbd44e59e10ab9681156a72d8107df4485e795e9c3c190`
-- `bundletool 1.18.3 validate`: passed
-- APK signing: v2 signature valid; certificate matches the upload certificate above
-- APK alignment: 16 KiB zip alignment passed
+- AAB SHA-256 (built from main at the cycle-7 close, signed with the regenerated upload key):
+  `b45a3b8e46d09e5d6f5e67b252d9ee2389554b0b532c7ea76d1eb0060b1bc6d1`
+- Matching release APK SHA-256:
+  `23ecbcf28745d975ab46124a60a29d255d9b8e2d77b03eb2d91fd5002b038c8e`
+- `bundletool 1.18.3 validate`: passed; AAB `jarsigner -verify`: verified
+- APK signing: v2 signature valid, 1 signer, certificate matches the upload certificate above
+- APK alignment: 16 KiB zip alignment passed (`zipalign -c -P 16 4`)
+- Release gate: `lintRelease` 0 errors / 5 known-intentional warnings; host unit suite green at HEAD
+
 - Manifest: target/min SDK 36, no `INTERNET`, no `DEBUGGABLE`
-- Build gates passed, including the unit-test suite and `lintRelease`. Re-run every release gate before
-  upload; `app/src/test/` is the suite source of truth rather than a copied test/task count.
-- The 2026-07-10 PMA110 smoke test passed DNG+HEIF photo, 4K HLG/AAC video, Open Gate 4:3 video,
-  settings persistence, and no crash/ANR. That is historical evidence only; current-source PMA110
-  verification is **NOT RUN / pending**.
+- The 2026-07-10 PMA110 smoke test (DNG+HEIF photo, 4K HLG/AAC video, Open Gate 4:3, settings
+  persistence, no crash/ANR) is historical evidence from a superseded build/certificate; the
+  current-candidate PMA110 release matrix is **pending** and gates the upload.
+
+### Historical v1 candidate (2026-07-10; superseded — DO NOT UPLOAD)
+
+- AAB `8230d82f482807e6feae4ae80d6a8052d1633bb8921f4cf6b908d8192224fe62`, APK
+  `1b2a9ba978f937f2cbcbd44e59e10ab9681156a72d8107df4485e795e9c3c190`, signed with the retired
+  certificate `A6:D0:A0:3F:…:BC:AF` (never uploaded; keystore replaced 2026-07-25).
 
 The developer account was created in 2015, so the closed-test production-access requirement for new
 personal accounts created after November 13, 2023 does not apply.
