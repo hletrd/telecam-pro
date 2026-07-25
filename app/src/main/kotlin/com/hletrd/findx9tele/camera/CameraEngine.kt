@@ -3441,6 +3441,7 @@ class CameraEngine(private val context: Context) {
             configuredSurface = rec.start(
                 uri, encoderSize, rate.encoderRate, captureRate, requestedBitRate,
                 fileTransfer, codec, recordAudio, audioGain, orientationHint,
+                frontFacing = facing == CameraFacing.FRONT,
                 audioScene, controls.zoomRatio, audioInputPreference,
                 onRoute = { route -> onAudioRoute?.invoke(route) },
                 onLevel = { lvl -> onAudioLevel?.invoke(lvl) },

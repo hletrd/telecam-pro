@@ -126,6 +126,7 @@ class VideoRecorder(private val context: Context) {
         recordAudio: Boolean,
         audioGain: Float = 1f,
         orientationHint: Int = 0,
+        frontFacing: Boolean = false,
         audioScene: AudioScene = AudioScene.STANDARD,
         audioZoom: Float = 1f,
         audioInputPreference: AudioInputPreference = AudioInputPreference.AUTO,
@@ -137,7 +138,7 @@ class VideoRecorder(private val context: Context) {
         this.audioGain = normalizeAudioGain(audioGain)
         this.audioScene = audioScene
         this.audioZoom = audioZoom
-        this.audioOrientation = RotationMath.videoOrientationHint(orientationHint)
+        this.audioOrientation = RotationMath.videoOrientationHint(orientationHint, frontFacing)
         this.audioInputPreference = audioInputPreference
         this.onRoute = onRoute
         this.onLevel = onLevel
@@ -150,7 +151,7 @@ class VideoRecorder(private val context: Context) {
             // GL already bakes the afocal 180° into the frames; this hint adds ONLY the physical device
             // orientation (0/90/180/270) captured at record start, so a landscape-held clip plays
             // upright. Must be set before start(). Sign is device-verify (see RotationMath helper doc).
-            runCatching { muxer?.setOrientationHint(RotationMath.videoOrientationHint(orientationHint)) }
+            runCatching { muxer?.setOrientationHint(RotationMath.videoOrientationHint(orientationHint, frontFacing)) }
 
             val vFmt = ColorProfiles.videoFormat(codec, size.width, size.height, encoderRate, captureRate, bitRate, transfer)
             val vCodec = MediaCodec.createEncoderByType(ColorProfiles.mimeFor(codec))

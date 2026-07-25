@@ -39,15 +39,18 @@ object RotationMath {
         captureRotationDegrees(sensorOrientation, teleconverterMode, deviceOrientation, frontFacing = false)
 
     /**
-     * Total CW rotation to save a still upright.
-     *  - BACK: sensor + afocal(tele) + device orientation, normalized — the device-verified matrix.
-     *  - FRONT: sensor − device orientation, normalized; the afocal term NEVER applies (the
-     *    converter clamps onto the rear 3×). The sign flips because a front sensor faces the
-     *    opposite direction, so the device's physical CW tilt is CCW relative to its image — the
-     *    standard Camera2 front JPEG-orientation formula. DEVICE-VERIFICATION-PENDING: like the
-     *    back signs before it, this needs a held, lit portrait/landscape output check on the
-     *    PMA110 front camera; if the check flips it, this seam (and its test matrix) is the one
-     *    place that changes.
+     * Total CW rotation to save a still upright. [deviceOrientation] comes from GyroEis's
+     * `atan2(x, y)` gravity read, which is CCW-POSITIVE (dev=90 = counter-clockwise/left
+     * landscape — the device-confirmed convention behind the `+dev` glyph counter-rotation), i.e.
+     * dev = 360 − OrientationEventListener. Substituting into the standard Camera2 JPEG formulas
+     * (BACK = sensor + OEL, FRONT = sensor − OEL) therefore gives BACK = sensor − dev and
+     * FRONT = sensor + dev.
+     *  - BACK: sensor + afocal(tele) − device orientation. DEVICE-VERIFIED 2026-07-25: with the
+     *    old `+dev` term a landscape-held rear still saved 180° rotated (laptop shot, keyboard-up)
+     *    while portrait (dev=0, term-neutral) was upright — exactly the cycle-6 analysis.
+     *  - FRONT: sensor + device orientation; the afocal term NEVER applies (the converter clamps
+     *    onto the rear 3×). Front PORTRAIT is device-verified (dev=0 — unaffected by the sign);
+     *    front LANDSCAPE still needs its held output check (docs/BACKLOG.md).
      */
     fun captureRotationDegrees(
         sensorOrientation: Int,
@@ -55,9 +58,9 @@ object RotationMath {
         deviceOrientation: Int,
         frontFacing: Boolean,
     ): Int {
-        if (frontFacing) return normalize(sensorOrientation - deviceOrientation)
+        if (frontFacing) return normalize(sensorOrientation + deviceOrientation)
         val base = sensorOrientation + if (teleconverterMode) AFOCAL_FLIP else 0
-        return normalize(base + deviceOrientation)
+        return normalize(base - deviceOrientation)
     }
 
     /** Maps a CW rotation (any int) to the matching EXIF/TIFF orientation tag (1/3/6/8). */
@@ -70,13 +73,15 @@ object RotationMath {
 
     /**
      * MediaMuxer orientation hint for a clip started at [deviceOrientation] (0/90/180/270 from
-     * gravity). The GL pipeline already bakes the afocal 180° into the recorded frames, so the hint
-     * carries ONLY the physical device tilt, normalized to [0,360). NOTE: the hint's SIGN on this
-     * device is an open Residual Field Check (docs/BACKLOG.md) — it may need `(360 - deg) % 360`;
-     * verify a held-landscape clip in BOTH directions (external gallery, not just in-app review,
-     * which re-applies the container rotation itself) before trusting it.
+     * gravity, CCW-POSITIVE — see [captureRotationDegrees]). The GL pipeline already bakes the
+     * sensor rotation + afocal 180° into the recorded frames, so the hint carries ONLY the
+     * device-tilt term — the same term the still matrix applies: BACK = −dev (device-confirmed via
+     * the 2026-07-25 landscape still), FRONT = +dev. NOTE: a held-landscape clip check in an
+     * external player (not in-app review, which re-applies the container rotation itself) is still
+     * an open Residual Field Check for the hint specifically (docs/BACKLOG.md).
      */
-    fun videoOrientationHint(deviceOrientation: Int): Int = normalize(deviceOrientation)
+    fun videoOrientationHint(deviceOrientation: Int, frontFacing: Boolean = false): Int =
+        if (frontFacing) normalize(deviceOrientation) else normalize(-deviceOrientation)
 
     /**
      * True when the GL content aspect is SWAPPED relative to the camera stream: the SurfaceTexture

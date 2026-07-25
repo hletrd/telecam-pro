@@ -13,24 +13,26 @@ class RotationMathTest {
     }
 
     @Test
-    fun `capture rotation adds sensor + afocal + device, normalized to 0-359`() {
+    fun `capture rotation adds sensor + afocal MINUS the CCW-positive device term`() {
+        // DEVICE-CONFIRMED 2026-07-25: dev is GyroEis CCW-positive, so BACK subtracts it (the old
+        // +dev matrix saved a landscape-held rear still 180 deg rotated; portrait dev=0 was inert).
         // sensor 90, tele on (+180), device 0 -> 270
         assertEquals(270, RotationMath.captureRotationDegrees(90, true, 0))
-        // sensor 90, tele on, device 90 -> 360 -> 0
-        assertEquals(0, RotationMath.captureRotationDegrees(90, true, 90))
+        // sensor 90, tele on, device 90 (CCW landscape) -> 270 - 90 = 180
+        assertEquals(180, RotationMath.captureRotationDegrees(90, true, 90))
         // sensor 90, tele off, device 0 -> 90
         assertEquals(90, RotationMath.captureRotationDegrees(90, false, 0))
-        // sensor 90, tele off, device 270 -> 360 -> 0
-        assertEquals(0, RotationMath.captureRotationDegrees(90, false, 270))
+        // sensor 90, tele off, device 270 (CW landscape) -> 90 - 270 -> 180
+        assertEquals(180, RotationMath.captureRotationDegrees(90, false, 270))
     }
 
     @Test
     fun `capture rotation normalizes negative and over-360 sums`() {
-        // sensor 270, tele on (+180), device 180 -> 630 -> 270
+        // sensor 270, tele on (+180), device 180 -> 450 - 180 = 270 (180 is sign-neutral mod 360)
         assertEquals(270, RotationMath.captureRotationDegrees(270, true, 180))
         // negative device orientation still normalizes into range
         assertEquals(0, RotationMath.captureRotationDegrees(0, false, -360))
-        assertEquals(90, RotationMath.captureRotationDegrees(0, false, -270))
+        assertEquals(270, RotationMath.captureRotationDegrees(0, false, -270))
     }
 
     @Test
@@ -64,17 +66,20 @@ class RotationMathTest {
     }
 
     @Test
-    fun `video orientation hint passes the device tilt through, normalized`() {
-        // Pins the CURRENT mapping (hint = normalized device orientation; the afocal 180° is baked
-        // into the pixels by GL, so it must NOT appear here). The hint's SIGN on the device is an
-        // open Residual Field Check — if the field check flips it to (360-deg)%360, this test is
-        // the one place that changes with it.
+    fun `video orientation hint carries the same device term as the still matrix`() {
+        // BACK = -dev, FRONT = +dev (dev is CCW-positive; the afocal 180° is baked into the pixels
+        // by GL, so it must NOT appear here). The rear sign follows the device-confirmed 2026-07-25
+        // still matrix; the held-landscape CLIP check in an external player remains the open
+        // Residual Field Check pinning this seam.
         assertEquals(0, RotationMath.videoOrientationHint(0))
-        assertEquals(90, RotationMath.videoOrientationHint(90))
+        assertEquals(270, RotationMath.videoOrientationHint(90))
         assertEquals(180, RotationMath.videoOrientationHint(180))
-        assertEquals(270, RotationMath.videoOrientationHint(270))
-        assertEquals(270, RotationMath.videoOrientationHint(-90))
-        assertEquals(90, RotationMath.videoOrientationHint(450))
+        assertEquals(90, RotationMath.videoOrientationHint(270))
+        assertEquals(90, RotationMath.videoOrientationHint(-90))
+        assertEquals(270, RotationMath.videoOrientationHint(450))
+        // FRONT keeps the +dev term.
+        assertEquals(90, RotationMath.videoOrientationHint(90, frontFacing = true))
+        assertEquals(270, RotationMath.videoOrientationHint(270, frontFacing = true))
     }
 
     @Test
@@ -89,14 +94,14 @@ class RotationMathTest {
     }
 
     @Test
-    fun `front capture rotation is sensor minus device and the afocal term never applies`() {
-        // The front matrix (sensorOrientation 270, the typical front value). Sign is the standard
-        // Camera2 front formula and DEVICE-VERIFICATION-PENDING like every rotation sign before it;
-        // a device-corrected flip lands here as an intentional matrix change.
+    fun `front capture rotation is sensor plus device and the afocal term never applies`() {
+        // The front matrix (sensorOrientation 270, the typical front value). FRONT adds the
+        // CCW-positive dev (= standard Camera2 sensor - OEL); portrait (dev=0) is device-verified,
+        // landscape is the remaining BACKLOG field check — a corrected flip lands here.
         assertEquals(270, RotationMath.captureRotationDegrees(270, false, 0, frontFacing = true))
-        assertEquals(180, RotationMath.captureRotationDegrees(270, false, 90, frontFacing = true))
+        assertEquals(0, RotationMath.captureRotationDegrees(270, false, 90, frontFacing = true))
         assertEquals(90, RotationMath.captureRotationDegrees(270, false, 180, frontFacing = true))
-        assertEquals(0, RotationMath.captureRotationDegrees(270, false, 270, frontFacing = true))
+        assertEquals(180, RotationMath.captureRotationDegrees(270, false, 270, frontFacing = true))
         // A (route-impossible) teleconverter flag is inert on the front path: the converter is a
         // rear-3× accessory and the facing door forces it off, but even a stale flag must not
         // rotate a selfie by 180°.
@@ -105,9 +110,9 @@ class RotationMathTest {
 
     @Test
     fun `back capture matrix through the facing-aware overload matches the rear form`() {
-        // frontFacing=false must be byte-identical to the historical rear matrix pinned above.
+        // frontFacing=false must be byte-identical to the rear matrix pinned above.
         assertEquals(270, RotationMath.captureRotationDegrees(90, true, 0, frontFacing = false))
-        assertEquals(0, RotationMath.captureRotationDegrees(90, true, 90, frontFacing = false))
+        assertEquals(180, RotationMath.captureRotationDegrees(90, true, 90, frontFacing = false))
         assertEquals(90, RotationMath.captureRotationDegrees(90, false, 0, frontFacing = false))
     }
 
