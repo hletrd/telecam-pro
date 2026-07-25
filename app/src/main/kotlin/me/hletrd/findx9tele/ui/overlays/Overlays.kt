@@ -386,6 +386,11 @@ internal fun compactShootingStatusVisible(state: CameraUiState): Boolean =
         state.controls.aeLock ||
         state.controls.awbLock ||
         state.controls.afLock ||
+        // Focus confidence is the OSD's one statement that the viewfinder is NOT resolving the
+        // subject. Compact is the default state (DISP starts off), so leaving it out of this gate
+        // made the tag render only when some UNRELATED tag happened to force the strip visible —
+        // i.e. never, in the default photo state the detector was built for.
+        state.focusConfidence != null ||
         state.punchIn ||
         teleFinderVisible(
             enabled = state.teleFinder,

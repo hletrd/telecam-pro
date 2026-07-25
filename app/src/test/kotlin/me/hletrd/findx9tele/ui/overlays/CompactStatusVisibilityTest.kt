@@ -4,6 +4,7 @@ import me.hletrd.findx9tele.camera.CameraUiState
 import me.hletrd.findx9tele.camera.CaptureMode
 import me.hletrd.findx9tele.camera.ColorTransfer
 import me.hletrd.findx9tele.camera.DriveMode
+import me.hletrd.findx9tele.camera.FocusConfidenceSource
 import me.hletrd.findx9tele.camera.ManualControls
 import me.hletrd.findx9tele.camera.MemorySlot
 import me.hletrd.findx9tele.camera.PhotoFormats
@@ -30,6 +31,10 @@ class CompactStatusVisibilityTest {
             "video transfer" to base.copy(mode = CaptureMode.VIDEO, transfer = ColorTransfer.HLG),
             "muted video" to base.copy(mode = CaptureMode.VIDEO, recordAudio = false),
             "open gate" to base.copy(mode = CaptureMode.VIDEO, openGate = true),
+            // Both proofs of the focus-confidence tag: the compact strip is the DEFAULT viewfinder,
+            // so a tag that only shows when another tag is up is a tag that never shows.
+            "focus confidence (AF limit)" to base.copy(focusConfidence = FocusConfidenceSource.AF_LIMIT),
+            "focus confidence (frame detail)" to base.copy(focusConfidence = FocusConfidenceSource.FRAME_DETAIL),
         )
         cases.forEach { (label, state) -> assertTrue(label, compactShootingStatusVisible(state)) }
     }
