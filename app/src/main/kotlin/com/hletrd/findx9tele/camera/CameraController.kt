@@ -483,7 +483,9 @@ class CameraController(context: Context) {
         val camera = device ?: return onError.onError(IllegalStateException("camera device unavailable"))
         val preview = glSurface ?: return onError.onError(IllegalStateException("preview surface unavailable"))
 
-        // Discard any readers built by a previous (failed) attempt before rebuilding.
+        // Discard any readers built by a previous (failed) attempt before rebuilding. Ring images
+        // belong to the outgoing YUV reader and must close BEFORE it does.
+        zslRingFlush()
         runCatching { jpegReader?.close() }
         runCatching { rawReader?.close() }
         jpegReader = null
@@ -540,7 +542,11 @@ class CameraController(context: Context) {
                 val reader = ImageReader.newInstance(
                     it.width, it.height,
                     if (useYuv) ImageFormat.YUV_420_888 else ImageFormat.JPEG,
-                    2,
+                    // The logical YUV reader feeds the pseudo-ZSL ring, which HOLDS
+                    // ZSL_RING_DEPTH acquired images while the repeating stream keeps producing —
+                    // depth + one being-acquired + one HAL margin. Standalone HAL-JPEG keeps the
+                    // proven 2. (Gralloc footprint ~5×19 MB at 4096×3072 — device-verify item.)
+                    if (useYuv) ZSL_RING_DEPTH + 2 else 2,
                 )
                 reader.setOnImageAvailableListener({ r -> onImage(r, isRaw = false) }, handler)
                 jpegReader = reader
@@ -771,13 +777,15 @@ class CameraController(context: Context) {
         // IllegalState. Guard the whole build+submit so a torn-down session degrades to "no preview
         // this cycle" instead of crashing the camera thread.
         var tapRequestStarted = false
+        val zslTargetAttached = zslStreamingActive()
         return runCatching {
             val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                 addTarget(preview)
-                // DEBUG spike only (null otherwise): stream the full-res YUV reader continuously
-                // to measure pseudo-ZSL feasibility. The cached fast-path builders inherit this
-                // target automatically (they ARE this builder).
-                zslSpikeRepeatingTarget()?.let(::addTarget)
+                // Pseudo-ZSL streaming (cycle 8): the LOGICAL photo route keeps its full-res YUV
+                // still reader on the repeating request so the zero-lag ring is always warm
+                // (S4a device-measured: no fps/stability/thermal cost). The cached fast-path
+                // builders inherit the target automatically (they ARE this builder).
+                if (zslTargetAttached) jpegReader?.surface?.let(::addTarget)
                 applyManualControls(
                     controls,
                     caps,
@@ -808,6 +816,9 @@ class CameraController(context: Context) {
                 override fun onCaptureCompleted(
                     session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult,
                 ) {
+                    // Pair this repeating result with its ring frame (EXIF/admission truth for the
+                    // pseudo-ZSL serve path). Same camera thread as the reader listener.
+                    if (zslTargetAttached && !zslStreamingBroken) zslRingAttachResult(result)
                     result.get(CaptureResult.CONTROL_ZOOM_RATIO)?.let { rz ->
                         // Change-gated: this callback runs 30-60 Hz and the GL compensation only
                         // needs FRESH values while the HAL is actually ramping — forwarding a
@@ -924,6 +935,16 @@ class CameraController(context: Context) {
             PreviewSubmission(true, tapTrigger)
         }.getOrElse {
             if (BuildConfig.DEBUG) Log.w(TAG, "startPreview skipped: ${it.message}")
+            // A failed submit with the ZSL streaming target aboard retries ONCE without it (the
+            // flag flips exactly once per controller): whatever the true cause, the preview must
+            // never stay down over an optional ring. A genuinely dead device fails the retry the
+            // same way it failed before the ZSL era.
+            if (zslTargetAttached && !zslStreamingBroken && !tapRequestStarted) {
+                zslStreamingBroken = true
+                zslRingFlush()
+                Log.w(TAG, "ZSL streaming target refused; retrying preview without it")
+                return submitPreviewRequest()
+            }
             PreviewSubmission(
                 repeatingAccepted = false,
                 tapTrigger = when {
@@ -1114,14 +1135,131 @@ class CameraController(context: Context) {
         }
     }
 
-    // ---- cycle-8 S4a: pseudo-ZSL streaming spike (DEBUG-only measurement mode) ----
-    // Measures whether this HAL sustains the full-res logical YUV stream as a REPEATING target —
-    // the load-bearing unknown of the pseudo-ZSL ring — before any ring/still plumbing exists.
-    // While enabled: the repeating request additionally targets the existing YUV still reader
-    // (request-level only, session shape unchanged), arriving frames are drained through the
-    // normal no-pending close path with per-second fps logs, and stills are REFUSED — a repeating
-    // YUV frame arriving inside onImage's expected==null adoption window would masquerade as a
-    // still's image, and this toggle must never corrupt the proven capture path.
+    // ---- cycle-8 pseudo-ZSL: full-res YUV ring on the LOGICAL photo route ----
+    // The route's YUV still reader streams on the repeating request (S4a device-measured
+    // 2026-07-25: 29-31 fps lit / 14-16 fps at the dark fluidity cap over 5-minute soaks, zero
+    // FrameGap stalls ≥200 ms, zero camera errors, +0.3°C battery — the load-bearing unknown is
+    // settled). A ring of the last ZSL_RING_DEPTH frames + their TotalCaptureResults feeds the
+    // zero-lag serve path in capturePhoto; admission (ZslAdmission.kt) guarantees a served frame
+    // IS the requested still. Everything here is CAMERA-THREAD CONFINED (reader listener, capture
+    // callbacks, and capturePhoto all run on [handler]).
+    //
+    // Real captures on this route adopt their image FROM the ring by EXACT timestamp
+    // (maybeAdoptZslFrame) — the old expected==null blind adoption would race the repeating
+    // stream. Standalone/TELE routes keep the legacy blind-adopt path byte-for-byte: their
+    // readers never see repeating frames.
+    private class ZslRingEntry(val image: Image, val timestampNs: Long) {
+        var result: TotalCaptureResult? = null
+    }
+
+    private val zslRing = ArrayDeque<ZslRingEntry>()
+    // Results can outrun their images (or vice versa); keep a few recent ones to pair either way.
+    private val zslRecentResults = ArrayDeque<TotalCaptureResult>()
+    // Set when a repeating submit with the ZSL target aboard is refused: retry once without it —
+    // a streaming refusal must degrade to "no ZSL on this controller", never "no preview".
+    private var zslStreamingBroken = false
+
+    private fun zslStreamingActive(): Boolean =
+        !zslStreamingBroken && caps.isLogicalMultiCamera && !hiResReaderActive && jpegReader != null
+
+    private fun zslRingFlush() {
+        while (zslRing.isNotEmpty()) runCatching { zslRing.removeFirst().image.close() }
+        zslRecentResults.clear()
+    }
+
+    private fun zslRingAdd(image: Image) {
+        val entry = ZslRingEntry(image, image.timestamp)
+        entry.result = zslRecentResults.firstOrNull {
+            it.get(CaptureResult.SENSOR_TIMESTAMP) == entry.timestampNs
+        }
+        zslRing.addLast(entry)
+        while (zslRing.size > ZSL_RING_DEPTH) runCatching { zslRing.removeFirst().image.close() }
+    }
+
+    /** Pairs a repeating-request result with its ring frame (called from the preview callback). */
+    private fun zslRingAttachResult(result: TotalCaptureResult) {
+        val ts = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
+        zslRecentResults.addLast(result)
+        while (zslRecentResults.size > 6) zslRecentResults.removeFirst()
+        zslRing.lastOrNull { it.timestampNs == ts }?.let { it.result = result }
+    }
+
+    /**
+     * Timestamp-exact adoption for a REAL capture on the streaming route: once the still's
+     * onCaptureStarted has bound its sensor timestamp, its own frame is fished out of the ring.
+     * Called on every ring add and on capture start, so image/started arrival order is immaterial.
+     */
+    private fun maybeAdoptZslFrame() {
+        val p = pending ?: return
+        val expected = synchronized(p) {
+            if (p.done || !p.wantJpeg || p.jpeg != null) null else p.sensorTimestampNs
+        } ?: return
+        val idx = zslRing.indexOfLast { timestampBelongsToCapture(expected, it.timestampNs) }
+        if (idx < 0) return
+        val entry = zslRing.removeAt(idx)
+        synchronized(p) {
+            if (p.done || p.jpeg != null) {
+                runCatching { entry.image.close() }
+                return
+            }
+            p.jpeg = entry.image
+        }
+        tryComplete(p)
+    }
+
+    /**
+     * The zero-lag path: serve the newest admissible buffered frame through the SAME
+     * Pending/tryComplete machinery a real capture uses (exactly-once callback, image close,
+     * pending slot). Inline completion needs no watchdog — nothing is left pending. Returns false
+     * to fall through to a real capture (byte-for-byte today's path).
+     */
+    private fun tryServeZslFrame(c: ManualControls, wantRaw: Boolean, cb: PhotoCallback): Boolean {
+        if (!zslStreamingActive() || zslRing.isEmpty()) return false
+        val intent = ZslStillIntent(
+            manualAe = manualAeAdmitted(c, caps),
+            wantProcessed = true,
+            wantRaw = wantRaw,
+            flash = c.flash,
+            exposureNs = c.clampedEffectiveExposureNs(
+                minNs = caps.exposureTimeRange?.lower,
+                maxNs = caps.exposureTimeRange?.upper,
+            ),
+            iso = c.iso,
+            // The EXACT requested ratio (never the wide-aimed HAL target) — the frame's own
+            // result carries what the wire actually applied, so a mid-ramp frame refuses.
+            zoomRatio = c.zoomRatio,
+            gestureActive = smoothPreviewBoost,
+        )
+        if (!zslIntentEligible(intent)) return false
+        val nowNs = android.os.SystemClock.elapsedRealtimeNanos()
+        for (i in zslRing.indices.reversed()) {
+            val entry = zslRing[i]
+            val r = entry.result ?: continue
+            val facts = ZslFrameFacts(
+                timestampNs = entry.timestampNs,
+                exposureNs = r.get(CaptureResult.SENSOR_EXPOSURE_TIME),
+                iso = r.get(CaptureResult.SENSOR_SENSITIVITY),
+                zoomRatio = r.get(CaptureResult.CONTROL_ZOOM_RATIO),
+            )
+            if (!zslFrameAdmissible(facts, intent, nowNs)) continue
+            zslRing.removeAt(i)
+            val p = Pending(wantJpeg = true, wantRaw = false, cb)
+            val ageMs = (nowNs - entry.timestampNs) / 1_000_000L
+            p.sensorTimestampNs = entry.timestampNs
+            // The frame's true exposure moment, not the press moment — EXIF/file times stay honest.
+            p.takenAtMs = System.currentTimeMillis() - ageMs
+            p.result = r
+            p.jpeg = entry.image
+            pending = p
+            if (BuildConfig.DEBUG) Log.i(TAG, "ShutterLag: ZSL served buffered frame, age $ageMs ms")
+            tryComplete(p)
+            return true
+        }
+        return false
+    }
+
+    // DEBUG-only per-second YUV fps logging (the S4a measurement instrument, kept for device
+    // evidence collection — streaming itself is route-owned now, so the toggle only logs).
     @Volatile private var zslSpikeEnabled = false
     private var spikeFrames = 0
     private var spikeWindowStartMs = 0L
@@ -1133,14 +1271,9 @@ class CameraController(context: Context) {
             zslSpikeEnabled = enabled
             spikeFrames = 0
             spikeWindowStartMs = 0L
-            Log.i(TAG, "ZslSpike: ${if (enabled) "ENABLED (stills refused)" else "disabled"}")
-            startPreview()
+            Log.i(TAG, "ZslSpike: fps logging ${if (enabled) "ENABLED" else "disabled"}")
         }
     }
-
-    /** The extra repeating target while the spike measures — logical photo route only. */
-    private fun zslSpikeRepeatingTarget(): Surface? =
-        if (zslSpikeEnabled && caps.isLogicalMultiCamera && !hiResReaderActive) jpegReader?.surface else null
 
     private fun onSpikeFrame() {
         val now = android.os.SystemClock.uptimeMillis()
@@ -1398,7 +1531,7 @@ class CameraController(context: Context) {
         }
     }
 
-    fun capturePhoto(wantJpeg: Boolean, wantRaw: Boolean, cb: PhotoCallback) {
+    fun capturePhoto(wantJpeg: Boolean, wantRaw: Boolean, cb: PhotoCallback, allowZsl: Boolean = false) {
         val posted = postToCamera {
             // Always surface a result through the callback (even on the no-target/not-ready paths) so a
             // BURST/AEB chain's onDone still fires and the user gets feedback instead of a silent no-op.
@@ -1414,15 +1547,18 @@ class CameraController(context: Context) {
             if (pending != null) {
                 return@postToCamera cb.onError(IllegalStateException("Capture already in progress"))
             }
-            if (zslSpikeEnabled) {
-                // See the spike block above: repeating YUV frames would race the expected==null
-                // adoption window; the measurement mode refuses stills instead of corrupting them.
-                return@postToCamera cb.onError(IllegalStateException("ZSL spike active — stills disabled (debug measurement mode)"))
-            }
 
             // Snapshot once: the timeout and the request must describe the same AEB/manual step even
             // if the UI publishes the next immutable control set while this capture is in flight.
             val requestControls = controls
+
+            // Pseudo-ZSL: a single processed shot may serve the newest buffered frame instantly
+            // when it truthfully IS the requested still (ZslAdmission.kt). Refusal falls through
+            // to the real capture below, byte-for-byte. Chains (burst/AEB/timelapse) and the
+            // in-REC snapshot never pass allowZsl.
+            if (allowZsl && jpeg != null && tryServeZslFrame(requestControls, wantRaw = raw != null, cb)) {
+                return@postToCamera
+            }
             val watchdogExposureNs = if (!requestControls.autoExposure && caps.supportsManualSensor) {
                 requestControls.clampedEffectiveExposureNs(
                     minNs = caps.exposureTimeRange?.lower,
@@ -1533,6 +1669,10 @@ class CameraController(context: Context) {
                                 newPending.raw = null
                             }
                         }
+                        // Streaming route: the still's own frame lands in the RING (onImage routes
+                        // every processed frame there) — now that its timestamp is bound, fish it
+                        // out. Order-immaterial with the ring-add call site.
+                        maybeAdoptZslFrame()
                         // TRUE shutter moment (sensor exposure start): queue→started is the user-felt
                         // shutter lag; started→completed→image is HAL processing + readout.
                         if (BuildConfig.DEBUG) {
@@ -1587,9 +1727,17 @@ class CameraController(context: Context) {
 
     private fun onImage(reader: ImageReader, isRaw: Boolean) {
         val image = runCatching { reader.acquireNextImage() }.getOrNull() ?: return
-        // Spike accounting only — the frame itself falls through to the normal no-pending close
-        // below (stills are refused while the spike streams, so pending is always null here).
         if (!isRaw && zslSpikeEnabled) onSpikeFrame()
+        // Streaming route: EVERY processed frame goes through the ring — a pending real capture
+        // adopts its own frame back out by EXACT timestamp (maybeAdoptZslFrame), so a repeating
+        // frame can never masquerade as the still's image the way the legacy expected==null blind
+        // adoption below would allow. Standalone/TELE readers never see repeating frames and keep
+        // the proven path untouched.
+        if (!isRaw && zslStreamingActive()) {
+            zslRingAdd(image)
+            maybeAdoptZslFrame()
+            return
+        }
         val p = pending
         if (p == null) { image.close(); return }
         synchronized(p) {
@@ -1666,6 +1814,8 @@ class CameraController(context: Context) {
             pending = null
             runCatching { session?.close() }
             runCatching { device?.close() }
+            // Ring images belong to the YUV reader — close them before it.
+            zslRingFlush()
             runCatching { jpegReader?.close() }
             runCatching { rawReader?.close() }
             session = null

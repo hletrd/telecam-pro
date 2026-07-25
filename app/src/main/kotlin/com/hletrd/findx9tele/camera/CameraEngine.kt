@@ -1096,6 +1096,8 @@ class CameraEngine(private val context: Context) {
         }
         ctrl.onFocusDistance = { d -> if (controller === ctrl) onFocusDistance?.invoke(d) }
         ctrl.onAfState = { hal -> if (controller === ctrl) onAfIndication?.invoke(AfIndication.fromHal(hal)) }
+        // Replay the cached debug fps-logging intent (a pre-controller toggle must not be lost).
+        if (com.hletrd.findx9tele.BuildConfig.DEBUG && zslSpikeLoggingWanted) ctrl.setZslSpike(true)
         return ctrl
     }
 
@@ -1581,9 +1583,20 @@ class CameraEngine(private val context: Context) {
     }
 
     /** Forces the luma readback for the app-side auto-exposure loop (SHUTTER/ISO priority). */
-    /** DEBUG only: toggles the cycle-8 S4a pseudo-ZSL streaming spike (stills refused while on). */
+    // DEBUG only: the per-second YUV fps logging toggle (the S4a measurement instrument; ZSL
+    // streaming itself is route-owned). Cached so a toggle arriving before the first controller
+    // exists (cold-launch race, operator-observed: silently ignored <~10 s after launch) applies
+    // when wireController runs — and the refusal is at least visible in logcat meanwhile.
+    @Volatile private var zslSpikeLoggingWanted = false
+
     fun setZslSpike(enabled: Boolean) {
-        controller?.setZslSpike(enabled)
+        zslSpikeLoggingWanted = enabled
+        val ctrl = controller
+        if (ctrl == null) {
+            android.util.Log.w("CameraEngine", "ZslSpike: no controller yet — cached, applies on next wire")
+            return
+        }
+        ctrl.setZslSpike(enabled)
     }
 
     fun setAeMetering(enabled: Boolean) {
@@ -2825,6 +2838,10 @@ class CameraEngine(private val context: Context) {
                         effFormats.wantsProcessedStill,
                         effFormats.dngRaw,
                         callback,
+                        // Only the SINGLE drive may serve a buffered pseudo-ZSL frame: chains
+                        // (burst/AEB/timelapse) need per-shot wire captures, and the admission
+                        // itself re-gates route/format/values (ZslAdmission.kt).
+                        allowZsl = true,
                     )
                 }
                 if (dispatched.isFailure) {
