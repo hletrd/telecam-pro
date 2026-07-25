@@ -8,9 +8,10 @@ Use this as the source of truth when filling Play Console > Policy > App content
 - Declared permissions: `CAMERA`, `RECORD_AUDIO`
 - No declared `INTERNET` permission
 - No ads, analytics, accounts, cloud sync, or crash telemetry SDKs of any kind
-- The release build bundles no third-party OEM SDK (the OPPO CameraUnit/OCS availability probe is
-  debug-only); the enforceable guarantee is the merged manifest: the app declares no `INTERNET`
-  permission, and the build strips one if any dependency ever tries to merge it in
+- NO build variant bundles a third-party OEM SDK. The OPPO CameraUnit/OCS availability probe and its
+  `com.oplus.ocs` dependency — previously debug-only, never in release — were removed entirely on
+  2026-07-25. The enforceable guarantee is unchanged and is the merged manifest: the app declares no
+  `INTERNET` permission, and the build strips one if any dependency ever tries to merge it in
 - Camera input is used for the viewfinder and capture. Microphone input is processed locally when
   recording video audio and while the input level meter is visible in armed Video mode. Standby meter
   input is reduced to a level reading and is not saved. Photos and videos are saved in `DCIM/X9Tele`

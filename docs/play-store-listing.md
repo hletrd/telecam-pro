@@ -92,8 +92,9 @@ Requires an OPPO Find X9 Ultra running Android 16. Target model codes: CPH2841 (
   Camera input supports the local viewfinder and captures. Microphone input is processed locally for
   enabled video audio and while the visible input level meter is active in armed Video mode; standby
   meter input is not saved. Captures remain on-device through Android MediaStore, and no input is
-  uploaded, collected by the developer, or shared with third parties. The release build bundles no
-  OEM SDK; the OPPO CameraUnit/OCS availability probe is debug-only.
+  uploaded, collected by the developer, or shared with third parties. No build variant bundles an
+  OEM SDK (the debug-only OPPO CameraUnit/OCS availability probe and its `com.oplus.ocs` dependency
+  were removed 2026-07-25).
 - **Is all user data encrypted in transit?** -> N/A (no data transmitted).
 - **Do you provide a way to request data deletion?** -> N/A (no data collected); users delete their own
   photos/videos via the gallery.

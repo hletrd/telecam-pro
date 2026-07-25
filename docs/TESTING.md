@@ -37,9 +37,9 @@ bucket by the committed filters in `tools/coverage/`:
   instrumented coverage runs when performed); it has **no host-coverage target** and its
   host-JVM number is reported only for transparency.
 - **Excluded** (`tools/coverage/partition-excluded.txt`): debug/preview QA scaffolding
-  (`PreviewCameraActions` @Preview stub, the debug-only `UiSnapshotActivity` harness, the
-  debug-only `OcsProbe` vendor probe). Counted in neither partition, but the analyzer prints the
-  excluded line count on every run so the exclusion is never invisible.
+  (`PreviewCameraActions` @Preview stub, the debug-only `UiSnapshotActivity` harness). Counted in
+  neither partition, but the analyzer prints the excluded line count on every run so the exclusion
+  is never invisible.
 
 ### The honest-number contract
 

@@ -431,13 +431,26 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   off on that one attempt; a rejected hi-res session falls back to full-with-RAW), fast commits
   compare intent against the CONFIGURED session (`hiResConfigured`), the still saves via the
   EXIF-orientation-only passthrough-JPEG lane, and the `HR` OSD tag keys on accepted-session truth.
-- **300 mm teleconverter OIS integration depends on OPPO CameraUnit availability (2026-07-08).**
-  The 4.3× teleconverter stabilization profile appears to use CameraUnit extension parameters that
-  are not exposed through raw Camera2 request/result keys. The app applies the public Camera2 overlap
-  (`com.oplus.camera.mode=40`, `com.oplus.original.zoomRatio` 4.286×) and runs `OcsProbe` in debug
-  builds as a read-only CameraUnit availability check. Enabling the full CameraUnit path requires the
-  official OPPO developer registration flow and an AUTH_CODE; see the "Authenticated CameraUnit
-  path" entry under Deferred Beyond v1 in `docs/BACKLOG.md` for the checklist and SDK notes.
+- **300 mm teleconverter OIS would depend on OPPO CameraUnit, which is NOT integrated — SDK and
+  probe REMOVED 2026-07-25; do not re-add without the BACKLOG checklist.** The 4.3× teleconverter
+  stabilization profile appears to use CameraUnit extension parameters that are not exposed through
+  raw Camera2 request/result keys. What the app actually applies is the public Camera2 overlap
+  (`com.oplus.camera.mode=40`, `com.oplus.original.zoomRatio` 4.286×) plus the vendor 0x80b4 TC
+  session type — **none of which needs an AUTH_CODE**, and none of which is affected by this
+  removal. The `com.oplus.ocs` dependency (camera 1.1.0 + base 1.0.16 and its
+  base-auth/base-internal transitives), the OPPO OpenCapability maven repo, and the debug-only
+  `OcsProbe` availability check were deleted because the probe's answer was a CONSTANT of the
+  missing AUTH_CODE, not of the device: it returned `errorCode=1004` (AUTHCODE_EXPECTED) on every
+  run and could never report anything else without an OPPO developer registration — which is itself
+  the prerequisite for re-adding the SDK. For that constant it cost ~180 ms of DEBUG cold start
+  (device-measured 2026-07-25: release 354 ms vs debug 535 ms to `configure_streams`) and 200+ log
+  rows inside the cold-start window, blowing ColorOS's 300-row per-process quota (`LOG_FLOWCTRL ...
+  DROPPED`) and silently eating our own `StartupTrace` instrumentation — a measurement tax that
+  corrupted measurement. Like the 200 MP entry above: **do not re-probe without cause.** CameraUnit
+  remains a legitimate deferred OPTION; the full re-enable order (registration → issued AUTH_CODE →
+  restore dependency/repo/catalog/verification-metadata → build flag → re-measure) is in the
+  "Authenticated CameraUnit path" entry under Deferred Beyond v1 in `docs/BACKLOG.md`. Restore from
+  the removal commits rather than re-deriving coordinates and credentials.
 - **The camera-control button: slides arrive as STANDARD `KEYCODE_ZOOM_IN`/`OUT` (live-verified
   2026-07-09).** Full mechanical press = standard `KEYCODE_CAMERA` (→ shutter, `onKeyDown`). The
   capacitive slide is re-emitted to the FOCUSED app as **KEYCODE_ZOOM_IN (168) / KEYCODE_ZOOM_OUT
