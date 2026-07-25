@@ -14,6 +14,11 @@ import kotlin.math.abs
  * LENS_INFO_MINIMUM_FOCUS_DISTANCE). Both are already live in CameraUiState; the hold below turns
  * the flickery instantaneous signal into a stable OSD tag per UX_POLICY (quiet viewfinder — a
  * compact "TOO CLOSE" tag in the OSD row, never a banner/toast).
+ *
+ * HONESTY (device-observed 2026-07-25): the heuristic is deliberately conservative — it can MISS,
+ * it must never false-fire. This HAL can false-lock FOCUSED on a featureless surface at point
+ * blank (contrast AF has nothing to judge), and a FOCUSED verdict correctly shows no tag; the tag
+ * only appears when AF itself admits it cannot resolve the subject.
  */
 
 /** Fraction of the min-focus diopter limit the lens must exceed to count as "racked near it". */
