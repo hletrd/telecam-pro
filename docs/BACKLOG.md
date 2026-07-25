@@ -99,8 +99,28 @@ verification not yet run:
    the existing analysis readback) shows `SOFT` and no suffix — it proves the frame resolves no
    fine detail, not that the subject is too close. Added because the TELE HAL false-locks
    `FOCUSED` at infinity on a ~9 cm subject, which makes `AF_LIMIT` unreachable on that route
-   (see CLAUDE.md). **Device check needed**: subject ~9 cm on TELE must raise `SOFT`; a flat wall,
-   a dark scene, and a sharp normal scene must all stay clear.
+   (see CLAUDE.md). **DEVICE-CHECKED 2026-07-25 — the detector MISSES the case it was built for.**
+   Measured from its own tile votes (a `FocusConfidence` DEBUG trace added for this check):
+   - sharp reference (front camera, lit room at normal distance): **5-6 soft of 75-76 judgeable**
+     (7-8% soft), `bestRatio` 0.89-1.05 → RESOLVED, correct.
+   - defocused, subject ~3 cm on TELE (min focus 120 cm): **53 soft of 72** (74%), `bestRatio` 0.30
+     → **RESOLVED, a MISS.** Same subject at 1x (min focus 15 cm): 45 of 73 (62%), `bestRatio` 0.19,
+     also a MISS.
+   The binding constraint is the FRAME rule, not the metric: `FOCUS_SHARP_TOLERANCE = 0.02` requires
+   ≈1 sharp tile out of ~74, and genuinely defocused frames still show 19-28 (sensor noise raises
+   the fine-lag term — by design, see `FOCUS_SOFT_RATIO`; noiseless synthetic frames cannot expose
+   this, so no host test could have caught it). The metric ITSELF separates cleanly, and `bestRatio`
+   separates best (0.19-0.30 defocused vs 0.89-1.05 sharp).
+   **Left unchanged deliberately.** The contract is "may miss, must never false-fire", and a miss
+   does not violate it. Relaxing the tolerance to 0.50 was tried and REVERTED: it broke the existing
+   "a small sharp subject inside a defocused field keeps the frame resolved" test — i.e. it would
+   false-fire on shallow-depth-of-field shots, which for a 300 mm telephoto app is the *normal*
+   photograph. Three scenes are not enough evidence to move a never-false-fire threshold.
+   **To close this properly** (deferred): drive the frame verdict off `bestRatio` (nothing anywhere
+   in the frame resolves) instead of a sharp-tile count, and calibrate it on a device set that
+   MUST include bokeh — a sharp subject on a blurred background — plus flat, dark, grainy, and
+   motion-blurred scenes. Until then the FRAME_DETAIL path is effectively dormant on this device
+   and `AF_LIMIT` remains the only live proof (itself unreachable on TELE).
 4. **Pseudo-ZSL S4a spike (debug-only)** — `DEBUG_ZSL_SPIKE` broadcast streams the full-res
    logical YUV reader on the repeating request with fps logs (stills refused while on); the S4b
    pick-latest ring is GATED on this measurement. The ZSL probe found YUV/PRIVATE reprocessing
