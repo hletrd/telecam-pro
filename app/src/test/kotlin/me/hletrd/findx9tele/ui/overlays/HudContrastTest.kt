@@ -113,4 +113,31 @@ class HudContrastTest {
         val ratio = contrastRatioOnWhiteScrim(rgbOf(CameraColors.TextPrimary), HUD_TEXT_SCRIM_ALPHA)
         assertTrue("review action glyph contrast was $ratio", ratio >= 4.5)
     }
+
+    @Test
+    fun `the bottom-cluster pill surfaces share the pinned alpha`() {
+        // DialChip, CompactFnButton, CompactDialCloseButton and the Speed/Angle toggle sat on magic
+        // 0.70/0.72 alphas and were covered by NO case above, even though they sit directly over the
+        // live preview: the bottom cluster's gradient is transparent at its TOP edge, which is
+        // exactly where the dial chip row is. Every foreground they use must clear the same floor.
+        val foregrounds = mapOf(
+            "dial chip / compact glyph white" to rgbOf(CameraColors.TextPrimary),
+            "unavailable chip + inactive Speed/Angle option" to rgbOf(CameraColors.TextSecondary),
+        )
+        foregrounds.forEach { (label, rgb) ->
+            val ratio = contrastRatioOnWhiteScrim(rgb, HUD_TEXT_SCRIM_ALPHA)
+            assertTrue("$label contrast was $ratio", ratio >= 4.5)
+        }
+    }
+
+    @Test
+    fun `the pre-fix bottom-cluster alpha failed for its secondary foreground`() {
+        // Measured with the app's own formula, not estimated: at the old 0.70 plate alpha the white
+        // chip text was fine (8.5:1) but CameraColors.TextSecondary — the color an unavailable dial
+        // chip and the INACTIVE (still selectable, not disabled) Speed/Angle option use — measured
+        // 3.2:1. That is the gap routing these four surfaces through HUD_TEXT_SCRIM_ALPHA closes.
+        assertTrue(contrastRatioOnWhiteScrim(rgbOf(CameraColors.TextSecondary), 0.70f) < 4.5)
+        assertTrue(contrastRatioOnWhiteScrim(rgbOf(CameraColors.TextSecondary), 0.72f) < 4.5)
+        assertTrue(contrastRatioOnWhiteScrim(rgbOf(CameraColors.TextSecondary), HUD_TEXT_SCRIM_ALPHA) >= 4.5)
+    }
 }

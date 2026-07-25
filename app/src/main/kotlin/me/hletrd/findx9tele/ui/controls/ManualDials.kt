@@ -37,6 +37,7 @@ import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.setProgress
@@ -391,7 +392,7 @@ internal fun CompactFnButton(
             modifier = Modifier
                 .size(36.dp)
                 .clip(RoundedCornerShape(50))
-                .background(CameraColors.Pill.copy(alpha = 0.72f))
+                .background(CameraColors.Pill.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
                 .border(1.dp, CameraColors.Accent.copy(alpha = 0.55f), RoundedCornerShape(50)),
             contentAlignment = Alignment.Center,
         ) {
@@ -428,7 +429,7 @@ private fun CompactDialCloseButton(onClick: () -> Unit, modifier: Modifier = Mod
             modifier = Modifier
                 .size(32.dp)
                 .clip(RoundedCornerShape(50))
-                .background(CameraColors.Pill.copy(alpha = 0.72f))
+                .background(CameraColors.Pill.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
                 .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(50)),
             contentAlignment = Alignment.Center,
         ) {
@@ -662,7 +663,8 @@ private fun DialChip(
     autoValue: Boolean = false,
 ) {
     val activate = onClick
-    val bg = if (active) CameraColors.TextPrimary else CameraColors.Pill.copy(alpha = 0.7f)
+    val longActivate = onLongClick
+    val bg = if (active) CameraColors.TextPrimary else CameraColors.Pill.copy(alpha = HUD_TEXT_SCRIM_ALPHA)
     val fg = when {
         active -> Color.Black
         enabled -> CameraColors.TextPrimary
@@ -682,6 +684,14 @@ private fun DialChip(
                 onClick {
                     if (!enabled) return@onClick false
                     activate()
+                    true
+                }
+                // clearAndSetSemantics drops combinedClickable's long-press action too, so the Fn
+                // shortcut has to be re-declared here or it exists only for sighted touch (UX_POLICY:
+                // preserve full merged accessibility actions).
+                onLongClick(label = "Open Fn menu") {
+                    if (!enabled) return@onLongClick false
+                    longActivate()
                     true
                 }
             }
@@ -715,7 +725,11 @@ private fun DialChip(
                 lineHeight = 13.sp,
                 fontWeight = FontWeight.SemiBold,
             )
-            val valueColor = fg.copy(alpha = if (active) 1f else 0.75f)
+            // NOT dimmed further on the idle chip: the plate underneath is a translucent pill over
+            // the LIVE preview (the bottom cluster's gradient is transparent at its top edge, where
+            // this row sits), so 0.75 on top of that landed the value under the 4.5:1 floor the rest
+            // of the HUD is held to. The label/value hierarchy is carried by size and weight instead.
+            val valueColor = fg
             Text(
                 if (autoValue) {
                     buildAnnotatedString {
@@ -904,7 +918,7 @@ private fun SpeedAngleToggle(mode: ShutterMode, enabled: Boolean, onSelect: (Shu
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(50))
-                        .background(if (on) CameraColors.ManualActive else CameraColors.Pill.copy(alpha = 0.7f))
+                        .background(if (on) CameraColors.ManualActive else CameraColors.Pill.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
                         .padding(horizontal = 14.dp, vertical = 5.dp),
                 ) {
                     Text(

@@ -1367,14 +1367,24 @@ private fun FnSlotOrderRow(
             style = MaterialTheme.typography.labelMedium,
             modifier = Modifier.weight(1f),
         )
-        MiniTextButton(text = "Up", enabled = index > 0, onClick = onMoveUp)
-        MiniTextButton(text = "Down", enabled = index < count - 1, onClick = onMoveDown)
-        MiniTextButton(text = "Remove", enabled = true, onClick = onRemove)
+        // Up to eight identical Up/Down/Remove triples sit in this list and MiniTextButton exports
+        // only its bare text, so a TalkBack user heard "Up, button" eight times with no way to tell
+        // WHICH slot they were reordering. The visual text stays compact; the spoken action names
+        // the slot.
+        val name = fnSlotLabel(slot)
+        MiniTextButton(text = "Up", clickLabel = "Move $name up", enabled = index > 0, onClick = onMoveUp)
+        MiniTextButton(text = "Down", clickLabel = "Move $name down", enabled = index < count - 1, onClick = onMoveDown)
+        MiniTextButton(text = "Remove", clickLabel = "Remove $name", enabled = true, onClick = onRemove)
     }
 }
 
 @Composable
-private fun MiniTextButton(text: String, enabled: Boolean, onClick: () -> Unit) {
+private fun MiniTextButton(
+    text: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    clickLabel: String? = null,
+) {
     val fg = if (enabled) CameraColors.TextPrimary else CameraColors.TextSecondary.copy(alpha = 0.45f)
     // Outer box carries the click at a 48 dp minimum touch target; the inner pill stays the compact
     // VISUAL (the Fn-slot editor packs Up/Down/Remove into a tight row), so the look is unchanged
@@ -1382,7 +1392,7 @@ private fun MiniTextButton(text: String, enabled: Boolean, onClick: () -> Unit) 
     Box(
         modifier = Modifier
             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
+            .clickable(enabled = enabled, onClickLabel = clickLabel, role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Box(

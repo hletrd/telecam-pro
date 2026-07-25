@@ -708,7 +708,11 @@ fun CameraScreen(
                     .clearAndSetSemantics {
                         contentDescription = "Self timer"
                         stateDescription = "${state.timerCountdownSec} seconds remaining"
-                        liveRegion = LiveRegionMode.Assertive
+                        // POLITE, not Assertive: the stateDescription changes at 1 Hz, so Assertive
+                        // made a 10 s timer interrupt TalkBack ten times. The sibling ticking readout
+                        // already takes the opposite line for the same reason (RecordingIndicator:
+                        // "elapsed telemetry must not be re-announced every second").
+                        liveRegion = LiveRegionMode.Polite
                         role = Role.Button
                         onClick {
                             currentActions.value.onCapturePhoto()
