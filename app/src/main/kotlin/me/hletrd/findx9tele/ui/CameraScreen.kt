@@ -190,6 +190,15 @@ import me.hletrd.findx9tele.ui.theme.CameraColors
 import me.hletrd.findx9tele.ui.theme.FindX9TeleTheme
 
 /**
+ * Top inset every free-floating viewfinder lane starts below, so nothing lands on the OSD status
+ * row. The row itself sits at 60 dp + statusBars and its labelMedium + 6 dp padding ends ~88-90 dp;
+ * QA hit an overlap on the scopes column at 72 dp. ONE constant so the lanes cannot drift apart
+ * again — the top-center lane was still at 64 dp and the centered 180 dp zoom bar overlapped a
+ * long (full-DISP video) status strip during a pinch.
+ */
+private val OSD_CLEARANCE_TOP = 100.dp
+
+/**
  * Root camera UI, styled after Sony Alpha / Xperia Pro operation: a clear viewfinder at rest, compact
  * status readouts, and a bottom cluster of manual "Fn" dials + mode switch + shutter. Everything else
  * lives one tap away in [ProSheet], a Sony-menu-style tabbed settings system. Stateless: everything
@@ -584,11 +593,16 @@ fun CameraScreen(
         // One measured top-center lane owns every transient/held readout. Its first slot keeps the
         // focus states below the shooting OSD even when the zoom readout is hidden, while expanding
         // to the zoom's actual rotated/font-scaled height whenever it is visible.
+        // Same OSD_CLEARANCE_TOP as the scopes column: this lane sat at 64 dp while the status row
+        // runs ~60-88 dp, and StatusBar grows horizontally with its tag count (weight(1f, fill =
+        // false) from x = 12 dp). A full-DISP video strip crosses the centered 180 dp zoom bar, so
+        // the zoom pill landed on top of the OSD mid-pinch — the same overlap QA already hit on the
+        // top-END column at 72 dp.
         Column(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
-                .padding(top = 64.dp),
+                .padding(top = OSD_CLEARANCE_TOP),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -642,8 +656,8 @@ fun CameraScreen(
             }
         }
 
-        // Scopes/readouts stack in the top-end column. top = 100dp clears the OSD status row (which ends
-        // ~90dp) — QA hit an overlap at 72dp. Each scope counter-rotates to stay horizontal as the phone
+        // Scopes/readouts stack in the top-end column, at the shared OSD_CLEARANCE_TOP that clears the
+        // OSD status row (which ends ~90dp) — QA hit an overlap at 72dp. Each scope counter-rotates to stay horizontal as the phone
         // turns (rotateLayout reserves the ROTATED bounding box, so a 90° hold no longer makes the
         // histogram and waveform collide — the earlier plain rotate() did, which is why they were left
         // fixed before).
@@ -653,7 +667,7 @@ fun CameraScreen(
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .statusBarsPadding()
-                .padding(end = 12.dp, top = 100.dp),
+                .padding(end = 12.dp, top = OSD_CLEARANCE_TOP),
             horizontalAlignment = Alignment.End,
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
