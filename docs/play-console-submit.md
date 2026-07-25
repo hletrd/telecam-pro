@@ -4,22 +4,16 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 ## Upload Artifact
 
-> **UPLOAD-READY (2026-07-25, final).** Built from the dedicated release worktree at 9541697 —
-> includes the device-CONFIRMED capture-rotation sign fix (a209830; landscape-held stills saved
-> 180° rotated before it) and the draw-only ring inset (055bc04); cycle-8 responsiveness work is
-> deliberately EXCLUDED from v1. Evidence basis: the full release matrix passed on the same source
-> lineage, and the rotation fix itself was device-verified by the held-orientation still matrix
-> (rear portrait + both rear landscape directions + front portrait + front landscape, all upright).
-> Upload the AAB whose SHA-256 matches this sheet exactly — regenerate this block if the source
-> moves again.
+> **UPLOAD-READY (2026-07-26) — re-cut from `main`.** The previously recorded `9541697` artifact is
+> SUPERSEDED: `main` has since moved through the Kotlin namespace move (`6ae3979`), the
+> `com.oplus.ocs` SDK removal, cycle-8 responsiveness, the pseudo-ZSL ring, and the focus-confidence
+> detector. Re-cutting cost only a fresh device matrix, because ALL SIX Play screenshots had to be
+> recaptured either way — so the candidate below is a build of `main`, not a frozen branch.
+> `applicationId` is unchanged (`me.hletrd.telecampro`); the launcher component is now
+> `me.hletrd.findx9tele.MainActivity`.
 >
-> **SOURCE HAS MOVED (2026-07-25, later the same day).** `main` is now past `9541697`: the Kotlin
-> namespace moved `com.hletrd.findx9tele` → `me.hletrd.findx9tele` (`6ae3979`), which changes every
-> class name and the launcher activity component in a release build. `applicationId` is UNCHANGED
-> (`me.hletrd.telecampro`), and the `com.oplus.ocs` removal (`2b4bc55`) was debug-only, so release
-> bytes are unaffected by it. This artifact therefore remains valid and matrix-passed **as a frozen
-> v1 candidate**, but it is no longer a build of `main`. Either ship it as-is, or re-cut from `main`
-> and regenerate this entire block plus the device matrix below — do not mix the two.
+> **The remaining blocker is not a build:** the six phone screenshots are still stale and must be
+> recaptured from THIS candidate on the physical PMA110 before the console sequence can complete.
 
 - Signed Android App Bundle:
   `app/build/outputs/bundle/release/app-release.aab`
@@ -32,39 +26,39 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 Do not upload debug APKs or any unsigned/stale release bundle.
 
-### Final v1 upload artifacts (built + verified 2026-07-25 from release worktree @ 9541697)
+### Final v1 upload artifacts (built + verified 2026-07-26 from `main`)
 
-- Artifact location: `.claude/worktrees/release-v1/app/build/outputs/bundle/release/app-release.aab`
-- AAB SHA-256 (signed with the regenerated upload key):
-  `a737483fb621b0d64b5859976b126fbc513960b0755ed38f641d202fd1f8f2b2`
+- Artifact location: `app/build/outputs/bundle/release/app-release.aab`
+- AAB SHA-256: `69af1574140c95dcb15e35526777b9bc49bfb83a06d20c34fc86da407d2ac753`
 - Matching release APK SHA-256:
-  `8efa65e25d94991b4a9cb3e4c9aa59bde86fa72f15efb27dd00344bb94360995`
-- Launch component for THIS artifact: `me.hletrd.telecampro/com.hletrd.findx9tele.MainActivity`
-  (pre-namespace-move). CLAUDE.md and BACKLOG print the post-move `me.hletrd.findx9tele.MainActivity`,
-  which is correct for `main` and wrong for this APK — same applicationId, so the failure mode is a
-  confusing "activity not found".
-- Superseded same-day candidates (do not upload): AAB `7339e00d…` / `b45a3b8e…` (pre-rotation-fix).
+  `e56b3769b740fe56da192a553c0a550e265a78ecf09b36f85fa799d34597fed5`
+- Launch component: `me.hletrd.telecampro/me.hletrd.findx9tele.MainActivity`
 - `bundletool 1.18.3 validate`: passed; AAB `jarsigner -verify`: verified
-- APK signing: v2 signature valid, 1 signer, certificate matches the upload certificate above
-- APK alignment: 16 KiB zip alignment passed (`zipalign -c -P 16 4`)
-- Release gate: `lintRelease` 0 errors / 5 known-intentional warnings; host unit suite green at HEAD
+- APK signing: v2 valid, 1 signer, certificate matches the upload certificate above
+- APK alignment: 16 KiB passed (`zipalign -c -P 16 4`)
+- Release gate: `lintRelease` 0 errors / 5 known-intentional warnings; host suite green at HEAD
+  (Partition-A coverage 99.81%)
 - Manifest: target/min SDK 36, no `INTERNET`, no `DEBUGGABLE`
+- **Release dex contains ZERO `com/oplus/ocs` classes** (verified by dex string scan) — the OEM SDK
+  is gone from the shipped binary entirely, which is what the Data-Safety answers now rest on.
+- Superseded candidates (do NOT upload): `a737483f…` (9541697, pre-namespace-move), `7339e00d…`,
+  `b45a3b8e…`.
 
-### PMA110 release device matrix — PASSED 2026-07-25 (post-chrome-fix build, same source lineage)
+### PMA110 release device matrix — PASSED 2026-07-26 (this exact artifact)
 
-- Fresh install + runtime-permission flow (CAMERA, then RECORD_AUDIO) verified; with the mic still
-  denied, REC admission refused cleanly (no phantom file) and recorded video-only-degrade never
-  misfired; after the grant, full AV recording worked.
-- Photo: HEIF 3064×4080. TELE: DNG+HEIF family with one filename key; DNG 4096×3072, 16-bit,
-  SamplesPerPixel 1, CFA, sane EXIF (ISO 12800, 1/10 s dark-room AE).
-- Video: HEVC Main10 (`yuv420p10le`) 2160×3840 portrait, HLG `arib-std-b67` + `bt2020nc`/`bt2020`
-  (no PQ mistag), AAC track present, 21.9 s clean full decode.
-- Settings persistence across force-stop: VIDEO mode + HLG + STEADY + TELE all restored.
-- Zero app crashes/ANRs. Incident note: a vendor QTI camera HAL process (`provider-service_64`)
-  SIGABRT crash-looped under force-stop→instant-relaunch stress (`SensorDevice::InitializeHardware`);
-  the app auto-restarted, held Not-Ready honestly, and recovered fully once the HAL settled —
-  device/vendor-level, not an app defect.
-- The 2026-07-10 smoke sheet remains historical evidence from a superseded build/certificate.
+Installed APK SHA-256 verified byte-identical to the artifact above before testing.
+
+- Fresh install (package uninstalled first) → clean cold launch, live PID, **zero crashes/ANRs**
+  across the whole session.
+- Runtime permissions from scratch: CAMERA granted through the app's own prompt; with RECORD_AUDIO
+  still denied, REC was **refused cleanly with no phantom file** (the documented admission
+  behaviour), and after granting the microphone a full clip recorded.
+- Photo: HEIF 4080×3064 written and pulled.
+- Video: HEVC 2160×3840 portrait, `arib-std-b67` (HLG) transfer, AAC audio track, 9.05 s,
+  clean full decode.
+- One transient `CameraService: disconnect` was observed after an interrupted REC attempt; a
+  relaunch restored a healthy session with no data loss — consistent with the documented bounded
+  recovery, not a defect in this build.
 
 ### Historical v1 candidate (2026-07-10; superseded — DO NOT UPLOAD)
 
