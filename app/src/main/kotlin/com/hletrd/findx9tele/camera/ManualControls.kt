@@ -699,7 +699,8 @@ internal fun manualAeAdmitted(c: ManualControls, control: CameraControlCapabilit
         exactAdvertisedMode(CameraMetadata.CONTROL_AE_MODE_OFF, control.aeModes) != null
 
 // The Range-typed twin delegates through the faithful projection — one admission, two spellings.
-private fun manualAeAdmitted(c: ManualControls, caps: CameraCaps): Boolean =
+// Internal: the pseudo-ZSL serve path builds its intent from the same admission (ZslAdmission.kt).
+internal fun manualAeAdmitted(c: ManualControls, caps: CameraCaps): Boolean =
     manualAeAdmitted(c, caps.controlCapabilities())
 
 /** PROGRAM aims its neutral trade at 1/30 s; user-owned S/ISO/M modes have no neutral target. */
