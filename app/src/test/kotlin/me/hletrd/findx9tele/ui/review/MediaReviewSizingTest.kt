@@ -50,10 +50,17 @@ class MediaReviewSizingTest {
 
     @Test
     fun `raw metadata stays truthful when dimensions are unavailable`() {
-        assertEquals("RAW · 1.0 MB", reviewMetadataLine(raw = true, width = 0, height = 0, sizeBytes = 1024L * 1024L))
+        // DECIMAL megabytes, matching the label and StatusInfoPill's remaining-shots budget (which
+        // sizes a DNG at 26_000_000 bytes). The old binary divisor under an "MB" label reported a
+        // 26 MB DNG as 24.8 MB — two byte bases for the same file, one of them mislabelled.
+        assertEquals("RAW · 1.0 MB", reviewMetadataLine(raw = true, width = 0, height = 0, sizeBytes = 1_000_000L))
         assertEquals(
             "RAW · 8192×6144 · 2.0 MB",
-            reviewMetadataLine(raw = true, width = 8192, height = 6144, sizeBytes = 2L * 1024L * 1024L),
+            reviewMetadataLine(raw = true, width = 8192, height = 6144, sizeBytes = 2_000_000L),
+        )
+        assertEquals(
+            "RAW · 26.0 MB",
+            reviewMetadataLine(raw = true, width = 0, height = 0, sizeBytes = 26_000_000L),
         )
     }
 
