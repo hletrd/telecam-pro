@@ -251,11 +251,13 @@ class CameraController(context: Context) {
         // opening from a background proc state (e.g. relaunched behind the keyguard / while the screen
         // just woke), or SecurityException. Guard it so that lifecycle race surfaces as an onError
         // status instead of crashing the app; the next foreground resume() reopens cleanly.
+        StartupTrace.mark("openCamera")
         val openAdmitted = runNativeAcquisition {
             runCatching {
                 manager.openCamera(selection.logicalId, executor, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
                     if (closed) { runCatching { camera.close() }; return } // closed before open completed
+                    StartupTrace.mark("onOpened")
                     device = camera
                     configAttempt = 0
                     if (deferSession) {
@@ -577,6 +579,7 @@ class CameraController(context: Context) {
                 override fun onConfigured(s: CameraCaptureSession) {
                     if (closed) { runCatching { s.close() }; return } // closed before config completed
                     session = s
+                    StartupTrace.mark("onConfigured")
                     if (BuildConfig.DEBUG) Log.i(TAG, "Session configured (fallback=$attempt, hlg=$useHlg, jpeg=$useJpeg, raw=$useRaw, hiRes=$hiResReaderActive, vendorLog=$vendorLogMode)")
                     when (sessionStartDelivery(startPreview())) {
                         SessionStartDelivery.READY -> onReady.onReady(
@@ -622,6 +625,7 @@ class CameraController(context: Context) {
         // Uncaught, that surfaces as terminal onError WITHOUT advancing the ladder — the exact
         // degradation path built to absorb vendor-mode rejection never runs. Advance it like
         // onConfigureFailed does (the high-speed path already guards this same call).
+        StartupTrace.mark("createCaptureSession")
         runCatching { camera.createCaptureSession(sessionConfig) }.onFailure { failure ->
             configAttempt = attempt + 1
             val maxAttempt = maxSessionAttempt(teleconverterMode, hiResStill)
@@ -809,6 +813,7 @@ class CameraController(context: Context) {
             // otherwise a final ramp value equal to the pre-rebuild steady value would be suppressed
             // and the GL compensation would hold a stale mid-ramp halZoom.
             lastForwardedResultZoom = Float.NaN
+            StartupTrace.mark("previewRequestBuilt")
             val callback = object : CameraCaptureSession.CaptureCallback() {
                 private var firstDiagnosticResultPending = true
                 private var firstAfResultPending = true
@@ -893,6 +898,7 @@ class CameraController(context: Context) {
                     // Debug builds only — release users don't need per-second camera telemetry
                     // in logcat (minor capability disclosure + log spam; security review).
                     if (BuildConfig.DEBUG && (firstDiagnosticResultPending || threeAFrame % 30 == 0)) {
+                        if (firstDiagnosticResultPending) StartupTrace.finish("firstCameraResult")
                         firstDiagnosticResultPending = false
                         val ae = result.get(CaptureResult.CONTROL_AE_STATE)
                         val af = result.get(CaptureResult.CONTROL_AF_STATE)

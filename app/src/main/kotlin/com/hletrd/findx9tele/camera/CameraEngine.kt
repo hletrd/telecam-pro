@@ -4090,6 +4090,10 @@ class CameraEngine(private val context: Context) {
 
     /** Reopens the camera after [pause], reusing the existing GL input surface and start state. */
     fun resume() {
+        // Cold-start stopwatch origin (cycle 8 S6): resume is the earliest point the app itself
+        // controls — everything before it is process/Activity bring-up the system owns. Idempotent,
+        // so a resume that finds the camera already live cannot restart a running measurement.
+        StartupTrace.begin()
         paused = false
         if (!nativeAcquisitionMayProceed()) {
             if (UnsafeRecorderQuarantine.isActive()) {
