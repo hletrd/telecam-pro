@@ -20,6 +20,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
+import kotlin.math.roundToInt
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -724,6 +725,20 @@ class GlPipeline {
     /** The zoom the HAL reported in the latest capture result (rides the matching frames). */
     fun setHalZoom(z: Float) = post { halZoom = z }
 
+    // Preview brightness simulation (cycle 8): linear gain for the exposure shortfall the
+    // fluidity-capped AE-OFF repeating request cannot carry (CameraController publishes the value
+    // its previewExposureTrade just put on the wire; the engine re-seeds it per GL generation).
+    // GL-thread confined. The preview/finder draws render it; the analysis readback stays
+    // UNBOOSTED and its histogram/waveform apply the matching display LUT CPU-side instead, so
+    // scopes, the MANUAL meter, and the app-side AE loop all read the SIMULATED still exposure
+    // (the loop then drives the intended still values — metering the dimmed wire preview would
+    // ratchet the intended exposure against a brightness the wire can never show). The encoder
+    // draw never sees any of this.
+    private var previewDigitalGain = 1f
+
+    /** The GL brightness-simulation gain matching the current repeating request (≥1). */
+    fun setPreviewDigitalGain(g: Float) = post { previewDigitalGain = g.coerceAtLeast(1f) }
+
     private fun drawFrame(updateTex: Boolean = true) {
         val now = android.os.SystemClock.uptimeMillis()
         if (com.hletrd.findx9tele.BuildConfig.DEBUG) {
@@ -827,6 +842,7 @@ class GlPipeline {
                     peakThreshold = peakThreshold, peakR = peakR, peakG = peakG, peakB = peakB, zebraThreshold = zebraThreshold,
                     delogAssist = nativeLog && gammaAssist,
                     zoomComp = zoomTarget / halZoom.coerceAtLeast(0.01f),
+                    digitalGain = previewDigitalGain,
                     // NO preview mirror on this device: the front stream arrives pre-mirrored
                     // (FrontMirrorConvention), which IS the selfie-mirror view. The
                     // encoder/analysis draws below apply the inversion instead to record the true
@@ -866,6 +882,9 @@ class GlPipeline {
                                 // (crop/center/EIS deliberately left at defaults — the finder shows
                                 // the whole frame, not the loupe/stab framing).
                                 zoomComp = 1f,
+                                // Preview-role sibling: matches the main view's simulated
+                                // brightness, or the PIP would read as a mysteriously dark inset.
+                                digitalGain = previewDigitalGain,
                                 viewportX = fx, viewportY = fy,
                                 // Preview-space sibling draw: like the main preview, no mirror
                                 // of our own (moot today — the finder requires TC, which the front
@@ -1081,10 +1100,17 @@ class GlPipeline {
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
             buf.rewind()
             buf.get(bytes, 0, size)
+            // GL-thread snapshot: the gain that rendered THIS frame's preview. The readback pixels
+            // are unboosted (analysis draw passes digitalGain=1), so the executor applies the
+            // matching display LUT to the histogram/waveform values — scopes, the MANUAL meter,
+            // and the app-side AE loop then read the same simulated still exposure the finder
+            // shows, and the boost is counted exactly once.
+            val analysisGain = previewDigitalGain
             generation.executor.execute {
                 try {
-                    val hist = if (doHist) computeHistogram(bytes, w, h) else null
-                    val wave = if (doWave) computeWaveform(bytes, w, h) else null
+                    val lut = digitalGainDisplayLut(analysisGain)
+                    val hist = if (doHist) computeHistogram(bytes, w, h, lut) else null
+                    val wave = if (doWave) computeWaveform(bytes, w, h, lut) else null
                     if (generation.owner.mayPublish() && analysisGeneration === generation) {
                         cb.invoke(hist, wave)
                     }
@@ -1675,7 +1701,26 @@ internal fun dispatchWithResult(
 // pattern (e.g. camera/meteringRect, camera/centerCropBox).
 
 /** RGBA snapshot -> luma + per-channel 256-bin histograms, subsampled for speed (Rec.2020 luma). */
-internal fun computeHistogram(bytes: ByteArray, w: Int, h: Int): HistogramData {
+/**
+ * Display-referred byte LUT mirroring the shader's `dgain`: BT.1886 decode → linear ×[gain] →
+ * clamp → re-encode. Applied to the UNBOOSTED analysis readback's per-pixel values before binning
+ * so the scope/meter story matches the simulated preview while the readback stays sensor-true.
+ * Null at ~unity (the common case) so the hot loops keep their LUT-free shape; the 256-entry
+ * allocation only happens on the ~6 Hz analysis executor while a boost is active.
+ */
+internal fun digitalGainDisplayLut(gain: Float): IntArray? {
+    if (gain <= 1.001f) return null
+    val lut = IntArray(256)
+    val g = gain.toDouble()
+    for (v in 0..255) {
+        val lin = Math.pow(v / 255.0, SdrToHlgMapping.SDR_EOTF_GAMMA) * g
+        val enc = Math.pow(minOf(lin, 1.0), 1.0 / SdrToHlgMapping.SDR_EOTF_GAMMA)
+        lut[v] = (enc * 255.0).roundToInt().coerceIn(0, 255)
+    }
+    return lut
+}
+
+internal fun computeHistogram(bytes: ByteArray, w: Int, h: Int, lut: IntArray? = null): HistogramData {
     val luma = IntArray(256)
     val red = IntArray(256)
     val green = IntArray(256)
@@ -1687,9 +1732,15 @@ internal fun computeHistogram(bytes: ByteArray, w: Int, h: Int): HistogramData {
         var x = 0
         while (x < w) {
             val i = rowBase + x * 4
-            val r = bytes[i].toInt() and 0xFF
-            val g = bytes[i + 1].toInt() and 0xFF
-            val b = bytes[i + 2].toInt() and 0xFF
+            var r = bytes[i].toInt() and 0xFF
+            var g = bytes[i + 1].toInt() and 0xFF
+            var b = bytes[i + 2].toInt() and 0xFF
+            // Boost BEFORE the luma weighting, exactly like the shader gains rgb before `base`.
+            if (lut != null) {
+                r = lut[r]
+                g = lut[g]
+                b = lut[b]
+            }
             val l = (0.2627f * r + 0.678f * g + 0.0593f * b).toInt().coerceIn(0, 255)
             luma[l]++
             red[r]++
@@ -1703,7 +1754,7 @@ internal fun computeHistogram(bytes: ByteArray, w: Int, h: Int): HistogramData {
 }
 
 /** RGBA snapshot -> 128x64 luma waveform, subsampled; row 0 = brightest (top). */
-internal fun computeWaveform(bytes: ByteArray, w: Int, h: Int): WaveformData {
+internal fun computeWaveform(bytes: ByteArray, w: Int, h: Int, lut: IntArray? = null): WaveformData {
     val columns = 128
     val rows = 64
     val bins = IntArray(columns * rows)
@@ -1714,9 +1765,14 @@ internal fun computeWaveform(bytes: ByteArray, w: Int, h: Int): WaveformData {
         var x = 0
         while (x < w) {
             val i = rowBase + x * 4
-            val r = bytes[i].toInt() and 0xFF
-            val g = bytes[i + 1].toInt() and 0xFF
-            val b = bytes[i + 2].toInt() and 0xFF
+            var r = bytes[i].toInt() and 0xFF
+            var g = bytes[i + 1].toInt() and 0xFF
+            var b = bytes[i + 2].toInt() and 0xFF
+            if (lut != null) {
+                r = lut[r]
+                g = lut[g]
+                b = lut[b]
+            }
             val l = (0.2627f * r + 0.678f * g + 0.0593f * b).toInt().coerceIn(0, 255)
             val col = (x * columns / w).coerceIn(0, columns - 1)
             val row = ((255 - l) * rows / 256).coerceIn(0, rows - 1)

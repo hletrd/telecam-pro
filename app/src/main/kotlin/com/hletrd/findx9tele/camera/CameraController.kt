@@ -179,6 +179,12 @@ class CameraController(context: Context) {
     @Volatile var onExposure: ((iso: Int?, exposureNs: Long?) -> Unit)? = null
     // HAL-applied zoom from each preview result — drives the GL live-zoom compensation.
     @Volatile var onZoomResult: ((Float) -> Unit)? = null
+    // GL brightness-simulation gain matching the repeating request's traded preview exposure
+    // (previewDigitalGain — the SAME trade applyExposure just carried). Published after every
+    // submit that can change the wire exposure: the full rebuild and the sensor fast path (the
+    // zoom fast path leaves exposure keys untouched). Change-gated; the engine forwards it to
+    // GlPipeline.setPreviewDigitalGain and re-seeds it per GL generation.
+    @Volatile var onPreviewDigitalGain: ((Float) -> Unit)? = null
     private var lastReportedIso: Int? = null
     private var lastReportedExpNs: Long? = null
     // Live lens focus distance (diopters, from CaptureResult.LENS_FOCUS_DISTANCE) surfaced to the UI:
@@ -903,6 +909,7 @@ class CameraController(context: Context) {
             latestPreviewRequestGeneration = requestGeneration
             previewBuilder = builder
             previewCallback = callback
+            publishPreviewDigitalGain()
             val tapTrigger = if (tapPointRequested) {
                 TapTriggerSubmission.ACCEPTED
             } else {
@@ -1151,6 +1158,7 @@ class CameraController(context: Context) {
             // starved the preview to ~5 fps under app-side AE with a held tap-AF.
             applyAfOverrides(b)
             s.setRepeatingRequest(b.build(), cb, handler)
+            publishPreviewDigitalGain()
         }.onFailure {
             if (BuildConfig.DEBUG) Log.w(TAG, "sensor fast path failed, rebuilding: ${it.message}")
             // The cached builder/session can go invalid during a configure transition; re-derive
@@ -1199,6 +1207,20 @@ class CameraController(context: Context) {
     private var lastTracedResultZoom = -1f
     // Change gate for onZoomResult forwarding (camera-thread confined; NaN = always forward next).
     private var lastForwardedResultZoom = Float.NaN
+    // Change gate for onPreviewDigitalGain (camera-thread confined; NaN = always publish next).
+    private var lastPublishedDigitalGain = Float.NaN
+
+    /**
+     * Publishes the GL brightness-simulation gain for the preview values just submitted. Runs on
+     * the camera thread right after an ACCEPTED repeating submit so the gain can never describe a
+     * request the wire refused.
+     */
+    private fun publishPreviewDigitalGain() {
+        val gain = previewDigitalGain(controls, caps.controlCapabilities())
+        if (gain == lastPublishedDigitalGain) return
+        lastPublishedDigitalGain = gain
+        onPreviewDigitalGain?.invoke(gain)
+    }
     private var smoothPreviewBoost = false
 
     fun setSmoothPreviewBoost(active: Boolean, finalZoom: Float? = null) {

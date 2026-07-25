@@ -63,6 +63,9 @@ object Shaders {
         uniform float uZebraThreshold; // luma above which zebra stripes draw
         uniform int uFalseColor; // 0/1  (preview only) exposure false-color map
         uniform vec2 uTexel;     // 1/width, 1/height for neighbor sampling
+        uniform float uDigitalGain; // >=1 (preview only): brightness-simulation linear gain for the
+                                    // exposure shortfall the fluidity-capped repeating request
+                                    // cannot carry (see previewExposureTrade)
         varying vec2 vTexCoord;
 
         const vec3 LUMA = vec3(0.2627, 0.6780, 0.0593); // Rec.2020 luma weights
@@ -71,6 +74,18 @@ object Shaders {
         const float HLG_SYSTEM_GAMMA = ${SdrToHlgMapping.HLG_SYSTEM_GAMMA};
 
         float luma(vec3 c) { return dot(c, LUMA); }
+
+        // Preview brightness simulation (cycle 8): the AE-OFF repeating request is capped at the
+        // 1/15 s fluidity ceiling and the residual exposure shortfall is applied HERE, in linear
+        // light (BT.1886 decode -> multiply -> re-encode), BEFORE `base` forms — so the display,
+        // zebra, and false-color all read the STILL's simulated brightness. Encoder and analysis
+        // draws always pass 1.0: files never contain the boost, and the scope/AE readback stays
+        // sensor-true (its CPU-side histogram applies the matching LUT exactly once instead).
+        vec3 dgain(vec3 c) {
+            if (uDigitalGain <= 1.001) return c;
+            vec3 lin = pow(clamp(c, 0.0, 1.0), vec3(SDR_EOTF_GAMMA)) * uDigitalGain;
+            return pow(min(lin, vec3(1.0)), vec3(1.0 / SDR_EOTF_GAMMA));
+        }
 
         // BT.2100 HLG OETF. Input is normalized scene light from the BT.2408 mapping below.
         vec3 hlg(vec3 x) {
@@ -167,7 +182,7 @@ object Shaders {
         }
 
         void main() {
-            vec3 base = texture2D(uTexture, vTexCoord).rgb;
+            vec3 base = dgain(texture2D(uTexture, vTexCoord).rgb);
             vec3 color = base;
             // Exposure signal for the zebra / false-color overlays: ALWAYS the display-referred
             // rendition, never the encode curve. The log OETFs compress display white to ~0.57-0.60
@@ -225,11 +240,15 @@ object Shaders {
                 else color = vec3(1.0, 0.0, 0.0);
             }
 
-            // Focus peaking: highlight strong local gradients.
+            // Focus peaking: highlight strong local gradients. Neighbors pass through the SAME
+            // dgain as `base`: mixing a boosted center with raw neighbors would fabricate a false
+            // gradient everywhere, and boosted-vs-boosted keeps the edge magnitude scaling with
+            // what the user actually sees (a dark true stream would otherwise under-fire the
+            // threshold exactly in the low light the simulation exists for).
             if (uPeaking == 1) {
                 float c  = luma(base);
-                float rx = luma(texture2D(uTexture, vTexCoord + vec2(uTexel.x, 0.0)).rgb);
-                float ry = luma(texture2D(uTexture, vTexCoord + vec2(0.0, uTexel.y)).rgb);
+                float rx = luma(dgain(texture2D(uTexture, vTexCoord + vec2(uTexel.x, 0.0)).rgb));
+                float ry = luma(dgain(texture2D(uTexture, vTexCoord + vec2(0.0, uTexel.y)).rgb));
                 float edge = abs(c - rx) + abs(c - ry);
                 if (edge > uPeakThreshold) {
                     color = mix(color, uPeakColor, 0.85);

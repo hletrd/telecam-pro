@@ -35,6 +35,7 @@ class FlipRenderer {
     private var uZebraThreshold = 0
     private var uFalseColor = 0
     private var uTexel = 0
+    private var uDigitalGain = 0
 
     private val quad: FloatBuffer = floatBuffer(
         // x, y   (triangle strip)
@@ -78,6 +79,7 @@ class FlipRenderer {
         uZebraThreshold = GLES20.glGetUniformLocation(program, "uZebraThreshold")
         uFalseColor = GLES20.glGetUniformLocation(program, "uFalseColor")
         uTexel = GLES20.glGetUniformLocation(program, "uTexel")
+        uDigitalGain = GLES20.glGetUniformLocation(program, "uDigitalGain")
 
         val ids = IntArray(1)
         GLES20.glGenTextures(1, ids, 0)
@@ -134,6 +136,10 @@ class FlipRenderer {
         // this HAL's stream ~180 ms, so the LIVE zoom renders here as a texture crop while the HAL
         // catches up at a throttled pace. ≥1 (can't sample beyond the frame); 1 = no-op.
         zoomComp: Float = 1f,
+        // Preview-only brightness simulation (cycle 8): linear-light gain for the exposure
+        // shortfall the fluidity-capped repeating request cannot carry. Encoder/analysis draw
+        // roles keep the default 1 so files and the scope/AE readback never contain the boost.
+        digitalGain: Float = 1f,
         // Viewport origin for sub-rect draws (the TELE finder PIP); callers scissor around the draw
         // because the internal glClear is framebuffer-wide otherwise.
         viewportX: Int = 0,
@@ -180,6 +186,7 @@ class FlipRenderer {
         GLES20.glUniform1f(uZebraThreshold, zebraThreshold)
         GLES20.glUniform1i(uFalseColor, if (falseColor) 1 else 0)
         GLES20.glUniform2f(uTexel, 1f / previewW, 1f / previewH)
+        GLES20.glUniform1f(uDigitalGain, digitalGain.coerceAtLeast(1f))
 
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId)

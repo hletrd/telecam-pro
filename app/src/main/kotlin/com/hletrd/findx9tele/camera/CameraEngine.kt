@@ -110,6 +110,10 @@ class CameraEngine(private val context: Context) {
     // failed/overlapping MR recall must restore the exact Photo shutter of the last Ready session.
     @Volatile private var photoExposureTimeNs = controls.exposureTimeNs
     @Volatile private var transfer = ColorTransfer.HLG
+    // Latest controller-published GL brightness-simulation gain (see wireController), cached so a
+    // replacement GL generation is re-seeded with the live value in the gl.start callback —
+    // GlPipeline drops posts before start, and the controller's change gate won't republish.
+    @Volatile private var lastPreviewDigitalGain = 1f
     @Volatile private var lensChoice: LensChoice = LensChoice.MAIN
     @Volatile private var overrideId: String? = null
     // The GENUINE diagnostic pin (setCameraOverride), distinct from [overrideId]: after any door,
@@ -767,6 +771,7 @@ class CameraEngine(private val context: Context) {
                         // Re-seed desired GL state that may have been set before the handler existed.
                         ownedGl.setNativeLog(false)
                         ownedGl.setTransfer(transfer)
+                        ownedGl.setPreviewDigitalGain(lastPreviewDigitalGain)
                         rendererAssists.replayAll(ownedGl)
                         gyro.start()
                         // Capture route + token after GL input exists. A newer intent invalidates it.
@@ -1061,6 +1066,15 @@ class CameraEngine(private val context: Context) {
         ctrl.onExposure = { iso, exp -> if (controller === ctrl) onExposureInfo?.invoke(iso, exp) }
         ctrl.onZoomResult = { rz ->
             if (controller === ctrl && glOwners.owns(ownedGl)) ownedGl.setHalZoom(rz)
+        }
+        ctrl.onPreviewDigitalGain = { gain ->
+            if (controller === ctrl && glOwners.owns(ownedGl)) {
+                // Cached so a GL generation replacement can re-seed the live value: GlPipeline
+                // drops posts before start, and the controller's change gate won't republish an
+                // unchanged gain on its own.
+                lastPreviewDigitalGain = gain
+                ownedGl.setPreviewDigitalGain(gain)
+            }
         }
         ctrl.onFocusDistance = { d -> if (controller === ctrl) onFocusDistance?.invoke(d) }
         ctrl.onAfState = { hal -> if (controller === ctrl) onAfIndication?.invoke(AfIndication.fromHal(hal)) }
