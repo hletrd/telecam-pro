@@ -83,8 +83,8 @@ class FnOverlayPolicyTest {
         val slots = FnSlot.entries.take(8)
 
         assertEquals(
-            FnOverlayLayoutPolicy(FN_OVERLAY_HELD_COLUMN_COUNT, FnOverlayAnchor.CENTER_START),
-            fnOverlayLayoutPolicy(90),
+            FnOverlayAnchor.CENTER_START,
+            fnOverlayAnchor(90),
         )
         assertEquals(
             listOf(
@@ -97,8 +97,8 @@ class FnOverlayPolicyTest {
         )
 
         assertEquals(
-            FnOverlayLayoutPolicy(FN_OVERLAY_HELD_COLUMN_COUNT, FnOverlayAnchor.CENTER_END),
-            fnOverlayLayoutPolicy(270),
+            FnOverlayAnchor.CENTER_END,
+            fnOverlayAnchor(270),
         )
         assertEquals(
             listOf(
@@ -130,8 +130,8 @@ class FnOverlayPolicyTest {
     fun `portrait keeps the bottom 4-column tray in both upright orientations`() {
         listOf(0, 180).forEach {
             assertEquals(
-                FnOverlayLayoutPolicy(FN_OVERLAY_COLUMN_COUNT, FnOverlayAnchor.BOTTOM_CENTER),
-                fnOverlayLayoutPolicy(it),
+                FnOverlayAnchor.BOTTOM_CENTER,
+                fnOverlayAnchor(it),
             )
         }
     }

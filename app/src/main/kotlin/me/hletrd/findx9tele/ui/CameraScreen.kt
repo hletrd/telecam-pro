@@ -1576,7 +1576,7 @@ private fun FnOverlay(
     val slots = remember(state.mode, state.activeFnSlots) {
         fnOverlaySlots(state.mode, state.activeFnSlots)
     }
-    val layoutPolicy = fnOverlayLayoutPolicy(state.deviceOrientation)
+    val trayAnchor = fnOverlayAnchor(state.deviceOrientation)
     val gridRows = remember(slots, state.deviceOrientation) {
         fnOverlayGridRows(slots, state.deviceOrientation)
     }
@@ -1598,7 +1598,7 @@ private fun FnOverlay(
                 // named close action for TalkBack, Switch Access, and UI automation.
                 .pointerInput(Unit) { detectTapGestures(onTap = { onDismiss() }) },
         )
-        val panelPlacement = when (layoutPolicy.anchor) {
+        val panelPlacement = when (trayAnchor) {
             FnOverlayAnchor.BOTTOM_CENTER -> Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()

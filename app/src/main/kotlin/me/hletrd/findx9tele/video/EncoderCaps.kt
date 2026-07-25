@@ -66,8 +66,8 @@ object EncoderCaps {
 
     fun isSupported(codec: VideoCodec): Boolean = byCodec.containsKey(codec)
 
-    /** True if [codec] has a hardware encoder. */
-    fun isHardware(codec: VideoCodec): Boolean = byCodec[codec]?.hardware == true
+    // NOTE: no public isHardware(codec) accessor — it had no caller. The underlying `Info.hardware`
+    // field IS load-bearing: it is pickBestEncoder's hardware-first tie-break.
 
     /** The concrete encoder component name chosen for [codec] (for diagnostics), or null. */
     fun encoderName(codec: VideoCodec): String? = byCodec[codec]?.name

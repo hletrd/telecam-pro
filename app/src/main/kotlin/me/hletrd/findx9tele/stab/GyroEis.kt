@@ -53,7 +53,8 @@ class GyroEis(context: Context) : SensorEventListener {
     // atan2(x,y) is pure noise — keeps the last confident orientation instead of snapping randomly.
     @Volatile private var stableOrientation = 0
 
-    val isAvailable: Boolean get() = gyroscope != null
+    // NOTE: no isAvailable accessor. It reported `gyroscope != null` — availability of a sensor
+    // this class deliberately never registers (see [start]) — so it was misleading, not just unused.
 
     fun start() {
         reset()

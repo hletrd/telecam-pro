@@ -136,11 +136,6 @@ internal enum class FnOverlayAnchor { BOTTOM_CENTER, CENTER_START, CENTER_END }
  */
 internal enum class FnEntryAnchor { START, END }
 
-internal data class FnOverlayLayoutPolicy(
-    val rawColumnCount: Int,
-    val anchor: FnOverlayAnchor,
-)
-
 internal enum class FnTileContentAxis {
     PORTRAIT,
     HELD_LANDSCAPE_LABEL_FIRST_RAW,
@@ -154,11 +149,17 @@ internal fun fnOverlaySlots(mode: CaptureMode, activeSlots: List<FnSlot>): List<
         .take(FN_OVERLAY_MAX_SLOTS)
         .ifEmpty { if (mode == CaptureMode.VIDEO) FnSlot.VIDEO_DEFAULT else FnSlot.PHOTO_DEFAULT }
 
-internal fun fnOverlayLayoutPolicy(deviceOrientation: Int): FnOverlayLayoutPolicy =
+/**
+ * Where the opened Fn tray docks for a held/upright device. Anchor ONLY: the tray's raw column
+ * count is derived once, by [fnOverlayGridRows], from FN_OVERLAY_COLUMN_COUNT /
+ * FN_OVERLAY_HELD_COLUMN_COUNT. This used to also return a `rawColumnCount` nothing ever read — a
+ * second derivation of the same number, free to drift from the one that actually draws.
+ */
+internal fun fnOverlayAnchor(deviceOrientation: Int): FnOverlayAnchor =
     when (((deviceOrientation % 360) + 360) % 360) {
-        90 -> FnOverlayLayoutPolicy(FN_OVERLAY_HELD_COLUMN_COUNT, FnOverlayAnchor.CENTER_START)
-        270 -> FnOverlayLayoutPolicy(FN_OVERLAY_HELD_COLUMN_COUNT, FnOverlayAnchor.CENTER_END)
-        else -> FnOverlayLayoutPolicy(FN_OVERLAY_COLUMN_COUNT, FnOverlayAnchor.BOTTOM_CENTER)
+        90 -> FnOverlayAnchor.CENTER_START
+        270 -> FnOverlayAnchor.CENTER_END
+        else -> FnOverlayAnchor.BOTTOM_CENTER
     }
 
 internal fun fnEntryAnchor(deviceOrientation: Int): FnEntryAnchor =

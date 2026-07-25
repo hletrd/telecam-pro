@@ -4507,8 +4507,9 @@ class CameraEngine(private val context: Context) {
     }
 
     private companion object {
-        // Exposure floor while a zoom gesture is live (1/30 s → ≥30 fps preview when ISO headroom allows).
-        private const val ZOOM_SMOOTH_EXPOSURE_NS = 33_333_333L
+        // (A ZOOM_SMOOTH_EXPOSURE_NS gesture exposure floor lived here until the app-side P loop
+        // took over the gesture exposure trade; it was unreferenced and its comment still asserted
+        // a policy nothing enforced.)
 
         // Live-zoom HAL pacing: every setRepeatingRequest swap stalls this HAL's preview ~180 ms
         // (measured 2026-07-14), so mid-gesture submits are spaced at least this far apart — the
