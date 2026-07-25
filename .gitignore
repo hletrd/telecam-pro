@@ -37,3 +37,5 @@ IMG2*.heic
 IMG2*.jpg
 device-tests/reports/
 __pycache__/
+*.jks.*
+*.keystore.*
