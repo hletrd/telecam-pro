@@ -11,7 +11,6 @@ import me.hletrd.findx9tele.camera.FnSlot
 import me.hletrd.findx9tele.camera.FocusMode
 import me.hletrd.findx9tele.camera.GridType
 import me.hletrd.findx9tele.camera.HardwareKeyAction
-import me.hletrd.findx9tele.camera.MemorySlot
 import me.hletrd.findx9tele.camera.MeteringMode
 import me.hletrd.findx9tele.camera.ProcessingLevel
 import me.hletrd.findx9tele.camera.ShutterMode
@@ -19,7 +18,6 @@ import me.hletrd.findx9tele.camera.ShutterTimer
 import me.hletrd.findx9tele.camera.VideoCodec
 import me.hletrd.findx9tele.camera.VideoFrameRate
 import me.hletrd.findx9tele.camera.WbMode
-import me.hletrd.findx9tele.focus.FocusMapping
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -148,8 +146,6 @@ internal fun driveModeLabel(mode: DriveMode): String = when (mode) {
 
 internal fun fnSlotLabel(slot: FnSlot): String = slot.label
 
-internal fun memorySlotLabel(slot: MemorySlot): String = slot.label
-
 internal fun hardwareKeyActionLabel(action: HardwareKeyAction): String = action.label
 
 internal fun aspectRatioLabel(ratio: AspectRatio): String = when (ratio) {
@@ -161,6 +157,9 @@ internal fun videoCodecLabel(codec: VideoCodec): String = when (codec) {
     VideoCodec.HEVC -> "HEVC"
     VideoCodec.AVC -> "H.264"
     // All-intra professional codec (ProRes / XAVC-I class), HW-accelerated, very high bitrate.
+    // UNREACHABLE user-facing copy: APV is deliberately excluded from the offered codecs because
+    // MediaMuxer (API 36) rejects it in MP4 (device-verified). EncoderCaps can never surface it, so
+    // this branch exists only to keep the `when` exhaustive.
     VideoCodec.APV -> "APV Intra"
 }
 
@@ -234,15 +233,11 @@ internal fun formatShutterSpeed(ns: Long): String {
     }
 }
 
-/** Human-readable focus distance. Infinity for diopters <= 0. Shared with the manual focus ruler. */
-internal fun formatFocusDistance(diopters: Float): String {
-    val meters = FocusMapping.dioptersToMeters(diopters)
-    return when {
-        meters.isInfinite() -> "∞"
-        meters < 1f -> "${(meters * 100).roundToInt()}cm"
-        else -> "%.2fm".format(Locale.US, meters)
-    }
-}
+// (No absolute focus-distance formatter here on purpose: through the afocal converter the exit
+// light is ~collimated and the lens sits near infinity, so a metre readout is meaningless. The
+// manual focus ruler shows a RELATIVE position instead — formatFocusRelative in ManualDials.kt.
+// The metre formatter was deleted 2026-07-26 with its test; it had no main-source callers and the
+// repo was pinning a formatter it had deliberately stopped shipping.)
 
 /** Transfer-function display label: what the footage IS, not just the enum name. */
 internal fun transferLabel(transfer: ColorTransfer): String = when (transfer) {

@@ -8,14 +8,11 @@ import me.hletrd.findx9tele.camera.ColorTransfer
 import me.hletrd.findx9tele.camera.DriveMode
 import me.hletrd.findx9tele.camera.ExposureMode
 import me.hletrd.findx9tele.camera.FlashMode
-import me.hletrd.findx9tele.camera.FocusMode
 import me.hletrd.findx9tele.camera.FrameLineType
 import me.hletrd.findx9tele.camera.GridType
 import me.hletrd.findx9tele.camera.ManualControls
-import me.hletrd.findx9tele.camera.MeteringMode
 import me.hletrd.findx9tele.camera.ShutterTimer
 import me.hletrd.findx9tele.camera.VideoStabMode
-import me.hletrd.findx9tele.camera.WbMode
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -24,8 +21,10 @@ import org.junit.Test
  *  - explicit per-step transitions (documents the exact order the Fn/dial UI walks), and
  *  - a generic closed-cycle property (repeatedly applying from ANY loop member returns to that
  *    member in `members.size` steps AND visits every member on the way).
- * nextWbMode is the deliberate exception — INCANDESCENT/FLUORESCENT/CUSTOM route to AUTO instead of
- * looping — so its skip-list is pinned separately and the closed cycle covers only the loop members.
+ * Only the FIXED-ORDER cycles live here. The capability-projected enums (exposure mode, focus, WB,
+ * metering, flash) are walked by nextAvailable over the route's advertised list, and their pinned
+ * order is whatever ControlAvailability builds — the hardcoded next* twins that used to be tested
+ * here shipped nowhere and documented an order the app did not implement.
  */
 class ControlCyclesTest {
 
@@ -56,44 +55,6 @@ class ControlCyclesTest {
     }
 
     @Test
-    fun exposureModeCycle() {
-        assertEquals(ExposureMode.SHUTTER, nextExposureMode(ExposureMode.PROGRAM))
-        assertEquals(ExposureMode.ISO, nextExposureMode(ExposureMode.SHUTTER))
-        assertEquals(ExposureMode.MANUAL, nextExposureMode(ExposureMode.ISO))
-        assertEquals(ExposureMode.PROGRAM, nextExposureMode(ExposureMode.MANUAL))
-        assertClosedCycle(ExposureMode.entries, ::nextExposureMode)
-    }
-
-    @Test
-    fun focusModeCycle() {
-        assertEquals(FocusMode.AUTO, nextFocusMode(FocusMode.CONTINUOUS))
-        assertEquals(FocusMode.MANUAL, nextFocusMode(FocusMode.AUTO))
-        assertEquals(FocusMode.MACRO, nextFocusMode(FocusMode.MANUAL))
-        assertEquals(FocusMode.CONTINUOUS, nextFocusMode(FocusMode.MACRO))
-        assertClosedCycle(FocusMode.entries, ::nextFocusMode)
-    }
-
-    @Test
-    fun wbModeLoopAndSkips() {
-        // The loop the Fn cycle walks.
-        assertEquals(WbMode.DAYLIGHT, nextWbMode(WbMode.AUTO))
-        assertEquals(WbMode.CLOUDY, nextWbMode(WbMode.DAYLIGHT))
-        assertEquals(WbMode.SHADE, nextWbMode(WbMode.CLOUDY))
-        assertEquals(WbMode.MANUAL, nextWbMode(WbMode.SHADE))
-        assertEquals(WbMode.AUTO, nextWbMode(WbMode.MANUAL))
-        // Skip-list: these are entered only by other means (presets / "Capture Custom WB"); the Fn
-        // cycle steps PAST them back to AUTO rather than looping through them.
-        assertEquals(WbMode.AUTO, nextWbMode(WbMode.INCANDESCENT))
-        assertEquals(WbMode.AUTO, nextWbMode(WbMode.FLUORESCENT))
-        assertEquals(WbMode.AUTO, nextWbMode(WbMode.CUSTOM))
-        // Closed cycle over the loop members only.
-        assertClosedCycle(
-            listOf(WbMode.AUTO, WbMode.DAYLIGHT, WbMode.CLOUDY, WbMode.SHADE, WbMode.MANUAL),
-            ::nextWbMode,
-        )
-    }
-
-    @Test
     fun videoStabModeCycle() {
         assertEquals(VideoStabMode.STANDARD, nextVideoStabMode(VideoStabMode.OFF))
         assertEquals(VideoStabMode.ENHANCED, nextVideoStabMode(VideoStabMode.STANDARD))
@@ -108,14 +69,6 @@ class ControlCyclesTest {
         assertEquals(DriveMode.TIMELAPSE, nextDriveMode(DriveMode.AEB))
         assertEquals(DriveMode.SINGLE, nextDriveMode(DriveMode.TIMELAPSE))
         assertClosedCycle(DriveMode.entries, ::nextDriveMode)
-    }
-
-    @Test
-    fun meteringModeCycle() {
-        assertEquals(MeteringMode.CENTER, nextMeteringMode(MeteringMode.MATRIX))
-        assertEquals(MeteringMode.SPOT, nextMeteringMode(MeteringMode.CENTER))
-        assertEquals(MeteringMode.MATRIX, nextMeteringMode(MeteringMode.SPOT))
-        assertClosedCycle(MeteringMode.entries, ::nextMeteringMode)
     }
 
     @Test
@@ -153,15 +106,6 @@ class ControlCyclesTest {
         assertEquals(FrameLineType.VERTICAL, nextFrameLine(FrameLineType.SQUARE))
         assertEquals(FrameLineType.OFF, nextFrameLine(FrameLineType.VERTICAL))
         assertClosedCycle(FrameLineType.entries, ::nextFrameLine)
-    }
-
-    @Test
-    fun flashModeCycle() {
-        assertEquals(FlashMode.AUTO, nextFlashMode(FlashMode.OFF))
-        assertEquals(FlashMode.ON, nextFlashMode(FlashMode.AUTO))
-        assertEquals(FlashMode.TORCH, nextFlashMode(FlashMode.ON))
-        assertEquals(FlashMode.OFF, nextFlashMode(FlashMode.TORCH))
-        assertClosedCycle(FlashMode.entries, ::nextFlashMode)
     }
 
     @Test

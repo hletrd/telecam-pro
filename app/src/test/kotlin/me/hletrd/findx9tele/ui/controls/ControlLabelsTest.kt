@@ -208,7 +208,9 @@ class ControlLabelsTest {
             MemorySlot.MR2 to "MR2",
             MemorySlot.MR3 to "MR3",
         ),
-        ::memorySlotLabel,
+        // The identity wrapper this used to call had no main-source callers (MemoryPresetRow reads
+        // slot.label directly); pin the property the UI actually renders.
+        MemorySlot::label,
     )
 
     @Test
