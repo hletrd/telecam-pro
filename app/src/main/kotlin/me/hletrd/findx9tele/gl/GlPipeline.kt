@@ -756,7 +756,14 @@ class GlPipeline {
     private fun drawFrame(updateTex: Boolean = true) {
         val now = android.os.SystemClock.uptimeMillis()
         if (me.hletrd.findx9tele.BuildConfig.DEBUG) {
-            if (lastDrawMs != 0L && now - lastDrawMs > 50) {
+            // Threshold is 200 ms, not 50: since the cycle-8 fluidity cap a dark preview runs at a
+            // DESIGNED 66.7 ms cadence, so a >50 ms rule logged EVERY frame (~15 rows/s) and spent
+            // ColorOS's 300-row per-process quota in ~20 s — after which the device silently drops
+            // every other diagnostic this app emits (LOG_FLOWCTRL, device-observed 2026-07-25:
+            // it ate the startup trace and the focus-verdict trace outright). 200 ms still catches
+            // what this line exists for: the ~180 ms setRepeatingRequest stalls and real stream
+            // wedges. Normal cadence is NOT news.
+            if (lastDrawMs != 0L && now - lastDrawMs > 200) {
                 android.util.Log.i("GlPipeline", "FrameGap: ${now - lastDrawMs} ms")
             }
         }

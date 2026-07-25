@@ -32,14 +32,14 @@ class StartupTraceTest {
 
     @After
     fun restoreSeams() {
-        StartupTrace.reset()
+        StartupTrace.disarm()
         StartupTrace.elapsedMs = { android.os.SystemClock.elapsedRealtime() }
         StartupTrace.emit = { android.util.Log.i("StartupTrace", it) }
     }
 
     @Test
     fun `begin is idempotent so a re-entrant start cannot restart the clock`() {
-        StartupTrace.reset()
+        StartupTrace.disarm()
         StartupTrace.begin()
         StartupTrace.mark("first")
         // A second begin() during a live measurement must NOT clear the buffer: the cold start it
@@ -51,7 +51,7 @@ class StartupTraceTest {
 
     @Test
     fun `marks are ignored while unarmed and resume after a new begin`() {
-        StartupTrace.reset()
+        StartupTrace.disarm()
         StartupTrace.mark("stray")
         assertTrue(StartupTrace.marksForTest().isEmpty())
 
@@ -62,7 +62,7 @@ class StartupTraceTest {
 
     @Test
     fun `finish records its own label then disarms`() {
-        StartupTrace.reset()
+        StartupTrace.disarm()
         StartupTrace.begin()
         StartupTrace.mark("openCamera")
         StartupTrace.finish("firstCameraResult")
@@ -89,7 +89,7 @@ class StartupTraceTest {
 
     @Test
     fun `elapsed values are monotonic and start at or after zero`() {
-        StartupTrace.reset()
+        StartupTrace.disarm()
         StartupTrace.begin()
         StartupTrace.mark("a")
         StartupTrace.mark("b")
@@ -99,14 +99,27 @@ class StartupTraceTest {
     }
 
     @Test
-    fun `reset clears a partial measurement`() {
-        StartupTrace.reset()
+    fun `disarm clears a partial measurement`() {
+        StartupTrace.disarm()
         StartupTrace.begin()
         StartupTrace.mark("partial")
-        StartupTrace.reset()
+        StartupTrace.disarm()
         assertTrue(StartupTrace.marksForTest().isEmpty())
-        // reset() also disarms, so marks after it are dropped until the next begin().
-        StartupTrace.mark("after-reset")
+        // disarm() also stops the clock, so marks after it are dropped until the next begin().
+        StartupTrace.mark("after-disarm")
+        assertTrue(StartupTrace.marksForTest().isEmpty())
+    }
+
+    @Test
+    fun `a disarmed measurement cannot be finished by a later unrelated mark`() {
+        // The resume-arms-then-early-returns shape: begin() with no open behind it, disarmed, then
+        // an ordinary preview rebuild calls finish(). It must emit nothing at all.
+        StartupTrace.disarm()
+        StartupTrace.begin()
+        StartupTrace.disarm()
+        val before = emitted.size
+        StartupTrace.finish("firstCameraResult")
+        assertEquals(before, emitted.size)
         assertTrue(StartupTrace.marksForTest().isEmpty())
     }
 }

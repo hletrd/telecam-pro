@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Log
 import android.util.Size
 import android.view.Surface
 import androidx.lifecycle.AndroidViewModel
@@ -32,6 +33,7 @@ import me.hletrd.findx9tele.camera.FrameLineType
 import me.hletrd.findx9tele.camera.effectiveExposureNs
 import me.hletrd.findx9tele.camera.FlashMode
 import me.hletrd.findx9tele.camera.FnSlot
+import me.hletrd.findx9tele.BuildConfig
 import me.hletrd.findx9tele.camera.FocusDetailData
 import me.hletrd.findx9tele.camera.FocusMode
 import me.hletrd.findx9tele.camera.GridType
@@ -291,6 +293,15 @@ class CameraViewModel @JvmOverloads constructor(
     // Newest frame-detail verdict and when it landed. Main-thread confined (written in the
     // onAnalysis main post, read only here), so plain fields are correct and cheap.
     private var lastFocusDetail: FocusDetailData? = null
+    // Last traced focus-confidence candidate, so the DEBUG trace only fires on a change. Seeded
+    // with a sentinel rather than null: the steady state IS "no candidate", so a null seed made the
+    // very first evaluation compare equal and the trace never emitted at all (self-inflicted, found
+    // on device 2026-07-25) — the first evaluation is exactly the one worth seeing.
+    private val focusTraceUnset = Any()
+    private var lastFocusConfidenceTrace: Any? = focusTraceUnset
+    // ...plus a 2 s heartbeat: a change-gated trace shows the VERDICT but not the INPUTS moving,
+    // and the inputs are what a refusal has to be diagnosed from.
+    private var lastFocusTraceAtMs = 0L
     private var lastFocusDetailAtMs: Long = 0L
 
     // Bumped at every optics door. The GL generation OUTLIVES a route change, so an analysis frame
@@ -323,6 +334,25 @@ class CameraViewModel @JvmOverloads constructor(
             handheldShutterNs = preferredProgramShutterNs(s),
         )
         val candidate = focusConfidenceCandidate(afLimit = afLimit, frameDetail = frameDetail)
+        // DEBUG-only verdict trace. Without it an on-device check can only observe the TAG, so a
+        // silent detector is indistinguishable from a refused one — and every refusal here is a
+        // deliberate gate (dark frame, unjudgeable scene, mid-scan, stale stats) whose firing you
+        // need to SEE to trust. Change-gated: this runs on every AF event and every ~6 Hz analysis
+        // tick, and an unconditional line would burn ColorOS's 300-row process quota outright.
+        if (BuildConfig.DEBUG &&
+            (candidate != lastFocusConfidenceTrace || now - lastFocusTraceAtMs > 2_000L)
+        ) {
+            lastFocusConfidenceTrace = candidate
+            lastFocusTraceAtMs = now
+            Log.i(
+                "FocusConfidence",
+                "candidate=$candidate afLimit=$afLimit frameDetail=$frameDetail " +
+                    "verdict=${lastFocusDetail?.verdict} ageMs=" +
+                    (if (lastFocusDetail == null) -1L else now - lastFocusDetailAtMs) +
+                    " af=${s.afIndication} focusMode=${s.controls.focusMode}" +
+                    " expNs=${s.liveExposureNs} handheldNs=${preferredProgramShutterNs(s)}",
+            )
+        }
         val show = focusConfidenceHold.update(candidate, now)
         if (focusConfidenceHold.pending(now)) {
             mainHandler.removeCallbacks(focusConfidenceRefreshRunnable)

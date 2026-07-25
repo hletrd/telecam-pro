@@ -2853,8 +2853,13 @@ class CameraEngine(private val context: Context) {
                         callback,
                         // Only the SINGLE drive may serve a buffered pseudo-ZSL frame: chains
                         // (burst/AEB/timelapse) need per-shot wire captures, and the admission
-                        // itself re-gates route/format/values (ZslAdmission.kt).
-                        allowZsl = true,
+                        // itself re-gates route/format/values (ZslAdmission.kt). The in-REC
+                        // snapshot arrives here too (captureDriveMode maps singleShot → SINGLE), so
+                        // the "never during REC" half of that invariant must be spelled out rather
+                        // than left to the fact that video happens to route to a standalone camera
+                        // today — a debug camera override (or the backlogged logical-video move)
+                        // would otherwise let a mid-clip snapshot serve a frame up to 250 ms old.
+                        allowZsl = !singleShot,
                     )
                 }
                 if (dispatched.isFailure) {
@@ -4106,9 +4111,15 @@ class CameraEngine(private val context: Context) {
         // Cold-start stopwatch origin (cycle 8 S6): resume is the earliest point the app itself
         // controls — everything before it is process/Activity bring-up the system owns. Idempotent,
         // so a resume that finds the camera already live cannot restart a running measurement.
+        // Every path below that returns WITHOUT starting a real open must DISARM it again: an armed
+        // trace with zero marks is finished by the next ordinary startPreview rebuild (any control
+        // change builds a fresh callback with firstDiagnosticResultPending), which printed a
+        // one-mark `cold start … firstCameraResult <arbitrary>` line into the exact log the startup
+        // budget is read from. A fabricated number there is worse than no line at all.
         StartupTrace.begin()
         paused = false
         if (!nativeAcquisitionMayProceed()) {
+            StartupTrace.disarm()
             if (UnsafeRecorderQuarantine.isActive()) {
                 onStatus?.invoke(UNSAFE_RECORDER_RESTART_STATUS)
             }
@@ -4123,6 +4134,8 @@ class CameraEngine(private val context: Context) {
         coldStartRetryGate.cancel()
         gyro.start()
         if (!started) {
+            // No surface yet: the trace stays ARMED on purpose — its origin is still the honest
+            // "ms since resume" zero and the real open follows as soon as the surface arrives.
             val surface = previewSurface ?: return
             onPreviewSurfaceAvailable(surface, previewSurfaceW, previewSurfaceH)
             return
@@ -4133,8 +4146,16 @@ class CameraEngine(private val context: Context) {
         // `controller = null` + open (both threads could observe null and double-open, contending
         // for the HAL device) and paid the open's Binder IPCs on the UI thread.
         setupExecutor.execute {
-            if (!nativeAcquisitionMayProceed() || paused) return@execute
-            if (controller != null) return@execute
+            if (!nativeAcquisitionMayProceed() || paused) {
+                StartupTrace.disarm()
+                return@execute
+            }
+            // Camera already live (an ordinary foreground return, not a cold start): nothing will
+            // mark, so disarm rather than leave a zero-mark trace for a later rebuild to finish.
+            if (controller != null) {
+                StartupTrace.disarm()
+                return@execute
+            }
             // Re-resolve selection/caps/stream geometry from CURRENT desired fields. openCamera(input)
             // reused the pre-pause selection and could mark a new mode/lens generation Ready on the
             // outgoing camera when its queued intent had observed paused and returned.

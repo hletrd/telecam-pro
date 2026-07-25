@@ -63,9 +63,15 @@ object StartupTrace {
         emit("cold start (ms since resume): " + marks.joinToString(" → ") { "${it.first} ${it.second}" })
     }
 
-    /** Arms the next cold start (a real close/reopen, not a fast commit). */
+    /**
+     * DISARMS a measurement that never became a real camera open, discarding its marks. The old
+     * name (`reset`) and doc claimed the opposite ("arms the next cold start") while the body only
+     * ever stopped one. [CameraEngine.resume] arms optimistically at its very first line — the only
+     * honest "ms since resume" origin — and calls this on every path that returns without opening,
+     * so a zero-mark trace can never be finished by an unrelated later preview rebuild.
+     */
     @Synchronized
-    fun reset() {
+    fun disarm() {
         if (!BuildConfig.DEBUG) return
         running = false
         marks.clear()

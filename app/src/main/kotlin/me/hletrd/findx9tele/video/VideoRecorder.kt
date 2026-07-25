@@ -138,7 +138,14 @@ class VideoRecorder(private val context: Context) {
         this.audioGain = normalizeAudioGain(audioGain)
         this.audioScene = audioScene
         this.audioZoom = audioZoom
-        this.audioOrientation = RotationMath.videoOrientationHint(orientationHint, frontFacing)
+        // DIFFERENT DOMAIN from the muxer hint below, despite the shared input: the vendor audio HAL
+        // key `vendor_audiorecord_orientation` describes how the PHONE is physically held (it aims
+        // the Sound Focus beam / Sound Stage field), while [RotationMath.videoOrientationHint] is a
+        // CONTAINER rotation. They were briefly the same function only because the hint used to be
+        // the identity; a209830 made it −dev on rear routes (the device-verified still-rotation fix)
+        // and silently started feeding the audio HAL the MIRRORED landscape (270 for a phone at 90).
+        // Keep the two apart: the audio key takes the raw gravity device orientation.
+        this.audioOrientation = RotationMath.normalize(orientationHint)
         this.audioInputPreference = audioInputPreference
         this.onRoute = onRoute
         this.onLevel = onLevel
