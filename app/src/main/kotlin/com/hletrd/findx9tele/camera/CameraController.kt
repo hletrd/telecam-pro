@@ -899,9 +899,16 @@ class CameraController(context: Context) {
                         val afMode = result.get(CaptureResult.CONTROL_AF_MODE)
                         val ois = result.get(CaptureResult.LENS_OPTICAL_STABILIZATION_MODE)
                         val vstab = result.get(CaptureResult.CONTROL_VIDEO_STABILIZATION_MODE)
+                        // Flash wire truth (torch-regression discrimination 2026-07-25): flashMode
+                        // is what OUR request carried; flashState is what the HAL says the lamp is
+                        // doing (0 UNAVAIL / 1 CHARGING / 2 READY / 3 FIRED / 4 PARTIAL). A TORCH
+                        // request with a dark lamp shows mode=2/state!=3 → HAL/route refusal, not
+                        // a request-side bug.
+                        val flashMode = result.get(CaptureResult.FLASH_MODE)
+                        val flashState = result.get(CaptureResult.FLASH_STATE)
                         val effectiveZoom = controls.zoomRatio.coerceAtLeast(1f) *
                             if (teleconverterMode) TELECONVERTER_MAGNIFICATION else 1f
-                        Log.i(TAG, "3A: controllerId=$diagnosticId opticsGeneration=$requestOpticsGeneration requestGeneration=$requestGeneration mode=${requestMode.name} aeState=$ae afState=$af afMode=$afMode iso=${result.get(CaptureResult.SENSOR_SENSITIVITY)} expNs=${result.get(CaptureResult.SENSOR_EXPOSURE_TIME)} lens=$lastFocusDistance ois=$ois vstab=$vstab (req=$videoStabHalMode tele=$teleconverterMode effZoom=$effectiveZoom)")
+                        Log.i(TAG, "3A: controllerId=$diagnosticId opticsGeneration=$requestOpticsGeneration requestGeneration=$requestGeneration mode=${requestMode.name} aeState=$ae afState=$af afMode=$afMode iso=${result.get(CaptureResult.SENSOR_SENSITIVITY)} expNs=${result.get(CaptureResult.SENSOR_EXPOSURE_TIME)} lens=$lastFocusDistance ois=$ois vstab=$vstab flashMode=$flashMode flashState=$flashState (req=$videoStabHalMode tele=$teleconverterMode effZoom=$effectiveZoom)")
                     }
                 }
             }

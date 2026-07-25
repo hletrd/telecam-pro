@@ -872,15 +872,27 @@ private fun CaptureRequest.Builder.applyProcessing(c: ManualControls, caps: Came
  *      OFF → AE_MODE_ON + FLASH_MODE_OFF, AUTO → AE_MODE_ON_AUTO_FLASH,
  *      ON → AE_MODE_ON_ALWAYS_FLASH, TORCH → AE_MODE_ON + FLASH_MODE_TORCH.
  */
+/**
+ * The FLASH_MODE key for the manual-AE (AE-OFF) branch, pure for the host pin: TORCH must survive
+ * EVERY AE-OFF mode — FLASH_MODE_TORCH is a direct lamp control and needs no AE metering (only
+ * the AUTO/ON firing variants do; unusable under AE_MODE_OFF, they resolve to OFF here). Null =
+ * flash hardware absent → key omitted. Field regression suspicion 2026-07-25 ("torch dead in ISO
+ * mode") prompted this pin; the request-side decision was and is TORCH-preserving — if the lamp
+ * stays dark with FLASH_MODE=TORCH on the wire, look at the HAL/route (3A trace logs
+ * flashMode/flashState for exactly that discrimination).
+ */
+internal fun manualAeFlashMode(flash: FlashMode, flashAvailable: Boolean): Int? =
+    if (!flashAvailable) {
+        null
+    } else when (flash) {
+        FlashMode.TORCH -> CameraMetadata.FLASH_MODE_TORCH
+        FlashMode.OFF, FlashMode.AUTO, FlashMode.ON -> CameraMetadata.FLASH_MODE_OFF
+    }
+
 private fun CaptureRequest.Builder.applyFlash(c: ManualControls, caps: CameraCaps) {
     val aeManual = manualAeAdmitted(c, caps)
     if (aeManual) {
-        if (caps.flashAvailable) {
-            when (c.flash) {
-                FlashMode.TORCH -> set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_TORCH)
-                else -> set(CaptureRequest.FLASH_MODE, CameraMetadata.FLASH_MODE_OFF)
-            }
-        }
+        manualAeFlashMode(c.flash, caps.flashAvailable)?.let { set(CaptureRequest.FLASH_MODE, it) }
     } else {
         // Expression-position `when`s for compiler-enforced exhaustiveness (see applyFocus): a new
         // FlashMode that forgets a branch here must fail the build, not silently keep the previous
