@@ -40,6 +40,9 @@ com/hletrd/findx9tele/camera/ManualControlsKt#applyFlash
 com/hletrd/findx9tele/camera/ManualControlsKt#applyZoom
 com/hletrd/findx9tele/camera/ManualControlsKt#kelvinTintToRggbGains
 com/hletrd/findx9tele/camera/ManualControlsKt#normalizedFor#camera/CameraCaps;
+# manualAeAdmitted: the projection overload is the tested pure core (A); the CameraCaps twin
+# delegates through controlCapabilities(), whose Range getters throw on the host stubs.
+com/hletrd/findx9tele/camera/ManualControlsKt#manualAeAdmitted#camera/CameraCaps;
 # Kotlin synthetic default-argument bridges of the B extensions above: exact-name method rules do
 # not match the compiler's `$default` suffix, yet each bridge shares the CaptureRequest.Builder
 # receiver (no host constructor) and delegates straight into builder.set, which throws on the
