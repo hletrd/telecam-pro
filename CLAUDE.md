@@ -403,21 +403,31 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
 - **Aspect ratio is only 4:3 or 16:9.** The sensor is 4:3-native: `AspectRatio.W4_3` = full readout
   (no crop, the default + the no-crop sentinel), `W16_9` = its center crop. Full/1:1/portrait removed.
 - **The teleconverter's MAGNIFICATION is a setting, not a constant — and never a detection
-  (2026-07-26).** `camera/Teleconverter.kt` owns `TeleconverterProfile` — four first-party kits
-  (Hasselblad 300 mm = 300/70 ≈ 4.286× for the X9 Ultra; Hasselblad 230 mm = 230/70 ≈ 3.29× for the
-  X9 Pro; ZEISS 200 mm = 200/85 ≈ 2.35× and ZEISS 400 mm = 400/85 ≈ 4.71× for the vivo 85 mm
-  periscopes), generic 1.5/2/3× clip-ons, and CUSTOM — plus the pure helpers
-  (`effectiveMagnification`, `normalizeMagnification`, `detectProfile`, `effectiveFocalMm`), and
+  (2026-07-26).** The setting is a PAIR, asked as two dropdowns in the Lens tab: `PhoneModel`, then
+  the `TeleconverterProfile`s that clamp onto it (`PhoneModel.converters()` = that phone's kits plus
+  the fits-anything generics and CUSTOM). A flat chip row listing every brand's converters at once
+  was the first shape and the user rejected it on device — optics that cannot mount on your phone
+  should not be offered beside the ones that can. `camera/Teleconverter.kt` owns both enums, the
+  five first-party kits (Hasselblad 300 mm = 300/70 ≈ 4.286× on the X9 Ultra; Hasselblad 230 mm =
+  230/70 ≈ 3.29× on the X9 Pro; ZEISS 200 mm = 200/85 ≈ 2.35× on the X200 Ultra AND the X300 Ultra;
+  ZEISS 400 mm = 400/85 ≈ 4.71× on the X300 Ultra), the generic 1.5/2/3× clip-ons, CUSTOM, and the
+  pure helpers (`effectiveMagnification`, `normalizeMagnification`, `detectPhone`,
+  `defaultConverterFor`, `reconcileConverter`, `effectiveFocalMm`) plus
   `teleDisplayBase(magnification)` — the function that REPLACED the top-level `TELE_DISPLAY_BASE`
   val. `TELECONVERTER_MAGNIFICATION` survives there as the Explorer default and as the anchor every
-  older test and document quotes. Consumers read `CameraUiState.teleconverterMagnification` /
+  older test and document quotes. A kit's `magnification` derives from ITS OWN host phone, never the
+  selected one: moving glass to another body does not regrind it. Consumers read `CameraUiState.teleconverterMagnification` /
   `.teleconverterFocalMm`, so the profile and its custom value can never drift apart, and the old
   hardcoded `300f` / `"300 mm"` readouts (OSD, EXIF, Fn tile, MR summary, lens caption) are derived.
   Five rules hold this together:
-  1. **Passive glass cannot announce itself.** There is no contact, no ID, no optical trick that
-     tells us a converter is mounted or which one. `detectProfile` matches the PHONE
-     (`Build.MODEL` → `deviceModels`) and only pre-selects a default; the UI must say "default for
-     PMA110", never "detected a converter".
+  1. **Passive glass cannot announce itself; the PHONE can.** There is no contact, no ID, no optical
+     trick that tells us a converter is mounted or which one — so the converter dropdown is pure
+     declaration. `detectPhone` resolves `Build.MODEL` and only preselects the phone dropdown, and
+     the caption may therefore say "Detected OPPO Find X9 Ultra." but never "detected a converter".
+     `phoneModelDetected` must be RE-DERIVED (`phone == detectedPhone`) on every write of
+     `phoneModel`, not latched at seed time: a latched flag survives the user overriding the
+     dropdown and makes the caption claim "Detected Other phone." — a detection the app never made.
+     Picking the real phone back re-claims it.
   2. **This is the ONLY place in the codebase that keys off a model string**, and it may only choose
      which entry starts selected. Everything else still resolves hardware by ENUMERATING Camera2
      capabilities (`CameraSelector2` picks by measured equivalent focal, never by id). No
@@ -435,11 +445,15 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
      would write a false focal into saved files. Tests pin both the published figure (tolerance
      `1e-2`, because makers TRUNCATE — 230/70 = 3.2857 is sold as "3.28×", and a ±5e-3 band fails)
      and the exact ratios at `delta = 0`, which is what catches a preset that adopted a sibling's.
-  5. **When a phone has TWO official converters, the exotic one claims no device.** The vivo X300
-     Ultra takes both the 200 mm and the 400 mm; `detectProfile` can return only one, so the BASE
-     kit owns the model code and the long optic is an explicit pick. A test forbids two profiles
-     claiming the same model, because `firstOrNull` would otherwise make the default depend on
-     declaration order.
+  5. **A phone with TWO official converters offers both, and defaults to the BASE one.** The vivo
+     X300 Ultra takes the 200 mm and the 400 mm, so its narrowed list carries both — but
+     `defaultConverterFor` is `firstOrNull { it.phone == phone }`, which returns the base kit only
+     because `ZEISS_200_X300` is DECLARED BEFORE `ZEISS_400`. That ordering is load-bearing and
+     invisible, so a test pins it: reordering the enum must fail rather than silently default those
+     users to the exotic 4.7× optic. `reconcileConverter` keeps a generic/custom across a phone
+     change and replaces a foreign kit, so no selection can outlive the phone that offered it —
+     the two persisted keys are independent, and the UI must never be handed a converter its own
+     narrowed dropdown does not contain.
   Changing magnification changes that ceiling, so both action handlers re-normalize the live zoom
   and reset `ZoomGlideState.pendingRatio` AND `easeTarget` — an in-flight ease target is an ABSOLUTE
   number in the OLD scale (same trap as a mode flip or lens preset).
