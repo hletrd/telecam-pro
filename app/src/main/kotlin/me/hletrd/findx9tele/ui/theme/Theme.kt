@@ -36,8 +36,29 @@ object CameraColors {
     val Accent = Color(0xFF8AB4F8)
     /** Recording / destructive state. */
     val Record = Color(0xFFFF3B30)
-    /** Manual-control-active accent (focus reticle, open ruler dial, manual chip). */
+    /**
+     * Destructive-action glyph red: the review trash icon and its confirm button. Lighter than
+     * [Record] on purpose — HudContrastTest pins this exact value at the shared scrim because at the
+     * pre-fix 0.5 alpha it measured 1.43:1, the worst interactive contrast in the app.
+     */
+    val Alert = Color(0xFFFF6B6B)
+    /**
+     * Manual-control-active accent (focus reticle, open ruler dial, manual chip) AND the OSD's
+     * non-default-state tag colour (AEL/AWL/AFL, MUTE, LOUPE, OVERVIEW, drive, HR, MR). One amber for
+     * "the camera is not in its default state", Sony-style. It was written as a bare literal at 20
+     * sites, only two of which were manual overrides; the token now owns every one of them.
+     */
     val ManualActive = Color(0xFFFFD60A)
+    /**
+     * The ONE hairline stroke for chip/tile/card/panel EDGES that carry no affordance of their own.
+     * Five decorative borders drifted across 0.10-0.15 alpha, which reads as five slightly different
+     * greys rather than one edge treatment.
+     *
+     * NOT for interactive boundaries: the 0.18 chip borders (settings FilterChip, the Fn close pill,
+     * the FocalRail circle) stay where they are — composited on Pill they already measure ~1.8:1, and
+     * lowering an affordance edge is not a cleanup.
+     */
+    val Hairline = Color.White.copy(alpha = 0.14f)
 }
 
 private val TeleDarkColorScheme = darkColorScheme(

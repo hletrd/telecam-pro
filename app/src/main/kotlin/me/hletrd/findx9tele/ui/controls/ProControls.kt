@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -83,6 +84,10 @@ import me.hletrd.findx9tele.ui.theme.CameraColors
  * equidistant between the section it closed and the one it opened and read as a stray caption. An
  * eyebrow treatment costs zero vertical space; `uppercase()` would have changed the ACCESSIBLE text
  * of 27 decorative nodes to buy a purely visual effect.
+ *
+ * The header owns its own extra leading (here, not at ~27 call sites) so the tab reads 24 dp above a
+ * header and 12 dp below it against the page's 12 dp base gap. Before, the sheet had exactly ONE gap
+ * value everywhere, so a section boundary was spaced identically to a caption under its own control.
  */
 @Composable
 internal fun SectionHeader(text: String, modifier: Modifier = Modifier) {
@@ -92,8 +97,26 @@ internal fun SectionHeader(text: String, modifier: Modifier = Modifier) {
         style = MaterialTheme.typography.labelSmall,
         fontWeight = FontWeight.SemiBold,
         letterSpacing = 0.8.sp,
-        modifier = modifier,
+        modifier = modifier.padding(top = 12.dp),
     )
+}
+
+/**
+ * A control and the caption that explains it, bound as ONE block in the tab rhythm.
+ *
+ * Captions are 4 dp under their control, so the page's base gap can separate GROUPS instead of
+ * floating every caption equidistant between the row it explains and the next unrelated one.
+ * [caption] is nullable because several of these are route-gated (rear-optics only, non-SDR
+ * transfer only) — a null renders the control alone, with no leftover empty line box.
+ */
+@Composable
+internal fun Captioned(caption: String?, content: @Composable () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        content()
+        if (caption != null) {
+            Text(caption, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
+        }
+    }
 }
 
 /** Colors shared by every [FilterChip] in the settings menu: filled white when selected, ghost otherwise. */
@@ -252,12 +275,16 @@ internal fun LabeledSlider(
                 color = if (enabled) CameraColors.TextPrimary else CameraColors.TextSecondary,
                 style = MaterialTheme.typography.labelMedium,
             )
-            // The value reads like a camera HUD readout: accent-colored and bold.
+            // The same right-hand value column as LabelValueRow and DropdownRow: labelMedium,
+            // regular weight, Accent. ManualActive is reserved for a LIVE manual exposure override —
+            // rendering "JPEG Quality 92" and "Interval 5s" in bold amber put plain settings in the
+            // colour that means "the sensor is under manual control", right beside Encoder and Route
+            // in regular blue. The amber stays where it earns the name: this slider's own fill and
+            // needle, and the viewfinder RulerReadout.
             Text(
                 valueLabel,
-                color = if (enabled) CameraColors.ManualActive else CameraColors.TextSecondary,
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.SemiBold,
+                color = if (enabled) CameraColors.Accent else CameraColors.TextSecondary,
+                style = MaterialTheme.typography.labelMedium,
             )
         }
         Spacer(modifier = Modifier.height(2.dp))
@@ -464,9 +491,13 @@ internal fun LabelValueRow(
             color = CameraColors.TextPrimary.copy(alpha = alpha),
             style = MaterialTheme.typography.labelMedium,
         )
+        // Accent marks an AFFORDANCE, not just a value: three rows here are pure readouts
+        // ("Recording / Settings locked", "Encoder / …", "Route / …") and rendered in the same blue
+        // as the tappable "Privacy Policy → View" / "Tap Focus → Reset" / "… → Add" rows. TextPrimary
+        // on Pill is ~15:1, so contrast rises.
         Text(
             valueLabel,
-            color = CameraColors.Accent.copy(alpha = alpha),
+            color = (if (onClick != null) CameraColors.Accent else CameraColors.TextPrimary).copy(alpha = alpha),
             style = MaterialTheme.typography.labelMedium,
         )
     }
@@ -601,7 +632,7 @@ internal fun videoResolutionLabel(size: Size): String = videoResolutionLabelFor(
  * end-to-end 10-bit claim).
  */
 @Composable
-fun TransferSelector(
+internal fun TransferSelector(
     transfer: ColorTransfer,
     onTransfer: (ColorTransfer) -> Unit,
     modifier: Modifier = Modifier,
@@ -654,7 +685,7 @@ fun TransferSelector(
 
 /** HEIF / JPEG / DNG output-format toggles; supported formats may be enabled simultaneously. */
 @Composable
-fun PhotoFormatToggles(
+internal fun PhotoFormatToggles(
     formats: PhotoFormats,
     onSetPhotoFormats: (PhotoFormats) -> Unit,
     processedAvailable: Boolean,

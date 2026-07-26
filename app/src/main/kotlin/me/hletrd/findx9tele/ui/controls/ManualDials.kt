@@ -338,7 +338,10 @@ private fun DialChipRow(
                     .weight(1f)
                     .trailingEdgeFadeScrollHint(fnScroll)
                     .horizontalScroll(fnScroll),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                // 8 dp, the one bottom-cluster gap: this chip row, the focal rail above it, and the
+                // mode pair below it are three stacked rows that read as one control block, and they
+                // used to run 6 / 8 / 20 dp.
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 state.activeFnSlots.forEach { slot ->
                     FnDialChip(
@@ -705,9 +708,9 @@ private fun DialChip(
                 .clip(RoundedCornerShape(50))
                 .background(bg)
                 .then(
-                    if (!active) Modifier.border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(50)) else Modifier,
+                    if (!active) Modifier.border(1.dp, CameraColors.Hairline, RoundedCornerShape(50)) else Modifier,
                 )
-                .padding(horizontal = 8.dp, vertical = 6.dp),
+                .padding(horizontal = 12.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -789,7 +792,7 @@ private fun RulerReadout(value: String, modifier: Modifier = Modifier, autoValue
                 }
                 .clip(RoundedCornerShape(50))
                 .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
-                .padding(horizontal = 14.dp, vertical = 2.dp),
+                .padding(horizontal = 12.dp, vertical = 6.dp),
         )
     }
 }
@@ -910,7 +913,7 @@ private fun SpeedAngleToggle(mode: ShutterMode, enabled: Boolean, onSelect: (Shu
                     modifier = Modifier
                         .clip(RoundedCornerShape(50))
                         .background(if (on) CameraColors.ManualActive else CameraColors.Pill.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
-                        .padding(horizontal = 14.dp, vertical = 5.dp),
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
                 ) {
                     Text(
                         text = if (m == ShutterMode.SPEED) "Speed" else "Angle",

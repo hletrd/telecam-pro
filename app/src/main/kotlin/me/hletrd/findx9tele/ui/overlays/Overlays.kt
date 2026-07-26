@@ -56,6 +56,7 @@ import me.hletrd.findx9tele.focus.focusConfidenceLabel
 import me.hletrd.findx9tele.ui.controls.transferLabelShort
 import me.hletrd.findx9tele.ui.controls.videoCodecLabelShort
 import me.hletrd.findx9tele.ui.controls.videoResolutionLabel
+import me.hletrd.findx9tele.ui.theme.CameraColors
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -243,7 +244,7 @@ internal fun levelDeviationDegrees(rollDegrees: Float, deviceOrientation: Int): 
 fun LevelOverlay(modifier: Modifier = Modifier, rollDegrees: Float = 0f, deviceOrientation: Int = 0) {
     val deviation = levelDeviationDegrees(rollDegrees, deviceOrientation)
     val isLevel = abs(deviation) < 0.5f
-    val indicatorColor = if (isLevel) Color(0xFFFFD60A) else Color.White
+    val indicatorColor = if (isLevel) CameraColors.ManualActive else Color.White
     Canvas(modifier = modifier.fillMaxSize()) {
         val cy = size.height / 2f
         val halfSpan = size.width * 0.16f
@@ -282,7 +283,7 @@ fun FocusReticle(
     val color = when (indication) {
         AfIndication.FOCUSED -> Color(0xFF30D158)
         AfIndication.FAILED -> Color(0xFFFF453A)
-        AfIndication.SCANNING, AfIndication.IDLE -> Color(0xFFFFD60A)
+        AfIndication.SCANNING, AfIndication.IDLE -> CameraColors.ManualActive
     }
     val focusDescription = when (indication) {
         AfIndication.FOCUSED -> "Focus locked"
@@ -328,7 +329,7 @@ fun RecordingIndicator(elapsedMs: Long, modifier: Modifier = Modifier) {
     ) {
         Spacer(modifier = Modifier.width(2.dp))
         Canvas(modifier = Modifier.size(10.dp)) {
-            drawCircle(color = Color(0xFFFF3B30))
+            drawCircle(color = CameraColors.Record)
         }
         Text(
             text = timeLabel,
@@ -349,7 +350,7 @@ fun AudioMeter(level: Float, modifier: Modifier = Modifier) {
     val fillColor = when {
         fill < 0.6f -> Color(0xFF4CD964)
         fill < 0.85f -> Color(0xFFFFD60A)
-        else -> Color(0xFFFF3B30)
+        else -> CameraColors.Record
     }
     Box(
         modifier = modifier
@@ -474,12 +475,12 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
             Text(it, color = Color.White, style = MaterialTheme.typography.labelMedium)
         }
         state.activeMemorySlot?.let {
-            Text(it.label, color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+            Text(it.label, color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
         }
         // Facing: the one state that changes what the app is for. Rear is the norm and stays
         // untagged (UX_POLICY: keep the viewfinder quiet); FRONT is the exception and says so.
         if (state.facing == CameraFacing.FRONT) {
-            Text("FRONT", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+            Text("FRONT", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
         }
         if (state.mode == CaptureMode.VIDEO) {
             if (!compact) {
@@ -500,17 +501,22 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                 Text(spec, color = Color.White, style = MaterialTheme.typography.labelMedium)
             }
             if (!compact || state.transfer != ColorTransfer.SDR) {
-                Text(transferLabelShort(state.transfer), color = Color(0xFF4C9AFF), style = MaterialTheme.typography.labelMedium)
+                // The token, not a second blue: this tag used to be a raw 0xFF4C9AFF while the zoom
+                // pill, TAP AF chip and Fn glyph rode CameraColors.Accent (#8AB4F8) — two blues 40
+                // units apart for one meaning. Accent is the lighter of the two, so HUD contrast
+                // rises. (The histogram's blue CHANNEL curve below stays a literal: it names a
+                // colour channel, not a UI accent.)
+                Text(transferLabelShort(state.transfer), color = CameraColors.Accent, style = MaterialTheme.typography.labelMedium)
             }
             if (state.transfer.isLog && state.gammaAssist) {
                 // Gamma Display Assist active: the monitor is corrected, the file stays log.
                 Text("Assist", color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.labelMedium)
             }
             if (state.openGate) {
-                Text("4:3", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+                Text("4:3", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
             }
             if (!state.recordAudio) {
-                Text("MUTE", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+                Text("MUTE", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
             }
             val stabTag = when (state.videoStabMode) {
                 VideoStabMode.STANDARD -> "OIS+"
@@ -519,7 +525,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
             }
             Text(
                 stabTag,
-                color = if (state.videoStabMode == VideoStabMode.OFF) Color(0xFFFFD60A) else Color(0xFF4CD964),
+                color = if (state.videoStabMode == VideoStabMode.OFF) CameraColors.ManualActive else Color(0xFF4CD964),
                 style = MaterialTheme.typography.labelMedium,
             )
         } else {
@@ -531,13 +537,13 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                 )
             } else {
                 compactPhotoFormatLabel(state)?.let { formatLabel ->
-                    Text(formatLabel, color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+                    Text(formatLabel, color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
                 }
             }
             if (state.photoSessionOutputs.hiRes) {
                 // ACCEPTED-session truth, never the toggle intent (the ladder drops hi-res first) —
                 // the same honesty rule as the finder PIP tag.
-                Text("HR", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+                Text("HR", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
             }
             if (state.driveMode != DriveMode.SINGLE) {
                 val driveLabel = when (state.driveMode) {
@@ -546,13 +552,13 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                     DriveMode.TIMELAPSE -> "TL ${state.intervalSec}s"
                     DriveMode.SINGLE -> ""
                 }
-                Text(driveLabel, color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+                Text(driveLabel, color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
             }
             if (!state.controls.oisEnabled) {
-                Text("OIS OFF", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+                Text("OIS OFF", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
             }
             if (!compact && state.timer != ShutterTimer.OFF) {
-                Text("T${state.timer.seconds}s", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+                Text("T${state.timer.seconds}s", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
             }
         }
         if (state.controls.meteringMode != MeteringMode.MATRIX) {
@@ -566,13 +572,13 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
         // silently "ignoring" the scene reads as a broken camera. Amber tags, Sony-style, in the OSD
         // row per UX policy ("important states belong in the OSD").
         if (state.controls.aeLock) {
-            Text("AEL", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+            Text("AEL", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
         }
         if (state.controls.awbLock) {
-            Text("AWL", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+            Text("AWL", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
         }
         if (state.controls.afLock) {
-            Text("AFL", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+            Text("AFL", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
         }
         // Focus confidence: ONE compact amber tag whose text follows whichever proof holds —
         // TOO CLOSE (AF admitted defeat with the lens racked at its close limit, optionally
@@ -580,10 +586,10 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
         // fine detail, which cannot establish distance and so advises nothing). Same Sony-style
         // register as AEL/AFL; the wording rule and the 700 ms hold live in focus/MacroProximity.kt.
         focusConfidenceLabel(state.focusConfidence, state.macroCloserLensLabel)?.let { tag ->
-            Text(tag, color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+            Text(tag, color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
         }
         if (state.punchIn) {
-            Text("LOUPE", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+            Text("LOUPE", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
         }
         if (teleFinderVisible(
                 enabled = state.teleFinder,
@@ -593,7 +599,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                 punchIn = state.punchIn,
             )
         ) {
-            Text("OVERVIEW", color = Color(0xFFFFD60A), style = MaterialTheme.typography.labelMedium)
+            Text("OVERVIEW", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
         }
     }
 }

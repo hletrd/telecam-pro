@@ -596,7 +596,9 @@ fun CameraScreen(
                 .statusBarsPadding()
                 .padding(top = OSD_CLEARANCE_TOP),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            // Matches the taller scopes column on the top-end edge: two free-floating overlay lanes
+            // on the same screen edge should not run different rhythms.
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Box(
                 modifier = Modifier.sizeIn(minHeight = 34.dp),
@@ -638,7 +640,7 @@ fun CameraScreen(
                         .rotateLayout(overlayRotation)
                         .clip(RoundedCornerShape(50))
                         .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
-                        .padding(horizontal = 12.dp, vertical = 5.dp),
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
                 )
             }
             if (state.tapFocusHeld) {
@@ -736,7 +738,7 @@ fun CameraScreen(
                             LiveRegionMode.Polite
                         }
                     }
-                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
             )
         }
 
@@ -868,7 +870,13 @@ fun CameraScreen(
                     glyphRotation = overlayRotation,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = if (landscapeOperator) 12.dp else 28.dp),
+                        // 12 dp, the ONE left inset (see the rule stated above the top-start
+                        // column). GalleryThumb is CenterStart inside this Box, so the old 28 dp
+                        // portrait value put the app's one bottom-left element 16 dp inboard of the
+                        // Fn chip row, focal rail, exposure meter, status OSD and top bar. Nothing
+                        // else here depends on the inset: the shutter is centred and the snapshot
+                        // dot is a fixed offset from centre. The 52 dp thumb stays over the floor.
+                        .padding(horizontal = 12.dp),
                 )
             }
         }
@@ -1107,7 +1115,7 @@ private fun TopBar(
                 modifier = Modifier.rotate(glyphRotation),
                 frontFacing = state.facing == CameraFacing.FRONT,
             )
-            DispButton(active = compact, onClick = onToggleDisp, modifier = Modifier.rotate(glyphRotation))
+            DispButton(infoHidden = compact, onClick = onToggleDisp, modifier = Modifier.rotate(glyphRotation))
             GearButton(onClick = onOpenSheet, modifier = Modifier.rotate(glyphRotation))
         }
     }
@@ -1284,7 +1292,10 @@ private fun AspectButton(ratio: AspectRatio, onClick: () -> Unit, modifier: Modi
 @Composable
 private fun GridButton(type: GridType, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val active = type != GridType.NONE
-    val color = if (active) CameraColors.TextPrimary else CameraColors.TextSecondary
+    // Accent for engaged, like every other chrome toggle on this row (TimerButton armed, TeleChip,
+    // DispButton). White-for-on made Grid the row's one dissenter. Accent is pinned >= 4.5:1 at the
+    // shared HUD scrim.
+    val color = if (active) CameraColors.Accent else CameraColors.TextSecondary
     // Name the grid, not just on/off: the glyph draws thirds whichever type is active, so "Grid on"
     // told a TalkBack user nothing about which of the five is framing their shot.
     ChromeIconButton(
@@ -1433,16 +1444,25 @@ private fun GearButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
     }
 }
 
-/** Sony DISP toggle: viewfinder-frame glyph whose info lines drop out when the display is clean. */
+/**
+ * Sony DISP toggle: a viewfinder-frame glyph with two info lines (both always drawn — the glyph is
+ * the control's identity, not a preview of its state).
+ *
+ * [infoHidden] is the CURRENT display state, i.e. `compact`, which starts true. The colour follows
+ * the info, not the button: Accent means the shooting info is ON SCREEN. The old `active = compact`
+ * naming lit the glyph Accent at launch while nothing was displayed and dimmed it once the OSD
+ * appeared — the inverse of "Accent = active highlight". Both colours are pinned >= 4.5:1 at the
+ * shared scrim.
+ */
 @Composable
-private fun DispButton(active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun DispButton(infoHidden: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     ChromeIconButton(
         onClick = onClick,
-        contentDescription = if (active) "Show shooting info" else "Hide shooting info",
+        contentDescription = if (infoHidden) "Show shooting info" else "Hide shooting info",
         modifier = modifier,
     ) {
         Canvas(Modifier.size(16.dp)) {
-            val color = if (active) CameraColors.Accent else CameraColors.TextPrimary
+            val color = if (infoHidden) CameraColors.TextSecondary else CameraColors.Accent
             val sw = 1.3.dp.toPx()
             drawRect(color, style = Stroke(width = sw))
             drawLine(color, Offset(size.width * 0.22f, size.height * 0.36f), Offset(size.width * 0.78f, size.height * 0.36f), strokeWidth = sw)
@@ -1496,7 +1516,7 @@ private fun StatusInfoPill(state: CameraUiState, modifier: Modifier = Modifier) 
     Row(
         modifier = modifier
             .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA), RoundedCornerShape(8.dp))
-            .padding(horizontal = 10.dp, vertical = 5.dp),
+            .padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1542,7 +1562,7 @@ private fun ZoomIndicator(
             modifier = Modifier
                 .rotateLayout(numberRotation)
                 .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA), RoundedCornerShape(50))
-                .padding(horizontal = 12.dp, vertical = 4.dp),
+                .padding(horizontal = 12.dp, vertical = 6.dp),
         )
         Box(
             modifier = Modifier
@@ -1602,6 +1622,11 @@ private fun FnOverlay(
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
                 .padding(horizontal = 14.dp)
+                // 154 dp = the resting height of the bottom cluster (dial-chip row + focal rail +
+                // mode pair + shutter row), so the tray sits directly above it instead of over it.
+                // It is a MEASURED constant re-stated by hand: the live height already exists as
+                // bottomClusterRestHeightPx. Any change to the cluster's rows, insets or type sizes
+                // silently invalidates this number — re-measure it, do not nudge it.
                 .padding(bottom = 154.dp)
                 .fillMaxWidth()
             FnOverlayAnchor.CENTER_START -> Modifier
@@ -1622,8 +1647,10 @@ private fun FnOverlay(
                     .clip(RoundedCornerShape(8.dp))
                     // The full-screen scrim stays light, but the compact panel itself is opaque so
                     // focal-rail values cannot read as a second line inside held-landscape Fn tiles.
-                    .background(Color(0xFF181818))
-                    .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(8.dp))
+                    // Pill IS that opaque panel grey — the settings sheet uses it — so a hand-rolled
+                    // 0xFF181818 here was only a second, near-identical panel colour.
+                    .background(CameraColors.Pill)
+                    .border(1.dp, CameraColors.Hairline, RoundedCornerShape(8.dp))
                     .semantics {
                         paneTitle = "Function menu"
                         isTraversalGroup = true
@@ -1679,7 +1706,7 @@ private fun FnOverlay(
                         // Preserve empty raw cells/rows for custom lists shorter than eight. Without
                         // the row floor an all-null held row collapses and changes the perceived 4x2
                         // slot position even though fnOverlayGridRows intentionally retained it.
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 58.dp),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         rowSlots.forEach { slot ->
@@ -1736,10 +1763,10 @@ private fun FnOverlayTile(
     val foregroundAlpha = if (enabled) 1f else 0.55f
     Box(
         modifier = modifier
-            .heightIn(min = 58.dp)
+            .heightIn(min = 56.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(Color.White.copy(alpha = if (enabled) 0.09f else 0.04f))
-            .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(8.dp))
+            .border(1.dp, CameraColors.Hairline, RoundedCornerShape(8.dp))
             .focusable()
             .clearAndSetSemantics {
                 contentDescription = fnSlotLabel(slot)
@@ -1753,7 +1780,9 @@ private fun FnOverlayTile(
                 }
             }
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
-            .padding(horizontal = 9.dp, vertical = 7.dp),
+            // Carve-out from the shared 12/6 pill inset: this tile sits in the width-contended
+            // 148 dp held tray (CameraScreenPolicy), so only the vertical joins the scale.
+            .padding(horizontal = 9.dp, vertical = 6.dp),
         contentAlignment = Alignment.Center,
     ) {
         if (heldLandscape) {
@@ -1839,7 +1868,7 @@ private fun ExposureMeter(
     // Vertical Sony-style scale: +3 EV at the top, -3 EV at the bottom, readout above it.
     Column(
         modifier = modifier
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(8.dp))
             .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
             .padding(horizontal = 6.dp, vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -1930,7 +1959,7 @@ private fun FocalRail(
                                 else Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA),
                             )
                             .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
@@ -1961,7 +1990,10 @@ private fun ModeCarousel(
     enabled: Boolean = true,
 ) {
     Row(modifier = modifier.selectableGroup(), horizontalArrangement = Arrangement.Center) {
-        Row(horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+        // 8 dp like the two rows above it (Fn chips, focal rail); at 20 dp this row ran 2.5x the
+        // rhythm of the row directly above. Photo and Video stay clearly separate: each pill now
+        // carries 12 dp of internal inset, so the visual gap between the labels is 8 + 24 = 32 dp.
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             // The mode labels are SHORT ("Photo"/"Video"), so — iPhone-style — they DO counter-rotate
             // to stay upright as the phone turns (unlike the wide dial pills, which would overflow their
             // fixed row slots and are kept screen-fixed). The label + its underline rotate as one unit.
@@ -2018,7 +2050,12 @@ private fun ModeLabel(text: String, active: Boolean, enabled: Boolean, onClick: 
                 // contrast. Same treatment as every sibling HUD element.
                 .clip(RoundedCornerShape(50))
                 .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                // The ONE HUD pill inset, 12/6. Fifteen pills used to be padded by hand — six
+                // horizontal values and seven vertical — and disagreeing neighbours sit adjacent
+                // (StatusBar above StatusInfoPill, DialChip under RulerReadout). Every visual pill
+                // lives inside its own 48 dp box, so unifying the inset moves no touch target. Two
+                // width-contended rows keep a 9 dp horizontal and are marked as such.
+                .padding(horizontal = 12.dp, vertical = 6.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(

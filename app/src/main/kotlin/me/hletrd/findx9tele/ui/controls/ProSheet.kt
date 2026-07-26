@@ -210,7 +210,7 @@ internal fun ProSheet(
                 .navigationBarsPadding(),
         ) {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 14.dp, bottom = 8.dp),
+                modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 16.dp, bottom = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -223,7 +223,9 @@ internal fun ProSheet(
 
             Row(modifier = Modifier.fillMaxWidth().weight(1f)) {
                 TabRail(selected = selectedTab, onSelect = { selectedTab = it; onTabChange(it) })
-                Box(modifier = Modifier.width(1.dp).fillMaxHeight().background(Color.White.copy(alpha = 0.08f)))
+                // (The 0.08 rail divider that used to sit here is gone: on Pill it resolved to
+                // #2E2E2F — below the visibility threshold — and the selected rail item already
+                // carries a 10% block PLUS an accent bar PLUS a colour change.)
                 // Content scroll. overscrollEffect = null removes the stretch glow at the ends; the
                 // panel itself no longer drags, so there is nothing left to bounce. Weighted Box because
                 // Modifier.weight is a RowScope extension.
@@ -247,8 +249,14 @@ internal fun ProSheet(
                         modifier = Modifier
                             .fillMaxSize()
                             .verticalScroll(tabScrollStates.getValue(selectedTab), overscrollEffect = null)
-                            .padding(horizontal = 18.dp, vertical = 16.dp),
-                        verticalArrangement = Arrangement.spacedBy(20.dp),
+                            // A trailing Spacer inside a spacedBy column made the bottom inset
+                            // 20 + 8 against a 16 dp top; the column states its own bottom instead.
+                            .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 24.dp),
+                        // The page's BASE gap, not its only gap. At a uniform 20 dp a caption sat as
+                        // far from the control it explains as a new section did from the last one;
+                        // the rhythm is now 4 dp caption-to-control (Captioned), 12 dp between
+                        // sibling controls, and 24 dp above a SectionHeader (which adds its own 12).
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         when (selectedTab) {
                             ProSheetTab.MY_MENU -> MyMenuTab(
@@ -271,7 +279,6 @@ internal fun ProSheet(
                             ProSheetTab.ASSISTS -> AssistsTab(state, actions)
                             ProSheetTab.ADVANCED -> AdvancedTab(state, actions)
                         }
-                        Spacer(modifier = Modifier.height(8.dp))
                     }
                 }
             }
@@ -370,7 +377,7 @@ private fun TabRailItem(tab: ProSheetTab, selected: Boolean, onClick: () -> Unit
                 .height(2.dp)
                 .background(if (selected) CameraColors.Accent else Color.Transparent, RoundedCornerShape(1.dp)),
         )
-        Spacer(modifier = Modifier.height(6.dp))
+        Spacer(modifier = Modifier.height(4.dp))
         Canvas(modifier = Modifier.size(20.dp)) { drawTabIcon(tab, fg) }
         Spacer(modifier = Modifier.height(4.dp))
         Text(
@@ -575,8 +582,14 @@ private fun MemoryPresetRow(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
-            .background(if (active) Color(0xFFFFD60A).copy(alpha = 0.18f) else Color.White.copy(alpha = 0.05f))
-            .border(1.dp, Color.White.copy(alpha = if (active) 0.28f else 0.10f), RoundedCornerShape(8.dp))
+            .background(if (active) CameraColors.ManualActive.copy(alpha = 0.18f) else Color.White.copy(alpha = 0.05f))
+            // The active row is already tinted amber; a neutral white border over that tint read as
+            // a smudge rather than a selection. Idle takes the shared decorative hairline.
+            .border(
+                1.dp,
+                if (active) CameraColors.ManualActive.copy(alpha = 0.35f) else CameraColors.Hairline,
+                RoundedCornerShape(8.dp),
+            )
             // Role + label on the primary recall action (cycle-6 D-11): without them the row read
             // as an anonymous clickable while its Save chip was fully labeled.
             .clickable(
@@ -586,12 +599,12 @@ private fun MemoryPresetRow(
                 onClick = onRecall,
             )
             .padding(horizontal = 12.dp, vertical = 9.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = slot.label,
-            color = if (active) Color(0xFFFFD60A) else CameraColors.TextSecondary,
+            color = if (active) CameraColors.ManualActive else CameraColors.TextSecondary,
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier.width(36.dp),
@@ -643,28 +656,26 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
     // old inline conjunction here was a third encoding of the admission axes). The row shows the
     // INTENT; the OSD HR tag shows accepted session truth.
     if (availability.hiResAdvertisedStandalone) {
-        ToggleRow(
-            label = "High Resolution",
-            checked = state.hiResStill,
-            onCheckedChange = actions::onToggleHiResStill,
-            enabled = hiResToggleEnabled(
-                availability = availability,
-                videoMode = state.mode == CaptureMode.VIDEO,
-                aspect = state.aspectRatio,
-                recording = state.isRecording,
-            ),
-        )
         // The advertised dimensions are display copy only; every admission axis stays projected.
         // Constraints only, in the app's own ` · ` register: "Full-sensor still" restated the row
         // label directly above, and "Reduces low-light quality" was an editorial verdict on a
         // setting the operator just chose (docs/UX_POLICY.md). What earns the line is the three
         // SILENT consequences of the switch.
-        caps?.hiResJpegSize?.let { hiResSize ->
+        val hiResCaption = caps?.hiResJpegSize?.let { hiResSize ->
             val mp = (hiResSize.width.toLong() * hiResSize.height / 1_000_000).toInt()
-            Text(
-                "${hiResSize.width}×${hiResSize.height} · $mp MP · JPEG, 4:3, no RAW",
-                color = CameraColors.TextSecondary,
-                style = MaterialTheme.typography.labelSmall,
+            "${hiResSize.width}×${hiResSize.height} · $mp MP · JPEG, 4:3, no RAW"
+        }
+        Captioned(hiResCaption) {
+            ToggleRow(
+                label = "High Resolution",
+                checked = state.hiResStill,
+                onCheckedChange = actions::onToggleHiResStill,
+                enabled = hiResToggleEnabled(
+                    availability = availability,
+                    videoMode = state.mode == CaptureMode.VIDEO,
+                    aspect = state.aspectRatio,
+                    recording = state.isRecording,
+                ),
             )
         }
     }
@@ -710,7 +721,6 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         onValueChange = { actions.onJpegQuality(it.roundToInt()) },
         valueRange = 1f..100f,
     )
-    SectionHeader("Drive")
     SegmentedSelector(
         label = "Drive",
         options = DriveMode.entries,
@@ -746,7 +756,6 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     // already memoize the identical projection).
     val availability = remember(caps, controls) { controlAvailability(caps?.controlCapabilities(), controls) }
     TabTitle("Exposure")
-    SectionHeader("Exposure")
     // PASM-style: P (auto), S (shutter-priority, app auto-ISO), ISO (iso-priority, app auto-shutter),
     // M (manual). No aperture-priority — the tele aperture is fixed.
     SegmentedSelector(
@@ -771,7 +780,6 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         onSelect = actions::onAntibanding,
         enabled = availability.antibandingModes.size > 1,
     )
-    SectionHeader("Shutter")
     SegmentedSelector(
         label = "Shutter",
         options = ShutterMode.entries,
@@ -789,7 +797,6 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         enabled = availability.shutterDialEnabled,
     )
     val isoRange = caps?.isoRange ?: Range(controls.iso, controls.iso)
-    SectionHeader("ISO")
     LabeledSlider(
         label = "ISO",
         valueLabel = controls.iso.toString(),
@@ -800,7 +807,6 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
             (controls.exposureMode == ExposureMode.ISO || controls.exposureMode == ExposureMode.MANUAL),
     )
 
-    SectionHeader("Metering")
     SegmentedSelector(
         label = "Metering",
         options = availability.meteringModes,
@@ -810,7 +816,6 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         enabled = availability.meteringModes.size > 1,
     )
 
-    SectionHeader("WB")
     SegmentedSelector(
         label = "WB",
         options = availability.wbModes,
@@ -839,18 +844,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     }
     // Sony Custom WB: frame a white/grey card and capture a fresh accepted-session AWB sample.
     val customWbCaptureEnabled = state.cameraReady && availability.customWbCaptureEnabled
-    // DES4-3: standalone action chip missed by the d875eea sweep — same 48 dp wrapper.
-    MinTouchTarget48 {
-        FilterChip(
-            selected = controls.wbMode == WbMode.CUSTOM,
-            onClick = actions::onCaptureCustomWb,
-            enabled = customWbCaptureEnabled,
-            label = { Text("Capture Custom WB", style = MaterialTheme.typography.labelMedium) },
-            colors = pixelChipColors(),
-            border = pixelChipBorder(controls.wbMode == WbMode.CUSTOM),
-        )
-    }
-    Text(
+    Captioned(
         if (customWbCaptureEnabled) {
             "Aim at a white or gray card"
         } else if (!state.cameraReady) {
@@ -860,9 +854,19 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
             // caption and the toast are one instruction seen twice, not two instructions.
             "Use Auto WB with AWB Lock off"
         },
-        color = CameraColors.TextSecondary,
-        style = MaterialTheme.typography.labelSmall,
-    )
+    ) {
+        // DES4-3: standalone action chip missed by the d875eea sweep — same 48 dp wrapper.
+        MinTouchTarget48 {
+            FilterChip(
+                selected = controls.wbMode == WbMode.CUSTOM,
+                onClick = actions::onCaptureCustomWb,
+                enabled = customWbCaptureEnabled,
+                label = { Text("Capture Custom WB", style = MaterialTheme.typography.labelMedium) },
+                colors = pixelChipColors(),
+                border = pixelChipBorder(controls.wbMode == WbMode.CUSTOM),
+            )
+        }
+    }
     ToggleRow(
         label = "AWB Lock",
         checked = controls.awbLock,
@@ -959,35 +963,27 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
             style = MaterialTheme.typography.labelSmall,
         )
     }
-    // Lens picks are ZOOM PRESETS on the seamless logical camera — they do NOT bundle the
-    // teleconverter. TELE stays on only when it already is AND the pick is its 3× host lens; the
-    // separate toggle below pins converter shooting (afocal 180° flip, standalone 3× camera).
-    SegmentedSelector(
-        label = "Lens",
-        options = LensChoice.entries,
-        selected = state.lens,
-        labelFor = ::lensLabel,
-        onSelect = actions::onLens,
-        enabled = rearOpticsMutable,
-    )
-    if (rearRoute) {
-        Text(
-            lensFocalCaption(state.lens, state.teleconverterMode, state.teleconverterFocalMm),
-            color = CameraColors.TextSecondary,
-            style = MaterialTheme.typography.labelSmall,
+    Captioned(
+        if (rearRoute) lensFocalCaption(state.lens, state.teleconverterMode, state.teleconverterFocalMm) else null,
+    ) {
+        // Lens picks are ZOOM PRESETS on the seamless logical camera — they do NOT bundle the
+        // teleconverter. TELE stays on only when it already is AND the pick is its 3× host lens; the
+        // separate toggle below pins converter shooting (afocal 180° flip, standalone 3× camera).
+        SegmentedSelector(
+            label = "Lens",
+            options = LensChoice.entries,
+            selected = state.lens,
+            labelFor = ::lensLabel,
+            onSelect = actions::onLens,
+            enabled = rearOpticsMutable,
         )
     }
-    ToggleRow(
-        label = "Teleconverter",
-        checked = state.teleconverterMode,
-        onCheckedChange = actions::onToggleTeleconverter,
-        enabled = rearOpticsMutable,
-    )
-    if (rearRoute) {
-        Text(
-            "3× lens only",
-            color = CameraColors.TextSecondary,
-            style = MaterialTheme.typography.labelSmall,
+    Captioned(if (rearRoute) "3× lens only" else null) {
+        ToggleRow(
+            label = "Teleconverter",
+            checked = state.teleconverterMode,
+            onCheckedChange = actions::onToggleTeleconverter,
+            enabled = rearOpticsMutable,
         )
     }
     // The converter setting is a PAIR, asked in order: the phone decides which kits clamp on, the
@@ -1002,31 +998,15 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
         onSelect = actions::onPhoneModel,
         enabled = rearOpticsMutable,
     )
-    DropdownRow(
-        label = "Converter",
-        // Narrowed to this phone's kits plus the fits-anything entries, so a converter that cannot
-        // physically clamp on is not offerable in the first place.
-        options = state.phoneModel.converters(),
-        selected = state.teleconverterProfile,
-        labelFor = { it.label },
-        onSelect = actions::onTeleconverterProfile,
-        enabled = rearOpticsMutable,
-    )
-    if (state.teleconverterProfile.isCustom) {
-        LabeledSlider(
-            label = "Magnification",
-            valueLabel = "%.2f×".format(Locale.US, state.teleconverterMagnification),
-            value = state.teleconverterCustomMagnification,
-            onValueChange = actions::onTeleconverterCustomMagnification,
-            valueRange = MIN_TELECONVERTER_MAGNIFICATION..MAX_TELECONVERTER_MAGNIFICATION,
-            enabled = rearOpticsMutable,
-        )
-    }
     // The computed focal for THIS phone's host lens, never the preset's product number: a "ZEISS
     // 200 mm" is 2.35x glass, and 2.35x on this phone's 70 mm periscope is 165 mm.
     val converterFocal = "${formatFocalMm(state.teleconverterFocalMm)} equiv."
-    if (rearRoute) {
-        Text(
+    // Converter and Magnification are ONE setting (the slider exists only for a custom converter),
+    // and the caption states what the pair resolves to — so all three bind as one block.
+    Captioned(
+        if (!rearRoute) {
+            null
+        } else {
             when {
                 // Only the PHONE is ever detected, and only when Build.MODEL actually matched this
                 // boot — a default that happens to be right is not a detection. Nothing is appended
@@ -1037,31 +1017,52 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
                 // ran them together right after the "equiv." abbreviation dot.
                 state.phoneModelDetected -> "$converterFocal · ${state.phoneModel.label} detected"
                 else -> converterFocal
-            },
-            color = CameraColors.TextSecondary,
-            style = MaterialTheme.typography.labelSmall,
+            }
+        },
+    ) {
+        DropdownRow(
+            label = "Converter",
+            // Narrowed to this phone's kits plus the fits-anything entries, so a converter that
+            // cannot physically clamp on is not offerable in the first place.
+            options = state.phoneModel.converters(),
+            selected = state.teleconverterProfile,
+            labelFor = { it.label },
+            onSelect = actions::onTeleconverterProfile,
+            enabled = rearOpticsMutable,
         )
+        if (state.teleconverterProfile.isCustom) {
+            LabeledSlider(
+                label = "Magnification",
+                valueLabel = "%.2f×".format(Locale.US, state.teleconverterMagnification),
+                value = state.teleconverterCustomMagnification,
+                onValueChange = actions::onTeleconverterCustomMagnification,
+                valueRange = MIN_TELECONVERTER_MAGNIFICATION..MAX_TELECONVERTER_MAGNIFICATION,
+                enabled = rearOpticsMutable,
+            )
+        }
     }
 
     // Stabilization lives here with the rest of the optics — it does not need its own menu tab
     // (feedback). HAL OIS+EIS path; OIS physically cuts per-frame motion blur at 300 mm.
     SectionHeader("Stabilization")
-    SegmentedSelector(
-        label = "Mode",
-        options = VideoStabMode.entries,
-        selected = state.videoStabMode,
-        labelFor = { it.label },
-        onSelect = actions::onVideoStabMode,
-        // Same REC guard as the Lens/TC rows above (CR4-6): onVideoStabMode refuses mid-REC with
-        // a toast, so a visually-hot selector here silently no-oped while its siblings greyed out.
-        enabled = recordingMutable,
-    )
-    val stabCaption = when (state.videoStabMode) {
-        VideoStabMode.OFF -> "Off"
-        VideoStabMode.STANDARD -> "OIS+EIS"
-        VideoStabMode.ENHANCED -> "OIS+EIS, crop"
+    Captioned(
+        when (state.videoStabMode) {
+            VideoStabMode.OFF -> "Off"
+            VideoStabMode.STANDARD -> "OIS+EIS"
+            VideoStabMode.ENHANCED -> "OIS+EIS, crop"
+        },
+    ) {
+        SegmentedSelector(
+            label = "Mode",
+            options = VideoStabMode.entries,
+            selected = state.videoStabMode,
+            labelFor = { it.label },
+            onSelect = actions::onVideoStabMode,
+            // Same REC guard as the Lens/TC rows above (CR4-6): onVideoStabMode refuses mid-REC with
+            // a toast, so a visually-hot selector here silently no-oped while its siblings greyed out.
+            enabled = recordingMutable,
+        )
     }
-    Text(stabCaption, color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
     if (state.caps?.oisAvailable == true) {
         ToggleRow(label = "Photo OIS", checked = state.controls.oisEnabled, onCheckedChange = actions::onToggleOis)
     }
@@ -1165,23 +1166,18 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         label = "Encoder",
         valueLabel = "${videoCodecLabelShort(codec)} · ${videoResolutionLabel(state.videoResolution)} · ${state.videoFrameRate.label}p · $mbps Mbps",
     )
-    // Transfer is part of the encoded image format, so keep it with codec/rate controls instead of
-    // below the unrelated audio controls.
-    TransferSelector(
-        transfer = state.transfer,
-        onTransfer = actions::onTransfer,
-        enabled = codec == VideoCodec.HEVC && recordingMutable,
-    )
     // One terse source caveat (cycle-6 A26/D-08): the named log curves are real math, but they bake
     // onto the already-tone-mapped SDR stream — no scene-referred latitude is recovered (CLAUDE.md
     // "must not be marketed as such"). Same caption idiom as the hi-res/stabilization rows. Gated on
     // a non-SDR selection because the caveat is about a CURVE: printed under Transfer = SDR it
     // asserted a curve was applied where none is.
-    if (state.transfer != ColorTransfer.SDR) {
-        Text(
-            "Applied to the SDR stream",
-            color = CameraColors.TextSecondary,
-            style = MaterialTheme.typography.labelSmall,
+    Captioned(if (state.transfer != ColorTransfer.SDR) "Applied to the SDR stream" else null) {
+        // Transfer is part of the encoded image format, so keep it with codec/rate controls instead
+        // of below the unrelated audio controls.
+        TransferSelector(
+            transfer = state.transfer,
+            onTransfer = actions::onTransfer,
+            enabled = codec == VideoCodec.HEVC && recordingMutable,
         )
     }
 
@@ -1314,17 +1310,14 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
     // "Teleconverter", not the OSD's TELE tag: a viewfinder tag borrowed into a menu shouts next to
     // 19 Title Case siblings.
     SectionHeader("Teleconverter")
-    // Loupe Overview is a same-stream full-frame reference, never an automatic 1x camera feed.
-    // Exact predicate: enabled + Photo + 4:3 + TELE + active punch-in. Default remains off.
-    ToggleRow(label = "Loupe Overview", checked = state.teleFinder, onCheckedChange = actions::onToggleTeleFinder)
     // Every sibling toggle with non-obvious preconditions carries one of these (UX_POLICY: menu rows
     // are the sanctioned place for that copy, never the viewfinder). Without it, toggling this in
     // video, at 16:9, or with the loupe off does nothing visible and says nothing about why.
-    Text(
-        "Photo · 4:3 · TELE · Loupe",
-        color = CameraColors.TextSecondary,
-        style = MaterialTheme.typography.labelSmall,
-    )
+    Captioned("Photo · 4:3 · TELE · Loupe") {
+        // Loupe Overview is a same-stream full-frame reference, never an automatic 1x camera feed.
+        // Exact predicate: enabled + Photo + 4:3 + TELE + active punch-in. Default remains off.
+        ToggleRow(label = "Loupe Overview", checked = state.teleFinder, onCheckedChange = actions::onToggleTeleFinder)
+    }
 }
 
 @Composable
@@ -1447,6 +1440,12 @@ private fun FnSlotEditor(selected: List<FnSlot>, mode: CaptureMode?, onSet: (Lis
             valueLabel = "Add",
             enabled = normalized.size < 8,
             onClick = { if (normalized.size < 8) onSet(normalized + slot) },
+            // One list, one left edge: FnSlotOrderRow's 26 dp index column + 8 dp gap indents the
+            // ordered names 34 dp, so the available rows directly beneath started at 0 dp and the
+            // editor read as two stacked lists. LabelValueRow applies `modifier.fillMaxWidth()`
+            // before its clickable, so the row narrows and shifts right with its 48 dp sizeIn and
+            // its whole (narrower) surface still tappable.
+            modifier = Modifier.padding(start = 34.dp),
         )
     }
 }
@@ -1509,7 +1508,9 @@ private fun MiniTextButton(
             modifier = Modifier
                 .clip(RoundedCornerShape(50))
                 .background(Color.White.copy(alpha = if (enabled) 0.09f else 0.04f))
-                .padding(horizontal = 9.dp, vertical = 5.dp),
+                // Carve-out from the shared 12/6 pill inset: three of these actions share one row,
+                // so only the vertical joins the scale.
+                .padding(horizontal = 9.dp, vertical = 6.dp),
             contentAlignment = Alignment.Center,
         ) {
             Text(text, color = fg, style = MaterialTheme.typography.labelSmall)

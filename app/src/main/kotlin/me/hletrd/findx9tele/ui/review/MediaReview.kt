@@ -395,7 +395,7 @@ fun GalleryThumb(uri: Uri?, onClick: () -> Unit, modifier: Modifier = Modifier) 
             .size(52.dp)
             .clip(RoundedCornerShape(14.dp))
             .background(CameraColors.Pill)
-            .border(1.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(14.dp))
+            .border(1.dp, CameraColors.Hairline, RoundedCornerShape(14.dp))
             .semantics {
                 contentDescription = galleryReviewContentDescription(uri != null, content.kind)
                 role = Role.Button
@@ -535,7 +535,7 @@ fun MediaReviewOverlay(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Color.Black)
+            .background(CameraColors.Background)
             .semantics {
                 paneTitle = if (rawReady) "RAW capture review" else "Media review"
                 isTraversalGroup = true
@@ -845,7 +845,7 @@ fun MediaReviewOverlay(
                     // heights and the filename line landed inside the gesture-nav swipe zone.
                     .navigationBarsPadding()
                     .padding(14.dp)
-                    .clip(RoundedCornerShape(10.dp))
+                    .clip(RoundedCornerShape(8.dp))
                     // Sits directly over the reviewed (often bright) photo, so it rides the same tested
                     // contrast floor (05486cb) as the live HUD — at 0.55 the secondary EXIF line was
                     // ~1.78:1, effectively unreadable over any bright region of the frame.
@@ -963,7 +963,7 @@ fun MediaReviewOverlay(
         ) {
             // Trash-can glyph (icon per feedback, not a "DEL" text chip), tinted delete-red.
             Canvas(Modifier.size(18.dp)) {
-                val c = Color(0xFFFF6B6B)
+                val c = CameraColors.Alert
                 val sw = 1.6.dp.toPx()
                 val w = size.width
                 val h = size.height
@@ -984,6 +984,10 @@ fun MediaReviewOverlay(
     if (confirmDelete) {
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
+            // The app's own panel grey. Left to material3 this dialog rendered on the scheme's
+            // derived surface (Theme.kt's 0xFF0B0B0B), making the one destructive surface in the app
+            // the only one not using the app's palette.
+            containerColor = CameraColors.Pill,
             title = { Text(deleteCopy.title) },
             text = { Text(deleteCopy.body) },
             confirmButton = {
@@ -996,7 +1000,7 @@ fun MediaReviewOverlay(
                     }) {
                         // Destructive action reads red (same delete-red as the trash glyph); the rest of
                         // the review chrome stays Sony-style monochrome.
-                        Text("Delete", color = Color(0xFFFF6B6B))
+                        Text("Delete", color = CameraColors.Alert)
                     }
                 }
             },

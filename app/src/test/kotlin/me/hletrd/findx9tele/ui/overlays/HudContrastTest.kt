@@ -26,7 +26,7 @@ class HudContrastTest {
         val foregrounds = mapOf(
             "primary" to rgbOf(CameraColors.TextPrimary),
             "secondary" to rgbOf(CameraColors.TextSecondary),
-            "blue status accent" to 0x4C9AFF,
+            "blue status accent" to rgbOf(CameraColors.Accent),
         )
 
         foregrounds.forEach { (label, rgb) ->
