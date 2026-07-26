@@ -1113,9 +1113,16 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         if (state.openGate) it.openGateVideoSizes else it.availableVideoSizes
     }.orEmpty()
     if (resolutionOptions.isEmpty()) {
+        // A capability caption is [CameraColors.TextSecondary], NOT the recording red. The review's
+        // counter-argument for red — "this one REPLACES its selector, so it is a harder dead-end than
+        // the greyed siblings under live chips" — does not survive PhotoFormatToggles: its "Still
+        // capture unavailable" caption fires exactly when all three format chips are disabled, i.e. it
+        // is every bit as terminal, and it is already grey. So red here was ONE class spelled two ways,
+        // in the one tab that also shows the real recording red mid-REC. Greying it also raises
+        // contrast on the opaque sheet surface (6.35:1 vs red's 4.80:1 — see HudContrastTest).
         Text(
             "No supported resolution",
-            color = CameraColors.Record,
+            color = CameraColors.TextSecondary,
             style = MaterialTheme.typography.labelSmall,
         )
     } else {
@@ -1135,9 +1142,10 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     // unconditionally because the constrained high-speed session SIGABRTs this HAL. 8K is capped ≤30.
     val fpsOptions = VideoFrameRate.availableFor(caps, state.videoResolution, codec)
     if (fpsOptions.isEmpty()) {
+        // Same capability-caption colour rule as the resolution branch above.
         Text(
             "No supported frame rate",
-            color = CameraColors.Record,
+            color = CameraColors.TextSecondary,
             style = MaterialTheme.typography.labelSmall,
         )
     } else {

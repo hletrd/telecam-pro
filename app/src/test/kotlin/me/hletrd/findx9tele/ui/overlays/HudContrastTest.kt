@@ -191,6 +191,20 @@ class HudContrastTest {
         assertTrue(contrastOnComposited(rgbOf(CameraColors.TextPrimary), pillOverWhite) >= 4.5)
     }
 
+    @Test
+    fun `the sheet's capability captions read better in secondary than in the recording red`() {
+        // The ProSheet panel is OPAQUE CameraColors.Pill, so its captions are measured directly
+        // against that surface rather than through a scrim alpha. Two Video-tab capability captions
+        // ("No supported resolution" / "No supported frame rate") used to paint CameraColors.Record;
+        // they are TextSecondary now, like every sibling capability caption. The point of pinning it
+        // here: the louder colour was also the WEAKER one, so this was never a contrast trade.
+        val sheet = rgbOf(CameraColors.Pill)
+        val secondary = contrastOnComposited(rgbOf(CameraColors.TextSecondary), sheet)
+        val record = contrastOnComposited(rgbOf(CameraColors.Record), sheet)
+        assertTrue("caption contrast was $secondary", secondary >= 4.5)
+        assertTrue("caption $secondary must not undercut the red's $record", secondary > record)
+    }
+
     /** Source-over composite of an [alpha] plate of [plateRgb] onto an opaque white frame. */
     private fun compositeOverWhite(plateRgb: Int, alpha: Float): Int {
         var out = 0

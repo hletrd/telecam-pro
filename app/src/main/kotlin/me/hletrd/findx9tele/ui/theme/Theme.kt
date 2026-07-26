@@ -50,7 +50,17 @@ object CameraColors {
     val TextSecondary = Color(0xFF9E9E9E)
     /** Primary accent: links, active non-manual highlights. */
     val Accent = Color(0xFF8AB4F8)
-    /** Recording / destructive state. */
+    /**
+     * Recording state and the record affordance: the REC tally border, the REC dot, the video-mode
+     * shutter disc. Plus exactly two HARDWARE alarms that are not UI state and are red on camera
+     * bodies too — the ≤15% battery numeral and the audio meter's clipping bucket.
+     *
+     * NOT for "this control is unavailable on this route". Two static capability captions in the Video
+     * tab used to paint this token, which made the sheet say "error" about a device fact and put the
+     * recording colour in the one tab that is designed to be read mid-REC; they are [TextSecondary]
+     * now, like their PhotoFormatToggles siblings (which cover an equally terminal dead-end). A
+     * destructive GLYPH uses the lighter [Alert], not this.
+     */
     val Record = Color(0xFFFF3B30)
     /**
      * Destructive-action glyph red: the review trash icon and its confirm button. Lighter than
