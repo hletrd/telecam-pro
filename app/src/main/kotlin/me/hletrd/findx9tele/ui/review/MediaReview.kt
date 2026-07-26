@@ -20,7 +20,6 @@ import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -76,7 +75,8 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import me.hletrd.findx9tele.camera.MediaDeleteScope
-import me.hletrd.findx9tele.ui.controls.MinTouchTargetButton
+import me.hletrd.findx9tele.ui.controls.MinTouchTarget48
+import me.hletrd.findx9tele.ui.controls.formatShutterSpeed
 import me.hletrd.findx9tele.ui.overlays.HUD_TEXT_SCRIM_ALPHA
 import me.hletrd.findx9tele.ui.theme.CameraColors
 import kotlinx.coroutines.Dispatchers
@@ -84,7 +84,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
 import kotlin.math.max
-import kotlin.math.roundToInt
 
 /**
  * In-app review of the last saved photo or video. Stills support high-magnification focus checks;
@@ -335,7 +334,11 @@ private suspend fun loadMetadata(context: Context, uri: Uri): ReviewMetadata? =
                     val focal35 = exif.getAttribute(androidx.exifinterface.media.ExifInterface.TAG_FOCAL_LENGTH_IN_35MM_FILM)
                     val parts = buildList {
                         iso?.let { add("ISO $it") }
-                        expS?.let { add(if (it >= 1.0) "%.1fs".format(java.util.Locale.US, it) else "1/${(1.0 / it).roundToInt()}s") }
+                        // Through the canonical formatter, not a local 1/x snap: that snap emitted
+                        // the nonsensical "1/1s" in [0.667 s, 1 s) — reachable, stills clamp at 4 s
+                        // — and skipped NICE_SHUTTER_DENOM, so a shot the OSD showed as 1/125s read
+                        // 1/128s here.
+                        expS?.let { add(formatShutterSpeed((it * 1_000_000_000.0).toLong())) }
                         focal35?.takeIf { f -> f.toIntOrNull()?.let { it > 0 } == true }?.let { add("$it mm") }
                     }
                     parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
@@ -822,7 +825,7 @@ fun MediaReviewOverlay(
                     color = CameraColors.TextPrimary,
                     style = MaterialTheme.typography.bodyMedium,
                 )
-                MinTouchTargetButton {
+                MinTouchTarget48 {
                     TextButton(onClick = { loadAttempt += 1 }) {
                         Text("Retry")
                     }
@@ -986,7 +989,7 @@ fun MediaReviewOverlay(
             confirmButton = {
                 // 48 dp outer targets (DES4-2): a mis-tap is costliest right here, next to the
                 // app's one destructive, irreversible action.
-                MinTouchTargetButton {
+                MinTouchTarget48 {
                     TextButton(onClick = {
                         confirmDelete = false
                         onDelete()
@@ -998,7 +1001,7 @@ fun MediaReviewOverlay(
                 }
             },
             dismissButton = {
-                MinTouchTargetButton {
+                MinTouchTarget48 {
                     TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
                 }
             },

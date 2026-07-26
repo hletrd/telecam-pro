@@ -71,7 +71,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.net.toUri
-import me.hletrd.findx9tele.camera.Antibanding
 import me.hletrd.findx9tele.camera.AfSpotSize
 import me.hletrd.findx9tele.camera.ExposureMode
 import me.hletrd.findx9tele.camera.FrameLineType
@@ -83,7 +82,6 @@ import me.hletrd.findx9tele.camera.BitrateLevel
 import me.hletrd.findx9tele.camera.CameraUiState
 import me.hletrd.findx9tele.camera.CameraFacing
 import me.hletrd.findx9tele.camera.CaptureMode
-import me.hletrd.findx9tele.camera.ColorEffect
 import me.hletrd.findx9tele.camera.DriveMode
 import me.hletrd.findx9tele.camera.FnSlot
 import me.hletrd.findx9tele.camera.HardwareKeyAction
@@ -94,7 +92,6 @@ import me.hletrd.findx9tele.camera.FocusMode
 import me.hletrd.findx9tele.camera.GridType
 import me.hletrd.findx9tele.camera.LensChoice
 import me.hletrd.findx9tele.camera.MemorySlot
-import me.hletrd.findx9tele.camera.ProcessingLevel
 import me.hletrd.findx9tele.camera.ShutterMode
 import me.hletrd.findx9tele.camera.MAX_TELECONVERTER_MAGNIFICATION
 import me.hletrd.findx9tele.camera.MIN_TELECONVERTER_MAGNIFICATION
@@ -599,7 +596,7 @@ private fun MemoryPresetRow(
         }
         // DES4-3: the d875eea 48 dp sweep covered the three shared selector components; this
         // standalone action chip (writes an MR bank) was left bare at ~32 dp.
-        MinTouchTargetChip {
+        MinTouchTarget48 {
             FilterChip(
                 selected = false,
                 onClick = onSave,
@@ -829,7 +826,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     // Sony Custom WB: frame a white/grey card and capture a fresh accepted-session AWB sample.
     val customWbCaptureEnabled = state.cameraReady && availability.customWbCaptureEnabled
     // DES4-3: standalone action chip missed by the d875eea sweep — same 48 dp wrapper.
-    MinTouchTargetChip {
+    MinTouchTarget48 {
         FilterChip(
             selected = controls.wbMode == WbMode.CUSTOM,
             onClick = actions::onCaptureCustomWb,

@@ -42,7 +42,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import me.hletrd.findx9tele.ui.controls.MinTouchTargetButton
+import me.hletrd.findx9tele.ui.controls.MinTouchTarget48
 import androidx.core.content.edit
 import androidx.core.net.toUri
 import me.hletrd.findx9tele.camera.CaptureMode
@@ -406,14 +406,14 @@ private fun MicrophonePermissionRationale(
         title = { Text(stringResource(R.string.microphone_permission_title)) },
         text = { Text(stringResource(R.string.microphone_permission_rationale)) },
         confirmButton = {
-            MinTouchTargetButton {
+            MinTouchTarget48 {
                 TextButton(onClick = onContinue) {
                     Text(stringResource(R.string.microphone_permission_continue))
                 }
             }
         },
         dismissButton = {
-            MinTouchTargetButton {
+            MinTouchTarget48 {
                 TextButton(onClick = onDismiss) {
                     Text(stringResource(R.string.microphone_permission_not_now))
                 }
@@ -458,16 +458,16 @@ private fun PermissionGate(
             // first thing a new user must hit one-handed; material3's bare Button/TextButton stop
             // at a 40 dp container.
             if (permanentlyDenied) {
-                MinTouchTargetButton {
+                MinTouchTarget48 {
                     Button(onClick = onOpenSettings, colors = primaryColors) { Text("Settings") }
                 }
             } else {
-                MinTouchTargetButton {
+                MinTouchTarget48 {
                     Button(onClick = onRequest, colors = primaryColors) { Text("Allow Camera Access") }
                 }
             }
             Spacer(Modifier.height(8.dp))
-            MinTouchTargetButton {
+            MinTouchTarget48 {
                 TextButton(onClick = onOpenPrivacy) {
                     Text("Privacy Policy", color = CameraColors.TextSecondary)
                 }

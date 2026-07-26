@@ -75,6 +75,9 @@ import me.hletrd.findx9tele.camera.VideoFrameRate
 import me.hletrd.findx9tele.camera.WbMode
 import me.hletrd.findx9tele.camera.ZebraLevel
 import me.hletrd.findx9tele.ui.controls.formatFocalMm
+import me.hletrd.findx9tele.ui.controls.transferLabel
+import me.hletrd.findx9tele.ui.controls.videoResolutionLabel
+import me.hletrd.findx9tele.ui.overlays.photoFormatLabel
 import me.hletrd.findx9tele.focus.FocusMapping
 import me.hletrd.findx9tele.focus.MACRO_HOLD_MS
 import me.hletrd.findx9tele.focus.FocusConfidenceHold
@@ -1168,40 +1171,31 @@ class CameraViewModel @JvmOverloads constructor(
         }
     }
 
+    // An MR summary is a READ-ONLY restatement of what the other surfaces already show, so every
+    // fragment below goes through that surface's canonical formatter. The private re-implementations
+    // that used to live here had already drifted: the local video-size bucket printed "1440p" for
+    // the 2560×1920 Open Gate size the OSD and Encoder row call "2.5K 4:3", and the focal branch
+    // truncated where formatFocalMm rounds.
     private fun presetNameFor(s: CameraUiState): String {
         val focal = focalSummary(s)
         return when (s.mode) {
             CaptureMode.PHOTO -> "Photo $focal"
-            CaptureMode.VIDEO -> "Video ${transferSummary(s.transfer)}"
+            CaptureMode.VIDEO -> "Video ${transferLabel(s.transfer)}"
         }
     }
 
     private fun presetSummaryFor(s: CameraUiState): String = when (s.mode) {
-        CaptureMode.PHOTO -> {
-            val formats = buildList {
-                if (s.photoFormats.heif) add("HEIF")
-                if (s.photoFormats.jpeg) add("JPEG")
-                if (s.photoFormats.dngRaw) add("DNG")
-            }.ifEmpty { listOf("No still format") }.joinToString("+")
-            "${focalSummary(s)} · ${s.controls.exposureMode.letter} · $formats"
-        }
+        CaptureMode.PHOTO ->
+            "${focalSummary(s)} · ${s.controls.exposureMode.letter} · ${photoFormatLabel(s.photoFormats)}"
         CaptureMode.VIDEO -> {
-            "${focalSummary(s)} · ${videoSizeSummary(s.videoResolution)} ${s.videoFrameRate.label}p · " +
-                "${transferSummary(s.transfer)} · ${s.bitrateLevel.name.lowercase().replaceFirstChar { it.uppercase() }}"
+            "${focalSummary(s)} · ${videoResolutionLabel(s.videoResolution)} ${s.videoFrameRate.label}p · " +
+                "${transferLabel(s.transfer)} · ${s.bitrateLevel.name.lowercase().replaceFirstChar { it.uppercase() }}"
         }
     }
 
     private fun focalSummary(s: CameraUiState): String =
         if (s.teleconverterMode) formatFocalMm(s.teleconverterFocalMm)
-        else "${s.lens.targetEquivMm.toInt()} mm"
-
-    private fun transferSummary(t: ColorTransfer): String = when (t) {
-        ColorTransfer.HLG -> "HLG"
-        ColorTransfer.SLOG3 -> "S-Log3"
-        ColorTransfer.SLOG3_CINE -> "S-Log3.Cine"
-        ColorTransfer.LOGC3 -> "LogC3"
-        ColorTransfer.SDR -> "SDR"
-    }
+        else formatFocalMm(s.lens.targetEquivMm)
 
     /** Parses a persisted "WxH" video-resolution string; null for "" or anything malformed. */
     private fun parseVideoResolution(raw: String): Size? {
@@ -1210,14 +1204,6 @@ class CameraViewModel @JvmOverloads constructor(
         val w = parts[0].toIntOrNull() ?: return null
         val h = parts[1].toIntOrNull() ?: return null
         return if (w > 0 && h > 0) Size(w, h) else null
-    }
-
-    // No 8K bucket: chooseVideoSize caps the recording width at 3840, so 2160-tall is the ceiling.
-    private fun videoSizeSummary(size: Size): String = when {
-        size.height >= 2160 -> "4K"
-        size.height >= 1440 -> "1440p"
-        size.height >= 1080 -> "1080p"
-        else -> "${size.width}x${size.height}"
     }
 
     private fun markChanged(slot: FnSlot) {
@@ -1362,12 +1348,7 @@ class CameraViewModel @JvmOverloads constructor(
         // Entering/leaving PROGRAM may flip the app-side flag (photo P is app-side, video P is HAL).
         refreshProgramAppSide()
     }
-    // Legacy binary toggle (kept for any caller): Auto→PROGRAM, Manual→MANUAL.
-    override fun onToggleAutoExposure(auto: Boolean) {
-        val mode = if (auto) ExposureMode.PROGRAM else ExposureMode.MANUAL
-        updateControls(FnSlot.EXPOSURE_MODE) { it.copy(exposureMode = mode) }
-        refreshProgramAppSide()
-    }
+    // (onToggleAutoExposure was removed: dead API surface — every caller sets ExposureMode directly.)
     override fun onToggleAeLock(locked: Boolean) = updateControls(FnSlot.EXPOSURE_MODE) { it.copy(aeLock = locked) }
     override fun onAntibanding(mode: Antibanding) = updateControls(persist = true) { it.copy(antibanding = mode) }
     // (onFps was removed: dead API surface — controls.fps is always driven by onVideoFrameRate.)

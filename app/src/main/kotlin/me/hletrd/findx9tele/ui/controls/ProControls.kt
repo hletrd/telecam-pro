@@ -103,29 +103,23 @@ internal fun pixelChipBorder(selected: Boolean) = FilterChipDefaults.filterChipB
 )
 
 /**
- * Every settings-sheet [FilterChip] sits inside this: bundled Material3 (`material3-android:1.4.0`)
- * never calls `minimumInteractiveComponentSize()` on `ChipKt`, unlike Checkbox/RadioButton/Switch/
- * Slider/IconButton, so the chip's fixed ~32 dp container is under the app-wide 48 dp touch floor
- * (cycle 2 fixed this for MR slots/DialChip/TeleChip via the same outer-Box `sizeIn`/`heightIn`
- * pattern). Centering the compact chip inside a taller invisible Box grows only the tappable area —
- * the visual chip stays exactly as compact as before.
+ * The ONE 48 dp touch-floor wrapper. Bundled Material3 (`material3-android:1.4.0`) leaves two
+ * distinct gaps under the app-wide floor, and both are closed here so a future floor change can
+ * never be applied to one and missed on the other:
+ * - Every settings-sheet [FilterChip]: material3 never calls `minimumInteractiveComponentSize()` on
+ *   `ChipKt`, unlike Checkbox/RadioButton/Switch/Slider/IconButton, so the chip's fixed ~32 dp
+ *   container is under 48 dp (cycle 2 fixed this for MR slots/DialChip/TeleChip via the same
+ *   outer-Box `sizeIn`/`heightIn` pattern).
+ * - Bare `Button`/`TextButton` sites (DES4-2): material3 gives them only a 40 dp `defaultMinSize`
+ *   (ButtonSmallTokens.ContainerHeight), NOT `minimumInteractiveComponentSize()` — 8 dp under the
+ *   floor on exactly the surfaces where a mis-tap is costliest (the permission-gate CTAs, a
+ *   review-load Retry, and the destructive delete-confirmation pair).
+ *
+ * Centering the compact content inside a taller invisible Box grows only the tappable area — the
+ * visual chip/button stays exactly as compact as before.
  */
 @Composable
-internal fun MinTouchTargetChip(content: @Composable () -> Unit) {
-    Box(contentAlignment = Alignment.Center, modifier = Modifier.heightIn(min = 48.dp)) {
-        content()
-    }
-}
-
-/**
- * The same 48 dp outer-target pattern for bare Material3 `Button`/`TextButton` sites (DES4-2):
- * bundled material3 1.4.0 gives Button/TextButton only a 40 dp `defaultMinSize`
- * (ButtonSmallTokens.ContainerHeight), NOT `minimumInteractiveComponentSize()` — 8 dp under the
- * app-wide floor on exactly the surfaces where a mis-tap is costliest (the permission-gate CTAs, a
- * review-load Retry, and the destructive delete-confirmation pair).
- */
-@Composable
-internal fun MinTouchTargetButton(content: @Composable () -> Unit) {
+internal fun MinTouchTarget48(content: @Composable () -> Unit) {
     Box(contentAlignment = Alignment.Center, modifier = Modifier.heightIn(min = 48.dp)) {
         content()
     }
@@ -180,7 +174,7 @@ internal fun <T> SegmentedSelector(
         ) {
             options.forEach { option ->
                 val isSelected = option == selected
-                MinTouchTargetChip {
+                MinTouchTarget48 {
                     FilterChip(
                         selected = isSelected,
                         onClick = { onSelect(option) },
@@ -247,6 +241,10 @@ internal fun LabeledSlider(
     }
 }
 
+// Fixed tick count: the single call site never varied it, and a per-slider tick rhythm would read
+// as inconsistency across the settings sheet rather than as information.
+private const val CAMERA_SLIDER_TICKS = 11
+
 /**
  * A pro-camera-style slider: a tick-marked track with an accent fill and a thin needle thumb (not the
  * round Material knob), tuned to match the shooting-screen dial rulers. Tap anywhere on the track to
@@ -258,7 +256,6 @@ private fun CameraSlider(
     onFraction: (Float) -> Unit,
     enabled: Boolean,
     valueDescription: String,
-    tickCount: Int = 11,
 ) {
     val accent = if (enabled) CameraColors.ManualActive else CameraColors.TextSecondary
     val trackColor = Color.White.copy(alpha = if (enabled) 0.16f else 0.08f)
@@ -328,9 +325,9 @@ private fun CameraSlider(
             cornerRadius = radius,
         )
         // Tick marks; the ends and centre are taller (major) for a scale-like read.
-        for (i in 0 until tickCount) {
-            val x = pad + span * i / (tickCount - 1)
-            val major = i == 0 || i == tickCount - 1 || i == (tickCount - 1) / 2
+        for (i in 0 until CAMERA_SLIDER_TICKS) {
+            val x = pad + span * i / (CAMERA_SLIDER_TICKS - 1)
+            val major = i == 0 || i == CAMERA_SLIDER_TICKS - 1 || i == (CAMERA_SLIDER_TICKS - 1) / 2
             val th = (if (major) 8.dp else 4.dp).toPx()
             drawLine(tickColor, Offset(x, cy - th / 2f), Offset(x, cy + th / 2f), strokeWidth = 1.5.dp.toPx())
         }
@@ -596,7 +593,7 @@ fun TransferSelector(
         ) {
             ColorTransfer.entries.forEach { option ->
                 val isSelected = transfer == option
-                MinTouchTargetChip {
+                MinTouchTarget48 {
                     FilterChip(
                         selected = isSelected,
                         onClick = { onTransfer(option) },
@@ -625,7 +622,7 @@ fun PhotoFormatToggles(
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text("Output", color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            MinTouchTargetChip {
+            MinTouchTarget48 {
                 FilterChip(
                     selected = formats.heif,
                     onClick = { onSetPhotoFormats(formats.copy(heif = !formats.heif)) },
@@ -635,7 +632,7 @@ fun PhotoFormatToggles(
                     border = pixelChipBorder(formats.heif),
                 )
             }
-            MinTouchTargetChip {
+            MinTouchTarget48 {
                 FilterChip(
                     selected = formats.jpeg,
                     onClick = { onSetPhotoFormats(formats.copy(jpeg = !formats.jpeg)) },
@@ -645,7 +642,7 @@ fun PhotoFormatToggles(
                     border = pixelChipBorder(formats.jpeg),
                 )
             }
-            MinTouchTargetChip {
+            MinTouchTarget48 {
                 FilterChip(
                     selected = formats.dngRaw,
                     onClick = { onSetPhotoFormats(formats.copy(dngRaw = !formats.dngRaw)) },

@@ -5,20 +5,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Pins the manual-dial stop math: [roundToSignificant] and the plain-bounds cores of [isoStops] /
- * [shutterStops]. The cores take Int/Long bounds directly because android.util.Range getters throw
+ * Pins the manual-dial stop math: the plain-bounds cores of [isoStops] / [shutterStops].
+ * The cores take Int/Long bounds directly because android.util.Range getters throw
  * "not mocked" on the JVM (the sessionAttemptPlan/centerCropBox house pattern), so they are testable
  * off-device.
  */
 class DialStopsTest {
-
-    @Test
-    fun `roundToSignificant snaps to two significant figures`() {
-        assertEquals(100.0, roundToSignificant(100.0, 2), 1e-9)
-        // 99.99 rounds up across the power-of-ten boundary to 100 — the ceil(log10) off-by-one trap.
-        assertEquals(100.0, roundToSignificant(99.99, 2), 1e-9)
-        assertEquals(1200.0, roundToSignificant(1234.0, 2), 1e-9)
-    }
 
     // Whole-stop ISO values (exact doublings of 100) land on every EV granularity that divides 1 EV
     // into an integer number of steps — 1/3, 1/2, 1 all do — so they must appear regardless of step,

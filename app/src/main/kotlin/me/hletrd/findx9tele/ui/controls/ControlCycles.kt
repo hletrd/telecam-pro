@@ -122,19 +122,20 @@ internal fun evCompStops(state: CameraUiState): Float {
     )
 }
 
+/** The ONE EV-step derivation: the hardware CONTROL_AE_COMPENSATION_STEP, conventional 1/3 fallback. */
+internal fun exposureCompensationStep(stepNumerator: Int?, stepDenominator: Int?): Float =
+    if (stepNumerator != null && stepDenominator != null && stepDenominator != 0) {
+        stepNumerator.toFloat() / stepDenominator.toFloat()
+    } else {
+        1f / 3f
+    }
+
 /** Pure Camera2 compensation-index conversion, including malformed/missing-step fallback. */
 internal fun exposureCompensationStops(
     index: Int,
     stepNumerator: Int?,
     stepDenominator: Int?,
-): Float {
-    val step = if (stepNumerator != null && stepDenominator != null && stepDenominator != 0) {
-        stepNumerator.toFloat() / stepDenominator.toFloat()
-    } else {
-        1f / 3f
-    }
-    return index * step
-}
+): Float = index * exposureCompensationStep(stepNumerator, stepDenominator)
 
 /** Final signed value used by the dedicated ±3 EV meter; [evCompStops] is already fully scaled. */
 internal fun exposureMeterCompensationEv(state: CameraUiState): Float =

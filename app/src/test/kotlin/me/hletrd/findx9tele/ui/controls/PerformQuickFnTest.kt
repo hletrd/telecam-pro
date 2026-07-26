@@ -66,7 +66,6 @@ class PerformQuickFnTest {
         override fun onShutterNs(ns: Long) = hit("onShutterNs($ns)")
         override fun onExposureCompensation(ev: Int) = hit("onExposureCompensation($ev)")
         override fun onExposureMode(mode: ExposureMode) = hit("onExposureMode($mode)")
-        override fun onToggleAutoExposure(auto: Boolean) = hit("onToggleAutoExposure")
         override fun onToggleAeLock(locked: Boolean) = hit("onToggleAeLock")
         override fun onAntibanding(mode: Antibanding) = hit("onAntibanding")
         override fun onShutterMode(mode: ShutterMode) = hit("onShutterMode($mode)")

@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -88,10 +87,6 @@ private fun linearSrgb(channel: Double): Double =
     if (channel <= 0.04045) channel / 12.92 else Math.pow((channel + 0.055) / 1.055, 2.4)
 
 /**
- * Composition grid, drawn per [GridType]. Purely decorative; visibility/style is entirely driven
- * by the [type] argument (NONE draws nothing).
- */
-/**
  * Sony "Frame Lines": a centered marker box of the delivery aspect (2.39:1 / 1:1 / 9:16), fitted to
  * the viewfinder, for judging a crop that will happen in post.
  */
@@ -114,6 +109,10 @@ fun FrameLinesOverlay(type: me.hletrd.findx9tele.camera.FrameLineType, modifier:
     }
 }
 
+/**
+ * Composition grid, drawn per [GridType]. Purely decorative; visibility/style is entirely driven
+ * by the [type] argument (NONE draws nothing).
+ */
 @Composable
 fun GridOverlay(type: GridType, modifier: Modifier = Modifier) {
     if (type == GridType.NONE) return
