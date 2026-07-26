@@ -67,6 +67,23 @@ import kotlin.math.roundToInt
  */
 internal const val HUD_TEXT_SCRIM_ALPHA = 0.82f
 
+/**
+ * The ONE spelling of the shared HUD plate: the translucent black slab every readout, pill, scope
+ * panel, chrome disc and chip over the live preview or a reviewed frame sits on.
+ *
+ * It is a parameterless value, deliberately, and that is the whole point: there is no alpha to pass,
+ * so [HUD_TEXT_SCRIM_ALPHA] cannot be bypassed by accident and [CameraColors.ChromeScrim] never needs
+ * to be held at a draw site. A `Modifier` extension could not have replaced all 23 sites — the plate
+ * is also a `drawCircle(color = …)` argument and the else-branch of three `if`/`when` expressions
+ * (TeleChip, DialChip, FocalRail, the Speed/Angle toggle), so a Modifier-only helper would have left
+ * the mixed world it was meant to end.
+ *
+ * A plate that is NOT this — a local halo, a dim, a gradient stop — must not be spelled as a `.copy`
+ * of a scrim token; write it as its own `Color.Black.copy(…)` at the site with a comment saying why,
+ * so the search for "who bypasses the floor" keeps returning nothing.
+ */
+internal val HudPlate: Color = CameraColors.ChromeScrim.copy(alpha = HUD_TEXT_SCRIM_ALPHA)
+
 /** WCAG contrast of [foregroundRgb] against black [scrimAlpha] composited over white. */
 internal fun contrastRatioOnWhiteScrim(foregroundRgb: Int, scrimAlpha: Float): Double {
     val foregroundLuminance = relativeLuminance(foregroundRgb)
@@ -321,7 +338,7 @@ fun RecordingIndicator(elapsedMs: Long, modifier: Modifier = Modifier) {
     val timeLabel = "%02d:%02d".format(Locale.US, minutes, seconds)
     Row(
         modifier = modifier
-            .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA), RoundedCornerShape(50))
+            .background(HudPlate, RoundedCornerShape(50))
             // Keep a stable REC description; elapsed telemetry must not be re-announced every second.
             .clearAndSetSemantics { contentDescription = "Recording" },
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -357,7 +374,7 @@ fun AudioMeter(level: Float, modifier: Modifier = Modifier) {
             .size(width = 120.dp, height = 8.dp)
             // Rides the tested HUD contrast floor (05486cb) like the OSD pills: the meter reads level
             // against bright scenes, so its scrim can't be the near-transparent 0.45 it was.
-            .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA), RoundedCornerShape(4.dp)),
+            .background(HudPlate, RoundedCornerShape(4.dp)),
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             if (fill > 0f) {
@@ -463,7 +480,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
     }
     Row(
         modifier = modifier
-            .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA), RoundedCornerShape(8.dp))
+            .background(HudPlate, RoundedCornerShape(8.dp))
             // Sony bodies paginate their status strip; with many concurrent tags (AEL/AWL/AFL/LOUPE/…)
             // trailing tags would run off-screen, so scroll keeps every lock tag reachable.
             .horizontalScroll(rememberScrollState())
@@ -616,7 +633,7 @@ fun HistogramOverlay(data: HistogramData?, modifier: Modifier = Modifier) {
             // Scrim rides the tested HUD contrast floor (05486cb): the scopes exist to judge exposure
             // against bright/high-key scenes bleeding through the box, so the panel can't sit at the
             // old 0.55 — the darker plate also makes the thin luma/RGB traces read better, not worse.
-            .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA), RoundedCornerShape(8.dp))
+            .background(HudPlate, RoundedCornerShape(8.dp))
             .padding(6.dp),
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
@@ -659,7 +676,7 @@ fun WaveformOverlay(data: WaveformData?, modifier: Modifier = Modifier) {
         modifier = modifier
             .width(150.dp)
             .height(84.dp)
-            .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA), RoundedCornerShape(8.dp))
+            .background(HudPlate, RoundedCornerShape(8.dp))
             .padding(6.dp),
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {

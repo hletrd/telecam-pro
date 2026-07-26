@@ -77,7 +77,7 @@ import androidx.compose.ui.unit.dp
 import me.hletrd.findx9tele.camera.MediaDeleteScope
 import me.hletrd.findx9tele.ui.controls.MinTouchTarget48
 import me.hletrd.findx9tele.ui.controls.formatShutterSpeed
-import me.hletrd.findx9tele.ui.overlays.HUD_TEXT_SCRIM_ALPHA
+import me.hletrd.findx9tele.ui.overlays.HudPlate
 import me.hletrd.findx9tele.ui.theme.CameraColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -849,9 +849,12 @@ fun MediaReviewOverlay(
                     // Sits directly over the reviewed (often bright) photo, so it rides the same tested
                     // contrast floor (05486cb) as the live HUD — at 0.55 the secondary EXIF line was
                     // ~1.78:1, effectively unreadable over any bright region of the frame.
-                    .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
+                    .background(HudPlate)
                     .widthIn(max = 280.dp)
-                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                    // The ONE HUD pill inset, 12/6 — this panel and the zoom-scale label below were
+                    // the two review-screen plates the inset sweep left behind, on 9 dp and 5 dp of
+                    // vertical padding respectively.
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 Text(meta.name, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
@@ -880,10 +883,12 @@ fun MediaReviewOverlay(
                     // focus check right after a landscape-held 300 mm shot reads "4×" upright).
                     .rotate(overlayRotation)
                     .clip(RoundedCornerShape(50))
-                    // Match the live ZoomIndicator's tested contrast floor (05486cb) — its 0.55 sibling
-                    // cleared 4.5 only by a hair over a bright review photo.
-                    .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
-                    .padding(horizontal = 12.dp, vertical = 5.dp),
+                    // Match the live ZoomIndicator completely, not just in colour: the shared plate
+                    // (its tested contrast floor, 05486cb — the 0.55 sibling cleared 4.5 only by a
+                    // hair over a bright review photo) AND the shared 12/6 pill inset. This one kept
+                    // a 5 dp vertical while claiming that kinship.
+                    .background(HudPlate)
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
             )
         }
 
@@ -932,7 +937,7 @@ fun MediaReviewOverlay(
                 .padding(12.dp)
                 .size(48.dp)
                 .clip(CircleShape)
-                .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
+                .background(HudPlate)
                 .semantics {
                     contentDescription = "Close review"
                     role = Role.Button
@@ -953,7 +958,7 @@ fun MediaReviewOverlay(
                 .padding(12.dp)
                 .size(48.dp)
                 .clip(CircleShape)
-                .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
+                .background(HudPlate)
                 .semantics {
                     contentDescription = deleteCopy.title.removeSuffix("?")
                     role = Role.Button
@@ -1071,7 +1076,7 @@ private fun ReviewActionButton(
             .clip(CircleShape)
             // Shared scrim constant (DES4-4): the last review-screen surface still on a magic
             // alpha after the fc16e23 sweep — HudContrastTest pins this one with its siblings.
-            .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
+            .background(HudPlate)
             .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
             .semantics {
                 contentDescription = actionLabel

@@ -118,7 +118,12 @@ internal fun showHalfPressLabel(
     tapFocusHeld: Boolean,
 ): Boolean = active && !(action == HardwareKeyAction.AF_ON && tapFocusHeld)
 
-/** Test seam pinning TELE's idle plate to the app-wide, bright-frame contrast floor. */
+/**
+ * Test seam pinning TELE's idle plate to the app-wide, bright-frame contrast floor. The chip itself
+ * now paints `HudPlate`, which bakes that alpha in and leaves no alpha at the call site to drift;
+ * this seam names the value that plate carries so HudContrastTest can measure it without re-deriving
+ * a literal of its own.
+ */
 internal fun teleChipIdleScrimAlpha(): Float = HUD_TEXT_SCRIM_ALPHA
 
 internal const val FN_OVERLAY_COLUMN_COUNT = 4

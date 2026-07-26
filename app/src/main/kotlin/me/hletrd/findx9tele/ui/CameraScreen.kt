@@ -162,7 +162,7 @@ import me.hletrd.findx9tele.ui.overlays.FrameLinesOverlay
 import me.hletrd.findx9tele.ui.overlays.FocusReticle
 import me.hletrd.findx9tele.ui.overlays.GridOverlay
 import me.hletrd.findx9tele.ui.overlays.HistogramOverlay
-import me.hletrd.findx9tele.ui.overlays.HUD_TEXT_SCRIM_ALPHA
+import me.hletrd.findx9tele.ui.overlays.HudPlate
 import me.hletrd.findx9tele.ui.overlays.LevelOverlay
 import me.hletrd.findx9tele.ui.overlays.RecordingIndicator
 import me.hletrd.findx9tele.ui.overlays.StatusBar
@@ -639,7 +639,7 @@ fun CameraScreen(
                     modifier = Modifier
                         .rotateLayout(overlayRotation)
                         .clip(RoundedCornerShape(50))
-                        .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
+                        .background(HudPlate)
                         .padding(horizontal = 12.dp, vertical = 6.dp),
                 )
             }
@@ -730,7 +730,7 @@ fun CameraScreen(
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier
                     .align(Alignment.Center)
-                    .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA), RoundedCornerShape(8.dp))
+                    .background(HudPlate, RoundedCornerShape(8.dp))
                     .semantics {
                         liveRegion = if (message.isUrgentStatus()) {
                             LiveRegionMode.Assertive
@@ -1125,11 +1125,14 @@ private fun TopBar(
 @Composable
 private fun TapFocusHoldChip(onReset: () -> Unit, modifier: Modifier = Modifier) {
     val activate = onReset
+    // Outer box carries the click, focus and the 48 dp minimum touch target; the visual pill is the
+    // INNER box, same pattern as TeleChip and DialChip. The plate used to sit on this outer box with
+    // horizontal-only padding, so the drawn slab was the full 48 dp tall while its TopCenter
+    // lane-mates — the half-press label and the ZoomIndicator readout, both on the shared 12/6 inset
+    // — draw ~26-31 dp. Moving the plate inward changes no hit area, only the painted rectangle.
     Box(
         modifier = modifier
             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
-            .clip(RoundedCornerShape(50))
-            .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
             .focusable()
             .clearAndSetSemantics {
                 contentDescription = "Reset focus point"
@@ -1140,8 +1143,7 @@ private fun TapFocusHoldChip(onReset: () -> Unit, modifier: Modifier = Modifier)
                     true
                 }
             }
-            .clickable(role = Role.Button, onClickLabel = "Reset focus point", onClick = onReset)
-            .padding(horizontal = 12.dp),
+            .clickable(role = Role.Button, onClickLabel = "Reset focus point", onClick = onReset),
         contentAlignment = Alignment.Center,
     ) {
         Text(
@@ -1152,6 +1154,10 @@ private fun TapFocusHoldChip(onReset: () -> Unit, modifier: Modifier = Modifier)
             text = "TAP AF ×",
             color = CameraColors.Accent,
             style = hudGlyph(11.sp),
+            modifier = Modifier
+                .clip(RoundedCornerShape(50))
+                .background(HudPlate)
+                .padding(horizontal = 12.dp, vertical = 6.dp),
         )
     }
 }
@@ -1161,7 +1167,7 @@ private fun TapFocusHoldChip(onReset: () -> Unit, modifier: Modifier = Modifier)
  * 48 dp touch target (Material / WCAG 2.2 minimum) while the visible scrim stays a compact 36 dp, so
  * one-handed / gloved use on this 3168 px panel mis-taps far less without bloating the chrome.
  *
- * The scrim rides [HUD_TEXT_SCRIM_ALPHA] — the same tested contrast floor 05486cb applied to the OSD
+ * The scrim is the shared [HudPlate] — the same tested contrast floor 05486cb applied to the OSD
  * readouts — because the earlier 0.45 disc failed it badly (secondary #9E9E9E glyphs ≈1.25:1, white
  * ≈3.35:1 over a bright sky), leaving flash/grid/aspect state unreadable outdoors. The enabled/
  * disabled affordance is carried by the glyph's own alpha (each content lambda dims to 0.38 when
@@ -1204,7 +1210,7 @@ private fun ChromeIconButton(
             modifier = Modifier
                 .size(36.dp)
                 .clip(CircleShape)
-                .background(CameraColors.ChromeScrim.copy(alpha = HUD_TEXT_SCRIM_ALPHA)),
+                .background(HudPlate),
             contentAlignment = Alignment.Center,
             content = content,
         )
@@ -1327,7 +1333,7 @@ private fun TeleChip(active: Boolean, onClick: () -> Unit, modifier: Modifier = 
     val bg = when {
         active && enabled -> CameraColors.TextPrimary
         active -> CameraColors.TextPrimary.copy(alpha = 0.38f)
-        else -> CameraColors.ChromeScrim.copy(alpha = teleChipIdleScrimAlpha())
+        else -> HudPlate
     }
     val fg = when {
         active -> Color.Black.copy(alpha = if (enabled) 1f else 0.55f)
@@ -1431,6 +1437,13 @@ private fun GearButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
             val color = CameraColors.TextPrimary
             val railStroke = 1.6.dp.toPx()
             val knobRadius = size.minDimension * 0.11f
+            // Knob halo: a local darkening under each knob ring so the white rail does not read
+            // straight THROUGH the knob and flatten the glyph into three plain lines. Deliberately
+            // NOT the HUD text scrim — it is a ~2 px disc inside an 18 dp glyph that already sits on
+            // its own ChromeIconButton plate, not a plate behind text, so HUD_TEXT_SCRIM_ALPHA's
+            // 4.5:1 TEXT floor does not apply here and at 0.82 the halo would read as a filled dot.
+            // Spelled as its own black so no consumer of a scrim token hand-picks an alpha again.
+            val knobHalo = Color.Black.copy(alpha = 0.45f)
             // Three rails at 1/4, 1/2, 3/4 height; knobs sit at varying x to imply adjustable levels.
             val rows = listOf(0.25f to 0.66f, 0.5f to 0.34f, 0.75f to 0.6f)
             val left = size.width * 0.12f
@@ -1439,7 +1452,7 @@ private fun GearButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
                 val y = size.height * yf
                 drawLine(color, Offset(left, y), Offset(right, y), strokeWidth = railStroke)
                 val knobX = left + (right - left) * knobXf
-                drawCircle(color = CameraColors.ChromeScrim.copy(alpha = 0.45f), radius = knobRadius * 1.4f, center = Offset(knobX, y))
+                drawCircle(color = knobHalo, radius = knobRadius * 1.4f, center = Offset(knobX, y))
                 drawCircle(color, radius = knobRadius, center = Offset(knobX, y), style = Stroke(width = 1.4.dp.toPx()))
             }
         }
@@ -1517,7 +1530,7 @@ private fun StatusInfoPill(state: CameraUiState, modifier: Modifier = Modifier) 
     }
     Row(
         modifier = modifier
-            .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA), RoundedCornerShape(8.dp))
+            .background(HudPlate, RoundedCornerShape(8.dp))
             .padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -1563,7 +1576,7 @@ private fun ZoomIndicator(
             style = hudGlyph(15.sp),
             modifier = Modifier
                 .rotateLayout(numberRotation)
-                .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA), RoundedCornerShape(50))
+                .background(HudPlate, RoundedCornerShape(50))
                 .padding(horizontal = 12.dp, vertical = 6.dp),
         )
         Box(
@@ -1876,10 +1889,18 @@ private fun ExposureMeter(
         }
     }
     // Vertical Sony-style scale: +3 EV at the top, -3 EV at the bottom, readout above it.
+    // 6/8 DELIBERATELY, not the 12/6 HUD pill inset: this is the one HUD plate whose content is a
+    // vertical instrument rather than a line of text, and its axis needs are the inverse of a pill's.
+    // The track's extreme ticks are drawn AT y=0 and y=height (`y = (3 - i) / 6 * height` for
+    // i = ±3, the widest/major ones), so vertically the padding is the ONLY clearance the ±3 EV ends
+    // get — 6 dp would leave ~5 dp under a 1.6 dp stroke. Horizontally the 22 dp Canvas already
+    // carries its own 5 dp gutter (major ticks span cx±6 dp of an 11 dp centre), so 6 dp there yields
+    // ~11 dp of visual clearance, and the pill's 12 dp would fatten a 34 dp column plate to 46 dp
+    // with no text to protect. Left as-is by measurement, not by omission.
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(8.dp))
-            .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
+            .background(HudPlate)
             .padding(horizontal = 6.dp, vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -1966,7 +1987,7 @@ private fun FocalRail(
                             .clip(CircleShape)
                             .background(
                                 if (presentation.selected) CameraColors.TextPrimary
-                                else Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA),
+                                else HudPlate,
                             )
                             .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
                             .padding(horizontal = 12.dp, vertical = 6.dp),
@@ -2059,7 +2080,7 @@ private fun ModeLabel(text: String, active: Boolean, enabled: Boolean, onClick: 
                 // snow, water — normal super-tele fare) the mid-gray inactive label fell under usable
                 // contrast. Same treatment as every sibling HUD element.
                 .clip(RoundedCornerShape(50))
-                .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
+                .background(HudPlate)
                 // The ONE HUD pill inset, 12/6. Fifteen pills used to be padded by hand — six
                 // horizontal values and seven vertical — and disagreeing neighbours sit adjacent
                 // (StatusBar above StatusInfoPill, DialChip under RulerReadout). Every visual pill

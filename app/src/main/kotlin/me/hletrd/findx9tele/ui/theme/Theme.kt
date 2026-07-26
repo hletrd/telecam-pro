@@ -22,13 +22,29 @@ object CameraColors {
     /** True-black viewfinder background. */
     val Background = Color(0xFF000000)
     /**
-     * Base color for translucent chrome scrims (top bar, bottom cluster gradient). Callers apply
-     * [me.hletrd.findx9tele.ui.overlays.HUD_TEXT_SCRIM_ALPHA] — NOT a hand-picked value. The old
-     * "0.40-0.55" note here invited exactly the regression HudContrastTest exists to prevent: it
-     * asserts 0.45 and 0.55 FAIL the 4.5:1 floor over a white frame.
+     * Base color for translucent chrome scrims (top bar, bottom cluster gradient).
+     *
+     * It has exactly ONE consumer — [me.hletrd.findx9tele.ui.overlays.HudPlate], which bakes in
+     * [me.hletrd.findx9tele.ui.overlays.HUD_TEXT_SCRIM_ALPHA]. Do NOT reference this token at a draw
+     * site: a call site holding the base colour and an alpha in its hands is how the plate came to be
+     * spelled three ways (23 sites split across `Color.Black.copy(alpha = …)`, `ChromeScrim.copy(…)`
+     * and a lighter `Pill.copy(…)`), and how this very token acquired a consumer that passed a
+     * hand-picked 0.45 for a knob halo. The old "0.40-0.55" note here invited exactly the regression
+     * HudContrastTest exists to prevent: it asserts 0.45 and 0.55 FAIL the 4.5:1 floor over a white
+     * frame.
      */
     val ChromeScrim = Color(0xFF000000)
-    /** Solid pill/chip background (ghost chips, sheet surface). */
+    /**
+     * SOLID pill/chip background (ghost chips, sheet surface) — and solid means solid.
+     *
+     * Four bottom-cluster chips over the LIVE preview (DialChip idle, CompactFnButton,
+     * CompactDialCloseButton, the Speed/Angle toggle) used to paint `Pill.copy(alpha = …)`, an
+     * incidental ~9/255-lighter plate inherited from the first Pixel-style draft. Composited over a
+     * white frame at the shared alpha it measured 3.57:1 for [TextSecondary] — under the 4.5:1 floor,
+     * and under the 5.07:1 the contrast pass that touched those exact lines believed it was buying.
+     * They now paint [me.hletrd.findx9tele.ui.overlays.HudPlate] like every other HUD plate. Keep this
+     * token opaque; over the viewfinder, use HudPlate.
+     */
     val Pill = Color(0xFF1C1C1E)
     val TextPrimary = Color(0xFFFFFFFF)
     val TextSecondary = Color(0xFF9E9E9E)

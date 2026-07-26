@@ -99,7 +99,7 @@ import me.hletrd.findx9tele.ui.FnEntryAnchor
 import me.hletrd.findx9tele.ui.fnEntryAnchor
 import me.hletrd.findx9tele.ui.formatDisplayZoom
 import me.hletrd.findx9tele.ui.formatZoomMultiplier
-import me.hletrd.findx9tele.ui.overlays.HUD_TEXT_SCRIM_ALPHA
+import me.hletrd.findx9tele.ui.overlays.HudPlate
 import me.hletrd.findx9tele.ui.theme.CameraColors
 import me.hletrd.findx9tele.ui.theme.hudGlyph
 import java.util.Locale
@@ -389,7 +389,7 @@ internal fun CompactFnButton(
             modifier = Modifier
                 .size(36.dp)
                 .clip(RoundedCornerShape(50))
-                .background(CameraColors.Pill.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
+                .background(HudPlate)
                 .border(1.dp, CameraColors.Accent.copy(alpha = 0.55f), RoundedCornerShape(50)),
             contentAlignment = Alignment.Center,
         ) {
@@ -425,7 +425,7 @@ private fun CompactDialCloseButton(onClick: () -> Unit, modifier: Modifier = Mod
             modifier = Modifier
                 .size(32.dp)
                 .clip(RoundedCornerShape(50))
-                .background(CameraColors.Pill.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
+                .background(HudPlate)
                 .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(50)),
             contentAlignment = Alignment.Center,
         ) {
@@ -665,7 +665,14 @@ private fun DialChip(
 ) {
     val activate = onClick
     val longActivate = onLongClick
-    val bg = if (active) CameraColors.TextPrimary else CameraColors.Pill.copy(alpha = HUD_TEXT_SCRIM_ALPHA)
+    // Idle plate is the shared [HudPlate], like every sibling chip. It used to be
+    // `CameraColors.Pill.copy(alpha = …)`, a ~9/255-lighter slab that measured 3.57:1 for the
+    // TextSecondary an UNAVAILABLE chip uses — under the 4.5:1 floor, and under the 5.07:1 the
+    // contrast pass that rewrote this exact line (798006d) reported. Its nearest sibling, FocalRail's
+    // lens chip in CameraScreen, is the same construct (idle plate, white when selected, 0.18 border)
+    // and was already black, which is what settled it: the lighter base was an inherited literal from
+    // the first Pixel-style draft, not a second plate treatment.
+    val bg = if (active) CameraColors.TextPrimary else HudPlate
     val fg = when {
         active -> Color.Black
         enabled -> CameraColors.TextPrimary
@@ -796,7 +803,7 @@ private fun RulerReadout(value: String, modifier: Modifier = Modifier, autoValue
                     contentDescription = if (autoValue) "Auto $value" else value
                 }
                 .clip(RoundedCornerShape(50))
-                .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
+                .background(HudPlate)
                 .padding(horizontal = 12.dp, vertical = 6.dp),
         )
     }
@@ -917,7 +924,7 @@ private fun SpeedAngleToggle(mode: ShutterMode, enabled: Boolean, onSelect: (Shu
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(50))
-                        .background(if (on) CameraColors.ManualActive else CameraColors.Pill.copy(alpha = HUD_TEXT_SCRIM_ALPHA))
+                        .background(if (on) CameraColors.ManualActive else HudPlate)
                         .padding(horizontal = 12.dp, vertical = 6.dp),
                 ) {
                     Text(
@@ -1196,7 +1203,7 @@ fun RulerSlider(
             // The tested HUD floor, not 0.35: the ruler band sits directly over the live preview
             // and its minor ticks (0.28 white) washed out against bright scenes — same class as
             // the 05486cb scrim sweep, which this control originally missed.
-            .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA), RoundedCornerShape(16.dp))
+            .background(HudPlate, RoundedCornerShape(16.dp))
             // TalkBack: a bare Canvas is invisible to accessibility services — every manual dial
             // rides this control, so expose it as an adjustable value with a set action.
             .progressSemantics(value = fraction.coerceIn(0f, 1f), valueRange = 0f..1f)
