@@ -260,13 +260,16 @@ internal fun <T> SegmentedSelector(
                 // Each chip carries the row label in its OWN name: the label is a sibling Text, so an
                 // unnamed chip announced a bare value ("Off") with nothing saying what is off — and
                 // "Sharpness" and "NR" draw the SAME three values back to back in the Image tab.
-                val optionSemantics = segmentedOptionSemantics(label, labelFor(option))
+                val optionName = segmentedOptionName(label, labelFor(option))
                 MinTouchTarget48 {
                     FilterChip(
                         selected = isSelected,
                         onClick = { onSelect(option) },
                         enabled = enabled,
-                        modifier = Modifier.semantics { contentDescription = optionSemantics.label },
+                        // semantics(), not clearAndSetSemantics(): FilterChip's own selectable node
+                        // supplies the selected / not-selected announcement, and only the NAME is
+                        // ours to set here.
+                        modifier = Modifier.semantics { contentDescription = optionName },
                         // labelMedium binds the chip to the SAME size as the row label naming it.
                         // Material's FilterChipTokens.LabelTextFont resolves to labelLarge (14 sp),
                         // so an unbound chip rendered LARGER than that label and larger than the
@@ -694,13 +697,13 @@ internal fun TransferSelector(
         ) {
             ColorTransfer.entries.forEach { option ->
                 val isSelected = transfer == option
-                val optionSemantics = segmentedOptionSemantics("Transfer", transferLabel(option))
+                val optionName = segmentedOptionName("Transfer", transferLabel(option))
                 MinTouchTarget48 {
                     FilterChip(
                         selected = isSelected,
                         onClick = { onTransfer(option) },
                         enabled = enabled,
-                        modifier = Modifier.semantics { contentDescription = optionSemantics.label },
+                        modifier = Modifier.semantics { contentDescription = optionName },
                         label = {
                             Text(
                                 transferLabel(option),

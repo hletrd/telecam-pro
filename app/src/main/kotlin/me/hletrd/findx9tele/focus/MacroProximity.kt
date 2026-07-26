@@ -174,14 +174,21 @@ internal class FocusConfidenceHold(private val holdMs: Long = MACRO_HOLD_MS) {
 /**
  * The OSD text for a held source. Each proof gets exactly the wording it can defend:
  *
- * - AF_LIMIT proved a distance relation, so `TOO CLOSE`, and it may carry the `▸ <lens>` suffix
+ * - AF_LIMIT proved a distance relation, so `TOO CLOSE`, and it may carry the `→ <lens>` suffix
  *   naming a genuinely closer-focusing lens.
  * - FRAME_DETAIL proved only that the frame resolves nothing fine. `SOFT` is true in EVERY state
  *   that path can reach — gross defocus (too close, or focus racked wrong), a soft subject, haze,
  *   a fogged converter, isotropic shake that survived the exposure gate — and it is Sony-native
- *   vocabulary. It deliberately takes NO lens suffix: `▸ 1×` is a distance remedy, and recommending
+ *   vocabulary. It deliberately takes NO lens suffix: `→ 1×` is a distance remedy, and recommending
  *   it would smuggle back the causal claim the metric cannot make. `DEFOCUS`/`NO FOCUS` are
  *   rejected for the same reason; `TOO CLOSE` here would simply be false in the haze/shake cases.
+ *
+ * The separator is U+2192 RIGHTWARDS ARROW, not the U+25B8 small triangle this shipped with: the
+ * app bundles three Inter faces (res/font) and NONE of them carries U+25B8, so that glyph fell back
+ * to a system typeface mid-string — a different face, weight, and metrics inside one OSD tag. The
+ * arrow is in all three faces and already carries exactly this meaning elsewhere in the app's own
+ * copy (MediaReview's "→<scale>" zoom button = "go to this"), so `TOO CLOSE → 1×` reads as
+ * "too close; switch to 1×", which is the remedy the suffix exists to name.
  */
 internal fun focusConfidenceLabel(
     source: FocusConfidenceSource?,
@@ -189,7 +196,7 @@ internal fun focusConfidenceLabel(
 ): String? = when (source) {
     null -> null
     FocusConfidenceSource.FRAME_DETAIL -> "SOFT"
-    FocusConfidenceSource.AF_LIMIT -> closerLensLabel?.let { "TOO CLOSE ▸ $it" } ?: "TOO CLOSE"
+    FocusConfidenceSource.AF_LIMIT -> closerLensLabel?.let { "TOO CLOSE → $it" } ?: "TOO CLOSE"
 }
 
 /**

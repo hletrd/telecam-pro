@@ -1063,9 +1063,18 @@ private fun TopBar(
             // as OFF there instead of claiming a metering mode video can never use.
             val flashChoices = flashChoicesFor(state.mode, availability.flashModes)
             val flashDisplay = flashDisplayMode(state.mode, state.controls.flash)
-            // One predicate for all four toggles (chromeToggleVisible): full DISP draws every one,
-            // compact keeps only the non-default states.
-            if (chromeToggleVisible(compact, flashDisplay == FlashMode.OFF)) {
+            // One predicate for all four toggles (chromeToggles): full DISP draws every one, compact
+            // keeps only the non-default states. The per-toggle "which value is the quiet one"
+            // comparison lives in there with it — spelling it out here is how GRID lost its clause.
+            val chrome = chromeToggles(
+                compact = compact,
+                photo = state.mode == CaptureMode.PHOTO,
+                flash = flashDisplay,
+                timer = state.timer,
+                aspect = state.aspectRatio,
+                grid = state.grid,
+            )
+            if (chrome.flash) {
                 FlashButton(
                     mode = flashDisplay,
                     onClick = { actions.onFlash(nextAvailable(flashDisplay, flashChoices)) },
@@ -1073,7 +1082,7 @@ private fun TopBar(
                     modifier = glyphSpin,
                 )
             }
-            if (state.mode == CaptureMode.PHOTO && chromeToggleVisible(compact, state.timer == ShutterTimer.OFF)) {
+            if (chrome.timer) {
                 TimerButton(
                     timer = state.timer,
                     onClick = { actions.onTimer(nextTimer(state.timer)) },
@@ -1081,7 +1090,7 @@ private fun TopBar(
                     modifier = glyphSpin,
                 )
             }
-            if (state.mode == CaptureMode.PHOTO && chromeToggleVisible(compact, state.aspectRatio == AspectRatio.W4_3)) {
+            if (chrome.aspect) {
                 AspectButton(
                     ratio = state.aspectRatio,
                     onClick = { actions.onAspectRatio(nextAspect(state.aspectRatio)) },
@@ -1091,7 +1100,7 @@ private fun TopBar(
             }
             // An ACTIVE grid keeps its button in compact too: the grid lines are drawn unconditionally
             // over the live image, and this is the only control that clears them.
-            if (chromeToggleVisible(compact, state.grid == GridType.NONE)) {
+            if (chrome.grid) {
                 GridButton(
                     type = state.grid,
                     onClick = { actions.onGridType(toggledGridType(state.grid, lastActiveGrid)) },

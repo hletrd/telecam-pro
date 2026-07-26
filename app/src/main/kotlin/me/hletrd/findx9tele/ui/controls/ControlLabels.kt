@@ -47,15 +47,21 @@ internal fun dropdownSettingSemantics(label: String, selected: String): SettingS
     SettingSemantics(label = label, state = selected)
 
 /**
- * One chip inside a [SegmentedSelector]-class row. Unlike the three builders above, the row's visible
- * label is a SIBLING of the chips, not part of them — so each chip announced only its own value and
- * the label became an orphan node. The Image tab stacks "Sharpness" and "NR" consecutively and BOTH
- * draw [processingLevelLabel], so a TalkBack user heard "Off, Fast, HQ" twice over with nothing naming
- * which control they were on. Carrying the row label into each chip's own name is what makes a chip
- * self-describing; the value stays in [SettingSemantics.state] so the name is still stable per option.
+ * The spoken NAME of one chip inside a [SegmentedSelector]-class row. Unlike the three builders above,
+ * the row's visible label is a SIBLING of the chips, not part of them — so each chip announced only its
+ * own value and the label became an orphan node. The Image tab stacks "Sharpness" and "NR"
+ * consecutively and BOTH draw [processingLevelLabel], so a TalkBack user heard "Off, Fast, HQ" twice
+ * over with nothing naming which control they were on. Carrying the row label into each chip's own name
+ * is what makes a chip self-describing, and the name stays stable per option because it is built from
+ * that chip's OWN value, never the row's current selection.
+ *
+ * A bare String, not a [SettingSemantics]: a chip has no state description to give. Its selected /
+ * not-selected state comes from Material's own `selectable` semantics, and writing a `stateDescription`
+ * here would REPLACE that announcement with the option name — the one fact the chip's name already
+ * carries. This returned a pair whose second half nothing read, which is exactly what let a test pin
+ * `state == option` and report coverage of a value no user could ever hear.
  */
-internal fun segmentedOptionSemantics(label: String, option: String): SettingSemantics =
-    SettingSemantics(label = "$label $option", state = option)
+internal fun segmentedOptionName(label: String, option: String): String = "$label $option"
 
 // ---------------------------------------------------------------------------
 // Enum -> short-label mappings
@@ -67,6 +73,25 @@ internal fun focusModeLabel(mode: FocusMode): String = when (mode) {
     FocusMode.CONTINUOUS -> "AF-C"
     FocusMode.MACRO -> "Macro"
 }
+
+/**
+ * The FOCUS dial chip's spoken STATE: its AF mode and its distance readout, in the order the pill
+ * draws them.
+ *
+ * The chip is the one dial whose pill spends its LABEL slot on a live value — it draws
+ * [focusModeLabel] where every sibling draws its own name — so the chip carries two facts, not one.
+ * Pinning the node's name to the stable slot name ("Focus") fixed a name that was renamed on every
+ * AF cycle, but it also left the mode with nowhere to go: name "Focus" + state "∞+42" speaks the
+ * distance and drops the mode a sighted user reads right beside it. The mode is a VALUE, so it
+ * belongs in the state with the distance, and the two are comma-separated so TalkBack pauses
+ * between them instead of running "MF" into the digits ("Focus, MF, ∞+42").
+ *
+ * The drawn abbreviations are kept verbatim rather than expanded: MF / AF / AF-C are the printed
+ * vocabulary of every camera body this app is modelled on, and inventing a second spoken wording
+ * would put the sighted and TalkBack readings of the same pill out of step.
+ */
+internal fun focusDialStateDescription(mode: FocusMode, distance: String): String =
+    "${focusModeLabel(mode)}, $distance"
 
 internal fun antibandingLabel(mode: Antibanding): String = when (mode) {
     Antibanding.AUTO -> "Auto"

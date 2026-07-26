@@ -383,8 +383,12 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
     resolves anything finer than ~12 analysis px (~200 sensor px, ~5% of frame width).
   - **CANNOT prove**: *why*. A single frame cannot separate defocus from a soft subject, haze, a
     fogged converter, or isotropic shake. The OSD therefore says **`SOFT`**, never `TOO CLOSE`, and
-    carries **no** `▸ <lens>` suffix on this path — that suffix is a distance remedy and would
-    smuggle back the causal claim. Only `AF_LIMIT` may say `TOO CLOSE ▸ 1×`.
+    carries **no** `→ <lens>` suffix on this path — that suffix is a distance remedy and would
+    smuggle back the causal claim. Only `AF_LIMIT` may say `TOO CLOSE → 1×`. The separator is
+    **U+2192**, not the U+25B8 triangle it shipped with: **none of the three bundled Inter faces
+    (`app/src/main/res/font/`) carries U+25B8**, so that glyph fell back to a system typeface inside
+    one OSD tag. Every user-facing literal must stay inside those faces — the covered set in use is
+    `§ © ° · ± × γ — … → ∞ ≈`.
   - **Deliberate design facts** (each cost a wrong turn to find): curvature, not gradient — a ramp
     is locally linear at every scale, so a first-difference ratio returns exactly `1/k` on a sky
     gradient (guaranteed false fire), while curvature is identically zero there. **No noise

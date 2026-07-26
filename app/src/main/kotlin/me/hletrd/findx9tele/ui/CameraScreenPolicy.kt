@@ -4,12 +4,16 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.constrainHeight
 import androidx.compose.ui.unit.constrainWidth
+import me.hletrd.findx9tele.camera.AspectRatio
 import me.hletrd.findx9tele.camera.AutoExposure
 import me.hletrd.findx9tele.camera.CaptureMode
 import me.hletrd.findx9tele.camera.ExposureMode
+import me.hletrd.findx9tele.camera.FlashMode
 import me.hletrd.findx9tele.camera.FnSlot
+import me.hletrd.findx9tele.camera.GridType
 import me.hletrd.findx9tele.camera.HardwareKeyAction
 import me.hletrd.findx9tele.camera.LensChoice
+import me.hletrd.findx9tele.camera.ShutterTimer
 import me.hletrd.findx9tele.ui.controls.fnSlotLabel
 import kotlin.math.abs
 import kotlin.math.ceil
@@ -185,6 +189,42 @@ internal fun showHalfPressLabel(
  * missing invisibly; one predicate is how it stays pinned.
  */
 internal fun chromeToggleVisible(compact: Boolean, isDefault: Boolean): Boolean = !compact || !isDefault
+
+/** Which of the four top-bar chrome toggles draw, from live state. */
+internal data class ChromeToggles(
+    val flash: Boolean,
+    val timer: Boolean,
+    val aspect: Boolean,
+    val grid: Boolean,
+)
+
+/**
+ * [chromeToggleVisible] resolved against the live values, so the OTHER half of each rule — which
+ * value counts as "default" for that toggle — is pinned here too instead of being retyped at four
+ * Compose call sites. One predicate stopped the `!compact` clause going missing; this stops the
+ * comparison beside it going wrong, which is the same failure one argument to the left.
+ *
+ * "Default" means the QUIET value, the one whose control changes no output and paints nothing — not
+ * the value the app launches with. GRID is where the two come apart: `CameraUiState.grid` starts at
+ * THIRDS, so the grid toggle is deliberately visible in compact at first launch, because the lines
+ * are on the live image and this button is the only thing that clears them.
+ *
+ * [photo] gates the two PHOTO-only toggles: the self-timer and the aspect ratio have no meaning in
+ * video, where the frame size is the encoder's.
+ */
+internal fun chromeToggles(
+    compact: Boolean,
+    photo: Boolean,
+    flash: FlashMode,
+    timer: ShutterTimer,
+    aspect: AspectRatio,
+    grid: GridType,
+): ChromeToggles = ChromeToggles(
+    flash = chromeToggleVisible(compact, flash == FlashMode.OFF),
+    timer = photo && chromeToggleVisible(compact, timer == ShutterTimer.OFF),
+    aspect = photo && chromeToggleVisible(compact, aspect == AspectRatio.W4_3),
+    grid = chromeToggleVisible(compact, grid == GridType.NONE),
+)
 
 internal const val FN_OVERLAY_COLUMN_COUNT = 4
 internal const val FN_OVERLAY_HELD_COLUMN_COUNT = 2

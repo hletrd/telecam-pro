@@ -456,23 +456,32 @@ private fun FnDialChip(
             onClick = { actions.onExposureMode(nextAvailable(controls.exposureMode, availability.exposureModes)) },
             onLongClick = onOpenFnMenu,
         )
-        FnSlot.FOCUS -> DialChip(
-            label = focusModeLabel(controls.focusMode),
-            // The drawn label is the LIVE AF mode, so the node's name has to come from the slot.
-            accessibleName = fnSlotLabel(slot),
-            value = formatFocusRelative(
+        FnSlot.FOCUS -> {
+            val focusDistance = formatFocusRelative(
                 if (controls.focusMode == FocusMode.MANUAL) controls.focusDistanceDiopters
                 else state.liveFocusDiopters ?: controls.focusDistanceDiopters,
                 caps?.minFocusDistanceDiopters ?: 0f,
-            ),
-            active = openDial == DialType.FOCUS,
-            enabled = policyEnabled && quickManualDialEnabled(DialType.FOCUS, availability),
-            onClick = { onSelect(DialType.FOCUS) },
-            onLongClick = onOpenFnMenu,
-        )
+            )
+            DialChip(
+                label = focusModeLabel(controls.focusMode),
+                // The drawn label is the LIVE AF mode, so the node's name has to come from the slot —
+                // and the mode then rides the STATE with the distance, or it is spoken nowhere on the
+                // chip while a sighted user reads it in the pill.
+                accessibleName = fnSlotLabel(slot),
+                value = focusDistance,
+                accessibleState = focusDialStateDescription(controls.focusMode, focusDistance),
+                active = openDial == DialType.FOCUS,
+                enabled = policyEnabled && quickManualDialEnabled(DialType.FOCUS, availability),
+                onClick = { onSelect(DialType.FOCUS) },
+                onLongClick = onOpenFnMenu,
+            )
+        }
         FnSlot.SHUTTER -> DialChip(
             label = "SS",
-            // "SS" is a printed abbreviation with no spoken form; the slot name is "Shutter".
+            // "SS" is a printed abbreviation with no spoken form; the slot name is "Shutter". Unlike
+            // FOCUS this loses nothing to the rename: "SS" is only ever an abbreviation OF the name,
+            // never a value, and the speed/angle distinction the value can carry is already in the
+            // value's own glyphs ("1/250s" vs "180°"). So this chip needs no accessibleState.
             accessibleName = fnSlotLabel(slot),
             value = when {
                 controls.exposureMode == ExposureMode.PROGRAM -> autoShutterText(state)
@@ -670,6 +679,13 @@ private fun DialChip(
     // tile for the same slot exports fnSlotLabel(slot). The value belongs in stateDescription, which
     // is where it already goes.
     accessibleName: String = label,
+    // The SPOKEN state, when the drawn [value] alone is not the whole of what the pill says. Pinning
+    // [accessibleName] to the stable slot name is only half the fix for a chip that draws a value in
+    // its LABEL slot: FOCUS draws the live AF mode there, so with the name pinned to "Focus" the mode
+    // was spoken in neither half of the node and only the distance survived. The mode is a value, so
+    // it rides here with the distance (focusDialStateDescription). Null keeps the ordinary rule —
+    // the drawn value IS the state — for the eighteen chips whose label is already their name.
+    accessibleState: String? = null,
     // Auto-driven value ("A9100" class): the qualifier renders as a smaller, dimmer A so the
     // actual value stays scannable ("A9100" read as one blob — user-reported), and accessibility
     // hears the honest word instead of a letter glued to digits.
@@ -698,7 +714,7 @@ private fun DialChip(
             .focusable()
             .clearAndSetSemantics {
                 contentDescription = accessibleName
-                stateDescription = if (autoValue) "Auto $value" else value
+                stateDescription = accessibleState ?: if (autoValue) "Auto $value" else value
                 role = Role.Button
                 if (!enabled) disabled()
                 onClick {

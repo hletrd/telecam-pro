@@ -289,7 +289,7 @@ class CameraUiPolicyTest {
             tag(CameraUiState(focusConfidence = FocusConfidenceSource.AF_LIMIT)),
         )
         assertEquals(
-            "TOO CLOSE ▸ 1×",
+            "TOO CLOSE → 1×",
             tag(CameraUiState(focusConfidence = FocusConfidenceSource.AF_LIMIT, macroCloserLensLabel = "1×")),
         )
         assertEquals(
@@ -310,21 +310,58 @@ class CameraUiPolicyTest {
         assertTrue(chromeToggleVisible(compact = false, isDefault = false))
         assertFalse(chromeToggleVisible(compact = true, isDefault = true))
         assertTrue(chromeToggleVisible(compact = true, isDefault = false))
+    }
 
-        // The miss this predicate exists to make testable: GRID shipped as a bare `!compact` while its
-        // three row siblings carried the second clause, so an active grid — the one chrome state that
-        // paints on the live image — had no control at all in the preview-first finder.
-        assertTrue(chromeToggleVisible(compact = true, isDefault = GridType.THIRDS == GridType.NONE))
-        assertTrue(chromeToggleVisible(compact = true, isDefault = GridType.CENTER == GridType.NONE))
-        assertFalse(chromeToggleVisible(compact = true, isDefault = GridType.NONE == GridType.NONE))
+    @Test
+    fun `each chrome toggle compares its own live value against its own quiet value`() {
+        // The miss the predicate above exists to make testable: GRID shipped as a bare `!compact`
+        // while its three row siblings carried the second clause, so an active grid — the one chrome
+        // state that paints on the live image — had no control at all in the preview-first finder.
+        // That is only half the rule though, and the half that used to be pinned here could not fail:
+        // an `isDefault = GridType.THIRDS == GridType.NONE` argument is a constant `false` the
+        // compiler folds, so nine such lines re-asserted `chromeToggleVisible(true, false)` and said
+        // nothing about which value each toggle actually compares. chromeToggles owns both halves.
+        fun quiet(compact: Boolean = true) = chromeToggles(
+            compact = compact,
+            photo = true,
+            flash = FlashMode.OFF,
+            timer = ShutterTimer.OFF,
+            aspect = AspectRatio.W4_3,
+            grid = GridType.NONE,
+        )
+        assertEquals(ChromeToggles(false, false, false, false), quiet())
+        assertEquals(ChromeToggles(true, true, true, true), quiet(compact = false))
 
-        // Same predicate, same answers, for the three that already behaved.
-        assertTrue(chromeToggleVisible(compact = true, isDefault = FlashMode.TORCH == FlashMode.OFF))
-        assertFalse(chromeToggleVisible(compact = true, isDefault = FlashMode.OFF == FlashMode.OFF))
-        assertTrue(chromeToggleVisible(compact = true, isDefault = ShutterTimer.SEC10 == ShutterTimer.OFF))
-        assertFalse(chromeToggleVisible(compact = true, isDefault = ShutterTimer.OFF == ShutterTimer.OFF))
-        assertTrue(chromeToggleVisible(compact = true, isDefault = AspectRatio.W16_9 == AspectRatio.W4_3))
-        assertFalse(chromeToggleVisible(compact = true, isDefault = AspectRatio.W4_3 == AspectRatio.W4_3))
+        // One toggle off its quiet value at a time: each must move alone, or two rules are crossed.
+        assertEquals(
+            ChromeToggles(flash = true, timer = false, aspect = false, grid = false),
+            chromeToggles(true, true, FlashMode.TORCH, ShutterTimer.OFF, AspectRatio.W4_3, GridType.NONE),
+        )
+        assertEquals(
+            ChromeToggles(flash = false, timer = true, aspect = false, grid = false),
+            chromeToggles(true, true, FlashMode.OFF, ShutterTimer.SEC10, AspectRatio.W4_3, GridType.NONE),
+        )
+        assertEquals(
+            ChromeToggles(flash = false, timer = false, aspect = true, grid = false),
+            chromeToggles(true, true, FlashMode.OFF, ShutterTimer.OFF, AspectRatio.W16_9, GridType.NONE),
+        )
+        // GRID's quiet value is NONE, NOT the launch default THIRDS — so the grid button IS drawn in
+        // compact at first launch. A seam written against the launch default would flip both lines.
+        assertEquals(
+            ChromeToggles(flash = false, timer = false, aspect = false, grid = true),
+            chromeToggles(true, true, FlashMode.OFF, ShutterTimer.OFF, AspectRatio.W4_3, GridType.THIRDS),
+        )
+        assertTrue(
+            "the grid toggle must survive compact at the state the app launches in",
+            chromeToggles(true, true, FlashMode.OFF, ShutterTimer.OFF, AspectRatio.W4_3, CameraUiState().grid).grid,
+        )
+
+        // Timer and aspect are PHOTO-only and drop out of video even when off their quiet values;
+        // flash (torch is a video light) and grid do not.
+        assertEquals(
+            ChromeToggles(flash = true, timer = false, aspect = false, grid = true),
+            chromeToggles(true, false, FlashMode.TORCH, ShutterTimer.SEC10, AspectRatio.W16_9, GridType.THIRDS),
+        )
     }
 
     @Test

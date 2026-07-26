@@ -232,9 +232,12 @@ class FocusConfidenceTest {
         assertNull(focusConfidenceLabel(null, null))
         assertNull(focusConfidenceLabel(null, "1×"))
         assertEquals("TOO CLOSE", focusConfidenceLabel(FocusConfidenceSource.AF_LIMIT, null))
-        assertEquals("TOO CLOSE ▸ 1×", focusConfidenceLabel(FocusConfidenceSource.AF_LIMIT, "1×"))
+        // The separator is U+2192, and this exact-string pin is what keeps it one: the suffix
+        // shipped with U+25B8, which none of the three bundled Inter faces (res/font) carries, so
+        // it fell back to a system typeface inside an otherwise-Inter OSD row.
+        assertEquals("TOO CLOSE → 1×", focusConfidenceLabel(FocusConfidenceSource.AF_LIMIT, "1×"))
         assertEquals("SOFT", focusConfidenceLabel(FocusConfidenceSource.FRAME_DETAIL, null))
-        // The detail proof takes NO lens suffix even when a closer lens exists: "▸ 1×" is a
+        // The detail proof takes NO lens suffix even when a closer lens exists: "→ 1×" is a
         // distance remedy, and the metric cannot establish that distance is the cause.
         assertEquals("SOFT", focusConfidenceLabel(FocusConfidenceSource.FRAME_DETAIL, "1×"))
     }

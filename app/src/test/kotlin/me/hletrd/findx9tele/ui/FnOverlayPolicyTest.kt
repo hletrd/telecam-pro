@@ -6,6 +6,7 @@ import me.hletrd.findx9tele.camera.FnSlot
 import me.hletrd.findx9tele.camera.FocusMode
 import me.hletrd.findx9tele.ui.controls.fnSlotLabel
 import me.hletrd.findx9tele.ui.controls.fnSlotValue
+import me.hletrd.findx9tele.ui.controls.focusDialStateDescription
 import me.hletrd.findx9tele.ui.controls.focusModeLabel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -176,8 +177,13 @@ class FnOverlayPolicyTest {
 
     @Test
     fun `held landscape copy is compact without changing portrait copy`() {
+        // STABILIZATION and OPEN_GATE are the only two slots with a held-landscape alias, so they are
+        // the only two the portrait branch could ever shorten by accident. Pinned as literals, not as
+        // `== fnSlotLabel(slot)`: the portrait branch IS `fnSlotLabel(slot)`, and comparing it to
+        // itself would pass no matter what either side became.
         assertEquals("Stabilization", fnOverlayVisualLabel(FnSlot.STABILIZATION, false))
         assertEquals("Stab", fnOverlayVisualLabel(FnSlot.STABILIZATION, true))
+        assertEquals("Open Gate", fnOverlayVisualLabel(FnSlot.OPEN_GATE, false))
         assertEquals("Gate", fnOverlayVisualLabel(FnSlot.OPEN_GATE, true))
 
         // Feed the strings fnSlotValue ACTUALLY emits, never hand-written ones: the previous
@@ -214,11 +220,20 @@ class FnOverlayPolicyTest {
         // directly; the dial chip's accessibleName defaults to its DRAWN label, so the two slots whose
         // pill text is not their name pass fnSlotLabel(slot) explicitly.
         FnSlot.entries.forEach { slot ->
-            val spoken = fnSlotLabel(slot)
-            assertTrue("every slot needs a spoken name, $slot has none", spoken.isNotBlank())
-            // Portrait: the drawn tray label IS the spoken name, with no shortening in between.
-            assertEquals(spoken, fnOverlayVisualLabel(slot, heldLandscape = false))
+            assertTrue("every slot needs a spoken name, $slot has none", fnSlotLabel(slot).isNotBlank())
         }
+        // "One slot, one spoken name" also runs the other way, and THAT is the half a per-slot loop
+        // cannot see: two slots sharing a name gives the tray two tiles TalkBack reads identically,
+        // with nothing in the node to tell them apart. (The portrait tray's no-shortening rule is a
+        // property of fnOverlayVisualLabel and is pinned as literals in the visual-copy test above;
+        // this test used to restate its `!heldLandscape -> fnSlotLabel(slot)` branch as
+        // `fnSlotLabel(slot) == fnOverlayVisualLabel(slot, false)`, which is the same expression on
+        // both sides and so proved nothing about either surface.)
+        assertEquals(
+            "two Fn slots must never share one spoken name",
+            FnSlot.entries.size,
+            FnSlot.entries.map { fnSlotLabel(it) }.toSet().size,
+        )
 
         // FOCUS draws the LIVE AF mode, so its drawn label is not (and must never become) its name —
         // a node renamed on every AF cycle is a node TalkBack cannot keep focus on.
@@ -237,5 +252,30 @@ class FnOverlayPolicyTest {
         // The held tray is the ONE surface allowed to shorten; it shortens the VISIBLE label only.
         assertEquals("Stab", fnOverlayVisualLabel(FnSlot.STABILIZATION, heldLandscape = true))
         assertEquals("Stabilization", fnSlotLabel(FnSlot.STABILIZATION))
+    }
+
+    @Test
+    fun `pinning the FOCUS chip's name to its slot must not cost the AF mode`() {
+        // The other half of the rule above. FOCUS is the one dial chip whose pill spends its LABEL
+        // slot on a live value, so moving the node's NAME to the stable slot name left the mode with
+        // nowhere to be spoken: a sighted user read "MF ∞+42" while TalkBack heard "Focus, ∞+42".
+        // The mode belongs in the STATE, beside the distance the pill draws next to it.
+        //
+        // Exhaustive, and as INDEPENDENT literals rather than `contains(focusModeLabel(mode))`: the
+        // production string is built from focusModeLabel, so a containment check phrased in those
+        // terms would still pass if both sides drifted together. The map must cover every FocusMode,
+        // so a new mode fails here instead of shipping a silently modeless chip.
+        val expected = mapOf(
+            FocusMode.MANUAL to "MF, ∞+42",
+            FocusMode.AUTO to "AF, ∞+42",
+            FocusMode.CONTINUOUS to "AF-C, ∞+42",
+            FocusMode.MACRO to "Macro, ∞+42",
+        )
+        assertEquals("every FocusMode needs a decided spoken state", FocusMode.entries.toSet(), expected.keys)
+        FocusMode.entries.forEach { mode ->
+            assertEquals(expected.getValue(mode), focusDialStateDescription(mode, "∞+42"))
+        }
+        // The distance is passed through, not re-derived: "∞" at the infinity end reads as itself.
+        assertEquals("MF, ∞", focusDialStateDescription(FocusMode.MANUAL, "∞"))
     }
 }
