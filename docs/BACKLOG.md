@@ -237,7 +237,24 @@ These do not require a code or metadata change unless the result exposes a defec
   retired with the `com.oplus.ocs` removal on 2026-07-25 — no build variant links an OEM SDK now,
   and `app/proguard-rules.pro` carries no vendor keep rules, only the staged, still-commented
   SettingsStore enum rule.)
-- **Dolby Vision:** hardware support exists, but a correct Dolby Vision MP4 path is not implemented.
+- **Dolby Vision:** device-probed end to end on 2026-07-26 and the technical path WORKS — the
+  blockers are legal and honesty, not engineering. `DolbyVisionProbeTest` (androidTest; logs under
+  `DVProbe`, never fails the build) showed `c2.qti.dv.encoder` is HW and visible to our own
+  third-party package, configured it, encoded 12 P010 frames, and MediaMuxer accepted the track and
+  closed a file `ffprobe` reads as a genuine DV stream: `dvvC` box, `dby1` brand, `dv_profile=8`,
+  `dv_level=11`, `rpu_present_flag=1`, `bl_present_flag=1`. Do NOT reason from the APV exclusion —
+  AOSP's `MPEG4Writer` special-cases `video/dolby-vision` rather than rejecting it. The emitted
+  transfer is `arib-std-b67` (HLG) even when PQ is requested, i.e. **Profile 8.4**, whose base layer
+  is the same HLG signal our GL pipeline already builds, with the encoder generating the RPU. So the
+  remaining engineering is small (a 10-bit encoder EGL config plus the DV MIME/profile). What must
+  be resolved first, in order:
+  1. **Source honesty.** The stream is still the ISP's display-referred 8-bit SDR output (see the
+     entry below). A DV-branded file would assert more than the pipeline can back — the same rule
+     that already forbids marketing our HLG as end-to-end 10-bit.
+  2. **Trademark.** Using the device's licensed encoder through public Camera2/MediaCodec is one
+     question; putting "Dolby Vision" in the UI or the Play listing is a separate permission
+     question that public Dolby documentation does not answer (their Implementation Handbook covers
+     chip and device makers only). Requires contacting Dolby before any user-visible naming.
 - **End-to-end 10-bit Camera2 input:** the stable shipping Camera2/EGL source is SDR/8-bit; the prior
   HLG10 + JPEG + RAW combination crashed the HAL.
 - **Authenticated CameraUnit path:** still a legitimate deferred option, but the groundwork was
