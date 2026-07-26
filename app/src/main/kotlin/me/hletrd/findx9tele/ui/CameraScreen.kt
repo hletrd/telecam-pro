@@ -101,6 +101,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
@@ -1221,15 +1222,40 @@ private fun ChromeIconButton(
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
+        // background(shape) rather than clip(CircleShape) + background(): the plate draws identically
+        // either way, but a CLIP here silently shaves any content that reaches past the disc instead
+        // of letting it overflow where it can be seen. That is precisely how both badges shipped with
+        // their lower halves cut off (see [chromeBadgePlateClearanceDp]). The ripple stays circular
+        // regardless — indication is bounded by the OUTER box's clip, which carries the clickable.
         Box(
             modifier = Modifier
-                .size(36.dp)
-                .clip(CircleShape)
-                .background(HudPlate),
+                .size(CHROME_PLATE_DP.dp)
+                .background(HudPlate, CircleShape),
             contentAlignment = Alignment.Center,
             content = content,
         )
     }
+}
+
+/**
+ * The state badge both [FlashButton] and [TimerButton] paint on the chrome plate: flash AUTO's "A",
+ * the armed self-timer's seconds. One helper because the two sites were byte-identical — and both
+ * wrong the same way, the timer having copied the flash button's placement on the belief it was
+ * tuned. Placement is derived, not eyeballed: see [chromeBadgePlateClearanceDp] for the annulus
+ * argument that puts it under the glyph instead of in the corner, and
+ * [chromeBadgeGlyphClearanceDp] for the gap above it.
+ */
+@Composable
+private fun BoxScope.PlateBadge(text: String, color: Color) {
+    Text(
+        text = text,
+        color = color,
+        // dp-pinned rather than sp — see [CHROME_BADGE_TEXT_DP].
+        style = hudGlyph(with(LocalDensity.current) { CHROME_BADGE_TEXT_DP.dp.toSp() }),
+        modifier = Modifier
+            .align(Alignment.BottomCenter)
+            .padding(bottom = CHROME_BADGE_BOTTOM_INSET_DP.dp),
+    )
 }
 
 @Composable
@@ -1249,7 +1275,13 @@ private fun FlashButton(mode: FlashMode, onClick: () -> Unit, modifier: Modifier
         modifier = modifier,
         enabled = enabled,
     ) {
-        Canvas(Modifier.size(16.dp)) {
+        Canvas(Modifier.size(CHROME_GLYPH_BOX_DP.dp)) {
+            // Round joins. The path's bottom vertex is a 31.6-degree spike sitting exactly on the box
+            // edge, and Skia miters it (1/sin(15.8 deg) = 3.67, inside the default limit of 4) into a
+            // needle reaching 2.6 dp BELOW the 16 dp box this glyph claims to occupy — over the badge
+            // and past the size every other chrome glyph is measured by. A round join caps the same
+            // vertex at half a stroke, which is the bound [CHROME_GLYPH_INK_BELOW_CENTRE_DP] assumes.
+            val boltStroke = Stroke(width = 1.4.dp.toPx(), join = StrokeJoin.Round)
             val bolt = Path().apply {
                 moveTo(size.width * 0.56f, 0f)
                 lineTo(size.width * 0.08f, size.height * 0.6f)
@@ -1262,21 +1294,14 @@ private fun FlashButton(mode: FlashMode, onClick: () -> Unit, modifier: Modifier
             if (mode == FlashMode.ON || mode == FlashMode.TORCH) {
                 drawPath(bolt, color = color)
             } else {
-                drawPath(bolt, color = color, style = Stroke(width = 1.4.dp.toPx()))
+                drawPath(bolt, color = color, style = boltStroke)
             }
             if (mode == FlashMode.OFF) {
                 drawLine(color, Offset(0f, size.height * 0.06f), Offset(size.width, size.height * 0.94f), strokeWidth = 1.4.dp.toPx())
             }
         }
         if (mode == FlashMode.AUTO) {
-            Text(
-                text = "A",
-                color = color,
-                style = hudGlyph(8.sp),
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(end = 3.dp, bottom = 2.dp),
-            )
+            PlateBadge(text = "A", color = color)
         }
     }
 }
@@ -1284,7 +1309,7 @@ private fun FlashButton(mode: FlashMode, onClick: () -> Unit, modifier: Modifier
 @Composable
 private fun TimerButton(timer: ShutterTimer, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
     val armed = timer != ShutterTimer.OFF
-    // Clock in BOTH states, seconds as a corner badge. The armed branch used to DELETE the clock and
+    // Clock in BOTH states, seconds as a [PlateBadge] under it. The armed branch used to DELETE the clock and
     // draw the bare digit, i.e. it dropped the control's identity in exactly the state worth spotting —
     // the exact opposite of the rule DispButton's own KDoc states below ("both always drawn — the glyph
     // is the control's identity, not a preview of its state"), and of every other chrome button on this
@@ -1304,24 +1329,13 @@ private fun TimerButton(timer: ShutterTimer, onClick: () -> Unit, modifier: Modi
         modifier = modifier,
         enabled = enabled,
     ) {
-        Canvas(Modifier.size(16.dp)) {
+        Canvas(Modifier.size(CHROME_GLYPH_BOX_DP.dp)) {
             drawCircle(color, radius = size.minDimension / 2f, style = Stroke(width = 1.3.dp.toPx()))
             drawLine(color, center, Offset(center.x, center.y - size.height * 0.3f), strokeWidth = 1.2.dp.toPx())
             drawLine(color, center, Offset(center.x + size.width * 0.18f, center.y), strokeWidth = 1.2.dp.toPx())
         }
         if (armed) {
-            // FlashButton's AUTO "A" geometry exactly (8 sp, BottomEnd, 3/2 dp) — the one badge idiom
-            // this row already has, and the one whose 8 sp/2 dp placement was tuned on device. "10" is
-            // two characters where "A" is one, but the badge box still clears the clock: the 16 dp clock
-            // ends 10 dp in from the 36 dp disc's bottom edge, and tnum holds both digits on one advance.
-            Text(
-                text = timer.seconds.toString(),
-                color = color,
-                style = hudGlyph(8.sp),
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(end = 3.dp, bottom = 2.dp),
-            )
+            PlateBadge(text = timer.seconds.toString(), color = color)
         }
     }
 }

@@ -18,6 +18,7 @@ import me.hletrd.findx9tele.ui.controls.fnSlotLabel
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
@@ -225,6 +226,143 @@ internal fun chromeToggles(
     aspect = photo && chromeToggleVisible(compact, aspect == AspectRatio.W4_3),
     grid = chromeToggleVisible(compact, grid == GridType.NONE),
 )
+
+/**
+ * `ChromeIconButton`'s visible HUD plate. Its touch target stays a separate 48 dp box; this is the
+ * disc that is actually drawn AND, because the plate is a circle, the shape that bounds badge ink.
+ */
+internal const val CHROME_PLATE_DP = 36f
+
+/** Canvas edge of the centred glyph on the two badged buttons (flash bolt, self-timer clock). */
+internal const val CHROME_GLYPH_BOX_DP = 16f
+
+/** The wider stroke of the two badged glyphs — clock 1.3 dp, bolt 1.4 dp. */
+private const val CHROME_GLYPH_STROKE_DP = 1.4f
+
+/**
+ * How far the centred glyph's ink reaches below the plate centre: half its declared box plus half
+ * its stroke. Both badged glyphs touch their box edge, so this holds only while their joins stay
+ * bounded — a mitered 31.6-degree spike at the bolt's bottom vertex paints 2.6 dp FURTHER down,
+ * past the glyph's own declared size and into the badge, which is why `FlashButton` strokes with a
+ * round join.
+ */
+internal const val CHROME_GLYPH_INK_BELOW_CENTRE_DP =
+    CHROME_GLYPH_BOX_DP / 2f + CHROME_GLYPH_STROKE_DP / 2f
+
+/**
+ * Badge type size, in DP rather than sp. The plate, the glyph and the clip are all fixed dp, so a
+ * badge that grew with the system font scale would walk straight back out through the arc — the
+ * defect this geometry exists to prevent. Nothing is lost to a large-font user: neither badge is
+ * the only carrier of its state, both buttons speak it through `stateDescription`.
+ */
+internal const val CHROME_BADGE_TEXT_DP = 8f
+
+/** `hudGlyph`'s leading multiple, which sets the badge's line box height. */
+private const val CHROME_BADGE_LEADING = 1.2f
+
+/**
+ * Inset of the badge's LINE BOX from the plate's bottom edge. Zero is the derived value, not an
+ * oversight: Inter leaves 1.91 dp of descent gap below a digit's baseline at this size and leading,
+ * and that gap alone already lands the ink 1.02 dp inside the clip while leaving 1.48 dp of air
+ * under the glyph. Splitting the difference exactly would want ~0.25 dp, which is below the panel's
+ * pixel pitch. Nudging this is what the two clearance functions guard.
+ */
+internal const val CHROME_BADGE_BOTTOM_INSET_DP = 0f
+
+// Inter SemiBold, read out of the bundled app/src/main/res/font/inter_semibold.ttf (2048 units/em).
+private const val INTER_EM = 2048f
+private const val INTER_ASCENT = 1984f
+private const val INTER_DESCENT = 494f
+
+/** Tallest ink above the baseline across the badge alphabet (the digit "9"). */
+private const val INTER_INK_ABOVE_BASELINE = 1513f
+
+/** Deepest round-glyph overshoot below the baseline across the same set (the digit "9"). */
+private const val INTER_INK_BELOW_BASELINE = 21f
+
+/** Tabular ("tnum") advance — identical for every digit, which is what keeps "10" and "3" aligned. */
+private const val INTER_DIGIT_ADVANCE = 1325f
+
+/** "A" is the only non-digit either badge draws. */
+private const val INTER_A_ADVANCE = 1490f
+
+/**
+ * Advance width of a badge string. Deliberately the ADVANCE box and not the ink box: the advance is
+ * never narrower than the ink it carries, so every clearance derived from it is conservative.
+ */
+internal fun chromeBadgeAdvanceDp(text: String): Float {
+    var units = 0f
+    for (c in text) {
+        units += when {
+            c.isDigit() -> INTER_DIGIT_ADVANCE
+            c == 'A' -> INTER_A_ADVANCE
+            // Nothing else is drawn today. Bound an unknown character by the wider of the two rather
+            // than under-report the room a future badge would need.
+            else -> maxOf(INTER_DIGIT_ADVANCE, INTER_A_ADVANCE)
+        }
+    }
+    return units / INTER_EM * CHROME_BADGE_TEXT_DP
+}
+
+/**
+ * The badge's baseline in plate coordinates (y down from the plate box's top edge). Compose spreads
+ * the difference between the requested leading and the font's own ascent+descent proportionally;
+ * the requested 1.2 em is 0.01 em SHORT of Inter's natural 1.21 em line, so that distribution moves
+ * the baseline by under 0.02 dp whichever way it resolves and no clearance below turns on it.
+ */
+private fun chromeBadgeBaselineDp(bottomInsetDp: Float): Float {
+    val lineHeight = CHROME_BADGE_TEXT_DP * CHROME_BADGE_LEADING
+    return CHROME_PLATE_DP - bottomInsetDp - lineHeight +
+        lineHeight * INTER_ASCENT / (INTER_ASCENT + INTER_DESCENT)
+}
+
+/**
+ * Vertical dp of clear plate between the centred glyph's LOWEST ink and the badge's HIGHEST ink.
+ *
+ * Vertical, not radial, because the shipped badge sits at `Alignment.BottomCenter`: its ink straddles
+ * the plate's vertical centre line, exactly where the glyph reaches lowest, so "wholly below the
+ * glyph" is both the right test and a conservative one (further out to either side the glyph's ink
+ * stops higher). It is NOT a valid bound for a corner-anchored badge, whose box sits off to one side.
+ */
+internal fun chromeBadgeGlyphClearanceDp(bottomInsetDp: Float = CHROME_BADGE_BOTTOM_INSET_DP): Float {
+    val inkTop = chromeBadgeBaselineDp(bottomInsetDp) -
+        INTER_INK_ABOVE_BASELINE / INTER_EM * CHROME_BADGE_TEXT_DP
+    return inkTop - (CHROME_PLATE_DP / 2f + CHROME_GLYPH_INK_BELOW_CENTRE_DP)
+}
+
+/**
+ * Radial dp between the badge's farthest ink corner and the plate's circular CLIP. Negative means
+ * the arc cuts the glyph.
+ *
+ * WHY this exists, and why the badge is bottom-CENTRE: both badges shipped at `Alignment.BottomEnd`
+ * with 3 dp / 2 dp of corner padding, which put their ink outside the plate's `clip(CircleShape)`
+ * and had the arc shave them diagonally — device-verified, "10" lost the bottom of its "0" and "3"
+ * kept only its top curve, reading as a "?". A 36 dp square's corner is 18*sqrt(2) = 25.46 dp from
+ * the centre against an 18 dp clip radius, so a corner-anchored badge starts ~7.5 dp outside the
+ * circle before any padding is applied. The comment that shipped with it reasoned only about
+ * clearing the CLOCK and never about the CLIP, which is exactly how it missed.
+ *
+ * The usable area is the ANNULUS between the glyph's ink (8.7 dp out) and the clip (18 dp) — only
+ * 9.3 dp wide. An axis-aligned W x H box placed at angle t off horizontal consumes
+ * `W*|cos t| + H*|sin t|` of it. The badge is wider than it is tall, so the DIAGONAL is the worst
+ * direction available: "10" needs (9.17 + 5.99)/sqrt(2) = 10.7 dp there and cannot fit at any
+ * padding. Straight DOWN is the best: it needs only the 5.99 dp ink height. Hence BottomCenter,
+ * where string width stops driving the fit (it only moves ink sideways, where the disc is widest)
+ * and one placement covers "A", "3" and "10" alike.
+ *
+ * [endInsetDp] defaults to that centred placement; pass the old 3 dp to re-derive the defect.
+ */
+internal fun chromeBadgePlateClearanceDp(
+    text: String,
+    endInsetDp: Float = (CHROME_PLATE_DP - chromeBadgeAdvanceDp(text)) / 2f,
+    bottomInsetDp: Float = CHROME_BADGE_BOTTOM_INSET_DP,
+): Float {
+    val radius = CHROME_PLATE_DP / 2f
+    val dx = (CHROME_PLATE_DP - endInsetDp) - radius
+    val dy = chromeBadgeBaselineDp(bottomInsetDp) +
+        INTER_INK_BELOW_BASELINE / INTER_EM * CHROME_BADGE_TEXT_DP - radius
+    return radius - hypot(dx, dy)
+}
 
 internal const val FN_OVERLAY_COLUMN_COUNT = 4
 internal const val FN_OVERLAY_HELD_COLUMN_COUNT = 2
