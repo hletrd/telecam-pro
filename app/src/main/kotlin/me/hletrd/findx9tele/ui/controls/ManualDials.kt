@@ -458,6 +458,8 @@ private fun FnDialChip(
         )
         FnSlot.FOCUS -> DialChip(
             label = focusModeLabel(controls.focusMode),
+            // The drawn label is the LIVE AF mode, so the node's name has to come from the slot.
+            accessibleName = fnSlotLabel(slot),
             value = formatFocusRelative(
                 if (controls.focusMode == FocusMode.MANUAL) controls.focusDistanceDiopters
                 else state.liveFocusDiopters ?: controls.focusDistanceDiopters,
@@ -470,6 +472,8 @@ private fun FnDialChip(
         )
         FnSlot.SHUTTER -> DialChip(
             label = "SS",
+            // "SS" is a printed abbreviation with no spoken form; the slot name is "Shutter".
+            accessibleName = fnSlotLabel(slot),
             value = when {
                 controls.exposureMode == ExposureMode.PROGRAM -> autoShutterText(state)
                 controls.autoShutterDriven -> formatShutterSpeed(controls.exposureTimeNs)
@@ -658,6 +662,14 @@ private fun DialChip(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     modifier: Modifier = Modifier,
+    // The SPOKEN name, when the drawn [label] is not one. Most chips draw their own slot name, so the
+    // default is right for 18 of the 20 — but FOCUS draws the live AF mode ("MF" / "AF-C") and SHUTTER
+    // draws "SS", so those two announced a VALUE as the node's name: the chip said "MF, ∞+42" with the
+    // word "Focus" nowhere, and its name changed every time the user cycled AF. A node's name must be
+    // stable (TalkBack tracks focus by it) and must match the same control elsewhere — the Fn tray
+    // tile for the same slot exports fnSlotLabel(slot). The value belongs in stateDescription, which
+    // is where it already goes.
+    accessibleName: String = label,
     // Auto-driven value ("A9100" class): the qualifier renders as a smaller, dimmer A so the
     // actual value stays scannable ("A9100" read as one blob — user-reported), and accessibility
     // hears the honest word instead of a letter glued to digits.
@@ -685,7 +697,7 @@ private fun DialChip(
             .sizeIn(minHeight = 48.dp)
             .focusable()
             .clearAndSetSemantics {
-                contentDescription = label
+                contentDescription = accessibleName
                 stateDescription = if (autoValue) "Auto $value" else value
                 role = Role.Button
                 if (!enabled) disabled()
@@ -697,7 +709,10 @@ private fun DialChip(
                 // clearAndSetSemantics drops combinedClickable's long-press action too, so the Fn
                 // shortcut has to be re-declared here or it exists only for sighted touch (UX_POLICY:
                 // preserve full merged accessibility actions).
-                onLongClick(label = "Open Fn menu") {
+                // "Open function menu", word for word what CompactFnButton above and the opened pane
+                // ("Function menu" / "Close function menu") already say: one destination gets one
+                // spoken name, and "Fn" is a printed glyph, not a word.
+                onLongClick(label = "Open function menu") {
                     if (!enabled) return@onLongClick false
                     longActivate()
                     true
@@ -707,7 +722,7 @@ private fun DialChip(
                 enabled = enabled,
                 role = Role.Button,
                 onClick = onClick,
-                onLongClickLabel = "Open Fn menu",
+                onLongClickLabel = "Open function menu",
                 onLongClick = onLongClick,
             ),
         contentAlignment = Alignment.Center,

@@ -505,8 +505,10 @@ fun CameraScreen(
                             .size(rect.width.dp, rect.height.dp)
                             .border(1.dp, Color.White.copy(alpha = 0.85f))
                             .semantics {
+                                // Name only. The node declares no actions, so TalkBack already
+                                // announces it as non-interactive; a stateDescription saying so spent
+                                // a spoken line restating what the absence of an action already says.
                                 contentDescription = "Loupe overview"
-                                stateDescription = "Non-interactive"
                             }
                             // Consume the overview's pointer stream as well as guarding the viewfinder's
                             // focus dispatch. It is a framing reference, never a second focus plane.
@@ -690,9 +692,9 @@ fun CameraScreen(
                     .fillMaxSize()
                     .focusable()
                     .clearAndSetSemantics {
-                        // "Self-timer", hyphenated like the menu row: one feature, one spelling.
+                        // "Self-timer": one feature, one spelling across every spoken string.
                         contentDescription = "Self-timer"
-                        stateDescription = "${state.timerCountdownSec} seconds remaining"
+                        stateDescription = timerCountdownDescription(state.timerCountdownSec)
                         // POLITE, not Assertive: the stateDescription changes at 1 Hz, so Assertive
                         // made a 10 s timer interrupt TalkBack ten times. The sibling ticking readout
                         // already takes the opposite line for the same reason (RecordingIndicator:
@@ -705,7 +707,7 @@ fun CameraScreen(
                         }
                     }
                     .clickable(
-                        onClickLabel = "Cancel self timer",
+                        onClickLabel = "Cancel self-timer",
                         role = Role.Button,
                         onClick = { currentActions.value.onCapturePhoto() },
                     ),
@@ -1224,7 +1226,16 @@ private fun FlashButton(mode: FlashMode, onClick: () -> Unit, modifier: Modifier
         FlashMode.TORCH -> CameraColors.Accent
         else -> CameraColors.TextPrimary
     }.copy(alpha = if (enabled) 1f else 0.38f)
-    ChromeIconButton(onClick = onClick, contentDescription = "Flash ${flashModeLabel(mode)}", modifier = modifier, enabled = enabled) {
+    // Name constant, value in the state: the bolt glyph does not spell which of the four modes is
+    // live, but folding the mode INTO the name renamed the node on every cycle, which is what
+    // TalkBack tracks focus by. Same split GridButton and FlipCameraButton already use.
+    ChromeIconButton(
+        onClick = onClick,
+        contentDescription = "Flash",
+        stateDescription = flashModeLabel(mode),
+        modifier = modifier,
+        enabled = enabled,
+    ) {
         Canvas(Modifier.size(16.dp)) {
             val bolt = Path().apply {
                 moveTo(size.width * 0.56f, 0f)
@@ -1259,7 +1270,13 @@ private fun FlashButton(mode: FlashMode, onClick: () -> Unit, modifier: Modifier
 
 @Composable
 private fun TimerButton(timer: ShutterTimer, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
-    ChromeIconButton(onClick = onClick, contentDescription = "Self-timer ${shutterTimerLabel(timer)}", modifier = modifier, enabled = enabled) {
+    ChromeIconButton(
+        onClick = onClick,
+        contentDescription = "Self-timer",
+        stateDescription = shutterTimerLabel(timer),
+        modifier = modifier,
+        enabled = enabled,
+    ) {
         if (timer == ShutterTimer.OFF) {
             Canvas(Modifier.size(16.dp)) {
                 val color = CameraColors.TextSecondary.copy(alpha = if (enabled) 1f else 0.38f)
@@ -1275,7 +1292,13 @@ private fun TimerButton(timer: ShutterTimer, onClick: () -> Unit, modifier: Modi
 
 @Composable
 private fun AspectButton(ratio: AspectRatio, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
-    ChromeIconButton(onClick = onClick, contentDescription = "Aspect ratio ${aspectRatioLabel(ratio)}", modifier = modifier, enabled = enabled) {
+    ChromeIconButton(
+        onClick = onClick,
+        contentDescription = "Aspect ratio",
+        stateDescription = aspectRatioLabel(ratio),
+        modifier = modifier,
+        enabled = enabled,
+    ) {
         Canvas(Modifier.size(18.dp)) {
             val color = CameraColors.TextPrimary.copy(alpha = if (enabled) 1f else 0.38f)
             val sw = 1.4.dp.toPx()
@@ -1531,7 +1554,17 @@ private fun StatusInfoPill(state: CameraUiState, modifier: Modifier = Modifier) 
     Row(
         modifier = modifier
             .background(HudPlate, RoundedCornerShape(8.dp))
-            .padding(horizontal = 12.dp, vertical = 6.dp),
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            // The pill is ONE readout, so it clears its leaves and speaks them together: unmerged,
+            // TalkBack read the raw glyphs — "45m" (which is a distance aloud) and a bare "1234"
+            // that names nothing. The visible shortening stays; only the spoken form spells it out.
+            .clearAndSetSemantics {
+                contentDescription = statusInfoDescription(
+                    batteryPct = state.batteryPct,
+                    remaining = remaining,
+                    video = state.mode == CaptureMode.VIDEO,
+                )
+            },
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -2201,14 +2234,14 @@ private fun ShutterButton(
             .focusable()
             .clearAndSetSemantics {
                 contentDescription = when {
-                    timerCountdownSec > 0 -> "Cancel self timer"
+                    timerCountdownSec > 0 -> "Cancel self-timer"
                     mode == CaptureMode.PHOTO -> "Take photo"
                     isRecording -> "Stop recording"
                     else -> "Start recording"
                 }
                 role = Role.Button
                 stateDescription = when {
-                    timerCountdownSec > 0 -> "$timerCountdownSec seconds remaining"
+                    timerCountdownSec > 0 -> timerCountdownDescription(timerCountdownSec)
                     enabled -> "Ready"
                     else -> "Unavailable"
                 }
@@ -2224,7 +2257,7 @@ private fun ShutterButton(
                 interactionSource = interaction,
                 indication = null,
                 role = Role.Button,
-                onClickLabel = if (timerCountdownSec > 0) "Cancel self timer" else null,
+                onClickLabel = if (timerCountdownSec > 0) "Cancel self-timer" else null,
                 onClick = activate,
             ),
     ) {

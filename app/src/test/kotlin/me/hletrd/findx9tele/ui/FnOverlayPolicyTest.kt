@@ -3,8 +3,12 @@ package me.hletrd.findx9tele.ui
 import me.hletrd.findx9tele.camera.CameraUiState
 import me.hletrd.findx9tele.camera.CaptureMode
 import me.hletrd.findx9tele.camera.FnSlot
+import me.hletrd.findx9tele.camera.FocusMode
+import me.hletrd.findx9tele.ui.controls.fnSlotLabel
 import me.hletrd.findx9tele.ui.controls.fnSlotValue
+import me.hletrd.findx9tele.ui.controls.focusModeLabel
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -200,5 +204,38 @@ class FnOverlayPolicyTest {
         // The alias must not be "Steady": the OSD spends that word on one specific VALUE (ENHANCED).
         assertEquals("Stabilization", fnOverlayVisualLabel(FnSlot.STABILIZATION, false))
         assertEquals("Stab", fnOverlayVisualLabel(FnSlot.STABILIZATION, true))
+    }
+
+    @Test
+    fun `one slot has one spoken name across the Fn tray and the persistent dial chip`() {
+        // The invariant whose absence let FOCUS and SHUTTER drift: a slot is ONE control shown on two
+        // surfaces (the Fn tray tile in CameraScreen, the always-visible dial chip in ManualDials), and
+        // both name themselves from fnSlotLabel. The tray tile's contentDescription is fnSlotLabel(slot)
+        // directly; the dial chip's accessibleName defaults to its DRAWN label, so the two slots whose
+        // pill text is not their name pass fnSlotLabel(slot) explicitly.
+        FnSlot.entries.forEach { slot ->
+            val spoken = fnSlotLabel(slot)
+            assertTrue("every slot needs a spoken name, $slot has none", spoken.isNotBlank())
+            // Portrait: the drawn tray label IS the spoken name, with no shortening in between.
+            assertEquals(spoken, fnOverlayVisualLabel(slot, heldLandscape = false))
+        }
+
+        // FOCUS draws the LIVE AF mode, so its drawn label is not (and must never become) its name —
+        // a node renamed on every AF cycle is a node TalkBack cannot keep focus on.
+        assertEquals("Focus", fnSlotLabel(FnSlot.FOCUS))
+        FocusMode.entries.forEach { mode ->
+            assertNotEquals(
+                "the FOCUS chip's drawn label is a value; the spoken name must not be it",
+                fnSlotLabel(FnSlot.FOCUS),
+                focusModeLabel(mode),
+            )
+        }
+        // SHUTTER draws "SS", a printed abbreviation with no spoken form.
+        assertEquals("Shutter", fnSlotLabel(FnSlot.SHUTTER))
+        assertNotEquals("SS", fnSlotLabel(FnSlot.SHUTTER))
+
+        // The held tray is the ONE surface allowed to shorten; it shortens the VISIBLE label only.
+        assertEquals("Stab", fnOverlayVisualLabel(FnSlot.STABILIZATION, heldLandscape = true))
+        assertEquals("Stabilization", fnSlotLabel(FnSlot.STABILIZATION))
     }
 }

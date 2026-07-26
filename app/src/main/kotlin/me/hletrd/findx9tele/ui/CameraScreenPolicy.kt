@@ -22,7 +22,8 @@ import kotlin.math.sin
 /**
  * Non-composable policy helpers for [CameraScreen], hoisted (behavior-locked, verbatim) out of
  * CameraScreen.kt so the pure decision logic lives apart from Compose emission: status urgency and
- * display duration, rotated-layout bounds math, the Fn overlay's orientation-aware layout/copy
+ * display duration, the spoken forms of the self-timer countdown and the status pill,
+ * rotated-layout bounds math, the Fn overlay's orientation-aware layout/copy
  * policy, exposure-meter visibility/needle math, preview letterbox placement, focal-rail and
  * mode-carousel accessibility state, and the glyph-rotation unwrap. Everything here is plain
  * Kotlin over enums/data (host-testable); the composables that consume these stay in
@@ -42,6 +43,58 @@ internal fun statusDisplayDurationMs(message: String?): Long? = when {
     listOf("saved", "deleted", "loaded").any { token -> message.contains(token, ignoreCase = true) } ->
         1_500L
     else -> 2_500L
+}
+
+/**
+ * The self-timer countdown, spoken. Its node is a 1 Hz `LiveRegionMode.Polite` region, so TalkBack
+ * reads this unprompted on EVERY tick — including the last one, where the interpolated plural said
+ * "1 seconds remaining". Hoisted because a string built inline inside a semantics block is reachable
+ * from no host test at all; both the countdown overlay and the shutter button read it from here so
+ * the two can never disagree about the same second.
+ */
+internal fun timerCountdownDescription(sec: Int): String =
+    if (sec == 1) "1 second remaining" else "$sec seconds remaining"
+
+/**
+ * The battery + remaining-media pill, spoken as ONE readout. The drawn copy is deliberately
+ * telegraphic for a finder — "72%", then "45m" / "9h30m" / a bare shot count — but read aloud "45m"
+ * is a distance and "1234" names nothing at all. This spells the same two facts out in words while
+ * the pill keeps its short glyphs; [remaining] is the exact token the pill draws, so there is one
+ * source of truth for the number and only its wording differs.
+ */
+internal fun statusInfoDescription(batteryPct: Int, remaining: String?, video: Boolean): String {
+    val parts = mutableListOf<String>()
+    if (batteryPct >= 0) parts += "Battery $batteryPct percent"
+    remaining?.let { token -> remainingMediaDescription(token, video)?.let { parts += it } }
+    return parts.joinToString(", ")
+}
+
+/** "1 shot" / "2 shots" — a spoken plural must follow the count, unlike the drawn digits. */
+private fun countedUnit(value: Long, singular: String): String =
+    if (value == 1L) "$value $singular" else "$value ${singular}s"
+
+/**
+ * Words for the pill's remaining-media token. Both branches saturate with a trailing "+" ("9h+",
+ * "9999+"), which reads as "Over ..." rather than a plus sign. An unparsable token yields null so a
+ * future format change degrades to the battery fact alone instead of speaking punctuation.
+ */
+private fun remainingMediaDescription(token: String, video: Boolean): String? {
+    val over = token.endsWith("+")
+    val body = token.removeSuffix("+")
+    val spoken = if (video) {
+        val hourMark = body.indexOf('h')
+        val hours = if (hourMark < 0) 0L else body.substring(0, hourMark).toLongOrNull() ?: return null
+        val minuteText = (if (hourMark < 0) body else body.substring(hourMark + 1)).removeSuffix("m")
+        val minutes = if (minuteText.isEmpty()) 0L else minuteText.toLongOrNull() ?: return null
+        when {
+            hours > 0 && minutes > 0 -> "${countedUnit(hours, "hour")} ${countedUnit(minutes, "minute")}"
+            hours > 0 -> countedUnit(hours, "hour")
+            else -> countedUnit(minutes, "minute")
+        }
+    } else {
+        countedUnit(body.toLongOrNull() ?: return null, "shot")
+    }
+    return if (over) "Over $spoken remaining" else "$spoken remaining"
 }
 
 internal data class RotatedLayoutBounds(val widthPx: Int, val heightPx: Int)

@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
@@ -244,17 +245,28 @@ internal fun <T> SegmentedSelector(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                // selectableGroup(): this row is ONE exclusive choice, and saying so is what makes
+                // TalkBack announce a chip's position within it ("2 of 3"). Every other
+                // exclusive-choice row in the app already declares it (FocalRail, the mode carousel,
+                // the dial ruler, the settings rail). PhotoFormatToggles must NOT get this — those
+                // chips are multi-select and the group would lie about exclusivity.
+                .selectableGroup()
                 .trailingEdgeFadeScrollHint(optionScroll)
                 .horizontalScroll(optionScroll),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             options.forEach { option ->
                 val isSelected = option == selected
+                // Each chip carries the row label in its OWN name: the label is a sibling Text, so an
+                // unnamed chip announced a bare value ("Off") with nothing saying what is off — and
+                // "Sharpness" and "NR" draw the SAME three values back to back in the Image tab.
+                val optionSemantics = segmentedOptionSemantics(label, labelFor(option))
                 MinTouchTarget48 {
                     FilterChip(
                         selected = isSelected,
                         onClick = { onSelect(option) },
                         enabled = enabled,
+                        modifier = Modifier.semantics { contentDescription = optionSemantics.label },
                         // labelMedium binds the chip to the SAME size as the row label naming it.
                         // Material's FilterChipTokens.LabelTextFont resolves to labelLarge (14 sp),
                         // so an unbound chip rendered LARGER than that label and larger than the
@@ -673,17 +685,22 @@ internal fun TransferSelector(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                // Same exclusive-choice group and same per-chip naming as SegmentedSelector: this is
+                // that row hand-rolled for one enum, and it inherited the identical gap.
+                .selectableGroup()
                 .trailingEdgeFadeScrollHint(optionScroll)
                 .horizontalScroll(optionScroll),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             ColorTransfer.entries.forEach { option ->
                 val isSelected = transfer == option
+                val optionSemantics = segmentedOptionSemantics("Transfer", transferLabel(option))
                 MinTouchTarget48 {
                     FilterChip(
                         selected = isSelected,
                         onClick = { onTransfer(option) },
                         enabled = enabled,
+                        modifier = Modifier.semantics { contentDescription = optionSemantics.label },
                         label = {
                             Text(
                                 transferLabel(option),

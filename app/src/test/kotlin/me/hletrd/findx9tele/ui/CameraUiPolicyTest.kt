@@ -9,6 +9,7 @@ import me.hletrd.findx9tele.camera.FocusMode
 import me.hletrd.findx9tele.camera.ManualControls
 import me.hletrd.findx9tele.camera.normalizeFnSlots
 import me.hletrd.findx9tele.focus.focusConfidenceLabel
+import me.hletrd.findx9tele.ui.controls.proSheetUsesSideLayout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -296,5 +297,76 @@ class CameraUiPolicyTest {
             "SOFT",
             tag(CameraUiState(focusConfidence = FocusConfidenceSource.FRAME_DETAIL, macroCloserLensLabel = "1×")),
         )
+    }
+
+    @Test
+    fun `settings sheet selects a side panel only in landscape`() {
+        // (Moved here from SettingSemanticsTest, which is an accessibility file — a layout-policy
+        // assertion parked there is part of why that surface read as covered.)
+        assertTrue(proSheetUsesSideLayout(900f, 400f))
+        assertFalse(proSheetUsesSideLayout(400f, 900f))
+        assertFalse(proSheetUsesSideLayout(500f, 500f))
+    }
+
+    @Test
+    fun `the self-timer countdown speaks a correct plural on its final second`() {
+        // The countdown node is a 1 Hz Polite live region, so the last tick of EVERY timer was spoken:
+        // "1 seconds remaining". The overlay and the shutter button read the same helper, so they
+        // cannot disagree about one second.
+        assertEquals("1 second remaining", timerCountdownDescription(1))
+        assertEquals("2 seconds remaining", timerCountdownDescription(2))
+        assertEquals("3 seconds remaining", timerCountdownDescription(3))
+        assertEquals("10 seconds remaining", timerCountdownDescription(10))
+    }
+
+    @Test
+    fun `the status pill speaks battery and remaining media in words`() {
+        // Photo: a bare integer names nothing aloud, and "9999+" is the saturation token.
+        assertEquals(
+            "Battery 72 percent, 1234 shots remaining",
+            statusInfoDescription(batteryPct = 72, remaining = "1234", video = false),
+        )
+        assertEquals(
+            "Battery 5 percent, Over 9999 shots remaining",
+            statusInfoDescription(batteryPct = 5, remaining = "9999+", video = false),
+        )
+        assertEquals(
+            "Battery 100 percent, 1 shot remaining",
+            statusInfoDescription(batteryPct = 100, remaining = "1", video = false),
+        )
+
+        // Video: "45m" is a distance aloud, and the hour branches must not be read as glyphs.
+        assertEquals(
+            "Battery 72 percent, 45 minutes remaining",
+            statusInfoDescription(batteryPct = 72, remaining = "45m", video = true),
+        )
+        assertEquals(
+            "Battery 72 percent, 9 hours 30 minutes remaining",
+            statusInfoDescription(batteryPct = 72, remaining = "9h30m", video = true),
+        )
+        assertEquals(
+            "Battery 72 percent, Over 9 hours remaining",
+            statusInfoDescription(batteryPct = 72, remaining = "9h+", video = true),
+        )
+        assertEquals(
+            "Battery 72 percent, 1 minute remaining",
+            statusInfoDescription(batteryPct = 72, remaining = "1m", video = true),
+        )
+        // A whole-hour token drops the empty minute clause rather than saying "0 minutes".
+        assertEquals(
+            "Battery 72 percent, 1 hour remaining",
+            statusInfoDescription(batteryPct = 72, remaining = "1h0m", video = true),
+        )
+    }
+
+    @Test
+    fun `the status pill speaks only the facts it actually has`() {
+        // The pill hides each half independently (no battery telemetry yet; unknown free space), so the
+        // spoken form must not emit a dangling separator or a fact it does not hold.
+        assertEquals("42 shots remaining", statusInfoDescription(batteryPct = -1, remaining = "42", video = false))
+        assertEquals("Battery 42 percent", statusInfoDescription(batteryPct = 42, remaining = null, video = false))
+        // An unrecognized token degrades to the battery fact instead of speaking punctuation.
+        assertEquals("Battery 42 percent", statusInfoDescription(batteryPct = 42, remaining = "??", video = true))
+        assertEquals("Battery 42 percent", statusInfoDescription(batteryPct = 42, remaining = "??", video = false))
     }
 }

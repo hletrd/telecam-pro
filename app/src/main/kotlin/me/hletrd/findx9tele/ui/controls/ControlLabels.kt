@@ -46,6 +46,17 @@ internal fun toggleSettingSemantics(label: String, checked: Boolean): SettingSem
 internal fun dropdownSettingSemantics(label: String, selected: String): SettingSemantics =
     SettingSemantics(label = label, state = selected)
 
+/**
+ * One chip inside a [SegmentedSelector]-class row. Unlike the three builders above, the row's visible
+ * label is a SIBLING of the chips, not part of them — so each chip announced only its own value and
+ * the label became an orphan node. The Image tab stacks "Sharpness" and "NR" consecutively and BOTH
+ * draw [processingLevelLabel], so a TalkBack user heard "Off, Fast, HQ" twice over with nothing naming
+ * which control they were on. Carrying the row label into each chip's own name is what makes a chip
+ * self-describing; the value stays in [SettingSemantics.state] so the name is still stable per option.
+ */
+internal fun segmentedOptionSemantics(label: String, option: String): SettingSemantics =
+    SettingSemantics(label = "$label $option", state = option)
+
 // ---------------------------------------------------------------------------
 // Enum -> short-label mappings
 // ---------------------------------------------------------------------------
