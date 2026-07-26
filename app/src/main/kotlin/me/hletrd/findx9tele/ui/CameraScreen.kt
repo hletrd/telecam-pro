@@ -1145,8 +1145,10 @@ private fun TapFocusHoldChip(onReset: () -> Unit, modifier: Modifier = Modifier)
         contentAlignment = Alignment.Center,
     ) {
         Text(
-            // "TAP AF", the name the menu row and the a11y state already use. "AF HOLD" was a third
-            // name for one state, and it read as a sibling of the unrelated AFL lock tag.
+            // The viewfinder's compact form of the menu's "Tap Focus" row (ProSheet.kt); the a11y
+            // state above spells the same concept out as "Tap focus held". It replaced "AF HOLD",
+            // which read as a sibling of the unrelated AFL exposure-lock tag in the OSD.
+            // "AF HOLD" remains the INTERNAL concept name (CameraEngine, docs/ARCHITECTURE.md).
             text = "TAP AF ×",
             color = CameraColors.Accent,
             style = hudGlyph(11.sp),
@@ -1622,11 +1624,19 @@ private fun FnOverlay(
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
                 .padding(horizontal = 14.dp)
-                // 154 dp = the resting height of the bottom cluster (dial-chip row + focal rail +
-                // mode pair + shutter row), so the tray sits directly above it instead of over it.
-                // It is a MEASURED constant re-stated by hand: the live height already exists as
-                // bottomClusterRestHeightPx. Any change to the cluster's rows, insets or type sizes
-                // silently invalidates this number — re-measure it, do not nudge it.
+                // 154 dp clears the cluster's two ACTION rows and nothing above them: measured up
+                // from the same navigation-bar inset, the cluster spends 20 (its own bottom pad) +
+                // 76 (shutter row) + 8 + 48 (mode pair) = 152 dp on them, so the tray's bottom edge
+                // lands 2 dp clear of the mode pair. The focal rail above that (160-208 dp) is
+                // deliberately UNDER the tray — the whole screen is scrimmed while Fn is open, and
+                // the rail's lens presets are not what the tray is competing with for attention.
+                //
+                // NOT interchangeable with bottomClusterRestHeightPx, despite that being a live
+                // measurement of the same cluster: it reports the Column's CONTENT height only
+                // (the 12/20 dp padding and navigationBarsPadding sit left of its onSizeChanged, so
+                // they are excluded → ~188 dp here), and it grows with the DISP dial-chip row, which
+                // would make the tray's anchor move with detail state. It is measured for
+                // previewTopPx's reserve, which wants exactly that behaviour; this anchor does not.
                 .padding(bottom = 154.dp)
                 .fillMaxWidth()
             FnOverlayAnchor.CENTER_START -> Modifier

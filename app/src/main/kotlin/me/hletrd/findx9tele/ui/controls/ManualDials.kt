@@ -528,6 +528,11 @@ private fun FnDialChip(
         FnSlot.STABILIZATION -> DialChip(
             // Full words, not in-house abbreviations ("Stab"/"Steady" read as nonsense to camera
             // users — feedback). Values come from VideoStabMode.label (Off/Standard/Active).
+            // The feedback governs THIS chip and stands. The one exception is the held-landscape Fn
+            // tray, where fnOverlayVisualLabel/Value (CameraScreenPolicy.kt) shortens visual copy to
+            // fit a 148 dp tile — "Stab", "Gate", "Std", "TL", "Day", "Tung." — while accessibility
+            // keeps the complete label. That is a width seam with its own justification, not this
+            // rule being overridden.
             label = "Stabilization",
             value = state.videoStabMode.label,
             active = state.videoStabMode != VideoStabMode.OFF,

@@ -80,10 +80,12 @@ class HudContrastTest {
 
     @Test
     fun `destructive review delete icon clears the floor at the shared alpha`() {
-        // The red trash glyph (#FF6B6B) was the worst interactive contrast found (1.43:1 at 0.5 alpha);
-        // at the shared floor it clears 4.5, so no opaque plate is needed. A destructive action must
-        // never be ambiguous over a bright review frame.
-        val ratio = contrastRatioOnWhiteScrim(0xFF6B6B, HUD_TEXT_SCRIM_ALPHA)
+        // The red trash glyph (CameraColors.Alert) was the worst interactive contrast found (1.43:1
+        // at 0.5 alpha); at the shared floor it clears 4.5, so no opaque plate is needed. A
+        // destructive action must never be ambiguous over a bright review frame. LIVE surface, so it
+        // reads the real palette (see the doctrine above); the pre-fix 0.5-alpha case above this one
+        // documents history and keeps its literal on purpose.
+        val ratio = contrastRatioOnWhiteScrim(rgbOf(CameraColors.Alert), HUD_TEXT_SCRIM_ALPHA)
         assertTrue("delete-red contrast was $ratio", ratio >= 4.5)
     }
 

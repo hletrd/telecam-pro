@@ -627,7 +627,7 @@ private fun MemoryPresetRow(
                     )
                 },
                 colors = pixelChipColors(),
-                border = pixelChipBorder(false),
+                border = pixelChipBorder(false, !locked),
             )
         }
     }
@@ -721,6 +721,10 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         onValueChange = { actions.onJpegQuality(it.roundToInt()) },
         valueRange = 1f..100f,
     )
+    // "Release", the Sony group name for drive mode + interval + self-timer. A bare "Drive" header
+    // would only echo the row directly under it, but WITHOUT a header here the three release rows
+    // sat under "Format" and read as output-format settings.
+    SectionHeader("Release")
     SegmentedSelector(
         label = "Drive",
         options = DriveMode.entries,
@@ -863,7 +867,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
                 enabled = customWbCaptureEnabled,
                 label = { Text("Capture Custom WB", style = MaterialTheme.typography.labelMedium) },
                 colors = pixelChipColors(),
-                border = pixelChipBorder(controls.wbMode == WbMode.CUSTOM),
+                border = pixelChipBorder(controls.wbMode == WbMode.CUSTOM, customWbCaptureEnabled),
             )
         }
     }

@@ -349,7 +349,7 @@ fun AudioMeter(level: Float, modifier: Modifier = Modifier) {
     val fill = level.coerceIn(0f, 1f)
     val fillColor = when {
         fill < 0.6f -> Color(0xFF4CD964)
-        fill < 0.85f -> Color(0xFFFFD60A)
+        fill < 0.85f -> CameraColors.ManualActive
         else -> CameraColors.Record
     }
     Box(

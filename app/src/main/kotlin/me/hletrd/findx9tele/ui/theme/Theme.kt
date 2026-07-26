@@ -54,9 +54,10 @@ object CameraColors {
      * Five decorative borders drifted across 0.10-0.15 alpha, which reads as five slightly different
      * greys rather than one edge treatment.
      *
-     * NOT for interactive boundaries: the 0.18 chip borders (settings FilterChip, the Fn close pill,
-     * the FocalRail circle) stay where they are — composited on Pill they already measure ~1.8:1, and
-     * lowering an affordance edge is not a cleanup.
+     * NOT for interactive boundaries: the four 0.18 chip borders (the settings FilterChip via
+     * `pixelChipBorder`, the dial close pill, the FocalRail circle, and MediaReview's
+     * ReviewActionButton) stay where they are — composited on Pill they already measure ~1.8:1, and
+     * lowering an affordance edge is not a cleanup. (The Fn overlay's own Close carries no border.)
      */
     val Hairline = Color.White.copy(alpha = 0.14f)
 }
@@ -198,7 +199,8 @@ private val TeleTypography = Typography().run {
         // The sheet's only real prose role: the trademark and OFL footnotes. Slightly looser leading
         // than labelSmall precisely because it is prose and not a caption.
         bodySmall = bodySmall.camera(12.sp, 17.sp, 0.sp),
-        // REC timecode, slider values, review zoom readout.
+        // REC timecode, review zoom control. (The review zoom READOUT is labelMedium, and the
+        // settings sliders' values moved off this role — they follow their row label's labelMedium.)
         labelLarge = labelLarge.camera(14.sp, 20.sp, (-0.1).sp),
         // The OSD workhorse (`300 mm TELE`, `4K 30p HEVC 84M`, `TL 5s`) AND every settings row label
         // and option chip.

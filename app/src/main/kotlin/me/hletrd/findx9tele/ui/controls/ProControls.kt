@@ -102,6 +102,38 @@ internal fun SectionHeader(text: String, modifier: Modifier = Modifier) {
 }
 
 /**
+ * The ONE dim applied to a disabled settings row's own text. Alpha, not a colour swap: it composes
+ * with whatever colour the element is already drawn in, so label and value dim by the same amount
+ * without either of them having to know the other's colour.
+ */
+internal const val DISABLED_ROW_ALPHA = 0.55f
+
+/**
+ * The ONE settings-row label treatment, shared by every row primitive in this file.
+ *
+ * WEIGHT carries hierarchy down the settings page, not size: SectionHeader (11 sp/600, tracked, dim)
+ * -> row label (12 sp/600, white) -> value or option chip (12 sp/500). Every row LABEL is SemiBold
+ * and every VALUE and chip is Medium, so nothing has to grow to outrank anything. Before this was one
+ * function, three of the seven primitives were SemiBold and four were Medium, which made the weight
+ * alternate inside consecutive rows of one tab — Focus read 600, 600, 500, 500, 500, 600 down the
+ * page, i.e. the ladder inverted twice for reasons a reader could not see.
+ *
+ * `enabled` dims through [DISABLED_ROW_ALPHA]. That state also used to have three implementations in
+ * this one sheet — no dim at all, a [CameraColors.TextSecondary] swap, and this alpha — on rows that
+ * sit directly beside each other in the Exposure tab.
+ */
+@Composable
+internal fun SettingsRowLabel(text: String, modifier: Modifier = Modifier, enabled: Boolean = true) {
+    Text(
+        text,
+        color = CameraColors.TextPrimary.copy(alpha = if (enabled) 1f else DISABLED_ROW_ALPHA),
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = FontWeight.SemiBold,
+        modifier = modifier,
+    )
+}
+
+/**
  * A control and the caption that explains it, bound as ONE block in the tab rhythm.
  *
  * Captions are 4 dp under their control, so the page's base gap can separate GROUPS instead of
@@ -128,9 +160,19 @@ internal fun pixelChipColors() = FilterChipDefaults.filterChipColors(
     selectedLabelColor = Color.Black,
 )
 
+/**
+ * The affordance edge shared by every settings [FilterChip]: 0.18 white unselected, none when
+ * selected (the filled white container is its own edge).
+ *
+ * [enabled] must be passed the chip's OWN enablement, not left at `true`: a hard-coded `true` drew
+ * the full-strength affordance edge around a chip that could not be tapped, while its label dimmed —
+ * so the row said "disabled" and "tappable" at once. Material resolves the disabled edge through this
+ * app's own scheme (`onSurface` is white here), landing at white/0.12 — close to the 0.55 the labels
+ * dim by, and no new hand-picked number.
+ */
 @Composable
-internal fun pixelChipBorder(selected: Boolean) = FilterChipDefaults.filterChipBorder(
-    enabled = true,
+internal fun pixelChipBorder(selected: Boolean, enabled: Boolean = true) = FilterChipDefaults.filterChipBorder(
+    enabled = enabled,
     selected = selected,
     borderColor = Color.White.copy(alpha = 0.18f),
     selectedBorderWidth = 0.dp,
@@ -197,18 +239,7 @@ internal fun <T> SegmentedSelector(
             .fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        // SemiBold, and the chips below it are bound to the SAME labelMedium size. Material's
-        // FilterChipTokens.LabelTextFont resolves to labelLarge (14 sp), so an unbound chip rendered
-        // LARGER than the row label naming it and larger than the section header above that —
-        // reading down the panel the size order was 11 -> 12 -> 14, i.e. the most numerous and least
-        // important elements were the biggest text on the page. Hierarchy is carried by WEIGHT
-        // instead (label 12 sp/600, options 12 sp/500); no chip container or touch target moves.
-        Text(
-            label,
-            color = CameraColors.TextPrimary,
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.SemiBold,
-        )
+        SettingsRowLabel(label, enabled = enabled)
         val optionScroll = rememberScrollState()
         Row(
             modifier = Modifier
@@ -224,6 +255,14 @@ internal fun <T> SegmentedSelector(
                         selected = isSelected,
                         onClick = { onSelect(option) },
                         enabled = enabled,
+                        // labelMedium binds the chip to the SAME size as the row label naming it.
+                        // Material's FilterChipTokens.LabelTextFont resolves to labelLarge (14 sp),
+                        // so an unbound chip rendered LARGER than that label and larger than the
+                        // section header above it — reading down the panel the size order was
+                        // 11 -> 12 -> 14, i.e. the most numerous and least important elements were
+                        // the biggest text on the page. [SettingsRowLabel] carries the hierarchy by
+                        // weight instead; no chip container or touch target moves.
+                        //
                         // Single line always: a squeezed chip must scroll into space, never wrap
                         // its label mid-word (the TransferSelector "Log/C3" break class).
                         label = {
@@ -235,7 +274,7 @@ internal fun <T> SegmentedSelector(
                             )
                         },
                         colors = pixelChipColors(),
-                        border = pixelChipBorder(isSelected),
+                        border = pixelChipBorder(isSelected, enabled),
                     )
                 }
             }
@@ -270,11 +309,7 @@ internal fun LabeledSlider(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                label,
-                color = if (enabled) CameraColors.TextPrimary else CameraColors.TextSecondary,
-                style = MaterialTheme.typography.labelMedium,
-            )
+            SettingsRowLabel(label, enabled = enabled)
             // The same right-hand value column as LabelValueRow and DropdownRow: labelMedium,
             // regular weight, Accent. ManualActive is reserved for a LIVE manual exposure override —
             // rendering "JPEG Quality 92" and "Interval 5s" in bold amber put plain settings in the
@@ -437,11 +472,7 @@ internal fun ToggleRow(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            label,
-            color = if (enabled) CameraColors.TextPrimary else CameraColors.TextSecondary,
-            style = MaterialTheme.typography.labelMedium,
-        )
+        SettingsRowLabel(label, enabled = enabled)
         Switch(
             checked = checked,
             onCheckedChange = null,
@@ -485,12 +516,8 @@ internal fun LabelValueRow(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        val alpha = if (enabled) 1f else 0.55f
-        Text(
-            label,
-            color = CameraColors.TextPrimary.copy(alpha = alpha),
-            style = MaterialTheme.typography.labelMedium,
-        )
+        val alpha = if (enabled) 1f else DISABLED_ROW_ALPHA
+        SettingsRowLabel(label, enabled = enabled)
         // Accent marks an AFFORDANCE, not just a value: three rows here are pure readouts
         // ("Recording / Settings locked", "Encoder / …", "Route / …") and rendered in the same blue
         // as the tappable "Privacy Policy → View" / "Tap Focus → Reset" / "… → Add" rows. TextPrimary
@@ -551,12 +578,8 @@ internal fun <T> DropdownRow(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            val alpha = if (enabled) 1f else 0.55f
-            Text(
-                label,
-                color = CameraColors.TextPrimary.copy(alpha = alpha),
-                style = MaterialTheme.typography.labelMedium,
-            )
+            val alpha = if (enabled) 1f else DISABLED_ROW_ALPHA
+            SettingsRowLabel(label, enabled = enabled)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     labelFor(selected),
@@ -639,12 +662,7 @@ internal fun TransferSelector(
     enabled: Boolean = true,
 ) {
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(
-            "Transfer",
-            color = CameraColors.TextPrimary,
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.SemiBold,
-        )
+        SettingsRowLabel("Transfer", enabled = enabled)
         // Scrollable like SegmentedSelector. Five entries USED to exceed the sheet width outright:
         // a fixed Row squeezed the last visible chip until its label broke mid-word ("Log/C3")
         // while SDR fell off entirely. Binding the chips to labelMedium (12 sp, from 14 sp) took
@@ -675,7 +693,7 @@ internal fun TransferSelector(
                             )
                         },
                         colors = pixelChipColors(),
-                        border = pixelChipBorder(isSelected),
+                        border = pixelChipBorder(isSelected, enabled),
                     )
                 }
             }
@@ -694,42 +712,44 @@ internal fun PhotoFormatToggles(
 ) {
     val processedSelected = processedAvailable && formats.wantsProcessedStill
     val rawSelected = rawAvailable && formats.dngRaw
+    // Hoisted so the chip's border sees the SAME enablement as the chip: at least one processed
+    // format must survive unless RAW is on, and RAW needs a processed sibling.
+    val heifEnabled = processedAvailable && (!formats.heif || formats.jpeg || rawSelected)
+    val jpegEnabled = processedAvailable && (!formats.jpeg || formats.heif || rawSelected)
+    val dngEnabled = rawAvailable && (!formats.dngRaw || processedSelected)
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(
-            "Output",
-            color = CameraColors.TextPrimary,
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.SemiBold,
-        )
+        // No `enabled` axis on this row: each format chip carries its own availability, so the label
+        // itself is never the thing that is unavailable.
+        SettingsRowLabel("Output")
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             MinTouchTarget48 {
                 FilterChip(
                     selected = formats.heif,
                     onClick = { onSetPhotoFormats(formats.copy(heif = !formats.heif)) },
-                    enabled = processedAvailable && (!formats.heif || formats.jpeg || rawSelected),
+                    enabled = heifEnabled,
                     label = { Text("HEIF", style = MaterialTheme.typography.labelMedium) },
                     colors = pixelChipColors(),
-                    border = pixelChipBorder(formats.heif),
+                    border = pixelChipBorder(formats.heif, heifEnabled),
                 )
             }
             MinTouchTarget48 {
                 FilterChip(
                     selected = formats.jpeg,
                     onClick = { onSetPhotoFormats(formats.copy(jpeg = !formats.jpeg)) },
-                    enabled = processedAvailable && (!formats.jpeg || formats.heif || rawSelected),
+                    enabled = jpegEnabled,
                     label = { Text("JPEG", style = MaterialTheme.typography.labelMedium) },
                     colors = pixelChipColors(),
-                    border = pixelChipBorder(formats.jpeg),
+                    border = pixelChipBorder(formats.jpeg, jpegEnabled),
                 )
             }
             MinTouchTarget48 {
                 FilterChip(
                     selected = formats.dngRaw,
                     onClick = { onSetPhotoFormats(formats.copy(dngRaw = !formats.dngRaw)) },
-                    enabled = rawAvailable && (!formats.dngRaw || processedSelected),
+                    enabled = dngEnabled,
                     label = { Text("DNG", style = MaterialTheme.typography.labelMedium) },
                     colors = pixelChipColors(),
-                    border = pixelChipBorder(formats.dngRaw),
+                    border = pixelChipBorder(formats.dngRaw, dngEnabled),
                 )
             }
         }
