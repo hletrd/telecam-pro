@@ -94,6 +94,11 @@ interface CameraActions {
     fun onAudioScene(scene: me.hletrd.findx9tele.camera.AudioScene)
     fun onAudioInputPreference(preference: me.hletrd.findx9tele.camera.AudioInputPreference)
     fun onToggleTeleconverter(enabled: Boolean)
+    /**
+     * Declares which PHONE the converter clamps onto. Seeded from `Build.MODEL` at first launch and
+     * overridable; it narrows the converter list and can therefore change the magnification.
+     */
+    fun onPhoneModel(model: me.hletrd.findx9tele.camera.PhoneModel)
     /** Declares WHICH converter is clamped on — a manual choice, never a detection. */
     fun onTeleconverterProfile(profile: me.hletrd.findx9tele.camera.TeleconverterProfile)
     /** Magnification for [me.hletrd.findx9tele.camera.TeleconverterProfile.CUSTOM] only. */

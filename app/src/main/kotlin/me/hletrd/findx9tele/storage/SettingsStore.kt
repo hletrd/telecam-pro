@@ -15,7 +15,10 @@ import me.hletrd.findx9tele.camera.ExposureMode
 import me.hletrd.findx9tele.camera.FnSlot
 import me.hletrd.findx9tele.camera.PeakingColor
 import me.hletrd.findx9tele.camera.PeakingLevel
+import me.hletrd.findx9tele.camera.DEFAULT_PHONE_MODEL
 import me.hletrd.findx9tele.camera.DEFAULT_TELECONVERTER_PROFILE
+import me.hletrd.findx9tele.camera.PhoneModel
+import me.hletrd.findx9tele.camera.reconcileConverter
 import me.hletrd.findx9tele.camera.ShutterTimer
 import me.hletrd.findx9tele.camera.TELECONVERTER_MAGNIFICATION
 import me.hletrd.findx9tele.camera.TeleconverterProfile
@@ -51,8 +54,10 @@ data class ExtraSettings(
     val photoExposureTimeNs: Long = ManualControls().exposureTimeNs,
     val lens: LensChoice = LensChoice.MAIN,
     val teleconverter: Boolean = false,
-    // WHICH converter the toggle above means. Passive glass cannot announce itself, so this is the
-    // user's declaration (see Teleconverter.kt); the phone model only picks the first-launch default.
+    // The converter PAIR (see Teleconverter.kt). Passive glass cannot announce itself, so both are
+    // the user's declaration; detection only ever seeds the phone at first launch, and whether that
+    // detection actually fired is a fact about the current boot, so it is deliberately NOT persisted.
+    val phoneModel: PhoneModel = DEFAULT_PHONE_MODEL,
     val teleconverterProfile: TeleconverterProfile = DEFAULT_TELECONVERTER_PROFILE,
     val teleconverterCustomMagnification: Float = TELECONVERTER_MAGNIFICATION,
     val videoStabMode: VideoStabMode = VideoStabMode.ENHANCED,
@@ -229,6 +234,7 @@ class SettingsStore(private val prefs: SharedPreferences) {
                 jpegQuality = safeInt("${prefix}jpegQuality", d.jpegQuality),
             )
             val ed = ExtraSettings()
+            val restoredPhone = enumOr(safeString("${prefix}phoneModel", null), ed.phoneModel)
             val extras = ExtraSettings(
                 // Legacy alias: pre-2026-07-22 builds persisted the removed O-Log2 option as
                 // "LOG". Map it to S-Log3.Cine (the closest shipped log profile) explicitly —
@@ -247,9 +253,14 @@ class SettingsStore(private val prefs: SharedPreferences) {
                     .coerceAtLeast(1L),
                 lens = enumOr(safeString("${prefix}lens", null), ed.lens),
                 teleconverter = safeBoolean("${prefix}teleconverter", ed.teleconverter),
-                teleconverterProfile = enumOr(
-                    safeString("${prefix}teleconverterProfile", null),
-                    ed.teleconverterProfile,
+                phoneModel = restoredPhone,
+                // reconcileConverter, not a bare enumOr: the two keys are restored independently, so
+                // a blob written under one phone (or hand-edited, or left over from a build whose
+                // catalog paired them differently) could otherwise select a kit that does not clamp
+                // onto the restored phone. A generic or CUSTOM entry survives any phone.
+                teleconverterProfile = reconcileConverter(
+                    restoredPhone,
+                    enumOr(safeString("${prefix}teleconverterProfile", null), ed.teleconverterProfile),
                 ),
                 // normalizeMagnification (not a local coerceIn) so the persisted bounds are the SAME
                 // ones effectiveMagnification enforces at every read — and so a corrupt non-finite
@@ -352,6 +363,7 @@ class SettingsStore(private val prefs: SharedPreferences) {
         putLong("${prefix}photoExposureTimeNs", e.photoExposureTimeNs)
         putString("${prefix}lens", e.lens.name)
         putBoolean("${prefix}teleconverter", e.teleconverter)
+        putString("${prefix}phoneModel", e.phoneModel.name)
         putString("${prefix}teleconverterProfile", e.teleconverterProfile.name)
         putFloat("${prefix}teleconverterCustomMagnification", e.teleconverterCustomMagnification)
         putString("${prefix}videoStabMode", e.videoStabMode.name)

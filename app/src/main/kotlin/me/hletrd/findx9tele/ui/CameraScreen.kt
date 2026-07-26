@@ -2279,6 +2279,7 @@ internal object PreviewCameraActions : CameraActions {
     override fun onAudioScene(scene: me.hletrd.findx9tele.camera.AudioScene) = Unit
     override fun onAudioInputPreference(preference: me.hletrd.findx9tele.camera.AudioInputPreference) = Unit
     override fun onToggleTeleconverter(enabled: Boolean) = Unit
+    override fun onPhoneModel(model: me.hletrd.findx9tele.camera.PhoneModel) = Unit
     override fun onTeleconverterProfile(profile: me.hletrd.findx9tele.camera.TeleconverterProfile) = Unit
     override fun onTeleconverterCustomMagnification(value: Float) = Unit
     override fun onVideoCodec(codec: VideoCodec) = Unit

@@ -39,6 +39,13 @@ internal fun sliderSettingSemantics(label: String, value: String): SettingSemant
 internal fun toggleSettingSemantics(label: String, checked: Boolean): SettingSemantics =
     SettingSemantics(label = label, state = if (checked) "On" else "Off")
 
+/**
+ * A dropdown trigger reads as "<label>, <selected>" so a device UI test can find the row by its
+ * label alone and assert the selection from the same node.
+ */
+internal fun dropdownSettingSemantics(label: String, selected: String): SettingSemantics =
+    SettingSemantics(label = label, state = selected)
+
 // ---------------------------------------------------------------------------
 // Enum -> short-label mappings
 // ---------------------------------------------------------------------------

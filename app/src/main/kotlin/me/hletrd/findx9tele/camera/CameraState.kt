@@ -814,14 +814,18 @@ data class CameraUiState(
     val facing: CameraFacing = CameraFacing.BACK,
     // Teleconverter mode: manual (not auto-detected). ON = afocal 180° flip; locked to the 3× lens.
     val teleconverterMode: Boolean = false,
+    // The converter setting is a PAIR (see Teleconverter.kt): the phone decides WHICH kits clamp on,
+    // then the converter decides the magnification. Only the phone is ever resolved automatically —
+    // Build.MODEL is readable, passive glass is not — and even that only picks a starting selection.
+    val phoneModel: PhoneModel = DEFAULT_PHONE_MODEL,
+    // True only when Build.MODEL actually matched a known phone THIS boot. Deliberately not
+    // persisted and deliberately separate from [phoneModel]: the caption has to distinguish "we
+    // recognised your phone" from "this is merely the default", and a default is not a detection.
+    val phoneModelDetected: Boolean = false,
     // WHICH converter is clamped on, and — for [TeleconverterProfile.CUSTOM] — its magnification.
-    // Also manual: passive glass cannot announce itself. The phone model only pre-selects a default
-    // at first launch (see [detectProfile]); it never gates a capability or a request.
+    // Manual: passive glass cannot announce itself; it never gates a capability or a request.
     val teleconverterProfile: TeleconverterProfile = DEFAULT_TELECONVERTER_PROFILE,
     val teleconverterCustomMagnification: Float = TELECONVERTER_MAGNIFICATION,
-    // The phone model the kit-converter default was matched against, for honest UI copy. Null when
-    // this phone has no known kit optic.
-    val detectedTeleconverterModel: String? = null,
     // Stabilization. Default ENHANCED = HAL OIS+EIS ("super steady"): at 300 mm it reduces the
     // per-frame motion blur (see [VideoStabMode]).
     val videoStabMode: VideoStabMode = VideoStabMode.ENHANCED,

@@ -97,6 +97,7 @@ class PerformQuickFnTest {
         override fun onAudioScene(scene: AudioScene) = hit("onAudioScene($scene)")
         override fun onAudioInputPreference(preference: AudioInputPreference) = hit("onAudioInputPreference")
         override fun onToggleTeleconverter(enabled: Boolean) = hit("onToggleTeleconverter($enabled)")
+        override fun onPhoneModel(model: me.hletrd.findx9tele.camera.PhoneModel) = hit("onPhoneModel($model)")
         override fun onTeleconverterProfile(profile: me.hletrd.findx9tele.camera.TeleconverterProfile) =
             hit("onTeleconverterProfile($profile)")
         override fun onTeleconverterCustomMagnification(value: Float) =

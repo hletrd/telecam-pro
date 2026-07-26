@@ -64,9 +64,12 @@ import me.hletrd.findx9tele.camera.ShutterMode
 import me.hletrd.findx9tele.camera.ShutterTimer
 import me.hletrd.findx9tele.camera.TapFocusPublicationGate
 import me.hletrd.findx9tele.camera.TeleconverterProfile
-import me.hletrd.findx9tele.camera.detectProfile
+import me.hletrd.findx9tele.camera.PhoneModel
+import me.hletrd.findx9tele.camera.defaultConverterFor
+import me.hletrd.findx9tele.camera.detectPhone
 import me.hletrd.findx9tele.camera.effectiveMagnification
 import me.hletrd.findx9tele.camera.normalizeMagnification
+import me.hletrd.findx9tele.camera.reconcileConverter
 import me.hletrd.findx9tele.camera.VideoCodec
 import me.hletrd.findx9tele.camera.VideoFrameRate
 import me.hletrd.findx9tele.camera.WbMode
@@ -188,6 +191,13 @@ class CameraViewModel @JvmOverloads constructor(
     // pre-select which teleconverter entry starts SELECTED. Declared BEFORE init for the same
     // reason as the zoom state above — seedTeleconverterProfile() runs during construction.
     private val deviceModel: String = android.os.Build.MODEL.orEmpty()
+
+    // Resolved once from [deviceModel]. Kept as a FIELD, not recomputed at each use, because it is
+    // the reference every later write of `phoneModel` compares against: the caption may claim a
+    // detection only while the SELECTED phone is still the one Build.MODEL actually named. Without
+    // that comparison, overriding the dropdown to "Other phone" left the caption asserting
+    // "Detected Other phone." — a detection the app never made.
+    private val detectedPhone: PhoneModel? = detectPhone(deviceModel)
 
     // The 16 ms trailing coalescer flush, held as a NAMED Runnable so a remap door / onStop can
     // cancel it — the old anonymous postDelayed lambda had no reference to remove (AGG3-26).
@@ -675,7 +685,7 @@ class CameraViewModel @JvmOverloads constructor(
         engine.onRawSaved = { uri, captureId ->
             recordCaptureOutput(uri, captureId, CaptureOutputKind.RAW)
         }
-        seedTeleconverterProfile()
+        seedPhoneModel()
         restoreSettingsIfEnabled()
         refreshProgramAppSide()
         // Sweep prior-process pending rows first, then restore the newest published family. This
@@ -773,8 +783,11 @@ class CameraViewModel @JvmOverloads constructor(
         }
         // The recalled packet carries its OWN converter, and the TELE zoom ceiling is derived from
         // it — resolve the magnification before anything clamps a zoom against it.
+        // SettingsStore already reconciled the persisted pair; re-running it here costs nothing and
+        // keeps this path correct for any caller that hands over a hand-built ExtraSettings.
+        val restoredConverter = reconcileConverter(e.phoneModel, e.teleconverterProfile)
         val restoredMagnification =
-            effectiveMagnification(e.teleconverterProfile, e.teleconverterCustomMagnification)
+            effectiveMagnification(restoredConverter, e.teleconverterCustomMagnification)
         val restoredOptics = restoredOptics(
             mode = e.mode,
             requestedLens = requestedLens,
@@ -890,7 +903,11 @@ class CameraViewModel @JvmOverloads constructor(
                 mode = e.mode,
                 lens = restoredLens,
                 teleconverterMode = restoredTeleconverter,
-                teleconverterProfile = e.teleconverterProfile,
+                phoneModel = e.phoneModel,
+                // Same re-derivation as the live picker: a restored phone that is not the one this
+                // boot detected must not inherit the "Detected …" claim.
+                phoneModelDetected = e.phoneModel == detectedPhone,
+                teleconverterProfile = restoredConverter,
                 teleconverterCustomMagnification = e.teleconverterCustomMagnification,
                 // Recall/restore packets are rear-route optics; the engine's setResolvedOptics
                 // exits FRONT in the same transaction, so the UI mirrors that here (MR recall
@@ -959,6 +976,7 @@ class CameraViewModel @JvmOverloads constructor(
             },
             lens = s.lens,
             teleconverter = s.teleconverterMode,
+            phoneModel = s.phoneModel,
             teleconverterProfile = s.teleconverterProfile,
             teleconverterCustomMagnification = s.teleconverterCustomMagnification,
             videoStabMode = s.videoStabMode,
@@ -1769,11 +1787,25 @@ class CameraViewModel @JvmOverloads constructor(
         saveSettingsIfEnabled()
     }
 
+    override fun onPhoneModel(model: PhoneModel) {
+        if (rejectBackOnlyOpticsDoor()) return
+        // The phone narrows the converter list, so a kit for the OUTGOING phone cannot stay selected
+        // — and dropping it changes the magnification, which is why this rides the same seam as a
+        // converter pick rather than being a plain state write.
+        applyTeleconverterOptic(
+            phone = model,
+            profile = reconcileConverter(model, _state.value.teleconverterProfile),
+            custom = _state.value.teleconverterCustomMagnification,
+            persistImmediately = true,
+        )
+    }
+
     override fun onTeleconverterProfile(profile: TeleconverterProfile) {
         if (rejectBackOnlyOpticsDoor()) return
         // Discrete pick: commit synchronously like every other one-tap optics choice — the next
         // gesture can be a Recents swipe-kill, and apply()'s async write would die with the process.
         applyTeleconverterOptic(
+            phone = _state.value.phoneModel,
             profile = profile,
             custom = _state.value.teleconverterCustomMagnification,
             persistImmediately = true,
@@ -1784,6 +1816,7 @@ class CameraViewModel @JvmOverloads constructor(
         if (rejectBackOnlyOpticsDoor()) return
         // Ruler drag: bursts of values, so persistence rides the 500 ms trailing debounce.
         applyTeleconverterOptic(
+            phone = _state.value.phoneModel,
             profile = _state.value.teleconverterProfile,
             custom = normalizeMagnification(value),
             persistImmediately = false,
@@ -1791,7 +1824,8 @@ class CameraViewModel @JvmOverloads constructor(
     }
 
     /**
-     * The ONE seam that changes which converter the app believes is mounted.
+     * The ONE seam that changes which converter the app believes is mounted — phone, converter, or
+     * custom magnification, since all three resolve to the same single number.
      *
      * Order matters: the engine (and through it the controller's HAL zoom hint) must know the new
      * optic BEFORE anything re-clamps a zoom against it, because TELE's ceiling is a cap on TOTAL
@@ -1799,6 +1833,7 @@ class CameraViewModel @JvmOverloads constructor(
      * that was legal under the previous optic can be out of range under this one.
      */
     private fun applyTeleconverterOptic(
+        phone: PhoneModel,
         profile: TeleconverterProfile,
         custom: Float,
         persistImmediately: Boolean,
@@ -1806,7 +1841,14 @@ class CameraViewModel @JvmOverloads constructor(
         val magnification = effectiveMagnification(profile, custom)
         engine.setTeleconverterMagnification(magnification)
         _state.update {
-            it.copy(teleconverterProfile = profile, teleconverterCustomMagnification = custom)
+            it.copy(
+                phoneModel = phone,
+                // Re-derived, never carried: picking a different phone by hand un-claims the
+                // detection, and picking the detected one back re-claims it.
+                phoneModelDetected = phone == detectedPhone,
+                teleconverterProfile = profile,
+                teleconverterCustomMagnification = custom,
+            )
         }
         // The converter IS the TELE zoom SCALE, so this is an optics-remap door like mode/lens/TC:
         // a hardware-key glide easing toward an ABSOLUTE target set in the old scale, or a throttled
@@ -1843,20 +1885,26 @@ class CameraViewModel @JvmOverloads constructor(
     }
 
     /**
-     * First-launch default for the converter profile.
+     * First-launch default for the converter PAIR, seeded from the phone.
      *
      * An afocal converter is passive glass on a clamp — no contacts, no ID — so the app can NEVER
      * detect one. What it CAN read is the PHONE, and this is the ONE place in the codebase that does
-     * ([detectProfile] itself stays pure). A model match may only choose which entry starts
-     * SELECTED and supply honest UI copy; no capability, route, or request decision may ever branch
-     * on a model string (every lens is still resolved by ENUMERATING Camera2 capabilities).
+     * ([detectPhone] itself stays pure). A model match may only choose which entries start SELECTED
+     * and license the "Detected …" caption; no capability, route, or request decision may ever
+     * branch on a model string (every lens is still resolved by ENUMERATING Camera2 capabilities).
      *
-     * Runs before [restoreSettingsIfEnabled], so a persisted profile always wins over this seed.
+     * Runs before [restoreSettingsIfEnabled], so a persisted pair always wins over this seed. On an
+     * unrecognised phone nothing is seeded: the state defaults stand and [phoneModelDetected] stays
+     * false, which is exactly what the caption must be able to say.
      */
-    private fun seedTeleconverterProfile() {
-        val kit = detectProfile(deviceModel) ?: return
+    private fun seedPhoneModel() {
+        val phone = detectedPhone ?: return
         _state.update {
-            it.copy(teleconverterProfile = kit, detectedTeleconverterModel = deviceModel)
+            it.copy(
+                phoneModel = phone,
+                phoneModelDetected = true,
+                teleconverterProfile = defaultConverterFor(phone),
+            )
         }
         engine.setTeleconverterMagnification(_state.value.teleconverterMagnification)
     }

@@ -99,8 +99,7 @@ import me.hletrd.findx9tele.camera.ShutterMode
 import me.hletrd.findx9tele.camera.MAX_TELECONVERTER_MAGNIFICATION
 import me.hletrd.findx9tele.camera.MIN_TELECONVERTER_MAGNIFICATION
 import me.hletrd.findx9tele.camera.ShutterTimer
-import me.hletrd.findx9tele.camera.TeleconverterProfile
-import me.hletrd.findx9tele.camera.detectProfile
+import me.hletrd.findx9tele.camera.PhoneModel
 import me.hletrd.findx9tele.camera.VideoCodec
 import me.hletrd.findx9tele.camera.VideoStabMode
 import me.hletrd.findx9tele.camera.VideoFrameRate
@@ -966,11 +965,23 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.labelSmall,
     )
-    // WHICH converter is clamped on. This can never be detected (passive glass, no contacts), so it
-    // is a declaration; the phone model only decides which entry starts selected.
-    SegmentedSelector(
+    // The converter setting is a PAIR, asked in order: the phone decides which kits clamp on, the
+    // converter decides the magnification. Dropdowns, not chips — the flat catalog of every brand's
+    // optics read as a scrolling smear (user-rejected). Only the PHONE is ever resolved
+    // automatically; passive glass cannot announce itself.
+    DropdownRow(
+        label = "Phone",
+        options = PhoneModel.entries,
+        selected = state.phoneModel,
+        labelFor = { it.label },
+        onSelect = actions::onPhoneModel,
+        enabled = rearOpticsMutable,
+    )
+    DropdownRow(
         label = "Converter",
-        options = TeleconverterProfile.entries,
+        // Narrowed to this phone's kits plus the fits-anything entries, so a converter that cannot
+        // physically clamp on is not offerable in the first place.
+        options = state.phoneModel.converters(),
         selected = state.teleconverterProfile,
         labelFor = { it.label },
         onSelect = actions::onTeleconverterProfile,
@@ -986,26 +997,18 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
             enabled = rearOpticsMutable,
         )
     }
-    // The stored model is quoted back only while the SELECTED profile is still this phone's kit
-    // optic — otherwise "Default for PMA110" would describe a converter the user replaced.
-    // detectProfile is pure and takes the already-captured string; nothing here reads a Build field.
-    val kitPhone = state.detectedTeleconverterModel
-        ?.takeIf { detectProfile(it) == state.teleconverterProfile }
-    // The computed focal for THIS phone's host lens, never the preset's product number: a 2.35×
-    // extender sold as "200 mm" is 165 mm on a 70 mm periscope.
+    // The computed focal for THIS phone's host lens, never the preset's product number: a "ZEISS
+    // 200 mm" is 2.35x glass, and 2.35x on this phone's 70 mm periscope is 165 mm.
     val converterFocal = "${formatFocalMm(state.teleconverterFocalMm)} equiv."
     Text(
         when {
             !rearRoute -> "Rear camera only."
-            kitPhone != null -> "$converterFocal Default for $kitPhone."
-            // A named optic identifies itself by the phone it ships with — which is the only thing
-            // "per-device preset" can honestly mean for passive glass.
-            state.teleconverterProfile.kit.isNotEmpty() ->
-                "$converterFocal ${state.teleconverterProfile.kit}."
-            // Generic and custom entries get the focal and nothing else. The earlier copy told the
-            // user to "set this to the optic you mounted" here, which is the one place they already
-            // have: it fired precisely BECAUSE they made a deliberate pick, so it read as a warning
-            // about a correct action (and this app does not nag — see docs/UX_POLICY.md).
+            // Only the PHONE is ever detected, and only when Build.MODEL actually matched this boot
+            // — a default that happens to be right is not a detection. Nothing is appended
+            // otherwise: the earlier copy told the user to "set this to the optic you mounted",
+            // which fired precisely BECAUSE they had just made a deliberate pick, so it read as a
+            // warning about a correct action (this app does not nag — see docs/UX_POLICY.md).
+            state.phoneModelDetected -> "$converterFocal Detected ${state.phoneModel.label}."
             else -> converterFocal
         },
         color = CameraColors.TextSecondary,

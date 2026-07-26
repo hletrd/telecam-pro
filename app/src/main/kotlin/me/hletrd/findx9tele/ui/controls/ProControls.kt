@@ -24,7 +24,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
@@ -32,6 +36,10 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -42,6 +50,7 @@ import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
@@ -434,6 +443,117 @@ internal fun LabelValueRow(
             color = CameraColors.Accent.copy(alpha = alpha),
             style = MaterialTheme.typography.labelMedium,
         )
+    }
+}
+
+/**
+ * Label + selected value that opens a dropdown menu of [options].
+ *
+ * The alternative for an exclusive choice here is [SegmentedSelector], and it stays the default: a
+ * chip row shows every option at once, which is what a photographer wants for a 2–5 way pick they
+ * change while shooting. This exists for the opposite shape — a long, mostly-static list where the
+ * chips become a horizontally scrolling smear (the converter catalog, user-rejected in that form).
+ * Prefer the chips; reach for this only when the list is long enough to stop reading as a row.
+ *
+ * The trigger reuses [LabelValueRow]'s exact layout and colors so a dropdown row sits flush with the
+ * toggle/value rows above and below it, and it carries a merged `contentDescription` (label +
+ * current selection) so the on-device UI tests can find it by label. The menu itself is capped and
+ * scrollable: [PhoneModel]-sized lists fit, but nothing here may grow past the panel.
+ */
+@Composable
+internal fun <T> DropdownRow(
+    label: String,
+    options: List<T>,
+    selected: T,
+    labelFor: (T) -> String,
+    onSelect: (T) -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    // A disabled row must not keep an already-open menu alive: enablement flips from REC start and
+    // from a facing change, both of which can land while the sheet is open.
+    if (!enabled && expanded) expanded = false
+    val accessibility = dropdownSettingSemantics(label, labelFor(selected))
+    Box(modifier = modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .sizeIn(minHeight = 48.dp)
+                .clickable(
+                    enabled = enabled,
+                    role = Role.DropdownList,
+                    onClick = { expanded = true },
+                )
+                .semantics(mergeDescendants = true) {
+                    contentDescription = accessibility.label
+                    stateDescription = accessibility.state
+                    role = Role.DropdownList
+                    if (!enabled) disabled()
+                },
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            val alpha = if (enabled) 1f else 0.55f
+            Text(
+                label,
+                color = CameraColors.TextPrimary.copy(alpha = alpha),
+                style = MaterialTheme.typography.labelMedium,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    labelFor(selected),
+                    color = CameraColors.Accent.copy(alpha = alpha),
+                    style = MaterialTheme.typography.labelMedium,
+                    maxLines = 1,
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+                DropdownCaret(color = CameraColors.Accent.copy(alpha = alpha))
+            }
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            containerColor = CameraColors.Pill,
+            // Long catalogs must scroll INSIDE the menu rather than run off the panel.
+            modifier = Modifier.heightIn(max = 320.dp),
+        ) {
+            options.forEach { option ->
+                val isSelected = option == selected
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            labelFor(option),
+                            color = if (isSelected) CameraColors.Accent else CameraColors.TextPrimary,
+                            style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1,
+                        )
+                    },
+                    onClick = {
+                        expanded = false
+                        onSelect(option)
+                    },
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The dropdown affordance, drawn rather than imported: `androidx.compose.material.icons` is NOT on
+ * this module's classpath (material3 does not pull it in here), and a whole icon artifact for one
+ * 8 dp triangle is not worth the APK. Purely decorative — the row above owns the semantics.
+ */
+@Composable
+private fun DropdownCaret(color: Color) {
+    Canvas(modifier = Modifier.size(width = 10.dp, height = 6.dp)) {
+        val path = Path().apply {
+            moveTo(0f, 0f)
+            lineTo(size.width, 0f)
+            lineTo(size.width / 2f, size.height)
+            close()
+        }
+        drawPath(path, color)
     }
 }
 

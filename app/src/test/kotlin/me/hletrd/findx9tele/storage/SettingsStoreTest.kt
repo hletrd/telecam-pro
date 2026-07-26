@@ -25,6 +25,7 @@ import me.hletrd.findx9tele.camera.MemorySlot
 import me.hletrd.findx9tele.camera.MeteringMode
 import me.hletrd.findx9tele.camera.PeakingColor
 import me.hletrd.findx9tele.camera.PeakingLevel
+import me.hletrd.findx9tele.camera.PhoneModel
 import me.hletrd.findx9tele.camera.ProcessingLevel
 import me.hletrd.findx9tele.camera.ShutterMode
 import me.hletrd.findx9tele.camera.ShutterTimer
@@ -173,6 +174,34 @@ class SettingsStoreTest {
     }
 
     @Test
+    fun loadReconcilesAConverterThatCannotClampOntoTheRestoredPhone() {
+        // The phone and converter are two independent keys, so nothing in the file format stops a
+        // pair that never existed together (an older catalog, a hand-edited blob, a preset written
+        // before a phone change). Load must resolve it rather than hand the UI a selection its own
+        // narrowed dropdown does not contain. Presets share loadWithPrefix, so it holds there too.
+        val prefs = FakePrefs()
+        prefs.edit()
+            .putBoolean("hasSaved", true)
+            .putString("phoneModel", PhoneModel.FIND_X9_ULTRA.name)
+            .putString("teleconverterProfile", TeleconverterProfile.ZEISS_400.name)
+            .putBoolean("preset_MR1_hasSaved", true)
+            .putString("preset_MR1_phoneModel", PhoneModel.OTHER.name)
+            .putString("preset_MR1_teleconverterProfile", TeleconverterProfile.EXPLORER_300.name)
+            .commit()
+        val store = SettingsStore(prefs)
+
+        assertEquals(TeleconverterProfile.EXPLORER_300, store.load()?.extras?.teleconverterProfile)
+        assertEquals(PhoneModel.OTHER, store.loadPreset(MemorySlot.MR1)?.extras?.phoneModel)
+        assertEquals(
+            TeleconverterProfile.GENERIC_1_5,
+            store.loadPreset(MemorySlot.MR1)?.extras?.teleconverterProfile,
+        )
+        // A converter that fits anything is the user's deliberate pick and must survive untouched.
+        prefs.edit().putString("teleconverterProfile", TeleconverterProfile.GENERIC_3.name).commit()
+        assertEquals(TeleconverterProfile.GENERIC_3, store.load()?.extras?.teleconverterProfile)
+    }
+
+    @Test
     fun rememberToggleCommitsBothValuesSynchronously() {
         val prefs = FakePrefs()
         val store = SettingsStore(prefs)
@@ -197,6 +226,9 @@ class SettingsStoreTest {
         photoExposureTimeNs = 750_000_000L,
         lens = LensChoice.TELE3X,
         teleconverter = true,
+        // A phone with its own kit catalog paired with a fits-anything converter: proves the phone
+        // key round-trips AND that load-time reconciliation does not replace a legitimate pick.
+        phoneModel = PhoneModel.VIVO_X300_ULTRA,
         teleconverterProfile = TeleconverterProfile.CUSTOM,
         teleconverterCustomMagnification = 2.75f,
         videoStabMode = VideoStabMode.STANDARD,
