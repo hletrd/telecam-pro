@@ -11,7 +11,6 @@ import me.hletrd.findx9tele.camera.FnSlot
 import me.hletrd.findx9tele.camera.HardwareKeyAction
 import me.hletrd.findx9tele.camera.LensChoice
 import me.hletrd.findx9tele.ui.controls.fnSlotLabel
-import me.hletrd.findx9tele.ui.overlays.HUD_TEXT_SCRIM_ALPHA
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.cos
@@ -117,14 +116,6 @@ internal fun showHalfPressLabel(
     action: HardwareKeyAction,
     tapFocusHeld: Boolean,
 ): Boolean = active && !(action == HardwareKeyAction.AF_ON && tapFocusHeld)
-
-/**
- * Test seam pinning TELE's idle plate to the app-wide, bright-frame contrast floor. The chip itself
- * now paints `HudPlate`, which bakes that alpha in and leaves no alpha at the call site to drift;
- * this seam names the value that plate carries so HudContrastTest can measure it without re-deriving
- * a literal of its own.
- */
-internal fun teleChipIdleScrimAlpha(): Float = HUD_TEXT_SCRIM_ALPHA
 
 internal const val FN_OVERLAY_COLUMN_COUNT = 4
 internal const val FN_OVERLAY_HELD_COLUMN_COUNT = 2

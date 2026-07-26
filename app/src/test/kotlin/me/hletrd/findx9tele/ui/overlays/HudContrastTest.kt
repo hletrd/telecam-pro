@@ -2,23 +2,20 @@ package me.hletrd.findx9tele.ui.overlays
 
 import androidx.compose.ui.graphics.toArgb
 import me.hletrd.findx9tele.ui.theme.CameraColors
-import me.hletrd.findx9tele.ui.teleChipIdleScrimAlpha
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class HudContrastTest {
 
-    @Test
-    fun `idle TELE uses the shared bright-frame scrim floor`() {
-        assertEquals(HUD_TEXT_SCRIM_ALPHA, teleChipIdleScrimAlpha(), 0f)
-        // The chip paints HudPlate, so tie the seam to that plate's own alpha — otherwise the seam
-        // could keep reporting the floor after the drawn slab drifted off it. One 8-bit step of
-        // tolerance because Color quantizes the alpha channel (0.82 * 255 = 209.1 -> 209/255).
-        assertEquals(teleChipIdleScrimAlpha(), HudPlate.alpha, 1f / 255f)
-        val ratio = contrastRatioOnWhiteScrim(rgbOf(CameraColors.TextPrimary), teleChipIdleScrimAlpha())
-        assertTrue("idle TELE contrast was $ratio", ratio >= 4.5)
-    }
+    // TELE's idle plate had a case of its own here, asserting a `teleChipIdleScrimAlpha()` seam. Both
+    // are gone: TeleChip paints HudPlate directly, so the seam returned HUD_TEXT_SCRIM_ALPHA and the
+    // plate is DEFINED from HUD_TEXT_SCRIM_ALPHA — its assertions could not fail in either direction,
+    // which made it a constant-equality check wearing a drift guard's comment. The two facts it meant
+    // to pin are pinned for real below: `HudPlate is the scrim token at the pinned alpha and nothing
+    // else` pins the drawn slab's composition, and the "primary" entry in `shared HUD scrim clears
+    // small-text contrast on a white frame` pins the idle chip's white label at 4.5:1 over a white
+    // frame. Deleted with the function it pinned, not weakened.
 
     // LIVE surfaces reference the REAL palette (TEST4-10): the old literal copies pinned a stale
     // duplicate of CameraColors — a palette tweak kept these green while shipping an unchecked

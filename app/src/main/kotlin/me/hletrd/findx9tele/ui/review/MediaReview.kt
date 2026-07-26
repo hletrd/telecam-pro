@@ -769,6 +769,14 @@ fun MediaReviewOverlay(
             if (!playing) {
                 // Paused indicator: a simple ▶ so it's obvious a tap resumes.
                 Canvas(Modifier.size(64.dp)) {
+                    // Deliberately its own black, NOT the shared HudPlate. What sits on this disc is a
+                    // 64 dp white GLYPH, not text, so its floor is WCAG's 3:1 non-text minimum rather
+                    // than the plate's 4.5:1 — and 0.45 black over a white frame measures 3.36:1 for
+                    // white by the app's own formula (HudContrastTest pins that same 0.45/white pair
+                    // as a text FAILURE, which it is). Written out at the site, with the alpha here
+                    // rather than as a `.copy` of a scrim token, per the rule in HudPlate's KDoc.
+                    // OPEN: whether it should fold into HudPlate anyway needs a device look at a
+                    // paused bright video frame — folding it is a visual call, not a contrast fix.
                     drawCircle(Color.Black.copy(alpha = 0.45f), radius = size.minDimension / 2f)
                     val tri = androidx.compose.ui.graphics.Path().apply {
                         moveTo(size.width * 0.4f, size.height * 0.3f)

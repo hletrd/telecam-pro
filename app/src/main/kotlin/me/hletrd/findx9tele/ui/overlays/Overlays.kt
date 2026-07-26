@@ -6,7 +6,6 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -68,19 +67,29 @@ import kotlin.math.roundToInt
 internal const val HUD_TEXT_SCRIM_ALPHA = 0.82f
 
 /**
- * The ONE spelling of the shared HUD plate: the translucent black slab every readout, pill, scope
- * panel, chrome disc and chip over the live preview or a reviewed frame sits on.
+ * The ONE spelling of the shared HUD plate: the translucent black slab the viewfinder's readouts,
+ * pills, scope panels, chrome discs and chips sit on, plus the review screen's own chrome.
+ *
+ * It is NOT a claim about every black drawn over a frame — that is what the rule at the bottom is
+ * for. The known exception is MediaReview's paused-video ▶ disc, a glyph backing at the 3:1 non-text
+ * floor rather than a text plate; it says so at its own site.
  *
  * It is a parameterless value, deliberately, and that is the whole point: there is no alpha to pass,
  * so [HUD_TEXT_SCRIM_ALPHA] cannot be bypassed by accident and [CameraColors.ChromeScrim] never needs
- * to be held at a draw site. A `Modifier` extension could not have replaced all 23 sites — the plate
- * is also a `drawCircle(color = …)` argument and the else-branch of three `if`/`when` expressions
- * (TeleChip, DialChip, FocalRail, the Speed/Angle toggle), so a Modifier-only helper would have left
- * the mixed world it was meant to end.
+ * to be held at a draw site. A `Modifier` extension could not have replaced all 26 sites — the plate
+ * is the else-branch of four `if`/`when` expressions (TeleChip, DialChip, FocalRail, the Speed/Angle
+ * toggle), which a Modifier cannot express, so a Modifier-only helper would have left the mixed world
+ * it was meant to end. Every one of the 26 is a `.background(…)` argument, or a `val`/branch feeding
+ * one; none is a draw-call argument.
  *
- * A plate that is NOT this — a local halo, a dim, a gradient stop — must not be spelled as a `.copy`
- * of a scrim token; write it as its own `Color.Black.copy(…)` at the site with a comment saying why,
- * so the search for "who bypasses the floor" keeps returning nothing.
+ * 26 of 27: the three old spellings covered 27 sites (20 `Color.Black.copy(alpha = …)`, 3
+ * `ChromeScrim.copy(…)`, 4 `Pill.copy(…)`). The 27th is GearButton's knob halo — a ~2 px disc inside
+ * an 18 dp glyph, at its own deliberately lighter alpha, which is not a plate behind anything and
+ * carries a comment saying so.
+ *
+ * A plate that is NOT this — a local halo, a dim, a gradient stop, a glyph backing — must not be
+ * spelled as a `.copy` of a scrim token; write it as its own `Color.Black.copy(…)` at the site with a
+ * comment saying why, so the search for "who bypasses the floor" keeps returning nothing.
  */
 internal val HudPlate: Color = CameraColors.ChromeScrim.copy(alpha = HUD_TEXT_SCRIM_ALPHA)
 
@@ -340,11 +349,18 @@ fun RecordingIndicator(elapsedMs: Long, modifier: Modifier = Modifier) {
         modifier = modifier
             .background(HudPlate, RoundedCornerShape(50))
             // Keep a stable REC description; elapsed telemetry must not be re-announced every second.
-            .clearAndSetSemantics { contentDescription = "Recording" },
+            .clearAndSetSemantics { contentDescription = "Recording" }
+            // The ONE HUD pill inset, 12/6 (canonical note in CameraScreen's ModeLabel). This
+            // pill is why "one inset" needs stating twice: it hand-rolled ~2/10 horizontal and 4
+            // vertical out of a leading Spacer plus one-sided Text padding, so the sweep that unified
+            // fifteen `padding(…)` calls had nothing here to find. Only the PLATE's inset moves — the
+            // dot-to-timecode gap is the Row's own 6 dp arrangement, untouched. It is End-aligned in a
+            // column whose other members are 120-150 dp wide, so the ~12 dp it gains contends with
+            // nothing, and it is non-interactive, so no touch target is involved.
+            .padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Spacer(modifier = Modifier.width(2.dp))
         Canvas(modifier = Modifier.size(10.dp)) {
             drawCircle(color = CameraColors.Record)
         }
@@ -352,7 +368,6 @@ fun RecordingIndicator(elapsedMs: Long, modifier: Modifier = Modifier) {
             text = timeLabel,
             color = Color.White,
             style = MaterialTheme.typography.labelLarge,
-            modifier = Modifier.padding(end = 10.dp, top = 4.dp, bottom = 4.dp),
         )
     }
 }
@@ -634,6 +649,15 @@ fun HistogramOverlay(data: HistogramData?, modifier: Modifier = Modifier) {
             // against bright/high-key scenes bleeding through the box, so the panel can't sit at the
             // old 0.55 — the darker plate also makes the thin luma/RGB traces read better, not worse.
             .background(HudPlate, RoundedCornerShape(8.dp))
+            // Uniform 6 DELIBERATELY, not the 12/6 HUD pill inset — the same instrument-not-text
+            // argument the ExposureMeter carries, and for the same measured reason. This box holds NO
+            // text: its content is a framed Canvas whose bordering rect is drawn AT the Canvas edge and
+            // whose data spans the full x (256 bins) and y (bin height) of that frame. So the padding
+            // is not clearance protecting a glyph, it is the gap between the plate edge and the PLOT
+            // FRAME; widening it to 12 would cut the 138 dp plot to 126 dp and drop ~9% of the
+            // histogram's horizontal axis (the waveform's column axis likewise) to protect nothing.
+            // Symmetric because the frame is symmetric: a 12/6 split would visibly seat the drawn
+            // border nearer the plate edge top and bottom than left and right.
             .padding(6.dp),
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
@@ -677,6 +701,10 @@ fun WaveformOverlay(data: WaveformData?, modifier: Modifier = Modifier) {
             .width(150.dp)
             .height(84.dp)
             .background(HudPlate, RoundedCornerShape(8.dp))
+            // Uniform 6, not 12/6, for the reason spelled out on [HistogramOverlay]: a text-free framed
+            // instrument whose data reaches its own drawn border, so a pill's horizontal inset would
+            // narrow the plot rather than protect a glyph. Kept identical to the histogram's on purpose
+            // — they stack directly under one another in the same column.
             .padding(6.dp),
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {

@@ -27,11 +27,12 @@ object CameraColors {
      * It has exactly ONE consumer — [me.hletrd.findx9tele.ui.overlays.HudPlate], which bakes in
      * [me.hletrd.findx9tele.ui.overlays.HUD_TEXT_SCRIM_ALPHA]. Do NOT reference this token at a draw
      * site: a call site holding the base colour and an alpha in its hands is how the plate came to be
-     * spelled three ways (23 sites split across `Color.Black.copy(alpha = …)`, `ChromeScrim.copy(…)`
-     * and a lighter `Pill.copy(…)`), and how this very token acquired a consumer that passed a
-     * hand-picked 0.45 for a knob halo. The old "0.40-0.55" note here invited exactly the regression
-     * HudContrastTest exists to prevent: it asserts 0.45 and 0.55 FAIL the 4.5:1 floor over a white
-     * frame.
+     * spelled three ways (27 sites split across 20 `Color.Black.copy(alpha = …)`, 3
+     * `ChromeScrim.copy(…)` and 4 lighter `Pill.copy(…)`; 26 are the plate, and the 27th is the
+     * GearButton knob halo, which is deliberately not one), and how this very token acquired a
+     * consumer that passed a hand-picked 0.45 for that halo. The old "0.40-0.55" note here invited
+     * exactly the regression HudContrastTest exists to prevent: it asserts 0.45 and 0.55 FAIL the
+     * 4.5:1 floor over a white frame.
      */
     val ChromeScrim = Color(0xFF000000)
     /**
@@ -53,7 +54,12 @@ object CameraColors {
     /**
      * Recording state and the record affordance: the REC tally border, the REC dot, the video-mode
      * shutter disc. Plus exactly two HARDWARE alarms that are not UI state and are red on camera
-     * bodies too — the ≤15% battery numeral and the audio meter's clipping bucket.
+     * bodies too — the ≤15% battery numeral and the audio meter's clipping bucket. Plus one indirect
+     * route: this token is also the scheme's `error` slot below. Nothing reads `colorScheme.error`
+     * today, and that is the point of naming it here — it is the one way a Material component could
+     * re-acquire the recording red without ever spelling this token, which is exactly how ChromeScrim
+     * grew a consumer. Do not introduce a `colorScheme.error` reader without deciding, at that call
+     * site, that the recording red is what it means.
      *
      * NOT for "this control is unavailable on this route". Two static capability captions in the Video
      * tab used to paint this token, which made the sheet say "error" about a device fact and put the
