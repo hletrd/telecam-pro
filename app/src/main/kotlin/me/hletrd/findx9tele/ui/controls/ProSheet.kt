@@ -69,7 +69,6 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.core.net.toUri
 import me.hletrd.findx9tele.camera.AfSpotSize
 import me.hletrd.findx9tele.camera.ExposureMode
@@ -215,7 +214,7 @@ internal fun ProSheet(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Menu", color = CameraColors.TextPrimary, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Text("Menu", color = CameraColors.TextPrimary, style = MaterialTheme.typography.titleLarge)
                 CloseButton(
                     onClick = onDismiss,
                     modifier = Modifier.focusRequester(closeFocusRequester),
@@ -377,10 +376,14 @@ private fun TabRailItem(tab: ProSheetTab, selected: Boolean, onClick: () -> Unit
         Text(
             text = tab.label,
             color = fg,
-            fontSize = 10.sp,
-            lineHeight = 12.sp,
+            // labelSmall (11 sp), not a hand-rolled 10 sp: this is the sheet's PRIMARY navigation,
+            // not a badge, and 10 sp was the smallest permanent text in the app. The longest label
+            // ("Exposure") measures ~46 dp at 11 sp inside the fixed 68 dp box, so nothing wraps.
+            // The weight is unconditional: swapping it on selection reflows that fixed box on every
+            // tab change, and the accent bar plus the color change already carry the selection.
+            style = MaterialTheme.typography.labelSmall,
             textAlign = TextAlign.Center,
-            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            fontWeight = FontWeight.Medium,
             modifier = Modifier.width(68.dp),
         )
     }
@@ -478,7 +481,7 @@ private fun DrawScope.drawTabIcon(tab: ProSheetTab, color: Color) {
 
 @Composable
 private fun TabTitle(text: String) {
-    Text(text, color = CameraColors.TextPrimary, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+    Text(text, color = CameraColors.TextPrimary, style = MaterialTheme.typography.titleMedium)
 }
 
 @Composable
@@ -590,7 +593,7 @@ private fun MemoryPresetRow(
             text = slot.label,
             color = if (active) Color(0xFFFFD60A) else CameraColors.TextSecondary,
             style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.Bold,
+            fontWeight = FontWeight.SemiBold,
             modifier = Modifier.width(36.dp),
         )
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -604,7 +607,12 @@ private fun MemoryPresetRow(
                 selected = false,
                 onClick = onSave,
                 enabled = !locked,
-                label = { Text(if (saved) "Update" else "Save") },
+                label = {
+                    Text(
+                        if (saved) "Update" else "Save",
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                },
                 colors = pixelChipColors(),
                 border = pixelChipBorder(false),
             )
@@ -837,7 +845,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
             selected = controls.wbMode == WbMode.CUSTOM,
             onClick = actions::onCaptureCustomWb,
             enabled = customWbCaptureEnabled,
-            label = { Text("Capture Custom WB") },
+            label = { Text("Capture Custom WB", style = MaterialTheme.typography.labelMedium) },
             colors = pixelChipColors(),
             border = pixelChipBorder(controls.wbMode == WbMode.CUSTOM),
         )
@@ -1330,21 +1338,23 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
         onClick = { openPrivacyPolicy(context) },
     )
     // Trademark attribution for the named log profiles offered in the Video tab — a legal
-    // footnote, deliberately non-interactive and dim (small text like SectionHeader).
+    // footnote, deliberately non-interactive and dim. bodySmall, NOT labelSmall: these two are the
+    // only multi-sentence PROSE in the sheet, and labelSmall is a label treatment (Medium weight)
+    // that renders three sentences as a wall of emphasized micro-text.
     // ARRI marks are registered to the Cine Technik entity, not an "ARRI AG" (cycle-6 DS-8).
     Text(
         "S-Log is a trademark of Sony Group Corporation. LogC is a trademark of " +
             "Arnold & Richter Cine Technik GmbH & Co. Betriebs KG (ARRI). " +
             "This app is not affiliated with or endorsed by Sony or ARRI.",
         color = CameraColors.TextSecondary,
-        style = MaterialTheme.typography.labelSmall,
+        style = MaterialTheme.typography.bodySmall,
     )
     // Bundled-typeface attribution (SIL OFL requires the license to travel with the font; the
     // full text ships in the repo at docs/licenses/inter-OFL.txt).
     Text(
         "UI typeface: Inter, © The Inter Project Authors, SIL Open Font License 1.1.",
         color = CameraColors.TextSecondary,
-        style = MaterialTheme.typography.labelSmall,
+        style = MaterialTheme.typography.bodySmall,
     )
     SectionHeader("Startup")
     ToggleRow(

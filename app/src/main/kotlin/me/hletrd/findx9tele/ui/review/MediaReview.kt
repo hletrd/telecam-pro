@@ -419,7 +419,7 @@ fun GalleryThumb(uri: Uri?, onClick: () -> Unit, modifier: Modifier = Modifier) 
                     text = "RAW",
                     color = CameraColors.TextPrimary,
                     style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
+                    fontWeight = FontWeight.SemiBold,
                 )
                 Text(
                     text = "DNG",
@@ -871,7 +871,7 @@ fun MediaReviewOverlay(
                 text = reviewScaleLabel(scale),
                 color = CameraColors.TextPrimary,
                 style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold,
+                fontWeight = FontWeight.SemiBold,
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .statusBarsPadding()
@@ -917,7 +917,7 @@ fun MediaReviewOverlay(
                     text = reviewZoomControlLabel(scale),
                     color = CameraColors.TextPrimary,
                     style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold,
+                    fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.rotate(overlayRotation),
                 )
             }
@@ -940,7 +940,7 @@ fun MediaReviewOverlay(
                 .clickable(onClick = onClose),
             contentAlignment = Alignment.Center,
         ) {
-            Text("✕", color = CameraColors.TextPrimary, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+            Text("✕", color = CameraColors.TextPrimary, style = MaterialTheme.typography.titleMedium)
         }
 
         // Delete button, top-right. Scrim rides the tested HUD contrast floor (05486cb): the red trash
@@ -1044,7 +1044,6 @@ private fun RawReviewPlaceholder(modifier: Modifier = Modifier) {
             text = "RAW",
             color = CameraColors.TextPrimary,
             style = MaterialTheme.typography.displaySmall,
-            fontWeight = FontWeight.Bold,
         )
         Text(
             text = "DNG",

@@ -101,6 +101,7 @@ import me.hletrd.findx9tele.ui.formatDisplayZoom
 import me.hletrd.findx9tele.ui.formatZoomMultiplier
 import me.hletrd.findx9tele.ui.overlays.HUD_TEXT_SCRIM_ALPHA
 import me.hletrd.findx9tele.ui.theme.CameraColors
+import me.hletrd.findx9tele.ui.theme.hudGlyph
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -392,8 +393,7 @@ internal fun CompactFnButton(
             Text(
                 text = "Fn",
                 color = CameraColors.Accent,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
+                style = hudGlyph(11.sp),
                 modifier = Modifier.rotate(glyphRotation),
             )
         }
@@ -426,7 +426,7 @@ private fun CompactDialCloseButton(onClick: () -> Unit, modifier: Modifier = Mod
                 .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(50)),
             contentAlignment = Alignment.Center,
         ) {
-            Text("×", color = CameraColors.TextPrimary, fontSize = 16.sp)
+            Text("×", color = CameraColors.TextPrimary, style = hudGlyph(16.sp, FontWeight.Normal))
         }
     }
 }
@@ -714,14 +714,14 @@ private fun DialChip(
             Text(
                 label,
                 color = fg,
-                fontSize = 11.sp,
-                lineHeight = 13.sp,
-                fontWeight = FontWeight.SemiBold,
+                style = hudGlyph(11.sp, FontWeight.Medium),
             )
             // NOT dimmed further on the idle chip: the plate underneath is a translucent pill over
             // the LIVE preview (the bottom cluster's gradient is transparent at its top edge, where
             // this row sits), so 0.75 on top of that landed the value under the 4.5:1 floor the rest
-            // of the HUD is held to. The label/value hierarchy is carried by size and weight instead.
+            // of the HUD is held to. The label/value hierarchy is carried by WEIGHT alone (label
+            // Medium, value SemiBold — both 11 sp): the live value is the emphasized element, the
+            // static caption is not.
             val valueColor = fg
             Text(
                 if (autoValue) {
@@ -737,8 +737,7 @@ private fun DialChip(
                     AnnotatedString(value)
                 },
                 color = valueColor,
-                fontSize = 11.sp,
-                lineHeight = 13.sp,
+                style = hudGlyph(11.sp, FontWeight.SemiBold),
             )
         }
     }
@@ -784,7 +783,6 @@ private fun RulerReadout(value: String, modifier: Modifier = Modifier, autoValue
             },
             color = CameraColors.ManualActive,
             style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
             modifier = Modifier
                 .clearAndSetSemantics {
                     contentDescription = if (autoValue) "Auto $value" else value

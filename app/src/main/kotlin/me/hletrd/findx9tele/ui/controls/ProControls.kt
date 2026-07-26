@@ -55,6 +55,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import me.hletrd.findx9tele.camera.ColorTransfer
 import me.hletrd.findx9tele.camera.PhotoFormats
 import me.hletrd.findx9tele.ui.theme.CameraColors
@@ -74,13 +75,23 @@ import me.hletrd.findx9tele.ui.theme.CameraColors
 // Small reusable building blocks shared by every settings row
 // ---------------------------------------------------------------------------
 
-/** Small caps sub-heading used to group a handful of rows within a settings tab page. */
+/**
+ * Tracked sub-heading used to group a handful of rows within a settings tab page.
+ *
+ * Weight and tracking, NOT size or color: a header used to render byte-identically to the captions
+ * beneath the rows (same labelSmall, same TextSecondary) inside a uniform spacedBy column, so it sat
+ * equidistant between the section it closed and the one it opened and read as a stray caption. An
+ * eyebrow treatment costs zero vertical space; `uppercase()` would have changed the ACCESSIBLE text
+ * of 27 decorative nodes to buy a purely visual effect.
+ */
 @Composable
 internal fun SectionHeader(text: String, modifier: Modifier = Modifier) {
     Text(
         text,
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.labelSmall,
+        fontWeight = FontWeight.SemiBold,
+        letterSpacing = 0.8.sp,
         modifier = modifier,
     )
 }
@@ -163,7 +174,18 @@ internal fun <T> SegmentedSelector(
             .fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Text(label, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
+        // SemiBold, and the chips below it are bound to the SAME labelMedium size. Material's
+        // FilterChipTokens.LabelTextFont resolves to labelLarge (14 sp), so an unbound chip rendered
+        // LARGER than the row label naming it and larger than the section header above that —
+        // reading down the panel the size order was 11 -> 12 -> 14, i.e. the most numerous and least
+        // important elements were the biggest text on the page. Hierarchy is carried by WEIGHT
+        // instead (label 12 sp/600, options 12 sp/500); no chip container or touch target moves.
+        Text(
+            label,
+            color = CameraColors.TextPrimary,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
         val optionScroll = rememberScrollState()
         Row(
             modifier = Modifier
@@ -181,7 +203,14 @@ internal fun <T> SegmentedSelector(
                         enabled = enabled,
                         // Single line always: a squeezed chip must scroll into space, never wrap
                         // its label mid-word (the TransferSelector "Log/C3" break class).
-                        label = { Text(labelFor(option), maxLines = 1, softWrap = false) },
+                        label = {
+                            Text(
+                                labelFor(option),
+                                style = MaterialTheme.typography.labelMedium,
+                                maxLines = 1,
+                                softWrap = false,
+                            )
+                        },
                         colors = pixelChipColors(),
                         border = pixelChipBorder(isSelected),
                     )
@@ -228,7 +257,7 @@ internal fun LabeledSlider(
                 valueLabel,
                 color = if (enabled) CameraColors.ManualActive else CameraColors.TextSecondary,
                 style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Bold,
+                fontWeight = FontWeight.SemiBold,
             )
         }
         Spacer(modifier = Modifier.height(2.dp))
@@ -579,10 +608,18 @@ fun TransferSelector(
     enabled: Boolean = true,
 ) {
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text("Transfer", color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
-        // Scrollable like SegmentedSelector: five entries exceed the sheet width, and a fixed Row
-        // squeezed the last visible chip until its label broke mid-word ("Log/C3") while SDR fell
-        // off entirely. maxLines=1 keeps any future squeeze from ever wrapping a chip label again.
+        Text(
+            "Transfer",
+            color = CameraColors.TextPrimary,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        // Scrollable like SegmentedSelector. Five entries USED to exceed the sheet width outright:
+        // a fixed Row squeezed the last visible chip until its label broke mid-word ("Log/C3")
+        // while SDR fell off entirely. Binding the chips to labelMedium (12 sp, from 14 sp) took
+        // ~14% off each one, so that overflow is now headroom rather than a live constraint — but
+        // the scroll and maxLines=1 stay: they are what keeps a future entry, a longer label, or a
+        // larger system font scale from ever wrapping a chip label again.
         val optionScroll = rememberScrollState()
         Row(
             modifier = Modifier
@@ -598,7 +635,14 @@ fun TransferSelector(
                         selected = isSelected,
                         onClick = { onTransfer(option) },
                         enabled = enabled,
-                        label = { Text(transferLabel(option), maxLines = 1, softWrap = false) },
+                        label = {
+                            Text(
+                                transferLabel(option),
+                                style = MaterialTheme.typography.labelMedium,
+                                maxLines = 1,
+                                softWrap = false,
+                            )
+                        },
                         colors = pixelChipColors(),
                         border = pixelChipBorder(isSelected),
                     )
@@ -620,14 +664,19 @@ fun PhotoFormatToggles(
     val processedSelected = processedAvailable && formats.wantsProcessedStill
     val rawSelected = rawAvailable && formats.dngRaw
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text("Output", color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
+        Text(
+            "Output",
+            color = CameraColors.TextPrimary,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             MinTouchTarget48 {
                 FilterChip(
                     selected = formats.heif,
                     onClick = { onSetPhotoFormats(formats.copy(heif = !formats.heif)) },
                     enabled = processedAvailable && (!formats.heif || formats.jpeg || rawSelected),
-                    label = { Text("HEIF") },
+                    label = { Text("HEIF", style = MaterialTheme.typography.labelMedium) },
                     colors = pixelChipColors(),
                     border = pixelChipBorder(formats.heif),
                 )
@@ -637,7 +686,7 @@ fun PhotoFormatToggles(
                     selected = formats.jpeg,
                     onClick = { onSetPhotoFormats(formats.copy(jpeg = !formats.jpeg)) },
                     enabled = processedAvailable && (!formats.jpeg || formats.heif || rawSelected),
-                    label = { Text("JPEG") },
+                    label = { Text("JPEG", style = MaterialTheme.typography.labelMedium) },
                     colors = pixelChipColors(),
                     border = pixelChipBorder(formats.jpeg),
                 )
@@ -647,7 +696,7 @@ fun PhotoFormatToggles(
                     selected = formats.dngRaw,
                     onClick = { onSetPhotoFormats(formats.copy(dngRaw = !formats.dngRaw)) },
                     enabled = rawAvailable && (!formats.dngRaw || processedSelected),
-                    label = { Text("DNG") },
+                    label = { Text("DNG", style = MaterialTheme.typography.labelMedium) },
                     colors = pixelChipColors(),
                     border = pixelChipBorder(formats.dngRaw),
                 )

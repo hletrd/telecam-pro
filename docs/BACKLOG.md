@@ -352,15 +352,19 @@ evidence or a design decision, with enough detail to act on without re-deriving 
   KEPT deliberately: the comment records that it is dormant pending the orientation pipeline (GL
   sampling, capture masks, tap mapping and encoder framing all share a portrait-window contract),
   and deleting it would discard that design. Revisit together with that pipeline, not before.
-- **UI16 — no 700-weight Inter is bundled, so `FontWeight.Bold` renders as SemiBold.**
-  `app/src/main/res/font/` has Regular/Medium/SemiBold only, while ~22 call sites ask for Bold
-  (`CameraScreen` ×11, `MediaReview` ×5, `ProSheet` ×3, `ManualDials` ×2, `ProControls` ×1). Font
-  matching resolves 700 → 600, so Bold and SemiBold are pixel-identical today. The one concrete
-  consequence: `FocalRail`'s selected-state emphasis is `Bold` vs `SemiBold`, so that weight step
-  cannot render and only the filled pill carries the selection. The Theme KDoc now states this
-  honestly. NOT fixed here because both options are design calls needing eyes on the device:
-  bundling `inter_bold.ttf` (+~110 KB, OFL, same family) changes the weight of all 22 sites at once,
-  and collapsing the sites to SemiBold needs a new unselected weight for FocalRail.
+- **UI16 — CLOSED 2026-07-26 (typography pass). `FontWeight.Bold` is gone; no fourth face bundled.**
+  `app/src/main/res/font/` has Regular/Medium/SemiBold only, and the ~22 call sites that asked for
+  Bold (`CameraScreen` ×11, `MediaReview` ×5, `ProSheet` ×3, `ManualDials` ×2, `ProControls` ×1)
+  were all being resolved 700 → 600 by font matching, so collapsing them to `SemiBold` was
+  pixel-identical everywhere except FocalRail. **The stated blocker was false**: FocalRail did not
+  need a new face — `FontWeight.Medium` (500) is already bundled, so its selected/unselected step is
+  now SemiBold(600) vs Medium(500) and RENDERS with zero new assets. Six of the 22 disappeared into
+  the theme entirely when `titleSmall`/`titleMedium`/`titleLarge`/`displaySmall` were raised to 600.
+  **The "+~110 KB" estimate was also wrong by ~4×**: the three bundled faces measure 412/417/420 KB,
+  so a fourth static face is ~420 KB — and eleven of the sites sit at or below 13 sp, where Inter's
+  700 thickens stems into the counters (worst on the inverted `TELE` pill, black on white at 11 sp).
+  Do not bundle `inter_bold.ttf`, and do not reintroduce `FontWeight.Bold` at a call site.
+  *Device check attached:* FocalRail selected vs unselected at a glance (`0.6×/1×/3×/10×`).
 - **The green AF reticle can claim focus on a visibly defocused frame (correctness, not cosmetic).**
   `FocusReticle` draws the green bracket and announces "Focus locked" straight off
   `AfIndication.FOCUSED`. On the TELE route this HAL reports `afState = FOCUSED_LOCKED` with the

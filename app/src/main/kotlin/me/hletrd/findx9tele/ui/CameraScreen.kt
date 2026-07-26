@@ -171,6 +171,7 @@ import me.hletrd.findx9tele.ui.overlays.WaveformOverlay
 import me.hletrd.findx9tele.ui.review.GalleryThumb
 import me.hletrd.findx9tele.ui.review.MediaReviewOverlay
 import me.hletrd.findx9tele.ui.theme.CameraColors
+import me.hletrd.findx9tele.ui.theme.hudGlyph
 
 /**
  * Top inset every free-floating viewfinder lane starts below, so nothing lands on the OSD status
@@ -632,7 +633,7 @@ fun CameraScreen(
                     text = state.halfPressAction.label,
                     color = CameraColors.ManualActive,
                     style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Bold,
+                    fontWeight = FontWeight.SemiBold,
                     modifier = Modifier
                         .rotateLayout(overlayRotation)
                         .clip(RoundedCornerShape(50))
@@ -1140,8 +1141,7 @@ private fun TapFocusHoldChip(onReset: () -> Unit, modifier: Modifier = Modifier)
             // name for one state, and it read as a sibling of the unrelated AFL lock tag.
             text = "TAP AF ×",
             color = CameraColors.Accent,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold,
+            style = hudGlyph(11.sp),
         )
     }
 }
@@ -1232,8 +1232,7 @@ private fun FlashButton(mode: FlashMode, onClick: () -> Unit, modifier: Modifier
             Text(
                 text = "A",
                 color = color,
-                fontSize = 8.sp,
-                fontWeight = FontWeight.Bold,
+                style = hudGlyph(8.sp),
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(end = 3.dp, bottom = 2.dp),
@@ -1253,7 +1252,7 @@ private fun TimerButton(timer: ShutterTimer, onClick: () -> Unit, modifier: Modi
                 drawLine(color, center, Offset(center.x + size.width * 0.18f, center.y), strokeWidth = 1.2.dp.toPx())
             }
         } else {
-            Text(timer.seconds.toString(), color = CameraColors.Accent.copy(alpha = if (enabled) 1f else 0.38f), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            Text(timer.seconds.toString(), color = CameraColors.Accent.copy(alpha = if (enabled) 1f else 0.38f), style = hudGlyph(13.sp))
         }
     }
 }
@@ -1353,7 +1352,7 @@ private fun TeleChip(active: Boolean, onClick: () -> Unit, modifier: Modifier = 
                 .padding(horizontal = 12.dp),
             contentAlignment = Alignment.Center,
         ) {
-            Text("TELE", color = fg, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            Text("TELE", color = fg, style = hudGlyph(11.sp))
         }
     }
 }
@@ -1539,8 +1538,7 @@ private fun ZoomIndicator(
         Text(
             text = formatZoomMultiplier(zoom),
             color = CameraColors.Accent,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Bold,
+            style = hudGlyph(15.sp),
             modifier = Modifier
                 .rotateLayout(numberRotation)
                 .background(Color.Black.copy(alpha = HUD_TEXT_SCRIM_ALPHA), RoundedCornerShape(50))
@@ -1647,7 +1645,6 @@ private fun FnOverlay(
                         "Fn",
                         color = CameraColors.TextPrimary,
                         style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
                         modifier = Modifier.rotate(glyphRotation),
                     )
                     Box(
@@ -1807,7 +1804,7 @@ private fun FnOverlayTileValue(text: String, alpha: Float, modifier: Modifier = 
         text,
         color = CameraColors.TextPrimary.copy(alpha = alpha),
         style = MaterialTheme.typography.labelMedium,
-        fontWeight = FontWeight.Bold,
+        fontWeight = FontWeight.SemiBold,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
         modifier = modifier,
@@ -1848,7 +1845,7 @@ private fun ExposureMeter(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Text(label, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+        Text(label, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
         Canvas(modifier = Modifier.width(22.dp).height(if (compact) 96.dp else 150.dp)) {
             val cx = size.width / 2f
             drawLine(Color.White.copy(alpha = 0.34f), Offset(cx, 0f), Offset(cx, size.height), strokeWidth = 1.2.dp.toPx())
@@ -1939,8 +1936,13 @@ private fun FocalRail(
                         Text(
                             text = choice.label,
                             color = if (presentation.selected) Color.Black else CameraColors.TextPrimary,
-                            fontSize = 12.sp,
-                            fontWeight = if (presentation.selected) FontWeight.Bold else FontWeight.SemiBold,
+                            // SemiBold(600) vs Medium(500): a weight step that actually RENDERS.
+                            // The old Bold/SemiBold pair resolved to one bundled face (600), so the
+                            // selection was carried by the filled pill alone (BACKLOG UI16).
+                            style = hudGlyph(
+                                12.sp,
+                                if (presentation.selected) FontWeight.SemiBold else FontWeight.Medium,
+                            ),
                             modifier = Modifier.alpha(if (presentation.enabled) 1f else 0.38f),
                         )
                     }
@@ -2026,8 +2028,11 @@ private fun ModeLabel(text: String, active: Boolean, enabled: Boolean, onClick: 
                     active -> CameraColors.TextPrimary
                     else -> CameraColors.TextSecondary
                 },
-                fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
-                fontSize = if (active) 15.sp else 14.sp,
+                // ONE size for both states. The old 15/14 sp step moved each label's measured width
+                // ~4 dp and, because the pair is centered, BOTH labels physically shifted on every
+                // mode switch — visible motion under the thumb on the most-used control in the app.
+                // Selection is already carried by weight, color, and the 20x2 dp underline below.
+                style = hudGlyph(14.sp, if (active) FontWeight.SemiBold else FontWeight.Normal),
             )
             Spacer(modifier = Modifier.height(3.dp))
             Box(

@@ -9,6 +9,8 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.TextUnit
+import androidx.compose.ui.unit.sp
 import me.hletrd.findx9tele.R
 
 /**
@@ -65,12 +67,16 @@ private val TeleDarkColorScheme = darkColorScheme(
  * weights are bundled (~1.2 MB total). Korean never renders in-app (everything user-facing is
  * English), so no CJK subset is needed; system fallback would cover it.
  *
- * NOTE the family stops at SemiBold(600) while ~22 call sites ask for [FontWeight.Bold] (700).
- * Font matching resolves those to SemiBold, so `Bold` and `SemiBold` render IDENTICALLY today —
- * which silently flattens FocalRail's selected/unselected weight step (the filled pill still
- * carries the selection). Bundling a real Bold would change the weight of every one of those 22
- * sites at once, so it is a deliberate design call with a device check attached rather than a
- * drive-by (docs/BACKLOG.md).
+ * The family stops at SemiBold(600) DELIBERATELY, and no call site asks for Bold(700) any more
+ * (BACKLOG UI16, resolved). The 22 sites that used to were all resolving to SemiBold by font
+ * matching anyway, so the collapse was pixel-identical everywhere except FocalRail, whose
+ * selected/unselected step was `Bold` vs `SemiBold` — i.e. one bundled face against itself, an
+ * unrenderable step. That step is now SemiBold(600) vs Medium(500), which renders with zero new
+ * assets. A fourth static face would cost ~420 KB (the three bundled ones measure 412/417/420 KB,
+ * not the ~110 KB the old backlog entry estimated) and would thicken Inter's stems into the
+ * counters at the eleven sites that sit at or below 13 sp — worst on the inverted `TELE` pill,
+ * black on white at 11 sp. So: do not bundle `inter_bold.ttf`, and do not reintroduce
+ * [FontWeight.Bold] at a call site — it silently means SemiBold.
  */
 private val Inter = FontFamily(
     Font(R.font.inter_regular, FontWeight.Normal),
@@ -86,23 +92,98 @@ private val Inter = FontFamily(
  */
 private fun TextStyle.withInter(): TextStyle = copy(fontFamily = Inter, fontFeatureSettings = "tnum")
 
+/**
+ * Compact HUD/chrome glyph metrics. [MaterialTheme] wraps its content in
+ * `ProvideTextStyle(typography.bodyLarge)`, so a bare `Text(fontSize = …)` MERGES over the ambient
+ * bodyLarge — `TextStyle.merge` leaves `lineHeight` and `letterSpacing` untouched when the call site
+ * does not name them. Every 8-16 sp camera numeral therefore silently inherited a PROSE metric: a
+ * 24 sp line box and body tracking (the zoom pill measured ~32 dp around a 15 sp digit; the 8 sp
+ * flash "A" floated ~8 dp above where its 2 dp bottom padding implied inside a 36 dp disc).
+ *
+ * Sizes stay exactly what the on-device checks tuned — only the inherited box and tracking change.
+ * Tracking is 0: Inter's own optical curve is ~0 at 11-12 sp, and these are numerals over a scrim,
+ * not running text. Leading is 1.2x the glyph, the tightest box that still clears Inter's ascender.
+ */
+internal fun hudGlyph(size: TextUnit, weight: FontWeight = FontWeight.SemiBold): TextStyle =
+    TextStyle(
+        fontFamily = Inter,
+        fontFeatureSettings = "tnum",
+        fontSize = size,
+        lineHeight = size * 1.2f,
+        letterSpacing = 0.sp,
+        fontWeight = weight,
+    )
+
+/**
+ * [withInter] plus this app's own metrics for one type role.
+ *
+ * WHY the tracking differs from Material's: Material's scale is tuned for content-first consumer
+ * apps, where the label roles carry short static words inside generous layouts and a little positive
+ * tracking helps them read as labels. This is a dense instrument panel, and its label roles carry
+ * LIVE NUMERALS — `1/250s`, `ISO 12800`, `5600K`, `4K 30p HEVC 84M`, the REC timecode, the review
+ * EXIF block. On a status strip, +0.5 sp at 12 sp is +4.2% em of body tracking spread across every
+ * digit of a value the photographer reads at a glance while shooting.
+ *
+ * The numbers are not taste. Inter publishes its own optical tracking curve (Dynamic Metrics,
+ * https://rsms.me/inter/dynmetrics/): `tracking(em) = -0.0223 + 0.185 * e^(-0.1745 * size)`,
+ * converted here by `tracking_sp = tracking_em * size`. Evaluated across this scale it is tighter
+ * everywhere at and above 14 sp and lands at ~0 (never negative) at 11-12 sp, which is exactly the
+ * property small text needs. Every SIZE below is held or raised — nothing shrinks — so no legibility
+ * floor moves; only leading, tracking, and four title/display weights change.
+ *
+ * Six call sites already forced a weight override that the four raised title/display roles now
+ * supply, so those overrides are deleted rather than left as redundant noise. ONE consumer did not
+ * force one and therefore does change: MediaReview's `"DNG"` sub-label under the `"RAW"` placard
+ * goes 500 → 600. Accepted — the 36/16 sp size step is what carries that pair, not the weight.
+ */
+private fun TextStyle.camera(
+    size: TextUnit,
+    lineHeight: TextUnit,
+    tracking: TextUnit,
+    weight: FontWeight = fontWeight ?: FontWeight.Normal,
+): TextStyle = copy(
+    fontFamily = Inter,
+    fontFeatureSettings = "tnum",
+    fontSize = size,
+    lineHeight = lineHeight,
+    letterSpacing = tracking,
+    fontWeight = weight,
+)
+
 private val TeleTypography = Typography().run {
     Typography(
-        displayLarge = displayLarge.withInter(),
+        // 57 sp base kept internally consistent for its one consumer, which overrides fontSize to
+        // 120 sp for the self-timer digit (and now overrides the leading and tracking with it).
+        displayLarge = displayLarge.camera(57.sp, 60.sp, (-1.25).sp),
         displayMedium = displayMedium.withInter(),
-        displaySmall = displaySmall.withInter(),
+        // MediaReview's "RAW" placard.
+        displaySmall = displaySmall.camera(36.sp, 44.sp, (-0.8).sp, FontWeight.SemiBold),
         headlineLarge = headlineLarge.withInter(),
         headlineMedium = headlineMedium.withInter(),
         headlineSmall = headlineSmall.withInter(),
-        titleLarge = titleLarge.withInter(),
-        titleMedium = titleMedium.withInter(),
-        titleSmall = titleSmall.withInter(),
-        bodyLarge = bodyLarge.withInter(),
-        bodyMedium = bodyMedium.withInter(),
-        bodySmall = bodySmall.withInter(),
-        labelLarge = labelLarge.withInter(),
-        labelMedium = labelMedium.withInter(),
-        labelSmall = labelSmall.withInter(),
+        // The settings sheet's "Menu" title.
+        titleLarge = titleLarge.camera(22.sp, 28.sp, (-0.4).sp, FontWeight.SemiBold),
+        // RulerReadout — the single numeral the photographer is actively DRAGGING — plus TabTitle
+        // and the review close glyph. Prose tracking on a live value in a pill is exactly wrong.
+        titleMedium = titleMedium.camera(16.sp, 20.sp, (-0.2).sp, FontWeight.SemiBold),
+        // The Fn overlay header.
+        titleSmall = titleSmall.camera(14.sp, 20.sp, (-0.1).sp, FontWeight.SemiBold),
+        // The ambient LocalTextStyle every unstyled Text merges over — which is why the 24 sp prose
+        // line box was leaking into 8-16 sp chrome. Chrome no longer relies on it (see [hudGlyph]),
+        // and the one explicit consumer is the single-line camera-permission label, not a paragraph.
+        bodyLarge = bodyLarge.camera(16.sp, 20.sp, (-0.2).sp),
+        // Status toast + review load/error copy.
+        bodyMedium = bodyMedium.camera(14.sp, 20.sp, (-0.1).sp),
+        // The sheet's only real prose role: the trademark and OFL footnotes. Slightly looser leading
+        // than labelSmall precisely because it is prose and not a caption.
+        bodySmall = bodySmall.camera(12.sp, 17.sp, 0.sp),
+        // REC timecode, slider values, review zoom readout.
+        labelLarge = labelLarge.camera(14.sp, 20.sp, (-0.1).sp),
+        // The OSD workhorse (`300 mm TELE`, `4K 30p HEVC 84M`, `TL 5s`) AND every settings row label
+        // and option chip.
+        labelMedium = labelMedium.camera(12.sp, 16.sp, 0.sp),
+        // Battery %, remaining shots, the EV readout, review EXIF, the tab rail, sheet captions.
+        labelSmall = labelSmall.camera(11.sp, 16.sp, 0.sp),
     )
 }
 

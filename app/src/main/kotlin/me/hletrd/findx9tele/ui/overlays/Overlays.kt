@@ -727,7 +727,7 @@ internal fun waveformAlphaBucket(value: Int, maxVal: Int, alphaBuckets: Int): In
 /**
  * Big centered self-timer countdown number, shown while a shutter delay is counting down.
  * [rotationDegrees] counter-rotates the digit so it stays upright in a landscape hold (wired by the
- * call site from the device orientation); the 0f default keeps existing callers screen-fixed.
+ * sole call site from the device orientation); the 0f default is the screen-fixed identity.
  */
 @Composable
 fun TimerCountdown(seconds: Int, modifier: Modifier = Modifier, rotationDegrees: Float = 0f) {
@@ -736,7 +736,16 @@ fun TimerCountdown(seconds: Int, modifier: Modifier = Modifier, rotationDegrees:
         Text(
             text = seconds.toString(),
             color = Color.White,
-            style = MaterialTheme.typography.displayLarge.copy(fontSize = 120.sp),
+            // The line box and tracking must scale WITH the 120 sp override. Copying only fontSize
+            // left the 57 sp role's own line box under a 120 sp glyph — roughly HALF the glyph's
+            // size, so the digit is not centered in its measured box and Text's default Clip can eat
+            // the ascender — plus tracking scaled for 57 sp on a 120 sp numeral. -2.7 sp is Inter's
+            // own optical curve at 120 sp; the 120 sp itself is deliberate (see the call site).
+            style = MaterialTheme.typography.displayLarge.copy(
+                fontSize = 120.sp,
+                lineHeight = 126.sp,
+                letterSpacing = (-2.7).sp,
+            ),
             modifier = Modifier.rotate(rotationDegrees),
         )
     }
