@@ -116,16 +116,20 @@ Summary:
     drive mode, self-timer
   - `screenshots/03-focus-tools.png` — Focus tab: AF modes, spot size, AF lock, peaking level/colour
   - `screenshots/04-video-controls.png` — video mode: REC control, live encoder OSD
-  - `screenshots/05-lens-and-fn.png` — focal rail with the Fn quick-control sheet open
+  - `screenshots/05-lens-and-tele.png` — focal rail with the 300 mm TELECONVERTER engaged (the
+    app's signature route: 3x pinned, TELE tag lit). The Fn quick-control sheet was tried first but
+    would not survive a screencap — it dismisses before the frame lands, so this shot carries the
+    lens story instead.
   - `screenshots/06-video-settings.png` — Video tab: codec, Open Gate, resolution, FPS, bitrate,
     live encoder summary, transfer curves
   - All six render UPRIGHT: the first captures had every rotating glyph sideways because the app
     counter-rotates glyphs by the gravity-derived device orientation and the phone was standing in
     a landscape pose. Capture with the phone PORTRAIT — this is app behaviour, not a bug, and no
     code change is involved.
-  - REMAINING JUDGEMENT CALL (owner): the three viewfinder frames show whatever the lens was
-    pointed at during capture, currently a close, out-of-focus surface. The chrome is correct and
-    uploadable as-is, but a lit, textured, IN-FOCUS subject would make far better store art.
+  - The three viewfinder frames (01/04/05) were deliberately captured against a BLACK scene, so the
+    chrome — grid, OSD tags, focal rail, mode carousel, shutter — reads without competing with
+    whatever the lens happened to see. Swap in a lit, in-focus subject if the listing wants
+    photography-led art instead; the framing and crop stay valid either way.
 
 ## Device Catalog
 
