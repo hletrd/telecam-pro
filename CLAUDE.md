@@ -402,6 +402,47 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
     the settle wait after an AF scan needs no second timer.
 - **Aspect ratio is only 4:3 or 16:9.** The sensor is 4:3-native: `AspectRatio.W4_3` = full readout
   (no crop, the default + the no-crop sentinel), `W16_9` = its center crop. Full/1:1/portrait removed.
+- **The teleconverter's MAGNIFICATION is a setting, not a constant — and never a detection
+  (2026-07-26).** `camera/Teleconverter.kt` owns `TeleconverterProfile` — four first-party kits
+  (Hasselblad 300 mm = 300/70 ≈ 4.286× for the X9 Ultra; Hasselblad 230 mm = 230/70 ≈ 3.29× for the
+  X9 Pro; ZEISS 200 mm = 200/85 ≈ 2.35× and ZEISS 400 mm = 400/85 ≈ 4.71× for the vivo 85 mm
+  periscopes), generic 1.5/2/3× clip-ons, and CUSTOM — plus the pure helpers
+  (`effectiveMagnification`, `normalizeMagnification`, `detectProfile`, `effectiveFocalMm`), and
+  `teleDisplayBase(magnification)` — the function that REPLACED the top-level `TELE_DISPLAY_BASE`
+  val. `TELECONVERTER_MAGNIFICATION` survives there as the Explorer default and as the anchor every
+  older test and document quotes. Consumers read `CameraUiState.teleconverterMagnification` /
+  `.teleconverterFocalMm`, so the profile and its custom value can never drift apart, and the old
+  hardcoded `300f` / `"300 mm"` readouts (OSD, EXIF, Fn tile, MR summary, lens caption) are derived.
+  Five rules hold this together:
+  1. **Passive glass cannot announce itself.** There is no contact, no ID, no optical trick that
+     tells us a converter is mounted or which one. `detectProfile` matches the PHONE
+     (`Build.MODEL` → `deviceModels`) and only pre-selects a default; the UI must say "default for
+     PMA110", never "detected a converter".
+  2. **This is the ONLY place in the codebase that keys off a model string**, and it may only choose
+     which entry starts selected. Everything else still resolves hardware by ENUMERATING Camera2
+     capabilities (`CameraSelector2` picks by measured equivalent focal, never by id). No
+     capability, route, or request decision may branch on a model string.
+  3. **`TELE_MAX_DISPLAY_ZOOM` (60×) stays FIXED and does not scale with the converter.** It caps
+     TOTAL magnification, so the local-zoom ceiling (`TELE_MAX_DISPLAY_ZOOM / teleDisplayBase(m)`)
+     widens as the converter weakens — a 2× converter earns nearly the full 1–10× digital range,
+     and ordinary capability reconciliation clamps whatever the lens cannot actually deliver.
+  4. **A preset's PRODUCT NAME is not a focal length.** Each magnification is written as (converter
+     focal ÷ the host tele focal it was designed for) so the arithmetic is auditable against the
+     maker's printed figure — and host focals differ: the Hasselblad kits target a 70 mm periscope,
+     the ZEISS ones an 85 mm. A "ZEISS 200" on THIS phone's 70 mm lens is therefore **165 mm**, not
+     200. Labels keep the sold name so a user recognises their own glass, but the caption, OSD, and
+     EXIF must always report `effectiveFocalMm` for the ACTIVE lens. Repeating the product number
+     would write a false focal into saved files. Tests pin both the published figure (tolerance
+     `1e-2`, because makers TRUNCATE — 230/70 = 3.2857 is sold as "3.28×", and a ±5e-3 band fails)
+     and the exact ratios at `delta = 0`, which is what catches a preset that adopted a sibling's.
+  5. **When a phone has TWO official converters, the exotic one claims no device.** The vivo X300
+     Ultra takes both the 200 mm and the 400 mm; `detectProfile` can return only one, so the BASE
+     kit owns the model code and the long optic is an explicit pick. A test forbids two profiles
+     claiming the same model, because `firstOrNull` would otherwise make the default depend on
+     declaration order.
+  Changing magnification changes that ceiling, so both action handlers re-normalize the live zoom
+  and reset `ZoomGlideState.pendingRatio` AND `easeTarget` — an in-flight ease target is an ABSOLUTE
+  number in the OLD scale (same trap as a mode flip or lens preset).
 - **Front (selfie) camera is a first-class optics door with BASIC scope (2026-07-22; mirror roles
   device-diagnosed 2026-07-23; capture-ROTATION sign device-bisected and verified 2026-07-25).**
   `CameraEngine.setFrontCamera` is a full generation-owned
