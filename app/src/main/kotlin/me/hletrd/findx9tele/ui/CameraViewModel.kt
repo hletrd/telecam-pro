@@ -74,6 +74,7 @@ import me.hletrd.findx9tele.camera.VideoCodec
 import me.hletrd.findx9tele.camera.VideoFrameRate
 import me.hletrd.findx9tele.camera.WbMode
 import me.hletrd.findx9tele.camera.ZebraLevel
+import me.hletrd.findx9tele.ui.controls.bitrateLevelLabel
 import me.hletrd.findx9tele.ui.controls.formatFocalMm
 import me.hletrd.findx9tele.ui.controls.transferLabel
 import me.hletrd.findx9tele.ui.controls.videoResolutionLabel
@@ -90,6 +91,7 @@ import me.hletrd.findx9tele.storage.RestoredDeleteScope
 import me.hletrd.findx9tele.storage.SettingsStore
 import me.hletrd.findx9tele.storage.StoredMediaOutputKind
 import me.hletrd.findx9tele.video.AudioInputInspector
+import me.hletrd.findx9tele.video.audioUnavailableLabel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -499,7 +501,11 @@ class CameraViewModel @JvmOverloads constructor(
                                 "Still capture unavailable"
                             current.photoFormats.wantsProcessedStill &&
                                 !accepted.photoFormats.wantsProcessedStill && accepted.photoFormats.dngRaw ->
-                                "HEIF/JPEG unavailable; using DNG"
+                                // Word for word the engine's capture-time refusal and the
+                                // PhotoFormatToggles caption: this fires on Ready publication and
+                                // those fire at the shutter, so one user sees all three for one
+                                // output mask.
+                                "HEIF/JPEG unavailable; DNG only"
                             current.photoFormats.dngRaw && !accepted.photoFormats.dngRaw ->
                                 "RAW unavailable"
                             else -> null
@@ -636,7 +642,9 @@ class CameraViewModel @JvmOverloads constructor(
                 val current = _state.value
                 if (!current.isRecording && standbyMeterVisible) {
                     _state.update {
-                        it.copy(audioRouteLabel = "${it.audioInputPreference.label} unavailable")
+                        // The canonical helper, not a hand-rolled copy of its format: every Route-row
+                        // degradation must keep spelling this one way.
+                        it.copy(audioRouteLabel = audioUnavailableLabel(it.audioInputPreference.label))
                     }
                     publishStatus("Standby microphone unavailable")
                 }
@@ -1189,7 +1197,7 @@ class CameraViewModel @JvmOverloads constructor(
             "${focalSummary(s)} · ${s.controls.exposureMode.letter} · ${photoFormatLabel(s.photoFormats)}"
         CaptureMode.VIDEO -> {
             "${focalSummary(s)} · ${videoResolutionLabel(s.videoResolution)} ${s.videoFrameRate.label}p · " +
-                "${transferLabel(s.transfer)} · ${s.bitrateLevel.name.lowercase().replaceFirstChar { it.uppercase() }}"
+                "${transferLabel(s.transfer)} · ${bitrateLevelLabel(s.bitrateLevel)}"
         }
     }
 
@@ -2306,7 +2314,10 @@ class CameraViewModel @JvmOverloads constructor(
                 )
             }
             if (s.recordAudio && !inputStatus.available) {
-                showStatus("${inputStatus.label}, using default")
+                // ";" is the clause joiner every sibling status uses ("Camera unavailable; mode
+                // unchanged"). A comma cannot do it here: the left operand is a port label that can
+                // itself read "Auto · No mic", so a comma would bind a clause inside a · list.
+                showStatus("${inputStatus.label}; using default")
             }
             // THREAD CONTRACT: this callback runs on the RECORDER EXECUTOR for a queued admission,
             // or synchronously on MAIN for an immediate refusal. Reconcile a refusal on MAIN as one

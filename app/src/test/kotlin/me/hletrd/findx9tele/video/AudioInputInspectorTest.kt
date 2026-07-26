@@ -154,7 +154,10 @@ class AudioInputInspectorTest {
             me.hletrd.findx9tele.camera.AudioInputPreference.WIRED,
         )
         assertFalse(s.available)
-        org.junit.Assert.assertEquals("Wired missing", s.label)
+        // Pins the CROSS-SURFACE wording, not just this branch: the Route row must read the same
+        // before REC and during it, so this label has to BE audioUnavailableLabel's output.
+        org.junit.Assert.assertEquals("Wired unavailable", s.label)
+        org.junit.Assert.assertEquals(audioUnavailableLabel("Wired"), s.label)
     }
 
     @Test

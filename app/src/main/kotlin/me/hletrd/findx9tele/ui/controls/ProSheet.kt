@@ -848,14 +848,16 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     }
     // Sony Custom WB: frame a white/grey card and capture a fresh accepted-session AWB sample.
     val customWbCaptureEnabled = state.cameraReady && availability.customWbCaptureEnabled
+    // Both refusal branches are word for word the toast the SAME refusal already emits from the
+    // ViewModel (onCaptureCustomWb guards these two conditions in this order): the caption and the
+    // toast are one instruction seen twice, not two instructions. "Camera reconfiguring" is also
+    // the app's single name for !cameraReady everywhere else.
     Captioned(
         if (customWbCaptureEnabled) {
             "Aim at a white or gray card"
         } else if (!state.cameraReady) {
-            "Camera busy"
+            "Camera reconfiguring"
         } else {
-            // Word for word the toast the SAME refusal already emits from the ViewModel: the
-            // caption and the toast are one instruction seen twice, not two instructions.
             "Use Auto WB with AWB Lock off"
         },
     ) {
@@ -1325,7 +1327,9 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
     // Every sibling toggle with non-obvious preconditions carries one of these (UX_POLICY: menu rows
     // are the sanctioned place for that copy, never the viewfinder). Without it, toggling this in
     // video, at 16:9, or with the loupe off does nothing visible and says nothing about why.
-    Captioned("Photo · 4:3 · TELE · Loupe") {
+    // Same rule as the header four lines up: the caption's other three tokens are menu names, so the
+    // sole borrowed OSD tag spelled itself out too.
+    Captioned("Photo · 4:3 · Teleconverter · Loupe") {
         // Loupe Overview is a same-stream full-frame reference, never an automatic 1x camera feed.
         // Exact predicate: enabled + Photo + 4:3 + TELE + active punch-in. Default remains off.
         ToggleRow(label = "Loupe Overview", checked = state.teleFinder, onCheckedChange = actions::onToggleTeleFinder)

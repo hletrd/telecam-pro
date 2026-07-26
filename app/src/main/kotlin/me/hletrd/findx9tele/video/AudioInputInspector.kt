@@ -25,7 +25,11 @@ internal object AudioInputInspector {
     }
 
     fun routeLabel(preference: AudioInputPreference, device: AudioDeviceInfo?): String {
-        if (device == null) return if (preference == AudioInputPreference.AUTO) "Auto" else "${preference.label} missing"
+        // "unavailable", not "missing": VideoRecorder.audioUnavailableLabel spells the SAME fact for
+        // the SAME Route row once REC starts, so two words for one fact read as two situations.
+        if (device == null) {
+            return if (preference == AudioInputPreference.AUTO) "Auto" else audioUnavailableLabel(preference.label)
+        }
         val name = device.productName?.toString()?.takeIf { it.isNotBlank() && it != "Unknown" }
         return listOfNotNull(typeLabel(device.type), name).joinToString(" · ")
     }
@@ -93,8 +97,8 @@ internal fun audioPortLabel(port: AudioInputPortInfo): String {
  * - AUTO prefers a RECOGNIZED external mic (wired/USB/BT — CR4-9: `type != BUILTIN` alone could
  *   pick a telephony/FM tuner port and label it like a mic), else the built-in mic, else the
  *   first port (AUTO recording uses the system default route either way; the pick is a LABEL).
- * - A concrete preference reports "<port> ready" when an exact match exists, "<pref> missing"
- *   (unavailable) otherwise.
+ * - A concrete preference reports "<port> ready" when an exact match exists, "<pref> unavailable"
+ *   (the canonical audioUnavailableLabel wording the in-REC degradation paths already use) otherwise.
  */
 internal fun resolveAudioInputStatus(
     ports: List<AudioInputPortInfo>,
@@ -116,6 +120,6 @@ internal fun resolveAudioInputStatus(
     return if (match != null) {
         AudioInputStatus("${audioPortLabel(match)} ready", available = true)
     } else {
-        AudioInputStatus("${preference.label} missing", available = false)
+        AudioInputStatus(audioUnavailableLabel(preference.label), available = false)
     }
 }

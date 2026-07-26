@@ -450,7 +450,10 @@ internal fun photoFormatLabel(formats: PhotoFormats): String = buildString {
         if (isNotEmpty()) append("+")
         append("DNG")
     }
-    if (isEmpty()) append("-")
+    // "--" is the app's one null token (focalLabel below, the MR slots, the Fn cycles). This slot and
+    // that focal readout land in the SAME StatusBar row on a preview-only session, so a lone "-" here
+    // would put two spellings of "nothing" side by side.
+    if (isEmpty()) append("--")
 }
 
 /** Compact strip: the default HEIF-only combination is not an output-changing state, so it is silent. */
@@ -542,7 +545,9 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
             }
             if (state.transfer.isLog && state.gammaAssist) {
                 // Gamma Display Assist active: the monitor is corrected, the file stays log.
-                Text("Assist", color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.labelMedium)
+                // Caps like every other alphabetic tag in this row (FRONT/MUTE/HR/AEL/LOUPE/SLOG3…);
+                // Title Case is the MENU row convention, not the finder's.
+                Text("ASSIST", color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.labelMedium)
             }
             if (state.openGate) {
                 Text("4:3", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)

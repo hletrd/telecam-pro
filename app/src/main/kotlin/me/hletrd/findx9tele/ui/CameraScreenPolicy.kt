@@ -31,8 +31,10 @@ import kotlin.math.sin
  */
 
 internal fun String.isUrgentStatus(): Boolean =
-    // "could not": the delete-failure statuses ("Could not delete media") matched no keyword and
-    // rendered as polite toasts — found while pinning this classifier (TEST4-14).
+    // "could not": the delete-failure statuses ("Could not delete file", "Some files could not be
+    // deleted. …") matched no keyword and rendered as polite toasts — found while pinning this
+    // classifier (TEST4-14). It is the only keyword those three strings contain, so StatusUrgencyTest
+    // pins all of them by their exact shipped wording.
     listOf("error", "fail", "unable", "unavailable", "denied", "insufficient", "could not")
         .any { contains(it, ignoreCase = true) }
 

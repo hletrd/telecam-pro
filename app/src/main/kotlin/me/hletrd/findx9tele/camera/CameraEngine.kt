@@ -3378,7 +3378,9 @@ class CameraEngine(private val context: Context) {
             return false
         }
         if (videoFrameRate !in VideoFrameRate.availableFor(caps, videoSize, videoCodec)) {
-            onStatus?.invoke("Selected FPS is unavailable")
+            // Bare "<X> unavailable" like every sibling status in this file; the copula was the one
+            // status that read as a sentence in a register of clipped labels.
+            onStatus?.invoke("Selected FPS unavailable")
             return false
         }
         // A just-stopped clip's async teardown still owns the mic (and the encoder pipeline is being

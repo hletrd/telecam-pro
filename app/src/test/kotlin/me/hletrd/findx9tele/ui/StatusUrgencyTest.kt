@@ -19,8 +19,13 @@ class StatusUrgencyTest {
         assertTrue("DNG save failed".isUrgentStatus())
         assertTrue("Still capture unavailable".isUrgentStatus())
         // Found while writing this pin: delete failures matched no keyword and rendered polite —
-        // "could not" joined the classifier with this test.
-        assertTrue("Could not delete media".isUrgentStatus())
+        // "could not" joined the classifier with this test. Every delete-failure string the app can
+        // actually emit is listed, because "could not" is the ONLY keyword any of them contains: the
+        // two partial-family ones do not say "fail" or "unavailable" anywhere, and the phrase sits
+        // mid-sentence and lower-case there, so this is also the pin on the ignoreCase match.
+        assertTrue("Could not delete file".isUrgentStatus())
+        assertTrue("Some files could not be deleted. Open the capture and retry.".isUrgentStatus())
+        assertTrue("Some files could not be deleted. Retry in Gallery.".isUrgentStatus())
         assertTrue("Camera permission denied".isUrgentStatus())
         assertTrue("Insufficient storage".isUrgentStatus())
     }
