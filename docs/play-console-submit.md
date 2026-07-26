@@ -110,21 +110,22 @@ Summary:
   panel is 1440x3168 (1:2.2), so the crop removes the OS status bar and gesture bar only — no app
   content is lost. The 2026-07-10 captures (`03-focus-loupe.png`, `05-lens-selection.png` and the
   older versions of the rest) are retired: they showed a superseded UI.
-  - **READY** `screenshots/02-pro-settings.png` — Shooting tab: output format, aspect, zoom, JPEG
-    quality, drive mode, self-timer
-  - **READY** `screenshots/03-focus-tools.png` — Focus tab: AF modes, spot size, AF lock, peaking
-    level and colour
-  - **READY** `screenshots/06-video-settings.png` — Video tab: codec, Open Gate, resolution, FPS,
-    bitrate, live encoder summary, transfer curves
-  - **NEEDS RECAPTURE** `screenshots/01-main-viewfinder.png`,
-    `screenshots/04-video-controls.png`, `screenshots/05-lens-and-fn.png` — content and framing are
-    correct, but every rotating glyph (Photo/Video labels, the lens pills, the Fn chips) renders
-    SIDEWAYS in them. That is the app behaving correctly: it counter-rotates glyphs by the
-    gravity-derived device orientation, and the phone was standing in a LANDSCAPE pose during
-    capture, which the orientation logic reports confidently (it is not the flat-phone hold case).
-    Recapture these three with the phone held or docked PORTRAIT — no code change is involved.
-  - Aim the camera at a lit, textured subject for the viewfinder shots; the settings-sheet shots do
-    not depend on the scene.
+  - `screenshots/01-main-viewfinder.png` — photo viewfinder: OSD row, focal rail, mode carousel,
+    shutter
+  - `screenshots/02-pro-settings.png` — Shooting tab: output format, aspect, zoom, JPEG quality,
+    drive mode, self-timer
+  - `screenshots/03-focus-tools.png` — Focus tab: AF modes, spot size, AF lock, peaking level/colour
+  - `screenshots/04-video-controls.png` — video mode: REC control, live encoder OSD
+  - `screenshots/05-lens-and-fn.png` — focal rail with the Fn quick-control sheet open
+  - `screenshots/06-video-settings.png` — Video tab: codec, Open Gate, resolution, FPS, bitrate,
+    live encoder summary, transfer curves
+  - All six render UPRIGHT: the first captures had every rotating glyph sideways because the app
+    counter-rotates glyphs by the gravity-derived device orientation and the phone was standing in
+    a landscape pose. Capture with the phone PORTRAIT — this is app behaviour, not a bug, and no
+    code change is involved.
+  - REMAINING JUDGEMENT CALL (owner): the three viewfinder frames show whatever the lens was
+    pointed at during capture, currently a close, out-of-focus surface. The chrome is correct and
+    uploadable as-is, but a lit, textured, IN-FOCUS subject would make far better store art.
 
 ## Device Catalog
 
