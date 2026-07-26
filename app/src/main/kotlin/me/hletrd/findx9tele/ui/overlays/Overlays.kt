@@ -440,12 +440,14 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
         null
     } else {
         val focal = state.caps?.equivalentFocalMm ?: 0f
-        remember(focal, state.controls.zoomRatio, state.teleconverterMode) {
-            // The afocal teleconverter multiplies the ~70 mm periscope → a ~300 mm effective focal.
-            // Round to the nearest 10 mm so the readout reads a clean "300 mm" rather than 296 mm.
-            // TELE effective focal follows the digital zoom on the NOMINAL 300 mm base (constant
-            // scale, matching the 13/30/60× pill marks): 300 mm at 13×, 690 at 30×, 1380 at 60×.
-            val effFocal = ((300f * state.controls.zoomRatio.coerceAtLeast(1f)) / 10f).roundToInt() * 10
+        val teleFocal = state.teleconverterFocalMm
+        remember(focal, state.controls.zoomRatio, state.teleconverterMode, teleFocal) {
+            // The afocal teleconverter multiplies the ~70 mm periscope → the SELECTED converter's
+            // effective focal (~300 mm on the kit optic). Round to the nearest 10 mm so the readout
+            // reads a clean "300 mm" rather than 296 mm. TELE effective focal follows the digital
+            // zoom on that NOMINAL base (constant scale, matching the 13/30/60× pill marks): on the
+            // kit optic 300 mm at 13×, 690 at 30×, 1380 at 60×.
+            val effFocal = ((teleFocal * state.controls.zoomRatio.coerceAtLeast(1f)) / 10f).roundToInt() * 10
             when {
                 focal <= 0f -> "--"
                 state.teleconverterMode -> "$effFocal mm TELE"

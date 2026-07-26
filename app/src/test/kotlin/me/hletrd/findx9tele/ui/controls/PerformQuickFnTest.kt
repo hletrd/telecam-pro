@@ -97,6 +97,10 @@ class PerformQuickFnTest {
         override fun onAudioScene(scene: AudioScene) = hit("onAudioScene($scene)")
         override fun onAudioInputPreference(preference: AudioInputPreference) = hit("onAudioInputPreference")
         override fun onToggleTeleconverter(enabled: Boolean) = hit("onToggleTeleconverter($enabled)")
+        override fun onTeleconverterProfile(profile: me.hletrd.findx9tele.camera.TeleconverterProfile) =
+            hit("onTeleconverterProfile($profile)")
+        override fun onTeleconverterCustomMagnification(value: Float) =
+            hit("onTeleconverterCustomMagnification($value)")
         override fun onVideoCodec(codec: VideoCodec) = hit("onVideoCodec")
         override fun onBitrateLevel(level: BitrateLevel) = hit("onBitrateLevel")
         override fun onVideoResolution(size: android.util.Size) = hit("onVideoResolution")

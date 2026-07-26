@@ -96,7 +96,11 @@ import me.hletrd.findx9tele.camera.LensChoice
 import me.hletrd.findx9tele.camera.MemorySlot
 import me.hletrd.findx9tele.camera.ProcessingLevel
 import me.hletrd.findx9tele.camera.ShutterMode
+import me.hletrd.findx9tele.camera.MAX_TELECONVERTER_MAGNIFICATION
+import me.hletrd.findx9tele.camera.MIN_TELECONVERTER_MAGNIFICATION
 import me.hletrd.findx9tele.camera.ShutterTimer
+import me.hletrd.findx9tele.camera.TeleconverterProfile
+import me.hletrd.findx9tele.camera.detectProfile
 import me.hletrd.findx9tele.camera.VideoCodec
 import me.hletrd.findx9tele.camera.VideoStabMode
 import me.hletrd.findx9tele.camera.VideoFrameRate
@@ -662,8 +666,13 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         onSelect = actions::onAspectRatio,
     )
     caps?.zoomRatioRange?.let { range ->
-        // TELE shows the converter-equivalent scale (13–60×) but writes the lens-local ratio.
-        val zBase = if (state.teleconverterMode) me.hletrd.findx9tele.camera.TELE_DISPLAY_BASE else 1f
+        // TELE shows the converter-equivalent scale (13–60× on the kit optic) but writes the
+        // lens-local ratio; the scale follows whichever converter the user declared.
+        val zBase = if (state.teleconverterMode) {
+            me.hletrd.findx9tele.camera.teleDisplayBase(state.teleconverterMagnification)
+        } else {
+            1f
+        }
         val loDisplay = range.lower * zBase
         val zHi = if (state.teleconverterMode) {
             minOf(range.upper * zBase, me.hletrd.findx9tele.camera.TELE_MAX_DISPLAY_ZOOM)
@@ -938,7 +947,11 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
         enabled = rearOpticsMutable,
     )
     Text(
-        if (rearRoute) lensFocalCaption(state.lens, state.teleconverterMode) else "Rear camera only.",
+        if (rearRoute) {
+            lensFocalCaption(state.lens, state.teleconverterMode, state.teleconverterFocalMm)
+        } else {
+            "Rear camera only."
+        },
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.labelSmall,
     )
@@ -950,6 +963,51 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
     )
     Text(
         if (rearRoute) "3× lens only." else "Rear camera only.",
+        color = CameraColors.TextSecondary,
+        style = MaterialTheme.typography.labelSmall,
+    )
+    // WHICH converter is clamped on. This can never be detected (passive glass, no contacts), so it
+    // is a declaration; the phone model only decides which entry starts selected.
+    SegmentedSelector(
+        label = "Converter",
+        options = TeleconverterProfile.entries,
+        selected = state.teleconverterProfile,
+        labelFor = { it.label },
+        onSelect = actions::onTeleconverterProfile,
+        enabled = rearOpticsMutable,
+    )
+    if (state.teleconverterProfile.isCustom) {
+        LabeledSlider(
+            label = "Magnification",
+            valueLabel = "%.2f×".format(Locale.US, state.teleconverterMagnification),
+            value = state.teleconverterCustomMagnification,
+            onValueChange = actions::onTeleconverterCustomMagnification,
+            valueRange = MIN_TELECONVERTER_MAGNIFICATION..MAX_TELECONVERTER_MAGNIFICATION,
+            enabled = rearOpticsMutable,
+        )
+    }
+    // The stored model is quoted back only while the SELECTED profile is still this phone's kit
+    // optic — otherwise "Default for PMA110" would describe a converter the user replaced.
+    // detectProfile is pure and takes the already-captured string; nothing here reads a Build field.
+    val kitPhone = state.detectedTeleconverterModel
+        ?.takeIf { detectProfile(it) == state.teleconverterProfile }
+    // The computed focal for THIS phone's host lens, never the preset's product number: a 2.35×
+    // extender sold as "200 mm" is 165 mm on a 70 mm periscope.
+    val converterFocal = "${formatFocalMm(state.teleconverterFocalMm)} equiv."
+    Text(
+        when {
+            !rearRoute -> "Rear camera only."
+            kitPhone != null -> "$converterFocal Default for $kitPhone."
+            // A named optic identifies itself by the phone it ships with — which is the only thing
+            // "per-device preset" can honestly mean for passive glass.
+            state.teleconverterProfile.kit.isNotEmpty() ->
+                "$converterFocal ${state.teleconverterProfile.kit}."
+            // Generic and custom entries get the focal and nothing else. The earlier copy told the
+            // user to "set this to the optic you mounted" here, which is the one place they already
+            // have: it fired precisely BECAUSE they made a deliberate pick, so it read as a warning
+            // about a correct action (and this app does not nag — see docs/UX_POLICY.md).
+            else -> converterFocal
+        },
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.labelSmall,
     )

@@ -271,17 +271,15 @@ enum class AudioInputPreference(val label: String) {
     BLUETOOTH("BT"),
 }
 
-/**
- * The Explorer teleconverter's angular magnification: ~300 mm effective over the native ~70 mm
- * periscope (≈4.286×). Single source of truth — this factor feeds the HAL zoom hints, the EXIF
- * 35 mm focal, the OSD focal readout, and the handheld-shutter rule; a corrected optic measurement
- * must change exactly one constant.
- */
-const val TELECONVERTER_MAGNIFICATION = 300f / 70f
+// The teleconverter's magnification, its preset catalog, and the derived display/focal scales now
+// live in Teleconverter.kt — they stopped being constants when the converter became selectable.
+// `TELECONVERTER_MAGNIFICATION` survives there as the Explorer default; `TELE_DISPLAY_BASE` became
+// the `teleDisplayBase(magnification)` function.
 
-// TELE mode's DISPLAY zoom scale (converter-equivalent, main-relative): local 1.0 on the 3× lens
-// with the 4.3× converter ≈ 13×. The user-spec range is 13–60× with magnetic snaps at 30× / 60×.
-val TELE_DISPLAY_BASE: Float = (LensChoice.TELE3X.targetEquivMm / LensChoice.MAIN.targetEquivMm) * TELECONVERTER_MAGNIFICATION
+// TELE mode's DISPLAY zoom ceiling (converter-equivalent, main-relative). Deliberately NOT scaled
+// by the converter: it caps TOTAL magnification, so the local-zoom headroom derived from it
+// (`TELE_MAX_DISPLAY_ZOOM / teleDisplayBase(m)`) widens as the converter weakens. The user-spec
+// range is 13–60× on the kit optic, with magnetic snaps at 30× / 60×.
 const val TELE_MAX_DISPLAY_ZOOM = 60f
 
 // TELE finder PIP: an opt-in corner viewport re-drawing the FULL current camera frame while the
@@ -393,6 +391,11 @@ fun finderContainsTopLeftPoint(
     return pointX >= rect.x && pointX <= rect.x + rect.width &&
         pointY >= top && pointY <= top + rect.height
 }
+// Magnetic zoom marks, in TOTAL-magnification units like the HUD pill — NOT lens-local ratios. The
+// local ratio each one lands on therefore depends on the mounted converter (mark ÷
+// teleDisplayBase), which is why `normalizeZoomRequest` converts in both directions instead of
+// comparing raw ratios. On a weak enough converter the 60× mark simply falls outside the lens's
+// range and the ordinary bounds clamp swallows it; that is intended, not a missing case.
 val TELE_ZOOM_SNAPS = floatArrayOf(30f, 60f)
 
 /**
@@ -811,6 +814,14 @@ data class CameraUiState(
     val facing: CameraFacing = CameraFacing.BACK,
     // Teleconverter mode: manual (not auto-detected). ON = afocal 180° flip; locked to the 3× lens.
     val teleconverterMode: Boolean = false,
+    // WHICH converter is clamped on, and — for [TeleconverterProfile.CUSTOM] — its magnification.
+    // Also manual: passive glass cannot announce itself. The phone model only pre-selects a default
+    // at first launch (see [detectProfile]); it never gates a capability or a request.
+    val teleconverterProfile: TeleconverterProfile = DEFAULT_TELECONVERTER_PROFILE,
+    val teleconverterCustomMagnification: Float = TELECONVERTER_MAGNIFICATION,
+    // The phone model the kit-converter default was matched against, for honest UI copy. Null when
+    // this phone has no known kit optic.
+    val detectedTeleconverterModel: String? = null,
     // Stabilization. Default ENHANCED = HAL OIS+EIS ("super steady"): at 300 mm it reduces the
     // per-frame motion blur (see [VideoStabMode]).
     val videoStabMode: VideoStabMode = VideoStabMode.ENHANCED,
@@ -907,6 +918,17 @@ data class CameraUiState(
 ) {
     val activeFnSlots: List<FnSlot>
         get() = if (mode == CaptureMode.VIDEO) videoFnSlots else photoFnSlots
+
+    /**
+     * The converter magnification in force. Every focal, zoom-scale, and HAL-hint consumer reads
+     * this instead of a constant, so the profile and its custom value can never drift apart.
+     */
+    val teleconverterMagnification: Float
+        get() = effectiveMagnification(teleconverterProfile, teleconverterCustomMagnification)
+
+    /** The effective 35 mm-equivalent focal through the converter, e.g. 300 mm on the kit optic. */
+    val teleconverterFocalMm: Float
+        get() = effectiveFocalMm(teleconverterMagnification)
     val stillCaptureReady: Boolean
         get() = cameraReady && photoSessionOutputs.hasStillTarget
     val primaryShutterHealthy: Boolean

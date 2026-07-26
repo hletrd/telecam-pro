@@ -57,14 +57,14 @@ class ProgramModeRoutingTest {
     @Test
     fun `handheld shutter rule is one over the effective focal`() {
         // 70 mm lens with the converter → ~300 mm effective → ~1/300 s.
-        val tele = preferredProgramShutterNs(70f, teleconverterMode = true)
+        val tele = preferredProgramShutterNs(70f, teleconverterMode = true, TELECONVERTER_MAGNIFICATION)
         assertEquals((1_000_000_000f / (70f * TELECONVERTER_MAGNIFICATION)).toLong(), tele)
         // Main 23 mm without the converter → 1/23 s.
-        assertEquals((1_000_000_000f / 23f).toLong(), preferredProgramShutterNs(23f, teleconverterMode = false))
+        assertEquals((1_000_000_000f / 23f).toLong(), preferredProgramShutterNs(23f, teleconverterMode = false, TELECONVERTER_MAGNIFICATION))
     }
 
     @Test
     fun `degenerate focal cannot divide by zero`() {
-        assertEquals(1_000_000_000L, preferredProgramShutterNs(0f, teleconverterMode = false))
+        assertEquals(1_000_000_000L, preferredProgramShutterNs(0f, teleconverterMode = false, TELECONVERTER_MAGNIFICATION))
     }
 }

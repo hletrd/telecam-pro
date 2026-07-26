@@ -1,6 +1,8 @@
 package me.hletrd.findx9tele.ui.controls
 
 import me.hletrd.findx9tele.camera.LensChoice
+import me.hletrd.findx9tele.camera.TELECONVERTER_MAGNIFICATION
+import me.hletrd.findx9tele.camera.effectiveFocalMm
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -11,19 +13,37 @@ import org.junit.Test
  * without its afocal correction).
  */
 class LensFocalCaptionTest {
+    // The kit optic, spelled out: the caption now takes the SELECTED converter's focal, so the
+    // historical "300 mm equiv." string is asserted against the historical magnification.
+    private val kitFocal = effectiveFocalMm(TELECONVERTER_MAGNIFICATION)
+
 
     @Test
     fun `tele3x caption follows the converter state`() {
-        assertEquals("70 mm", lensFocalCaption(LensChoice.TELE3X, teleconverter = false))
-        assertEquals("300 mm equiv.", lensFocalCaption(LensChoice.TELE3X, teleconverter = true))
+        assertEquals("70 mm", lensFocalCaption(LensChoice.TELE3X, teleconverter = false, teleconverterFocalMm = kitFocal))
+        assertEquals("300 mm equiv.", lensFocalCaption(LensChoice.TELE3X, teleconverter = true, teleconverterFocalMm = kitFocal))
+    }
+
+    @Test
+    fun `the caption quotes the SELECTED converter, not the kit one`() {
+        // A generic 2x on the 70 mm host is 140 mm — claiming the kit's 300 would misdescribe the
+        // optic the operator actually mounted.
+        assertEquals(
+            "140 mm equiv.",
+            lensFocalCaption(
+                LensChoice.TELE3X,
+                teleconverter = true,
+                teleconverterFocalMm = effectiveFocalMm(2f),
+            ),
+        )
     }
 
     @Test
     fun `other lenses never claim the converter`() {
         for (tc in booleanArrayOf(false, true)) {
-            assertEquals("14 mm", lensFocalCaption(LensChoice.ULTRAWIDE, teleconverter = tc))
-            assertEquals("23 mm", lensFocalCaption(LensChoice.MAIN, teleconverter = tc))
-            assertEquals("230 mm", lensFocalCaption(LensChoice.TELE10X, teleconverter = tc))
+            assertEquals("14 mm", lensFocalCaption(LensChoice.ULTRAWIDE, teleconverter = tc, teleconverterFocalMm = kitFocal))
+            assertEquals("23 mm", lensFocalCaption(LensChoice.MAIN, teleconverter = tc, teleconverterFocalMm = kitFocal))
+            assertEquals("230 mm", lensFocalCaption(LensChoice.TELE10X, teleconverter = tc, teleconverterFocalMm = kitFocal))
         }
     }
 }

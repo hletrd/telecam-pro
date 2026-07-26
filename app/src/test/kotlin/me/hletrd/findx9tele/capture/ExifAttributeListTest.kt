@@ -3,6 +3,7 @@ package me.hletrd.findx9tele.capture
 import androidx.exifinterface.media.ExifInterface
 import me.hletrd.findx9tele.camera.AspectRatio
 import me.hletrd.findx9tele.camera.ManualControls
+import me.hletrd.findx9tele.camera.TELECONVERTER_MAGNIFICATION
 import me.hletrd.findx9tele.camera.MeteringMode
 import me.hletrd.findx9tele.storage.CaptureFamilyKey
 import me.hletrd.findx9tele.storage.CaptureFamilyMedia
@@ -124,6 +125,7 @@ class ExifAttributeListTest {
             caps = null,
             selection = null,
             teleconverter = true,
+            teleconverterMagnification = TELECONVERTER_MAGNIFICATION,
             aspectRatio = AspectRatio.W4_3,
             jpegQuality = 95,
             rotationDegrees = 180,

@@ -124,16 +124,24 @@ internal fun lensLabel(lens: me.hletrd.findx9tele.camera.LensChoice): String = w
     me.hletrd.findx9tele.camera.LensChoice.TELE10X -> "10×"
 }
 
+// The ONE focal-readout typography: whole millimetres, no decimals — "300 mm", "165 mm". Every
+// converter-derived focal (Fn tiles, lens caption, MR summary) reads through this so a custom
+// magnification can never surface as "164.50 mm" on one surface and "165 mm" on another.
+internal fun formatFocalMm(mm: Float): String = "${kotlin.math.round(mm).toInt()} mm"
+
 // The 3× caption must be TRUTHFUL about the converter: lens picks are zoom presets that do NOT
 // bundle TELE, so an unconditional "+ TC = 300 mm" claimed the afocal correction was active when
-// the adjacent toggle was off — an operator could shoot a mounted converter uncorrected.
+// the adjacent toggle was off — an operator could shoot a mounted converter uncorrected. The focal
+// itself follows the SELECTED converter, so a generic 2× reads "140 mm equiv.", not the kit's 300.
 internal fun lensFocalCaption(
     lens: me.hletrd.findx9tele.camera.LensChoice,
     teleconverter: Boolean,
+    teleconverterFocalMm: Float,
 ): String = when (lens) {
     me.hletrd.findx9tele.camera.LensChoice.ULTRAWIDE -> "14 mm"
     me.hletrd.findx9tele.camera.LensChoice.MAIN -> "23 mm"
-    me.hletrd.findx9tele.camera.LensChoice.TELE3X -> if (teleconverter) "300 mm equiv." else "70 mm"
+    me.hletrd.findx9tele.camera.LensChoice.TELE3X ->
+        if (teleconverter) "${formatFocalMm(teleconverterFocalMm)} equiv." else "70 mm"
     me.hletrd.findx9tele.camera.LensChoice.TELE10X -> "230 mm"
 }
 

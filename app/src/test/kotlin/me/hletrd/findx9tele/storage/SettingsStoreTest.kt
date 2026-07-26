@@ -28,6 +28,7 @@ import me.hletrd.findx9tele.camera.PeakingLevel
 import me.hletrd.findx9tele.camera.ProcessingLevel
 import me.hletrd.findx9tele.camera.ShutterMode
 import me.hletrd.findx9tele.camera.ShutterTimer
+import me.hletrd.findx9tele.camera.TeleconverterProfile
 import me.hletrd.findx9tele.camera.VideoCodec
 import me.hletrd.findx9tele.camera.VideoFrameRate
 import me.hletrd.findx9tele.camera.VideoStabMode
@@ -196,6 +197,8 @@ class SettingsStoreTest {
         photoExposureTimeNs = 750_000_000L,
         lens = LensChoice.TELE3X,
         teleconverter = true,
+        teleconverterProfile = TeleconverterProfile.CUSTOM,
+        teleconverterCustomMagnification = 2.75f,
         videoStabMode = VideoStabMode.STANDARD,
         aspectRatio = AspectRatio.W16_9,
         timer = ShutterTimer.SEC10,

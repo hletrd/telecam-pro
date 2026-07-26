@@ -128,6 +128,12 @@ class CameraController(context: Context) {
     // hints this device exposes through Camera2: Hasselblad telephoto mode + effective zoom ~= 300/70.
     // These are best-effort and fully guarded.
     private var teleconverterMode = false
+    // WHICH converter [teleconverterMode] means: its angular magnification (see Teleconverter.kt —
+    // a user declaration, not a detection). Only feeds the guarded `com.oplus.original.zoomRatio`
+    // OIS-context hint and the debug 3A line; it is not a session key, so [setTeleconverterMagnification]
+    // updates it without a reopen. @Volatile because that setter writes from the engine's caller
+    // thread while the camera thread reads it while building requests.
+    @Volatile private var teleconverterMagnification = TELECONVERTER_MAGNIFICATION
     // Engine-RESOLVED hi-res admission ([hiResAdmitted]: photo + 4:3 + standalone + advertised),
     // set BEFORE configure like [teleconverterMode]. @Volatile because the engine writes it on
     // setupExecutor while the fallback ladder re-reads it on the camera thread. The plan drops
@@ -210,6 +216,7 @@ class CameraController(context: Context) {
         vendorLogMode: Int = 0,
         videoStabHalMode: Int = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF,
         teleconverterMode: Boolean = false,
+        teleconverterMagnification: Float = TELECONVERTER_MAGNIFICATION,
         pinAutoFps: Boolean = false,
         diagnosticOpticsGeneration: Long = 0,
         // Dual-open camera switching: open the DEVICE now (the outgoing camera keeps streaming
@@ -239,6 +246,7 @@ class CameraController(context: Context) {
         this.vendorLogMode = vendorLogMode
         this.videoStabHalMode = videoStabHalMode
         this.teleconverterMode = teleconverterMode
+        this.teleconverterMagnification = teleconverterMagnification
         this.pinAutoFps = pinAutoFps
         this.diagnosticRequestMode = if (pinAutoFps) CaptureMode.VIDEO else CaptureMode.PHOTO
         this.diagnosticOpticsGeneration = diagnosticOpticsGeneration
@@ -397,7 +405,7 @@ class CameraController(context: Context) {
      */
     private fun CaptureRequest.Builder.applyTeleconverterHints() {
         val effectiveZoom = controls.zoomRatio.coerceAtLeast(1f) *
-            if (teleconverterMode) TELECONVERTER_MAGNIFICATION else 1f
+            if (teleconverterMode) teleconverterMagnification else 1f
         if (teleconverterMode) {
             runCatching {
                 set(oplusModeKey, OPLUS_CAMERA_MODE_TELEPHOTO_HASSELBLAD)
@@ -449,7 +457,7 @@ class CameraController(context: Context) {
             }
             // Keep OPPO's logical-zoom session hint in step (it contextualizes OIS/EIS strength);
             // same guarded write as applyTeleconverterHints.
-            val effectiveZoom = ratio.coerceAtLeast(1f) * if (teleconverterMode) TELECONVERTER_MAGNIFICATION else 1f
+            val effectiveZoom = ratio.coerceAtLeast(1f) * if (teleconverterMode) teleconverterMagnification else 1f
             runCatching { b.set(oplusOriginalZoomRatioKey, effectiveZoom) }
             s.setRepeatingRequest(b.build(), cb, handler)
         }.onFailure {
@@ -458,6 +466,17 @@ class CameraController(context: Context) {
             // Re-derive the full repeating request so the requested zoom is not silently lost.
             startPreview()
         }
+    }
+
+    /**
+     * Re-declares the mounted converter's magnification. Deliberately a bare field write with NO
+     * resubmit: its only wire effect is the guarded, advisory `com.oplus.original.zoomRatio` hint,
+     * which every still request rebuilds from scratch and the repeating request picks up on its next
+     * ordinary rebuild or zoom submit. A setRepeatingRequest here would stall this HAL's preview
+     * ~180 ms per call — at the custom-magnification ruler's drag rate.
+     */
+    fun setTeleconverterMagnification(magnification: Float) {
+        teleconverterMagnification = magnification
     }
 
     /** Live-updates the HAL video stabilization mode and re-issues the repeating request. */
@@ -921,7 +940,7 @@ class CameraController(context: Context) {
                         val flashMode = result.get(CaptureResult.FLASH_MODE)
                         val flashState = result.get(CaptureResult.FLASH_STATE)
                         val effectiveZoom = controls.zoomRatio.coerceAtLeast(1f) *
-                            if (teleconverterMode) TELECONVERTER_MAGNIFICATION else 1f
+                            if (teleconverterMode) teleconverterMagnification else 1f
                         Log.i(TAG, "3A: controllerId=$diagnosticId opticsGeneration=$requestOpticsGeneration requestGeneration=$requestGeneration mode=${requestMode.name} aeState=$ae afState=$af afMode=$afMode iso=${result.get(CaptureResult.SENSOR_SENSITIVITY)} expNs=${result.get(CaptureResult.SENSOR_EXPOSURE_TIME)} lens=$lastFocusDistance ois=$ois vstab=$vstab flashMode=$flashMode flashState=$flashState (req=$videoStabHalMode tele=$teleconverterMode effZoom=$effectiveZoom)")
                     }
                 }

@@ -142,7 +142,6 @@ import me.hletrd.findx9tele.camera.PhotoFormats
 import me.hletrd.findx9tele.camera.ProcessingLevel
 import me.hletrd.findx9tele.camera.ShutterMode
 import me.hletrd.findx9tele.camera.ShutterTimer
-import me.hletrd.findx9tele.camera.TELECONVERTER_MAGNIFICATION
 import me.hletrd.findx9tele.camera.VideoCodec
 import me.hletrd.findx9tele.camera.WbMode
 import me.hletrd.findx9tele.camera.controlAvailability
@@ -628,6 +627,7 @@ fun CameraScreen(
                 ) {
                     val mul = zoomDisplayMultiplier(
                         state.teleconverterMode,
+                        state.teleconverterMagnification,
                         state.caps?.equivalentFocalMm,
                         frontFacing = state.facing == CameraFacing.FRONT,
                     )
@@ -2279,6 +2279,8 @@ internal object PreviewCameraActions : CameraActions {
     override fun onAudioScene(scene: me.hletrd.findx9tele.camera.AudioScene) = Unit
     override fun onAudioInputPreference(preference: me.hletrd.findx9tele.camera.AudioInputPreference) = Unit
     override fun onToggleTeleconverter(enabled: Boolean) = Unit
+    override fun onTeleconverterProfile(profile: me.hletrd.findx9tele.camera.TeleconverterProfile) = Unit
+    override fun onTeleconverterCustomMagnification(value: Float) = Unit
     override fun onVideoCodec(codec: VideoCodec) = Unit
     override fun onBitrateLevel(level: BitrateLevel) = Unit
     override fun onVideoResolution(size: android.util.Size) = Unit

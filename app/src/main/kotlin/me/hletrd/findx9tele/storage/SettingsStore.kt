@@ -15,8 +15,12 @@ import me.hletrd.findx9tele.camera.ExposureMode
 import me.hletrd.findx9tele.camera.FnSlot
 import me.hletrd.findx9tele.camera.PeakingColor
 import me.hletrd.findx9tele.camera.PeakingLevel
+import me.hletrd.findx9tele.camera.DEFAULT_TELECONVERTER_PROFILE
 import me.hletrd.findx9tele.camera.ShutterTimer
+import me.hletrd.findx9tele.camera.TELECONVERTER_MAGNIFICATION
+import me.hletrd.findx9tele.camera.TeleconverterProfile
 import me.hletrd.findx9tele.camera.VideoStabMode
+import me.hletrd.findx9tele.camera.normalizeMagnification
 import me.hletrd.findx9tele.camera.ZebraLevel
 import me.hletrd.findx9tele.camera.normalizeAudioGain
 import me.hletrd.findx9tele.camera.normalizeFnSlots
@@ -47,6 +51,10 @@ data class ExtraSettings(
     val photoExposureTimeNs: Long = ManualControls().exposureTimeNs,
     val lens: LensChoice = LensChoice.MAIN,
     val teleconverter: Boolean = false,
+    // WHICH converter the toggle above means. Passive glass cannot announce itself, so this is the
+    // user's declaration (see Teleconverter.kt); the phone model only picks the first-launch default.
+    val teleconverterProfile: TeleconverterProfile = DEFAULT_TELECONVERTER_PROFILE,
+    val teleconverterCustomMagnification: Float = TELECONVERTER_MAGNIFICATION,
     val videoStabMode: VideoStabMode = VideoStabMode.ENHANCED,
     val aspectRatio: AspectRatio = AspectRatio.W4_3,
     val timer: ShutterTimer = ShutterTimer.OFF,
@@ -239,6 +247,16 @@ class SettingsStore(private val prefs: SharedPreferences) {
                     .coerceAtLeast(1L),
                 lens = enumOr(safeString("${prefix}lens", null), ed.lens),
                 teleconverter = safeBoolean("${prefix}teleconverter", ed.teleconverter),
+                teleconverterProfile = enumOr(
+                    safeString("${prefix}teleconverterProfile", null),
+                    ed.teleconverterProfile,
+                ),
+                // normalizeMagnification (not a local coerceIn) so the persisted bounds are the SAME
+                // ones effectiveMagnification enforces at every read — and so a corrupt non-finite
+                // value comes back as the kit optic rather than silently clamping to the floor.
+                teleconverterCustomMagnification = normalizeMagnification(
+                    safeFloat("${prefix}teleconverterCustomMagnification", ed.teleconverterCustomMagnification),
+                ),
                 videoStabMode = enumOr(safeString("${prefix}videoStabMode", null), ed.videoStabMode),
                 aspectRatio = enumOr(safeString("${prefix}aspectRatio", null), ed.aspectRatio),
                 timer = enumOr(safeString("${prefix}timer", null), ed.timer),
@@ -334,6 +352,8 @@ class SettingsStore(private val prefs: SharedPreferences) {
         putLong("${prefix}photoExposureTimeNs", e.photoExposureTimeNs)
         putString("${prefix}lens", e.lens.name)
         putBoolean("${prefix}teleconverter", e.teleconverter)
+        putString("${prefix}teleconverterProfile", e.teleconverterProfile.name)
+        putFloat("${prefix}teleconverterCustomMagnification", e.teleconverterCustomMagnification)
         putString("${prefix}videoStabMode", e.videoStabMode.name)
         putString("${prefix}aspectRatio", e.aspectRatio.name)
         putString("${prefix}timer", e.timer.name)

@@ -4,6 +4,7 @@ import me.hletrd.findx9tele.camera.AfIndication
 import me.hletrd.findx9tele.camera.FocusConfidenceSource
 import me.hletrd.findx9tele.camera.FocusMode
 import me.hletrd.findx9tele.camera.FrameDetail
+import me.hletrd.findx9tele.camera.TELECONVERTER_MAGNIFICATION
 import me.hletrd.findx9tele.ui.preferredProgramShutterNs
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -22,7 +23,7 @@ import org.junit.Test
 class FocusConfidenceTest {
 
     // 300 mm effective (70 mm x the teleconverter) -> the handheld rule is ~3.33 ms.
-    private val handheldNs = preferredProgramShutterNs(70f, teleconverterMode = true)
+    private val handheldNs = preferredProgramShutterNs(70f, teleconverterMode = true, TELECONVERTER_MAGNIFICATION)
 
     private fun candidate(
         detail: FrameDetail? = FrameDetail.SOFT,
@@ -117,7 +118,7 @@ class FocusConfidenceTest {
     @Test
     fun `a wider lens gets a proportionally longer exposure allowance`() {
         // The gate scales with the handheld rule, so 1x main tolerates far more than 300 mm does.
-        val wide = preferredProgramShutterNs(23f, teleconverterMode = false)
+        val wide = preferredProgramShutterNs(23f, teleconverterMode = false, TELECONVERTER_MAGNIFICATION)
         assertTrue(
             frameDefocusCandidate(
                 FrameDetail.SOFT, 100L, FocusMode.CONTINUOUS, AfIndication.FOCUSED,

@@ -26,6 +26,9 @@ internal data class ShotSpec(
     val caps: CameraCaps?,
     val selection: TeleSelection?,
     val teleconverter: Boolean,
+    // The mounted converter's magnification, snapshotted with [teleconverter] so this shot's EXIF
+    // 35 mm focal describes the optic it was actually taken through (see Teleconverter.kt).
+    val teleconverterMagnification: Float,
     val aspectRatio: AspectRatio,
     val jpegQuality: Int,
     val rotationDegrees: Int,

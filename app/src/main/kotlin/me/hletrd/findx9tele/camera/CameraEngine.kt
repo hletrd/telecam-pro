@@ -236,6 +236,7 @@ class CameraEngine(private val context: Context) {
             capabilities = cameraCaps.controlCapabilities(),
             mode = if (videoMode) CaptureMode.VIDEO else CaptureMode.PHOTO,
             teleconverter = teleconverterMode,
+            teleconverterMagnification = teleconverterMagnification,
             capsLower = range?.lower,
             capsUpper = range?.upper,
         )
@@ -659,6 +660,12 @@ class CameraEngine(private val context: Context) {
 
     private val gyro = me.hletrd.findx9tele.stab.GyroEis(context)
     @Volatile private var teleconverterMode = false
+    // WHICH converter is mounted (its angular magnification), set by the ViewModel from the user's
+    // profile pick and restored settings. Passive glass cannot announce itself, so this is a
+    // declaration, not a measurement — see Teleconverter.kt. It feeds the TELE zoom ceiling, the
+    // HAL's effective-zoom hint, and the EXIF focal, and is snapshotted per shot ([ShotOptics]) so a
+    // profile change mid-save cannot relabel a frame that was taken through a different optic.
+    @Volatile private var teleconverterMagnification = TELECONVERTER_MAGNIFICATION
     @Volatile private var videoMode = false
     // FRONT is a first-class optics door (setFrontCamera). Never persisted — fresh launch is BACK
     // (see CameraFacing) — and never combined with TELE: entering FRONT forces the converter off.
@@ -1181,6 +1188,7 @@ class CameraEngine(private val context: Context) {
                 vendorLogMode = vendorLogMode.halValue,
                 videoStabHalMode = c.videoStabControlMode(videoStabMode),
                 teleconverterMode = teleconverterMode,
+                teleconverterMagnification = teleconverterMagnification,
                 pinAutoFps = videoMode,
                 diagnosticOpticsGeneration = expectedOpticsGeneration,
                 onReady = { outputs ->
@@ -1395,6 +1403,7 @@ class CameraEngine(private val context: Context) {
                                 capabilities = routeCaps.controlCapabilities(),
                                 mode = if (enabled) CaptureMode.VIDEO else CaptureMode.PHOTO,
                                 teleconverter = teleconverterMode,
+                                teleconverterMagnification = teleconverterMagnification,
                                 capsLower = range?.lower,
                                 capsUpper = range?.upper,
                             )
@@ -1520,6 +1529,7 @@ class CameraEngine(private val context: Context) {
                             capabilities = routeCaps.controlCapabilities(),
                             mode = if (enabledVideo) CaptureMode.VIDEO else CaptureMode.PHOTO,
                             teleconverter = resolvedTeleconverter,
+                            teleconverterMagnification = teleconverterMagnification,
                             capsLower = range?.lower,
                             capsUpper = range?.upper,
                         )
@@ -2092,6 +2102,23 @@ class CameraEngine(private val context: Context) {
     }
 
     /**
+     * Declares which converter is clamped on (see Teleconverter.kt — it is a user statement, never a
+     * detection). NOT a session key and NOT a route axis: no reopen, and no capability changes.
+     *
+     * The controller only stores the new value; it does not resubmit the repeating request. The
+     * value's only wire effect is the advisory `com.oplus.original.zoomRatio` OIS-context hint, which
+     * every STILL request rebuilds from scratch and which the preview picks up on its next ordinary
+     * rebuild or zoom submit. Resubmitting here instead would pay the documented ~180 ms
+     * setRepeatingRequest stall at slider rate while the custom-magnification ruler is being dragged.
+     */
+    fun setTeleconverterMagnification(magnification: Float) {
+        val m = normalizeMagnification(magnification)
+        if (teleconverterMagnification == m) return
+        teleconverterMagnification = m
+        controller?.setTeleconverterMagnification(m)
+    }
+
+    /**
      * The ONE engine-side hi-res resolution ([hiResAdmitted]): defaults describe the CURRENT route;
      * reconfigure passes its freshly selected route explicitly. Standalone here means the full
      * standalone-camera truth — an unrouted selection of a non-logical camera (both halves of the
@@ -2506,6 +2533,7 @@ class CameraEngine(private val context: Context) {
                     vendorLogMode = vendorLogMode.halValue,
                     videoStabHalMode = c.videoStabControlMode(videoStabMode),
                     teleconverterMode = teleconverterMode,
+                    teleconverterMagnification = teleconverterMagnification,
                     pinAutoFps = videoMode,
                     diagnosticOpticsGeneration = transaction.generation,
                     deferSession = true,
@@ -2699,7 +2727,10 @@ class CameraEngine(private val context: Context) {
         // TELE's zoom is capped at the 60× display ceiling (local ≈4.6 on the 3× lens): past that
         // the digital crop is unusable at 1400 mm-equivalent anyway.
         val hi = if (teleconverterMode) {
-            minOf(r?.upper ?: Float.MAX_VALUE, TELE_MAX_DISPLAY_ZOOM / TELE_DISPLAY_BASE)
+            minOf(
+                r?.upper ?: Float.MAX_VALUE,
+                TELE_MAX_DISPLAY_ZOOM / teleDisplayBase(teleconverterMagnification),
+            )
         } else {
             r?.upper ?: Float.MAX_VALUE
         }
@@ -2767,7 +2798,10 @@ class CameraEngine(private val context: Context) {
     fun commitZoomForBoost(ratio: Float) {
         val r = caps?.zoomRatioRange
         val hi = if (teleconverterMode) {
-            minOf(r?.upper ?: Float.MAX_VALUE, TELE_MAX_DISPLAY_ZOOM / TELE_DISPLAY_BASE)
+            minOf(
+                r?.upper ?: Float.MAX_VALUE,
+                TELE_MAX_DISPLAY_ZOOM / teleDisplayBase(teleconverterMagnification),
+            )
         } else {
             r?.upper ?: Float.MAX_VALUE
         }
@@ -3046,12 +3080,23 @@ class CameraEngine(private val context: Context) {
         val caps: CameraCaps?,
         val selection: TeleSelection?,
         val teleconverter: Boolean,
+        // WHICH converter, snapshotted with the rest of the route for the same reason: the EXIF
+        // focal is derived from it, and a profile change landing mid-save would otherwise label
+        // this frame with an optic it was not taken through.
+        val teleconverterMagnification: Float,
         val frontFacing: Boolean,
         val aspectRatio: AspectRatio,
     )
 
     private fun snapshotShotOptics(): ShotOptics = synchronized(this) {
-        ShotOptics(caps, selection, teleconverterMode, facing == CameraFacing.FRONT, aspectRatio)
+        ShotOptics(
+            caps,
+            selection,
+            teleconverterMode,
+            teleconverterMagnification,
+            facing == CameraFacing.FRONT,
+            aspectRatio,
+        )
     }
 
     private fun shotSpec(shotControls: ManualControls, hiRes: Boolean, optics: ShotOptics): ShotSpec {
@@ -3072,6 +3117,7 @@ class CameraEngine(private val context: Context) {
             caps = optics.caps,
             selection = optics.selection,
             teleconverter = optics.teleconverter,
+            teleconverterMagnification = optics.teleconverterMagnification,
             aspectRatio = optics.aspectRatio,
             jpegQuality = shotControls.jpegQuality.coerceIn(1, 100),
             rotationDegrees = rotation,
@@ -4418,17 +4464,20 @@ class CameraEngine(private val context: Context) {
         // Effective 35 mm focal: what the FRAME shows — unified zoom on the logical camera already
         // lands on the active lens (equiv × leftover digital), TELE multiplies the converter.
         val baseEquiv = base?.equivalentFocalMm ?: 0f
-        // TELE uses the NOMINAL 300 mm base so EXIF matches the OSD/pill marks exactly
-        // (13×→300, 30×→690, 60×→1380); the caps-measured 69.4 mm equiv would read 680 at 30×.
+        // TELE uses the NOMINAL converter base (magnification × the nominal 70 mm host lens, i.e.
+        // 300 mm on the kit optic) so EXIF matches the OSD/pill marks exactly — 13×→300, 30×→690,
+        // 60×→1380; the caps-measured 69.4 mm equiv would read 680 at 30×. The magnification comes
+        // from the SHOT's optics snapshot, never the live field, so a converter re-declared while
+        // this save is in flight cannot relabel a frame taken through the previous one.
         val appliedZoom = result.get(android.hardware.camera2.CaptureResult.CONTROL_ZOOM_RATIO)
             ?: c.zoomRatio
         val eff = if (spec.teleconverter) {
-            300f * appliedZoom.coerceAtLeast(1f)
+            effectiveFocalMm(spec.teleconverterMagnification) * appliedZoom.coerceAtLeast(1f)
         } else {
             baseEquiv * appliedZoom.coerceAtLeast(0.01f)
         }
-        // Digital portion of the zoom: in TELE the converter's 4.286× is OPTICAL (glass), so only
-        // the user's 1-10× ratio is digital; otherwise it's effective ÷ the active lens's equiv.
+        // Digital portion of the zoom: in TELE the converter's magnification is OPTICAL (glass), so
+        // only the user's 1-10× ratio is digital; otherwise it's effective ÷ the active lens's equiv.
         val digital = if (spec.teleconverter) {
             appliedZoom.coerceAtLeast(1f)
         } else if (lensEquiv > 0f) {

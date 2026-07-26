@@ -3,10 +3,10 @@ package me.hletrd.findx9tele.ui
 import me.hletrd.findx9tele.camera.CaptureMode
 import me.hletrd.findx9tele.camera.LensChoice
 import me.hletrd.findx9tele.camera.ManualControls
-import me.hletrd.findx9tele.camera.TELE_DISPLAY_BASE
 import me.hletrd.findx9tele.camera.TELE_MAX_DISPLAY_ZOOM
 import me.hletrd.findx9tele.camera.TELE_ZOOM_SNAPS
 import me.hletrd.findx9tele.camera.normalizedForCaptureMode
+import me.hletrd.findx9tele.camera.teleDisplayBase
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -15,16 +15,22 @@ import java.util.Locale
 internal data class ZoomBounds(val lower: Float, val upper: Float)
 
 /**
- * The ONE main-relative zoom DISPLAY multiplier (DES4-1): TELE uses the constant converter scale
- * (13–60× round numbers; the caps-measured 69.4 mm would read 59.5× at the 60× ceiling), other
- * routes use openedLensEquiv ÷ mainEquiv (≈3.0× at the 3× tele's native position). The HUD pill
- * and the Fn/My-Menu ZOOM value MUST both read through this — the Fn tile used to show the raw
+ * The ONE main-relative zoom DISPLAY multiplier (DES4-1): TELE uses the converter scale (13–60×
+ * round numbers on the kit optic; the caps-measured 69.4 mm would read 59.5× at the 60× ceiling),
+ * other routes use openedLensEquiv ÷ mainEquiv (≈3.0× at the 3× tele's native position). The HUD
+ * pill and the Fn/My-Menu ZOOM value MUST both read through this — the Fn tile used to show the raw
  * lens-local ratio ("2.3×") while the pill showed "30.0×" for the identical physical state. (The
  * Shooting-tab slider and Zoom ruler are EDIT surfaces on the lens-local scale outside TELE and
  * deliberately keep their own base.)
+ *
+ * [teleconverterMagnification] is the SELECTED converter's magnification (CameraUiState.
+ * teleconverterMagnification). It is an explicit parameter, never a global read, so this whole file
+ * stays pure and JVM-testable — and so a caller can never silently display the kit optic's scale
+ * while a different converter is mounted.
  */
 internal fun zoomDisplayMultiplier(
     teleconverter: Boolean,
+    teleconverterMagnification: Float,
     equivalentFocalMm: Float?,
     frontFacing: Boolean = false,
 ): Float = when {
@@ -32,7 +38,7 @@ internal fun zoomDisplayMultiplier(
     // front camera has no place on it — front-equiv ÷ main-equiv would read "0.9×" at the selfie
     // 1× — so front zoom displays as its honest lens-local ratio.
     frontFacing -> 1f
-    teleconverter -> TELE_DISPLAY_BASE
+    teleconverter -> teleDisplayBase(teleconverterMagnification)
     else -> (equivalentFocalMm ?: LensChoice.MAIN.targetEquivMm) / LensChoice.MAIN.targetEquivMm
 }
 
@@ -43,23 +49,36 @@ internal fun formatZoomMultiplier(zoom: Float): String = "%.1f×".format(Locale.
 internal fun formatDisplayZoom(
     localZoomRatio: Float,
     teleconverter: Boolean,
+    teleconverterMagnification: Float,
     equivalentFocalMm: Float?,
     frontFacing: Boolean = false,
 ): String = formatZoomMultiplier(
-    localZoomRatio * zoomDisplayMultiplier(teleconverter, equivalentFocalMm, frontFacing),
+    localZoomRatio * zoomDisplayMultiplier(
+        teleconverter,
+        teleconverterMagnification,
+        equivalentFocalMm,
+        frontFacing,
+    ),
 )
 
-/** One zoom range shared by input targets and the value that can actually be applied. */
+/**
+ * One zoom range shared by input targets and the value that can actually be applied.
+ *
+ * The TELE ceiling is a cap on TOTAL magnification ([TELE_MAX_DISPLAY_ZOOM]), so the LOCAL ceiling
+ * it produces moves inversely with the converter: a weaker optic earns more digital zoom before
+ * reaching the same total. Live caps still narrow it below.
+ */
 internal fun effectiveZoomBounds(
     capsLower: Float?,
     capsUpper: Float?,
     teleconverter: Boolean,
+    teleconverterMagnification: Float,
 ): ZoomBounds? {
     if (!teleconverter) {
         if (capsLower == null || capsUpper == null || capsLower > capsUpper) return null
         return ZoomBounds(capsLower, capsUpper)
     }
-    val teleUpper = TELE_MAX_DISPLAY_ZOOM / TELE_DISPLAY_BASE
+    val teleUpper = TELE_MAX_DISPLAY_ZOOM / teleDisplayBase(teleconverterMagnification)
     val lower = max(1f, capsLower ?: 1f)
     val upper = min(teleUpper, capsUpper ?: teleUpper)
     return if (lower <= upper) ZoomBounds(lower, upper) else ZoomBounds(upper, upper)
@@ -74,12 +93,16 @@ internal fun normalizeZoomRequest(
     currentApplied: Float,
     bounds: ZoomBounds?,
     teleconverter: Boolean,
+    teleconverterMagnification: Float,
 ): Float {
     var value = bounds?.let { requested.coerceIn(it.lower, it.upper) } ?: requested
     if (!teleconverter || !value.isFinite()) return value
 
-    val requestedDisplay = value * TELE_DISPLAY_BASE
-    val currentDisplay = currentApplied * TELE_DISPLAY_BASE
+    // The marks are TOTAL-magnification numbers (30×/60×), so the local ratio they correspond to
+    // depends on the mounted converter — derive the scale once and use it for both directions.
+    val displayBase = teleDisplayBase(teleconverterMagnification)
+    val requestedDisplay = value * displayBase
+    val currentDisplay = currentApplied * displayBase
     val snap = TELE_ZOOM_SNAPS.firstOrNull { mark ->
         val band = mark * SNAP_FRACTION
         val requestedDistance = abs(requestedDisplay - mark)
@@ -89,7 +112,7 @@ internal fun normalizeZoomRequest(
             (currentDisplay - mark) * (requestedDisplay - mark) < 0f
         (enteringBand || crossingMark) && requestedDistance < band
     }
-    if (snap != null) value = snap / TELE_DISPLAY_BASE
+    if (snap != null) value = snap / displayBase
     return bounds?.let { value.coerceIn(it.lower, it.upper) } ?: value
 }
 
@@ -268,6 +291,7 @@ internal fun restoredOptics(
     mode: CaptureMode,
     requestedLens: LensChoice,
     teleconverter: Boolean,
+    teleconverterMagnification: Float,
     savedZoomRatio: Float,
 ): RestoredOptics {
     val safeZoom = savedZoomRatio.takeIf { it.isFinite() } ?: when {
@@ -278,7 +302,13 @@ internal fun restoredOptics(
         return RestoredOptics(
             lens = LensChoice.TELE3X,
             teleconverter = true,
-            zoomRatio = safeZoom.coerceIn(1f, TELE_MAX_DISPLAY_ZOOM / TELE_DISPLAY_BASE),
+            // Same converter-dependent local ceiling as effectiveZoomBounds: a persisted ratio that
+            // was legal under one converter can exceed the total-magnification cap under a stronger
+            // one, so restore clamps against the magnification being restored WITH it.
+            zoomRatio = safeZoom.coerceIn(
+                1f,
+                TELE_MAX_DISPLAY_ZOOM / teleDisplayBase(teleconverterMagnification),
+            ),
         )
     }
     return if (mode == CaptureMode.VIDEO) {

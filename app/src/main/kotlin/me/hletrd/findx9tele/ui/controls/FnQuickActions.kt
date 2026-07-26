@@ -47,6 +47,7 @@ internal fun fnSlotValue(slot: FnSlot, state: CameraUiState): String {
         FnSlot.ZOOM -> formatDisplayZoom(
             c.zoomRatio,
             state.teleconverterMode,
+            state.teleconverterMagnification,
             state.caps?.equivalentFocalMm,
             frontFacing = state.facing == me.hletrd.findx9tele.camera.CameraFacing.FRONT,
         )
@@ -60,7 +61,7 @@ internal fun fnSlotValue(slot: FnSlot, state: CameraUiState): String {
         FnSlot.GRID -> gridTypeLabel(state.grid)
         FnSlot.LEVEL -> if (state.level) "On" else "Off"
         FnSlot.PUNCH_IN -> if (state.punchIn) "On" else "Off"
-        FnSlot.TELECONVERTER -> if (state.teleconverterMode) "300 mm" else "Off"
+        FnSlot.TELECONVERTER -> if (state.teleconverterMode) formatFocalMm(state.teleconverterFocalMm) else "Off"
         FnSlot.OPEN_GATE -> if (state.openGate) "4:3" else "Off"
         FnSlot.FRAME_LINES -> state.frameLines.label
     }

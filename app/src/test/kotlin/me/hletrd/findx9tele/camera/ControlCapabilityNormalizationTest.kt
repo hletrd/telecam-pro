@@ -44,6 +44,7 @@ class ControlCapabilityNormalizationTest {
             capabilities = caps,
             mode = CaptureMode.PHOTO,
             teleconverter = false,
+            teleconverterMagnification = TELECONVERTER_MAGNIFICATION,
             capsLower = 1f,
             capsUpper = 8f,
         )
@@ -66,6 +67,7 @@ class ControlCapabilityNormalizationTest {
                 capabilities = caps,
                 mode = CaptureMode.PHOTO,
                 teleconverter = false,
+                teleconverterMagnification = TELECONVERTER_MAGNIFICATION,
                 capsLower = 1f,
                 capsUpper = 8f,
             ),
@@ -207,6 +209,7 @@ class ControlCapabilityNormalizationTest {
             capabilities = offOnly,
             mode = CaptureMode.VIDEO,
             teleconverter = false,
+            teleconverterMagnification = TELECONVERTER_MAGNIFICATION,
             capsLower = 1f,
             capsUpper = 4f,
         )
@@ -241,6 +244,7 @@ class ControlCapabilityNormalizationTest {
             capabilities = routeCaps,
             mode = CaptureMode.PHOTO,
             teleconverter = true,
+            teleconverterMagnification = TELECONVERTER_MAGNIFICATION,
             capsLower = 1f,
             capsUpper = 10f,
         )
@@ -275,6 +279,7 @@ class ControlCapabilityNormalizationTest {
             capabilities = normalRoute,
             mode = CaptureMode.VIDEO,
             teleconverter = false,
+            teleconverterMagnification = TELECONVERTER_MAGNIFICATION,
             capsLower = 1f,
             capsUpper = 10f,
         )
@@ -529,6 +534,7 @@ class ControlCapabilityNormalizationTest {
             capabilities = wideCaps,
             mode = CaptureMode.PHOTO,
             teleconverter = false,
+            teleconverterMagnification = TELECONVERTER_MAGNIFICATION,
             capsLower = 1f,
             capsUpper = 20f,
         )
@@ -538,6 +544,7 @@ class ControlCapabilityNormalizationTest {
             capabilities = narrowCaps,
             mode = CaptureMode.PHOTO,
             teleconverter = false,
+            teleconverterMagnification = TELECONVERTER_MAGNIFICATION,
             capsLower = 1f,
             capsUpper = 10f,
         )

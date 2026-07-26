@@ -63,10 +63,15 @@ import me.hletrd.findx9tele.camera.ProcessingLevel
 import me.hletrd.findx9tele.camera.ShutterMode
 import me.hletrd.findx9tele.camera.ShutterTimer
 import me.hletrd.findx9tele.camera.TapFocusPublicationGate
+import me.hletrd.findx9tele.camera.TeleconverterProfile
+import me.hletrd.findx9tele.camera.detectProfile
+import me.hletrd.findx9tele.camera.effectiveMagnification
+import me.hletrd.findx9tele.camera.normalizeMagnification
 import me.hletrd.findx9tele.camera.VideoCodec
 import me.hletrd.findx9tele.camera.VideoFrameRate
 import me.hletrd.findx9tele.camera.WbMode
 import me.hletrd.findx9tele.camera.ZebraLevel
+import me.hletrd.findx9tele.ui.controls.formatFocalMm
 import me.hletrd.findx9tele.focus.FocusMapping
 import me.hletrd.findx9tele.focus.MACRO_HOLD_MS
 import me.hletrd.findx9tele.focus.FocusConfidenceHold
@@ -178,6 +183,11 @@ class CameraViewModel @JvmOverloads constructor(
     // construction and calls invalidateOpticsDerivedState(), which dereferences this — a later declaration
     // would leave it null and NPE on a launch that restores saved settings.
     private val zoomGlide = ZoomGlideState()
+
+    // The ONE android.os.Build.MODEL read in the app (see seedTeleconverterProfile): it may only
+    // pre-select which teleconverter entry starts SELECTED. Declared BEFORE init for the same
+    // reason as the zoom state above — seedTeleconverterProfile() runs during construction.
+    private val deviceModel: String = android.os.Build.MODEL.orEmpty()
 
     // The 16 ms trailing coalescer flush, held as a NAMED Runnable so a remap door / onStop can
     // cancel it — the old anonymous postDelayed lambda had no reference to remove (AGG3-26).
@@ -665,6 +675,7 @@ class CameraViewModel @JvmOverloads constructor(
         engine.onRawSaved = { uri, captureId ->
             recordCaptureOutput(uri, captureId, CaptureOutputKind.RAW)
         }
+        seedTeleconverterProfile()
         restoreSettingsIfEnabled()
         refreshProgramAppSide()
         // Sweep prior-process pending rows first, then restore the newest published family. This
@@ -760,7 +771,17 @@ class CameraViewModel @JvmOverloads constructor(
         } else {
             c.zoomRatio
         }
-        val restoredOptics = restoredOptics(e.mode, requestedLens, requestedTeleconverter, requestedZoom)
+        // The recalled packet carries its OWN converter, and the TELE zoom ceiling is derived from
+        // it — resolve the magnification before anything clamps a zoom against it.
+        val restoredMagnification =
+            effectiveMagnification(e.teleconverterProfile, e.teleconverterCustomMagnification)
+        val restoredOptics = restoredOptics(
+            mode = e.mode,
+            requestedLens = requestedLens,
+            teleconverter = requestedTeleconverter,
+            teleconverterMagnification = restoredMagnification,
+            savedZoomRatio = requestedZoom,
+        )
         val restoredLens = restoredOptics.lens
         val restoredTeleconverter = restoredOptics.teleconverter
         // Clamp only when the currently accepted session is the same route as the restored target.
@@ -799,6 +820,12 @@ class CameraViewModel @JvmOverloads constructor(
             exposureTimeNs = restoredExposure.activeExposureTimeNs,
         ).normalizedForCaptureMode(e.mode)
         val restoredVideoSize = parseVideoResolution(e.videoResolution)
+        // Before setResolvedOptics: the engine's own TELE zoom ceiling and its HAL effective-zoom
+        // hint both derive from the converter, so the recalled optic must be in force first — its
+        // terminal commit re-normalizes the packet against it. Rolled back below on refusal, like
+        // the hidden Photo shutter: a rejected recall must leave NEITHER bank behind.
+        val previousMagnification = _state.value.teleconverterMagnification
+        engine.setTeleconverterMagnification(restoredMagnification)
         // Resolution and hidden Photo exposure join the optics transaction. A synchronous REC
         // rejection or asynchronous camera rollback must leave neither rejected bank behind.
         val opticsAccepted = engine.setResolvedOptics(
@@ -811,6 +838,7 @@ class CameraViewModel @JvmOverloads constructor(
         )
         if (!opticsAccepted) {
             photoExposureTimeNs = previousPhotoExposureTimeNs
+            engine.setTeleconverterMagnification(previousMagnification)
             return
         }
         // The recalled packet supersedes a delayed manual-control snapshot from the prior setup.
@@ -862,6 +890,8 @@ class CameraViewModel @JvmOverloads constructor(
                 mode = e.mode,
                 lens = restoredLens,
                 teleconverterMode = restoredTeleconverter,
+                teleconverterProfile = e.teleconverterProfile,
+                teleconverterCustomMagnification = e.teleconverterCustomMagnification,
                 // Recall/restore packets are rear-route optics; the engine's setResolvedOptics
                 // exits FRONT in the same transaction, so the UI mirrors that here (MR recall
                 // stays available while FRONT — it flips back as part of the recall).
@@ -929,6 +959,8 @@ class CameraViewModel @JvmOverloads constructor(
             },
             lens = s.lens,
             teleconverter = s.teleconverterMode,
+            teleconverterProfile = s.teleconverterProfile,
+            teleconverterCustomMagnification = s.teleconverterCustomMagnification,
             videoStabMode = s.videoStabMode,
             aspectRatio = s.aspectRatio,
             timer = s.timer,
@@ -1090,9 +1122,14 @@ class CameraViewModel @JvmOverloads constructor(
             preferredProgramShutterNs(
                 s.caps?.equivalentFocalMm?.takeIf { it > 0f } ?: LensChoice.MAIN.targetEquivMm,
                 teleconverterMode = false,
+                teleconverterMagnification = s.teleconverterMagnification,
             )
         } else {
-            preferredProgramShutterNs(s.lens.targetEquivMm, s.teleconverterMode)
+            preferredProgramShutterNs(
+                s.lens.targetEquivMm,
+                s.teleconverterMode,
+                s.teleconverterMagnification,
+            )
         }
 
     private fun audioInputStatus(preference: AudioInputPreference = _state.value.audioInputPreference) =
@@ -1137,7 +1174,8 @@ class CameraViewModel @JvmOverloads constructor(
     }
 
     private fun focalSummary(s: CameraUiState): String =
-        if (s.teleconverterMode) "300 mm" else "${s.lens.targetEquivMm.toInt()} mm"
+        if (s.teleconverterMode) formatFocalMm(s.teleconverterFocalMm)
+        else "${s.lens.targetEquivMm.toInt()} mm"
 
     private fun transferSummary(t: ColorTransfer): String = when (t) {
         ColorTransfer.HLG -> "HLG"
@@ -1421,8 +1459,19 @@ class CameraViewModel @JvmOverloads constructor(
     private fun applyZoomRatio(ratio: Float): Float {
         val s = _state.value
         val range = s.caps?.zoomRatioRange
-        val bounds = effectiveZoomBounds(range?.lower, range?.upper, s.teleconverterMode)
-        val z = normalizeZoomRequest(ratio, currentZoomBase(), bounds, s.teleconverterMode)
+        val bounds = effectiveZoomBounds(
+            range?.lower,
+            range?.upper,
+            s.teleconverterMode,
+            s.teleconverterMagnification,
+        )
+        val z = normalizeZoomRequest(
+            requested = ratio,
+            currentApplied = currentZoomBase(),
+            bounds = bounds,
+            teleconverter = s.teleconverterMode,
+            teleconverterMagnification = s.teleconverterMagnification,
+        )
         zoomGlide.pendingRatio = z
         if (zoomGlide.flushScheduled) return z // the scheduled flush picks up this newest value
         zoomGlide.flushScheduled = true
@@ -1478,8 +1527,14 @@ class CameraViewModel @JvmOverloads constructor(
 
     /** One hardware zoom-key repeat: nudge the ease target and make sure the glide ticker runs. */
     fun onHardwareZoomStep(factor: Float) {
-        val range = _state.value.caps?.zoomRatioRange ?: return
-        val bounds = effectiveZoomBounds(range.lower, range.upper, _state.value.teleconverterMode) ?: return
+        val s = _state.value
+        val range = s.caps?.zoomRatioRange ?: return
+        val bounds = effectiveZoomBounds(
+            range.lower,
+            range.upper,
+            s.teleconverterMode,
+            s.teleconverterMagnification,
+        ) ?: return
         val base = zoomGlide.easeTarget ?: currentZoomBase()
         val wasIdle = zoomGlide.easeTarget == null
         zoomGlide.easeTarget = (base * factor).coerceIn(bounds.lower, bounds.upper)
@@ -1713,6 +1768,99 @@ class CameraViewModel @JvmOverloads constructor(
         markChanged(FnSlot.TELECONVERTER)
         saveSettingsIfEnabled()
     }
+
+    override fun onTeleconverterProfile(profile: TeleconverterProfile) {
+        if (rejectBackOnlyOpticsDoor()) return
+        // Discrete pick: commit synchronously like every other one-tap optics choice — the next
+        // gesture can be a Recents swipe-kill, and apply()'s async write would die with the process.
+        applyTeleconverterOptic(
+            profile = profile,
+            custom = _state.value.teleconverterCustomMagnification,
+            persistImmediately = true,
+        )
+    }
+
+    override fun onTeleconverterCustomMagnification(value: Float) {
+        if (rejectBackOnlyOpticsDoor()) return
+        // Ruler drag: bursts of values, so persistence rides the 500 ms trailing debounce.
+        applyTeleconverterOptic(
+            profile = _state.value.teleconverterProfile,
+            custom = normalizeMagnification(value),
+            persistImmediately = false,
+        )
+    }
+
+    /**
+     * The ONE seam that changes which converter the app believes is mounted.
+     *
+     * Order matters: the engine (and through it the controller's HAL zoom hint) must know the new
+     * optic BEFORE anything re-clamps a zoom against it, because TELE's ceiling is a cap on TOTAL
+     * magnification — the LOCAL ratio it permits moves inversely with the converter, so a framing
+     * that was legal under the previous optic can be out of range under this one.
+     */
+    private fun applyTeleconverterOptic(
+        profile: TeleconverterProfile,
+        custom: Float,
+        persistImmediately: Boolean,
+    ) {
+        val magnification = effectiveMagnification(profile, custom)
+        engine.setTeleconverterMagnification(magnification)
+        _state.update {
+            it.copy(teleconverterProfile = profile, teleconverterCustomMagnification = custom)
+        }
+        // The converter IS the TELE zoom SCALE, so this is an optics-remap door like mode/lens/TC:
+        // a hardware-key glide easing toward an ABSOLUTE target set in the old scale, or a throttled
+        // landing about to fire, would drag the framing toward an un-commanded value in the new one.
+        invalidateOpticsDerivedState()
+        reconcileZoomToTeleconverterOptic()
+        markChanged(FnSlot.TELECONVERTER)
+        if (persistImmediately) saveSettingsIfEnabled() else scheduleSettingsSave()
+    }
+
+    /**
+     * Re-clamps the live zoom after the converter changed. Only TELE has a converter-derived scale,
+     * so every other route is untouched. Deliberately NOT routed through [applyZoomRatio]: that path
+     * is the pinch/dial coalescer and would open a zoom INTERACTION (fps boost + a full preview
+     * rebuild) for what is a settings pick. The engine fast path is the whole submit.
+     */
+    private fun reconcileZoomToTeleconverterOptic() {
+        val s = _state.value
+        if (!s.teleconverterMode) return
+        val range = s.caps?.zoomRatioRange
+        val bounds = effectiveZoomBounds(
+            range?.lower,
+            range?.upper,
+            teleconverter = true,
+            teleconverterMagnification = s.teleconverterMagnification,
+        ) ?: return
+        val z = s.controls.zoomRatio.coerceIn(bounds.lower, bounds.upper)
+        if (z == s.controls.zoomRatio) return
+        engine.setZoomRatio(z)
+        _state.update { it.copy(controls = it.controls.copy(zoomRatio = z)) }
+        // A delayed full-controls packet captured the pre-clamp ratio; refresh it so it cannot snap
+        // the framing back out of range when it lands.
+        pendingControls = pendingControls?.copy(zoomRatio = z)
+    }
+
+    /**
+     * First-launch default for the converter profile.
+     *
+     * An afocal converter is passive glass on a clamp — no contacts, no ID — so the app can NEVER
+     * detect one. What it CAN read is the PHONE, and this is the ONE place in the codebase that does
+     * ([detectProfile] itself stays pure). A model match may only choose which entry starts
+     * SELECTED and supply honest UI copy; no capability, route, or request decision may ever branch
+     * on a model string (every lens is still resolved by ENUMERATING Camera2 capabilities).
+     *
+     * Runs before [restoreSettingsIfEnabled], so a persisted profile always wins over this seed.
+     */
+    private fun seedTeleconverterProfile() {
+        val kit = detectProfile(deviceModel) ?: return
+        _state.update {
+            it.copy(teleconverterProfile = kit, detectedTeleconverterModel = deviceModel)
+        }
+        engine.setTeleconverterMagnification(_state.value.teleconverterMagnification)
+    }
+
     // UI mirror of the engine's pre-TELE framing snapshot (unified main-relative zoom).
     private var preTeleUnifiedZoom = Float.NaN
     // Last REAR optics captured at FRONT entry, substituted into settings saves while FRONT (see
@@ -1860,6 +2008,7 @@ class CameraViewModel @JvmOverloads constructor(
             capabilities = caps.controlCapabilities(),
             mode = current.mode,
             teleconverter = current.teleconverterMode,
+            teleconverterMagnification = current.teleconverterMagnification,
             capsLower = range?.lower,
             capsUpper = range?.upper,
         )
@@ -1880,6 +2029,7 @@ class CameraViewModel @JvmOverloads constructor(
                 capabilities = caps.controlCapabilities(),
                 mode = current.mode,
                 teleconverter = current.teleconverterMode,
+                teleconverterMagnification = current.teleconverterMagnification,
                 capsLower = range?.lower,
                 capsUpper = range?.upper,
             )
@@ -2593,7 +2743,11 @@ internal fun focusDetailAnalysisRequired(
  * Handheld-safe shutter target (ns) for app-side PROGRAM: the 1/(35mm-equivalent focal) rule at the
  * effective focal length (native × teleconverter magnification). Pure for unit tests.
  */
-internal fun preferredProgramShutterNs(lensEquivMm: Float, teleconverterMode: Boolean): Long {
-    val eff = lensEquivMm * (if (teleconverterMode) me.hletrd.findx9tele.camera.TELECONVERTER_MAGNIFICATION else 1f)
+internal fun preferredProgramShutterNs(
+    lensEquivMm: Float,
+    teleconverterMode: Boolean,
+    teleconverterMagnification: Float,
+): Long {
+    val eff = lensEquivMm * (if (teleconverterMode) teleconverterMagnification else 1f)
     return (1_000_000_000f / eff.coerceAtLeast(1f)).toLong()
 }

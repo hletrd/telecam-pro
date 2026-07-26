@@ -94,6 +94,10 @@ interface CameraActions {
     fun onAudioScene(scene: me.hletrd.findx9tele.camera.AudioScene)
     fun onAudioInputPreference(preference: me.hletrd.findx9tele.camera.AudioInputPreference)
     fun onToggleTeleconverter(enabled: Boolean)
+    /** Declares WHICH converter is clamped on — a manual choice, never a detection. */
+    fun onTeleconverterProfile(profile: me.hletrd.findx9tele.camera.TeleconverterProfile)
+    /** Magnification for [me.hletrd.findx9tele.camera.TeleconverterProfile.CUSTOM] only. */
+    fun onTeleconverterCustomMagnification(value: Float)
     fun onVideoCodec(codec: VideoCodec)
     fun onBitrateLevel(level: BitrateLevel)
     fun onVideoResolution(size: Size)

@@ -277,6 +277,7 @@ fun ManualDialCluster(
                         controls = controls,
                         caps = caps,
                         teleconverter = state.teleconverterMode,
+                        teleconverterMagnification = state.teleconverterMagnification,
                         onZoomRatio = actions::onZoomRatio,
                     )
                     null -> Unit
@@ -521,6 +522,7 @@ private fun FnDialChip(
             value = formatDisplayZoom(
                 controls.zoomRatio,
                 state.teleconverterMode,
+                state.teleconverterMagnification,
                 state.caps?.equivalentFocalMm,
                 frontFacing = state.facing == me.hletrd.findx9tele.camera.CameraFacing.FRONT,
             ),
@@ -618,7 +620,7 @@ private fun FnDialChip(
         )
         FnSlot.TELECONVERTER -> DialChip(
             label = "Tele",
-            value = if (state.teleconverterMode) "300 mm" else "Off",
+            value = if (state.teleconverterMode) formatFocalMm(state.teleconverterFocalMm) else "Off",
             active = state.teleconverterMode,
             enabled = policyEnabled,
             onClick = { if (policyEnabled) actions.onToggleTeleconverter(!state.teleconverterMode) },
@@ -1099,11 +1101,16 @@ private fun ZoomRuler(
     controls: ManualControls,
     caps: CameraCaps?,
     teleconverter: Boolean = false,
+    teleconverterMagnification: Float = me.hletrd.findx9tele.camera.TELECONVERTER_MAGNIFICATION,
     onZoomRatio: (Float) -> Unit,
 ) {
-    // TELE reads and drags on the converter-equivalent scale (13–60×); the callback still writes
-    // the LENS-LOCAL ratio the engine owns. Other modes are 1:1.
-    val base = if (teleconverter) me.hletrd.findx9tele.camera.TELE_DISPLAY_BASE else 1f
+    // TELE reads and drags on the converter-equivalent scale (13–60× on the kit optic); the callback
+    // still writes the LENS-LOCAL ratio the engine owns. Other modes are 1:1.
+    val base = if (teleconverter) {
+        me.hletrd.findx9tele.camera.teleDisplayBase(teleconverterMagnification)
+    } else {
+        1f
+    }
     val range = caps?.zoomRatioRange ?: Range(1f, 1f)
     val lo = range.lower * base
     val hi = if (teleconverter) {

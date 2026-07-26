@@ -30,17 +30,23 @@ internal fun acceptedOpticsAuxState(
     photoFormats = photoFormats.normalizedFor(photoOutputs),
 )
 
-/** Clamps normalized optics again once the selected camera's live zoom range is authoritative. */
+/**
+ * Clamps normalized optics again once the selected camera's live zoom range is authoritative.
+ *
+ * [teleconverterMagnification] is the SELECTED converter's magnification: TELE's contract ceiling is
+ * a cap on TOTAL magnification, so the local ratio it permits scales inversely with the optic.
+ */
 internal fun reconcileZoomWithCaps(
     mode: CaptureMode,
     teleconverter: Boolean,
+    teleconverterMagnification: Float,
     zoomRatio: Float,
     capsLower: Float?,
     capsUpper: Float?,
 ): Float {
     val contractLower = if (mode == CaptureMode.PHOTO && !teleconverter) 0.6f else 1f
     val contractUpper = when {
-        teleconverter -> TELE_MAX_DISPLAY_ZOOM / TELE_DISPLAY_BASE
+        teleconverter -> TELE_MAX_DISPLAY_ZOOM / teleDisplayBase(teleconverterMagnification)
         mode == CaptureMode.VIDEO -> 10f
         else -> 20f
     }
@@ -58,6 +64,7 @@ internal fun normalizeControlsForRoute(
     capabilities: CameraControlCapabilities,
     mode: CaptureMode,
     teleconverter: Boolean,
+    teleconverterMagnification: Float,
     capsLower: Float?,
     capsUpper: Float?,
 ): ManualControls {
@@ -74,6 +81,7 @@ internal fun normalizeControlsForRoute(
         zoomRatio = reconcileZoomWithCaps(
             mode = mode,
             teleconverter = teleconverter,
+            teleconverterMagnification = teleconverterMagnification,
             zoomRatio = capabilityControls.zoomRatio,
             capsLower = capsLower,
             capsUpper = capsUpper,
@@ -90,6 +98,7 @@ internal fun normalizeRetainedControlsAtCommit(
     capabilities: CameraControlCapabilities,
     mode: CaptureMode,
     teleconverter: Boolean,
+    teleconverterMagnification: Float,
     capsLower: Float?,
     capsUpper: Float?,
 ): ManualControls = normalizeControlsForRoute(
@@ -97,6 +106,7 @@ internal fun normalizeRetainedControlsAtCommit(
     capabilities = capabilities,
     mode = mode,
     teleconverter = teleconverter,
+    teleconverterMagnification = teleconverterMagnification,
     capsLower = capsLower,
     capsUpper = capsUpper,
 )
