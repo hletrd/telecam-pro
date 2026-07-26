@@ -105,16 +105,26 @@ Summary:
 - Feature graphic: `docs/assets/play/feature-graphic.png`
   - 1024 x 500 PNG
   - no alpha
-- Phone screenshots — **all six are STALE / DO NOT UPLOAD**:
-  - **STALE:** `docs/assets/play/screenshots/01-main-viewfinder.png`
-  - **STALE:** `docs/assets/play/screenshots/02-pro-settings.png`
-  - **STALE:** `docs/assets/play/screenshots/03-focus-loupe.png`
-  - **STALE:** `docs/assets/play/screenshots/04-video-controls.png`
-  - **STALE:** `docs/assets/play/screenshots/05-lens-selection.png`
-  - **STALE:** `docs/assets/play/screenshots/06-video-settings.png`
-  - historical 2026-07-10 physical-PMA110 captures, 1440 x 2560 (9:16), before the current Fn/chrome behavior
-  - recapture from the exact signed candidate only after its current release-device matrix passes;
-    cycle/debug UI verification screenshots are not substitute Play assets
+- Phone screenshots — recaptured 2026-07-26 from the RELEASE candidate above, cropped to
+  **1440x2880 (exactly 2:1)** 24-bit PNG, no alpha. Play rejects anything taller than 2:1 and this
+  panel is 1440x3168 (1:2.2), so the crop removes the OS status bar and gesture bar only — no app
+  content is lost. The 2026-07-10 captures (`03-focus-loupe.png`, `05-lens-selection.png` and the
+  older versions of the rest) are retired: they showed a superseded UI.
+  - **READY** `screenshots/02-pro-settings.png` — Shooting tab: output format, aspect, zoom, JPEG
+    quality, drive mode, self-timer
+  - **READY** `screenshots/03-focus-tools.png` — Focus tab: AF modes, spot size, AF lock, peaking
+    level and colour
+  - **READY** `screenshots/06-video-settings.png` — Video tab: codec, Open Gate, resolution, FPS,
+    bitrate, live encoder summary, transfer curves
+  - **NEEDS RECAPTURE** `screenshots/01-main-viewfinder.png`,
+    `screenshots/04-video-controls.png`, `screenshots/05-lens-and-fn.png` — content and framing are
+    correct, but every rotating glyph (Photo/Video labels, the lens pills, the Fn chips) renders
+    SIDEWAYS in them. That is the app behaving correctly: it counter-rotates glyphs by the
+    gravity-derived device orientation, and the phone was standing in a LANDSCAPE pose during
+    capture, which the orientation logic reports confidently (it is not the flat-phone hold case).
+    Recapture these three with the phone held or docked PORTRAIT — no code change is involved.
+  - Aim the camera at a lit, textured subject for the viewfinder shots; the settings-sheet shots do
+    not depend on the scene.
 
 ## Device Catalog
 
