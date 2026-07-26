@@ -2847,7 +2847,8 @@ class CameraEngine(private val context: Context) {
         }
         when {
             formats.wantsProcessedStill && !effFormats.wantsProcessedStill && effFormats.dngRaw ->
-                onStatus?.invoke("HEIF/JPEG unavailable; using DNG")
+                // Word for word the caption PhotoFormatToggles shows for the same output mask.
+                onStatus?.invoke("HEIF/JPEG unavailable; DNG only")
             formats.dngRaw && !effFormats.dngRaw ->
                 onStatus?.invoke("RAW unavailable")
         }

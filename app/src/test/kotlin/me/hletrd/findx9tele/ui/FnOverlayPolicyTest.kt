@@ -173,7 +173,7 @@ class FnOverlayPolicyTest {
     @Test
     fun `held landscape copy is compact without changing portrait copy`() {
         assertEquals("Stabilization", fnOverlayVisualLabel(FnSlot.STABILIZATION, false))
-        assertEquals("Steady", fnOverlayVisualLabel(FnSlot.STABILIZATION, true))
+        assertEquals("Stab", fnOverlayVisualLabel(FnSlot.STABILIZATION, true))
         assertEquals("Gate", fnOverlayVisualLabel(FnSlot.OPEN_GATE, true))
 
         // Feed the strings fnSlotValue ACTUALLY emits, never hand-written ones: the previous
@@ -197,7 +197,8 @@ class FnOverlayPolicyTest {
 
         // Stabilization is the longest production label. The tray uses a compact visual alias while
         // the semantic node still exports fnSlotLabel(slot), and Text ellipsizes any future overflow.
+        // The alias must not be "Steady": the OSD spends that word on one specific VALUE (ENHANCED).
         assertEquals("Stabilization", fnOverlayVisualLabel(FnSlot.STABILIZATION, false))
-        assertEquals("Steady", fnOverlayVisualLabel(FnSlot.STABILIZATION, true))
+        assertEquals("Stab", fnOverlayVisualLabel(FnSlot.STABILIZATION, true))
     }
 }

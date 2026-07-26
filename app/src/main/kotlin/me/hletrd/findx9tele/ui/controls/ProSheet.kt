@@ -82,6 +82,7 @@ import me.hletrd.findx9tele.camera.BitrateLevel
 import me.hletrd.findx9tele.camera.CameraUiState
 import me.hletrd.findx9tele.camera.CameraFacing
 import me.hletrd.findx9tele.camera.CaptureMode
+import me.hletrd.findx9tele.camera.ColorTransfer
 import me.hletrd.findx9tele.camera.DriveMode
 import me.hletrd.findx9tele.camera.FnSlot
 import me.hletrd.findx9tele.camera.HardwareKeyAction
@@ -544,7 +545,9 @@ private fun MemoryRecallControls(state: CameraUiState, actions: CameraActions) {
         MemoryPresetRow(
             slot = slot,
             name = if (saved) name else "Empty",
-            summary = if (saved) summary else "Save current setup",
+            // The app's own null token, not an instruction: this slot holds the bank's SUMMARY, and
+            // the Save chip immediately to its right already says what to do about an empty one.
+            summary = if (saved) summary else "--",
             active = state.activeMemorySlot == slot,
             saved = saved,
             locked = state.isRecording,
@@ -633,7 +636,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
     // INTENT; the OSD HR tag shows accepted session truth.
     if (availability.hiResAdvertisedStandalone) {
         ToggleRow(
-            label = "High resolution",
+            label = "High Resolution",
             checked = state.hiResStill,
             onCheckedChange = actions::onToggleHiResStill,
             enabled = hiResToggleEnabled(
@@ -644,11 +647,14 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
             ),
         )
         // The advertised dimensions are display copy only; every admission axis stays projected.
+        // Constraints only, in the app's own ` · ` register: "Full-sensor still" restated the row
+        // label directly above, and "Reduces low-light quality" was an editorial verdict on a
+        // setting the operator just chose (docs/UX_POLICY.md). What earns the line is the three
+        // SILENT consequences of the switch.
         caps?.hiResJpegSize?.let { hiResSize ->
             val mp = (hiResSize.width.toLong() * hiResSize.height / 1_000_000).toInt()
             Text(
-                "${hiResSize.width}×${hiResSize.height} (${mp}MP). " +
-                    "Full-sensor still. JPEG only, 4:3, RAW off. Reduces low-light quality.",
+                "${hiResSize.width}×${hiResSize.height} · $mp MP · JPEG, 4:3, no RAW",
                 color = CameraColors.TextSecondary,
                 style = MaterialTheme.typography.labelSmall,
             )
@@ -838,11 +844,13 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     }
     Text(
         if (customWbCaptureEnabled) {
-            "Aim at a white or gray card."
+            "Aim at a white or gray card"
         } else if (!state.cameraReady) {
-            "Camera busy."
+            "Camera busy"
         } else {
-            "Requires Auto WB with AWB Lock off."
+            // Word for word the toast the SAME refusal already emits from the ViewModel: the
+            // caption and the toast are one instruction seen twice, not two instructions.
+            "Use Auto WB with AWB Lock off"
         },
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.labelSmall,
@@ -889,7 +897,9 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
     }
     LabelValueRow(
         label = "Tap Focus",
-        valueLabel = if (state.tapFocusHeld) "Reset" else "No point",
+        // "None", not "No point": in a value slot that phrase reads as "there is no point". The
+        // stateDescription below is the one that gets to be a sentence.
+        valueLabel = if (state.tapFocusHeld) "Reset" else "None",
         enabled = state.tapFocusHeld,
         onClick = actions::onResetFocusPoint,
         modifier = Modifier.semantics {
@@ -931,6 +941,16 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
     val rearOpticsMutable = recordingMutable && rearRoute
     TabTitle("Lens")
     SectionHeader("Optics")
+    // Every row in this section shares ONE gate (rearOpticsMutable), so the precondition is stated
+    // ONCE for the section instead of once per dimmed row — the selfie route used to stack the same
+    // dim sentence three times, 20 dp apart, under rows that were already grey.
+    if (!rearRoute) {
+        Text(
+            "Rear camera only",
+            color = CameraColors.TextSecondary,
+            style = MaterialTheme.typography.labelSmall,
+        )
+    }
     // Lens picks are ZOOM PRESETS on the seamless logical camera — they do NOT bundle the
     // teleconverter. TELE stays on only when it already is AND the pick is its 3× host lens; the
     // separate toggle below pins converter shooting (afocal 180° flip, standalone 3× camera).
@@ -942,26 +962,26 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
         onSelect = actions::onLens,
         enabled = rearOpticsMutable,
     )
-    Text(
-        if (rearRoute) {
-            lensFocalCaption(state.lens, state.teleconverterMode, state.teleconverterFocalMm)
-        } else {
-            "Rear camera only."
-        },
-        color = CameraColors.TextSecondary,
-        style = MaterialTheme.typography.labelSmall,
-    )
+    if (rearRoute) {
+        Text(
+            lensFocalCaption(state.lens, state.teleconverterMode, state.teleconverterFocalMm),
+            color = CameraColors.TextSecondary,
+            style = MaterialTheme.typography.labelSmall,
+        )
+    }
     ToggleRow(
         label = "Teleconverter",
         checked = state.teleconverterMode,
         onCheckedChange = actions::onToggleTeleconverter,
         enabled = rearOpticsMutable,
     )
-    Text(
-        if (rearRoute) "3× lens only." else "Rear camera only.",
-        color = CameraColors.TextSecondary,
-        style = MaterialTheme.typography.labelSmall,
-    )
+    if (rearRoute) {
+        Text(
+            "3× lens only",
+            color = CameraColors.TextSecondary,
+            style = MaterialTheme.typography.labelSmall,
+        )
+    }
     // The converter setting is a PAIR, asked in order: the phone decides which kits clamp on, the
     // converter decides the magnification. Dropdowns, not chips — the flat catalog of every brand's
     // optics read as a scrolling smear (user-rejected). Only the PHONE is ever resolved
@@ -997,20 +1017,23 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
     // The computed focal for THIS phone's host lens, never the preset's product number: a "ZEISS
     // 200 mm" is 2.35x glass, and 2.35x on this phone's 70 mm periscope is 165 mm.
     val converterFocal = "${formatFocalMm(state.teleconverterFocalMm)} equiv."
-    Text(
-        when {
-            !rearRoute -> "Rear camera only."
-            // Only the PHONE is ever detected, and only when Build.MODEL actually matched this boot
-            // — a default that happens to be right is not a detection. Nothing is appended
-            // otherwise: the earlier copy told the user to "set this to the optic you mounted",
-            // which fired precisely BECAUSE they had just made a deliberate pick, so it read as a
-            // warning about a correct action (this app does not nag — see docs/UX_POLICY.md).
-            state.phoneModelDetected -> "$converterFocal Detected ${state.phoneModel.label}."
-            else -> converterFocal
-        },
-        color = CameraColors.TextSecondary,
-        style = MaterialTheme.typography.labelSmall,
-    )
+    if (rearRoute) {
+        Text(
+            when {
+                // Only the PHONE is ever detected, and only when Build.MODEL actually matched this
+                // boot — a default that happens to be right is not a detection. Nothing is appended
+                // otherwise: the earlier copy told the user to "set this to the optic you mounted",
+                // which fired precisely BECAUSE they had just made a deliberate pick, so it read as
+                // a warning about a correct action (this app does not nag — docs/UX_POLICY.md).
+                // Two independent facts, joined by the app's own ` · ` — the old sentence period
+                // ran them together right after the "equiv." abbreviation dot.
+                state.phoneModelDetected -> "$converterFocal · ${state.phoneModel.label} detected"
+                else -> converterFocal
+            },
+            color = CameraColors.TextSecondary,
+            style = MaterialTheme.typography.labelSmall,
+        )
+    }
 
     // Stabilization lives here with the rest of the optics — it does not need its own menu tab
     // (feedback). HAL OIS+EIS path; OIS physically cuts per-frame motion blur at 300 mm.
@@ -1078,7 +1101,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     }.orEmpty()
     if (resolutionOptions.isEmpty()) {
         Text(
-            "No supported resolution.",
+            "No supported resolution",
             color = CameraColors.Record,
             style = MaterialTheme.typography.labelSmall,
         )
@@ -1100,7 +1123,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     val fpsOptions = VideoFrameRate.availableFor(caps, state.videoResolution, codec)
     if (fpsOptions.isEmpty()) {
         Text(
-            "No supported frame rate for this setup.",
+            "No supported frame rate",
             color = CameraColors.Record,
             style = MaterialTheme.typography.labelSmall,
         )
@@ -1122,7 +1145,9 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         onSelect = actions::onBitrateLevel,
         enabled = recordingMutable,
     )
-    // Resolved encoder settings summary, e.g. "HEVC · 4K · 30 · 84 Mbps" — the exact computed bitrate.
+    // Resolved encoder settings summary, e.g. "HEVC · 4K · 30p · 84 Mbps" — the exact computed
+    // bitrate. The rate carries its "p" like the OSD's spec line does: in a list next to "4K" a
+    // bare number reads as another dimension.
     val mbps = videoBitRate(
         state.videoResolution.width, state.videoResolution.height,
         state.videoFrameRate.encoderRate,
@@ -1130,7 +1155,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     ) / 1_000_000
     LabelValueRow(
         label = "Encoder",
-        valueLabel = "${videoCodecLabelShort(codec)} · ${videoResolutionLabel(state.videoResolution)} · ${state.videoFrameRate.label} · $mbps Mbps",
+        valueLabel = "${videoCodecLabelShort(codec)} · ${videoResolutionLabel(state.videoResolution)} · ${state.videoFrameRate.label}p · $mbps Mbps",
     )
     // Transfer is part of the encoded image format, so keep it with codec/rate controls instead of
     // below the unrelated audio controls.
@@ -1141,12 +1166,16 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     )
     // One terse source caveat (cycle-6 A26/D-08): the named log curves are real math, but they bake
     // onto the already-tone-mapped SDR stream — no scene-referred latitude is recovered (CLAUDE.md
-    // "must not be marketed as such"). Same caption idiom as the hi-res/stabilization rows.
-    Text(
-        "Curve applied to the SDR camera stream.",
-        color = CameraColors.TextSecondary,
-        style = MaterialTheme.typography.labelSmall,
-    )
+    // "must not be marketed as such"). Same caption idiom as the hi-res/stabilization rows. Gated on
+    // a non-SDR selection because the caveat is about a CURVE: printed under Transfer = SDR it
+    // asserted a curve was applied where none is.
+    if (state.transfer != ColorTransfer.SDR) {
+        Text(
+            "Applied to the SDR stream",
+            color = CameraColors.TextSecondary,
+            style = MaterialTheme.typography.labelSmall,
+        )
+    }
 
     SectionHeader("Audio")
     ToggleRow(
@@ -1274,7 +1303,9 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
     SectionHeader("Focus Aids")
     // "Loupe" app-wide (cycle-6 D-04): Fn chip, key-action label, and LOUPE OSD tag already use it.
     ToggleRow(label = "Loupe", checked = state.punchIn, onCheckedChange = actions::onTogglePunchIn)
-    SectionHeader("TELE")
+    // "Teleconverter", not the OSD's TELE tag: a viewfinder tag borrowed into a menu shouts next to
+    // 19 Title Case siblings.
+    SectionHeader("Teleconverter")
     // Loupe Overview is a same-stream full-frame reference, never an automatic 1x camera feed.
     // Exact predicate: enabled + Photo + 4:3 + TELE + active punch-in. Default remains off.
     ToggleRow(label = "Loupe Overview", checked = state.teleFinder, onCheckedChange = actions::onToggleTeleFinder)
@@ -1282,7 +1313,7 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
     // are the sanctioned place for that copy, never the viewfinder). Without it, toggling this in
     // video, at 16:9, or with the loupe off does nothing visible and says nothing about why.
     Text(
-        "Photo, 4:3, TELE, Loupe on.",
+        "Photo · 4:3 · TELE · Loupe",
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.labelSmall,
     )

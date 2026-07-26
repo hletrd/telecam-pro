@@ -91,7 +91,7 @@ class AudioInputInspectorTest {
     fun status_autoWithNoDevices_isHonestlyUnavailable() {
         val s = resolveAudioInputStatus(emptyList(), me.hletrd.findx9tele.camera.AudioInputPreference.AUTO)
         assertFalse(s.available)
-        org.junit.Assert.assertEquals("Auto · no mic detected", s.label)
+        org.junit.Assert.assertEquals("Auto · No mic", s.label)
     }
 
     @Test
@@ -135,7 +135,7 @@ class AudioInputInspectorTest {
     @Test
     fun status_autoWithOnlyUnrecognizedPorts_labelsTheFirstPort() {
         // No recognized external mic AND no builtin: AUTO still records via the system default
-        // route, so the label falls back to the first port rather than lying "no mic detected".
+        // route, so the label falls back to the first port rather than lying "No mic".
         val s = resolveAudioInputStatus(
             listOf(
                 AudioInputPortInfo(AudioDeviceInfo.TYPE_FM_TUNER, "FM"),

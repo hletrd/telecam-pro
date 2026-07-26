@@ -208,7 +208,10 @@ internal fun fnTileContentAxis(deviceOrientation: Int): FnTileContentAxis =
 /** Short visual copy for the narrow physical strip; accessibility keeps the complete slot label. */
 internal fun fnOverlayVisualLabel(slot: FnSlot, heldLandscape: Boolean): String = when {
     !heldLandscape -> fnSlotLabel(slot)
-    slot == FnSlot.STABILIZATION -> "Steady"
+    // "Stab", not "Steady": the OSD already owns STEADY for ONE value (ENHANCED), so the held tray
+    // read "Steady / Std" while the OSD said OIS+ — a tile labelled with the name of a state it is
+    // not in. "Stab" matches the OSD's own STAB OFF tag and still fits the 148 dp tile.
+    slot == FnSlot.STABILIZATION -> "Stab"
     slot == FnSlot.OPEN_GATE -> "Gate"
     else -> fnSlotLabel(slot)
 }

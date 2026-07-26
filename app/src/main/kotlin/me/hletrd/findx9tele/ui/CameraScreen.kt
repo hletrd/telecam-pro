@@ -687,7 +687,8 @@ fun CameraScreen(
                     .fillMaxSize()
                     .focusable()
                     .clearAndSetSemantics {
-                        contentDescription = "Self timer"
+                        // "Self-timer", hyphenated like the menu row: one feature, one spelling.
+                        contentDescription = "Self-timer"
                         stateDescription = "${state.timerCountdownSec} seconds remaining"
                         // POLITE, not Assertive: the stateDescription changes at 1 Hz, so Assertive
                         // made a 10 s timer interrupt TalkBack ten times. The sibling ticking readout
@@ -1135,7 +1136,9 @@ private fun TapFocusHoldChip(onReset: () -> Unit, modifier: Modifier = Modifier)
         contentAlignment = Alignment.Center,
     ) {
         Text(
-            text = "AF HOLD ×",
+            // "TAP AF", the name the menu row and the a11y state already use. "AF HOLD" was a third
+            // name for one state, and it read as a sibling of the unrelated AFL lock tag.
+            text = "TAP AF ×",
             color = CameraColors.Accent,
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
@@ -1241,7 +1244,7 @@ private fun FlashButton(mode: FlashMode, onClick: () -> Unit, modifier: Modifier
 
 @Composable
 private fun TimerButton(timer: ShutterTimer, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
-    ChromeIconButton(onClick = onClick, contentDescription = "Self timer ${shutterTimerLabel(timer)}", modifier = modifier, enabled = enabled) {
+    ChromeIconButton(onClick = onClick, contentDescription = "Self-timer ${shutterTimerLabel(timer)}", modifier = modifier, enabled = enabled) {
         if (timer == ShutterTimer.OFF) {
             Canvas(Modifier.size(16.dp)) {
                 val color = CameraColors.TextSecondary.copy(alpha = if (enabled) 1f else 0.38f)
@@ -1476,7 +1479,8 @@ private fun StatusInfoPill(state: CameraUiState, modifier: Modifier = Modifier) 
                 when {
                     min >= 600 -> "9h+"
                     min >= 60 -> "${min / 60}h${min % 60}m"
-                    else -> "${min}min"
+                    // "m", not "min": the two branches above already spell minutes that way.
+                    else -> "${min}m"
                 }
             }
             else -> {

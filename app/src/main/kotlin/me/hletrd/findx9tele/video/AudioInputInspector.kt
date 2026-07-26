@@ -88,7 +88,7 @@ internal fun audioPortLabel(port: AudioInputPortInfo): String {
 /**
  * The audio-input status decision over plain ports (TEST4-18 — the branching used to live inside
  * status() against live AudioDeviceInfo and was untestable on the JVM):
- * - AUTO with no capture device: honest "no mic detected", unavailable (the old code composed the
+ * - AUTO with no capture device: honest "No mic", unavailable (the old code composed the
  *   doubled "Auto · Auto" and reported ready).
  * - AUTO prefers a RECOGNIZED external mic (wired/USB/BT — CR4-9: `type != BUILTIN` alone could
  *   pick a telephony/FM tuner port and label it like a mic), else the built-in mic, else the
@@ -101,7 +101,9 @@ internal fun resolveAudioInputStatus(
     preference: AudioInputPreference,
 ): AudioInputStatus {
     if (preference == AudioInputPreference.AUTO) {
-        if (ports.isEmpty()) return AudioInputStatus("Auto · no mic detected", available = false)
+        // Capitalized after the separator like every sibling ("Auto · Phone mic"): the label is a
+        // port name in that slot, not a sentence about one.
+        if (ports.isEmpty()) return AudioInputStatus("Auto · No mic", available = false)
         val recognizedExternal = AudioInputInspector.USB_INPUT_TYPES +
             AudioInputInspector.BLUETOOTH_INPUT_TYPES +
             AudioDeviceInfo.TYPE_WIRED_HEADSET

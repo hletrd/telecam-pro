@@ -2299,14 +2299,14 @@ class CameraViewModel @JvmOverloads constructor(
             // run synchronously for an immediate refusal).
             _state.update {
                 it.copy(
-                    audioRouteLabel = if (s.recordAudio) "Starting..." else "Off",
+                    audioRouteLabel = if (s.recordAudio) "Starting…" else "Off",
                     isRecording = true,
                     isRecordingStarting = true,
                     recordElapsedMs = 0,
                 )
             }
             if (s.recordAudio && !inputStatus.available) {
-                showStatus("${inputStatus.label}; using default")
+                showStatus("${inputStatus.label}, using default")
             }
             // THREAD CONTRACT: this callback runs on the RECORDER EXECUTOR for a queued admission,
             // or synchronously on MAIN for an immediate refusal. Reconcile a refusal on MAIN as one
@@ -2404,7 +2404,9 @@ class CameraViewModel @JvmOverloads constructor(
 
     override fun onRecallMemorySlot(slot: MemorySlot) {
         if (_state.value.isRecording) {
-            showStatus("Stop REC before ${slot.label}")
+            // The canonical REC refusal, word for word: every other site in the VM and the engine
+            // says exactly this, and StatusUrgencyTest pins it. One refusal, one voice.
+            showStatus("Stop REC first")
             return
         }
         val loaded = settingsStore.loadPreset(slot)

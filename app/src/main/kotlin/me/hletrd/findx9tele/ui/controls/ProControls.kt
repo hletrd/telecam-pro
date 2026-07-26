@@ -655,19 +655,20 @@ fun PhotoFormatToggles(
         }
         if (!processedAvailable && !rawAvailable) {
             Text(
-                "Still capture unavailable.",
+                "Still capture unavailable",
                 color = CameraColors.TextSecondary,
                 style = MaterialTheme.typography.labelSmall,
             )
         } else if (!rawAvailable) {
             Text(
-                "RAW unavailable.",
+                "RAW unavailable",
                 color = CameraColors.TextSecondary,
                 style = MaterialTheme.typography.labelSmall,
             )
         } else if (!processedAvailable) {
             Text(
-                "HEIF/JPEG unavailable; DNG only.",
+                // Word for word the status CameraEngine emits for the same accepted-output mask.
+                "HEIF/JPEG unavailable; DNG only",
                 color = CameraColors.TextSecondary,
                 style = MaterialTheme.typography.labelSmall,
             )

@@ -1021,7 +1021,10 @@ internal fun mediaDeleteConfirmationCopy(
     )
     MediaDeleteScope.FILE_ONLY -> MediaDeleteConfirmationCopy(
         title = if (raw) "Delete RAW file?" else "Delete file?",
-        body = "This file will be deleted.",
+        // FILE_ONLY is exactly the degraded path where siblings SURVIVE — that difference from
+        // CAPTURE_FAMILY is the whole reason the two dialogs exist, so the body states it instead
+        // of restating the title in the passive voice.
+        body = "Only this file is deleted.",
     )
 }
 

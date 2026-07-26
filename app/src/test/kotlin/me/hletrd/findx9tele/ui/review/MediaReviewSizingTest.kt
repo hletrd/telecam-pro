@@ -16,10 +16,12 @@ class MediaReviewSizingTest {
             ),
             mediaDeleteConfirmationCopy(MediaDeleteScope.CAPTURE_FAMILY, raw = false),
         )
+        // FILE_ONLY must state the SCOPE, not restate the title: this is the degraded path where
+        // siblings survive, so "Only this file" is the one fact the family dialog does not promise.
         assertEquals(
             MediaDeleteConfirmationCopy(
                 title = "Delete RAW file?",
-                body = "This file will be deleted.",
+                body = "Only this file is deleted.",
             ),
             mediaDeleteConfirmationCopy(MediaDeleteScope.FILE_ONLY, raw = true),
         )

@@ -491,8 +491,11 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                         state.videoFrameRate.encoderRate,
                         me.hletrd.findx9tele.camera.effectiveBpp(state.bitrateLevel, state.videoCodec), state.videoCodec,
                     ) / 1_000_000
+                    // A bare "M" is the finder convention for a bitrate; "Mb" named megabits, which
+                    // is a quantity, not a rate. The menu's Encoder row spells the full "Mbps" —
+                    // two registers on purpose, both now correct.
                     "${videoResolutionLabel(state.videoResolution)} ${state.videoFrameRate.label}p " +
-                        "${videoCodecLabelShort(state.videoCodec)} ${mbps}Mb"
+                        "${videoCodecLabelShort(state.videoCodec)} ${mbps}M"
                 }
                 Text(spec, color = Color.White, style = MaterialTheme.typography.labelMedium)
             }

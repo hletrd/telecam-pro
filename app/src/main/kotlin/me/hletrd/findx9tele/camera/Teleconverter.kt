@@ -48,7 +48,9 @@ enum class PhoneModel(
      * Anything without a first-party kit. Offers only the generic clip-ons and CUSTOM, so it needs
      * no host focal of its own — those magnifications are intrinsic.
      */
-    OTHER("Other phone", 70f),
+    // Labelled just "Other": the row it renders in is already labelled "Phone", so the old
+    // "Other phone" read back as "Phone   Other phone".
+    OTHER("Other", 70f),
     ;
 
     /** The converters that clamp onto this phone, plus the ones that fit anything. */
