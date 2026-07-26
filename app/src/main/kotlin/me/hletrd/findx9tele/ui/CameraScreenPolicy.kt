@@ -172,6 +172,20 @@ internal fun showHalfPressLabel(
     tapFocusHeld: Boolean,
 ): Boolean = active && !(action == HardwareKeyAction.AF_ON && tapFocusHeld)
 
+/**
+ * Whether a top-bar chrome toggle (flash / self-timer / aspect / grid) draws in the current DISP
+ * state. Full DISP shows all of them; compact keeps only the ones whose value is NOT the default —
+ * UX_POLICY: "compact mode keeps only active or output-changing state plus the Fn entry point."
+ *
+ * Hoisted because the rule was spelled four times inline and GRID shipped with the second clause
+ * MISSING (a bare `!compact`). Grid is the one of the four that paints on the live image, so the
+ * preview-first state could carry four 55%-white lines across the frame with no visible control to
+ * clear them — and GRID is in neither `compactShootingStatusVisible` nor `FnSlot.PHOTO_DEFAULT` /
+ * `MY_MENU_DEFAULT`, so nothing else exposed it either. Four copies of one rule is how a clause goes
+ * missing invisibly; one predicate is how it stays pinned.
+ */
+internal fun chromeToggleVisible(compact: Boolean, isDefault: Boolean): Boolean = !compact || !isDefault
+
 internal const val FN_OVERLAY_COLUMN_COUNT = 4
 internal const val FN_OVERLAY_HELD_COLUMN_COUNT = 2
 internal const val FN_OVERLAY_MAX_SLOTS = 8

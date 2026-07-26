@@ -547,7 +547,13 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                 // Gamma Display Assist active: the monitor is corrected, the file stays log.
                 // Caps like every other alphabetic tag in this row (FRONT/MUTE/HR/AEL/LOUPE/SLOG3…);
                 // Title Case is the MENU row convention, not the finder's.
-                Text("ASSIST", color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.labelMedium)
+                // Full white, like its neutral-white row-mates (the focal readout, the video spec): it
+                // was the ONE alpha-modulated tag here, and dimming is this app's vocabulary for
+                // UNAVAILABLE everywhere else (0.38 chrome glyphs, DISABLED_ROW_ALPHA, the 0.55 Fn
+                // tile). A tag that only exists while the assist is ON must not wear the disabled
+                // treatment. (The two other 0.55s in this file are the level scale and the grid lines —
+                // graphics over the image, not tags.)
+                Text("ASSIST", color = Color.White, style = MaterialTheme.typography.labelMedium)
             }
             if (state.openGate) {
                 Text("4:3", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)

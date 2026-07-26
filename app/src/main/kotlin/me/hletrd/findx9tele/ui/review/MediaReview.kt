@@ -936,8 +936,8 @@ fun MediaReviewOverlay(
             }
         }
 
-        // Close button, top-left. Scrim rides the tested HUD contrast floor (05486cb): the "✕" over a
-        // bright/high-key review frame washed out at 0.5 (≈3.98:1, under the 4.5 floor).
+        // Close button, top-left. Scrim rides the tested HUD contrast floor (05486cb): the close glyph
+        // over a bright/high-key review frame washed out at 0.5 (≈3.98:1, under the 4.5 floor).
         Box(
             modifier = Modifier
                 .align(Alignment.TopStart)
@@ -953,7 +953,20 @@ fun MediaReviewOverlay(
                 .clickable(onClick = onClose),
             contentAlignment = Alignment.Center,
         ) {
-            Text("✕", color = CameraColors.TextPrimary, style = MaterialTheme.typography.titleMedium)
+            // U+00D7, not U+2715: the old ✕ (MULTIPLICATION X) is absent from ALL THREE bundled Inter
+            // faces (verified over the cmaps of inter_regular/medium/semibold), so the app's most
+            // prominent close control — sitting next to the destructive delete — was the one glyph
+            // rendered in whatever face ColorOS substitutes, at that face's weight and metrics. That is
+            // exactly what Theme.kt bundled Inter to end. U+00D7 IS in all three, and ManualDials'
+            // dial-close pill already draws it.
+            //
+            // titleLarge (22 sp), not titleMedium (16 sp), because the substitution was also hiding a
+            // SIZE change: Inter's `multiply` ink is 1016/2048 = 0.496 em tall at SemiBold, where a
+            // dingbat U+2715 is ~0.67-0.70 em (Arial Unicode 0.668, Zapf Dingbats 0.696). At 16 sp the
+            // outgoing glyph drew ~10.7-11.1 sp of ink; 22 sp x 0.496 = 10.9 sp reproduces it, and the
+            // 1.375x scale carries the stroke weight up with it. `fontWeight = SemiBold` is NOT an
+            // alternative here — titleMedium already carries SemiBold(600).
+            Text("×", color = CameraColors.TextPrimary, style = MaterialTheme.typography.titleLarge)
         }
 
         // Delete button, top-right. Scrim rides the tested HUD contrast floor (05486cb): the red trash

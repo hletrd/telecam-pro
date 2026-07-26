@@ -64,7 +64,7 @@ class HudContrastTest {
         // extending 05486cb's closed list:
         //  - top-bar ChromeIconButton glyphs (white / secondary #9E9E9E / blue accent #8AB4F8)
         //  - review metadata panel (white name + secondary EXIF/size lines)
-        //  - review close ✕ (white), review zoom-scale badge (white), center status/error toast (white)
+        //  - review close glyph (white), review zoom-scale badge (white), center status/error toast (white)
         //  - histogram / waveform / audio-meter panel scrims (judged by the near-white brightest trace)
         // Pin each foreground so a future alpha/color tweak can't sink one back under 4.5:1 on a white
         // frame the way the pre-fix 0.45/0.5/0.55/0.62 alphas did.
@@ -189,6 +189,45 @@ class HudContrastTest {
     }
 
     @Test
+    fun `the zoom bar track survives a bright frame only once it sits on the plate`() {
+        // ZoomIndicator's 180x4 dp track is a 0.25-white slab and its fill is opaque Accent. It was the
+        // one chrome readout drawn BARE on the live image (the "N.N×" pill 6 dp above it has a plate),
+        // so a bright sky erased the track and left the fill floating with nothing to be a fraction of.
+        // Non-text graphics floor is 3:1 (WCAG 1.4.11), not 4.5. Measured with this file's own formula:
+        //   over a white frame, bare:   track -> #FFFFFF (1.00:1, invisible)   fill 2.11:1
+        //   over a white frame, plated: track -> #626262 (6.10:1)              fill 6.44:1
+        //   fill vs the plated track    2.89:1 (the bar still reads as a scale, not a slab)
+        //   over a black frame          #404040 either way — unchanged
+        val track = 0xFFFFFF
+        val trackAlpha = 0.25f
+        val white = 0xFFFFFF
+        val accent = rgbOf(CameraColors.Accent)
+
+        // Pre-fix, over a white frame: the track composites to pure white — literally invisible — and
+        // the fill misses 3:1 on its own.
+        val bareTrack = compositeOn(track, trackAlpha, white)
+        assertTrue("bare track composited to $bareTrack", bareTrack == white)
+        assertTrue(contrastOnComposited(bareTrack, white) < 1.1)
+        assertTrue("accent on white was ${contrastOnComposited(accent, white)}", contrastOnComposited(accent, white) < 3.0)
+
+        // Post-fix: the plate goes under the track, so both the empty track and the fill are measured
+        // against the same slab every sibling HUD readout uses.
+        val platedFrame = compositeOverWhite(rgbOf(CameraColors.ChromeScrim), HUD_TEXT_SCRIM_ALPHA)
+        val platedTrack = compositeOn(track, trackAlpha, platedFrame)
+        assertTrue("plated track vs frame was ${contrastOnComposited(platedTrack, white)}", contrastOnComposited(platedTrack, white) >= 3.0)
+        val fillOnPlate = contrastRatioOnWhiteScrim(accent, HUD_TEXT_SCRIM_ALPHA)
+        assertTrue("accent fill on the plate was $fillOnPlate", fillOnPlate >= 3.0)
+        // And the fill stays distinguishable FROM the track it fills, which is what makes the bar a scale.
+        assertTrue("fill vs track was ${contrastOnComposited(accent, platedTrack)}", contrastOnComposited(accent, platedTrack) >= 1.5)
+
+        // Over a DARK scene nothing moves: 82% black over black is black, so the track composites to the
+        // exact colour it did before. This fix may only add worst-case contrast, never trade any.
+        val darkBefore = compositeOn(track, trackAlpha, 0x000000)
+        val darkAfter = compositeOn(track, trackAlpha, compositeOn(rgbOf(CameraColors.ChromeScrim), HUD_TEXT_SCRIM_ALPHA, 0x000000))
+        assertTrue("dark-scene track moved from $darkBefore to $darkAfter", darkBefore == darkAfter)
+    }
+
+    @Test
     fun `the sheet's capability captions read better in secondary than in the recording red`() {
         // The ProSheet panel is OPAQUE CameraColors.Pill, so its captions are measured directly
         // against that surface rather than through a scrim alpha. Two Video-tab capability captions
@@ -203,11 +242,16 @@ class HudContrastTest {
     }
 
     /** Source-over composite of an [alpha] plate of [plateRgb] onto an opaque white frame. */
-    private fun compositeOverWhite(plateRgb: Int, alpha: Float): Int {
+    private fun compositeOverWhite(plateRgb: Int, alpha: Float): Int =
+        compositeOn(plateRgb, alpha, 0xFFFFFF)
+
+    /** Source-over composite of an [alpha] layer of [overRgb] onto the opaque [baseRgb]. */
+    private fun compositeOn(overRgb: Int, alpha: Float, baseRgb: Int): Int {
         var out = 0
         for (shift in intArrayOf(16, 8, 0)) {
-            val plate = (plateRgb shr shift) and 0xFF
-            val blended = Math.round(alpha * plate + (1f - alpha) * 255f).coerceIn(0, 255)
+            val over = (overRgb shr shift) and 0xFF
+            val base = (baseRgb shr shift) and 0xFF
+            val blended = Math.round(alpha * over + (1f - alpha) * base).coerceIn(0, 255)
             out = out or (blended shl shift)
         }
         return out

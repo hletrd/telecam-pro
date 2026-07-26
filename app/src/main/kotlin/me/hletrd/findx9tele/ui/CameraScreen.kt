@@ -1063,7 +1063,9 @@ private fun TopBar(
             // as OFF there instead of claiming a metering mode video can never use.
             val flashChoices = flashChoicesFor(state.mode, availability.flashModes)
             val flashDisplay = flashDisplayMode(state.mode, state.controls.flash)
-            if (!compact || flashDisplay != FlashMode.OFF) {
+            // One predicate for all four toggles (chromeToggleVisible): full DISP draws every one,
+            // compact keeps only the non-default states.
+            if (chromeToggleVisible(compact, flashDisplay == FlashMode.OFF)) {
                 FlashButton(
                     mode = flashDisplay,
                     onClick = { actions.onFlash(nextAvailable(flashDisplay, flashChoices)) },
@@ -1071,7 +1073,7 @@ private fun TopBar(
                     modifier = glyphSpin,
                 )
             }
-            if (state.mode == CaptureMode.PHOTO && (!compact || state.timer != ShutterTimer.OFF)) {
+            if (state.mode == CaptureMode.PHOTO && chromeToggleVisible(compact, state.timer == ShutterTimer.OFF)) {
                 TimerButton(
                     timer = state.timer,
                     onClick = { actions.onTimer(nextTimer(state.timer)) },
@@ -1079,7 +1081,7 @@ private fun TopBar(
                     modifier = glyphSpin,
                 )
             }
-            if (state.mode == CaptureMode.PHOTO && (!compact || state.aspectRatio != AspectRatio.W4_3)) {
+            if (state.mode == CaptureMode.PHOTO && chromeToggleVisible(compact, state.aspectRatio == AspectRatio.W4_3)) {
                 AspectButton(
                     ratio = state.aspectRatio,
                     onClick = { actions.onAspectRatio(nextAspect(state.aspectRatio)) },
@@ -1087,7 +1089,9 @@ private fun TopBar(
                     modifier = glyphSpin,
                 )
             }
-            if (!compact) {
+            // An ACTIVE grid keeps its button in compact too: the grid lines are drawn unconditionally
+            // over the live image, and this is the only control that clears them.
+            if (chromeToggleVisible(compact, state.grid == GridType.NONE)) {
                 GridButton(
                     type = state.grid,
                     onClick = { actions.onGridType(toggledGridType(state.grid, lastActiveGrid)) },
@@ -1270,6 +1274,20 @@ private fun FlashButton(mode: FlashMode, onClick: () -> Unit, modifier: Modifier
 
 @Composable
 private fun TimerButton(timer: ShutterTimer, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
+    val armed = timer != ShutterTimer.OFF
+    // Clock in BOTH states, seconds as a corner badge. The armed branch used to DELETE the clock and
+    // draw the bare digit, i.e. it dropped the control's identity in exactly the state worth spotting —
+    // the exact opposite of the rule DispButton's own KDoc states below ("both always drawn — the glyph
+    // is the control's identity, not a preview of its state"), and of every other chrome button on this
+    // row, which keeps its pictograph and changes colour. Compounding it: the OSD's `T3s` tag is suppressed
+    // in compact and `timer` is not in compactShootingStatusVisible, so an armed self-timer's only mark
+    // in the preview-first finder was an unlabelled blue digit in a row of pictographs.
+    //
+    // Accent for armed / TextSecondary for off is the row's shared engaged rule (GridButton, TeleChip,
+    // DispButton), and the OFF branch therefore draws exactly what it drew before — full-alpha
+    // secondary, unchanged geometry.
+    val color = (if (armed) CameraColors.Accent else CameraColors.TextSecondary)
+        .copy(alpha = if (enabled) 1f else 0.38f)
     ChromeIconButton(
         onClick = onClick,
         contentDescription = "Self-timer",
@@ -1277,15 +1295,24 @@ private fun TimerButton(timer: ShutterTimer, onClick: () -> Unit, modifier: Modi
         modifier = modifier,
         enabled = enabled,
     ) {
-        if (timer == ShutterTimer.OFF) {
-            Canvas(Modifier.size(16.dp)) {
-                val color = CameraColors.TextSecondary.copy(alpha = if (enabled) 1f else 0.38f)
-                drawCircle(color, radius = size.minDimension / 2f, style = Stroke(width = 1.3.dp.toPx()))
-                drawLine(color, center, Offset(center.x, center.y - size.height * 0.3f), strokeWidth = 1.2.dp.toPx())
-                drawLine(color, center, Offset(center.x + size.width * 0.18f, center.y), strokeWidth = 1.2.dp.toPx())
-            }
-        } else {
-            Text(timer.seconds.toString(), color = CameraColors.Accent.copy(alpha = if (enabled) 1f else 0.38f), style = hudGlyph(13.sp))
+        Canvas(Modifier.size(16.dp)) {
+            drawCircle(color, radius = size.minDimension / 2f, style = Stroke(width = 1.3.dp.toPx()))
+            drawLine(color, center, Offset(center.x, center.y - size.height * 0.3f), strokeWidth = 1.2.dp.toPx())
+            drawLine(color, center, Offset(center.x + size.width * 0.18f, center.y), strokeWidth = 1.2.dp.toPx())
+        }
+        if (armed) {
+            // FlashButton's AUTO "A" geometry exactly (8 sp, BottomEnd, 3/2 dp) — the one badge idiom
+            // this row already has, and the one whose 8 sp/2 dp placement was tuned on device. "10" is
+            // two characters where "A" is one, but the badge box still clears the clock: the 16 dp clock
+            // ends 10 dp in from the 36 dp disc's bottom edge, and tnum holds both digits on one advance.
+            Text(
+                text = timer.seconds.toString(),
+                color = color,
+                style = hudGlyph(8.sp),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 3.dp, bottom = 2.dp),
+            )
         }
     }
 }
@@ -1617,6 +1644,16 @@ private fun ZoomIndicator(
                 .width(180.dp)
                 .height(4.dp)
                 .clip(RoundedCornerShape(2.dp))
+                // The bar was the one chrome readout drawn BARE on the live image, while the "N.N×"
+                // pill directly above it sits on the plate. Over a bright sky the 0.25-white track
+                // composited to white and vanished, and the Accent fill alone measures ≈2.1:1 against
+                // white — so the scale reference disappeared and the bar read as a floating blue
+                // segment. Chained backgrounds draw in chain order, so the EARLIER one is underneath and
+                // the plate goes FIRST: over a dark scene the track composites to the exact #404040 it
+                // did before (82% black over black is black), and
+                // over a bright one it keeps a real track to be a fraction OF. HudContrastTest pins
+                // both halves.
+                .background(HudPlate)
                 .background(Color.White.copy(alpha = 0.25f)),
         ) {
             Box(
@@ -1821,7 +1858,7 @@ private fun FnOverlayTile(
         modifier = modifier
             .heightIn(min = 56.dp)
             .clip(RoundedCornerShape(8.dp))
-            .background(Color.White.copy(alpha = if (enabled) 0.09f else 0.04f))
+            .background(if (enabled) CameraColors.Block else CameraColors.BlockDisabled)
             .border(1.dp, CameraColors.Hairline, RoundedCornerShape(8.dp))
             .focusable()
             .clearAndSetSemantics {

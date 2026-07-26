@@ -2,11 +2,15 @@ package me.hletrd.findx9tele.ui
 
 import androidx.compose.ui.semantics.Role
 import me.hletrd.findx9tele.camera.AfIndication
+import me.hletrd.findx9tele.camera.AspectRatio
 import me.hletrd.findx9tele.camera.CameraUiState
+import me.hletrd.findx9tele.camera.FlashMode
 import me.hletrd.findx9tele.camera.FocusConfidenceSource
+import me.hletrd.findx9tele.camera.GridType
 import me.hletrd.findx9tele.camera.LensChoice
 import me.hletrd.findx9tele.camera.FocusMode
 import me.hletrd.findx9tele.camera.ManualControls
+import me.hletrd.findx9tele.camera.ShutterTimer
 import me.hletrd.findx9tele.camera.normalizeFnSlots
 import me.hletrd.findx9tele.focus.focusConfidenceLabel
 import me.hletrd.findx9tele.ui.controls.proSheetUsesSideLayout
@@ -297,6 +301,30 @@ class CameraUiPolicyTest {
             "SOFT",
             tag(CameraUiState(focusConfidence = FocusConfidenceSource.FRAME_DETAIL, macroCloserLensLabel = "1×")),
         )
+    }
+
+    @Test
+    fun `compact DISP keeps every top-bar toggle whose state is not the default`() {
+        // Full DISP draws all four regardless; compact keeps only non-default state (UX_POLICY).
+        assertTrue(chromeToggleVisible(compact = false, isDefault = true))
+        assertTrue(chromeToggleVisible(compact = false, isDefault = false))
+        assertFalse(chromeToggleVisible(compact = true, isDefault = true))
+        assertTrue(chromeToggleVisible(compact = true, isDefault = false))
+
+        // The miss this predicate exists to make testable: GRID shipped as a bare `!compact` while its
+        // three row siblings carried the second clause, so an active grid — the one chrome state that
+        // paints on the live image — had no control at all in the preview-first finder.
+        assertTrue(chromeToggleVisible(compact = true, isDefault = GridType.THIRDS == GridType.NONE))
+        assertTrue(chromeToggleVisible(compact = true, isDefault = GridType.CENTER == GridType.NONE))
+        assertFalse(chromeToggleVisible(compact = true, isDefault = GridType.NONE == GridType.NONE))
+
+        // Same predicate, same answers, for the three that already behaved.
+        assertTrue(chromeToggleVisible(compact = true, isDefault = FlashMode.TORCH == FlashMode.OFF))
+        assertFalse(chromeToggleVisible(compact = true, isDefault = FlashMode.OFF == FlashMode.OFF))
+        assertTrue(chromeToggleVisible(compact = true, isDefault = ShutterTimer.SEC10 == ShutterTimer.OFF))
+        assertFalse(chromeToggleVisible(compact = true, isDefault = ShutterTimer.OFF == ShutterTimer.OFF))
+        assertTrue(chromeToggleVisible(compact = true, isDefault = AspectRatio.W16_9 == AspectRatio.W4_3))
+        assertFalse(chromeToggleVisible(compact = true, isDefault = AspectRatio.W4_3 == AspectRatio.W4_3))
     }
 
     @Test

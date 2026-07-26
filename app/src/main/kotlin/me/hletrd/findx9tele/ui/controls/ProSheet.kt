@@ -309,7 +309,9 @@ private fun CloseButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
             modifier = Modifier
                 .size(32.dp)
                 .clip(RoundedCornerShape(50))
-                .background(Color.White.copy(alpha = 0.08f)),
+                // The shared raised-block fill; this pill used to spell it 0.08, one hundredth off the
+                // 0.09 its two siblings (MiniTextButton, FnOverlayTile) draw.
+                .background(CameraColors.Block),
             contentAlignment = Alignment.Center,
         ) {
             Canvas(modifier = Modifier.size(12.dp)) {
@@ -1523,7 +1525,7 @@ private fun MiniTextButton(
         Box(
             modifier = Modifier
                 .clip(RoundedCornerShape(50))
-                .background(Color.White.copy(alpha = if (enabled) 0.09f else 0.04f))
+                .background(if (enabled) CameraColors.Block else CameraColors.BlockDisabled)
                 // Carve-out from the shared 12/6 pill inset: three of these actions share one row,
                 // so only the vertical joins the scale.
                 .padding(horizontal = 9.dp, vertical = 6.dp),

@@ -82,6 +82,24 @@ object CameraColors {
      */
     val ManualActive = Color(0xFFFFD60A)
     /**
+     * The ONE raised-block FILL: the white wash that lifts a small INTERACTIVE block off whatever it
+     * sits on. Three sites draw it — the sheet's CloseButton pill, MiniTextButton, and FnOverlayTile —
+     * and they had drifted to two spellings 0.01 apart (0.08 / 0.09), i.e. three blocks and two
+     * slightly different greys, exactly the drift [Hairline] documents for the edges. 0.09 is the
+     * majority spelling (two of the three), so the odd 0.08 moved rather than the pair.
+     *
+     * It is NOT [me.hletrd.findx9tele.ui.overlays.HudPlate]: that is a translucent BLACK slab whose
+     * job is a contrast floor for text over the live image. This is a lightening wash, and it carries
+     * no contrast promise of its own — every one of the three has its own foreground rule.
+     *
+     * NOT folded in, deliberately: the idle settings-row surface (0.05) and the SELECTED tab-rail item
+     * (0.10). Those two encode different ROLES — collapsing either into this token would make a
+     * selected rail item look like an idle row.
+     */
+    val Block = Color.White.copy(alpha = 0.09f)
+    /** [Block] for a disabled block. The foreground carries the state too; this keeps the slab quieter. */
+    val BlockDisabled = Color.White.copy(alpha = 0.04f)
+    /**
      * The ONE hairline stroke for chip/tile/card/panel EDGES that carry no affordance of their own.
      * Five decorative borders drifted across 0.10-0.15 alpha, which reads as five slightly different
      * greys rather than one edge treatment.
@@ -215,10 +233,12 @@ private val TeleTypography = Typography().run {
         headlineLarge = headlineLarge.withInter(),
         headlineMedium = headlineMedium.withInter(),
         headlineSmall = headlineSmall.withInter(),
-        // The settings sheet's "Menu" title.
+        // The settings sheet's "Menu" title, and the review close "×". That glyph moved up from
+        // titleMedium with the codepoint fix: Inter's `multiply` ink is 0.50 em where the U+2715 it
+        // replaced was ~0.68 em in the face ColorOS substituted, so 22 sp is what holds the drawn size.
         titleLarge = titleLarge.camera(22.sp, 28.sp, (-0.4).sp, FontWeight.SemiBold),
-        // RulerReadout — the single numeral the photographer is actively DRAGGING — plus TabTitle
-        // and the review close glyph. Prose tracking on a live value in a pill is exactly wrong.
+        // RulerReadout — the single numeral the photographer is actively DRAGGING — plus TabTitle.
+        // Prose tracking on a live value in a pill is exactly wrong.
         titleMedium = titleMedium.camera(16.sp, 20.sp, (-0.2).sp, FontWeight.SemiBold),
         // The Fn overlay header.
         titleSmall = titleSmall.camera(14.sp, 20.sp, (-0.1).sp, FontWeight.SemiBold),
