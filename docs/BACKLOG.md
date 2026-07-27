@@ -245,12 +245,30 @@ upscales) and runs out of field if zooming OUT past the 1.2× margin. Video-P an
 start a gesture without the margin at all, because those two routes take the rebuild path whose wire
 zoom comes from `controls` — accepted rather than pay a second stall to widen.
 
-**Device state: the change is unit-tested and the mechanism is re-measured, but the PINCH FEEL is
-not verified — `adb input` is single-pointer (`input motionevent` takes one x/y), so no synthetic
-two-finger gesture exists.** What was verified on device is the regression guard: rail taps are NOT
-a gesture, so they must still submit, and they do — `ZoomTrace: submit` with FrameGaps of 251/275/
-291/354 ms, which also reconfirms the per-swap stall a fourth time. The gesture path itself needs a
-human finger.
+**DEVICE-VERIFIED 2026-07-27 with a REAL injected pinch.** `adb shell input` is single-pointer and
+`sendevent` on the touchpanel is refused by SELinux (shell is in the `input` group, so this is a
+policy denial, not a DAC one) — but INSTRUMENTATION can do it: `UiAutomation` holds INJECT_EVENTS,
+so `PinchGestureProbeTest` (androidTest, probe-only, never fails the build) posts multi-pointer
+`MotionEvent`s into our own activity. Measured over two full pinches:
+
+| | zoom-in 1.0→4.6 | zoom-out 4.6→1.0 |
+|---|---|---|
+| submits during finger MOTION | 0 (start edge only) | 0 (start edge only) |
+| start-edge HAL target | 1.0 (wide aim clamped at the range floor) | **3.756** = 4.6 ÷ 1.2 |
+| FrameGaps DURING the gesture | **0** | **0** |
+| FrameGap after fingers lift | 370 ms | 396 ms |
+
+Both conclusions are load-bearing. Mid-gesture stalls are GONE — the only gaps fall after the
+fingers lift, during the settle, where the old policy produced one roughly every 200 ms and each
+demonstrably cost 210–413 ms. And the accepted zoom-OUT risk did NOT materialise: zoom ran the whole
+way back to 1.0 instead of starving at the margin, because the relocated wide aim (visible on the
+wire as `submit=3.756`) pre-bought the field. Note the comparison is structural, not a same-input
+A/B — the earlier 43%-stalled figure came from rail taps, which are NOT gestures and still submit by
+design (re-confirmed at 251/275/291/354 ms). The absolute result is the claim: zero submits and zero
+gaps while the fingers move.
+
+What a human still owns is the SUBJECTIVE half — whether the progressive softening while zooming in
+reads as acceptable. The stall behaviour itself is now measured, not assumed.
 
 ## Before Production
 
