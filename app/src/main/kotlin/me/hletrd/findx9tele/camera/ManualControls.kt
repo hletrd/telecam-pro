@@ -712,6 +712,36 @@ internal fun manualAeAdmitted(c: ManualControls, control: CameraControlCapabilit
 internal fun manualAeAdmitted(c: ManualControls, caps: CameraCaps): Boolean =
     manualAeAdmitted(c, caps.controlCapabilities())
 
+/**
+ * Whether flipping the smooth-preview boost can change ANY key this request build emits.
+ *
+ * The boost's entire wire effect is `pinAutoFps = pinAutoFps || smoothPreviewBoost`, and the only
+ * key that reads it is the AE target-fps range, chosen as `if (pinAutoFps || manualAe)`. So when the
+ * route is ALREADY pinning fps — either because video mode set `pinAutoFps` outright, or because the
+ * exposure is app-side and [manualAeAdmitted] is therefore true — the flip produces a byte-identical
+ * request. (`enforceFrameRate` reads `pinAutoFps` directly and likewise cannot move.)
+ *
+ * That matters because the flip's handler REBUILDS the repeating request, and a rebuild costs this
+ * HAL a documented ~180 ms preview stall (CLAUDE.md). Photo PROGRAM is app-side on this device, so
+ * the default stills route was paying that stall at BOTH edges of every pinch to submit a request it
+ * already had. Only video-P and flash-metered P — the two routes that genuinely ride the HAL AE, and
+ * the ones whose cadence pin keeps a 29.97 selection from recording as 25 fps — actually need it.
+ *
+ * Pure so a host test can pin the four cases; inlined at the call site it would not be testable.
+ */
+internal fun boostFlipChangesFpsDecision(
+    pinAutoFps: Boolean,
+    c: ManualControls,
+    control: CameraControlCapabilities,
+): Boolean = !pinAutoFps && !manualAeAdmitted(c, control)
+
+// The Range-typed twin, same one-admission-two-spellings rule manualAeAdmitted follows.
+internal fun boostFlipChangesFpsDecision(
+    pinAutoFps: Boolean,
+    c: ManualControls,
+    caps: CameraCaps,
+): Boolean = boostFlipChangesFpsDecision(pinAutoFps, c, caps.controlCapabilities())
+
 /** PROGRAM aims its neutral trade at 1/30 s; user-owned S/ISO/M modes have no neutral target. */
 private fun programNeutralCapNs(c: ManualControls): Long? =
     if (c.exposureMode == ExposureMode.PROGRAM) PREVIEW_MAX_EXPOSURE_NS else null

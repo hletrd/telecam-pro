@@ -1491,6 +1491,20 @@ class CameraController(context: Context) {
                 return@postToCamera
             }
             smoothPreviewBoost = active
+            // Only rebuild when the flip can actually change a request key. On this device photo
+            // PROGRAM is app-side, so `manualAe` already pins the fps range and the boost's one wire
+            // effect is a no-op there — the old unconditional rebuild spent a ~180 ms repeating-
+            // request stall at BOTH edges of every pinch to re-send a request it already had, which
+            // is exactly the "frame rate drops while zooming" the stall produces. Video-P and
+            // flash-metered P DO ride the HAL AE and still rebuild, so the cadence pin that keeps a
+            // 29.97 selection from recording as 25 fps is untouched. The FIELD is set either way, so
+            // `gestureActive` (ZSL refusal) and the next natural rebuild stay correct.
+            // `caps` is lateinit: if the flip somehow precedes configure we cannot decide, so fall
+            // through to the rebuild — the conservative side is the OLD behaviour, never a skip.
+            if (this::caps.isInitialized && !boostFlipChangesFpsDecision(pinAutoFps, controls, caps)) {
+                if (finalZoom != null) submitZoomFastPath(finalZoom)
+                return@postToCamera
+            }
             startPreview()
         }
     }
