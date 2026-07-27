@@ -354,6 +354,10 @@ private fun TabRailItem(tab: ProSheetTab, selected: Boolean, onClick: () -> Unit
     Column(
         modifier = modifier
             .fillMaxWidth()
+            // One-off, and deliberately not CameraColors.Block (0.09): that token's KDoc names this
+            // exact site as one it must not swallow. A rail item is SELECTED, an idle settings row
+            // (0.05, MemoryPresetRow) is merely present, and a Block is a raised tappable slab —
+            // three roles that would become one grey if they shared a number.
             .background(if (selected) Color.White.copy(alpha = 0.10f) else Color.Transparent)
             // Keep the visible icon/label and the Tab action on one accessibility node. Without
             // this merge Android exported an unnamed focusable parent plus a separate inert Text,
@@ -584,6 +588,9 @@ private fun MemoryPresetRow(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
+            // The idle-row surface: one-off at 0.05, the quietest wash in the app and the other site
+            // CameraColors.Block's KDoc explicitly refuses to absorb. (The 0.18 alongside it is an
+            // AMBER tint, not the white AffordanceEdge — same number, unrelated colour.)
             .background(if (active) CameraColors.ManualActive.copy(alpha = 0.18f) else Color.White.copy(alpha = 0.05f))
             // The active row is already tinted amber; a neutral white border over that tint read as
             // a smudge rather than a selection. Idle takes the shared decorative hairline.

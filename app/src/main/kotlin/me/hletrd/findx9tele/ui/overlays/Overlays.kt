@@ -128,7 +128,7 @@ fun FrameLinesOverlay(type: me.hletrd.findx9tele.camera.FrameLineType, modifier:
             w = h * ratio
         }
         drawRect(
-            color = Color.White.copy(alpha = 0.55f),
+            color = CameraColors.GuideLine,
             topLeft = Offset((size.width - w) / 2f, (size.height - h) / 2f),
             size = androidx.compose.ui.geometry.Size(w, h),
             style = Stroke(width = 1.2.dp.toPx()),
@@ -143,7 +143,7 @@ fun FrameLinesOverlay(type: me.hletrd.findx9tele.camera.FrameLineType, modifier:
 @Composable
 fun GridOverlay(type: GridType, modifier: Modifier = Modifier) {
     if (type == GridType.NONE) return
-    val lineColor = Color.White.copy(alpha = 0.55f)
+    val lineColor = CameraColors.GuideLine
     Canvas(modifier = modifier.fillMaxSize()) {
         val strokeWidth = 1.dp.toPx()
         when (type) {
@@ -270,11 +270,14 @@ internal fun levelDeviationDegrees(rollDegrees: Float, deviceOrientation: Int): 
 fun LevelOverlay(modifier: Modifier = Modifier, rollDegrees: Float = 0f, deviceOrientation: Int = 0) {
     val deviation = levelDeviationDegrees(rollDegrees, deviceOrientation)
     val isLevel = abs(deviation) < 0.5f
-    val indicatorColor = if (isLevel) CameraColors.ManualActive else Color.White
+    val indicatorColor = if (isLevel) CameraColors.ManualActive else CameraColors.TextPrimary
     Canvas(modifier = modifier.fillMaxSize()) {
         val cy = size.height / 2f
         val halfSpan = size.width * 0.16f
         drawLine(
+            // One-off: the STATIC datum the moving indicator above is read against. It is a part of
+            // this gauge and is deliberately quieter than the live line it sits under, so it is not
+            // GuideLine (a composition rule the photographer frames to) and not ink.
             color = Color.White.copy(alpha = 0.4f),
             start = Offset(size.width / 2f - halfSpan, cy),
             end = Offset(size.width / 2f + halfSpan, cy),
@@ -366,7 +369,7 @@ fun RecordingIndicator(elapsedMs: Long, modifier: Modifier = Modifier) {
         }
         Text(
             text = timeLabel,
-            color = Color.White,
+            color = CameraColors.TextPrimary,
             style = MaterialTheme.typography.labelLarge,
         )
     }
@@ -507,7 +510,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
         verticalAlignment = Alignment.CenterVertically,
     ) {
         focalLabel?.let {
-            Text(it, color = Color.White, style = MaterialTheme.typography.labelMedium)
+            Text(it, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
         }
         state.activeMemorySlot?.let {
             Text(it.label, color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
@@ -533,7 +536,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                     "${videoResolutionLabel(state.videoResolution)} ${state.videoFrameRate.label}p " +
                         "${videoCodecLabelShort(state.videoCodec)} ${mbps}M"
                 }
-                Text(spec, color = Color.White, style = MaterialTheme.typography.labelMedium)
+                Text(spec, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
             }
             if (!compact || state.transfer != ColorTransfer.SDR) {
                 // The token, not a second blue: this tag used to be a raw 0xFF4C9AFF while the zoom
@@ -551,9 +554,10 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                 // was the ONE alpha-modulated tag here, and dimming is this app's vocabulary for
                 // UNAVAILABLE everywhere else (0.38 chrome glyphs, DISABLED_ROW_ALPHA, the 0.55 Fn
                 // tile). A tag that only exists while the assist is ON must not wear the disabled
-                // treatment. (The two other 0.55s in this file are the level scale and the grid lines —
-                // graphics over the image, not tags.)
-                Text("ASSIST", color = Color.White, style = MaterialTheme.typography.labelMedium)
+                // treatment. (The other 0.55s in this file are the frame lines and the grid — they
+                // are CameraColors.GuideLine now: graphics over the image, not tags. The old note
+                // here said "the level scale", which was never one of them; that gauge is 0.4.)
+                Text("ASSIST", color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
             }
             if (state.openGate) {
                 Text("4:3", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
@@ -575,7 +579,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
             if (!compact) {
                 Text(
                     photoFormatLabel(state.photoFormats),
-                    color = Color.White,
+                    color = CameraColors.TextPrimary,
                     style = MaterialTheme.typography.labelMedium,
                 )
             } else {
@@ -607,7 +611,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
         if (state.controls.meteringMode != MeteringMode.MATRIX) {
             Text(
                 if (state.controls.meteringMode == MeteringMode.SPOT) "SPOT" else "CENTER",
-                color = Color.White,
+                color = CameraColors.TextPrimary,
                 style = MaterialTheme.typography.labelMedium,
             )
         }
@@ -672,8 +676,16 @@ fun HistogramOverlay(data: HistogramData?, modifier: Modifier = Modifier) {
             .padding(6.dp),
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
+            // DRIFT, knowingly left: this plot frame and the waveform's (0.35f) are the same role —
+            // the border of a scope box, drawn on the same plate, stacked in the same column — spelled
+            // one hundredth apart. Unifying them is right, but BOTH spellings cannot survive it, so it
+            // moves rendered pixels on one of the two scopes and is a visual call, not a naming one.
+            // Whoever makes it: pick a number, change both lines, and look at the stack on device.
             drawRect(color = Color.White.copy(alpha = 0.3f), style = Stroke(width = 1.dp.toPx()))
             if (data != null) {
+                // The LUMA channel's own colour, sibling to the R/G/B literals below — white because
+                // luma is white, not because the HUD's ink is. It stays a literal for the same reason
+                // they do (see the OSD transfer-tag note): these name signal channels, not UI roles.
                 drawHistogramCurve(data.luma, Color.White.copy(alpha = 0.9f))
                 drawHistogramCurve(data.red, Color(0xFFFF5252).copy(alpha = 0.75f))
                 drawHistogramCurve(data.green, Color(0xFF4CD964).copy(alpha = 0.75f))
@@ -719,6 +731,8 @@ fun WaveformOverlay(data: WaveformData?, modifier: Modifier = Modifier) {
             .padding(6.dp),
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
+            // The histogram's identical plot frame is 0.3f — see the drift note at that site. Left
+            // as-is here for the same reason: closing it changes what one of the two scopes renders.
             drawRect(color = Color.White.copy(alpha = 0.35f), style = Stroke(width = 1.dp.toPx()))
             if (data != null && data.columns > 0 && data.rows > 0) {
                 drawWaveform(data)
@@ -797,7 +811,7 @@ fun TimerCountdown(seconds: Int, modifier: Modifier = Modifier, rotationDegrees:
     Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Text(
             text = seconds.toString(),
-            color = Color.White,
+            color = CameraColors.TextPrimary,
             // The line box and tracking must scale WITH the 120 sp override. Copying only fontSize
             // left the 57 sp role's own line box under a 120 sp glyph — roughly HALF the glyph's
             // size, so the digit is not centered in its measured box and Text's default Clip can eat

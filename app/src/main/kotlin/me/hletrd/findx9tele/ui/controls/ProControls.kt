@@ -162,8 +162,8 @@ internal fun pixelChipColors() = FilterChipDefaults.filterChipColors(
 )
 
 /**
- * The affordance edge shared by every settings [FilterChip]: 0.18 white unselected, none when
- * selected (the filled white container is its own edge).
+ * The affordance edge shared by every settings [FilterChip]: [CameraColors.AffordanceEdge]
+ * unselected, none when selected (the filled white container is its own edge).
  *
  * [enabled] must be passed the chip's OWN enablement, not left at `true`: a hard-coded `true` drew
  * the full-strength affordance edge around a chip that could not be tapped, while its label dimmed —
@@ -175,7 +175,7 @@ internal fun pixelChipColors() = FilterChipDefaults.filterChipColors(
 internal fun pixelChipBorder(selected: Boolean, enabled: Boolean = true) = FilterChipDefaults.filterChipBorder(
     enabled = enabled,
     selected = selected,
-    borderColor = Color.White.copy(alpha = 0.18f),
+    borderColor = CameraColors.AffordanceEdge,
     selectedBorderWidth = 0.dp,
 )
 
@@ -215,6 +215,11 @@ internal fun Modifier.trailingEdgeFadeScrollHint(scrollState: ScrollState): Modi
         drawContent()
         if (scrollState.canScrollForward) {
             drawRect(
+                // NOT a colour. `DstIn` keeps the destination weighted by the SOURCE ALPHA and
+                // discards the source's RGB entirely, so these two stops are an opacity ramp
+                // (1 -> 0) that happens to be written as colours. `Color.White` here means "alpha =
+                // 1, keep this pixel"; naming it an ink token would claim the fade paints white,
+                // which it never does — swap in any opaque colour and the render is identical.
                 brush = Brush.horizontalGradient(
                     0.90f to Color.White,
                     1f to Color.Transparent,
@@ -364,6 +369,10 @@ private fun CameraSlider(
     valueDescription: String,
 ) {
     val accent = if (enabled) CameraColors.ManualActive else CameraColors.TextSecondary
+    // Two one-off PAIRS, not four numbers: each is an enabled/disabled ramp for one part of this
+    // slider, and the pair is what carries the disabled state (the accent needle changes hue, the
+    // structure just recedes). A token would have to be either the enabled or the disabled half,
+    // which would split a pair that only means anything together.
     val trackColor = Color.White.copy(alpha = if (enabled) 0.16f else 0.08f)
     val tickColor = Color.White.copy(alpha = if (enabled) 0.35f else 0.15f)
     Canvas(
@@ -494,10 +503,17 @@ internal fun ToggleRow(
             enabled = enabled,
             modifier = Modifier.clearAndSetSemantics { },
             colors = SwitchDefaults.colors(
-                checkedThumbColor = Color.White,
+                // The knob is this app's foreground mark, not Material's on-surface concept: the
+                // scheme's own `onPrimary` is BLACK here, so a slot resolved from Material would
+                // have come out dark on the Accent track. It is TextPrimary for the same reason its
+                // unchecked sibling two lines down is TextSecondary — one knob, one palette.
+                checkedThumbColor = CameraColors.TextPrimary,
                 checkedTrackColor = CameraColors.Accent,
                 checkedBorderColor = Color.Transparent,
                 uncheckedThumbColor = CameraColors.TextSecondary,
+                // One-off: the OFF track, a component fill sized to sit under a TextSecondary knob.
+                // Close to Hairline (0.14) by coincidence only — that token is an EDGE on something
+                // inert, this is the filled body of a live control.
                 uncheckedTrackColor = Color.White.copy(alpha = 0.15f),
                 uncheckedBorderColor = Color.Transparent,
             ),

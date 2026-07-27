@@ -426,7 +426,7 @@ private fun CompactDialCloseButton(onClick: () -> Unit, modifier: Modifier = Mod
                 .size(32.dp)
                 .clip(RoundedCornerShape(50))
                 .background(HudPlate)
-                .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(50)),
+                .border(1.dp, CameraColors.AffordanceEdge, RoundedCornerShape(50)),
             contentAlignment = Alignment.Center,
         ) {
             Text("×", color = CameraColors.TextPrimary, style = hudGlyph(16.sp, FontWeight.Normal))
@@ -1223,6 +1223,10 @@ fun RulerSlider(
         contUnit = fraction.coerceIn(0f, 1f) * totalUnits
         localUnit = if (snap) contUnit.roundToInt().toFloat() else contUnit
     }
+    // One-off enabled/disabled PAIRS, like the settings slider's — and deliberately NOT the same
+    // numbers as it, despite the shared visual family: this ruler is drawn over the LIVE PREVIEW
+    // (hence the plate note below and the brighter 0.85 majors), the settings slider over an opaque
+    // sheet. Same shape, different backdrop, so the legibility budgets are not transferable.
     val minorColor = Color.White.copy(alpha = if (enabled) 0.28f else 0.12f)
     val majorColor = Color.White.copy(alpha = if (enabled) 0.85f else 0.3f)
     val indicatorColor = if (enabled) RULER_ACCENT else CameraColors.TextSecondary

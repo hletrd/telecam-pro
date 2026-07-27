@@ -241,6 +241,46 @@ class HudContrastTest {
         assertTrue("caption $secondary must not undercut the red's $record", secondary > record)
     }
 
+    @Test
+    fun `the ink token is exactly white, which is what makes naming a white site free`() {
+        // Seventeen `Color.White` draws (shutter/snapshot discs, the OSD's neutral tags, the REC
+        // timecode, the timer digit, the review playback glyphs, the Switch knob, the level gauge's
+        // off-level line) were renamed to TextPrimary on the strength of ONE fact: TextPrimary IS
+        // opaque #FFFFFF, so the rename could not move a pixel. Pin the fact rather than the renames.
+        // If someone warms the ink (#FFFEF8, say), those seventeen sites shift together and this
+        // fails first — which is the correct outcome, since a warm ink is a decision about glyphs.
+        assertEquals(0xFFFFFF, rgbOf(CameraColors.TextPrimary))
+        assertEquals(1f, CameraColors.TextPrimary.alpha, 0f)
+    }
+
+    @Test
+    fun `the white-derived structural tokens stay five distinct roles`() {
+        // AffordanceEdge (0.18) and GuideLine (0.55) were minted from repeated inline literals: four
+        // interactive borders and two composition guides. Two things must hold. First, each is
+        // EXACTLY the wash it replaced — otherwise the naming pass silently restyled six surfaces.
+        val white = androidx.compose.ui.graphics.Color.White
+        assertTrue(CameraColors.AffordanceEdge == white.copy(alpha = 0.18f))
+        assertTrue(CameraColors.GuideLine == white.copy(alpha = 0.55f))
+        // Second, the five white-derived tokens stay five NUMBERS. They are close enough to look like
+        // redundancy in a diff (0.04 / 0.09 / 0.14 / 0.18 / 0.55), and the temptation to collapse
+        // "nearly the same grey" is exactly how the Block and Hairline drifts happened in the first
+        // place. Each encodes a different role; a merge must delete a token, not quietly equalize it.
+        val alphas = listOf(
+            CameraColors.BlockDisabled.alpha,
+            CameraColors.Block.alpha,
+            CameraColors.Hairline.alpha,
+            CameraColors.AffordanceEdge.alpha,
+            CameraColors.GuideLine.alpha,
+        )
+        assertEquals("white-derived tokens collapsed: $alphas", alphas.size, alphas.toSet().size)
+        // And all five really are white washes, not tinted ones — a tinted "hairline" would drag a
+        // hue into edges that are supposed to be neutral over arbitrary live pixels.
+        listOf(
+            CameraColors.BlockDisabled, CameraColors.Block, CameraColors.Hairline,
+            CameraColors.AffordanceEdge, CameraColors.GuideLine,
+        ).forEach { assertEquals(0xFFFFFF, rgbOf(it)) }
+    }
+
     /** Source-over composite of an [alpha] plate of [plateRgb] onto an opaque white frame. */
     private fun compositeOverWhite(plateRgb: Int, alpha: Float): Int =
         compositeOn(plateRgb, alpha, 0xFFFFFF)

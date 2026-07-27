@@ -504,6 +504,11 @@ fun CameraScreen(
                             .align(AbsoluteAlignment.BottomLeft)
                             .absoluteOffset(x = rect.x.dp, y = (-rect.y).dp)
                             .size(rect.width.dp, rect.height.dp)
+                            // One-off structural stroke, not ink and not a composition guide: it
+                            // traces the GL scissor rect of a SECOND rendering of the camera frame,
+                            // so it must read against arbitrary live pixels on both of its sides.
+                            // Hence 0.85 rather than the 0.55 GuideLine the thirds/frame-line rules
+                            // use — those sit over ONE image and may recede; this one delimits two.
                             .border(1.dp, Color.White.copy(alpha = 0.85f))
                             .semantics {
                                 // Name only. The node declares no actions, so TalkBack already
@@ -1677,6 +1682,9 @@ private fun ZoomIndicator(
                 // over a bright one it keeps a real track to be a fraction OF. HudContrastTest pins
                 // both halves.
                 .background(HudPlate)
+                // One-off: the EMPTY half of a fill bar — a slab the Accent fill is measured as a
+                // fraction OF, not a stroke and not ink. HudContrastTest pins this exact 0.25
+                // against the plate, so the number is asserted where it is spelled.
                 .background(Color.White.copy(alpha = 0.25f)),
         ) {
             Box(
@@ -2001,6 +2009,11 @@ private fun ExposureMeter(
         Text(label, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
         Canvas(modifier = Modifier.width(22.dp).height(if (compact) 96.dp else 150.dp)) {
             val cx = size.width / 2f
+            // Three one-off alphas, one instrument: this is a hand-drawn EV scale whose parts are
+            // ranked against each other, not against anything else in the app. 0.34 spine (the axis
+            // you read positions along), 0.75 zero-EV datum, 0.42 for the remaining ticks. They are
+            // a local hierarchy — reusing a token for any one of them would tie an unrelated
+            // surface's future to this scale's legibility.
             drawLine(Color.White.copy(alpha = 0.34f), Offset(cx, 0f), Offset(cx, size.height), strokeWidth = 1.2.dp.toPx())
             for (i in -3..3) {
                 // +EV up: EV i sits at y = (3 - i)/6 of the track.
@@ -2082,7 +2095,7 @@ private fun FocalRail(
                                 if (presentation.selected) CameraColors.TextPrimary
                                 else HudPlate,
                             )
-                            .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
+                            .border(1.dp, CameraColors.AffordanceEdge, CircleShape)
                             .padding(horizontal = 12.dp, vertical = 6.dp),
                         contentAlignment = Alignment.Center,
                     ) {
@@ -2326,9 +2339,9 @@ private fun ShutterButton(
         // (alpha < 1 implies clip in Compose) — the overhang got sliced only while dimmed, reading
         // as a faceted ring on the video shutter (user-reported 2026-07-25).
         val ringStroke = 4.dp.toPx()
-        drawCircle(color = Color.White, radius = (size.minDimension - ringStroke) / 2f, style = Stroke(width = ringStroke))
+        drawCircle(color = CameraColors.TextPrimary, radius = (size.minDimension - ringStroke) / 2f, style = Stroke(width = ringStroke))
         when {
-            mode == CaptureMode.PHOTO -> drawCircle(color = Color.White, radius = size.minDimension * 0.38f)
+            mode == CaptureMode.PHOTO -> drawCircle(color = CameraColors.TextPrimary, radius = size.minDimension * 0.38f)
             mode == CaptureMode.VIDEO && !isRecording -> drawCircle(color = CameraColors.Record, radius = size.minDimension * 0.38f)
             else -> {
                 val rectSize = size.minDimension * 0.42f
@@ -2372,8 +2385,8 @@ private fun SnapshotButton(onClick: () -> Unit, enabled: Boolean, modifier: Modi
         contentAlignment = Alignment.Center,
     ) {
         Canvas(modifier = Modifier.size(36.dp)) {
-            drawCircle(color = Color.White, radius = size.minDimension / 2f, style = Stroke(width = 2.dp.toPx()))
-            drawCircle(color = Color.White, radius = size.minDimension * 0.32f)
+            drawCircle(color = CameraColors.TextPrimary, radius = size.minDimension / 2f, style = Stroke(width = 2.dp.toPx()))
+            drawCircle(color = CameraColors.TextPrimary, radius = size.minDimension * 0.32f)
         }
     }
 }

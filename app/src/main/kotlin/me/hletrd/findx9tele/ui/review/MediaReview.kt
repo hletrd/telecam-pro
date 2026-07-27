@@ -784,7 +784,7 @@ fun MediaReviewOverlay(
                         lineTo(size.width * 0.74f, size.height * 0.5f)
                         close()
                     }
-                    drawPath(tri, Color.White)
+                    drawPath(tri, CameraColors.TextPrimary)
                 }
             }
         } else {
@@ -1098,7 +1098,7 @@ private fun ReviewActionButton(
             // Shared scrim constant (DES4-4): the last review-screen surface still on a magic
             // alpha after the fc16e23 sweep — HudContrastTest pins this one with its siblings.
             .background(HudPlate)
-            .border(1.dp, Color.White.copy(alpha = 0.18f), CircleShape)
+            .border(1.dp, CameraColors.AffordanceEdge, CircleShape)
             .semantics {
                 contentDescription = actionLabel
                 stateDescription = stateLabel
@@ -1120,13 +1120,13 @@ private fun PlaybackGlyph(playing: Boolean) {
         if (playing) {
             val stroke = size.width * 0.16f
             drawLine(
-                color = Color.White,
+                color = CameraColors.TextPrimary,
                 start = Offset(size.width * 0.34f, size.height * 0.24f),
                 end = Offset(size.width * 0.34f, size.height * 0.76f),
                 strokeWidth = stroke,
             )
             drawLine(
-                color = Color.White,
+                color = CameraColors.TextPrimary,
                 start = Offset(size.width * 0.66f, size.height * 0.24f),
                 end = Offset(size.width * 0.66f, size.height * 0.76f),
                 strokeWidth = stroke,
@@ -1138,7 +1138,7 @@ private fun PlaybackGlyph(playing: Boolean) {
                 lineTo(size.width * 0.76f, size.height * 0.5f)
                 close()
             }
-            drawPath(triangle, Color.White)
+            drawPath(triangle, CameraColors.TextPrimary)
         }
     }
 }

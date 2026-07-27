@@ -17,6 +17,16 @@ import me.hletrd.findx9tele.R
  * Sony-style pro camera design tokens. Kept as plain constants (rather than only
  * [MaterialTheme.colorScheme] entries) so Canvas-drawn glyphs, overlays and chrome scrims can
  * reference them directly without threading the color scheme through every draw call.
+ *
+ * TWO of these names are byte-identical white and are still NOT interchangeable. [TextPrimary] is
+ * foreground INK — the thing the photographer reads or the mark the app draws. [Block],
+ * [BlockDisabled], [Hairline], [AffordanceEdge] and [GuideLine] derive from a bare `Color.White`
+ * BASE — a wash of N% white over whatever happens to be underneath, which is a structural fact
+ * about compositing, not a statement about foreground. A call site that means the first must spell
+ * [TextPrimary] even though `Color.White` renders the same pixel today; a call site that means the
+ * second keeps the base. That separation is the only thing that would let a future ink change (a
+ * warm white, say) land on the glyphs and leave the scrims alone, and it is why the remaining bare
+ * `Color.White` literals in `ui/` are each annotated with which of the two they are.
  */
 object CameraColors {
     /** True-black viewfinder background. */
@@ -100,13 +110,38 @@ object CameraColors {
     /** [Block] for a disabled block. The foreground carries the state too; this keeps the slab quieter. */
     val BlockDisabled = Color.White.copy(alpha = 0.04f)
     /**
+     * The ONE edge a small INTERACTIVE control draws around itself: the settings `FilterChip` (via
+     * `pixelChipBorder`), the compact dial's close pill, the FocalRail lens circle, and MediaReview's
+     * ReviewActionButton. Exactly the four sites [Hairline] already named in prose as the ones it
+     * must not swallow — they simply had no name of their own, so the number lived inline four times.
+     *
+     * Kept SEPARATE from [Hairline] rather than merged upward: Hairline edges something you cannot
+     * touch, this edges a touch target. Composited on [Pill] these four already measure only ~1.8:1,
+     * so 0.18 is a floor being held, not a knob — moving it toward the decorative edge would dim an
+     * affordance, which is a visual decision and not a cleanup.
+     */
+    val AffordanceEdge = Color.White.copy(alpha = 0.18f)
+    /**
+     * Composition guides drawn straight onto the live image with no plate beneath them: the
+     * FrameLinesOverlay delivery-aspect box and every GridOverlay rule (thirds / golden / square /
+     * center). Two consumers, one job — a reference the photographer composes against and then stops
+     * seeing — and they must move together or the finder shows two weights of guide at once.
+     *
+     * NOT the level gauge's static reference line (0.4), and NOT a scope's plot frame (0.3 for the
+     * histogram, 0.35 for the waveform — a real drift, see those two sites). Each of those is part of
+     * an instrument sitting on a HUD plate and carries its own number; folding any of them in here
+     * would move rendered pixels, which is not something a naming pass is allowed to do.
+     */
+    val GuideLine = Color.White.copy(alpha = 0.55f)
+    /**
      * The ONE hairline stroke for chip/tile/card/panel EDGES that carry no affordance of their own.
      * Five decorative borders drifted across 0.10-0.15 alpha, which reads as five slightly different
      * greys rather than one edge treatment.
      *
-     * NOT for interactive boundaries: the four 0.18 chip borders (the settings FilterChip via
+     * NOT for interactive boundaries: those four sites (the settings FilterChip via
      * `pixelChipBorder`, the dial close pill, the FocalRail circle, and MediaReview's
-     * ReviewActionButton) stay where they are — composited on Pill they already measure ~1.8:1, and
+     * ReviewActionButton) are [AffordanceEdge] now — a token of their own at 0.18, not this one at
+     * 0.14. They keep their own number because composited on Pill they already measure ~1.8:1, and
      * lowering an affordance edge is not a cleanup. (The Fn overlay's own Close carries no border.)
      */
     val Hairline = Color.White.copy(alpha = 0.14f)
