@@ -540,6 +540,32 @@ fun CameraScreen(
                     )
                 }
             }
+
+            // Camera-switch dip (ui/SwitchCoverPolicy.kt owns WHEN; this owns only how it looks).
+            // Drawn in COMPOSE, above the preview, never in GL: `drawFrame` early-returns when
+            // there is no texture update and no preview EGL surface, so a GL-side fade would
+            // freeze mid-animation at exactly the photo↔video EGLSurface recreate, would need its
+            // own redraw ticker, would have to be excluded from the encoder and analysis draws,
+            // and would add swaps while EGL ownership is being handed around. A Compose layer
+            // composites independently of the camera and cannot be starved by a dead producer.
+            // Scoped to the aspect box like the shutter blink, and emitted LAST inside it: during a
+            // reopen nothing image-derived is trustworthy, so the grid, frame lines, aspect mask,
+            // reticle and loupe-overview border — all composition guides for an image that is not
+            // there — go under it too. Everything that says WHICH state the user switched to lives
+            // OUTSIDE this box (OSD/status row, focal rail, TELE chip, mode carousel, shutter) and
+            // is emitted later still, so it stays fully readable across the dip. No pointerInput:
+            // the cover must not change what a tap during a switch does.
+            // Asymmetric timing: the fade-IN races the outgoing stream's death, while the fade-OUT
+            // also covers the gap between the terminal Ready commit and the first delivered frame
+            // of the new stream.
+            androidx.compose.animation.AnimatedVisibility(
+                visible = state.switchCoverVisible,
+                enter = fadeIn(tween(110)),
+                exit = fadeOut(tween(220)),
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                Box(modifier = Modifier.fillMaxSize().background(CameraColors.Background))
+            }
         }
         }
 

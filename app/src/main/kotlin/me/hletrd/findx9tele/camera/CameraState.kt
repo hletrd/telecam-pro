@@ -800,6 +800,11 @@ data class CameraUiState(
     // Live camera health: false while opening/reconfiguring/recovering (and after recovery gives
     // up). The shutter dims on it so a dead session never hides behind a ready-looking button.
     val cameraReady: Boolean = false,
+    // The camera-switch dip (ui/SwitchCoverPolicy.kt): true only while a REOPEN — one that actually
+    // changed the session generation — owes the viewfinder a frame, and only after that reopen has
+    // outlived the grace delay. Deliberately NOT derived from [cameraReady]: every optics door
+    // clears that bit, including the same-route fast path behind every photo lens preset.
+    val switchCoverVisible: Boolean = false,
     // True while the full-screen media-review overlay is up (also used to freeze its media URI).
     val reviewOpen: Boolean = false,
     // One Activity-facing gate for every full-screen modal (settings, Fn, review). Hardware shutter,

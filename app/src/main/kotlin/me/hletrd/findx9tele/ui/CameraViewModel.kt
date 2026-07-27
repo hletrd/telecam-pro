@@ -18,6 +18,7 @@ import me.hletrd.findx9tele.camera.BackOpticsRefusal
 import me.hletrd.findx9tele.camera.CameraCaps
 import me.hletrd.findx9tele.camera.CameraEngine
 import me.hletrd.findx9tele.camera.CameraFacing
+import me.hletrd.findx9tele.camera.CameraReadyPublication
 import me.hletrd.findx9tele.camera.CameraReadyPublicationGate
 import me.hletrd.findx9tele.camera.backOpticsDoorRefusal
 import me.hletrd.findx9tele.camera.CameraUiState
@@ -126,6 +127,57 @@ class CameraViewModel @JvmOverloads constructor(
             _state.update { it.copy(recordElapsedMs = SystemClock.elapsedRealtime() - recordStartMs) }
             mainHandler.postDelayed(this, 200)
         }
+    }
+
+    // ---- Camera-switch dip (ui/SwitchCoverPolicy.kt) ----
+    // Main-confined: Ready publications already post here, and the Not-Ready branch is posted below
+    // so both the fold and its two timers share one thread. [switchCoverSequence] repeats the gate's
+    // latest-wins rule locally — the two branches are delivered from DIFFERENT engine threads, so
+    // their arrival order on main is not the order they were minted in, and an inverted pair would
+    // otherwise raise a cover the newer publication had already released.
+    private var switchCover = SwitchCoverState()
+    private var switchCoverSequence = 0L
+    private var switchCoverDeadlineEpoch = 0L
+    private val switchCoverGraceRunnable = Runnable {
+        // The grace expired with the cover still owed: only now does black reach the screen.
+        if (switchCover.covered) _state.update { it.copy(switchCoverVisible = true) }
+    }
+    private val switchCoverDeadlineRunnable = Runnable {
+        applySwitchCover(switchCover.onReleaseDeadline(switchCoverDeadlineEpoch))
+    }
+
+    /**
+     * Installs a folded [SwitchCoverState] and re-arms its timers on the RISING edge only, so the
+     * repeated Not-Ready publications of one reopen cannot restart the fade or extend the deadline.
+     */
+    private fun applySwitchCover(next: SwitchCoverState) {
+        val raised = next.covered && !switchCover.covered
+        val released = !next.covered && switchCover.covered
+        switchCover = next
+        if (raised) {
+            switchCoverDeadlineEpoch = next.epoch
+            mainHandler.removeCallbacks(switchCoverGraceRunnable)
+            mainHandler.removeCallbacks(switchCoverDeadlineRunnable)
+            mainHandler.postDelayed(switchCoverGraceRunnable, SWITCH_COVER_GRACE_MS)
+            mainHandler.postDelayed(switchCoverDeadlineRunnable, SWITCH_COVER_RELEASE_DEADLINE_MS)
+        } else if (released) {
+            mainHandler.removeCallbacks(switchCoverGraceRunnable)
+            mainHandler.removeCallbacks(switchCoverDeadlineRunnable)
+            _state.update { if (it.switchCoverVisible) it.copy(switchCoverVisible = false) else it }
+        }
+    }
+
+    /** Folds one camera-health publication into the dip. Main thread only. */
+    private fun foldSwitchCover(publication: CameraReadyPublication) {
+        if (publication.sequence <= switchCoverSequence) return
+        switchCoverSequence = publication.sequence
+        applySwitchCover(
+            switchCover.onPublication(
+                ready = publication.ready,
+                sessionGeneration = publication.sessionGeneration,
+                opticsGeneration = publication.opticsGeneration,
+            ),
+        )
     }
 
     // Throttles engine.setControls() so rapid drags don't rebuild the repeating request per tick, but
@@ -472,6 +524,10 @@ class CameraViewModel @JvmOverloads constructor(
         // while the session is down instead of silently declining taps.
         engine.onCameraReadyChange = readyChange@{ publication ->
             if (!cameraReadyPublicationGate.observe(publication)) return@readyChange
+            // The switch dip is main-confined and folds BOTH branches; the gate above has already
+            // established latest-wins ordering, and foldSwitchCover repeats it against its own
+            // sequence because these posts originate on two different engine threads.
+            mainHandler.post { foldSwitchCover(publication) }
             if (!publication.ready) {
                 // False is immediately authoritative. Preserve requested formats during the
                 // transition, but clear accepted reader truth until a new owned Ready arrives.
@@ -534,6 +590,11 @@ class CameraViewModel @JvmOverloads constructor(
                 mode, lens, teleconverter, facing, controls, restoredPhotoExposureTimeNs, userPin, generation ->
             mainHandler.post {
                 if (!engine.isOpticsGenerationCurrent(generation)) return@post
+                // "Camera unchanged": the failed door never closed the outgoing session, so it is
+                // still streaming. Drop the dip now rather than blacking out live picture until the
+                // deadline — and remember this generation, because the rollback's OWN trailing
+                // Not-Ready (posted right behind this one, from the same thread) carries it.
+                applySwitchCover(switchCover.onOpticsRollback(generation))
                 cancelPendingControls()
                 cancelCountdown()
                 // The rollback restored a different optics scale: every in-flight glide value is an
