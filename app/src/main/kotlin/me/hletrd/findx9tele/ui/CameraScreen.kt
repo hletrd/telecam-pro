@@ -1034,7 +1034,10 @@ fun CameraScreen(
 // hoisted to a non-composable file so they stay host-testable apart from Compose emission.)
 
 /** Rotates content while reserving its exact animated axis-aligned bounds in layout. */
-private fun Modifier.rotateLayout(degrees: Float): Modifier = this
+// `internal`, not private, so a host Compose test can render the real status plate through the real
+// modifier: its geometry helpers are unit-tested on their own, but "the wide OSD plate still FITS
+// once rotated" is a property of the composed pair and was the actual risk in turning it on.
+internal fun Modifier.rotateLayout(degrees: Float): Modifier = this
     // This clip must wrap the custom layout. Putting it after layout() would clip against the
     // unrotated child's bounds instead of the constraint-valid rotated slot.
     .clipToBounds()
