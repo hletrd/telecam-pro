@@ -375,6 +375,63 @@ fun finderRect(
 }
 
 /**
+ * The sub-rect of the finder PIP that marks WHERE THE MAIN VIEW IS LOOKING — the iPhone-style
+ * framing hint drawn inside the overview.
+ *
+ * The finder draws the full delivered frame (`crop = 0`, `zoomComp = 1`), while the main view draws
+ * `(1 - crop) / zoomComp` of that same frame centred on the loupe point — so the hint is exactly
+ * that fraction of the finder box, positioned at the loupe centre. [visibleFraction] is that
+ * quotient, already computed by the caller from the values it passed to the main draw, so the hint
+ * cannot drift from the framing it claims to describe.
+ *
+ * [rotationDegrees] is the renderer's own texcoord rotation. Both draws apply it identically, so a
+ * texcoord point lands at the same relative place in both — but that place is ROTATED, and the
+ * finder is only ever reachable in tele, where the afocal correction is 180°. A centred loupe is
+ * therefore unaffected (180° maps 0.5 to 0.5) and only a tapped, off-centre loupe can expose a sign
+ * error here; the device check for this feature is to tap off-centre and confirm the hint follows
+ * the same corner the magnified view actually shows.
+ *
+ * The result is clamped INSIDE the finder box: at zoomComp < 1 (transient, mid-gesture zoom-out) the
+ * main view can genuinely be looking wider than the delivered frame, and a hint spilling past its
+ * own border would read as a drawing bug rather than as the honest "you are at the edge".
+ */
+fun loupeHintRect(
+    finder: FinderRect,
+    visibleFraction: Float,
+    centerTexX: Float,
+    centerTexY: Float,
+    rotationDegrees: Int,
+): FinderRect {
+    val f = visibleFraction.coerceIn(0.01f, 1f)
+    val cx = centerTexX.coerceIn(0f, 1f) - 0.5f
+    val cy = centerTexY.coerceIn(0f, 1f) - 0.5f
+    // Rotate the centre offset about the frame centre by the same texcoord rotation the draws use.
+    val (rx, ry) = when (((rotationDegrees % 360) + 360) % 360) {
+        90 -> -cy to cx
+        180 -> -cx to -cy
+        270 -> cy to -cx
+        else -> cx to cy
+    }
+    val w = finder.width * f
+    val h = finder.height * f
+    // BOTH axes take the rotated offset with the SAME sign. The y term looked like it needed an
+    // extra negation for FinderRect's bottom-left origin, and shipping it that way put the hint
+    // BELOW centre for a tap ABOVE centre — device-bisected 2026-07-27 by tapping the upper-left
+    // quadrant and measuring: x moved −39 px against −37.8 px predicted (correct), y moved +64.5 px
+    // against −62 predicted (inverted magnitude-correct). The loupe centre arrives already in the
+    // draw's own coordinate space, so the origin flip is one the caller has performed, not one this
+    // function owes.
+    val x = finder.x + (rx + 0.5f) * finder.width - w / 2f
+    val y = finder.y + (ry + 0.5f) * finder.height - h / 2f
+    return FinderRect(
+        x = x.coerceIn(finder.x, finder.x + finder.width - w),
+        y = y.coerceIn(finder.y, finder.y + finder.height - h),
+        width = w,
+        height = h,
+    )
+}
+
+/**
  * Whether a top-left-origin UI pointer lands inside the bottom-left-origin finder rectangle.
  * Keeping this beside [finderRect] prevents the non-interactive PIP hit block from drifting away
  * from the GL viewport and Compose border it protects.

@@ -10,6 +10,7 @@ import android.view.Surface
 import me.hletrd.findx9tele.camera.ColorTransfer
 import me.hletrd.findx9tele.camera.PUNCH_IN_CROP
 import me.hletrd.findx9tele.camera.finderRect
+import me.hletrd.findx9tele.camera.loupeHintRect
 import me.hletrd.findx9tele.camera.FocusDetailData
 import me.hletrd.findx9tele.camera.HistogramData
 import me.hletrd.findx9tele.camera.WaveformData
@@ -133,6 +134,8 @@ class GlPipeline {
     private var zebraThreshold = 0.95f
     private var falseColor = false
     private var tenBit = false
+    // Renderer texcoord rotation, mirrored for the loupe framing hint (see setRotationDegrees).
+    private var previewRotationDeg = 0
     private var punchIn = false
     // Movable focus loupe: texcoord point the punch-in zoom magnifies (0.5,0.5 = frame center), set
     // from the tapped point so the loupe follows an off-center subject. Preview-only.
@@ -432,7 +435,13 @@ class GlPipeline {
         renderer.setPreviewSize(cameraW, cameraH)
     }
 
-    fun setRotationDegrees(deg: Int) = post { renderer.setRotationDegrees(deg) }
+    fun setRotationDegrees(deg: Int) = post {
+        // Mirrored on this side too: the loupe framing hint has to rotate a texcoord point the same
+        // way the renderer rotates the image, and reading it back off the renderer would make the
+        // hint depend on that class's internals.
+        previewRotationDeg = ((deg % 360) + 360) % 360
+        renderer.setRotationDegrees(deg)
+    }
     fun setSensorOrientation(deg: Int) = post { renderer.setSensorOrientation(deg) }
 
     /**
@@ -912,6 +921,43 @@ class GlPipeline {
                                 // route forces off).
                                 mirrorX = false,
                             )
+                            // iPhone-style framing hint: a thin rectangle inside the overview
+                            // marking WHERE THE MAGNIFIED MAIN VIEW IS LOOKING. Drawn with
+                            // scissored clears rather than geometry — four 1-ish px edges need no
+                            // shader, no VBO and no texture unit, so the hint cannot perturb the
+                            // renderer state the main preview and the encoder share. Scissor is
+                            // already enabled and already restored by the finally below.
+                            //
+                            // The fraction is derived from the SAME values the main draw above
+                            // received, so the hint cannot claim a framing the view does not have.
+                            val hint = loupeHintRect(
+                                finder = rect,
+                                visibleFraction = (1f - previewCrop) /
+                                    (zoomTarget / halZoom.coerceAtLeast(0.01f)).coerceAtLeast(0.01f),
+                                centerTexX = loupeX,
+                                centerTexY = loupeY,
+                                rotationDegrees = previewRotationDeg,
+                            )
+                            val hx = hint.x.toInt()
+                            val hy = hint.y.toInt()
+                            val hw = hint.width.toInt().coerceAtLeast(1)
+                            val hh = hint.height.toInt().coerceAtLeast(1)
+                            val t = (minOf(fw, fh) / 90).coerceIn(1, 3)
+                            GLES20.glClearColor(1f, 1f, 1f, 1f)
+                            // Bottom, top, left, right. Each is clamped into the finder box so an
+                            // edge-clamped hint cannot paint over the border or the main preview.
+                            intArrayOf(0).let { _ ->
+                                val edges = arrayOf(
+                                    intArrayOf(hx, hy, hw, t),
+                                    intArrayOf(hx, hy + hh - t, hw, t),
+                                    intArrayOf(hx, hy, t, hh),
+                                    intArrayOf(hx + hw - t, hy, t, hh),
+                                )
+                                for (e in edges) {
+                                    GLES20.glScissor(e[0], e[1], e[2].coerceAtLeast(1), e[3].coerceAtLeast(1))
+                                    GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+                                }
+                            }
                         } finally {
                             GLES20.glDisable(GLES20.GL_SCISSOR_TEST)
                         }
