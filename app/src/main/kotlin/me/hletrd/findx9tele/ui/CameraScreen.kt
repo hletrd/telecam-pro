@@ -604,8 +604,9 @@ fun CameraScreen(
         }
 
         Row(
-            // NOT rotated: it's a wide top row, so a 90° spin about its center swings it off
-            // screen. It stays fixed (readable in portrait); only the compact scopes counter-rotate.
+            // The full-width CONTAINER stays fixed — spinning a fillMaxWidth row would swing a
+            // screen-wide box off screen no matter how the slot is reserved. Its children rotate
+            // individually below, each of which sizes to its own content.
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .statusBarsPadding()
@@ -617,12 +618,27 @@ fun CameraScreen(
             StatusBar(
                 state = state,
                 compact = !detailsVisible,
-                modifier = Modifier.weight(1f, fill = false),
+                // The status plate (STEADY/OIS+/MUTE/4:3, the focal readout, the lock tags) now
+                // counter-rotates with the phone like every other readout. It was left screen-fixed
+                // when the only tool was `Modifier.rotate`, a DRAW transform that leaves the
+                // unrotated box in layout — which is what "swings it off screen" meant. rotateLayout
+                // reserves the rotated axis-aligned bounds CLAMPED to the parent's constraints and
+                // measures the child along the axis its width actually runs after turning, which is
+                // what already let the two scopes rotate without colliding. The plate sizes to its
+                // content (`weight(fill = false)` + its own horizontalScroll), so it is not the
+                // screen-wide box the old comment warned about.
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .rotateLayout(overlayRotation),
             )
             // Battery/shots-remaining lives in the chrome row, not floating inside the image: on
             // the 4:3 layout the old in-preview TopEnd anchor left it hovering over the frame
             // (user-reported as visual clutter).
-            if (detailsVisible) StatusInfoPill(state = state)
+            // Same treatment for its row-mate: leaving battery/shots screen-fixed beside a rotating
+            // status plate would just move the inconsistency one element to the right.
+            if (detailsVisible) {
+                StatusInfoPill(state = state, modifier = Modifier.rotateLayout(overlayRotation))
+            }
         }
 
         // One measured top-center lane owns every transient/held readout. Its first slot keeps the
