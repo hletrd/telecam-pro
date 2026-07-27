@@ -470,6 +470,18 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   Changing magnification changes that ceiling, so both action handlers re-normalize the live zoom
   and reset `ZoomGlideState.pendingRatio` AND `easeTarget` — an in-flight ease target is an ABSOLUTE
   number in the OLD scale (same trap as a mode flip or lens preset).
+- **Saved-file EXIF labels come from the BUILD and from MEASURED focal length, never from literals
+  or camera ids (2026-07-28).** `camera/DeviceExifLabels.kt` owns `exifMake`/`exifModel`/
+  `deviceLabel`/`lensNameForEquiv`/`exifLensModel`, all pure and unit-tested. Before this, `TAG_MAKE`
+  /`TAG_MODEL` were the literals `"OPPO"`/`"OPPO Find X9 Ultra"` and the lens description keyed off
+  camera ids `"2"/"3"/"4"/"5"` with `else -> "tele"` — on any other handset that wrote a FALSE camera
+  model and a FALSE lens name into the user's files, and stamped one phone's marketing focal band
+  onto a shot taken elsewhere. `TAG_MODEL` is the model IDENTIFIER by definition (photo software
+  resolves the marketing name from it), so imitating the stock app's market name was wrong in
+  principle as well as off-device. Make/model are carried on `ExifShot` rather than read inside
+  `exifAttributeList`, because that formatter is covered by plain JVM tests with no Android
+  framework. A blank build field OMITS its tag instead of writing empty.
+
 - **Front (selfie) camera is a first-class optics door with BASIC scope (2026-07-22; mirror roles
   device-diagnosed 2026-07-23; capture-ROTATION sign device-bisected and verified 2026-07-25).**
   `CameraEngine.setFrontCamera` is a full generation-owned

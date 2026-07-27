@@ -4515,31 +4515,17 @@ class CameraEngine(private val context: Context) {
         val evStep = base?.evStep?.let {
             if (it.denominator == 0) 1f / 3f else it.numerator.toFloat() / it.denominator
         } ?: (1f / 3f)
-        val activeLensId = activeId ?: spec.selection?.let { it.physicalId ?: it.logicalId }
-        // The id map below names REAR lenses; a front shot must not fall into its "tele" default
-        // (the front id is enumerated, never assumed, so facing — not an id table — decides).
-        val lensName = when {
-            spec.frontFacing -> "front"
-            activeLensId == "3" -> "ultra-wide"
-            activeLensId == "2" -> "wide"
-            activeLensId == "4" -> "tele"
-            activeLensId == "5" -> "periscope tele"
-            else -> "tele"
-        }
-        // Marketing focal like the stock sample ("70mm", not the computed 69.4): the lens band's
-        // nominal equiv. f-stop truncated to one decimal (stock: "f/2.2" for the 2.26 aperture).
-        // The front has no rear marketing band — its own measured equiv is the honest value.
-        val marketingMm = when {
-            spec.frontFacing -> lensEquiv
-            activeLensId == "3" -> LensChoice.ULTRAWIDE.targetEquivMm
-            activeLensId == "2" -> LensChoice.MAIN.targetEquivMm
-            activeLensId == "4" -> LensChoice.TELE3X.targetEquivMm
-            activeLensId == "5" -> LensChoice.TELE10X.targetEquivMm
-            else -> lensEquiv
-        }
-        val fTrunc = kotlin.math.floor(lensF * 10f) / 10f
-        val modelLabel = "OPPO Find X9 Ultra $lensName camera " +
-            "${Math.round(marketingMm)}mm f/${"%.1f".format(java.util.Locale.US, fTrunc)}"
+        // Lens description derives from the MEASURED equivalent focal and the running build, never
+        // from a camera-id table or a hardcoded phone name (see camera/DeviceExifLabels.kt): the id
+        // map this replaced defaulted every unrecognised rear lens to "tele" and stamped one
+        // phone's marketing focal band onto whatever handset was actually shooting.
+        val modelLabel = exifLensModel(
+            manufacturer = android.os.Build.MANUFACTURER,
+            model = android.os.Build.MODEL,
+            equivMm = lensEquiv,
+            apertureF = lensF,
+            frontFacing = spec.frontFacing,
+        )
         return ExifShot(
             iso = result.get(android.hardware.camera2.CaptureResult.SENSOR_SENSITIVITY) ?: 0,
             expNs = result.get(android.hardware.camera2.CaptureResult.SENSOR_EXPOSURE_TIME) ?: 0L,
@@ -4561,6 +4547,8 @@ class CameraEngine(private val context: Context) {
             manualExposure = c.exposureMode == ExposureMode.MANUAL,
             manualWb = c.wbMode != WbMode.AUTO,
             lensModel = modelLabel,
+            deviceMake = exifMake(android.os.Build.MANUFACTURER),
+            deviceModel = exifModel(android.os.Build.MODEL),
             takenAtMs = spec.takenAtMs,
         )
     }

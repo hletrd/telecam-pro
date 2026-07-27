@@ -65,6 +65,14 @@ internal data class ExifShot(
     val manualExposure: Boolean,
     val manualWb: Boolean,
     val lensModel: String,
+    /**
+     * EXIF Make/Model straight from the running build (null when it reports nothing usable, in
+     * which case the tag is omitted rather than written empty). Carried on the shot instead of read
+     * inside [exifAttributeList] so that formatter stays a pure function of its input — it is
+     * covered by plain JVM tests with no Android framework.
+     */
+    val deviceMake: String?,
+    val deviceModel: String?,
     val takenAtMs: Long,
 )
 
@@ -455,7 +463,10 @@ internal fun exifAttributeList(shot: ExifShot): List<Pair<String, String>> = bui
     // Pixels are rotated upright before encode — the orientation tag must say NORMAL,
     // not the invalid 0 exifinterface leaves when the tag was never present.
     add(androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION to "1")
-    // The stock sample writes the MARKET name, not the ro.product.model code (PMA110).
-    add(androidx.exifinterface.media.ExifInterface.TAG_MAKE to "OPPO")
-    add(androidx.exifinterface.media.ExifInterface.TAG_MODEL to "OPPO Find X9 Ultra")
+    // From the running build, not a literal: these were "OPPO" / "OPPO Find X9 Ultra", which wrote a
+    // false camera model into every file taken on any other handset. TAG_MODEL is the model
+    // IDENTIFIER by definition — photo software resolves the marketing name from it — so imitating
+    // the stock app's market name here was both wrong off-device and wrong in principle.
+    shot.deviceMake?.let { add(androidx.exifinterface.media.ExifInterface.TAG_MAKE to it) }
+    shot.deviceModel?.let { add(androidx.exifinterface.media.ExifInterface.TAG_MODEL to it) }
 }

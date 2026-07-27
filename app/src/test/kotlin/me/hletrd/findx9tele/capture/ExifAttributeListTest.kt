@@ -56,7 +56,7 @@ class ExifAttributeListTest {
                 ExifInterface.TAG_OFFSET_TIME_ORIGINAL to "+09:00",
                 ExifInterface.TAG_ORIENTATION to "1",
                 ExifInterface.TAG_MAKE to "OPPO",
-                ExifInterface.TAG_MODEL to "OPPO Find X9 Ultra",
+                ExifInterface.TAG_MODEL to "PMA110",
             ),
             attributes,
         )
@@ -89,6 +89,16 @@ class ExifAttributeListTest {
         // The unconditional tags still stamp: a metadata-poor shot keeps make/model/orientation.
         assertEquals("1", attributes[ExifInterface.TAG_ORIENTATION])
         assertEquals("OPPO", attributes[ExifInterface.TAG_MAKE])
+        assertEquals("PMA110", attributes[ExifInterface.TAG_MODEL])
+    }
+
+    @Test
+    fun `a build that reports no make or model omits those tags instead of writing empty`() {
+        // Build.MANUFACTURER/MODEL are not guaranteed non-empty. An empty EXIF Make is worse than an
+        // absent one — readers show a blank camera rather than falling back to their own heuristics.
+        val attributes = exifAttributeList(fullShot().copy(deviceMake = null, deviceModel = null)).toMap()
+        assertNull("make", attributes[ExifInterface.TAG_MAKE])
+        assertNull("model", attributes[ExifInterface.TAG_MODEL])
     }
 
     @Test
@@ -166,6 +176,8 @@ class ExifAttributeListTest {
         manualExposure = true,
         manualWb = true,
         lensModel = "OPPO 70mm f/2.2",
+        deviceMake = "OPPO",
+        deviceModel = "PMA110",
         takenAtMs = 0L,
     )
 
