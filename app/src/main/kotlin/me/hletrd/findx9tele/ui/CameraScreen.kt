@@ -132,6 +132,8 @@ import me.hletrd.findx9tele.camera.MediaDeleteScope
 import me.hletrd.findx9tele.camera.ShutterTimer
 import me.hletrd.findx9tele.camera.controlAvailability
 import me.hletrd.findx9tele.camera.controlCapabilities
+import me.hletrd.findx9tele.camera.teleDisplayBase
+import me.hletrd.findx9tele.ui.controls.formatZoomMark
 import me.hletrd.findx9tele.ui.controls.CompactFnButton
 import me.hletrd.findx9tele.ui.controls.DialType
 import me.hletrd.findx9tele.ui.controls.ManualDialCluster
@@ -821,6 +823,7 @@ fun CameraScreen(
                         FocalRail(
                             state = state,
                             onLens = actions::onLens,
+                            onTeleZoomMark = actions::onTeleZoomMark,
                             glyphRotation = overlayRotation,
                             modifier = Modifier.fillMaxWidth(),
                         )
@@ -2039,11 +2042,23 @@ private fun ExposureMeter(
 // Bottom cluster: mode carousel + shutter row (the manual dial cluster lives in ManualDials.kt).
 // ---------------------------------------------------------------------------
 
-/** Direct iPhone/Sony-familiar focal presets; TELE remains a separate, labeled converter action. */
+/**
+ * Direct iPhone/Sony-familiar focal presets; TELE remains a separate, labeled converter action.
+ *
+ * The rail has TWO faces. Off the converter it picks a LENS. On it, the lens is pinned to the
+ * converter's host optic — every non-3× pick already EXITED converter shooting (`onLens` keeps TELE
+ * only for [LensChoice.TELE3X]), so those three chips were three ways to leave, and the TELE toggle
+ * in the top chrome remains the one deliberate exit. In their place the rail picks DIGITAL ZOOM, as
+ * total magnification (13×/30×/60× on the kit optic). Those numbers are read from the device's own
+ * lens information every recomposition ([teleZoomMarks] over the live `CONTROL_ZOOM_RATIO_RANGE`),
+ * never written as literals: a converter with a different magnification moves the base, and a lens
+ * with less digital headroom simply offers fewer marks.
+ */
 @Composable
 private fun FocalRail(
     state: CameraUiState,
     onLens: (LensChoice) -> Unit,
+    onTeleZoomMark: (Float) -> Unit,
     modifier: Modifier = Modifier,
     glyphRotation: Float = 0f,
 ) {
@@ -2052,68 +2067,117 @@ private fun FocalRail(
             modifier = Modifier.selectableGroup(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            LensChoice.entries.forEach { choice ->
-                val presentation = focalRailState(
-                    choice = choice,
-                    selectedLens = state.lens,
-                    teleconverter = state.teleconverterMode,
-                    cameraReady = state.cameraReady,
-                    recording = state.isRecording,
+            if (state.teleconverterMode) {
+                val range = state.caps?.zoomRatioRange
+                val marks = teleZoomMarks(
+                    range?.lower,
+                    range?.upper,
+                    state.teleconverterMagnification,
                 )
-                Box(
-                    modifier = Modifier
-                        .size(48.dp)
-                        .rotate(glyphRotation)
-                        .focusable()
-                        // Selection and activation must live on the same outer node. A separate
-                        // selected semantic followed by clickable exported selected=false from the
-                        // actionable AccessibilityNodeInfo on PMA110.
-                        .clearAndSetSemantics {
-                            contentDescription = "${choice.label} lens"
-                            stateDescription = presentation.stateDescription
-                            role = presentation.accessibilityRole
-                            selected = presentation.selected
-                            if (!presentation.enabled) disabled()
-                            onClick {
-                                if (!presentation.enabled) return@onClick false
-                                onLens(choice)
-                                true
-                            }
-                        }
-                        .selectable(
-                            selected = presentation.selected,
-                            enabled = presentation.enabled,
-                            role = presentation.accessibilityRole,
-                            onClick = { onLens(choice) },
+                // The rail speaks TOTAL magnification while the controls carry the LENS-LOCAL ratio,
+                // so the current framing crosses into the marks' scale exactly once, here.
+                val activeMark = selectedTeleZoomMark(
+                    marks,
+                    state.controls.zoomRatio * teleDisplayBase(state.teleconverterMagnification),
+                )
+                marks.forEach { mark ->
+                    // ONE value feeds the drawn text and the spoken name so they cannot drift, and
+                    // the spoken name says what the chip IS — a zoom mark is not a lens.
+                    val label = formatZoomMark(mark)
+                    RailChip(
+                        label = label,
+                        contentDescription = "$label zoom",
+                        presentation = teleZoomMarkState(
+                            selected = mark == activeMark,
+                            cameraReady = state.cameraReady,
+                            recording = state.isRecording,
                         ),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .background(
-                                if (presentation.selected) CameraColors.TextPrimary
-                                else HudPlate,
-                            )
-                            .border(1.dp, CameraColors.AffordanceEdge, CircleShape)
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = choice.label,
-                            color = if (presentation.selected) Color.Black else CameraColors.TextPrimary,
-                            // SemiBold(600) vs Medium(500): a weight step that actually RENDERS.
-                            // The old Bold/SemiBold pair resolved to one bundled face (600), so the
-                            // selection was carried by the filled pill alone (BACKLOG UI16).
-                            style = hudGlyph(
-                                12.sp,
-                                if (presentation.selected) FontWeight.SemiBold else FontWeight.Medium,
-                            ),
-                            modifier = Modifier.alpha(if (presentation.enabled) 1f else 0.38f),
-                        )
-                    }
+                        onClick = { onTeleZoomMark(mark) },
+                        glyphRotation = glyphRotation,
+                    )
+                }
+            } else {
+                LensChoice.entries.forEach { choice ->
+                    RailChip(
+                        label = choice.label,
+                        contentDescription = "${choice.label} lens",
+                        presentation = focalRailState(
+                            choice = choice,
+                            selectedLens = state.lens,
+                            teleconverter = state.teleconverterMode,
+                            cameraReady = state.cameraReady,
+                            recording = state.isRecording,
+                        ),
+                        onClick = { onLens(choice) },
+                        glyphRotation = glyphRotation,
+                    )
                 }
             }
+        }
+    }
+}
+
+/** One rail chip: identical box, semantics, and plate treatment for a lens pick and a zoom mark. */
+@Composable
+private fun RailChip(
+    label: String,
+    contentDescription: String,
+    presentation: FocalRailState,
+    onClick: () -> Unit,
+    glyphRotation: Float,
+) {
+    val description = contentDescription
+    Box(
+        modifier = Modifier
+            .size(48.dp)
+            .rotate(glyphRotation)
+            .focusable()
+            // Selection and activation must live on the same outer node. A separate
+            // selected semantic followed by clickable exported selected=false from the
+            // actionable AccessibilityNodeInfo on PMA110.
+            .clearAndSetSemantics {
+                this.contentDescription = description
+                stateDescription = presentation.stateDescription
+                role = presentation.accessibilityRole
+                selected = presentation.selected
+                if (!presentation.enabled) disabled()
+                onClick {
+                    if (!presentation.enabled) return@onClick false
+                    onClick()
+                    true
+                }
+            }
+            .selectable(
+                selected = presentation.selected,
+                enabled = presentation.enabled,
+                role = presentation.accessibilityRole,
+                onClick = onClick,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .clip(CircleShape)
+                .background(
+                    if (presentation.selected) CameraColors.TextPrimary
+                    else HudPlate,
+                )
+                .border(1.dp, CameraColors.AffordanceEdge, CircleShape)
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = label,
+                color = if (presentation.selected) Color.Black else CameraColors.TextPrimary,
+                // SemiBold(600) vs Medium(500): a weight step that actually RENDERS.
+                // The old Bold/SemiBold pair resolved to one bundled face (600), so the
+                // selection was carried by the filled pill alone (BACKLOG UI16).
+                style = hudGlyph(
+                    12.sp,
+                    if (presentation.selected) FontWeight.SemiBold else FontWeight.Medium,
+                ),
+                modifier = Modifier.alpha(if (presentation.enabled) 1f else 0.38f),
+            )
         }
     }
 }

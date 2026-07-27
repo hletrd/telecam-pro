@@ -79,6 +79,12 @@ interface CameraActions {
     fun onZoomRatio(ratio: Float)
     // Pinch-to-zoom on the viewfinder: [factor] is the incremental pinch scale (1.0 = no change).
     fun onPinchZoom(factor: Float)
+    /**
+     * A TELE focal-rail mark: [totalMagnification] is the converter-equivalent TOTAL the user tapped
+     * (13×/30×/60×-class), not a lens-local ratio. The converter's host lens stays put — this is a
+     * discrete digital-zoom pick, never a lens change.
+     */
+    fun onTeleZoomMark(totalMagnification: Float)
     fun onJpegQuality(quality: Int)
 
     // Modes

@@ -70,6 +70,7 @@ import me.hletrd.findx9tele.camera.detectPhone
 import me.hletrd.findx9tele.camera.effectiveMagnification
 import me.hletrd.findx9tele.camera.normalizeMagnification
 import me.hletrd.findx9tele.camera.reconcileConverter
+import me.hletrd.findx9tele.camera.teleDisplayBase
 import me.hletrd.findx9tele.camera.VideoCodec
 import me.hletrd.findx9tele.camera.VideoFrameRate
 import me.hletrd.findx9tele.camera.WbMode
@@ -1931,6 +1932,45 @@ class CameraViewModel @JvmOverloads constructor(
         clearTapFocusUi()
         markChanged(FnSlot.TELECONVERTER)
         saveSettingsIfEnabled()
+    }
+
+    /**
+     * One TELE rail mark. [totalMagnification] arrives in the rail's TOTAL-magnification scale, so it
+     * crosses back to the lens-local ratio here and clamps through the same [effectiveZoomBounds]
+     * seam the marks were derived from — a drawn mark therefore always lands exactly on itself.
+     *
+     * Deliberately NOT routed through [applyZoomRatio], for the same reason as
+     * [reconcileZoomToTeleconverterOptic]: that path is the pinch/dial coalescer and would open a
+     * zoom INTERACTION (fps boost + a full preview rebuild, ~180 ms of repeating-request stall) for
+     * what is one discrete pick. The engine fast path is the whole submit.
+     */
+    override fun onTeleZoomMark(totalMagnification: Float) {
+        val s = _state.value
+        if (!s.teleconverterMode) return
+        val range = s.caps?.zoomRatioRange
+        val bounds = effectiveZoomBounds(
+            range?.lower,
+            range?.upper,
+            teleconverter = true,
+            teleconverterMagnification = s.teleconverterMagnification,
+        ) ?: return
+        val base = teleDisplayBase(s.teleconverterMagnification)
+        if (!base.isFinite() || base <= 0f || !totalMagnification.isFinite()) return
+        val z = (totalMagnification / base).coerceIn(bounds.lower, bounds.upper)
+        // A discrete pick OWNS the framing: a coalesced pending ratio or a hardware-key glide still
+        // easing toward its own absolute target would otherwise drag the zoom straight back off the
+        // mark the user just tapped. (The scale itself is unchanged, so this is not a remap door —
+        // no route-scoped focus evidence to discard.)
+        zoomGlide.pendingRatio = Float.NaN
+        zoomGlide.easeTarget = null
+        if (z == s.controls.zoomRatio) return
+        engine.setZoomRatio(z)
+        _state.update { it.copy(controls = it.controls.copy(zoomRatio = z)) }
+        // A delayed full-controls packet captured the pre-pick ratio; refresh it so it cannot snap
+        // the framing back when it lands.
+        pendingControls = pendingControls?.copy(zoomRatio = z)
+        markChanged(FnSlot.ZOOM)
+        scheduleSettingsSave()
     }
 
     override fun onToggleFrontCamera() {

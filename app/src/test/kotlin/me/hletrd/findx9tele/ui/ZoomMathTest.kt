@@ -8,8 +8,10 @@ import me.hletrd.findx9tele.camera.TELECONVERTER_MAGNIFICATION
 import me.hletrd.findx9tele.camera.TELE_MAX_DISPLAY_ZOOM
 import me.hletrd.findx9tele.camera.normalizedForCaptureMode
 import me.hletrd.findx9tele.camera.teleDisplayBase
+import me.hletrd.findx9tele.ui.controls.formatZoomMark
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.Locale
@@ -470,5 +472,94 @@ class ZoomMathTest {
             zoomDisplayMultiplier(false, TELECONVERTER_MAGNIFICATION, LensChoice.TELE10X.targetEquivMm),
             0f,
         )
+    }
+
+    // ---------------------------------------------------------------------------
+    // TELE rail marks: the rail's TELE face is a digital-zoom picker whose numbers come from the
+    // device's own lens information, so these pin the DERIVATION, not a table of constants.
+    // ---------------------------------------------------------------------------
+
+    @Test
+    fun `kit optic on this device offers its native field, the round stops, and the ceiling`() {
+        // PMA110's standalone tele advertises 1-10x digital, which is more headroom than the 60x
+        // total cap needs — so the span is the converter's own 13x up to exactly 60x.
+        val marks = teleZoomMarks(1f, 10f, TELECONVERTER_MAGNIFICATION)
+        assertEquals(3, marks.size)
+        assertEquals(kitBase, marks[0], 0.001f)
+        assertEquals(30f, marks[1], 0.001f)
+        assertEquals(60f, marks[2], 0.01f)
+        assertEquals(listOf("13×", "30×", "60×"), marks.map { formatZoomMark(it) })
+    }
+
+    @Test
+    fun `a weaker converter moves the base without moving the round stops`() {
+        // The stops are TOTAL magnifications, so they stay 30/60 while the native field halves —
+        // and the weaker optic still reaches 60x because its local ceiling widens inversely.
+        val marks = teleZoomMarks(1f, 10f, 2f)
+        assertEquals(teleDisplayBase(2f), marks[0], 0.001f)
+        assertEquals(listOf("6.1×", "30×", "60×"), marks.map { formatZoomMark(it) })
+    }
+
+    @Test
+    fun `a lens that cannot reach a stop never draws it`() {
+        // 2x digital on the kit optic tops out at ~26x: 30x and 60x are unreachable, and a chip that
+        // cannot be activated is worse than a missing one.
+        val marks = teleZoomMarks(1f, 2f, TELECONVERTER_MAGNIFICATION)
+        assertEquals(2, marks.size)
+        assertEquals(kitBase, marks[0], 0.001f)
+        assertEquals(2f * kitBase, marks[1], 0.001f)
+        assertTrue(marks.none { it >= 30f })
+    }
+
+    @Test
+    fun `every mark is inside the bounds application clamps to, in ascending order`() {
+        // The floor follows the LENS, not the nominal base: a lens whose own zoom floor sits above
+        // 1.0 cannot be asked for the converter's native field, so the rail must not offer it.
+        listOf(
+            Triple(1f, 10f, TELECONVERTER_MAGNIFICATION),
+            Triple(1f, 2f, TELECONVERTER_MAGNIFICATION),
+            Triple(1.5f, 10f, TELECONVERTER_MAGNIFICATION),
+            Triple(1f, 10f, 2f),
+            Triple(1f, 4f, 1.5f),
+        ).forEach { (lower, upper, magnification) ->
+            val bounds = effectiveZoomBounds(lower, upper, true, magnification)!!
+            val base = teleDisplayBase(magnification)
+            val marks = teleZoomMarks(lower, upper, magnification)
+            assertTrue("$magnification: empty", marks.isNotEmpty())
+            assertEquals("$magnification: ascending", marks.sorted(), marks)
+            marks.forEach { mark ->
+                assertTrue("$magnification: $mark below floor", mark >= bounds.lower * base - 0.001f)
+                assertTrue("$magnification: $mark above ceiling", mark <= bounds.upper * base + 0.001f)
+            }
+            // Distinct enough to read as separate chips (a ceiling landing on a stop draws once).
+            marks.zipWithNext { a, b -> assertTrue("$magnification: $a and $b collide", b > a * 1.01f) }
+        }
+    }
+
+    @Test
+    fun `a lens pinned to one zoom degenerates to a single mark`() {
+        val marks = teleZoomMarks(1f, 1f, TELECONVERTER_MAGNIFICATION)
+        assertEquals(listOf("13×"), marks.map { formatZoomMark(it) })
+    }
+
+    @Test
+    fun `a tapped mark highlights itself after the round trip through the local scale`() {
+        val marks = teleZoomMarks(1f, 10f, TELECONVERTER_MAGNIFICATION)
+        marks.forEach { mark ->
+            // Exactly what activation does: total -> lens-local ratio -> back through the display
+            // base for the highlight. Float drift here must never de-select the tapped chip.
+            val local = mark / kitBase
+            assertEquals(mark, selectedTeleZoomMark(marks, local * kitBase))
+        }
+    }
+
+    @Test
+    fun `a free pinch between marks highlights none of them`() {
+        val marks = teleZoomMarks(1f, 10f, TELECONVERTER_MAGNIFICATION)
+        assertNull(selectedTeleZoomMark(marks, 22f))
+        // A value that deliberately escaped the 6% magnetic snap band reads as unselected rather
+        // than keeping the chip lit at a framing it no longer describes.
+        assertNull(selectedTeleZoomMark(marks, 30f * 1.05f))
+        assertNull(selectedTeleZoomMark(marks, Float.NaN))
     }
 }

@@ -85,6 +85,68 @@ internal fun effectiveZoomBounds(
 }
 
 /**
+ * The TOTAL-magnification marks the focal rail offers while the converter is on, ascending.
+ *
+ * While TELE is on the rail stops being a LENS picker and becomes a DIGITAL ZOOM picker: the lens is
+ * pinned to the converter's host optic, so the numbers are 13×/30×/60×-class totals rather than the
+ * 0.6/1/3/10 lens presets. They are DERIVED PER DEVICE, never literals:
+ *  - the floor is the converter's own native field ([teleDisplayBase] scaled by the lens's own zoom
+ *    floor, which is 1.0 on every route that reaches here — so ordinarily the base itself),
+ *  - [TELE_ZOOM_SNAPS] contributes the round intermediate stops that lie STRICTLY inside the span,
+ *    which is what keeps the rail's marks and the magnetic snapping the same set of numbers,
+ *  - the ceiling is whatever [effectiveZoomBounds] says this lens can actually reach — the SAME seam
+ *    application clamps through, so every drawn mark is reachable by construction.
+ *
+ * A snap outside that span is simply ABSENT: on a lens whose digital ceiling stops at ~26× there is
+ * no 60× chip, because a chip that cannot be activated is worse than a missing one. Values within
+ * [MARK_EPSILON_FRACTION] of one already collected are dropped, so a ceiling landing on a snap (the
+ * kit optic's 60×) draws once, and floor == ceiling degenerates to a single mark.
+ */
+internal fun teleZoomMarks(
+    capsLower: Float?,
+    capsUpper: Float?,
+    teleconverterMagnification: Float,
+): List<Float> {
+    val base = teleDisplayBase(teleconverterMagnification)
+    if (!base.isFinite() || base <= 0f) return emptyList()
+    val bounds = effectiveZoomBounds(capsLower, capsUpper, true, teleconverterMagnification)
+        ?: return emptyList()
+    val floor = bounds.lower * base
+    val ceiling = bounds.upper * base
+    if (!floor.isFinite() || !ceiling.isFinite()) return emptyList()
+    val marks = mutableListOf(floor)
+    // sorted() rather than trusting the constant's declaration order: the rail draws these left to
+    // right and must stay ascending no matter how the snap list is later edited.
+    TELE_ZOOM_SNAPS.sorted().forEach { snap ->
+        if (snap > floor && snap < ceiling) marks.addDistinctMark(snap)
+    }
+    marks.addDistinctMark(ceiling)
+    return marks
+}
+
+/** Appends [value] unless a collected mark is already within [MARK_EPSILON_FRACTION] of it. */
+private fun MutableList<Float>.addDistinctMark(value: Float) {
+    if (none { abs(it - value) <= max(it, value) * MARK_EPSILON_FRACTION }) add(value)
+}
+
+/**
+ * Which mark the rail highlights at [currentTotal] (total magnification, i.e. lens-local zoom ×
+ * [teleDisplayBase]), or null when the framing sits between marks.
+ *
+ * A free pinch lands anywhere in the range, and a filled chip claims the framing IS that mark — so
+ * "nearest" alone would light 30× at 24×. The tolerance is deliberately far INSIDE the magnetic snap
+ * band (`SNAP_FRACTION`, 6%): a value that deliberately escaped a snap in small increments must read
+ * as unselected, while the float round-trip through the local scale (~1e-6 relative) can never
+ * de-select a mark the user just tapped.
+ */
+internal fun selectedTeleZoomMark(marks: List<Float>, currentTotal: Float): Float? {
+    if (!currentTotal.isFinite()) return null
+    return marks
+        .filter { abs(it - currentTotal) <= it * MARK_SELECTION_FRACTION }
+        .minByOrNull { abs(it - currentTotal) }
+}
+
+/**
  * Applies TELE's magnetic marks with hysteresis. Entering or crossing a mark snaps once; a value
  * already at/inside that snap band can move away in small increments instead of being trapped.
  */
@@ -321,6 +383,8 @@ internal fun restoredOptics(
 
 private const val SNAP_FRACTION = 0.06f
 private const val SNAP_EPSILON = 0.001f
+private const val MARK_EPSILON_FRACTION = 0.01f
+private const val MARK_SELECTION_FRACTION = 0.02f
 private const val EASE_EXPONENT = 0.4
 private const val EASE_LANDING_LOG = 0.004
 private const val MIN_PHOTO_ZOOM = 0.6f

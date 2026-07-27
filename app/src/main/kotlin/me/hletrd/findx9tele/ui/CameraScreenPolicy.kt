@@ -543,18 +543,51 @@ internal fun focalRailState(
     recording: Boolean,
 ): FocalRailState {
     val selected = choice == selectedLens
-    val enabled = cameraReady && !recording
-    val description = when {
-        recording -> "Unavailable while recording"
-        !cameraReady -> "Camera reconfiguring"
-        selected && teleconverter && choice == LensChoice.TELE3X -> "Selected; teleconverter on"
-        selected -> "Selected"
-        else -> "Not selected"
-    }
     // These presets are one mutually exclusive value, not pages of content. RadioButton lets
     // TalkBack announce that relationship truthfully; Android exports the active preset through
     // AccessibilityNodeInfo.isChecked rather than mislabelling each focal length as a tab.
-    return FocalRailState(selected, enabled, description, Role.RadioButton)
+    return FocalRailState(
+        selected = selected,
+        enabled = cameraReady && !recording,
+        stateDescription = railChipStateDescription(
+            selected = selected,
+            cameraReady = cameraReady,
+            recording = recording,
+            selectedDetail = "Selected; teleconverter on"
+                .takeIf { teleconverter && choice == LensChoice.TELE3X },
+        ),
+        accessibilityRole = Role.RadioButton,
+    )
+}
+
+/**
+ * One chip of the rail's TELE face, where the marks are total-magnification zoom picks rather than
+ * lenses. Same availability rules and same wording as [focalRailState] (both read through
+ * [railChipStateDescription], so the two faces of one rail cannot drift apart) and the same
+ * RadioButton relationship — a free pinch can leave every mark unselected, and a radio group with no
+ * selection announces exactly that truthfully.
+ */
+internal fun teleZoomMarkState(
+    selected: Boolean,
+    cameraReady: Boolean,
+    recording: Boolean,
+): FocalRailState = FocalRailState(
+    selected = selected,
+    enabled = cameraReady && !recording,
+    stateDescription = railChipStateDescription(selected, cameraReady, recording),
+    accessibilityRole = Role.RadioButton,
+)
+
+private fun railChipStateDescription(
+    selected: Boolean,
+    cameraReady: Boolean,
+    recording: Boolean,
+    selectedDetail: String? = null,
+): String = when {
+    recording -> "Unavailable while recording"
+    !cameraReady -> "Camera reconfiguring"
+    selected -> selectedDetail ?: "Selected"
+    else -> "Not selected"
 }
 
 internal data class ModeCarouselState(
