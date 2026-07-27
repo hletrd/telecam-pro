@@ -57,6 +57,7 @@ import me.hletrd.findx9tele.camera.normalizeFnSlots
 import me.hletrd.findx9tele.camera.normalizedFor
 import me.hletrd.findx9tele.camera.normalizedForCaptureMode
 import me.hletrd.findx9tele.camera.pendingControlsForTransition
+import me.hletrd.findx9tele.camera.seedExposureForRouteChange
 import me.hletrd.findx9tele.camera.exposureUpperBoundForCaptureMode
 import me.hletrd.findx9tele.camera.withDefaultIfEmpty
 import me.hletrd.findx9tele.camera.ProcessingLevel
@@ -2116,8 +2117,19 @@ class CameraViewModel @JvmOverloads constructor(
     private fun reconcileZoomToCaps(caps: CameraCaps) {
         val current = _state.value
         val range = caps.zoomRatioRange
-        val normalizedControls = normalizeControlsForRoute(
+        // Carry the outgoing lens's exposure across the aperture change before normalizing, exactly
+        // as the engine already did at its own caps-install seam (same pure seed, same inputs — the
+        // engine's `controls` and this state are the same packet, so the two agree and this cannot
+        // undo the engine's seed). Doing it here as well is what keeps the OSD honest AND stops the
+        // re-normalization below from pushing the stale pre-switch exposure back down.
+        val seededControls = seedExposureForRouteChange(
             requested = current.controls,
+            outgoing = current.caps,
+            incoming = caps,
+            mode = current.mode,
+        )
+        val normalizedControls = normalizeControlsForRoute(
+            requested = seededControls,
             capabilities = caps.controlCapabilities(),
             mode = current.mode,
             teleconverter = current.teleconverterMode,
@@ -2138,7 +2150,14 @@ class CameraViewModel @JvmOverloads constructor(
         }
         pendingControls = pendingControls?.let { pending ->
             normalizeControlsForRoute(
-                requested = pending,
+                // A throttled apply captured before the switch carries the OLD lens's exposure; it
+                // lands after this reconcile and would otherwise walk the seed straight back.
+                requested = seedExposureForRouteChange(
+                    requested = pending,
+                    outgoing = current.caps,
+                    incoming = caps,
+                    mode = current.mode,
+                ),
                 capabilities = caps.controlCapabilities(),
                 mode = current.mode,
                 teleconverter = current.teleconverterMode,

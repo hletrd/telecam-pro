@@ -229,12 +229,24 @@ class CameraEngine(private val context: Context) {
         onCameraReadyChange?.invoke(publication)
     }
 
-    private fun reconcileControlsWithCaps(cameraCaps: CameraCaps) {
+    /**
+     * [outgoingCaps] are the caps of the route that was streaming until this call (null on cold
+     * start). They exist only so the exposure can be carried across the aperture change BEFORE the
+     * new route's first repeating request is built — seeding after the open would spend a whole
+     * ~180 ms rebuild, and one visibly mis-exposed batch of frames, undoing itself.
+     */
+    private fun reconcileControlsWithCaps(cameraCaps: CameraCaps, outgoingCaps: CameraCaps?) {
+        val mode = if (videoMode) CaptureMode.VIDEO else CaptureMode.PHOTO
         val range = cameraCaps.zoomRatioRange
         controls = normalizeControlsForRoute(
-            requested = controls,
+            requested = seedExposureForRouteChange(
+                requested = controls,
+                outgoing = outgoingCaps,
+                incoming = cameraCaps,
+                mode = mode,
+            ),
             capabilities = cameraCaps.controlCapabilities(),
-            mode = if (videoMode) CaptureMode.VIDEO else CaptureMode.PHOTO,
+            mode = mode,
             teleconverter = teleconverterMode,
             teleconverterMagnification = teleconverterMagnification,
             capsLower = range?.lower,
@@ -2494,9 +2506,12 @@ class CameraEngine(private val context: Context) {
                     readyController = null
                     acceptedCameraSession = null
                     val sessionGeneration = cameraSessionGeneration.incrementAndGet()
+                    // Read the OUTGOING caps before the field is overwritten: the exposure transfer
+                    // needs the f-number of the lens that was actually streaming.
+                    val outgoingCaps = caps
                     selection = sel
                     caps = c
-                    reconcileControlsWithCaps(c)
+                    reconcileControlsWithCaps(c, outgoingCaps)
                     videoSize = chooseVideoSize(sel)
                     previewStreamSize = choosePreviewStreamSize(sel)
                     nextCameraReadyPublication(

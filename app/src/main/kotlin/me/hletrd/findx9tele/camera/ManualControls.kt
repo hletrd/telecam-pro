@@ -713,6 +713,84 @@ internal fun manualAeAdmitted(c: ManualControls, caps: CameraCaps): Boolean =
     manualAeAdmitted(c, caps.controlCapabilities())
 
 /**
+ * Carries [requested]'s exposure across a route change at constant exposure value, so the app-side
+ * AE loop starts the new lens near the answer instead of re-converging from whatever the old lens
+ * left behind. Returns [requested] unchanged whenever no transfer is possible or allowed.
+ *
+ * Callers pass their own OUTGOING caps ([outgoing] null on cold start — nothing ran yet, nothing to
+ * carry). Both the engine's caps-install seam and the ViewModel's `onCapsReady` seam call this with
+ * the same inputs, so they compute the same seed and neither can undo the other; once caps have
+ * been delivered, a repeat delivery of the same route is an exact identity.
+ *
+ * Skipped, deliberately, when either side is NOT app-side ([manualAeAdmitted] false):
+ *  - video PROGRAM and flash-metered PROGRAM ride the HAL AE, which does its own metering. A seed
+ *    on the incoming side would be overwritten by the HAL's first converged result at best, and
+ *    fight it at worst.
+ *  - a route without manual-sensor support has no ISO/exposure keys to seed.
+ * MANUAL is refused one level down, in [AutoExposure.seedCarrier]: those values are the user's.
+ *
+ * The exposure ceiling is the SAME mode-aware bound the loop uses ([exposureUpperBoundForCaptureMode]
+ * pins video to 1/fps), so a seed can never land somewhere the next tick has to walk straight back.
+ *
+ * SCOPE, honestly: this fires on route CHANGES — the TC toggle, a video lens preset, the front
+ * door, a mode flip. Photo zoom across 0.6–20× does not reopen anything (the logical multicamera
+ * crosses lenses HAL-internally), so no seed runs there and none is wanted: that route advertises
+ * one f-number for the whole span, and the HAL owns its own exposure continuity across the
+ * crossing. The transfer is also only ever a PRIOR — different lenses frame different scenes, so
+ * the loop still converges; it just no longer starts up to ~2.3 stops off (PMA110's rear glass
+ * spans f/1.58 to f/3.50).
+ */
+internal fun seedExposureForRouteChange(
+    requested: ManualControls,
+    outgoing: CameraControlCapabilities?,
+    outgoingApertureF: Float,
+    incoming: CameraControlCapabilities,
+    incomingApertureF: Float,
+    mode: CaptureMode,
+): ManualControls {
+    val out = outgoing ?: return requested
+    if (!manualAeAdmitted(requested, out) || !manualAeAdmitted(requested, incoming)) return requested
+    val isoMin = incoming.isoMin ?: return requested
+    val isoMax = incoming.isoMax ?: return requested
+    val expMinNs = incoming.exposureTimeMinNs ?: return requested
+    val expMaxNs = incoming.exposureTimeMaxNs ?: return requested
+    val seeded = AutoExposure.seedForApertureChange(
+        exposureMode = requested.exposureMode,
+        angleDerivedShutter = requested.shutterMode == ShutterMode.ANGLE,
+        iso = requested.iso,
+        // The EFFECTIVE exposure is what the old lens actually ran, which is what transfers.
+        exposureTimeNs = requested.effectiveExposureNs(),
+        outgoingApertureF = outgoingApertureF,
+        incomingApertureF = incomingApertureF,
+        isoMin = isoMin,
+        isoMax = isoMax,
+        expMinNs = expMinNs,
+        expMaxNs = exposureUpperBoundForCaptureMode(mode, requested.fps, expMaxNs),
+    ) ?: return requested
+    // Write back ONLY the axis the transfer moved; the echoed one may be a derived or user value.
+    return when (seeded.carrier) {
+        ExposureSeedCarrier.EXPOSURE_TIME -> requested.copy(exposureTimeNs = seeded.exposureTimeNs)
+        ExposureSeedCarrier.ISO -> requested.copy(iso = seeded.iso)
+    }
+}
+
+// The Range-typed twin, same one-admission-two-spellings rule manualAeAdmitted follows. A null
+// outgoing route (cold start) carries a 0f f-number that the pure core refuses anyway.
+internal fun seedExposureForRouteChange(
+    requested: ManualControls,
+    outgoing: CameraCaps?,
+    incoming: CameraCaps,
+    mode: CaptureMode,
+): ManualControls = seedExposureForRouteChange(
+    requested = requested,
+    outgoing = outgoing?.controlCapabilities(),
+    outgoingApertureF = outgoing?.lensApertureF ?: 0f,
+    incoming = incoming.controlCapabilities(),
+    incomingApertureF = incoming.lensApertureF,
+    mode = mode,
+)
+
+/**
  * Whether flipping the smooth-preview boost can change ANY key this request build emits.
  *
  * The boost's entire wire effect is `pinAutoFps = pinAutoFps || smoothPreviewBoost`, and the only

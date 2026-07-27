@@ -150,6 +150,131 @@ object AutoExposure {
         return newIso to newNs
     }
 
+    /**
+     * The exposure factor that preserves the exposure value across an aperture change, i.e. the
+     * number the incoming route's exposure (or ISO) must be multiplied by so the same scene lands
+     * at the same brightness: `(N_in / N_out)²`.
+     *
+     * Scene luminance is the invariant across a lens switch — the light in the room does not change
+     * when the HAL routes to different glass — so holding EV is the physically right transfer:
+     * `N_out² / (t_out · S_out) == N_in² / (t_in · S_in)`.
+     *
+     * Null when either f-number is missing, non-positive, or non-finite: a route that does not
+     * report `LENS_INFO_AVAILABLE_APERTURES` gives no basis for a transfer, and inventing one
+     * would seed a wrong exposure where today's cold start at least starts from a known value.
+     */
+    internal fun apertureTransferFactor(outgoingApertureF: Float, incomingApertureF: Float): Double? {
+        if (!outgoingApertureF.isFinite() || outgoingApertureF <= 0f) return null
+        if (!incomingApertureF.isFinite() || incomingApertureF <= 0f) return null
+        val ratio = incomingApertureF.toDouble() / outgoingApertureF.toDouble()
+        return ratio * ratio
+    }
+
+    /**
+     * Which sensor axis an aperture transfer may move on [exposureMode] — always the one the
+     * app-side loop already owns, never one the photographer set. A lens switch that silently
+     * rewrote a dialled-in shutter or ISO would be a worse bug than the swing it fixes.
+     *
+     * [angleDerivedShutter] is [ShutterMode.ANGLE], where [ManualControls.effectiveExposureNs]
+     * computes the exposure from the cine angle and fps and IGNORES `exposureTimeNs`. Writing that
+     * field there changes nothing on the wire, so time is not a usable carrier: PROGRAM (which owns
+     * both axes) falls back to ISO, and ISO-priority (where ISO is the user's) has no carrier left.
+     */
+    internal fun seedCarrier(
+        exposureMode: ExposureMode,
+        angleDerivedShutter: Boolean,
+    ): ExposureSeedCarrier? = when (exposureMode) {
+        // MANUAL is user-owned on BOTH axes — the same contract as swapping glass on a real body.
+        ExposureMode.MANUAL -> null
+        // SHUTTER priority: the user fixed the time, the loop drives ISO.
+        ExposureMode.SHUTTER -> ExposureSeedCarrier.ISO
+        // ISO priority: the user fixed ISO, the loop drives the time.
+        ExposureMode.ISO -> if (angleDerivedShutter) null else ExposureSeedCarrier.EXPOSURE_TIME
+        // PROGRAM: the loop owns both. Prefer TIME and hold ISO — the simplest, most predictable
+        // rule, and the one the request framed. It is also the one with headroom on this device:
+        // the ISO ceiling is a couple of stops away in the dark, while the exposure range runs to
+        // the 4 s HAL-safe ceiling, so a +2.3-stop transfer (f/1.58 main → f/3.5 10×) fits in time
+        // and would clamp in ISO. [driveProgram] then re-centres the shutter toward the handheld
+        // rule over the next ticks, counter-moving ISO brightness-neutrally, so the redistribution
+        // is invisible — only the total brightness had to be right at the switch, and it is.
+        ExposureMode.PROGRAM ->
+            if (angleDerivedShutter) ExposureSeedCarrier.ISO else ExposureSeedCarrier.EXPOSURE_TIME
+    }
+
+    /**
+     * The exposure to START the incoming route's app-side loop from, carried across a lens change
+     * at constant exposure value.
+     *
+     * This is a PRIOR, not an answer. Different lenses see different fields, so the metered scene
+     * genuinely differs — a 0.6× ultrawide and a 10× tele can want different exposures for the same
+     * room, and the loop still has to converge. What the transfer removes is the part of the error
+     * that is pure optics: on this device the rear f-numbers span f/1.58 to f/3.50, so an
+     * unseeded switch starts up to ~2.3 stops off and visibly swings bright or dark before
+     * settling. Seeded, it starts within the framing difference.
+     *
+     * Returns null when no transfer is possible — an unusable f-number on either side, or an
+     * exposure mode with no loop-owned axis to move (see [seedCarrier]) — so the caller leaves the
+     * exposure exactly as it is today rather than seeding a wrong value. Degenerate current values
+     * (non-positive ISO or exposure) are refused for the same reason.
+     *
+     * The result is clamped into the INCOMING route's advertised ranges; a transfer that would run
+     * past them lands on the bound and the loop finishes the remainder. It deliberately does NOT
+     * spill the clamped remainder onto the other axis: in the priority modes that axis is the
+     * user's, and in PROGRAM the loop redistributes anyway. An inverted/degenerate advertised range
+     * clamps nothing (mirrors [clampExposureNs]) rather than throwing out of `coerceIn`.
+     */
+    internal fun seedForApertureChange(
+        exposureMode: ExposureMode,
+        angleDerivedShutter: Boolean,
+        iso: Int,
+        exposureTimeNs: Long,
+        outgoingApertureF: Float,
+        incomingApertureF: Float,
+        isoMin: Int,
+        isoMax: Int,
+        expMinNs: Long,
+        expMaxNs: Long,
+    ): SeededExposure? {
+        val carrier = seedCarrier(exposureMode, angleDerivedShutter) ?: return null
+        val transfer = apertureTransferFactor(outgoingApertureF, incomingApertureF) ?: return null
+        if (iso <= 0 || exposureTimeNs <= 0L) return null
+        return when (carrier) {
+            // roundToLong/roundToInt saturate at the type bound for an out-of-range Double, so a
+            // pathological f-number pair overflows into the clamp instead of wrapping negative.
+            ExposureSeedCarrier.EXPOSURE_TIME -> SeededExposure(
+                carrier = carrier,
+                iso = iso,
+                exposureTimeNs = clampInRange((exposureTimeNs * transfer).roundToLong(), expMinNs, expMaxNs),
+            )
+            ExposureSeedCarrier.ISO -> SeededExposure(
+                carrier = carrier,
+                iso = clampInRange((iso * transfer).roundToInt(), isoMin, isoMax),
+                exposureTimeNs = exposureTimeNs,
+            )
+        }
+    }
+
+    private fun clampInRange(value: Long, min: Long, max: Long): Long =
+        if (min <= max) value.coerceIn(min, max) else value
+
+    private fun clampInRange(value: Int, min: Int, max: Int): Int =
+        if (min <= max) value.coerceIn(min, max) else value
+
     private fun pow2(x: Float): Double = Math.pow(2.0, x.toDouble())
     private fun log2(x: Float): Float = (ln(x.toDouble()) / ln(2.0)).toFloat()
 }
+
+/** Which sensor axis an exposure transfer may move — the one the app-side AE loop owns. */
+internal enum class ExposureSeedCarrier { EXPOSURE_TIME, ISO }
+
+/**
+ * The sensor pair to start the incoming route from, plus which axis the transfer actually moved.
+ * The carrier is part of the result so callers write back only the moved field: the untouched one
+ * is echoed for convenience and must not overwrite a user-owned value (in ANGLE shutter mode the
+ * echoed `exposureTimeNs` is the angle-derived exposure, not the stored field).
+ */
+internal data class SeededExposure(
+    val carrier: ExposureSeedCarrier,
+    val iso: Int,
+    val exposureTimeNs: Long,
+)
