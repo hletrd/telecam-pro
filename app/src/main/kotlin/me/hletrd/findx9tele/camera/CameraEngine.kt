@@ -2712,7 +2712,18 @@ class CameraEngine(private val context: Context) {
         // fast-path tick (throttle stamp below): GL zoomComp covers instantly and the HAL follows
         // at the next ≥200 ms window. The GL compensation converges to 1 as matching results land.
         lastHalZoomSubmitMs = android.os.SystemClock.uptimeMillis()
-        controller?.setSmoothPreviewBoost(active, finalZoom = controls.zoomRatio)
+        // The STARTING edge carries the wide aim. Mid-gesture submits are suppressed entirely now
+        // (resolveHalZoomSubmit), so this is the only submit that can pre-buy the zoom-out margin
+        // the GL crop lives on for the rest of the gesture; the ENDING edge lands exact.
+        // `finalZoom` stays the exact ratio either way — it is the still-request truth.
+        val exact = controls.zoomRatio
+        val wideAim = if (active) {
+            val r = caps?.zoomRatioRange
+            clampToOrderedBounds(exact / ZOOM_GESTURE_MARGIN, r?.lower, r?.upper)
+        } else {
+            null
+        }
+        controller?.setSmoothPreviewBoost(active, finalZoom = exact, halZoom = wideAim)
         // (The low-light frame-rate help lives in applyExposure's ALWAYS-on preview exposure cap —
         // an earlier gesture-scoped trade here mutated the real program values, so a still captured
         // right after a zoom inherited the traded short-exposure/high-ISO pair.)

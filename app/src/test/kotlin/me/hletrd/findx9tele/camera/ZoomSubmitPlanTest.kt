@@ -63,13 +63,22 @@ class ZoomSubmitPlanTest {
     }
 
     @Test
-    fun `mid-gesture submit throttles inside the window`() {
+    fun `a moving gesture never submits, at any elapsed time`() {
+        // Device-measured 2026-07-27: spacing submits did NOT help. Submits already ~400 ms apart
+        // (double the old floor) still stalled the preview 210-413 ms each, because the stall is a
+        // property of the repeating-request SWAP and not of how tightly swaps are packed. So the
+        // throttle boundary is no longer a submit boundary — well past it must stay silent, or the
+        // "frame rate drops while zooming" report comes straight back.
         assertFalse(plan(4f, active = true, now = 199L, last = 0L).submitNow)
+        assertFalse(plan(4f, active = true, now = 200L, last = 0L).submitNow)
+        assertFalse(plan(4f, active = true, now = 5_000L, last = 0L).submitNow)
     }
 
     @Test
-    fun `mid-gesture submit fires exactly at the throttle boundary`() {
-        assertTrue(plan(4f, active = true, now = 200L, last = 0L).submitNow)
+    fun `a moving gesture still reports the wide aim for the edge that does submit`() {
+        // halTarget stays meaningful while suppressed: the gesture-START edge submits it to pre-buy
+        // the zoom-out margin the GL crop lives on for the rest of the gesture.
+        assertEquals(4f / margin, plan(4f, active = true, now = 5_000L, last = 0L).halTarget, 1e-6f)
     }
 
     @Test
@@ -87,7 +96,7 @@ class ZoomSubmitPlanTest {
     @Test
     fun `mid-gesture wide aim still carries the exact ratio for stills`() {
         val p = plan(4f, active = true, now = 300L, last = 0L)
-        assertTrue(p.submitNow)
+        assertFalse(p.submitNow)
         assertEquals(4f / margin, p.halTarget, 1e-6f)
         assertEquals(4f, p.controlsZoomRatio, 0f)
     }

@@ -1477,17 +1477,25 @@ class CameraController(context: Context) {
     }
     private var smoothPreviewBoost = false
 
-    fun setSmoothPreviewBoost(active: Boolean, finalZoom: Float? = null) {
+    /**
+     * [finalZoom] is the still-request TRUTH (always the exact user-framed ratio). [halZoom], when
+     * given, is what actually goes on the wire — the gesture-START edge passes its wide-aimed target
+     * there, because with mid-gesture submits suppressed this edge is the only chance to pre-buy the
+     * zoom-out margin the GL crop needs, and writing that wide value into [controls] instead would
+     * frame every still in the gesture ~17% wide.
+     */
+    fun setSmoothPreviewBoost(active: Boolean, finalZoom: Float? = null, halZoom: Float? = null) {
         postToCamera {
             // Land the caller's exact zoom INSIDE the same rebuild that flips the boost. The old
             // rebuild-then-correct order at gesture end submitted the stale mid-gesture wide-aimed
             // ratio first (this field was last written by the throttled wide submit) and then paid
             // a second ~180 ms repeating-request stall for the correction.
             if (finalZoom != null) controls = controls.copy(zoomRatio = finalZoom)
+            val wire = halZoom ?: finalZoom
             if (smoothPreviewBoost == active) {
                 // Boost state already correct (duplicate gesture edge): still honor the exact zoom
                 // without a full rebuild.
-                if (finalZoom != null) submitZoomFastPath(finalZoom)
+                if (wire != null) submitZoomFastPath(wire)
                 return@postToCamera
             }
             smoothPreviewBoost = active
@@ -1502,9 +1510,14 @@ class CameraController(context: Context) {
             // `caps` is lateinit: if the flip somehow precedes configure we cannot decide, so fall
             // through to the rebuild — the conservative side is the OLD behaviour, never a skip.
             if (this::caps.isInitialized && !boostFlipChangesFpsDecision(pinAutoFps, controls, caps)) {
-                if (finalZoom != null) submitZoomFastPath(finalZoom)
+                if (wire != null) submitZoomFastPath(wire)
                 return@postToCamera
             }
+            // Rebuild path (video-P / flash-metered P only): startPreview derives the wire zoom from
+            // `controls`, i.e. the EXACT ratio, so those two routes start a gesture without the
+            // wide-aim margin and lose GL field on an immediate zoom-out. Accepted: they are the two
+            // routes that must rebuild anyway for the fps pin, and paying a second submit here to
+            // widen would reintroduce the back-to-back stall this edge was rewritten to remove.
             startPreview()
         }
     }

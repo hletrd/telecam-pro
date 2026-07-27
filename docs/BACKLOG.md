@@ -225,14 +225,32 @@ swap itself, not of how closely two swaps are packed, so spacing them further ap
 proportionally little and just makes `zoomComp` diverge more. Do not tune this constant expecting a
 fix.
 
-What the measurement points at instead is an ASYMMETRY worth designing around: zoom-**IN** needs no
-HAL submit at all, because GL is cropping into a frame the HAL is already delivering wider than
-requested, whereas zoom-**OUT** genuinely needs field the HAL is not sending (which is what the
-1.2× wide aim exists to pre-buy). A submit policy that is free on the way in and bounded on the way
-out would remove most mid-gesture swaps outright rather than merely spacing them. That is a real
-change to the app's most regression-prone path — three separate rounds of "핀치 버벅" reports live
-here — and its cost is progressive preview softness during the gesture, which is a judgement only
-the user's eyes can make. Left OPEN deliberately, now with numbers behind it.
+**RESOLVED by user decision (2026-07-27): a MOVING gesture now submits NOTHING.** Presented with the
+measurement and the tradeoff, the user chose "제스처 중 전부 생략" — one submit at each gesture edge
+instead of one per ~200 ms. `resolveHalZoomSubmit`'s `submitNow` is simply `!interactionActive`.
+
+Two consequences that had to move with it:
+
+- **The wide aim relocated to the gesture-START edge.** It used to ride the mid-gesture submits that
+  no longer exist, and it is the only thing pre-buying the field the GL crop needs to zoom OUT, so
+  `setZoomInteraction(true)` now passes a wide-aimed `halZoom` while `finalZoom` keeps the exact
+  ratio — the still-request truth must never inherit the aim (a still would frame ~17% wide).
+- **The quiet-window landing is kept and becomes load-bearing.** `landExactZoom` already fires only
+  while an interaction is active, so a PAUSED finger still lands the exact ratio and sharpens the
+  preview, while a MOVING one stays silent. Pause-to-sharpen came for free.
+
+Accepted cost, stated to the user before the choice: with no mid-gesture submit the HAL field is
+frozen at the edge's wide-aimed target, so the preview softens progressively while zooming IN (GL
+upscales) and runs out of field if zooming OUT past the 1.2× margin. Video-P and flash-metered P
+start a gesture without the margin at all, because those two routes take the rebuild path whose wire
+zoom comes from `controls` — accepted rather than pay a second stall to widen.
+
+**Device state: the change is unit-tested and the mechanism is re-measured, but the PINCH FEEL is
+not verified — `adb input` is single-pointer (`input motionevent` takes one x/y), so no synthetic
+two-finger gesture exists.** What was verified on device is the regression guard: rail taps are NOT
+a gesture, so they must still submit, and they do — `ZoomTrace: submit` with FrameGaps of 251/275/
+291/354 ms, which also reconfirms the per-swap stall a fourth time. The gesture path itself needs a
+human finger.
 
 ## Before Production
 
