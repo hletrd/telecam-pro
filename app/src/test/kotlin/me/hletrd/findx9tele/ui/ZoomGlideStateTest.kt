@@ -13,9 +13,11 @@ import org.junit.Test
  *    (`invalidateOpticsDerivedState()` in the ViewModel wraps it + cancels the matching Handler timers). Before
  *    this holder existed the invalidation was hand-duplicated across ~10 sites and forgotten at several
  *    (AGG3-10/25/26/51, VER-3, ARCH-4) — these tests fail if any field stops being cleared.
- *  - `isLeadingEdgeToWide()` is the zoom-OUT leading-edge decision (AGG3-9): the first outward gesture
- *    tick must submit immediately, while zoom-IN and every mid-gesture tick must NOT (they ride the
- *    existing coalesced/throttled wide-aim path).
+ *  - `isLeadingEdgeToWide()` is the zoom-OUT leading-edge decision (AGG3-9): the first outward tick
+ *    after the pipeline goes QUIET must submit immediately, while zoom-IN and every mid-gesture tick
+ *    must NOT (they ride the existing coalesced/throttled wide-aim path). Quiet — not `!interacting`
+ *    — is the axis (AGG4-14): `interacting` is a 700 ms tail that outlives the finger, so gating on
+ *    it disarmed the edge for a re-pinch that starts inside that tail.
  *  - `base()` is the compounding-input source of truth (`currentZoomBase()`): the coalesced pending
  *    ratio while a flush window is open, else the committed state ratio.
  */
@@ -23,17 +25,21 @@ class ZoomGlideStateTest {
 
     // ---- invalidateForRemap: every plain glide field is cleared (P2.1 door invariant) ----
 
-    @Test fun `invalidateForRemap clears pending, ease target, interacting, and flush-scheduled`() {
+    @Test fun `invalidateForRemap resets pending, ease target, interacting, leading edge, and flush-scheduled`() {
         val g = ZoomGlideState().apply {
             pendingRatio = 7.5f
             easeTarget = 4.2f
             interacting = true
+            leadingEdgeArmed = false // a flush had spent the edge when the remap fired
             flushScheduled = true
         }
         g.invalidateForRemap()
         assertTrue("pendingRatio must be NaN after invalidate", g.pendingRatio.isNaN())
         assertNull("easeTarget must be null after invalidate", g.easeTarget)
         assertFalse("interacting must be false after invalidate", g.interacting)
+        // Idle for this one is ARMED: the remap discards the outgoing controller, so no wide-aim
+        // margin is spent and the next outward tick on the fresh route is a genuine leading edge.
+        assertTrue("leadingEdgeArmed must be re-armed after invalidate", g.leadingEdgeArmed)
         assertFalse("flushScheduled must be false after invalidate", g.flushScheduled)
     }
 
@@ -43,6 +49,7 @@ class ZoomGlideStateTest {
         assertTrue(g.pendingRatio.isNaN())
         assertNull(g.easeTarget)
         assertFalse(g.interacting)
+        assertTrue(g.leadingEdgeArmed)
         assertFalse(g.flushScheduled)
     }
 
@@ -53,6 +60,7 @@ class ZoomGlideStateTest {
         val g = ZoomGlideState().apply {
             pendingRatio = 9f // stale old-scale coalesced value
             interacting = true // mid-gesture when the remap fired
+            leadingEdgeArmed = false // …and that gesture's first flush had spent the edge
         }
         g.invalidateForRemap()
         assertEquals("base must ignore the invalidated pending ratio", 3f, g.base(3f), 0f)
@@ -76,9 +84,43 @@ class ZoomGlideStateTest {
         assertFalse(g.isLeadingEdgeToWide(6f, 6f))
     }
 
-    @Test fun `mid-gesture outward ticks are not leading edges (only the first)`() {
-        val g = ZoomGlideState().apply { interacting = true }
+    // Re-expressed for AGG4-14: "mid-gesture" is no longer `interacting` alone (that flag is a
+    // 700 ms TAIL that outlives the finger), it is `interacting` AND an edge already spent by this
+    // gesture's first flush. A recent tick is exactly that state.
+    @Test fun `mid-gesture outward ticks are not leading edges (only the first after quiet)`() {
+        val g = ZoomGlideState().apply {
+            interacting = true
+            leadingEdgeArmed = false // this gesture's first flush spent it; no quiet window since
+        }
         assertFalse("subsequent outward ticks ride the throttled wide-aim path", g.isLeadingEdgeToWide(2f, 6f))
+    }
+
+    // ---- AGG4-14: a gesture that BEGINS inside the previous gesture's 700 ms tail ----
+    //
+    // `interacting` is still true here (it is re-posted 700 ms past the last flush), but the
+    // pipeline went quiet for a throttle window, so either the quiet-window landing or a real
+    // onPinchEnd re-armed the edge. This is the case the pre-fix `!interacting` gate could not
+    // express, and the worst one to miss: the landing already spent the 1.2× wide-aim margin and
+    // GL zoomComp is clamped at 1, so an outward finger has NO source of new field until the HAL
+    // submits.
+
+    @Test fun `an outward re-pinch inside the interaction tail is a leading edge once re-armed`() {
+        val g = ZoomGlideState().apply {
+            interacting = true // the previous gesture's boost tail is still running
+            leadingEdgeArmed = true // quiet-window landing (or onPinchEnd) re-armed it
+        }
+        assertTrue("a re-pinch to wide must take the immediate submit", g.isLeadingEdgeToWide(4f, 6f))
+    }
+
+    @Test fun `an inward re-pinch inside the interaction tail is still not a leading edge`() {
+        val g = ZoomGlideState().apply {
+            interacting = true
+            leadingEdgeArmed = true
+        }
+        assertFalse(
+            "zoom-IN has GL headroom in every window; the re-arm must not widen the swallow",
+            g.isLeadingEdgeToWide(8f, 6f),
+        )
     }
 
     // ---- base: currentZoomBase source of truth ----

@@ -29,6 +29,28 @@ internal class ZoomGlideState {
     /** True from a gesture's first flush until its 700 ms interaction-end fires (drives the boost). */
     var interacting: Boolean = false
 
+    /**
+     * True while a zoom-OUT leading edge is still UNSPENT — i.e. the zoom pipeline has been QUIET
+     * since the last real gesture boundary, so no wide-aim margin has been spent and no landing is
+     * in flight.
+     *
+     * Split out of [interacting] (AGG4-14). [interacting] is a 700 ms TAIL re-posted at every flush;
+     * using it as the "a gesture is in progress" proxy left the leading edge DISARMED for 700 ms
+     * after finger-up, which is exactly when a re-pinch lands — and exactly when GL cannot help,
+     * because `zoomComp.coerceAtLeast(1f)` gives a zoom-OUT ZERO outward headroom (the self-redraw
+     * is pixel-identical to the previous frame). Worst window is Δ250-450 ms: `landExactZoom` has
+     * already fired, spent the 1.2× wide-aim margin AND restamped the submit throttle, so an
+     * outward finger gets no new frames until ≈Δ630 ms while the HAL steps the crop 1.2× the WRONG
+     * way. Pinch-release-pinch cadence lands squarely in there — the "핀치를 했다가 풀었다 하면
+     * 배율이 툭툭 끊긴다" report.
+     *
+     * Cleared at every flush (idempotent after the gesture's first); re-armed by a real pinch-end
+     * ([CameraActions.onPinchEnd]) or, for the input paths that have NO finger-up (hardware
+     * slide-zoom key repeats, the ease ticker), by the quiet-window landing — which already IS the
+     * "went quiet for one throttle window" signal.
+     */
+    var leadingEdgeArmed: Boolean = true
+
     /** True while a 16 ms trailing coalescer flush is queued. */
     var flushScheduled: Boolean = false
 
@@ -39,14 +61,18 @@ internal class ZoomGlideState {
     fun base(stateRatio: Float): Float = pendingRatio.takeUnless { it.isNaN() } ?: stateRatio
 
     /**
-     * Zoom-OUT leading edge (AGG3-9): true when a gesture's FIRST tick ([interacting] not yet set)
-     * moves toward WIDE ([newRatio] below the committed [currentRatio]). Only the first outward tick
-     * qualifies — GL zoomComp magnifies the delivered frame instantly for zoom-IN but cannot widen
-     * past the delivered crop, so only the OUT direction needs the leading-edge HAL submit; mid-
-     * gesture reversals ride the existing wide-aim path.
+     * Zoom-OUT leading edge (AGG3-9): true when a tick arriving on a QUIET pipeline
+     * ([leadingEdgeArmed]) moves toward WIDE ([newRatio] below the committed [currentRatio]). Only
+     * the first outward tick after quiet qualifies — GL zoomComp magnifies the delivered frame
+     * instantly for zoom-IN but cannot widen past the delivered crop, so only the OUT direction
+     * needs the leading-edge HAL submit; mid-gesture reversals ride the existing wide-aim path.
+     *
+     * Gated on [leadingEdgeArmed], NOT `!interacting` (AGG4-14): a re-pinch that BEGINS inside the
+     * previous gesture's 700 ms tail is a fresh outward edge on an already-spent wide-aim margin,
+     * and it needs the immediate submit more than a cold-start pinch does, not less.
      */
     fun isLeadingEdgeToWide(newRatio: Float, currentRatio: Float): Boolean =
-        !interacting && newRatio < currentRatio
+        leadingEdgeArmed && newRatio < currentRatio
 
     /**
      * Clears every plain glide field for an optics-SCALE remap (mode/lens/TC/MR-recall/rollback/
@@ -54,11 +80,16 @@ internal class ZoomGlideState {
      * committed ratio, no glide is in flight, and the next gesture's first flush re-arms the boost
      * edge on the FRESH controller. Deliberately does NOT touch the engine: a synchronous boost-off
      * at a remap door would rebuild the OUTGOING controller (see the ViewModel wrapper's note).
+     *
+     * Every field goes back to its IDLE value — which for [leadingEdgeArmed] means `true`, not
+     * `false`: a remap discards the outgoing controller, so nothing has spent its wide-aim margin
+     * and the next outward tick on the fresh route is a genuine leading edge.
      */
     fun invalidateForRemap() {
         pendingRatio = Float.NaN
         easeTarget = null
         interacting = false
+        leadingEdgeArmed = true
         flushScheduled = false
     }
 }

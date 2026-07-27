@@ -229,7 +229,14 @@ class CameraViewModel @JvmOverloads constructor(
     // Quiet-window landing: one throttle window after the LAST flush, the exact (non-wide-aimed)
     // ratio lands on the HAL even though the 700 ms boost tail is still running — otherwise a clip
     // keeps the ~1.2×-wide framing after finger-up and a tail still frames wider than the finder.
-    private val zoomQuietLanding = Runnable { engine.landExactZoom() }
+    // It also RE-ARMS the zoom-OUT leading edge (AGG4-14): reaching here means the pipeline went
+    // quiet for a full throttle window, which is the only re-arm signal available to the input paths
+    // with no finger-up (hardware slide-zoom key repeats, the ease ticker). onPinchEnd re-arms
+    // sooner when touch actually reports the boundary; whichever lands first wins, both are idempotent.
+    private val zoomQuietLanding = Runnable {
+        zoomGlide.leadingEdgeArmed = true
+        engine.landExactZoom()
+    }
 
     // Hardware slide-zoom easing: the camera button emits DISCRETE key repeats (~20 Hz), and applying
     // each 1.04x jump directly reads as stutter. Instead the steps move a TARGET and a ~30 Hz ticker
@@ -1498,12 +1505,30 @@ class CameraViewModel @JvmOverloads constructor(
         // request here AND then setZoomInteraction(true)'s boost flip ran a full startPreview
         // rebuild carrying the same ratio — two back-to-back ~180 ms repeating-request stalls at
         // every fresh pinch-out (3-lane cycle-4 consensus). Now the leading tick only COMMITS the
-        // ratio (engine controls + GL target + still-truth, no submit); the boost rebuild right
-        // below is the edge's ONE submit and carries this z as its finalZoom. Mid-gesture ticks
-        // keep the coalesced/throttled wide-aim path unchanged.
+        // ratio (engine controls + GL target + still-truth, no submit); the boost flip right below
+        // is the edge's ONE submit and carries this z as its finalZoom (a rebuild on a cold edge, a
+        // bare fast-path submit when the boost is already active). Mid-gesture ticks keep the
+        // coalesced/throttled wide-aim path unchanged.
         val leadingWide = zoomGlide.isLeadingEdgeToWide(z, _state.value.controls.zoomRatio)
+        // One flush spends the edge, whether or not it took it. Idempotent for every later tick of
+        // the same gesture; re-armed only by a real pinch-end or the quiet-window landing.
+        zoomGlide.leadingEdgeArmed = false
         if (leadingWide) engine.commitZoomForBoost(z)
-        if (!zoomGlide.interacting) {
+        // `leadingWide ||` (AGG4-14): a re-pinch that begins inside the previous gesture's 700 ms
+        // tail still has `interacting == true`, so the old `!interacting` form would have committed
+        // the ratio here and then submitted NOTHING (the `!leadingWide` guard below skips the fast
+        // path) — a leading edge strictly worse than no leading edge. Calling in with the boost
+        // already active is cheap and deliberate: CameraController.setSmoothPreviewBoost sees
+        // `smoothPreviewBoost == active` and takes its fast-path branch — ONE submitZoomFastPath
+        // with the exact ratio, no startPreview rebuild. Because the edge is spent by this same
+        // flush, a re-pinch costs exactly ONE extra submit however long the gesture runs, so the
+        // sustained rate stays inside the ≥200 ms throttle's cost class (a ~260 ms pinch-release
+        // cadence is ~4 submits/s against its 5/s ceiling). What it does NOT respect is the
+        // throttle's local spacing: landing at Δ250 then re-pinching at Δ300 submits twice ~50 ms
+        // apart. That is the trade taken knowingly — the leading edge exists precisely because
+        // zoom-OUT has no GL fallback (zoomComp is clamped at 1), so one extra ~180 ms stall beats
+        // a crop frozen the wrong way for ~330 ms.
+        if (leadingWide || !zoomGlide.interacting) {
             zoomGlide.interacting = true
             engine.setZoomInteraction(true)
         }
@@ -1547,6 +1572,17 @@ class CameraViewModel @JvmOverloads constructor(
         val wasIdle = zoomGlide.easeTarget == null
         zoomGlide.easeTarget = (base * factor).coerceIn(bounds.lower, bounds.upper)
         if (wasIdle) mainHandler.post(zoomEaseTicker)
+    }
+
+    override fun onPinchEnd() {
+        // The one signal that is a TRUE gesture boundary. Re-arm the zoom-OUT leading edge now
+        // instead of waiting for the 250 ms quiet-window landing, so a re-pinch that begins inside
+        // the previous gesture's 700 ms boost tail still gets its immediate outward submit — the
+        // window where GL has zero outward headroom (zoomComp is clamped at 1) and the wide-aim
+        // margin is already spent. Nothing else moves: the boost tail, the quiet landing, and the
+        // 16 ms coalescer all keep their own timing, and the landing's own re-arm stays as the
+        // fallback for the paths with no finger-up.
+        zoomGlide.leadingEdgeArmed = true
     }
 
     override fun onPinchZoom(factor: Float) {

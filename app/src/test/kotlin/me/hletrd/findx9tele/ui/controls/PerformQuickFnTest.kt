@@ -85,6 +85,7 @@ class PerformQuickFnTest {
         override fun onToggleOis(enabled: Boolean) = hit("onToggleOis")
         override fun onZoomRatio(ratio: Float) = hit("onZoomRatio($ratio)")
         override fun onPinchZoom(factor: Float) = hit("onPinchZoom")
+        override fun onPinchEnd() = hit("onPinchEnd")
         override fun onTeleZoomMark(totalMagnification: Float) = hit("onTeleZoomMark($totalMagnification)")
         override fun onJpegQuality(quality: Int) = hit("onJpegQuality")
         override fun onModeChange(mode: CaptureMode) = hit("onModeChange")

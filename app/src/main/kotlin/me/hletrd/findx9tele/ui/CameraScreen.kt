@@ -402,6 +402,13 @@ fun CameraScreen(
                                     }
                                 }
                             }
+                            // Report the TRUE pinch boundary (AGG4-14). The ViewModel otherwise has
+                            // to infer finger-up from the 250 ms quiet landing, which leaves a
+                            // re-pinch started inside the previous gesture's 700 ms tail without its
+                            // zoom-OUT leading edge. Gated on `zoomed` so a tap or a single-finger
+                            // drag — neither of which touched the zoom pipeline — cannot claim to
+                            // have ended a pinch.
+                            if (zoomed) currentActions.value.onPinchEnd()
                             // Only a clean single-finger tap (no second finger, no pinch, no drag) focuses.
                             if (maxPointers == 1 && !zoomed && !dragged) {
                                 val w = size.width.toFloat()

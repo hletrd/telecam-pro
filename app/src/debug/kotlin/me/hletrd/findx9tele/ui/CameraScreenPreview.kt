@@ -68,6 +68,7 @@ internal object PreviewCameraActions : CameraActions {
     override fun onToggleOis(enabled: Boolean) = Unit
     override fun onZoomRatio(ratio: Float) = Unit
     override fun onPinchZoom(factor: Float) = Unit
+    override fun onPinchEnd() = Unit
     override fun onTeleZoomMark(totalMagnification: Float) = Unit
     override fun onJpegQuality(quality: Int) = Unit
 

@@ -80,6 +80,14 @@ interface CameraActions {
     // Pinch-to-zoom on the viewfinder: [factor] is the incremental pinch scale (1.0 = no change).
     fun onPinchZoom(factor: Float)
     /**
+     * The last finger of a pinch that actually zoomed has lifted. The gesture loop is the only place
+     * that knows this boundary exactly; the ViewModel otherwise has to infer it from a timer, and
+     * inferring it wrongly is what left a re-pinch inside the previous gesture's 700 ms tail without
+     * its zoom-OUT leading edge (AGG4-14). Advisory only: the timer-based re-arm remains the
+     * fallback for the input paths that never report a finger-up (hardware slide-zoom, ease glide).
+     */
+    fun onPinchEnd()
+    /**
      * A TELE focal-rail mark: [totalMagnification] is the converter-equivalent TOTAL the user tapped
      * (13×/30×/60×-class), not a lens-local ratio. The converter's host lens stays put — this is a
      * discrete digital-zoom pick, never a lens change.
