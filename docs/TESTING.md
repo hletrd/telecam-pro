@@ -172,6 +172,41 @@ leaves null.
 
 ## Instrumented coverage (ADOPTED as infra, coverage cycle 7 phase 4)
 
+### Compose UI tests on Robolectric (added 2026-07-27)
+
+Compose UI tests run in the ORDINARY host suite — `androidx.compose.ui.test.junit4` is already a
+`testImplementation` dependency and `isIncludeAndroidResources` is already on, so a Compose-side
+rule needs no device tier. Use this whenever the property under test is a property of the composed
+UI rather than of a value:
+
+- `ui/controls/LoupeOverviewGateTest` renders the real `ProSheet` and asserts the Loupe Overview row
+  is disabled/enabled in BOTH directions. A state-flag assertion would not have caught the defect,
+  which was in what the row let the user DO.
+- `ui/StatusPlateRotationTest` renders the real `StatusBar` through the real `rotateLayout` and
+  asserts the turned plate still FITS its slot. The phone derives orientation from gravity and holds
+  its last value while flat, so the turned LOOK cannot be captured over adb — but the fit can.
+
+Two conventions worth copying. `setContent` may be called only ONCE per test, so drive variation
+through state (which also matches the device, where the rotation is an animated float in a
+composition that never restarts). And to measure a modifier's RESERVED bounds, wrap it in a
+tagged wrap-content `Box`: measuring a CHILD is vacuous, because `rotateLayout` clips to its own
+bounds and any child is inside by construction.
+
+`CameraActions` is a ~90-method interface with no defaults; tests that never click should use a
+`java.lang.reflect.Proxy` double rather than 90 hand-written stubs (its one non-Unit member must
+return `false`, not null, into a primitive).
+
+### Injected-gesture probes
+
+`adb shell input` is single-pointer and `sendevent` on the touchpanel is refused by SELinux (shell
+sits in the `input` group, so it is a policy denial). INSTRUMENTATION is the way in:
+`UiAutomation` holds INJECT_EVENTS, so `PinchGestureProbeTest` posts multi-pointer `MotionEvent`s
+into our own activity to measure the zoom-gesture submit policy. Like `DolbyVisionProbeTest` it is
+a PROBE — it logs under its own tag and must never fail the build, because the thing measured is a
+HAL stall and an assertion would freeze a timing threshold into a correctness claim. Read it by
+streaming a FILTERED logcat while the class runs; an unfiltered buffer rolls over long before a
+50 s probe finishes on this device.
+
 An `app/src/androidTest` **smoke tier** and property-gated instrumented coverage now exist. This
 tier is deliberately shallow: **`device-tests/` remains the functional authority** — the
 instrumented suite exists to drive real MainActivity → CameraViewModel → CameraEngine →

@@ -4,8 +4,8 @@
 
 <h1>TeleCam Pro</h1>
 
-<p><b>Professional manual camera for the OPPO Find X9 Ultra periscope telephoto and 300&nbsp;mm afocal teleconverters</b><br/>
-4-lens switcher, afocal 180° flip, HAL OIS+EIS, SDR-to-HLG / S-Log3 / LogC3 profiles, directional audio</p>
+<p><b>Professional manual camera for the OPPO Find X9 Ultra periscope telephoto and clip-on afocal teleconverters</b><br/>
+Selectable converter magnification, 4-lens switcher, afocal 180° flip, HAL OIS+EIS, SDR-to-HLG / S-Log3 / LogC3 profiles, directional audio</p>
 
 <p>
 <img src="https://img.shields.io/badge/Android-16%20(API%2036)-3DDC84?logo=android&logoColor=white" alt="Android 16" />
@@ -26,6 +26,13 @@
   over the viewfinder. See [`docs/UX_POLICY.md`](docs/UX_POLICY.md).
 - **Seamless zoom (photo)**: pinch sweeps **0.6×→20×** across all four lenses (UW 14 mm / main 23 mm / 3× 70 mm / 10× 230 mm) in one session on the logical multicamera — the HAL crosses the optics at their native ratios and fills between them digitally, iPhone-style; lens buttons are zoom presets, and the OSD reads the live effective focal. Video pins the matching standalone lens (the logical camera's EIS leaks a warp band into recordings — device-isolated), with lens-local digital zoom. The TELE toggle pins the standalone 3× for converter shooting.
 - **Afocal 180° flip**: The teleconverter is afocal, so images arrive flipped 180° → preview/photos/videos all corrected (GL texcoord rotation for preview, pixel rotation for HEIF/JPEG, EXIF tag for DNG).
+- **Selectable teleconverter**: the mounted optic is a *setting*, not a constant — two dropdowns in
+  the Lens tab (phone model, then the converters that clamp onto it) covering the first-party kits
+  (Hasselblad 300 mm / 230 mm, ZEISS 200 mm / 400 mm), generic 1.5/2/3× clip-ons, and a custom
+  magnification. Passive glass cannot announce itself, so this is pure declaration; only the *phone*
+  is detected, and each kit's magnification derives from the host tele it was designed for (a
+  "ZEISS 200" on this 70 mm periscope is honestly reported as 165 mm). The OSD, EXIF 35 mm focal,
+  Fn tile, and TELE zoom range all follow the selection.
 - **Front camera with flip button — basic capture**: photo and video on the selfie camera with a
   mirrored preview (saved files unmirrored, the standard convention). The teleconverter, focal rail,
   and other rear-optics features stay rear-only; the app always launches on the rear camera.
@@ -63,8 +70,11 @@
 - **Capture aids**: focus peaking (adjustable sensitivity/color), zebra, false color, grid, spirit
   level, a movable punch-in loupe, and an opt-in **Loupe Overview** (a same-stream reference to the
   full delivered frame while the loupe is active in TELE Photo 4:3—not an automatic 1× or a second
-  camera feed), plus histogram, waveform, and in-app last-shot pinch-to-zoom review. A direct
-  0.6/1/3/10× focal rail sits beside the zoom pill.
+  camera feed) that marks the magnified field with an iPhone-style framing rectangle, plus
+  histogram, waveform, and in-app last-shot pinch-to-zoom review. The focal rail carries the direct
+  0.6/1/3/10× lens presets; with TELE engaged it becomes a digital-zoom picker whose marks are
+  **derived from the lens's advertised range × the selected converter** (13×/30×/60× with the
+  300 mm kit), so a mark the optics cannot reach is absent rather than clamped.
 - **Settings persistence**: pro controls saved across launches ("Remember Settings", default ON),
   with separate default-on preserve toggles for lens selection and TELE mode.
 - **Durable saves**: completed captures and clips survive interruptions — a capture followed by an
@@ -143,10 +153,16 @@ graphic assets live in [`docs/play-store-listing.md`](docs/play-store-listing.md
 [`privacy-policy/index.html`](privacy-policy/index.html), [`docs/play-data-safety.md`](docs/play-data-safety.md),
 and [`docs/assets/play/`](docs/assets/play/).
 
-This working copy has a local upload keystore at `telecampro-upload.jks`, a gitignored
-`keystore.properties` containing only the keystore path/alias, and an encrypted password backup at
-`telecampro-upload-passwords.txt.gpg`. Decrypt that backup locally and export the two `TELECAMPRO_*`
+This working copy has a local upload keystore at `telecampro-upload.jks` and a gitignored
+`keystore.properties` containing only the keystore path/alias. Export the two `TELECAMPRO_*`
 password variables before rebuilding release bundles.
+
+> ⚠️ **`telecampro-upload-passwords.txt.gpg` is STALE and does not open the current keystore.** The
+> backup is dated 2026-07-07; the keystore was regenerated 2026-07-25, and the old passphrase was
+> not carried over — a release build was blocked on exactly this. Refresh the backup from the
+> passwords actually in use, or delete it so it cannot mislead. The keystore has never been uploaded
+> to Play, so replacing the key entirely is still free; once an AAB signed with it is accepted, the
+> upload identity is fixed to that key.
 
 ## Device camera capabilities
 
@@ -165,32 +181,32 @@ not just session setup logs:
 
 ## Implementation Status
 
-- 🟡 **Release status (2026-07-25): a signed, matrix-passed v1 artifact exists, frozen at `9541697`;
-  `main` has since moved past it (the Kotlin namespace move).** Do not upload a locally built AAB
-  from `main`, and do not upload the checked-in Play screenshots — those are stale regardless of
-  which candidate ships. [`docs/BACKLOG.md`](docs/BACKLOG.md) is the authoritative release board and
-  states the owner decision.
-
-The entries below are historical 2026-07-10 evidence, superseded by the 2026-07-25 PMA110 release
-matrix recorded in [`docs/play-console-submit.md`](docs/play-console-submit.md); neither describes
-current HEAD:
-
-- 🗂️ **Historical build & gates**: `./gradlew testDebugUnitTest lintRelease assembleRelease bundleRelease`
-  passed for that candidate. `app/src/test/` remains the suite source of truth; rerun it for current
-  results instead of relying on a copied count.
-- 🗂️ **Historical release device smoke test on PMA110**: fresh launch started at 1x / 23 mm with TELE off;
-  Preserve Lens and Preserve TELE default on and persist independently; rapid double-shutter in an
-  eligible TELE session produces one valid DNG+HEIF pair; 4K HLG records HEVC Main10 at 30000/1001
-  with AAC; Open Gate records
-  2560x1920 4:3; and no crash or ANR was observed. The installed release APK matched the locally
-  verified artifact byte-for-byte and was not debuggable.
-- 🗂️ **Historical UI evidence**: the then-current menu hierarchy and core photo/video flows were
-  reviewed on the physical device. The six tracked 1440x2560 PMA110 screenshots are stale and marked
-  **DO NOT UPLOAD** in the listing sheet.
-- ⏳ **After a new signed candidate is proven**: upload the signed AAB, enter the listing and Data Safety answers,
-  restrict the device catalog to CPH2841/PMA110, run internal testing, and review the pre-launch report.
-  The exact operator checklist is in [`docs/play-console-submit.md`](docs/play-console-submit.md).
+- 🟢 **Release status (2026-07-27, cycle 9): a signed release candidate is cut from current `main`
+  and its six Play screenshots are current.** The artifact SHA-256s, signing verification, and the
+  per-slot screenshot provenance are recorded in
+  [`docs/play-console-submit.md`](docs/play-console-submit.md);
+  [`docs/BACKLOG.md`](docs/BACKLOG.md) remains the authoritative release board. The signer
+  certificate is unchanged, so this uploads as an update to the same Play identity.
+- ✅ **Gates on that candidate**: `assembleDebug testDebugUnitTest lintDebug` and
+  `lintRelease assembleRelease bundleRelease` all pass — **1185 host tests, 0 failures**;
+  `lintRelease` 0 errors / 5 warnings, all pre-existing. `app/src/test/` stays the suite source of
+  truth; rerun it rather than trusting a copied count.
+- ✅ **Device-verified on PMA110 (2026-07-27)**: TELE rail reads 13×/30×/60× and reconfigures with
+  RAW enabled where the non-TELE route reports none; AE carries across a lens switch with no
+  convergence excursion (tele's first frame at the clamped-correct ISO, return landing on the
+  original exactly); the camera-switch dip's grace/deadline bracket the measured 288 ms / 658 ms
+  reopen gaps; Loupe Overview gates and draws with its framing hint; and an injected two-finger
+  pinch shows **zero HAL submits and zero frame gaps while the fingers move**.
+- ⏳ **Operator steps that remain**: upload the signed AAB, enter the listing and Data Safety
+  answers, restrict the device catalog to CPH2841/PMA110, run internal testing, and review the
+  pre-launch report — the checklist is in
+  [`docs/play-console-submit.md`](docs/play-console-submit.md). One screenshot slot
+  (`05-lens-and-tele`) is a black-scene frame and would benefit from a handheld TELE capture
+  against a real subject; it is correct and current either way.
 - 🔎 **Residual field checks**: directional-audio off-axis acoustic A/B, held-landscape VIDEO
   playback in an external player (the container orientation hint — saved STILL orientation was
-  device-verified 2026-07-25), and post-mapping HLG appearance on a real HDR display remain pending.
-- 📌 **Deferred beyond v1**: R8/minify and Dolby Vision. See [`docs/BACKLOG.md`](docs/BACKLOG.md).
+  device-verified 2026-07-25), post-mapping HLG appearance on a real HDR display, and the
+  subjective read of the preview softening that the new zoom-gesture submit policy trades for a
+  fluid scene.
+- 📌 **Deferred beyond v1**: R8/minify, Dolby Vision, and the authenticated CameraUnit path. See
+  [`docs/BACKLOG.md`](docs/BACKLOG.md).

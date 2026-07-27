@@ -4,11 +4,11 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 ## Upload Artifact
 
-> **UPLOAD-READY (2026-07-27) — re-cut from `main` at `a0d4dbc`.** The 2026-07-26 candidate
-> (`69af1574…`) is SUPERSEDED: `main` moved 24 commits past it, and 25 shipped source files changed
-> (+2468 / −760). That is not a docs drift — it includes a NEW FEATURE (the teleconverter became a
-> selectable optic with phone/converter dropdowns) and a UI pass that changed the type scale, the
-> menu copy, the colour tokens and two clipped chrome badges. `applicationId` is unchanged
+> **UPLOAD-READY (2026-07-27, cycle 9) — re-cut from current `main`.** This supersedes BOTH earlier
+> candidates (`a0d4dbc` and, before it, `69af1574` / `9541697`). It carries the selectable
+> teleconverter and the UI pass that the `a0d4dbc` note describes, PLUS cycle 9: the device-derived
+> TELE rail, the AE lens-switch seed, the camera-switch dip, the loupe framing hint, the
+> gallery-restore fix, and the zoom-gesture submit policy. `applicationId` is unchanged
 > (`me.hletrd.telecampro`) and so is the upload certificate, so Play identity is unaffected.
 >
 > **RESOLVED 2026-07-27 (cycle 9): the six screenshots on record were RECAPTURED and are current.**
@@ -165,12 +165,12 @@ The app requires Android 16 / API 36 and is intentionally single-device.
 
 ## Manual Console Sequence
 
-1. Decide the candidate (see the header block): either upload the recorded `9541697` artifact, whose
-   hashes are above and whose matrix passed, or generate a new signed AAB from `main`, regenerate
-   this sheet's hashes, and re-run the PMA110 matrix before uploading that one.
+1. Upload the cycle-9 AAB whose hashes are above. The candidate decision is CLOSED — the earlier
+   `9541697` and `a0d4dbc` artifacts are superseded and must not be uploaded.
 2. Enter the Store Listing and Data Safety answers from this repository.
-3. Recapture and review all six phone flows from that exact candidate, then upload the icon, feature
-   graphic, and the six replacement screenshots; do not use the stale checked-in captures.
+3. Upload the icon, feature graphic, and the six checked-in screenshots — these ARE current
+   (recaptured 2026-07-27, 1440x2880); the earlier "do not use the checked-in captures" warning no
+   longer applies.
 4. Restrict the device catalog to CPH2841 and PMA110 before any wider rollout.
 5. Review Play's automated checks and pre-launch report.
 6. Promote the same artifact only after the internal-test install succeeds.

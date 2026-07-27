@@ -29,8 +29,9 @@ Open-source manual camera for Find X9 Ultra telephoto.
 
 ```
 TeleCam Pro is an open-source manual camera for the OPPO Find X9 Ultra, tuned for its periscope
-telephoto lens and 300 mm afocal teleconverter. Camera2 provides direct manual controls and access to
-the device's video pipeline.
+telephoto lens and clip-on afocal teleconverters — including the 300 mm kit, with the mounted
+converter's magnification selectable. Camera2 provides direct manual controls and access to the
+device's video pipeline.
 
 OPEN SOURCE
 • Source code is public and auditable: github.com/hletrd/telecam-pro
@@ -39,6 +40,11 @@ OPEN SOURCE
 TELECONVERTER MODE
 • One tap selects the 3x periscope lens and enables teleconverter mode: the afocal converter flips the
   image 180 degrees, and the app corrects it in preview, photos, and video automatically.
+• Tell the app which converter you mounted. Pick your phone, then the converters that clamp onto it —
+  the first-party 300 mm and 230 mm kits, ZEISS 200 mm and 400 mm, generic 1.5x/2x/3x clip-ons, or a
+  custom magnification. The focal readout, EXIF focal length, and the zoom range all follow your
+  choice, and each preset's magnification is computed from the lens it was designed for, so a
+  converter used on a different phone reports its true focal length rather than the number on the box.
 • Uses the device's available Camera2 OIS and video-stabilization modes for long-lens shooting.
 
 FOUR LENSES
@@ -110,19 +116,20 @@ Requires an OPPO Find X9 Ultra running Android 16. Target model codes: CPH2841 (
 
 ### Screenshots captured on PMA110
 
-> **STALE — DO NOT UPLOAD ANY FILE IN THIS LIST.** These 1440 x 2560 (9:16), no-alpha PNGs are
-> historical 2026-07-10 PMA110 captures from the then-current candidate, after the 1x default-lens
-> and separate Preserve Lens / Preserve TELE settings update. They predate the current Fn/chrome
-> behavior and are not evidence for an exact current signed release candidate. Cycle/debug UI
-> verification screenshots are also not replacement Play assets. Recapture all six only after the
-> exact signed candidate passes the current release-device matrix.
+> **CURRENT — recaptured 2026-07-27 (cycle 9).** Six 1440 x 2880 (exactly 2:1) 24-bit no-alpha
+> PNGs. Play rejects anything taller than 2:1 and this panel is 1440 x 3168, so the crop box
+> `(0, 168) → (1440, 3048)` strips the OS status bar and gesture bar only. Provenance is mixed on
+> purpose: the viewfinder frames are handheld captures against real subjects, the menu frames come
+> from the signed release build. Capture PORTRAIT — the app counter-rotates glyphs by the
+> gravity-derived orientation, so a landscape-held capture renders the focal rail sideways. Full
+> rationale and the per-file measurement live in `docs/play-console-submit.md`.
 
-1. **STALE — DO NOT UPLOAD:** `docs/assets/play/screenshots/01-main-viewfinder.png` - historical main still viewfinder with 1x / 23 mm and TELE off.
-2. **STALE — DO NOT UPLOAD:** `docs/assets/play/screenshots/02-pro-settings.png` - historical Setup tab with Remember, Preserve Lens, and Preserve TELE.
-3. **STALE — DO NOT UPLOAD:** `docs/assets/play/screenshots/03-focus-loupe.png` - historical Focus controls and focus-assist settings.
-4. **STALE — DO NOT UPLOAD:** `docs/assets/play/screenshots/04-video-controls.png` - historical video viewfinder with 4K 29.97p HEVC HLG status.
-5. **STALE — DO NOT UPLOAD:** `docs/assets/play/screenshots/05-lens-selection.png` - historical Lens tab with 0.6x / 1x / 3x / 10x selection.
-6. **STALE — DO NOT UPLOAD:** `docs/assets/play/screenshots/06-video-settings.png` - historical Video tab with codec, resolution, FPS, and bitrate.
+1. `docs/assets/play/screenshots/01-main-viewfinder.png` - photo viewfinder against a real subject: OSD row, focal rail, mode carousel, shutter.
+2. `docs/assets/play/screenshots/02-pro-settings.png` - Shooting tab: output format, aspect, zoom, JPEG quality, drive mode, self-timer.
+3. `docs/assets/play/screenshots/03-focus-tools.png` - Focus tab: AF modes, spot size, AF lock, peaking level/colour.
+4. `docs/assets/play/screenshots/04-video-controls.png` - video viewfinder: REC control with the live HLG / STEADY encoder OSD.
+5. `docs/assets/play/screenshots/05-lens-and-tele.png` - TELE engaged: the device-derived `13x / 30x / 60x` rail and the Loupe Overview with its framing hint. The one black-scene frame; swap in a handheld TELE capture to match the others.
+6. `docs/assets/play/screenshots/06-video-settings.png` - Video tab: codec, Open Gate, resolution, FPS, bitrate, live encoder summary, transfer curves.
 
 ## Release checklist
 

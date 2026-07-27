@@ -7,29 +7,27 @@ per-file history via `git log -- docs/BACKLOG.md`.
 
 ## Release State
 
-Version 1.0 (`versionCode=1`). **A signed, validated v1 artifact EXISTS and its release-device
-matrix PASSED** — but it is frozen on a source lineage `main` has since left, so upload is an owner
-DECISION, not a blocked gate.
+Version 1.0 (`versionCode=1`). **RESOLVED 2026-07-27 — the owner chose to re-cut from `main` with
+cycle 9 included, and that candidate is built, verified, and screenshotted.** The earlier "ship the
+frozen artifact vs re-cut" decision is closed; both frozen candidates (`9541697` 2026-07-25 and
+`a0d4dbc` 2026-07-27) are SUPERSEDED and must not be uploaded.
 
-- **The artifact:** built 2026-07-25 from the dedicated release worktree `.claude/worktrees/release-v1`
-  at `9541697`. `bundletool validate`, `jarsigner -verify`, APK v2 signing, and 16 KiB alignment all
-  passed, and the PMA110 release matrix passed the same day (photo / TELE DNG / video / persistence /
-  permission flow, zero app crashes or ANRs). Exact hashes, the upload certificate, and matrix detail
-  live in `docs/play-console-submit.md` — that sheet is the single home for artifact identity; do not
+- **The artifact:** built from current `main`, signed with the unchanged upload certificate, and
+  validated the same way as its predecessors (`bundletool validate`, AAB `jarsigner -verify`, APK v2
+  signing, 16 KiB alignment). Exact hashes and the certificate fingerprint live in
+  `docs/play-console-submit.md` — that sheet remains the single home for artifact identity; do not
   copy hashes here.
-- **Why it is not simply "upload it":** `main` has moved past `9541697` — most consequentially the
-  Kotlin namespace move (`6ae3979`, `com.hletrd.findx9tele` → `me.hletrd.findx9tele`), which changes
-  every class name and the launcher activity component in a release build. `applicationId` is
-  unchanged (`me.hletrd.telecampro`), so Play identity is unaffected. The `com.oplus.ocs` removal
-  (`2b4bc55`) was `debugImplementation`-only and does NOT change release bytes. Cycle-8
-  responsiveness, the pseudo-ZSL ring, and the focus-confidence detector are all post-`9541697` and
-  deliberately excluded from v1.
-- **The one hard blocker either way:** all six Play phone screenshots are STALE / DO-NOT-UPLOAD. The
-  console sequence cannot complete until they are recaptured from whichever exact candidate ships.
-- **Owner decision:** (a) ship the frozen `9541697` artifact as v1 — nothing more to build, recapture
-  screenshots and go; or (b) re-cut v1 from `main`, which requires a new signed AAB, a fresh hash
-  block in `docs/play-console-submit.md`, and a re-run PMA110 matrix, because the namespace move
-  invalidates the "same source lineage" evidence basis.
+- **What it adds over the frozen candidates:** the Kotlin namespace move, cycle-8 responsiveness, the
+  pseudo-ZSL ring and focus-confidence detector — all previously excluded — plus cycle 9 (selectable
+  teleconverter, device-derived TELE rail, AE lens-switch seed, camera-switch dip, loupe framing
+  hint, gallery-restore fix, zoom-gesture submit policy).
+- **The screenshot blocker is CLEARED.** All six were recaptured 2026-07-27 at the required
+  1440×2880; provenance and the measured crop box are recorded in `docs/play-console-submit.md`.
+  One slot (`05-lens-and-tele`) is a black-scene frame — correct and current, but a handheld TELE
+  capture would make the three viewfinder frames consistent.
+- **What is NOT re-run:** the full PMA110 release matrix against this exact artifact. Individual
+  features were device-verified from this build (see cycle 9 below), but the formal matrix sweep
+  recorded for `9541697` has not been repeated end to end.
 
 ### Verified 2026-07-10
 
@@ -276,7 +274,7 @@ These are manual Play Console operations, not repository implementation work:
 
 1. Create the app and upload the signed AAB to Internal testing.
 2. Enter the listing, privacy policy, App content, and Data Safety answers from `docs/play-*.md`.
-3. Upload the icon, feature graphic, and six 1440x2560 phone screenshots.
+3. Upload the icon, feature graphic, and the six 1440x2880 phone screenshots.
 4. Restrict the device catalog to OPPO Find X9 Ultra codes CPH2841 and PMA110.
 5. Install from Internal testing and review Play's automated checks and pre-launch report.
 6. Promote the same tested artifact to production.

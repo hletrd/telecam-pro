@@ -93,7 +93,8 @@ Two critical consequences of the afocal converter drive the entire design:
 | `MacroProximity.kt` | Focus-confidence proofs and their OSD wording: `AF_LIMIT` (AF failed/hunting near the advertised minimum focus distance) may say `TOO CLOSE` with a closer-lens suffix; `FRAME_DETAIL` may only say `SOFT` with no suffix — it proves the frame resolves no fine detail, never *why*. 700 ms hold; any refusal resets it. |
 | `FocusMapping.kt` | Maps the UI slider (0..1) bidirectionally to LENS_FOCUS_DISTANCE with `diopters = minFocusDiopters * slider^3`. There is no additive offset, preserving exact infinity at slider 0 while concentrating travel near it. |
 | **ui/** | |
-| `ZoomMath.kt` | Pure zoom-scale math shared by engine and UI: effective bounds, TELE magnetic-snap normalization, mode/restore scale remaps, and the hardware-glide ease-step function. |
+| `ZoomMath.kt` | Pure zoom-scale math shared by engine and UI: effective bounds, TELE magnetic-snap normalization, mode/restore scale remaps, the hardware-glide ease-step function, and the TELE rail's device-derived zoom marks (`teleZoomMarks` — lens bounds × converter magnification; an unreachable snap is ABSENT, never clamped). |
+| `SwitchCoverPolicy.kt` | Pure fold for the camera-switch dip. Keys on a session-generation CHANGE, never `cameraReady` — every optics door clears that bit including the same-route fast path behind every photo lens preset, so a ready-keyed cover would flash black on the most-used control. Repeated Not-Ready inside one reopen is idempotent via an epoch; a self-owned release deadline bounds every cover because `rollbackOptics`, exhausted recovery, and doors returning early on `paused` deliver nothing further. |
 | `CameraScreen.kt` | Compose root layout: preview TextureView, shutter button, mode toggle, gallery thumbnail, fixed settings panel, and capture overlays. Stateless, reads CameraUiState. |
 | `CameraViewModel.kt` | StateFlow<CameraUiState> owner. Turns CameraActions into CameraEngine calls, publishes capability-normalized controls, applies gesture changes with a trailing throttle, and coordinates capture-id review ownership. |
 | `CaptureOutputTracker.kt` | Bounded, synchronized ownership map for monotonic capture ids and every processed/RAW sibling. Selects the truthful review owner, upgrades RAW placeholders, tombstones whole captures before deletion, and seeds a reconstructed prior-process family below every live capture id. One open-review family can be pinned outside ordinary bounded history until close/delete. |
@@ -591,8 +592,14 @@ of the old rebuild-then-correct pair that transiently re-submitted the stale mid
 ratio. The engine's zoom read-modify-write on `controls` shares the packet writers' monitor (as
 does `setControls` — every wholesale `controls` writer holds the engine monitor), and
 `onZoomResult → gl.setHalZoom` forwarding is change-gated with a per-rebuild reset. The
-throttle/wide-aim decision itself is the pure `resolveHalZoomSubmit` (`camera/ZoomSubmitPlan.kt`,
-unit-tested), and two additions keep captures WYSIWYG: the controller stores the EXACT requested
+submit decision itself is the pure `resolveHalZoomSubmit` (`camera/ZoomSubmitPlan.kt`, unit-tested).
+**Since 2026-07-27 a MOVING gesture submits NOTHING** (`submitNow = !interactionActive`): device
+measurement showed each swap stalls this HAL 210–413 ms, and spacing them out did not help — submits
+already ~400 ms apart stalled identically, because the stall belongs to the swap itself rather than
+to how tightly swaps are packed. A gesture therefore costs TWO swaps, one per edge, and the START
+edge carries the wide aim (it used to ride the mid-gesture submits and is the only thing pre-buying
+the field the GL crop needs to zoom out). An injected two-finger pinch measured zero submits and
+zero frame gaps while the fingers move. Two further additions keep captures WYSIWYG: the controller stores the EXACT requested
 ratio for still requests (`setZoomRatio(halRatio, requestRatio)` — a still must never inherit the
 mid-gesture ~1.2×-wide aim), and a QUIET-WINDOW landing (`landExactZoom`, ~250 ms after the last
 flush) lands the exact ratio on the HAL well before the 700 ms fps-boost tail ends, so a recorded
@@ -617,7 +624,17 @@ landing on drag end; the ruler's own canvas still follows the finger per event).
 ### Loupe Overview (same-stream assist)
 
 The `Loupe Overview` Assist toggle (default OFF, persisted) draws a bottom-left corner viewport re-drawing the FULL
-current camera frame while the main view is magnified. **Single-stream honesty**: the HAL's
+current camera frame while the main view is magnified, with an iPhone-style rectangle inside it
+marking WHERE the magnified view is pointing (`loupeHintRect` in `CameraState.kt`, pure and
+unit-tested; drawn as four scissored clears so the hint needs no shader, no VBO and no texture unit
+and cannot perturb renderer state the preview and encoder share). Its size is the SAME
+`(1 - crop) / zoomComp` the main draw received, so it cannot claim a framing the view does not have
+— device-measured at 39.5% of the overview against the 40% `PUNCH_IN_CROP` implies. Its placement
+sign was device-bisected: the finder is reachable only in tele, where the afocal correction is 180°,
+so a centred loupe is unaffected and only an off-centre tap exposes an error.
+Since the row is a sub-option of the loupe, the Assist toggle is DISABLED while the loupe is off
+(same shape as Zebra Level under Zebra) — ungated it reported "On" while provably drawing nothing,
+with its parent switch under a different section header. **Single-stream honesty**: the HAL's
 `CONTROL_ZOOM_RATIO` crop is baked into the one camera texture, so the PIP can only be wider than
 the main view while GL zoom compensation (mid-gesture) or punch-in magnifies past the delivered
 field. This is deliberately not labeled PIP or 1x; a true unzoomed/wide finder is a BACKLOG design

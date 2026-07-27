@@ -180,9 +180,18 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   values, HAL-AE alike) gaps the stream 170–250 ms; per-tick zoom submits made zoom read as ~5 fps
   regardless of input smoothing (the true root cause behind THREE rounds of "핀치 버벅" reports).
   Architecture: the preview renders the REQUESTED zoom instantly (FlipRenderer `zoomComp` =
-  requested ÷ HAL-reported zoom, GL self-redraws the last frame when the camera is quiet); HAL
-  submits are throttled to ≥200 ms and aimed 1.2× WIDE mid-gesture (zoom-out margin), landing on
-  the exact value at gesture end. Encoder/analysis only ever see REAL camera frames (self-redraws
+  requested ÷ HAL-reported zoom, GL self-redraws the last frame when the camera is quiet).
+  **A MOVING gesture submits NOTHING (cycle 9, `submitNow = !interactionActive`)** — the ≥200 ms
+  throttle that used to pace mid-gesture submits was REFUTED on device 2026-07-27: submits already
+  ~400 ms apart (double the floor) stalled 210–413 ms just the same, because the stall belongs to
+  the repeating-request SWAP, not to how tightly swaps are packed. **Do not "fix" gesture stutter by
+  tuning `SENSOR_SUBMIT_MIN_INTERVAL_MS`** — that constant now paces only the quiet-window landing
+  and the sensor fast path. A gesture costs TWO swaps, one per edge; the START edge carries the
+  1.2× WIDE aim (zoom-out margin) because it is the only submit left that can pre-buy the field the
+  GL crop needs, and the END edge lands exact. An injected two-finger pinch measured ZERO submits
+  and ZERO frame gaps while the fingers move; the accepted cost is progressive softening while
+  zooming in, since the HAL field stays frozen at the edge's target.
+  Encoder/analysis only ever see REAL camera frames (self-redraws
   are preview-only). Plus: in low light the app-side P loop trades exposure→ISO brightness-
   neutrally during gestures (ISO-headroom-bounded) so the base frame rate rises. Each gesture EDGE
   is ONE submit: the fps-boost flip's own preview rebuild carries the current/final exact zoom
