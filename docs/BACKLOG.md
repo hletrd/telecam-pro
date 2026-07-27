@@ -143,16 +143,21 @@ received 2026-07-25 for slices 1, 2 and 4; slice 3's own check ran and is record
    also found YUV/PRIVATE reprocessing ADVERTISED on cams 0–5 (evidence:
    `.context/cycle8/zsl-probe-2026-07-25.md`) — see the true-ZSL deferral below.
 
-### Landed 2026-07-27 — cycle 9 transitions (gate-green, NONE device-verified)
+### Landed 2026-07-27 — cycle 9 transitions (DEVICE-VERIFIED except the two-finger items)
 
-Six commits, each gate-green at 1172 host tests. **The device was unreachable for this entire
-cycle** — a full 65535-port scan of the phone found only three open ports, none speaking the ADB
-TLS protocol, i.e. wireless debugging is off — so every perceptual claim below is reasoned from
-code and MUST be checked before it is treated as verified.
+Eight commits, gate-green at 1175 host tests. The device came online late in the cycle
+(`127.0.0.1:37605` via a loopback proxy; mac0 reaches the phone at LAN speed through a local TCP
+relay, which is how the 34 MB debug APK installs in 0.9 s instead of stalling for 9 minutes on the
+tunnel). Device evidence is recorded per item below. **What could NOT be checked: anything needing
+a two-finger pinch** — `adb input` has no multitouch, so the pinch-feel items are still open.
 
 1. `daa7639` **TELE rail → device-derived zoom marks.** Floor and ceiling come from the lens's own
    advertised bounds × the converter magnification; unreachable snaps are ABSENT rather than
    clamped (a 1.5× converter drops 60× because the lens ceiling is 45.7×).
+   **DEVICE-VERIFIED 2026-07-27:** TELE on turns the rail from `0.6× 1× 3× 10×` into
+   `13× 30× 60×` with 13× selected (3× lens × 4.286 ≈ 12.86 → 13×). The same toggle reconfigured
+   with `raw=true` where non-TELE reported `raw=false`, which independently re-confirms the
+   standalone-only RAW gating.
 2. `2122175` **boost-flip rebuild removed** where it provably cannot change a request key
    (`boostFlipChangesFpsDecision`). Saves the documented ~180 ms stall at BOTH pinch edges on the
    app-side exposure route — which is this device's default stills route.
@@ -161,16 +166,34 @@ code and MUST be checked before it is treated as verified.
    still gets its margin.
 4. `1aefb39` **AE carried across a lens switch at constant EV** (`seedForApertureChange`,
    `t_in = t_out · (N_in/N_out)²`, mode-aware carrier). 1×→10× is 2.295 stops on this device.
+   **DEVICE-VERIFIED 2026-07-27** across a real camera switch (TELE toggle, f/1.58 ↔ f/2.26 =
+   1.03 stops), dark room: 1× sat at ISO 9052 / 66.7 ms; the tele's FIRST frame came up at ISO
+   12700 (the seed wants 9052 × 2.046 = 18520 and clamps at the sensor ceiling — right direction,
+   right magnitude up to the clamp); returning to 1× landed on ISO 9052 EXACTLY on its first
+   frame. No convergence excursion in either direction, which is the reported defect gone.
+   Note the scene was dark enough that exposure was pinned at the fluidity cap throughout, so
+   this exercised the ISO carrier only — the time carrier still wants a lit-scene check.
 5. `f612054` **camera-switch dip.** Replaces the FROZEN old-lens frame (magnified on TELE-off)
    that today fills the gap between `controller.close()` and the new stream's first frame.
    Discriminator is a session-generation CHANGE, never `cameraReady` — every optics door clears
    that bit including the same-route fast path behind every photo lens preset, so a ready-keyed
-   cover would flash black on the most-used control in the app. **The 120 ms grace and 1500 ms
-   release deadline are NOT device-measured.** Cold start and resume also raise a cover.
+   cover would flash black on the most-used control in the app. Cold start and resume also raise
+   a cover.
+   **THE CONSTANTS ARE NOW MEASURED (2026-07-27), and both hold.** `GlPipeline`'s FrameGap is the
+   right instrument — it IS the frozen-frame window the cover exists to hide. Measured on device:
+   a TELE-**off** reopen (→ logical, `raw=false`) gaps **288 ms**; a TELE-**on** reopen (→
+   standalone 4, `raw=true`) gaps **658 ms**. So the 120 ms grace is shorter than the SHORTEST
+   real gap and therefore covers both, and the 1500 ms deadline has 2.3× headroom over the
+   LONGEST, i.e. it never fires on a normal reopen — exactly the safety-net role it was given.
 6. `f0f4d69` **Loupe Overview gated on the loupe**, so it can no longer report On while drawing
-   nothing. Addresses the likely cause of the user's "the PIP loupe still doesn't work"; the
-   engine/GL path itself was traced and is correct (GL combines the pushed resolved flag with its
-   own punch-in state inside `drawFrame`).
+   nothing. The engine/GL path itself was traced and is correct (GL combines the pushed resolved
+   flag with its own punch-in state inside `drawFrame`).
+   **DEVICE-VERIFIED 2026-07-27, both directions and end to end:** with Loupe off, the Loupe
+   Overview label renders grey and its switch dim while the parent Loupe row stays bright (the
+   gate is targeted, not blanket); turning Loupe on brings the label to full white and the switch
+   to normal. With all five conditions met the corner viewport DOES draw and the OSD carries both
+   `LOUPE` and `OVERVIEW`. So the user's "the PIP loupe still doesn't work" was the missing parent
+   toggle, and the UI now says so instead of silently reporting On.
 
 **OPEN — the sustained mid-gesture frame-rate drop is NOT fixed.** Item 2 above removed only the
 two gesture-EDGE rebuilds. The user's actual report ("it drops further while zooming") has a
@@ -185,13 +208,31 @@ different cause, now confirmed by code trace rather than hypothesis:
   is already true, so **the smooth-preview boost has zero wire effect on the route the user shoots
   on.**
 
-What remains is the original hypothesis: submits are throttled to ≥200 ms and each stalls this
-HAL's stream 170–250 ms, so the camera is stalled for most of a sustained pinch. The GL self-redraw
-keeps the ZOOM motion smooth by redrawing the last frame at the new `zoomComp`, but the SCENE is
-frozen — which is exactly what "drops further while zooming" looks like when panning. Fixing it
-means submitting less often mid-gesture, trading a fluid scene against a softer GL-upscaled preview
-during the gesture (zoom-OUT is already covered by the 1.2× wide aim; zoom-IN would upscale).
-**That is a perceptual tradeoff — do not land it blind.**
+**MEASURED ON DEVICE 2026-07-27 — the mechanism is confirmed and it is WORSE than documented.**
+Driving 12 zoom-preset submits (1×↔3×, the same controller fast path a pinch drives) over ~4.2 s
+produced six FrameGaps ≥200 ms: **400, 282, 213, 413, 276, 210 ms — 1794 ms, i.e. ≥43% of the
+window with the preview stalled**, and that is a FLOOR because gaps under 200 ms are not logged at
+all (see the ColorOS log-quota bullet in CLAUDE.md). Individual stalls reach **413 ms**, above the
+170–250 ms the rest of the docs quote. The GL self-redraw keeps the ZOOM motion smooth by redrawing
+the last frame at the new `zoomComp`, but the SCENE is frozen — which is exactly what "it drops
+further while zooming" looks like when panning.
+
+**The obvious remedy — raise `SENSOR_SUBMIT_MIN_INTERVAL_MS` — is REFUTED by this same run, and the
+earlier entry proposing it was wrong.** The taps above were ~350 ms apart and the resulting submits
+landed ~400 ms apart, i.e. already double the 200 ms floor — and the stalls were undiminished
+(413 ms and 276 ms still appear at that spacing). The stall is a property of the repeating-request
+swap itself, not of how closely two swaps are packed, so spacing them further apart buys back
+proportionally little and just makes `zoomComp` diverge more. Do not tune this constant expecting a
+fix.
+
+What the measurement points at instead is an ASYMMETRY worth designing around: zoom-**IN** needs no
+HAL submit at all, because GL is cropping into a frame the HAL is already delivering wider than
+requested, whereas zoom-**OUT** genuinely needs field the HAL is not sending (which is what the
+1.2× wide aim exists to pre-buy). A submit policy that is free on the way in and bounded on the way
+out would remove most mid-gesture swaps outright rather than merely spacing them. That is a real
+change to the app's most regression-prone path — three separate rounds of "핀치 버벅" reports live
+here — and its cost is progressive preview softness during the gesture, which is a judgement only
+the user's eyes can make. Left OPEN deliberately, now with numbers behind it.
 
 ## Before Production
 
