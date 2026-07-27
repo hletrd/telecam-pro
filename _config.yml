@@ -1,0 +1,44 @@
+# GitHub Pages (legacy build, serving `main` at the repo root).
+#
+# This exists mainly to stop the site title from being whatever the repository "About" field says.
+# Without it Jekyll falls back to repo metadata, so the rendered README carried the full About
+# sentence as its <title> — and drifted every time that field was edited.
+#
+# `privacy-policy/index.html` has NO YAML front matter, so Jekyll copies it verbatim: the
+# hand-written, self-contained policy page is unaffected by anything here. That page is referenced
+# by the Play listing, so it must stay byte-stable.
+title: TeleCam Pro
+description: >-
+  Manual camera for the OPPO Find X9 Ultra and clip-on afocal teleconverters.
+theme: jekyll-theme-primer
+
+# Keep the site to the landing page and the policy. Everything below is engineering documentation
+# that is already readable on GitHub; publishing it through Jekyll only adds broken relative links
+# (the docs link to source paths, which the site does not serve).
+# NOTE: `docs/` is NOT excluded wholesale — the README's logo is `docs/assets/logo.svg`, and
+# dropping the directory would serve the landing page with a broken image. Only the prose lives
+# here; `docs/assets` and `docs/licenses` stay published.
+exclude:
+  - app/
+  - gradle/
+  - device-tests/
+  - tools/
+  - docs/ARCHITECTURE.md
+  - docs/BACKLOG.md
+  - docs/TESTING.md
+  - docs/UX_POLICY.md
+  - docs/play-console-submit.md
+  - docs/play-data-safety.md
+  - docs/play-store-listing.md
+  - docs/plans/
+  - docs/reviews/
+  - docs/superpowers/
+  - CLAUDE.md
+  - CLAUDE-omc.md
+  - PRIVACY.md
+  - keystore.properties.example
+  - build.gradle.kts
+  - settings.gradle.kts
+  - gradle.properties
+  - gradlew
+  - gradlew.bat
