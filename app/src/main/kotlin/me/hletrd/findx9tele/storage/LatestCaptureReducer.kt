@@ -34,6 +34,17 @@ internal data class StoredMediaRow<T>(
     val isPending: Boolean,
     /** False models a row that disappeared between query/reduction and is ignored safely. */
     val isPresent: Boolean = true,
+    /**
+     * Whether MediaStore still credits THIS package as the row's owner.
+     *
+     * False is the normal state for a file this app really did write in a PREVIOUS install:
+     * Android clears `OWNER_PACKAGE_NAME` when the owning package is uninstalled, so every
+     * reinstall or debug/release swap orphans that build's rows permanently. Such a row is still
+     * ours by directory and filename, and must still be restorable for DISPLAY — but it can no
+     * longer be deleted without a system consent flow, so it may never carry a capture-family
+     * delete promise (see [restoreLatestCapture]).
+     */
+    val isOwned: Boolean = true,
 )
 
 internal data class RestoredCaptureOutput<T>(
@@ -157,11 +168,16 @@ internal fun <T> restoreLatestCapture(rows: Iterable<StoredMediaRow<T>>): Restor
                 displayName = candidate.row.displayName,
             )
         }
+    // A proven family key normally earns capture-level deletion — but only while we still OWN every
+    // row in it. After a reinstall MediaStore has cleared our ownership, so the same delete that
+    // used to remove the whole family now fails per row; promising CAPTURE_FAMILY there would show
+    // whole-capture delete copy for something we cannot actually remove. Display is unaffected.
+    val ownsWholeFamily = winner.value.all { it.row.isOwned }
     return RestoredCapture(
         preferred = orderedOutputs.first(),
         outputs = orderedOutputs,
         familyKey = familyKey,
-        deleteScope = if (familyKey != null) {
+        deleteScope = if (familyKey != null && ownsWholeFamily) {
             RestoredDeleteScope.CAPTURE_FAMILY
         } else {
             RestoredDeleteScope.FILE_ONLY

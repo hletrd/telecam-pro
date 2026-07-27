@@ -355,6 +355,57 @@ class LatestCaptureReducerTest {
     private fun videoKey(at: Long, sequence: Long) =
         CaptureFamilyKey(CaptureFamilyMedia.VIDEO, at, sequence)
 
+    @Test
+    fun `a capture whose ownership was cleared still restores, but only file-only`() {
+        // Android clears OWNER_PACKAGE_NAME when the owning package is uninstalled, so every
+        // reinstall orphans that build's rows. The file is still ours by directory and filename and
+        // the user must still see it in the gallery button — but the family delete it used to
+        // promise would now fail per row, so the scope has to degrade.
+        val key = stillKey(at = 1_700_000_000_000L, sequence = 7L)
+        val restored = restoreLatestCapture(
+            listOf(
+                familyRow("photo.heic", key, "heic", id = 40L, owned = false),
+                familyRow("photo.dng", key, "dng", id = 41L, mime = "image/x-adobe-dng", owned = false),
+            ),
+        )
+
+        assertEquals("photo.heic", restored?.preferred?.output)
+        assertEquals(2, restored?.outputs?.size)
+        assertEquals(key, restored?.familyKey)
+        assertEquals(RestoredDeleteScope.FILE_ONLY, restored?.deleteScope)
+    }
+
+    @Test
+    fun `one unowned sibling is enough to drop the whole family's delete promise`() {
+        // Partial ownership is reachable: a reinstall clears the rows that existed then, while a
+        // later sibling of that same capture is written by the new install and IS owned. Deleting
+        // "the capture" would leave the orphaned sibling behind, so the promise must not be made.
+        val key = stillKey(at = 1_700_000_500_000L, sequence = 3L)
+        val restored = restoreLatestCapture(
+            listOf(
+                familyRow("photo.heic", key, "heic", id = 50L, owned = true),
+                familyRow("photo.dng", key, "dng", id = 51L, mime = "image/x-adobe-dng", owned = false),
+            ),
+        )
+
+        assertEquals(key, restored?.familyKey)
+        assertEquals(RestoredDeleteScope.FILE_ONLY, restored?.deleteScope)
+    }
+
+    @Test
+    fun `a fully owned family still earns capture-level deletion`() {
+        // The regression guard for the two above: degrading unowned rows must not degrade everyone.
+        val key = stillKey(at = 1_700_000_900_000L, sequence = 1L)
+        val restored = restoreLatestCapture(
+            listOf(
+                familyRow("photo.heic", key, "heic", id = 60L),
+                familyRow("photo.dng", key, "dng", id = 61L, mime = "image/x-adobe-dng"),
+            ),
+        )
+
+        assertEquals(RestoredDeleteScope.CAPTURE_FAMILY, restored?.deleteScope)
+    }
+
     private fun familyRow(
         output: String,
         key: CaptureFamilyKey,
@@ -363,6 +414,7 @@ class LatestCaptureReducerTest {
         mime: String = "image/heic",
         pending: Boolean = false,
         present: Boolean = true,
+        owned: Boolean = true,
     ) = StoredMediaRow(
         output = output,
         collection = if (key.media == CaptureFamilyMedia.STILL) {
@@ -379,6 +431,7 @@ class LatestCaptureReducerTest {
         dateModifiedEpochSeconds = key.capturedAtEpochMillis / 1_000L,
         isPending = pending,
         isPresent = present,
+        isOwned = owned,
     )
 
     private fun legacyRow(

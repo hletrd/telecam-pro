@@ -117,17 +117,29 @@ object MediaStoreWriter {
             MediaStore.MediaColumns.DATE_ADDED,
             MediaStore.MediaColumns.DATE_MODIFIED,
             MediaStore.MediaColumns.IS_PENDING,
+            MediaStore.MediaColumns.OWNER_PACKAGE_NAME,
         )
         val queryArgs = Bundle().apply {
             val nameSelection = displayNames
                 ?.takeIf { it.isNotEmpty() }
                 ?.joinToString(prefix = " AND ${MediaStore.MediaColumns.DISPLAY_NAME} IN (", postfix = ")") { "?" }
                 .orEmpty()
+            // `OWNER_PACKAGE_NAME = ?` alone silently loses every capture this app made in a
+            // PREVIOUS install: Android clears that column when the owning package is uninstalled,
+            // and in SQL `NULL = 'anything'` is NULL — never true — so those rows can never match
+            // any package name. Device evidence (2026-07-27): four rows in our own DCIM/X9Tele/
+            // with our own IMG_TELECAM_* filenames sat at owner NULL, invisible to this query,
+            // which is why the gallery button fell back to its placeholder after a reinstall even
+            // though the photos were right there. A NULL owner is therefore ACCEPTED — the
+            // relative-path and filename filters already establish the file is ours — and the
+            // resulting row is flagged unowned so it cannot promise a delete it can no longer
+            // perform. A row owned by a DIFFERENT package is still excluded.
             putString(
                 ContentResolver.QUERY_ARG_SQL_SELECTION,
                 "${MediaStore.MediaColumns.RELATIVE_PATH} = ? AND " +
                     "${MediaStore.MediaColumns.IS_PENDING} = ? AND " +
-                    "${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} = ?" + nameSelection,
+                    "(${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} = ? OR " +
+                    "${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} IS NULL)" + nameSelection,
             )
             putStringArray(
                 ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS,
@@ -154,6 +166,7 @@ object MediaStoreWriter {
             val addedColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED)
             val modifiedColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED)
             val pendingColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.IS_PENDING)
+            val ownerColumn = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.OWNER_PACKAGE_NAME)
             buildList {
                 while (cursor.moveToNext()) {
                     val id = cursor.getLong(idColumn)
@@ -168,6 +181,10 @@ object MediaStoreWriter {
                             dateAddedEpochSeconds = cursor.getLong(addedColumn),
                             dateModifiedEpochSeconds = cursor.getLong(modifiedColumn),
                             isPending = cursor.getInt(pendingColumn) != 0,
+                            // The selection admits our package OR a cleared owner, so this is
+                            // exactly "a previous install wrote it": restorable for display,
+                            // but no longer deletable by us without a consent flow.
+                            isOwned = !cursor.isNull(ownerColumn),
                         ),
                     )
                 }
