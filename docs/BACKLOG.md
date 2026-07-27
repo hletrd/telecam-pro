@@ -275,7 +275,7 @@ These are manual Play Console operations, not repository implementation work:
 1. Create the app and upload the signed AAB to Internal testing.
 2. Enter the listing, privacy policy, App content, and Data Safety answers from `docs/play-*.md`.
 3. Upload the icon, feature graphic, and the six 1440x2880 phone screenshots.
-4. Restrict the device catalog to OPPO Find X9 Ultra codes CPH2841 and PMA110.
+4. Set the device catalog (see play-console-submit.md § Device Catalog — the app is no longer single-device).
 5. Install from Internal testing and review Play's automated checks and pre-launch report.
 6. Promote the same tested artifact to production.
 

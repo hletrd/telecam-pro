@@ -4,98 +4,106 @@
 
 <h1>TeleCam Pro</h1>
 
-<p><b>Professional manual camera for the OPPO Find X9 Ultra periscope telephoto and clip-on afocal teleconverters</b><br/>
-Selectable converter magnification, 4-lens switcher, afocal 180° flip, HAL OIS+EIS, SDR-to-HLG / S-Log3 / LogC3 profiles, directional audio</p>
+<p><b>Manual camera for periscope telephoto phones and clip-on afocal teleconverters</b></p>
 
 <p>
 <img src="https://img.shields.io/badge/Android-16%20(API%2036)-3DDC84?logo=android&logoColor=white" alt="Android 16" />
 <img src="https://img.shields.io/badge/Kotlin-2.4.10-7F52FF?logo=kotlin&logoColor=white" alt="Kotlin" />
 <img src="https://img.shields.io/badge/Jetpack%20Compose-2026.06-4285F4?logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
 <img src="https://img.shields.io/badge/Camera2-Pro%20manual-FF7043" alt="Camera2" />
-<img src="https://img.shields.io/badge/Gradle-9.6.1-02303A?logo=gradle&logoColor=white" alt="Gradle" />
-<img src="https://img.shields.io/badge/Device-Find%20X9%20Ultra%20(CPH2841%2FPMA110)-000000" alt="Find X9 Ultra" />
+<img src="https://img.shields.io/badge/License-open%20source-000000" alt="Open source" />
 </p>
 
 </div>
 
+A clip-on afocal teleconverter turns a phone's periscope lens into a long telephoto — and breaks two
+assumptions every stock camera app makes. The image arrives **upside down**, because an afocal
+telescope has no erecting prism. And the light leaves it **collimated**, so the phone focuses near
+infinity and autofocus has almost nothing to work with.
+
+TeleCam Pro is built around those two facts, then filled out with the manual controls that kind of
+shooting needs.
+
 ## Features
 
-- **Single-device exclusive**: Android 16 (API 36), latest toolchain only (no backward compatibility). Camera2 direct — no CameraX.
-- **Sony-style pro UX**: Fn access, My Menu, MR banks, PASM-like exposure, compact OSD, peaking,
-  zebra, histogram, waveform, and review zoom. No tutorial banners, warning chips, or helper overlays
-  over the viewfinder. See [`docs/UX_POLICY.md`](docs/UX_POLICY.md).
-- **Seamless zoom (photo)**: pinch sweeps **0.6×→20×** across all four lenses (UW 14 mm / main 23 mm / 3× 70 mm / 10× 230 mm) in one session on the logical multicamera — the HAL crosses the optics at their native ratios and fills between them digitally, iPhone-style; lens buttons are zoom presets, and the OSD reads the live effective focal. Video pins the matching standalone lens (the logical camera's EIS leaks a warp band into recordings — device-isolated), with lens-local digital zoom. The TELE toggle pins the standalone 3× for converter shooting.
-- **Afocal 180° flip**: The teleconverter is afocal, so images arrive flipped 180° → preview/photos/videos all corrected (GL texcoord rotation for preview, pixel rotation for HEIF/JPEG, EXIF tag for DNG).
-- **Selectable teleconverter**: the mounted optic is a *setting*, not a constant — two dropdowns in
-  the Lens tab (phone model, then the converters that clamp onto it) covering the first-party kits
-  (Hasselblad 300 mm / 230 mm, ZEISS 200 mm / 400 mm), generic 1.5/2/3× clip-ons, and a custom
-  magnification. Passive glass cannot announce itself, so this is pure declaration; only the *phone*
-  is detected, and each kit's magnification derives from the host tele it was designed for (a
-  "ZEISS 200" on this 70 mm periscope is honestly reported as 165 mm). The OSD, EXIF 35 mm focal,
-  Fn tile, and TELE zoom range all follow the selection.
-- **Front camera with flip button — basic capture**: photo and video on the selfie camera with a
-  mirrored preview (saved files unmirrored, the standard convention). The teleconverter, focal rail,
-  and other rear-optics features stay rear-only; the app always launches on the rear camera.
-- **Full manual control**: Focus (nonlinear slider tuned near infinity), ISO, shutter (speed or cine
-  angle), WB (presets + Kelvin/tint), EV, metering, drive modes (single/burst/AEB/timelapse).
-  Stop-snapping dials have haptic detents; AF→MF handoff seeds the manual slider from AF's live lens
-  position. Restored and live choices are normalized as one packet to the exact modes and zoom range
-  the accepted camera advertises; route-changing recall waits for the target camera's capabilities.
-  Settings and Fn cycles expose only applicable choices, and quick rulers require their exact manual
-  mode/range. AE/AF regions are sent only when that camera reports region support.
-- **Volume-key hardware shutter**: vibration-free release at 300 mm (photo capture / video start-stop).
-- **Directional audio (Sound Focus / Sound Stage)**: drives the device's accepted vendor audio-HAL controls; the acoustic effect still needs an off-axis real-scene A/B check.
-- **Photos**: HEIF and JPEG can be selected separately or together in photo mode. RAW (DNG) is
-  additionally available only in TELE mode on the eligible standalone 3× camera; supported outputs
-  can be combined. A DNG-only result gets a truthful RAW review tile; a processed sibling from the
-  same capture upgrades it. Canonical families remain grouped across relaunch, and Delete removes
-  every known sibling; legacy files that cannot prove grouping explicitly delete only that file. The
-  fresh-launch review compares photos, RAW-only captures, and videos. All saved formats carry
-  gravity-derived orientation correction.
-- **Video**: HEVC Main10 profiles for **HLG / S-Log3 / S-Log3.Cine / LogC3** plus 8-bit HEVC/AVC
-  SDR. HLG uses the display-referred SDR-to-HLG mapping from ITU-R BT.2408-9 (SDR reference white →
-  75% HLG); the log profiles bake the standard curve + gamut matrix onto the same display-referred
-  SDR stream (grading convenience, not scene-referred camera log); none can recover highlights
-  already removed by the ISP's SDR tone mapping. The stable v1 Camera2 and
-  EGL input is SDR/8-bit, so neither HLG nor the log profiles are marketed as end-to-end 10-bit capture. 4K UHD
-  max (HEVC/AVC HW ceiling); 24/25/30/60 fps class + NTSC drop-frame
-  (23.976/29.97/59.94); **Low → Max bitrate presets up to ~120 Mbps at 4K**; Open-Gate
-  4:3-aspect recording (2560×1920 verified on the tele); AAC 48 kHz stereo.
-- **Video stabilization = HAL OIS+EIS** (the stock "super steady" path): OIS physically cuts per-frame motion blur at 300 mm (Off / Standard / Active — the in-app labels).
-- **Vendor/HAL stability**: unstable or unmuxable device paths such as Auto HDR, high-speed 120 fps,
-  AV1 software encode, APV MP4 muxing, and native vendor log are excluded from the shipped UI. The
-  GL-baked S-Log3 / S-Log3.Cine / LogC3 profiles are the shipping log path (they replaced the
-  earlier GL O-Log2 option).
-- **Aspect ratios**: 4:3 (full sensor) / 16:9 (center crop). Sony-style mode-aware OSD.
-- **Capture aids**: focus peaking (adjustable sensitivity/color), zebra, false color, grid, spirit
-  level, a movable punch-in loupe, and an opt-in **Loupe Overview** (a same-stream reference to the
-  full delivered frame while the loupe is active in TELE Photo 4:3—not an automatic 1× or a second
-  camera feed) that marks the magnified field with an iPhone-style framing rectangle, plus
-  histogram, waveform, and in-app last-shot pinch-to-zoom review. The focal rail carries the direct
-  0.6/1/3/10× lens presets; with TELE engaged it becomes a digital-zoom picker whose marks are
-  **derived from the lens's advertised range × the selected converter** (13×/30×/60× with the
-  300 mm kit), so a mark the optics cannot reach is absent rather than clamped.
-- **Settings persistence**: pro controls saved across launches ("Remember Settings", default ON),
-  with separate default-on preserve toggles for lens selection and TELE mode.
-- **Durable saves**: completed captures and clips survive interruptions — a capture followed by an
-  immediate app kill, or a recording interrupted by backgrounding, still finalizes and publishes; a
-  finished file whose MediaStore publish fails is adopted and published at the next launch instead of
-  being discarded (device-verified on PMA110). A mid-recording microphone failure degrades the clip
-  to video-only rather than losing the take.
+**Teleconverter**
+- Afocal 180° flip corrected everywhere — preview, stills, and video.
+- Tell the app which converter you mounted: pick your phone, then the optics that clamp onto it.
+  Presets cover the Hasselblad 300 mm and 230 mm, ZEISS 200 mm and 400 mm, generic 1.5/2/3× clip-ons,
+  and a custom magnification. Passive glass cannot identify itself, so this is a declaration — only
+  the *phone* is detected.
+- Each preset's magnification is derived from the tele lens it was designed for, so a converter used
+  on a different body reports its true focal length instead of the number printed on the barrel.
+- With TELE engaged the focal rail becomes a digital-zoom picker whose marks come from the lens's
+  advertised range × your converter. Marks the optics cannot reach are absent, not clamped.
 
-> S-Log is a trademark of Sony Group Corporation; LogC is a trademark of Arnold & Richter Cine
-> Technik GmbH & Co. Betriebs KG (ARRI). The log profiles are the app's own implementations of the
-> published curve specifications, named only to describe grading-workflow compatibility.
+**Manual control**
+- PASM-style exposure, plus manual focus on a nonlinear slider that spends most of its travel near
+  infinity — where a collimated converter actually focuses.
+- ISO, shutter (speed or cine angle), WB presets + Kelvin/tint, EV, metering, and drive modes
+  (single / burst / AEB / timelapse), with stop-snapping haptic detents.
+- Every control is normalized to what the selected camera actually advertises; a value the hardware
+  cannot apply is not offered.
 
-## Open source
+**Capture**
+- HEIF and JPEG, selectable separately or together. RAW (DNG) is available in TELE mode, where the
+  app routes to a standalone camera that permits it.
+- Video: HEVC/AVC up to 4K UHD, 24/25/30/60 fps plus NTSC drop-frame, bitrate presets to ~120 Mbps,
+  Open Gate 4:3, AAC 48 kHz stereo.
+- Colour profiles for HLG, S-Log3, S-Log3.Cine and LogC3 — see the honesty note below.
+- Video stabilization uses the device's own OIS + EIS path. At 300 mm, OIS is what cuts per-frame
+  motion blur; frame-warping EIS cannot.
 
-TeleCam Pro is free and open source. The source code is public at
-[`github.com/hletrd/telecam-pro`](https://github.com/hletrd/telecam-pro), and the app contains no ads,
-analytics, in-app purchases, accounts, or cloud sync.
+**Viewfinder**
+- Sony-style: Fn, My Menu, MR banks, compact OSD. No tutorial banners or coach marks over the image
+  ([UX policy](docs/UX_POLICY.md)).
+- Focus peaking, zebra, false colour, grid, spirit level, histogram, waveform.
+- A movable punch-in loupe, with an optional corner overview that marks the magnified field.
+- Pinch-to-zoom review of the last shot, in app.
 
-## Toolchain
+**Reliability**
+- Settings persist across launches, with separate toggles for keeping your lens and TELE choice.
+- A capture followed immediately by an app kill still finalizes. A finished file whose MediaStore
+  publish fails is adopted and published at the next launch rather than discarded.
+- A microphone failure mid-recording degrades the clip to video-only instead of losing the take.
 
-See [`CLAUDE.md`](CLAUDE.md) § **Toolchain** for pinned versions and build setup.
+## What this app does not claim
+
+The Camera2 stream it receives is the ISP's **display-referred 8-bit SDR** output.
+
+That has a consequence worth stating plainly: **the log and HLG profiles are curves baked onto that
+SDR signal, not scene-referred camera log.** They decode BT.1886, matrix to the target gamut, and
+apply the S-Log3 / LogC3 / HLG transfer function. They give you a flat image that drops into a
+log grading workflow — they do **not** recover highlights the ISP has already tone-mapped away, and
+they do not extend dynamic range. Neither HLG nor the log profiles are end-to-end 10-bit capture.
+
+A genuinely scene-referred stream would need the vendor's authenticated camera SDK. The device's
+native log key is accepted by the HAL but changes nothing a third-party app can see — tested on
+device with both preview and record templates.
+
+> S-Log is a trademark of Sony Group Corporation; LogC is a trademark of ARRI. The profiles are this
+> app's own implementations of the published curve specifications, named to describe grading-workflow
+> compatibility.
+
+## Device support
+
+Requires **Android 16 (API 36)**. Hardware is resolved by enumerating Camera2 capabilities rather
+than by model name, so the app adapts to whatever lenses and controls a phone advertises.
+
+Development and device verification happen on the **OPPO Find X9 Ultra**, which is also where the
+HAL workarounds in [`CLAUDE.md`](CLAUDE.md) were measured. Other Android 16 phones are supported on a
+best-effort basis.
+
+## Build
+
+```bash
+./gradlew assembleDebug        # debug APK
+./gradlew installDebug         # install to a connected device
+```
+
+Requires JDK 21, Android SDK Platform 37, and Build Tools 36.0.0. Platform 37 is a compile-time
+requirement only; the runtime target and minimum stay API 36. AGP 9 bundles Kotlin, so the
+`kotlin.android` plugin is not applied.
 
 | Component | Version |
 |---|---|
@@ -104,109 +112,33 @@ See [`CLAUDE.md`](CLAUDE.md) § **Toolchain** for pinned versions and build setu
 | Kotlin / Compose compiler | 2.4.10 |
 | Compose BOM | 2026.06.01 |
 | compileSdk / targetSdk / minSdk | 37 / 36 / 36 |
-| JDK | 21 (aarch64) |
+| JDK | 21 |
 
-> Android SDK Platform 37 is required to compile the app. The runtime target and minimum remain API 36
-> (Android 16). AGP 9 has Kotlin built in; the `kotlin.android` plugin is not applied.
+The Gradle wrapper is pinned to its published SHA-256, and resolved plugins and dependencies are
+checked against `gradle/verification-metadata.xml` in strict mode.
 
-## Build
+### Release builds
 
-```bash
-./gradlew assembleDebug        # debug APK
-./gradlew installDebug          # install to device
-```
+`./gradlew bundleRelease` produces the Play App Bundle. Signing is driven by a gitignored
+`keystore.properties` plus `TELECAMPRO_STORE_PASSWORD` / `TELECAMPRO_KEY_PASSWORD` in the
+environment — no keys live in git, and release bundling fails fast rather than emitting an unsigned
+artifact. R8/minify is off for v1.
 
-Requires JDK 21, Android SDK Platform 37, and SDK Build Tools 36.0.0. The app still targets and requires
-API 36 at runtime. [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) is the current as-built design
-authority. The [`2026-07-01 specification`](docs/superpowers/specs/2026-07-01-find-x9-ultra-camera-design.md)
-is a preserved historical snapshot and is superseded wherever it differs; it is not the current design.
-The Gradle 9.6.1 wrapper distribution is pinned to Gradle's published SHA-256, and resolved build
-plugins/dependencies are checked against `gradle/verification-metadata.xml` in strict mode by default.
+## Open source
 
-### Release build (Google Play)
+No ads, analytics, in-app purchases, accounts, or cloud sync. Source at
+[`github.com/hletrd/telecam-pro`](https://github.com/hletrd/telecam-pro).
 
-The signed release artifact is a **Play App Bundle** (`.aab`). Signing is driven by a gitignored
-`keystore.properties` — no keys live in git. One-time setup:
+## Documentation
 
-```bash
-# 1. create an upload keystore (from the repo root)
-keytool -genkeypair -v -keystore telecampro-upload.jks -alias telecampro \
-  -keyalg RSA -keysize 4096 -validity 10000
+| | |
+|---|---|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | As-built design authority: module map, threading, ownership, data flow |
+| [`CLAUDE.md`](CLAUDE.md) | Hard-won device and HAL facts, and the conventions that follow from them |
+| [`docs/BACKLOG.md`](docs/BACKLOG.md) | Release board, residual field checks, deferred work |
+| [`docs/TESTING.md`](docs/TESTING.md) | Test tiers and coverage policy |
+| [`docs/UX_POLICY.md`](docs/UX_POLICY.md) | Viewfinder rules |
 
-# 2. copy the template and fill in the path/alias (passwords should stay out of the file)
-cp keystore.properties.example keystore.properties   # then edit storeFile/keyAlias if needed
-
-# 3. provide passwords for this shell without putting them in shell history
-read -s "TELECAMPRO_STORE_PASSWORD?Store password: "; echo
-export TELECAMPRO_STORE_PASSWORD
-read -s "TELECAMPRO_KEY_PASSWORD?Key password (enter the same value if you reused it): "; echo
-export TELECAMPRO_KEY_PASSWORD
-
-# 4. build the signed bundle (fails fast if signing credentials are missing)
-./gradlew bundleRelease        # → app/build/outputs/bundle/release/app-release.aab
-```
-
-Without `keystore.properties`, debug builds, tests, and lint still work; release bundling intentionally
-fails instead of producing an unsigned artifact that cannot be uploaded to Play.
-R8/minify is intentionally off for v1. Store listing text, privacy policy, Data Safety answers, and
-graphic assets live in [`docs/play-store-listing.md`](docs/play-store-listing.md),
-[`privacy-policy/index.html`](privacy-policy/index.html), [`docs/play-data-safety.md`](docs/play-data-safety.md),
-and [`docs/assets/play/`](docs/assets/play/).
-
-This working copy has a local upload keystore at `telecampro-upload.jks` and a gitignored
-`keystore.properties` containing only the keystore path/alias. Export the two `TELECAMPRO_*`
-password variables before rebuilding release bundles.
-
-> ⚠️ **`telecampro-upload-passwords.txt.gpg` is STALE and does not open the current keystore.** The
-> backup is dated 2026-07-07; the keystore was regenerated 2026-07-25, and the old passphrase was
-> not carried over — a release build was blocked on exactly this. Refresh the backup from the
-> passwords actually in use, or delete it so it cannot mislead. The keystore has never been uploaded
-> to Play, so replacing the key entirely is still free; once an AAB signed with it is accepted, the
-> upload identity is fixed to that key.
-
-## Device camera capabilities
-
-Beyond the standard Camera2 surface, the device advertises extra session/request capabilities for its
-camera pipeline, and several are available to third-party apps on the tele. TeleCam Pro submits only
-exact advertised values, normalizes the visible controls to those values, and suppresses AE/AF regions
-when the corresponding advertised maximum is zero. Device behavior is verified through saved files,
-not just session setup logs:
-
-| Feature | Key | Status |
-|---|---|---|
-| Native log | `com.oplus.log.video.mode` (session key) | ⛔ HAL accepts the key, but third-party Camera2 output remains 709; GL S-Log3/LogC3 ship |
-| Video stabilization | `CONTROL_VIDEO_STABILIZATION_MODE` + `com.oplus.video.stabilization.mode` | ✅ `ois=1, vstab=2` verified |
-| Directional audio | `vendor_audiorecord_effect_type` / `focus_angle` … | ✅ HAL `track_support=true` |
-| Auto HDR / Ideal RAW / APV / AV1 / high-speed 120 / in-sensor zoom / macro / custom-LUT | — | ⛔ not exposed in the shipped UI; excluded after device compatibility checks |
-
-## Implementation Status
-
-- 🟢 **Release status (2026-07-27, cycle 9): a signed release candidate is cut from current `main`
-  and its six Play screenshots are current.** The artifact SHA-256s, signing verification, and the
-  per-slot screenshot provenance are recorded in
-  [`docs/play-console-submit.md`](docs/play-console-submit.md);
-  [`docs/BACKLOG.md`](docs/BACKLOG.md) remains the authoritative release board. The signer
-  certificate is unchanged, so this uploads as an update to the same Play identity.
-- ✅ **Gates on that candidate**: `assembleDebug testDebugUnitTest lintDebug` and
-  `lintRelease assembleRelease bundleRelease` all pass — **1185 host tests, 0 failures**;
-  `lintRelease` 0 errors / 5 warnings, all pre-existing. `app/src/test/` stays the suite source of
-  truth; rerun it rather than trusting a copied count.
-- ✅ **Device-verified on PMA110 (2026-07-27)**: TELE rail reads 13×/30×/60× and reconfigures with
-  RAW enabled where the non-TELE route reports none; AE carries across a lens switch with no
-  convergence excursion (tele's first frame at the clamped-correct ISO, return landing on the
-  original exactly); the camera-switch dip's grace/deadline bracket the measured 288 ms / 658 ms
-  reopen gaps; Loupe Overview gates and draws with its framing hint; and an injected two-finger
-  pinch shows **zero HAL submits and zero frame gaps while the fingers move**.
-- ⏳ **Operator steps that remain**: upload the signed AAB, enter the listing and Data Safety
-  answers, restrict the device catalog to CPH2841/PMA110, run internal testing, and review the
-  pre-launch report — the checklist is in
-  [`docs/play-console-submit.md`](docs/play-console-submit.md). One screenshot slot
-  (`05-lens-and-tele`) is a black-scene frame and would benefit from a handheld TELE capture
-  against a real subject; it is correct and current either way.
-- 🔎 **Residual field checks**: directional-audio off-axis acoustic A/B, held-landscape VIDEO
-  playback in an external player (the container orientation hint — saved STILL orientation was
-  device-verified 2026-07-25), post-mapping HLG appearance on a real HDR display, and the
-  subjective read of the preview softening that the new zoom-gesture submit policy trades for a
-  fluid scene.
-- 📌 **Deferred beyond v1**: R8/minify, Dolby Vision, and the authenticated CameraUnit path. See
-  [`docs/BACKLOG.md`](docs/BACKLOG.md).
+Store listing text, privacy policy, and Play assets live in
+[`docs/play-store-listing.md`](docs/play-store-listing.md),
+[`privacy-policy/`](privacy-policy/index.html), and [`docs/assets/play/`](docs/assets/play/).

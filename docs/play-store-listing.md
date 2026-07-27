@@ -22,7 +22,7 @@ Copy-paste source for the Play Console listing. Character limits noted; everythi
 ## Short description (≤80 chars)
 
 ```
-Open-source manual camera for Find X9 Ultra telephoto.
+Open-source manual camera for periscope telephoto + teleconverters.
 ```
 
 ## Full description (≤4000 chars)
@@ -87,8 +87,10 @@ S-Log is a trademark of Sony Group Corporation; LogC is a trademark of Arnold & 
 Technik GmbH & Co. Betriebs KG (ARRI). The log profiles are the app's own implementations of the
 published curve specifications, named only to describe grading-workflow compatibility.
 
-Requires an OPPO Find X9 Ultra running Android 16. Target model codes: CPH2841 (global) and PMA110
-(China/import). It will not work on other devices.
+Requires Android 16. Built and verified on the OPPO Find X9 Ultra (CPH2841 / PMA110); the app reads
+each phone's advertised camera capabilities rather than its model name, so other Android 16 phones
+are supported on a best-effort basis. Teleconverter presets cover the Find X9 Ultra and X9 Pro,
+vivo X200 Ultra and X300 Ultra, plus generic clip-ons and a custom magnification.
 ```
 
 ## Data Safety form answers
@@ -139,7 +141,7 @@ Requires an OPPO Find X9 Ultra running Android 16. Target model codes: CPH2841 (
 3. Play Console → create app → upload the signed AAB to an **internal testing** track.
 4. Set pricing to **free**, paste the descriptions above, set category/rating, complete the Data Safety form as above.
 5. Add the privacy policy URL, contact email, icon, feature graphic, and screenshots.
-6. Device catalog -> restrict availability to OPPO Find X9 Ultra / CPH2841 and PMA110 before wider rollout.
+6. Device catalog -> see play-console-submit.md; the app is no longer restricted to two model codes.
 7. Roll out internal testing, review the pre-launch report, then promote to production. A closed test
    remains optional for this 2015 developer account.
 

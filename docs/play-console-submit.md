@@ -156,12 +156,22 @@ Summary:
 
 ## Device Catalog
 
-Restrict availability to Find X9 Ultra variants:
+**The app is no longer single-device.** Hardware is resolved by enumerating Camera2 capabilities
+rather than model names, and the teleconverter presets explicitly cover the Find X9 Ultra and X9 Pro,
+vivo X200 Ultra and X300 Ultra, plus generic clip-ons — a catalog locked to two model codes would
+contradict the app's own UI.
 
-- Global/international: `CPH2841`
-- China/import/tested device: `PMA110`
+The `minSdk 36` manifest requirement already excludes almost every device on the market, so Android
+16 is doing most of the narrowing on its own.
 
-The app requires Android 16 / API 36 and is intentionally single-device.
+Two options, an owner decision:
+
+- **Open catalog (matches the app's own claims).** Ship to all Android 16 phones. Only the Find X9
+  Ultra is device-verified, so accept that early reviews may come from untested hardware.
+- **Staged.** Launch restricted to the verified models below, then widen once another device has
+  been through a real capture pass. Slower, but no unverified first impressions.
+
+Verified models: `CPH2841` (global) and `PMA110` (China/import).
 
 ## Manual Console Sequence
 
@@ -171,7 +181,7 @@ The app requires Android 16 / API 36 and is intentionally single-device.
 3. Upload the icon, feature graphic, and the six checked-in screenshots — these ARE current
    (recaptured 2026-07-27, 1440x2880); the earlier "do not use the checked-in captures" warning no
    longer applies.
-4. Restrict the device catalog to CPH2841 and PMA110 before any wider rollout.
+4. Set the device catalog per the Device Catalog section above (open vs staged is an owner call).
 5. Review Play's automated checks and pre-launch report.
 6. Promote the same artifact only after the internal-test install succeeds.
 
