@@ -1341,7 +1341,23 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
     Captioned("Photo · 4:3 · Teleconverter · Loupe") {
         // Loupe Overview is a same-stream full-frame reference, never an automatic 1x camera feed.
         // Exact predicate: enabled + Photo + 4:3 + TELE + active punch-in. Default remains off.
-        ToggleRow(label = "Loupe Overview", checked = state.teleFinder, onCheckedChange = actions::onToggleTeleFinder)
+        //
+        // Gated on the LOUPE specifically, the same way Zebra Level is gated on Zebra: the loupe is
+        // this row's parent FEATURE (cycle 4 made it the gate axis — at a steady zoom the overview
+        // duplicates the main view ~1:1, so without magnification there is nothing for it to show),
+        // and its switch lives under a DIFFERENT section header, which is what makes the dependency
+        // invisible from here. Ungated, this row would report "On" while provably drawing nothing
+        // and saying nothing about why — the caption alone is passive and easy to read past.
+        // Deliberately NOT gated on Photo/4:3/Teleconverter as well: those three are transient
+        // shooting states, so gating on them would flicker the row in and out mid-shoot and block
+        // pre-arming a persisted preference. The caption carries those; the switch carries the
+        // parent.
+        ToggleRow(
+            label = "Loupe Overview",
+            checked = state.teleFinder,
+            onCheckedChange = actions::onToggleTeleFinder,
+            enabled = state.punchIn,
+        )
     }
 }
 
