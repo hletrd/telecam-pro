@@ -24,9 +24,9 @@ the TELE focal rail, the AE lens-switch seed, the camera-switch dip, the loupe f
 gallery-restore fix and the zoom-gesture submit policy. Do not upload the older bundle.
 
 - Artifact location: `app/build/outputs/bundle/release/app-release.aab`
-- AAB SHA-256: `6171c66967cc65504db3b04d179ecfa335b9ea51884526f9375d474969fcc26f`
+- AAB SHA-256: `c238c1cf1d30e8930aa12075b56641b3824541757dfe2e5cfc6b7d8a94888363`
 - Matching release APK SHA-256:
-  `2e6d382c46c857570a704e1d29a302539f40bdd535f690a73fc106bd616a4910`
+  `615ff06d044f0fbd378471e80a8f351eacb21a106b1ae2eddc460904d849d4e3`
 - Launch component: `me.hletrd.telecampro/me.hletrd.findx9tele.MainActivity`
 - `bundletool 1.18.3 validate`: passed; AAB `jarsigner -verify`: verified
 - APK signing: v2 valid (v1/v3/v3.1/v4 absent, as before), 1 signer, certificate SHA-256
@@ -36,6 +36,10 @@ gallery-restore fix and the zoom-gesture submit policy. Do not upload the older 
 - Release gate (cycle-9 cut): `lintRelease` **0 errors / 5 warnings**, every one pre-existing and
   outside the changed files (`ApplySharedPref`, `UseKtx` ×3, an AGP-version-available notice);
   host suite **1185 tests, 0 failures**
+- Carries a **baseline profile** (`assets/dexopt/baseline.prof`) installed by
+  androidx.profileinstaller. Without it the shipped APK sat at `status=verify` and ran
+  interpreted until JIT warmed; device-measured, the worst frame on opening the settings sheet
+  went 61 ms → 22 ms and idle-viewfinder p99 10 ms → 7 ms.
 - Installed and exercised on the PMA110 from this exact APK: viewfinder, TELE toggle
   (rail reads `13x / 30x / 60x`), Shooting/Focus/Video tabs — which is where three of the six
   store screenshots come from

@@ -176,11 +176,25 @@ composeCompiler {
     // on every ~10-25 Hz telemetry tick regardless of strong skipping. The config marks the
     // effectively-immutable ones stable; CameraUiState itself is @Immutable in source.
     stabilityConfigurationFiles.add(layout.projectDirectory.file("compose_stability.conf"))
+
+    // Opt-in compiler reports for recomposition work: `-PcomposeReports=true` writes per-module
+    // stability/skippability CSV+txt under build/compose_*. Off by default because it slows the
+    // Kotlin task and writes into the build dir on every compile; it is the tool for answering
+    // "which composable is unskippable and why" instead of guessing at traversal cost.
+    if (providers.gradleProperty("composeReports").orNull == "true") {
+        reportsDestination = layout.buildDirectory.dir("compose_reports")
+        metricsDestination = layout.buildDirectory.dir("compose_metrics")
+    }
 }
 
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
+    // Installs src/main/baseline-prof.txt at first run so ART compiles the startup and
+    // menu paths ahead of time. Without it the release APK sits at `status=verify` and
+    // every method is interpreted until JIT warms — measured as a 61 ms worst frame on
+    // the first settings open, 26 ms once AOT-compiled.
+    implementation(libs.androidx.profileinstaller)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.kotlinx.coroutines.android)

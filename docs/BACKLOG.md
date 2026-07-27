@@ -268,6 +268,43 @@ gaps while the fingers move.
 What a human still owns is the SUBJECTIVE half — whether the progressive softening while zooming in
 reads as acceptable. The stall behaviour itself is now measured, not assumed.
 
+### Landed 2026-07-27 — startup/UI profiling pass
+
+Profiled the RELEASE build on PMA110 rather than guessing at what felt slow, and the guess would
+have been wrong: the camera path was already clean.
+
+`dumpsys gfxinfo` over a mixed interaction showed 3.01% janky frames with **GPU p95 at 4 ms and
+every janky frame flagged `Slow UI thread`** — CPU-bound, not render-bound. The Compose compiler
+report (`-PcomposeReports=true`, now an opt-in flag in `app/build.gradle.kts`) then ruled out the
+usual suspect: **94 of 94 restartable composables are skippable, none unskippable**, so the cycle-4
+stability work (`app/compose_stability.conf`) is doing its job and recomposition breadth was not the
+problem.
+
+Isolating each interaction with its own `gfxinfo reset` located the cost precisely — first
+composition of the menu, not the viewfinder:
+
+| action | p99 before | p99 after |
+|---|---|---|
+| open settings | **61 ms** | **22 ms** |
+| tab switches | 36 ms | 30 ms |
+| close settings | 16 ms | 13 ms |
+| idle viewfinder | 10 ms | 7 ms |
+| photo↔video | 11 ms | 12 ms |
+
+Root cause: `dumpsys package dexopt` reported the shipped APK at **`status=verify`** — no profile
+had ever been supplied, so it ran interpreted until JIT warmed. Fixed by adding
+`androidx.profileinstaller` 1.4.1 plus `app/src/main/baseline-prof.txt`, which AGP compiles into
+`assets/dexopt/baseline.prof` (verified present in both the APK and the AAB).
+
+Two notes for whoever revisits this:
+
+- The profile is CLASS-level and hand-scoped, not generated. A macrobenchmark module
+  (`androidx.baselineprofile`) would produce method-level rules from a measured run and should
+  replace this file if that module is ever added. Coarse as it is, it already beat a forced
+  blanket `compile -m speed` on the worst frame (22 ms vs 26 ms).
+- `profman` is not reachable from the adb shell on this device, which is why the device's own JIT
+  profile could not be converted into generated rules.
+
 ## Before Production
 
 These are manual Play Console operations, not repository implementation work:

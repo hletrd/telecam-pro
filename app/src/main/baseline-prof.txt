@@ -1,0 +1,41 @@
+# Baseline profile — AOT-compiled at install by androidx.profileinstaller.
+#
+# WHY THIS EXISTS (device-measured 2026-07-27, release APK on PMA110):
+#   dumpsys package dexopt reported `status=verify` — the shipped APK ran fully interpreted until
+#   JIT warmed, because nothing ever supplied a profile. Isolating each interaction with
+#   `dumpsys gfxinfo ... framestats` put the cost on first composition of the menu, not on the
+#   camera path:
+#
+#     action            p99 (verify)   p99 (forced `compile -m speed`)
+#     open settings         61 ms                26 ms
+#     tab switches          36 ms                29 ms
+#     close settings        16 ms                11 ms
+#     idle viewfinder       10 ms                 —      (0% janky either way)
+#
+#   So the ceiling AOT can reach is a 57% cut on the worst frame, and the viewfinder itself was
+#   never the problem — GPU sat at 4 ms p95 while every janky frame was `Slow UI thread`.
+#
+# SCOPE: class-level rules over this app's own packages plus the Compose UI machinery its first
+# composition walks. Deliberately NOT method-level — those come from a macrobenchmark run
+# (androidx.baselineprofile plugin), which needs a separate Gradle module; this file is the
+# measured-but-coarse version of that, and should be REPLACED by generated output if that module
+# is ever added. Over-inclusion costs install-time compilation, not runtime.
+#
+# Format note: `L...;` is a class rule; `H`/`S`/`P` flags mark hot/startup/post-startup methods.
+# profgen (run by AGP) compiles this into assets/dexopt/baseline.prof — verify it is present in
+# the built APK after editing, because a malformed rule is silently dropped.
+
+# --- This app -------------------------------------------------------------------------------
+Lme/hletrd/findx9tele/**;
+
+# --- Compose: what first composition of the viewfinder and the settings sheet actually walks ---
+Landroidx/compose/runtime/**;
+Landroidx/compose/ui/**;
+Landroidx/compose/foundation/**;
+Landroidx/compose/material3/**;
+Landroidx/compose/animation/**;
+
+# --- Activity / lifecycle / ViewModel startup path --------------------------------------------
+Landroidx/activity/**;
+Landroidx/lifecycle/**;
+Landroidx/core/view/**;
