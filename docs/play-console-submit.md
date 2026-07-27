@@ -17,21 +17,28 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 Do not upload debug APKs or any unsigned/stale release bundle.
 
-### Final v1 upload artifacts (built + verified 2026-07-27 from `main` at `a0d4dbc`)
+### Final v1 upload artifacts (built + verified 2026-07-27 from `main` at cycle 9, `6bf2325`)
+
+**This supersedes the `a0d4dbc` cut** (AAB `84a74f64…`, APK `f95161cc…`), which predates cycle 9 —
+the TELE focal rail, the AE lens-switch seed, the camera-switch dip, the loupe framing hint, the
+gallery-restore fix and the zoom-gesture submit policy. Do not upload the older bundle.
 
 - Artifact location: `app/build/outputs/bundle/release/app-release.aab`
-- AAB SHA-256: `84a74f645a55c06163486db756dbd71a0d5836a17e118398710cb6837250641d`
+- AAB SHA-256: `6171c66967cc65504db3b04d179ecfa335b9ea51884526f9375d474969fcc26f`
 - Matching release APK SHA-256:
-  `f95161cc0828ef010f2e561c7136fc5047e8afddf483beb4733d885b0dd65291`
+  `2e6d382c46c857570a704e1d29a302539f40bdd535f690a73fc106bd616a4910`
 - Launch component: `me.hletrd.telecampro/me.hletrd.findx9tele.MainActivity`
 - `bundletool 1.18.3 validate`: passed; AAB `jarsigner -verify`: verified
 - APK signing: v2 valid (v1/v3/v3.1/v4 absent, as before), 1 signer, certificate SHA-256
   `9dfdb903269238ef6de424052666b05814577b4b3bb43a5e3e3a05572660e584` — matches the upload
   certificate above
 - APK alignment: 16 KiB passed (`zipalign -c -P 16 4`)
-- Release gate: `lintRelease` **0 errors / 5 warnings**, every one pre-existing and outside the
-  changed files (`MediaStoreWriter` ×3, `StillCapturePipeline`, an AGP 9.3.1-available notice);
-  host suite **1131 tests, 0 failures**
+- Release gate (cycle-9 cut): `lintRelease` **0 errors / 5 warnings**, every one pre-existing and
+  outside the changed files (`ApplySharedPref`, `UseKtx` ×3, an AGP-version-available notice);
+  host suite **1185 tests, 0 failures**
+- Installed and exercised on the PMA110 from this exact APK: viewfinder, TELE toggle
+  (rail reads `13x / 30x / 60x`), Shooting/Focus/Video tabs — which is where three of the six
+  store screenshots come from
 - Manifest: target/min SDK 36, no `INTERNET`, no `DEBUGGABLE` (checked in the packaged binary
   manifest, not only the source)
 - **Release dex contains ZERO `com.oplus.ocs` occurrences** (string scan over both dex files) — the
