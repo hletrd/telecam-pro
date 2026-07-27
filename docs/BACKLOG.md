@@ -143,6 +143,56 @@ received 2026-07-25 for slices 1, 2 and 4; slice 3's own check ran and is record
    also found YUV/PRIVATE reprocessing ADVERTISED on cams 0–5 (evidence:
    `.context/cycle8/zsl-probe-2026-07-25.md`) — see the true-ZSL deferral below.
 
+### Landed 2026-07-27 — cycle 9 transitions (gate-green, NONE device-verified)
+
+Six commits, each gate-green at 1172 host tests. **The device was unreachable for this entire
+cycle** — a full 65535-port scan of the phone found only three open ports, none speaking the ADB
+TLS protocol, i.e. wireless debugging is off — so every perceptual claim below is reasoned from
+code and MUST be checked before it is treated as verified.
+
+1. `daa7639` **TELE rail → device-derived zoom marks.** Floor and ceiling come from the lens's own
+   advertised bounds × the converter magnification; unreachable snaps are ABSENT rather than
+   clamped (a 1.5× converter drops 60× because the lens ceiling is 45.7×).
+2. `2122175` **boost-flip rebuild removed** where it provably cannot change a request key
+   (`boostFlipChangesFpsDecision`). Saves the documented ~180 ms stall at BOTH pinch edges on the
+   app-side exposure route — which is this device's default stills route.
+3. `a057b8a` **`leadingEdgeArmed`** re-arms the zoom-out wide-aim margin on the quiet-window
+   landing rather than on tail expiry, so a re-pinch starting inside the previous gesture's tail
+   still gets its margin.
+4. `1aefb39` **AE carried across a lens switch at constant EV** (`seedForApertureChange`,
+   `t_in = t_out · (N_in/N_out)²`, mode-aware carrier). 1×→10× is 2.295 stops on this device.
+5. `f612054` **camera-switch dip.** Replaces the FROZEN old-lens frame (magnified on TELE-off)
+   that today fills the gap between `controller.close()` and the new stream's first frame.
+   Discriminator is a session-generation CHANGE, never `cameraReady` — every optics door clears
+   that bit including the same-route fast path behind every photo lens preset, so a ready-keyed
+   cover would flash black on the most-used control in the app. **The 120 ms grace and 1500 ms
+   release deadline are NOT device-measured.** Cold start and resume also raise a cover.
+6. `f0f4d69` **Loupe Overview gated on the loupe**, so it can no longer report On while drawing
+   nothing. Addresses the likely cause of the user's "the PIP loupe still doesn't work"; the
+   engine/GL path itself was traced and is correct (GL combines the pushed resolved flag with its
+   own punch-in state inside `drawFrame`).
+
+**OPEN — the sustained mid-gesture frame-rate drop is NOT fixed.** Item 2 above removed only the
+two gesture-EDGE rebuilds. The user's actual report ("it drops further while zooming") has a
+different cause, now confirmed by code trace rather than hypothesis:
+
+- `previewExposureTrade` takes **no gesture parameter** and `AutoExposure.kt` contains no gesture
+  references at all. The cycle-8 fluidity cap is unconditional, so the previously documented
+  "gesture fps-boost trades exposure→ISO so the base frame rate rises" no longer exists as a
+  gesture-specific mechanism — it was subsumed by that always-on cap.
+- `ManualControls.kt` states the boost's ENTIRE wire effect is
+  `pinAutoFps = pinAutoFps || smoothPreviewBoost`. On the app-side exposure route `manualAeAdmitted`
+  is already true, so **the smooth-preview boost has zero wire effect on the route the user shoots
+  on.**
+
+What remains is the original hypothesis: submits are throttled to ≥200 ms and each stalls this
+HAL's stream 170–250 ms, so the camera is stalled for most of a sustained pinch. The GL self-redraw
+keeps the ZOOM motion smooth by redrawing the last frame at the new `zoomComp`, but the SCENE is
+frozen — which is exactly what "drops further while zooming" looks like when panning. Fixing it
+means submitting less often mid-gesture, trading a fluid scene against a softer GL-upscaled preview
+during the gesture (zoom-OUT is already covered by the 1.2× wide aim; zoom-IN would upscale).
+**That is a perceptual tradeoff — do not land it blind.**
+
 ## Before Production
 
 These are manual Play Console operations, not repository implementation work:
