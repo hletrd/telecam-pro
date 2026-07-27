@@ -28,10 +28,9 @@ Open-source manual camera for periscope telephoto + teleconverters.
 ## Full description (≤4000 chars)
 
 ```
-TeleCam Pro is an open-source manual camera for the OPPO Find X9 Ultra, tuned for its periscope
-telephoto lens and clip-on afocal teleconverters — including the 300 mm kit, with the mounted
-converter's magnification selectable. Camera2 provides direct manual controls and access to the
-device's video pipeline.
+TeleCam Pro is an open-source manual camera for shooting through clip-on afocal teleconverters on a
+phone's periscope telephoto lens. It corrects the 180-degree flip those converters introduce, and
+gives you the manual controls that long-lens work needs.
 
 OPEN SOURCE
 • Source code is public and auditable: github.com/hletrd/telecam-pro
@@ -40,15 +39,16 @@ OPEN SOURCE
 TELECONVERTER MODE
 • One tap selects the 3x periscope lens and enables teleconverter mode: the afocal converter flips the
   image 180 degrees, and the app corrects it in preview, photos, and video automatically.
-• Tell the app which converter you mounted. Pick your phone, then the converters that clamp onto it —
-  the first-party 300 mm and 230 mm kits, ZEISS 200 mm and 400 mm, generic 1.5x/2x/3x clip-ons, or a
-  custom magnification. The focal readout, EXIF focal length, and the zoom range all follow your
-  choice, and each preset's magnification is computed from the lens it was designed for, so a
-  converter used on a different phone reports its true focal length rather than the number on the box.
+• Tell the app which converter you mounted: pick your phone, then the optics that fit it. Presets
+  cover the Hasselblad 300 mm and 230 mm, ZEISS 200 mm and 400 mm, generic clip-ons, and a custom
+  magnification. The focal readout, EXIF focal length, and zoom range follow your choice — and each
+  preset is computed from the lens it was built for, so glass moved to another phone reports its
+  real focal length, not the number on the barrel.
 • Uses the device's available Camera2 OIS and video-stabilization modes for long-lens shooting.
 
-FOUR LENSES
-• Ultra-wide, main, 3x, and 10x focal presets.
+LENSES
+• Focal presets for every rear lens your phone advertises, with the live effective focal length in
+  the viewfinder.
 
 FULL MANUAL CONTROL
 • Manual focus with a nonlinear slider tuned near infinity (essential for a collimated teleconverter).

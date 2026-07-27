@@ -9,7 +9,7 @@
 # by the Play listing, so it must stay byte-stable.
 title: TeleCam Pro
 description: >-
-  Manual camera for the OPPO Find X9 Ultra and clip-on afocal teleconverters.
+  Manual camera for periscope telephoto phones and clip-on afocal teleconverters.
 theme: jekyll-theme-primer
 
 # Keep the site to the landing page and the policy. Everything below is engineering documentation
