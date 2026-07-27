@@ -282,11 +282,19 @@ These are manual Play Console operations, not repository implementation work:
 Use `docs/play-console-submit.md` as the operator checklist. The account was created in 2015, so the
 new-personal-account closed-test rule does not apply; an internal test remains the release gate.
 
-**Owner actions outside this repo (recorded by cycle 6, 2026-07-23):** the GitHub repository About
-tagline currently claims "Raw / Log video" (cycle-6 security F-2) — RAW is stills-only (DNG) and
-the log profiles are display-referred SDR bakes, so reword the tagline to match the listing's
-honest copy. D-2 below also still stands: confirm the Play/privacy contact mailbox is real and
-monitored and that the GitHub Pages privacy-policy URL is live before submission.
+**Owner actions outside this repo (recorded by cycle 6, 2026-07-23):**
+
+- **DONE 2026-07-27 — the GitHub About tagline.** The cycle-6 finding (F-2) described it as claiming
+  "Raw / Log video"; by the time it was actioned it already read "DNG stills, log-profile video", so
+  the RAW-video misreading was gone and that half of the note was stale. What was still wrong was
+  different: it pinned the optic to "Hasselblad 300 mm teleconverter" after the converter became
+  selectable, and "DNG stills" read as unconditional when DNG only exists in TELE mode on the
+  standalone camera. Now: *"Manual camera for the OPPO Find X9 Ultra and clip-on afocal
+  teleconverters — selectable converter magnification, DNG stills in tele mode, HLG / S-Log3 /
+  LogC3 video profiles, full manual Camera2 control"*.
+- **STILL OPEN (D-2):** confirm the Play/privacy contact mailbox is real and monitored, and that the
+  GitHub Pages privacy-policy URL is live, before submission. The repo `homepageUrl` is also empty —
+  set it if the listing should point at the Pages site.
 
 ## Residual Field Checks
 
