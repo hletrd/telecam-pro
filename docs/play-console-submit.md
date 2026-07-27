@@ -4,49 +4,50 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 ## Upload Artifact
 
-> **UPLOAD-READY (2026-07-26) — re-cut from `main`.** The previously recorded `9541697` artifact is
-> SUPERSEDED: `main` has since moved through the Kotlin namespace move (`6ae3979`), the
-> `com.oplus.ocs` SDK removal, cycle-8 responsiveness, the pseudo-ZSL ring, and the focus-confidence
-> detector. Re-cutting cost only a fresh device matrix, because ALL SIX Play screenshots had to be
-> recaptured either way — so the candidate below is a build of `main`, not a frozen branch.
-> `applicationId` is unchanged (`me.hletrd.telecampro`); the launcher component is now
-> `me.hletrd.findx9tele.MainActivity`.
+> **UPLOAD-READY (2026-07-27) — re-cut from `main` at `a0d4dbc`.** The 2026-07-26 candidate
+> (`69af1574…`) is SUPERSEDED: `main` moved 24 commits past it, and 25 shipped source files changed
+> (+2468 / −760). That is not a docs drift — it includes a NEW FEATURE (the teleconverter became a
+> selectable optic with phone/converter dropdowns) and a UI pass that changed the type scale, the
+> menu copy, the colour tokens and two clipped chrome badges. `applicationId` is unchanged
+> (`me.hletrd.telecampro`) and so is the upload certificate, so Play identity is unaffected.
 >
-> **The remaining blocker is not a build:** the six phone screenshots are still stale and must be
-> recaptured from THIS candidate on the physical PMA110 before the console sequence can complete.
-
-- Signed Android App Bundle:
-  `app/build/outputs/bundle/release/app-release.aab`
-- Version: `versionCode=1`, `versionName=1.0`
-- Package name: `me.hletrd.telecampro`
-- Upload key alias: `telecampro`
-- Upload certificate SHA-256 (keystore regenerated 2026-07-25 — the previous certificate was never
-  uploaded to Play, so nothing is bound to it):
-  `9D:FD:B9:03:26:92:38:EF:6D:E4:24:05:26:66:B0:58:14:57:7B:4B:3B:B4:3A:5E:3E:3A:05:57:26:60:E5:84`
+> **The six phone screenshots on record are from the SUPERSEDED build and must not be uploaded.**
+> They show the pre-fix hierarchy (option chips larger than the row labels naming them, section
+> headers indistinguishable from captions) and predate the Converter dropdowns entirely.
 
 Do not upload debug APKs or any unsigned/stale release bundle.
 
-### Final v1 upload artifacts (built + verified 2026-07-26 from `main`)
+### Final v1 upload artifacts (built + verified 2026-07-27 from `main` at `a0d4dbc`)
 
 - Artifact location: `app/build/outputs/bundle/release/app-release.aab`
-- AAB SHA-256: `69af1574140c95dcb15e35526777b9bc49bfb83a06d20c34fc86da407d2ac753`
+- AAB SHA-256: `84a74f645a55c06163486db756dbd71a0d5836a17e118398710cb6837250641d`
 - Matching release APK SHA-256:
-  `e56b3769b740fe56da192a553c0a550e265a78ecf09b36f85fa799d34597fed5`
+  `f95161cc0828ef010f2e561c7136fc5047e8afddf483beb4733d885b0dd65291`
 - Launch component: `me.hletrd.telecampro/me.hletrd.findx9tele.MainActivity`
 - `bundletool 1.18.3 validate`: passed; AAB `jarsigner -verify`: verified
-- APK signing: v2 valid, 1 signer, certificate matches the upload certificate above
+- APK signing: v2 valid (v1/v3/v3.1/v4 absent, as before), 1 signer, certificate SHA-256
+  `9dfdb903269238ef6de424052666b05814577b4b3bb43a5e3e3a05572660e584` — matches the upload
+  certificate above
 - APK alignment: 16 KiB passed (`zipalign -c -P 16 4`)
-- Release gate: `lintRelease` 0 errors / 5 known-intentional warnings; host suite green at HEAD
-  (Partition-A coverage 99.81%)
-- Manifest: target/min SDK 36, no `INTERNET`, no `DEBUGGABLE`
-- **Release dex contains ZERO `com/oplus/ocs` classes** (verified by dex string scan) — the OEM SDK
-  is gone from the shipped binary entirely, which is what the Data-Safety answers now rest on.
-- Superseded candidates (do NOT upload): `a737483f…` (9541697, pre-namespace-move), `7339e00d…`,
-  `b45a3b8e…`.
+- Release gate: `lintRelease` **0 errors / 5 warnings**, every one pre-existing and outside the
+  changed files (`MediaStoreWriter` ×3, `StillCapturePipeline`, an AGP 9.3.1-available notice);
+  host suite **1131 tests, 0 failures**
+- Manifest: target/min SDK 36, no `INTERNET`, no `DEBUGGABLE` (checked in the packaged binary
+  manifest, not only the source)
+- **Release dex contains ZERO `com.oplus.ocs` occurrences** (string scan over both dex files) — the
+  OEM SDK is absent from the shipped binary, which is what the Data-Safety answers rest on.
+- Superseded candidates (do NOT upload): `69af1574…` (2026-07-26), `a737483f…` (9541697,
+  pre-namespace-move), `7339e00d…`, `b45a3b8e…`.
 
-### PMA110 release device matrix — PASSED 2026-07-26 (this exact artifact)
+### PMA110 release device matrix — PENDING for the 2026-07-27 artifact
 
-Installed APK SHA-256 verified byte-identical to the artifact above before testing.
+The run recorded below passed against the SUPERSEDED `69af1574…` build. It is kept because its
+findings (the clean REC refusal without the microphone, the bounded recovery after a transient
+disconnect) describe behaviour the code still has — but it is NOT evidence for the artifact this
+sheet now names, and the console sequence must not treat it as such. Re-run it against
+`84a74f64…` and replace this block.
+
+Installed APK SHA-256 was verified byte-identical to the SUPERSEDED artifact before that run.
 
 - Fresh install (package uninstalled first) → clean cold launch, live PID, **zero crashes/ANRs**
   across the whole session.
