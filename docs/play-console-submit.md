@@ -11,9 +11,9 @@ Use this sheet for the parts that must be entered manually in Play Console.
 > menu copy, the colour tokens and two clipped chrome badges. `applicationId` is unchanged
 > (`me.hletrd.telecampro`) and so is the upload certificate, so Play identity is unaffected.
 >
-> **The six phone screenshots on record are from the SUPERSEDED build and must not be uploaded.**
-> They show the pre-fix hierarchy (option chips larger than the row labels naming them, section
-> headers indistinguishable from captions) and predate the Converter dropdowns entirely.
+> **RESOLVED 2026-07-27 (cycle 9): the six screenshots on record were RECAPTURED and are current.**
+> Provenance is now mixed on purpose — see the screenshot section below. The earlier warning stood
+> because the set predated the Converter dropdowns and the UI hierarchy pass; both are now shown.
 
 Do not upload debug APKs or any unsigned/stale release bundle.
 
@@ -106,11 +106,23 @@ Summary:
 - Feature graphic: `docs/assets/play/feature-graphic.png`
   - 1024 x 500 PNG
   - no alpha
-- Phone screenshots — recaptured 2026-07-26 from the RELEASE candidate above, cropped to
-  **1440x2880 (exactly 2:1)** 24-bit PNG, no alpha. Play rejects anything taller than 2:1 and this
-  panel is 1440x3168 (1:2.2), so the crop removes the OS status bar and gesture bar only — no app
-  content is lost. The 2026-07-10 captures (`03-focus-loupe.png`, `05-lens-selection.png` and the
-  older versions of the rest) are retired: they showed a superseded UI.
+- Phone screenshots — recaptured **2026-07-27 (cycle 9)**, cropped to **1440x2880 (exactly 2:1)**
+  24-bit PNG, no alpha. Play rejects anything taller than 2:1 and this panel is 1440x3168 (1:2.2).
+  The crop box is **(0, 168) → (1440, 3048)**, derived by MEASUREMENT rather than guessed: on this
+  panel the OS status-bar glyphs end at y=101 and the lowest app pixel (the shutter ring) sits at
+  y=3041, so this window strips both system bars and loses no app content. Verified per file — only
+  `02` touches the bottom edge, and that is the MR card of a SCROLLING sheet, which reads correctly
+  as "more below".
+  - **Provenance is mixed, deliberately.** The three viewfinder frames come from the operator's own
+    handheld captures against real subjects (buildings, sky) because the listing wants
+    photography-led art; the three menu frames come from the signed RELEASE build installed on the
+    PMA110, since a menu needs no scene and must show the shipping UI.
+  - Landscape captures were REJECTED for this set. The app counter-rotates glyphs by the
+    gravity-derived device orientation, so a landscape-held capture renders the focal rail and mode
+    carousel sideways. This is app behaviour, not a bug — capture PORTRAIT.
+  - The 2026-07-10 and 2026-07-26 captures are retired: they showed a superseded UI, and every
+    TELE-engaged frame among them shows the OLD focal rail (`0.6x 1x 3x 10x`) where the shipping
+    build now reads `13x / 30x / 60x`.
   - `screenshots/01-main-viewfinder.png` — photo viewfinder: OSD row, focal rail, mode carousel,
     shutter
   - `screenshots/02-pro-settings.png` — Shooting tab: output format, aspect, zoom, JPEG quality,
@@ -127,10 +139,13 @@ Summary:
     counter-rotates glyphs by the gravity-derived device orientation and the phone was standing in
     a landscape pose. Capture with the phone PORTRAIT — this is app behaviour, not a bug, and no
     code change is involved.
-  - The three viewfinder frames (01/04/05) were deliberately captured against a BLACK scene, so the
-    chrome — grid, OSD tags, focal rail, mode carousel, shutter — reads without competing with
-    whatever the lens happened to see. Swap in a lit, in-focus subject if the listing wants
-    photography-led art instead; the framing and crop stay valid either way.
+  - 01 and 04 now carry LIT, real subjects (the "photography-led art" option this note always
+    offered). **05 is still a BLACK-scene frame and is the one weak spot in the set**: it is the
+    only slot that requires TELE engaged, and every real-subject TELE capture on hand predates the
+    focal-rail change, so it would advertise a rail the shipping build no longer draws. It is
+    correct and current as-is — it shows `13x / 30x / 60x` and the loupe overview with its framing
+    hint — but a handheld TELE capture against a distant subject would make the three viewfinder
+    frames consistent. Replace it with a PORTRAIT capture, TELE lit, and re-crop with the box above.
 
 ## Device Catalog
 
