@@ -676,12 +676,7 @@ fun HistogramOverlay(data: HistogramData?, modifier: Modifier = Modifier) {
             .padding(6.dp),
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
-            // DRIFT, knowingly left: this plot frame and the waveform's (0.35f) are the same role —
-            // the border of a scope box, drawn on the same plate, stacked in the same column — spelled
-            // one hundredth apart. Unifying them is right, but BOTH spellings cannot survive it, so it
-            // moves rendered pixels on one of the two scopes and is a visual call, not a naming one.
-            // Whoever makes it: pick a number, change both lines, and look at the stack on device.
-            drawRect(color = Color.White.copy(alpha = 0.3f), style = Stroke(width = 1.dp.toPx()))
+            drawRect(color = CameraColors.ScopeFrame, style = Stroke(width = 1.dp.toPx()))
             if (data != null) {
                 // The LUMA channel's own colour, sibling to the R/G/B literals below — white because
                 // luma is white, not because the HUD's ink is. It stays a literal for the same reason
@@ -731,9 +726,10 @@ fun WaveformOverlay(data: WaveformData?, modifier: Modifier = Modifier) {
             .padding(6.dp),
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
-            // The histogram's identical plot frame is 0.3f — see the drift note at that site. Left
-            // as-is here for the same reason: closing it changes what one of the two scopes renders.
-            drawRect(color = Color.White.copy(alpha = 0.35f), style = Stroke(width = 1.dp.toPx()))
+            // [CameraColors.ScopeFrame], shared with the histogram above it. This site used to spell
+            // 0.35f against the histogram's 0.3f for the same role; the device check that closed that
+            // drift is recorded on the token.
+            drawRect(color = CameraColors.ScopeFrame, style = Stroke(width = 1.dp.toPx()))
             if (data != null && data.columns > 0 && data.rows > 0) {
                 drawWaveform(data)
             }

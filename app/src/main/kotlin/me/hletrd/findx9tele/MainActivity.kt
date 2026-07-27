@@ -450,6 +450,11 @@ private fun PermissionGate(
                 color = CameraColors.TextPrimary,
             )
             Spacer(Modifier.height(16.dp))
+            // A CONTAINER fill, not foreground ink — hence a bare `Color.White` rather than
+            // CameraColors.TextPrimary, which is the rule stated on CameraColors. The pairing proves
+            // it: the content on top of this is BLACK, so the white here is the surface the CTA is
+            // made of. (This is the one white outside ui/; the permission screen predates the token
+            // set and draws no camera chrome.)
             val primaryColors = ButtonDefaults.buttonColors(
                 containerColor = Color.White,
                 contentColor = Color.Black,

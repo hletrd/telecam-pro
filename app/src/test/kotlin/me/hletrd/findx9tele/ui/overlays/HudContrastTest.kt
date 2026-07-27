@@ -254,15 +254,19 @@ class HudContrastTest {
     }
 
     @Test
-    fun `the white-derived structural tokens stay five distinct roles`() {
+    fun `the white-derived structural tokens stay six distinct roles`() {
         // AffordanceEdge (0.18) and GuideLine (0.55) were minted from repeated inline literals: four
         // interactive borders and two composition guides. Two things must hold. First, each is
         // EXACTLY the wash it replaced — otherwise the naming pass silently restyled six surfaces.
         val white = androidx.compose.ui.graphics.Color.White
         assertTrue(CameraColors.AffordanceEdge == white.copy(alpha = 0.18f))
         assertTrue(CameraColors.GuideLine == white.copy(alpha = 0.55f))
-        // Second, the five white-derived tokens stay five NUMBERS. They are close enough to look like
-        // redundancy in a diff (0.04 / 0.09 / 0.14 / 0.18 / 0.55), and the temptation to collapse
+        // ScopeFrame (0.3) closed a real drift rather than replacing a repeated literal: the two scope
+        // plot frames were 0.3 and 0.35 for one role. It is pinned at the SURVIVING number, so a
+        // future edit cannot quietly reopen the gap by nudging the token toward the value it retired.
+        assertTrue(CameraColors.ScopeFrame == white.copy(alpha = 0.3f))
+        // Second, the six white-derived tokens stay six NUMBERS. They are close enough to look like
+        // redundancy in a diff (0.04 / 0.09 / 0.14 / 0.18 / 0.3 / 0.55), and the temptation to collapse
         // "nearly the same grey" is exactly how the Block and Hairline drifts happened in the first
         // place. Each encodes a different role; a merge must delete a token, not quietly equalize it.
         val alphas = listOf(
@@ -270,14 +274,15 @@ class HudContrastTest {
             CameraColors.Block.alpha,
             CameraColors.Hairline.alpha,
             CameraColors.AffordanceEdge.alpha,
+            CameraColors.ScopeFrame.alpha,
             CameraColors.GuideLine.alpha,
         )
         assertEquals("white-derived tokens collapsed: $alphas", alphas.size, alphas.toSet().size)
-        // And all five really are white washes, not tinted ones — a tinted "hairline" would drag a
+        // And all six really are white washes, not tinted ones — a tinted "hairline" would drag a
         // hue into edges that are supposed to be neutral over arbitrary live pixels.
         listOf(
             CameraColors.BlockDisabled, CameraColors.Block, CameraColors.Hairline,
-            CameraColors.AffordanceEdge, CameraColors.GuideLine,
+            CameraColors.AffordanceEdge, CameraColors.ScopeFrame, CameraColors.GuideLine,
         ).forEach { assertEquals(0xFFFFFF, rgbOf(it)) }
     }
 

@@ -20,11 +20,11 @@ import me.hletrd.findx9tele.R
  *
  * TWO of these names are byte-identical white and are still NOT interchangeable. [TextPrimary] is
  * foreground INK — the thing the photographer reads or the mark the app draws. [Block],
- * [BlockDisabled], [Hairline], [AffordanceEdge] and [GuideLine] derive from a bare `Color.White`
- * BASE — a wash of N% white over whatever happens to be underneath, which is a structural fact
- * about compositing, not a statement about foreground. A call site that means the first must spell
- * [TextPrimary] even though `Color.White` renders the same pixel today; a call site that means the
- * second keeps the base. That separation is the only thing that would let a future ink change (a
+ * [BlockDisabled], [Hairline], [AffordanceEdge], [ScopeFrame] and [GuideLine] derive from a bare
+ * `Color.White` BASE — a wash of N% white over whatever happens to be underneath, which is a
+ * structural fact about compositing, not a statement about foreground. A call site that means the
+ * first must spell [TextPrimary] even though `Color.White` renders the same pixel today; a call
+ * site that means the second keeps the base. That separation is the only thing that would let a future ink change (a
  * warm white, say) land on the glyphs and leave the scrims alone, and it is why the remaining bare
  * `Color.White` literals in `ui/` are each annotated with which of the two they are.
  */
@@ -127,12 +127,25 @@ object CameraColors {
      * center). Two consumers, one job — a reference the photographer composes against and then stops
      * seeing — and they must move together or the finder shows two weights of guide at once.
      *
-     * NOT the level gauge's static reference line (0.4), and NOT a scope's plot frame (0.3 for the
-     * histogram, 0.35 for the waveform — a real drift, see those two sites). Each of those is part of
-     * an instrument sitting on a HUD plate and carries its own number; folding any of them in here
-     * would move rendered pixels, which is not something a naming pass is allowed to do.
+     * NOT the level gauge's static reference line (0.4), and NOT a scope's plot frame ([ScopeFrame]).
+     * Each of those is part of an instrument sitting on a HUD plate and carries its own number.
      */
     val GuideLine = Color.White.copy(alpha = 0.55f)
+    /**
+     * The border of a scope's plot box: the histogram's and the waveform's, which stack in one column
+     * on the same HUD plate. Two consumers, one job.
+     *
+     * These were 0.3 and 0.35 — one hundredth apart for the same role, left as a knowing drift by the
+     * naming pass because closing it moves rendered pixels and that is a visual call. It was then made
+     * on device: with both scopes enabled the two frames measure differently (mean stroke 78 vs 90 on
+     * a dark plate) and are still indistinguishable by eye at a 1 dp stroke, so unifying costs nothing
+     * a photographer can see. 0.3 is the survivor because the quieter of two indistinguishable weights
+     * is the one a preview-first finder should carry, and it leaves the more-used scope untouched.
+     *
+     * Distinct from [GuideLine] (0.55) on purpose: a guide is drawn straight onto the live image and
+     * has to survive it, while this edges a plot that already sits on a plate.
+     */
+    val ScopeFrame = Color.White.copy(alpha = 0.3f)
     /**
      * The ONE hairline stroke for chip/tile/card/panel EDGES that carry no affordance of their own.
      * Five decorative borders drifted across 0.10-0.15 alpha, which reads as five slightly different
