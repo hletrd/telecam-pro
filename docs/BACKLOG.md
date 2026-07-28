@@ -479,6 +479,31 @@ A dedicated front-route sweep. Everything that does not depend on AE having head
 | Lens presets | **Correctly absent** — no zoom preset pills on the front route |
 | Multi-format capture | HEIF + JPEG both written from one shutter press |
 
+**Vertical (rotation-term) axis — ATTEMPTED 2026-07-28 with the phone upright and AE off its rails
+(`iso=4681`, range 100–16000). INCONCLUSIVE, and the inconclusive result is the important part.**
+
+A two-point vertical pair chosen so that the correct and inverted mappings predict OPPOSITE ISO
+orderings (P1 y=1240 luma 108, whose vertical mirror is bright ~167; P2 y=1880 luma 161, whose mirror
+is dim ~123) returned, under SPOT metering, 3/3 consistent `P1→~4380, P2→4831` — i.e. tapping the
+BRIGHT point RAISED ISO, matching the INVERTED prediction. Two controls then dismantled it:
+
+1. **Order was refuted, correctly** — reversing the pair kept the values attached to the POINTS
+   (P2→4831 first or second; P1→~4380 either way), so the effect was position-dependent and real-looking.
+2. **A four-corner map killed it.** Corners spanning a 1.6× brightness range (TL 79, TR 127, BL 98,
+   BR 115) returned iso 4413 / 4347 / 4347 / 4356 — a **1.5% spread, i.e. essentially no AE response
+   to the region at all**, and the earlier 10.8% spread did not reproduce.
+
+So the front route's AE-region response is too weak and too unstable in this scene to determine the
+tap mapping. **No defect is claimed and no fix was made**; a 2-point comparison on this route can
+manufacture either answer. Any future attempt must include the corner map as a sanity gate — if the
+corners do not separate, the run cannot conclude anything. This also means the shipped harness's
+2-point design is only trustworthy when its response check passes by a wide margin, which is why its
+`MIN_ISO_RESPONSE` gate exists.
+
+**Note on the A1 PASS**: it stands as recorded — 3/3 reproducible at an 11.6% spread under a
+different, brighter regime — but the weak-region behaviour observed here is a caveat worth carrying,
+not a refutation.
+
 **Not closed: the two tap-axis checks, both needing AE headroom.** The horizontal (mirror) axis PASSED
 earlier at 19:29 when the room light was on (3/3, bright `iso=1316` vs dim `iso=1488`). By 19:47 the
 light was off again: HAL AE converged but sat at `iso=16000` — its exact ceiling — and mirrored taps
