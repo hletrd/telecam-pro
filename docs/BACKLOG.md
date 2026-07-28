@@ -461,6 +461,33 @@ O-Log2. Not worth it without new evidence; the GL-baked profiles remain the ship
 Keep the GL-baked S-Log3/LogC3 profiles either way: they are the display-referred fallback, and a
 native path would be a separate, genuinely scene-referred option.
 
+### Front camera — FULL DEVICE PASS 2026-07-28 (except the two AE-headroom tap axes)
+
+A dedicated front-route sweep. Everything that does not depend on AE having headroom passed:
+
+| Behaviour | Result |
+|---|---|
+| Pseudo-ZSL (`997b5b7`) | **Serving** — `ShutterLag: ZSL served buffered frame, age 167 ms`, then `images+result +0 ms` on the next shot |
+| STILL mirror truth | **Correct** — preview and file are horizontal mirrors of each other (foil square left→right, pole right→left, curtain right→left). Preview shows the selfie mirror; the FILE carries the true scene. Covers HEIF and JPEG in one capture (`outputs=heic,jpg`) |
+| VIDEO mirror truth | **Correct** — "LG"/"WHISEN" read unreversed in a pulled clip (A2) |
+| Still rotation, portrait | **Upright**, `Orientation = 1`, 3072×4096 portrait |
+| EXIF identity | `Make=OPPO`, `Model=PMA110`, **`LensModel = "OPPO PMA110 front camera 21mm f/2.4"`** — the front route and its MEASURED 21 mm equivalent, from `DeviceExifLabels`, no literals |
+| GPS | **Absent** from IFD0 and ExifIFD, as designed |
+| RAW gating | **Correctly unavailable** — DNG greyed with "RAW unavailable" |
+| Flash | **Correctly absent** — no flash control in Exposure or Fn (front has no LED), which is also why front HAL AE exists only in VIDEO |
+| TELE door | **Correctly not offered** — the TELE control is absent from the top bar on FRONT, not merely refused; `tele=false effZoom=1.0` |
+| Lens presets | **Correctly absent** — no zoom preset pills on the front route |
+| Multi-format capture | HEIF + JPEG both written from one shutter press |
+
+**Not closed: the two tap-axis checks, both needing AE headroom.** The horizontal (mirror) axis PASSED
+earlier at 19:29 when the room light was on (3/3, bright `iso=1316` vs dim `iso=1488`). By 19:47 the
+light was off again: HAL AE converged but sat at `iso=16000` — its exact ceiling — and mirrored taps
+on a 153-vs-111 luma gradient both returned `iso=16000`, i.e. no response in either direction. Note
+that being railed at MAX ISO would still leave headroom DOWNWARD, so the attempt was legitimate; the
+scene was simply too dim for even its bright region to pull ISO off the ceiling. The VERTICAL
+(rotation-term) axis has therefore still never been exercised — it is the one remaining front unknown,
+and `viewTapToSensorPoint` documents itself as approximate on that term.
+
 ### Loupe Overview "inverted in TELE" — NOT REPRODUCIBLE; inversion is structurally impossible (2026-07-28)
 
 Reported as "Loupe view should not be inverted when TELE mode is on." Investigated to a conclusion:
