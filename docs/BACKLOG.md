@@ -336,37 +336,49 @@ Order of work when picked up:
 Risk to respect: the front route is documented as "untouched … byte-for-byte", and every stream-combo
 change on this device has needed a real capture pass to trust.
 
-### Native log / 10-bit — the "inert key" verdict rests on an INVALID test (2026-07-28)
+### Native log — the stock app's recipe, CAPTURED (2026-07-28)
 
-The recorded conclusion is that `com.oplus.log.video.mode` is accepted but changes nothing a
-third-party app can see. That test ran on the shipping **8-bit SDR** session, which is very likely
-why it showed nothing: a log transfer has no meaning on an 8-bit display-referred stream.
+Traced the stock camera live in `4K·30·O-Log2` via `dumpsys media.camera`, which prints the active
+client's configured streams. The result overturns BOTH prior positions — mine and the older doc's.
 
-What the device actually advertises, re-read from `dumpsys media.camera`:
+```
+Stream[0]: 1920x1080  format 0x7fa30c09  dataspace 0x8c60000  Dynamic Range Profile: 0x1
+Stream[1]: 3840x2160  format 0x36        dataspace 0x8c60000  Dynamic Range Profile: 0x1
+```
 
-- `android.request.availableDynamicRangeProfilesMap` is present on **all 7 cameras**, listing
-  **HLG10 (2), HDR10 (4), HDR10_PLUS (8)** — `DYNAMIC_RANGE_TEN_BIT` appears 6 times.
-- So 10-bit capture is NOT unavailable on this device. The app runs SDR/8-bit because one
-  COMBINATION crashed the HAL: HLG10 preview + full-res JPEG + RAW together.
+**Native log runs on an 8-BIT session.** `Dynamic Range Profile 0x1` is STANDARD, not HLG10 (0x2).
+So the "log needs 10-bit, which is why our 8-bit test showed nothing" theory is WRONG — being
+8-bit was never the obstacle, and switching to a 10-bit session is not the path.
 
-That combination does not exist in VIDEO mode — no full-res JPEG reader, no RAW — which is exactly
-where log matters. The stock app was observed in PRO VIDEO showing `4K30·O-Log2`, i.e. the vendor
-log path is real and running on this hardware.
+`dataspace 0x8c60000` decodes to **STANDARD_BT2020 | TRANSFER_SMPTE_170M | RANGE_FULL**. That is
+the tagging the stock log stream carries: BT.2020 primaries, full range, and a placeholder SDR
+transfer — not an HDR transfer.
 
-Test to run before concluding anything (in order):
+Vendor tags found in the same dump that this app does NOT currently touch:
 
-1. Configure a VIDEO-only session with a 10-bit dynamic-range profile (HLG10) on the tele, with no
-   still/RAW readers attached. Confirm it configures at fallback=0.
-2. With that session live, set `com.oplus.log.video.mode` as BOTH a session parameter and on every
-   repeating request, and judge the recorded file — not the preview, and not the container tag,
-   which is what produced the earlier false "it recorded as log" reading.
-3. Capture the stock app's own `configure_streams` from CamX logs while it sits in PRO VIDEO
-   O-Log2, and diff its formats/operation_mode against ours. That is the ground truth for
-   replication and needs no guessing.
+| tag | id | why it matters |
+|---|---|---|
+| `com.oplus.VideoColorBT709` | `811900e4` int32 | plausibly the switch that forces the 709 output we kept observing |
+| `com.oplus.video.dataspace` | `8119007e` int32 | sets the stream dataspace the table above shows |
+| `com.oplus.log.extension.iso.range` | `8119002e` int32[2] | a LOG-SPECIFIC ISO range — the HAL genuinely has a log path, not just an accepted key |
+| `com.oplus.log.video.mode` | `811901e5` int32 | already known and already set by this app |
 
-Until step 2 is judged on a real file, neither "log works for third parties" nor "the key is inert"
-is established — the current documentation asserts the latter on evidence that could not have shown
-the former.
+That last row is the point: we set the log MODE key alone and concluded it was inert. The dump shows
+the stock path also carries a dataspace and a BT709 control, so the honest reading is that the key
+was necessary but not sufficient — never that the HAL ignores it.
+
+Replication order (no guessing left):
+
+1. Set `com.oplus.VideoColorBT709 = 0` alongside the existing `com.oplus.log.video.mode`, on both
+   the session parameters and every repeating request.
+2. Tag the encoder stream `STANDARD_BT2020 | TRANSFER_SMPTE_170M | RANGE_FULL`, matching stock,
+   instead of the transfer our container policy picks today.
+3. If output is still 709, set `com.oplus.video.dataspace` explicitly to the same value.
+4. Judge a RECORDED FILE, never the preview and never the container tag — the earlier false
+   "it recorded as log" was exactly a misread container tag.
+
+Keep the GL-baked S-Log3/LogC3 profiles either way: they are the display-referred fallback, and a
+native path would be a separate, genuinely scene-referred option.
 
 ## Before Production
 
