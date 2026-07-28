@@ -241,6 +241,53 @@ class TapMappingTest {
         )
     }
 
+    /**
+     * Front route WITH the punch-in loupe active — the corner the metering split newly makes
+     * non-trivial, because the two centers then hold DIFFERENT values (each is fed from its own
+     * mapping's output: `loupeCenterSensorX` from sensorPoint, `loupeCenterTexX` from loupePoint).
+     *
+     * `loupeAdjustedTap` is `center + span·(p − 0.5)`, and the mirror `x → 1−x` is a reflection
+     * about the centre — orthonormal and centre-pivoted like the rotation stages it is documented to
+     * commute with — so applying it to the RAW view tap before composition stays exact. The two
+     * results move in OPPOSITE directions from their own centres, which is the whole point:
+     * metering crosses to the mirrored half while the loupe follows the finger.
+     */
+    @Test
+    fun frontRouteWithPunchIn_composesEachSpaceAgainstItsOwnCenter() {
+        val g = mapTapFocusGeometry(
+            nx = 0.25f,
+            ny = 0.5f,
+            sensorOrientation = 0,
+            teleconverter = false,
+            punchActive = true,
+            // Deliberately different, as they are on the front route once a tap has landed.
+            sensorCenter = 0.7f to 0.5f,
+            loupeCenter = 0.3f to 0.5f,
+            previewRotationDegrees = 0,
+            mirrorX = FrontMirrorConvention.tapDisplayMirrorX(frontRoute = true),
+            meteringMirrorX = FrontMirrorConvention.meteringMirrorX(frontRoute = true),
+        )
+        // span = 0.4. Metering: unflip 0.25 → 0.75, then 0.7 + 0.4·(0.75 − 0.5) = 0.8.
+        assertEquals(0.8f, g.sensorPoint.first, eps)
+        // Loupe: no unflip, then 0.3 + 0.4·(0.25 − 0.5) = 0.2.
+        assertEquals(0.2f, g.loupePoint.first, eps)
+        // A tap at the centre of the magnified view must meter the loupe's own centre.
+        val centered = mapTapFocusGeometry(
+            nx = 0.5f,
+            ny = 0.5f,
+            sensorOrientation = 0,
+            teleconverter = false,
+            punchActive = true,
+            sensorCenter = 0.7f to 0.5f,
+            loupeCenter = 0.3f to 0.5f,
+            previewRotationDegrees = 0,
+            mirrorX = FrontMirrorConvention.tapDisplayMirrorX(frontRoute = true),
+            meteringMirrorX = FrontMirrorConvention.meteringMirrorX(frontRoute = true),
+        )
+        assertEquals(0.7f, centered.sensorPoint.first, eps)
+        assertEquals(0.3f, centered.loupePoint.first, eps)
+    }
+
     @Test
     fun rapidDeferredTap_keepsTheEventTimeVisibleLoupeCenter() {
         val deferred = mapTapFocusGeometry(

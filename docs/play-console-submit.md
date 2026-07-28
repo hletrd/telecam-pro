@@ -37,7 +37,8 @@ older bundle.
   upload certificate**, so this is the same upload key
 - APK alignment: 16 KiB passed (`zipalign -c -P 16 4`)
 - Release gate: `lintRelease` **0 errors / 5 warnings**, all pre-existing (`ApplySharedPref`,
-  `UseKtx`, `AndroidGradlePluginVersion`); host suite **1207 tests, 0 failures**
+  `UseKtx`, `AndroidGradlePluginVersion`); host suite **1208 tests, 0 failures** (the artifact itself is unchanged — the
+  extra case since the cut is a test-only addition auditing the tap-AF punch-in composition)
 - Carries a **baseline profile** (`assets/dexopt/baseline.prof`, 11 KiB + `.profm`) installed by
   androidx.profileinstaller. Without it the shipped APK sat at `status=verify` and ran interpreted
   until JIT warmed; device-measured, the worst frame on opening the settings sheet went 61 ms → 22 ms
