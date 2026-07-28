@@ -83,6 +83,12 @@ breathing or hunting at rest.
 The last open piece of the rotation work. Saved *stills* are confirmed upright in every held pose;
 the video **container orientation hint** has never been played back externally.
 
+> Partial data (2026-07-28, phone lying FLAT): a recorded clip carried a natively portrait
+> 2160×3840 buffer and **no rotation side-data or rotate tag at all** (hint = 0), which plays
+> upright. That is *consistent* with a device-orientation term of 0 but does NOT prove it —
+> flat means in-plane gravity is ~0, so `GyroEis` was holding its last confident value and the
+> term was unobservable. The two LANDSCAPE cases are what actually need a held phone.
+
 - Record ~5 s clips held: portrait, rotated left 90°, rotated right 90°.
 - Play each in an external player (Google Photos, VLC — **not** the app's own review).
 
