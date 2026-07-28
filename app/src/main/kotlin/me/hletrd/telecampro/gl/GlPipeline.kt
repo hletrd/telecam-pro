@@ -851,8 +851,15 @@ class GlPipeline {
 
         // The loupe (movable punch-in) recenters the preview zoom on the tapped point; the encoder
         // draw below stays centered so recordings are unaffected.
-        val loupeX = if (punchIn) punchInX else 0.5f
-        val loupeY = if (punchIn) punchInY else 0.5f
+        //
+        // Clamped against the LIVE crop and zoom compensation so the sampled window cannot leave the
+        // texture — setPunchInCenter can only bound the centre to 0..1, which still lets the window
+        // run off the edge and return edge-clamped garbage instead of scene. Computed once here and
+        // fed to BOTH the draw and the framing hint, or the hint would mark a position the preview
+        // no longer shows.
+        val previewZoomComp = (zoomTarget / halZoom.coerceAtLeast(0.01f)).coerceAtLeast(1f)
+        val loupeX = if (punchIn) clampPunchInCenter(punchInX, previewCrop, previewZoomComp) else 0.5f
+        val loupeY = if (punchIn) clampPunchInCenter(punchInY, previewCrop, previewZoomComp) else 0.5f
         // Show the selected log curve (S-Log3/S-Log3.Cine/LogC3) FLAT in the live preview so the user
         // can monitor that they're on a log profile — previously the preview was hardcoded to SDR
         // (null) and only the encoder got the curve, so log never looked flat on screen. The preview

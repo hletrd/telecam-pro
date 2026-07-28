@@ -274,6 +274,27 @@ internal fun texCoordQuad(mirrorX: Boolean): FloatArray {
  * net 90/270 swaps the displayed width/height. Exactly one axis is scaled >1 to overscan the target;
  * matching aspects return (1, 1). [targetHeight] is floored at 1 to avoid a divide-by-zero.
  */
+/**
+ * Clamps a punch-in/loupe center so the SAMPLED WINDOW stays inside the texture.
+ *
+ * [FlipRenderer.draw] samples `center ± halfExtent`, where the half-extent is
+ * `((1 - crop) / zoomComp) / 2`. Clamping only the CENTER to 0..1 (which is all
+ * `GlPipeline.setPunchInCenter` can do, since it does not know the live crop) still lets the window
+ * run off the edge: at the default `PUNCH_IN_CROP` the half-extent is 0.2, so a center of 0 samples
+ * from -0.2. Outside the texture the external sampler returns edge-clamped/garbage texels, which is
+ * the smeared out-of-bounds artifact the operator sees after dragging the loupe repeatedly against
+ * an edge (reported 2026-07-28) — the finder must show real scene or nothing.
+ *
+ * Returns 0.5 when the window is at least as large as the frame ([halfExtent] >= 0.5): there is then
+ * no legal off-center position at all, and a naive `coerceIn(half, 1 - half)` would throw on an
+ * inverted range.
+ */
+internal fun clampPunchInCenter(center: Float, crop: Float, zoomComp: Float): Float {
+    val halfExtent = ((1f - crop.coerceIn(0f, 1f)) / zoomComp.coerceAtLeast(1f)) / 2f
+    if (halfExtent >= 0.5f) return 0.5f
+    return center.coerceIn(halfExtent, 1f - halfExtent)
+}
+
 internal fun coverScale(
     previewW: Int,
     previewH: Int,
