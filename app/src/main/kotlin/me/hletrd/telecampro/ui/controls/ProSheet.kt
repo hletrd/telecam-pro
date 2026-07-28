@@ -1336,9 +1336,11 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
     // Every sibling toggle with non-obvious preconditions carries one of these (UX_POLICY: menu rows
     // are the sanctioned place for that copy, never the viewfinder). Without it, toggling this in
     // video, at 16:9, or with the loupe off does nothing visible and says nothing about why.
+    // The magnification clause is NOT "Teleconverter" any more: the finder is offered at 3× on any
+    // lens, because what it depends on is magnifying past the delivered field, not the accessory.
     // Same rule as the header four lines up: the caption's other three tokens are menu names, so the
     // sole borrowed OSD tag spelled itself out too.
-    Captioned("Photo · 4:3 · Teleconverter · Loupe") {
+    Captioned("Photo · 4:3 · Loupe · 3× or a converter") {
         // Loupe Overview is a same-stream full-frame reference, never an automatic 1x camera feed.
         // Exact predicate: enabled + Photo + 4:3 + TELE + active punch-in. Default remains off.
         //

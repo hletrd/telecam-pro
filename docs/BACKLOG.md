@@ -336,6 +336,38 @@ Order of work when picked up:
 Risk to respect: the front route is documented as "untouched … byte-for-byte", and every stream-combo
 change on this device has needed a real capture pass to trust.
 
+### Native log / 10-bit — the "inert key" verdict rests on an INVALID test (2026-07-28)
+
+The recorded conclusion is that `com.oplus.log.video.mode` is accepted but changes nothing a
+third-party app can see. That test ran on the shipping **8-bit SDR** session, which is very likely
+why it showed nothing: a log transfer has no meaning on an 8-bit display-referred stream.
+
+What the device actually advertises, re-read from `dumpsys media.camera`:
+
+- `android.request.availableDynamicRangeProfilesMap` is present on **all 7 cameras**, listing
+  **HLG10 (2), HDR10 (4), HDR10_PLUS (8)** — `DYNAMIC_RANGE_TEN_BIT` appears 6 times.
+- So 10-bit capture is NOT unavailable on this device. The app runs SDR/8-bit because one
+  COMBINATION crashed the HAL: HLG10 preview + full-res JPEG + RAW together.
+
+That combination does not exist in VIDEO mode — no full-res JPEG reader, no RAW — which is exactly
+where log matters. The stock app was observed in PRO VIDEO showing `4K30·O-Log2`, i.e. the vendor
+log path is real and running on this hardware.
+
+Test to run before concluding anything (in order):
+
+1. Configure a VIDEO-only session with a 10-bit dynamic-range profile (HLG10) on the tele, with no
+   still/RAW readers attached. Confirm it configures at fallback=0.
+2. With that session live, set `com.oplus.log.video.mode` as BOTH a session parameter and on every
+   repeating request, and judge the recorded file — not the preview, and not the container tag,
+   which is what produced the earlier false "it recorded as log" reading.
+3. Capture the stock app's own `configure_streams` from CamX logs while it sits in PRO VIDEO
+   O-Log2, and diff its formats/operation_mode against ours. That is the ground truth for
+   replication and needs no guessing.
+
+Until step 2 is judged on a real file, neither "log works for third parties" nor "the key is inert"
+is established — the current documentation asserts the latter on evidence that could not have shown
+the former.
+
 ## Before Production
 
 These are manual Play Console operations, not repository implementation work:
