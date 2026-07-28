@@ -58,6 +58,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import me.hletrd.telecampro.camera.ColorTransfer
 import me.hletrd.telecampro.camera.PhotoFormats
 import me.hletrd.telecampro.ui.theme.CameraColors
@@ -611,12 +613,26 @@ internal fun <T> DropdownRow(
         ) {
             val alpha = if (enabled) 1f else DISABLED_ROW_ALPHA
             SettingsRowLabel(label, enabled = enabled)
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            // The value block is the row's TRAILING column and must stay pinned to the end, like
+            // every LabelValueRow. Without a weight it took its intrinsic width, so a long value
+            // ("OPPO Find X9 Ultra" on the Phone row) consumed all the free space, SpaceBetween had
+            // none left to distribute, and the value ran on directly after the label — reading as
+            // left-aligned (user-reported 2026-07-28). Weighted + End-aligned, it fills the
+            // remainder and sits right; `fill = false` keeps SHORT values hugging the edge instead
+            // of stretching a transparent box across the row.
+            Row(
+                modifier = Modifier.weight(1f, fill = false),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text(
                     labelFor(selected),
                     color = CameraColors.Accent.copy(alpha = alpha),
                     style = MaterialTheme.typography.labelMedium,
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.End,
+                    modifier = Modifier.weight(1f, fill = false),
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 DropdownCaret(color = CameraColors.Accent.copy(alpha = alpha))
