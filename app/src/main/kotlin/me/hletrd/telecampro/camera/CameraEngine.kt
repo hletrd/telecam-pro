@@ -405,6 +405,11 @@ class CameraEngine(private val context: Context) {
                 outputs = photoOutputs,
                 hiResConfigured = expectedController.hiResStill,
             )
+            // How the ACCEPTED session encoded its buffers. Pushed HERE, after onConfigured has run
+            // — a route-time push reads a stale false and every 10-bit frame is then linearised as
+            // 8-bit SDR. Through rendererAssists so it enters the replayed snapshot and survives a
+            // GL generation replacement.
+            rendererAssists.setSourceHlg(expectedController.hlgConfigured)
             val effectiveReady = previewReady
             cameraReady = effectiveReady
             readyController = expectedController.takeIf { effectiveReady }

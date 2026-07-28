@@ -461,6 +461,40 @@ O-Log2. Not worth it without new evidence; the GL-baked profiles remain the ship
 Keep the GL-baked S-Log3/LogC3 profiles either way: they are the display-referred fallback, and a
 native path would be a separate, genuinely scene-referred option.
 
+### 10-bit colour pipeline — SEAM LANDED, END RESULT NOT YET CORRECT (2026-07-29)
+
+The source-decode seam exists and is tested, but **the 10-bit path does not yet produce correct log
+and must not be enabled**. It stays behind `tenBitExperimentEnabled` (DEBUG + flag file), and with
+that flag off the shader takes the byte-identical BT.1886 branch, so shipping behaviour is untouched.
+
+What is proven:
+- `Shaders.sourceLinear` replaces the hardcoded BT.1886 decode at all four transfer branches and
+  selects on `uSourceHlg`. The HLG branch is the exact inverse of the forward `hlg()` OETF plus the
+  inverse of its reference-white scaling, reusing the same constants. `SourceLinearHlgTest` pins the
+  round trip both as a pure OETF inverse and end-to-end on the display-light scale (white → 1.0).
+- `CameraController.hlgConfigured` reports the session that actually configured, not the intent the
+  fallback ladder may have dropped.
+- The flag reaches GL through `RendererAssists`/`RendererConfig`, so it is REPLAYED into a new GL
+  generation. A first attempt pushed it as a bare `GlPipeline.post` and the value was silently
+  dropped — the push logged `true` and the recorded output never changed. That is the documented
+  "posted before start() is a no-op" trap, and it cost a full debug cycle.
+
+What is NOT resolved — the remaining unknown, stated precisely so the next attempt starts here:
+with `uSourceHlg = 1` the recorded image changed once (mean 100.2 → 75.0, i.e. the seam is live)
+and then did NOT move at all when the reference-white normalization was added — a ~3.93x scale that
+cannot be a no-op on a signal that is genuinely HLG. The frame still reads as normal-contrast with
+deep blacks (p01 = 9) rather than the flat, lifted look the 8-bit reference shows (p01 = 25, p99 =
+139). The most likely explanation is that **the preview SurfaceTexture does not actually deliver
+HLG-encoded values even though its `OutputConfiguration` carries `setDynamicRangeProfile(HLG10)`** —
+in which case an HLG inverse is being applied to SDR data and the result clips. Next step is to
+prove what the preview buffer actually contains (e.g. an ImageReader at the same profile, or a
+known-value test pattern) BEFORE touching the curve again; two of the three attempts above failed
+because the plumbing, not the maths, was wrong.
+
+A CORRECTION to the 2026-07-29 measurement recorded earlier: the original 8-bit vs 10-bit A/B used
+`SLOG3` for one clip and `SLOG3_CINE` for the other — different gamut matrices — so the difference
+it showed was confounded and is NOT evidence that the sampler yields HLG. That claim is withdrawn.
+
 ### Stock app colour modes side by side — CAPTURED LIVE 2026-07-28
 
 Switched the stock app through its video colour modes with `dumpsys media.camera` captured at each,

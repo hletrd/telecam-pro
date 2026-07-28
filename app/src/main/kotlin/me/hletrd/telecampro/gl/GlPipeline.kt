@@ -493,6 +493,15 @@ class GlPipeline {
      *  corner viewport re-drawing the FULL current camera frame (single-stream: the HAL zoom crop
      *  is baked in, so this is the widest available field, not an unzoomed one). Preview-only; the
      *  actual gating also requires the loupe ([punchIn], checked at draw). */
+    /**
+     * How the accepted camera session encoded its buffers (HLG10/DV vs 8-bit SDR).
+     *
+     * Goes through RendererAssists so it lands in the REPLAYED snapshot: a bare post is dropped
+     * before start() and lost on a GL generation replacement — which is exactly how the first
+     * attempt at this silently did nothing (2026-07-29).
+     */
+    fun setSourceHlg(enabled: Boolean) = post { renderer.setSourceHlg(enabled) }
+
     fun setTeleFinder(enabled: Boolean) = post { teleFinder = enabled }
 
     /** Sets the loupe magnification center (texcoord 0..1); the punch-in zoom follows this point. */

@@ -18,6 +18,15 @@ internal data class RendererConfig(
     val waveform: Boolean = false,
     val punchIn: Boolean = false,
     val teleFinder: Boolean = false,
+    /**
+     * Whether the CAMERA stream is a 10-bit HLG-encoded buffer (HLG10 / DV session).
+     *
+     * Route state, not an assist — but it lives in this snapshot for the same reason the assists do:
+     * a GL generation replacement re-creates the renderer with defaults, and a value pushed only as
+     * a handler message is silently lost. That is exactly how the first attempt at this failed
+     * (2026-07-29): the push logged fine and the output never changed.
+     */
+    val sourceHlg: Boolean = false,
 )
 
 /** Thread-safe copy-on-write owner for [RendererConfig]. */

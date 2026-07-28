@@ -54,6 +54,8 @@ object Shaders {
         #extension GL_OES_EGL_image_external : require
         precision highp float;
         uniform samplerExternalOES uTexture;
+        // 1 when the CAMERA stream is a 10-bit HLG-encoded buffer (HLG10 / DV session).
+        uniform int uSourceHlg;
         uniform int uTransfer;   // 0 = display, 1 = HLG, 2 = S-Log3/S-Gamut3, 4 = S-Log3/S-Gamut3.Cine,
                                  // 5 = LogC3/AWG3, 3 = de-log O-Log2→709 (DORMANT Gamma Disp. Assist)
         uniform int uPeaking;    // 0/1  (preview only)
@@ -96,6 +98,32 @@ object Shaders {
             float a = ${SdrToHlgMapping.HLG_A}, b = ${SdrToHlgMapping.HLG_B}, c = ${SdrToHlgMapping.HLG_C};
             vec3 hi = a * log(max(12.0 * x - b, 1e-4)) + c;
             return mix(hi, lo, step(x, vec3(1.0 / 12.0)));
+        }
+
+        // SOURCE linearisation — the one place that knows how the CAMERA encoded what we sampled.
+        //
+        // GL_TEXTURE_EXTERNAL_OES returns values in the BUFFER's own encoding; it does not
+        // linearise. The 8-bit stream is display-referred 709, so BT.1886 is right there. When the
+        // session configures HLG10 the PREVIEW OutputConfiguration carries that profile too, so the
+        // same sampler yields HLG — and decoding that with a 2.4 gamma expands highlights instead of
+        // unrolling the HLG curve. The log OETF then re-compresses, so the file looks plausible
+        // while being wrong log: two errors partially cancelling.
+        vec3 sourceLinear(vec3 c) {
+            vec3 s = clamp(c, 0.0, 1.0);
+            if (uSourceHlg == 0) return pow(s, vec3(SDR_EOTF_GAMMA));
+            // BT.2100 inverse HLG OETF -> normalized scene light. Exact inverse of hlg() above,
+            // sharing its constants so the pair cannot drift (pinned by SourceLinearHlgTest).
+            float a = ${SdrToHlgMapping.HLG_A}, b = ${SdrToHlgMapping.HLG_B}, c2 = ${SdrToHlgMapping.HLG_C};
+            vec3 lo = s * s / 3.0;
+            vec3 hi = (exp((s - c2) / a) + b) / 12.0;
+            vec3 sceneLight = mix(hi, lo, step(s, vec3(0.5)));
+            // ...then back onto the DISPLAY-LIGHT scale every branch below was written for, where
+            // diffuse white is 1.0. HLG scene light puts diffuse white near BT2408_HLG_SCALE
+            // (~0.25), so handing it over raw under-drives the log OETFs — device-seen as an image
+            // that changed but still was not flat. This is the exact inverse of the forward HLG
+            // branch's `pow(displayLight * BT2408_HLG_SCALE, 1/HLG_SYSTEM_GAMMA)`, reusing both
+            // constants so forward and inverse cannot drift apart.
+            return pow(sceneLight, vec3(HLG_SYSTEM_GAMMA)) / BT2408_HLG_SCALE;
         }
 
         // Rec.709 -> Rec.2020 primaries (linear light), for the HLG mapping above.
@@ -201,7 +229,7 @@ object Shaders {
                 // Simplified display-referred SDR-to-HLG mapping (ITU-R BT.2408-9 §5.1.3.4):
                 // BT.1886 decode -> linear 709-to-2020 -> normalized reference-white scale and
                 // per-channel inverse OOTF -> BT.2100 HLG OETF. SDR white maps to 75% HLG.
-                vec3 sdrDisplayLight = pow(clamp(color, 0.0, 1.0), vec3(SDR_EOTF_GAMMA));
+                vec3 sdrDisplayLight = sourceLinear(color);
                 vec3 bt2020DisplayLight = toRec2020(sdrDisplayLight);
                 vec3 hlgSceneLight = pow(
                     max(bt2020DisplayLight * BT2408_HLG_SCALE, vec3(0.0)),
@@ -211,15 +239,15 @@ object Shaders {
                 // S-Log3 / S-Gamut3 from the display-referred SDR stream, same chain shape as the
                 // HLG branch above: BT.1886 decode -> linear 709-to-S-Gamut3 -> defensive floor ->
                 // S-Log3 OETF (see file docs; NOT scene-referred camera log).
-                vec3 lin = pow(clamp(color, 0.0, 1.0), vec3(SDR_EOTF_GAMMA));
+                vec3 lin = sourceLinear(color);
                 color = slog3(gamutFloor(toSGamut3(lin)));
             } else if (uTransfer == 4) {
                 // S-Log3 / S-Gamut3.Cine: identical chain, smaller grading-friendlier gamut.
-                vec3 lin = pow(clamp(color, 0.0, 1.0), vec3(SDR_EOTF_GAMMA));
+                vec3 lin = sourceLinear(color);
                 color = slog3(gamutFloor(toSGamut3Cine(lin)));
             } else if (uTransfer == 5) {
                 // ARRI LogC3 EI800 / ARRI Wide Gamut 3: identical chain.
-                vec3 lin = pow(clamp(color, 0.0, 1.0), vec3(SDR_EOTF_GAMMA));
+                vec3 lin = sourceLinear(color);
                 color = logc3(gamutFloor(toAwg3(lin)));
             } else if (uTransfer == 3) {
                 // DORMANT Gamma Display Assist: the incoming stream IS native O-Log2 (scene-

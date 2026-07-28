@@ -139,6 +139,14 @@ class CameraController(context: Context) {
     // setupExecutor while the fallback ladder re-reads it on the camera thread. The plan drops
     // hi-res on the FIRST failed attempt; [hiResReaderActive] below carries the per-session truth.
     @Volatile var hiResStill = false
+
+    /**
+     * Whether the session that actually CONFIGURED is 10-bit HLG-encoded — accepted truth, not
+     * intent, because the fallback ladder drops HLG on its own. The preview OutputConfiguration
+     * carries the same profile, so this decides how GL must linearise the frames it samples.
+     */
+    @Volatile var hlgConfigured = false
+        private set
     // True only while the CURRENT configure attempt built its processed reader at the full-sensor
     // size — camera-thread-owned, reset every attempt, and the sole source for both the accepted
     // Ready outputs and the still request's SENSOR_PIXEL_MODE.
@@ -628,6 +636,7 @@ class CameraController(context: Context) {
                     if (closed) { runCatching { s.close() }; return } // closed before config completed
                     session = s
                     StartupTrace.mark("onConfigured")
+                    hlgConfigured = useHlg
                     if (BuildConfig.DEBUG) Log.i(TAG, "Session configured (fallback=$attempt, hlg=$useHlg, jpeg=$useJpeg, raw=$useRaw, hiRes=$hiResReaderActive, vendorLog=$vendorLogMode)")
                     // Which HDR profiles this route ACTUALLY advertises. Logged once per session
                     // (not per frame, so it is quota-safe) because dumpsys formats this map

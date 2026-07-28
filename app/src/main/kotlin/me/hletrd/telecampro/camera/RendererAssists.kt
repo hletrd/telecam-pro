@@ -130,6 +130,12 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
 
     fun isTeleFinderEnabled(): Boolean = teleFinderEnabled
 
+    /** How the ACCEPTED camera session encoded its buffers; selects the GL source linearisation. */
+    fun setSourceHlg(enabled: Boolean) {
+        config.update { it.copy(sourceHlg = enabled) }
+        currentGl().setSourceHlg(enabled)
+    }
+
     fun setTeleFinderResolved(enabled: Boolean) {
         config.update { it.copy(teleFinder = enabled) }
         currentGl().setTeleFinder(enabled)
@@ -151,5 +157,6 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
         gl.setAnalysisEnabled(snapshot.histogram, snapshot.waveform)
         gl.setPunchIn(snapshot.punchIn)
         gl.setTeleFinder(snapshot.teleFinder)
+        gl.setSourceHlg(snapshot.sourceHlg)
     }
 }

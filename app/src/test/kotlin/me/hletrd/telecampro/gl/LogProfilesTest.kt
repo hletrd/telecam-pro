@@ -172,7 +172,7 @@ class LogProfilesTest {
             cineBranch to "color = slog3(gamutFloor(toSGamut3Cine(lin)));",
             logc3Branch to "color = logc3(gamutFloor(toAwg3(lin)));",
         )) {
-            val decode = branch.indexOf("vec3 lin = pow(clamp(color, 0.0, 1.0), vec3(SDR_EOTF_GAMMA));")
+            val decode = branch.indexOf("vec3 lin = sourceLinear(color);")
             val apply = branch.indexOf(encode)
             assertTrue("BT.1886 decode must open the branch", decode >= 0)
             assertTrue("matrix→floor→OETF must follow the decode", apply > decode)

@@ -80,7 +80,7 @@ class SdrToHlgMappingTest {
             ),
         )
 
-        val decode = shader.indexOf("vec3 sdrDisplayLight = pow(clamp(color")
+        val decode = shader.indexOf("vec3 sdrDisplayLight = sourceLinear(color)")
         val to2020 = shader.indexOf("vec3 bt2020DisplayLight = toRec2020(sdrDisplayLight)")
         val scaleAndInverseOotf = shader.indexOf("max(bt2020DisplayLight * BT2408_HLG_SCALE")
         val inverseOotf = shader.indexOf("vec3(1.0 / HLG_SYSTEM_GAMMA)", scaleAndInverseOotf)

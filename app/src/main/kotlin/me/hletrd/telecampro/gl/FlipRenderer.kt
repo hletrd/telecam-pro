@@ -28,6 +28,7 @@ class FlipRenderer {
     private var uTexMatrix = 0
     private var uTexture = 0
     private var uTransfer = 0
+    private var uSourceHlg = 0
     private var uPeaking = 0
     private var uPeakThreshold = 0
     private var uPeakColor = 0
@@ -57,6 +58,7 @@ class FlipRenderer {
     private var previewW = 1
     private var previewH = 1
     private var rotationDeg = 0
+    private var sourceHlg = false
     // Rotation the camera SurfaceTexture transform already bakes into the sampled image (the sensor
     // orientation). It is NOT re-applied to texcoords (stMatrix does that), but it DOES decide the
     // displayed aspect: a ~90° sensor rotation swaps the shown width/height. Combined with rotationDeg
@@ -72,6 +74,7 @@ class FlipRenderer {
         uTexMatrix = GLES20.glGetUniformLocation(program, "uTexMatrix")
         uTexture = GLES20.glGetUniformLocation(program, "uTexture")
         uTransfer = GLES20.glGetUniformLocation(program, "uTransfer")
+        uSourceHlg = GLES20.glGetUniformLocation(program, "uSourceHlg")
         uPeaking = GLES20.glGetUniformLocation(program, "uPeaking")
         uPeakThreshold = GLES20.glGetUniformLocation(program, "uPeakThreshold")
         uPeakColor = GLES20.glGetUniformLocation(program, "uPeakColor")
@@ -95,6 +98,11 @@ class FlipRenderer {
     fun setPreviewSize(width: Int, height: Int) {
         previewW = width.coerceAtLeast(1)
         previewH = height.coerceAtLeast(1)
+    }
+
+    /** How the accepted camera session encoded its buffers; selects the shader source decode. */
+    fun setSourceHlg(enabled: Boolean) {
+        sourceHlg = enabled
     }
 
     /** Extra CW rotation applied to texcoords on top of the SurfaceTexture transform (afocal flip). */
@@ -188,6 +196,9 @@ class FlipRenderer {
         GLES20.glUniformMatrix4fv(uTexMatrix, 1, false, texMatrix, 0)
         GLES20.glUniform1i(uTexture, 0)
         GLES20.glUniform1i(uTransfer, shaderTransferCode(transfer, delogAssist))
+        // Route state: describes the FRAMES, so every draw role must agree. A field, not an
+        // argument — preview, encoder, analysis and finder all read the same camera buffers.
+        GLES20.glUniform1i(uSourceHlg, if (sourceHlg) 1 else 0)
         GLES20.glUniform1i(uPeaking, if (peaking) 1 else 0)
         GLES20.glUniform1f(uPeakThreshold, peakThreshold)
         GLES20.glUniform3f(uPeakColor, peakR, peakG, peakB)
