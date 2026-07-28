@@ -4,73 +4,85 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 ## Upload Artifact
 
-> **UPLOAD-READY (2026-07-27, cycle 9) — re-cut from current `main`.** This supersedes BOTH earlier
-> candidates (`a0d4dbc` and, before it, `69af1574` / `9541697`). It carries the selectable
-> teleconverter and the UI pass that the `a0d4dbc` note describes, PLUS cycle 9: the device-derived
-> TELE rail, the AE lens-switch seed, the camera-switch dip, the loupe framing hint, the
-> gallery-restore fix, and the zoom-gesture submit policy. `applicationId` is unchanged
-> (`me.hletrd.telecampro`) and so is the upload certificate, so Play identity is unaffected.
+> **UPLOAD-READY (2026-07-28) — re-cut from current `main` at `8519eaa`.** This supersedes the
+> cycle-9 cut (`6bf2325`) and every candidate before it. `applicationId` is unchanged
+> (`me.hletrd.telecampro`) and the upload certificate is byte-identical to the recorded one, so Play
+> identity is unaffected.
 >
-> **RESOLVED 2026-07-27 (cycle 9): the six screenshots on record were RECAPTURED and are current.**
-> Provenance is now mixed on purpose — see the screenshot section below. The earlier warning stood
-> because the set predated the Converter dropdowns and the UI hierarchy pass; both are now shown.
+> Twenty-two commits landed since `6bf2325`, ten of them touching app source: the baseline profile,
+> device-independent EXIF identity, the phone-model removal from the app's own identity, the finder
+> past 3× opening at 1×, the selfie route hidden then restored with the loupe diagnosis, the
+> native-log experiment and its real blocker, the 10-bit HLG10 session proof, front-route pseudo-ZSL,
+> and the microphone-decline recording fix.
+>
+> **Screenshots: still the recaptured 2026-07-27 set.** They predate none of the above visually
+> except the 1× default opening framing — see the screenshot section before uploading.
 
 Do not upload debug APKs or any unsigned/stale release bundle.
 
-### Final v1 upload artifacts (built + verified 2026-07-27 from `main` at cycle 9, `6bf2325`)
+### Final v1 upload artifacts (built + verified 2026-07-28 from `main` at `8519eaa`)
 
-**This supersedes the `a0d4dbc` cut** (AAB `84a74f64…`, APK `f95161cc…`), which predates cycle 9 —
-the TELE focal rail, the AE lens-switch seed, the camera-switch dip, the loupe framing hint, the
-gallery-restore fix and the zoom-gesture submit policy. Do not upload the older bundle.
+**This supersedes the `6bf2325` cycle-9 cut** (AAB `c238c1cf…`, APK `615ff06d…`). Do not upload the
+older bundle.
 
 - Artifact location: `app/build/outputs/bundle/release/app-release.aab`
-- AAB SHA-256: `c238c1cf1d30e8930aa12075b56641b3824541757dfe2e5cfc6b7d8a94888363`
+- AAB SHA-256: `be719d7646b33601b894c175a443fbbca1f74da2daa45aacecefb09d9329e475`
 - Matching release APK SHA-256:
-  `615ff06d044f0fbd378471e80a8f351eacb21a106b1ae2eddc460904d849d4e3`
+  `99a1893cd50fb7e7f5cea4cc2afb83c864b8450a75241852ffddea0b1ec7f27e`
 - Launch component: `me.hletrd.telecampro/me.hletrd.telecampro.MainActivity`
-- `bundletool 1.18.3 validate`: passed; AAB `jarsigner -verify`: verified
-- APK signing: v2 valid (v1/v3/v3.1/v4 absent, as before), 1 signer, certificate SHA-256
-  `9dfdb903269238ef6de424052666b05814577b4b3bb43a5e3e3a05572660e584` — matches the upload
-  certificate above
+- `bundletool validate`: passed; AAB `jarsigner -verify`: **jar verified**
+- APK signing: v2 valid (v1/v3/v3.1/v4 absent, as before), 1 signer,
+  `CN=Jiyong Youn, L=Seoul, ST=Seoul, C=KR`, certificate SHA-256
+  `9dfdb903269238ef6de424052666b05814577b4b3bb43a5e3e3a05572660e584` — **unchanged from the recorded
+  upload certificate**, so this is the same upload key
 - APK alignment: 16 KiB passed (`zipalign -c -P 16 4`)
-- Release gate (cycle-9 cut): `lintRelease` **0 errors / 5 warnings**, every one pre-existing and
-  outside the changed files (`ApplySharedPref`, `UseKtx` ×3, an AGP-version-available notice);
-  host suite **1185 tests, 0 failures**
-- Carries a **baseline profile** (`assets/dexopt/baseline.prof`) installed by
-  androidx.profileinstaller. Without it the shipped APK sat at `status=verify` and ran
-  interpreted until JIT warmed; device-measured, the worst frame on opening the settings sheet
-  went 61 ms → 22 ms and idle-viewfinder p99 10 ms → 7 ms.
-- Installed and exercised on the PMA110 from this exact APK: viewfinder, TELE toggle
-  (rail reads `13x / 30x / 60x`), Shooting/Focus/Video tabs — which is where three of the six
-  store screenshots come from
-- Manifest: target/min SDK 36, no `INTERNET`, no `DEBUGGABLE` (checked in the packaged binary
-  manifest, not only the source)
-- **Release dex contains ZERO `com.oplus.ocs` occurrences** (string scan over both dex files) — the
-  OEM SDK is absent from the shipped binary, which is what the Data-Safety answers rest on.
-- Superseded candidates (do NOT upload): `69af1574…` (2026-07-26), `a737483f…` (9541697,
-  pre-namespace-move), `7339e00d…`, `b45a3b8e…`.
+- Release gate: `lintRelease` **0 errors / 5 warnings**, all pre-existing (`ApplySharedPref`,
+  `UseKtx`, `AndroidGradlePluginVersion`); host suite **1203 tests, 0 failures**
+- Carries a **baseline profile** (`assets/dexopt/baseline.prof`, 11 KiB + `.profm`) installed by
+  androidx.profileinstaller. Without it the shipped APK sat at `status=verify` and ran interpreted
+  until JIT warmed; device-measured, the worst frame on opening the settings sheet went 61 ms → 22 ms
+  and idle-viewfinder p99 10 ms → 7 ms.
+- **Smoke-tested on the PMA110 from this exact APK** (2026-07-28): installed as an update over the
+  prior release, launched to a live viewfinder with the loupe + corner overview active at 10×, and
+  captured a HEIF still (DCIM/TeleCamPro went 12 → 13 files). Process stayed alive; `logcat -b crash`
+  reported **zero** entries for `me.hletrd.telecampro`, and zero ANRs.
+- Packaged binary manifest (not just the source): `minSdkVersion 36`, `targetSdkVersion 36`,
+  `compileSdkVersion 37`, **no `INTERNET`**, **no debuggable flag**. `uses-permission` is exactly
+  `CAMERA` + `RECORD_AUDIO` (plus the framework's own dynamic-receiver permission).
+- **Release dex contains ZERO `com.oplus.ocs` occurrences** — verified by raw byte scan for both
+  `com/oplus/ocs` and `com.oplus.ocs` across `classes.dex` and `classes2.dex`. The OEM SDK is absent
+  from the shipped binary, which is what the Data-Safety answers rest on.
+- Superseded candidates (do NOT upload): `6bf2325` (`c238c1cf…`), `a0d4dbc` (`84a74f64…`),
+  `69af1574…`, `a737483f…` (9541697, pre-namespace-move), `7339e00d…`, `b45a3b8e…`.
 
-### PMA110 release device matrix — PENDING for the 2026-07-27 artifact
+### PMA110 release device matrix — PARTIAL for the 2026-07-28 artifact
 
-The run recorded below passed against the SUPERSEDED `69af1574…` build. It is kept because its
-findings (the clean REC refusal without the microphone, the bounded recovery after a transient
-disconnect) describe behaviour the code still has — but it is NOT evidence for the artifact this
-sheet now names, and the console sequence must not treat it as such. Re-run it against
-`84a74f64…` and replace this block.
+**Verified against THIS artifact** (release APK `99a1893c…`, installed as an update over the prior
+release):
 
-Installed APK SHA-256 was verified byte-identical to the SUPERSEDED artifact before that run.
+- Cold launch to a live viewfinder, loupe + corner overview active at 10×; live PID held.
+- Photo: HEIF written (DCIM/TeleCamPro 12 → 13 files).
+- `logcat -b crash`: **zero** entries for `me.hletrd.telecampro`; zero ANRs.
 
-- Fresh install (package uninstalled first) → clean cold launch, live PID, **zero crashes/ANRs**
-  across the whole session.
-- Runtime permissions from scratch: CAMERA granted through the app's own prompt; with RECORD_AUDIO
-  still denied, REC was **refused cleanly with no phantom file** (the documented admission
-  behaviour), and after granting the microphone a full clip recorded.
-- Photo: HEIF 4080×3064 written and pulled.
-- Video: HEVC 2160×3840 portrait, `arib-std-b67` (HLG) transfer, AAC audio track, 9.05 s,
-  clean full decode.
-- One transient `CameraService: disconnect` was observed after an interrupted REC attempt; a
-  relaunch restored a healthy session with no data loss — consistent with the documented bounded
-  recovery, not a defect in this build.
+**Verified the same day on the DEBUG package from the same `8519eaa` source** (the debug variant is a
+separate `applicationId`, so its runtime permissions are independent — which is what made a true
+first-launch audit possible; `pm grant`/`pm revoke` are both refused on ColorOS, so virgin permission
+state needs uninstall + reinstall):
+
+- Fresh install, nothing granted → CAMERA requested immediately, no error.
+- CAMERA denied once → the gate re-requests successfully; denied twice → "Enable camera access in
+  Settings." with a button that opens `InstalledAppDetails`.
+- With RECORD_AUDIO denied, REC now **records a video-only clip** — `RecordingSpec: admitted …
+  audio=false`, `MUTE` in the OSD, a 30.3 s HEVC 2160×3840 file with exactly one stream and no audio
+  track. **This supersedes the older "REC refused cleanly with no phantom file" note**, which
+  described pre-`06fc6d1` behaviour and is no longer what the code does; refusing the take withheld a
+  recording the pipeline can fully deliver.
+- Granting the microphone afterwards through the rationale → system dialog re-enables audio normally.
+- Saved stills carry no GPS: parsing a HEIF's TIFF IFDs found no GPS IFD pointer in IFD0 or ExifIFD.
+
+**Still pending against this artifact**: a video record/stop cycle and an HLG transfer check on the
+RELEASE package specifically (both were exercised on debug from the same source), and the
+converter-mounted optical checks that need the physical teleconverter.
 
 ### Historical v1 candidate (2026-07-10; superseded — DO NOT UPLOAD)
 
