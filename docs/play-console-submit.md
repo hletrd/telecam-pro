@@ -27,7 +27,7 @@ gallery-restore fix and the zoom-gesture submit policy. Do not upload the older 
 - AAB SHA-256: `c238c1cf1d30e8930aa12075b56641b3824541757dfe2e5cfc6b7d8a94888363`
 - Matching release APK SHA-256:
   `615ff06d044f0fbd378471e80a8f351eacb21a106b1ae2eddc460904d849d4e3`
-- Launch component: `me.hletrd.telecampro/me.hletrd.findx9tele.MainActivity`
+- Launch component: `me.hletrd.telecampro/me.hletrd.telecampro.MainActivity`
 - `bundletool 1.18.3 validate`: passed; AAB `jarsigner -verify`: verified
 - APK signing: v2 valid (v1/v3/v3.1/v4 absent, as before), 1 signer, certificate SHA-256
   `9dfdb903269238ef6de424052666b05814577b4b3bb43a5e3e3a05572660e584` — matches the upload

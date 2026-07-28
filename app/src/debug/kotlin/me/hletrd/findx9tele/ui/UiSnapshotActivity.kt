@@ -1,4 +1,4 @@
-package me.hletrd.findx9tele.ui
+package me.hletrd.telecampro.ui
 
 import android.content.Intent
 import android.hardware.camera2.CameraMetadata
@@ -29,17 +29,17 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
-import me.hletrd.findx9tele.camera.AspectRatio
-import me.hletrd.findx9tele.camera.CameraCaps
-import me.hletrd.findx9tele.camera.CameraUiState
-import me.hletrd.findx9tele.camera.CaptureMode
-import me.hletrd.findx9tele.camera.ColorTransfer
-import me.hletrd.findx9tele.camera.ExposureMode
-import me.hletrd.findx9tele.camera.FnSlot
-import me.hletrd.findx9tele.camera.LensChoice
-import me.hletrd.findx9tele.camera.MemorySlot
-import me.hletrd.findx9tele.camera.PhotoSessionOutputs
-import me.hletrd.findx9tele.ui.theme.FindX9TeleTheme
+import me.hletrd.telecampro.camera.AspectRatio
+import me.hletrd.telecampro.camera.CameraCaps
+import me.hletrd.telecampro.camera.CameraUiState
+import me.hletrd.telecampro.camera.CaptureMode
+import me.hletrd.telecampro.camera.ColorTransfer
+import me.hletrd.telecampro.camera.ExposureMode
+import me.hletrd.telecampro.camera.FnSlot
+import me.hletrd.telecampro.camera.LensChoice
+import me.hletrd.telecampro.camera.MemorySlot
+import me.hletrd.telecampro.camera.PhotoSessionOutputs
+import me.hletrd.telecampro.ui.theme.TeleCamProTheme
 
 /**
  * Deterministic debug-only host for screenshot review. It renders the production camera composable
@@ -54,7 +54,7 @@ class UiSnapshotActivity : ComponentActivity() {
         enableEdgeToEdge()
         acceptSnapshotIntent(intent)
         setContent {
-            FindX9TeleTheme {
+            TeleCamProTheme {
                 val request = snapshotRequest
                 val generation = snapshotGeneration
                 val layoutDirection = if (request.rtl) LayoutDirection.Rtl else LayoutDirection.Ltr

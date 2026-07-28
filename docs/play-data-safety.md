@@ -14,7 +14,7 @@ Use this as the source of truth when filling Play Console > Policy > App content
   `INTERNET` permission, and the build strips one if any dependency ever tries to merge it in
 - Camera input is used for the viewfinder and capture. Microphone input is processed locally when
   recording video audio and while the input level meter is visible in armed Video mode. Standby meter
-  input is reduced to a level reading and is not saved. Photos and videos are saved in `DCIM/X9Tele`
+  input is reduced to a level reading and is not saved. Photos and videos are saved in `DCIM/TeleCamPro`
   through Android MediaStore.
 - Privacy policy URL: `https://hletrd.github.io/telecam-pro/privacy-policy/`
 

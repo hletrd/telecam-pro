@@ -87,7 +87,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | **storage/** | |
 | `CaptureFamily.kt` | Versioned, timestamped capture-family identity embedded in every new output filename. HEIF/JPEG/DNG siblings reuse one exact key; video owns a one-file family. Legacy names are deliberately not inferred by timestamp proximity. |
 | `LatestCaptureReducer.kt` | Android-free reducer for owned Images/Video rows. Selects the newest capture first, then a displayable sibling inside only that capture, and distinguishes proven capture-family deletion from legacy file-only deletion. |
-| `MediaStoreWriter.kt` | Scoped-storage wrapper with a durable per-URI `REGISTERED`/`COMPLETE` journal. It retries COMPLETE markers boundedly, creates/publishes pending DCIM/X9Tele rows, and structurally probes JPEG/DNG/video. HEIF proof requires bounded `meta` children, a matching `pitm`/`iloc` primary item, supported construction/reference fields, and explicit extents wholly inside `mdat`. Launch recovery adopts COMPLETE/valid rows, deletes only proven-invalid rows, retains indeterminate/error rows, continues across collection failures, and returns a sanitized `RecoveryReport` for bounded provider retry. Delete count zero is existence-probed so an already-absent row is success. |
+| `MediaStoreWriter.kt` | Scoped-storage wrapper with a durable per-URI `REGISTERED`/`COMPLETE` journal. It retries COMPLETE markers boundedly, creates/publishes pending DCIM/TeleCamPro rows, and structurally probes JPEG/DNG/video. HEIF proof requires bounded `meta` children, a matching `pitm`/`iloc` primary item, supported construction/reference fields, and explicit extents wholly inside `mdat`. Launch recovery adopts COMPLETE/valid rows, deletes only proven-invalid rows, retains indeterminate/error rows, continues across collection failures, and returns a sanitized `RecoveryReport` for bounded provider retry. Delete count zero is existence-probed so an already-absent row is success. |
 | `SettingsStore.kt` | SharedPreferences persistence of ManualControls + ExtraSettings across launches, gated by a "Remember Settings" toggle (default ON); enums stored by name, defensive load. Lens and TELE restoration have separate default-on preserve toggles. |
 | **focus/** | |
 | `MacroProximity.kt` | Focus-confidence proofs and their OSD wording: `AF_LIMIT` (AF failed/hunting near the advertised minimum focus distance) may say `TOO CLOSE` with a closer-lens suffix; `FRAME_DETAIL` may only say `SOFT` with no suffix — it proves the frame resolves no fine detail, never *why*. 700 ms hold; any refusal resets it. |
@@ -112,7 +112,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `MediaReview.kt` | In-app review of the last capture: zoomable processed photos (EXIF-orientation-honoring decode — required by the hi-res passthrough lane, a no-op for the pixel-upright processed lane), rotating video playback, and a truthful non-decoding RAW/DNG metadata tile. Delete copy promises all saved formats only for a proven canonical family; legacy rows explicitly delete one file. Visible semantic Play/Pause and zoom-cycle controls remain available where applicable. |
 | **ui/theme/** | |
 | `Theme.kt` | Material3 dark theme tuned for a Sony-style pro camera surface, typography, color palette, text field/button shapes. |
-| **(app root — `me.hletrd.findx9tele`)** | |
+| **(app root — `me.hletrd.telecampro`)** | |
 | `MainActivity.kt` | Entry point. Requests CAMERA/RECORD_AUDIO permissions at runtime (ColorOS blocks pm grant). CAMERA request history distinguishes fresh/cancelled prompts from fixed denial before offering Settings. Hosts the Compose root and ViewModel. Lifecycle: `onStart` calls the ViewModel's `onStart`, which resumes the engine; `onStop` calls the ViewModel's `onStop`, which pauses it. |
 | `CameraPermissionPolicy.kt` | Pure CAMERA-permission decision table: fresh install / cancelled prompt / genuine permanent denial, driven only by completed request history plus rationale state. |
 | `HardwareInputPolicy.kt` | Pure camera-key EDGE ownership only (`cameraKeyDecision` / `updateAggregateCameraKeyOwnership`): pairs key-down claims with their key-ups across the aliased camera keycodes. The OEM keycode families and their dispatch to configurable actions live in `MainActivity.kt`; the `HardwareKeyAction` enum lives in `camera/CameraState.kt`. |
@@ -894,7 +894,7 @@ demoted to track-only — an evicted family must never become the review owner (
 pinned and delete would silently degrade to file-only).
 
 On relaunch, `MediaStoreWriter.latestOwnCapture` independently queries bounded sets of this package's
-published rows under `DCIM/X9Tele` from Images and Video. A failure in one collection does not discard
+published rows under `DCIM/TeleCamPro` from Images and Video. A failure in one collection does not discard
 valid rows from the other. The Android-free reducer chooses the newest capture
 before applying sibling display preference; an exact, bounded filename query then reconstructs every
 extant row for the winning canonical family. That family is seeded into the tracker with a synthetic
@@ -928,7 +928,7 @@ DNG always saves full-frame (crop not applied).
 
 ```kotlin
 createPendingImage(context, fileName, mimeType) → Uri
-// Creates DCIM/X9Tele IS_PENDING = 1, then durably journals REGISTERED
+// Creates DCIM/TeleCamPro IS_PENDING = 1, then durably journals REGISTERED
 openParcelFd(context, uri, "rw") → ParcelFileDescriptor
 // Caller writes to the FD
 markWriteComplete(context, uri)
@@ -1071,7 +1071,7 @@ current result; do not copy a mutable test/class count into documentation.
 this contract. A device run must receive the current session's `ANDROID_SERIAL`, derive application id
 and launch activity from the built APK, and respect any no-deployment directive. Default photo starts on
 the logical back camera at 1× / 23 mm with TELE off; TELE pins the standalone 3× camera; captures publish
-through MediaStore under `DCIM/X9Tele`; exposure modes are P, S, ISO, and M; and the settings rail has the
+through MediaStore under `DCIM/TeleCamPro`; exposure modes are P, S, ISO, and M; and the settings rail has the
 nine tabs documented above. A host-only run reports device behavior as not run, never as passed or failed.
 
 **Device verification:**

@@ -67,7 +67,7 @@ adb connect <device-ip>:<port>
 # debug installs as me.hletrd.telecampro.debug (applicationIdSuffix) — a SEPARATE app from the
 # release me.hletrd.telecampro, so runtime permissions must be granted once per package.
 adb install -r app/build/outputs/apk/debug/app-debug.apk
-adb shell am start -n me.hletrd.telecampro.debug/me.hletrd.findx9tele.MainActivity
+adb shell am start -n me.hletrd.telecampro.debug/me.hletrd.telecampro.MainActivity
 
 # verify: no crash + a real preview. The device may be asleep/locked — wake first, and note that
 # a screenshot of a flat-lying phone shows a dark textured surface, NOT a bug.

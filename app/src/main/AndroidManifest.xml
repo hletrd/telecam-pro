@@ -23,7 +23,7 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.FindX9TeleCamera">
+        android:theme="@style/Theme.TeleCamPro">
 
         <!-- CameraUnit is NOT integrated: the com.oplus.ocs SDK dependency, the OPPO
              OpenCapability maven repo, and the debug-only availability probe were all removed
@@ -41,7 +41,7 @@
             android:exported="true"
             android:screenOrientation="portrait"
             android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden|screenLayout|density"
-            android:theme="@style/Theme.FindX9TeleCamera"
+            android:theme="@style/Theme.TeleCamPro"
             tools:ignore="DiscouragedApi,LockedOrientationActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

@@ -556,7 +556,7 @@ export PATH="$JAVA_HOME/bin:$PATH"
 ./gradlew testDebugUnitTest lintRelease assembleRelease bundleRelease
 adb connect <device-ip>:<port>
 adb install -r app/build/outputs/apk/release/app-release.apk
-adb shell am start -n me.hletrd.telecampro/me.hletrd.findx9tele.MainActivity
+adb shell am start -n me.hletrd.telecampro/me.hletrd.telecampro.MainActivity
 ```
 
 The component above is correct for `main`. The pinned v1 release artifact PREDATES the namespace

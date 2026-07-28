@@ -1,0 +1,824 @@
+package me.hletrd.telecampro.ui.overlays
+
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import me.hletrd.telecampro.camera.AfIndication
+import me.hletrd.telecampro.camera.AspectRatio
+import me.hletrd.telecampro.camera.CameraFacing
+import me.hletrd.telecampro.camera.CameraUiState
+import me.hletrd.telecampro.camera.CaptureMode
+import me.hletrd.telecampro.camera.ColorTransfer
+import me.hletrd.telecampro.camera.DriveMode
+import me.hletrd.telecampro.camera.GridType
+import me.hletrd.telecampro.camera.HistogramData
+import me.hletrd.telecampro.camera.MeteringMode
+import me.hletrd.telecampro.camera.PhotoFormats
+import me.hletrd.telecampro.camera.ShutterTimer
+import me.hletrd.telecampro.camera.VideoStabMode
+import me.hletrd.telecampro.camera.WaveformData
+import me.hletrd.telecampro.camera.displayedStillAspect
+import me.hletrd.telecampro.camera.largestCenteredRect
+import me.hletrd.telecampro.camera.teleFinderVisible
+import me.hletrd.telecampro.camera.videoBitRate
+import me.hletrd.telecampro.focus.focusConfidenceLabel
+import me.hletrd.telecampro.ui.controls.transferLabelShort
+import me.hletrd.telecampro.ui.controls.videoCodecLabelShort
+import me.hletrd.telecampro.ui.controls.videoResolutionLabel
+import me.hletrd.telecampro.ui.theme.CameraColors
+import java.util.Locale
+import kotlin.math.abs
+import kotlin.math.roundToInt
+
+/**
+ * Small HUD text must remain readable over a white frame. At 82% black, opaque secondary text
+ * (#9E9E9E) retains >5:1 contrast and the blue status accent retains >4.7:1.
+ */
+internal const val HUD_TEXT_SCRIM_ALPHA = 0.82f
+
+/**
+ * The ONE spelling of the shared HUD plate: the translucent black slab the viewfinder's readouts,
+ * pills, scope panels, chrome discs and chips sit on, plus the review screen's own chrome.
+ *
+ * It is NOT a claim about every black drawn over a frame — that is what the rule at the bottom is
+ * for. The known exception is MediaReview's paused-video ▶ disc, a glyph backing at the 3:1 non-text
+ * floor rather than a text plate; it says so at its own site.
+ *
+ * It is a parameterless value, deliberately, and that is the whole point: there is no alpha to pass,
+ * so [HUD_TEXT_SCRIM_ALPHA] cannot be bypassed by accident and [CameraColors.ChromeScrim] never needs
+ * to be held at a draw site. A `Modifier` extension could not have replaced all 26 sites — the plate
+ * is the else-branch of four `if`/`when` expressions (TeleChip, DialChip, FocalRail, the Speed/Angle
+ * toggle), which a Modifier cannot express, so a Modifier-only helper would have left the mixed world
+ * it was meant to end. Every one of the 26 is a `.background(…)` argument, or a `val`/branch feeding
+ * one; none is a draw-call argument.
+ *
+ * 26 of 27: the three old spellings covered 27 sites (20 `Color.Black.copy(alpha = …)`, 3
+ * `ChromeScrim.copy(…)`, 4 `Pill.copy(…)`). The 27th is GearButton's knob halo — a ~2 px disc inside
+ * an 18 dp glyph, at its own deliberately lighter alpha, which is not a plate behind anything and
+ * carries a comment saying so.
+ *
+ * A plate that is NOT this — a local halo, a dim, a gradient stop, a glyph backing — must not be
+ * spelled as a `.copy` of a scrim token; write it as its own `Color.Black.copy(…)` at the site with a
+ * comment saying why, so the search for "who bypasses the floor" keeps returning nothing.
+ */
+internal val HudPlate: Color = CameraColors.ChromeScrim.copy(alpha = HUD_TEXT_SCRIM_ALPHA)
+
+/** WCAG contrast of [foregroundRgb] against black [scrimAlpha] composited over white. */
+internal fun contrastRatioOnWhiteScrim(foregroundRgb: Int, scrimAlpha: Float): Double {
+    val foregroundLuminance = relativeLuminance(foregroundRgb)
+    val backgroundChannel = (1.0 - scrimAlpha.coerceIn(0f, 1f)).coerceIn(0.0, 1.0)
+    val backgroundLuminance = linearSrgb(backgroundChannel)
+    val lighter = maxOf(foregroundLuminance, backgroundLuminance)
+    val darker = minOf(foregroundLuminance, backgroundLuminance)
+    return (lighter + 0.05) / (darker + 0.05)
+}
+
+private fun relativeLuminance(rgb: Int): Double {
+    val red = linearSrgb(((rgb shr 16) and 0xFF) / 255.0)
+    val green = linearSrgb(((rgb shr 8) and 0xFF) / 255.0)
+    val blue = linearSrgb((rgb and 0xFF) / 255.0)
+    return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+}
+
+private fun linearSrgb(channel: Double): Double =
+    if (channel <= 0.04045) channel / 12.92 else Math.pow((channel + 0.055) / 1.055, 2.4)
+
+/**
+ * Sony "Frame Lines": a centered marker box of the delivery aspect (2.39:1 / 1:1 / 9:16), fitted to
+ * the viewfinder, for judging a crop that will happen in post.
+ */
+@Composable
+fun FrameLinesOverlay(type: me.hletrd.telecampro.camera.FrameLineType, modifier: Modifier = Modifier) {
+    val ratio = type.ratio ?: return
+    Canvas(modifier = modifier) {
+        var w = size.width
+        var h = w / ratio
+        if (h > size.height) {
+            h = size.height
+            w = h * ratio
+        }
+        drawRect(
+            color = CameraColors.GuideLine,
+            topLeft = Offset((size.width - w) / 2f, (size.height - h) / 2f),
+            size = androidx.compose.ui.geometry.Size(w, h),
+            style = Stroke(width = 1.2.dp.toPx()),
+        )
+    }
+}
+
+/**
+ * Composition grid, drawn per [GridType]. Purely decorative; visibility/style is entirely driven
+ * by the [type] argument (NONE draws nothing).
+ */
+@Composable
+fun GridOverlay(type: GridType, modifier: Modifier = Modifier) {
+    if (type == GridType.NONE) return
+    val lineColor = CameraColors.GuideLine
+    Canvas(modifier = modifier.fillMaxSize()) {
+        val strokeWidth = 1.dp.toPx()
+        when (type) {
+            GridType.THIRDS -> drawThirdsGrid(lineColor, strokeWidth)
+            GridType.GOLDEN -> drawGoldenGrid(lineColor, strokeWidth)
+            GridType.SQUARE -> drawSquareGrid(lineColor, strokeWidth)
+            GridType.CENTER -> drawCenterMark(lineColor, strokeWidth)
+            GridType.NONE -> Unit
+        }
+    }
+}
+
+private fun DrawScope.drawThirdsGrid(color: Color, strokeWidth: Float) {
+    val x1 = size.width / 3f
+    val x2 = 2f * size.width / 3f
+    val y1 = size.height / 3f
+    val y2 = 2f * size.height / 3f
+    drawLine(color, Offset(x1, 0f), Offset(x1, size.height), strokeWidth)
+    drawLine(color, Offset(x2, 0f), Offset(x2, size.height), strokeWidth)
+    drawLine(color, Offset(0f, y1), Offset(size.width, y1), strokeWidth)
+    drawLine(color, Offset(0f, y2), Offset(size.width, y2), strokeWidth)
+}
+
+private fun DrawScope.drawGoldenGrid(color: Color, strokeWidth: Float) {
+    val phiInv = 0.618034f
+    val x1 = size.width * (1f - phiInv)
+    val x2 = size.width * phiInv
+    val y1 = size.height * (1f - phiInv)
+    val y2 = size.height * phiInv
+    drawLine(color, Offset(x1, 0f), Offset(x1, size.height), strokeWidth)
+    drawLine(color, Offset(x2, 0f), Offset(x2, size.height), strokeWidth)
+    drawLine(color, Offset(0f, y1), Offset(size.width, y1), strokeWidth)
+    drawLine(color, Offset(0f, y2), Offset(size.width, y2), strokeWidth)
+}
+
+private fun DrawScope.drawSquareGrid(color: Color, strokeWidth: Float) {
+    val cell = size.minDimension / 4f
+    if (cell <= 0f) return
+    var x = cell
+    while (x < size.width) {
+        drawLine(color, Offset(x, 0f), Offset(x, size.height), strokeWidth)
+        x += cell
+    }
+    var y = cell
+    while (y < size.height) {
+        drawLine(color, Offset(0f, y), Offset(size.width, y), strokeWidth)
+        y += cell
+    }
+}
+
+private fun DrawScope.drawCenterMark(color: Color, strokeWidth: Float) {
+    val cx = size.width / 2f
+    val cy = size.height / 2f
+    val armLength = size.minDimension * 0.05f
+    drawLine(color, Offset(cx - armLength, cy), Offset(cx + armLength, cy), strokeWidth)
+    drawLine(color, Offset(cx, cy - armLength), Offset(cx, cy + armLength), strokeWidth)
+    drawCircle(
+        color = color,
+        radius = size.minDimension * 0.08f,
+        center = Offset(cx, cy),
+        style = Stroke(width = strokeWidth),
+    )
+}
+
+/**
+ * Crop mask for non-[AspectRatio.W4_3] capture ratios: dims the sensor area outside
+ * [ratio]'s w:h box with semi-opaque black bars (letterboxed top/bottom or pillarboxed
+ * left/right, whichever the view's own aspect requires) so the framed area is obvious in the
+ * viewfinder. Draws nothing for [AspectRatio.W4_3] (the full-sensor/no-crop default).
+ */
+@Composable
+fun AspectMask(ratio: AspectRatio, modifier: Modifier = Modifier) {
+    if (ratio == AspectRatio.W4_3) return // full sensor = no crop mask
+    val barColor = Color.Black.copy(alpha = 0.5f)
+    Canvas(modifier = modifier.fillMaxSize()) {
+        val displayedAspect = displayedStillAspect(ratio)
+        val frame = largestCenteredRect(
+            containerWidth = size.width,
+            containerHeight = size.height,
+            aspectWidth = displayedAspect.width,
+            aspectHeight = displayedAspect.height,
+        )
+        if (frame.x > 0f) {
+            drawRect(color = barColor, topLeft = Offset.Zero, size = Size(frame.x, size.height))
+            drawRect(
+                color = barColor,
+                topLeft = Offset(frame.x + frame.width, 0f),
+                size = Size(frame.x, size.height),
+            )
+        }
+        if (frame.y > 0f) {
+            drawRect(color = barColor, topLeft = Offset.Zero, size = Size(size.width, frame.y))
+            drawRect(
+                color = barColor,
+                topLeft = Offset(0f, frame.y + frame.height),
+                size = Size(size.width, frame.y),
+            )
+        }
+    }
+}
+
+/**
+ * Deviation of the horizon gauge from the CURRENT held quadrant, normalized to (-180, 180]. Deviation
+ * is measured against the held orientation (not raw roll) because a landscape hold reads ±90° raw and
+ * would never show level, but the photographer's question is "am I square to the horizon in THIS
+ * hold" — captures auto-rotate per quadrant. Pulled out of [LevelOverlay] as a pure seam so the wrap
+ * logic (e.g. 350° roll vs a 10° hold reads as -20°, not +340°) is unit-testable off-device — the
+ * sessionAttemptPlan/centerCropBox house pattern. Upside-down (a 180° diff) maps to the inclusive
+ * +180 edge, visually identical to -180 on the symmetric gauge line.
+ */
+internal fun levelDeviationDegrees(rollDegrees: Float, deviceOrientation: Int): Float {
+    val m = ((rollDegrees - deviceOrientation) % 360f + 360f) % 360f
+    return if (m > 180f) m - 360f else m
+}
+
+/**
+ * Horizon/level indicator. A static reference line marks true-horizontal; the [rollDegrees] line
+ * rotates with device roll and turns YELLOW (Sony style) once within a small tolerance of level. In
+ * a landscape hold the gauge stays horizontal on screen: deviation is measured against the current
+ * held quadrant ([deviceOrientation], the task-8 gravity orientation), so "level" means square to
+ * the horizon in whatever way the phone is being held.
+ */
+@Composable
+fun LevelOverlay(modifier: Modifier = Modifier, rollDegrees: Float = 0f, deviceOrientation: Int = 0) {
+    val deviation = levelDeviationDegrees(rollDegrees, deviceOrientation)
+    val isLevel = abs(deviation) < 0.5f
+    val indicatorColor = if (isLevel) CameraColors.ManualActive else CameraColors.TextPrimary
+    Canvas(modifier = modifier.fillMaxSize()) {
+        val cy = size.height / 2f
+        val halfSpan = size.width * 0.16f
+        drawLine(
+            // One-off: the STATIC datum the moving indicator above is read against. It is a part of
+            // this gauge and is deliberately quieter than the live line it sits under, so it is not
+            // GuideLine (a composition rule the photographer frames to) and not ink.
+            color = Color.White.copy(alpha = 0.4f),
+            start = Offset(size.width / 2f - halfSpan, cy),
+            end = Offset(size.width / 2f + halfSpan, cy),
+            strokeWidth = 2.dp.toPx(),
+        )
+        rotate(degrees = deviation, pivot = Offset(size.width / 2f, cy)) {
+            drawLine(
+                color = indicatorColor,
+                start = Offset(size.width / 2f - halfSpan, cy),
+                end = Offset(size.width / 2f + halfSpan, cy),
+                strokeWidth = 4.dp.toPx(),
+            )
+        }
+        drawCircle(color = indicatorColor, radius = 4.dp.toPx(), center = Offset(size.width / 2f, cy))
+    }
+}
+
+/**
+ * Tap-to-focus reticle: a small yellow bracketed square centered at [point] (view-normalized
+ * 0..1 coordinates). Draws nothing while [point] is null (e.g. after the auto-hide timeout).
+ */
+@Composable
+fun FocusReticle(
+    point: Pair<Float, Float>?,
+    modifier: Modifier = Modifier,
+    indication: AfIndication = AfIndication.IDLE,
+) {
+    if (point == null) return
+    // Sony-style AF confirmation: the bracket turns GREEN on lock and RED on a failed scan — at
+    // 300 mm this is the difference between a keeper and a soft frame the user can't judge on the
+    // small live view. Yellow = tapped/scanning (the pre-verdict states).
+    val color = when (indication) {
+        AfIndication.FOCUSED -> Color(0xFF30D158)
+        AfIndication.FAILED -> Color(0xFFFF453A)
+        AfIndication.SCANNING, AfIndication.IDLE -> CameraColors.ManualActive
+    }
+    val focusDescription = when (indication) {
+        AfIndication.FOCUSED -> "Focus locked"
+        AfIndication.FAILED -> "Autofocus failed"
+        AfIndication.SCANNING -> "Autofocus searching"
+        AfIndication.IDLE -> "Focus point"
+    }
+    Canvas(modifier = modifier.semantics { contentDescription = focusDescription }) {
+        val cx = point.first * size.width
+        val cy = point.second * size.height
+        val half = 32.dp.toPx()
+        val corner = 10.dp.toPx()
+        val strokeWidth = 2.dp.toPx()
+        val left = cx - half
+        val right = cx + half
+        val top = cy - half
+        val bottom = cy + half
+        drawLine(color, Offset(left, top), Offset(left + corner, top), strokeWidth)
+        drawLine(color, Offset(left, top), Offset(left, top + corner), strokeWidth)
+        drawLine(color, Offset(right, top), Offset(right - corner, top), strokeWidth)
+        drawLine(color, Offset(right, top), Offset(right, top + corner), strokeWidth)
+        drawLine(color, Offset(left, bottom), Offset(left + corner, bottom), strokeWidth)
+        drawLine(color, Offset(left, bottom), Offset(left, bottom - corner), strokeWidth)
+        drawLine(color, Offset(right, bottom), Offset(right - corner, bottom), strokeWidth)
+        drawLine(color, Offset(right, bottom), Offset(right, bottom - corner), strokeWidth)
+    }
+}
+
+/** Red recording dot + elapsed mm:ss, shown while [me.hletrd.telecampro.camera.CameraUiState.isRecording] is true. */
+@Composable
+fun RecordingIndicator(elapsedMs: Long, modifier: Modifier = Modifier) {
+    val totalSeconds = elapsedMs / 1000L
+    val minutes = totalSeconds / 60L
+    val seconds = totalSeconds % 60L
+    val timeLabel = "%02d:%02d".format(Locale.US, minutes, seconds)
+    Row(
+        modifier = modifier
+            .background(HudPlate, RoundedCornerShape(50))
+            // Keep a stable REC description; elapsed telemetry must not be re-announced every second.
+            .clearAndSetSemantics { contentDescription = "Recording" }
+            // The ONE HUD pill inset, 12/6 (canonical note in CameraScreen's ModeLabel). This
+            // pill is why "one inset" needs stating twice: it hand-rolled ~2/10 horizontal and 4
+            // vertical out of a leading Spacer plus one-sided Text padding, so the sweep that unified
+            // fifteen `padding(…)` calls had nothing here to find. Only the PLATE's inset moves — the
+            // dot-to-timecode gap is the Row's own 6 dp arrangement, untouched. It is End-aligned in a
+            // column whose other members are 120-150 dp wide, so the ~12 dp it gains contends with
+            // nothing, and it is non-interactive, so no touch target is involved.
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Canvas(modifier = Modifier.size(10.dp)) {
+            drawCircle(color = CameraColors.Record)
+        }
+        Text(
+            text = timeLabel,
+            color = CameraColors.TextPrimary,
+            style = MaterialTheme.typography.labelLarge,
+        )
+    }
+}
+
+/**
+ * Thin horizontal audio input-level meter (0..1). Fill color shifts green -> yellow -> red as
+ * [level] approaches clipping, so it doubles as a basic peak warning while recording.
+ */
+@Composable
+fun AudioMeter(level: Float, modifier: Modifier = Modifier) {
+    val fill = level.coerceIn(0f, 1f)
+    val fillColor = when {
+        fill < 0.6f -> Color(0xFF4CD964)
+        fill < 0.85f -> CameraColors.ManualActive
+        else -> CameraColors.Record
+    }
+    Box(
+        modifier = modifier
+            .size(width = 120.dp, height = 8.dp)
+            // Rides the tested HUD contrast floor (05486cb) like the OSD pills: the meter reads level
+            // against bright scenes, so its scrim can't be the near-transparent 0.45 it was.
+            .background(HudPlate, RoundedCornerShape(4.dp)),
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            if (fill > 0f) {
+                drawRect(color = fillColor, size = Size(size.width * fill, size.height))
+            }
+        }
+    }
+}
+
+/**
+ * Top status strip — the Sony-style shooting OSD. Mode-aware so it only shows what affects the
+ * NEXT shot in the current mode:
+ *  - PHOTO: 35mm-equivalent focal (tagged TELE through the converter), still formats, drive mode
+ *    (when not single-shot) and self-timer (when armed).
+ *  - VIDEO: focal, the resolved recording spec (resolution · fps · codec · Mbps — what the encoder
+ *    will actually write), and the transfer function.
+ *  - Both: metering pattern (when not matrix), lock state, and non-default stabilization state.
+ */
+internal fun compactShootingStatusVisible(state: CameraUiState): Boolean =
+    state.activeMemorySlot != null ||
+        // FRONT changes what the app IS (the teleconverter is forced off, the tele chip and focal
+        // rail disappear). Sighted users read it from the vanished chrome and the mirrored image;
+        // without a tag there was no readout of it at all, and no non-visual way to know.
+        state.facing == CameraFacing.FRONT ||
+        state.mode == CaptureMode.VIDEO ||
+        (state.mode == CaptureMode.PHOTO && compactPhotoFormatLabel(state) != null) ||
+        (state.mode == CaptureMode.PHOTO && state.driveMode != DriveMode.SINGLE) ||
+        (state.mode == CaptureMode.PHOTO && !state.controls.oisEnabled) ||
+        // Accepted hi-res is a non-default capture state — the HR tag must stay reachable in the
+        // compact strip too, not only while some other tag happens to force it visible.
+        state.photoSessionOutputs.hiRes ||
+        state.controls.meteringMode != MeteringMode.MATRIX ||
+        state.controls.aeLock ||
+        state.controls.awbLock ||
+        state.controls.afLock ||
+        // Focus confidence is the OSD's one statement that the viewfinder is NOT resolving the
+        // subject. Compact is the default state (DISP starts off), so leaving it out of this gate
+        // made the tag render only when some UNRELATED tag happened to force the strip visible —
+        // i.e. never, in the default photo state the detector was built for.
+        state.focusConfidence != null ||
+        state.punchIn ||
+        teleFinderVisible(
+            enabled = state.teleFinder,
+            teleconverter = state.teleconverterMode,
+            videoMode = state.mode == CaptureMode.VIDEO,
+            aspect = state.aspectRatio,
+            punchIn = state.punchIn,
+        )
+
+/** The one HEIF(+JPEG)(+DNG) string. Both StatusBar branches used to build it separately. */
+internal fun photoFormatLabel(formats: PhotoFormats): String = buildString {
+    if (formats.heif) append("HEIF")
+    if (formats.jpeg) {
+        if (isNotEmpty()) append("+")
+        append("JPEG")
+    }
+    if (formats.dngRaw) {
+        if (isNotEmpty()) append("+")
+        append("DNG")
+    }
+    // "--" is the app's one null token (focalLabel below, the MR slots, the Fn cycles). This slot and
+    // that focal readout land in the SAME StatusBar row on a preview-only session, so a lone "-" here
+    // would put two spellings of "nothing" side by side.
+    if (isEmpty()) append("--")
+}
+
+/** Compact strip: the default HEIF-only combination is not an output-changing state, so it is silent. */
+internal fun compactPhotoFormatLabel(state: CameraUiState): String? {
+    if (state.mode != CaptureMode.PHOTO) return null
+    val formats = state.photoFormats
+    if (formats.heif && !formats.jpeg && !formats.dngRaw) return null
+    return photoFormatLabel(formats)
+}
+
+@Composable
+fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Boolean = false) {
+    if (compact && !compactShootingStatusVisible(state)) return
+    // PERF: StatusBar takes the WHOLE CameraUiState, so it recomposes at telemetry rate (audio
+    // level, roll, REC timer). Both derivations below are keyed remembers for the same reason its
+    // two siblings already are — StatusInfoPill (PERF4-2) and TopBar's availability projection —
+    // and the focal label is computed only in the branch that renders it.
+    val focalLabel = if (compact) {
+        null
+    } else {
+        val focal = state.caps?.equivalentFocalMm ?: 0f
+        val teleFocal = state.teleconverterFocalMm
+        remember(focal, state.controls.zoomRatio, state.teleconverterMode, teleFocal) {
+            // The afocal teleconverter multiplies the ~70 mm periscope → the SELECTED converter's
+            // effective focal (~300 mm on the kit optic). Round to the nearest 10 mm so the readout
+            // reads a clean "300 mm" rather than 296 mm. TELE effective focal follows the digital
+            // zoom on that NOMINAL base (constant scale, matching the 13/30/60× pill marks): on the
+            // kit optic 300 mm at 13×, 690 at 30×, 1380 at 60×.
+            val effFocal = ((teleFocal * state.controls.zoomRatio.coerceAtLeast(1f)) / 10f).roundToInt() * 10
+            when {
+                focal <= 0f -> "--"
+                state.teleconverterMode -> "$effFocal mm TELE"
+                // Seamless zoom: the logical camera's equiv focal is the MAIN lens's (23 mm) and the
+                // unified zoom is main-relative, so the EFFECTIVE focal is their product — 14 mm at
+                // 0.6×, 230 mm at 10× — tracking the lens the HAL actually has active, like the TELE
+                // readout does. FRONT rides this same seam unchanged: its caps equiv is the front
+                // lens's own and its zoom is lens-local, so the product is the honest selfie focal
+                // (no TELE multiplier possible — teleconverterMode is forced off on the front route).
+                else -> "%.0f mm".format(Locale.US, focal * state.controls.zoomRatio.coerceAtLeast(0.01f))
+            }
+        }
+    }
+    Row(
+        modifier = modifier
+            .background(HudPlate, RoundedCornerShape(8.dp))
+            // Sony bodies paginate their status strip; with many concurrent tags (AEL/AWL/AFL/LOUPE/…)
+            // trailing tags would run off-screen, so scroll keeps every lock tag reachable.
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        focalLabel?.let {
+            Text(it, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
+        }
+        state.activeMemorySlot?.let {
+            Text(it.label, color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+        }
+        // Facing: the one state that changes what the app is for. Rear is the norm and stays
+        // untagged (UX_POLICY: keep the viewfinder quiet); FRONT is the exception and says so.
+        if (state.facing == CameraFacing.FRONT) {
+            Text("FRONT", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+        }
+        if (state.mode == CaptureMode.VIDEO) {
+            if (!compact) {
+                val spec = remember(
+                    state.videoResolution, state.videoFrameRate, state.videoCodec, state.bitrateLevel,
+                ) {
+                    val mbps = videoBitRate(
+                        state.videoResolution.width, state.videoResolution.height,
+                        state.videoFrameRate.encoderRate,
+                        me.hletrd.telecampro.camera.effectiveBpp(state.bitrateLevel, state.videoCodec), state.videoCodec,
+                    ) / 1_000_000
+                    // A bare "M" is the finder convention for a bitrate; "Mb" named megabits, which
+                    // is a quantity, not a rate. The menu's Encoder row spells the full "Mbps" —
+                    // two registers on purpose, both now correct.
+                    "${videoResolutionLabel(state.videoResolution)} ${state.videoFrameRate.label}p " +
+                        "${videoCodecLabelShort(state.videoCodec)} ${mbps}M"
+                }
+                Text(spec, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
+            }
+            if (!compact || state.transfer != ColorTransfer.SDR) {
+                // The token, not a second blue: this tag used to be a raw 0xFF4C9AFF while the zoom
+                // pill, TAP AF chip and Fn glyph rode CameraColors.Accent (#8AB4F8) — two blues 40
+                // units apart for one meaning. Accent is the lighter of the two, so HUD contrast
+                // rises. (The histogram's blue CHANNEL curve below stays a literal: it names a
+                // colour channel, not a UI accent.)
+                Text(transferLabelShort(state.transfer), color = CameraColors.Accent, style = MaterialTheme.typography.labelMedium)
+            }
+            if (state.transfer.isLog && state.gammaAssist) {
+                // Gamma Display Assist active: the monitor is corrected, the file stays log.
+                // Caps like every other alphabetic tag in this row (FRONT/MUTE/HR/AEL/LOUPE/SLOG3…);
+                // Title Case is the MENU row convention, not the finder's.
+                // Full white, like its neutral-white row-mates (the focal readout, the video spec): it
+                // was the ONE alpha-modulated tag here, and dimming is this app's vocabulary for
+                // UNAVAILABLE everywhere else (0.38 chrome glyphs, DISABLED_ROW_ALPHA, the 0.55 Fn
+                // tile). A tag that only exists while the assist is ON must not wear the disabled
+                // treatment. (The other 0.55s in this file are the frame lines and the grid — they
+                // are CameraColors.GuideLine now: graphics over the image, not tags. The old note
+                // here said "the level scale", which was never one of them; that gauge is 0.4.)
+                Text("ASSIST", color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
+            }
+            if (state.openGate) {
+                Text("4:3", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+            }
+            if (!state.recordAudio) {
+                Text("MUTE", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+            }
+            val stabTag = when (state.videoStabMode) {
+                VideoStabMode.STANDARD -> "OIS+"
+                VideoStabMode.ENHANCED -> "STEADY"
+                VideoStabMode.OFF -> "STAB OFF"
+            }
+            Text(
+                stabTag,
+                color = if (state.videoStabMode == VideoStabMode.OFF) CameraColors.ManualActive else Color(0xFF4CD964),
+                style = MaterialTheme.typography.labelMedium,
+            )
+        } else {
+            if (!compact) {
+                Text(
+                    photoFormatLabel(state.photoFormats),
+                    color = CameraColors.TextPrimary,
+                    style = MaterialTheme.typography.labelMedium,
+                )
+            } else {
+                compactPhotoFormatLabel(state)?.let { formatLabel ->
+                    Text(formatLabel, color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+                }
+            }
+            if (state.photoSessionOutputs.hiRes) {
+                // ACCEPTED-session truth, never the toggle intent (the ladder drops hi-res first) —
+                // the same honesty rule as the finder PIP tag.
+                Text("HR", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+            }
+            if (state.driveMode != DriveMode.SINGLE) {
+                val driveLabel = when (state.driveMode) {
+                    DriveMode.BURST -> "BURST"
+                    DriveMode.AEB -> "AEB±2"
+                    DriveMode.TIMELAPSE -> "TL ${state.intervalSec}s"
+                    DriveMode.SINGLE -> ""
+                }
+                Text(driveLabel, color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+            }
+            if (!state.controls.oisEnabled) {
+                Text("OIS OFF", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+            }
+            if (!compact && state.timer != ShutterTimer.OFF) {
+                Text("T${state.timer.seconds}s", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+            }
+        }
+        if (state.controls.meteringMode != MeteringMode.MATRIX) {
+            Text(
+                if (state.controls.meteringMode == MeteringMode.SPOT) "SPOT" else "CENTER",
+                color = CameraColors.TextPrimary,
+                style = MaterialTheme.typography.labelMedium,
+            )
+        }
+        // Lock states are togglable (Fn/hardware key) but had NO on-screen indicator — a locked AE
+        // silently "ignoring" the scene reads as a broken camera. Amber tags, Sony-style, in the OSD
+        // row per UX policy ("important states belong in the OSD").
+        if (state.controls.aeLock) {
+            Text("AEL", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+        }
+        if (state.controls.awbLock) {
+            Text("AWL", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+        }
+        if (state.controls.afLock) {
+            Text("AFL", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+        }
+        // Focus confidence: ONE compact amber tag whose text follows whichever proof holds —
+        // TOO CLOSE (AF admitted defeat with the lens racked at its close limit, optionally
+        // suffixed with a genuinely closer-focusing lens) or SOFT (the frame itself resolved no
+        // fine detail, which cannot establish distance and so advises nothing). Same Sony-style
+        // register as AEL/AFL; the wording rule and the 700 ms hold live in focus/MacroProximity.kt.
+        focusConfidenceLabel(state.focusConfidence, state.macroCloserLensLabel)?.let { tag ->
+            Text(tag, color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+        }
+        if (state.punchIn) {
+            Text("LOUPE", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+        }
+        if (teleFinderVisible(
+                enabled = state.teleFinder,
+                teleconverter = state.teleconverterMode,
+                videoMode = state.mode == CaptureMode.VIDEO,
+                aspect = state.aspectRatio,
+                punchIn = state.punchIn,
+            )
+        ) {
+            Text("OVERVIEW", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+        }
+    }
+}
+
+/**
+ * Luma + per-channel (R/G/B) 256-bin histogram curves. Draws an empty bordered frame when [data]
+ * is null (e.g. before the first frame has been analyzed).
+ */
+@Composable
+fun HistogramOverlay(data: HistogramData?, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .size(width = 150.dp, height = 84.dp)
+            // Scrim rides the tested HUD contrast floor (05486cb): the scopes exist to judge exposure
+            // against bright/high-key scenes bleeding through the box, so the panel can't sit at the
+            // old 0.55 — the darker plate also makes the thin luma/RGB traces read better, not worse.
+            .background(HudPlate, RoundedCornerShape(8.dp))
+            // Uniform 6 DELIBERATELY, not the 12/6 HUD pill inset — the same instrument-not-text
+            // argument the ExposureMeter carries, and for the same measured reason. This box holds NO
+            // text: its content is a framed Canvas whose bordering rect is drawn AT the Canvas edge and
+            // whose data spans the full x (256 bins) and y (bin height) of that frame. So the padding
+            // is not clearance protecting a glyph, it is the gap between the plate edge and the PLOT
+            // FRAME; widening it to 12 would cut the 138 dp plot to 126 dp and drop ~9% of the
+            // histogram's horizontal axis (the waveform's column axis likewise) to protect nothing.
+            // Symmetric because the frame is symmetric: a 12/6 split would visibly seat the drawn
+            // border nearer the plate edge top and bottom than left and right.
+            .padding(6.dp),
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            drawRect(color = CameraColors.ScopeFrame, style = Stroke(width = 1.dp.toPx()))
+            if (data != null) {
+                // The LUMA channel's own colour, sibling to the R/G/B literals below — white because
+                // luma is white, not because the HUD's ink is. It stays a literal for the same reason
+                // they do (see the OSD transfer-tag note): these name signal channels, not UI roles.
+                drawHistogramCurve(data.luma, Color.White.copy(alpha = 0.9f))
+                drawHistogramCurve(data.red, Color(0xFFFF5252).copy(alpha = 0.75f))
+                drawHistogramCurve(data.green, Color(0xFF4CD964).copy(alpha = 0.75f))
+                drawHistogramCurve(data.blue, Color(0xFF4C9AFF).copy(alpha = 0.75f))
+            }
+        }
+    }
+}
+
+private fun DrawScope.drawHistogramCurve(bins: IntArray, color: Color) {
+    if (bins.size < 2) return
+    val maxVal = (bins.maxOrNull() ?: 0).coerceAtLeast(1)
+    val stepX = size.width / (bins.size - 1)
+    val path = Path()
+    for (i in bins.indices) {
+        val x = i * stepX
+        val y = size.height - (bins[i].toFloat() / maxVal) * size.height
+        if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+    }
+    drawPath(path, color = color, style = Stroke(width = 1.2.dp.toPx()))
+}
+
+/**
+ * Luma waveform monitor: for each screen column, plots a vertical spread of points whose alpha is
+ * proportional to that bucket's bin intensity (normalized against the frame's brightest bucket).
+ * Draws an empty bordered frame when [data] is null (e.g. before the first frame has been analyzed).
+ */
+@Composable
+fun WaveformOverlay(data: WaveformData?, modifier: Modifier = Modifier) {
+    // Fixed compact box (matching the histogram's footprint) instead of a fraction of the screen
+    // width, so it has a known extent, stacks cleanly under the histogram, and stays clear of the
+    // top-bar settings glyph. Scrim rides the tested HUD contrast floor (05486cb) — same reasoning as
+    // the histogram — with a brighter trace (below) so it reads at a glance over bright scenes.
+    Box(
+        modifier = modifier
+            .width(150.dp)
+            .height(84.dp)
+            .background(HudPlate, RoundedCornerShape(8.dp))
+            // Uniform 6, not 12/6, for the reason spelled out on [HistogramOverlay]: a text-free framed
+            // instrument whose data reaches its own drawn border, so a pill's horizontal inset would
+            // narrow the plot rather than protect a glyph. Kept identical to the histogram's on purpose
+            // — they stack directly under one another in the same column.
+            .padding(6.dp),
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            // [CameraColors.ScopeFrame], shared with the histogram above it. This site used to spell
+            // 0.35f against the histogram's 0.3f for the same role; the device check that closed that
+            // drift is recorded on the token.
+            drawRect(color = CameraColors.ScopeFrame, style = Stroke(width = 1.dp.toPx()))
+            if (data != null && data.columns > 0 && data.rows > 0) {
+                drawWaveform(data)
+            }
+        }
+    }
+}
+
+private fun DrawScope.drawWaveform(data: WaveformData) {
+    val maxVal = (data.bins.maxOrNull() ?: 0).coerceAtLeast(1)
+    val colWidth = size.width / data.columns
+    val rowHeight = size.height / data.rows
+    // Perf (PERF-5/AGG3-43): the batched-drawPoints version still boxed every populated cell —
+    // Offset is a value class, so an `ArrayList<Offset>` per bucket boxed up to columns×rows (~8k)
+    // Offsets per redraw at ~6 Hz (~1.5 MB/s garbage on main). Bucket the same √ alpha ramp into
+    // primitive FloatArrays of interleaved x,y pairs and hand each straight to the native
+    // Canvas.drawPoints(float[]) — zero per-point boxing, identical round-cap dots in ~8 draw ops.
+    val alphaBuckets = 8
+    val counts = IntArray(alphaBuckets)
+    for (col in 0 until data.columns) {
+        for (row in 0 until data.rows) {
+            val value = data.bins[col * data.rows + row]
+            if (value <= 0) continue
+            counts[waveformAlphaBucket(value, maxVal, alphaBuckets)]++
+        }
+    }
+    val coords = Array(alphaBuckets) { FloatArray(counts[it] * 2) } // FloatArray = primitive, no boxing
+    val next = IntArray(alphaBuckets)
+    for (col in 0 until data.columns) {
+        val x = col * colWidth + colWidth / 2f
+        for (row in 0 until data.rows) {
+            val value = data.bins[col * data.rows + row]
+            if (value <= 0) continue
+            val bucket = waveformAlphaBucket(value, maxVal, alphaBuckets)
+            val i = next[bucket]
+            coords[bucket][i] = x
+            coords[bucket][i + 1] = row * rowHeight + rowHeight / 2f
+            next[bucket] = i + 2
+        }
+    }
+    val diameter = 3.2.dp.toPx() // stroke width == the old 1.6 dp-radius circles
+    val paint = android.graphics.Paint().apply {
+        isAntiAlias = true
+        style = android.graphics.Paint.Style.STROKE
+        strokeCap = android.graphics.Paint.Cap.ROUND // round dots, like the old drawCircle points
+        strokeWidth = diameter
+        color = android.graphics.Color.rgb(0x8B, 0xFF, 0xA8) // brighter green for contrast against the scrim
+    }
+    val canvas = drawContext.canvas.nativeCanvas
+    for (bucket in 0 until alphaBuckets) {
+        if (counts[bucket] == 0) continue
+        val alpha = (0.4f + 0.6f * (bucket / (alphaBuckets - 1f))).coerceIn(0f, 1f)
+        paint.alpha = (alpha * 255f).roundToInt()
+        canvas.drawPoints(coords[bucket], paint)
+    }
+}
+
+/**
+ * Maps a bucket cell's [value] to an alpha bucket index. The old linear alpha (value/max) left
+ * low-count buckets nearly invisible; a floor + √ curve lifts them so any populated bucket paints
+ * clearly (QA: "waveform too faint"). Pulled out so both the counting and the fill pass agree.
+ */
+internal fun waveformAlphaBucket(value: Int, maxVal: Int, alphaBuckets: Int): Int {
+    val norm = (value.toFloat() / maxVal).coerceIn(0f, 1f)
+    return (kotlin.math.sqrt(norm) * (alphaBuckets - 1)).toInt().coerceIn(0, alphaBuckets - 1)
+}
+
+/**
+ * Big centered self-timer countdown number, shown while a shutter delay is counting down.
+ * [rotationDegrees] counter-rotates the digit so it stays upright in a landscape hold (wired by the
+ * sole call site from the device orientation); the 0f default is the screen-fixed identity.
+ */
+@Composable
+fun TimerCountdown(seconds: Int, modifier: Modifier = Modifier, rotationDegrees: Float = 0f) {
+    if (seconds <= 0) return
+    Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Text(
+            text = seconds.toString(),
+            color = CameraColors.TextPrimary,
+            // The line box and tracking must scale WITH the 120 sp override. Copying only fontSize
+            // left the 57 sp role's own line box under a 120 sp glyph — roughly HALF the glyph's
+            // size, so the digit is not centered in its measured box and Text's default Clip can eat
+            // the ascender — plus tracking scaled for 57 sp on a 120 sp numeral. -2.7 sp is Inter's
+            // own optical curve at 120 sp; the 120 sp itself is deliberate (see the call site).
+            style = MaterialTheme.typography.displayLarge.copy(
+                fontSize = 120.sp,
+                lineHeight = 126.sp,
+                letterSpacing = (-2.7).sp,
+            ),
+            modifier = Modifier.rotate(rotationDegrees),
+        )
+    }
+}

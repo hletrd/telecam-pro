@@ -6,13 +6,13 @@
         <!-- Shell-accessible deterministic screenshot surface. DUMP is signature-only, so ordinary
              third-party apps cannot launch this exported debug component. It is absent from release. -->
         <activity
-            android:name="me.hletrd.findx9tele.ui.UiSnapshotActivity"
+            android:name="me.hletrd.telecampro.ui.UiSnapshotActivity"
             android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden|screenLayout|density"
             android:excludeFromRecents="true"
             android:exported="true"
             android:permission="android.permission.DUMP"
             android:screenOrientation="portrait"
-            android:theme="@style/Theme.FindX9TeleCamera"
+            android:theme="@style/Theme.TeleCamPro"
             tools:ignore="DiscouragedApi,LockedOrientationActivity" />
     </application>
 
