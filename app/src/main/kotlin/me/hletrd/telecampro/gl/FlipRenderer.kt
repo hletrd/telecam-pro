@@ -151,7 +151,16 @@ class FlipRenderer {
         // convention. Do not hand a literal to any call site; consume the convention's derived
         // values so a future re-diagnosis stays a one-constant edit.
         mirrorX: Boolean = false,
+        // Per-draw content-rotation override, in place of the shared [rotationDeg] field.
+        //
+        // Exists for ONE caller: the TELE corner overview, which the operator wants UPRIGHT while
+        // the magnified main view carries the afocal 180° (user-specified 2026-07-28). Rotation is
+        // otherwise renderer STATE precisely so every draw role agrees, so this is deliberately an
+        // explicit opt-in per call rather than a settable field — null keeps the shared value, and
+        // the encoder/analysis/preview roles never pass it.
+        rotationOverrideDeg: Int? = null,
     ) {
+        val contentRotationDeg = rotationOverrideDeg ?: rotationDeg
         GLES20.glViewport(viewportX, viewportY, targetWidth, targetHeight)
         GLES20.glClearColor(0f, 0f, 0f, 1f)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
@@ -161,7 +170,7 @@ class FlipRenderer {
         // Center-crop "cover" scale so the content aspect fills the target without distortion.
         // Allocation-free form (PERF4-4): draw runs 1-4x per frame (preview + encoder + finder +
         // analysis) and the Pair-returning coverScale boxed 3 objects per call in the hottest loop.
-        coverScaleInto(coverScratch, previewW, previewH, sensorOrientationDeg, rotationDeg, targetWidth, targetHeight)
+        coverScaleInto(coverScratch, previewW, previewH, sensorOrientationDeg, contentRotationDeg, targetWidth, targetHeight)
         Matrix.setIdentityM(mvp, 0)
         Matrix.scaleM(mvp, 0, coverScratch[0], coverScratch[1], 1f)
 
@@ -169,7 +178,7 @@ class FlipRenderer {
         // crop-zoom for stabilization headroom, then EIS translation, then the SurfaceTexture matrix.
         Matrix.setIdentityM(rot, 0)
         Matrix.translateM(rot, 0, centerX + stabShiftX, centerY + stabShiftY, 0f)
-        Matrix.rotateM(rot, 0, rotationDeg.toFloat() + stabRollDeg, 0f, 0f, 1f)
+        Matrix.rotateM(rot, 0, contentRotationDeg.toFloat() + stabRollDeg, 0f, 0f, 1f)
         val comp = zoomComp.coerceAtLeast(1f)
         Matrix.scaleM(rot, 0, (1f - crop) / comp, (1f - crop) / comp, 1f)
         Matrix.translateM(rot, 0, -0.5f, -0.5f, 0f)

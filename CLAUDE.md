@@ -148,6 +148,19 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   them through the full `startPreview` rebuild read as stutter. Pinch/zoom events are additionally
   COALESCED in the ViewModel (leading apply + 16 ms trailing flush of the newest value, ~60 Hz) — per-event
   application recomposed the whole tree at input rate (~120 Hz) and read as jank.
+- **The Loupe Overview draws UPRIGHT — it deliberately does NOT take the afocal 180° the main view
+  takes (user-specified 2026-07-28).** The operator wants the world the right way up in the corner
+  while the magnified main view is the converter-corrected image, so the finder draw passes
+  `rotationOverrideDeg = 0` and the framing hint's `rotationDegrees` is pinned to 0 to match (a hint
+  that kept rotating inside a box that stopped would land point-mirrored). Rotation is otherwise
+  renderer STATE shared by every draw role, so this override is an explicit per-call opt-in with
+  exactly one caller — never make it a settable field. Device-verified by A/B: the overview's
+  vertical gradient inverted (top-brighter −7.3 → bottom-brighter +10.4) while the main view's was
+  unchanged (+0.9 → +0.5). **HONESTY LIMIT:** this is only fully correct once the overview is a real
+  WIDE stream. Today it re-draws the SAME converter-fed frame, so with the converter physically
+  mounted the box shows the raw, inverted field; the genuinely correct version is the second-stream
+  wide finder on the BACKLOG, which comes off a lens the converter is not clamped to and is upright
+  for real rather than by declining a rotation.
 - **Loupe Overview is HONEST about the single stream (2026-07-17; photo-only since cycle 2).**
   The Assist toggle (default OFF, persisted) draws a bottom-left corner viewport re-drawing the
   FULL current camera frame in TELE **photo** + 4:3 while the PUNCH-IN LOUPE is active (photo-only:

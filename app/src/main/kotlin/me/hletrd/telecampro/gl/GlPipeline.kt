@@ -920,6 +920,20 @@ class GlPipeline {
                                 // of our own (moot today — the finder requires TC, which the front
                                 // route forces off).
                                 mirrorX = false,
+                                // UPRIGHT, deliberately NOT carrying the afocal 180° the main view
+                                // gets (user-specified 2026-07-28, restated three times). The
+                                // overview is an orientation reference: the operator wants the
+                                // world the right way up in the corner while the magnified main
+                                // view is the converter-corrected image.
+                                //
+                                // HONESTY NOTE — this is only fully right once the overview is a
+                                // real WIDE stream. Today it re-draws the SAME converter-fed frame
+                                // (single-stream), so with the converter physically mounted this
+                                // box shows the raw, inverted field. The genuinely correct version
+                                // is the second-stream wide finder already on the BACKLOG; that
+                                // stream comes off a lens the converter is NOT clamped to, and is
+                                // upright for real rather than by declining a rotation.
+                                rotationOverrideDeg = 0,
                             )
                             // iPhone-style framing hint: a thin rectangle inside the overview
                             // marking WHERE THE MAGNIFIED MAIN VIEW IS LOOKING. Drawn with
@@ -936,7 +950,12 @@ class GlPipeline {
                                     (zoomTarget / halZoom.coerceAtLeast(0.01f)).coerceAtLeast(0.01f),
                                 centerTexX = loupeX,
                                 centerTexY = loupeY,
-                                rotationDegrees = previewRotationDeg,
+                                // MUST match the overview draw's own rotation, which is now pinned
+                                // upright above — not previewRotationDeg. The hint marks a position
+                                // INSIDE that box, so if the box stops rotating and the hint keeps
+                                // rotating, the mark lands point-mirrored from the field it claims
+                                // to describe (the same class of bug the y-sign bisect chased).
+                                rotationDegrees = 0,
                             )
                             val hx = hint.x.toInt()
                             val hy = hint.y.toInt()
