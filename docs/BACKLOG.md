@@ -410,6 +410,32 @@ the camera→SurfaceTexture→GL→encoder chain is 8-bit end to end today, so G
 (or the record stream must bypass GL). Do not attempt it as a patch — it needs its own slice, and
 the afocal 180° rotation means the record path cannot simply skip GL.
 
+**STEP 2–3 RUN (2026-07-28). One solid new capability; the log verdict is still OPEN.**
+
+PROVEN, and worth keeping regardless of log: **a 10-bit HLG10 video session configures on this HAL
+at `fallback=0` with no crash**, provided both still readers are dropped in the same configure —
+`Session configured (fallback=0, hlg=true, jpeg=false, raw=false, vendorLog=1)`, zero SIGABRT/SIGSEGV.
+The long-standing "HLG10 crashes the HAL" note is really "HLG10 **+ full-res JPEG + RAW** crashes
+it". `sessionAttemptPlan(tenBitVideoOnly = true)` is that rung; it costs the in-REC snapshot while
+active, which is why it is attempt-0-only and falls straight through to the ordinary 8-bit ladder.
+
+NOT established: whether native log ever reaches the file. Both clips measured with blacks at code
+0 — but so did the run where the GL S-Log3 curve should have been baking anyway, and a log encoding
+of ANY origin cannot emit 0 (S-Log3's floor is ~0.093, code ~95). So the recording path in the
+experiment is not in the state the test assumed, and NO conclusion about
+`com.oplus.log.video.mode` can be drawn from these clips. Two traps already caught here, both worth
+repeating: judging a `bt2020-10`-tagged 10-bit file through an sRGB PNG conversion crushes blacks by
+itself (measure the RAW Y plane), and the scene was very dark (whole histogram under code 184),
+which is a poor test regardless.
+
+Before re-running, in this order:
+
+1. Record a CONTROL clip with the experiment OFF and S-Log3 selected, measured the same raw-Y way.
+   If its blacks also sit at 0, the encoder is not baking the curve and the fault is in the test
+   harness, not the HAL — fix that before touching vendor keys again.
+2. Shoot a LIT scene with real highlights. A histogram capped at 18% cannot distinguish curves.
+3. Only then compare native-log-on vs native-log-off on the same lit scene.
+
 Keep the GL-baked S-Log3/LogC3 profiles either way: they are the display-referred fallback, and a
 native path would be a separate, genuinely scene-referred option.
 

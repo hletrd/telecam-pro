@@ -546,6 +546,7 @@ class CameraController(context: Context) {
             logicalMultiCamera = caps.isLogicalMultiCamera,
             teleconverterMode = teleconverterMode,
             wantHiRes = hiResStill,
+            tenBitVideoOnly = tenBitHlg && caps.supportsHlg10(),
         )
         val useHlg = plan.useHlg
         val useJpeg = plan.useJpeg
@@ -2141,7 +2142,23 @@ internal fun sessionAttemptPlan(
     logicalMultiCamera: Boolean = false,
     teleconverterMode: Boolean = false,
     wantHiRes: Boolean = false,
+    tenBitVideoOnly: Boolean = false,
 ): SessionAttemptPlan {
+    // 10-bit EXPERIMENT rung (debug-gated upstream). HLG10 + full-res JPEG + RAW together CRASH
+    // this HAL — a crash, not a config rejection, so the fallback ladder below cannot rescue it.
+    // The only safe way to ask for 10 bits is therefore to drop both still readers in the same
+    // breath, which costs the in-REC snapshot while it is active. Attempt 0 only: any later attempt
+    // falls straight through to the ordinary 8-bit ladder.
+    if (tenBitVideoOnly && attempt == 0) {
+        return SessionAttemptPlan(
+            useHlg = true,
+            useJpeg = false,
+            useRaw = false,
+            useVendorOperationMode = teleconverterMode,
+            useHiResStill = false,
+            useDeepZslReader = false,
+        )
+    }
     val hiRes = wantHiRes && attempt == 0
     val ladderAttempt = if (wantHiRes && attempt > 0) attempt - 1 else attempt
     val (streamAttempt, vendorMode) = if (teleconverterMode) {

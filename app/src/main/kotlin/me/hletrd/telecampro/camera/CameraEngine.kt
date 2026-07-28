@@ -790,8 +790,12 @@ class CameraEngine(private val context: Context) {
                     return@runIfOpen
                 }
                 // HLG10 10-bit preview + full-res JPEG/RAW crashes this HAL (configureStreams Broken
-                // pipe -32); use an SDR preview session. Video still tags HLG/Log in the encoder.
-                val tenBit = false
+                // pipe -32); the shipping session is therefore SDR and video only TAGS HLG/Log in
+                // the encoder. The debug-gated experiment asks for a real 10-bit chain instead, and
+                // pairs it with a session rung that drops BOTH still readers — see
+                // sessionAttemptPlan(tenBitVideoOnly). EglCore falls back to 8-bit on its own if the
+                // RGBA1010102 config is unavailable.
+                val tenBit = tenBitExperimentEnabled()
                 val ownedGl = glOwners.current()
                 glInputPending = true
                 ownedGl.start(tenBit) { _ ->
@@ -1193,7 +1197,7 @@ class CameraEngine(private val context: Context) {
                 caps = c,
                 glInputSurface = input,
                 controls = controls,
-                tenBitHlg = false, // SDR session — HLG10+RAW+JPEG crashes the HAL
+                tenBitHlg = tenBitExperimentEnabled(), // SDR unless the debug 10-bit experiment is armed
                 // The shipping picker always resolves 0: constrained high-speed SIGABRTs this HAL.
                 // Non-zero support remains dormant for diagnostics/schema-compatible internal callers.
                 highSpeedFps = desiredHighSpeedFps(),
@@ -2558,7 +2562,7 @@ class CameraEngine(private val context: Context) {
                     caps = c,
                     glInputSurface = input,
                     controls = controls,
-                    tenBitHlg = false, // SDR session — HLG10+RAW+JPEG crashes the HAL
+                    tenBitHlg = tenBitExperimentEnabled(), // SDR unless the debug 10-bit experiment is armed
                     highSpeedFps = desiredHighSpeedFps(),
                     vendorLogMode = vendorLogMode.halValue,
                     videoStabHalMode = c.videoStabControlMode(videoStabMode),
@@ -4329,6 +4333,16 @@ class CameraEngine(private val context: Context) {
         )
         rendererAssists.setTeleFinderResolved(resolved)
     }
+
+    /**
+     * DEBUG-only 10-bit experiment gate, sharing the native-log flag file so one switch drives the
+     * whole "replicate the stock log path" attempt (docs/BACKLOG.md). Release builds always read
+     * false, so the shipping SDR session is untouched.
+     */
+    internal fun tenBitExperimentEnabled(): Boolean =
+        BuildConfig.DEBUG &&
+            runCatching { java.io.File(context.getExternalFilesDir(null), "nativelog").exists() }
+                .getOrDefault(false)
 
     /** Breaks the engine→ViewModel callback graph before asynchronous owner teardown begins. */
     fun detachCallbacks() {
