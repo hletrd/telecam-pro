@@ -461,6 +461,41 @@ O-Log2. Not worth it without new evidence; the GL-baked profiles remain the ship
 Keep the GL-baked S-Log3/LogC3 profiles either way: they are the display-referred fallback, and a
 native path would be a separate, genuinely scene-referred option.
 
+### Loupe Overview "inverted in TELE" — NOT REPRODUCIBLE; inversion is structurally impossible (2026-07-28)
+
+Reported as "Loupe view should not be inverted when TELE mode is on." Investigated to a conclusion:
+**the overview cannot be inverted relative to the main view, by construction**, so there is no code
+change that would be correct here.
+
+Three independent proofs:
+
+1. **One rotation field, two draws.** `FlipRenderer.rotationDeg` is a private field set only by
+   `setRotationDegrees` and consumed inside `draw` (`Matrix.rotateM(rot, 0, rotationDeg + stabRollDeg,
+   …)`). Rotation is NOT a `draw` parameter. The main preview draw and the finder PIP draw are two
+   calls to the SAME renderer instance in the SAME frame with the SAME `stMatrix`; only the viewport
+   and `zoomComp` differ. They therefore carry identical orientation. (`coverScaleInto` does take the
+   box size, but that selects cover scaling for the smaller box — not rotation.)
+2. **The flip gates on the CONVERTER, not the lens.** `previewRotationDegrees()` is
+   `RotationMath.previewRotationDegrees(teleconverterMode)` — the user's TELE declaration that glass
+   is mounted, not "the 70 mm lens is selected". So the 180° is applied exactly when the user says
+   the afocal optic is in the path.
+3. **The framing hint tracks correctly IN TELE (device-measured).** With TELE engaged and the loupe
+   active, the untapped hint sits centred in the overview box (measured centre (257, 2020) against a
+   box centre of ~(255, 2010)). Tapping the UPPER-LEFT of the main view moved it to (219, 1942):
+   Δx −38, Δy −78, i.e. up-and-left — the hint follows the tap's SCREEN direction, which is the
+   correct result once both views carry the same 180°. This exercises the `rotationDegrees` term that
+   an earlier non-TELE bisection left at 0 and never tested.
+
+**Most likely explanation of the observation: TELE engaged with the converter NOT physically
+mounted.** The app then corrects an inversion that is not happening, so the whole frame — main view
+AND overview — reads upside down. The overview is where that is obvious, because it shows the entire
+scene, while a 13×+ punched-in main view is often ambiguous texture. Un-inverting only the overview
+would make it upside down in real, converter-mounted use, so it must not be done.
+
+Remaining (needs the phone aimed at a real scene, cannot be done over ADB): with the 300 mm
+converter mounted and TELE on, confirm visually that the corner overview and the main view show the
+same scene the same way up. Everything checkable without a scene is checked.
+
 ### Permissions + location EXIF — AUDITED on a fresh install (2026-07-28)
 
 Exercised every first-launch permission path on a genuinely clean package (`pm revoke` is refused on
