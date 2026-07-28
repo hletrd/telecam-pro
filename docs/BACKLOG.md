@@ -626,6 +626,12 @@ These do not require a code or metadata change unless the result exposes a defec
     railed against both limits and had no freedom to respond to any region.** That is a property of
     the light, not evidence about the mirror. A valid run needs enough light for AE to sit off its
     ceiling, plus real depth separation.
+    **The check is now one command: `tools/field/tap_af_aim.py --serial <serial>`.** Aim at a scene
+    clearly brighter on one side, put the app in VIDEO + PROGRAM, run it. It taps a mirrored pair and
+    prints PASS / FAIL / INCONCLUSIVE, and it REFUSES a verdict unless it first proves the run can
+    produce one — photo mode (app-side AE ignores HAL regions), a railed meter, too-even a scene, or
+    a meter that barely moved each exit 2 with the reason. Self-verified against the railed state
+    above, where it reports exactly that.
   - **Log-profile on-device check PARTIALLY CLOSED.** An S-Log3.Cine 4K clip was ffprobe-verified
     2026-07-23 (HEVC Main10, `color_transfer=bt2020-10` — confirmed NOT PQ/ST2084, the exact
     mistag the explicit-transfer container policy exists to prevent). Still open: playback
