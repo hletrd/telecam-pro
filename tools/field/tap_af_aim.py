@@ -15,11 +15,21 @@ disagree with you. So this script REFUSES to return a verdict unless it first pr
 somewhere to move, and unless the scene actually differs across the two tap points.
 
 PRECONDITIONS the script enforces (it exits non-zero and says which one failed):
-  1. VIDEO mode, PROGRAM exposure. Photo PROGRAM runs the APP-SIDE AE loop, which meters GL luma and
-     ignores HAL regions entirely — a photo-mode run tests nothing. Video P leaves HAL AE in charge.
+  1. A configuration where HAL AE owns exposure, because only then do AE regions apply at all.
+     `programShouldRunAppSide` says that is VIDEO+PROGRAM, or PHOTO+PROGRAM with flash AUTO/ON.
+     Everything else runs the APP-SIDE loop, which meters GL luma and ignores HAL regions entirely.
+     The script cannot read the flash mode out of the 3A line, so it ACCEPTS photo and warns: a
+     photo run without flash simply comes back INCONCLUSIVE at check 4 rather than lying.
   2. AE off its rails: reported ISO strictly inside the advertised range, so it can move both ways.
   3. Real scene contrast between the two tap points (default >= 18 luma), or the meter has no reason
      to respond even when it is working.
+  4. The meter actually moved between the two taps.
+
+CHOOSING A MODE. Video is the reliable one, but it PINS the frame rate, so exposure cannot go past
+~1/30 s and a dim scene rails ISO against its ceiling (exactly what defeated the first attempt).
+Photo lifts that pin — but only earns HAL AE with flash AUTO/ON, and the FRONT camera on this device
+advertises no flash at all, so front runs must use video and therefore need more light. For the
+front route, add light rather than switching modes.
 
 WHAT IT DOES NOT PROVE. Only the horizontal half. The tap mapping's ROTATION term is still
 uncalibrated on the front route (`viewTapToSensorPoint` documents itself as approximate), so a
@@ -126,9 +136,14 @@ def main() -> None:
             "relaunch it to get a fresh process, then re-run."
         )
     if not before.get("_video"):
-        fail(
-            "not in VIDEO mode. Photo PROGRAM runs the app-side AE loop, which meters GL luma and "
-            "ignores HAL regions — the run would test nothing."
+        # Not a refusal: photo + PROGRAM + flash AUTO/ON is genuinely HAL-AE, and it is the only way
+        # to escape video's FPS pin when the scene is dim. The flash mode is not recoverable from the
+        # 3A line, so warn rather than guess — a photo run WITHOUT flash runs the app-side loop,
+        # which ignores regions, and that shows up honestly as "AE barely moved" at the end.
+        print(
+            "note: PHOTO mode — valid only with flash AUTO/ON (which is what hands exposure to HAL "
+            "AE). Without it the app-side loop ignores regions and this run will end INCONCLUSIVE. "
+            "The front camera advertises no flash, so front runs must use VIDEO."
         )
 
     iso0 = before["iso"]

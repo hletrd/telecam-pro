@@ -26,6 +26,10 @@ inconclusive because AE was railed at max ISO in a dark room — so **light matt
 
 - Aim the **front** camera at something clearly brighter on one side (a window wall beside a shaded
   one works well). Set **VIDEO** mode, exposure **PROGRAM**.
+- **Light matters more than it looks.** Video pins the frame rate, so exposure cannot exceed
+  ~1/30 s; in a dim room AE rails against its ISO ceiling and can no longer respond to any
+  region. Photo mode lifts that pin but only earns HAL AE with flash AUTO/ON — and the front
+  camera advertises no flash — so for the front route, add light rather than changing mode.
 - Run: `tools/field/tap_af_aim.py --serial <serial>`
 
 **Pass:** prints `PASS — tapping the bright side lowered ISO`.
