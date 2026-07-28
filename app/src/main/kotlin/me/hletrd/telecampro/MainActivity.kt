@@ -226,7 +226,19 @@ class MainActivity : ComponentActivity() {
                 val activeTransition = updateAggregateCameraKeyOwnership(ownedShutterKeys, keyCode, ownedAfter = true)
                 if (activeTransition == true) {
                     val s = vm.state.value
-                    if (s.mode == CaptureMode.VIDEO && !s.isRecording && s.recordAudio && !hasMicrophonePermission) {
+                    // The hardware shutter deliberately never opens the rationale dialog — a
+                    // physical press should start the take, not a modal — so when the mic is wanted
+                    // but absent it drops audio and records video-only, reaching the same outcome
+                    // the touch path's decline reaches. The PREDICATE is the shared pure one so the
+                    // two entry points cannot drift; the STATUS text differs on purpose, because
+                    // here the user was never asked and so has denied nothing.
+                    val wantsMicrophone = microphonePermissionRequired(
+                        action = PendingAudioAction.START_RECORDING,
+                        videoMode = s.mode == CaptureMode.VIDEO,
+                        recording = s.isRecording,
+                        recordAudio = s.recordAudio,
+                    )
+                    if (wantsMicrophone && !hasMicrophonePermission) {
                         vm.onToggleRecordAudio(false)
                         vm.onAppStatus("Recording without audio")
                     }
