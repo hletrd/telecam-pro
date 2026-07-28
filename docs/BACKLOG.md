@@ -305,6 +305,37 @@ Two notes for whoever revisits this:
 - `profman` is not reachable from the adb shell on this device, which is why the device's own JIT
   profile could not be converted into generated rules.
 
+### Front shutter lag — MEASURED 2026-07-28, root cause is the missing ZSL route
+
+Device numbers, same app / same session / same room, 3 of 3 each:
+
+| route | shutter lag |
+|---|---|
+| REAR (pseudo-ZSL) | `images+result +0 ms` — serves a buffered frame aged 104–119 ms |
+| FRONT (no ZSL) | **+554 / +561 ms** |
+
+Brightness was NOT the dominant term. In the dark the front sat at ISO 16000 / 66.7 ms; in a lit
+room it runs ISO 375 / 33.3 ms, and the lag only fell to ~555 ms. The `ShutterLag` breakdown puts
+~455 ms of that BEFORE the capture starts (`started +455 ms`), i.e. roughly 14 frame intervals of
+queueing — not exposure, and not something more light can fix.
+
+**The fix is extending pseudo-ZSL to the front route, and it is a real session-shape change, not a
+flag flip.** `zslStreamingActive()` requires `caps.isLogicalMultiCamera` because the ring is fed by
+the full-res YUV still reader that only the LOGICAL photo route configures (that route uses YUV
+stills because gralloc rejects its HAL-JPEG blob — see the CLAUDE.md bullet). Standalone routes,
+front included, keep the proven HAL-JPEG path and have no YUV stream to buffer.
+
+Order of work when picked up:
+
+1. Relax the `isLogicalMultiCamera` condition in `zslStreamingActive()`.
+2. Add the full-res YUV reader to the front session's ladder, degrading to today's HAL-JPEG path if
+   the HAL rejects the combination — this HAL has form here (gralloc blob rejection, the RAW-on-
+   logical device error), so the rung must fail soft.
+3. `ZslAdmission` needs NO change: it is already a pure predicate with no route assumptions.
+
+Risk to respect: the front route is documented as "untouched … byte-for-byte", and every stream-combo
+change on this device has needed a real capture pass to trust.
+
 ## Before Production
 
 These are manual Play Console operations, not repository implementation work:
