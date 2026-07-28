@@ -1583,10 +1583,25 @@ class CameraEngine(private val context: Context) {
         // preview shows it flat, and Gamma Display Assist shows the normal display-referred image
         // instead. vendorLogMode stays OFF (dormant, with the de-log shader, for a future
         // CameraUnit-authenticated scene-referred path).
-        gl.setNativeLog(false)
+        // DEBUG-ONLY native-log experiment (docs/BACKLOG.md "the stock app's recipe"). The stock
+        // session was traced in 4K/30/O-Log2 and carries MORE than the mode key, so the old "the
+        // HAL ignores it" verdict was drawn from an incomplete request. Enable with:
+        //     adb shell setprop debug.telecampro.nativelog 1
+        // and pick a log transfer in Video. Release builds ignore the property entirely, so the
+        // shipped behaviour is unchanged until a recorded FILE proves the path works.
+        // Flag file rather than a system property: SystemProperties is hidden API. Enable with
+        //   adb shell touch /sdcard/Android/data/me.hletrd.telecampro.debug/files/nativelog
+        val nativeLogExperiment = BuildConfig.DEBUG && t.isLog &&
+            runCatching { java.io.File(context.getExternalFilesDir(null), "nativelog").exists() }
+                .getOrDefault(false)
+        // The GL curve must NOT also bake in while the HAL is asked to emit log — two curves in
+        // series is not a test of either.
+        gl.setNativeLog(nativeLogExperiment)
         val wasNativeLog = vendorLogMode != VendorLogMode.OFF
-        vendorLogMode = VendorLogMode.OFF
-        if (wasNativeLog) reopenForSession()
+        val nextLogMode = if (nativeLogExperiment) VendorLogMode.ON else VendorLogMode.OFF
+        val logModeChanged = wasNativeLog != (nextLogMode != VendorLogMode.OFF)
+        vendorLogMode = nextLogMode
+        if (logModeChanged) reopenForSession()
         if (recorder == null) gl.setTransfer(t)
     }
     fun setPeaking(enabled: Boolean) {

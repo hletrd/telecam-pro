@@ -349,12 +349,28 @@ class CameraController(context: Context) {
      */
     private val logVideoModeKey = CaptureRequest.Key("com.oplus.log.video.mode", Int::class.javaObjectType)
 
+    /**
+     * The stock app's log path carries MORE than the mode key, which is why setting that key alone
+     * produced 709 output and the earlier "the HAL ignores it" verdict (see docs/BACKLOG.md — the
+     * stock session was traced live in 4K/30/O-Log2 via `dumpsys media.camera`).
+     *
+     * `com.oplus.VideoColorBT709` is the suspected forced-709 switch; clearing it is step 1 of the
+     * replication. Both are guarded exactly like the mode key: a vendor tag that disappears or
+     * rejects a value across ColorOS builds must never take the preview down with it.
+     */
+    private val videoColorBt709Key = CaptureRequest.Key("com.oplus.VideoColorBT709", Int::class.javaObjectType)
+
     /** Applies the HAL-native log mode (no-op at 0). Defensive: a rejected vendor tag must never kill the preview build. */
     private fun CaptureRequest.Builder.applyVendorLog() {
         if (vendorLogMode == 0) return
         runCatching { set(logVideoModeKey, vendorLogMode) }
             .onSuccess { if (BuildConfig.DEBUG) Log.i(TAG, "vendor log.video.mode=$vendorLogMode applied") }
             .onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "vendor log.video.mode=$vendorLogMode rejected: ${it.message}") }
+        // Clear the forced-BT709 conversion the stock log path does not use. Independent
+        // runCatching: if this tag is absent the mode key above must still have been applied.
+        runCatching { set(videoColorBt709Key, 0) }
+            .onSuccess { if (BuildConfig.DEBUG) Log.i(TAG, "vendor VideoColorBT709=0 applied") }
+            .onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "vendor VideoColorBT709 rejected: ${it.message}") }
     }
 
     // The QTI vendor "extras" (Auto HDR, in-sensor zoom, ideal RAW) were all removed: Auto HDR SIGABRTs

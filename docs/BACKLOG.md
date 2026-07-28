@@ -377,6 +377,39 @@ Replication order (no guessing left):
 4. Judge a RECORDED FILE, never the preview and never the container tag — the earlier false
    "it recorded as log" was exactly a misread container tag.
 
+**STEP 1 RUN AND MEASURED (2026-07-28): the vendor keys alone do NOT produce log.**
+
+`com.oplus.VideoColorBT709 = 0` was added beside `com.oplus.log.video.mode = 1`, both applied
+successfully (`vendor VideoColorBT709=0 applied`), session at `fallback=0, vendorLog=1`, GL curve
+suppressed so nothing else could bake one. The recorded 4K clip measures:
+
+```
+min 0.0000   p1 0.0000   median 0.0627   p99 0.2353   max 0.6471
+```
+
+Blacks are crushed to ZERO, and a log encoding never emits 0 — S-Log3's black sits near 0.09. So the
+output is still display-referred. (Scene was dark, which weakens the highlight end of this test, but
+not the black end: pure-black pixels are sufficient on their own.)
+
+**The likely reason, from re-reading the stock streams: PIXEL FORMAT, not the dynamic-range profile.**
+
+```
+stock Stream[1]: 3840x2160  format 0x36 = HAL_PIXEL_FORMAT_YCBCR_P010   <- 10-BIT
+stock Stream[0]: 1920x1080  format 0x7fa30c09 = vendor implementation-defined (preview)
+```
+
+Both carry `Dynamic Range Profile 0x1` (STANDARD), which is what misled the earlier reading —
+including mine. The stock log path is 10-bit via the **P010 stream format**, not via the
+DynamicRangeProfile mechanism this app reasons about. Our record path is SurfaceTexture/PRIVATE
+8-bit; the Main10 / `yuv420p10le` / `bt2020-10` in our file is a 10-bit CONTAINER over an 8-bit
+SOURCE, which is exactly the mismatch the honesty note in the README describes.
+
+So the remaining step is NOT another vendor key. It is a P010 camera output stream feeding the
+encoder, with the BT2020 / SMPTE_170M / FULL dataspace stock uses. That is an architecture change:
+the camera→SurfaceTexture→GL→encoder chain is 8-bit end to end today, so GL needs a 10-bit path
+(or the record stream must bypass GL). Do not attempt it as a patch — it needs its own slice, and
+the afocal 180° rotation means the record path cannot simply skip GL.
+
 Keep the GL-baked S-Log3/LogC3 profiles either way: they are the display-referred fallback, and a
 native path would be a separate, genuinely scene-referred option.
 
