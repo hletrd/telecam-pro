@@ -461,6 +461,43 @@ O-Log2. Not worth it without new evidence; the GL-baked profiles remain the ship
 Keep the GL-baked S-Log3/LogC3 profiles either way: they are the display-referred fallback, and a
 native path would be a separate, genuinely scene-referred option.
 
+### How the STOCK app gets its log stream — ANSWERED 2026-07-28 (and why we cannot copy it)
+
+Its live `configure_streams` (captured earlier via `dumpsys media.camera` in `4K·30·O-Log2`):
+
+```
+Stream[0]: 1920x1080  format 0x7fa30c09  dataspace 0x8c60000  Dynamic Range Profile: 0x1
+Stream[1]: 3840x2160  format 0x36        dataspace 0x8c60000  Dynamic Range Profile: 0x1
+```
+
+The mechanism, decoded:
+1. **`format 0x36` is `HAL_PIXEL_FORMAT_YCBCR_P010` — a 10-BIT buffer.** So the stock app does get
+   ten bits, but NOT the way a third party would: `Dynamic Range Profile: 0x1` is **STANDARD**, not
+   HLG10. It takes 10-bit PIXELS while declaring an SDR profile.
+2. **`dataspace 0x8c60000` = `STANDARD_BT2020 | TRANSFER_SMPTE_170M | RANGE_FULL`** — BT.2020
+   primaries, full range, and a placeholder SDR transfer. That is the container tagging its log
+   signal travels under; the transfer is a placeholder precisely because "O-Log2" has no standard
+   transfer code.
+3. The ISP writes log-encoded data into that buffer, driven by the vendor mode key.
+
+**Why this is not reachable from public Camera2 — three independent walls, any one of which is
+fatal:**
+- **P010 is not advertised.** `availableStreamConfigurations` on this device contains no `0x36`
+  entry at all, so an `ImageReader` at `ImageFormat.YCBCR_P010` is not an offered configuration for
+  these cameras. The stock app is configuring a stream the public map does not list.
+- **Dataspace is not ours to set.** Publicly it FOLLOWS the DynamicRangeProfile; stamping an
+  arbitrary one is `ANativeWindow_setBuffersDataSpace`, a native call, not a Camera2 operation.
+- **The vendor log key is inert for us.** Already device-tested (2026-07-09): accepted and
+  "applied", changes nothing a third-party session can see. Consistent with the stock package
+  holding **`com.oplus.permission.safe.CAMERA`**, a signature-level privileged permission we cannot
+  obtain.
+
+**What IS ours:** `availableDynamicRangeProfilesMap` advertises profiles 2/4/8 (HLG10 / HDR10 /
+HDR10+), and the HLG10 route is device-proven to configure and to produce real Main 10 output (see
+the entry below). That is a genuinely different mechanism from the stock app's — it yields 10-bit
+PRECISION on the same display-referred source, not the ISP's scene-referred log. Nothing found here
+changes the honesty position: our log profiles remain GL-baked curves on a tone-mapped signal.
+
 ### 10-bit + log — MEASURED 2026-07-28, and what it does and does not buy
 
 Arming the debug 10-bit gate (`tenBitExperimentEnabled`, the `nativelog` flag file) configured a
