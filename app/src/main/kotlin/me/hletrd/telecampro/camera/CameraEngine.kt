@@ -4310,6 +4310,7 @@ class CameraEngine(private val context: Context) {
             teleconverterMode,
             videoMode,
             aspectRatio,
+            controls.zoomRatio,
         )
         rendererAssists.setTeleFinderResolved(resolved)
     }

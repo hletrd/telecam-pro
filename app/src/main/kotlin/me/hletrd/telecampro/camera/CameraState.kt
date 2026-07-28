@@ -307,12 +307,17 @@ const val PUNCH_IN_CROP = 0.6f
  * ONE implementation for the engine (`pushTeleFinder`) and the Compose border — the same
  * hand-written condition used to live in three places and could silently drift.
  */
+/** Zoom at or past which the finder is offered without a converter mounted. */
+const val FINDER_MIN_ZOOM = 3f
+
 fun teleFinderResolved(
     enabled: Boolean,
     teleconverter: Boolean,
     videoMode: Boolean,
     aspect: AspectRatio,
-): Boolean = enabled && teleconverter && !videoMode && aspect == AspectRatio.W4_3
+    zoomRatio: Float = 1f,
+): Boolean = enabled && (teleconverter || zoomRatio >= FINDER_MIN_ZOOM) &&
+    !videoMode && aspect == AspectRatio.W4_3
 
 /**
  * The full visibility gate: the resolved flag plus an ACTIVE punch-in loupe (AGG4-29/P3.4). The
@@ -328,7 +333,8 @@ fun teleFinderVisible(
     videoMode: Boolean,
     aspect: AspectRatio,
     punchIn: Boolean,
-): Boolean = teleFinderResolved(enabled, teleconverter, videoMode, aspect) && punchIn
+    zoomRatio: Float = 1f,
+): Boolean = teleFinderResolved(enabled, teleconverter, videoMode, aspect, zoomRatio) && punchIn
 
 /**
  * The ONE hi-res-still admission predicate (same single-implementation discipline as

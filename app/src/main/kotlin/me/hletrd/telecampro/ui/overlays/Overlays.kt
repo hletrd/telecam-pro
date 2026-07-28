@@ -440,6 +440,7 @@ internal fun compactShootingStatusVisible(state: CameraUiState): Boolean =
             videoMode = state.mode == CaptureMode.VIDEO,
             aspect = state.aspectRatio,
             punchIn = state.punchIn,
+            zoomRatio = state.controls.zoomRatio,
         )
 
 /** The one HEIF(+JPEG)(+DNG) string. Both StatusBar branches used to build it separately. */
@@ -644,6 +645,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                 videoMode = state.mode == CaptureMode.VIDEO,
                 aspect = state.aspectRatio,
                 punchIn = state.punchIn,
+                zoomRatio = state.controls.zoomRatio,
             )
         ) {
             Text("OVERVIEW", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)

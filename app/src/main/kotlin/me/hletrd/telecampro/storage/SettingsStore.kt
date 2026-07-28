@@ -99,7 +99,10 @@ data class ExtraSettings(
     val halfPressAction: HardwareKeyAction = HardwareKeyAction.AF_ON,
     val gammaAssist: Boolean = false,
     val frameLines: FrameLineType = FrameLineType.OFF,
-    val preserveLensSelection: Boolean = true,
+    // Default OFF so every launch opens at the 1x main lens. Preserving the last pick made
+    // the app reopen at whatever zoom the previous session ended on, which reads as a wrong
+    // default rather than a restored preference.
+    val preserveLensSelection: Boolean = false,
     val preserveTeleconverter: Boolean = true,
 )
 

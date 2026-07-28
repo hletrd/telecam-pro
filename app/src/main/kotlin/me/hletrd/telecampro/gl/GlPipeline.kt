@@ -943,7 +943,10 @@ class GlPipeline {
                             val hw = hint.width.toInt().coerceAtLeast(1)
                             val hh = hint.height.toInt().coerceAtLeast(1)
                             val t = (minOf(fw, fh) / 90).coerceIn(1, 3)
-                            GLES20.glClearColor(1f, 1f, 1f, 1f)
+                            // Signature yellow (CameraColors.ManualActive 0xFFFFD60A): the hint
+                            // is an ACTIVE-state mark like the OSD tags, not neutral chrome, and
+                            // white lost itself against a bright frame.
+                            GLES20.glClearColor(1f, 0.839f, 0.039f, 1f)
                             // Bottom, top, left, right. Each is clamped into the finder box so an
                             // edge-clamped hint cannot paint over the border or the main preview.
                             intArrayOf(0).let { _ ->

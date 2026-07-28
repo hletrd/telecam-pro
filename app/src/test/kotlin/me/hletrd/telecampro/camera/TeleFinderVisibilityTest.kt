@@ -71,4 +71,25 @@ class TeleFinderVisibilityTest {
             assertFalse(teleFinderVisible(true, true, true, aspect, punchIn = true))
         }
     }
+
+    @Test
+    fun `past the zoom floor the finder is offered without a converter`() {
+        // The finder used to require TELE. A long DIGITAL zoom magnifies past the delivered field
+        // just as a converter does, so the honest gate is the magnification, not the accessory.
+        assertTrue(teleFinderVisible(true, false, false, AspectRatio.W4_3, punchIn = true, zoomRatio = 3f))
+        assertTrue(teleFinderVisible(true, false, false, AspectRatio.W4_3, punchIn = true, zoomRatio = 10f))
+    }
+
+    @Test
+    fun `below the floor a converterless route still refuses`() {
+        // Guards the regression the old raw floor caused: at ordinary zoom the corner box duplicates
+        // the main view ~1:1 and adds nothing.
+        assertFalse(teleFinderVisible(true, false, false, AspectRatio.W4_3, punchIn = true, zoomRatio = 2.9f))
+        assertFalse(teleFinderVisible(true, false, false, AspectRatio.W4_3, punchIn = true, zoomRatio = 1f))
+    }
+
+    @Test
+    fun `a mounted converter still qualifies at any zoom`() {
+        assertTrue(teleFinderVisible(true, true, false, AspectRatio.W4_3, punchIn = true, zoomRatio = 1f))
+    }
 }

@@ -354,6 +354,7 @@ fun CameraScreen(
                 videoMode = state.mode == CaptureMode.VIDEO,
                 aspect = state.aspectRatio,
                 punchIn = state.punchIn,
+                zoomRatio = state.controls.zoomRatio,
             )
             AndroidView(
                 modifier = Modifier
