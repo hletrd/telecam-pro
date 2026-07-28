@@ -31,3 +31,45 @@ internal fun updatedCameraPermissionRequestHistory(
     false -> true
     null -> requestedBefore
 }
+
+/** Why the app is about to ask for RECORD_AUDIO. */
+internal enum class PendingAudioAction { ENABLE_AUDIO, START_RECORDING }
+
+/** What a DECLINED microphone request should still do for the intent that triggered it. */
+internal enum class MicrophoneDeclineOutcome {
+    /** Leave audio off and stop there. */
+    AUDIO_OFF,
+
+    /** Leave audio off, then start the recording anyway — video-only. */
+    AUDIO_OFF_AND_RECORD,
+}
+
+/**
+ * Resolves a microphone denial into what should still happen.
+ *
+ * A [PendingAudioAction.START_RECORDING] intent keeps its recording: `VideoRecorder` records
+ * video-only whenever RECORD_AUDIO is absent, so refusing the take would withhold something the
+ * pipeline can fully deliver. Only an explicit [PendingAudioAction.ENABLE_AUDIO] — where recording
+ * was never requested — ends at audio-off.
+ */
+internal fun microphoneDeclineOutcome(action: PendingAudioAction?): MicrophoneDeclineOutcome =
+    when (action) {
+        PendingAudioAction.START_RECORDING -> MicrophoneDeclineOutcome.AUDIO_OFF_AND_RECORD
+        PendingAudioAction.ENABLE_AUDIO, null -> MicrophoneDeclineOutcome.AUDIO_OFF
+    }
+
+/**
+ * Whether [action] must hold for the microphone permission before running.
+ *
+ * A recording start needs it only when audio is actually wanted for that take; once audio is off
+ * (including right after a denial) the shutter runs straight through instead of re-prompting.
+ */
+internal fun microphonePermissionRequired(
+    action: PendingAudioAction,
+    videoMode: Boolean,
+    recording: Boolean,
+    recordAudio: Boolean,
+): Boolean = when (action) {
+    PendingAudioAction.ENABLE_AUDIO -> true
+    PendingAudioAction.START_RECORDING -> videoMode && !recording && recordAudio
+}

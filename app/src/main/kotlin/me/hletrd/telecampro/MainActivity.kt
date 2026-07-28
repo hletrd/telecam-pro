@@ -120,8 +120,7 @@ class MainActivity : ComponentActivity() {
                     val action = pendingAudioAction
                     pendingAudioAction = null
                     if (!granted) {
-                        vm.onToggleRecordAudio(false)
-                        vm.onAppStatus("Microphone permission denied")
+                        declineMicrophone(action)
                         return@rememberLauncherForActivityResult
                     }
                     when (action) {
@@ -167,7 +166,9 @@ class MainActivity : ComponentActivity() {
                             },
                             onDismiss = {
                                 showMicrophoneRationale = false
+                                val action = pendingAudioAction
                                 pendingAudioAction = null
+                                declineMicrophone(action)
                             },
                         )
                     }
@@ -323,16 +324,44 @@ class MainActivity : ComponentActivity() {
 
     private fun requestMicrophoneThen(action: PendingAudioAction, block: () -> Unit) {
         val s = vm.state.value
-        val needsMicrophone = when (action) {
-            PendingAudioAction.ENABLE_AUDIO -> true
-            PendingAudioAction.START_RECORDING -> s.mode == CaptureMode.VIDEO && !s.isRecording && s.recordAudio
-        }
+        val needsMicrophone = microphonePermissionRequired(
+            action = action,
+            videoMode = s.mode == CaptureMode.VIDEO,
+            recording = s.isRecording,
+            recordAudio = s.recordAudio,
+        )
         if (!needsMicrophone || hasMicrophonePermission) {
             block()
             return
         }
         pendingAudioAction = action
         showMicrophoneRationale = true
+    }
+
+    /**
+     * The microphone was declined — at our own rationale ("Not now") or at the system dialog.
+     *
+     * A START_RECORDING intent STILL GETS ITS RECORDING, silently. [VideoRecorder] already records
+     * video-only whenever RECORD_AUDIO is absent (`doAudio = recordAudio && hasRecordPermission()`
+     * → `expectedTracks = 1`), so dropping the press refuses a take the pipeline can fully deliver.
+     * Dropping it also stranded anyone who simply never wants audio: turning [recordAudio] off is
+     * what makes the NEXT press skip the prompt, so declining used to be a two-press ritual whose
+     * first press vanished behind a transient status line (device-verified 2026-07-28 on a fresh
+     * install: "Not now" returned to an idle viewfinder with no tally and no clip).
+     *
+     * Audio is disabled BEFORE starting so the UI toggle and the recorder's own permission gate
+     * agree on one answer instead of showing an armed mic over a silent clip; [_state] updates
+     * synchronously, so the start below observes it.
+     */
+    private fun declineMicrophone(action: PendingAudioAction?) {
+        vm.onToggleRecordAudio(false)
+        when (microphoneDeclineOutcome(action)) {
+            MicrophoneDeclineOutcome.AUDIO_OFF_AND_RECORD -> {
+                vm.onAppStatus("Microphone denied — recording without audio")
+                vm.onToggleRecording()
+            }
+            MicrophoneDeclineOutcome.AUDIO_OFF -> vm.onAppStatus("Microphone permission denied")
+        }
     }
 
     private fun refreshPermissionState() {
@@ -393,7 +422,6 @@ class MainActivity : ComponentActivity() {
         getSharedPreferences(PERMISSION_PREFS_NAME, MODE_PRIVATE)
     }
 
-    private enum class PendingAudioAction { ENABLE_AUDIO, START_RECORDING }
 }
 
 @Composable

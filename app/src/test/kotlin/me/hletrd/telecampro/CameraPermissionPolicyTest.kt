@@ -72,4 +72,95 @@ class CameraPermissionPolicyTest {
     fun grantClearsPriorRequestHistory() {
         assertEquals(false, updatedCameraPermissionRequestHistory(true, result = true))
     }
+
+    /**
+     * The defect this pins (device-verified 2026-07-28 on a fresh install): declining the mic at the
+     * REC prompt returned to an idle viewfinder and recorded nothing, even though `VideoRecorder`
+     * records video-only without the permission. The press must still produce a clip.
+     */
+    @Test
+    fun decliningTheMicStillRecordsTheTakeVideoOnly() {
+        assertEquals(
+            MicrophoneDeclineOutcome.AUDIO_OFF_AND_RECORD,
+            microphoneDeclineOutcome(PendingAudioAction.START_RECORDING),
+        )
+    }
+
+    @Test
+    fun decliningAnExplicitAudioEnableJustLeavesAudioOff() {
+        assertEquals(
+            MicrophoneDeclineOutcome.AUDIO_OFF,
+            microphoneDeclineOutcome(PendingAudioAction.ENABLE_AUDIO),
+        )
+    }
+
+    /** A denial with no recorded intent (dismissed twice, restored state) must not start anything. */
+    @Test
+    fun decliningWithNoPendingIntentStartsNothing() {
+        assertEquals(MicrophoneDeclineOutcome.AUDIO_OFF, microphoneDeclineOutcome(null))
+    }
+
+    @Test
+    fun recordingStartNeedsTheMicOnlyWhenAudioIsWanted() {
+        assertEquals(
+            true,
+            microphonePermissionRequired(
+                PendingAudioAction.START_RECORDING,
+                videoMode = true,
+                recording = false,
+                recordAudio = true,
+            ),
+        )
+        // Audio off — including immediately after a denial — runs straight through with no prompt,
+        // which is what keeps declining from becoming a two-press ritual.
+        assertEquals(
+            false,
+            microphonePermissionRequired(
+                PendingAudioAction.START_RECORDING,
+                videoMode = true,
+                recording = false,
+                recordAudio = false,
+            ),
+        )
+    }
+
+    @Test
+    fun stoppingARecordingNeverPromptsForTheMic() {
+        assertEquals(
+            false,
+            microphonePermissionRequired(
+                PendingAudioAction.START_RECORDING,
+                videoMode = true,
+                recording = true,
+                recordAudio = true,
+            ),
+        )
+    }
+
+    @Test
+    fun photoModeNeverPromptsForTheMic() {
+        assertEquals(
+            false,
+            microphonePermissionRequired(
+                PendingAudioAction.START_RECORDING,
+                videoMode = false,
+                recording = false,
+                recordAudio = true,
+            ),
+        )
+    }
+
+    /** Turning audio ON is always a real microphone request, whatever the capture state. */
+    @Test
+    fun enablingAudioAlwaysRequiresTheMic() {
+        assertEquals(
+            true,
+            microphonePermissionRequired(
+                PendingAudioAction.ENABLE_AUDIO,
+                videoMode = false,
+                recording = false,
+                recordAudio = false,
+            ),
+        )
+    }
 }
