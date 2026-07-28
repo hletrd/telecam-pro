@@ -1184,14 +1184,17 @@ private fun TopBar(
                     onClick = { actions.onToggleTeleconverter(!state.teleconverterMode) },
                 )
             }
-            // Fixed (non-scrolling) slot like DISP/settings: flipping must stay reachable while the
-            // leading chip row is scrolled, and it never disappears in compact mode.
-            FlipCameraButton(
-                onClick = actions::onToggleFrontCamera,
-                enabled = !recordingLocked,
-                modifier = Modifier.rotate(glyphRotation),
-                frontFacing = state.facing == CameraFacing.FRONT,
-            )
+            // The selfie route is HIDDEN (2026-07-28): its flip button was the only way in, so
+            // removing it takes the feature out of the product without unpicking the engine. The
+            // front path underneath — setFrontCamera's optics transaction, CameraSelector2.pickFront,
+            // FrontMirrorConvention, the RotationMath front branch — is left intact and dormant, so
+            // restoring the feature is re-adding this button, not rebuilding a route.
+            //
+            // Why it was pulled: the front preview reads noticeably tighter than the stock camera's
+            // (unresolved — the SAVED file is the full 4096x3072 array at the lens's own minimum
+            // zoom, so nothing is cropped in captures), and the front has no pseudo-ZSL, which
+            // measured a ~555 ms shutter lag against the rear route's 0 ms in the same light.
+            // Both are recorded in docs/BACKLOG.md.
             DispButton(infoHidden = compact, onClick = onToggleDisp, modifier = Modifier.rotate(glyphRotation))
             GearButton(onClick = onOpenSheet, modifier = Modifier.rotate(glyphRotation))
         }
