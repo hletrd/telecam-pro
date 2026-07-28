@@ -4,31 +4,31 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 ## Upload Artifact
 
-> **UPLOAD-READY (2026-07-28) — re-cut from current `main` at `8519eaa`.** This supersedes the
+> **UPLOAD-READY (2026-07-28) — re-cut from current `main` at `aa642ad`.** This supersedes the
 > cycle-9 cut (`6bf2325`) and every candidate before it. `applicationId` is unchanged
 > (`me.hletrd.telecampro`) and the upload certificate is byte-identical to the recorded one, so Play
 > identity is unaffected.
 >
-> Twenty-two commits landed since `6bf2325`, ten of them touching app source: the baseline profile,
-> device-independent EXIF identity, the phone-model removal from the app's own identity, the finder
-> past 3× opening at 1×, the selfie route hidden then restored with the loupe diagnosis, the
-> native-log experiment and its real blocker, the 10-bit HLG10 session proof, front-route pseudo-ZSL,
-> and the microphone-decline recording fix.
+> Twenty-six commits landed since `6bf2325`, eleven of them touching app source: the baseline
+> profile, device-independent EXIF identity, the phone-model removal from the app's own identity,
+> the finder past 3× opening at 1×, the selfie route hidden then restored with the loupe diagnosis,
+> the native-log experiment and its real blocker, the 10-bit HLG10 session proof, front-route
+> pseudo-ZSL, the microphone-decline recording fix, and the front tap-AF metering-mirror fix.
 >
 > **Screenshots: still the recaptured 2026-07-27 set.** They predate none of the above visually
 > except the 1× default opening framing — see the screenshot section before uploading.
 
 Do not upload debug APKs or any unsigned/stale release bundle.
 
-### Final v1 upload artifacts (built + verified 2026-07-28 from `main` at `8519eaa`)
+### Final v1 upload artifacts (built + verified 2026-07-28 from `main` at `aa642ad`)
 
 **This supersedes the `6bf2325` cycle-9 cut** (AAB `c238c1cf…`, APK `615ff06d…`). Do not upload the
 older bundle.
 
 - Artifact location: `app/build/outputs/bundle/release/app-release.aab`
-- AAB SHA-256: `be719d7646b33601b894c175a443fbbca1f74da2daa45aacecefb09d9329e475`
+- AAB SHA-256: `70a85bb1699477c38b34b0838f48f2241c94fb9faa3277ebad6ce9d77709e282`
 - Matching release APK SHA-256:
-  `99a1893cd50fb7e7f5cea4cc2afb83c864b8450a75241852ffddea0b1ec7f27e`
+  `99d227d6ada9d8d4caada5b96f7ab0359cd0784cb158b4508dd07cca23ac14f7`
 - Launch component: `me.hletrd.telecampro/me.hletrd.telecampro.MainActivity`
 - `bundletool validate`: passed; AAB `jarsigner -verify`: **jar verified**
 - APK signing: v2 valid (v1/v3/v3.1/v4 absent, as before), 1 signer,
@@ -37,15 +37,16 @@ older bundle.
   upload certificate**, so this is the same upload key
 - APK alignment: 16 KiB passed (`zipalign -c -P 16 4`)
 - Release gate: `lintRelease` **0 errors / 5 warnings**, all pre-existing (`ApplySharedPref`,
-  `UseKtx`, `AndroidGradlePluginVersion`); host suite **1203 tests, 0 failures**
+  `UseKtx`, `AndroidGradlePluginVersion`); host suite **1207 tests, 0 failures**
 - Carries a **baseline profile** (`assets/dexopt/baseline.prof`, 11 KiB + `.profm`) installed by
   androidx.profileinstaller. Without it the shipped APK sat at `status=verify` and ran interpreted
   until JIT warmed; device-measured, the worst frame on opening the settings sheet went 61 ms → 22 ms
   and idle-viewfinder p99 10 ms → 7 ms.
-- **Smoke-tested on the PMA110 from this exact APK** (2026-07-28): installed as an update over the
-  prior release, launched to a live viewfinder with the loupe + corner overview active at 10×, and
-  captured a HEIF still (DCIM/TeleCamPro went 12 → 13 files). Process stayed alive; `logcat -b crash`
-  reported **zero** entries for `me.hletrd.telecampro`, and zero ANRs.
+- **Smoke-tested on the PMA110 from this exact APK** (2026-07-28). The installed APK's on-device
+  `sha256sum` was confirmed byte-identical to the artifact above BEFORE the run, so this is evidence
+  for this bundle and not an earlier one. Launched to a live viewfinder with the loupe + corner
+  overview active and captured a HEIF still (DCIM/TeleCamPro went 14 → 15 files). Process stayed
+  alive; `logcat -b crash` reported **zero** entries for `me.hletrd.telecampro`, and zero ANRs.
 - Packaged binary manifest (not just the source): `minSdkVersion 36`, `targetSdkVersion 36`,
   `compileSdkVersion 37`, **no `INTERNET`**, **no debuggable flag**. `uses-permission` is exactly
   `CAMERA` + `RECORD_AUDIO` (plus the framework's own dynamic-receiver permission).
@@ -57,14 +58,16 @@ older bundle.
 
 ### PMA110 release device matrix — PARTIAL for the 2026-07-28 artifact
 
-**Verified against THIS artifact** (release APK `99a1893c…`, installed as an update over the prior
+**Verified against THIS artifact** (release APK `99d227d6…`, installed as an update over the prior
 release):
 
-- Cold launch to a live viewfinder, loupe + corner overview active at 10×; live PID held.
-- Photo: HEIF written (DCIM/TeleCamPro 12 → 13 files).
+- Installed APK verified byte-identical to the artifact (`sha256sum` on device) before testing.
+- Cold launch to a live viewfinder, loupe + corner overview active; live PID held.
+- Photo: HEIF written (DCIM/TeleCamPro 14 → 15 files).
 - `logcat -b crash`: **zero** entries for `me.hletrd.telecampro`; zero ANRs.
 
-**Verified the same day on the DEBUG package from the same `8519eaa` source** (the debug variant is a
+**Verified the same day on the DEBUG package built from `8519eaa`** (one commit before the front
+tap-AF fix, which is host-tested only) (the debug variant is a
 separate `applicationId`, so its runtime permissions are independent — which is what made a true
 first-launch audit possible; `pm grant`/`pm revoke` are both refused on ColorOS, so virgin permission
 state needs uninstall + reinstall):
