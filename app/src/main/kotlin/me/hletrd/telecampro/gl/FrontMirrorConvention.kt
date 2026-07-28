@@ -25,11 +25,30 @@ object FrontMirrorConvention {
     fun encoderDrawMirrorX(frontRoute: Boolean): Boolean = frontRoute && FRONT_STREAM_PRE_MIRRORED
 
     /**
-     * Whether displayed x differs from texture x, i.e. the tap mapping must un-flip. False while
-     * the pre-mirrored stream is shown as-is: displayed x == texture x by construction, whatever
-     * the sensor's own mirror relationship is. (The SENSOR-half question — whether metering
-     * regions computed from texture space land on the tapped subject — is a separate
-     * device-verification item; see docs/BACKLOG.md front residual checks.)
+     * Whether displayed x differs from TEXTURE x, i.e. the loupe/content mapping must un-flip.
+     * False while the pre-mirrored stream is shown as-is: displayed x == texture x by construction.
+     * This is NOT the metering question — see [meteringMirrorX].
      */
     fun tapDisplayMirrorX(frontRoute: Boolean): Boolean = previewDrawMirrorX(frontRoute)
+
+    /**
+     * Whether displayed x differs from ACTIVE-ARRAY x, i.e. AE/AF metering regions must un-flip.
+     *
+     * Distinct from [tapDisplayMirrorX], and the distinction is the whole point: the loupe consumes
+     * TEXTURE space (which the pre-mirrored stream matches 1:1, so no flip), while metering regions
+     * are specified in the sensor's ACTIVE ARRAY, which holds the TRUE, un-mirrored scene. The
+     * displayed selfie is that scene mirrored, so a tap on the left of the preview is on the RIGHT
+     * of the array — without this flip, front tap-AF/AE meters the horizontally opposite point
+     * (cycle-6 debugger F2).
+     *
+     * Same value as [encoderDrawMirrorX] and for the same reason — both convert from what is shown
+     * to what is true — and the flip belongs in DISPLAY space, before the tap's rotation into array
+     * coordinates, because that is where the device-verified encoder flip acts (`texCoordQuad`
+     * mirrors the texcoord ATTRIBUTE, i.e. the output's own horizontal axis, and a pulled front
+     * still read unreversed on device).
+     *
+     * The tap mapping's ROTATION term remains uncalibrated on the front route; this fixes only the
+     * mirror half. See the front residual checks in docs/BACKLOG.md.
+     */
+    fun meteringMirrorX(frontRoute: Boolean): Boolean = frontRoute && FRONT_STREAM_PRE_MIRRORED
 }

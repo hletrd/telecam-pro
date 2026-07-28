@@ -1774,6 +1774,13 @@ class CameraEngine(private val context: Context) {
             mirrorX = me.hletrd.telecampro.gl.FrontMirrorConvention.tapDisplayMirrorX(
                 facing == CameraFacing.FRONT,
             ),
+            // The METERING half is a different question and a different answer: AE/AF regions are
+            // ACTIVE-ARRAY coordinates, and the array holds the TRUE scene while the selfie preview
+            // shows it mirrored. Derived from the same one authority so the two halves can never
+            // drift apart.
+            meteringMirrorX = me.hletrd.telecampro.gl.FrontMirrorConvention.meteringMirrorX(
+                facing == CameraFacing.FRONT,
+            ),
         )
         val attempt = PendingTapFocus(
             session = accepted,
@@ -5148,14 +5155,20 @@ internal fun mapTapFocusGeometry(
     sensorCenter: Pair<Float, Float>,
     loupeCenter: Pair<Float, Float>,
     previewRotationDegrees: Int,
-    // Selfie preview mirror: the DISPLAYED image is x-flipped, so the tapped view x must un-flip
-    // (nx → 1−nx) before the sensor/loupe content mappings — otherwise front tap-AF meters the
-    // horizontally opposite scene point. The reticle viewPoint stays the raw tap (UI space).
-    // Same on-device sign caveat as the rest of this mapping.
+    // Display → TEXTURE mirror, for the loupe/content mapping. False on this device: the front
+    // stream is pre-mirrored and the preview shows it as-is, so displayed x == texture x.
     mirrorX: Boolean = false,
+    // Display → ACTIVE-ARRAY mirror, for AE/AF metering regions. SEPARATE from [mirrorX] and
+    // usually its opposite on the front route: metering regions are array coordinates, and the
+    // array holds the TRUE scene while the preview shows it mirrored. Sharing one flag made the
+    // front route meter the horizontally opposite point (cycle-6 debugger F2) — a tap on the left
+    // of the selfie is on the right of the array. Applied to the RAW view x, before the rotation
+    // into array space, matching where the device-verified encoder un-mirror acts.
+    meteringMirrorX: Boolean = false,
 ): TapFocusGeometry {
     val cx = if (mirrorX) 1f - nx else nx
-    val sensorRaw = viewTapToSensorPoint(cx, ny, sensorOrientation, teleconverter)
+    val meterX = if (meteringMirrorX) 1f - nx else nx
+    val sensorRaw = viewTapToSensorPoint(meterX, ny, sensorOrientation, teleconverter)
     val loupeRaw = viewTapToLoupeCenter(cx, ny, previewRotationDegrees)
     if (!punchActive) return TapFocusGeometry(nx to ny, sensorRaw, loupeRaw)
     val span = 1f - PUNCH_IN_CROP

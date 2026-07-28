@@ -1,5 +1,6 @@
 package me.hletrd.telecampro.camera
 
+import me.hletrd.telecampro.gl.FrontMirrorConvention
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -109,9 +110,13 @@ class TapMappingTest {
 
     @Test
     fun mirroredTap_unflipsViewXForContentMappingsButKeepsTheReticlePoint() {
-        // Selfie preview: the DISPLAYED image is x-flipped, so a tap at view x=0.25 sits over the
-        // scene point an unmirrored view shows at x=0.75. Sensor/loupe mappings must use the
-        // unflipped coordinate; the reticle (viewPoint) stays at the raw tap in UI space.
+        // A DISPLAY that is x-flipped relative to both texture and array: a tap at view x=0.25 sits
+        // over the point an unmirrored view shows at x=0.75, so BOTH content mappings unflip. The
+        // reticle (viewPoint) stays at the raw tap in UI space.
+        //
+        // The two flags are passed separately because they answer DIFFERENT questions and, on this
+        // device's front route, take different values — see frontRoute_meteringUnflipsWhileTheLoupe
+        // DoesNot. This case is the both-true corner, kept to pin the shared unflip arithmetic.
         val mirrored = mapTapFocusGeometry(
             nx = 0.25f,
             ny = 0.4f,
@@ -122,12 +127,41 @@ class TapMappingTest {
             loupeCenter = 0.5f to 0.5f,
             previewRotationDegrees = 0,
             mirrorX = true,
+            meteringMirrorX = true,
         )
         assertEquals(0.75f, mirrored.sensorPoint.first, eps)
         assertEquals(0.4f, mirrored.sensorPoint.second, eps)
         assertEquals(0.75f, mirrored.loupePoint.first, eps)
         assertEquals(0.25f, mirrored.viewPoint.first, eps)
         assertEquals(0.4f, mirrored.viewPoint.second, eps)
+    }
+
+    /**
+     * The flags are INDEPENDENT: a texture-space unflip must not drag metering with it, and vice
+     * versa. This is the regression that would return if someone "simplified" them back to one.
+     */
+    @Test
+    fun theTwoMirrorHalvesAreIndependent() {
+        fun map(mirror: Boolean, metering: Boolean) = mapTapFocusGeometry(
+            nx = 0.25f,
+            ny = 0.4f,
+            sensorOrientation = 0,
+            teleconverter = false,
+            punchActive = false,
+            sensorCenter = 0.5f to 0.5f,
+            loupeCenter = 0.5f to 0.5f,
+            previewRotationDegrees = 0,
+            mirrorX = mirror,
+            meteringMirrorX = metering,
+        )
+        map(mirror = true, metering = false).let {
+            assertEquals(0.75f, it.loupePoint.first, eps)
+            assertEquals(0.25f, it.sensorPoint.first, eps)
+        }
+        map(mirror = false, metering = true).let {
+            assertEquals(0.25f, it.loupePoint.first, eps)
+            assertEquals(0.75f, it.sensorPoint.first, eps)
+        }
     }
 
     @Test
@@ -145,6 +179,66 @@ class TapMappingTest {
         )
         assertEquals(0.25f, plain.sensorPoint.first, eps)
         assertEquals(0.25f, plain.loupePoint.first, eps)
+    }
+
+    /**
+     * The front route's two mirror questions have DIFFERENT answers, and conflating them made
+     * tap-AF meter the horizontally opposite point (cycle-6 debugger F2). The loupe consumes
+     * TEXTURE space, which the pre-mirrored stream matches 1:1 (no flip); metering regions are
+     * ACTIVE-ARRAY coordinates, and the array holds the true scene the preview is showing mirrored.
+     */
+    @Test
+    fun frontRoute_meteringUnflipsWhileTheLoupeDoesNot() {
+        val front = mapTapFocusGeometry(
+            nx = 0.25f,
+            ny = 0.4f,
+            sensorOrientation = 0,
+            teleconverter = false,
+            punchActive = false,
+            sensorCenter = 0.5f to 0.5f,
+            loupeCenter = 0.5f to 0.5f,
+            previewRotationDegrees = 0,
+            mirrorX = FrontMirrorConvention.tapDisplayMirrorX(frontRoute = true),
+            meteringMirrorX = FrontMirrorConvention.meteringMirrorX(frontRoute = true),
+        )
+        // Metering crosses to the opposite half: the tapped subject is at array x=0.75.
+        assertEquals(0.75f, front.sensorPoint.first, eps)
+        // The loupe stays on the tapped side — displayed x == texture x.
+        assertEquals(0.25f, front.loupePoint.first, eps)
+        // The reticle is drawn where the finger landed.
+        assertEquals(0.25f, front.viewPoint.first, eps)
+    }
+
+    /** The rear route must be untouched by the split: neither half flips. */
+    @Test
+    fun rearRoute_neitherHalfMirrors() {
+        val rear = mapTapFocusGeometry(
+            nx = 0.25f,
+            ny = 0.4f,
+            sensorOrientation = 0,
+            teleconverter = false,
+            punchActive = false,
+            sensorCenter = 0.5f to 0.5f,
+            loupeCenter = 0.5f to 0.5f,
+            previewRotationDegrees = 0,
+            mirrorX = FrontMirrorConvention.tapDisplayMirrorX(frontRoute = false),
+            meteringMirrorX = FrontMirrorConvention.meteringMirrorX(frontRoute = false),
+        )
+        assertEquals(0.25f, rear.sensorPoint.first, eps)
+        assertEquals(0.25f, rear.loupePoint.first, eps)
+    }
+
+    /** Metering un-mirrors exactly when the encoder does — both convert "shown" into "true". */
+    @Test
+    fun meteringMirrorMatchesTheEncoderUnMirror() {
+        assertEquals(
+            FrontMirrorConvention.encoderDrawMirrorX(frontRoute = true),
+            FrontMirrorConvention.meteringMirrorX(frontRoute = true),
+        )
+        assertEquals(
+            FrontMirrorConvention.encoderDrawMirrorX(frontRoute = false),
+            FrontMirrorConvention.meteringMirrorX(frontRoute = false),
+        )
     }
 
     @Test
