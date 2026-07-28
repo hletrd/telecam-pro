@@ -110,39 +110,63 @@ internal object LogProfiles {
         LOGC3_E * x + LOGC3_F
     }
 
-    fun encodeSlog3(red: Double, green: Double, blue: Double): Rgb = encode(
+    fun encodeSlog3(red: Double, green: Double, blue: Double, sourceHlg: Boolean = false): Rgb = encode(
         red, green, blue,
         SG3_R_FROM_R, SG3_R_FROM_G, SG3_R_FROM_B,
         SG3_G_FROM_R, SG3_G_FROM_G, SG3_G_FROM_B,
         SG3_B_FROM_R, SG3_B_FROM_G, SG3_B_FROM_B,
         ::slog3Oetf,
+        sourceHlg,
     )
 
-    fun encodeSlog3Cine(red: Double, green: Double, blue: Double): Rgb = encode(
+    fun encodeSlog3Cine(red: Double, green: Double, blue: Double, sourceHlg: Boolean = false): Rgb = encode(
         red, green, blue,
         SG3C_R_FROM_R, SG3C_R_FROM_G, SG3C_R_FROM_B,
         SG3C_G_FROM_R, SG3C_G_FROM_G, SG3C_G_FROM_B,
         SG3C_B_FROM_R, SG3C_B_FROM_G, SG3C_B_FROM_B,
         ::slog3Oetf,
+        sourceHlg,
     )
 
-    fun encodeLogc3(red: Double, green: Double, blue: Double): Rgb = encode(
+    fun encodeLogc3(red: Double, green: Double, blue: Double, sourceHlg: Boolean = false): Rgb = encode(
         red, green, blue,
         AWG3_R_FROM_R, AWG3_R_FROM_G, AWG3_R_FROM_B,
         AWG3_G_FROM_R, AWG3_G_FROM_G, AWG3_G_FROM_B,
         AWG3_B_FROM_R, AWG3_B_FROM_G, AWG3_B_FROM_B,
         ::logc3Oetf,
+        sourceHlg,
     )
 
     // The one place the documented order lives on the CPU side: decode → matrix → floor → OETF.
+    /**
+     * CPU mirror of the shader's `sourceLinear`: how the CAMERA encoded what was sampled.
+     *
+     * [sourceHlg] false is the 8-bit display-referred stream (BT.1886). True is a 10-bit HLG10/DV
+     * session, where the external sampler yields HLG-encoded values; that branch is the inverse HLG
+     * OETF followed by the inverse of the forward mapping's reference-white scaling, so both source
+     * kinds arrive on the SAME display-light scale (diffuse white = 1.0) the matrix and OETF below
+     * were written for.
+     */
+    internal fun sourceLinear(v: Double, sourceHlg: Boolean): Double {
+        val s = v.coerceIn(0.0, 1.0)
+        if (!sourceHlg) return s.pow(SdrToHlgMapping.SDR_EOTF_GAMMA)
+        val scene = if (s <= 0.5) {
+            s * s / 3.0
+        } else {
+            (kotlin.math.exp((s - SdrToHlgMapping.HLG_C) / SdrToHlgMapping.HLG_A) + SdrToHlgMapping.HLG_B) / 12.0
+        }
+        return scene.pow(SdrToHlgMapping.HLG_SYSTEM_GAMMA) / SdrToHlgMapping.NORMALIZED_DISPLAY_LIGHT_SCALE
+    }
+
     private fun encode(
         red: Double, green: Double, blue: Double,
         rr: Double, rg: Double, rb: Double,
         gr: Double, gg: Double, gb: Double,
         br: Double, bg: Double, bb: Double,
         oetf: (Double) -> Double,
+        sourceHlg: Boolean = false,
     ): Rgb {
-        val linear709 = Rgb(red, green, blue).map { it.coerceIn(0.0, 1.0).pow(SdrToHlgMapping.SDR_EOTF_GAMMA) }
+        val linear709 = Rgb(red, green, blue).map { sourceLinear(it, sourceHlg) }
         val linearTarget = Rgb(
             red = rr * linear709.red + rg * linear709.green + rb * linear709.blue,
             green = gr * linear709.red + gg * linear709.green + gb * linear709.blue,
