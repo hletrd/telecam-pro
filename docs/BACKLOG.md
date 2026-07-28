@@ -617,6 +617,15 @@ These do not require a code or metadata change unless the result exposes a defec
     the tap mapping's ROTATION term is still uncalibrated on the front route (`viewTapToSensorPoint`
     documents itself as approximate), so a residual vertical/axis error would be a SEPARATE finding
     from the mirror.
+    **A remote attempt was made 2026-07-28 and is INCONCLUSIVE — do not repeat it in these
+    conditions.** With the phone face-down the front camera did see a lit ceiling carrying a usable
+    left-bright/right-dim gradient (~140 vs ~116 luma), so mirrored tap pairs were tried in VIDEO
+    mode (where HAL AE, not the app-side loop, owns exposure and therefore honours AE regions).
+    Both taps returned `iso=16000` unchanged, because that sensor's advertised
+    `sensitivityRange` is `[100, 16000]` and the video FPS pin holds `expNs` at 1/30 s: **AE was
+    railed against both limits and had no freedom to respond to any region.** That is a property of
+    the light, not evidence about the mirror. A valid run needs enough light for AE to sit off its
+    ceiling, plus real depth separation.
   - **Log-profile on-device check PARTIALLY CLOSED.** An S-Log3.Cine 4K clip was ffprobe-verified
     2026-07-23 (HEVC Main10, `color_transfer=bt2020-10` — confirmed NOT PQ/ST2084, the exact
     mistag the explicit-transfer container policy exists to prevent). Still open: playback
