@@ -327,6 +327,27 @@ const val FINDER_MIN_ZOOM = 3f
  */
 fun punchInResolved(enabled: Boolean, frontFacing: Boolean): Boolean = enabled && !frontFacing
 
+/**
+ * The zoom the REAR route resumes at when leaving FRONT.
+ *
+ * Restores the framing the operator actually had, not the lens PRESET. Falling back to the preset
+ * meant that once TELE had been used — which pins the lens choice to the 3× — every front trip
+ * returned to 3× regardless of where the user was standing, so flipping to the selfie camera and
+ * back silently zoomed them in (user-reported 2026-07-28). The pre-front snapshot exists on both
+ * sides already; it was simply never consumed on the way back.
+ *
+ * VIDEO still returns to lens-local 1×: that route pins a standalone lens, so a ratio captured in
+ * the photo route's unified main-relative scale does not mean the same thing there.
+ *
+ * [preFrontZoom] is NaN when nothing was captured (a recall or settings restore exited front
+ * without going through the flip), and the preset is then the honest fallback.
+ */
+fun rearReturnZoom(videoMode: Boolean, preFrontZoom: Float, lensPreset: Float): Float = when {
+    videoMode -> 1f
+    !preFrontZoom.isNaN() && preFrontZoom > 0f -> preFrontZoom
+    else -> lensPreset
+}
+
 fun teleFinderResolved(
     enabled: Boolean,
     teleconverter: Boolean,

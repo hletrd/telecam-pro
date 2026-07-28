@@ -34,3 +34,31 @@ class PunchInResolvedTest {
         assertTrue("restored on return", punchInResolved(intent, frontFacing = false))
     }
 }
+
+/**
+ * Leaving FRONT must restore the framing the operator had, not the lens preset. Once TELE has been
+ * used the preset is 3x for the rest of the session, so the preset fallback silently zoomed them in
+ * on every flip back (user-reported 2026-07-28).
+ */
+class RearReturnZoomTest {
+
+    @Test
+    fun photoRestoresTheFramingHeldBeforeTheFrontTrip() {
+        // Standing at 1x with the lens choice pinned to the 3x by earlier TELE use.
+        assertTrue(rearReturnZoom(videoMode = false, preFrontZoom = 1f, lensPreset = 3f) == 1f)
+        assertTrue(rearReturnZoom(videoMode = false, preFrontZoom = 5.5f, lensPreset = 3f) == 5.5f)
+    }
+
+    @Test
+    fun videoReturnsToLensLocalOneRegardlessOfTheSnapshot() {
+        // The video route pins a standalone lens, so a photo-scale ratio does not transfer.
+        assertTrue(rearReturnZoom(videoMode = true, preFrontZoom = 5.5f, lensPreset = 3f) == 1f)
+    }
+
+    @Test
+    fun theLensPresetIsTheFallbackWhenNothingWasCaptured() {
+        // A recall or settings restore exits front atomically, without going through the flip.
+        assertTrue(rearReturnZoom(videoMode = false, preFrontZoom = Float.NaN, lensPreset = 3f) == 3f)
+        assertTrue(rearReturnZoom(videoMode = false, preFrontZoom = 0f, lensPreset = 3f) == 3f)
+    }
+}

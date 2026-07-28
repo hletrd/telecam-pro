@@ -77,6 +77,7 @@ import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.camera.VideoFrameRate
 import me.hletrd.telecampro.camera.WbMode
 import me.hletrd.telecampro.camera.ZebraLevel
+import me.hletrd.telecampro.camera.rearReturnZoom
 import me.hletrd.telecampro.ui.controls.bitrateLevelLabel
 import me.hletrd.telecampro.ui.controls.formatFocalMm
 import me.hletrd.telecampro.ui.controls.transferLabel
@@ -2101,7 +2102,15 @@ class CameraViewModel @JvmOverloads constructor(
                 it.copy(
                     facing = CameraFacing.BACK,
                     controls = it.controls.copy(
-                        zoomRatio = if (it.mode == CaptureMode.VIDEO) 1f else it.lens.zoomPreset,
+                        // Mirrors the engine transaction: restore the framing held before the front
+                        // trip, NOT the lens preset — once TELE has been used the preset is 3x for
+                        // the rest of the session, so the preset fallback zoomed the operator in on
+                        // every flip back (user-reported).
+                        zoomRatio = rearReturnZoom(
+                            videoMode = it.mode == CaptureMode.VIDEO,
+                            preFrontZoom = preFrontRearZoom,
+                            lensPreset = it.lens.zoomPreset,
+                        ),
                     ),
                     activeMemorySlot = null,
                 )

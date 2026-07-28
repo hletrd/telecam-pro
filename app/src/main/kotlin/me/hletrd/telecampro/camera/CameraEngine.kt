@@ -1882,6 +1882,11 @@ class CameraEngine(private val context: Context) {
     // and sensor (what a magnified tap's metering composes against). Reset with clearTapPoint.
     @Volatile private var loupeCenterTexX = 0.5f
     @Volatile private var loupeCenterTexY = 0.5f
+
+    // The rear framing in force when FRONT was entered, restored on the way back. NaN when the
+    // trip did not go through the flip (a recall or settings restore exits front atomically).
+    private var preFrontRearZoom = Float.NaN
+
     @Volatile private var loupeCenterSensorX = 0.5f
     @Volatile private var loupeCenterSensorY = 0.5f
 
@@ -2373,8 +2378,16 @@ class CameraEngine(private val context: Context) {
         val transaction = beginOpticsTransaction {
             facing = if (enabled) CameraFacing.FRONT else CameraFacing.BACK
             if (enabled) teleconverterMode = false
+            // Snapshot BEFORE the overwrite below, so leaving restores the framing the operator
+            // actually had rather than the lens PRESET (which is 3x for the rest of the session
+            // once TELE has been used, silently zooming them in on every front trip).
+            if (enabled) preFrontRearZoom = controls.zoomRatio
             controls = controls.copy(
-                zoomRatio = if (enabled || videoMode) 1f else lensChoice.zoomPreset,
+                zoomRatio = if (enabled) {
+                    1f
+                } else {
+                    rearReturnZoom(videoMode, preFrontRearZoom, lensChoice.zoomPreset)
+                },
             )
             // A front trip drops the pre-TELE return framing: the snapshot is an absolute ratio in
             // a rear scale, and TELE does not survive the trip (leaving FRONT lands on the plain
