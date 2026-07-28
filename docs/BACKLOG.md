@@ -503,6 +503,21 @@ preview buffer really does differ, and is very likely HLG-encoded after all.** T
 p99 202 → 201). Neither `gamutFloor` nor `slog3` clamps its input, so that scale cannot be a no-op on
 a real signal. Something between `sourceLinear`'s return and the encoder is not carrying the change.
 
+**ROOT CAUSE OF THE NO-OP, FOUND 2026-07-29 — the transform was probably fine; the INSTRUMENT was
+not.** `uSourceHlg` was confirmed reaching the draw (`sourceHlg -> true (uniformLoc=2)`), so the HLG
+branch really does run. The reference-white normalization is a pure GAIN, and **the app-side AE loop
+meters the GL preview luma** — so a brighter preview makes the loop pull exposure down by the same
+factor and the RECORDED file lands back at the same luma distribution. A gain change is invisible to
+a recorded-luma A/B under active AE, while the earlier BT.1886→HLG swap was a curve-SHAPE change and
+therefore partly survived. That single fact explains every "identical output" result above.
+
+So there are now TWO independent reasons a scene A/B cannot measure this pipeline, and both bit:
+1. **AE compensation** silently cancels any gain-like change (above).
+2. **Transfer persistence** restored a different `ColorTransfer` across app restarts, so two
+   comparisons silently pitted SLOG3 against SLOG3_CINE.
+A third attempt using MANUAL exposure to defeat (1) failed for a mundane reason worth noting: the
+locked ISO/shutter were far under for the scene and both clips came back essentially black.
+
 Next step is a KNOWN-VALUE test, not another scene A/B: render a synthetic ramp through the shader
 (or read the analysis FBO with a fixed input) and compare against the CPU reference in
 `SourceLinearHlgTest`, so the transform is checked in isolation from camera behaviour, AE drift, and
