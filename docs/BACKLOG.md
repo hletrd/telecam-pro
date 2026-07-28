@@ -599,12 +599,24 @@ These do not require a code or metadata change unless the result exposes a defec
     passed on device — see the RESOLVED entry above for the evidence.
     `RotationMath.videoOrientationHint` carries the same term; only its EXTERNAL-PLAYER playback
     check remains open (below).
-  - **Front VIDEO file mirror truth.** Front STILL mirror truth WAS device-verified 2026-07-23
-    (cycle-6 QA: a pulled front JPEG showed legible, unreversed "LG/WHISEN" text after a viewing
-    180° — the saved file keeps the true scene). The encoder un-mirror path is shared with video,
-    but no front CLIP has been pulled and checked: record a front video of legible text and
-    confirm it reads unreversed in an external player.
-  - **Front tap-AF aim — FIXED IN CODE 2026-07-28 (`7cda8da`); the aim check is what remains.**
+  - **Front VIDEO file mirror truth — RESOLVED 2026-07-28.** Front STILL mirror truth was
+    device-verified 2026-07-23; the CLIP had never been checked. Now it has: an 8.1 s front clip
+    (HEVC, 2160×3840 portrait, `audio=false` via the declined-mic path) was pulled and a frame
+    extracted. **"LG" and "WHISEN" on the air-conditioner read normally — not reversed.** The frame
+    is also horizontally flipped relative to the live preview (light source moves left→right, smoke
+    detector right, wall pole left), which is exactly the design: the preview shows the selfie
+    mirror, the FILE carries the true scene. The encoder un-mirror path is therefore confirmed for
+    video, not just stills.
+  - **Front tap-AF aim — RESOLVED 2026-07-28. Fix `7cda8da` is DEVICE-CONFIRMED.** Once the room
+    light came on (front-camera ISO fell 16000 → ~1300, i.e. AE finally off its ceiling), the harness
+    ran clean **3/3 with identical values**: scene left 147–156 luma vs right 123–133, and tapping
+    the BRIGHT side settled at `iso=1316` against `iso=1488` for the dim side. Metering the brighter
+    half pulled exposure DOWN, so the AE region lands on the tapped half and not its horizontal
+    mirror. `FrontMirrorConvention.meteringMirrorX` has the correct sign. The rotation term is still
+    uncalibrated on the front route (see below) — that would be a separate finding.
+    Historical detail of the fix and the blocked attempts follows.
+
+  - **(superseded) Front tap-AF aim — FIXED IN CODE 2026-07-28 (`7cda8da`); the aim check is what remains.**
     Cycle-6 probe: the front camera (id "1") ADVERTISES `android.control.maxRegions =
     [AE=1, AWB=0, AF=1]`, so tap-AF/AE regions are live on the front route. Debugger F2 was RIGHT:
     `mapTapFocusGeometry` used ONE `mirrorX` for two different questions, and it was pinned false.

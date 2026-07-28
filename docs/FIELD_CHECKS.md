@@ -19,10 +19,15 @@ adb install -r -t app/build/outputs/apk/debug/app-debug.apk
 
 ## A. Indoors, lit room, no converter — 5 min
 
-### A1. Front tap-AF aim  *(the one that most needs doing)*
+### A1. Front tap-AF aim — ✅ PASSED 2026-07-28
 
-The metering mirror was fixed in `7cda8da` but never confirmed on a real scene. A remote attempt was
-inconclusive because AE was railed at max ISO in a dark room — so **light matters here.**
+**Done. Fix `7cda8da` is device-confirmed.** With the room light on (front ISO fell 16000 → ~1300),
+the harness ran 3/3 with identical values: bright side `iso=1316`, dim side `iso=1488` — metering
+the brighter half pulled exposure down, so the region lands on the tapped half. Re-run below only if
+that mapping changes.
+
+The metering mirror was fixed in `7cda8da`. An earlier attempt was inconclusive because AE was
+railed at max ISO in a dark room — so **light matters here.**
 
 - Aim the **front** camera at something clearly brighter on one side (a window wall beside a shaded
   one works well). Set **VIDEO** mode, exposure **PROGRAM**.
@@ -42,9 +47,13 @@ exit-2 as either result.
 > Only proves the horizontal half. The tap mapping's **rotation** term is still uncalibrated on the
 > front route, so a vertical/axis error would survive a PASS and is a separate finding.
 
-### A2. Front video mirror truth
+### A2. Front video mirror truth — ✅ PASSED 2026-07-28
 
-Front stills were confirmed unreversed on device; no front *clip* has been checked.
+**Done.** An 8.1 s front clip was pulled and a frame extracted: "LG" and "WHISEN" on the
+air-conditioner read normally, and the frame is horizontally flipped relative to the preview —
+preview shows the selfie mirror, the file carries the true scene, as designed.
+
+Front stills were confirmed unreversed on device; the front *clip* had never been checked.
 
 - Front camera, record ~5 s of **legible text** (a book cover, a screen).
 - Pull it and play it in an external player.
@@ -52,9 +61,15 @@ Front stills were confirmed unreversed on device; no front *clip* has been check
 **Pass:** the text reads normally — not mirror-reversed. (The preview showing it mirrored is correct;
 that's the selfie view. The **file** must carry the true scene.)
 
-### A3. P-mode brightness
+### A3. P-mode brightness — ◐ HALF DONE 2026-07-28
 
-- Rear camera, **PHOTO**, exposure **PROGRAM**, ordinary room light.
+**Stability half passed:** rear PHOTO/PROGRAM held `iso=9100 expNs=66666667` dead steady across
+16 s — zero breathing or hunting at rest, which is the half that catches loop defects.
+**Brightness half still open:** the phone was face-up, so the REAR lens faced a dark desk and AE sat
+railed at its ISO ceiling; a railed meter cannot demonstrate a sensible brightness target. Re-run
+with the rear camera actually pointed at the lit room.
+
+- Rear camera, **PHOTO**, exposure **PROGRAM**, ordinary room light — pointed AT the room.
 
 **Pass:** the image settles at a sensible brightness within ~2 s and then sits still — no slow
 breathing or hunting at rest.
