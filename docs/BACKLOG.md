@@ -484,12 +484,31 @@ with `uSourceHlg = 1` the recorded image changed once (mean 100.2 → 75.0, i.e.
 and then did NOT move at all when the reference-white normalization was added — a ~3.93x scale that
 cannot be a no-op on a signal that is genuinely HLG. The frame still reads as normal-contrast with
 deep blacks (p01 = 9) rather than the flat, lifted look the 8-bit reference shows (p01 = 25, p99 =
-139). The most likely explanation is that **the preview SurfaceTexture does not actually deliver
-HLG-encoded values even though its `OutputConfiguration` carries `setDynamicRangeProfile(HLG10)`** —
-in which case an HLG inverse is being applied to SDR data and the result clips. Next step is to
-prove what the preview buffer actually contains (e.g. an ImageReader at the same profile, or a
-known-value test pattern) BEFORE touching the curve again; two of the three attempts above failed
-because the plumbing, not the maths, was wrong.
+139). **That guess was then TESTED AND DISPROVED** — record it so nobody repeats it. A probe build forced
+`setSourceHlg(false)` on BOTH sessions, making the decode identical so only the camera session's bit
+depth varied:
+
+| session | p01 | p50 | p90 | p99 | range |
+|---|---|---|---|---|---|
+| 8-bit | 24 | 63 | 121 | 135 | 111 |
+| 10-bit | 8 | 58 | 154 | **196** | **188** |
+
+Under an identical BT.1886 decode the 10-bit session's source carries a far wider range. S-Log3 vs
+S-Log3.Cine differ only by a gamut matrix — a few percent of luma, not 60 points at p99 — so **the
+preview buffer really does differ, and is very likely HLG-encoded after all.** The
+`setDynamicRangeProfile(HLG10)` on the preview `OutputConfiguration` is doing something real.
+
+**The actual open anomaly is narrower than "is it HLG":** adding the reference-white normalization
+(a ~3.93x scale on the linear values) changed the recorded output by NOTHING (mean 75.0 both times,
+p99 202 → 201). Neither `gamutFloor` nor `slog3` clamps its input, so that scale cannot be a no-op on
+a real signal. Something between `sourceLinear`'s return and the encoder is not carrying the change.
+
+Next step is a KNOWN-VALUE test, not another scene A/B: render a synthetic ramp through the shader
+(or read the analysis FBO with a fixed input) and compare against the CPU reference in
+`SourceLinearHlgTest`, so the transform is checked in isolation from camera behaviour, AE drift, and
+the transfer-persistence problem that confounded three separate device comparisons here — the app
+restored a different `ColorTransfer` across restarts every time, so two of these A/Bs silently
+compared SLOG3 against SLOG3_CINE.
 
 A CORRECTION to the 2026-07-29 measurement recorded earlier: the original 8-bit vs 10-bit A/B used
 `SLOG3` for one clip and `SLOG3_CINE` for the other — different gamut matrices — so the difference
