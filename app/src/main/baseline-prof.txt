@@ -26,7 +26,18 @@
 # the built APK after editing, because a malformed rule is silently dropped.
 
 # --- This app -------------------------------------------------------------------------------
-Lme/hletrd/findx9tele/**;
+# MUST track the namespace. This said `findx9tele` from the 2026-07-25 package move until
+# 2026-07-28 and therefore matched NOTHING of this app — an unresolvable rule is dropped with no
+# warning, so the profile still built, still installed, and still looked fine.
+#
+# Scope of that regression, measured rather than assumed (A/B of the built release APK): the
+# compiled profile went 11443 -> 11465 bytes when the package was corrected. So the dead line cost
+# real classes but NOT the bulk of the win above — the androidx/Compose rules below never named this
+# app's package and kept working, and they are what the 61 -> 22 ms settings-sheet measurement was
+# actually attributing the cost to (first composition, not the camera path).
+#
+# Any future package rename has to change this line in the same commit.
+Lme/hletrd/telecampro/**;
 
 # --- Compose: what first composition of the viewfinder and the settings sheet actually walks ---
 Landroidx/compose/runtime/**;

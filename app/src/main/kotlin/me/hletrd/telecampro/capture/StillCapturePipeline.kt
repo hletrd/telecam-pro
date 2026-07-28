@@ -326,7 +326,7 @@ internal class StillCapturePipeline(
     }
 
     private fun buildHeifExifData(shot: ExifShot, width: Int, height: Int): ByteArray {
-        val temp = File.createTempFile("x9-heif-exif-", ".jpg", context.cacheDir)
+        val temp = File.createTempFile("heif-exif-", ".jpg", context.cacheDir)
         return try {
             val seed = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
             try {
