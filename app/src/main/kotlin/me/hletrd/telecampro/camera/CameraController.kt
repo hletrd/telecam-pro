@@ -629,6 +629,27 @@ class CameraController(context: Context) {
                     session = s
                     StartupTrace.mark("onConfigured")
                     if (BuildConfig.DEBUG) Log.i(TAG, "Session configured (fallback=$attempt, hlg=$useHlg, jpeg=$useJpeg, raw=$useRaw, hiRes=$hiResReaderActive, vendorLog=$vendorLogMode)")
+                    // Which HDR profiles this route ACTUALLY advertises. Logged once per session
+                    // (not per frame, so it is quota-safe) because dumpsys formats this map
+                    // ambiguously enough to mis-parse — the characteristics query is the only
+                    // authority, and on a multi-device build it decides what colour modes exist.
+                    if (BuildConfig.DEBUG) {
+                        Log.i(TAG, "DynamicRangeProfiles: " + caps.supportedDynamicRangeProfiles.sorted().joinToString { p ->
+                            when (p) {
+                                DynamicRangeProfiles.STANDARD -> "STANDARD"
+                                DynamicRangeProfiles.HLG10 -> "HLG10"
+                                DynamicRangeProfiles.HDR10 -> "HDR10"
+                                DynamicRangeProfiles.HDR10_PLUS -> "HDR10_PLUS"
+                                DynamicRangeProfiles.DOLBY_VISION_10B_HDR_REF -> "DV_10B_REF"
+                                DynamicRangeProfiles.DOLBY_VISION_10B_HDR_REF_PO -> "DV_10B_REF_PO"
+                                DynamicRangeProfiles.DOLBY_VISION_10B_HDR_OEM -> "DV_10B_OEM"
+                                DynamicRangeProfiles.DOLBY_VISION_10B_HDR_OEM_PO -> "DV_10B_OEM_PO"
+                                DynamicRangeProfiles.DOLBY_VISION_8B_HDR_REF -> "DV_8B_REF"
+                                DynamicRangeProfiles.DOLBY_VISION_8B_HDR_OEM -> "DV_8B_OEM"
+                                else -> "0x${p.toString(16)}"
+                            }
+                        })
+                    }
                     when (sessionStartDelivery(startPreview())) {
                         SessionStartDelivery.READY -> onReady.onReady(
                             acceptedPhotoSessionOutputs(
