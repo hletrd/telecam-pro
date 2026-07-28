@@ -136,6 +136,7 @@ No ads, analytics, in-app purchases, accounts, or cloud sync. Source at
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | As-built design authority: module map, threading, ownership, data flow |
 | [`CLAUDE.md`](CLAUDE.md) | Hard-won device and HAL facts, and the conventions that follow from them |
 | [`docs/BACKLOG.md`](docs/BACKLOG.md) | Release board, residual field checks, deferred work |
+| [`docs/FIELD_CHECKS.md`](docs/FIELD_CHECKS.md) | Hands-on device checks: setup, command, pass criteria |
 | [`docs/TESTING.md`](docs/TESTING.md) | Test tiers and coverage policy |
 | [`docs/UX_POLICY.md`](docs/UX_POLICY.md) | Viewfinder rules |
 

@@ -560,6 +560,9 @@ new-personal-account closed-test rule does not apply; an internal test remains t
 
 ## Residual Field Checks
 
+**Runnable checklist: [`docs/FIELD_CHECKS.md`](FIELD_CHECKS.md)** — the hardware-dependent ones,
+grouped by setup with exact commands and pass criteria (~15 min for all).
+
 These do not require a code or metadata change unless the result exposes a defect:
 
 - **RESOLVED 2026-07-24 (disposition kept for the durable record): the ColorOS installer gate on
