@@ -17,7 +17,12 @@ internal enum class RestoredDeleteScope {
     /** Every extant row with the exact, versioned capture-family key is known. */
     CAPTURE_FAMILY,
 
-    /** The legacy row has no provable family identity; only this file may be promised. */
+    /**
+     * Only THIS file may be promised. Two different causes reach here, and the second is easy to
+     * forget: either the row has no provable family identity (a legacy filename, deliberately
+     * grouped alone), OR the family key IS proven but at least one row in it is no longer owned by
+     * this package, so the delete would silently fail per row. Display is unaffected in both cases.
+     */
     FILE_ONLY,
 }
 
