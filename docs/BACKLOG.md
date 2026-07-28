@@ -461,6 +461,29 @@ O-Log2. Not worth it without new evidence; the GL-baked profiles remain the ship
 Keep the GL-baked S-Log3/LogC3 profiles either way: they are the display-referred fallback, and a
 native path would be a separate, genuinely scene-referred option.
 
+### 10-bit + log — MEASURED 2026-07-28, and what it does and does not buy
+
+Arming the debug 10-bit gate (`tenBitExperimentEnabled`, the `nativelog` flag file) configured a
+**genuine HLG10 session first try**: `Session configured (fallback=0, hlg=true, jpeg=false,
+raw=false)`. A clip recorded on it with a log profile came out **HEVC Main 10, `yuv420p10le`,
+`color_primaries=bt2020`, full range** — i.e. the pipeline really is 10-bit end to end, and the log
+curve really is applied on top of it.
+
+What it buys: PRECISION. Ten bits of code value across the log curve instead of eight, so the flat
+image banding-resists a grade far better.
+
+What it does NOT buy, and must never be claimed: **latitude**. The stream is still the ISP's
+DISPLAY-REFERRED output — already tone-mapped, highlights already rolled off or clipped. More bits
+subdivide the same range; they do not extend it. And **there is no linear input to be had**: public
+Camera2 hands out transfer-encoded video only (SDR, or HLG/PQ under a 10-bit profile). Scene-referred
+linear exists for STILLS as RAW/DNG and has no video equivalent here.
+
+One real correctness gap before this could ship: the GL shaders decode the source as **BT.1886 2.4**
+(an SDR assumption). Feed them an HLG10 stream and that decode is simply wrong, so the log curve
+would sit on a mis-linearised signal. Shipping the 10-bit path therefore needs a source-transfer-aware
+decode, not just the session flag. Left DEBUG-gated for that reason — and because the armed flag also
+drops JPEG/RAW (the attempt-0 rung is video-only), which is not a shipping trade.
+
 ### Front camera — FULL DEVICE PASS 2026-07-28 (except the two AE-headroom tap axes)
 
 A dedicated front-route sweep. Everything that does not depend on AE having headroom passed:

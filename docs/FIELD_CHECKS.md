@@ -119,7 +119,7 @@ The code makes disagreement structurally impossible — both are one call each t
 same frame, same rotation field — so this is a confirmation, not a suspicion. Reported once; see the
 2026-07-28 backlog entry.
 
-### C3. TC OIS (optional)
+### C3. TC OIS (optional) — ✅ CONFIRMED WORKING 2026-07-28 (operator)
 
 Never verified whether the vendor `0x80b4` TC session actually engages a different OIS profile at
 300 mm — result metadata reads identically either way.
