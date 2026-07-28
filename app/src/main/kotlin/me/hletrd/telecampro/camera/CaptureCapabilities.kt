@@ -120,6 +120,13 @@ data class CameraCaps(
     val supportsManualSensor: Boolean,
     val supportsManualPostProcessing: Boolean,
     val supportsRaw: Boolean,
+    /**
+     * Front-facing route. Needed because the pseudo-ZSL ring is fed by a full-res YUV still reader,
+     * which only the LOGICAL route used to configure — leaving the selfie route on the HAL-JPEG
+     * path with no buffered frame to serve, measured at ~555 ms shutter lag against the rear
+     * route's 0 ms in the same light.
+     */
+    val lensFacingFront: Boolean,
     val rawSize: Size?,
     val supportedDynamicRangeProfiles: Set<Long>,
     val largestJpegSize: Size?,
@@ -364,6 +371,8 @@ data class CameraCaps(
                 supportsManualSensor = has(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR),
                 supportsManualPostProcessing = has(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_POST_PROCESSING),
                 supportsRaw = has(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_RAW),
+                lensFacingFront =
+                    chars.get(CameraCharacteristics.LENS_FACING) == CameraMetadata.LENS_FACING_FRONT,
                 rawSize = rawSize,
                 supportedDynamicRangeProfiles = dynamicProfiles,
                 largestJpegSize = jpegSize,

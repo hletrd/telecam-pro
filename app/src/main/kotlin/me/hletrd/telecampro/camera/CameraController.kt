@@ -547,6 +547,7 @@ class CameraController(context: Context) {
             teleconverterMode = teleconverterMode,
             wantHiRes = hiResStill,
             tenBitVideoOnly = tenBitHlg && caps.supportsHlg10(),
+            frontRoute = caps.lensFacingFront,
         )
         val useHlg = plan.useHlg
         val useJpeg = plan.useJpeg
@@ -566,7 +567,10 @@ class CameraController(context: Context) {
             // shot dies), so stills there come as YUV and the app encodes them itself (the save
             // pipeline re-encodes through a Bitmap either way). Standalone cameras keep the proven
             // HAL-JPEG path.
-            val useYuv = caps.isLogicalMultiCamera
+            // FRONT joins the YUV lane so it can feed the pseudo-ZSL ring (its HAL-JPEG path had
+            // nothing to buffer, hence ~555 ms shutter lag vs the rear route's 0 ms). The YUV→encode
+            // save lane is the same one the logical route has always used.
+            val useYuv = caps.isLogicalMultiCamera || caps.lensFacingFront
             // Hi-res admission RE-CHECKED at the seam (defensive, same discipline as the RAW gate
             // above): standalone only — the plan already gates, but a big blob reaching a routed or
             // logical session is exactly the gralloc/HAL-crash class this file exists to prevent.
@@ -1231,7 +1235,8 @@ class CameraController(context: Context) {
 
     private fun zslStreamingActive(): Boolean =
         !zslStreamingBroken && zslReaderDeep &&
-            caps.isLogicalMultiCamera && !hiResReaderActive && jpegReader != null
+            (caps.isLogicalMultiCamera || caps.lensFacingFront) &&
+            !hiResReaderActive && jpegReader != null
 
     /**
      * "Now" in the SENSOR_TIMESTAMP clock domain THIS camera advertises, not an assumed one. Frame
@@ -2143,6 +2148,7 @@ internal fun sessionAttemptPlan(
     teleconverterMode: Boolean = false,
     wantHiRes: Boolean = false,
     tenBitVideoOnly: Boolean = false,
+    frontRoute: Boolean = false,
 ): SessionAttemptPlan {
     // 10-bit EXPERIMENT rung (debug-gated upstream). HLG10 + full-res JPEG + RAW together CRASH
     // this HAL — a crash, not a config rejection, so the fallback ladder below cannot rescue it.
@@ -2186,7 +2192,8 @@ internal fun sessionAttemptPlan(
     // Hi-res additionally FORCES RAW off on its one attempt: a 200MP blob + RAW in one session is
     // exactly the over-demanding stream combo this HAL punishes, and the maximum-resolution map
     // need not carry RAW at all.
-    useRaw = streamAttempt < 1 && supportsRaw && standalone && !logicalMultiCamera && !hiRes,
+    useRaw = streamAttempt < 1 && supportsRaw && standalone && !logicalMultiCamera && !hiRes &&
+        !frontRoute,
     useVendorOperationMode = vendorMode,
     useHiResStill = hiRes,
     // The deep pseudo-ZSL reader rides the FULL plan only — see [SessionAttemptPlan.useDeepZslReader].

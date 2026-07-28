@@ -281,4 +281,5 @@ private fun snapshotCameraCaps(): CameraCaps = CameraCaps(
     availableVideoSizes = listOf(Size(3840, 2160)),
     openGateVideoSizes = listOf(Size(4080, 3064)),
     highSpeedConfigs = emptyMap(),
+    lensFacingFront = false,
 )
