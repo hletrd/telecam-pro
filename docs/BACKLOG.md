@@ -461,6 +461,40 @@ O-Log2. Not worth it without new evidence; the GL-baked profiles remain the ship
 Keep the GL-baked S-Log3/LogC3 profiles either way: they are the display-referred fallback, and a
 native path would be a separate, genuinely scene-referred option.
 
+### Permissions + location EXIF — AUDITED on a fresh install (2026-07-28)
+
+Exercised every first-launch permission path on a genuinely clean package (`pm revoke` is refused on
+ColorOS exactly like `pm grant`, so the only honest way to reach virgin permission state is
+uninstall + reinstall). **Zero crashes and zero errors in every path; `logcat -b crash` stayed empty
+throughout.**
+
+| Path | Result |
+|---|---|
+| Fresh launch, nothing granted | Requests CAMERA immediately; no error |
+| CAMERA denied once | `PermissionGate`: "Camera access required." + a working re-request |
+| CAMERA denied twice | Flips to "Enable camera access in Settings."; button opens `InstalledAppDetails` |
+| CAMERA granted, mic denied | Preview + session `fallback=0`; standby meter correctly never starts |
+| REC with mic denied | Rationale sheet → decline → **records video-only** (fixed, see below) |
+| Location | Never requested — not a permission the app has |
+
+**One real defect found and fixed** (`06fc6d1`): declining the microphone dropped the REC press
+entirely. `VideoRecorder` already records video-only without RECORD_AUDIO, so the refusal withheld a
+take the pipeline can deliver, and it stranded anyone who never wants audio — turning `recordAudio`
+off is what makes the *next* press skip the prompt, so a decline was a two-press ritual whose first
+press vanished behind a transient status line. Now a declined `START_RECORDING` disables audio and
+starts the take; both decisions live in the pure `CameraPermissionPolicy` seam
+(`microphoneDeclineOutcome`, `microphonePermissionRequired`, 13 unit tests). Device-verified:
+`RecordingSpec: admitted ... audio=false`, `MUTE` in the OSD, and a 30.3 s HEVC 2160×3840 clip with
+exactly one stream and no audio track.
+
+**Location EXIF: there is none, by construction.** The built APK's merged manifest requests exactly
+`CAMERA` and `RECORD_AUDIO` (`INTERNET` is stripped with `tools:node="remove"`), no source file
+references any location API, and parsing a saved HEIF's TIFF IFDs found **no GPS IFD pointer in
+IFD0 or ExifIFD**. Captures carry `Make`/`Model`/`DateTime`/`Orientation`/`ISO`/`ExposureTime`/
+`FocalLengthIn35mmFilm`/`LensModel` and nothing locational. So location cannot be "inaccessible" and
+cannot error. Adding geotagging later would be a new permission, a new Data Safety declaration, and
+a privacy-policy change — treat it as a feature, not a fix.
+
 ## Before Production
 
 These are manual Play Console operations, not repository implementation work:
