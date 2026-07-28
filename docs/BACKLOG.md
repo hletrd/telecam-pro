@@ -601,14 +601,22 @@ These do not require a code or metadata change unless the result exposes a defec
     180° — the saved file keeps the true scene). The encoder un-mirror path is shared with video,
     but no front CLIP has been pulled and checked: record a front video of legible text and
     confirm it reads unreversed in an external player.
-  - **Front tap-AF aim — NOT moot.** Cycle-6 probe: the front camera (id "1") ADVERTISES
-    `android.control.maxRegions = [AE=1, AWB=0, AF=1]`, so tap-AF/AE regions are live on the front
-    route. Debugger F2's suspected sensor-half mirror error stands: the display half of the tap
-    mapping is correct, but `viewTapToSensorPoint` undoes only rotation, never the mirror, so the
-    metering region may land at the horizontally OPPOSITE active-array point. Check: tap a subject
-    near the LEFT edge of the selfie preview against a depth-separated background and confirm
-    focus/exposure drives from the tapped subject, not its horizontal mirror. If wrong, the sensor
-    half needs the `1−nx` un-flip (seam: `gl/FrontMirrorConvention` + `mapTapFocusGeometry`).
+  - **Front tap-AF aim — FIXED IN CODE 2026-07-28 (`7cda8da`); the aim check is what remains.**
+    Cycle-6 probe: the front camera (id "1") ADVERTISES `android.control.maxRegions =
+    [AE=1, AWB=0, AF=1]`, so tap-AF/AE regions are live on the front route. Debugger F2 was RIGHT:
+    `mapTapFocusGeometry` used ONE `mirrorX` for two different questions, and it was pinned false.
+    The loupe consumes TEXTURE space, which the pre-mirrored stream matches 1:1 (no flip — that half
+    was correct); metering regions are ACTIVE-ARRAY coordinates, and the array holds the TRUE scene
+    while the preview shows it mirrored, so the metering half needed the `1−nx` un-flip and never
+    got it. `FrontMirrorConvention.meteringMirrorX` now supplies it, equal to `encoderDrawMirrorX`
+    (both convert "what is shown" into "what is true"), applied in DISPLAY space before the rotation
+    into array coordinates — where the device-verified encoder un-mirror acts. Rear is untouched;
+    four unit tests pin the split and its independence.
+    STILL NEEDS A HUMAN: tap a subject near the LEFT edge of the selfie preview against a
+    depth-separated background and confirm focus/exposure now drives from the tapped subject. Note
+    the tap mapping's ROTATION term is still uncalibrated on the front route (`viewTapToSensorPoint`
+    documents itself as approximate), so a residual vertical/axis error would be a SEPARATE finding
+    from the mirror.
   - **Log-profile on-device check PARTIALLY CLOSED.** An S-Log3.Cine 4K clip was ffprobe-verified
     2026-07-23 (HEVC Main10, `color_transfer=bt2020-10` — confirmed NOT PQ/ST2084, the exact
     mistag the explicit-transfer container policy exists to prevent). Still open: playback
