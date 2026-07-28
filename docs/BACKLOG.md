@@ -461,6 +461,34 @@ O-Log2. Not worth it without new evidence; the GL-baked profiles remain the ship
 Keep the GL-baked S-Log3/LogC3 profiles either way: they are the display-referred fallback, and a
 native path would be a separate, genuinely scene-referred option.
 
+### Stock app colour modes side by side — CAPTURED LIVE 2026-07-28
+
+Switched the stock app through its video colour modes with `dumpsys media.camera` captured at each,
+and decoded the main 4K stream:
+
+| Stock mode | main 4K format | dynamic-range profile | dataspace |
+|---|---|---|---|
+| HDR **off** (Rec.709 / SDR) | `YUV_420_888` — **8-bit** | `0x1` STANDARD | `0x10c10000` = BT709 \| SMPTE_170M \| **LIMITED** |
+| HDR **on** (Rec.2020) | `YCBCR_P010` — **10-bit** | `0x40` **DOLBY_VISION_10B_HDR_OEM** | `0x12060000` = BT2020 \| **HLG** \| LIMITED |
+| **O-Log2** | `YCBCR_P010` — **10-bit** | `0x1` **STANDARD** | `0x8c60000` = BT2020 \| SMPTE_170M \| **FULL** |
+
+**The specific way log works, and why it is closed to us, is now exact.** Log is a **10-bit P010
+buffer paired with the STANDARD (SDR) dynamic-range profile**, carrying a full-range BT.2020
+dataspace whose transfer is a deliberate SDR placeholder. That pairing is the whole trick: it asks
+the HAL for ten bits WITHOUT asking for an HDR transfer, then labels the result itself.
+
+Public Camera2 cannot express it. Bit depth is not an independent axis there — ten bits are obtained
+by requesting a 10-bit `DynamicRangeProfile` (HLG10/HDR10/DV), and that profile then DETERMINES the
+dataspace. There is no public way to say "10-bit pixels, SDR profile, my own BT.2020 full-range
+tag". Combined with the three walls already recorded (P010 absent from
+`availableStreamConfigurations`, dataspace not settable outside native, vendor log key inert for
+third parties), this closes the question: the stock log path is structurally privileged, not merely
+undocumented.
+
+Incidental confirmation: the stock app's HDR-on video really is **Dolby Vision** (profile `0x40`),
+matching the 2026-07-26 `DolbyVisionProbeTest` finding that `c2.qti.dv.encoder` is visible and
+MediaMuxer accepts a DV track — and its base layer is HLG, exactly as the probe reported.
+
 ### How the STOCK app gets its log stream — ANSWERED 2026-07-28 (and why we cannot copy it)
 
 Its live `configure_streams` (captured earlier via `dumpsys media.camera` in `4K·30·O-Log2`):
