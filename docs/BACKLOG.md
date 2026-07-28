@@ -436,6 +436,28 @@ Before re-running, in this order:
 2. Shoot a LIT scene with real highlights. A histogram capped at 18% cannot distinguish curves.
 3. Only then compare native-log-on vs native-log-off on the same lit scene.
 
+**RESOLVED 2026-07-28 by a CONTROL clip: native log really is inert for third-party Camera2, and
+my challenge to the original verdict was wrong.**
+
+| clip | black level (raw Y, 10-bit) |
+|---|---|
+| CONTROL — GL S-Log3 baked, experiment OFF | `min 58  p1 93  p50 104  p99 153` |
+| EXPERIMENT — vendor log keys, GL curve suppressed, HLG10 10-bit session | `min 0  p1 6  p50 43` |
+
+S-Log3's black floor is ~95 of 1023. The control sits **exactly on it**, which proves two things at
+once: the measurement method is sound, and the experiment really did suppress the GL curve as
+intended. With the GL curve gone the native path supplied nothing in its place — blacks fell to 0.
+
+That holds with BOTH vendor keys applied (`log.video.mode=1`, `VideoColorBT709=0`) on a genuine
+10-bit HLG10 session at `fallback=0`. So the original "the HAL accepts the key but third-party
+output stays display-referred" conclusion stands, and the three theories raised against it are all
+dead: it was not the 8-bit session, not the missing BT709 control, and not the dynamic-range profile.
+
+The remaining untested difference is the stock app's `format 0x36` (P010) CAMERA stream — ours is
+SurfaceTexture/PRIVATE feeding GL. Chasing it means a P010 ImageReader path that GL cannot simply
+bypass (the afocal 180° lives there), for a feature whose own output the stock app already brands
+O-Log2. Not worth it without new evidence; the GL-baked profiles remain the shipping answer.
+
 Keep the GL-baked S-Log3/LogC3 profiles either way: they are the display-referred fallback, and a
 native path would be a separate, genuinely scene-referred option.
 
