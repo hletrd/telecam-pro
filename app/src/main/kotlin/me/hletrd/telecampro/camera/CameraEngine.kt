@@ -2387,6 +2387,10 @@ class CameraEngine(private val context: Context) {
         // resolve synchronously so the GL PIP cannot outlive the facing flip while the async
         // reconfigure is still queued — the same door discipline as setLens/setVideoMode.
         pushTeleFinder()
+        // Same door, same reason: the loupe is suppressed on the front route, and resolving it
+        // synchronously keeps the 40% crop from surviving into the selfie preview while the
+        // reconfigure is still in flight.
+        pushPunchIn()
         setupExecutor.execute {
             if (!ownsOpticsTransaction(transaction) ||
                 facingIntentGeneration.get() != intentGeneration || paused
@@ -4312,7 +4316,19 @@ class CameraEngine(private val context: Context) {
     fun currentDeviceOrientation(): Int = gyro.currentDeviceOrientation()
 
     fun setPunchIn(enabled: Boolean) {
-        rendererAssists.setPunchIn(enabled)
+        rendererAssists.setPunchInIntent(enabled)
+        pushPunchIn()
+    }
+
+    /**
+     * Re-resolves the loupe against the live route. Called from the toggle AND from the facing door,
+     * exactly like [pushTeleFinder] — the resolved value depends on state the toggle does not own,
+     * so a route change has to re-push it or the crop outlives the route that justified it.
+     */
+    private fun pushPunchIn() {
+        rendererAssists.setPunchInResolved(
+            punchInResolved(rendererAssists.isPunchInIntended(), facing == CameraFacing.FRONT),
+        )
     }
 
     // TELE finder PIP: the user's persisted Assist toggle (default OFF). Only the RESOLVED flag —

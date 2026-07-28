@@ -31,7 +31,26 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
     @Volatile
     private var focusDetail = false
 
+    // The user's punch-in INTENT, remembered independently of the resolved value for the same
+    // reason as [teleFinderEnabled]: only the route-resolved flag is pushed to GL or replayed, but
+    // the intent has to survive a front trip so returning to the rear restores the loupe.
+    @Volatile
+    private var punchInEnabled = false
+
+    /** The RESOLVED punch-in actually applied to the preview — false on the front route. */
     fun isPunchInEnabled(): Boolean = config.snapshot().punchIn
+
+    /** The user's toggle, regardless of whether the current route applies it. */
+    fun isPunchInIntended(): Boolean = punchInEnabled
+
+    fun setPunchInIntent(enabled: Boolean) {
+        punchInEnabled = enabled
+    }
+
+    fun setPunchInResolved(resolved: Boolean) {
+        config.update { it.copy(punchIn = resolved) }
+        currentGl().setPunchIn(resolved)
+    }
 
     fun setFalseColor(enabled: Boolean) {
         config.update { it.copy(falseColor = enabled) }
@@ -103,11 +122,6 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
     fun setGammaAssist(enabled: Boolean) {
         gammaAssist = enabled
         currentGl().setGammaAssist(enabled)
-    }
-
-    fun setPunchIn(enabled: Boolean) {
-        config.update { it.copy(punchIn = enabled) }
-        currentGl().setPunchIn(enabled)
     }
 
     fun setTeleFinderIntent(enabled: Boolean) {

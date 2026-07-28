@@ -353,7 +353,7 @@ fun CameraScreen(
                 teleconverter = state.teleconverterMode,
                 videoMode = state.mode == CaptureMode.VIDEO,
                 aspect = state.aspectRatio,
-                punchIn = state.punchIn,
+                punchIn = state.punchInActive,
                 zoomRatio = state.controls.zoomRatio,
             )
             AndroidView(

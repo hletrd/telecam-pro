@@ -443,13 +443,13 @@ internal fun compactShootingStatusVisible(state: CameraUiState): Boolean =
         // made the tag render only when some UNRELATED tag happened to force the strip visible —
         // i.e. never, in the default photo state the detector was built for.
         state.focusConfidence != null ||
-        state.punchIn ||
+        state.punchInActive ||
         teleFinderVisible(
             enabled = state.teleFinder,
             teleconverter = state.teleconverterMode,
             videoMode = state.mode == CaptureMode.VIDEO,
             aspect = state.aspectRatio,
-            punchIn = state.punchIn,
+            punchIn = state.punchInActive,
             zoomRatio = state.controls.zoomRatio,
         )
 
@@ -646,7 +646,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
         focusConfidenceLabel(state.focusConfidence, state.macroCloserLensLabel)?.let { tag ->
             Text(tag, color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
         }
-        if (state.punchIn) {
+        if (state.punchInActive) {
             Text("LOUPE", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
         }
         if (teleFinderVisible(
@@ -654,7 +654,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                 teleconverter = state.teleconverterMode,
                 videoMode = state.mode == CaptureMode.VIDEO,
                 aspect = state.aspectRatio,
-                punchIn = state.punchIn,
+                punchIn = state.punchInActive,
                 zoomRatio = state.controls.zoomRatio,
             )
         ) {

@@ -310,6 +310,23 @@ const val PUNCH_IN_CROP = 0.6f
 /** Zoom at or past which the finder is offered without a converter mounted. */
 const val FINDER_MIN_ZOOM = 3f
 
+/**
+ * The engine-RESOLVED punch-in loupe: the user's persisted toggle, suppressed on the FRONT route.
+ *
+ * The loupe exists to check CRITICAL FOCUS at long focal lengths, which is why it crops to
+ * `1 - PUNCH_IN_CROP` = 40% of the frame. On a ~21 mm-equivalent selfie lens that magnification
+ * buys nothing and instead reads as a broken camera: the preview shows a fraction of the field
+ * while the saved file is full-frame, so the finder and the result disagree with no visible cause
+ * (user-reported twice — "front preview is very narrow FOV, the taken picture is proper"). The
+ * earlier round diagnosed the same symptom as "the loupe, not a front-camera fault" and left it,
+ * which is what let it come back.
+ *
+ * Suppressed, not CLEARED: the toggle keeps its value so returning to the rear route restores the
+ * aid the operator asked for. One implementation, consumed by `pushPunchIn` and by the tap-focus
+ * geometry, so a tap cannot compose through a crop the preview is not applying.
+ */
+fun punchInResolved(enabled: Boolean, frontFacing: Boolean): Boolean = enabled && !frontFacing
+
 fun teleFinderResolved(
     enabled: Boolean,
     teleconverter: Boolean,
@@ -923,6 +940,8 @@ data class CameraUiState(
     val levelRoll: Float = 0f,
     // Physical device orientation (0/90/180/270) from gravity; rotates overlays to stay upright.
     val deviceOrientation: Int = 0,
+    // The user's loupe TOGGLE. What the preview actually applies is [punchInActive] — the settings
+    // switch shows this raw value so it does not appear to flip itself on a camera change.
     val punchIn: Boolean = false,
     // TELE finder PIP Assist toggle (default OFF; see FINDER_* above for the honest contract).
     val teleFinder: Boolean = false,
@@ -1001,6 +1020,16 @@ data class CameraUiState(
     /** The effective 35 mm-equivalent focal through the converter, e.g. 300 mm on the kit optic. */
     val teleconverterFocalMm: Float
         get() = effectiveFocalMm(teleconverterMagnification)
+    /**
+     * The loupe the preview ACTUALLY applies — [punchIn] suppressed on the front route.
+     *
+     * Every consumer that asks "is the view magnified" reads this: the OSD tag, the Loupe Overview
+     * gate, and the finder geometry. Reading the raw toggle instead let the finder advertise LOUPE
+     * over an unmagnified selfie preview, and would let the overview border draw for a crop GL was
+     * not applying. Same derivation as the engine's `pushPunchIn`, through one shared predicate.
+     */
+    val punchInActive: Boolean
+        get() = punchInResolved(punchIn, facing == CameraFacing.FRONT)
     val stillCaptureReady: Boolean
         get() = cameraReady && photoSessionOutputs.hasStillTarget
     val primaryShutterHealthy: Boolean
