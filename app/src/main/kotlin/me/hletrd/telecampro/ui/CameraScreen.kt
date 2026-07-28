@@ -480,6 +480,19 @@ fun CameraScreen(
 
             FocusReticle(point = state.tapPoint, indication = state.afIndication, modifier = Modifier.fillMaxSize())
 
+            // The level belongs to the FRAMING overlays, so it lives inside the aspect box with the
+            // grid. Outside it (where this used to sit) `fillMaxSize` is the whole SCREEN, so the
+            // gauge centred on the screen's midpoint rather than the image's — visibly low, because
+            // the bottom control cluster is taller than the top bar (user-reported 2026-07-28;
+            // measured ~1581 px against an image centre of ~1545).
+            if (state.level) {
+                LevelOverlay(
+                    modifier = Modifier.fillMaxSize(),
+                    rollDegrees = state.levelRoll,
+                    deviceOrientation = state.deviceOrientation,
+                )
+            }
+
             // Shutter blink: a ~90 ms black flash over the image the instant the shutter fires —
             // the still itself takes pipeline-depth × frame-duration before exposing, and with no
             // immediate acknowledgment every press reads as lag (user-reported). Inside the aspect
@@ -593,14 +606,6 @@ fun CameraScreen(
                         CameraColors.Record,
                         RoundedCornerShape(with(LocalDensity.current) { tallyRadius.toDp() }),
                     ),
-            )
-        }
-
-        if (state.level) {
-            LevelOverlay(
-                modifier = Modifier.fillMaxSize(),
-                rollDegrees = state.levelRoll,
-                deviceOrientation = state.deviceOrientation,
             )
         }
 
