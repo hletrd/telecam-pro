@@ -716,6 +716,22 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   later converged result from its exact tagged request—never cached preset/manual gains. Its accepted
   Ready-session owner is rechecked atomically after the callback crosses to main. If a route change
   invalidates an open ruler, close it and retain the normalized applied value.
+- **A DECLINED microphone still records — video-only, silently (2026-07-28).** Declining at the
+  rationale ("Not now") or at the system dialog turns audio off and then STARTS the take the user
+  asked for; only an explicit "enable audio" that was declined stops at audio-off. `VideoRecorder`
+  already handles it (`doAudio = recordAudio && hasRecordPermission()` → `expectedTracks = 1`), so
+  refusing the press withheld a clip the pipeline can fully deliver — and it stranded anyone who
+  simply never wants audio, because turning `recordAudio` off is exactly what makes the NEXT press
+  skip the prompt, making a decline a two-press ritual whose first press vanished behind a transient
+  status line (device-verified on a fresh install: "Not now" returned to an idle viewfinder having
+  recorded nothing). Audio is disabled BEFORE starting so the UI toggle and the recorder's own
+  permission gate agree; `_state` updates synchronously, so the start observes it. Both decisions are
+  pure and unit-tested in `CameraPermissionPolicy.kt` (`microphoneDeclineOutcome`,
+  `microphonePermissionRequired`) — `PendingAudioAction` lives there, not in `MainActivity`.
+  **The app requests exactly CAMERA and RECORD_AUDIO. There is NO location permission and no
+  location code, so captures carry no GPS tags** (verified by parsing a saved HEIF's TIFF IFDs: no
+  GPS IFD pointer in IFD0 or ExifIFD). Adding geotagging would be a new permission, a new Data
+  Safety declaration, and a privacy-policy change — a feature, not a fix.
 - **Exactly one owner of the mic.** The Sony-style standby audio meter is a levels-only `AudioRecord`
   tap that runs while video is ARMED but not rolling. Its synchronized ownership gate reserves one
   immutable owner and release latch before thread start. REC must claim the handoff and observe that
