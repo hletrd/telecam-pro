@@ -130,7 +130,16 @@ object CameraColors {
      * NOT the level gauge's static reference line (0.4), and NOT a scope's plot frame ([ScopeFrame]).
      * Each of those is part of an instrument sitting on a HUD plate and carries its own number.
      */
-    val GuideLine = Color.White.copy(alpha = 0.55f)
+    // 0.55 → 0.40, a DELIBERATE restyle (user-reported 2026-07-28: the grid and level read too
+    // bright and heavy). At 0.55 the thirds rules sat ON the finder rather than under it, which is
+    // the opposite of "compose against it, then stop seeing it"; a 1 dp line at 0.40 still resolves
+    // over a bright sky, because a guide only has to survive the image, not out-shout it.
+    //
+    // NOT taken nearer [ScopeFrame] (0.30) even though the complaint pulls that way: this file's own
+    // measurement found 1 dp strokes 0.05 apart indistinguishable by eye, so a value in the low 0.3s
+    // would mint a second token that looks identical to an existing one — exactly the drift the
+    // six-distinct-roles test exists to prevent. 0.40 stays a visibly separate weight.
+    val GuideLine = Color.White.copy(alpha = 0.40f)
     /**
      * The border of a scope's plot box: the histogram's and the waveform's, which stack in one column
      * on the same HUD plate. Two consumers, one job.

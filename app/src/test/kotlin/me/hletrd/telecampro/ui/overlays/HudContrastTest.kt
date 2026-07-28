@@ -260,7 +260,11 @@ class HudContrastTest {
         // EXACTLY the wash it replaced — otherwise the naming pass silently restyled six surfaces.
         val white = androidx.compose.ui.graphics.Color.White
         assertTrue(CameraColors.AffordanceEdge == white.copy(alpha = 0.18f))
-        assertTrue(CameraColors.GuideLine == white.copy(alpha = 0.55f))
+        // GuideLine was minted at 0.55 (the wash it replaced) and RESTYLED to 0.40 on 2026-07-28,
+        // deliberately: the operator reported the grid and level reading too bright and heavy on the
+        // live image. Re-pinned rather than loosened, so the next change is equally visible in a
+        // diff — this assertion's job is to make a restyle explicit, not to freeze the value.
+        assertTrue(CameraColors.GuideLine == white.copy(alpha = 0.40f))
         // ScopeFrame (0.3) closed a real drift rather than replacing a repeated literal: the two scope
         // plot frames were 0.3 and 0.35 for one role. It is pinned at the SURVIVING number, so a
         // future edit cannot quietly reopen the gap by nudging the token toward the value it retired.

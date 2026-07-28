@@ -278,20 +278,30 @@ fun LevelOverlay(modifier: Modifier = Modifier, rollDegrees: Float = 0f, deviceO
             // One-off: the STATIC datum the moving indicator above is read against. It is a part of
             // this gauge and is deliberately quieter than the live line it sits under, so it is not
             // GuideLine (a composition rule the photographer frames to) and not ink.
-            color = Color.White.copy(alpha = 0.4f),
+            // 0.4 → 0.22 with the 2026-07-28 slimming below: a datum only has to be findable, and at
+            // 0.4 under a lighter indicator it competed with the reading instead of supporting it.
+            color = Color.White.copy(alpha = 0.22f),
             start = Offset(size.width / 2f - halfSpan, cy),
             end = Offset(size.width / 2f + halfSpan, cy),
-            strokeWidth = 2.dp.toPx(),
+            strokeWidth = 1.5.dp.toPx(),
         )
         rotate(degrees = deviation, pivot = Offset(size.width / 2f, cy)) {
             drawLine(
-                color = indicatorColor,
+                // Slimmed 4 dp → 2 dp and taken off full opacity (user-reported: too bright and
+                // heavy). The gauge is read by its ANGLE, not its mass, and the level state already
+                // has a second channel — [indicatorColor] turns yellow within 0.5°. Kept a touch
+                // stronger than the datum so the live line stays the figure and the datum the ground.
+                color = indicatorColor.copy(alpha = 0.72f),
                 start = Offset(size.width / 2f - halfSpan, cy),
                 end = Offset(size.width / 2f + halfSpan, cy),
-                strokeWidth = 4.dp.toPx(),
+                strokeWidth = 2.dp.toPx(),
             )
         }
-        drawCircle(color = indicatorColor, radius = 4.dp.toPx(), center = Offset(size.width / 2f, cy))
+        drawCircle(
+            color = indicatorColor.copy(alpha = 0.72f),
+            radius = 2.5.dp.toPx(),
+            center = Offset(size.width / 2f, cy),
+        )
     }
 }
 
