@@ -2226,15 +2226,17 @@ private fun RailChip(
     glyphRotation: Float,
 ) {
     val description = contentDescription
+    // The press ripple is drawn by the indication on whichever node carries `selectable`. That used
+    // to be this 48 dp SQUARE touch target, so a square slab flashed behind a round pill; clipping
+    // the square merely made it a 48 dp CIRCLE, still visibly bigger and rounder than the stadium it
+    // sits behind (user-reported twice, 2026-07-29). The only way the ripple matches the pill is for
+    // the PILL to be the interactive node — so `selectable` moved inside, onto the same node that
+    // already clips itself to the pill shape. This outer box keeps the 48 dp extent (layout rhythm
+    // and hit area) and owns the semantics.
     Box(
         modifier = Modifier
             .size(48.dp)
             .rotate(glyphRotation)
-            // The press ripple is drawn by the indication on the SELECTABLE node, which is this
-            // 48 dp square touch target — so it rendered as a square slab behind a round pill
-            // (user-reported 2026-07-29). Clipping the node shapes its ripple; the target keeps its
-            // 48 dp extent, it is simply round like the thing it activates.
-            .clip(CircleShape)
             .focusable()
             // Selection and activation must live on the same outer node. A separate
             // selected semantic followed by clickable exported selected=false from the
@@ -2250,18 +2252,20 @@ private fun RailChip(
                     onClick()
                     true
                 }
-            }
-            .selectable(
-                selected = presentation.selected,
-                enabled = presentation.enabled,
-                role = presentation.accessibilityRole,
-                onClick = onClick,
-            ),
+            },
         contentAlignment = Alignment.Center,
     ) {
         Box(
             modifier = Modifier
+                // Clip BEFORE selectable so the ripple is bounded by the pill's own shape, and
+                // before the background so the fill is clipped to it too.
                 .clip(CircleShape)
+                .selectable(
+                    selected = presentation.selected,
+                    enabled = presentation.enabled,
+                    role = presentation.accessibilityRole,
+                    onClick = onClick,
+                )
                 .background(
                     if (presentation.selected) CameraColors.TextPrimary
                     else HudPlate,

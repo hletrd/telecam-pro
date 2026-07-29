@@ -1195,7 +1195,11 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     // "must not be marketed as such"). Same caption idiom as the hi-res/stabilization rows. Gated on
     // a non-SDR selection because the caveat is about a CURVE: printed under Transfer = SDR it
     // asserted a curve was applied where none is.
-    Captioned(if (state.transfer != ColorTransfer.SDR) "Applied to the SDR stream" else null) {
+    // "SDR stream" stopped being true when video gained a 10-bit session; the honesty point was
+    // never the bit depth but that the ISP has ALREADY tone-mapped what the curve is applied to.
+    Captioned(
+        if (state.transfer != ColorTransfer.SDR) "Applied to the camera's already tone-mapped stream" else null,
+    ) {
         // Transfer is part of the encoded image format, so keep it with codec/rate controls instead
         // of below the unrelated audio controls.
         TransferSelector(
@@ -1341,9 +1345,13 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
     // lens, because what it depends on is magnifying past the delivered field, not the accessory.
     // Same rule as the header four lines up: the caption's other three tokens are menu names, so the
     // sole borrowed OSD tag spelled itself out too.
-    Captioned("Photo · 4:3 · Loupe · 3× or a converter") {
+    // Says what the aid IS, not the four gates it passes through. The dotted condition list read
+    // like the predicate printed out, and it went stale the moment video qualified (2026-07-29) —
+    // a caption that enumerates its own preconditions has to be re-edited every time one moves.
+    Captioned("A corner view of the full frame while the loupe magnifies") {
         // Loupe Overview is a same-stream full-frame reference, never an automatic 1x camera feed.
-        // Exact predicate: enabled + Photo + 4:3 + TELE + active punch-in. Default remains off.
+        // Exact predicate: enabled + active punch-in + (TELE or past the zoom floor), and in PHOTO
+        // also 4:3. Default remains off.
         //
         // Gated on the LOUPE specifically, the same way Zebra Level is gated on Zebra: the loupe is
         // this row's parent FEATURE (cycle 4 made it the gate axis — at a steady zoom the overview

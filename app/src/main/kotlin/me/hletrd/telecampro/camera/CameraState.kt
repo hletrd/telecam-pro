@@ -292,7 +292,10 @@ const val TELE_MAX_DISPLAY_ZOOM = 60f
 // and the Compose overlay (border) through [finderRect] so both boxes stay pixel-aligned.
 const val FINDER_FRACTION = 0.30f
 const val FINDER_SIDE_MARGIN = 0.03f
-const val FINDER_BOTTOM_MARGIN = 0.14f
+// 0.14 → 0.22 (2026-07-29): once the box moved to the RIGHT edge it came alongside the focal rail,
+// whose last chip ran into it. The rail is a 48 dp row sitting just above the preview's bottom, so
+// the inset has to clear the rail's full height plus its breathing room, not just the edge.
+const val FINDER_BOTTOM_MARGIN = 0.22f
 // The punch-in loupe's texcoord crop: the magnified preview samples a (1-crop) span of the frame
 // (0.6 → 2.5× magnification). Shared between the GL draw (gl/GlPipeline) and the tap-mapping
 // composition in CameraEngine (P2.8/AGG4-11) so the two cannot drift.
