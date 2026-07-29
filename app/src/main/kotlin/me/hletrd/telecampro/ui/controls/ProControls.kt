@@ -761,11 +761,13 @@ internal fun PhotoFormatToggles(
     processedAvailable: Boolean,
     // Whether the DEVICE can produce RAW at all — what the DNG chip's enablement keys off.
     rawAvailable: Boolean,
+    // `modifier` stays the FIRST optional parameter (Compose convention, enforced by the
+    // ModifierParameter lint); route facts follow it.
+    modifier: Modifier = Modifier,
     // Whether the CURRENT session actually carries a RAW output. Drives the caption only: on the
     // logical photo route this is false while [rawAvailable] is true, and selecting DNG is exactly
     // what switches the route so it becomes true.
     rawInSession: Boolean = rawAvailable,
-    modifier: Modifier = Modifier,
     // VIDEO reframes the "no still outputs" line: there it is the 10-bit session's deliberate trade,
     // not a capability the route failed to deliver.
     videoMode: Boolean = false,

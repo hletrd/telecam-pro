@@ -978,6 +978,11 @@ class CameraViewModel @JvmOverloads constructor(
         engine.setAudioScene(e.audioScene)
         engine.setAudioInputPreference(e.audioInputPreference)
         engine.setVideoFrameRate(safeFrameRate)
+        // DNG is a ROUTE input, so a RESTORED selection has to reach the engine exactly like a live
+        // one. Without this the persisted choice was silently inert on every launch: the sheet
+        // showed DNG selected, the session came up on the logical route with raw=false, and the
+        // shutter produced outputs=jpg with no DNG at all (found by the 2026-07-29 review pass).
+        engine.setRawWanted(PhotoFormats(e.heif, e.jpeg, e.dngRaw).withDefaultIfEmpty().dngRaw)
         // Restore the user-selected recording resolution ("Remember Settings" previously dropped it
         // silently — the engine re-picked the largest size on every launch). The engine re-validates
         // the request against the live caps once the camera opens and falls back to auto if the
