@@ -25,6 +25,7 @@ class RawSelectableTest {
                 rawInSession = false,
                 videoMode = false,
                 hiResSession = false,
+                frontFacing = false,
             ),
         )
     }
@@ -37,6 +38,7 @@ class RawSelectableTest {
                 rawInSession = false,
                 videoMode = true,
                 hiResSession = false,
+                frontFacing = false,
             ),
         )
     }
@@ -49,6 +51,7 @@ class RawSelectableTest {
                 rawInSession = true,
                 videoMode = true,
                 hiResSession = false,
+                frontFacing = false,
             ),
         )
     }
@@ -61,6 +64,22 @@ class RawSelectableTest {
                 rawInSession = false,
                 videoMode = false,
                 hiResSession = true,
+                frontFacing = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `the front route refuses DNG even when the front camera advertises RAW`() {
+        // The session plan force-drops RAW on the front route, so a live chip there would promise a
+        // DNG that never arrives.
+        assertFalse(
+            rawSelectable(
+                deviceSupportsRaw = true,
+                rawInSession = false,
+                videoMode = false,
+                hiResSession = false,
+                frontFacing = true,
             ),
         )
     }
@@ -76,6 +95,7 @@ class RawSelectableTest {
                         rawInSession = false,
                         videoMode = video,
                         hiResSession = hiRes,
+                        frontFacing = false,
                     ),
                 )
             }
@@ -106,13 +126,27 @@ class AcceptedPhotoFormatsTest {
     }
 
     @Test
-    fun `a session that can shoot still normalises away what it cannot deliver`() {
+    fun `a processed-only session normalises the processed axis but keeps the RAW request`() {
+        // dngRaw SURVIVES: on the logical photo route that request is exactly what moves the session
+        // to a lens that can serve it. Clearing it here diverged the UI from the engine's rawWanted
+        // and the change gate then froze that divergence.
         assertEquals(
-            PhotoFormats(heif = true, jpeg = true, dngRaw = false),
+            PhotoFormats(heif = true, jpeg = true, dngRaw = true),
             accepted(
                 PhotoFormats(heif = true, jpeg = true, dngRaw = true),
                 PhotoSessionOutputs(processed = true, raw = false),
             ),
+        )
+    }
+
+    @Test
+    fun `a hi-res session still collapses the processed axis to passthrough JPEG`() {
+        assertEquals(
+            false,
+            accepted(
+                PhotoFormats(heif = true, jpeg = true, dngRaw = false),
+                PhotoSessionOutputs(processed = true, raw = false, hiRes = true),
+            ).heif,
         )
     }
 

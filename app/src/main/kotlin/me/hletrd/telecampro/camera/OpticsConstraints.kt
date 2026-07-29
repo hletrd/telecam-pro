@@ -27,15 +27,29 @@ internal fun acceptedOpticsAuxState(
     photoFormats: PhotoFormats,
 ): AcceptedOpticsAuxState = AcceptedOpticsAuxState(
     preTeleUnifiedZoom = if (teleconverter) preTeleUnifiedZoom else Float.NaN,
-    // A session with NO still lane at all is a session STATE, not an answer about formats: the
-    // 10-bit video session drops both still readers BY DESIGN, and preview-only is a fallback rung.
-    // Normalising against that wrote the EMPTY set over the operator's request, so a trip through
-    // log video silently reset a persisted HEIF+JPEG+DNG selection — the empty set persists on
-    // background and withDefaultIfEmpty resurrects it as HEIF-only on the next launch
-    // (device-reproduced 2026-07-29). Capture-time normalisation in CameraEngine still guarantees no
-    // shot is attempted against an output the accepted session lacks, so keeping the request here
-    // cannot produce a bogus capture; it only stops a designed trade from editing user intent.
-    photoFormats = if (photoOutputs.hasStillTarget) photoFormats.normalizedFor(photoOutputs) else photoFormats,
+    // What an accepted session may edit in the operator's format request, and what it may not
+    // (both halves device-reproduced 2026-07-29):
+    //
+    // - No still lane AT ALL is a session STATE, not an answer about formats — the 10-bit video
+    //   session drops both still readers by design, and preview-only is a fallback rung. Normalising
+    //   against that wrote the EMPTY set over the request, which persisted on background and came
+    //   back as HEIF-only next launch.
+    // - The PROCESSED axis IS a genuine session answer: a hi-res session collapses to passthrough
+    //   JPEG, and a DNG-only session really has no processed reader. It still normalises.
+    // - The RAW axis is NOT. RAW's presence is a CONSEQUENCE of this very request — wanting DNG is
+    //   what moves the route — so letting the session clear it made the engine's `rawWanted` and the
+    //   UI's `dngRaw` diverge, and `setRawWanted`'s change gate froze the divergence: the operator
+    //   saw DNG off while photo stayed pinned to a standalone lens, silently losing seamless zoom for
+    //   a format they no longer appeared to have chosen (seen on the front-camera trip).
+    //
+    // [rawSelectable] disables the chip wherever the route structurally cannot deliver RAW, and
+    // capture-time normalisation in CameraEngine still refuses to shoot a missing output — so keeping
+    // intent here can never produce a bogus capture.
+    photoFormats = if (photoOutputs.hasStillTarget) {
+        photoFormats.normalizedFor(photoOutputs).copy(dngRaw = photoFormats.dngRaw)
+    } else {
+        photoFormats
+    },
 )
 
 /**
@@ -51,14 +65,17 @@ internal fun acceptedOpticsAuxState(
  *
  * So: honour the capability, and require that the session either already carries RAW or belongs to a
  * mode where selecting DNG is what brings it. [hiResSession] is excluded because its one ladder rung
- * force-drops RAW (a full-sensor blob plus RAW is the over-demanding combo this HAL punishes).
+ * force-drops RAW (a full-sensor blob plus RAW is the over-demanding combo this HAL punishes), and
+ * [frontFacing] because the session plan force-drops RAW on the front route as well — the front
+ * camera advertising RAW would otherwise leave a live chip promising a DNG that never arrives.
  */
 internal fun rawSelectable(
     deviceSupportsRaw: Boolean,
     rawInSession: Boolean,
     videoMode: Boolean,
     hiResSession: Boolean,
-): Boolean = deviceSupportsRaw && (rawInSession || (!videoMode && !hiResSession))
+    frontFacing: Boolean,
+): Boolean = deviceSupportsRaw && !frontFacing && (rawInSession || (!videoMode && !hiResSession))
 
 /**
  * Clamps normalized optics again once the selected camera's live zoom range is authoritative.

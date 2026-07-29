@@ -78,6 +78,7 @@ import me.hletrd.telecampro.camera.VideoFrameRate
 import me.hletrd.telecampro.camera.WbMode
 import me.hletrd.telecampro.camera.ZebraLevel
 import me.hletrd.telecampro.camera.rearReturnZoom
+import me.hletrd.telecampro.camera.rawSelectable
 import me.hletrd.telecampro.ui.controls.bitrateLevelLabel
 import me.hletrd.telecampro.ui.controls.formatFocalMm
 import me.hletrd.telecampro.ui.controls.transferLabel
@@ -578,8 +579,18 @@ class CameraViewModel @JvmOverloads constructor(
                                 // those fire at the shutter, so one user sees all three for one
                                 // output mask.
                                 "HEIF/JPEG unavailable; DNG only"
-                            current.photoFormats.dngRaw && !accepted.photoFormats.dngRaw ->
-                                "RAW unavailable"
+                            // Keyed on whether this route can EVER deliver RAW, not on whether the
+                            // session happens to carry it yet: the accepted session no longer edits
+                            // the RAW axis (see acceptedOpticsAuxState), and on the logical photo
+                            // route a DNG request is about to be honoured by the reopen it triggers,
+                            // so "not carrying RAW right now" would announce a fault mid-transition.
+                            current.photoFormats.dngRaw && !rawSelectable(
+                                deviceSupportsRaw = true,
+                                rawInSession = publication.photoOutputs.raw,
+                                videoMode = current.mode == CaptureMode.VIDEO,
+                                hiResSession = publication.photoOutputs.hiRes,
+                                frontFacing = current.facing == CameraFacing.FRONT,
+                            ) -> "RAW unavailable"
                             else -> null
                         }
                         current.copy(

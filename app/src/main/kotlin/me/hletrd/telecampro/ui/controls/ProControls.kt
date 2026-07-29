@@ -824,15 +824,20 @@ internal fun PhotoFormatToggles(
                 color = CameraColors.TextSecondary,
                 style = MaterialTheme.typography.labelSmall,
             )
-        } else if (!rawInSession && formats.dngRaw) {
+        } else if (!rawAvailable) {
+            // BEFORE the "switching" line, not after: on a route that structurally cannot carry RAW
+            // (front, hi-res, 10-bit video) nothing is switching, and announcing a lens change that
+            // will never happen is worse than saying plainly that RAW is off the table. The DNG
+            // request itself survives — it is intent, and it applies again the moment the operator
+            // returns to a route that can serve it.
             Text(
-                "Switching to a single lens for RAW",
+                "RAW unavailable",
                 color = CameraColors.TextSecondary,
                 style = MaterialTheme.typography.labelSmall,
             )
-        } else if (!rawAvailable) {
+        } else if (!rawInSession && formats.dngRaw) {
             Text(
-                "RAW unavailable",
+                "Switching to a single lens for RAW",
                 color = CameraColors.TextSecondary,
                 style = MaterialTheme.typography.labelSmall,
             )

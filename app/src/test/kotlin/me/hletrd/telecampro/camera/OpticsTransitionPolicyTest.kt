@@ -43,7 +43,7 @@ class OpticsTransitionPolicyTest {
     }
 
     @Test
-    fun `accepted non tele camera clears return framing and unavailable raw`() {
+    fun `accepted non tele camera clears return framing but keeps the RAW request`() {
         val accepted = acceptedOpticsAuxState(
             teleconverter = false,
             photoOutputs = PhotoSessionOutputs(processed = true),
@@ -52,7 +52,10 @@ class OpticsTransitionPolicyTest {
         )
 
         assertTrue(accepted.preTeleUnifiedZoom.isNaN())
-        assertFalse(accepted.photoFormats.dngRaw)
+        // dngRaw is NOT cleared any more: on the logical photo route the request is precisely what
+        // moves the session to a lens that can serve it, so clearing it here diverged the UI from the
+        // engine's rawWanted and setRawWanted's change gate then froze that divergence.
+        assertTrue(accepted.photoFormats.dngRaw)
     }
 
     @Test

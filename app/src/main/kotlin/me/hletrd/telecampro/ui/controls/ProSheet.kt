@@ -665,6 +665,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
             rawInSession = state.photoSessionOutputs.raw,
             videoMode = state.mode == CaptureMode.VIDEO,
             hiResSession = state.photoSessionOutputs.hiRes,
+            frontFacing = state.facing == CameraFacing.FRONT,
         ),
         // Session truth still drives the CAPTION, so the sheet can say RAW is not in force yet
         // without disabling the control that brings it into force.
