@@ -767,6 +767,20 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   permission gate agree; `_state` updates synchronously, so the start observes it. Both decisions are
   pure and unit-tested in `CameraPermissionPolicy.kt` (`microphoneDeclineOutcome`,
   `microphonePermissionRequired`) — `PendingAudioAction` lives there, not in `MainActivity`.
+  **A denial-disabled audio track is RESTORED by a later grant; operator-chosen silence is not
+  (2026-07-29).** `recordAudio = false` conflated "this operator wants a silent clip" with "we gave
+  up on audio because the permission was refused", and the second was SELF-LOCKING: a
+  START_RECORDING prompt is conditional on `recordAudio` (`microphonePermissionRequired`), so once
+  audio was off the shutter never asked again, and granting the permission in Android Settings
+  changed nothing. Both user-visible symptoms came from that ONE flag — silent clips
+  (`doAudio = recordAudio && hasRecordPermission()`) AND a missing level meter during recording (its
+  UI gate is `mode == VIDEO && recordAudio && (detailsVisible || isRecording)`), which reads as two
+  separate bugs and is one. `AUDIO_OFF_BY_DENIAL_KEY` now records WHICH of the two it was:
+  `audioRestoredByMicrophoneGrant` re-enables audio the moment the permission is observed granted,
+  while an operator who switched audio off themselves keeps their silence forever. This mirrors what
+  CAMERA already did — a Settings grant there resets the denial history rather than letting an
+  obsolete refusal outlive itself. The recorder's own level emission is fine and always was: at unity
+  gain the RMS pass is skipped only when no emit is due (`audioGain != 1f || emitDue`).
   **The app requests exactly CAMERA and RECORD_AUDIO. There is NO location permission and no
   location code, so captures carry no GPS tags** (verified by parsing a saved HEIF's TIFF IFDs: no
   GPS IFD pointer in IFD0 or ExifIFD). Adding geotagging would be a new permission, a new Data

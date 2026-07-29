@@ -148,6 +148,11 @@ class MainActivity : ComponentActivity() {
 
                             override fun onToggleRecordAudio(enabled: Boolean) {
                                 if (!enabled) {
+                                    // The operator chose silence. Clear the denial reason so a later
+                                    // grant does NOT override their own choice.
+                                    permissionPreferences.edit(commit = true) {
+                                        putBoolean(AUDIO_OFF_BY_DENIAL_KEY, false)
+                                    }
                                     vm.onToggleRecordAudio(false)
                                     return
                                 }
@@ -366,6 +371,11 @@ class MainActivity : ComponentActivity() {
      * synchronously, so the start below observes it.
      */
     private fun declineMicrophone(action: PendingAudioAction?) {
+        // WHY audio went off, not just that it did — see [audioRestoredByMicrophoneGrant]. Without
+        // this the refusal outlived itself: a later Settings grant left clips silent and the level
+        // meter hidden, and the shutter never re-prompted because the flag it checks was the very
+        // flag that was off.
+        permissionPreferences.edit(commit = true) { putBoolean(AUDIO_OFF_BY_DENIAL_KEY, true) }
         vm.onToggleRecordAudio(false)
         when (microphoneDeclineOutcome(action)) {
             MicrophoneDeclineOutcome.AUDIO_OFF_AND_RECORD -> {
@@ -384,6 +394,16 @@ class MainActivity : ComponentActivity() {
             // A Settings grant (or a later runtime grant) starts a fresh denial history. This also
             // prevents a future Android auto-reset from inheriting an obsolete pre-grant denial.
             permissionPreferences.edit(commit = true) { putBoolean(CAMERA_REQUESTED_BEFORE_KEY, false) }
+        }
+        if (audioRestoredByMicrophoneGrant(
+                audioDisabledByDenial = permissionPreferences.getBoolean(AUDIO_OFF_BY_DENIAL_KEY, false),
+                recordAudio = vm.state.value.recordAudio,
+                hasMicrophonePermission = hasMicrophonePermission,
+            )
+        ) {
+            permissionPreferences.edit(commit = true) { putBoolean(AUDIO_OFF_BY_DENIAL_KEY, false) }
+            vm.onToggleRecordAudio(true)
+            vm.onAppStatus("Microphone allowed — audio on")
         }
         cameraPermanentlyDenied = classifyCameraPermission(
             granted = hasCameraPermission,
@@ -418,6 +438,9 @@ class MainActivity : ComponentActivity() {
         const val PRIVACY_POLICY_URL = "https://hletrd.github.io/telecam-pro/privacy-policy/"
         const val PERMISSION_PREFS_NAME = "permission_state"
         const val CAMERA_REQUESTED_BEFORE_KEY = "camera_requested_before"
+
+        /** Whether audio is off BECAUSE a microphone request was refused, not by operator choice. */
+        const val AUDIO_OFF_BY_DENIAL_KEY = "audio_off_by_denial"
 
         // Non-standard OPPO keycodes the Find X9 Ultra camera-control button delivers to the focused app
         // (device-captured via a dispatchKeyEvent log). Two are slide notches, one is the light-press.

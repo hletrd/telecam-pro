@@ -73,3 +73,25 @@ internal fun microphonePermissionRequired(
     PendingAudioAction.ENABLE_AUDIO -> true
     PendingAudioAction.START_RECORDING -> videoMode && !recording && recordAudio
 }
+
+/**
+ * Whether a microphone grant should hand the operator their audio back.
+ *
+ * `recordAudio = false` conflates two states that are not the same thing: "this operator wants a
+ * silent clip" and "we gave up on audio because the permission was refused". Only the first is a
+ * preference. The second is a consequence — and it was SELF-LOCKING, because
+ * [microphonePermissionRequired] makes a START_RECORDING prompt conditional on `recordAudio`, so
+ * once audio is off the shutter never asks again. Granting the permission in Android Settings
+ * therefore changed nothing: clips stayed silent AND the level meter stayed hidden (its UI gate is
+ * the same flag), which is exactly the "I allowed the microphone but it is still mute" report.
+ *
+ * So remember WHICH of the two it was. A denial-disabled audio track is restored the moment the
+ * permission is observed granted; audio the operator switched off themselves stays off forever.
+ * This mirrors what CAMERA already does one function over — a Settings grant there resets the denial
+ * history rather than letting an obsolete refusal outlive itself.
+ */
+internal fun audioRestoredByMicrophoneGrant(
+    audioDisabledByDenial: Boolean,
+    recordAudio: Boolean,
+    hasMicrophonePermission: Boolean,
+): Boolean = audioDisabledByDenial && !recordAudio && hasMicrophonePermission
