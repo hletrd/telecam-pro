@@ -759,7 +759,12 @@ internal fun PhotoFormatToggles(
     formats: PhotoFormats,
     onSetPhotoFormats: (PhotoFormats) -> Unit,
     processedAvailable: Boolean,
+    // Whether the DEVICE can produce RAW at all — what the DNG chip's enablement keys off.
     rawAvailable: Boolean,
+    // Whether the CURRENT session actually carries a RAW output. Drives the caption only: on the
+    // logical photo route this is false while [rawAvailable] is true, and selecting DNG is exactly
+    // what switches the route so it becomes true.
+    rawInSession: Boolean = rawAvailable,
     modifier: Modifier = Modifier,
     // VIDEO reframes the "no still outputs" line: there it is the 10-bit session's deliberate trade,
     // not a capability the route failed to deliver.
@@ -814,6 +819,12 @@ internal fun PhotoFormatToggles(
                 // (the 10-bit session drops the still readers), not a fault, so the sheet says what
                 // it BOUGHT rather than what it lost.
                 if (videoMode) "10-bit video · stills off" else "Still capture unavailable",
+                color = CameraColors.TextSecondary,
+                style = MaterialTheme.typography.labelSmall,
+            )
+        } else if (!rawInSession && formats.dngRaw) {
+            Text(
+                "Switching to a single lens for RAW",
                 color = CameraColors.TextSecondary,
                 style = MaterialTheme.typography.labelSmall,
             )

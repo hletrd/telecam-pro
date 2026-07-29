@@ -655,7 +655,14 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
     PhotoFormatToggles(
         formats = state.photoFormats,
         processedAvailable = state.photoSessionOutputs.processed,
-        rawAvailable = state.photoSessionOutputs.raw,
+        // DEVICE capability, not the current session's outputs. RAW is unavailable on the logical
+        // photo route, but WANTING it is what moves the route to a standalone lens — gating the chip
+        // on session truth made that unreachable: DNG was disabled because RAW was absent, and RAW
+        // stayed absent because DNG could not be enabled.
+        rawAvailable = state.caps?.supportsRaw == true,
+        // Session truth still drives the CAPTION, so the sheet can say RAW is not in force yet
+        // without disabling the control that brings it into force.
+        rawInSession = state.photoSessionOutputs.raw,
         onSetPhotoFormats = actions::onSetPhotoFormats,
         videoMode = state.mode == CaptureMode.VIDEO,
     )

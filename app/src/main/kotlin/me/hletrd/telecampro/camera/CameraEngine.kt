@@ -1898,6 +1898,10 @@ class CameraEngine(private val context: Context) {
     // trip did not go through the flip (a recall or settings restore exits front atomically).
     private var preFrontRearZoom = Float.NaN
 
+    // DNG intent, mirrored from the ViewModel: decides whether photo takes the standalone route.
+    @Volatile
+    private var rawWanted = false
+
     @Volatile private var loupeCenterSensorX = 0.5f
     @Volatile private var loupeCenterSensorY = 0.5f
 
@@ -2451,12 +2455,25 @@ class CameraEngine(private val context: Context) {
      * Falls back to the closest standalone id on devices without a logical back camera.
      */
     private fun resolveNonTeleId(choice: LensChoice): String? =
-        if (videoMode) {
+        if (standaloneRouteWanted(videoMode, rawWanted)) {
             cachedIdForFocal(choice.targetEquivMm)
         } else {
             cachedLogicalBack()
                 ?: cachedIdForFocal(choice.targetEquivMm)
         }
+
+    /**
+     * The operator's DNG intent. It is a ROUTE input, not just a save option: RAW is impossible on
+     * the logical camera (see [standaloneRouteWanted]), so wanting DNG moves photo onto a standalone
+     * lens. Reopens only when the answer actually changes, so toggling HEIF/JPEG never disturbs the
+     * session.
+     */
+    fun setRawWanted(enabled: Boolean) {
+        if (rawWanted == enabled) return
+        val before = standaloneRouteWanted(videoMode, rawWanted)
+        rawWanted = enabled
+        if (standaloneRouteWanted(videoMode, rawWanted) != before) reopenForSession()
+    }
 
     fun setCameraOverride(id: String?) {
         // Switching the physical lens mid-recording reconfigures the camera under the encoder and

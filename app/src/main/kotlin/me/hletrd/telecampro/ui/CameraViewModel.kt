@@ -1771,9 +1771,16 @@ class CameraViewModel @JvmOverloads constructor(
     override fun onSetPhotoFormats(formats: PhotoFormats) {
         cancelCountdown()
         val s = _state.value
+        // DNG is a ROUTE input: RAW cannot come off the logical photo camera, so wanting it moves
+        // the session to a standalone lens. Pushed BEFORE the state write so the reopen it may
+        // trigger is already in flight when the UI reflects the new selection.
+        engine.setRawWanted(formats.dngRaw)
         _state.update {
             it.copy(
-                photoFormats = formats.normalizedFor(s.photoSessionOutputs),
+                // NOT normalizedFor(photoSessionOutputs) on the RAW axis any more: those outputs
+                // describe the session being replaced, so normalising against them dropped the very
+                // selection that asks for the new route.
+                photoFormats = formats,
                 activeMemorySlot = null,
             )
         }

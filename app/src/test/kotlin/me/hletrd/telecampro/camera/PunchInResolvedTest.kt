@@ -90,3 +90,35 @@ class TenBitSessionWantedTest {
         }
     }
 }
+
+/**
+ * RAW is impossible on the logical photo camera — it advertises the capability and then errors the
+ * whole device seconds after a still that carries a RAW target. Every physical camera here really
+ * does support RAW, so wanting DNG moves photo onto a standalone lens instead of denying it.
+ */
+class StandaloneRouteWantedTest {
+
+    @Test
+    fun videoAlwaysTakesTheStandaloneRoute() {
+        assertTrue(standaloneRouteWanted(videoMode = true, rawWanted = false))
+        assertTrue(standaloneRouteWanted(videoMode = true, rawWanted = true))
+    }
+
+    @Test
+    fun photoWithoutRawKeepsTheSeamlessLogicalRoute() {
+        assertFalse(standaloneRouteWanted(videoMode = false, rawWanted = false))
+    }
+
+    /** The point of the change: DNG at ANY focal length, not only through the teleconverter. */
+    @Test
+    fun photoWantingRawSwitchesToAStandaloneLens() {
+        assertTrue(standaloneRouteWanted(videoMode = false, rawWanted = true))
+    }
+
+    /** Turning DNG back off must restore seamless zoom rather than stranding the standalone route. */
+    @Test
+    fun droppingRawReturnsToTheLogicalRoute() {
+        assertTrue(standaloneRouteWanted(videoMode = false, rawWanted = true))
+        assertFalse(standaloneRouteWanted(videoMode = false, rawWanted = false))
+    }
+}

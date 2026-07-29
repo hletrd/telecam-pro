@@ -331,6 +331,23 @@ const val FINDER_MIN_ZOOM = 3f
 fun punchInResolved(enabled: Boolean, frontFacing: Boolean): Boolean = enabled && !frontFacing
 
 /**
+ * Whether the rear PHOTO route must pin a STANDALONE lens instead of the logical multicamera.
+ *
+ * Photo normally runs on the logical camera because that is what makes 0.6–20× pinch seamless: the
+ * HAL crosses lenses internally and the session never reopens. But RAW cannot come off it — the
+ * logical camera ADVERTISES the RAW capability and then errors the whole device ~5 s after a still
+ * that carries a RAW target (`CAMERA_ERROR(3)`, no image ever arrives; device-measured). Every
+ * physical camera on this device really does support RAW, so the limitation is the logical route,
+ * not the sensor.
+ *
+ * So when the operator wants DNG, the route switches to the standalone lens nearest the current
+ * framing and RAW works at ANY focal length — not just through the teleconverter. The cost is that
+ * zoom then steps between lenses with a reopen instead of crossing seamlessly, exactly as the video
+ * route already does. That is the trade, and it is opt-in: turning DNG off restores seamless zoom.
+ */
+fun standaloneRouteWanted(videoMode: Boolean, rawWanted: Boolean): Boolean = videoMode || rawWanted
+
+/**
  * Whether to ask the HAL for a 10-bit HLG10 session.
  *
  * VIDEO only, and only when a non-SDR transfer is selected — i.e. exactly when the extra bits are
