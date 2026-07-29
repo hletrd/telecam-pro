@@ -127,7 +127,7 @@ class GyroEis(context: Context) : SensorEventListener {
                 // in-plane gravity magnitude must exceed a threshold. When flat on a desk, x/y ≈ 0 and
                 // atan2 is noise, so we hold the last confident value (a flat shot keeps the last hold).
                 if (shouldUpdateOrientation(x, y)) {
-                    stableOrientation = snapToQuadrant(rollDegrees)
+                    stableOrientation = snapToQuadrantHysteretic(rollDegrees, stableOrientation)
                 }
             }
         }
@@ -160,6 +160,13 @@ class GyroEis(context: Context) : SensorEventListener {
 
         // In-plane gravity magnitude (m/s²) above which the phone is considered clearly HELD (not
         // flat), so its discrete orientation can be trusted. ~4.9 = half g ≈ tilted ≥30° from flat.
+        /**
+         * How close to a quadrant's centre the roll must come before that quadrant is adopted.
+         * 30° means the phone must pass ~60° from the orientation it is leaving — a deliberate
+         * turn, not a knife edge at 45° where a hand tremor re-reports the orientation.
+         */
+        const val ORIENTATION_ENTER_MARGIN_DEG = 30f
+
         const val FLAT_GRAVITY_THRESHOLD = 4.9f
 
         // In-plane gravity magnitude (m/s²) below which the roll angle is undefined (phone pointing
@@ -197,6 +204,31 @@ internal fun shouldUpdateRoll(x: Float, y: Float): Boolean =
 internal fun snapToQuadrant(rollDegrees: Float): Int {
     val d = Math.round(rollDegrees / 90f) * 90
     return ((d % 360) + 360) % 360
+}
+
+/**
+ * Quadrant snap WITH HYSTERESIS — what the reported device orientation actually uses.
+ *
+ * [snapToQuadrant] alone flips at exactly 45°, so a phone held near a diagonal re-reports a new
+ * orientation on the slightest movement and every rotating glyph twitches with it (user-reported
+ * 2026-07-29: "too sensitive compared to stock"). Android's own OrientationEventListener does not
+ * behave that way: it demands a decisive turn before it commits.
+ *
+ * A candidate quadrant is adopted only once the roll sits within [enterMargin] of ITS centre — 30°
+ * by default, so the phone must pass ~60° from the quadrant it is leaving. Below that it HOLDS, so
+ * the boundary is asymmetric (easy to stay, deliberate to leave) rather than a knife edge.
+ *
+ * Pure so the behaviour is pinned by tests rather than by waving a handset around.
+ */
+internal fun snapToQuadrantHysteretic(
+    rollDegrees: Float,
+    current: Int,
+    enterMargin: Float = GyroEis.ORIENTATION_ENTER_MARGIN_DEG,
+): Int {
+    val candidate = snapToQuadrant(rollDegrees)
+    if (candidate == current) return current
+    val offCentre = kotlin.math.abs(wrapDegrees(rollDegrees - candidate))
+    return if (offCentre <= enterMargin) candidate else current
 }
 
 /** Normalize an angle in degrees into (-180, 180] — the same range atan2-derived roll lives in. */

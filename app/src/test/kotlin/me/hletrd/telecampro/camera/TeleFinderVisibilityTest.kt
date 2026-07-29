@@ -19,7 +19,9 @@ class TeleFinderVisibilityTest {
             for (tc in booleanArrayOf(true, false))
                 for (video in booleanArrayOf(true, false))
                     for (aspect in AspectRatio.entries) {
-                        val expected = enabled && tc && !video && aspect == AspectRatio.W4_3
+                        // VIDEO no longer consults the STILL aspect at all: there the recorded
+                        // framing is the video size, so the 4:3 photo setting is unrelated.
+                        val expected = enabled && tc && (video || aspect == AspectRatio.W4_3)
                         assertEquals(
                             "enabled=$enabled tc=$tc video=$video aspect=$aspect",
                             expected,
@@ -64,12 +66,28 @@ class TeleFinderVisibilityTest {
     }
 
     @Test
-    fun `video mode never shows the finder regardless of the photo aspect setting`() {
-        // The 4:3 gate is the STILL aspect; in video it used to make the overview appear/vanish with an
-        // unrelated photo setting. Photo-only closes that semantic surprise.
+    fun `video shows the finder for ANY photo aspect - the setting is not consulted there`() {
+        // The overview used to be photo-only because the gate read the 4:3 STILL aspect, which made
+        // it appear/vanish mid-clip with no visible cause. The fix is to ignore that setting in
+        // video, not to withhold the aid from the mode a long lens most needs it in (user-asked
+        // 2026-07-29: "loupe is more required for video"). What must NOT return is aspect
+        // sensitivity: every still aspect has to behave identically while recording.
         for (aspect in AspectRatio.entries) {
-            assertFalse(teleFinderVisible(true, true, true, aspect, punchIn = true))
+            assertTrue(
+                "video finder must not depend on the still aspect ($aspect)",
+                teleFinderVisible(true, true, true, aspect, punchIn = true),
+            )
         }
+    }
+
+    @Test
+    fun `video still obeys the loupe and magnification gates`() {
+        // Allowing video must not weaken the two gates that make the same-stream overview honest.
+        assertFalse("no punch-in", teleFinderVisible(true, true, true, AspectRatio.W16_9, punchIn = false))
+        assertFalse(
+            "below the zoom floor without a converter",
+            teleFinderVisible(true, false, true, AspectRatio.W16_9, punchIn = true, zoomRatio = 2.9f),
+        )
     }
 
     @Test

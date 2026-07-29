@@ -695,12 +695,10 @@ fun CameraScreen(
                             }
                             android.util.Range(minOf(it.lower * mul, hi), hi)
                         },
-                        // The WHOLE indicator turns, not just the number: a screen-fixed bar under
-                        // an upright readout reads as a broken pairing in landscape, because the bar
-                        // then runs across the viewer's vertical (user-reported 2026-07-29). Passing
-                        // 0 here and rotating the composable keeps the number from turning twice.
-                        numberRotation = 0f,
-                        modifier = Modifier.rotateLayout(overlayRotation),
+                        // ONLY the number turns. Rotating the whole indicator was tried and
+                        // rejected on device: the bar is a horizontal scale and reads fine at any
+                        // angle, while turning it swung a 180 dp-wide box through the chrome.
+                        numberRotation = overlayRotation,
                     )
                 }
             }
@@ -847,6 +845,10 @@ fun CameraScreen(
                 // 12 dp start — the ONE left inset every left-anchored element shares (status OSD,
                 // exposure meter, Fn chip row); mixed 10/12/16 insets read as misalignment.
                 .padding(start = 12.dp),
+            // Only the READOUT turns, not the scale. Rotating the whole meter was tried and
+            // rejected on device: the bar is a vertical scale whose position carries the value and
+            // it reads at any angle, while its figures do not (user-specified 2026-07-29).
+            glyphRotation = overlayRotation,
         )
 
         val onShutter = remember(state.mode) {
@@ -1715,9 +1717,7 @@ private fun StatusInfoPill(state: CameraUiState, modifier: Modifier = Modifier) 
 
 /**
  * Live zoom readout: a "N.N×" pill over a thin bar that fills to the zoom's position within the lens's
- * advertised range. The caller rotates the WHOLE thing so the readout and its scale stay a pair —
- * `rotateLayout` reserves the ROTATED bounding box, so the wider landscape footprint is laid out
- * rather than overlapping its neighbours.
+ * advertised range. The number stays upright as the phone turns; the bar remains screen-fixed.
  */
 @Composable
 private fun ZoomIndicator(
@@ -1734,8 +1734,9 @@ private fun ZoomIndicator(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        // [numberRotation] survives for callers that place the readout inside already-rotated
-        // chrome; the viewfinder passes 0 and rotates the whole indicator instead.
+        // The "N.N×" readout is short, so it counter-rotates to stay upright as the phone turns
+        // (iPhone-style). The bar below stays horizontal — a generic level indicator reads fine at
+        // any angle, and rotating it would collide with the surrounding chrome.
         Text(
             text = formatZoomMultiplier(zoom),
             color = CameraColors.Accent,
@@ -2050,6 +2051,8 @@ private fun ExposureMeter(
     state: CameraUiState,
     modifier: Modifier = Modifier,
     compact: Boolean = false,
+    // Counter-rotation for the READOUT only: the scale itself is positional and reads at any angle.
+    glyphRotation: Float = 0f,
 ) {
     // The shared helper returns the final signed stop amount. Do not multiply by the raw Camera2
     // compensation index again: that double-scaled positive values and reversed negative signs.
@@ -2084,7 +2087,15 @@ private fun ExposureMeter(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Text(label, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
+        Text(
+            label,
+            color = CameraColors.TextPrimary,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            // Short glyph, so it counter-rotates to stay upright as the phone turns — the same
+            // treatment the zoom readout and the OSD tags get. The scale below stays put.
+            modifier = Modifier.rotateLayout(glyphRotation),
+        )
         Canvas(modifier = Modifier.width(22.dp).height(if (compact) 96.dp else 150.dp)) {
             val cx = size.width / 2f
             // Three one-off alphas, one instrument: this is a hand-drawn EV scale whose parts are
@@ -2137,7 +2148,20 @@ private fun FocalRail(
     modifier: Modifier = Modifier,
     glyphRotation: Float = 0f,
 ) {
-    Row(modifier = modifier, horizontalArrangement = Arrangement.Center) {
+    // Scrollable, because the rail's LENGTH is not fixed: teleZoomMarks derives its marks from the
+    // live zoom range and the converter's magnification, so a weaker converter earns more marks and
+    // the row outgrows the screen. It used to be a plain centred Row, which simply clipped the end
+    // chips against the edge (user-reported 2026-07-29). Centring is kept for the common case that
+    // fits — Arrangement.Center inside a scrollable row still centres content narrower than the
+    // viewport — and the trailing fade is the same affordance the top bar and Fn row already use.
+    val railScroll = rememberScrollState()
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .horizontalScroll(railScroll)
+            .trailingEdgeFadeScrollHint(railScroll),
+        horizontalArrangement = Arrangement.Center,
+    ) {
         Row(
             modifier = Modifier.selectableGroup(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -2206,6 +2230,11 @@ private fun RailChip(
         modifier = Modifier
             .size(48.dp)
             .rotate(glyphRotation)
+            // The press ripple is drawn by the indication on the SELECTABLE node, which is this
+            // 48 dp square touch target — so it rendered as a square slab behind a round pill
+            // (user-reported 2026-07-29). Clipping the node shapes its ripple; the target keeps its
+            // 48 dp extent, it is simply round like the thing it activates.
+            .clip(CircleShape)
             .focusable()
             // Selection and activation must live on the same outer node. A separate
             // selected semantic followed by clickable exported selected=false from the

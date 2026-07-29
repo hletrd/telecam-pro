@@ -300,10 +300,10 @@ const val PUNCH_IN_CROP = 0.6f
 
 /**
  * The engine-RESOLVED half of the finder gate (everything except the zoom floor): user toggle,
- * TELE mounted, PHOTO mode, 4:3. Photo-only because the finder is a still-composition aid and
- * 4:3 is the STILL aspect — in video that setting is semantically unrelated to the recorded
- * framing, so keying the overlay off it made the PIP appear/vanish with a photo setting mid-clip.
- * 16:9 is excluded because the AspectMask pillarboxes would dim/misframe the corner box.
+ * TELE mounted, and — in PHOTO — the 4:3 still aspect. In VIDEO the still aspect is not consulted
+ * at all: it is semantically unrelated to the recorded framing, and keying the overlay off it is
+ * what used to make the PIP appear/vanish mid-clip. 16:9 STILLS stay excluded because the
+ * AspectMask pillarboxes would dim and misframe the corner box.
  * ONE implementation for the engine (`pushTeleFinder`) and the Compose border — the same
  * hand-written condition used to live in three places and could silently drift.
  */
@@ -373,7 +373,12 @@ fun teleFinderResolved(
     aspect: AspectRatio,
     zoomRatio: Float = 1f,
 ): Boolean = enabled && (teleconverter || zoomRatio >= FINDER_MIN_ZOOM) &&
-    !videoMode && aspect == AspectRatio.W4_3
+    // VIDEO now qualifies too (user-asked 2026-07-29). It was excluded because the gate keyed off
+    // the 4:3 STILL aspect, so a photo setting made the overlay appear and vanish mid-clip with no
+    // visible cause. The fix is to stop consulting that setting in video — where the recorded
+    // framing is the video size, not the photo aspect — rather than to keep the whole aid out of
+    // the mode a long lens most needs it in.
+    (videoMode || aspect == AspectRatio.W4_3)
 
 /**
  * The full visibility gate: the resolved flag plus an ACTIVE punch-in loupe (AGG4-29/P3.4). The
