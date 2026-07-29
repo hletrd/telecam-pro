@@ -339,6 +339,71 @@ object MediaStoreWriter {
     }.getOrNull()
 
     /**
+     * Deletes still-PENDING rows belonging to [familyUri]'s capture family.
+     *
+     * A whole-family delete walks the TRACKER's known outputs — but an output whose MediaStore
+     * publish failed (transient provider error after the bytes were written) stays IS_PENDING with a
+     * COMPLETE journal entry and the tracker never learned it exists. Left behind, the next launch's
+     * [cleanupOrphanedPending] would ADOPT and publish it, resurrecting part of a capture the user
+     * already deleted (2026-07-30 review C3). So the family delete sweeps them here first.
+     *
+     * Scope is deliberately narrow: only the exact versioned-F1 display names of THIS family
+     * ([CaptureFamilyKey.knownOutputDisplayNames]) and only rows still IS_PENDING=1 — published
+     * siblings are the tracker's job, and a legacy (non-F1) [familyUri] parses to null so nothing is
+     * ever proximity-swept. Best-effort; never throws.
+     */
+    fun deletePendingFamilySiblings(context: Context, familyUri: Uri): Int {
+        val displayName = runCatching {
+            val queryArgs = Bundle().apply {
+                putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
+            }
+            context.contentResolver.query(
+                familyUri,
+                arrayOf(MediaStore.MediaColumns.DISPLAY_NAME),
+                queryArgs,
+                null,
+            )?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+        }.getOrNull()
+        val family = CaptureFamilyKey.parse(displayName)?.familyKey ?: return 0
+        val names = family.knownOutputDisplayNames()
+        val base = when (family.media) {
+            CaptureFamilyMedia.STILL -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            CaptureFamilyMedia.VIDEO -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        }
+        var swept = 0
+        runCatching {
+            val queryArgs = Bundle().apply {
+                putString(
+                    ContentResolver.QUERY_ARG_SQL_SELECTION,
+                    MediaStore.MediaColumns.DISPLAY_NAME + " IN (" +
+                        names.joinToString(",") { "?" } + ")",
+                )
+                putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, names.toTypedArray())
+                putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
+            }
+            context.contentResolver.query(
+                base,
+                arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.IS_PENDING),
+                queryArgs,
+                null,
+            )?.use { cursor ->
+                val idCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                val pendingCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.IS_PENDING)
+                while (cursor.moveToNext()) {
+                    if (cursor.getInt(pendingCol) != 1) continue
+                    val rowUri = ContentUris.withAppendedId(base, cursor.getLong(idCol))
+                    // Never sweep the row the caller is about to delete itself — identical outcome,
+                    // but keeping the contract "this function touches only rows the tracker does
+                    // NOT know" makes the caller's survivor accounting exact.
+                    if (rowUri == familyUri) continue
+                    if (delete(context, rowUri)) swept++
+                }
+            }
+        }
+        return swept
+    }
+
+    /**
      * Recovers our own prior-process pending entries under DCIM/[subDir]. A complete take is adopted
      * by publishing it; only a proven incomplete artifact is deleted. Indeterminate rows remain
      * pending for a later launch rather than risking silent data loss. Best-effort; never throws.
