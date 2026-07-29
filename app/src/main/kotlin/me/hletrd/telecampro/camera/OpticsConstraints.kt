@@ -27,8 +27,38 @@ internal fun acceptedOpticsAuxState(
     photoFormats: PhotoFormats,
 ): AcceptedOpticsAuxState = AcceptedOpticsAuxState(
     preTeleUnifiedZoom = if (teleconverter) preTeleUnifiedZoom else Float.NaN,
-    photoFormats = photoFormats.normalizedFor(photoOutputs),
+    // A session with NO still lane at all is a session STATE, not an answer about formats: the
+    // 10-bit video session drops both still readers BY DESIGN, and preview-only is a fallback rung.
+    // Normalising against that wrote the EMPTY set over the operator's request, so a trip through
+    // log video silently reset a persisted HEIF+JPEG+DNG selection — the empty set persists on
+    // background and withDefaultIfEmpty resurrects it as HEIF-only on the next launch
+    // (device-reproduced 2026-07-29). Capture-time normalisation in CameraEngine still guarantees no
+    // shot is attempted against an output the accepted session lacks, so keeping the request here
+    // cannot produce a bogus capture; it only stops a designed trade from editing user intent.
+    photoFormats = if (photoOutputs.hasStillTarget) photoFormats.normalizedFor(photoOutputs) else photoFormats,
 )
+
+/**
+ * Whether choosing DNG can actually yield a RAW file.
+ *
+ * Two different questions used to share one flag. RAW is a DEVICE capability, but it is also a ROUTE
+ * INPUT: in PHOTO, wanting DNG is exactly what moves the session off the logical camera onto a
+ * standalone lens that can deliver it, so gating the chip on session truth made it unreachable
+ * (disabled because RAW was absent, absent because it could not be enabled). Gating it purely on
+ * device capability then over-corrected: in a 10-bit VIDEO session — which drops both still readers
+ * by design — the chip stayed live and the caption read "HEIF/JPEG unavailable; DNG only" while DNG
+ * was equally unavailable and no route change could bring it back.
+ *
+ * So: honour the capability, and require that the session either already carries RAW or belongs to a
+ * mode where selecting DNG is what brings it. [hiResSession] is excluded because its one ladder rung
+ * force-drops RAW (a full-sensor blob plus RAW is the over-demanding combo this HAL punishes).
+ */
+internal fun rawSelectable(
+    deviceSupportsRaw: Boolean,
+    rawInSession: Boolean,
+    videoMode: Boolean,
+    hiResSession: Boolean,
+): Boolean = deviceSupportsRaw && (rawInSession || (!videoMode && !hiResSession))
 
 /**
  * Clamps normalized optics again once the selected camera's live zoom range is authoritative.

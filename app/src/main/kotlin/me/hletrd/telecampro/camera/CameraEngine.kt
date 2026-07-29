@@ -2472,7 +2472,25 @@ class CameraEngine(private val context: Context) {
         if (rawWanted == enabled) return
         val before = standaloneRouteWanted(videoMode, rawWanted)
         rawWanted = enabled
-        if (standaloneRouteWanted(videoMode, rawWanted) != before) reopenForSession()
+        if (standaloneRouteWanted(videoMode, rawWanted) == before) return
+        // Before start there is no session to move: the FIRST configure resolves the route from
+        // `rawWanted` directly (that is how a restored DNG selection lands), and opening a
+        // transaction here would bump the optics generation under the cold-start path for nothing.
+        // Same guard the bare reopen applies, so paused/stopped behaviour is unchanged.
+        if (!started || paused) return
+        // RE-RESOLVE the route; do NOT go through the bare reopenForSession(). That path reuses
+        // `overrideId`, which caches the id the LAST ACCEPTED session resolved to — after a
+        // Video→Photo trip that is the LOGICAL camera — so the reopen rebuilt the one route that
+        // cannot carry RAW, and the change gate above then made the divergence PERMANENT: the chip
+        // read DNG-on, the session stayed raw=false, no DNG file was ever written, and no further
+        // toggle could recover it because `rawWanted` already matched (device-reproduced with the
+        // route trace 2026-07-29, overrideId=0). `setRawWanted` is the only reopen whose route
+        // ANSWER changes — hi-res, aspect, fps and transfer all keep the same camera — which is why
+        // it alone needs this. An explicit user camera pin still wins; only the cached resolution
+        // is dropped.
+        val pin = synchronized(this) { userCameraPin }
+        val transaction = beginOpticsTransaction { overrideId = pin }.first
+        reconfigureCamera(pin, transaction)
     }
 
     fun setCameraOverride(id: String?) {

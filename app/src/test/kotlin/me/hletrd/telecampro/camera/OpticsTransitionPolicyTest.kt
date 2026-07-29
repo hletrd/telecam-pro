@@ -56,7 +56,12 @@ class OpticsTransitionPolicyTest {
     }
 
     @Test
-    fun `accepted preview-only session does not invent heif`() {
+    fun `accepted preview-only session neither invents heif nor erases the request`() {
+        // The original contract here was only half right. Inventing HEIF for a session with no
+        // processed reader would be a lie, and still is. But ERASING the request was the mirror-image
+        // lie: a still-less session (preview-only, or the 10-bit video trade that drops both readers
+        // by design) says nothing about which formats the operator wants, and zeroing it edited their
+        // selection — which then persisted on background and returned as HEIF-only next launch.
         val accepted = acceptedOpticsAuxState(
             teleconverter = false,
             photoOutputs = PhotoSessionOutputs(),
@@ -64,7 +69,7 @@ class OpticsTransitionPolicyTest {
             photoFormats = PhotoFormats(heif = false, jpeg = false, dngRaw = true),
         )
 
-        assertEquals(PhotoFormats(heif = false, jpeg = false, dngRaw = false), accepted.photoFormats)
+        assertEquals(PhotoFormats(heif = false, jpeg = false, dngRaw = true), accepted.photoFormats)
     }
 
     @Test

@@ -106,6 +106,7 @@ import me.hletrd.telecampro.camera.controlAvailability
 import me.hletrd.telecampro.camera.controlCapabilities
 import me.hletrd.telecampro.camera.hiResToggleEnabled
 import me.hletrd.telecampro.camera.videoBitRate
+import me.hletrd.telecampro.camera.rawSelectable
 import me.hletrd.telecampro.video.EncoderCaps
 import me.hletrd.telecampro.ui.CameraActions
 import me.hletrd.telecampro.ui.formatZoomMultiplier
@@ -655,11 +656,16 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
     PhotoFormatToggles(
         formats = state.photoFormats,
         processedAvailable = state.photoSessionOutputs.processed,
-        // DEVICE capability, not the current session's outputs. RAW is unavailable on the logical
-        // photo route, but WANTING it is what moves the route to a standalone lens — gating the chip
-        // on session truth made that unreachable: DNG was disabled because RAW was absent, and RAW
-        // stayed absent because DNG could not be enabled.
-        rawAvailable = state.caps?.supportsRaw == true,
+        // Neither pure session truth nor pure device capability — see [rawSelectable]. Session truth
+        // alone made the chip unreachable on the logical photo route (the route only moves BECAUSE
+        // DNG is chosen); capability alone left it live in a 10-bit video session that drops both
+        // still readers by design.
+        rawAvailable = rawSelectable(
+            deviceSupportsRaw = state.caps?.supportsRaw == true,
+            rawInSession = state.photoSessionOutputs.raw,
+            videoMode = state.mode == CaptureMode.VIDEO,
+            hiResSession = state.photoSessionOutputs.hiRes,
+        ),
         // Session truth still drives the CAPTION, so the sheet can say RAW is not in force yet
         // without disabling the control that brings it into force.
         rawInSession = state.photoSessionOutputs.raw,

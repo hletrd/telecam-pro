@@ -104,7 +104,31 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   through physical sub-camera routing crashes configure (`DataSpace override not allowed for format
   0x20`), AND a still with the RAW target on the plain LOGICAL camera errors the whole camera device
   ~5 s after the shot (`CAMERA_ERROR(3)`, no image ever arrives). Gated to standalone selections
-  only (`sessionAttemptPlan` `!logicalMultiCamera`); DNG therefore exists only in TELE mode.
+  only (`sessionAttemptPlan` `!logicalMultiCamera`).
+- **DNG is therefore a ROUTE INPUT, not a save option — and that makes it four different bugs
+  (all device-fixed 2026-07-29).** Wanting RAW is what MOVES photo off the logical seamless camera
+  onto a standalone lens, so DNG is available on EVERY lens, not only TELE. Consequences that each
+  cost a real defect:
+  1. **Restore must push it.** `engine.setRawWanted` used to be called only from the live toggle, so
+     a persisted DNG selection was silently inert on every launch — sheet showed DNG on, session came
+     up `raw=false`, shutter wrote `outputs=jpg`. Every route input must reach the engine from the
+     settings-restore path too; the reopen-triggering setters are enumerable, so check them all.
+  2. **Its reopen must RE-RESOLVE the route.** The bare `reopenForSession()` reuses `overrideId`,
+     which caches the id the LAST ACCEPTED session resolved to. After a Video→Photo trip that is the
+     LOGICAL camera, so the reopen rebuilt the one route that cannot carry RAW — and because
+     `setRawWanted` change-gates on `rawWanted`, the divergence was PERMANENT (no later toggle could
+     recover it). `setRawWanted` begins its own optics transaction with `overrideId = userCameraPin`.
+     It is the ONLY reopen whose route ANSWER changes — hi-res, aspect, fps and transfer all keep the
+     same camera — so it alone needs this.
+  3. **The chip is gated by `rawSelectable`, neither session truth nor bare capability.** Session
+     truth made it unreachable (disabled because RAW was absent, absent because it could not be
+     enabled); bare capability left it live in a 10-bit VIDEO session that drops both still readers by
+     design, under the caption "HEIF/JPEG unavailable; DNG only" while DNG was equally unavailable.
+  4. **A still-less session must not edit the request.** `acceptedOpticsAuxState` normalized
+     `photoFormats` against accepted outputs; in 10-bit video those are EMPTY, so a trip through log
+     video wrote the empty set over the operator's selection, which persisted on background and came
+     back as HEIF-only. Normalization now runs only when the session has a still target at all.
+     Capture-time normalization still guarantees no shot is attempted against a missing output.
 - **Last-capture review is owned by monotonic capture id, then displayability.** A newer RAW-only
   success replaces an older thumbnail with a truthful DNG metadata placeholder. A processed sibling
   for that same capture upgrades the placeholder; a late RAW sibling never displaces its processed
