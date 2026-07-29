@@ -51,9 +51,15 @@ could leave DNG permanently unable to produce a RAW file.
   androidx.profileinstaller. Without it the shipped APK sat at `status=verify` and ran interpreted
   until JIT warmed; device-measured, the worst frame on opening the settings sheet went 61 ms → 22 ms
   and idle-viewfinder p99 10 ms → 7 ms.
-- **Smoke-tested on the PMA110 from this exact APK** (2026-07-29). The installed APK's on-device
+- **Smoke-tested on the PMA110 from this exact APK** (2026-07-30). The installed APK's on-device
   `sha256sum` was confirmed byte-identical to the artifact above BEFORE the run
-  (`ad66b179…` both sides), so this is evidence for this bundle and not an earlier one. Covered on
+  (`9658300c…` both sides), so this is evidence for this bundle and not an earlier one.
+  Honest sequencing note: the smoke's first shutter press landed in VIDEO (the release package's
+  persisted mode) and recorded a 38 s HEVC + AAC-stereo clip with the tally and timer live — itself
+  useful evidence — before the PHOTO capture (HEIF written) completed the pass; the re-pin commit
+  message described the photo as done while that take was still rolling. Zero crashes/ANRs across
+  the whole run. The measured-audio evidence below is from the 2026-07-29 cut and its pipeline is
+  unchanged by this re-cut. Covered on
   the R8-minified binary, which is the only place the shipped code path is actually exercised:
   - Photo: HEIF written.
   - Video: recorded and stopped, MP4 written.
