@@ -20,10 +20,12 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 Do not upload debug APKs or any unsigned/stale release bundle.
 
-### Final v1 upload artifacts (built + verified 2026-07-29 from `main` at `3ff3b4b`)
+### Final v1 upload artifacts (built + verified 2026-07-30 from `main` at `26266db`)
 
-**This supersedes the `9f367c1` cut** (AAB `f04028f7…`, APK `ad66b179…`) — that one predates the
-microphone-grant audio restore — and before it the `3c70639` cut (AAB `70f83bdd…`, APK
+**This supersedes the `3ff3b4b` cut** (AAB `19ef2b7d…`, APK `870ac286…`) — that one predates the
+2026-07-30 whole-app review fixes (pre-open caps guard, finder zoom re-resolve, pending-sibling
+sweep, MR recall/store fidelity, hardware-key audio scoping, gesture closure lifetimes, EXIF
+honesty) — before it the `9f367c1` cut (AAB `f04028f7…`, APK `ad66b179…`), and before it the `3c70639` cut (AAB `70f83bdd…`, APK
 `97e53333…`), which in turn superseded
 the `6bf2325` cycle-9 cut (AAB `c238c1cf…`, APK `615ff06d…`). Do not upload either older bundle.
 The re-cut exists because `3c70639` predates the DNG route-input fixes (`d6ef232`, `968f13b`,
@@ -31,9 +33,9 @@ The re-cut exists because `3c70639` predates the DNG route-input fixes (`d6ef232
 could leave DNG permanently unable to produce a RAW file.
 
 - Artifact location: `app/build/outputs/bundle/release/app-release.aab`
-- AAB SHA-256: `19ef2b7d158cd06d8e8f19cd2994236c24c2de4226f0ac6684be253476b5bfd3`
+- AAB SHA-256: `59ccb318a6c7036aff274fc89c6fbc10cfab09ac0e7acb3af7c8362b0e4688c7`
 - Matching release APK SHA-256:
-  `870ac286fe1b3ff8ffdd6301adefc4ce5d437061484ba561b98766865bd85549`
+  `9658300c4d3e39a884379094c70a65670b136c1e251f3a0f1ac9cc8f892abc5f`
 - Launch component: `me.hletrd.telecampro/me.hletrd.telecampro.MainActivity`
 - AAB `jarsigner -verify`: **jar verified**. `bundletool validate` was NOT re-run for this
   cut — bundletool is not installed on this machine; the earlier cuts' passes are not
@@ -44,7 +46,7 @@ could leave DNG permanently unable to produce a RAW file.
   upload certificate**, so this is the same upload key
 - APK alignment: 16 KiB passed (`zipalign -c -P 16 4`)
 - Release gate: `lintRelease` **0 errors / 5 warnings**, all pre-existing (`ApplySharedPref`,
-  `UseKtx`, `AndroidGradlePluginVersion`); host suite **1256 tests, 0 failures**
+  `UseKtx`, `AndroidGradlePluginVersion`); host suite **1276 tests, 0 failures**
 - Carries a **baseline profile** (`assets/dexopt/baseline.prof`, 11 KiB + `.profm`) installed by
   androidx.profileinstaller. Without it the shipped APK sat at `status=verify` and ran interpreted
   until JIT warmed; device-measured, the worst frame on opening the settings sheet went 61 ms → 22 ms
