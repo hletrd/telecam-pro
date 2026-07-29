@@ -552,6 +552,14 @@ class CameraViewModel @JvmOverloads constructor(
                     var acceptedPreTele = Float.NaN
                     var acceptedApplied = false
                     _state.update { current ->
+                        // Reset PER ATTEMPT: update() retries on CAS contention, and a retry that
+                        // LOSES gate ownership must not leave attempt 1's acceptedApplied=true
+                        // behind — the post-transform assignment would then apply a pre-TELE
+                        // baseline from a transform that never committed (review L7; the T10
+                        // comment above already bans the mirror-image leak).
+                        acceptedPreTele = Float.NaN
+                        acceptedApplied = false
+                        formatStatus = null
                         if (!cameraReadyPublicationGate.owns(publication)) return@update current
                         // RAW truth and the pre-TELE return baseline change only when a camera intent
                         // is accepted. Optimistic normalization made a failed TELE-off irreversible.
@@ -958,6 +966,12 @@ class CameraViewModel @JvmOverloads constructor(
         // admission still precedes any stale trailing apply without mutating a rejected recall.
         cancelPendingControls()
         cancelCountdown()
+        // Mirror the engine transaction: setResolvedOptics resets ITS pre-TELE return snapshot, so
+        // the VM's copy must drop too (same discipline as the front-camera door). Keeping the old
+        // unified zoom here made a later TC-off restore a framing the engine had already forgotten —
+        // OSD said one zoom while the wire streamed another, and nothing re-converged until the
+        // next gesture.
+        preTeleUnifiedZoom = Float.NaN
         // MR recall / settings restore can change mode/lens/TC — i.e. the zoom SCALE. Any glide still
         // easing toward a target computed in the old scale (or a throttled landing about to fire) would
         // visibly drag the just-recalled framing away from the preset (same invariant as every remap door).
@@ -1064,6 +1078,13 @@ class CameraViewModel @JvmOverloads constructor(
         statusDisplayDurationMs(status)?.let { durationMs ->
             mainHandler.postDelayed(clearStatusRunnable, durationMs)
         }
+        // programAppSide is DERIVED, never persisted, so every loaded packet arrives with it false.
+        // The init restore path happened to call refreshProgramAppSide() after this function, but MR
+        // recall did not — a recalled Photo PROGRAM preset therefore ran on the HAL AE with no
+        // min-shutter rule (at 300 mm the HAL happily picks ~1/30 s) until an unrelated
+        // exposure-mode/flash/mode change re-derived it. Change-gated, so the init path's own later
+        // refresh stays a harmless no-op.
+        refreshProgramAppSide()
     }
 
     private fun currentExtras(): ExtraSettings = _state.value.let { s ->
@@ -1728,7 +1749,11 @@ class CameraViewModel @JvmOverloads constructor(
     // ---- Modes ----
     override fun onModeChange(mode: CaptureMode) {
         cancelCountdown()
-        if (_state.value.isRecording && mode != _state.value.mode) {
+        // Tapping the already-active mode label is a no-op, not a remap door: the full transition
+        // cancels glides, retires tap focus, and republishes optics — a visible hiccup for a tap
+        // that asked for nothing (review L8).
+        if (mode == _state.value.mode) return
+        if (_state.value.isRecording) {
             showStatus("Stop REC first")
             return
         }
@@ -2035,6 +2060,9 @@ class CameraViewModel @JvmOverloads constructor(
     private var preFrontRearTeleconverter = false
     private var preFrontRearZoom = Float.NaN
 
+    // Which zoom SCALE preFrontRearZoom was captured in (video = lens-local, photo = unified).
+    private var preFrontRearVideoMode = false
+
     override fun onLens(choice: LensChoice) {
         if (rejectBackOnlyOpticsDoor()) return
         cancelCountdown()
@@ -2117,6 +2145,11 @@ class CameraViewModel @JvmOverloads constructor(
         if (entering) {
             preFrontRearTeleconverter = _state.value.teleconverterMode
             preFrontRearZoom = _state.value.controls.zoomRatio
+            // The snapshot's zoom SCALE is the entry mode's; a mode flip while FRONT invalidates it
+            // for the live return zoom (falls back to the preset, mirroring the engine). The
+            // settings-save substitution keeps using it regardless: a clamped wrong-scale rear zoom
+            // on the next launch is strictly less wrong than persisting the front 1×/TC-off hybrid.
+            preFrontRearVideoMode = _state.value.mode == CaptureMode.VIDEO
         }
         engine.setFrontCamera(entering)
         _state.update {
@@ -2137,7 +2170,11 @@ class CameraViewModel @JvmOverloads constructor(
                         // every flip back (user-reported).
                         zoomRatio = rearReturnZoom(
                             videoMode = it.mode == CaptureMode.VIDEO,
-                            preFrontZoom = preFrontRearZoom,
+                            preFrontZoom = if (preFrontRearVideoMode == (it.mode == CaptureMode.VIDEO)) {
+                                preFrontRearZoom
+                            } else {
+                                Float.NaN
+                            },
                             lensPreset = it.lens.zoomPreset,
                         ),
                     ),
@@ -2595,11 +2632,32 @@ class CameraViewModel @JvmOverloads constructor(
 
     override fun onStoreMemorySlot(slot: MemorySlot) {
         if (rejectIfRecording("Stop REC first")) return
-        val snapshot = _state.value
+        val live = _state.value
+        // Same FRONT substitution as saveSettingsIfEnabled: recalled packets are REAR-route optics
+        // by contract (setResolvedOptics exits FRONT), so a preset stored while FRONT must persist
+        // the retained rear setup, not the front-session hybrid (TC forced off, front-local 1×).
+        // Without this, saving M1 during a selfie trip silently replaced the operator's TELE 5×
+        // preset with rear MAIN at 1× — the exact cycle-6 F6 defect class, fixed for the plain save
+        // path but not here. The substituted view also feeds the name/summary so the label describes
+        // what recall will actually restore.
+        val substituteRear = live.facing == CameraFacing.FRONT && !preFrontRearZoom.isNaN()
+        val snapshot = if (substituteRear) {
+            live.copy(
+                teleconverterMode = preFrontRearTeleconverter,
+                controls = live.controls.copy(zoomRatio = preFrontRearZoom),
+            )
+        } else {
+            live
+        }
+        val extras = if (substituteRear) {
+            currentExtras().copy(teleconverter = preFrontRearTeleconverter)
+        } else {
+            currentExtras()
+        }
         settingsStore.savePreset(
             slot,
             snapshot.controls,
-            currentExtras(),
+            extras,
             name = presetNameFor(snapshot),
             summary = presetSummaryFor(snapshot),
         )
@@ -2671,6 +2729,14 @@ class CameraViewModel @JvmOverloads constructor(
             }
         }
         ioExecutor.execute {
+            // BEFORE the known outputs go: sweep still-PENDING family siblings the tracker never
+            // learned about (a publish-failed output keeps its bytes + a COMPLETE journal entry, and
+            // launch recovery would ADOPT it later — resurrecting part of a deleted capture). Runs
+            // only for a real capture family; a legacy URI parses to no family and sweeps nothing.
+            // Reads the tapped URI's display name, so it must precede that row's own deletion.
+            if (deletePlan.captureId != null) {
+                MediaStoreWriter.deletePendingFamilySiblings(getApplication(), uri)
+            }
             val survivors = outputs.filterTo(linkedSetOf()) { output ->
                 !MediaStoreWriter.delete(getApplication(), output)
             }
