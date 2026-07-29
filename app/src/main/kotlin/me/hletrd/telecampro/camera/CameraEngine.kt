@@ -1287,6 +1287,9 @@ class CameraEngine(private val context: Context) {
             retiredTap
         }
         tapPublication?.let { onTapFocusChange?.invoke(it) }
+        // Wholesale packets (MR restore, rollback, caps reconcile, the 25 Hz apply loop) can move
+        // zoom across FINDER_MIN_ZOOM without an optics door — same re-resolve as setZoomRatio.
+        pushTeleFinder()
         // clearMeteringPoint(false), when needed, was queued first on this same controller. This
         // update performs the single request rebuild carrying both the focus-mode and ROI reset.
         controller?.updateControls(normalized)
@@ -1898,6 +1901,9 @@ class CameraEngine(private val context: Context) {
     // trip did not go through the flip (a recall or settings restore exits front atomically).
     private var preFrontRearZoom = Float.NaN
 
+    // Which zoom SCALE the snapshot above was taken in (video = lens-local, photo = unified).
+    private var preFrontRearZoomVideoMode = false
+
     // DNG intent, mirrored from the ViewModel: decides whether photo takes the standalone route.
     @Volatile
     private var rawWanted = false
@@ -2396,12 +2402,24 @@ class CameraEngine(private val context: Context) {
             // Snapshot BEFORE the overwrite below, so leaving restores the framing the operator
             // actually had rather than the lens PRESET (which is 3x for the rest of the session
             // once TELE has been used, silently zooming them in on every front trip).
-            if (enabled) preFrontRearZoom = controls.zoomRatio
+            if (enabled) {
+                preFrontRearZoom = controls.zoomRatio
+                // The snapshot is an ABSOLUTE ratio in the ENTRY mode's zoom scale (photo =
+                // unified main-relative, video = lens-local). Tag it, so an exit in a DIFFERENT
+                // mode — the operator flipped Photo/Video while FRONT — falls back to the lens
+                // preset instead of applying a video-local number on the photo scale (review L2;
+                // the same absolute-number trap as ZoomGlideState.easeTarget across a remap).
+                preFrontRearZoomVideoMode = videoMode
+            }
             controls = controls.copy(
                 zoomRatio = if (enabled) {
                     1f
                 } else {
-                    rearReturnZoom(videoMode, preFrontRearZoom, lensChoice.zoomPreset)
+                    rearReturnZoom(
+                        videoMode,
+                        if (preFrontRearZoomVideoMode == videoMode) preFrontRearZoom else Float.NaN,
+                        lensChoice.zoomPreset,
+                    )
                 },
             )
             // A front trip drops the pre-TELE return framing: the snapshot is an absolute ratio in
@@ -2680,6 +2698,13 @@ class CameraEngine(private val context: Context) {
             }
             if (!openStarted) {
                 next.close()
+                // Close the OUTGOING device too. Every other abort branch here either closes `old`
+                // or deliberately RESTORES it as the controller (the superseded-transaction branch);
+                // this one did neither, so the still-open old CameraDevice became unreachable the
+                // moment `controller` was nulled — a HAL client leak that can refuse later opens
+                // with CAMERA_IN_USE (2026-07-30 review L1). An open refused at the gate means
+                // teardown is in progress, so old cannot be restored; release it.
+                old?.close()
                 synchronized(this) {
                     if (controller === next) controller = null
                 }
@@ -2693,6 +2718,10 @@ class CameraEngine(private val context: Context) {
             // start a deferred session from an obsolete device; release every local handle.
             if (!nativeAcquisitionMayProceed()) {
                 next.close()
+                // Same leak as the !openStarted branch (review L1): terminal teardown superseded the
+                // dual-open while the setup thread was parked on the latch — release the outgoing
+                // device instead of orphaning it behind a nulled controller reference.
+                old?.close()
                 synchronized(this) {
                     if (controller === next) controller = null
                 }
@@ -2857,6 +2886,10 @@ class CameraEngine(private val context: Context) {
         // normalized packet published between its read and write-back — exactly around the
         // lens/TELE/mode churn where rollbacks happen.
         synchronized(this) { controls = controls.copy(zoomRatio = z) }
+        // The finder predicate carries a zoom axis (FINDER_MIN_ZOOM), and a seamless pinch never
+        // fires an optics door — re-resolve here so GL and the live UI gate cross the threshold on
+        // the same tick. Change-gated inside pushTeleFinder; costs a few boolean reads per tick.
+        pushTeleFinder()
         // The PREVIEW zooms instantly: GL crops the last frame to the requested ratio and
         // self-redraws (every setRepeatingRequest stalls this HAL's stream ~180 ms — measured —
         // so per-tick HAL submits made zoom read as ~5 fps no matter how smooth the input was).
@@ -4403,8 +4436,17 @@ class CameraEngine(private val context: Context) {
         pushTeleFinder()
     }
 
+    // Last pushed resolved value, so the ZOOM paths can re-resolve at 60 Hz for free. Since the
+    // predicate gained its zoomRatio axis (FINDER_MIN_ZOOM), doors alone are not enough: a seamless
+    // pinch never fires a door, so the GL-stored flag diverged from the live Compose/OSD gate —
+    // border and OVERVIEW tag appeared with no PIP content on a pinch past 3x, and the reverse
+    // (preset TELE3X then pinch down) left GL scissor-drawing an overview the UI gate had dropped.
+    @Volatile
+    private var lastTeleFinderResolved: Boolean? = null
+
     /** Recomputes and pushes the resolved finder flag; called on toggle, aspect, lens/TC, mode,
-     *  and session (re)config so the GL PIP can never outlive a TC-off, aspect, or mode change.
+     *  session (re)config, AND every zoom write (change-gated below, so the hot pinch path pays a
+     *  few boolean reads) so the GL PIP can never disagree with the live UI gate on any axis.
      *  The predicate itself is the shared, unit-tested [teleFinderResolved]. */
     private fun pushTeleFinder() {
         val resolved = teleFinderResolved(
@@ -4414,6 +4456,11 @@ class CameraEngine(private val context: Context) {
             aspectRatio,
             controls.zoomRatio,
         )
+        // Suppressing an identical re-push is safe for GL generations too: RendererAssists stores
+        // the value in its replayed config snapshot, and replayAll — not this push — is what seeds
+        // a fresh GL thread.
+        if (lastTeleFinderResolved == resolved) return
+        lastTeleFinderResolved = resolved
         rendererAssists.setTeleFinderResolved(resolved)
     }
 
@@ -4650,8 +4697,18 @@ class CameraEngine(private val context: Context) {
             evBiasStops = (result.get(android.hardware.camera2.CaptureResult.CONTROL_AE_EXPOSURE_COMPENSATION)
                 ?: c.exposureCompensation) * evStep,
             meteringMode = c.meteringMode,
-            flashFired = result.get(android.hardware.camera2.CaptureResult.FLASH_STATE) ==
-                android.hardware.camera2.CaptureResult.FLASH_STATE_FIRED,
+            // NOT bare FLASH_STATE: this HAL reports FIRED on frames where the lamp is physically
+            // dark (the documented torch lie), so with flash OFF a still could carry EXIF Flash=1
+            // for a flash that never existed. The REQUEST is wire truth for the commanded modes —
+            // OFF cannot have fired, ON/TORCH had the lamp lit during exposure — and only AUTO,
+            // where the HAL genuinely decides, falls back to its reported state (review L4).
+            flashFired = when (c.flash) {
+                FlashMode.OFF -> false
+                FlashMode.ON, FlashMode.TORCH -> true
+                FlashMode.AUTO ->
+                    result.get(android.hardware.camera2.CaptureResult.FLASH_STATE) ==
+                        android.hardware.camera2.CaptureResult.FLASH_STATE_FIRED
+            },
             exposureProgram = when (c.exposureMode) {
                 ExposureMode.MANUAL -> 1
                 ExposureMode.SHUTTER -> 4
