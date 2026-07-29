@@ -1202,7 +1202,8 @@ class CameraEngine(private val context: Context) {
                 caps = c,
                 glInputSurface = input,
                 controls = controls,
-                tenBitHlg = tenBitExperimentEnabled(), // SDR unless the debug 10-bit experiment is armed
+                // 10-bit exactly when the bits are spent on something: VIDEO + a non-SDR transfer.
+                tenBitHlg = tenBitSessionWanted(videoMode, transfer) || tenBitExperimentEnabled(),
                 // The shipping picker always resolves 0: constrained high-speed SIGABRTs this HAL.
                 // Non-zero support remains dormant for diagnostics/schema-compatible internal callers.
                 highSpeedFps = desiredHighSpeedFps(),
@@ -1581,6 +1582,7 @@ class CameraEngine(private val context: Context) {
      * for the next recording; stopRecording/pause re-apply it). See docs/reviews record-pipeline #4.
      */
     fun setTransfer(t: ColorTransfer) {
+        val previousTransfer = transfer
         transfer = t
         // Log = a GL-baked standard curve (proven architecture, inherited from the removed O-Log2
         // option). The native com.oplus.log.video.mode key was tried twice and is effectively INERT
@@ -1606,11 +1608,15 @@ class CameraEngine(private val context: Context) {
         // The GL curve must NOT also bake in while the HAL is asked to emit log — two curves in
         // series is not a test of either.
         gl.setNativeLog(nativeLogExperiment)
+        // The transfer is now a SESSION input (it decides 10-bit), not just a GL/encoder setting, so
+        // a change that flips that answer has to reconfigure or the new curve rides the old buffers.
+        val tenBitChanged = tenBitSessionWanted(videoMode, previousTransfer) !=
+            tenBitSessionWanted(videoMode, t)
         val wasNativeLog = vendorLogMode != VendorLogMode.OFF
         val nextLogMode = if (nativeLogExperiment) VendorLogMode.ON else VendorLogMode.OFF
         val logModeChanged = wasNativeLog != (nextLogMode != VendorLogMode.OFF)
         vendorLogMode = nextLogMode
-        if (logModeChanged) reopenForSession()
+        if (logModeChanged || tenBitChanged) reopenForSession()
         if (recorder == null) gl.setTransfer(t)
     }
     fun setPeaking(enabled: Boolean) {
@@ -2591,7 +2597,8 @@ class CameraEngine(private val context: Context) {
                     caps = c,
                     glInputSurface = input,
                     controls = controls,
-                    tenBitHlg = tenBitExperimentEnabled(), // SDR unless the debug 10-bit experiment is armed
+                    // 10-bit exactly when the bits are spent on something: VIDEO + a non-SDR transfer.
+                tenBitHlg = tenBitSessionWanted(videoMode, transfer) || tenBitExperimentEnabled(),
                     highSpeedFps = desiredHighSpeedFps(),
                     vendorLogMode = vendorLogMode.halValue,
                     videoStabHalMode = c.videoStabControlMode(videoStabMode),

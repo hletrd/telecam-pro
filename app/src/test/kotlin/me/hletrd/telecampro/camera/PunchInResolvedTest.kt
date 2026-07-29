@@ -62,3 +62,31 @@ class RearReturnZoomTest {
         assertTrue(rearReturnZoom(videoMode = false, preFrontZoom = 0f, lensPreset = 3f) == 3f)
     }
 }
+
+/**
+ * 10-bit costs the in-REC snapshot (its session rung drops JPEG/RAW because HLG10 + full-res JPEG +
+ * RAW crashes this HAL), so it must be asked for only where the bits buy something.
+ */
+class TenBitSessionWantedTest {
+
+    @Test
+    fun videoWithANonSdrTransferWantsTenBit() {
+        assertTrue(tenBitSessionWanted(videoMode = true, transfer = ColorTransfer.HLG))
+        assertTrue(tenBitSessionWanted(videoMode = true, transfer = ColorTransfer.SLOG3))
+        assertTrue(tenBitSessionWanted(videoMode = true, transfer = ColorTransfer.SLOG3_CINE))
+        assertTrue(tenBitSessionWanted(videoMode = true, transfer = ColorTransfer.LOGC3))
+    }
+
+    @Test
+    fun sdrVideoStaysEightBit() {
+        assertFalse(tenBitSessionWanted(videoMode = true, transfer = ColorTransfer.SDR))
+    }
+
+    /** Photo must never pay the cost, whatever transfer happens to be remembered from video. */
+    @Test
+    fun photoNeverWantsTenBit() {
+        ColorTransfer.entries.forEach {
+            assertFalse("photo asked for 10-bit with $it", tenBitSessionWanted(videoMode = false, transfer = it))
+        }
+    }
+}

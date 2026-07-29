@@ -461,6 +461,33 @@ O-Log2. Not worth it without new evidence; the GL-baked profiles remain the ship
 Keep the GL-baked S-Log3/LogC3 profiles either way: they are the display-referred fallback, and a
 native path would be a separate, genuinely scene-referred option.
 
+### 10-bit log — TRANSFORM PROVEN, GATE LANDED, ONE DEVICE CHECK OUTSTANDING (2026-07-29)
+
+**Verified without a device, because no device A/B here was a valid instrument.** A log encoding is
+defined by where known anchors land, so `LogFromHlgSourceTest` asserts exactly that:
+
+- 18% grey reaches the S-Log3 anchor (420/1023) from an 8-bit display-referred source **and** from a
+  10-bit HLG source; diffuse white agrees between the two routes.
+- Both source encodings linearise to the same display light across a full sweep.
+- The HLG route yields a genuinely FLAT band (blacks > 0.09, highlights < 0.80, monotonic) — not the
+  contrasty deep-black look the broken device clips showed.
+- The WRONG decode misses the grey anchor by > 0.05, so the suite can detect its own failure.
+
+`LogProfiles.sourceLinear` is the CPU mirror of the shader branch, so the assertions bind the real
+chain rather than a restatement.
+
+**Enablement:** `tenBitSessionWanted(videoMode, transfer)` = VIDEO && transfer != SDR. Photo never
+asks, so it never pays the cost — the 10-bit rung drops JPEG/RAW (HLG10 + full-res JPEG + RAW CRASHES
+this HAL), which costs the in-REC snapshot while a 10-bit clip records. `setTransfer` now reopens the
+session when a change flips that answer, because the transfer became a SESSION input rather than a
+GL/encoder-only setting.
+
+**OUTSTANDING — the one thing left, and it needs the phone on the network:** confirm on device that
+PHOTO reports `hlg=false, jpeg=true` (stills intact), that VIDEO + a log transfer reports `hlg=true`
+with `sourceHlg -> true`, and that switching back restores photo. The run was attempted and the
+device dropped off the network mid-check (not pingable, port closed). Nothing about the transform
+depends on it; what it proves is that the GATE fires on the right routes.
+
 ### 10-bit colour pipeline — SEAM LANDED, END RESULT NOT YET CORRECT (2026-07-29)
 
 The source-decode seam exists and is tested, but **the 10-bit path does not yet produce correct log

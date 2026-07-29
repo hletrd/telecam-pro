@@ -328,6 +328,24 @@ const val FINDER_MIN_ZOOM = 3f
 fun punchInResolved(enabled: Boolean, frontFacing: Boolean): Boolean = enabled && !frontFacing
 
 /**
+ * Whether to ask the HAL for a 10-bit HLG10 session.
+ *
+ * VIDEO only, and only when a non-SDR transfer is selected — i.e. exactly when the extra bits are
+ * spent on something. HLG and the log curves are graded or displayed wide; SDR is not, and eight
+ * bits through a display-referred 709 chain is what it has always been.
+ *
+ * The cost is real and is why this is not simply always-on: the 10-bit rung drops the JPEG and RAW
+ * readers (HLG10 + full-res JPEG + RAW together CRASH this HAL — a crash, not a rejection, so the
+ * fallback ladder cannot rescue it), which costs the in-REC snapshot while a 10-bit clip is
+ * recording. Photo mode never pays that, because photo never asks.
+ *
+ * Correctness of what the extra bits carry is pinned away from any device by LogFromHlgSourceTest:
+ * 18% grey must reach the S-Log3 anchor from an HLG source exactly as it does from an SDR one.
+ */
+fun tenBitSessionWanted(videoMode: Boolean, transfer: ColorTransfer): Boolean =
+    videoMode && transfer != ColorTransfer.SDR
+
+/**
  * The zoom the REAR route resumes at when leaving FRONT.
  *
  * Restores the framing the operator actually had, not the lens PRESET. Falling back to the preset
