@@ -333,7 +333,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   HEIF pixel-rotates and DNG tags EXIF orientation. `camera/RotationMath.kt` holds this as pure,
   unit-tested functions. DEVICE-VERIFIED 2026-07-25: rear portrait + BOTH rear landscape
   directions + front portrait + front landscape all upright. The muxer hint carries the same
-  −dev/+dev term; its external-player playback check is the one remaining rotation residual.
+  −dev/+dev term, and its external-player playback check PASSED 2026-07-29 (operator-reported:
+  held portrait + both landscape directions all play upright in an external player). **Rotation is
+  now closed end to end — preview, stills, and video container.**
 - **Device orientation only updates while the phone is HELD.** `GyroEis.currentDeviceOrientation()`
   derives 0/90/180/270 from gravity, but when the phone is **flat** the in-plane gravity is ~0 and
   `atan2(x,y)` is noise — so it updates the discrete value only when `hypot(x,y) > FLAT_GRAVITY_
@@ -387,9 +389,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   advertised RAW16 array, device-measured 2026-07-24 by `tele_dng_parity`). A 4K HLG clip was HEVC Main10
   3840×2160 at 30000/1001 with AAC 48 kHz stereo; Open Gate produced HEVC Main10 2560×1920 4:3 at
   30000/1001 with AAC. The release smoke test had no crash or ANR. Saved-STILL uprightness in
-  deliberately held poses is CLOSED (device-verified 2026-07-25 — see the rotation bullet above);
-  the only rotation residual left is the muxer orientation hint's playback check in an EXTERNAL
-  player. See `docs/BACKLOG.md`.
+  deliberately held poses is CLOSED (device-verified 2026-07-25 — see the rotation bullet above),
+  and the muxer orientation hint's EXTERNAL-player playback check is CLOSED too (operator-reported
+  2026-07-29). No rotation residual remains. See `docs/BACKLOG.md`.
 - **Photo and video AUTO use different target-FPS policies.** A fixed `[30,30]` range blocks photo
   AE from extending exposure in low light, so photo AUTO uses `CameraCaps.autoFpsRange()` with the
   lowest available floor. Video AUTO must hold the selected recording cadence: without that pin, a

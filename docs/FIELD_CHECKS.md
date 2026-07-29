@@ -4,7 +4,12 @@ The verifications that need the phone in your hands. Everything checkable over A
 these are the ones that need a real scene, real light, the physical converter, or your eyes.
 
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
-like.** Roughly 15 minutes for all of them.
+like.**
+
+**Status (2026-07-29):** A1 ✅ · A2 ✅ · A3 ◐ (brightness half) · B1 ✅ · C1 ☐ · C2 ☐ · C3 ✅ · D1 ☐.
+Four remain, ~8 minutes: **A3** needs the rear camera pointed at a lit room, **C1/C2** need the
+converter physically mounted, **D1** needs an off-axis sound source. B1 closed the rotation work end
+to end.
 
 Install the debug build first (the release strips the diagnostic logs these rely on):
 
@@ -78,10 +83,21 @@ breathing or hunting at rest.
 
 ## B. Held in hand — 3 min
 
-### B1. Landscape video playback orientation
+### B1. Landscape video playback orientation — ✅ PASSED 2026-07-29 (operator)
 
-The last open piece of the rotation work. Saved *stills* are confirmed upright in every held pose;
-the video **container orientation hint** has never been played back externally.
+Held portrait, rotated left 90°, and rotated right 90° clips all play upright in an external player.
+This was the last open piece of the rotation work; **rotation is now closed end to end** — preview,
+stills, and the video container hint.
+
+> Operator-reported, like C3: a human watched the three clips play. It is not an instrumented
+> measurement, and no rotation side-data was re-parsed for this pass. That is the right kind of
+> evidence for this check — the thing under test is exactly what a player does with the hint — but
+> record it as what it is.
+
+Original procedure, kept for re-runs after any `videoOrientationHint` change:
+
+Saved *stills* were already confirmed upright in every held pose; the video **container orientation
+hint** was the piece that had never been played back externally.
 
 > Partial data (2026-07-28, phone lying FLAT): a recorded clip carried a natively portrait
 > 2160×3840 buffer and **no rotation side-data or rotate tag at all** (hint = 0), which plays

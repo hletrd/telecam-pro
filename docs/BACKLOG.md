@@ -826,9 +826,10 @@ These do not require a code or metadata change unless the result exposes a defec
   rotated (laptop shot, keyboard-up); after a209830 (BACK −dev / FRONT +dev, dev being GyroEis
   CCW-positive) the full matrix passed on device: rear portrait ✓, rear landscape LEFT-90 ✓ and
   RIGHT-90 ✓ (room shots, both upright with landscape dims), front portrait ✓, front landscape ✓
-  (one direction; the other follows algebraically). REMAINING residual: a held-landscape VIDEO
-  clip in an external gallery — `RotationMath.videoOrientationHint` now carries the same
-  device-confirmed −dev/+dev term, but the container-hint playback check itself has not been run.
+  (one direction; the other follows algebraically). **CLOSED 2026-07-29** — the last residual was
+  a held-landscape VIDEO clip in an external gallery; `RotationMath.videoOrientationHint` carries the
+  same device-confirmed −dev/+dev term, and the operator ran the container-hint playback check
+  (FIELD_CHECKS B1) and reported all three held poses upright. Rotation is closed end to end.
 - Added by review-plan-fix cycles 2-4 (2026-07-17/18 runs):
   P-mode brightness-target judgment in a lit room (QA-3); EIS warp-band re-confirmation per the
   established lit-scene frame-extraction method (QA-4); a long-exposure bisect of the LOGICAL
@@ -842,8 +843,8 @@ These do not require a code or metadata change unless the result exposes a defec
     debugger F1 was CORRECT: the signs were swapped. `a209830` landed BACK = sensor − dev and
     FRONT = sensor + dev (dev being the GyroEis CCW-positive gravity read), and the held matrix
     passed on device — see the RESOLVED entry above for the evidence.
-    `RotationMath.videoOrientationHint` carries the same term; only its EXTERNAL-PLAYER playback
-    check remains open (below).
+    `RotationMath.videoOrientationHint` carries the same term, and its EXTERNAL-PLAYER playback
+    check is now CLOSED as well (operator, 2026-07-29 — FIELD_CHECKS B1).
   - **Front VIDEO file mirror truth — RESOLVED 2026-07-28.** Front STILL mirror truth was
     device-verified 2026-07-23; the CLIP had never been checked. Now it has: an 8.1 s front clip
     (HEVC, 2160×3840 portrait, `audio=false` via the declined-mic path) was pulled and a frame
