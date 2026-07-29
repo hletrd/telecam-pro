@@ -59,6 +59,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -208,8 +209,18 @@ fun CameraScreen(
     // CameraUiState (state.reviewOpen) so MainActivity's hardware-key handlers can refuse to fire
     // the shutter under the overlay. The reviewed uri is FROZEN here at open time so a timer/
     // timelapse capture completing mid-review can't swap the image being inspected.
-    var reviewUri by remember { mutableStateOf<android.net.Uri?>(null) }
-    var reviewDeleteScope by remember { mutableStateOf(MediaDeleteScope.FILE_ONLY) }
+    // rememberSaveable, not remember: reviewOpen, the family pin, and the input block all live in
+    // the ViewModel and SURVIVE an Activity recreation (dark-mode flip, locale) — a plain remember
+    // here reset only the URI, so the overlay vanished while the VM still held reviewOpen=true and
+    // the pinned family, leaving the shutter refusing input behind a modal that no longer existed
+    // (review L9). Uri is not Bundle-savable directly; a string round-trip is.
+    var reviewUri by rememberSaveable(
+        stateSaver = Saver<android.net.Uri?, String>(
+            save = { it?.toString() ?: "" },
+            restore = { if (it.isEmpty()) null else android.net.Uri.parse(it) },
+        ),
+    ) { mutableStateOf<android.net.Uri?>(null) }
+    var reviewDeleteScope by rememberSaveable { mutableStateOf(MediaDeleteScope.FILE_ONLY) }
     // Remembers the last-viewed settings tab so the gear reopens where the user left off.
     var sheetInitialTab by remember { mutableStateOf(ProSheetTab.MY_MENU) }
     var fnOverlayVisible by remember { mutableStateOf(false) }
@@ -356,6 +367,12 @@ fun CameraScreen(
                 punchIn = state.punchInActive,
                 zoomRatio = state.controls.zoomRatio,
             )
+            // Read inside the gesture loop through rememberUpdatedState, NOT as a pointerInput key.
+            // The predicate carries the LIVE zoom, so a pinch crossing FINDER_MIN_ZOOM flips it
+            // mid-gesture; keying pointerInput on it restarted the coroutine under the operator's
+            // fingers — the restarted awaitFirstDown never matches already-pressed pointers, so zoom
+            // froze for the rest of the pinch and onPinchEnd never fired (review C9).
+            val liveFinderVisible by rememberUpdatedState(finderVisible)
             AndroidView(
                 modifier = Modifier
                     .fillMaxSize()
@@ -378,7 +395,7 @@ fun CameraScreen(
                     // scale never left 1.0 (device-diagnosed via ZoomDbg). Handling both in a single
                     // awaitEachGesture removes the conflict: two fingers → pinch-zoom, a clean single
                     // stationary touch → tap-focus.
-                    .pointerInput(finderVisible) {
+                    .pointerInput(Unit) {
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
                             var maxPointers = 1
@@ -415,7 +432,7 @@ fun CameraScreen(
                                 val w = size.width.toFloat()
                                 val h = size.height.toFloat()
                                 if (w > 0f && h > 0f) {
-                                    if (!finderVisible || !finderContainsTopLeftPoint(
+                                    if (!liveFinderVisible || !finderContainsTopLeftPoint(
                                             pointX = down.position.x,
                                             pointY = down.position.y,
                                             boxWidth = w,

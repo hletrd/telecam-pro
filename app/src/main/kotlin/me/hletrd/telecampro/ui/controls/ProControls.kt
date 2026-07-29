@@ -41,6 +41,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.CornerRadius
@@ -370,6 +371,8 @@ private fun CameraSlider(
     enabled: Boolean,
     valueDescription: String,
 ) {
+    // Fresh callback for the running gesture: see the stale-closure note at the pointerInput below.
+    val currentOnFraction by rememberUpdatedState(onFraction)
     val accent = if (enabled) CameraColors.ManualActive else CameraColors.TextSecondary
     // Two one-off PAIRS, not four numbers: each is an enabled/disabled ramp for one part of this
     // slider, and the pair is what carries the disabled state (the accent needle changes hue, the
@@ -402,6 +405,11 @@ private fun CameraSlider(
                     val pad = 8.dp.toPx()
                     val trackSpan = (size.width - 2f * pad).coerceAtLeast(1f)
                     fun fractionAt(x: Float) = ((x - pad) / trackSpan).coerceIn(0f, 1f)
+                    // NOTE: emissions below go through [currentOnFraction], not the captured
+                    // parameter — same stale-closure class as RulerSlider (review C10/L10): the
+                    // pointerInput key never changes when the slider's DOMAIN rebinds, so a drag
+                    // running across a rebind would keep writing through the first composition's
+                    // callback.
                     // Publication is FRAME-GATED (~60 Hz) with an exact landing on release — the
                     // same gate RulerSlider carries: per-event emission re-normalized controls and
                     // re-published the whole CameraUiState at the panel's 120 Hz input rate on
@@ -410,7 +418,7 @@ private fun CameraSlider(
                     var latest = fractionAt(down.position.x)
                     var emitted = latest
                     var lastEmitMs = android.os.SystemClock.uptimeMillis()
-                    onFraction(latest)
+                    currentOnFraction(latest)
                     down.consume()
                     while (true) {
                         val event = awaitPointerEvent()
@@ -422,11 +430,11 @@ private fun CameraSlider(
                         if (now - lastEmitMs >= 16) {
                             lastEmitMs = now
                             emitted = latest
-                            onFraction(latest)
+                            currentOnFraction(latest)
                         }
                     }
                     // Land the exact final value the gate may have swallowed.
-                    if (emitted != latest) onFraction(latest)
+                    if (emitted != latest) currentOnFraction(latest)
                 }
             },
     ) {

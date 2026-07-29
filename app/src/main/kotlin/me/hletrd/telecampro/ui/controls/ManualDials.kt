@@ -54,6 +54,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -798,7 +799,7 @@ private fun DialChip(
  * Focus as a RELATIVE 0..100 scale (0 = ∞), not an absolute distance. The diopter→metres estimate
  * is unreliable through the afocal converter, so a relative "∞ + N" reads truer than a fake "3.20 m".
  */
-private fun formatFocusRelative(diopters: Float, minDiopters: Float): String {
+internal fun formatFocusRelative(diopters: Float, minDiopters: Float): String {
     if (minDiopters <= 0f) return "∞"
     val f = FocusMapping.dioptersToSlider(diopters, minDiopters)
     return if (f <= 0.005f) "∞" else "∞+${(f * 100).roundToInt()}"
@@ -1213,6 +1214,11 @@ fun RulerSlider(
     val density = LocalDensity.current
     val view = LocalView.current
     val pxPerUnit = remember(density) { with(density) { RULER_TICK_SPACING.toPx() } }
+    // The DOMAIN can change while the dial stays open (TELE toggle from the chip row rebases the
+    // zoom ruler; caps republish rescales lo/hi) without any pointerInput key changing — so the
+    // running drag handler must call the CURRENT composition's callback, not the first one it
+    // captured, or every subsequent drag maps through the stale scale (review C10).
+    val currentOnFractionChange by rememberUpdatedState(onFractionChange)
     var isDragging by remember { mutableStateOf(false) }
     // contUnit tracks the finger continuously; localUnit is what's drawn + reported. When [snap] is
     // set it detents to whole units (each = one stop) with a haptic tick, so the bar physically
@@ -1248,7 +1254,7 @@ fun RulerSlider(
                 if (!enabled) disabled()
                 setProgress { target ->
                     if (!enabled) return@setProgress false
-                    onFractionChange(target.coerceIn(0f, 1f))
+                    currentOnFractionChange(target.coerceIn(0f, 1f))
                     true
                 }
             }
@@ -1271,7 +1277,7 @@ fun RulerSlider(
                 // recomposition.
                 val landFinalValue = {
                     isDragging = false
-                    if (emittedUnit != localUnit) onFractionChange(localUnit / totalUnits)
+                    if (emittedUnit != localUnit) currentOnFractionChange(localUnit / totalUnits)
                 }
                 detectHorizontalDragGestures(
                     onDragStart = { isDragging = true; lastEmitMs = 0L; emittedUnit = Float.NaN },
@@ -1288,7 +1294,7 @@ fun RulerSlider(
                     if (now - lastEmitMs >= 16) {
                         lastEmitMs = now
                         emittedUnit = next
-                        onFractionChange(next / totalUnits)
+                        currentOnFractionChange(next / totalUnits)
                     }
                 }
             },
