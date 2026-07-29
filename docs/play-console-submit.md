@@ -20,18 +20,20 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 Do not upload debug APKs or any unsigned/stale release bundle.
 
-### Final v1 upload artifacts (built + verified 2026-07-29 from `main` at `9f367c1`)
+### Final v1 upload artifacts (built + verified 2026-07-29 from `main` at `3ff3b4b`)
 
-**This supersedes the `3c70639` cut** (AAB `70f83bdd…`, APK `97e53333…`), which in turn superseded
+**This supersedes the `9f367c1` cut** (AAB `f04028f7…`, APK `ad66b179…`) — that one predates the
+microphone-grant audio restore — and before it the `3c70639` cut (AAB `70f83bdd…`, APK
+`97e53333…`), which in turn superseded
 the `6bf2325` cycle-9 cut (AAB `c238c1cf…`, APK `615ff06d…`). Do not upload either older bundle.
 The re-cut exists because `3c70639` predates the DNG route-input fixes (`d6ef232`, `968f13b`,
 `9f367c1`): on that artifact a persisted DNG selection was inert at launch, and a Video→Photo trip
 could leave DNG permanently unable to produce a RAW file.
 
 - Artifact location: `app/build/outputs/bundle/release/app-release.aab`
-- AAB SHA-256: `f04028f7750fc0002d94f9c2a773422457ae7cbc0b18b55a2624de254019676b`
+- AAB SHA-256: `19ef2b7d158cd06d8e8f19cd2994236c24c2de4226f0ac6684be253476b5bfd3`
 - Matching release APK SHA-256:
-  `ad66b1792743ab5ab46ab7107122301758d2ad2d0e938d414f9d8c2748553e8d`
+  `870ac286fe1b3ff8ffdd6301adefc4ce5d437061484ba561b98766865bd85549`
 - Launch component: `me.hletrd.telecampro/me.hletrd.telecampro.MainActivity`
 - AAB `jarsigner -verify`: **jar verified**. `bundletool validate` was NOT re-run for this
   cut — bundletool is not installed on this machine; the earlier cuts' passes are not
@@ -56,6 +58,10 @@ could leave DNG permanently unable to produce a RAW file.
   - **DNG: enabled live from the sheet, which re-resolves the route, then captured — DNG + HEIF
     written, DNG parsed at 4080×3064 16-bit, `FocalLength` 7.73 mm, Make `OPPO` / Model `PMA110`.**
     This is the fix under test surviving minification; a `keep` rule miss would have shown here.
+  - **Audio: measured, not assumed.** With audio off the clip carried a VIDEO track only (the
+    `doAudio = recordAudio && hasRecordPermission()` path). With audio on, the same scene produced
+    AAC 48 kHz stereo whose PCM measured mean −52.3 dB / peak −38.6 dB with 98.6 % non-zero samples —
+    real room ambience, not a silent track. The recording level meter was visible throughout.
   - `logcat`: **zero** `FATAL EXCEPTION` and zero ANRs for `me.hletrd.telecampro` across the run.
 - Packaged binary manifest (not just the source): `minSdkVersion 36`, `targetSdkVersion 36`,
   `compileSdkVersion 37`, **no `INTERNET`**, **no debuggable flag**. `uses-permission` is exactly
