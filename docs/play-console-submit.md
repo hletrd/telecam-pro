@@ -4,7 +4,7 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 ## Upload Artifact
 
-> **UPLOAD-READY (2026-07-28) — re-cut from current `main` at `aa642ad`.** This supersedes the
+> **UPLOAD-READY (2026-07-28) — re-cut from current `main` at `3c70639`.** This supersedes the
 > cycle-9 cut (`6bf2325`) and every candidate before it. `applicationId` is unchanged
 > (`me.hletrd.telecampro`) and the upload certificate is byte-identical to the recorded one, so Play
 > identity is unaffected.
@@ -20,15 +20,15 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 Do not upload debug APKs or any unsigned/stale release bundle.
 
-### Final v1 upload artifacts (built + verified 2026-07-28 from `main` at `aa642ad`)
+### Final v1 upload artifacts (built + verified 2026-07-29 from `main` at `3c70639`)
 
 **This supersedes the `6bf2325` cycle-9 cut** (AAB `c238c1cf…`, APK `615ff06d…`). Do not upload the
 older bundle.
 
 - Artifact location: `app/build/outputs/bundle/release/app-release.aab`
-- AAB SHA-256: `70a85bb1699477c38b34b0838f48f2241c94fb9faa3277ebad6ce9d77709e282`
+- AAB SHA-256: `70f83bdd4d50a871c5d2e01e7945b0f6c4a87ee88f2e1cd0569538a84cc2fc0b`
 - Matching release APK SHA-256:
-  `99d227d6ada9d8d4caada5b96f7ab0359cd0784cb158b4508dd07cca23ac14f7`
+  `97e533330a284f3d72b343820abea7fef624a528eb2d45d7614e1c853776593c`
 - Launch component: `me.hletrd.telecampro/me.hletrd.telecampro.MainActivity`
 - `bundletool validate`: passed; AAB `jarsigner -verify`: **jar verified**
 - APK signing: v2 valid (v1/v3/v3.1/v4 absent, as before), 1 signer,
@@ -37,8 +37,7 @@ older bundle.
   upload certificate**, so this is the same upload key
 - APK alignment: 16 KiB passed (`zipalign -c -P 16 4`)
 - Release gate: `lintRelease` **0 errors / 5 warnings**, all pre-existing (`ApplySharedPref`,
-  `UseKtx`, `AndroidGradlePluginVersion`); host suite **1208 tests, 0 failures** (the artifact itself is unchanged — the
-  extra case since the cut is a test-only addition auditing the tap-AF punch-in composition)
+  `UseKtx`, `AndroidGradlePluginVersion`); host suite **1236 tests, 0 failures**
 - Carries a **baseline profile** (`assets/dexopt/baseline.prof`, 11 KiB + `.profm`) installed by
   androidx.profileinstaller. Without it the shipped APK sat at `status=verify` and ran interpreted
   until JIT warmed; device-measured, the worst frame on opening the settings sheet went 61 ms → 22 ms
