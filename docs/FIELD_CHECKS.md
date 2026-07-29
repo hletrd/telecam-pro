@@ -6,10 +6,10 @@ these are the ones that need a real scene, real light, the physical converter, o
 Grouped so you change the setup as little as possible. Each is: **set up → run → what a pass looks
 like.**
 
-**Status (2026-07-29):** A1 ✅ · A2 ✅ · A3 ◐ (brightness half) · B1 ✅ · C1 ☐ · C2 ☐ · C3 ✅ · D1 ☐.
-Four remain, ~8 minutes: **A3** needs the rear camera pointed at a lit room, **C1/C2** need the
-converter physically mounted, **D1** needs an off-axis sound source. B1 closed the rotation work end
-to end.
+**Status (2026-07-29):** A1 ✅ · A2 ✅ · A3 ◐ (brightness half) · B1 ✅ · C1 ✅ · C2 ✅ · C3 ✅ · D1 ☐.
+Two remain, ~4 minutes: **A3** needs the rear camera pointed at a lit room, **D1** needs an off-axis
+sound source. B1 closed the rotation work end to end; C1 confirmed the afocal correction against real
+converter glass.
 
 Install the debug build first (the release strips the diagnostic logs these rely on):
 
@@ -115,7 +115,12 @@ hint** was the piece that had never been played back externally.
 
 ## C. Converter mounted — 5 min
 
-### C1. TELE orientation
+### C1. TELE orientation — ✅ PASSED 2026-07-29 (operator)
+
+Upright with the converter mounted. This is the check the whole app exists for: the afocal 180°
+correction applied against real converter glass.
+
+Procedure, kept for re-runs after any rotation change:
 
 - Mount the 300 mm converter on the 3× lens, enable **TELE**.
 
@@ -125,7 +130,14 @@ hint** was the piece that had never been played back externally.
 > the converter **off**, that is expected and not a bug — TELE applies a 180° correction for an
 > inversion the optic would be causing.
 
-### C2. Loupe overview agreement
+### C2. Loupe overview agreement — ✅ PASSED 2026-07-29 (operator)
+
+The corner overview and the main view agree. Note what this does and does not prove: the overview
+re-draws the SAME converter-fed frame with `rotationOverrideDeg = 0`, so agreement here is agreement
+between two draws of one stream. The genuinely-wide second-stream finder on the BACKLOG is what would
+make the overview upright for real rather than by declining a rotation.
+
+Procedure, kept for re-runs:
 
 - Still in TELE, enable **Loupe** and **Loupe Overview** (Menu → Assist), activate the punch-in loupe.
 
