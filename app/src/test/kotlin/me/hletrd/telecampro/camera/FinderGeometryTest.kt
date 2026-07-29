@@ -25,8 +25,10 @@ class FinderGeometryTest {
         )
         assertEquals(300f, r.width, 1e-4f)
         assertEquals(225f, r.height, 1e-4f)
-        // Short edge is 750 → 22.5 side inset and 75 bottom inset.
-        assertEquals(22.5f, r.x, 1e-4f)
+        // Short edge is 750 → 22.5 side inset and 75 bottom inset. The box is anchored to the
+        // RIGHT edge (2026-07-29): the left column carries the vertical exposure/zoom ruler, which
+        // the overview used to sit under.
+        assertEquals(1000f - 300f - 22.5f, r.x, 1e-4f)
         assertEquals(75f, r.y, 1e-4f)
     }
 
@@ -35,7 +37,7 @@ class FinderGeometryTest {
         val r = finderRect(boxWidth = 1080f, boxHeight = 1440f)
         assertEquals(1080f * FINDER_FRACTION, r.width, 1e-3f)
         assertEquals(1440f * FINDER_FRACTION, r.height, 1e-3f)
-        assertEquals(1080f * FINDER_SIDE_MARGIN, r.x, 1e-3f)
+        assertEquals(1080f - 1080f * FINDER_FRACTION - 1080f * FINDER_SIDE_MARGIN, r.x, 1e-3f)
         assertEquals(1080f * FINDER_BOTTOM_MARGIN, r.y, 1e-3f)
     }
 

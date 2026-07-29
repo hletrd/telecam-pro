@@ -563,6 +563,12 @@ class CameraViewModel @JvmOverloads constructor(
                         acceptedPreTele = accepted.preTeleUnifiedZoom
                         acceptedApplied = true
                         formatStatus = when {
+                            // VIDEO never reports this. Stills during a take are not a feature this
+                            // app owes anyone -- a professional body records, it does not offer a
+                            // JPEG mid-clip -- and the 10-bit video session deliberately drops the
+                            // still readers to buy the bit depth. Announcing that as a loss made a
+                            // designed trade read as a fault on every mode switch (user-reported).
+                            current.mode == CaptureMode.VIDEO -> null
                             !publication.photoOutputs.hasStillTarget ->
                                 "Still capture unavailable"
                             current.photoFormats.wantsProcessedStill &&

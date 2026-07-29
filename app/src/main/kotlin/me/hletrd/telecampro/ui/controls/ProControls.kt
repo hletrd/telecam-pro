@@ -761,6 +761,9 @@ internal fun PhotoFormatToggles(
     processedAvailable: Boolean,
     rawAvailable: Boolean,
     modifier: Modifier = Modifier,
+    // VIDEO reframes the "no still outputs" line: there it is the 10-bit session's deliberate trade,
+    // not a capability the route failed to deliver.
+    videoMode: Boolean = false,
 ) {
     val processedSelected = processedAvailable && formats.wantsProcessedStill
     val rawSelected = rawAvailable && formats.dngRaw
@@ -807,7 +810,10 @@ internal fun PhotoFormatToggles(
         }
         if (!processedAvailable && !rawAvailable) {
             Text(
-                "Still capture unavailable",
+                // Same reasoning as the Ready-publication status: in VIDEO this is a designed trade
+                // (the 10-bit session drops the still readers), not a fault, so the sheet says what
+                // it BOUGHT rather than what it lost.
+                if (videoMode) "10-bit video · stills off" else "Still capture unavailable",
                 color = CameraColors.TextSecondary,
                 style = MaterialTheme.typography.labelSmall,
             )

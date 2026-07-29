@@ -428,10 +428,14 @@ fun finderRect(
     bottomMargin: Float = FINDER_BOTTOM_MARGIN,
 ): FinderRect {
     val shortEdge = minOf(boxWidth, boxHeight)
+    val width = boxWidth * fraction
     return FinderRect(
-        x = shortEdge * sideMargin,
+        // RIGHT edge, not left: the left column carries the vertical exposure/zoom ruler, and the
+        // overview sat under it (user-reported 2026-07-29 — "loupe is overlapping with zoom bar").
+        // The right column is the only side of the image with no persistent control on it.
+        x = boxWidth - width - shortEdge * sideMargin,
         y = shortEdge * bottomMargin,
-        width = boxWidth * fraction,
+        width = width,
         height = boxHeight * fraction,
     )
 }

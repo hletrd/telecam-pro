@@ -593,10 +593,15 @@ fun CameraScreen(
             val tallyRadius = remember(tallyView) {
                 val corner = tallyView.rootWindowInsets
                     ?.getRoundedCorner(android.view.RoundedCorner.POSITION_TOP_LEFT)
-                // The panel's corner is a CONTINUOUS-CURVATURE squircle; a circular arc at the same
-                // nominal radius reads visibly tighter than the glass (user-compared on device), so
-                // scale up ~20% to visually match the physical curve.
-                ((corner?.radius ?: 0) * 1.2f).toInt()
+                // Use the radius the panel REPORTS, unscaled.
+                //
+                // This was ×1.2 to make a circular arc "read like" the glass squircle. It does the
+                // opposite where it matters: a larger R turns the corner sooner, so the border's
+                // straight runs end early and it visibly pulls away from the edges — reported on
+                // device as a gap along each side (2026-07-29). A tally is an EDGE indicator first;
+                // hugging the sides matters more than matching the curvature of the corner, and the
+                // reported radius is the only figure that is actually about this panel.
+                (corner?.radius ?: 0)
             }
             Box(
                 modifier = Modifier
@@ -690,7 +695,12 @@ fun CameraScreen(
                             }
                             android.util.Range(minOf(it.lower * mul, hi), hi)
                         },
-                        numberRotation = overlayRotation,
+                        // The WHOLE indicator turns, not just the number: a screen-fixed bar under
+                        // an upright readout reads as a broken pairing in landscape, because the bar
+                        // then runs across the viewer's vertical (user-reported 2026-07-29). Passing
+                        // 0 here and rotating the composable keeps the number from turning twice.
+                        numberRotation = 0f,
+                        modifier = Modifier.rotateLayout(overlayRotation),
                     )
                 }
             }
@@ -1705,7 +1715,9 @@ private fun StatusInfoPill(state: CameraUiState, modifier: Modifier = Modifier) 
 
 /**
  * Live zoom readout: a "N.N×" pill over a thin bar that fills to the zoom's position within the lens's
- * advertised range. The number stays upright as the phone turns; the bar remains screen-fixed.
+ * advertised range. The caller rotates the WHOLE thing so the readout and its scale stay a pair —
+ * `rotateLayout` reserves the ROTATED bounding box, so the wider landscape footprint is laid out
+ * rather than overlapping its neighbours.
  */
 @Composable
 private fun ZoomIndicator(
@@ -1722,9 +1734,8 @@ private fun ZoomIndicator(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        // The "N.N×" readout is short, so it counter-rotates to stay upright as the phone turns
-        // (iPhone-style). The bar below stays horizontal — a generic level indicator reads fine at any
-        // angle, and rotating it would collide with the surrounding chrome.
+        // [numberRotation] survives for callers that place the readout inside already-rotated
+        // chrome; the viewfinder passes 0 and rotates the whole indicator instead.
         Text(
             text = formatZoomMultiplier(zoom),
             color = CameraColors.Accent,
