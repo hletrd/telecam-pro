@@ -672,6 +672,11 @@ class CameraController(context: Context) {
                     }
                 }
                 override fun onConfigureFailed(s: CameraCaptureSession) {
+                    // Same late-callback guard as onConfigured above: a failure delivered after
+                    // close() must not re-enter configureSession on a closed device — the retry
+                    // would throw, convert into a spurious onError, and race the replacement
+                    // controller's own bring-up (2026-07-30 review L5).
+                    if (closed) return
                     // Advance the fallback ladder and retry; give up once it is exhausted.
                     configAttempt = attempt + 1
                     val maxAttempt = maxSessionAttempt(teleconverterMode, hiResStill)
@@ -742,6 +747,7 @@ class CameraController(context: Context) {
                     }
                 }
                 override fun onConfigureFailed(s: CameraCaptureSession) {
+                    if (closed) return // late-callback guard, same as the regular ladder above
                     if (BuildConfig.DEBUG) Log.w(TAG, "High-speed session config failed at ${highSpeedFps}fps; falling back to regular session")
                     highSpeedFps = 0
                     configAttempt = 0
@@ -1159,6 +1165,13 @@ class CameraController(context: Context) {
         requested: ManualControls,
         retainedOpticsCommit: Boolean,
     ) {
+        // Same pre-open guard as requestCustomWbSample/setSmoothPreviewBoost/setMeteringPoint: the
+        // engine installs a replacement controller as the live `controller` target BEFORE calling
+        // open() on it, and the camera HandlerThread runs from construction — so a 25 Hz controls
+        // throttle tick or an app-side AE packet can land here before open() assigns lateinit
+        // `caps`, and the dereference below would crash the HandlerThread. Dropping the packet is
+        // safe: open() itself normalizes and applies the engine's latest controls.
+        if (!this::caps.isInitialized) return
         val modeIntent = if (pinAutoFps && requested.exposureMode == ExposureMode.PROGRAM) {
             requested.copy(programAppSide = false)
         } else {
@@ -1582,6 +1595,10 @@ class CameraController(context: Context) {
             // Drop superseded toggles before changing either the real request key or its diagnostic
             // owner. Both are camera-thread-confined, so a built request can never mix two intents.
             if (!modeIntentGate.isCurrent(intent)) return@postToCamera
+            // Pre-open guard (see applyControlsOnCamera): reachable before open() assigns lateinit
+            // `caps` because the engine installs the controller before opening it. open() applies
+            // the engine's latest mode/controls itself, so the dropped toggle is not lost.
+            if (!this::caps.isInitialized) return@postToCamera
             pinAutoFps = enabled
             diagnosticRequestMode = if (enabled) CaptureMode.VIDEO else CaptureMode.PHOTO
             diagnosticOpticsGeneration = opticsGeneration
