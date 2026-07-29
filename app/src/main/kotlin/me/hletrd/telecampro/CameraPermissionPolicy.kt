@@ -1,5 +1,7 @@
 package me.hletrd.telecampro
 
+import me.hletrd.telecampro.camera.HardwareKeyAction
+
 internal enum class CameraPermissionDisposition {
     GRANTED,
     REQUESTABLE,
@@ -95,3 +97,34 @@ internal fun audioRestoredByMicrophoneGrant(
     recordAudio: Boolean,
     hasMicrophonePermission: Boolean,
 ): Boolean = audioDisabledByDenial && !recordAudio && hasMicrophonePermission
+
+
+/**
+ * Whether a hardware full-key press should silently drop audio and record video-only.
+ *
+ * The hardware shutter deliberately never opens the rationale dialog — a physical press should start
+ * the take, not a modal — so when the mic is wanted but absent it drops audio and proceeds. Two
+ * constraints this predicate exists to hold:
+ *
+ * - The full-press action is USER-REASSIGNABLE ([HardwareKeyAction]): a volume key mapped to Zoom In
+ *   must NOT flip the audio setting off — pre-fix it did, and because `recordAudio = false` also
+ *   suppresses the touch path's mic prompt, one zoom press while un-granted silently condemned every
+ *   later recording to video-only without the user ever being asked (2026-07-30 review C7).
+ * - Only the SHUTTER action may drop audio, and the caller must record that drop as a DENIAL
+ *   consequence (AUDIO_OFF_BY_DENIAL_KEY), not a preference — otherwise a later Settings grant
+ *   cannot restore it and the self-locking silent-clip state returns (review C8).
+ */
+internal fun hardwareShutterAudioDrop(
+    fullKeyAction: HardwareKeyAction,
+    videoMode: Boolean,
+    recording: Boolean,
+    recordAudio: Boolean,
+    hasMicrophonePermission: Boolean,
+): Boolean = fullKeyAction == HardwareKeyAction.SHUTTER &&
+    !hasMicrophonePermission &&
+    microphonePermissionRequired(
+        action = PendingAudioAction.START_RECORDING,
+        videoMode = videoMode,
+        recording = recording,
+        recordAudio = recordAudio,
+    )

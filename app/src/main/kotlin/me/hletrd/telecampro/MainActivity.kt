@@ -234,16 +234,24 @@ class MainActivity : ComponentActivity() {
                     // The hardware shutter deliberately never opens the rationale dialog — a
                     // physical press should start the take, not a modal — so when the mic is wanted
                     // but absent it drops audio and records video-only, reaching the same outcome
-                    // the touch path's decline reaches. The PREDICATE is the shared pure one so the
-                    // two entry points cannot drift; the STATUS text differs on purpose, because
-                    // here the user was never asked and so has denied nothing.
-                    val wantsMicrophone = microphonePermissionRequired(
-                        action = PendingAudioAction.START_RECORDING,
-                        videoMode = s.mode == CaptureMode.VIDEO,
-                        recording = s.isRecording,
-                        recordAudio = s.recordAudio,
-                    )
-                    if (wantsMicrophone && !hasMicrophonePermission) {
+                    // the touch path's decline reaches. The decision is the pure, unit-tested
+                    // [hardwareShutterAudioDrop]: it additionally requires the full-press action to
+                    // actually BE the shutter (the key is user-reassignable — a Zoom In press must
+                    // not flip audio off), and this drop is recorded as a DENIAL consequence so a
+                    // later Settings grant restores it, exactly like the touch decline. The STATUS
+                    // text differs from the decline's on purpose: here the user was never asked and
+                    // so has denied nothing.
+                    if (hardwareShutterAudioDrop(
+                            fullKeyAction = s.volumeKeyAction,
+                            videoMode = s.mode == CaptureMode.VIDEO,
+                            recording = s.isRecording,
+                            recordAudio = s.recordAudio,
+                            hasMicrophonePermission = hasMicrophonePermission,
+                        )
+                    ) {
+                        permissionPreferences.edit(commit = true) {
+                            putBoolean(AUDIO_OFF_BY_DENIAL_KEY, true)
+                        }
                         vm.onToggleRecordAudio(false)
                         vm.onAppStatus("Recording without audio")
                     }
