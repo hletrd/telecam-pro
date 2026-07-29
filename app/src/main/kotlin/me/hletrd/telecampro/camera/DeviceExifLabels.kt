@@ -76,10 +76,20 @@ internal fun exifLensModel(
 ): String {
     val device = deviceLabel(manufacturer, model)
     val name = lensNameForEquiv(equivMm, frontFacing)
-    val mm = Math.round(equivMm.coerceAtLeast(0f))
-    val fTrunc = kotlin.math.floor(apertureF * 10f) / 10f
-    val fText = "%.1f".format(java.util.Locale.US, fTrunc)
-    return listOf(device, "$name camera", "${mm}mm", "f/$fText")
+    // The unknown-optics lens NAME is the bare word "camera"; appending the literal " camera"
+    // suffix to it printed "camera camera" (surfaced by the review L6 test).
+    val nameToken = if (name == "camera") name else "$name camera"
+    // Unknown optics OMIT their token instead of writing a false claim — the same discipline the
+    // make/model tags follow (a blank field omits the tag). Before this, a route whose focal or
+    // aperture had not resolved wrote "0mm f/0.0" into LensModel: a number no lens has, presented
+    // as a measurement (review L6).
+    val mmText = Math.round(equivMm.coerceAtLeast(0f)).takeIf { it > 0 }?.let { "${it}mm" }.orEmpty()
+    val fText = if (apertureF > 0f) {
+        "f/" + "%.1f".format(java.util.Locale.US, kotlin.math.floor(apertureF * 10f) / 10f)
+    } else {
+        ""
+    }
+    return listOf(device, nameToken, mmText, fText)
         .filter { it.isNotEmpty() }
         .joinToString(" ")
 }

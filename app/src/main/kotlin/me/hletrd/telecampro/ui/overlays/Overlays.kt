@@ -612,7 +612,10 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                 }
                 Text(driveLabel, color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
             }
-            if (!state.controls.oisEnabled) {
+            // Capability-gated: on a route with no OIS control (front camera), the toggle's value
+            // is inert and announcing "OIS OFF" would claim a control the lens does not have —
+            // the request builder applies the key only when caps.oisAvailable (review L11).
+            if (state.caps?.oisAvailable == true && !state.controls.oisEnabled) {
                 Text("OIS OFF", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
             }
             if (!compact && state.timer != ShutterTimer.OFF) {
