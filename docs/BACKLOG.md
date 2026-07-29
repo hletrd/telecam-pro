@@ -482,11 +482,21 @@ this HAL), which costs the in-REC snapshot while a 10-bit clip records. `setTran
 session when a change flips that answer, because the transfer became a SESSION input rather than a
 GL/encoder-only setting.
 
-**OUTSTANDING — the one thing left, and it needs the phone on the network:** confirm on device that
-PHOTO reports `hlg=false, jpeg=true` (stills intact), that VIDEO + a log transfer reports `hlg=true`
-with `sourceHlg -> true`, and that switching back restores photo. The run was attempted and the
-device dropped off the network mid-check (not pingable, port closed). Nothing about the transform
-depends on it; what it proves is that the GATE fires on the right routes.
+**GATE DEVICE-VERIFIED 2026-07-29 — this item is CLOSED.** Every route reports what it should, and
+the transfer change reopens the session as intended:
+
+| route | session | GL source decode |
+|---|---|---|
+| PHOTO (any transfer) | `hlg=false, jpeg=true` | `sourceHlg -> false` |
+| VIDEO + SDR | `hlg=false, jpeg=true` | `sourceHlg -> false` |
+| VIDEO + log/HLG | `hlg=true, jpeg=false` | `sourceHlg -> true` |
+
+Photo and SDR video keep their stills; only a non-SDR video route pays the JPEG/RAW cost, which is
+exactly the trade the gate exists to make. Flipping the transfer between SDR and log inside video
+reopens the session both ways, so `setTransfer`'s session-input handling works.
+
+End-to-end file, recorded on the shipping path with no debug override: **HEVC Main 10,
+`yuv420p10le`, 2160×3840, `color_primaries=bt2020`, full range** — a genuine 10-bit log clip.
 
 ### 10-bit colour pipeline — SEAM LANDED, END RESULT NOT YET CORRECT (2026-07-29)
 
