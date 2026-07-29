@@ -20,40 +20,50 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 Do not upload debug APKs or any unsigned/stale release bundle.
 
-### Final v1 upload artifacts (built + verified 2026-07-29 from `main` at `3c70639`)
+### Final v1 upload artifacts (built + verified 2026-07-29 from `main` at `9f367c1`)
 
-**This supersedes the `6bf2325` cycle-9 cut** (AAB `c238c1cf…`, APK `615ff06d…`). Do not upload the
-older bundle.
+**This supersedes the `3c70639` cut** (AAB `70f83bdd…`, APK `97e53333…`), which in turn superseded
+the `6bf2325` cycle-9 cut (AAB `c238c1cf…`, APK `615ff06d…`). Do not upload either older bundle.
+The re-cut exists because `3c70639` predates the DNG route-input fixes (`d6ef232`, `968f13b`,
+`9f367c1`): on that artifact a persisted DNG selection was inert at launch, and a Video→Photo trip
+could leave DNG permanently unable to produce a RAW file.
 
 - Artifact location: `app/build/outputs/bundle/release/app-release.aab`
-- AAB SHA-256: `70f83bdd4d50a871c5d2e01e7945b0f6c4a87ee88f2e1cd0569538a84cc2fc0b`
+- AAB SHA-256: `f04028f7750fc0002d94f9c2a773422457ae7cbc0b18b55a2624de254019676b`
 - Matching release APK SHA-256:
-  `97e533330a284f3d72b343820abea7fef624a528eb2d45d7614e1c853776593c`
+  `ad66b1792743ab5ab46ab7107122301758d2ad2d0e938d414f9d8c2748553e8d`
 - Launch component: `me.hletrd.telecampro/me.hletrd.telecampro.MainActivity`
-- `bundletool validate`: passed; AAB `jarsigner -verify`: **jar verified**
+- AAB `jarsigner -verify`: **jar verified**. `bundletool validate` was NOT re-run for this
+  cut — bundletool is not installed on this machine; the earlier cuts' passes are not
+  evidence for these bytes, so run it before upload if you want that check on the record
 - APK signing: v2 valid (v1/v3/v3.1/v4 absent, as before), 1 signer,
   `CN=Jiyong Youn, L=Seoul, ST=Seoul, C=KR`, certificate SHA-256
   `9dfdb903269238ef6de424052666b05814577b4b3bb43a5e3e3a05572660e584` — **unchanged from the recorded
   upload certificate**, so this is the same upload key
 - APK alignment: 16 KiB passed (`zipalign -c -P 16 4`)
 - Release gate: `lintRelease` **0 errors / 5 warnings**, all pre-existing (`ApplySharedPref`,
-  `UseKtx`, `AndroidGradlePluginVersion`); host suite **1236 tests, 0 failures**
+  `UseKtx`, `AndroidGradlePluginVersion`); host suite **1256 tests, 0 failures**
 - Carries a **baseline profile** (`assets/dexopt/baseline.prof`, 11 KiB + `.profm`) installed by
   androidx.profileinstaller. Without it the shipped APK sat at `status=verify` and ran interpreted
   until JIT warmed; device-measured, the worst frame on opening the settings sheet went 61 ms → 22 ms
   and idle-viewfinder p99 10 ms → 7 ms.
-- **Smoke-tested on the PMA110 from this exact APK** (2026-07-28). The installed APK's on-device
-  `sha256sum` was confirmed byte-identical to the artifact above BEFORE the run, so this is evidence
-  for this bundle and not an earlier one. Launched to a live viewfinder with the loupe + corner
-  overview active and captured a HEIF still (DCIM/TeleCamPro went 14 → 15 files). Process stayed
-  alive; `logcat -b crash` reported **zero** entries for `me.hletrd.telecampro`, and zero ANRs.
+- **Smoke-tested on the PMA110 from this exact APK** (2026-07-29). The installed APK's on-device
+  `sha256sum` was confirmed byte-identical to the artifact above BEFORE the run
+  (`ad66b179…` both sides), so this is evidence for this bundle and not an earlier one. Covered on
+  the R8-minified binary, which is the only place the shipped code path is actually exercised:
+  - Photo: HEIF written.
+  - Video: recorded and stopped, MP4 written.
+  - **DNG: enabled live from the sheet, which re-resolves the route, then captured — DNG + HEIF
+    written, DNG parsed at 4080×3064 16-bit, `FocalLength` 7.73 mm, Make `OPPO` / Model `PMA110`.**
+    This is the fix under test surviving minification; a `keep` rule miss would have shown here.
+  - `logcat`: **zero** `FATAL EXCEPTION` and zero ANRs for `me.hletrd.telecampro` across the run.
 - Packaged binary manifest (not just the source): `minSdkVersion 36`, `targetSdkVersion 36`,
   `compileSdkVersion 37`, **no `INTERNET`**, **no debuggable flag**. `uses-permission` is exactly
   `CAMERA` + `RECORD_AUDIO` (plus the framework's own dynamic-receiver permission).
 - **Release dex contains ZERO `com.oplus.ocs` occurrences** — verified by raw byte scan for both
   `com/oplus/ocs` and `com.oplus.ocs` across `classes.dex` and `classes2.dex`. The OEM SDK is absent
   from the shipped binary, which is what the Data-Safety answers rest on.
-- Superseded candidates (do NOT upload): `6bf2325` (`c238c1cf…`), `a0d4dbc` (`84a74f64…`),
+- Superseded candidates (do NOT upload): `3c70639` (`70f83bdd…`), `6bf2325` (`c238c1cf…`), `a0d4dbc` (`84a74f64…`),
   `69af1574…`, `a737483f…` (9541697, pre-namespace-move), `7339e00d…`, `b45a3b8e…`.
 
 ### PMA110 release device matrix — PARTIAL for the 2026-07-28 artifact
