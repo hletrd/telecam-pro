@@ -20,9 +20,12 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 Do not upload debug APKs or any unsigned/stale release bundle.
 
-### Final v1 upload artifacts (built + verified 2026-07-30 from `main` at `26266db`)
+### Final v1 upload artifacts (built + verified 2026-07-30 from `main` at `3a3d034`)
 
-**This supersedes the `3ff3b4b` cut** (AAB `19ef2b7d…`, APK `870ac286…`) — that one predates the
+**This supersedes the `26266db` cut** (AAB `59ccb318…`, APK `9658300c…`) — that one predates the
+adversarial verification closure (must-fix: recall packets re-normalized against outgoing caps;
+plus finder zoom-OUT edge, late-RAW retention veto, rollback mirror leg, OIS strip gate) — and
+before it the `3ff3b4b` cut (AAB `19ef2b7d…`, APK `870ac286…`), which predates the
 2026-07-30 whole-app review fixes (pre-open caps guard, finder zoom re-resolve, pending-sibling
 sweep, MR recall/store fidelity, hardware-key audio scoping, gesture closure lifetimes, EXIF
 honesty) — before it the `9f367c1` cut (AAB `f04028f7…`, APK `ad66b179…`), and before it the `3c70639` cut (AAB `70f83bdd…`, APK
@@ -33,9 +36,9 @@ The re-cut exists because `3c70639` predates the DNG route-input fixes (`d6ef232
 could leave DNG permanently unable to produce a RAW file.
 
 - Artifact location: `app/build/outputs/bundle/release/app-release.aab`
-- AAB SHA-256: `59ccb318a6c7036aff274fc89c6fbc10cfab09ac0e7acb3af7c8362b0e4688c7`
+- AAB SHA-256: `1c160b8c146d79c5f6adf220a5b01bb03b4f8eb962bc69419735b9773846d55c`
 - Matching release APK SHA-256:
-  `9658300c4d3e39a884379094c70a65670b136c1e251f3a0f1ac9cc8f892abc5f`
+  `8d73388ee0aa95a26ad9311df87b48510d0bd6f0b313965caf8fa1bb5eccdbe3`
 - Launch component: `me.hletrd.telecampro/me.hletrd.telecampro.MainActivity`
 - AAB `jarsigner -verify`: **jar verified**. `bundletool validate` was NOT re-run for this
   cut — bundletool is not installed on this machine; the earlier cuts' passes are not
@@ -46,19 +49,17 @@ could leave DNG permanently unable to produce a RAW file.
   upload certificate**, so this is the same upload key
 - APK alignment: 16 KiB passed (`zipalign -c -P 16 4`)
 - Release gate: `lintRelease` **0 errors / 5 warnings**, all pre-existing (`ApplySharedPref`,
-  `UseKtx`, `AndroidGradlePluginVersion`); host suite **1276 tests, 0 failures**
+  `UseKtx`, `AndroidGradlePluginVersion`); host suite **1278 tests, 0 failures**
 - Carries a **baseline profile** (`assets/dexopt/baseline.prof`, 11 KiB + `.profm`) installed by
   androidx.profileinstaller. Without it the shipped APK sat at `status=verify` and ran interpreted
   until JIT warmed; device-measured, the worst frame on opening the settings sheet went 61 ms → 22 ms
   and idle-viewfinder p99 10 ms → 7 ms.
 - **Smoke-tested on the PMA110 from this exact APK** (2026-07-30). The installed APK's on-device
   `sha256sum` was confirmed byte-identical to the artifact above BEFORE the run
-  (`9658300c…` both sides), so this is evidence for this bundle and not an earlier one.
-  Honest sequencing note: the smoke's first shutter press landed in VIDEO (the release package's
-  persisted mode) and recorded a 38 s HEVC + AAC-stereo clip with the tally and timer live — itself
-  useful evidence — before the PHOTO capture (HEIF written) completed the pass; the re-pin commit
-  message described the photo as done while that take was still rolling. Zero crashes/ANRs across
-  the whole run. The measured-audio evidence below is from the 2026-07-29 cut and its pipeline is
+  (`8d73388e…` both sides), so this is evidence for this bundle and not an earlier one.
+  This run selected PHOTO explicitly before the shutter (the prior cut's smoke learned that the
+  release package launches in its persisted mode) and wrote a HEIF still; zero crashes/ANRs. The
+  measured-audio and DNG-route evidence below is from the earlier cuts and those pipelines are
   unchanged by this re-cut. Covered on
   the R8-minified binary, which is the only place the shipped code path is actually exercised:
   - Photo: HEIF written.
