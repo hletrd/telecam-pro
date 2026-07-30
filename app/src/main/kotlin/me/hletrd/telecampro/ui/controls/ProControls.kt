@@ -394,7 +394,7 @@ private fun CameraSlider(
                 if (!enabled) disabled()
                 setProgress { target ->
                     if (!enabled) return@setProgress false
-                    onFraction(target.coerceIn(0f, 1f))
+                    currentOnFraction(target.coerceIn(0f, 1f))
                     true
                 }
             }

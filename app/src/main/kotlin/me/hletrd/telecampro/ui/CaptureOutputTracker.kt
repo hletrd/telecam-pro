@@ -207,6 +207,10 @@ internal class CaptureOutputTracker<T>(
         )
     }
 
+    /** Whether [captureId]'s family was whole-family deleted (tombstone still remembered). */
+    @Synchronized
+    fun isDeleted(captureId: Int): Boolean = captureId in tombstones
+
     /** Compatibility helper for callers/tests that do not need partial-result reconciliation. */
     @Synchronized
     fun takeForDelete(output: T): Set<T> = beginDelete(output).outputs

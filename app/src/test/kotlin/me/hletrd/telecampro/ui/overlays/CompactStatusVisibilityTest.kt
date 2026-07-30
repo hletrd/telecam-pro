@@ -27,7 +27,9 @@ class CompactStatusVisibilityTest {
             "non-default still formats" to base.copy(photoFormats = PhotoFormats(jpeg = true)),
             "raw" to base.copy(photoFormats = PhotoFormats(dngRaw = true)),
             "drive" to base.copy(driveMode = DriveMode.BURST),
-            "photo stabilization disabled" to base.copy(controls = ManualControls(oisEnabled = false)),
+            // "photo stabilization disabled" moved to its own test below: the clause is now
+            // capability-gated (oisOffTagVisible), and CameraUiState's default caps == null means
+            // this bare copy can no longer force the strip — that is the fix, not a regression.
             "lock" to base.copy(controls = ManualControls(aeLock = true)),
             "video transfer" to base.copy(mode = CaptureMode.VIDEO, transfer = ColorTransfer.HLG),
             "muted video" to base.copy(mode = CaptureMode.VIDEO, recordAudio = false),
@@ -40,6 +42,23 @@ class CompactStatusVisibilityTest {
             "front camera" to base.copy(facing = CameraFacing.FRONT),
         )
         cases.forEach { (label, state) -> assertTrue(label, compactShootingStatusVisible(state)) }
+    }
+
+    @Test
+    fun `ois off forces the strip only where OIS is actually controllable`() {
+        // The strip clause and the OIS OFF tag share one gate (verification S5): a persisted
+        // oisEnabled=false preference on a route with NO OIS control (or with caps still null
+        // mid-reopen) must not force the compact strip for a tag the render side suppresses.
+        assertTrue(oisOffTagVisible(photoMode = true, oisAvailable = true, oisEnabled = false))
+        assertFalse(oisOffTagVisible(photoMode = true, oisAvailable = false, oisEnabled = false))
+        assertFalse(oisOffTagVisible(photoMode = false, oisAvailable = true, oisEnabled = false))
+        assertFalse(oisOffTagVisible(photoMode = true, oisAvailable = true, oisEnabled = true))
+        // The whole-state form with default (null) caps: no longer forced visible.
+        assertFalse(
+            compactShootingStatusVisible(
+                CameraUiState().copy(controls = ManualControls(oisEnabled = false)),
+            ),
+        )
     }
 
     @Test

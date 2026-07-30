@@ -155,7 +155,7 @@ class CameraEngine(private val context: Context) {
     // black viewfinder behind a fully interactive-looking shutter with zero indication.
     var onCameraReadyChange: ((CameraReadyPublication) -> Unit)? = null
     /** Restores UI optics when a current-generation camera switch fails before closing the old one. */
-    var onOpticsRollback: ((CaptureMode, LensChoice, Boolean, CameraFacing, ManualControls, Long, String?, generation: Long) -> Unit)? = null
+    var onOpticsRollback: ((CaptureMode, LensChoice, Boolean, CameraFacing, ManualControls, Long, String?, restoredPreTeleUnifiedZoom: Float, generation: Long) -> Unit)? = null
 
     // AF engine state for the reticle color, mapped from the controller's raw CONTROL_AF_STATE.
     var onAfIndication: ((AfIndication) -> Unit)? = null
@@ -558,6 +558,10 @@ class CameraEngine(private val context: Context) {
             // The UI's cameraOverrideId means "diagnostic pin active" — publish the pin, never
             // the engine's routed-target overrideId (which is non-null after any door).
             restored.userPin,
+            // The VM mirrors preTeleUnifiedZoom and resets it eagerly on recall; a FAILED recall
+            // restores the engine's snapshot here, so the mirror must receive the same value or
+            // the next TC-off diverges OSD from wire on the failed-recall path (verification S4).
+            before.preTeleUnifiedZoom,
             transaction.generation,
         )
         before.caps?.let { onCapsReady?.invoke(it, transaction.generation) }
@@ -752,6 +756,9 @@ class CameraEngine(private val context: Context) {
     // A DNG output with the same capture-sequence id as its HEIF/JPEG siblings. A RAW-only capture
     // may own the review metadata tile until a processed sibling upgrades it. Fired after publish.
     var onRawSaved: ((android.net.Uri, Int) -> Unit)? = null
+
+    /** A COMPLETE still output retained pending after a failed publish — the tracker gets a veto. */
+    var onStillPublishRetained: ((android.net.Uri, Int) -> Unit)? = null
 
     // ---- Preview surface lifecycle ----
 
@@ -2957,6 +2964,11 @@ class CameraEngine(private val context: Context) {
         val z = clampToOrderedBounds(ratio, r?.lower ?: ratio, hi)
         // Same monitor rule as setZoomRatio: packet writers replace [controls] wholesale under it.
         synchronized(this) { controls = controls.copy(zoomRatio = z) }
+        // Third zoom writer, same finder rule as setZoomRatio/setControls — and the one the
+        // zoom-OUT leading edge uses exclusively (flushZoom skips setZoomRatio on a leading-wide
+        // flush), so a single-flush downward FINDER_MIN_ZOOM crossing otherwise left GL drawing an
+        // overview the UI gate had dropped (verification S1, 2026-07-30).
+        pushTeleFinder()
         gl.setZoomTarget(z)
         // Still-request truth must follow even though no repeating submit happens here.
         controller?.noteRequestZoom(z)
@@ -3212,6 +3224,7 @@ class CameraEngine(private val context: Context) {
         emitStatus = { msg -> onStatus?.invoke(msg) },
         emitMediaSaved = { uri, id -> onMediaSaved?.invoke(uri, id) },
         emitRawSaved = { uri, id -> onRawSaved?.invoke(uri, id) },
+        emitPublishRetained = { uri, id -> onStillPublishRetained?.invoke(uri, id) },
     )
     private val singleProcessedSnapshotBudget = ProcessedSnapshotBudget()
 
@@ -4449,19 +4462,27 @@ class CameraEngine(private val context: Context) {
      *  few boolean reads) so the GL PIP can never disagree with the live UI gate on any axis.
      *  The predicate itself is the shared, unit-tested [teleFinderResolved]. */
     private fun pushTeleFinder() {
-        val resolved = teleFinderResolved(
-            rendererAssists.isTeleFinderEnabled(),
-            teleconverterMode,
-            videoMode,
-            aspectRatio,
-            controls.zoomRatio,
-        )
-        // Suppressing an identical re-push is safe for GL generations too: RendererAssists stores
-        // the value in its replayed config snapshot, and replayAll — not this push — is what seeds
-        // a fresh GL thread.
-        if (lastTeleFinderResolved == resolved) return
-        lastTeleFinderResolved = resolved
-        rendererAssists.setTeleFinderResolved(resolved)
+        // The whole compute→gate→push is ONE monitor section: this runs concurrently from the main
+        // thread (zoom writes at pinch rate) and setupExecutor (doors, rollback), and a non-atomic
+        // gate could latch an INVERSION — push ¬X while recording X — that the gate then preserved
+        // forever, because every later identical-value push (including the doors') is suppressed
+        // (verification S2). Reentrant for callers already holding the engine monitor; the body is
+        // a few boolean reads plus a change-gated handler post.
+        synchronized(this) {
+            val resolved = teleFinderResolved(
+                rendererAssists.isTeleFinderEnabled(),
+                teleconverterMode,
+                videoMode,
+                aspectRatio,
+                controls.zoomRatio,
+            )
+            // Suppressing an identical re-push is safe for GL generations too: RendererAssists
+            // stores the value in its replayed config snapshot, and replayAll — not this push — is
+            // what seeds a fresh GL thread.
+            if (lastTeleFinderResolved == resolved) return
+            lastTeleFinderResolved = resolved
+            rendererAssists.setTeleFinderResolved(resolved)
+        }
     }
 
     /**

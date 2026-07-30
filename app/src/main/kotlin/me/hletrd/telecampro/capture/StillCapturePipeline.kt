@@ -98,6 +98,12 @@ internal class StillCapturePipeline(
     private val emitStatus: (String) -> Unit,
     private val emitMediaSaved: (android.net.Uri, Int) -> Unit,
     private val emitRawSaved: (android.net.Uri, Int) -> Unit,
+    // A COMPLETE output whose MediaStore publish failed: retained for launch recovery, but the
+    // owner of the capture must get to VETO that retention — a sibling arriving AFTER the user
+    // whole-family deleted (the designed-for late RAW) would otherwise be ADOPTED next launch and
+    // resurrect part of a deleted capture (verification S3, 2026-07-30). The row's fate is the
+    // TRACKER's decision, so this only reports; it never deletes.
+    private val emitPublishRetained: (android.net.Uri, Int) -> Unit,
 ) {
 
     /**
@@ -194,6 +200,7 @@ internal class StillCapturePipeline(
         val completion = MediaStoreWriter.markWriteComplete(context, u)
         if (!MediaStoreWriter.publish(context, u)) {
             emitStatus(retainedSaveStatus("HEIF", completion.durable))
+            emitPublishRetained(u, spec.captureId)
             return
         }
         emitMediaSaved(u, spec.captureId)
@@ -223,6 +230,7 @@ internal class StillCapturePipeline(
         val completion = MediaStoreWriter.markWriteComplete(context, u)
         if (!MediaStoreWriter.publish(context, u)) {
             emitStatus(retainedSaveStatus("JPEG", completion.durable))
+            emitPublishRetained(u, spec.captureId)
             return
         }
         emitMediaSaved(u, spec.captureId)
@@ -255,6 +263,7 @@ internal class StillCapturePipeline(
         val completion = MediaStoreWriter.markWriteComplete(context, u)
         if (!MediaStoreWriter.publish(context, u)) {
             emitStatus(retainedSaveStatus("JPEG", completion.durable))
+            emitPublishRetained(u, spec.captureId)
             return
         }
         emitMediaSaved(u, spec.captureId)
@@ -302,6 +311,7 @@ internal class StillCapturePipeline(
     fun publishDng(pending: PendingDngPublication) {
         if (!MediaStoreWriter.publish(context, pending.uri)) {
             emitStatus(retainedSaveStatus("DNG", pending.completionMarkerDurable))
+            emitPublishRetained(pending.uri, pending.captureId)
             return
         }
         emitRawSaved(pending.uri, pending.captureId)

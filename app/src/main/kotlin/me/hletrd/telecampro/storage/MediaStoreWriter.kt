@@ -373,12 +373,24 @@ object MediaStoreWriter {
         var swept = 0
         runCatching {
             val queryArgs = Bundle().apply {
+                // Same OWNER + directory scoping as orphanSweepSelection: display names are exact,
+                // but a foreign app can own an identically-named pending row elsewhere — its delete
+                // would fail anyway (not ours to delete), yet scoping keeps this sweep's SELECTION
+                // aligned with its recovery-side sibling instead of relying on delete() to refuse
+                // (verification note, 2026-07-30).
+                val paths = CAPTURE_SUBDIRS.joinToString(" OR ") {
+                    MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?"
+                }
                 putString(
                     ContentResolver.QUERY_ARG_SQL_SELECTION,
-                    MediaStore.MediaColumns.DISPLAY_NAME + " IN (" +
+                    "($paths) AND " + MediaStore.MediaColumns.OWNER_PACKAGE_NAME + " = ? AND " +
+                        MediaStore.MediaColumns.DISPLAY_NAME + " IN (" +
                         names.joinToString(",") { "?" } + ")",
                 )
-                putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, names.toTypedArray())
+                putStringArray(
+                    ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS,
+                    (CAPTURE_SUBDIRS.map { "DCIM/$it/%" } + context.packageName + names).toTypedArray(),
+                )
                 putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
             }
             context.contentResolver.query(

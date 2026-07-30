@@ -6,6 +6,19 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CaptureOutputTrackerTest {
+    @Test
+    fun isDeleted_reflectsTombstonesOnly() {
+        // The publish-retained veto (verification S3) keys on this: a COMPLETE output whose
+        // publish failed AFTER the family delete must be removed instead of retained for launch
+        // recovery, and a LIVE capture's retained row must survive.
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
+        tracker.record(7, "shot.heic", CaptureOutputKind.DISPLAYABLE)
+        assertFalse(tracker.isDeleted(7))
+        tracker.takeForDelete("shot.heic")
+        assertTrue(tracker.isDeleted(7))
+        assertFalse(tracker.isDeleted(8))
+    }
+
 
     @Test
     fun deleteByDisplayedOutput_returnsEveryKnownSibling() {

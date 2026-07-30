@@ -213,7 +213,10 @@ fun CameraScreen(
     // the ViewModel and SURVIVE an Activity recreation (dark-mode flip, locale) — a plain remember
     // here reset only the URI, so the overlay vanished while the VM still held reviewOpen=true and
     // the pinned family, leaving the shutter refusing input behind a modal that no longer existed
-    // (review L9). Uri is not Bundle-savable directly; a string round-trip is.
+    // (review L9). Uri is Parcelable, so autoSaver would also work; the explicit string round-trip
+    // is kept because it makes the saved form (and its size) obvious. After full PROCESS death the
+    // restored URI is inert by design: the recreated ViewModel starts with reviewOpen=false, and
+    // the modal keys on BOTH.
     var reviewUri by rememberSaveable(
         stateSaver = Saver<android.net.Uri?, String>(
             save = { it?.toString() ?: "" },

@@ -613,7 +613,8 @@ class CameraViewModel @JvmOverloads constructor(
             }
         }
         engine.onOpticsRollback = {
-                mode, lens, teleconverter, facing, controls, restoredPhotoExposureTimeNs, userPin, generation ->
+                mode, lens, teleconverter, facing, controls, restoredPhotoExposureTimeNs, userPin,
+                restoredPreTeleUnifiedZoom, generation ->
             mainHandler.post {
                 if (!engine.isOpticsGenerationCurrent(generation)) return@post
                 // "Camera unchanged": the failed door never closed the outgoing session, so it is
@@ -631,6 +632,11 @@ class CameraViewModel @JvmOverloads constructor(
                 // Engine snapshots this hidden bank inside the same generation-owned transaction as
                 // visible optics, so even Ready-callback overlap restores the exact accepted value.
                 photoExposureTimeNs = restoredPhotoExposureTimeNs
+                // Mirror the engine's restored pre-TELE snapshot: recall resets this mirror eagerly,
+                // and without the rollback leg a FAILED recall left NaN here while the engine
+                // restored its value — the next TC-off then showed the preset while the wire
+                // restored the retained framing (verification S4).
+                preTeleUnifiedZoom = restoredPreTeleUnifiedZoom
                 _state.update {
                     it.copy(
                         mode = mode,
@@ -792,6 +798,16 @@ class CameraViewModel @JvmOverloads constructor(
         engine.onRawSaved = { uri, captureId ->
             recordCaptureOutput(uri, captureId, CaptureOutputKind.RAW)
         }
+        // A publish-failed output is deliberately RETAINED for launch recovery — unless its
+        // family is already tombstoned (deleted). Then retention would resurrect part of a deleted
+        // capture on the next launch (the late-RAW timeline: family deleted before the DNG's
+        // pending row even existed, so the C3 delete-time sweep could not have seen it). Only the
+        // tombstoned case deletes; a live capture keeps its recovery row (verification S3).
+        engine.onStillPublishRetained = { uri, captureId ->
+            if (captureOutputs.isDeleted(captureId)) {
+                ioExecutor.execute { MediaStoreWriter.delete(getApplication(), uri) }
+            }
+        }
         seedPhoneModel()
         restoreSettingsIfEnabled()
         refreshProgramAppSide()
@@ -934,10 +950,27 @@ class CameraViewModel @JvmOverloads constructor(
         )
         val previousPhotoExposureTimeNs = photoExposureTimeNs
         photoExposureTimeNs = restoredExposure.photoExposureTimeNs
+        // programAppSide is DERIVED, never persisted, so every loaded packet arrives with it
+        // false. Derive it INTO the packet as a pure field write BEFORE setResolvedOptics — the
+        // engine transaction then carries the correct flag atomically with the route. It must NOT
+        // be re-derived after the fact through refreshProgramAppSide(): that routes the recalled
+        // packet through updateControls, which re-normalizes the WHOLE packet against the caps in
+        // _state — still the OUTGOING route's at that instant — clamping e.g. a MAIN preset's
+        // 5 dpt manual focus to TELE's 0.833 ceiling and persisting the destruction (verification
+        // must-fix, 2026-07-30; the "structural recall waits for target-route caps" invariant).
+        // The persisted iso/exposureTimeNs are the handoff seed; SPEED is forced for the same
+        // reason refreshProgramAppSide forces it — the loop's exposureTimeNs is what requests use.
+        val wantAppSideProgram = programShouldRunAppSide(e.mode, c.exposureMode, c.flash)
         val cSynced = c.copy(
             fps = safeFrameRate.fps,
             zoomRatio = restoredOptics.zoomRatio,
             exposureTimeNs = restoredExposure.activeExposureTimeNs,
+            programAppSide = wantAppSideProgram,
+            shutterMode = if (wantAppSideProgram && c.exposureMode == ExposureMode.PROGRAM) {
+                ShutterMode.SPEED
+            } else {
+                c.shutterMode
+            },
         ).normalizedForCaptureMode(e.mode)
         val restoredVideoSize = parseVideoResolution(e.videoResolution)
         // Before setResolvedOptics: the engine's own TELE zoom ceiling and its HAL effective-zoom
@@ -1078,13 +1111,10 @@ class CameraViewModel @JvmOverloads constructor(
         statusDisplayDurationMs(status)?.let { durationMs ->
             mainHandler.postDelayed(clearStatusRunnable, durationMs)
         }
-        // programAppSide is DERIVED, never persisted, so every loaded packet arrives with it false.
-        // The init restore path happened to call refreshProgramAppSide() after this function, but MR
-        // recall did not — a recalled Photo PROGRAM preset therefore ran on the HAL AE with no
-        // min-shutter rule (at 300 mm the HAL happily picks ~1/30 s) until an unrelated
-        // exposure-mode/flash/mode change re-derived it. Change-gated, so the init path's own later
-        // refresh stays a harmless no-op.
-        refreshProgramAppSide()
+        // NOTE deliberately NO refreshProgramAppSide() here: the flag is already derived into
+        // cSynced above, and calling the refresher would route the recalled packet back through
+        // updateControls' whole-packet normalization against the outgoing route's caps (the
+        // verification must-fix this replaced).
     }
 
     private fun currentExtras(): ExtraSettings = _state.value.let { s ->
@@ -2641,10 +2671,20 @@ class CameraViewModel @JvmOverloads constructor(
         // path but not here. The substituted view also feeds the name/summary so the label describes
         // what recall will actually restore.
         val substituteRear = live.facing == CameraFacing.FRONT && !preFrontRearZoom.isNaN()
+        // The zoom HALF of the substitution additionally requires the snapshot's zoom SCALE to
+        // match the live mode (same tag as the return-zoom path): a Photo/Video flip while FRONT
+        // makes the number wrong-scale, and a preset stores it verbatim — TC substitution has no
+        // scale and stays unconditional.
+        val substituteZoom = substituteRear &&
+            preFrontRearVideoMode == (live.mode == CaptureMode.VIDEO)
         val snapshot = if (substituteRear) {
             live.copy(
                 teleconverterMode = preFrontRearTeleconverter,
-                controls = live.controls.copy(zoomRatio = preFrontRearZoom),
+                controls = if (substituteZoom) {
+                    live.controls.copy(zoomRatio = preFrontRearZoom)
+                } else {
+                    live.controls
+                },
             )
         } else {
             live

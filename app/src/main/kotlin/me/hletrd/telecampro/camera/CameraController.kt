@@ -106,6 +106,14 @@ class CameraController(context: Context) {
     private val closeStarted = java.util.concurrent.atomic.AtomicBoolean(false)
 
     private lateinit var selection: TeleSelection
+    // @Volatile: written once on setupExecutor in open(); the pre-open ::caps.isInitialized
+
+    // guards read it from the camera thread with no other happens-before edge, and a stale
+
+    // read must at worst DROP a packet (benign), never observe a torn reference.
+
+    @Volatile
+
     private lateinit var caps: CameraCaps
     private var glSurface: Surface? = null
     // Read on the camera handler thread (startPreview/capturePhoto) and mutated via updateControls,

@@ -421,6 +421,16 @@ fun AudioMeter(level: Float, modifier: Modifier = Modifier) {
  *    will actually write), and the transfer function.
  *  - Both: metering pattern (when not matrix), lock state, and non-default stabilization state.
  */
+/**
+ * The ONE gate for the OIS OFF tag and its compact-strip visibility clause (review L11 /
+ * verification S5). Capability-gated: `oisEnabled` is a persisted preference that normalization
+ * deliberately never touches on no-OIS routes, so without the capability axis the tag claimed a
+ * control the lens does not have — and the strip clause forced the compact OSD visible for a tag
+ * the render side suppresses. A null-caps route (mid-reopen) counts as unavailable.
+ */
+internal fun oisOffTagVisible(photoMode: Boolean, oisAvailable: Boolean, oisEnabled: Boolean): Boolean =
+    photoMode && oisAvailable && !oisEnabled
+
 internal fun compactShootingStatusVisible(state: CameraUiState): Boolean =
     state.activeMemorySlot != null ||
         // FRONT changes what the app IS (the teleconverter is forced off, the tele chip and focal
@@ -430,7 +440,11 @@ internal fun compactShootingStatusVisible(state: CameraUiState): Boolean =
         state.mode == CaptureMode.VIDEO ||
         (state.mode == CaptureMode.PHOTO && compactPhotoFormatLabel(state) != null) ||
         (state.mode == CaptureMode.PHOTO && state.driveMode != DriveMode.SINGLE) ||
-        (state.mode == CaptureMode.PHOTO && !state.controls.oisEnabled) ||
+        oisOffTagVisible(
+            photoMode = state.mode == CaptureMode.PHOTO,
+            oisAvailable = state.caps?.oisAvailable == true,
+            oisEnabled = state.controls.oisEnabled,
+        ) ||
         // Accepted hi-res is a non-default capture state — the HR tag must stay reachable in the
         // compact strip too, not only while some other tag happens to force it visible.
         state.photoSessionOutputs.hiRes ||
@@ -612,10 +626,16 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                 }
                 Text(driveLabel, color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
             }
-            // Capability-gated: on a route with no OIS control (front camera), the toggle's value
-            // is inert and announcing "OIS OFF" would claim a control the lens does not have —
-            // the request builder applies the key only when caps.oisAvailable (review L11).
-            if (state.caps?.oisAvailable == true && !state.controls.oisEnabled) {
+            // Shared gate with the compact-strip clause (oisOffTagVisible): on a route with no OIS
+            // control the toggle's value is inert and announcing "OIS OFF" would claim a control
+            // the lens does not have — the request builder applies the key only when
+            // caps.oisAvailable (review L11 / verification S5).
+            if (oisOffTagVisible(
+                    photoMode = true,
+                    oisAvailable = state.caps?.oisAvailable == true,
+                    oisEnabled = state.controls.oisEnabled,
+                )
+            ) {
                 Text("OIS OFF", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
             }
             if (!compact && state.timer != ShutterTimer.OFF) {
