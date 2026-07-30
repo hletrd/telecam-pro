@@ -141,6 +141,16 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
         currentGl().setTeleFinder(enabled)
     }
 
+    /**
+     * Change-gated: pushed from every finder re-resolve (zoom writes at pinch rate included), while
+     * the value only moves at a TC toggle or a converter-profile change.
+     */
+    fun setFinderFieldScale(scale: Float) {
+        if (config.snapshot().finderFieldScale == scale) return
+        config.update { it.copy(finderFieldScale = scale) }
+        currentGl().setFinderFieldScale(scale)
+    }
+
     /** Replays all desired handler-backed assists into exactly one fresh GL generation. */
     fun replayAll(
         gl: GlPipeline = currentGl(),
@@ -158,5 +168,6 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
         gl.setPunchIn(snapshot.punchIn)
         gl.setTeleFinder(snapshot.teleFinder)
         gl.setSourceHlg(snapshot.sourceHlg)
+        gl.setFinderFieldScale(snapshot.finderFieldScale)
     }
 }

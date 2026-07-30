@@ -2187,6 +2187,10 @@ class CameraEngine(private val context: Context) {
         if (teleconverterMagnification == m) return
         teleconverterMagnification = m
         controller?.setTeleconverterMagnification(m)
+        // The Loupe Overview's pretend-field scale follows the selected converter (the hint marks
+        // the magnified view against the PRE-CONVERTER world) — re-resolve so a profile change with
+        // the finder already visible resizes the hint without waiting for a door.
+        pushTeleFinder()
     }
 
     /**
@@ -4469,6 +4473,12 @@ class CameraEngine(private val context: Context) {
         // (verification S2). Reentrant for callers already holding the engine monitor; the body is
         // a few boolean reads plus a change-gated handler post.
         synchronized(this) {
+            // BEFORE the resolved change-gate below: the field scale can change (converter profile
+            // picked) while resolved stays true, and an early return must not swallow it. Its own
+            // change gate lives in RendererAssists, so the pinch-rate calls stay cheap.
+            rendererAssists.setFinderFieldScale(
+                if (teleconverterMode) teleconverterMagnification else 1f,
+            )
             val resolved = teleFinderResolved(
                 rendererAssists.isTeleFinderEnabled(),
                 teleconverterMode,

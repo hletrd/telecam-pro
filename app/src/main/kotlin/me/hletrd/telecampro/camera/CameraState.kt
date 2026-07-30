@@ -492,10 +492,21 @@ fun loupeHintRect(
     centerTexX: Float,
     centerTexY: Float,
     rotationDegrees: Int,
+    // The overview PRETENDS to be this many times wider than the delivered frame. 1 = honest
+    // single-stream geometry (the hint marks the loupe crop within the frame the box actually
+    // draws). In TELE the operator reads the upright corner box as the PRE-CONVERTER world — the
+    // naked-eye orientation reference the un-rotated draw already role-plays — so the hint must
+    // mark the main view's field ON THAT SCALE: a 4.3× converter makes the magnified view 4.3×
+    // narrower against the world than against the delivered frame (operator-specified 2026-07-31,
+    // same class of deliberate declination as the overview's rotationOverrideDeg = 0). Both the
+    // size AND the centre offset divide by it: a point in the delivered frame sits at
+    // 0.5 + (p − 0.5)/scale of the pretend-wide field the box stands in for.
+    fieldScale: Float = 1f,
 ): FinderRect {
-    val f = visibleFraction.coerceIn(0.01f, 1f)
-    val cx = centerTexX.coerceIn(0f, 1f) - 0.5f
-    val cy = centerTexY.coerceIn(0f, 1f) - 0.5f
+    val scale = fieldScale.coerceAtLeast(1f)
+    val f = (visibleFraction / scale).coerceIn(0.01f, 1f)
+    val cx = (centerTexX.coerceIn(0f, 1f) - 0.5f) / scale
+    val cy = (centerTexY.coerceIn(0f, 1f) - 0.5f) / scale
     // Rotate the centre offset about the frame centre by the same texcoord rotation the draws use.
     val (rx, ry) = when (((rotationDegrees % 360) + 360) % 360) {
         90 -> -cy to cx

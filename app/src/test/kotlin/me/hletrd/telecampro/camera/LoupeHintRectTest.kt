@@ -17,6 +17,38 @@ class LoupeHintRectTest {
     private val finder = FinderRect(x = 40f, y = 60f, width = 300f, height = 400f)
 
     @Test
+    fun `fieldScale shrinks size AND centre offset - the pre-converter-world semantics`() {
+        // TELE, 4.3x converter (operator-specified 2026-07-31): the upright overview stands in for
+        // the PRE-CONVERTER world, so the magnified view's mark divides by the converter ratio on
+        // BOTH axes. Size: 0.4 / 4.3. Offset: a loupe point at texcoord 0.75 (0.25 off centre in
+        // the delivered frame) sits only 0.25/4.3 off centre of the pretend-wide field.
+        val scaled = loupeHintRect(
+            finder, visibleFraction = 0.4f, centerTexX = 0.75f, centerTexY = 0.5f,
+            rotationDegrees = 0, fieldScale = 4.3f,
+        )
+        assertEquals(300f * 0.4f / 4.3f, scaled.width, 1e-3f)
+        assertEquals(400f * 0.4f / 4.3f, scaled.height, 1e-3f)
+        val expectedCentreX = 40f + (0.5f + 0.25f / 4.3f) * 300f
+        assertEquals(expectedCentreX, scaled.x + scaled.width / 2f, 1e-3f)
+        // Vertical stays centred (loupe y at 0.5).
+        assertEquals(60f + 200f, scaled.y + scaled.height / 2f, 1e-3f)
+    }
+
+    @Test
+    fun `fieldScale one is byte-identical to the honest single-stream geometry`() {
+        val base = loupeHintRect(finder, 0.4f, 0.3f, 0.7f, rotationDegrees = 180)
+        val explicit = loupeHintRect(finder, 0.4f, 0.3f, 0.7f, rotationDegrees = 180, fieldScale = 1f)
+        assertEquals(base, explicit)
+    }
+
+    @Test
+    fun `a sub-one fieldScale is clamped - the overview never pretends to be narrower`() {
+        val clamped = loupeHintRect(finder, 0.4f, 0.5f, 0.5f, rotationDegrees = 0, fieldScale = 0.25f)
+        val unit = loupeHintRect(finder, 0.4f, 0.5f, 0.5f, rotationDegrees = 0, fieldScale = 1f)
+        assertEquals(unit, clamped)
+    }
+
+    @Test
     fun `a centred loupe puts the hint dead centre at the main view's own fraction`() {
         // PUNCH_IN_CROP 0.6 at rest (zoomComp 1) shows 40% of the frame, so the hint is 40% of the
         // finder — the number a user can check by eye against how much the loupe magnifies.

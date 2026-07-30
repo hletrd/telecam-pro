@@ -27,6 +27,13 @@ internal data class RendererConfig(
      * (2026-07-29): the push logged fine and the output never changed.
      */
     val sourceHlg: Boolean = false,
+    /**
+     * The Loupe Overview's pretend-field scale (see loupeHintRect's fieldScale): the selected
+     * converter's magnification while TELE, 1 otherwise. Route state in the replayed snapshot for
+     * the same reason as [sourceHlg] — a fresh GL generation must not fall back to 1 and quietly
+     * grow the hint by the converter ratio.
+     */
+    val finderFieldScale: Float = 1f,
 )
 
 /** Thread-safe copy-on-write owner for [RendererConfig]. */

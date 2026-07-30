@@ -140,6 +140,7 @@ class GlPipeline {
     // Movable focus loupe: texcoord point the punch-in zoom magnifies (0.5,0.5 = frame center), set
     // from the tapped point so the loupe follows an off-center subject. Preview-only.
     private var punchInX = 0.5f
+    private var finderFieldScale = 1f
     private var punchInY = 0.5f
     // TELE finder PIP: the RESOLVED enable flag (user toggle && TELE && 4:3, resolved by
     // CameraEngine.pushTeleFinder). The finder actually draws only when this is set AND the
@@ -488,6 +489,9 @@ class GlPipeline {
 
     /** Preview-only center crop-zoom (focus punch-in); does not affect the recorded/encoder frame. */
     fun setPunchIn(enabled: Boolean) = post { punchIn = enabled }
+
+    /** Loupe Overview pretend-field scale (converter magnification while TELE, else 1). */
+    fun setFinderFieldScale(scale: Float) = post { finderFieldScale = scale.coerceAtLeast(1f) }
 
     /** TELE finder PIP: with the resolved flag on and the punch-in loupe active, draw a small
      *  corner viewport re-drawing the FULL current camera frame (single-stream: the HAL zoom crop
@@ -966,6 +970,11 @@ class GlPipeline {
                                     (zoomTarget / halZoom.coerceAtLeast(0.01f)).coerceAtLeast(0.01f),
                                 centerTexX = loupeX,
                                 centerTexY = loupeY,
+                                // TELE: the upright overview stands in for the PRE-CONVERTER world,
+                                // so the hint marks the main view's field on that scale — a 4.3×
+                                // converter shrinks it 4.3× beyond the loupe fraction
+                                // (operator-specified 2026-07-31; see loupeHintRect).
+                                fieldScale = finderFieldScale,
                                 // MUST match the overview draw's own rotation, which is now pinned
                                 // upright above — not previewRotationDeg. The hint marks a position
                                 // INSIDE that box, so if the box stops rotating and the hint keeps
