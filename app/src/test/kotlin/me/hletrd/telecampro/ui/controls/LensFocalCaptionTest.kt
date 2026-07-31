@@ -8,20 +8,22 @@ import org.junit.Test
 
 /**
  * The Lens page caption must be truthful about the converter: lens picks are zoom presets that do
- * NOT bundle TELE, so the 3× caption may only claim "300 mm equiv." while the separate toggle is
+ * NOT bundle TELE, so the 3× caption may only claim "300 mm" while the separate toggle is
  * actually on (an operator relying on the caption could otherwise shoot a mounted converter
  * without its afocal correction).
  */
 class LensFocalCaptionTest {
     // The kit optic, spelled out: the caption now takes the SELECTED converter's focal, so the
-    // historical "300 mm equiv." string is asserted against the historical magnification.
+    // historical "300 mm" string is asserted against the historical magnification. The " equiv."
+    // suffix was dropped 2026-07-31 (UI review #36): every rail sibling is equally a 35 mm
+    // equivalent figure, so the lone suffix implied the others were physical focals.
     private val kitFocal = effectiveFocalMm(TELECONVERTER_MAGNIFICATION)
 
 
     @Test
     fun `tele3x caption follows the converter state`() {
         assertEquals("70 mm", lensFocalCaption(LensChoice.TELE3X, teleconverter = false, teleconverterFocalMm = kitFocal))
-        assertEquals("300 mm equiv.", lensFocalCaption(LensChoice.TELE3X, teleconverter = true, teleconverterFocalMm = kitFocal))
+        assertEquals("300 mm", lensFocalCaption(LensChoice.TELE3X, teleconverter = true, teleconverterFocalMm = kitFocal))
     }
 
     @Test
@@ -29,7 +31,7 @@ class LensFocalCaptionTest {
         // A generic 2x on the 70 mm host is 140 mm — claiming the kit's 300 would misdescribe the
         // optic the operator actually mounted.
         assertEquals(
-            "140 mm equiv.",
+            "140 mm",
             lensFocalCaption(
                 LensChoice.TELE3X,
                 teleconverter = true,

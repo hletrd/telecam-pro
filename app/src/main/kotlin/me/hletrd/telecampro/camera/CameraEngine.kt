@@ -2157,7 +2157,7 @@ class CameraEngine(private val context: Context) {
                     )
                 }.onFailure {
                     coldStartRetryGate.abandon(failure.token)
-                    onStatus?.invoke("Camera unavailable")
+                    onStatus?.invoke("Camera unavailable. Reopen the app.")
                 }
             }
         }
@@ -2249,7 +2249,7 @@ class CameraEngine(private val context: Context) {
     fun setVideoResolution(s: Size): Boolean {
         val offered = caps?.let { if (openGate) it.openGateVideoSizes else it.availableVideoSizes }
         if (offered != null && s !in offered) {
-            onStatus?.invoke("Resolution unavailable on this camera")
+            onStatus?.invoke("Selected resolution unavailable")
             return false
         }
         // Remember the user's pick so lens switches and the initial open don't silently re-derive
@@ -2590,9 +2590,9 @@ class CameraEngine(private val context: Context) {
             // the old camera keeps streaming while they run, shrinking the visible freeze.
             val sel = selectCurrentLens() ?: run {
                 if (recoverColdPreflight) {
-                    scheduleColdStartRetry(transaction, "Camera ID unavailable")
+                    scheduleColdStartRetry(transaction, "Camera unavailable")
                 } else {
-                    rollbackOptics(transaction, "Camera ID unavailable; camera unchanged")
+                    rollbackOptics(transaction, "Camera unavailable; camera unchanged")
                 }
                 return@execute
             }
@@ -3024,7 +3024,7 @@ class CameraEngine(private val context: Context) {
         when {
             formats.wantsProcessedStill && !effFormats.wantsProcessedStill && effFormats.dngRaw ->
                 // Word for word the caption PhotoFormatToggles shows for the same output mask.
-                onStatus?.invoke("HEIF/JPEG unavailable; DNG only")
+                onStatus?.invoke("HEIF/JPEG unavailable · DNG only")
             formats.dngRaw && !effFormats.dngRaw ->
                 onStatus?.invoke("RAW unavailable")
         }
@@ -3465,7 +3465,7 @@ class CameraEngine(private val context: Context) {
                         }
                     }
                     if (!formats.wantsProcessedStill && !formats.dngRaw) {
-                        reportStatus("No output selected")
+                        reportStatus("Still capture unavailable")
                     }
                 } finally {
                     if (!processedQueued) finishProcessed()
@@ -3564,7 +3564,7 @@ class CameraEngine(private val context: Context) {
         // finalized) — refuse until finishRecording completes rather than starting a second recorder
         // whose AudioRecord init would fail (silent video-only clip).
         if (recorderTeardownInFlight) {
-            onStatus?.invoke("Finalizing previous clip")
+            onStatus?.invoke("Finishing previous clip")
             return false
         }
         val processAdmission = UnsafeRecorderQuarantine.snapshotAdmission(processNativeOwner) ?: run {
@@ -3572,7 +3572,7 @@ class CameraEngine(private val context: Context) {
                 if (UnsafeRecorderQuarantine.isActive()) {
                     UNSAFE_RECORDER_RESTART_STATUS
                 } else {
-                    "Recording is already active"
+                    "Recording already active"
                 },
             )
             return false
@@ -3590,7 +3590,7 @@ class CameraEngine(private val context: Context) {
                 } catch (t: Throwable) {
                     android.util.Log.w("CameraEngine", "REC admission threw; releasing mic claim", t)
                     abortRecordingStart()
-                    onStatus?.invoke("REC failed")
+                    onStatus?.invoke("Recording failed")
                     false
                 }
             }
@@ -3612,7 +3612,7 @@ class CameraEngine(private val context: Context) {
         } ?: true
         if (!meterReleased) {
             abortRecordingStart()
-            onStatus?.invoke("Audio is busy. Try again.")
+            onStatus?.invoke("Microphone busy. Try again.")
             return false
         }
         if (!UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission)) {
@@ -3755,7 +3755,7 @@ class CameraEngine(private val context: Context) {
             // doesn't linger as a 0-byte orphan (VideoRecorder.start already released its own half).
             MediaStoreWriter.delete(context, uri)
             abortRecordingStart()
-            onStatus?.invoke("REC failed"); return false
+            onStatus?.invoke("Recording failed"); return false
         }
         if (!UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission)) {
             stopUnattachedRecording(rec, recordingCaptureId)

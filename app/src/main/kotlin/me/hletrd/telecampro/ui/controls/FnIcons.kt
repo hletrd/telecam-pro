@@ -2,11 +2,11 @@ package me.hletrd.telecampro.ui.controls
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AspectRatio
-import androidx.compose.material.icons.outlined.BlurOn
+import androidx.compose.material.icons.outlined.Contrast
+import androidx.compose.material.icons.outlined.Deblur
 import androidx.compose.material.icons.outlined.BurstMode
 import androidx.compose.material.icons.outlined.CenterFocusStrong
 import androidx.compose.material.icons.outlined.CropFree
-import androidx.compose.material.icons.outlined.Exposure
 import androidx.compose.material.icons.outlined.FilterCenterFocus
 import androidx.compose.material.icons.outlined.FlashOn
 import androidx.compose.material.icons.outlined.Fullscreen
@@ -42,12 +42,16 @@ internal fun fnSlotIcon(slot: FnSlot): ImageVector = when (slot) {
     FnSlot.SHUTTER -> Icons.Outlined.ShutterSpeed
     FnSlot.ISO -> Icons.Outlined.Iso
     FnSlot.WB -> Icons.Outlined.WbSunny
-    FnSlot.EV -> Icons.Outlined.Exposure
+    // Contrast, not Exposure: Iso and Exposure are near-identical plus/minus-diagonal glyphs, and a
+    // custom list holding both ISO and EV wore the same icon twice at 14 dp (UI review #38).
+    FnSlot.EV -> Icons.Outlined.Contrast
     FnSlot.ZOOM -> Icons.Outlined.ZoomIn
     FnSlot.STABILIZATION -> Icons.Outlined.VideoStable
     FnSlot.DRIVE -> Icons.Outlined.BurstMode
     FnSlot.METERING -> Icons.Outlined.FilterCenterFocus
-    FnSlot.PEAKING -> Icons.Outlined.BlurOn
+    // Deblur, not BlurOn: peaking HIGHLIGHTS in-focus edges — a blur glyph was the semantic
+    // opposite (UI review #39).
+    FnSlot.PEAKING -> Icons.Outlined.Deblur
     FnSlot.ZEBRA -> Icons.Outlined.Texture
     FnSlot.TRANSFER -> Icons.Outlined.ShowChart
     FnSlot.AUDIO_SCENE -> Icons.Outlined.SurroundSound

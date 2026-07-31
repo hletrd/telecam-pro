@@ -27,12 +27,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -40,6 +43,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -162,6 +166,9 @@ internal fun pixelChipColors() = FilterChipDefaults.filterChipColors(
     labelColor = CameraColors.TextPrimary,
     selectedContainerColor = CameraColors.TextPrimary,
     selectedLabelColor = Color.Black,
+    // The multi-select check (OutputFormatChip) inherits this: without it M3's default
+    // primary-tinted leading icon rendered near-invisible lavender on the filled white chip.
+    selectedLeadingIconColor = Color.Black,
 )
 
 /**
@@ -250,6 +257,13 @@ internal fun <T> SegmentedSelector(
     ) {
         SettingsRowLabel(label, enabled = enabled)
         val optionScroll = rememberScrollState()
+        // The CURRENT value must never sit past the scroll edge: Gamma's default (SDR) is declared
+        // last in its enum, so a fresh open showed a selector with NO visible selected chip — the
+        // trailing fade hints "more options", not "your setting is hidden" (UI review #1). The
+        // requester scrolls the selected chip into view on open and whenever the value changes
+        // externally (MR recall, capability reconciliation); a user's own tap is already in view.
+        val selectedIntoView = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
+        LaunchedEffect(selected) { selectedIntoView.bringIntoView() }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -277,7 +291,15 @@ internal fun <T> SegmentedSelector(
                         // semantics(), not clearAndSetSemantics(): FilterChip's own selectable node
                         // supplies the selected / not-selected announcement, and only the NAME is
                         // ours to set here.
-                        modifier = Modifier.semantics { contentDescription = optionName },
+                        modifier = Modifier
+                            .semantics { contentDescription = optionName }
+                            .then(
+                                if (isSelected) {
+                                    Modifier.bringIntoViewRequester(selectedIntoView)
+                                } else {
+                                    Modifier
+                                },
+                            ),
                         // labelMedium binds the chip to the SAME size as the row label naming it.
                         // Material's FilterChipTokens.LabelTextFont resolves to labelLarge (14 sp),
                         // so an unbound chip rendered LARGER than that label and larger than the
@@ -302,6 +324,37 @@ internal fun <T> SegmentedSelector(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun OutputFormatChip(
+    name: String,
+    selected: Boolean,
+    enabled: Boolean,
+    onToggle: () -> Unit,
+) {
+    MinTouchTarget48 {
+        FilterChip(
+            selected = selected,
+            onClick = onToggle,
+            enabled = enabled,
+            modifier = Modifier.semantics { contentDescription = segmentedOptionName("Output", name) },
+            leadingIcon = if (selected) {
+                {
+                    Icon(
+                        androidx.compose.material.icons.Icons.Outlined.Check,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
+            } else {
+                null
+            },
+            label = { Text(name, style = MaterialTheme.typography.labelMedium) },
+            colors = pixelChipColors(),
+            border = pixelChipBorder(selected, enabled),
+        )
     }
 }
 
@@ -717,7 +770,10 @@ internal fun TransferSelector(
     enabled: Boolean = true,
 ) {
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        SettingsRowLabel("Transfer", enabled = enabled)
+        // "Gamma", matching the Fn tile, dial chip, My Menu entry, and "Gamma Disp. Assist" — the row
+        // that OWNS the setting was the odd one out, so a user cycling the Gamma tile found no Gamma
+        // row in the menu (UI review #2; the same findability failure as Scene → Directionality).
+        SettingsRowLabel("Gamma", enabled = enabled)
         // Scrollable like SegmentedSelector. Five entries USED to exceed the sheet width outright:
         // a fixed Row squeezed the last visible chip until its label broke mid-word ("Log/C3")
         // while SDR fell off entirely. Binding the chips to labelMedium (12 sp, from 14 sp) took
@@ -725,6 +781,10 @@ internal fun TransferSelector(
         // the scroll and maxLines=1 stay: they are what keeps a future entry, a longer label, or a
         // larger system font scale from ever wrapping a chip label again.
         val optionScroll = rememberScrollState()
+        // Same selected-into-view rule as SegmentedSelector (UI review #1): SDR — the DEFAULT — is
+        // the last enum entry, so every fresh open of this row hid the current value off-edge.
+        val selectedIntoView = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
+        LaunchedEffect(transfer) { selectedIntoView.bringIntoView() }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -737,13 +797,21 @@ internal fun TransferSelector(
         ) {
             ColorTransfer.entries.forEach { option ->
                 val isSelected = transfer == option
-                val optionName = segmentedOptionName("Transfer", transferLabel(option))
+                val optionName = segmentedOptionName("Gamma", transferLabel(option))
                 MinTouchTarget48 {
                     FilterChip(
                         selected = isSelected,
                         onClick = { onTransfer(option) },
                         enabled = enabled,
-                        modifier = Modifier.semantics { contentDescription = optionName },
+                        modifier = Modifier
+                            .semantics { contentDescription = optionName }
+                            .then(
+                                if (isSelected) {
+                                    Modifier.bringIntoViewRequester(selectedIntoView)
+                                } else {
+                                    Modifier
+                                },
+                            ),
                         label = {
                             Text(
                                 transferLabel(option),
@@ -791,36 +859,24 @@ internal fun PhotoFormatToggles(
         // No `enabled` axis on this row: each format chip carries its own availability, so the label
         // itself is never the thing that is unavailable.
         SettingsRowLabel("Output")
+        // Chips + caption bind at the documented 4 dp caption gap (Captioned's own rhythm) while
+        // the label keeps the 6 dp row gap — the caption used to float at the page rhythm and read
+        // as a separate row (UI review #32).
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            MinTouchTarget48 {
-                FilterChip(
-                    selected = formats.heif,
-                    onClick = { onSetPhotoFormats(formats.copy(heif = !formats.heif)) },
-                    enabled = heifEnabled,
-                    label = { Text("HEIF", style = MaterialTheme.typography.labelMedium) },
-                    colors = pixelChipColors(),
-                    border = pixelChipBorder(formats.heif, heifEnabled),
-                )
+            // The sheet's ONE multi-select chip row. Two things its exclusive siblings do not get
+            // (UI review #31/#33): each chip announces WITH row context ("Output, HEIF" — the same
+            // orphan-label fix segmentedOptionName exists for; selectableGroup stays deliberately
+            // absent, it would lie about exclusivity), and a selected chip wears the standard
+            // leading check so two lit chips read as pick-many, not a rendering glitch.
+            OutputFormatChip("HEIF", formats.heif, heifEnabled) {
+                onSetPhotoFormats(formats.copy(heif = !formats.heif))
             }
-            MinTouchTarget48 {
-                FilterChip(
-                    selected = formats.jpeg,
-                    onClick = { onSetPhotoFormats(formats.copy(jpeg = !formats.jpeg)) },
-                    enabled = jpegEnabled,
-                    label = { Text("JPEG", style = MaterialTheme.typography.labelMedium) },
-                    colors = pixelChipColors(),
-                    border = pixelChipBorder(formats.jpeg, jpegEnabled),
-                )
+            OutputFormatChip("JPEG", formats.jpeg, jpegEnabled) {
+                onSetPhotoFormats(formats.copy(jpeg = !formats.jpeg))
             }
-            MinTouchTarget48 {
-                FilterChip(
-                    selected = formats.dngRaw,
-                    onClick = { onSetPhotoFormats(formats.copy(dngRaw = !formats.dngRaw)) },
-                    enabled = dngEnabled,
-                    label = { Text("DNG", style = MaterialTheme.typography.labelMedium) },
-                    colors = pixelChipColors(),
-                    border = pixelChipBorder(formats.dngRaw, dngEnabled),
-                )
+            OutputFormatChip("DNG", formats.dngRaw, dngEnabled) {
+                onSetPhotoFormats(formats.copy(dngRaw = !formats.dngRaw))
             }
         }
         if (!processedAvailable && !rawAvailable) {
@@ -852,10 +908,11 @@ internal fun PhotoFormatToggles(
         } else if (!processedAvailable) {
             Text(
                 // Word for word the status CameraEngine emits for the same accepted-output mask.
-                "HEIF/JPEG unavailable; DNG only",
+                "HEIF/JPEG unavailable · DNG only",
                 color = CameraColors.TextSecondary,
                 style = MaterialTheme.typography.labelSmall,
             )
+        }
         }
     }
 }

@@ -419,7 +419,9 @@ fun AudioMeter(level: Float, modifier: Modifier = Modifier) {
  *    (when not single-shot) and self-timer (when armed).
  *  - VIDEO: focal, the resolved recording spec (resolution · fps · codec · Mbps — what the encoder
  *    will actually write), and the transfer function.
- *  - Both: metering pattern (when not matrix), lock state, and non-default stabilization state.
+ *  - Both: metering pattern (when not matrix), lock state, and — in video — the stabilization tag
+ *    (ALWAYS rendered there, not only when non-default: at 300 mm whether stabilization is active
+ *    is standing information; UI review #7 aligned this doc with the render).
  */
 /**
  * The ONE gate for the OIS OFF tag and its compact-strip visibility clause (review L11 /
@@ -591,13 +593,17 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                 Text("MUTE", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
             }
             val stabTag = when (state.videoStabMode) {
-                VideoStabMode.STANDARD -> "OIS+"
+                // One word family for one control (UI review #7): STANDARD used to read "OIS+",
+                // borrowing the word of the SEPARATE photo "OIS OFF" tag, so across a mode flip two
+                // independent controls read as one. STEADY stays — it is the marketing-free name
+                // the ENHANCED value already owns app-wide.
+                VideoStabMode.STANDARD -> "STAB STD"
                 VideoStabMode.ENHANCED -> "STEADY"
                 VideoStabMode.OFF -> "STAB OFF"
             }
             Text(
                 stabTag,
-                color = if (state.videoStabMode == VideoStabMode.OFF) CameraColors.ManualActive else Color(0xFF4CD964),
+                color = if (state.videoStabMode == VideoStabMode.OFF) CameraColors.ManualActive else CameraColors.StabActive,
                 style = MaterialTheme.typography.labelMedium,
             )
         } else {
@@ -621,7 +627,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                 val driveLabel = when (state.driveMode) {
                     DriveMode.BURST -> "BURST"
                     DriveMode.AEB -> "AEB±2"
-                    DriveMode.TIMELAPSE -> "TL ${state.intervalSec}s"
+                    DriveMode.TIMELAPSE -> "TL${state.intervalSec}s" // no space: the compound-tag family (T3s, AEB±2) writes tight (UI #30)
                     DriveMode.SINGLE -> ""
                 }
                 Text(driveLabel, color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)

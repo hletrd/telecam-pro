@@ -152,6 +152,7 @@ import me.hletrd.telecampro.ui.controls.toggledGridType
 import me.hletrd.telecampro.ui.controls.quickFnEnabled
 import me.hletrd.telecampro.ui.controls.flashModeLabel
 import me.hletrd.telecampro.ui.controls.fnSlotIcon
+import me.hletrd.telecampro.ui.controls.formatEvComp
 import me.hletrd.telecampro.ui.controls.fnSlotLabel
 import me.hletrd.telecampro.ui.controls.gridTypeLabel
 import me.hletrd.telecampro.ui.controls.fnSlotValue
@@ -2118,7 +2119,7 @@ private fun ExposureMeter(
         when {
             state.controls.exposureMode == ExposureMode.MANUAL && manualEv != null -> "M %+.1f".format(java.util.Locale.US, manualEv)
             state.controls.exposureMode == ExposureMode.MANUAL -> "M --"
-            else -> "%+.1f".format(java.util.Locale.US, compensationEv)
+            else -> formatEvComp(compensationEv)
         }
     }
     // Vertical Sony-style scale: +3 EV at the top, -3 EV at the bottom, readout above it.

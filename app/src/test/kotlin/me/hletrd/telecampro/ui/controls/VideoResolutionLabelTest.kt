@@ -17,7 +17,7 @@ class VideoResolutionLabelTest {
         // Full-sensor-class 4:3 (3840x2880 = the 4K-wide 4:3 frame).
         assertEquals("4K 4:3", videoResolutionLabelFor(3840, 2880))
         assertEquals("8K 4:3", videoResolutionLabelFor(7680, 5760))
-        assertEquals("1080 4:3", videoResolutionLabelFor(1920, 1440))
+        assertEquals("1080p 4:3", videoResolutionLabelFor(1920, 1440))
     }
 
     @Test

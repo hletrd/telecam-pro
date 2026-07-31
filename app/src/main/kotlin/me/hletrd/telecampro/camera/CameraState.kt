@@ -138,7 +138,9 @@ enum class MemorySlot(val label: String) { MR1("MR1"), MR2("MR2"), MR3("MR3") }
  * dials; the rest are quick toggles/cycles a Sony user expects to keep out of the deep menu.
  */
 enum class FnSlot(val label: String) {
-    EXPOSURE_MODE("AE"),
+    // "Mode", not "AE": this is the PASM selector, and "AE: M" (auto-exposure: manual) read as a
+    // contradiction on the pro surface (2026-07-31 UI review #22). The sheet row is already "Mode".
+    EXPOSURE_MODE("Mode"),
     FOCUS("Focus"),
     SHUTTER("Shutter"),
     ISO("ISO"),
@@ -151,7 +153,9 @@ enum class FnSlot(val label: String) {
     PEAKING("Peaking"),
     ZEBRA("Zebra"),
     TRANSFER("Gamma"),
-    AUDIO_SCENE("Audio"),
+    // Pairs with the sheet row's "Directionality" (the "Audio" word belongs to the record toggle;
+    // one word naming two controls was the findability failure — 2026-07-31 UI review #3).
+    AUDIO_SCENE("Direction"),
     GRID("Grid"),
     LEVEL("Level"),
     PUNCH_IN("Loupe"),
@@ -163,7 +167,8 @@ enum class FnSlot(val label: String) {
     // NAMES, so appending here never disturbs saved lists; normalizeFnSlots drops unknowns on
     // downgrade by construction.
     FLASH("Flash"),
-    TIMER("Timer"),
+    // Full sheet name; the held-landscape tile shortens through fnOverlayVisualLabel like STAB.
+    TIMER("Self-Timer"),
     ASPECT("Aspect"),
     AUDIO_INPUT("Mic Input");
 

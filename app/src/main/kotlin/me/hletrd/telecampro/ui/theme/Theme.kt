@@ -29,6 +29,9 @@ import me.hletrd.telecampro.R
  * `Color.White` literals in `ui/` are each annotated with which of the two they are.
  */
 object CameraColors {
+    /** The stab OSD tag's active green — the row's one non-Manual accent, hoisted from a raw
+     *  literal so the token policy the file documents actually covers it (UI review #7). */
+    val StabActive = Color(0xFF4CD964)
     /** True-black viewfinder background. */
     val Background = Color(0xFF000000)
     /**

@@ -85,10 +85,10 @@ class MediaReviewSizingTest {
 
     @Test
     fun `still zoom state describes current magnification`() {
-        assertEquals("Magnification 1×", reviewZoomStateDescription(1f))
-        assertEquals("Magnification 4×", reviewZoomStateDescription(4f))
-        assertEquals("Magnification 8×", reviewZoomStateDescription(8f))
-        assertEquals("Magnification 2.5×", reviewZoomStateDescription(2.5f))
+        assertEquals("Zoom 1×", reviewZoomStateDescription(1f))
+        assertEquals("Zoom 4×", reviewZoomStateDescription(4f))
+        assertEquals("Zoom 8×", reviewZoomStateDescription(8f))
+        assertEquals("Zoom 2.5×", reviewZoomStateDescription(2.5f))
     }
 
     @Test

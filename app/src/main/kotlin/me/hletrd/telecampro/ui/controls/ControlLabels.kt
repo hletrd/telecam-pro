@@ -122,8 +122,18 @@ internal fun flashModeLabel(mode: FlashMode): String = when (mode) {
     FlashMode.TORCH -> "Torch"
 }
 
+/**
+ * The ONE EV-compensation readout format: Sony bodies print "±0.0" at zero, and "%+.1f" alone
+ * rendered "+0.0" — a signed claim about a neutral value. Three surfaces share this (Fn slot, dial
+ * chip, viewfinder meter readout); route them here so they cannot drift (UI review #35).
+ */
+internal fun formatEvComp(stops: Float): String =
+    if (stops == 0f) "±0.0" else "%+.1f".format(java.util.Locale.US, stops)
+
 internal fun gridTypeLabel(type: GridType): String = when (type) {
-    GridType.NONE -> "None"
+    // "Off", not "None": every sibling on/off-style picker in the tab (Frame Lines, Sharpness,
+    // NR, Flash, Timer) says "Off", and Sony's own idiom is "Grid Line: Off" (UI review #18).
+    GridType.NONE -> "Off"
     GridType.THIRDS -> "Thirds"
     GridType.GOLDEN -> "Golden"
     GridType.SQUARE -> "Square"
@@ -189,7 +199,7 @@ internal fun formatFocalMm(mm: Float): String = "${kotlin.math.round(mm).toInt()
 // The 3× caption must be TRUTHFUL about the converter: lens picks are zoom presets that do NOT
 // bundle TELE, so an unconditional "+ TC = 300 mm" claimed the afocal correction was active when
 // the adjacent toggle was off — an operator could shoot a mounted converter uncorrected. The focal
-// itself follows the SELECTED converter, so a generic 2× reads "140 mm equiv.", not the kit's 300.
+// itself follows the SELECTED converter, so a generic 2× reads "140 mm", not the kit's 300.
 internal fun lensFocalCaption(
     lens: me.hletrd.telecampro.camera.LensChoice,
     teleconverter: Boolean,
@@ -198,7 +208,7 @@ internal fun lensFocalCaption(
     me.hletrd.telecampro.camera.LensChoice.ULTRAWIDE -> "14 mm"
     me.hletrd.telecampro.camera.LensChoice.MAIN -> "23 mm"
     me.hletrd.telecampro.camera.LensChoice.TELE3X ->
-        if (teleconverter) "${formatFocalMm(teleconverterFocalMm)} equiv." else "70 mm"
+        if (teleconverter) "${formatFocalMm(teleconverterFocalMm)}" else "70 mm"
     me.hletrd.telecampro.camera.LensChoice.TELE10X -> "230 mm"
 }
 
@@ -255,7 +265,7 @@ internal fun videoResolutionLabelFor(width: Int, height: Int): String {
         height >= 5760 -> "8K 4:3"
         height >= 2880 -> "4K 4:3"
         height >= 1920 -> "2.5K 4:3"
-        height >= 1440 -> "1080 4:3"
+        height >= 1440 -> "1080p 4:3"
         else -> "${width}×$height"
     }
     return when (height) {

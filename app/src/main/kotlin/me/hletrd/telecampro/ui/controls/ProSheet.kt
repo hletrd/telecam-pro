@@ -482,9 +482,26 @@ private fun DrawScope.drawTabIcon(tab: ProSheetTab, color: Color) {
             drawRect(color, topLeft = Offset(mid + 1.dp.toPx(), midY + 1.dp.toPx()), size = androidx.compose.ui.geometry.Size(size.width - inset - mid - 1.dp.toPx(), size.height - inset - midY - 1.dp.toPx()), style = stroke)
         }
         ProSheetTab.ADVANCED -> {
-            drawCircle(color, radius = size.minDimension * 0.4f, center = Offset(size.width * 0.38f, size.height * 0.38f), style = stroke)
-            drawCircle(color, radius = size.minDimension * 0.16f, center = Offset(size.width * 0.38f, size.height * 0.38f))
-            drawLine(color, Offset(size.width * 0.58f, size.height * 0.58f), Offset(size.width * 0.92f, size.height * 0.92f), strokeWidth = 2.2.dp.toPx())
+            // A WRENCH, not the old magnifier: a lens universally reads as Search, and this rail
+            // already spends the reticle/star/camera glyphs on literal category matches (UI review
+            // #41). Same stroke primitives and weight as every sibling: an open C-jaw (arc) at the
+            // top-left, a straight handle to the bottom-right.
+            drawArc(
+                color,
+                startAngle = 300f,
+                sweepAngle = 240f,
+                useCenter = false,
+                topLeft = Offset(size.width * 0.10f, size.height * 0.10f),
+                size = androidx.compose.ui.geometry.Size(size.width * 0.44f, size.height * 0.44f),
+                style = stroke,
+            )
+            drawLine(
+                color,
+                Offset(size.width * 0.44f, size.height * 0.44f),
+                Offset(size.width * 0.88f, size.height * 0.88f),
+                strokeWidth = 2.6.dp.toPx(),
+                cap = androidx.compose.ui.graphics.StrokeCap.Round,
+            )
         }
     }
 }
@@ -651,7 +668,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
     val availability = remember(state.caps, state.controls) {
         controlAvailability(state.caps?.controlCapabilities(), state.controls)
     }
-    TabTitle("Shooting")
+    TabTitle("Shoot")
     SectionHeader("Format")
     PhotoFormatToggles(
         formats = state.photoFormats,
@@ -729,6 +746,10 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         // tele caps profile crossing the TELE display ceiling would otherwise crash every
         // recomposition of this tab.
         if (zHi > loDisplay) {
+            // Framing state, not an output-format fact — the same misfiling Release fixed for the
+            // drive rows (UI review #14). The Assist tab already owns "Framing" for overlays; here
+            // the word covers the one live framing control this tab carries.
+            SectionHeader("Framing")
             LabeledSlider(
                 label = "Zoom",
                 valueLabel = formatZoomMultiplier(state.controls.zoomRatio * zBase),
@@ -739,7 +760,10 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         }
     }
     LabeledSlider(
-        label = "JPEG Quality",
+        // "Still", not "JPEG": the slider governs BOTH still containers (StillCapturePipeline hands
+        // the same value to HeifCapture), and HEIF is a default output — the old name claimed the
+        // control skipped a HEIF-only shooter's files (UI review #8).
+        label = "Still Quality",
         valueLabel = state.controls.jpegQuality.toString(),
         value = state.controls.jpegQuality.toFloat().coerceIn(1f, 100f),
         onValueChange = { actions.onJpegQuality(it.roundToInt()) },
@@ -844,6 +868,9 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         enabled = availability.meteringModes.size > 1,
     )
 
+    // The one eyebrow this longest-scrolling tab gets (UI review #15): the exposure block above is
+    // a single train of thought from Mode, but WB opens a different subject mid-scroll.
+    SectionHeader("White Balance")
     SegmentedSelector(
         label = "WB",
         options = availability.wbModes,
@@ -1008,7 +1035,7 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
             enabled = rearOpticsMutable,
         )
     }
-    Captioned(if (rearRoute) "3× lens only" else null) {
+    Captioned(if (rearRoute) "Uses the 3× lens" else null) {
         ToggleRow(
             label = "Teleconverter",
             checked = state.teleconverterMode,
@@ -1077,9 +1104,13 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
     SectionHeader("Stabilization")
     Captioned(
         when (state.videoStabMode) {
-            VideoStabMode.OFF -> "Off"
+            // null, not "Off": the selected chip already says Off, and a caption restating the
+            // control 4 dp under itself is the slop class this file's convention exists to prevent
+            // (UI review #10). The other branches earn their line. " · ", not a comma — the app's
+            // one separator register (#17).
+            VideoStabMode.OFF -> null
             VideoStabMode.STANDARD -> "OIS+EIS"
-            VideoStabMode.ENHANCED -> "OIS+EIS, crop"
+            VideoStabMode.ENHANCED -> "OIS+EIS · crop"
         },
     ) {
         SegmentedSelector(
@@ -1170,7 +1201,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     if (fpsOptions.isEmpty()) {
         // Same capability-caption colour rule as the resolution branch above.
         Text(
-            "No supported frame rate",
+            "No supported FPS",
             color = CameraColors.TextSecondary,
             style = MaterialTheme.typography.labelSmall,
         )
@@ -1200,9 +1231,14 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         state.videoFrameRate.encoderRate,
         me.hletrd.telecampro.camera.effectiveBpp(state.bitrateLevel, codec), codec,
     ) / 1_000_000
-    LabelValueRow(
-        label = "Encoder",
-        valueLabel = "${videoCodecLabelShort(codec)} · ${videoResolutionLabel(state.videoResolution)} · ${state.videoFrameRate.label}p · $mbps Mbps",
+    // A derived READOUT, not a live control: it rides the caption idiom (dim, 4 dp under the
+    // Bitrate group it summarizes) so the SemiBold row ladder stays reserved for things a finger
+    // can change, and the 12 dp base gap returns to being the boundary before Gamma
+    // (UI review #16).
+    Text(
+        "${videoCodecLabelShort(codec)} · ${videoResolutionLabel(state.videoResolution)} · ${state.videoFrameRate.label}p · $mbps Mbps",
+        color = CameraColors.TextSecondary,
+        style = MaterialTheme.typography.labelSmall,
     )
     // One terse source caveat (cycle-6 A26/D-08): the named log curves are real math, but they bake
     // onto the already-tone-mapped SDR stream — no scene-referred latitude is recovered (CLAUDE.md
@@ -1225,7 +1261,9 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
 
     SectionHeader("Audio")
     ToggleRow(
-        label = "Audio",
+        // "Record Audio", not a verbatim restatement of the section header above it — and the bare
+        // word now belongs to nothing, so the Fn "Direction" cycler no longer collides (UI review #3).
+        label = "Record Audio",
         checked = state.recordAudio,
         onCheckedChange = actions::onToggleRecordAudio,
         enabled = recordingMutable,
@@ -1313,17 +1351,12 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
         onCheckedChange = actions::onToggleGammaAssist,
         enabled = state.transfer.isLog,
     )
-    SegmentedSelector(
-        label = "Frame Lines",
-        options = FrameLineType.entries,
-        selected = state.frameLines,
-        labelFor = { it.label },
-        onSelect = actions::onFrameLines,
-    )
     SectionHeader("Exposure Aids")
     ToggleRow(label = "Zebra", checked = state.zebra, onCheckedChange = actions::onToggleZebra)
     SegmentedSelector(
-        label = "Zebra IRE",
+        // "Level" with % values (Sony: "Zebra Level"): the old label named IRE while every chip
+        // printed a percent sign — one unit promised, another worn (UI review #19).
+        label = "Zebra Level",
         options = ZebraLevel.entries,
         selected = state.zebraLevel,
         labelFor = {
@@ -1341,6 +1374,15 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
     ToggleRow(label = "Histogram", checked = state.histogram, onCheckedChange = actions::onToggleHistogram)
     ToggleRow(label = "Waveform", checked = state.waveform, onCheckedChange = actions::onToggleWaveform)
     SectionHeader("Framing")
+    // Beside Grid, not under Monitor (UI review #20): both are framing overlays, and filing half of
+    // them a section away made a user scanning for framing marks miss this one.
+    SegmentedSelector(
+        label = "Frame Lines",
+        options = FrameLineType.entries,
+        selected = state.frameLines,
+        labelFor = { it.label },
+        onSelect = actions::onFrameLines,
+    )
     SegmentedSelector(
         label = "Grid",
         options = GridType.entries,
@@ -1352,9 +1394,10 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
     SectionHeader("Focus Aids")
     // "Loupe" app-wide (cycle-6 D-04): Fn chip, key-action label, and LOUPE OSD tag already use it.
     ToggleRow(label = "Loupe", checked = state.punchIn, onCheckedChange = actions::onTogglePunchIn)
-    // "Teleconverter", not the OSD's TELE tag: a viewfinder tag borrowed into a menu shouts next to
-    // 19 Title Case siblings.
-    SectionHeader("Teleconverter")
+    // NO section header here (UI review #9): the overview stopped being teleconverter-specific
+    // when the zoom floor qualified any lens (2026-07-29) — the old "Teleconverter" header was the
+    // stale claim the caption below already refutes — and the row's parent GATE is the Loupe toggle
+    // directly above, the Zebra → Zebra Level adjacency model.
     // Every sibling toggle with non-obvious preconditions carries one of these (UX_POLICY: menu rows
     // are the sanctioned place for that copy, never the viewfinder). Without it, toggling this in
     // video, at 16:9, or with the loupe off does nothing visible and says nothing about why.
@@ -1399,6 +1442,10 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
         valueLabel = "View",
         onClick = { openPrivacyPolicy(context) },
     )
+    // Own section eyebrow (UI review #43): a dim TextSecondary block at the uniform gap directly
+    // under the interactive Privacy Policy row wore the exact shape of that row's caption while
+    // being unrelated to it.
+    SectionHeader("Legal")
     // Trademark attribution for the named log profiles offered in the Video tab — a legal
     // footnote, deliberately non-interactive and dim. bodySmall, NOT labelSmall: these two are the
     // only multi-sentence PROSE in the sheet, and labelSmall is a label treatment (Medium weight)
@@ -1474,8 +1521,11 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
     // an inert implementation-detail row.
     state.cameraOverrideId?.let { cameraId ->
         LabelValueRow(
-            label = "Camera ID",
-            valueLabel = cameraId,
+            // The VALUE slot carries the ACTION, per every other tappable LabelValueRow ("View",
+            // "Add"): the old layout put the raw id there, so tapping looked like it would edit the
+            // id while it actually CLEARS the override (UI review #11).
+            label = "Camera ID $cameraId",
+            valueLabel = "Reset",
             onClick = { actions.onCameraOverride(null) },
         )
     }

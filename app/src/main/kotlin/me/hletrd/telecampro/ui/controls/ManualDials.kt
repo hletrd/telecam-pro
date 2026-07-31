@@ -454,7 +454,7 @@ private fun FnDialChip(
     val policyEnabled = quickFnEnabled(slot, state)
     when (slot) {
         FnSlot.EXPOSURE_MODE -> DialChip(
-            label = "AE",
+            label = "Mode", // not "AE" — "AE: M" read as auto-exposure: manual (UI review #22)
             value = controls.exposureMode.letter,
             active = controls.exposureMode != ExposureMode.PROGRAM,
             enabled = policyEnabled && availability.exposureModes.size > 1,
@@ -523,7 +523,7 @@ private fun FnDialChip(
         )
         FnSlot.EV -> DialChip(
             label = "EV",
-            value = "%+.1f".format(Locale.US, evCompStops(state)),
+            value = formatEvComp(evCompStops(state)),
             active = openDial == DialType.EV,
             enabled = policyEnabled && quickManualDialEnabled(DialType.EV, availability),
             onClick = { onSelect(DialType.EV) },

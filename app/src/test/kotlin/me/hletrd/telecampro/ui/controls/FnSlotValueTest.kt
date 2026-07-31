@@ -36,7 +36,7 @@ class FnSlotValueTest {
             FnSlot.SHUTTER to "Auto --",
             FnSlot.ISO to "Auto --",
             FnSlot.WB to "Auto",
-            FnSlot.EV to "+0.0",
+            FnSlot.EV to "±0.0",
             FnSlot.ZOOM to "1.0×",
             FnSlot.STABILIZATION to "Active",
             FnSlot.DRIVE to "Single",

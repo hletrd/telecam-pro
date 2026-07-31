@@ -99,7 +99,7 @@ class ControlLabelsTest {
     @Test
     fun `grid type labels`() = assertLabels(
         mapOf(
-            GridType.NONE to "None",
+            GridType.NONE to "Off",
             GridType.THIRDS to "Thirds",
             GridType.GOLDEN to "Golden",
             GridType.SQUARE to "Square",
@@ -177,7 +177,7 @@ class ControlLabelsTest {
     @Test
     fun `fn slot labels`() = assertLabels(
         mapOf(
-            FnSlot.EXPOSURE_MODE to "AE",
+            FnSlot.EXPOSURE_MODE to "Mode",
             FnSlot.FOCUS to "Focus",
             FnSlot.SHUTTER to "Shutter",
             FnSlot.ISO to "ISO",
@@ -190,7 +190,7 @@ class ControlLabelsTest {
             FnSlot.PEAKING to "Peaking",
             FnSlot.ZEBRA to "Zebra",
             FnSlot.TRANSFER to "Gamma",
-            FnSlot.AUDIO_SCENE to "Audio",
+            FnSlot.AUDIO_SCENE to "Direction",
             FnSlot.GRID to "Grid",
             FnSlot.LEVEL to "Level",
             FnSlot.PUNCH_IN to "Loupe",
@@ -198,7 +198,7 @@ class ControlLabelsTest {
             FnSlot.OPEN_GATE to "Open Gate",
             FnSlot.FRAME_LINES to "Frame",
             FnSlot.FLASH to "Flash",
-            FnSlot.TIMER to "Timer",
+            FnSlot.TIMER to "Self-Timer",
             FnSlot.ASPECT to "Aspect",
             FnSlot.AUDIO_INPUT to "Mic Input",
         ),

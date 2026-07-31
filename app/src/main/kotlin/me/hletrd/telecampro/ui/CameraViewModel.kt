@@ -585,7 +585,7 @@ class CameraViewModel @JvmOverloads constructor(
                                 // PhotoFormatToggles caption: this fires on Ready publication and
                                 // those fire at the shutter, so one user sees all three for one
                                 // output mask.
-                                "HEIF/JPEG unavailable; DNG only"
+                                "HEIF/JPEG unavailable · DNG only"
                             // NO route-switch "RAW unavailable" toast (user-removed 2026-07-31:
                             // "too noisy" — every front flip with DNG selected announced a state
                             // the vanished chrome already shows). The sheet caption under the

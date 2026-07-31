@@ -1170,7 +1170,7 @@ internal fun reviewZoomControlLabel(scale: Float): String =
     "→" + reviewScaleLabel(nextReviewScale(scale))
 
 internal fun reviewZoomStateDescription(scale: Float): String =
-    "Magnification ${reviewScaleLabel(scale)}"
+    "Zoom ${reviewScaleLabel(scale)}"
 
 internal fun videoPlaybackActionLabel(playing: Boolean): String =
     if (playing) "Pause video" else "Play video"

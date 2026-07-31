@@ -43,7 +43,7 @@ internal fun fnSlotValue(slot: FnSlot, state: CameraUiState): String {
             else -> c.iso.toString()
         }
         FnSlot.WB -> if (c.wbMode == WbMode.MANUAL) "${c.wbKelvin}K" else wbModeLabel(c.wbMode)
-        FnSlot.EV -> "%+.1f".format(Locale.US, evCompStops(state))
+        FnSlot.EV -> formatEvComp(evCompStops(state))
         // Same main-relative display scale and formatter as the HUD pill and persistent Fn row.
         FnSlot.ZOOM -> formatDisplayZoom(
             c.zoomRatio,
