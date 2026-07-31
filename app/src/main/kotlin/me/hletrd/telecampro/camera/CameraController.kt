@@ -1370,7 +1370,15 @@ class CameraController(context: Context) {
      * to fall through to a real capture (byte-for-byte today's path).
      */
     private fun tryServeZslFrame(c: ManualControls, wantRaw: Boolean, cb: PhotoCallback): Boolean {
-        if (!zslStreamingActive() || zslRing.isEmpty()) return false
+        // Quota-safe (one line per shutter press, DEBUG only): WHY a press did not serve. The
+        // refusal itself is often the design (dark divergence, RAW wanted) — this exists so a
+        // refusal in a case where wire==intent is diagnosable instead of read as "the freeze".
+        if (!zslStreamingActive() || zslRing.isEmpty()) {
+            if (BuildConfig.DEBUG) {
+                Log.i(TAG, "ZslRefuse: streaming=${zslStreamingActive()} ring=${zslRing.size}")
+            }
+            return false
+        }
         val intent = ZslStillIntent(
             manualAe = manualAeAdmitted(c, caps),
             wantProcessed = true,
@@ -1386,7 +1394,16 @@ class CameraController(context: Context) {
             zoomRatio = c.zoomRatio,
             gestureActive = smoothPreviewBoost,
         )
-        if (!zslIntentEligible(intent)) return false
+        if (!zslIntentEligible(intent)) {
+            if (BuildConfig.DEBUG) {
+                Log.i(
+                    TAG,
+                    "ZslRefuse: intent manualAe=${intent.manualAe} raw=${intent.wantRaw} " +
+                        "flash=${intent.flash} gesture=${intent.gestureActive}",
+                )
+            }
+            return false
+        }
         val nowNs = sensorClockNowNs()
         for (i in zslRing.indices.reversed()) {
             val entry = zslRing[i]
@@ -1397,7 +1414,17 @@ class CameraController(context: Context) {
                 iso = r.get(CaptureResult.SENSOR_SENSITIVITY),
                 zoomRatio = r.get(CaptureResult.CONTROL_ZOOM_RATIO),
             )
-            if (!zslFrameAdmissible(facts, intent, nowNs)) continue
+            if (!zslFrameAdmissible(facts, intent, nowNs)) {
+                if (BuildConfig.DEBUG && i == zslRing.indices.last) {
+                    Log.i(
+                        TAG,
+                        "ZslRefuse: newest frame age=${(nowNs - facts.timestampNs) / 1_000_000}ms " +
+                            "exp=${facts.exposureNs}/${intent.exposureNs} iso=${facts.iso}/${intent.iso} " +
+                            "zoom=${facts.zoomRatio}/${intent.zoomRatio}",
+                    )
+                }
+                continue
+            }
             zslRing.removeAt(i)
             val p = Pending(wantJpeg = true, wantRaw = false, cb)
             val ageMs = (nowNs - entry.timestampNs) / 1_000_000L

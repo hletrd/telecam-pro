@@ -1,5 +1,6 @@
 package me.hletrd.telecampro.camera
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -10,6 +11,15 @@ import org.junit.Test
  * fluidity-cap-diverged dark scenes honestly real-capture.
  */
 class ZslAdmissionTest {
+    @Test
+    fun `age cap is the measured pairing-lag value, not a guess`() {
+        // 400 ms (2026-07-31): at the dark 15 fps cap the newest RESULT-paired ring frame measured
+        // 243 ms old at press time, so the old 250 ms cap refused dim-scene serves whose sensor
+        // values matched exactly. Pinned so a drive-by "tidy" back to a rounder number fails here
+        // and has to argue with the measurement.
+        assertEquals(400_000_000L, ZSL_MAX_FRAME_AGE_NS)
+    }
+
 
     private val nowNs = 10_000_000_000L
 

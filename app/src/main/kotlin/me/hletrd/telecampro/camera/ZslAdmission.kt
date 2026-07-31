@@ -22,8 +22,18 @@ import kotlin.math.ln
  * (video-P, flash-metered P) have no app-known intended values and always real-capture.
  */
 
-/** Max age of a servable frame. Older frames risk stale framing/AE; ~4 frames at 15 fps. */
-internal const val ZSL_MAX_FRAME_AGE_NS = 250_000_000L
+/**
+ * Max age of a servable frame.
+ *
+ * 400 ms, raised from 250 (device-measured 2026-07-31): at the dark 15 fps fluidity cap the newest
+ * ring frame WITH a paired TotalCaptureResult measured 243 ms old at press time — results arrive a
+ * pipeline-depth (~3.6 frames) behind their images — so the old cap made dim-scene serves
+ * structurally marginal even when the sensor values matched exactly. This is the FRAMING axis, not
+ * the exposure axis: raising it trades only frame freshness (a ≤0.4 s-old frame, comparable to what
+ * the pipeline-lagged preview itself shows), never the value-match honesty that the 1/6-stop
+ * tolerance guards — which stays untouched per its own do-not-widen rule.
+ */
+internal const val ZSL_MAX_FRAME_AGE_NS = 400_000_000L
 
 /** Sensor-value match tolerance (stops) between the frame's actuals and the still's intent. */
 internal const val ZSL_VALUE_TOLERANCE_STOPS = 1f / 6f
