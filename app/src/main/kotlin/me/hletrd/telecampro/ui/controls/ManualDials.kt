@@ -388,7 +388,12 @@ internal fun CompactFnButton(
                 }
             }
             .clickable(role = Role.Button, onClick = onClick),
-        contentAlignment = Alignment.Center,
+        // CenterStart, not Center (UI review #37): the rail-mates (OSD plate, exposure meter,
+        // gallery thumb) put their VISIBLE plate edge on the shared 12 dp inset, but centring the
+        // 36 dp circle inside its 48 dp touch box pushed the visible edge ~6 dp further in — the
+        // one element off the rail line. The extra touch slack now falls inward, where it overlaps
+        // nothing interactive.
+        contentAlignment = Alignment.CenterStart,
     ) {
         Box(
             modifier = Modifier

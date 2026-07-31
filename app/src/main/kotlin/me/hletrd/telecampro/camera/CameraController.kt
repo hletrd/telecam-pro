@@ -1936,7 +1936,7 @@ class CameraController(context: Context) {
         // The controller is mid-teardown — a session-key reopen (Auto HDR / in-sensor zoom / lens / fps)
         // quit the camera thread. Route the failure through the callback so a BURST/AEB chain's onDone
         // still fires and the user gets feedback, instead of the post throwing a dead-thread exception.
-        if (!posted) cb.onError(IllegalStateException("Camera is reconfiguring — try the shot again"))
+        if (!posted) cb.onError(IllegalStateException("Camera reconfiguring — try again"))
     }
 
     private fun onImage(reader: ImageReader, isRaw: Boolean) {

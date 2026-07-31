@@ -335,6 +335,9 @@ fun CameraScreen(
         // dial is open: the cluster growing upward must overlay the preview like every transient
         // panel, not shove the viewfinder around mid-interaction.
         var bottomClusterRestHeightPx by remember { mutableIntStateOf(0) }
+        // The preview box's resolved top, exported for the TopBar's seam rule (the bar renders in a
+        // SIBLING scope of the BoxWithConstraints that computes it).
+        var previewTopForChromePx by remember { mutableIntStateOf(0) }
         // The viewfinder is LETTERBOXED, not cover-cropped: the TextureView (plus every overlay that
         // must align with the image frame) lives in a box sized to the displayed preview aspect, so
         // the FULL capture field is always visible. Letterboxing at the Compose layer — instead of
@@ -359,6 +362,7 @@ fun CameraScreen(
                 },
                 bottomReservePx = bottomClusterRestHeightPx,
             )
+            previewTopForChromePx = topOffsetPx
         Box(
             modifier = Modifier
                 .align(Alignment.TopCenter)
@@ -838,6 +842,33 @@ fun CameraScreen(
             )
         }
 
+        // When the preview is too tall to clear the top chrome (the 16:9 portrait frame:
+        // previewTopPx's centered branch fires and the image starts ABOVE the chips' default home),
+        // the chip plates used to STRADDLE the seam — a ~10 dp sliver of each translucent plate over
+        // the image, the rest invisible on the black band, reading as amputated bumps (UI review
+        // #5, measured). The rule the seam work already established: chrome sits wholly on the
+        // image or wholly on the band, never across the edge. Here only "wholly on the image" is
+        // possible (the band above is what is too short), so the bar shifts down to previewTop+8dp
+        // exactly when its default home would collide.
+        val topBarDensity = LocalDensity.current
+        val statusBarPx = WindowInsets.statusBars.getTop(topBarDensity)
+        val eightDpPx = with(topBarDensity) { 8.dp.roundToPx() }
+        var topBarHeightPx by remember { mutableIntStateOf(0) }
+        val topBarDefaultTopPx = statusBarPx + eightDpPx
+        // Offset ONLY on a genuine straddle — the preview's top edge falling INSIDE the bar's
+        // default vertical span. Fully-on-band (4:3: preview starts below the bar) and
+        // fully-on-image placements are both fine as-is; an unconditional offset pushed the bar
+        // down onto the image even when its default home was wholly on the band (caught on-device
+        // during this fix's own verification).
+        val topBarSeamOffsetPx = if (
+            topBarHeightPx > 0 &&
+            previewTopForChromePx > topBarDefaultTopPx &&
+            previewTopForChromePx < topBarDefaultTopPx + topBarHeightPx
+        ) {
+            previewTopForChromePx + eightDpPx - topBarDefaultTopPx
+        } else {
+            0
+        }
         TopBar(
             state = state,
             actions = actions,
@@ -855,7 +886,9 @@ fun CameraScreen(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
-                .padding(top = 8.dp),
+                .padding(top = 8.dp)
+                .onSizeChanged { topBarHeightPx = it.height }
+                .offset { IntOffset(0, topBarSeamOffsetPx) },
         )
 
         // Exposure meter: pinned to the LEFT edge as a vertical scale (the scopes own the right).
@@ -1015,16 +1048,20 @@ fun CameraScreen(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
+                    // Rest-state measurement for the preview's adaptive top ([previewTopPx]); a
+                    // dial-open growth spike must not re-place the viewfinder, so only the closed
+                    // state records. BEFORE the chrome/padding modifiers, so the reported height is
+                    // the cluster's FULL outer extent (nav-bar inset and the 12/20 dp panel padding
+                    // included): measured inside them it ran ~40 dp short, which let a 4:3 preview's
+                    // bottom edge cut through the Fn circle on the FRONT route — the exact
+                    // chrome-straddles-the-seam defect this reserve exists to prevent (UI review #6).
+                    .onSizeChanged {
+                        if (openManualDial == null) bottomClusterRestHeightPx = it.height
+                    }
                     .then(operatorChrome)
                     // bottom 20: the gesture-nav inset on this panel is thin, and 8 dp left the
                     // shutter nearly touching the home-bar swipe zone (user-reported 2026-07-25).
-                    .padding(top = 12.dp, bottom = 20.dp)
-                    // Rest-state measurement for the preview's adaptive top ([previewTopPx]); a
-                    // dial-open growth spike must not re-place the viewfinder, so only the closed
-                    // state records.
-                    .onSizeChanged {
-                        if (openManualDial == null) bottomClusterRestHeightPx = it.height
-                    },
+                    .padding(top = 12.dp, bottom = 20.dp),
                 verticalArrangement = Arrangement.Top,
             ) {
                 // Keep the dial cluster composed at zero height in compact rest state. Disposing it

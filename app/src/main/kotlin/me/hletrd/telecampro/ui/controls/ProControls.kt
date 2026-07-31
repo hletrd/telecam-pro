@@ -159,6 +159,14 @@ internal fun Captioned(caption: String?, content: @Composable () -> Unit) {
     }
 }
 
+/**
+ * Chip/row label typography: labelMedium with tightened tracking. Material3's default 0.5 sp
+ * letterSpacing at 12 sp amplifies Inter's hyphen side bearings, so "AF-C" and "Self-Timer"
+ * rendered as "AF - C" — the hyphen floating with a gap on both sides (UI review #42).
+ */
+@Composable
+internal fun chipLabelStyle() = MaterialTheme.typography.labelMedium.copy(letterSpacing = 0.1.sp)
+
 /** Colors shared by every [FilterChip] in the settings menu: filled white when selected, ghost otherwise. */
 @Composable
 internal fun pixelChipColors() = FilterChipDefaults.filterChipColors(
@@ -313,7 +321,7 @@ internal fun <T> SegmentedSelector(
                         label = {
                             Text(
                                 labelFor(option),
-                                style = MaterialTheme.typography.labelMedium,
+                                style = chipLabelStyle(),
                                 maxLines = 1,
                                 softWrap = false,
                             )
@@ -351,7 +359,7 @@ private fun OutputFormatChip(
             } else {
                 null
             },
-            label = { Text(name, style = MaterialTheme.typography.labelMedium) },
+            label = { Text(name, style = chipLabelStyle()) },
             colors = pixelChipColors(),
             border = pixelChipBorder(selected, enabled),
         )
@@ -815,7 +823,7 @@ internal fun TransferSelector(
                         label = {
                             Text(
                                 transferLabel(option),
-                                style = MaterialTheme.typography.labelMedium,
+                                style = chipLabelStyle(),
                                 maxLines = 1,
                                 softWrap = false,
                             )
