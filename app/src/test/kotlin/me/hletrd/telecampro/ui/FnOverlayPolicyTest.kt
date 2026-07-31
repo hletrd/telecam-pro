@@ -205,10 +205,11 @@ class FnOverlayPolicyTest {
         assertEquals("Focus", fnOverlayVisualValue(FnSlot.AUDIO_SCENE, "Sound Focus", true))
         assertEquals("300mm", fnOverlayVisualValue(FnSlot.TELECONVERTER, "300 mm", true))
 
-        // Stabilization is the longest production label. The tray uses a compact visual alias while
-        // the semantic node still exports fnSlotLabel(slot), and Text ellipsizes any future overflow.
-        // The alias must not be "Steady": the OSD spends that word on one specific VALUE (ENHANCED).
-        assertEquals("Stabilization", fnOverlayVisualLabel(FnSlot.STABILIZATION, false))
+        // Stabilization is the longest production label. Since the tiles gained icons (2026-07-31)
+        // it compresses in BOTH axes — the 14 dp glyph ate the width that let the full word fit a
+        // portrait tile. The semantic node still exports fnSlotLabel(slot) (pinned below), and the
+        // alias must not be "Steady": the OSD spends that word on one specific VALUE (ENHANCED).
+        assertEquals("Stab", fnOverlayVisualLabel(FnSlot.STABILIZATION, false))
         assertEquals("Stab", fnOverlayVisualLabel(FnSlot.STABILIZATION, true))
     }
 

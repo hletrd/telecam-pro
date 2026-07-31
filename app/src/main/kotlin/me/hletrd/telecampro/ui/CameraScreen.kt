@@ -859,7 +859,13 @@ fun CameraScreen(
 
         // Exposure meter: pinned to the LEFT edge as a vertical scale (the scopes own the right).
         // A fixed home beats the old jump between top/bottom as the dial opened (feedback).
-        if (shouldShowExposureMeter(state.controls.exposureMode, exposureMeterTransient)) ExposureMeter(
+        // Suppressed while the Fn overlay is open: the held-landscape tray anchors to the SAME
+        // left column and drew straight through the meter under the translucent scrim
+        // (user-reported 2026-07-31). A modal Fn owns the screen; the meter is not consultable
+        // through a scrim anyway, and it returns the frame the overlay closes.
+        if (!fnOverlayVisible &&
+            shouldShowExposureMeter(state.controls.exposureMode, exposureMeterTransient)
+        ) ExposureMeter(
             state = state,
             compact = !detailsVisible,
             modifier = Modifier
