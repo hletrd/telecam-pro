@@ -38,16 +38,15 @@ class FlipRenderer {
     private var uTexel = 0
     private var uDigitalGain = 0
 
-    private val quad: FloatBuffer = floatBuffer(
-        // x, y   (triangle strip)
-        floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f),
-    )
-    private val texCoords: FloatBuffer = floatBuffer(texCoordQuad(mirrorX = false))
+    // Static quad geometry lives in ONE VBO uploaded in [init] (perf review #15): the client-side
+    // glVertexAttribPointer form re-pinned and re-copied both arrays through JNI on every draw
+    // (~96 draws/s at recording+loupe+finder). Layout: position quad at byte 0, plain texcoords at
+    // [TEX_COORD_OFFSET_BYTES], mirrored-x texcoords at [TEX_COORD_MIRRORED_OFFSET_BYTES].
     // Selfie preview mirror: the attribute texcoords enter the rot chain BEFORE the SurfaceTexture
     // matrix, and attr x is display x, so inverting attr x here mirrors the DISPLAYED image
     // horizontally regardless of the sensor orientation the stMatrix bakes in (no sign guesswork
     // per sensor). The x→1−x inversion lives in the pure, tested [texCoordQuad].
-    private val texCoordsMirroredX: FloatBuffer = floatBuffer(texCoordQuad(mirrorX = true))
+    private var quadVbo = 0
 
     private val mvp = FloatArray(16)
     private val rot = FloatArray(16)
@@ -83,6 +82,26 @@ class FlipRenderer {
         uFalseColor = GLES20.glGetUniformLocation(program, "uFalseColor")
         uTexel = GLES20.glGetUniformLocation(program, "uTexel")
         uDigitalGain = GLES20.glGetUniformLocation(program, "uDigitalGain")
+
+        // Fresh VBO per GL generation (same replay discipline as RendererConfigStore: init() must
+        // fully re-seed everything a replacement context needs; release() deletes it).
+        val vboIds = IntArray(1)
+        GLES20.glGenBuffers(1, vboIds, 0)
+        quadVbo = vboIds[0]
+        val staging = floatBuffer(
+            // x, y  (triangle strip)          | tex u,v (plain)      | tex u,v (mirrored x)
+            floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f) +
+                texCoordQuad(mirrorX = false) +
+                texCoordQuad(mirrorX = true),
+        )
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, quadVbo)
+        GLES20.glBufferData(
+            GLES20.GL_ARRAY_BUFFER,
+            staging.capacity() * 4,
+            staging,
+            GLES20.GL_STATIC_DRAW,
+        )
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
 
         val ids = IntArray(1)
         GLES20.glGenTextures(1, ids, 0)
@@ -214,25 +233,31 @@ class FlipRenderer {
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTextureId)
 
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, quadVbo)
         GLES20.glEnableVertexAttribArray(aPosition)
-        GLES20.glVertexAttribPointer(aPosition, 2, GLES20.GL_FLOAT, false, 0, quad)
+        GLES20.glVertexAttribPointer(aPosition, 2, GLES20.GL_FLOAT, false, 0, 0)
         GLES20.glEnableVertexAttribArray(aTexCoord)
         GLES20.glVertexAttribPointer(
             aTexCoord, 2, GLES20.GL_FLOAT, false, 0,
-            if (mirrorX) texCoordsMirroredX else texCoords,
+            if (mirrorX) TEX_COORD_MIRRORED_OFFSET_BYTES else TEX_COORD_OFFSET_BYTES,
         )
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
 
         GLES20.glDisableVertexAttribArray(aPosition)
         GLES20.glDisableVertexAttribArray(aTexCoord)
+        // Leave no array-buffer binding behind: other GL code in this pipeline (FBO readback, hint
+        // clears) assumes default binding state.
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
     }
 
     fun release() {
         if (program != 0) GLES20.glDeleteProgram(program)
         if (oesTextureId != 0) GLES20.glDeleteTextures(1, intArrayOf(oesTextureId), 0)
+        if (quadVbo != 0) GLES20.glDeleteBuffers(1, intArrayOf(quadVbo), 0)
         program = 0
         oesTextureId = 0
+        quadVbo = 0
     }
 
     private fun floatBuffer(data: FloatArray): FloatBuffer =
@@ -264,6 +289,13 @@ class FlipRenderer {
         GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, status, 0)
         check(status[0] == GLES20.GL_TRUE) { "Shader compile failed: ${GLES20.glGetShaderInfoLog(shader)}" }
         return shader
+    }
+
+    private companion object {
+        // Byte offsets into the one static [quadVbo]: 8 position floats (32 B), then the plain
+        // texcoord quad, then the mirrored-x texcoord quad (8 floats / 32 B each).
+        const val TEX_COORD_OFFSET_BYTES = 8 * 4
+        const val TEX_COORD_MIRRORED_OFFSET_BYTES = 16 * 4
     }
 }
 
