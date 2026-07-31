@@ -245,7 +245,15 @@ data class CameraCaps(
          * physical and logical reads fail — a transient camera-service outage. Callers run on
          * background executors and must guard the call; an uncaught throw there kills the process.
          */
-        fun read(manager: CameraManager, logicalId: String, physicalId: String?): CameraCaps {
+        fun read(
+            manager: CameraManager,
+            logicalId: String,
+            physicalId: String?,
+            // Per-device measured still-exposure ceiling ([DeviceProfile.stillExposureCeilingNs]);
+            // null trusts the advertised range. Default keeps every existing caller/test on the
+            // PMA110-measured 4 s truth.
+            stillExposureCeilingNs: Long? = HAL_SAFE_MAX_STILL_EXPOSURE_NS,
+        ): CameraCaps {
             val chars: CameraCharacteristics = runCatching {
                 manager.getCameraCharacteristics(physicalId ?: logicalId)
             }.recoverCatching {
@@ -357,8 +365,18 @@ data class CameraCaps(
                 // still watchdog all truthful at once.
                 exposureTimeRange = chars.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)
                     ?.let { adv ->
-                        val (lo, hi) = clampStillExposureRange(adv.lower, adv.upper)
-                        if (lo == adv.lower && hi == adv.upper) adv else Range(lo, hi)
+                        // Per-device ceiling: a null profile value means the advertised range is
+                        // trusted as-is (spec devices, multi-device 2026-08-01).
+                        if (stillExposureCeilingNs == null) {
+                            adv
+                        } else {
+                            val (lo, hi) = clampStillExposureRange(
+                                adv.lower,
+                                adv.upper,
+                                stillExposureCeilingNs,
+                            )
+                            if (lo == adv.lower && hi == adv.upper) adv else Range(lo, hi)
+                        }
                     },
                 maxFrameDurationNs = chars.get(CameraCharacteristics.SENSOR_INFO_MAX_FRAME_DURATION) ?: 0L,
                 evRange = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE) ?: Range(0, 0),

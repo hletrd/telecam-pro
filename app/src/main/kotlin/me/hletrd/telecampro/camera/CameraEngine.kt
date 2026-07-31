@@ -626,10 +626,20 @@ class CameraEngine(private val context: Context) {
     private val lensExifCache = java.util.concurrent.ConcurrentHashMap<String, LensExifMetadata>()
     private val idForFocalCache = java.util.concurrent.ConcurrentHashMap<Float, String>()
     @Volatile private var cachedLogicalBackId: String? = null
+    // Measured per-device HAL quirks (multi-device 2026-08-01). Resolved once; PMA110 keeps every
+    // shipped workaround byte-identical, anything else gets spec behavior. See DeviceProfile.kt.
+    private val deviceProfile = DeviceProfile.resolve(android.os.Build.MODEL)
 
     private fun cachedCaps(logicalId: String, physicalId: String?): CameraCaps? =
         runCatching {
-            capsCache.getOrPut("$logicalId:$physicalId") { CameraCaps.read(manager, logicalId, physicalId) }
+            capsCache.getOrPut("$logicalId:$physicalId") {
+                CameraCaps.read(
+                    manager,
+                    logicalId,
+                    physicalId,
+                    stillExposureCeilingNs = deviceProfile.stillExposureCeilingNs,
+                )
+            }
         }.getOrNull()?.also { cameraCaps ->
             lensExifCache.putIfAbsent(physicalId ?: logicalId, cameraCaps.lensExifMetadata())
         }
@@ -908,8 +918,12 @@ class CameraEngine(private val context: Context) {
         // (the stream already displays the selfie-mirror view), while the ENCODER/ANALYSIS draws
         // apply the inversion to write the TRUE scene into files (stills are untouched HAL buffers
         // and stay correct either way). Tap mapping follows the same fact — displayed x == texture
-        // x, so no un-flip. On a future multi-device build this becomes a DeviceProfile quirk.
-        gl.setFrontStreamPreMirrored(facing == CameraFacing.FRONT)
+        // x, so no un-flip. Since multi-device (2026-08-01) the inversion is the
+        // [DeviceProfile.frontStreamPreMirrored] quirk: spec devices deliver the unmirrored scene
+        // and take the naive roles (preview mirrors, encoder/analysis pass through).
+        gl.setFrontStreamPreMirrored(
+            facing == CameraFacing.FRONT && deviceProfile.frontStreamPreMirrored,
+        )
         // TELE finder PIP: re-resolve on every session (re)config and tele change, like rotation
         // (the user toggle, TELE state, or aspect may all have changed since the last push).
         pushTeleFinder()

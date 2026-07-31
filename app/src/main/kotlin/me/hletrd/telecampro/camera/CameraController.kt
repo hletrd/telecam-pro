@@ -55,6 +55,8 @@ class CameraController(context: Context) {
     }
 
     private val manager = context.getSystemService(CameraManager::class.java)
+    // Measured per-device HAL quirks (multi-device 2026-08-01); gates the vendor TC session type.
+    private val deviceProfile = DeviceProfile.resolve(android.os.Build.MODEL)
     private val bg = HandlerThread("camera").apply { start() }
     private val handler = Handler(bg.looper)
     private val callbackDispatchGate = CameraCallbackDispatchGate()
@@ -569,7 +571,12 @@ class CameraController(context: Context) {
             // ChiMulticameraBase::Initialize). Only enable RAW for a standalone (non-routed) camera.
             standalone = selection.physicalId == null,
             logicalMultiCamera = caps.isLogicalMultiCamera,
-            teleconverterMode = teleconverterMode,
+            // The TC-shaped ladder exists to try OPPO's 0x80b4 vendor session type; on a device
+            // whose profile does not carry that quirk the TC route takes the regular ladder (the
+            // converter there is declaration + zoom only, multi-device 2026-08-01). The
+            // controller's own [teleconverterMode] field is untouched — zoom hints and rotation
+            // still see the converter.
+            teleconverterMode = teleconverterMode && deviceProfile.vendorTcSessionType,
             wantHiRes = hiResStill,
             tenBitVideoOnly = tenBitHlg && caps.supportsHlg10(),
             frontRoute = caps.lensFacingFront,

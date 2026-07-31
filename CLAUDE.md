@@ -25,8 +25,14 @@ deprecated APIs, latest stable everything.
 
 ## Non-negotiable constraints
 
-- **Target device only.** No backward compat, no `minSdk` lowering, no CameraX. We use **Camera2**
-  directly for physical-lens routing, `LENS_FOCUS_DISTANCE`, manual sensor, RAW/DNG, 10-bit HDR.
+- **PMA110-first, multi-device-installable (revised 2026-08-01, user decision — supersedes the
+  original "target device only / no minSdk lowering" rule).** `minSdk = 33` (Android 13; the lint
+  NewApi audit found zero unguarded sub-35 APIs). PMA110 behavior must stay byte-identical; every
+  measured HAL workaround is gated by `camera/DeviceProfile.kt` (the SECOND sanctioned
+  model-string seam beside `detectPhone`), and other devices take spec paths resolved by
+  ENUMERATED Camera2 capability. Still no CameraX — **Camera2** directly for physical-lens
+  routing, `LENS_FOCUS_DISTANCE`, manual sensor, RAW/DNG, 10-bit HDR. Non-PMA110 handsets are
+  UNVALIDATED until measured on-device; add quirks only with measurements, never speculatively.
 - **Latest toolchain, no deprecated APIs.** See versions below; bump when newer stable ships.
 - **Everything user-facing in English.** (Historical commit messages are Korean; do not rewrite
   history — that's a destructive op requiring explicit sign-off.)
@@ -480,8 +486,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
      `phoneModel`, not latched at seed time: a latched flag survives the user overriding the
      dropdown and makes the caption claim "Detected Other phone." — a detection the app never made.
      Picking the real phone back re-claims it.
-  2. **This is the ONLY place in the codebase that keys off a model string**, and it may only choose
-     which entry starts selected. Everything else still resolves hardware by ENUMERATING Camera2
+  2. **This and `DeviceProfile.resolve` are the ONLY places in the codebase that key off a model
+     string** (the second sanctioned 2026-08-01 for measured HAL quirks), and this one may only
+     choose which entry starts selected. Everything else still resolves hardware by ENUMERATING Camera2
      capabilities (`CameraSelector2` picks by measured equivalent focal, never by id). No
      capability, route, or request decision may branch on a model string.
   3. **`TELE_MAX_DISPLAY_ZOOM` (60×) stays FIXED and does not scale with the converter.** It caps
