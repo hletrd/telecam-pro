@@ -20,9 +20,11 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 Do not upload debug APKs or any unsigned/stale release bundle.
 
-### Final v1 upload artifacts (built + verified 2026-07-30 from `main` at `3a3d034`)
+### Final v1 upload artifacts (built + verified 2026-07-31 from `main` at `961b080`)
 
-**This supersedes the `26266db` cut** (AAB `59ccb318…`, APK `9658300c…`) — that one predates the
+**This supersedes the `3a3d034` cut** (AAB `1c160b8c…`, APK `8d73388e…`) — that one predates
+the loupe-hint pre-converter scaling (operator-requested) and the OPPO-767 half-press routing fix —
+and before it the `26266db` cut (AAB `59ccb318…`, APK `9658300c…`) — that one predates the
 adversarial verification closure (must-fix: recall packets re-normalized against outgoing caps;
 plus finder zoom-OUT edge, late-RAW retention veto, rollback mirror leg, OIS strip gate) — and
 before it the `3ff3b4b` cut (AAB `19ef2b7d…`, APK `870ac286…`), which predates the
@@ -36,9 +38,9 @@ The re-cut exists because `3c70639` predates the DNG route-input fixes (`d6ef232
 could leave DNG permanently unable to produce a RAW file.
 
 - Artifact location: `app/build/outputs/bundle/release/app-release.aab`
-- AAB SHA-256: `1c160b8c146d79c5f6adf220a5b01bb03b4f8eb962bc69419735b9773846d55c`
+- AAB SHA-256: `0516b0d85a7788cfbc7b1b3e82ccf430ff462a7276adc2b358913ed7f134ede1`
 - Matching release APK SHA-256:
-  `8d73388ee0aa95a26ad9311df87b48510d0bd6f0b313965caf8fa1bb5eccdbe3`
+  `54035d8a0129506e1ff6a399481d5f67a5ac901e921e486b2ae57df72767a8e5`
 - Launch component: `me.hletrd.telecampro/me.hletrd.telecampro.MainActivity`
 - AAB `jarsigner -verify`: **jar verified**. `bundletool validate` was NOT re-run for this
   cut — bundletool is not installed on this machine; the earlier cuts' passes are not
@@ -49,7 +51,7 @@ could leave DNG permanently unable to produce a RAW file.
   upload certificate**, so this is the same upload key
 - APK alignment: 16 KiB passed (`zipalign -c -P 16 4`)
 - Release gate: `lintRelease` **0 errors / 5 warnings**, all pre-existing (`ApplySharedPref`,
-  `UseKtx`, `AndroidGradlePluginVersion`); host suite **1278 tests, 0 failures**
+  `UseKtx`, `AndroidGradlePluginVersion`); host suite **1281 tests, 0 failures**
 - Carries a **baseline profile** (`assets/dexopt/baseline.prof`, 11 KiB + `.profm`) installed by
   androidx.profileinstaller. Without it the shipped APK sat at `status=verify` and ran interpreted
   until JIT warmed; device-measured, the worst frame on opening the settings sheet went 61 ms → 22 ms
