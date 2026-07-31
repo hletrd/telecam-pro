@@ -28,6 +28,44 @@ frozen artifact vs re-cut" decision is closed; both frozen candidates (`9541697`
 - **What is NOT re-run:** the full PMA110 release matrix against this exact artifact. Individual
   features were device-verified from this build (see cycle 9 below), but the formal matrix sweep
   recorded for `9541697` has not been repeated end to end.
+- **RE-CUT REQUIRED (2026-08-01):** `main` has since gained the two perf batches (16-item CPU/memory
+  review, all items landed or deliberately dropped), `minSdk 33` + the DeviceProfile multi-device
+  seam, and the timelapse dim. The pinned artifact in `docs/play-console-submit.md` predates all of
+  it; cut, validate, and re-pin before upload. Note the Play listing/Data Safety text may now also
+  mention broader device support — owner's call.
+
+### Landed 2026-08-01 — perf review closure + multi-device + 200MP probe (device-verified)
+
+- **Perf review fully dispositioned (16 items):** 8 low-risk landed earlier (`2c8cccc`); this cycle
+  landed #2 single-pass NV21 (+ #3 remainder: merged crop+rotate, single-use snapshot), #6 scope
+  publication gate, #8 ZSL never-serve DRIVE gate (repeating-target-only; session shape and ring
+  memory kept — the user explicitly accepted the ring's gralloc cost, so #1's session-shape change
+  is DROPPED, not deferred), #10 unattended-timelapse dim (10 s grace → 5% brightness,
+  `onUserInteraction` restore; verified via `mWindowManagerBrightnessOverride=0.05` engage/restore/
+  re-arm/run-stop on device), #11-cheap (remembered review lambda), #15 safe subset (static-quad
+  VBO; uniform shadowing deliberately NOT taken — multi-role draws change values per draw).
+  Device pass same day: standalone JPEG+DNG pair, logical ZSL serve 0 ms through the NEW NV21 pack,
+  5-frame burst all-real-captures under the detached target, timelapse ticks with dim cycling,
+  front photo serve + front/rear 4K HEVC clips clean, front→rear return re-resolves the RAW route,
+  scopes live in expanded DISP, M-meter live in compact, zoom 1→3× clean on the VBO path.
+- **Multi-device:** `minSdk 33` (lint NewApi audit: zero unguarded sub-35 APIs; the 8 API-35
+  findings fixed — ByteBuffer bulk get → duplicate() positional reads, VendorTagInspector probes
+  SDK-gated). `camera/DeviceProfile.kt` gates the three PMA110-only behaviors
+  (front pre-mirror, 0x80b4 TC session type, 4 s still-exposure clamp); GENERIC = spec. PMA110
+  byte-identical. **Other handsets are installable but UNVALIDATED** — per-device passes (front
+  mirror truth, EIS warp, logical-JPEG gralloc, long-exposure ceiling, key codes) are open work.
+- **200MP/50MP probe (stock, device-captured 2026-08-01):** the Hasselblad Hi-Res mode's full-res
+  path is a CamX vendor feature pipeline — `RealTimeFeatureNZSLSnapshotRDI0`, sensor mode 0 =
+  16320×12256 QUADCFA @ 10 fps on cameraId 2 inside logical 0, operation_mode 0x8001 — negotiated
+  by the CHI override. It is NOT a public stream (no >20 MP size in any public map, July probe),
+  and the stock app's own first configure attempt gets ILLEGAL_ARGUMENT before falling back to the
+  vendor shape, so a sessionType-style replication cannot conjure the stream: unlike 0x80b4 (an
+  int + standard streams) this needs stream SIZES the public interface refuses. Additionally the
+  mode is LUX-GATED: with the 200 MP badge active in a dark room, stock saved 12.5 MP
+  (`IMG20260801062957.jpg` 3064×4080; 15-frame hybridraw merge) — even first-party 200 MP only
+  exists in bright light at a 10 fps sensor mode. Conclusion unchanged: third-party full-res needs
+  the CameraUnit AUTH_CODE road (Deferred Beyond v1); a raw op-mode/oversized-reader probe against
+  this crash-prone HAL was deliberately not attempted on the user's device.
 
 ### Verified 2026-07-10
 
