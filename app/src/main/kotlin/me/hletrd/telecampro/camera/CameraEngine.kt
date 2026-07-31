@@ -2067,8 +2067,19 @@ class CameraEngine(private val context: Context) {
         }
         onCameraReadyChange?.invoke(outcome.first)
         outcome.third?.let { onTapFocusChange?.invoke(it) }
-        android.util.Log.e("CameraEngine", "Active camera failure", failure)
-        onStatus?.invoke("Camera error. Recovering.")
+        val evicted = cameraFailureIsEviction(failure)
+        if (evicted) {
+            // Another camera app took the device — ordinary multitasking, not a fault. The status
+            // line used to announce "Camera error. Recovering." whenever the eviction beat our own
+            // onStop by a few frames (user-reported as an intermittent error on app switches).
+            // Everything else about the health path is unchanged: Ready invalidated, a live
+            // recording finalized and published, bounded recovery scheduled — resume() reopens
+            // when the user returns, and a genuinely exhausted recovery still says so.
+            android.util.Log.w("CameraEngine", "Camera evicted by another client", failure)
+        } else {
+            android.util.Log.e("CameraEngine", "Active camera failure", failure)
+            onStatus?.invoke("Camera error. Recovering.")
+        }
         outcome.second?.let { owned ->
             detachAndFinalizeRecording(owned.gl, owned.recorder, owned.uri, owned.captureId)
             owned.gl.setTransfer(transfer)

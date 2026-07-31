@@ -301,7 +301,10 @@ class CameraController(context: Context) {
                 }
                 override fun onDisconnected(camera: CameraDevice) {
                     if (closed) return // an intentional teardown's late disconnect is not a health event
-                    onError.onError(IllegalStateException("Camera disconnected"))
+                    // Typed: disconnect means another client took the camera (or the provider is
+                    // rebalancing) — eviction-class, so the engine recovers WITHOUT announcing a
+                    // fault the user did not cause.
+                    onError.onError(CameraEvictedException("Camera disconnected"))
                     close()
                 }
                 override fun onError(camera: CameraDevice, error: Int) {
@@ -320,7 +323,13 @@ class CameraController(context: Context) {
                     // framework's own stopRepeating log inside close() — the actual onError source
                     // was silent, which cost a device-bisect session to attribute.
                     Log.e(TAG, "CameraDevice.StateCallback.onError: code=$error (device=${camera.id})")
-                    onError.onError(IllegalStateException("Camera error $error"))
+                    onError.onError(
+                        if (cameraErrorCodeIsEviction(error)) {
+                            CameraEvictedException("Camera error $error")
+                        } else {
+                            IllegalStateException("Camera error $error")
+                        },
+                    )
                     close()
                 }
                 })
@@ -2194,6 +2203,36 @@ internal data class SessionAttemptPlan(
  * hi-res session silently cost the whole session its RAW rung; cycle-6 debugger F3. The ladder is
  * one attempt LONGER when hi-res is wanted: see [maxSessionAttempt].)
  */
+/**
+ * A camera loss that means "another client took the camera", not "the camera is broken".
+ *
+ * The HAL delivers it as onDisconnected, or onError ERROR_CAMERA_IN_USE(1)/ERROR_MAX_CAMERAS_IN_USE
+ * (2), or a synchronous CameraAccessException(CAMERA_IN_USE/MAX_CAMERAS_IN_USE) from openCamera when
+ * a recovery reopen races the other client. It is ordinary multitasking — the user switched to
+ * another camera app — and the engine's health path must not announce it as a fault: the "Camera
+ * error. Recovering." status was reaching the user whenever the eviction beat our own onStop by a
+ * few frames (user-reported "sometimes throws an error when being switched with other camera using
+ * app", 2026-07-31). Ready still invalidates, a live recorder still finalizes its clip, and bounded
+ * recovery still runs — only the announcement is withheld.
+ */
+internal class CameraEvictedException(message: String) : IllegalStateException(message)
+
+/** Pure classifier for the eviction-class onError codes. */
+internal fun cameraErrorCodeIsEviction(error: Int): Boolean =
+    error == android.hardware.camera2.CameraDevice.StateCallback.ERROR_CAMERA_IN_USE ||
+        error == android.hardware.camera2.CameraDevice.StateCallback.ERROR_MAX_CAMERAS_IN_USE
+
+/** Whether a failure anywhere on the open/session path is eviction-class (see CameraEvictedException). */
+internal fun cameraFailureIsEviction(failure: Throwable): Boolean =
+    failure is CameraEvictedException ||
+        (
+            failure is android.hardware.camera2.CameraAccessException &&
+                (
+                    failure.reason == android.hardware.camera2.CameraAccessException.CAMERA_IN_USE ||
+                        failure.reason == android.hardware.camera2.CameraAccessException.MAX_CAMERAS_IN_USE
+                    )
+            )
+
 internal fun sessionAttemptPlan(
     attempt: Int,
     wantHlg: Boolean,
