@@ -300,7 +300,7 @@ class MainActivity : ComponentActivity() {
         }
         when (event.keyCode) {
             // Half presses own their matching release even if a modal opens mid-press.
-            KeyEvent.KEYCODE_FOCUS, KEY_CAM_HALF_PRESS -> {
+            KeyEvent.KEYCODE_FOCUS, KEY_CAM_HALF_PRESS, KEY_CAM_HALF_PRESS_ALT -> {
                 val edge = when (event.action) {
                     KeyEvent.ACTION_DOWN -> if (event.repeatCount == 0) CameraKeyEdge.DOWN else CameraKeyEdge.REPEAT
                     KeyEvent.ACTION_UP -> CameraKeyEdge.UP
@@ -313,8 +313,29 @@ class MainActivity : ComponentActivity() {
                     edge = edge,
                 )
                 if (decision.start) {
-                    updateAggregateCameraKeyOwnership(ownedHalfPressKeys, event.keyCode, ownedAfter = true)
-                        ?.let(vm::onHardwareHalfPress)
+                    val transition = updateAggregateCameraKeyOwnership(ownedHalfPressKeys, event.keyCode, ownedAfter = true)
+                    if (transition == true) {
+                        val s = vm.state.value
+                        // Same denial-recorded audio drop as the full-key path (onKeyDown): the
+                        // half-press action is user-assignable to SHUTTER, and without this the
+                        // half-press REC start bypassed the mic decision entirely — recording
+                        // video-only with audio still ARMED in the UI. Live since 2026-07-31 (767).
+                        if (hardwareShutterAudioDrop(
+                                fullKeyAction = s.halfPressAction,
+                                videoMode = s.mode == CaptureMode.VIDEO,
+                                recording = s.isRecording,
+                                recordAudio = s.recordAudio,
+                                hasMicrophonePermission = hasMicrophonePermission,
+                            )
+                        ) {
+                            permissionPreferences.edit(commit = true) {
+                                putBoolean(AUDIO_OFF_BY_DENIAL_KEY, true)
+                            }
+                            vm.onToggleRecordAudio(false)
+                            vm.onAppStatus("Recording without audio")
+                        }
+                    }
+                    transition?.let(vm::onHardwareHalfPress)
                 }
                 if (decision.release) {
                     updateAggregateCameraKeyOwnership(ownedHalfPressKeys, event.keyCode, ownedAfter = false)
@@ -326,9 +347,11 @@ class MainActivity : ComponentActivity() {
                 when (event.keyCode) {
                     // Live-captured 2026-07-09: the camera-control button's slide arrives as the
                     // STANDARD KEYCODE_ZOOM_IN/OUT (168/169), repeating ~20 Hz while the finger
-                    // slides — NOT the OPPO 767/769 codes seen in one earlier session (kept as
-                    // aliases just in case).
-                    KeyEvent.KEYCODE_ZOOM_IN, KEY_CAM_SLIDE_IN -> {
+                    // slides. 767 was kept here as a speculative slide-in alias until 2026-07-31,
+                    // when it was measured to be the HALF-PRESS (see KEY_CAM_HALF_PRESS_ALT) — the
+                    // alias silently ate the light press as a zoom nudge. 769 remains a speculative
+                    // slide-out alias only because nothing has ever been measured on it.
+                    KeyEvent.KEYCODE_ZOOM_IN -> {
                         if (event.action == KeyEvent.ACTION_DOWN) vm.onHardwareZoomStep(ZOOM_STEP)
                         return true
                     }
@@ -453,7 +476,15 @@ class MainActivity : ComponentActivity() {
         // Non-standard OPPO keycodes the Find X9 Ultra camera-control button delivers to the focused app
         // (device-captured via a dispatchKeyEvent log). Two are slide notches, one is the light-press.
         // Directions are a calibrated guess — swap SLIDE_IN/OUT if the on-device zoom goes the wrong way.
-        const val KEY_CAM_SLIDE_IN = 767
+        // 767 is the HALF-PRESS, not a slide (device-measured 2026-07-31: a light press on the
+        // camera-control button delivered exactly one 767 DOWN/UP pair, 3 ms apart, to the focused
+        // app — no ~20 Hz repeat, which is the slide signature; slides are live-verified to arrive
+        // as standard KEYCODE_ZOOM_IN/OUT). The old guess routed 767 to a zoom step, which is why
+        // the half-press read as dead: every light press nudged zoom instead of firing the
+        // half-press action. The stock camera's own interceptor registers
+        // {765,766,768,770,771,772,781,782} and NOT 767 — 767 is the code the system re-emits to
+        // the focused third-party app.
+        const val KEY_CAM_HALF_PRESS_ALT = 767
         const val KEY_CAM_SLIDE_OUT = 769
         const val KEY_CAM_HALF_PRESS = 782
         // Per-EVENT zoom multiplier: the slide repeats ~20 Hz, so ~1.04/event = a controlled

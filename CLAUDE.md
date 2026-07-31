@@ -665,9 +665,17 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   capacitive slide is re-emitted to the FOCUSED app as **KEYCODE_ZOOM_IN (168) / KEYCODE_ZOOM_OUT
   (169), repeating ~20 Hz** while the finger slides — a one-off earlier capture showed OPPO codes
   767/769/782 instead (config-dependent; both families are handled, `KEYCODE_FOCUS` too). The
-  **light-press (half-press) is NOT delivered at all** in the current configuration (nothing reaches
-  `dispatchKeyEvent`; likely stock-camera-only) — the FOCUS/782 handlers stay armed if it ever
-  arrives. The discrete ~20 Hz repeats stutter if applied 1:1: `onHardwareZoomStep` moves a TARGET and
+  **light-press (half-press) IS delivered — as OPPO keycode 767 (device-measured 2026-07-31,
+  three presses, three exact DOWN/UP pairs ~3 ms apart, zero repeats).** The earlier "not delivered"
+  conclusion was an artifact of two traps at once: (a) pressing while LOCKED launches the STOCK
+  camera, whose own `registerKeyEventInterceptor` ({765,766,768,770,771,772,781,782} — note 767 is
+  NOT in that list) consumes the event before any third-party app exists to receive it, and (b) our
+  handler had 767 registered as a speculative SLIDE-IN alias from a one-off earlier capture, so
+  every delivered half-press was silently eaten as a zoom nudge — the misroute made the key look
+  dead from the UI. 767 now routes to the half-press family (FOCUS/782 stay as siblings), verified
+  end-to-end: each press fires the assigned action (AF-ON: request-generation bump + afState
+  scan→FOCUSED) with effZoom bit-identical across presses. The half-press SHUTTER binding carries
+  the same denial-recorded audio drop as the full-key path. The discrete ~20 Hz repeats stutter if applied 1:1: `onHardwareZoomStep` moves a TARGET and
   a ~30 Hz ticker glides `zoomRatio` toward it (log-space exponential), like a powered zoom rocker.
   Full/half actions are a configurable `HardwareKeyAction` system (reassignable in Setup, persisted).
   **`adb input keyevent` injection does NOT reach the focused app** — only a physical press; verify
