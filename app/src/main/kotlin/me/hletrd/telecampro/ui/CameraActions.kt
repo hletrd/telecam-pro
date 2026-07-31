@@ -171,6 +171,7 @@ interface CameraActions {
     fun onRecallMemorySlot(slot: MemorySlot)
     fun onVolumeKeyAction(action: HardwareKeyAction)
     fun onHalfPressAction(action: HardwareKeyAction)
+    fun onQuickButtonAction(action: HardwareKeyAction)
     fun onDeleteLastMedia(uri: android.net.Uri)
 
     /**

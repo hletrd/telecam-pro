@@ -1041,6 +1041,13 @@ data class CameraUiState(
     // to shutter/REC. [halfPressActive] only drives the viewfinder feedback ring/chip.
     val volumeKeyAction: HardwareKeyAction = HardwareKeyAction.SHUTTER,
     val halfPressAction: HardwareKeyAction = HardwareKeyAction.AF_ON,
+
+    /**
+     * The OPPO quick/action button. The physical press (KEYCODE_ACTION_BUTTON_CLICK, scan 735) is
+     * intercepted by the system's StrategyActionButtonKeyLaunchApp, which injects keycode 781 to
+     * the focused app (device-measured 2026-07-31). A camera app's natural default is the shutter.
+     */
+    val quickButtonAction: HardwareKeyAction = HardwareKeyAction.SHUTTER,
     val halfPressActive: Boolean = false,
     // Gamma Display Assist (Sony): while shooting a log profile, the MONITOR shows the normal
     // 709-ish image and only the FILE stays log. Off = judge the flat log directly.

@@ -142,6 +142,7 @@ class PerformQuickFnTest {
         override fun onRecallMemorySlot(slot: MemorySlot) = hit("onRecallMemorySlot")
         override fun onVolumeKeyAction(action: HardwareKeyAction) = hit("onVolumeKeyAction")
         override fun onHalfPressAction(action: HardwareKeyAction) = hit("onHalfPressAction")
+        override fun onQuickButtonAction(action: HardwareKeyAction) = Unit
         override fun onDeleteLastMedia(uri: android.net.Uri) = hit("onDeleteLastMedia")
         override fun onReviewOpenChange(open: Boolean, uri: android.net.Uri): Boolean {
             hit("onReviewOpenChange")

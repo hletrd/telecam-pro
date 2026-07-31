@@ -97,6 +97,7 @@ data class ExtraSettings(
     val myMenuSlots: List<FnSlot> = FnSlot.MY_MENU_DEFAULT,
     val volumeKeyAction: HardwareKeyAction = HardwareKeyAction.SHUTTER,
     val halfPressAction: HardwareKeyAction = HardwareKeyAction.AF_ON,
+    val quickButtonAction: HardwareKeyAction = HardwareKeyAction.SHUTTER,
     val gammaAssist: Boolean = false,
     val frameLines: FrameLineType = FrameLineType.OFF,
     // Default OFF so every launch opens at the 1x main lens. Preserving the last pick made
@@ -315,6 +316,7 @@ class SettingsStore(private val prefs: SharedPreferences) {
                 ),
                 volumeKeyAction = enumOr(safeString("${prefix}volumeKeyAction", null), ed.volumeKeyAction),
                 halfPressAction = enumOr(safeString("${prefix}halfPressAction", null), ed.halfPressAction),
+                quickButtonAction = enumOr(safeString("${prefix}quickButtonAction", null), ed.quickButtonAction),
                 gammaAssist = safeBoolean("${prefix}gammaAssist", ed.gammaAssist),
                 frameLines = enumOr(safeString("${prefix}frameLines", null), ed.frameLines),
                 preserveLensSelection = safeBoolean("${prefix}preserveLensSelection", ed.preserveLensSelection),
@@ -401,6 +403,7 @@ class SettingsStore(private val prefs: SharedPreferences) {
         putString("${prefix}myMenuSlots", e.myMenuSlots.joinToString(",") { it.name })
         putString("${prefix}volumeKeyAction", e.volumeKeyAction.name)
         putString("${prefix}halfPressAction", e.halfPressAction.name)
+        putString("${prefix}quickButtonAction", e.quickButtonAction.name)
         putBoolean("${prefix}gammaAssist", e.gammaAssist)
         putString("${prefix}frameLines", e.frameLines.name)
         putBoolean("${prefix}preserveLensSelection", e.preserveLensSelection)

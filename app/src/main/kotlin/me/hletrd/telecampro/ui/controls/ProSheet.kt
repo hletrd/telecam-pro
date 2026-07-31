@@ -1458,6 +1458,15 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
         labelFor = ::hardwareKeyActionLabel,
         onSelect = actions::onHalfPressAction,
     )
+    // The OPPO quick/action button (system-injected 781). Discrete click — momentary bindings
+    // (AEL, Loupe) blip on/off within one press, which is honest to what the key delivers.
+    SegmentedSelector(
+        label = "Quick Button",
+        options = HardwareKeyAction.entries,
+        selected = state.quickButtonAction,
+        labelFor = ::hardwareKeyActionLabel,
+        onSelect = actions::onQuickButtonAction,
+    )
     // A stale diagnostic override must remain recoverable, but normal release users should not see
     // an inert implementation-detail row.
     state.cameraOverrideId?.let { cameraId ->

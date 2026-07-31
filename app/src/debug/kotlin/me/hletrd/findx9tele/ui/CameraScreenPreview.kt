@@ -131,6 +131,7 @@ internal object PreviewCameraActions : CameraActions {
     override fun onRecallMemorySlot(slot: me.hletrd.telecampro.camera.MemorySlot) = Unit
     override fun onVolumeKeyAction(action: me.hletrd.telecampro.camera.HardwareKeyAction) = Unit
     override fun onHalfPressAction(action: me.hletrd.telecampro.camera.HardwareKeyAction) = Unit
+    override fun onQuickButtonAction(action: me.hletrd.telecampro.camera.HardwareKeyAction) = Unit
     override fun onDeleteLastMedia(uri: android.net.Uri) = Unit
 }
 

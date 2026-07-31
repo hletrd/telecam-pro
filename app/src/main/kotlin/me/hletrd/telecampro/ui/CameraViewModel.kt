@@ -1099,6 +1099,7 @@ class CameraViewModel @JvmOverloads constructor(
                 myMenuSlots = normalizeFnSlots(e.myMenuSlots, FnSlot.MY_MENU_DEFAULT),
                 volumeKeyAction = e.volumeKeyAction,
                 halfPressAction = e.halfPressAction,
+                quickButtonAction = e.quickButtonAction,
                 preserveLensSelection = if (honorPreserveOptions) e.preserveLensSelection else it.preserveLensSelection,
                 preserveTeleconverter = if (honorPreserveOptions) e.preserveTeleconverter else it.preserveTeleconverter,
                 activeMemorySlot = activeSlot,
@@ -1166,6 +1167,7 @@ class CameraViewModel @JvmOverloads constructor(
             myMenuSlots = s.myMenuSlots,
             volumeKeyAction = s.volumeKeyAction,
             halfPressAction = s.halfPressAction,
+            quickButtonAction = s.quickButtonAction,
             gammaAssist = s.gammaAssist,
             frameLines = s.frameLines,
             preserveLensSelection = s.preserveLensSelection,
@@ -2465,6 +2467,11 @@ class CameraViewModel @JvmOverloads constructor(
         performHardwareAction(_state.value.volumeKeyAction, active)
     }
 
+    /** The OPPO quick/action button (injected keycode 781) — its own reassignable binding. */
+    fun onHardwareQuickButton(active: Boolean) {
+        performHardwareAction(_state.value.quickButtonAction, active)
+    }
+
     /**
      * Fires the capture AND blinks the viewfinder immediately. The still takes pipeline-depth ×
      * frame-duration before it even starts exposing (~0.9 s measured in low light) — with no
@@ -2727,6 +2734,11 @@ class CameraViewModel @JvmOverloads constructor(
 
     override fun onHalfPressAction(action: HardwareKeyAction) {
         _state.update { it.copy(halfPressAction = action, activeMemorySlot = null) }
+        saveSettingsIfEnabled()
+    }
+
+    override fun onQuickButtonAction(action: HardwareKeyAction) {
+        _state.update { it.copy(quickButtonAction = action, activeMemorySlot = null) }
         saveSettingsIfEnabled()
     }
 

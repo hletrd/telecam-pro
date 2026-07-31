@@ -69,6 +69,7 @@ class MainActivity : ComponentActivity() {
     // still reaches the ViewModel and both edges stay consumed instead of wedging a press state.
     private val ownedShutterKeys = mutableSetOf<Int>()
     private val ownedHalfPressKeys = mutableSetOf<Int>()
+    private val ownedQuickKeys = mutableSetOf<Int>()
 
     /**
      * DEBUG-only shell hook: API 36 rejects adb-shell broadcasts to NOT_EXPORTED receivers
@@ -209,6 +210,10 @@ class MainActivity : ComponentActivity() {
             ownedHalfPressKeys.clear()
             vm.onHardwareHalfPress(active = false)
         }
+        if (ownedQuickKeys.isNotEmpty()) {
+            ownedQuickKeys.clear()
+            vm.onHardwareQuickButton(active = false)
+        }
         vm.onStop()
         super.onStop()
     }
@@ -340,6 +345,46 @@ class MainActivity : ComponentActivity() {
                 if (decision.release) {
                     updateAggregateCameraKeyOwnership(ownedHalfPressKeys, event.keyCode, ownedAfter = false)
                         ?.let(vm::onHardwareHalfPress)
+                }
+                if (decision.consume) return true
+            }
+            KEY_CAM_QUICK -> {
+                val edge = when (event.action) {
+                    KeyEvent.ACTION_DOWN -> if (event.repeatCount == 0) CameraKeyEdge.DOWN else CameraKeyEdge.REPEAT
+                    KeyEvent.ACTION_UP -> CameraKeyEdge.UP
+                    else -> return super.dispatchKeyEvent(event)
+                }
+                val decision = cameraKeyDecision(
+                    hasCameraPermission = hasCameraPermission,
+                    cameraInputBlocked = vm.state.value.cameraInputBlocked || showMicrophoneRationale,
+                    alreadyOwned = event.keyCode in ownedQuickKeys,
+                    edge = edge,
+                )
+                if (decision.start) {
+                    val transition = updateAggregateCameraKeyOwnership(ownedQuickKeys, event.keyCode, ownedAfter = true)
+                    if (transition == true) {
+                        val s = vm.state.value
+                        // Same denial-recorded audio drop as the full-key and half-press paths.
+                        if (hardwareShutterAudioDrop(
+                                fullKeyAction = s.quickButtonAction,
+                                videoMode = s.mode == CaptureMode.VIDEO,
+                                recording = s.isRecording,
+                                recordAudio = s.recordAudio,
+                                hasMicrophonePermission = hasMicrophonePermission,
+                            )
+                        ) {
+                            permissionPreferences.edit(commit = true) {
+                                putBoolean(AUDIO_OFF_BY_DENIAL_KEY, true)
+                            }
+                            vm.onToggleRecordAudio(false)
+                            vm.onAppStatus("Recording without audio")
+                        }
+                    }
+                    transition?.let(vm::onHardwareQuickButton)
+                }
+                if (decision.release) {
+                    updateAggregateCameraKeyOwnership(ownedQuickKeys, event.keyCode, ownedAfter = false)
+                        ?.let(vm::onHardwareQuickButton)
                 }
                 if (decision.consume) return true
             }
@@ -485,6 +530,13 @@ class MainActivity : ComponentActivity() {
         // {765,766,768,770,771,772,781,782} and NOT 767 — 767 is the code the system re-emits to
         // the focused third-party app.
         const val KEY_CAM_HALF_PRESS_ALT = 767
+
+        // The OPPO quick/action button: the PHYSICAL press is KEYCODE_ACTION_BUTTON_CLICK
+        // (scan 735), which the system's StrategyActionButtonKeyLaunchApp intercepts and re-emits
+        // to the focused app as an INJECTED 781 DOWN/UP pair (device-measured 2026-07-31;
+        // isInjected=true in the system keylog). 781 is also in the stock camera's interceptor
+        // list, which is how ITS quick-button capture works.
+        const val KEY_CAM_QUICK = 781
         const val KEY_CAM_SLIDE_OUT = 769
         const val KEY_CAM_HALF_PRESS = 782
         // Per-EVENT zoom multiplier: the slide repeats ~20 Hz, so ~1.04/event = a controlled
