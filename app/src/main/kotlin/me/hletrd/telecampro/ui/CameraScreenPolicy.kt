@@ -450,11 +450,12 @@ internal fun fnTileContentAxis(deviceOrientation: Int): FnTileContentAxis =
 
 /** Short visual copy for the narrow physical strip; accessibility keeps the complete slot label. */
 internal fun fnOverlayVisualLabel(slot: FnSlot, heldLandscape: Boolean): String = when {
-    !heldLandscape -> fnSlotLabel(slot)
-    // "Stab", not "Steady": the OSD already owns STEADY for ONE value (ENHANCED), so the held tray
-    // read "Steady / Std" while the OSD said OIS+ — a tile labelled with the name of a state it is
-    // not in. "Stab" matches the OSD's own STAB OFF tag and still fits the 148 dp tile.
+    // "Stab" in BOTH axes since the tiles gained icons (2026-07-31): the 14 dp glyph + 4 dp gap
+    // eats exactly the width that let "Stabilization" fit a portrait tile, and "Stabilizati…" is
+    // worse than the compression. NOT "Steady": the OSD owns STEADY for ONE value (ENHANCED), so a
+    // tile named after a state it is not in reads as a lie; "Stab" matches the OSD's STAB OFF tag.
     slot == FnSlot.STABILIZATION -> "Stab"
+    !heldLandscape -> fnSlotLabel(slot)
     slot == FnSlot.OPEN_GATE -> "Gate"
     else -> fnSlotLabel(slot)
 }

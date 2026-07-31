@@ -49,6 +49,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -150,6 +151,7 @@ import me.hletrd.telecampro.ui.controls.nextTimer
 import me.hletrd.telecampro.ui.controls.toggledGridType
 import me.hletrd.telecampro.ui.controls.quickFnEnabled
 import me.hletrd.telecampro.ui.controls.flashModeLabel
+import me.hletrd.telecampro.ui.controls.fnSlotIcon
 import me.hletrd.telecampro.ui.controls.fnSlotLabel
 import me.hletrd.telecampro.ui.controls.gridTypeLabel
 import me.hletrd.telecampro.ui.controls.fnSlotValue
@@ -2010,7 +2012,8 @@ private fun FnOverlayTile(
     ) {
         if (heldLandscape) {
             // The portrait-locked Activity becomes a narrow physical strip when held sideways.
-            // Separating glyphs on the raw X axis stacks them on the held device's Y axis.
+            // Separating glyphs on the raw X axis stacks them on the held device's Y axis. The icon
+            // rides WITH the label glyph (one rotated unit) so the pair stays readable at 90°.
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -2018,9 +2021,9 @@ private fun FnOverlayTile(
             ) {
                 if (contentAxis == FnTileContentAxis.HELD_LANDSCAPE_VALUE_FIRST_RAW) {
                     FnOverlayTileValue(visualValue, foregroundAlpha, Modifier.rotateLayout(glyphRotation))
-                    FnOverlayTileLabel(visualLabel, foregroundAlpha, Modifier.rotateLayout(glyphRotation))
+                    FnOverlayTileLabel(visualLabel, foregroundAlpha, Modifier.rotateLayout(glyphRotation), icon = fnSlotIcon(slot))
                 } else {
-                    FnOverlayTileLabel(visualLabel, foregroundAlpha, Modifier.rotateLayout(glyphRotation))
+                    FnOverlayTileLabel(visualLabel, foregroundAlpha, Modifier.rotateLayout(glyphRotation), icon = fnSlotIcon(slot))
                     FnOverlayTileValue(visualValue, foregroundAlpha, Modifier.rotateLayout(glyphRotation))
                 }
             }
@@ -2031,7 +2034,7 @@ private fun FnOverlayTile(
                     .rotateLayout(glyphRotation),
                 verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
-                FnOverlayTileLabel(visualLabel, foregroundAlpha)
+                FnOverlayTileLabel(visualLabel, foregroundAlpha, icon = fnSlotIcon(slot))
                 FnOverlayTileValue(visualValue, foregroundAlpha)
             }
         }
@@ -2039,15 +2042,37 @@ private fun FnOverlayTile(
 }
 
 @Composable
-private fun FnOverlayTileLabel(text: String, alpha: Float, modifier: Modifier = Modifier) {
-    Text(
-        text,
-        color = CameraColors.TextSecondary.copy(alpha = alpha),
-        style = MaterialTheme.typography.labelSmall,
-        maxLines = 1,
-        overflow = TextOverflow.Ellipsis,
+private fun FnOverlayTileLabel(
+    text: String,
+    alpha: Float,
+    modifier: Modifier = Modifier,
+    icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+) {
+    // Icon + label as ONE unit (user-requested 2026-07-31: text-only tiles read as a wall of
+    // words). The icon inherits the label's secondary ink and alpha so a dimmed tile dims whole;
+    // contentDescription null because the tile's clearAndSetSemantics already names the slot —
+    // a second name here would double-announce.
+    Row(
         modifier = modifier,
-    )
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (icon != null) {
+            Icon(
+                icon,
+                contentDescription = null,
+                tint = CameraColors.TextSecondary.copy(alpha = alpha),
+                modifier = Modifier.size(14.dp),
+            )
+        }
+        Text(
+            text,
+            color = CameraColors.TextSecondary.copy(alpha = alpha),
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
 }
 
 @Composable

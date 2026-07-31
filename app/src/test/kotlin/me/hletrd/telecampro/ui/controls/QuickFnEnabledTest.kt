@@ -47,13 +47,21 @@ class QuickFnEnabledTest {
 
     @Test
     fun `the Fn editor offers only the slots its list can act on`() {
-        for (slot in listOf(FnSlot.STABILIZATION, FnSlot.TRANSFER, FnSlot.AUDIO_SCENE, FnSlot.OPEN_GATE)) {
+        val videoOnly = listOf(
+            FnSlot.STABILIZATION, FnSlot.TRANSFER, FnSlot.AUDIO_SCENE, FnSlot.OPEN_GATE,
+            FnSlot.AUDIO_INPUT,
+        )
+        for (slot in videoOnly) {
             assertFalse("$slot", fnSlotAppliesTo(slot, CaptureMode.PHOTO))
             assertTrue("$slot", fnSlotAppliesTo(slot, CaptureMode.VIDEO))
         }
-        for (slot in FnSlot.entries - setOf(
-            FnSlot.STABILIZATION, FnSlot.TRANSFER, FnSlot.AUDIO_SCENE, FnSlot.OPEN_GATE,
-        )) {
+        // Still-only axes: the self-timer counts to a SHUTTER; aspect is the STILL crop.
+        val photoOnly = listOf(FnSlot.TIMER, FnSlot.ASPECT)
+        for (slot in photoOnly) {
+            assertTrue("$slot", fnSlotAppliesTo(slot, CaptureMode.PHOTO))
+            assertFalse("$slot", fnSlotAppliesTo(slot, CaptureMode.VIDEO))
+        }
+        for (slot in FnSlot.entries - videoOnly.toSet() - photoOnly.toSet()) {
             assertTrue("$slot photo", fnSlotAppliesTo(slot, CaptureMode.PHOTO))
             assertTrue("$slot video", fnSlotAppliesTo(slot, CaptureMode.VIDEO))
         }

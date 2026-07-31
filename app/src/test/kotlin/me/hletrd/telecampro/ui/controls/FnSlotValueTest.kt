@@ -51,6 +51,10 @@ class FnSlotValueTest {
             FnSlot.TELECONVERTER to "Off",
             FnSlot.OPEN_GATE to "Off",
             FnSlot.FRAME_LINES to "Off",
+            FnSlot.FLASH to "Off",
+            FnSlot.TIMER to "Off",
+            FnSlot.ASPECT to "4:3",
+            FnSlot.AUDIO_INPUT to "Auto",
         )
         assertEquals(FnSlot.entries.toSet(), expected.keys)
         expected.forEach { (slot, value) -> assertEquals("$slot", value, fnSlotValue(slot, state)) }

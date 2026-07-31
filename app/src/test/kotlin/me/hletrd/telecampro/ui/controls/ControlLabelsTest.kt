@@ -197,6 +197,10 @@ class ControlLabelsTest {
             FnSlot.TELECONVERTER to "Tele",
             FnSlot.OPEN_GATE to "Open Gate",
             FnSlot.FRAME_LINES to "Frame",
+            FnSlot.FLASH to "Flash",
+            FnSlot.TIMER to "Timer",
+            FnSlot.ASPECT to "Aspect",
+            FnSlot.AUDIO_INPUT to "Mic Input",
         ),
         ::fnSlotLabel,
     )

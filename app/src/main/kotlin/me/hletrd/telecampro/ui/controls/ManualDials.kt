@@ -75,6 +75,10 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import me.hletrd.telecampro.camera.AspectRatio
+import me.hletrd.telecampro.camera.AudioInputPreference
+import me.hletrd.telecampro.camera.FlashMode
+import me.hletrd.telecampro.camera.ShutterTimer
 import me.hletrd.telecampro.camera.CameraCaps
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
@@ -653,6 +657,42 @@ private fun FnDialChip(
             active = state.frameLines != FrameLineType.OFF,
             enabled = policyEnabled,
             onClick = { actions.onFrameLines(nextFrameLine(state.frameLines)) },
+            onLongClick = onOpenFnMenu,
+        )
+        FnSlot.FLASH -> DialChip(
+            label = "Flash",
+            value = flashModeLabel(controls.flash),
+            active = controls.flash != FlashMode.OFF,
+            enabled = policyEnabled && availability.flashModes.size > 1,
+            onClick = { actions.onFlash(nextAvailable(controls.flash, availability.flashModes)) },
+            onLongClick = onOpenFnMenu,
+        )
+        FnSlot.TIMER -> DialChip(
+            label = "Timer",
+            value = shutterTimerLabel(state.timer),
+            active = state.timer != ShutterTimer.OFF,
+            enabled = policyEnabled,
+            onClick = { actions.onTimer(nextShutterTimer(state.timer)) },
+            onLongClick = onOpenFnMenu,
+        )
+        FnSlot.ASPECT -> DialChip(
+            label = "Aspect",
+            value = aspectRatioLabel(state.aspectRatio),
+            active = state.aspectRatio != AspectRatio.W4_3,
+            enabled = policyEnabled,
+            onClick = {
+                if (policyEnabled) actions.onAspectRatio(
+                    if (state.aspectRatio == AspectRatio.W4_3) AspectRatio.W16_9 else AspectRatio.W4_3,
+                )
+            },
+            onLongClick = onOpenFnMenu,
+        )
+        FnSlot.AUDIO_INPUT -> DialChip(
+            label = "Mic Input",
+            value = state.audioInputPreference.label,
+            active = state.audioInputPreference != AudioInputPreference.AUTO,
+            enabled = policyEnabled,
+            onClick = { if (policyEnabled) actions.onAudioInputPreference(nextAudioInput(state.audioInputPreference)) },
             onLongClick = onOpenFnMenu,
         )
     }

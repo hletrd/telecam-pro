@@ -1,6 +1,7 @@
 package me.hletrd.telecampro.ui.controls
 
 import me.hletrd.telecampro.camera.AspectRatio
+import me.hletrd.telecampro.camera.AudioInputPreference
 import me.hletrd.telecampro.camera.AudioScene
 import me.hletrd.telecampro.camera.CameraFacing
 import me.hletrd.telecampro.camera.CameraUiState
@@ -188,9 +189,20 @@ internal fun nextAspect(ratio: AspectRatio): AspectRatio = when (ratio) {
  *    could read "Active" while the OSD read "OIS OFF" for the same frame.
  * My Menu is a settings surface rather than a shooting one, so it keeps every slot.
  */
+/** Timer cycle: OFF → 3s → 10s → OFF. Fixed order, matches the sheet's chip order. */
+internal fun nextShutterTimer(current: ShutterTimer): ShutterTimer =
+    ShutterTimer.entries[(current.ordinal + 1) % ShutterTimer.entries.size]
+
+/** Mic-input cycle over the declared preference order (resolution against live ports is later). */
+internal fun nextAudioInput(current: AudioInputPreference): AudioInputPreference =
+    AudioInputPreference.entries[(current.ordinal + 1) % AudioInputPreference.entries.size]
+
 internal fun fnSlotAppliesTo(slot: FnSlot, mode: CaptureMode): Boolean = when (slot) {
-    FnSlot.OPEN_GATE, FnSlot.TRANSFER, FnSlot.AUDIO_SCENE, FnSlot.STABILIZATION ->
+    FnSlot.OPEN_GATE, FnSlot.TRANSFER, FnSlot.AUDIO_SCENE, FnSlot.STABILIZATION, FnSlot.AUDIO_INPUT ->
         mode == CaptureMode.VIDEO
+    // Still-only axes: the self-timer counts down to a SHUTTER, and aspect is the STILL crop
+    // (video framing is resolution/open-gate).
+    FnSlot.TIMER, FnSlot.ASPECT -> mode == CaptureMode.PHOTO
     else -> true
 }
 
@@ -223,5 +235,9 @@ internal fun quickFnEnabled(slot: FnSlot, state: CameraUiState): Boolean = fnSlo
     FnSlot.OPEN_GATE -> state.mode == CaptureMode.VIDEO && !state.isRecording
     FnSlot.STABILIZATION -> !state.isRecording
     FnSlot.AUDIO_SCENE -> !state.isRecording
+    // Session-reconfiguring (still reader size is fixed at configureStreams) / mic-route handoff:
+    // both actions rejectIfRecording, so the tile must dim in step (this predicate's contract).
+    FnSlot.ASPECT -> !state.isRecording
+    FnSlot.AUDIO_INPUT -> !state.isRecording
     else -> true
 }

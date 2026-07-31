@@ -177,11 +177,11 @@ class FnOverlayPolicyTest {
 
     @Test
     fun `held landscape copy is compact without changing portrait copy`() {
-        // STABILIZATION and OPEN_GATE are the only two slots with a held-landscape alias, so they are
-        // the only two the portrait branch could ever shorten by accident. Pinned as literals, not as
-        // `== fnSlotLabel(slot)`: the portrait branch IS `fnSlotLabel(slot)`, and comparing it to
-        // itself would pass no matter what either side became.
-        assertEquals("Stabilization", fnOverlayVisualLabel(FnSlot.STABILIZATION, false))
+        // Pinned as literals, not as `== fnSlotLabel(slot)`: the portrait branch IS
+        // `fnSlotLabel(slot)` for most slots, and comparing it to itself would pass no matter what
+        // either side became. STABILIZATION compresses in BOTH axes since the tiles gained icons
+        // (2026-07-31): the 14 dp glyph ate the width that let the full word fit portrait tiles.
+        assertEquals("Stab", fnOverlayVisualLabel(FnSlot.STABILIZATION, false))
         assertEquals("Stab", fnOverlayVisualLabel(FnSlot.STABILIZATION, true))
         assertEquals("Open Gate", fnOverlayVisualLabel(FnSlot.OPEN_GATE, false))
         assertEquals("Gate", fnOverlayVisualLabel(FnSlot.OPEN_GATE, true))

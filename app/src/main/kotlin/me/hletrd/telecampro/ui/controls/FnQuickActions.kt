@@ -1,5 +1,6 @@
 package me.hletrd.telecampro.ui.controls
 
+import me.hletrd.telecampro.camera.AspectRatio
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.ExposureMode
 import me.hletrd.telecampro.camera.FnSlot
@@ -64,6 +65,10 @@ internal fun fnSlotValue(slot: FnSlot, state: CameraUiState): String {
         FnSlot.TELECONVERTER -> if (state.teleconverterMode) formatFocalMm(state.teleconverterFocalMm) else "Off"
         FnSlot.OPEN_GATE -> if (state.openGate) "4:3" else "Off"
         FnSlot.FRAME_LINES -> state.frameLines.label
+        FnSlot.FLASH -> flashModeLabel(c.flash)
+        FnSlot.TIMER -> shutterTimerLabel(state.timer)
+        FnSlot.ASPECT -> aspectRatioLabel(state.aspectRatio)
+        FnSlot.AUDIO_INPUT -> state.audioInputPreference.label
     }
 }
 
@@ -106,5 +111,11 @@ internal fun performQuickFn(slot: FnSlot, state: CameraUiState, actions: CameraA
         FnSlot.TELECONVERTER -> actions.onToggleTeleconverter(!state.teleconverterMode)
         FnSlot.OPEN_GATE -> actions.onToggleOpenGate(!state.openGate) // gate lives in quickFnEnabled
         FnSlot.FRAME_LINES -> actions.onFrameLines(nextFrameLine(state.frameLines))
+        FnSlot.FLASH -> actions.onFlash(nextAvailable(state.controls.flash, availability.flashModes))
+        FnSlot.TIMER -> actions.onTimer(nextShutterTimer(state.timer))
+        FnSlot.ASPECT -> actions.onAspectRatio(
+            if (state.aspectRatio == AspectRatio.W4_3) AspectRatio.W16_9 else AspectRatio.W4_3,
+        )
+        FnSlot.AUDIO_INPUT -> actions.onAudioInputPreference(nextAudioInput(state.audioInputPreference))
     }
 }

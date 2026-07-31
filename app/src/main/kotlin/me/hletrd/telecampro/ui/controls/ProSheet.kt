@@ -1245,7 +1245,10 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     // Directional audio: Sound Focus aims the mic array at the framed subject and tightens with zoom;
     // Sound Stage keeps a wider stereo image.
     SegmentedSelector(
-        label = "Scene",
+        // "Directionality", not "Scene": the user-facing question this row answers is WHERE the
+        // mics listen (subject-aimed Sound Focus vs wide Sound Stage) — "Scene" read as a picture
+        // style and was reported un-findable (2026-07-31).
+        label = "Directionality",
         options = AudioScene.entries,
         selected = state.audioScene,
         labelFor = { it.label },

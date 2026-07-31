@@ -157,7 +157,15 @@ enum class FnSlot(val label: String) {
     PUNCH_IN("Loupe"),
     TELECONVERTER("Tele"),
     OPEN_GATE("Open Gate"),
-    FRAME_LINES("Frame");
+    FRAME_LINES("Frame"),
+
+    // 2026-07-31 additions (user: "some fn functions are not available"). Persistence stores enum
+    // NAMES, so appending here never disturbs saved lists; normalizeFnSlots drops unknowns on
+    // downgrade by construction.
+    FLASH("Flash"),
+    TIMER("Timer"),
+    ASPECT("Aspect"),
+    AUDIO_INPUT("Mic Input");
 
     companion object {
         val PHOTO_DEFAULT = listOf(EXPOSURE_MODE, FOCUS, SHUTTER, ISO, WB, EV)
