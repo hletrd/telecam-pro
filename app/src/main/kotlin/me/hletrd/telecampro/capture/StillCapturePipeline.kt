@@ -16,6 +16,7 @@ import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.MeteringMode
 import me.hletrd.telecampro.camera.RotationMath
 import me.hletrd.telecampro.camera.TeleSelection
+import me.hletrd.telecampro.camera.CropBox
 import me.hletrd.telecampro.camera.centerCropBox
 import me.hletrd.telecampro.storage.CaptureFamilyKey
 import me.hletrd.telecampro.storage.MediaStoreWriter
@@ -137,35 +138,39 @@ internal class StillCapturePipeline(
             return
         }
         var decoded: Bitmap? = null
-        var cropped: Bitmap? = null
         var rotated: Bitmap? = null
         try {
             val d = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             if (d == null) { emitStatus("Photo save failed"); return }
             decoded = d
+            // ONE createBitmap does crop AND rotate (perf review #3b): the old crop-then-rotate
+            // chain materialized a ~37 MB 16:9 intermediate that existed only to be re-read by the
+            // rotate. Bitmap.createBitmap(src, x, y, w, h, m, filter) applies the source rect and
+            // the matrix in a single allocation; a null matrix is a plain crop, and the
+            // no-crop/no-rotate case returns [d] itself (createBitmap may also return the source
+            // when the op is an identity — the === guards below already tolerate aliasing).
             val ar = spec.aspectRatio
-            val base = if (ar != AspectRatio.W4_3) { // W4_3 = full sensor, no crop needed
-                val c = centerCrop(d, ar.w, ar.h)
-                cropped = c
-                c
-            } else d
-            val r = rotateBitmap(base, spec.rotationDegrees)
+            val degrees = spec.rotationDegrees % 360
+            val r = if (ar == AspectRatio.W4_3 && degrees == 0) { // full sensor, upright: no-op
+                d
+            } else {
+                val (x, y, cropW, cropH) = if (ar != AspectRatio.W4_3) {
+                    centerCropBox(d.width, d.height, ar.w, ar.h)
+                } else {
+                    CropBox(0, 0, d.width, d.height)
+                }
+                val m = if (degrees != 0) Matrix().apply { postRotate(degrees.toFloat()) } else null
+                Bitmap.createBitmap(d, x, y, cropW, cropH, m, true)
+            }
             rotated = r
-            // Release the intermediates the ENCODERS never read as soon as [rotated] exists
-            // (perf review #3): holding decoded (~50 MB ARGB) + cropped (~37 MB) through the whole
-            // 1-3 s HEIF+JPEG encode kept a ~127-152 MB working set live per shot and inflated the
-            // ART heap target — the most plausible owner of the soak-observed Java growth. The
-            // finally block stays as the safety net for every earlier-exit path; recycle() is
-            // idempotent, and the === guards there already tolerate the aliased W4_3/0° cases.
-            if (r !== base) {
-                if (cropped != null && cropped !== d) {
-                    cropped.recycle()
-                    cropped = null
-                }
-                if (r !== d) {
-                    d.recycle()
-                    decoded = null
-                }
+            // Release the decode the ENCODERS never read as soon as [rotated] exists (perf review
+            // #3a): holding decoded (~50 MB ARGB) through the whole 1-3 s HEIF+JPEG encode kept a
+            // ~127-152 MB working set live per shot and inflated the ART heap target — the most
+            // plausible owner of the soak-observed Java growth. The finally block stays as the
+            // safety net for every earlier-exit path.
+            if (r !== d) {
+                d.recycle()
+                decoded = null
             }
             if (wantHeif) runCatching { writeProcessedHeif(r, spec, exifShot) }
                 .onFailure {
@@ -183,10 +188,8 @@ internal class StillCapturePipeline(
             emitStatus("Photo save failed")
         } finally {
             val rr = rotated
-            val cc = cropped
             val dd = decoded
-            if (rr != null && rr !== cc && rr !== dd) rr.recycle()
-            if (cc != null && cc !== dd) cc.recycle()
+            if (rr != null && rr !== dd) rr.recycle()
             dd?.recycle()
         }
     }
@@ -387,20 +390,8 @@ internal class StillCapturePipeline(
         exifAttributeList(shot).forEach { (tag, value) -> exif.setAttribute(tag, value) }
     }
 
-    private fun rotateBitmap(src: Bitmap, degrees: Int): Bitmap {
-        if (degrees % 360 == 0) return src
-        val m = Matrix().apply { postRotate(degrees.toFloat()) }
-        return Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
-    }
-
     /** Maps a clockwise rotation (0/90/180/270) to the matching EXIF/TIFF orientation tag for DNG. */
     private fun exifOrientationFor(degrees: Int): Int = RotationMath.exifOrientationFor(degrees)
-
-    /** Returns the largest [ratioW]:[ratioH] rect centered within [src], cropped out of it (HEIF + JPEG paths). */
-    private fun centerCrop(src: Bitmap, ratioW: Int, ratioH: Int): Bitmap {
-        val (x, y, cropW, cropH) = centerCropBox(src.width, src.height, ratioW, ratioH)
-        return Bitmap.createBitmap(src, x, y, cropW, cropH)
-    }
 }
 
 /** Truthful retained-take status for a completed artifact whose MediaStore publish failed. */
