@@ -960,8 +960,6 @@ class CameraController(context: Context) {
                             finishCustomWbSample(sample.id, awbGains)
                         }
                     }
-                    result.get(CaptureResult.SENSOR_SENSITIVITY)?.let { lastIso = it }
-                    result.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let { lastExposureNs = it }
                     threeAFrame++
                     // Surface the AE-resolved ISO/shutter to the UI (throttled ~3 Hz, only on change)
                     // so the Shutter/ISO chips can show what AE actually chose in auto mode.
@@ -1082,12 +1080,6 @@ class CameraController(context: Context) {
      *   SPOT   → one center rectangle covering 12%, at METERING_WEIGHT_MAX.
      * No-op when the active array is unavailable, so it degrades to full-frame metering.
      */
-    /** Latest-frame exposure, surfaced to the live UI and still-capture metadata. */
-    @Volatile var lastIso: Int = 0
-        private set
-    @Volatile var lastExposureNs: Long = 0L
-        private set
-
     /**
      * Owns one fresh grey-card measurement. Rebuilding the repeating request with [PendingCustomWbSample.tag]
      * makes callbacks from frames already in flight ineligible; only a later unlocked-AUTO,
@@ -1799,6 +1791,7 @@ class CameraController(context: Context) {
                     p.cb.onError(IllegalStateException("Capture timed out — the camera delivered no image"))
                 }
             }
+            newPending.watchdog = watchdog
             if (!postDelayedToCamera(watchdog, watchdogTimeoutMs)) {
                 if (pending === newPending) pending = null
                 synchronized(newPending) {
@@ -2001,6 +1994,15 @@ class CameraController(context: Context) {
         } finally {
             p.jpeg?.close()
             p.raw?.close()
+            // Completion hygiene (perf review #13): cancel the delivery watchdog so its delayed
+            // message stops retaining this Pending, and drop the buffer/result references — the
+            // closed Images and the native result blob otherwise stay reachable through the
+            // handler queue for the remaining 8-12 s budget.
+            p.watchdog?.let { handler.removeCallbacks(it) }
+            p.watchdog = null
+            p.jpeg = null
+            p.raw = null
+            p.result = null
             pending = null
         }
     }
@@ -2065,6 +2067,12 @@ class CameraController(context: Context) {
         var sensorTimestampNs: Long? = null
         var takenAtMs: Long = System.currentTimeMillis()
         var done = false
+
+        // The shot's own delivery watchdog, cancelled on completion (perf review #13): left armed,
+        // the delayed message kept this Pending — its TotalCaptureResult native blob and callback
+        // closure — reachable for the full 8-12 s timeout after every successful shot.
+        var watchdog: Runnable? = null
+
         // Shutter-lag instrumentation (DEBUG logs only): capture-queue time on the camera thread.
         val queuedAtNs: Long = System.nanoTime()
     }

@@ -447,7 +447,19 @@ internal data class CameraControlCapabilities(
     val hiResAdvertisedStandalone: Boolean = false,
 )
 
-internal fun CameraCaps.controlCapabilities(): CameraControlCapabilities = CameraControlCapabilities(
+// Per-instance cache (perf review #9): CameraCaps is an immutable per-route snapshot, but this
+// projection was rebuilt (~30 fields) on EVERY call — 25 Hz on the camera thread via normalizedFor
+// during gestures, plus recompose-rate on main. An identity-keyed single-entry cache keeps the
+// function an extension (no CameraCaps API change) while making repeat calls allocation-free.
+private val controlCapabilitiesCache =
+    java.util.concurrent.atomic.AtomicReference<Pair<CameraCaps, CameraControlCapabilities>?>(null)
+
+internal fun CameraCaps.controlCapabilities(): CameraControlCapabilities {
+    controlCapabilitiesCache.get()?.let { (caps, cached) -> if (caps === this) return cached }
+    return buildControlCapabilities().also { controlCapabilitiesCache.set(this to it) }
+}
+
+private fun CameraCaps.buildControlCapabilities(): CameraControlCapabilities = CameraControlCapabilities(
     supportsManualFocus = supportsManualFocus,
     supportsManualSensor = supportsManualSensor,
     supportsManualPostProcessing = supportsManualPostProcessing,

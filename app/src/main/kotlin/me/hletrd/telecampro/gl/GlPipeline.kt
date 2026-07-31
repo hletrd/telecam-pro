@@ -993,18 +993,17 @@ class GlPipeline {
                             GLES20.glClearColor(1f, 0.839f, 0.039f, 1f)
                             // Bottom, top, left, right. Each is clamped into the finder box so an
                             // edge-clamped hint cannot paint over the border or the main preview.
-                            intArrayOf(0).let { _ ->
-                                val edges = arrayOf(
-                                    intArrayOf(hx, hy, hw, t),
-                                    intArrayOf(hx, hy + hh - t, hw, t),
-                                    intArrayOf(hx, hy, t, hh),
-                                    intArrayOf(hx + hw - t, hy, t, hh),
-                                )
-                                for (e in edges) {
-                                    GLES20.glScissor(e[0], e[1], e[2].coerceAtLeast(1), e[3].coerceAtLeast(1))
-                                    GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-                                }
-                            }
+                            // Four inline scissor+clear pairs, no per-frame arrays: the previous
+                            // array-of-arrays shape allocated ~6 objects per drawn PIP frame at up
+                            // to ~90 draws/s on the GL thread (perf review #14).
+                            GLES20.glScissor(hx, hy, hw.coerceAtLeast(1), t)
+                            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+                            GLES20.glScissor(hx, hy + hh - t, hw.coerceAtLeast(1), t)
+                            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+                            GLES20.glScissor(hx, hy, t, hh.coerceAtLeast(1))
+                            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+                            GLES20.glScissor(hx + hw - t, hy, t, hh.coerceAtLeast(1))
+                            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
                         } finally {
                             GLES20.glDisable(GLES20.GL_SCISSOR_TEST)
                         }

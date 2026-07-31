@@ -151,6 +151,22 @@ internal class StillCapturePipeline(
             } else d
             val r = rotateBitmap(base, spec.rotationDegrees)
             rotated = r
+            // Release the intermediates the ENCODERS never read as soon as [rotated] exists
+            // (perf review #3): holding decoded (~50 MB ARGB) + cropped (~37 MB) through the whole
+            // 1-3 s HEIF+JPEG encode kept a ~127-152 MB working set live per shot and inflated the
+            // ART heap target — the most plausible owner of the soak-observed Java growth. The
+            // finally block stays as the safety net for every earlier-exit path; recycle() is
+            // idempotent, and the === guards there already tolerate the aliased W4_3/0° cases.
+            if (r !== base) {
+                if (cropped != null && cropped !== d) {
+                    cropped.recycle()
+                    cropped = null
+                }
+                if (r !== d) {
+                    d.recycle()
+                    decoded = null
+                }
+            }
             if (wantHeif) runCatching { writeProcessedHeif(r, spec, exifShot) }
                 .onFailure {
                     Log.e("StillCapturePipeline", "HEIF save failed", it)

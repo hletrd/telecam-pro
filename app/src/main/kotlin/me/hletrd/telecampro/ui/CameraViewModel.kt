@@ -125,7 +125,13 @@ class CameraViewModel @JvmOverloads constructor(
     private var recordStartMs = 0L
     private val recordTicker = object : Runnable {
         override fun run() {
-            _state.update { it.copy(recordElapsedMs = SystemClock.elapsedRealtime() - recordStartMs) }
+            // 200 ms tick bounds display lag, but the mm:ss readout changes at 1 Hz — publish only
+            // when the DISPLAYED second advances, or 4 of 5 ticks were whole-state copies that
+            // recomposed the root for an unchanged string (perf review #5).
+            val elapsed = SystemClock.elapsedRealtime() - recordStartMs
+            if (elapsed / 1000L != _state.value.recordElapsedMs / 1000L) {
+                _state.update { it.copy(recordElapsedMs = elapsed) }
+            }
             mainHandler.postDelayed(this, 200)
         }
     }
@@ -335,7 +341,15 @@ class CameraViewModel @JvmOverloads constructor(
     private val levelTicker = object : Runnable {
         override fun run() {
             if (!lifecycleStarted || !_state.value.level) return
-            _state.update { it.copy(levelRoll = engine.currentRollDegrees()) }
+            // Quantized to 0.2° BEFORE the compare (perf review #4): raw smoothed-gravity floats
+            // virtually never repeat, so the unquantized publish defeated StateFlow dedup and
+            // recomposed the whole tree at 10 Hz even on a tripod. 0.2° is 2.5× finer than the
+            // 0.5° is-level color threshold and moves the drawn 230 px half-span under 1 px —
+            // the same change-gating discipline orientationTicker below already applies.
+            val quantized = kotlin.math.round(engine.currentRollDegrees() * 5f) / 5f
+            if (_state.value.levelRoll != quantized) {
+                _state.update { it.copy(levelRoll = quantized) }
+            }
             mainHandler.postDelayed(this, 100)
         }
     }

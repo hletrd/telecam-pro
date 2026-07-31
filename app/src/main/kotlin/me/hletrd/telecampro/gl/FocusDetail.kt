@@ -165,6 +165,47 @@ internal fun focusFrameVerdict(totalTiles: Int, judgeableTiles: Int, sharpTiles:
  * d^2 g(L)/dk^2 ~= g'*L''k^2 + g''*(L'k)^2 — both terms scale as k^2, so the two-lag ratio survives
  * the BT.1886 encoding the analysis draw always uses.
  */
+/**
+ * Reusable accumulator scratch (perf review #7). The analysis executor is single-flight by
+ * construction (AnalysisGeneration's busy gate), so one thread-confined scratch is safe; sizing is
+ * re-checked per call and only ever grows. Before this, every run allocated ~205 KiB (the w*h luma
+ * plane plus six accumulator arrays) — ~1.2 MiB/s of steady Java churn in the default photo state.
+ */
+private class FocusDetailScratch {
+    var luma = IntArray(0)
+    var counts = IntArray(0)
+    var sums = LongArray(0)
+    var fineX = LongArray(0)
+    var fineY = LongArray(0)
+    var coarseX = LongArray(0)
+    var coarseY = LongArray(0)
+
+    fun ensure(lumaSize: Int, tiles: Int, lagCount: Int) {
+        if (luma.size < lumaSize) luma = IntArray(lumaSize)
+        if (counts.size < tiles) {
+            counts = IntArray(tiles)
+            sums = LongArray(tiles)
+            fineX = LongArray(tiles)
+            fineY = LongArray(tiles)
+        } else {
+            java.util.Arrays.fill(counts, 0, tiles, 0)
+            java.util.Arrays.fill(sums, 0, tiles, 0L)
+            java.util.Arrays.fill(fineX, 0, tiles, 0L)
+            java.util.Arrays.fill(fineY, 0, tiles, 0L)
+        }
+        val coarse = tiles * lagCount
+        if (coarseX.size < coarse) {
+            coarseX = LongArray(coarse)
+            coarseY = LongArray(coarse)
+        } else {
+            java.util.Arrays.fill(coarseX, 0, coarse, 0L)
+            java.util.Arrays.fill(coarseY, 0, coarse, 0L)
+        }
+    }
+}
+
+private val focusDetailScratch = ThreadLocal.withInitial { FocusDetailScratch() }
+
 internal fun computeFocusDetail(bytes: ByteArray, w: Int, h: Int): FocusDetailData {
     if (w <= 0 || h <= 0 || bytes.size.toLong() < w.toLong() * h.toLong() * 4L) {
         return FocusDetailData.UNJUDGED
@@ -183,10 +224,13 @@ internal fun computeFocusDetail(bytes: ByteArray, w: Int, h: Int): FocusDetailDa
     // computeHistogram's truncation: the scopes bin absolute levels where a sub-LSB bias is
     // cosmetic, whereas this differences neighbours, and truncation's discontinuity at 0 would
     // inject a spurious edge into near-black regions.
-    val luma = IntArray(w * h)
+    val scratch = checkNotNull(focusDetailScratch.get())
+    scratch.ensure(w * h, totalTiles, FOCUS_COARSE_LAGS.size)
+    val luma = scratch.luma
     var i = 0
     var p = 0
-    while (p < luma.size) {
+    val lumaSize = w * h
+    while (p < lumaSize) {
         val r = bytes[i].toInt() and 0xFF
         val g = bytes[i + 1].toInt() and 0xFF
         val b = bytes[i + 2].toInt() and 0xFF
@@ -196,14 +240,14 @@ internal fun computeFocusDetail(bytes: ByteArray, w: Int, h: Int): FocusDetailDa
     }
 
     val lagCount = FOCUS_COARSE_LAGS.size
-    val counts = IntArray(totalTiles)
-    val sums = LongArray(totalTiles)
-    val fineX = LongArray(totalTiles)
-    val fineY = LongArray(totalTiles)
+    val counts = scratch.counts
+    val sums = scratch.sums
+    val fineX = scratch.fineX
+    val fineY = scratch.fineY
     // Long accumulators are load-bearing: |D| <= 510 so D^2 <= 260100, which fits Int only by ~30x
     // at the current 64 samples/tile — any future tile growth would overflow silently.
-    val coarseX = LongArray(totalTiles * lagCount)
-    val coarseY = LongArray(totalTiles * lagCount)
+    val coarseX = scratch.coarseX
+    val coarseY = scratch.coarseY
 
     val endY = originY + tilesY * FOCUS_TILE
     val endX = originX + tilesX * FOCUS_TILE
