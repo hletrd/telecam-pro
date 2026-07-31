@@ -239,10 +239,18 @@ fun CameraScreen(
         currentActions.value.onCameraInputBlockedChange(modalVisible)
     }
     LaunchedEffect(detailsVisible, modalVisible) {
-        currentActions.value.onStandbyAudioMeterVisibilityChanged(detailsVisible && !modalVisible)
+        val exposed = detailsVisible && !modalVisible
+        currentActions.value.onStandbyAudioMeterVisibilityChanged(exposed)
+        // Same exposure truth gates the ~6 Hz histogram/waveform publication (perf review #6):
+        // the scope overlays compose only under detailsVisible, and a full-screen modal above
+        // them leaves no composed consumer either.
+        currentActions.value.onScopesVisibilityChanged(exposed)
     }
     DisposableEffect(Unit) {
-        onDispose { currentActions.value.onStandbyAudioMeterVisibilityChanged(false) }
+        onDispose {
+            currentActions.value.onStandbyAudioMeterVisibilityChanged(false)
+            currentActions.value.onScopesVisibilityChanged(false)
+        }
     }
 
     fun openSheet(tab: ProSheetTab) {
@@ -985,23 +993,33 @@ fun CameraScreen(
                     modifier = Modifier.fillMaxWidth(),
                 )
 
+                // Keyed on the two fields the lambda actually reads (perf review #11): capturing
+                // `state` minted a new lambda per emission, dragging ShutterRow into every 10 Hz
+                // telemetry recomposition. currentActions/reviewUri/reviewDeleteScope are
+                // recomposition-stable holders, safe inside the remembered closure.
+                val reviewOpenUri = state.lastMediaUri
+                val reviewOpenScope = state.lastMediaDeleteScope
+                val onOpenReview = remember(reviewOpenUri, reviewOpenScope) {
+                    {
+                        reviewOpenUri?.let { uri ->
+                            val familyPinned = currentActions.value.onReviewOpenChange(true, uri)
+                            reviewUri = uri
+                            reviewDeleteScope = if (familyPinned) {
+                                reviewOpenScope
+                            } else {
+                                MediaDeleteScope.FILE_ONLY
+                            }
+                        }
+                        Unit
+                    }
+                }
                 ShutterRow(
                     mode = state.mode,
                     isRecording = state.isRecording,
                     isRecordingStarting = state.isRecordingStarting,
                     timerCountdownSec = state.timerCountdownSec,
                     lastMediaUri = state.lastMediaUri,
-                    onOpenReview = {
-                        state.lastMediaUri?.let { uri ->
-                            val familyPinned = currentActions.value.onReviewOpenChange(true, uri)
-                            reviewUri = uri
-                            reviewDeleteScope = if (familyPinned) {
-                                state.lastMediaDeleteScope
-                            } else {
-                                MediaDeleteScope.FILE_ONLY
-                            }
-                        }
-                    },
+                    onOpenReview = onOpenReview,
                     onShutter = onShutter,
                     onSnapshot = actions::onCapturePhoto,
                     cameraHealthy = state.primaryShutterHealthy,

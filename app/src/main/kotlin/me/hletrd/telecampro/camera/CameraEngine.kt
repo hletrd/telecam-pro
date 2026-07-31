@@ -72,6 +72,9 @@ class CameraEngine(private val context: Context) {
     private val timelapseScheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor()
     @Volatile private var timelapseFuture: java.util.concurrent.ScheduledFuture<*>? = null
     private val timelapseRun = CaptureSequenceGeneration()
+    // True between startTimelapse and the stopTimelapse that ends that run — the edge detector for
+    // [onTimelapseRun] only; run OWNERSHIP stays with [timelapseRun]'s generation.
+    @Volatile private var timelapseRunActive = false
     @Volatile private var controller: CameraController? = null
     @Volatile private var recorder: VideoRecorder? = null
     private val recorderOwnershipLock = Any()
@@ -733,6 +736,12 @@ class CameraEngine(private val context: Context) {
     var onAnalysis: ((HistogramData?, WaveformData?, FocusDetailData?) -> Unit)? = null
     // Live recording-audio level (0..1 RMS, post-gain), throttled by VideoRecorder to ~10 Hz.
     var onAudioLevel: ((Float) -> Unit)? = null
+    // A timelapse RUN started (true) / ended (false). Run truth lives in [timelapseRun]'s
+    // generation, which the UI cannot see — the OSD's TL tag keys off the SELECTED drive only.
+    // Fired exactly on run-state edges (stopTimelapse with no active run is silent), from whichever
+    // thread flipped the run; the ViewModel folds it into state via thread-safe StateFlow update.
+    // Consumer: the unattended-timelapse screen dim (perf review #10) and any future run OSD.
+    var onTimelapseRun: ((Boolean) -> Unit)? = null
     // Actual AudioRecord route once recording starts, e.g. "USB · DJI Mic Mini".
     var onAudioRoute: ((String) -> Unit)? = null
     /** First successful standby PCM after enable/recovery; safe point to clear unavailable UI. */
@@ -1139,6 +1148,10 @@ class CameraEngine(private val context: Context) {
         ctrl.onAfState = { hal -> if (controller === ctrl) onAfIndication?.invoke(AfIndication.fromHal(hal)) }
         // Replay the cached debug fps-logging intent (a pre-controller toggle must not be lost).
         if (me.hletrd.telecampro.BuildConfig.DEBUG && zslSpikeLoggingWanted) ctrl.setZslSpike(true)
+        // Replay the drive-side ZSL streaming gate (perf review #8): a fresh controller defaults to
+        // serve-possible, which is wrong if the app opens (or reopens) while BURST/AEB/TIMELAPSE is
+        // the persisted drive selection.
+        ctrl.setZslServePossible(driveMode == DriveMode.SINGLE)
         return ctrl
     }
 
@@ -1946,6 +1959,10 @@ class CameraEngine(private val context: Context) {
         driveMode = m
         // Selecting any non-timelapse drive mode cancels an in-progress interval sequence.
         if (m != DriveMode.TIMELAPSE) stopTimelapse()
+        // Drive-side ZSL streaming gate (perf review #8): burst/AEB/timelapse can never serve a
+        // buffered frame, so the full-res repeating target detaches while they are selected. The
+        // controller change-gates and resubmits itself (~180 ms, once per drive change).
+        controller?.setZslServePossible(m == DriveMode.SINGLE)
     }
     fun setIntervalSec(s: Int) { intervalSec = s }
     fun setVideoCodec(c: VideoCodec) { videoCodec = c }
@@ -3177,6 +3194,8 @@ class CameraEngine(private val context: Context) {
         stopTimelapse()
         val period = intervalSec.coerceAtLeast(1).toLong()
         val generation = timelapseRun.restart()
+        timelapseRunActive = true
+        onTimelapseRun?.invoke(true)
         val sequence = object {
             fun schedule(delaySeconds: Long) {
                 if (!timelapseRun.owns(generation)) return
@@ -3229,6 +3248,12 @@ class CameraEngine(private val context: Context) {
         timelapseRun.stop()
         timelapseFuture?.cancel(false)
         timelapseFuture = null
+        // Edge-only: the many defensive stopTimelapse() calls (mode flips, pause, release) must not
+        // spam run-state listeners when no run was live.
+        if (timelapseRunActive) {
+            timelapseRunActive = false
+            onTimelapseRun?.invoke(false)
+        }
     }
 
 

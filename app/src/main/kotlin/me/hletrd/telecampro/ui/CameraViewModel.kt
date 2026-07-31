@@ -223,6 +223,9 @@ class CameraViewModel @JvmOverloads constructor(
     private var lifecycleStarted = false
     private var standbyMeterVisible = false
     private var standbyMeterEnabled = false
+    // Written on main (Compose DISP/modal effect), read by onAnalysis on the GL thread — volatile,
+    // not synchronized: a one-tick-stale read only delays a scope publication by ~166 ms.
+    @Volatile private var scopesVisible = false
     // Main-confined identity for optimistic REC UI. A queued refusal may arrive after stop/new-start
     // or lifecycle teardown; only the exact attempt that submitted it may reconcile the state.
     private var recordingAttemptGeneration = 0L
@@ -702,12 +705,17 @@ class CameraViewModel @JvmOverloads constructor(
             mainHandler.post(focusConfidenceRefreshRunnable)
         }
         engine.onAnalysis = { h, w, f ->
-            // Publish scope data into UI state only when something actually renders it (the
-            // histogram/waveform overlays or the MANUAL-mode exposure meter). App-side AE reads the
-            // callback arg directly, so with scopes hidden the ~6 Hz analysis tick no longer forces
-            // a whole-CameraUiState emission (root-recomposition churn during manual shooting).
+            // Publish scope data into UI state only when something actually renders it: the
+            // histogram/waveform overlays while ACTUALLY COMPOSED (scope settings alone are not
+            // enough — [scopesVisible] carries the Compose-local expanded-DISP/no-modal truth the
+            // VM cannot otherwise see, perf review #6), or the MANUAL-mode exposure meter, which
+            // reads histogram data with the overlays hidden and stays unconditional. App-side AE
+            // reads the callback arg directly, so with nothing rendering the ~6 Hz analysis tick
+            // no longer forces a whole-CameraUiState emission (root-recomposition churn).
             val s = _state.value
-            if (s.histogram || s.waveform || s.controls.exposureMode == ExposureMode.MANUAL) {
+            if (((s.histogram || s.waveform) && scopesVisible) ||
+                s.controls.exposureMode == ExposureMode.MANUAL
+            ) {
                 _state.update { it.copy(histogramData = h, waveformData = w) }
             }
             // Frame-detail verdict: stash it (plain fields, read only on main) and re-evaluate the
@@ -735,6 +743,9 @@ class CameraViewModel @JvmOverloads constructor(
             if (h != null && drivesAppSideAe) mainHandler.post { applyAutoExposure(h.luma) }
         }
         engine.onAudioLevel = { lvl -> _state.update { it.copy(audioLevel = lvl) } }
+        // Run-state edges only (engine is edge-gated); may arrive from the timelapse scheduler
+        // thread — StateFlow.update is thread-safe.
+        engine.onTimelapseRun = { running -> _state.update { it.copy(timelapseRunning = running) } }
         engine.onAudioRoute = { route -> _state.update { it.copy(audioRouteLabel = route) } }
         engine.onStandbyAudioAvailable = {
             mainHandler.post {
@@ -1229,6 +1240,10 @@ class CameraViewModel @JvmOverloads constructor(
         if (standbyMeterVisible == visible) return
         standbyMeterVisible = visible
         refreshStandbyAudioMeter()
+    }
+
+    override fun onScopesVisibilityChanged(visible: Boolean) {
+        scopesVisible = visible
     }
 
     private fun applyEngineTransfer(

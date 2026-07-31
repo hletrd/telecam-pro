@@ -45,6 +45,12 @@ import androidx.core.content.ContextCompat
 import me.hletrd.telecampro.ui.controls.MinTouchTarget48
 import androidx.core.content.edit
 import androidx.core.net.toUri
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.ui.CameraActions
 import me.hletrd.telecampro.ui.CameraScreen
@@ -70,6 +76,49 @@ class MainActivity : ComponentActivity() {
     private val ownedShutterKeys = mutableSetOf<Int>()
     private val ownedHalfPressKeys = mutableSetOf<Int>()
     private val ownedQuickKeys = mutableSetOf<Int>()
+
+    // --- Unattended-timelapse screen dim (perf review #10) -------------------------------------
+    // FLAG_KEEP_SCREEN_ON stays for the whole activity lifetime (a run killed by screen-off is a
+    // lost shoot), but during a timelapse RUN the forced-on panel is a ~1 W-class drain, one to two
+    // orders above every other standing cost measured in the perf review. Standard camera-app
+    // pattern: after [TIMELAPSE_DIM_GRACE_MS] without interaction, override window brightness to
+    // [TIMELAPSE_DIM_BRIGHTNESS] (screen stays alive — the run is visibly still going); ANY
+    // interaction ([onUserInteraction]) restores full brightness and re-arms the grace timer.
+    // Run end / leaving STARTED always restores.
+    private val timelapseDimHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var timelapseDimArmed = false
+    private var timelapseDimmed = false
+    private val timelapseDimRunnable = Runnable { applyTimelapseDim(true) }
+
+    private fun onTimelapseRunningChanged(running: Boolean) {
+        timelapseDimArmed = running
+        timelapseDimHandler.removeCallbacks(timelapseDimRunnable)
+        if (running) {
+            timelapseDimHandler.postDelayed(timelapseDimRunnable, TIMELAPSE_DIM_GRACE_MS)
+        } else {
+            applyTimelapseDim(false)
+        }
+    }
+
+    override fun onUserInteraction() {
+        super.onUserInteraction()
+        if (!timelapseDimArmed) return // cheap early-out on every ordinary touch/key
+        applyTimelapseDim(false)
+        timelapseDimHandler.removeCallbacks(timelapseDimRunnable)
+        timelapseDimHandler.postDelayed(timelapseDimRunnable, TIMELAPSE_DIM_GRACE_MS)
+    }
+
+    private fun applyTimelapseDim(dim: Boolean) {
+        if (timelapseDimmed == dim) return
+        timelapseDimmed = dim
+        window.attributes = window.attributes.also {
+            it.screenBrightness = if (dim) {
+                TIMELAPSE_DIM_BRIGHTNESS
+            } else {
+                WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+            }
+        }
+    }
 
     /**
      * DEBUG-only shell hook: API 36 rejects adb-shell broadcasts to NOT_EXPORTED receivers
@@ -101,6 +150,20 @@ class MainActivity : ComponentActivity() {
         // Android's view-level tapjacking defense and needs no overlay permission or network access.
         window.decorView.filterTouchesWhenObscured = true
         refreshPermissionState()
+        // Timelapse-run edges drive the unattended screen dim. The finally arm covers leaving
+        // STARTED mid-run (background/keyguard): the timer is cancelled and brightness restored, and
+        // re-entering STARTED re-collects the current run state and re-arms if still running.
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                try {
+                    vm.state.map { it.timelapseRunning }.distinctUntilChanged().collect { running ->
+                        onTimelapseRunningChanged(running)
+                    }
+                } finally {
+                    onTimelapseRunningChanged(false)
+                }
+            }
+        }
 
         setContent {
             TeleCamProTheme {
@@ -542,6 +605,12 @@ class MainActivity : ComponentActivity() {
         // Per-EVENT zoom multiplier: the slide repeats ~20 Hz, so ~1.04/event = a controlled
         // ~2.2x per second of continuous slide (1.15 raced 1x-10x in under two seconds).
         const val ZOOM_STEP = 1.04f
+
+        // Unattended-timelapse dim (perf review #10): 10 s idle grace before dimming, and a 5%
+        // brightness floor rather than BRIGHTNESS_OVERRIDE_OFF — the operator can still see at a
+        // glance that the run is alive, while the OLED panel drops from ~1 W-class to near-idle.
+        const val TIMELAPSE_DIM_GRACE_MS = 10_000L
+        const val TIMELAPSE_DIM_BRIGHTNESS = 0.05f
     }
 
     private val permissionPreferences by lazy {

@@ -1018,6 +1018,9 @@ data class CameraUiState(
     val timer: ShutterTimer = ShutterTimer.OFF,
     val driveMode: DriveMode = DriveMode.SINGLE,
     val intervalSec: Int = 5,
+    // A timelapse RUN is live (between the starting shutter press and stop/mode-exit) — distinct
+    // from driveMode == TIMELAPSE, which is only the SELECTION. Drives the unattended screen dim.
+    val timelapseRunning: Boolean = false,
     // Viewfinder assists
     val focusPeaking: Boolean = false,
     val peakingLevel: PeakingLevel = PeakingLevel.MEDIUM,

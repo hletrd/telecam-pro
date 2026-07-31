@@ -1285,8 +1285,36 @@ class CameraController(context: Context) {
     // False on a degraded rung, where the reader holds only the proven 2 images.
     private var zslReaderDeep = false
 
+    // DRIVE-side serve-possibility input from the engine (perf review #8): only SINGLE drive can
+    // ever consume a buffered frame (allowZsl = !singleShot excludes burst/AEB/timelapse ticks and
+    // the in-REC snapshot), yet the drive-blind streaming gate kept the full-res YUV target on the
+    // repeating request — ~18.9 MB × 30 fps ≈ 560 MB/s of ISP→DRAM write — for entire timelapse
+    // runs where a serve was structurally impossible. The VIDEO axis needs no extra input:
+    // [pinAutoFps] IS the controller's video-mode truth (open() seeds it, every flip goes through
+    // setPinAutoFps and already resubmits), so [zslStreamingActive] reads it directly.
+    // Camera-thread-confined; default true = the historic behavior, and the engine replays the
+    // real drive state at controller install + on every drive change. The ring MEMORY deliberately
+    // stays allocated (user decision 2026-08-01): session shape is untouched, only the repeating
+    // TARGET comes and goes.
+    private var zslDriveServePossible = true
+
+    fun setZslServePossible(possible: Boolean) {
+        postToCamera {
+            if (zslDriveServePossible == possible) return@postToCamera
+            zslDriveServePossible = possible
+            // Pre-open guard (see applyControlsOnCamera): the engine installs the controller before
+            // open() assigns lateinit `caps`; open applies the engine's latest state itself.
+            if (!this::caps.isInitialized) return@postToCamera
+            if (!possible) zslRingFlush()
+            // One documented ~180 ms repeating swap per transition — drive changes are discrete UI
+            // actions, never per-frame. A no-session/pre-preview state degrades to a safe no-op and
+            // the next ordinary startPreview carries the new target set anyway.
+            startPreview()
+        }
+    }
+
     private fun zslStreamingActive(): Boolean =
-        !zslStreamingBroken && zslReaderDeep &&
+        !zslStreamingBroken && zslReaderDeep && zslDriveServePossible && !pinAutoFps &&
             (caps.isLogicalMultiCamera || caps.lensFacingFront) &&
             !hiResReaderActive && jpegReader != null
 

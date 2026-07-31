@@ -183,4 +183,14 @@ interface CameraActions {
     fun onCameraInputBlockedChange(blocked: Boolean)
     /** True only while the standby Video level meter is actually visible and unobscured. */
     fun onStandbyAudioMeterVisibilityChanged(visible: Boolean)
+
+    /**
+     * True only while the histogram/waveform overlays are actually composed (expanded DISP, no
+     * modal above them). Gates the ~6 Hz scope-array publication into [CameraUiState] (perf review
+     * #6): with scopes enabled in settings but the compact DISP on screen, every analysis tick
+     * otherwise allocated ~37 KB of scope data and recomposed the whole tree for zero composed
+     * consumers. The MANUAL exposure-meter clause stays unconditional in the ViewModel — it reads
+     * histogram data with the overlays hidden.
+     */
+    fun onScopesVisibilityChanged(visible: Boolean)
 }
