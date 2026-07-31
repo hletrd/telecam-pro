@@ -90,8 +90,8 @@ sealed class StillSnapshot {
  * gralloc [java.nio.ByteBuffer] directly (host tests pass heap-wrapped arrays): the earlier
  * byte[]-snapshot seam copied all three planes (~25 MB) before the pack re-read them into the
  * ~19 MB NV21 — ~44 MB transient and every pixel touched twice, inline on the CAMERA thread while
- * the Image had to stay alive. The pack uses only ABSOLUTE reads (position is never moved), so the
- * view stays valid for a retry and the caller's buffer state is untouched.
+ * the Image had to stay alive. The pack reads through its own duplicate() views, so the caller's
+ * buffer state is untouched and the view stays valid for a retry.
  */
 internal data class YuvPlaneData(
     val buffer: java.nio.ByteBuffer,
@@ -115,8 +115,9 @@ internal data class YuvPlaneData(
  *    NV12-shaped, or any other pixelStride-2 layout, at half the elementwise work.
  *  - Anything else falls back to the fully general elementwise pack.
  *
- * All reads are ABSOLUTE (indexed get / get(index, dst, …), API 34+): the pack never moves any
- * buffer's position, so it is safe on the live gralloc views [StillSnapshot.from] hands it.
+ * Bulk row reads go through per-plane duplicate() views (position moves only on the duplicate,
+ * never the caller's buffer) — equivalent to the API 35 absolute get(index, dst, …) but available
+ * from minSdk 33; single-byte reads use the ancient absolute get(int).
  */
 internal fun packYuv420ToNv21(
     width: Int,
@@ -129,8 +130,10 @@ internal fun packYuv420ToNv21(
     val out = ByteArray(width * height * 3 / 2)
     var pos = 0
     if (y.pixelStride == 1) {
+        val yBuf = y.buffer.duplicate()
         for (row in 0 until height) {
-            y.buffer.get(row * y.rowStride, out, pos, width)
+            yBuf.position(row * y.rowStride)
+            yBuf.get(out, pos, width)
             pos += width
         }
     } else {
@@ -139,16 +142,18 @@ internal fun packYuv420ToNv21(
             for (col in 0 until width) out[pos++] = y.buffer.get(rowStart + col * y.pixelStride)
         }
     }
+    val vBulk = if (v.pixelStride == 2) v.buffer.duplicate() else null
     for (row in 0 until height / 2) {
         val vRow = row * v.rowStride
         val uRow = row * u.rowStride
-        if (v.pixelStride == 2) {
+        if (vBulk != null) {
             // V view stride contract puts V(k) at vRow + 2k → the row copy fills every even output
             // position correctly (odd positions get whatever the view's gap bytes were and are
             // fully overwritten from the U view below). The copy is width-1 bytes because the V
             // row's last valid byte is V(width/2-1) at offset width-2; output's final odd slot is
             // written by the U loop.
-            v.buffer.get(vRow, out, pos, width - 1)
+            vBulk.position(vRow)
+            vBulk.get(out, pos, width - 1)
             for (col in 0 until width / 2) {
                 out[pos + 2 * col + 1] = u.buffer.get(uRow + col * u.pixelStride)
             }

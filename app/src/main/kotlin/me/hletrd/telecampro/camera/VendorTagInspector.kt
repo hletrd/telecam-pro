@@ -8,6 +8,7 @@ import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
+import android.os.Build
 import android.util.Log
 import android.util.Size
 
@@ -56,6 +57,13 @@ object VendorTagInspector {
     // SecurityException is still isolated and logged by each query below.
     @SuppressLint("MissingPermission")
     private fun logWideFinderSupport(manager: CameraManager, concurrentSets: List<List<String>>) {
+        // The output-only SessionConfiguration ctor these queries build is API 35+. Debug-only
+        // diagnostics on an older device (minSdk 33, multi-device) simply skip — nothing runtime
+        // depends on the probe result.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            Log.w(TAG, "ConcurrentProbe result=SKIP_API_${Build.VERSION.SDK_INT}")
+            return
+        }
         val ids = manager.cameraIdList.toSet()
         if (WIDE_CAMERA_ID !in ids) {
             Log.w(TAG, "ConcurrentProbe wide=$WIDE_CAMERA_ID result=MISSING_CAMERA")
@@ -119,6 +127,12 @@ object VendorTagInspector {
      */
     @SuppressLint("MissingPermission")
     private fun logLogicalPhysicalFinderSupport(manager: CameraManager) {
+        // CameraDeviceSetup + the output-only SessionConfiguration ctor are API 35+ (see
+        // logWideFinderSupport); skip the probe below that.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            Log.w(TAG, "PhysicalProbe result=SKIP_API_${Build.VERSION.SDK_INT}")
+            return
+        }
         val ids = manager.cameraIdList.toSet()
         if (LOGICAL_CAMERA_ID !in ids) {
             Log.w(TAG, "PhysicalProbe logical=$LOGICAL_CAMERA_ID result=MISSING_CAMERA")
@@ -209,6 +223,9 @@ object VendorTagInspector {
             ?.getOutputSizes(SurfaceTexture::class.java)
             ?.contains(size) == true
 
+    // Output-only SessionConfiguration ctor: both callers are SDK-gated at entry; the annotation
+    // carries that contract for lint (it cannot see cross-function guards).
+    @androidx.annotation.RequiresApi(Build.VERSION_CODES.VANILLA_ICE_CREAM)
     private fun privateSession(size: Size): SessionConfiguration = SessionConfiguration(
         SessionConfiguration.SESSION_REGULAR,
         listOf(OutputConfiguration(size, SurfaceTexture::class.java)),

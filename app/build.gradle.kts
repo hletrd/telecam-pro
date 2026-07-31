@@ -47,7 +47,11 @@ android {
         // namespace shares the me.hletrd vendor prefix (repo-wide move 2026-07-25) while keeping the
         // package now matches the applicationId; nothing here names a handset.
         applicationId = "me.hletrd.telecampro"
-        minSdk = 36
+        // Multi-device support (2026-08-01, user decision): floor at Android 13 — the lint NewApi
+        // audit found ZERO unguarded APIs below 35 after the two API-35 fixes, and every plausible
+        // teleconverter host (vivo X100/X200/X300 Ultra, Find X9 line, 2022+ flagships) ships 13+.
+        // PMA110 behavior is byte-identical; other devices run spec paths via DeviceProfile.
+        minSdk = 33
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
@@ -106,11 +110,11 @@ android {
     }
 
     lint {
-        // Intentional for this single-device camera: runtime support targets Android 16 / API 36
-        // even though compileSdk is newer for AndroidX. Play's current target requirement is satisfied.
+        // Intentional: runtime support targets Android 16 / API 36 even though compileSdk is newer
+        // for AndroidX. Play's current target requirement is satisfied.
         disable += "OldTargetApi"
-        // minSdk is 36; keeping adaptive icons in the conventional v26 folder is harmless and clearer
-        // than moving resources for a packaging-only lint warning.
+        // Keeping adaptive icons in the conventional v26 folder is harmless and clearer than moving
+        // resources for a packaging-only lint warning.
         disable += "ObsoleteSdkInt"
     }
 
