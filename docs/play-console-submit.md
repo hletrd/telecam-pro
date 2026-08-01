@@ -20,9 +20,16 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 Do not upload debug APKs or any unsigned/stale release bundle.
 
-### Final v1 upload artifacts (built + verified 2026-07-31 from `main` at `c6722bb`)
+### Final v1 upload artifacts (built + verified 2026-08-01 from `main` at `2d6c35b`)
 
-**This supersedes the `961b080` cut** (AAB `0516b0d8…`, APK `54035d8a…`) — adds the OPPO
+**This supersedes the `c6722bb` cut** (AAB `a5654855…`, APK `7fd036ee…`) — adds BOTH perf batches
+(16-item CPU/memory review incl. the ZSL never-serve drive gate and the unattended-timelapse dim),
+`minSdk 33` + the DeviceProfile multi-device seam, the scope-stride fix, the 17-finding dual-lens
+review closure (timelapse press-to-stop + run OSD, front-mirror parametrization, host-focal EXIF),
+and the contextual READ_MEDIA reinstall gallery restore. **The manifest permission set CHANGED**
+(visual-media READ trio added): re-answer the Data Safety "Photos and videos" ACCESS question and
+use the updated `docs/play-data-safety.md` / `PRIVACY.md` wording at submission. Before it the
+`961b080` cut (AAB `0516b0d8…`, APK `54035d8a…`) — that one predates the OPPO
 quick-button binding (781), the eviction-quiet camera health path, and the route-switch RAW toast
 removal — and before it the `3a3d034` cut (AAB `1c160b8c…`, APK `8d73388e…`) — that one predates
 the loupe-hint pre-converter scaling (operator-requested) and the OPPO-767 half-press routing fix —
@@ -40,27 +47,30 @@ The re-cut exists because `3c70639` predates the DNG route-input fixes (`d6ef232
 could leave DNG permanently unable to produce a RAW file.
 
 - Artifact location: `app/build/outputs/bundle/release/app-release.aab`
-- AAB SHA-256: `a5654855f978972f4f1e87a2ae782a6cf98e3949904106d72d27b105816b901f`
+- AAB SHA-256: `02cbd69dbcf3e7eff5745667911c2c8774203d24454ef98507232c4d11cf2602`
 - Matching release APK SHA-256:
-  `7fd036ee1d26aca9983a82f860bc4ff83e09586914b9ea839c70eabe6b5311b7`
+  `e95aa8d47547f57fa95b12d4d5b333916e075d3324eb94b1e2ef366d99329f15`
 - Launch component: `me.hletrd.telecampro/me.hletrd.telecampro.MainActivity`
-- AAB `jarsigner -verify`: **jar verified**. `bundletool validate` was NOT re-run for this
-  cut — bundletool is not installed on this machine; the earlier cuts' passes are not
-  evidence for these bytes, so run it before upload if you want that check on the record
-- APK signing: v2 valid (v1/v3/v3.1/v4 absent, as before), 1 signer,
+- AAB `jarsigner -verify`: **jar verified**; `bundletool validate`: **OK** (run on this machine
+  against these exact bytes)
+- APK signing: v2 valid, 1 signer,
   `CN=Jiyong Youn, L=Seoul, ST=Seoul, C=KR`, certificate SHA-256
   `9dfdb903269238ef6de424052666b05814577b4b3bb43a5e3e3a05572660e584` — **unchanged from the recorded
   upload certificate**, so this is the same upload key
 - APK alignment: 16 KiB passed (`zipalign -c -P 16 4`)
-- Release gate: `lintRelease` **0 errors / 5 warnings**, all pre-existing (`ApplySharedPref`,
-  `UseKtx`, `AndroidGradlePluginVersion`); host suite **1284 tests, 0 failures**
+- Merged-manifest permissions confirmed on the built APK (`aapt2 dump badging`): CAMERA,
+  RECORD_AUDIO, READ_MEDIA_IMAGES, READ_MEDIA_VIDEO, READ_MEDIA_VISUAL_USER_SELECTED — and still
+  **no INTERNET**
+- Release gate: `lintRelease` **0 errors / 8 warnings** (`ApplySharedPref`, `UseKtx`,
+  `AndroidGradlePluginVersion`, plus `InlinedApi` newly surfaced by the minSdk 33 floor — all
+  benign); host suite **1291 tests, 0 failures**
 - Carries a **baseline profile** (`assets/dexopt/baseline.prof`, 11 KiB + `.profm`) installed by
   androidx.profileinstaller. Without it the shipped APK sat at `status=verify` and ran interpreted
   until JIT warmed; device-measured, the worst frame on opening the settings sheet went 61 ms → 22 ms
   and idle-viewfinder p99 10 ms → 7 ms.
-- **Smoke-tested on the PMA110 from this exact APK** (2026-07-30). The installed APK's on-device
+- **Smoke-tested on the PMA110 from this exact APK** (2026-08-01). The installed APK's on-device
   `sha256sum` was confirmed byte-identical to the artifact above BEFORE the run
-  (`8d73388e…` both sides), so this is evidence for this bundle and not an earlier one.
+  (`e95aa8d4…` both sides), so this is evidence for this bundle and not an earlier one.
   This run selected PHOTO explicitly before the shutter (the prior cut's smoke learned that the
   release package launches in its persisted mode) and wrote a HEIF still; zero crashes/ANRs. The
   measured-audio and DNG-route evidence below is from the earlier cuts and those pipelines are
