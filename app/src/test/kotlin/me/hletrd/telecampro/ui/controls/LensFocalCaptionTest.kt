@@ -49,3 +49,47 @@ class LensFocalCaptionTest {
         }
     }
 }
+
+/**
+ * The caption's four literals are PMA110's optics; on other hardware they were simply false
+ * (a 26 mm-lens tablet read "23 mm", device-seen 2026-08-02). Measured wins only when it actually
+ * disagrees, so PMA110's documented round-number readout survives.
+ */
+class LensFocalCaptionMeasuredTest {
+    @Test
+    fun `PMA110 keeps its round labels — measured is within the band`() {
+        // Its 3x measures ~69.4 mm and must keep reading 70 mm.
+        assertEquals(
+            "70 mm",
+            lensFocalCaption(LensChoice.TELE3X, teleconverter = false, teleconverterFocalMm = 300f, measuredEquivMm = 69.4f),
+        )
+        assertEquals(
+            "23 mm",
+            lensFocalCaption(LensChoice.MAIN, teleconverter = false, teleconverterFocalMm = 300f, measuredEquivMm = 23.2f),
+        )
+    }
+
+    @Test
+    fun `foreign hardware reports what it actually has`() {
+        assertEquals(
+            "26 mm",
+            lensFocalCaption(LensChoice.MAIN, teleconverter = false, teleconverterFocalMm = 0f, measuredEquivMm = 26f),
+        )
+    }
+
+    @Test
+    fun `an unreadable measurement falls back to the preset label`() {
+        assertEquals(
+            "23 mm",
+            lensFocalCaption(LensChoice.MAIN, teleconverter = false, teleconverterFocalMm = 0f, measuredEquivMm = 0f),
+        )
+    }
+
+    @Test
+    fun `the converter focal still wins on the 3x row`() {
+        assertEquals(
+            "300 mm",
+            lensFocalCaption(LensChoice.TELE3X, teleconverter = true, teleconverterFocalMm = 300f, measuredEquivMm = 26f),
+        )
+    }
+}

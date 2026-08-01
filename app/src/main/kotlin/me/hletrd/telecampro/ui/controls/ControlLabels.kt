@@ -204,13 +204,34 @@ internal fun lensFocalCaption(
     lens: me.hletrd.telecampro.camera.LensChoice,
     teleconverter: Boolean,
     teleconverterFocalMm: Float,
-): String = when (lens) {
-    me.hletrd.telecampro.camera.LensChoice.ULTRAWIDE -> "14 mm"
-    me.hletrd.telecampro.camera.LensChoice.MAIN -> "23 mm"
-    me.hletrd.telecampro.camera.LensChoice.TELE3X ->
-        if (teleconverter) "${formatFocalMm(teleconverterFocalMm)}" else "70 mm"
-    me.hletrd.telecampro.camera.LensChoice.TELE10X -> "230 mm"
+    // MEASURED 35 mm-equivalent of the lens actually in use, 0 when unknown. The four literals below
+    // are PMA110's optics, and on any other phone they were simply false (a 26 mm-lens tablet was
+    // told "23 mm", 2026-08-02). The literal survives only while it MATCHES the hardware: within
+    // 10% it IS the round marketing label for that lens — which is the documented readout style, and
+    // keeps PMA110 byte-identical (its measured 3x is ~69.4 mm and must keep reading "70 mm").
+    measuredEquivMm: Float = 0f,
+): String {
+    val preset = when (lens) {
+        me.hletrd.telecampro.camera.LensChoice.ULTRAWIDE -> 14f
+        me.hletrd.telecampro.camera.LensChoice.MAIN -> 23f
+        me.hletrd.telecampro.camera.LensChoice.TELE3X -> 70f
+        me.hletrd.telecampro.camera.LensChoice.TELE10X -> 230f
+    }
+    if (lens == me.hletrd.telecampro.camera.LensChoice.TELE3X && teleconverter) {
+        return formatFocalMm(teleconverterFocalMm)
+    }
+    val honest = if (measuredEquivMm > 0f &&
+        kotlin.math.abs(measuredEquivMm - preset) > preset * LENS_CAPTION_ROUNDING_BAND
+    ) {
+        measuredEquivMm
+    } else {
+        preset
+    }
+    return formatFocalMm(honest)
 }
+
+/** Within this fraction of the preset, the round label IS the lens's own marketing focal. */
+internal const val LENS_CAPTION_ROUNDING_BAND = 0.10f
 
 internal fun driveModeLabel(mode: DriveMode): String = when (mode) {
     DriveMode.SINGLE -> "Single"

@@ -511,6 +511,16 @@ class CameraViewModel @JvmOverloads constructor(
         }
         // Caps arrive on the setup thread. Reconcile restored/schema-normalized zoom against the
         // selected camera's authoritative range on main before any delayed input can reuse it.
+        engine.onLensInventory = { inventory ->
+            _state.update { it.copy(lensInventory = inventory) }
+            // The inventory carries the MEASURED converter host lens, and it lands after the phone
+            // seed — re-push so an unknown phone's focal readouts and EXIF stop using the 70 mm
+            // assumption the moment the real number is known.
+            engine.setTeleconverterMagnification(
+                _state.value.teleconverterMagnification,
+                _state.value.teleconverterHostEquivMm,
+            )
+        }
         engine.onCapsReady = { caps, generation ->
             mainHandler.post {
                 if (!engine.isOpticsGenerationCurrent(generation)) return@post
@@ -997,7 +1007,7 @@ class CameraViewModel @JvmOverloads constructor(
         // the hidden Photo shutter: a rejected recall must leave NEITHER bank behind.
         val previousMagnification = _state.value.teleconverterMagnification
         // Host focal rides the DECLARED phone, which an MR recall does not change.
-        val hostTeleEquivMm = _state.value.phoneModel.teleEquivMm
+        val hostTeleEquivMm = _state.value.teleconverterHostEquivMm
         engine.setTeleconverterMagnification(restoredMagnification, hostTeleEquivMm)
         // Resolution and hidden Photo exposure join the optics transaction. A synchronous REC
         // rejection or asynchronous camera rollback must leave neither rejected bank behind.
@@ -2046,7 +2056,7 @@ class CameraViewModel @JvmOverloads constructor(
         persistImmediately: Boolean,
     ) {
         val magnification = effectiveMagnification(profile, custom)
-        engine.setTeleconverterMagnification(magnification, phone.teleEquivMm)
+        engine.setTeleconverterMagnification(magnification, hostTeleEquivMmFor(phone))
         _state.update {
             it.copy(
                 phoneModel = phone,
@@ -2105,19 +2115,35 @@ class CameraViewModel @JvmOverloads constructor(
      * false, which is exactly what the caption must be able to say.
      */
     private fun seedPhoneModel() {
-        val phone = detectedPhone ?: return
+        // An UNRECOGNISED phone seeds PhoneModel.OTHER, not the state default: DEFAULT_PHONE_MODEL is
+        // the Find X9 Ultra (this app's reason for existing), which was correct while the app only
+        // installed on one handset. Since multi-device (2026-08-01) leaving it standing meant a
+        // Samsung/Lenovo/vivo owner opened the Lens tab to "Phone: OPPO Find X9 Ultra", a Hasselblad
+        // 300 mm converter their phone cannot mount, and a "300 mm" readout derived from a 70 mm
+        // periscope they do not have (device-seen on a Lenovo TB336ZU, 2026-08-02). OTHER offers the
+        // generic clip-ons, which is exactly what fits an unknown phone. Detection honesty is
+        // unchanged: phoneModelDetected stays false, so the caption still claims nothing.
+        val phone = detectedPhone ?: PhoneModel.OTHER
         _state.update {
             it.copy(
                 phoneModel = phone,
-                phoneModelDetected = true,
+                phoneModelDetected = detectedPhone != null,
                 teleconverterProfile = defaultConverterFor(phone),
             )
         }
         engine.setTeleconverterMagnification(
             _state.value.teleconverterMagnification,
-            _state.value.phoneModel.teleEquivMm,
+            _state.value.teleconverterHostEquivMm,
         )
     }
+
+    /** Host focal for a phone about to be selected: declared for a kit phone, measured for OTHER. */
+    private fun hostTeleEquivMmFor(phone: PhoneModel): Float =
+        if (phone == PhoneModel.OTHER && _state.value.lensInventory.teleHostEquivMm > 0f) {
+            _state.value.lensInventory.teleHostEquivMm
+        } else {
+            phone.teleEquivMm
+        }
 
     // UI mirror of the engine's pre-TELE framing snapshot (unified main-relative zoom).
     private var preTeleUnifiedZoom = Float.NaN

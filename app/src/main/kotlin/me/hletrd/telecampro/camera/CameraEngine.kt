@@ -695,6 +695,38 @@ class CameraEngine(private val context: Context) {
     private fun cachedLogicalBack(): String? =
         cachedLogicalBackId ?: CameraSelector2.logicalBackId(manager)?.also { cachedLogicalBackId = it }
 
+    @Volatile private var lensInventoryPublished = false
+
+    /**
+     * Enumerates the back optics ONCE and publishes which lens presets are actually reachable.
+     * Runs on [setupExecutor] (several Binder IPCs) beside the other one-shot enumerations, and the
+     * zoom half reads the PHOTO-HOME route's advertised range — device-static like the lens list,
+     * where a per-route range would wrongly narrow the rail in TELE/video (those carry a LENS-LOCAL
+     * range while the presets speak the unified main-relative scale).
+     */
+    private fun publishLensInventoryOnce() {
+        if (lensInventoryPublished) return
+        lensInventoryPublished = true
+        val equivalents = runCatching {
+            CameraSelector2.candidatesOf(manager).map { it.equivFocalMm }
+        }.getOrDefault(emptyList())
+        val homeId = cachedLogicalBack() ?: cachedIdForFocal(LensChoice.MAIN.targetEquivMm)
+        val range = homeId?.let { id ->
+            val logical = id.substringBefore(':')
+            val physical = id.substringAfter(':', "").takeIf { it.isNotEmpty() }
+            cachedCaps(logical, physical)?.zoomRatioRange?.let { it.lower to it.upper }
+        }
+        val inventory = lensInventoryOf(equivalents, range)
+        if (BuildConfig.DEBUG) {
+            Log.i(
+                "CameraEngine",
+                "LensInventory: lenses=${equivalents.map { it.toInt() }} zoom=$range " +
+                    "available=${inventory.available.map { it.label }} optical=${inventory.optical.map { it.label }}",
+            )
+        }
+        onLensInventory?.invoke(inventory)
+    }
+
     // Static-per-device like the focal→id cache: the front enumeration never changes at runtime and
     // costs several Binder IPCs, so resolve it once on setupExecutor and reuse.
     @Volatile private var cachedFrontSelection: TeleSelection? = null
@@ -745,6 +777,9 @@ class CameraEngine(private val context: Context) {
     @Volatile private var aspectRatio = AspectRatio.W4_3
     var onStatus: ((String?) -> Unit)? = null
     var onCapsReady: ((CameraCaps, generation: Long) -> Unit)? = null
+    // Device-static lens inventory (enumerated once, published once): which lens presets this
+    // hardware can actually deliver. The rail rendered the PMA110 set unconditionally before.
+    var onLensInventory: ((LensInventory) -> Unit)? = null
     // The auto-chosen video size for the selected lens (largest 16:9), so the UI's Video tab reflects
     // what the engine will actually encode instead of drifting from a hardcoded default.
     var onVideoSizeChosen: ((Size, generation: Long?) -> Unit)? = null
@@ -867,6 +902,10 @@ class CameraEngine(private val context: Context) {
                         // Capture route + token after GL input exists. A newer intent invalidates it.
                         val desired = currentOpticsReconfiguration()
                         reconfigureCamera(desired.overrideId, desired.transaction, startup = true)
+                        // Enumerated AFTER the route/open task is queued, like the debug capability
+                        // scan below it: the rail can render its pre-enumeration default for the
+                        // few hundred ms this costs, but the first camera open must not wait on it.
+                        setupExecutor.execute { runCatching { publishLensInventoryOnce() } }
                         maybeLogCameraCapabilities()
                     }
                 }

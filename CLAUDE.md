@@ -458,6 +458,19 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   - Admission adds: MANUAL focus, mid-`SCANNING`, recording/starting, an active zoom gesture, and
     statistics older than 1 s all refuse, and each refusal **resets** the 700 ms hold — which is why
     the settle wait after an AF scan needs no second timer.
+- **The lens rail is ENUMERATED, never the PMA110 lens set (2026-08-02, user-reported).** The
+  viewfinder rail and the Lens menu rendered `LensChoice.entries` (0.6/1/3/10×) unconditionally, so
+  a single-camera device offered framings it could not reach — device-seen on a Lenovo TB336ZU
+  (one 26 mm-equiv back lens, `zoomRatioRange` 1.0–8.0): 0.6× sat below the zoom floor and 10×
+  above the ceiling, and tapping 0.6× left the wire zoom at 1.0. `LensInventory`
+  (`camera/CameraState.kt`, pure + host-tested) resolves availability by ENUMERATION —
+  optical when a back lens's measured 35 mm-equivalent is within ±35% of the preset target, else
+  reachable only if the photo-home route's advertised zoom range covers the preset ratio — and the
+  engine publishes it once on `setupExecutor` (`onLensInventory`). PMA110 keeps all four (all
+  optical, pinned by test). A preset reachable only by zoom is spoken as "3× zoom", never "3× lens",
+  and a rail left with a single preset renders nothing (pinch still covers the range). The Optics
+  focal caption follows the same honesty: the round literal survives only within 10% of the
+  measured equivalent (PMA110's ~69.4 mm 3× still reads "70 mm"; the tablet's main reads "26 mm").
 - **Aspect ratio is only 4:3 or 16:9.** The sensor is 4:3-native: `AspectRatio.W4_3` = full readout
   (no crop, the default + the no-crop sentinel), `W16_9` = its center crop. Full/1:1/portrait removed.
 - **The teleconverter's MAGNIFICATION is a setting, not a constant — and never a detection
@@ -486,16 +499,24 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
      `phoneModel`, not latched at seed time: a latched flag survives the user overriding the
      dropdown and makes the caption claim "Detected Other phone." — a detection the app never made.
      Picking the real phone back re-claims it.
-  2. **This and `DeviceProfile.resolve` are the ONLY places in the codebase that key off a model
+  2. **An UNRECOGNISED phone seeds `PhoneModel.OTHER`, not the Find X9 Ultra (2026-08-02).**
+     `DEFAULT_PHONE_MODEL` remains the Explorer host for the state default, but `seedPhoneModel`
+     now resolves `detectPhone(...) ?: OTHER`: leaving the default standing on foreign hardware
+     showed a Lenovo tablet owner "Phone: OPPO Find X9 Ultra" with a Hasselblad 300 mm kit their
+     device cannot mount. OTHER declares no host tele, so its converter focal multiplies the
+     MEASURED lens the route would actually use (`LensInventory.teleHostEquivMm`) — a generic 1.5×
+     on that tablet's 26 mm lens reads 39 mm, not the 105 mm the 70 mm assumption produced. Named
+     kits still derive from their own declared host phone.
+  3. **This and `DeviceProfile.resolve` are the ONLY places in the codebase that key off a model
      string** (the second sanctioned 2026-08-01 for measured HAL quirks), and this one may only
      choose which entry starts selected. Everything else still resolves hardware by ENUMERATING Camera2
      capabilities (`CameraSelector2` picks by measured equivalent focal, never by id). No
      capability, route, or request decision may branch on a model string.
-  3. **`TELE_MAX_DISPLAY_ZOOM` (60×) stays FIXED and does not scale with the converter.** It caps
+  4. **`TELE_MAX_DISPLAY_ZOOM` (60×) stays FIXED and does not scale with the converter.** It caps
      TOTAL magnification, so the local-zoom ceiling (`TELE_MAX_DISPLAY_ZOOM / teleDisplayBase(m)`)
      widens as the converter weakens — a 2× converter earns nearly the full 1–10× digital range,
      and ordinary capability reconciliation clamps whatever the lens cannot actually deliver.
-  4. **A preset's PRODUCT NAME is not a focal length.** Each magnification is written as (converter
+  5. **A preset's PRODUCT NAME is not a focal length.** Each magnification is written as (converter
      focal ÷ the host tele focal it was designed for) so the arithmetic is auditable against the
      maker's printed figure — and host focals differ: the Hasselblad kits target a 70 mm periscope,
      the ZEISS ones an 85 mm. A "ZEISS 200" on THIS phone's 70 mm lens is therefore **165 mm**, not
@@ -504,7 +525,7 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
      would write a false focal into saved files. Tests pin both the published figure (tolerance
      `1e-2`, because makers TRUNCATE — 230/70 = 3.2857 is sold as "3.28×", and a ±5e-3 band fails)
      and the exact ratios at `delta = 0`, which is what catches a preset that adopted a sibling's.
-  5. **A phone with TWO official converters offers both, and defaults to the BASE one.** The vivo
+  6. **A phone with TWO official converters offers both, and defaults to the BASE one.** The vivo
      X300 Ultra takes the 200 mm and the 400 mm, so its narrowed list carries both — but
      `defaultConverterFor` is `firstOrNull { it.phone == phone }`, which returns the base kit only
      because `ZEISS_200_X300` is DECLARED BEFORE `ZEISS_400`. That ordering is load-bearing and

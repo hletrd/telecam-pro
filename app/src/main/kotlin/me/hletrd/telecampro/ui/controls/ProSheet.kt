@@ -1021,21 +1021,41 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
         )
     }
     Captioned(
-        if (rearRoute) lensFocalCaption(state.lens, state.teleconverterMode, state.teleconverterFocalMm) else null,
+        if (rearRoute) {
+            lensFocalCaption(
+                state.lens,
+                state.teleconverterMode,
+                state.teleconverterFocalMm,
+                measuredEquivMm = state.caps?.equivalentFocalMm ?: 0f,
+            )
+        } else {
+            null
+        },
     ) {
         // Lens picks are ZOOM PRESETS on the seamless logical camera — they do NOT bundle the
         // teleconverter. TELE stays on only when it already is AND the pick is its 3× host lens; the
         // separate toggle below pins converter shooting (afocal 180° flip, standalone 3× camera).
         SegmentedSelector(
             label = "Lens",
-            options = LensChoice.entries,
+            // Same enumerated inventory the viewfinder rail uses — a preset this device cannot
+            // reach must not be offered in the menu either.
+            options = LensChoice.entries.filter { it in state.lensInventory.available },
             selected = state.lens,
             labelFor = ::lensLabel,
             onSelect = actions::onLens,
             enabled = rearOpticsMutable,
         )
     }
-    Captioned(if (rearRoute) "Uses the 3× lens" else null) {
+    // Names the lens the converter will ACTUALLY clamp onto: the app resolves that by closest
+    // 35 mm-equivalent, which is the 3× periscope only where one exists (enumerated, not assumed —
+    // a single-camera device would otherwise be told it uses a lens it does not have).
+    Captioned(
+        if (rearRoute) {
+            if (LensChoice.TELE3X in state.lensInventory.optical) "Uses the 3× lens" else "Uses the main lens"
+        } else {
+            null
+        },
+    ) {
         ToggleRow(
             label = "Teleconverter",
             checked = state.teleconverterMode,

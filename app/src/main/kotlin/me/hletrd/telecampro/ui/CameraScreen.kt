@@ -2324,10 +2324,20 @@ private fun FocalRail(
                     )
                 }
             } else {
-                LensChoice.entries.forEach { choice ->
+                // ENUMERATED, not hardcoded: only the presets this hardware can actually deliver
+                // (see LensInventory). A single surviving preset is not a choice, so the rail stays
+                // empty rather than showing one dead-looking chip — pinch still covers that device's
+                // whole range.
+                val offered = LensChoice.entries.filter { it in state.lensInventory.available }
+                    .takeIf { it.size > 1 }
+                    .orEmpty()
+                offered.forEach { choice ->
+                    val optical = choice in state.lensInventory.optical
                     RailChip(
                         label = choice.label,
-                        contentDescription = "${choice.label} lens",
+                        // Same honesty rule the tele marks already follow: a digital-zoom preset is
+                        // not a lens, so it must not be spoken as one.
+                        contentDescription = "${choice.label} ${if (optical) "lens" else "zoom"}",
                         presentation = focalRailState(
                             choice = choice,
                             selectedLens = state.lens,

@@ -579,6 +579,76 @@ val TELE_ZOOM_SNAPS = floatArrayOf(30f, 60f)
  * afocal 180° flip — stabilization at 300 mm is the HAL's OIS+EIS via [VideoStabMode], not
  * app-side gyro warping).
  */
+/**
+ * Which [LensChoice] presets THIS device can actually deliver, and which of those are a real lens
+ * rather than digital zoom.
+ *
+ * The rail used to render [LensChoice.entries] unconditionally — the PMA110 lens set hardcoded into
+ * the UI. On a device that does not have those optics it offered framings it could never reach:
+ * user-reported 2026-08-02 on a single-camera Android 16 tablet where 0.6x and 10x were both dead
+ * chips (0.6x below the advertised zoom floor of 1.0, 10x above its 8.0 ceiling — tapping 0.6x left
+ * the wire zoom at 1.0). Everything here is resolved by ENUMERATING Camera2 capabilities, never by
+ * a model string, per the project's standing rule.
+ */
+data class LensInventory(
+    val available: Set<LensChoice>,
+    /** The subset backed by a physical lens; the rest are reachable only as digital zoom. */
+    val optical: Set<LensChoice>,
+    /**
+     * MEASURED 35 mm-equivalent of the lens a teleconverter would actually clamp onto here (the one
+     * closest to the 3x target). Zero when unreadable. Only consulted for [PhoneModel.OTHER]: a
+     * NAMED kit keeps deriving from its own declared host phone, because moving glass to another
+     * body does not regrind it — but an unknown phone has no declared host, and assuming 70 mm there
+     * told a 26 mm-lens tablet that a generic 1.5x clip-on yields 105 mm instead of 39 mm.
+     */
+    val teleHostEquivMm: Float = 0f,
+) {
+    companion object {
+        /**
+         * Pre-enumeration default: everything, so the first frames render exactly as before the
+         * inventory arrives (a sub-second window on cold start) instead of flashing an empty rail.
+         */
+        val ALL = LensInventory(LensChoice.entries.toSet(), LensChoice.entries.toSet())
+    }
+}
+
+/**
+ * A preset is OFFERED when either route can reach it:
+ *  - OPTICAL: a back lens exists whose 35 mm-equivalent is within [LENS_MATCH_TOLERANCE] of the
+ *    preset's target (a band, not equality — real "3x" periscopes land anywhere from ~65 to ~85 mm),
+ *  - ZOOM: the photo-home route's advertised zoom range covers the preset's ratio.
+ * [LensChoice.MAIN] additionally always survives while any back lens was enumerated: it is the
+ * reference framing, and a rail without it would be meaningless.
+ */
+internal const val LENS_MATCH_TOLERANCE = 1.35f
+
+internal fun lensInventoryOf(
+    backLensEquivMm: List<Float>,
+    zoomRange: Pair<Float, Float>?,
+): LensInventory {
+    val usableLenses = backLensEquivMm.filter { it > 0f }
+    if (usableLenses.isEmpty() && zoomRange == null) return LensInventory.ALL
+    // The lens a converter clamps onto is the one the route resolver would pick: closest to the 3x
+    // target (CameraSelector2 uses the same "closest measured equivalent" rule).
+    val teleHost = usableLenses.minByOrNull { kotlin.math.abs(it - LensChoice.TELE3X.targetEquivMm) } ?: 0f
+    val optical = LensChoice.entries.filter { choice ->
+        usableLenses.any { equiv ->
+            val ratio = if (equiv >= choice.targetEquivMm) {
+                equiv / choice.targetEquivMm
+            } else {
+                choice.targetEquivMm / equiv
+            }
+            ratio <= LENS_MATCH_TOLERANCE
+        }
+    }.toMutableSet()
+    if (usableLenses.isNotEmpty()) optical += LensChoice.MAIN
+    val available = LensChoice.entries.filter { choice ->
+        choice in optical ||
+            (zoomRange != null && choice.zoomPreset >= zoomRange.first && choice.zoomPreset <= zoomRange.second)
+    }.toSet()
+    return LensInventory(available = available, optical = optical, teleHostEquivMm = teleHost)
+}
+
 enum class LensChoice(val targetEquivMm: Float, val label: String, val zoomPreset: Float) {
     ULTRAWIDE(14f, "0.6×", 0.6f),
     MAIN(23f, "1×", 1f),
@@ -1100,6 +1170,8 @@ data class CameraUiState(
     val recordElapsedMs: Long = 0L,
     val timerCountdownSec: Int = 0,
     val caps: CameraCaps? = null,
+    // Device-static, enumerated once: which lens presets this hardware can actually deliver.
+    val lensInventory: LensInventory = LensInventory.ALL,
     val cameraOverrideId: String? = null,
     val statusMessage: String? = null,
     // The newest saved capture owner (HEIF/JPEG/video, or RAW when no displayable sibling exists).
@@ -1119,10 +1191,22 @@ data class CameraUiState(
     val teleconverterMagnification: Float
         get() = effectiveMagnification(teleconverterProfile, teleconverterCustomMagnification)
 
-    /** The effective 35 mm-equivalent focal through the converter, e.g. 300 mm on the kit optic —
-     *  on the DECLARED phone's host tele (70 mm OPPO / 85 mm vivo kits; review 2026-08-01). */
+    /**
+     * The effective 35 mm-equivalent focal through the converter, e.g. 300 mm on the kit optic.
+     * Host focal = the DECLARED phone's tele (70 mm OPPO / 85 mm vivo kits; review 2026-08-01),
+     * except on [PhoneModel.OTHER], which declares no host: there the MEASURED lens this device
+     * would actually use is the only honest base ([LensInventory.teleHostEquivMm]).
+     */
     val teleconverterFocalMm: Float
-        get() = effectiveFocalMm(teleconverterMagnification, phoneModel.teleEquivMm)
+        get() = effectiveFocalMm(teleconverterMagnification, teleconverterHostEquivMm)
+
+    /** The host-lens focal the converter multiplies — declared for a known phone, measured for OTHER. */
+    val teleconverterHostEquivMm: Float
+        get() = if (phoneModel == PhoneModel.OTHER && lensInventory.teleHostEquivMm > 0f) {
+            lensInventory.teleHostEquivMm
+        } else {
+            phoneModel.teleEquivMm
+        }
     /**
      * The loupe the preview ACTUALLY applies — [punchIn] suppressed on the front route.
      *
