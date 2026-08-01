@@ -1844,7 +1844,12 @@ internal fun computeHistogram(bytes: ByteArray, w: Int, h: Int, lut: IntArray? =
     val red = IntArray(256)
     val green = IntArray(256)
     val blue = IntArray(256)
-    val step = 6
+    // ADAPTIVE stride: the fixed step 6 predates the 2026-07-14 FBO downsample — it was sized for
+    // the full-resolution readback. Against today's ≤256-long-edge analysis buffer it left only
+    // ~1.4k samples for 256 bins (~5/bin — a spiky, starved histogram). A ≤256 buffer is ~49k
+    // pixels, trivially full-scannable at the ~6 Hz analysis cadence; larger (hypothetical) inputs
+    // keep a stride that lands ~256 samples per axis.
+    val step = maxOf(1, maxOf(w, h) / 256)
     var y = 0
     while (y < h) {
         val rowBase = y * w * 4
@@ -1877,7 +1882,12 @@ internal fun computeWaveform(bytes: ByteArray, w: Int, h: Int, lut: IntArray? = 
     val columns = 128
     val rows = 64
     val bins = IntArray(columns * rows)
-    val step = 6
+    // ADAPTIVE stride (see computeHistogram): with the fixed step 6 against the ≤256 analysis
+    // buffer, x visited only every 6th source pixel of ~192, so col = x*128/192 filled every 4TH
+    // waveform column — 96 of 128 columns were PERMANENTLY empty and the monitor rendered as
+    // spaced dots. The stride must never exceed the source-pixels-per-column ratio (w/columns),
+    // and a full scan of a ≤256 buffer is cheap; only oversized inputs stride.
+    val step = maxOf(1, minOf(w / columns, h / rows))
     var y = 0
     while (y < h) {
         val rowBase = y * w * 4

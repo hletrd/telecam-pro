@@ -98,7 +98,7 @@ class AnalysisMathTest {
 
     @Test
     fun `dimensions not divisible by the subsample step do not crash or over-run`() {
-        // step = 6; 101x77 sits off the stride so the last sampled x/y land near the edge — the index
+        // Odd sizes sit off any stride so the last sampled x/y land near the edge — the index
         // math (i + 2 for blue) must still stay inside the w*h*4 buffer.
         val bytes = solid(101, 77, 128, 128, 128)
         val hist = computeHistogram(bytes, 101, 77)
@@ -106,5 +106,31 @@ class AnalysisMathTest {
         // No exception = no buffer over-run; sanity-check something was actually sampled.
         assertTrue(hist.luma.sum() > 0)
         assertTrue(wave.bins.sum() > 0)
+    }
+
+    // The stride must ADAPT to the analysis buffer (regression 2026-08-01): the historical fixed
+    // step 6 was sized for the pre-2026-07-14 full-resolution readback, and against the real
+    // 192x256 FBO it filled only every 4th waveform column (dotted monitor) and starved the
+    // histogram to ~5 samples/bin.
+    @Test
+    fun `every waveform column is populated at the real analysis buffer size`() {
+        val w = 192
+        val h = 256
+        val wave = computeWaveform(solid(w, h, 128, 128, 128), w, h)
+        for (col in 0 until wave.columns) {
+            var colSum = 0
+            for (row in 0 until wave.rows) colSum += wave.bins[col * wave.rows + row]
+            assertTrue("column $col empty", colSum > 0)
+        }
+    }
+
+    @Test
+    fun `histogram full-scans the real analysis buffer`() {
+        val w = 192
+        val h = 256
+        val hist = computeHistogram(solid(w, h, 200, 10, 90), w, h)
+        // step must resolve to 1 at ≤256 long edge: every pixel sampled exactly once.
+        assertEquals(w * h, hist.luma.sum())
+        assertEquals(w * h, hist.red[200])
     }
 }
