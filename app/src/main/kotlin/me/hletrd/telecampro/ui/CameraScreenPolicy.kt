@@ -507,6 +507,31 @@ internal fun manualMeterEv(mode: ExposureMode, luma: IntArray?): Float? {
 private fun log2(value: Float): Float = (ln(value.toDouble()) / ln(2.0)).toFloat()
 
 /**
+ * Width of the letterboxed preview box: the largest box of [aspect] (width/height) that FITS INSIDE
+ * the window on BOTH axes.
+ *
+ * The old math was width-bound unconditionally (`height = width / aspect`), which is only correct
+ * while the window is taller than the content — true for a portrait phone and, historically, the
+ * only shape this portrait-locked app could be in. It is NOT true for a landscape window, and
+ * Android 16 hands one to every sw600dp device by ignoring the orientation lock (device-reproduced
+ * on a Lenovo TB336ZU / Android 16 / 1600x2560, 2026-08-02: in the 2560x1600 landscape window the
+ * 3:4 preview asked for 3413 px of height inside 1600 px, so the viewfinder was clipped at the top
+ * and most of the window was dead black). Split-screen and freeform reach the same shape on phones.
+ *
+ * Portrait windows are unchanged by construction: there the height-bound candidate is the larger
+ * one, so the width still binds and the result is exactly the previous value.
+ */
+internal fun previewBoxWidthPx(
+    availableWidthPx: Int,
+    availableHeightPx: Int,
+    aspect: Float,
+): Int {
+    if (aspect <= 0f || availableWidthPx <= 0 || availableHeightPx <= 0) return availableWidthPx
+    val heightBoundWidth = (availableHeightPx * aspect).toInt()
+    return min(availableWidthPx, heightBoundWidth)
+}
+
+/**
  * Top y of the letterboxed preview box. Unconditional vertical CENTERING left the 4:3 preview's
  * bottom edge cutting through the focal rail / Fn row — the bottom cluster is bottom-anchored, so
  * chrome straddled the image boundary and read as clipped. Instead, bias the preview UP just far

@@ -53,6 +53,18 @@
             android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden|screenLayout|density"
             android:theme="@style/Theme.TeleCamPro"
             tools:ignore="DiscouragedApi,LockedOrientationActivity">
+
+            <!-- Android 16 (API 36) IGNORES screenOrientation/aspect/resizability on any display
+                 whose smaller side is >= 600dp, so a tablet or unfolded foldable hands this
+                 portrait-designed viewfinder a landscape window (device-reproduced on a Lenovo
+                 TB336ZU / Android 16 / 1600x2560, 2026-08-02). This documented property restores the
+                 previous behaviour for now; it is TEMPORARY by Android's own schedule — the opt-out
+                 is removed at API 37, so the durable answer is the layout itself, which is why the
+                 preview box was fixed to letterbox correctly in ANY window shape rather than relying
+                 on this flag. Re-evaluate before raising targetSdk to 37. -->
+            <property
+                android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY"
+                android:value="true" />
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

@@ -358,7 +358,14 @@ fun CameraScreen(
         // offset only moves the box; every overlay and tap normalization is box-relative.
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val density = LocalDensity.current
-            val previewHeightPx = (constraints.maxWidth / displayedPreviewAspect).toInt()
+            // FIT INSIDE both axes (see [previewBoxWidthPx]) — a landscape/split/freeform window is
+            // height-bound, and the old width-bound-only math pushed the viewfinder off-window there.
+            val previewWidthPx = previewBoxWidthPx(
+                availableWidthPx = constraints.maxWidth,
+                availableHeightPx = constraints.maxHeight,
+                aspect = displayedPreviewAspect,
+            )
+            val previewHeightPx = (previewWidthPx / displayedPreviewAspect).toInt()
             val topOffsetPx = previewTopPx(
                 availableHeightPx = constraints.maxHeight,
                 previewHeightPx = previewHeightPx,
@@ -375,6 +382,10 @@ fun CameraScreen(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .offset { IntOffset(0, topOffsetPx) }
+                // Explicit width (not fillMaxWidth) so a height-bound window letterboxes on the
+                // SIDES; TopCenter then centres it horizontally. aspectRatio still derives the
+                // height, keeping one source of truth for the box shape.
+                .width(with(density) { previewWidthPx.toDp() })
                 .aspectRatio(displayedPreviewAspect),
         ) {
             val finderVisible = teleFinderVisible(
