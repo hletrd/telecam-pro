@@ -65,11 +65,12 @@ frozen artifact vs re-cut" decision is closed; both frozen candidates (`9541697`
   profile-collapsed plan, onCaptureFailed cancels the delivery watchdog, kit focals ride the
   DECLARED phone's host tele (ZEISS 200 on X200U now writes 200 mm, not 165), and capsCache no
   longer memoizes a logical-fallback read. TWO accepted-as-documented residuals:
-  1. **Reinstall gallery restore is ColorOS-visibility-dependent.** Spec Android 13/14
-     MediaProvider hides a previous install's owner-cleared rows from a permission-less app, so on
-     spec devices the reinstall-restore path finds nothing and the gallery button shows its
-     placeholder (files remain intact). Fixing it costs a READ_MEDIA_IMAGES permission + Data
-     Safety change — product decision, not code.
+  1. **Reinstall gallery restore — RESOLVED same day (user decision).** The visual-media READ
+     trio (IMAGES/VIDEO/VISUAL_USER_SELECTED) is now requested CONTEXTUALLY at an empty-gallery
+     tap; any grant (partial "Select photos" included, `hasVisualMediaAccess`) re-runs the bounded
+     capture restore so a previous install's rows seed review. Declining keeps own-rows-only.
+     Play follow-through: Data Safety must now declare Photos/Videos access (read-only, no
+     collection/sharing) and the privacy policy gains one line.
   2. **`teleDisplayBase`/zoom-pill scale still assumes the 70 mm host** for its display ratio; on
      an 85 mm-host phone the TC zoom pills would read in this phone's scale. Cosmetic-only
      (focals/EXIF are fixed); fold into the per-device validation pass.

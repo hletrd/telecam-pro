@@ -5,6 +5,16 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- Visual-media READ access (user decision 2026-08-01): after a REINSTALL, MediaStore clears
+         the previous install's row ownership, and a permission-less app cannot see those rows on a
+         spec provider — the in-app gallery restore came back empty even though the files were
+         intact. Requested CONTEXTUALLY (first gallery tap with nothing to review), never at
+         launch; declining keeps the old own-rows-only behavior. USER_SELECTED joins so Android
+         14+'s partial "Select photos" grant is handled first-class instead of read as a denial. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
+
     <!-- The entire privacy story (PRIVACY.md, Play Data Safety) rests on the MERGED manifest having
          no network permission. tools:node="remove" makes that build-enforced instead of true-by-
          omission: a dependency AAR whose manifest sneaks INTERNET in would be stripped, not merged. -->

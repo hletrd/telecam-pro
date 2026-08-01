@@ -128,3 +128,16 @@ internal fun hardwareShutterAudioDrop(
         recording = recording,
         recordAudio = recordAudio,
     )
+
+/**
+ * Whether ANY visual-media READ grant is in force. Android 14+'s "Select photos" flow grants
+ * READ_MEDIA_VISUAL_USER_SELECTED while denying the full permissions — that partial grant still
+ * widens MediaStore visibility to the user-selected set and must count as access, not a denial
+ * (2026-08-01, reinstall gallery restore). Pure so the three-way OR is pinned by a host test
+ * rather than re-derived at each call site.
+ */
+internal fun hasVisualMediaAccess(
+    imagesGranted: Boolean,
+    videoGranted: Boolean,
+    userSelectedGranted: Boolean,
+): Boolean = imagesGranted || videoGranted || userSelectedGranted

@@ -1248,6 +1248,14 @@ class CameraViewModel @JvmOverloads constructor(
         scopesVisible = visible
     }
 
+    override fun onGalleryAccessRequested() {
+        // Idempotent by construction: the restore only fills lastMediaUri while it is null and
+        // seedPriorCapture refuses to displace live captures, so a repeat tap (or the permission
+        // decorator calling through after a grant) cannot regress review state. Without media
+        // access the query still returns this install's own rows — same behavior as launch.
+        restoreLatestPublishedCapture()
+    }
+
     private fun applyEngineTransfer(
         mode: CaptureMode = _state.value.mode,
         transfer: ColorTransfer = _state.value.transfer,

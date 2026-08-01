@@ -93,6 +93,18 @@ class ReviewSurfacedSeamsTest {
         )
     }
 
+    // --- hasVisualMediaAccess (reinstall gallery restore, 2026-08-01) ----------------------------
+
+    @Test
+    fun `any visual-media grant counts as access, including the partial Select-photos grant`() {
+        assertTrue(hasVisualMediaAccess(imagesGranted = true, videoGranted = false, userSelectedGranted = false))
+        assertTrue(hasVisualMediaAccess(imagesGranted = false, videoGranted = true, userSelectedGranted = false))
+        // Android 14+ "Select photos": full permissions read DENIED while USER_SELECTED is granted
+        // — a denial-shaped result map that must still count as access.
+        assertTrue(hasVisualMediaAccess(imagesGranted = false, videoGranted = false, userSelectedGranted = true))
+        assertFalse(hasVisualMediaAccess(imagesGranted = false, videoGranted = false, userSelectedGranted = false))
+    }
+
     // --- exifLensModel unknown-optics omission (review L6) ---------------------------------------
 
     @Test

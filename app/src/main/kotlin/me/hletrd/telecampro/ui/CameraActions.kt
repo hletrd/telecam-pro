@@ -193,4 +193,13 @@ interface CameraActions {
      * histogram data with the overlays hidden.
      */
     fun onScopesVisibilityChanged(visible: Boolean)
+
+    /**
+     * The gallery thumb was tapped with NOTHING to review (fresh/reinstalled app). The ViewModel
+     * re-runs the bounded capture-restore query; MainActivity's permission decorator additionally
+     * requests visual-media READ access first when it is missing — after a reinstall the previous
+     * install's rows are owner-cleared and invisible without it (2026-08-01). Declining leaves the
+     * historic own-rows-only behavior.
+     */
+    fun onGalleryAccessRequested()
 }

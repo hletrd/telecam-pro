@@ -181,6 +181,16 @@ class MainActivity : ComponentActivity() {
                     recordCameraPermissionResult(results[Manifest.permission.CAMERA])
                     refreshPermissionState()
                 }
+                val mediaAccessLauncher = rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestMultiplePermissions(),
+                ) { _ ->
+                    // Re-check LIVE state instead of the result map: Android 14+'s "Select photos"
+                    // choice reports the full permissions denied while granting USER_SELECTED, and
+                    // that partial grant is access (hasVisualMediaAccess). On any access, re-run
+                    // the capture restore so a previous install's rows can seed review; a decline
+                    // simply keeps the historic own-rows-only behavior — nothing to record.
+                    if (hasVisualMediaPermission()) vm.onGalleryAccessRequested()
+                }
                 val microphoneLauncher = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission(),
                 ) { granted ->
@@ -227,6 +237,24 @@ class MainActivity : ComponentActivity() {
                                 requestMicrophoneThen(
                                     action = PendingAudioAction.ENABLE_AUDIO,
                                 ) { vm.onToggleRecordAudio(true) }
+                            }
+
+                            override fun onGalleryAccessRequested() {
+                                // Contextual media-access request (2026-08-01): the empty-gallery
+                                // tap IS the context, so the system dialog needs no rationale
+                                // sheet. With access already in force, fall through to the VM's
+                                // re-restore (covers a grant made in Settings mid-session).
+                                if (hasVisualMediaPermission()) {
+                                    vm.onGalleryAccessRequested()
+                                } else {
+                                    mediaAccessLauncher.launch(
+                                        arrayOf(
+                                            Manifest.permission.READ_MEDIA_IMAGES,
+                                            Manifest.permission.READ_MEDIA_VIDEO,
+                                            Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED,
+                                        ),
+                                    )
+                                }
                             }
                         }
                     }
@@ -563,6 +591,13 @@ class MainActivity : ComponentActivity() {
             permissionPreferences.edit(commit = true) { putBoolean(CAMERA_REQUESTED_BEFORE_KEY, updated) }
         }
     }
+
+    /** Live visual-media access truth, partial ("Select photos") grants included. */
+    private fun hasVisualMediaPermission(): Boolean = hasVisualMediaAccess(
+        imagesGranted = hasPermission(Manifest.permission.READ_MEDIA_IMAGES),
+        videoGranted = hasPermission(Manifest.permission.READ_MEDIA_VIDEO),
+        userSelectedGranted = hasPermission(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED),
+    )
 
     private fun hasPermission(permission: String): Boolean =
         ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED

@@ -36,6 +36,7 @@ internal object PreviewCameraActions : CameraActions {
     override fun onCameraInputBlockedChange(blocked: Boolean) = Unit
     override fun onStandbyAudioMeterVisibilityChanged(visible: Boolean) = Unit
     override fun onScopesVisibilityChanged(visible: Boolean) = Unit
+    override fun onGalleryAccessRequested() = Unit
     override fun onPreviewSurfaceChanged(width: Int, height: Int) = Unit
     override fun onPreviewSurfaceDestroyed() = Unit
 

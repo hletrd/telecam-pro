@@ -1007,16 +1007,20 @@ fun CameraScreen(
                 val reviewOpenScope = state.lastMediaDeleteScope
                 val onOpenReview = remember(reviewOpenUri, reviewOpenScope) {
                     {
-                        reviewOpenUri?.let { uri ->
-                            val familyPinned = currentActions.value.onReviewOpenChange(true, uri)
-                            reviewUri = uri
+                        if (reviewOpenUri != null) {
+                            val familyPinned = currentActions.value.onReviewOpenChange(true, reviewOpenUri)
+                            reviewUri = reviewOpenUri
                             reviewDeleteScope = if (familyPinned) {
                                 reviewOpenScope
                             } else {
                                 MediaDeleteScope.FILE_ONLY
                             }
+                        } else {
+                            // Nothing to review (fresh or reinstalled app): the tap asks for the
+                            // capture-restore instead — and, via MainActivity's decorator, for the
+                            // visual-media permission a reinstall restore needs (2026-08-01).
+                            currentActions.value.onGalleryAccessRequested()
                         }
-                        Unit
                     }
                 }
                 ShutterRow(

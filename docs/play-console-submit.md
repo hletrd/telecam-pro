@@ -153,6 +153,14 @@ Summary:
 - Ads: No
 - Child-directed: No
 
+**Since 2026-08-01 the manifest also declares the visual-media READ trio (READ_MEDIA_IMAGES /
+READ_MEDIA_VIDEO / READ_MEDIA_VISUAL_USER_SELECTED)** for the reinstall gallery restore. This
+reads the user's own captures ON DEVICE only — nothing is collected or transmitted, so the
+collect/share answers above stay "No" — but the Data Safety "Photos and videos" ACCESS question
+and the privacy policy must both mention on-device photo/video library access before the next
+review submission. Update `docs/play-data-safety.md` and `PRIVACY.md` in the same pass as the
+re-cut.
+
 ## Assets
 
 - Hi-res icon: `docs/assets/play/icon-512.png`

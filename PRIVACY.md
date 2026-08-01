@@ -16,6 +16,7 @@ cloud sync, or `INTERNET` permission.
 |---|---|
 | **Camera** | Shows the viewfinder and captures photos and videos. |
 | **Microphone** (`RECORD_AUDIO`) | Adds audio to videos when enabled. Before recording, it is also used while the input level meter is visible in armed Video mode. |
+| **Photos and videos** (`READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, `READ_MEDIA_VISUAL_USER_SELECTED`) | Lets the in-app gallery show captures this app saved before a reinstall. Asked only when you tap the gallery button with nothing to review; declining keeps the app working with only the captures made since installation. Reading happens on this device only. |
 
 Microphone input is processed locally. The visible standby meter reduces its input to a level reading
 and does not save that audio; recorded audio remains in the video file on your device. Neither is

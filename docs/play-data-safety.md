@@ -54,7 +54,9 @@ Use this wording in any free-text notes if Play review asks for clarification:
 ```text
 TeleCam Pro uses Camera for the viewfinder and photo/video capture. Microphone input is processed
 locally when recording enabled video audio and while the visible input level meter is active in armed
-Video mode; standby meter input is not saved. Captures are saved through Android MediaStore. The app
+Video mode; standby meter input is not saved. Captures are saved through Android MediaStore. Photo and
+video library access (READ_MEDIA_*) is used only to show this app's own prior captures in its gallery
+after a reinstall; it is requested contextually and processed entirely on device. The app
 declares no INTERNET permission and includes no ads, analytics, accounts, cloud sync, crash telemetry,
-or OEM SDK. Microphone and capture data are not uploaded, collected, or shared by the developer.
+or OEM SDK. Microphone, capture, and library data are not uploaded, collected, or shared by the developer.
 ```
