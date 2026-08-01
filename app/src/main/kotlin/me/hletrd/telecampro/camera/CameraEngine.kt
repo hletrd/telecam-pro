@@ -797,6 +797,7 @@ class CameraEngine(private val context: Context) {
     // ---- Preview surface lifecycle ----
 
     fun onPreviewSurfaceAvailable(surface: Surface, width: Int, height: Int) {
+        if (BuildConfig.DEBUG) Log.i("CameraEngine", "PreviewSurface: AVAILABLE ${System.identityHashCode(surface)} ${width}x$height started=$started paused=$paused")
         if (!nativeAcquisitionMayProceed()) {
             if (UnsafeRecorderQuarantine.isActive()) {
                 onStatus?.invoke(UNSAFE_RECORDER_RESTART_STATUS)
@@ -992,12 +993,67 @@ class CameraEngine(private val context: Context) {
     }
 
     fun onPreviewSurfaceDestroyed() {
-        // Portrait is locked, so this is app teardown; keep the GL context but drop the output.
+        if (BuildConfig.DEBUG) Log.i("CameraEngine", "PreviewSurface: DESTROYED (current=${System.identityHashCode(previewSurface)})")
         val surfaceGeneration = previewSurfaceGeneration.incrementAndGet()
         val outgoing = previewSurface
         previewSurface = null
         if (outgoing != null) markPreviewPending(outgoing, surfaceGeneration, requireCurrentSurface = false)
         gl.setPreviewOutput(null, 0, 0)
+        // A destroyed preview surface is NOT necessarily app teardown — the original comment here
+        // assumed it was, because the portrait lock removes rotation-driven recreation. Every OTHER
+        // configuration change outside the activity's configChanges list still recreates the
+        // Activity and therefore the TextureView: font size, display size, dark-mode/uiMode, locale,
+        // and entering multi-window. Reusing the half-torn render chain across that leaves the
+        // camera streaming into an input the GL thread never receives frames from again —
+        // device-reproduced on an API 34 AVD 2026-08-02: after one font-scale change the camera
+        // reopened and 3A flowed while drawFrame ran ZERO times, so the viewfinder stayed black and
+        // Ready never republished (shutter disabled) until the process was killed. Backgrounding
+        // does NOT destroy the surface, so that path is untouched and stays warm.
+        restartGlAfterPreviewSurfaceLoss()
+    }
+
+    /**
+     * Retires the GL generation and camera whose render chain just lost its preview surface, so the
+     * REPLACEMENT surface takes the proven cold-start path instead of binding onto a torn chain.
+     *
+     * Deliberately synchronous about the state flags and asynchronous about the teardown: clearing
+     * [started] here (on main, before returning) is what makes a replacement surface arriving in
+     * the same frame choose the cold-start branch, and queuing the close/stop on [setupExecutor]
+     * keeps that teardown ordered AHEAD of the cold start the replacement enqueues on the same
+     * serial executor. Recording is exempt — the encoder owns the GL generation and pause()'s
+     * ordered finalize owns that teardown.
+     */
+    private fun restartGlAfterPreviewSurfaceLoss() {
+        val acquisitionAllowed = nativeAcquisitionMayProceed()
+        val ownedGl = glOwners.current()
+        val outgoingController = synchronized(this) {
+            if (!previewSurfaceLossRestartAllowed(
+                    acquisitionAllowed = acquisitionAllowed,
+                    started = started,
+                    ownerCurrent = glOwners.owns(ownedGl),
+                    recording = recorder != null,
+                )
+            ) {
+                return
+            }
+            started = false
+            starting = false
+            glInputPending = false
+            val current = controller
+            controller = null
+            current
+        }
+        invalidateCameraReady()
+        val teardown = Runnable {
+            outgoingController?.close()
+            stopGlOwner(ownedGl, restartPreviewOnAbandon = false)
+            // The replacement surface usually arrives while this is still queued and cold-starts
+            // itself; this covers the reverse order (surface already published before teardown ran).
+            restartPreviewAfterGlReset()
+        }
+        if (runCatching { setupExecutor.execute(teardown) }.isFailure) {
+            runCatching { outgoingController?.close() }
+        }
     }
 
     private fun bindPreviewSurface(
@@ -1014,9 +1070,11 @@ class CameraEngine(private val context: Context) {
                 width = width,
                 height = height,
                 onReady = {
+                    if (BuildConfig.DEBUG) Log.i("CameraEngine", "PreviewSurface: BOUND-READY ${System.identityHashCode(surface)} gen=$surfaceGeneration")
                     handlePreviewReady(ownedGl, surface, surfaceGeneration)
                 },
                 onFailure = { failure ->
+                    if (BuildConfig.DEBUG) Log.w("CameraEngine", "PreviewSurface: BIND-FAILED ${System.identityHashCode(surface)} gen=$surfaceGeneration: $failure")
                     handlePreviewFailure(ownedGl, surface, surfaceGeneration, failure)
                 },
             )
@@ -4906,6 +4964,22 @@ class CameraEngine(private val context: Context) {
         const val UNSAFE_RECORDER_RESTART_STATUS = "Recording failed. Force stop and reopen the app."
     }
 }
+
+/**
+ * Whether losing the preview surface must retire the GL generation so the REPLACEMENT surface can
+ * cold-start (device-reproduced 2026-08-02: reusing the chain across an Activity recreation left
+ * the camera streaming into an input the GL thread never drew again — permanent black viewfinder).
+ *
+ * The RECORDING exemption is the load-bearing term: the encoder owns that GL generation and pause()'s
+ * ordered finalize owns its teardown, so retiring GL underneath it would drop a take's native graph
+ * mid-write. Pure so that exemption is pinned by a host test rather than re-read from the call site.
+ */
+internal fun previewSurfaceLossRestartAllowed(
+    acquisitionAllowed: Boolean,
+    started: Boolean,
+    ownerCurrent: Boolean,
+    recording: Boolean,
+): Boolean = acquisitionAllowed && started && ownerCurrent && !recording
 
 /** One predicate shared by GL, preview, Camera2, and standby-microphone acquisition boundaries. */
 internal fun nativeAcquisitionAllowed(
