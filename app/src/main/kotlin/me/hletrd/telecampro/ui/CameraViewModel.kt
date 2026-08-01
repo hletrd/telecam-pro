@@ -996,7 +996,9 @@ class CameraViewModel @JvmOverloads constructor(
         // terminal commit re-normalizes the packet against it. Rolled back below on refusal, like
         // the hidden Photo shutter: a rejected recall must leave NEITHER bank behind.
         val previousMagnification = _state.value.teleconverterMagnification
-        engine.setTeleconverterMagnification(restoredMagnification)
+        // Host focal rides the DECLARED phone, which an MR recall does not change.
+        val hostTeleEquivMm = _state.value.phoneModel.teleEquivMm
+        engine.setTeleconverterMagnification(restoredMagnification, hostTeleEquivMm)
         // Resolution and hidden Photo exposure join the optics transaction. A synchronous REC
         // rejection or asynchronous camera rollback must leave neither rejected bank behind.
         val opticsAccepted = engine.setResolvedOptics(
@@ -1009,7 +1011,7 @@ class CameraViewModel @JvmOverloads constructor(
         )
         if (!opticsAccepted) {
             photoExposureTimeNs = previousPhotoExposureTimeNs
-            engine.setTeleconverterMagnification(previousMagnification)
+            engine.setTeleconverterMagnification(previousMagnification, hostTeleEquivMm)
             return
         }
         // The recalled packet supersedes a delayed manual-control snapshot from the prior setup.
@@ -2036,7 +2038,7 @@ class CameraViewModel @JvmOverloads constructor(
         persistImmediately: Boolean,
     ) {
         val magnification = effectiveMagnification(profile, custom)
-        engine.setTeleconverterMagnification(magnification)
+        engine.setTeleconverterMagnification(magnification, phone.teleEquivMm)
         _state.update {
             it.copy(
                 phoneModel = phone,
@@ -2103,7 +2105,10 @@ class CameraViewModel @JvmOverloads constructor(
                 teleconverterProfile = defaultConverterFor(phone),
             )
         }
-        engine.setTeleconverterMagnification(_state.value.teleconverterMagnification)
+        engine.setTeleconverterMagnification(
+            _state.value.teleconverterMagnification,
+            _state.value.phoneModel.teleEquivMm,
+        )
     }
 
     // UI mirror of the engine's pre-TELE framing snapshot (unified main-relative zoom).

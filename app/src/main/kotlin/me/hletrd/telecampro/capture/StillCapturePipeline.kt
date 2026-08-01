@@ -30,6 +30,10 @@ internal data class ShotSpec(
     // The mounted converter's magnification, snapshotted with [teleconverter] so this shot's EXIF
     // 35 mm focal describes the optic it was actually taken through (see Teleconverter.kt).
     val teleconverterMagnification: Float,
+    // The declared phone's host tele focal the magnification multiplies (70 OPPO / 85 vivo kits);
+    // snapshotted for the same EXIF honesty (review 2026-08-01 — the 70 default wrote false
+    // focals on non-PMA110 hosts).
+    val hostTeleEquivMm: Float = me.hletrd.telecampro.camera.LensChoice.TELE3X.targetEquivMm,
     val aspectRatio: AspectRatio,
     val jpegQuality: Int,
     val rotationDegrees: Int,

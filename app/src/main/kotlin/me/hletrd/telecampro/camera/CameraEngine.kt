@@ -72,6 +72,10 @@ class CameraEngine(private val context: Context) {
     private val timelapseScheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor()
     @Volatile private var timelapseFuture: java.util.concurrent.ScheduledFuture<*>? = null
     private val timelapseRun = CaptureSequenceGeneration()
+    // Serializes run start/stop edges across the main and timelapse-scheduler threads (review
+    // 2026-08-01): the flag + generation + listener edge must move together or a tick-thread stop
+    // can kill a concurrent restart / wedge the edge flag.
+    private val timelapseRunEdgeLock = Any()
     // True between startTimelapse and the stopTimelapse that ends that run — the edge detector for
     // [onTimelapseRun] only; run OWNERSHIP stays with [timelapseRun]'s generation.
     @Volatile private var timelapseRunActive = false
@@ -638,6 +642,12 @@ class CameraEngine(private val context: Context) {
                     logicalId,
                     physicalId,
                     stillExposureCeilingNs = deviceProfile.stillExposureCeilingNs,
+                    // A process-lifetime cache must never memoize the logical-fallback read
+                    // (review 2026-08-01): a transient service outage during the first physical
+                    // read otherwise stamps the LOGICAL camera's focal into every later still on
+                    // that lens with no recovery path. Fail the read instead — getOrNull degrades
+                    // this call and the NEXT call retries fresh.
+                    allowLogicalFallback = false,
                 )
             }
         }.getOrNull()?.also { cameraCaps ->
@@ -700,6 +710,11 @@ class CameraEngine(private val context: Context) {
     // HAL's effective-zoom hint, and the EXIF focal, and is snapshotted per shot ([ShotOptics]) so a
     // profile change mid-save cannot relabel a frame that was taken through a different optic.
     @Volatile private var teleconverterMagnification = TELECONVERTER_MAGNIFICATION
+    // The DECLARED phone's host tele focal (mm-equiv) the converter clamps onto — 70 on the OPPO
+    // hosts, 85 on the vivo kits (review 2026-08-01: the hardcoded 70 default wrote a ZEISS 200's
+    // 200 mm as ≈165 mm into EXIF/OSD on the very phones the converter list advertises). Pushed
+    // with the magnification; snapshotted into ShotOptics for the same mid-save honesty.
+    @Volatile private var teleconverterHostEquivMm = LensChoice.TELE3X.targetEquivMm
     @Volatile private var videoMode = false
     // FRONT is a first-class optics door (setFrontCamera). Never persisted — fresh launch is BACK
     // (see CameraFacing) — and never combined with TELE: entering FRONT forces the converter off.
@@ -921,8 +936,9 @@ class CameraEngine(private val context: Context) {
         // x, so no un-flip. Since multi-device (2026-08-01) the inversion is the
         // [DeviceProfile.frontStreamPreMirrored] quirk: spec devices deliver the unmirrored scene
         // and take the naive roles (preview mirrors, encoder/analysis pass through).
-        gl.setFrontStreamPreMirrored(
-            facing == CameraFacing.FRONT && deviceProfile.frontStreamPreMirrored,
+        gl.setFrontMirrorConvention(
+            facing == CameraFacing.FRONT,
+            deviceProfile.frontStreamPreMirrored,
         )
         // TELE finder PIP: re-resolve on every session (re)config and tele change, like rotation
         // (the user toggle, TELE state, or aspect may all have changed since the last push).
@@ -1221,6 +1237,14 @@ class CameraEngine(private val context: Context) {
             ctrl.close()
             return
         }
+        // Post-swap replay of the drive-side ZSL gate (review 2026-08-01): the construction-site
+        // replay reads driveMode BEFORE the swap, so a main-thread setDriveMode landing in that
+        // window pushed the outgoing controller (dropped/closing) and left the new one wired with
+        // a stale value — stale-true re-paid the full-res streaming for a whole timelapse run,
+        // stale-false silently disabled zero-lag serve. Re-reading here, after `controller = ctrl`,
+        // closes the window: a racing setDriveMode now lands on the installed controller, and this
+        // replay is change-gated inside the controller so the common no-change case costs nothing.
+        ctrl.setZslServePossible(driveMode == DriveMode.SINGLE)
         // Re-assert the atomic install state in case the outgoing controller reported Ready after
         // the earlier invalidation but before replacement acquired the monitor.
         onCameraReadyChange?.invoke(installedPublication)
@@ -1821,6 +1845,7 @@ class CameraEngine(private val context: Context) {
             // and the GL draw roles disagreeing (cycle-6 architect F4).
             mirrorX = me.hletrd.telecampro.gl.FrontMirrorConvention.tapDisplayMirrorX(
                 facing == CameraFacing.FRONT,
+                deviceProfile.frontStreamPreMirrored,
             ),
             // The METERING half is a different question and a different answer: AE/AF regions are
             // ACTIVE-ARRAY coordinates, and the array holds the TRUE scene while the selfie preview
@@ -1828,6 +1853,7 @@ class CameraEngine(private val context: Context) {
             // drift apart.
             meteringMirrorX = me.hletrd.telecampro.gl.FrontMirrorConvention.meteringMirrorX(
                 facing == CameraFacing.FRONT,
+                deviceProfile.frontStreamPreMirrored,
             ),
         )
         val attempt = PendingTapFocus(
@@ -2224,8 +2250,9 @@ class CameraEngine(private val context: Context) {
      * rebuild or zoom submit. Resubmitting here instead would pay the documented ~180 ms
      * setRepeatingRequest stall at slider rate while the custom-magnification ruler is being dragged.
      */
-    fun setTeleconverterMagnification(magnification: Float) {
+    fun setTeleconverterMagnification(magnification: Float, hostTeleEquivMm: Float) {
         val m = normalizeMagnification(magnification)
+        teleconverterHostEquivMm = if (hostTeleEquivMm > 0f) hostTeleEquivMm else LensChoice.TELE3X.targetEquivMm
         if (teleconverterMagnification == m) return
         teleconverterMagnification = m
         controller?.setTeleconverterMagnification(m)
@@ -2685,6 +2712,10 @@ class CameraEngine(private val context: Context) {
                 next.close()
                 return@execute
             }
+            // Post-swap replay of the drive-side ZSL gate — same window as the sequential path's
+            // replay above: wireController read driveMode before this synchronized swap, and an MR
+            // recall's own applyLoaded orders the reopen BEFORE setDriveMode, making the race real.
+            next.setZslServePossible(driveMode == DriveMode.SINGLE)
             onCameraReadyChange?.invoke(candidatePublication)
 
             seedGlZoom()
@@ -3108,7 +3139,11 @@ class CameraEngine(private val context: Context) {
             }
             DriveMode.BURST -> captureBurst(accepted, effFormats)
             DriveMode.AEB -> captureAeb(accepted, effFormats)
-            DriveMode.TIMELAPSE -> startTimelapse(formats)
+            // Press-to-START, press-again-to-STOP — the universal interval-shooting idiom (review
+            // 2026-08-01: the old unconditional restart fired an immediate extra frame, reset the
+            // interval phase mid-assembly, and left NO discoverable way to end a run; drive-mode
+            // surgery was the only stop). The toggle reads the same edge flag the dim consumes.
+            DriveMode.TIMELAPSE -> if (timelapseRunActive) stopTimelapse() else startTimelapse(formats)
         }
         return true
     }
@@ -3205,11 +3240,18 @@ class CameraEngine(private val context: Context) {
      * [ioExecutor] when encoding/storage is slower than [intervalSec].
      */
     private fun startTimelapse(requestedFormats: PhotoFormats) {
-        stopTimelapse()
         val period = intervalSec.coerceAtLeast(1).toLong()
-        val generation = timelapseRun.restart()
-        timelapseRunActive = true
-        onTimelapseRun?.invoke(true)
+        // Stop-old + claim-new + edge under ONE lock (review 2026-08-01): the tick thread's own
+        // defensive stop raced a main-thread restart's check-then-act — it could kill the freshly
+        // restarted generation, or interleave with the edge flag so timelapseRunning wedged true
+        // with no live run (dimming an idle viewfinder until the next drive change).
+        val generation = synchronized(timelapseRunEdgeLock) {
+            stopTimelapseLocked()
+            val g = timelapseRun.restart()
+            timelapseRunActive = true
+            onTimelapseRun?.invoke(true)
+            g
+        }
         val sequence = object {
             fun schedule(delaySeconds: Long) {
                 if (!timelapseRun.owns(generation)) return
@@ -3225,7 +3267,7 @@ class CameraEngine(private val context: Context) {
                             val formats = requestedFormats.normalizedFor(accepted.outputs)
                             if (!formats.wantsProcessedStill && !formats.dngRaw) {
                                 onStatus?.invoke("Still capture unavailable")
-                                stopTimelapse()
+                                stopTimelapseIfOwns(generation)
                                 return@schedule
                             }
                             accepted.controller.capturePhoto(
@@ -3258,7 +3300,14 @@ class CameraEngine(private val context: Context) {
         sequence.schedule(0)
     }
 
-    fun stopTimelapse() {
+    fun stopTimelapse() = synchronized(timelapseRunEdgeLock) { stopTimelapseLocked() }
+
+    /** Tick-thread stop that may only kill ITS OWN run — a concurrent restart survives it. */
+    private fun stopTimelapseIfOwns(generation: Long) = synchronized(timelapseRunEdgeLock) {
+        if (timelapseRun.owns(generation)) stopTimelapseLocked()
+    }
+
+    private fun stopTimelapseLocked() {
         timelapseRun.stop()
         timelapseFuture?.cancel(false)
         timelapseFuture = null
@@ -3301,6 +3350,9 @@ class CameraEngine(private val context: Context) {
         // focal is derived from it, and a profile change landing mid-save would otherwise label
         // this frame with an optic it was not taken through.
         val teleconverterMagnification: Float,
+        // The declared host tele focal the magnification multiplies — snapshotted with it so a
+        // phone re-declared mid-save cannot relabel this frame's focal (same rule as above).
+        val hostTeleEquivMm: Float,
         val frontFacing: Boolean,
         val aspectRatio: AspectRatio,
     )
@@ -3311,6 +3363,7 @@ class CameraEngine(private val context: Context) {
             selection,
             teleconverterMode,
             teleconverterMagnification,
+            teleconverterHostEquivMm,
             facing == CameraFacing.FRONT,
             aspectRatio,
         )
@@ -3335,6 +3388,7 @@ class CameraEngine(private val context: Context) {
             selection = optics.selection,
             teleconverter = optics.teleconverter,
             teleconverterMagnification = optics.teleconverterMagnification,
+            hostTeleEquivMm = optics.hostTeleEquivMm,
             aspectRatio = optics.aspectRatio,
             jpegQuality = shotControls.jpegQuality.coerceIn(1, 100),
             rotationDegrees = rotation,
@@ -4742,7 +4796,7 @@ class CameraEngine(private val context: Context) {
         val appliedZoom = result.get(android.hardware.camera2.CaptureResult.CONTROL_ZOOM_RATIO)
             ?: c.zoomRatio
         val eff = if (spec.teleconverter) {
-            effectiveFocalMm(spec.teleconverterMagnification) * appliedZoom.coerceAtLeast(1f)
+            effectiveFocalMm(spec.teleconverterMagnification, spec.hostTeleEquivMm) * appliedZoom.coerceAtLeast(1f)
         } else {
             baseEquiv * appliedZoom.coerceAtLeast(0.01f)
         }

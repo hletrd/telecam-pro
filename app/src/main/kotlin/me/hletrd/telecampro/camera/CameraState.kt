@@ -1119,9 +1119,10 @@ data class CameraUiState(
     val teleconverterMagnification: Float
         get() = effectiveMagnification(teleconverterProfile, teleconverterCustomMagnification)
 
-    /** The effective 35 mm-equivalent focal through the converter, e.g. 300 mm on the kit optic. */
+    /** The effective 35 mm-equivalent focal through the converter, e.g. 300 mm on the kit optic —
+     *  on the DECLARED phone's host tele (70 mm OPPO / 85 mm vivo kits; review 2026-08-01). */
     val teleconverterFocalMm: Float
-        get() = effectiveFocalMm(teleconverterMagnification)
+        get() = effectiveFocalMm(teleconverterMagnification, phoneModel.teleEquivMm)
     /**
      * The loupe the preview ACTUALLY applies — [punchIn] suppressed on the front route.
      *

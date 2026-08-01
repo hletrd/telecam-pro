@@ -253,6 +253,11 @@ data class CameraCaps(
             // null trusts the advertised range. Default keeps every existing caller/test on the
             // PMA110-measured 4 s truth.
             stillExposureCeilingNs: Long? = HAL_SAFE_MAX_STILL_EXPOSURE_NS,
+            // False = a failed physical read THROWS instead of silently recovering with the
+            // LOGICAL camera's characteristics. Callers that CACHE the result must pass false
+            // (review 2026-08-01): one transient service hiccup otherwise pinned the wrong lens's
+            // focals/ranges/EXIF metadata under the physical key for the rest of the process.
+            allowLogicalFallback: Boolean = true,
         ): CameraCaps {
             val chars: CameraCharacteristics = runCatching {
                 manager.getCameraCharacteristics(physicalId ?: logicalId)
@@ -260,6 +265,7 @@ data class CameraCaps(
                 // The fallback read was previously unguarded inside getOrElse: a second service
                 // hiccup threw straight out of read() on the setup thread. recoverCatching keeps the
                 // failure a Result until getOrThrow, so exactly one exception surfaces to the caller.
+                if (!allowLogicalFallback) throw it
                 manager.getCameraCharacteristics(logicalId)
             }.getOrThrow()
 

@@ -19,6 +19,7 @@ class DeviceProfileTest {
             val p = DeviceProfile.resolve(model)
             assertTrue(model, p.frontStreamPreMirrored)
             assertTrue(model, p.vendorTcSessionType)
+            assertTrue(model, p.vendorOplusRequestHints)
             assertEquals(model, HAL_SAFE_MAX_STILL_EXPOSURE_NS, p.stillExposureCeilingNs)
         }
     }
@@ -29,6 +30,7 @@ class DeviceProfileTest {
             val p = DeviceProfile.resolve(model)
             assertFalse("$model", p.frontStreamPreMirrored)
             assertFalse("$model", p.vendorTcSessionType)
+            assertFalse("$model", p.vendorOplusRequestHints)
             assertNull("$model", p.stillExposureCeilingNs)
         }
     }

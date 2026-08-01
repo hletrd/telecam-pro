@@ -32,18 +32,28 @@ internal data class DeviceProfile(
      * although ≥20 s is advertised. Null = trust the advertised range (spec behavior).
      */
     val stillExposureCeilingNs: Long?,
+    /**
+     * Whether the `com.oplus.*` REQUEST hints (camera.mode Hasselblad-telephoto, original
+     * zoomRatio, video-stab vendor mirror) may ride requests. Their SEMANTICS are measured on
+     * PMA110 only; another ColorOS handset would ACCEPT the tags (same provider) and could shift
+     * 3A/OIS profiles in never-measured ways with the writes invisible behind runCatching —
+     * exactly the quirk class this profile exists to contain (review 2026-08-01).
+     */
+    val vendorOplusRequestHints: Boolean,
 ) {
     companion object {
         val PMA110 = DeviceProfile(
             frontStreamPreMirrored = true,
             vendorTcSessionType = true,
             stillExposureCeilingNs = HAL_SAFE_MAX_STILL_EXPOSURE_NS,
+            vendorOplusRequestHints = true,
         )
 
         val GENERIC = DeviceProfile(
             frontStreamPreMirrored = false,
             vendorTcSessionType = false,
             stillExposureCeilingNs = null,
+            vendorOplusRequestHints = false,
         )
 
         /** Pure resolver so the mapping is host-testable; callers pass [android.os.Build.MODEL]. */

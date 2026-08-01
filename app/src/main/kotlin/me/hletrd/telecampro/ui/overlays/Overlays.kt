@@ -630,7 +630,16 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                     DriveMode.TIMELAPSE -> "TL${state.intervalSec}s" // no space: the compound-tag family (T3s, AEB±2) writes tight (UI #30)
                     DriveMode.SINGLE -> ""
                 }
-                Text(driveLabel, color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+                // A LIVE interval run reads in the tally red (review 2026-08-01: running vs armed
+                // was previously indistinguishable — the run flag's only consumer was the screen
+                // dim, and the shutter's stop role needs a visible state to act on). Same
+                // state-belongs-in-the-OSD rule as REC/HR.
+                val driveColor = if (state.driveMode == DriveMode.TIMELAPSE && state.timelapseRunning) {
+                    CameraColors.Record
+                } else {
+                    CameraColors.ManualActive
+                }
+                Text(driveLabel, color = driveColor, style = MaterialTheme.typography.labelMedium)
             }
             // Shared gate with the compact-strip clause (oisOffTagVisible): on a route with no OIS
             // control the toggle's value is inert and announcing "OIS OFF" would claim a control

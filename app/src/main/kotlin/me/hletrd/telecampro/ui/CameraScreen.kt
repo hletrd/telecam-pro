@@ -782,10 +782,16 @@ fun CameraScreen(
             if (state.mode == CaptureMode.VIDEO && state.recordAudio && (detailsVisible || state.isRecording)) {
                 AudioMeter(level = state.audioLevel, modifier = Modifier.rotateLayout(overlayRotation))
             }
-            if (detailsVisible && state.histogram) {
+            // Composed on the SAME predicate that gates their data publication (review 2026-08-01):
+            // the Fn overlay's 22%-alpha scrim deliberately leaves chrome legible, so a scope left
+            // composed under it read as a live instrument while its data was frozen pre-modal —
+            // and in MANUAL the identical overlay kept updating, making the freeze look like a
+            // bug. An instrument that cannot be live is not shown (same rule as the exposure
+            // meter's Fn suppression).
+            if (detailsVisible && !modalVisible && state.histogram) {
                 HistogramOverlay(data = state.histogramData, modifier = Modifier.rotateLayout(overlayRotation))
             }
-            if (detailsVisible && state.waveform) {
+            if (detailsVisible && !modalVisible && state.waveform) {
                 WaveformOverlay(data = state.waveformData, modifier = Modifier.rotateLayout(overlayRotation))
             }
         }

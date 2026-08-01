@@ -307,6 +307,37 @@ class TeleconverterTest {
         assertEquals(70f, effectiveFocalMm(1f), 1e-3f)
     }
 
+    // Review 2026-08-01: the hardcoded 70 mm default wrote a ZEISS 200's genuine 200 mm as
+    // ≈165 mm into EXIF/OSD on the vivo hosts the converter list itself advertises. On the
+    // DECLARED phone's own tele the kit must reproduce its sold focal exactly.
+    @Test
+    fun `a kit on its OWN host phone reports its sold focal`() {
+        assertEquals(
+            200f,
+            effectiveFocalMm(
+                TeleconverterProfile.ZEISS_200_X200.magnification,
+                PhoneModel.VIVO_X200_ULTRA.teleEquivMm,
+            ),
+            0.5f,
+        )
+        assertEquals(
+            400f,
+            effectiveFocalMm(
+                TeleconverterProfile.ZEISS_400.magnification,
+                PhoneModel.VIVO_X300_ULTRA.teleEquivMm,
+            ),
+            0.5f,
+        )
+        assertEquals(
+            300f,
+            effectiveFocalMm(
+                TELECONVERTER_MAGNIFICATION,
+                PhoneModel.FIND_X9_ULTRA.teleEquivMm,
+            ),
+            1e-3f,
+        )
+    }
+
     @Test
     fun `tele display base reproduces the historical 13x at the kit magnification`() {
         val base = teleDisplayBase(TELECONVERTER_MAGNIFICATION)

@@ -432,7 +432,11 @@ class CameraController(context: Context) {
     /** Sets the HAL video stabilization on the preview/video repeating request: the standard mode plus the vendor mirror. */
     private fun CaptureRequest.Builder.applyVideoStab() {
         set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, videoStabHalMode)
-        runCatching { set(vendorVideoStabKey, videoStabHalMode) }
+        // Vendor mirror only where its semantics were measured (DeviceProfile, review 2026-08-01):
+        // another ColorOS handset would accept the tag with never-measured effects.
+        if (deviceProfile.vendorOplusRequestHints) {
+            runCatching { set(vendorVideoStabKey, videoStabHalMode) }
+        }
     }
 
     /**
@@ -447,6 +451,8 @@ class CameraController(context: Context) {
      * Fully guarded because device-specific tags can disappear or reject values across ColorOS builds.
      */
     private fun CaptureRequest.Builder.applyTeleconverterHints() {
+        // Measured-on-PMA110 vendor request hints stay off any other vendor's HAL (DeviceProfile).
+        if (!deviceProfile.vendorOplusRequestHints) return
         val effectiveZoom = controls.zoomRatio.coerceAtLeast(1f) *
             if (teleconverterMode) teleconverterMagnification else 1f
         if (teleconverterMode) {
@@ -500,8 +506,10 @@ class CameraController(context: Context) {
             }
             // Keep OPPO's logical-zoom session hint in step (it contextualizes OIS/EIS strength);
             // same guarded write as applyTeleconverterHints.
-            val effectiveZoom = ratio.coerceAtLeast(1f) * if (teleconverterMode) teleconverterMagnification else 1f
-            runCatching { b.set(oplusOriginalZoomRatioKey, effectiveZoom) }
+            if (deviceProfile.vendorOplusRequestHints) {
+                val effectiveZoom = ratio.coerceAtLeast(1f) * if (teleconverterMode) teleconverterMagnification else 1f
+                runCatching { b.set(oplusOriginalZoomRatioKey, effectiveZoom) }
+            }
             s.setRepeatingRequest(b.build(), cb, handler)
         }.onFailure {
             if (BuildConfig.DEBUG) Log.w(TAG, "zoom fast path failed, rebuilding: ${it.message}")
@@ -703,7 +711,10 @@ class CameraController(context: Context) {
                     if (closed) return
                     // Advance the fallback ladder and retry; give up once it is exhausted.
                     configAttempt = attempt + 1
-                    val maxAttempt = maxSessionAttempt(teleconverterMode, hiResStill)
+// SAME profile-collapsed ladder shape as sessionAttemptPlan (review 2026-08-01): the raw
+                    // field stretched GENERIC+TC to the 8-rung TC bound while the plan walks the 4-rung
+                    // regular table — four extra byte-identical preview-only retries before the error.
+                    val maxAttempt = maxSessionAttempt(teleconverterMode && deviceProfile.vendorTcSessionType, hiResStill)
                     if (configAttempt > maxAttempt) {
                         Log.e(TAG, "Session configure failed; fallback ladder exhausted")
                         onError.onError(IllegalStateException("session configure failed"))
@@ -735,7 +746,8 @@ class CameraController(context: Context) {
         StartupTrace.mark("createCaptureSession")
         runCatching { camera.createCaptureSession(sessionConfig) }.onFailure { failure ->
             configAttempt = attempt + 1
-            val maxAttempt = maxSessionAttempt(teleconverterMode, hiResStill)
+            // Same profile-collapsed bound as above.
+            val maxAttempt = maxSessionAttempt(teleconverterMode && deviceProfile.vendorTcSessionType, hiResStill)
             if (configAttempt > maxAttempt) {
                 Log.e(TAG, "createCaptureSession threw; fallback ladder exhausted", failure)
                 onError.onError(failure)
@@ -1308,15 +1320,26 @@ class CameraController(context: Context) {
     fun setZslServePossible(possible: Boolean) {
         postToCamera {
             if (zslDriveServePossible == possible) return@postToCamera
-            zslDriveServePossible = possible
             // Pre-open guard (see applyControlsOnCamera): the engine installs the controller before
             // open() assigns lateinit `caps`; open applies the engine's latest state itself.
-            if (!this::caps.isInitialized) return@postToCamera
+            if (!this::caps.isInitialized) {
+                zslDriveServePossible = possible
+                return@postToCamera
+            }
+            // Resubmit ONLY when the flip actually changes the repeating target set (review
+            // 2026-08-01): on TELE/standalone routes zslReaderDeep is false and in video pinAutoFps
+            // is true, so the drive edge changes nothing — yet the unconditional startPreview paid
+            // the documented ~180 ms swap stall on exactly the routes the gate cannot benefit.
+            // All other terms are camera-thread state, so before/after is race-free here.
+            val streamedBefore = zslStreamingActive()
+            zslDriveServePossible = possible
             if (!possible) zslRingFlush()
-            // One documented ~180 ms repeating swap per transition — drive changes are discrete UI
-            // actions, never per-frame. A no-session/pre-preview state degrades to a safe no-op and
-            // the next ordinary startPreview carries the new target set anyway.
-            startPreview()
+            if (zslStreamingActive() != streamedBefore) {
+                // One documented ~180 ms repeating swap per real transition — drive changes are
+                // discrete UI actions, never per-frame. A no-session/pre-preview state degrades to
+                // a safe no-op and the next ordinary startPreview carries the new target set.
+                startPreview()
+            }
         }
     }
 
@@ -1947,6 +1970,15 @@ class CameraController(context: Context) {
                                 newPending.done = true
                                 runCatching { newPending.jpeg?.close() }
                                 runCatching { newPending.raw?.close() }
+                                // Same completion hygiene as tryComplete's finally (review
+                                // 2026-08-01): the failure path also armed the delivery watchdog,
+                                // whose delayed message otherwise retains this Pending — closure,
+                                // result blob and all — for the remaining 8-12 s+ budget.
+                                newPending.watchdog?.let { handler.removeCallbacks(it) }
+                                newPending.watchdog = null
+                                newPending.jpeg = null
+                                newPending.raw = null
+                                newPending.result = null
                             }
                             pending = null
                             newPending.cb.onError(IllegalStateException("Capture failed: ${failure.reason}"))

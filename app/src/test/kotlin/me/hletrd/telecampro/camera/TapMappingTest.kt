@@ -198,8 +198,8 @@ class TapMappingTest {
             sensorCenter = 0.5f to 0.5f,
             loupeCenter = 0.5f to 0.5f,
             previewRotationDegrees = 0,
-            mirrorX = FrontMirrorConvention.tapDisplayMirrorX(frontRoute = true),
-            meteringMirrorX = FrontMirrorConvention.meteringMirrorX(frontRoute = true),
+            mirrorX = FrontMirrorConvention.tapDisplayMirrorX(frontRoute = true, streamPreMirrored = true),
+            meteringMirrorX = FrontMirrorConvention.meteringMirrorX(frontRoute = true, streamPreMirrored = true),
         )
         // Metering crosses to the opposite half: the tapped subject is at array x=0.75.
         assertEquals(0.75f, front.sensorPoint.first, eps)
@@ -221,8 +221,8 @@ class TapMappingTest {
             sensorCenter = 0.5f to 0.5f,
             loupeCenter = 0.5f to 0.5f,
             previewRotationDegrees = 0,
-            mirrorX = FrontMirrorConvention.tapDisplayMirrorX(frontRoute = false),
-            meteringMirrorX = FrontMirrorConvention.meteringMirrorX(frontRoute = false),
+            mirrorX = FrontMirrorConvention.tapDisplayMirrorX(frontRoute = false, streamPreMirrored = true),
+            meteringMirrorX = FrontMirrorConvention.meteringMirrorX(frontRoute = false, streamPreMirrored = true),
         )
         assertEquals(0.25f, rear.sensorPoint.first, eps)
         assertEquals(0.25f, rear.loupePoint.first, eps)
@@ -232,12 +232,12 @@ class TapMappingTest {
     @Test
     fun meteringMirrorMatchesTheEncoderUnMirror() {
         assertEquals(
-            FrontMirrorConvention.encoderDrawMirrorX(frontRoute = true),
-            FrontMirrorConvention.meteringMirrorX(frontRoute = true),
+            FrontMirrorConvention.encoderDrawMirrorX(frontRoute = true, streamPreMirrored = true),
+            FrontMirrorConvention.meteringMirrorX(frontRoute = true, streamPreMirrored = true),
         )
         assertEquals(
-            FrontMirrorConvention.encoderDrawMirrorX(frontRoute = false),
-            FrontMirrorConvention.meteringMirrorX(frontRoute = false),
+            FrontMirrorConvention.encoderDrawMirrorX(frontRoute = false, streamPreMirrored = true),
+            FrontMirrorConvention.meteringMirrorX(frontRoute = false, streamPreMirrored = true),
         )
     }
 
@@ -264,8 +264,8 @@ class TapMappingTest {
             sensorCenter = 0.7f to 0.5f,
             loupeCenter = 0.3f to 0.5f,
             previewRotationDegrees = 0,
-            mirrorX = FrontMirrorConvention.tapDisplayMirrorX(frontRoute = true),
-            meteringMirrorX = FrontMirrorConvention.meteringMirrorX(frontRoute = true),
+            mirrorX = FrontMirrorConvention.tapDisplayMirrorX(frontRoute = true, streamPreMirrored = true),
+            meteringMirrorX = FrontMirrorConvention.meteringMirrorX(frontRoute = true, streamPreMirrored = true),
         )
         // span = 0.4. Metering: unflip 0.25 → 0.75, then 0.7 + 0.4·(0.75 − 0.5) = 0.8.
         assertEquals(0.8f, g.sensorPoint.first, eps)
@@ -281,8 +281,8 @@ class TapMappingTest {
             sensorCenter = 0.7f to 0.5f,
             loupeCenter = 0.3f to 0.5f,
             previewRotationDegrees = 0,
-            mirrorX = FrontMirrorConvention.tapDisplayMirrorX(frontRoute = true),
-            meteringMirrorX = FrontMirrorConvention.meteringMirrorX(frontRoute = true),
+            mirrorX = FrontMirrorConvention.tapDisplayMirrorX(frontRoute = true, streamPreMirrored = true),
+            meteringMirrorX = FrontMirrorConvention.meteringMirrorX(frontRoute = true, streamPreMirrored = true),
         )
         assertEquals(0.7f, centered.sensorPoint.first, eps)
         assertEquals(0.3f, centered.loupePoint.first, eps)

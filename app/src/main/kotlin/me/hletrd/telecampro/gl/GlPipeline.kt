@@ -119,6 +119,7 @@ class GlPipeline {
     // view), and the encoder/analysis draws apply the x-inversion instead so files and metering
     // keep the TRUE scene. Per-draw roles derive from FrontMirrorConvention (never restate them
     // as literals); see CameraEngine.applyStabilization for the diagnosis trail.
+    private var frontRoute = false
     private var frontStreamPreMirrored = false
     private var gammaAssist = false
     // True while the HAL-native O-Log2 stream is engaged: the frames arriving here are ALREADY log
@@ -451,13 +452,14 @@ class GlPipeline {
      * the un-mirror so files and metering keep the TRUE scene. Per-draw roles derive from
      * [FrontMirrorConvention].
      */
-    fun setFrontStreamPreMirrored(enabled: Boolean) = post {
-        frontStreamPreMirrored = enabled
+    fun setFrontMirrorConvention(front: Boolean, streamPreMirrored: Boolean) = post {
+        frontRoute = front
+        frontStreamPreMirrored = streamPreMirrored
         // Kept as the diagnosis trail for the inverted mirror roles: this trace proved the flag
         // reaches the GL thread while the selfie still read unmirrored — the stream itself is
         // pre-mirrored, so the preview draw needs no mirror and the encoder must un-mirror.
         if (me.hletrd.telecampro.BuildConfig.DEBUG) {
-            android.util.Log.i("GlPipeline", "frontStreamPreMirrored=$enabled")
+            android.util.Log.i("GlPipeline", "frontMirror: front=$front preMirrored=$streamPreMirrored")
         }
     }
     fun setTransfer(t: ColorTransfer?) = post { transfer = t }
@@ -897,7 +899,7 @@ class GlPipeline {
                     // (FrontMirrorConvention), which IS the selfie-mirror view. The
                     // encoder/analysis draws below apply the inversion instead to record the true
                     // scene. All four draw roles derive from the ONE convention constant.
-                    mirrorX = FrontMirrorConvention.previewDrawMirrorX(frontStreamPreMirrored),
+                    mirrorX = FrontMirrorConvention.previewDrawMirrorX(frontRoute, frontStreamPreMirrored),
                 )
                 // TELE finder PIP (opt-in, resolved by CameraEngine.pushTeleFinder): a corner
                 // viewport re-drawing the FULL current camera frame while the main view is
@@ -1059,7 +1061,7 @@ class GlPipeline {
                 core.makeCurrent(ownedEncoder)
                 // Un-mirror the pre-mirrored front stream so the FILE keeps the true scene
                 // (rear routes pass false and are untouched).
-                renderer.draw(stMatrix, encoderW, encoderH, transfer, false, false, false, sx, sy, roll, crop, mirrorX = FrontMirrorConvention.encoderDrawMirrorX(frontStreamPreMirrored))
+                renderer.draw(stMatrix, encoderW, encoderH, transfer, false, false, false, sx, sy, roll, crop, mirrorX = FrontMirrorConvention.encoderDrawMirrorX(frontRoute, frontStreamPreMirrored))
                 // Rebase to the first recorded frame so video PTS starts near 0 like the audio track.
                 val ts = st.timestamp
                 if (!encoderBaseSet && ts > 0L) { encoderBaseNs = ts; encoderBaseSet = true }
@@ -1209,7 +1211,7 @@ class GlPipeline {
             // Same un-mirror as the encoder: luma stats are mirror-invariant, but keeping the
             // analysis geometry file-true costs nothing and avoids a surprise if a spatial
             // consumer (zone metering) ever lands here.
-            renderer.draw(stMatrix, w, h, transfer, false, false, false, sx, sy, roll, crop, centerX, centerY, mirrorX = FrontMirrorConvention.encoderDrawMirrorX(frontStreamPreMirrored))
+            renderer.draw(stMatrix, w, h, transfer, false, false, false, sx, sy, roll, crop, centerX, centerY, mirrorX = FrontMirrorConvention.encoderDrawMirrorX(frontRoute, frontStreamPreMirrored))
             buf.rewind()
             GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)

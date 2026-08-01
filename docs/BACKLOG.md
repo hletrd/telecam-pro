@@ -50,10 +50,29 @@ frozen artifact vs re-cut" decision is closed; both frozen candidates (`9541697`
   scopes live in expanded DISP, M-meter live in compact, zoom 1→3× clean on the VBO path.
 - **Multi-device:** `minSdk 33` (lint NewApi audit: zero unguarded sub-35 APIs; the 8 API-35
   findings fixed — ByteBuffer bulk get → duplicate() positional reads, VendorTagInspector probes
-  SDK-gated). `camera/DeviceProfile.kt` gates the three PMA110-only behaviors
-  (front pre-mirror, 0x80b4 TC session type, 4 s still-exposure clamp); GENERIC = spec. PMA110
-  byte-identical. **Other handsets are installable but UNVALIDATED** — per-device passes (front
-  mirror truth, EIS warp, logical-JPEG gralloc, long-exposure ceiling, key codes) are open work.
+  SDK-gated). `camera/DeviceProfile.kt` gates the four PMA110-only behaviors
+  (front pre-mirror, 0x80b4 TC session type, 4 s still-exposure clamp, oplus request hints);
+  GENERIC = spec. PMA110 byte-identical. **Other handsets are installable but UNVALIDATED** —
+  per-device passes (front mirror truth, EIS warp, logical-JPEG gralloc, long-exposure ceiling,
+  key codes) are open work.
+- **Same-day dual-lens review closure (17 confirmed findings, 21 raw, adversarially verified):**
+  all code findings fixed same day — front-mirror convention fully parametrized on the profile
+  (GENERIC front tap-metering flip + missing selfie mirror, the HIGH pair), timelapse shutter is
+  now press-to-start/press-again-to-STOP with the run tinted in the OSD and the run edge
+  lock-serialized, the dim skips open modals (mid-run review inspection), ZSL drive-gate resubmits
+  only when the target set actually changes (no more ~180 ms no-op stall on TELE/video) with a
+  post-swap replay closing the controller-replacement race, the GENERIC ladder bound matches the
+  profile-collapsed plan, onCaptureFailed cancels the delivery watchdog, kit focals ride the
+  DECLARED phone's host tele (ZEISS 200 on X200U now writes 200 mm, not 165), and capsCache no
+  longer memoizes a logical-fallback read. TWO accepted-as-documented residuals:
+  1. **Reinstall gallery restore is ColorOS-visibility-dependent.** Spec Android 13/14
+     MediaProvider hides a previous install's owner-cleared rows from a permission-less app, so on
+     spec devices the reinstall-restore path finds nothing and the gallery button shows its
+     placeholder (files remain intact). Fixing it costs a READ_MEDIA_IMAGES permission + Data
+     Safety change — product decision, not code.
+  2. **`teleDisplayBase`/zoom-pill scale still assumes the 70 mm host** for its display ratio; on
+     an 85 mm-host phone the TC zoom pills would read in this phone's scale. Cosmetic-only
+     (focals/EXIF are fixed); fold into the per-device validation pass.
 - **200MP/50MP probe (stock, device-captured 2026-08-01):** the Hasselblad Hi-Res mode's full-res
   path is a CamX vendor feature pipeline — `RealTimeFeatureNZSLSnapshotRDI0`, sensor mode 0 =
   16320×12256 QUADCFA @ 10 fps on cameraId 2 inside logical 0, operation_mode 0x8001 — negotiated

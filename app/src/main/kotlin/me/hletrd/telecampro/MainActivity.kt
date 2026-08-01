@@ -156,9 +156,13 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 try {
-                    vm.state.map { it.timelapseRunning }.distinctUntilChanged().collect { running ->
-                        onTimelapseRunningChanged(running)
-                    }
+                    // Dim only while the run is live AND no modal is up (review 2026-08-01):
+                    // cameraInputBlocked mirrors sheet/Fn/review, and review-during-run is exactly
+                    // staring-without-touching — the frame under critical-focus inspection must
+                    // not fade to 5% ten seconds in. Modal close re-arms the grace timer.
+                    vm.state.map { it.timelapseRunning && !it.cameraInputBlocked }
+                        .distinctUntilChanged()
+                        .collect { dimEligible -> onTimelapseRunningChanged(dimEligible) }
                 } finally {
                     onTimelapseRunningChanged(false)
                 }

@@ -17,26 +17,39 @@ import org.junit.Test
 class PreviewMirrorTest {
 
     @Test
-    fun `front mirror roles derive coherently from the one convention constant`() {
-        // Exactly ONE draw side carries the selfie mirror on the front route — whichever way the
-        // device fact points, preview and encoder must disagree, and the tap axis must follow the
-        // preview role (three independent literals drifted here before; cycle-6 architect F4).
-        assertTrue(
-            FrontMirrorConvention.previewDrawMirrorX(true) !=
-                FrontMirrorConvention.encoderDrawMirrorX(true),
-        )
-        assertEquals(
-            FrontMirrorConvention.previewDrawMirrorX(true),
-            FrontMirrorConvention.tapDisplayMirrorX(true),
-        )
-        // Rear routes never mirror on any seam.
-        assertFalse(FrontMirrorConvention.previewDrawMirrorX(false))
-        assertFalse(FrontMirrorConvention.encoderDrawMirrorX(false))
-        assertFalse(FrontMirrorConvention.tapDisplayMirrorX(false))
-        // The current device fact: pre-mirrored stream → preview pass-through, encoder un-mirrors.
-        assertTrue(FrontMirrorConvention.FRONT_STREAM_PRE_MIRRORED)
-        assertFalse(FrontMirrorConvention.previewDrawMirrorX(true))
-        assertTrue(FrontMirrorConvention.encoderDrawMirrorX(true))
+    fun `front mirror roles derive coherently under BOTH stream conventions`() {
+        for (pre in listOf(true, false)) {
+            // Exactly ONE draw side carries the selfie mirror on the front route — whichever way
+            // the device fact points, preview and encoder must disagree, and the tap axis must
+            // follow the preview role (three independent literals drifted here before; cycle-6
+            // architect F4, and the 2026-08-01 half-migration).
+            assertTrue(
+                "pre=$pre",
+                FrontMirrorConvention.previewDrawMirrorX(true, pre) !=
+                    FrontMirrorConvention.encoderDrawMirrorX(true, pre),
+            )
+            assertEquals(
+                FrontMirrorConvention.previewDrawMirrorX(true, pre),
+                FrontMirrorConvention.tapDisplayMirrorX(true, pre),
+            )
+            // The DISPLAYED selfie is mirrored relative to the array under either convention, so
+            // metering always un-flips on the front route — convention-independent by design.
+            assertTrue("pre=$pre", FrontMirrorConvention.meteringMirrorX(true, pre))
+            // Rear routes never mirror on any seam.
+            assertFalse(FrontMirrorConvention.previewDrawMirrorX(false, pre))
+            assertFalse(FrontMirrorConvention.encoderDrawMirrorX(false, pre))
+            assertFalse(FrontMirrorConvention.tapDisplayMirrorX(false, pre))
+            assertFalse(FrontMirrorConvention.meteringMirrorX(false, pre))
+        }
+        // PMA110 (pre-mirrored stream): preview pass-through, encoder un-mirrors — the shipped,
+        // device-verified role set stays byte-identical.
+        assertFalse(FrontMirrorConvention.previewDrawMirrorX(true, streamPreMirrored = true))
+        assertTrue(FrontMirrorConvention.encoderDrawMirrorX(true, streamPreMirrored = true))
+        // GENERIC (spec stream): preview adds the conventional selfie mirror, encoder writes the
+        // stream as-is, and the tap must un-flip display→texture because the preview mirrored.
+        assertTrue(FrontMirrorConvention.previewDrawMirrorX(true, streamPreMirrored = false))
+        assertFalse(FrontMirrorConvention.encoderDrawMirrorX(true, streamPreMirrored = false))
+        assertTrue(FrontMirrorConvention.tapDisplayMirrorX(true, streamPreMirrored = false))
     }
 
     @Test
