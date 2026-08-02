@@ -28,11 +28,19 @@ frozen artifact vs re-cut" decision is closed; both frozen candidates (`9541697`
 - **What is NOT re-run:** the full PMA110 release matrix against this exact artifact. Individual
   features were device-verified from this build (see cycle 9 below), but the formal matrix sweep
   recorded for `9541697` has not been repeated end to end.
-- **RE-CUT REQUIRED (2026-08-01):** `main` has since gained the two perf batches (16-item CPU/memory
-  review, all items landed or deliberately dropped), `minSdk 33` + the DeviceProfile multi-device
-  seam, and the timelapse dim. The pinned artifact in `docs/play-console-submit.md` predates all of
-  it; cut, validate, and re-pin before upload. Note the Play listing/Data Safety text may now also
-  mention broader device support — owner's call.
+- **RE-CUT REQUIRED, AND CURRENTLY BLOCKED (updated 2026-08-02).** The pinned artifact
+  (`2d6c35b`) is nine `app/src` commits behind `main` — it predates the config-change dead-preview
+  fix, the any-window letterbox, the enumerated lens rail, the device-laws review batch, and the
+  sub-720p video-size floor.
+  **The blocker is the signing password, not the code.** `telecampro-upload-passwords.txt.gpg`
+  (2026-07-07) holds the password for the RETIRED keystore; `telecampro-upload.jks` is the
+  2026-07-25 replacement, and `keytool` rejects the backup's password against it (verified
+  2026-08-02). This is an owner action: supply the July-25 password, then re-encrypt the backup.
+  Everything that does not need a signature is already verified on `main` at `74afa26` —
+  `lintRelease` 0 errors / 8 warnings, 1329 host tests green, the packaged binary's manifest,
+  16 KiB alignment, baseline profile, zero `com.oplus.ocs`, and a two-handset device regression.
+  Details and the exact commands live in `docs/play-console-submit.md`.
+  Note the Play listing/Data Safety text may now also mention broader device support — owner's call.
 
 ### Landed 2026-08-01 — perf review closure + multi-device + 200MP probe (device-verified)
 
