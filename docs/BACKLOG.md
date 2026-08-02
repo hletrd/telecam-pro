@@ -28,28 +28,49 @@ frozen artifact vs re-cut" decision is closed; both frozen candidates (`9541697`
 - **What is NOT re-run:** the full PMA110 release matrix against this exact artifact. Individual
   features were device-verified from this build (see cycle 9 below), but the formal matrix sweep
   recorded for `9541697` has not been repeated end to end.
-- **RE-CUT DONE AND PINNED (2026-08-02, `a4a7d12`).** AAB `5685b0c0…` / APK `4409fd45…`,
-  certificate `9dfdb903…` unchanged, `jarsigner` + `bundletool validate` + 16 KiB alignment green,
-  `lintRelease` 0/8, 1348 host tests. Device-verified on THREE targets — PMA110, Lenovo TB336ZU,
-  and an Android 13 (API 33) emulator — all three proven byte-identical to the artifact first.
-  Full matrix in `docs/play-console-submit.md`.
-  - **The earlier `fc43953` pin must not be uploaded.** Exercising the `minSdk 33` floor for the
-    first time found that video recording was impossible on a whole class of device: the encoder
-    buffer is swapped to portrait for the cycle-4 framing contract and nothing asked the encoder
-    whether it takes that shape, so any encoder capping height below width refused every take.
-    Fixed with a same-aspect fallback ladder (`148e7db`).
-  - Same pass: four of five gammas request `Main10`, which an 8-bit-only encoder silently downgrades
-    to `Main`. The TB336ZU's hardware `c2.mtk.hevc.encoder` was writing clips tagged
-    `bt2020 / arib-std-b67` over an 8-bit stream. Now capability-gated (`8de0415`); same-device
-    before/after is recorded in the submission sheet.
+- **RE-CUT DONE AND PINNED (2026-08-02, `66734db`).** AAB `152f1c33…` / APK `d43776a2…`,
+  certificate `9dfdb903…` unchanged, all signing/alignment/bundle checks green, `lintRelease` 0/8,
+  1356 host tests. Device-verified on FOUR targets — PMA110 (A16), Lenovo TB336ZU (A16), Lenovo
+  TB331FC (**A15**), and an Android 13 (API 33) emulator — all proven byte-identical first. Matrix
+  in `docs/play-console-submit.md`.
+  - **Three device-found defects fixed this pass, none of which PMA110 could ever show:**
+    1. The encoder buffer is swapped to portrait for the cycle-4 framing contract and nothing asked
+       the encoder whether it takes that shape. **Two of four tested encoder families refuse it** —
+       the AOSP software one and the TB331FC's Qualcomm one — so recording was impossible there.
+       Fixed with a same-aspect fallback ladder (`148e7db`).
+    2. Four of five gammas request `Main10`; an 8-bit-only encoder silently returns `Main`. The
+       TB336ZU's hardware MediaTek encoder was writing clips tagged `bt2020 / arib-std-b67` over an
+       8-bit stream. Capability-gated (`8de0415`), with a same-device before/after recorded.
+    3. Still size was "largest advertised JPEG within the array"; the TB331FC advertises a SQUARE
+       2448×2448 with more pixels than its native 4:3 2592×1944, so every photo saved square. Shape
+       now precedes size (`66734db`).
+  - Also landed: the standby audio meter follows the selected input (USB/BT/wired) and meters per
+    channel (`a4a7d12`).
   - The signing blocker (a GPG backup holding the RETIRED keystore's password) is resolved and the
-    backup re-encrypted. `.gitignore` matched secrets by exact filename and is now pattern-based
-    (`fc43953`). **Audited 2026-08-02: no key, keystore, or password has ever entered git history
-    on any ref** — verified by path scan across all commits plus a content search.
+    backup re-encrypted; `.gitignore` is now pattern-based (`fc43953`). **Audited: no key,
+    keystore, or password has ever entered git history on any ref.**
   - **Open owner decision: the upload key's password is six digits and was transmitted in
-    plaintext.** Practical risk is low (the keystore is gitignored and local-only, and with Play App
-    Signing an upload key alone cannot ship to users without console access), but rotating costs one
-    `keytool -genkeypair` while nothing is uploaded and becomes a Play support request afterwards.
+    plaintext.** Practical risk is low (keystore gitignored and local-only; with Play App Signing an
+    upload key alone cannot ship to users without console access), but rotating costs one
+    `keytool -genkeypair` now and becomes a Play support request after the first upload.
+
+### Open — camera blocked for ONE app is invisible to the user
+
+Found on the TB331FC 2026-08-02. The device had `appops CAMERA: ignore` at the UID level with
+`REVOKED_COMPAT` on the permission: `checkSelfPermission(CAMERA)` returns **GRANTED** while
+`openCamera` is rejected with `Camera "0" disabled by policy` (the stock camera app worked, so the
+block was per-app, not device-wide).
+
+The app behaves safely — no crash, shutter correctly disabled — but says **nothing**. The operator
+sees a normal viewfinder chrome over a black frame with a dead shutter and no explanation, because
+the permission gate is satisfied and the existing "Enable camera access in Settings." copy is keyed
+to a DENIED permission.
+
+This is realistic on managed/work profiles, kiosk devices, and OEM privacy managers. The fix is to
+treat a `CameraAccessException.CAMERA_DISABLED` / service-policy rejection as its own user-visible
+state with copy that points at the app's permission screen, distinct from both "permission denied"
+and the generic camera-error retry. Not attempted this pass: it needs UX wording the operator signs
+off on, and a way to reproduce on demand (`cmd appops set --uid <uid> CAMERA ignore`).
 
 - **Device catalog is now a bigger decision than it was.** It used to lean on `minSdk 36` doing the
   narrowing; at `minSdk 33` an open catalog reaches essentially the whole Android 13+ population
