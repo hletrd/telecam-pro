@@ -202,4 +202,11 @@ interface CameraActions {
      * historic own-rows-only behavior.
      */
     fun onGalleryAccessRequested()
+
+    /**
+     * True while no full-screen modal covers the viewfinder. Gates the MANUAL-mode histogram
+     * publication, whose only consumer is the exposure meter — suppressed under the Fn overlay and
+     * covered by the sheet/review, so publishing there was ~6 Hz of whole-state copies nothing drew.
+     */
+    fun onExposureMeterVisibilityChanged(visible: Boolean)
 }

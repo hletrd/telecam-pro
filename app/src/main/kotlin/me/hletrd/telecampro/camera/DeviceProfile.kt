@@ -40,6 +40,25 @@ internal data class DeviceProfile(
      * exactly the quirk class this profile exists to contain (review 2026-08-01).
      */
     val vendorOplusRequestHints: Boolean,
+    /**
+     * The LOGICAL camera cannot allocate a full-size JPEG blob, so stills there must come as YUV and
+     * be encoded in-app (PMA110 gralloc, device-observed 2026-07-14: "SnapAlloc: ValidateDescriptor
+     * invalid" and the image never arrives). That is a MEASURED quirk of one HAL, not a property of
+     * logical cameras — PRIV preview + JPEG(MAXIMUM) is a guaranteed combination at every hardware
+     * level, while PRIV + YUV(MAXIMUM) is only guaranteed at FULL. On a GENERIC device the YUV lane
+     * is therefore an OPTIMISATION (it is what feeds the pseudo-ZSL ring) that the fallback ladder
+     * may abandon for HAL JPEG, rather than the only survivable shape.
+     */
+    val logicalStillRequiresYuv: Boolean,
+    /**
+     * RAW must ride a STANDALONE camera: on PMA110 routing it through a physical sub-camera rejects
+     * the stream ("DataSpace override not allowed") and requesting it on the plain logical camera
+     * errors the whole device ~5 s after the shot (CAMERA_ERROR(3), device-observed 2026-07-14).
+     * Both are that HAL's faults. Spec devices commonly expose RAW16 on the logical camera itself —
+     * a phone whose rear lenses appear ONLY as physical sub-cameras has no standalone rear
+     * candidate at all, so applying this law universally silently removed DNG there.
+     */
+    val rawRequiresStandalone: Boolean,
 ) {
     companion object {
         val PMA110 = DeviceProfile(
@@ -47,6 +66,8 @@ internal data class DeviceProfile(
             vendorTcSessionType = true,
             stillExposureCeilingNs = HAL_SAFE_MAX_STILL_EXPOSURE_NS,
             vendorOplusRequestHints = true,
+            logicalStillRequiresYuv = true,
+            rawRequiresStandalone = true,
         )
 
         val GENERIC = DeviceProfile(
@@ -54,6 +75,8 @@ internal data class DeviceProfile(
             vendorTcSessionType = false,
             stillExposureCeilingNs = null,
             vendorOplusRequestHints = false,
+            logicalStillRequiresYuv = false,
+            rawRequiresStandalone = false,
         )
 
         /** Pure resolver so the mapping is host-testable; callers pass [android.os.Build.MODEL]. */

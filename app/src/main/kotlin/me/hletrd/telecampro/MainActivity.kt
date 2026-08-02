@@ -239,6 +239,17 @@ class MainActivity : ComponentActivity() {
                                 ) { vm.onToggleRecordAudio(true) }
                             }
 
+                            // Declared EXPLICITLY rather than left to `by vm`: a device-verified
+                            // AbstractMethodError (2026-08-02) showed this object shipping without
+                            // the delegated member after the interface gained it, crashing the
+                            // first composition. The three siblings below are explicit anyway, so
+                            // stating this one costs nothing and cannot regress that way again.
+                            override fun onExposureMeterVisibilityChanged(visible: Boolean) =
+                                vm.onExposureMeterVisibilityChanged(visible)
+
+                            override fun onScopesVisibilityChanged(visible: Boolean) =
+                                vm.onScopesVisibilityChanged(visible)
+
                             override fun onGalleryAccessRequested() {
                                 // Contextual media-access request (2026-08-01): the empty-gallery
                                 // tap IS the context, so the system dialog needs no rationale

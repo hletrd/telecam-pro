@@ -47,6 +47,7 @@ import me.hletrd.telecampro.camera.MemorySlot
 import me.hletrd.telecampro.camera.PeakingColor
 import me.hletrd.telecampro.camera.PeakingLevel
 import me.hletrd.telecampro.camera.PhotoFormats
+import me.hletrd.telecampro.camera.normalizedForEncoder
 import me.hletrd.telecampro.camera.PendingControlsDisposition
 import me.hletrd.telecampro.camera.acceptedOpticsAuxState
 import me.hletrd.telecampro.camera.controlAvailability
@@ -226,6 +227,9 @@ class CameraViewModel @JvmOverloads constructor(
     // Written on main (Compose DISP/modal effect), read by onAnalysis on the GL thread — volatile,
     // not synchronized: a one-tick-stale read only delays a scope publication by ~166 ms.
     @Volatile private var scopesVisible = false
+    // True while NO full-screen modal covers the viewfinder — the MANUAL exposure meter's own
+    // composed-consumer truth (it renders without expanded DISP, unlike the scopes).
+    @Volatile private var exposureMeterVisible = true
     // Main-confined identity for optimistic REC UI. A queued refusal may arrive after stop/new-start
     // or lifecycle teardown; only the exact attempt that submitted it may reconcile the state.
     private var recordingAttemptGeneration = 0L
@@ -726,8 +730,13 @@ class CameraViewModel @JvmOverloads constructor(
             // reads the callback arg directly, so with nothing rendering the ~6 Hz analysis tick
             // no longer forces a whole-CameraUiState emission (root-recomposition churn).
             val s = _state.value
+            // The MANUAL clause feeds the exposure meter, which is ALSO not composed under a modal
+            // (the Fn overlay suppresses it outright, the sheet and review cover it), so it takes
+            // the same consumer-exists gate rather than publishing ~6 Hz whole-state copies with
+            // nothing to draw them (2026-08-02 review). meterVisible stays true whenever no modal
+            // is up, so MANUAL keeps working with the scopes switched off.
             if (((s.histogram || s.waveform) && scopesVisible) ||
-                s.controls.exposureMode == ExposureMode.MANUAL
+                (s.controls.exposureMode == ExposureMode.MANUAL && exposureMeterVisible)
             ) {
                 _state.update { it.copy(histogramData = h, waveformData = w) }
             }
@@ -755,7 +764,15 @@ class CameraViewModel @JvmOverloads constructor(
                 (mode == ExposureMode.PROGRAM && s.controls.programAppSide)
             if (h != null && drivesAppSideAe) mainHandler.post { applyAutoExposure(h.luma) }
         }
-        engine.onAudioLevel = { lvl -> _state.update { it.copy(audioLevel = lvl) } }
+        engine.onAudioLevel = { lvl ->
+            // Quantize BEFORE the compare, exactly as levelRoll does (perf review #4): the raw RMS
+            // float never repeats — even a silent room's noise floor jitters — so StateFlow's
+            // equality dedup never fired and all ~10 emissions/s were whole-CameraUiState copies
+            // that recomposed the tree for an unchanged 120x8 dp bar. 1/256 is finer than one
+            // pixel of that bar, so nothing visible is lost.
+            val q = kotlin.math.round(lvl.coerceIn(0f, 1f) * 256f) / 256f
+            _state.update { if (it.audioLevel == q) it else it.copy(audioLevel = q) }
+        }
         // Run-state edges only (engine is edge-gated); may arrive from the timelapse scheduler
         // thread — StateFlow.update is thread-safe.
         engine.onTimelapseRun = { running -> _state.update { it.copy(timelapseRunning = running) } }
@@ -839,6 +856,7 @@ class CameraViewModel @JvmOverloads constructor(
                 ioExecutor.execute { MediaStoreWriter.delete(getApplication(), uri) }
             }
         }
+        seedStillEncoderAvailability()
         seedPhoneModel()
         restoreSettingsIfEnabled()
         refreshProgramAppSide()
@@ -919,9 +937,15 @@ class CameraViewModel @JvmOverloads constructor(
         // rebuilding the constrained session SIGABRTs this HAL. A persisted codec the device can't
         // mux (APV) would likewise break recording.
         val safeFrameRate = if (e.videoFrameRate.highSpeed) ExtraSettings().videoFrameRate else e.videoFrameRate
-        val safeCodec =
-            if (me.hletrd.telecampro.video.EncoderCaps.availableCodecs().contains(e.videoCodec)) e.videoCodec
-            else ExtraSettings().videoCodec
+        // The fallback must be a codec this DEVICE has, not the ExtraSettings default (HEVC) — on a
+        // handset with no HEVC encoder that default IS the unavailable one, so the "safe" value was
+        // the broken value (2026-08-02 review). HEVC encode is not CDD-mandatory at API 33.
+        val deviceCodecs = me.hletrd.telecampro.video.EncoderCaps.availableCodecs()
+        val safeCodec = when {
+            deviceCodecs.contains(e.videoCodec) -> e.videoCodec
+            deviceCodecs.contains(ExtraSettings().videoCodec) -> ExtraSettings().videoCodec
+            else -> deviceCodecs.firstOrNull() ?: ExtraSettings().videoCodec
+        }
         // Keep the exposure fps in lockstep with the restored video rate (mirrors onVideoFrameRate;
         // restoring them independently let the AE/shutter-angle math run at a stale fps).
         // If a launch-time preserve option deliberately changed the saved optics, reset framing to
@@ -1083,7 +1107,8 @@ class CameraViewModel @JvmOverloads constructor(
                 rememberSettings = rememberSettings ?: it.rememberSettings,
                 controls = cSynced,
                 transfer = e.transfer,
-                photoFormats = PhotoFormats(e.heif, e.jpeg, e.dngRaw).withDefaultIfEmpty(),
+                photoFormats = PhotoFormats(e.heif, e.jpeg, e.dngRaw).withDefaultIfEmpty()
+                    .normalizedForEncoder(it.heifAvailable),
                 mode = e.mode,
                 lens = restoredLens,
                 teleconverterMode = restoredTeleconverter,
@@ -1259,6 +1284,10 @@ class CameraViewModel @JvmOverloads constructor(
 
     override fun onScopesVisibilityChanged(visible: Boolean) {
         scopesVisible = visible
+    }
+
+    override fun onExposureMeterVisibilityChanged(visible: Boolean) {
+        exposureMeterVisible = visible
     }
 
     override fun onGalleryAccessRequested() {
@@ -1889,6 +1918,9 @@ class CameraViewModel @JvmOverloads constructor(
     override fun onSetPhotoFormats(formats: PhotoFormats) {
         cancelCountdown()
         val s = _state.value
+        // A device with no HEVC encoder cannot write HEIF at all — promote JPEG instead of letting
+        // the shutter produce nothing (2026-08-02 review).
+        val formats = formats.normalizedForEncoder(s.heifAvailable)
         // DNG is a ROUTE input: RAW cannot come off the logical photo camera, so wanting it moves
         // the session to a standalone lens. Pushed BEFORE the state write so the reopen it may
         // trigger is already in flight when the UI reflects the new selection.
@@ -2117,6 +2149,22 @@ class CameraViewModel @JvmOverloads constructor(
      * unrecognised phone nothing is seeded: the state defaults stand and [phoneModelDetected] stays
      * false, which is exactly what the caption must be able to say.
      */
+    /**
+     * Device-static still-encoder truth, seeded before settings restore so a persisted HEIF-only
+     * selection cannot survive onto hardware that has no HEVC encoder.
+     */
+    private fun seedStillEncoderAvailability() {
+        val available = runCatching {
+            me.hletrd.telecampro.video.EncoderCaps.heifEncodeAvailable()
+        }.getOrDefault(true)
+        _state.update {
+            it.copy(
+                heifAvailable = available,
+                photoFormats = it.photoFormats.normalizedForEncoder(available),
+            )
+        }
+    }
+
     private fun seedPhoneModel() {
         // An UNRECOGNISED phone seeds PhoneModel.OTHER, not the state default: DEFAULT_PHONE_MODEL is
         // the Find X9 Ultra (this app's reason for existing), which was correct while the app only

@@ -152,6 +152,7 @@ class PerformQuickFnTest {
         override fun onStandbyAudioMeterVisibilityChanged(visible: Boolean) = hit("onStandbyAudioMeterVisibilityChanged")
         override fun onScopesVisibilityChanged(visible: Boolean) = hit("onScopesVisibilityChanged")
         override fun onGalleryAccessRequested() = hit("onGalleryAccessRequested")
+        override fun onExposureMeterVisibilityChanged(visible: Boolean) = hit("onExposureMeterVisibilityChanged")
     }
 
     private fun dispatched(slot: FnSlot, state: CameraUiState): List<String> {

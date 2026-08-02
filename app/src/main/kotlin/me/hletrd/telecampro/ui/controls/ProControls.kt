@@ -56,6 +56,7 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.graphicsLayer
@@ -238,10 +239,16 @@ internal fun Modifier.trailingEdgeFadeScrollHint(scrollState: ScrollState): Modi
                 // (1 -> 0) that happens to be written as colours. `Color.White` here means "alpha =
                 // 1, keep this pixel"; naming it an ink token would claim the fade paints white,
                 // which it never does — swap in any opaque colour and the render is identical.
-                brush = Brush.horizontalGradient(
-                    0.90f to Color.White,
-                    1f to Color.Transparent,
-                ),
+                // Draw space is NOT layout-direction aware but Modifier.horizontalScroll IS: under
+                // an RTL layout the overflow extends past the visual LEFT edge, so a fixed
+                // right-edge ramp faded the wrong side and left the truncated chip cut raw
+                // (2026-08-02 review; the viewfinder consumers sit in a forced-Ltr scope, the two
+                // ProSheet ones do not).
+                brush = if (layoutDirection == LayoutDirection.Rtl) {
+                    Brush.horizontalGradient(0f to Color.Transparent, 0.10f to Color.White)
+                } else {
+                    Brush.horizontalGradient(0.90f to Color.White, 1f to Color.Transparent)
+                },
                 blendMode = BlendMode.DstIn,
             )
         }

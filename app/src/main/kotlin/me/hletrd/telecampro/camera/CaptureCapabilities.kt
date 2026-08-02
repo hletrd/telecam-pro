@@ -158,6 +158,14 @@ data class CameraCaps(
     // invalid" — the image never arrives and the shot dies), while YUV buffers allocate fine.
     val largestYuvSize: Size?,
     /**
+     * Advertised minimum frame duration (ns) of [largestYuvSize], 0 when unreported. Camera2 bounds
+     * a repeating request by the SLOWEST attached stream, so a full-res YUV still reader riding the
+     * preview (the pseudo-ZSL ring) caps the viewfinder at 1/this. PMA110 serves it at ~30 fps —
+     * measured, not guaranteed — and a device that serves large YUV slowly would have silently
+     * dropped the default photo viewfinder to 10-20 fps (2026-08-02 review).
+     */
+    val largestYuvMinFrameDurationNs: Long = 0L,
+    /**
      * SENSOR_INFO_TIMESTAMP_SOURCE. REALTIME means SENSOR_TIMESTAMP shares
      * `SystemClock.elapsedRealtimeNanos()`; UNKNOWN means it shares `System.nanoTime()` (monotonic,
      * excludes deep sleep). The pseudo-ZSL ring computes a frame AGE by subtracting the timestamp
@@ -292,15 +300,19 @@ data class CameraCaps(
             // binned path (allocating them on an ordinary session is the gralloc-wedge class).
             // Defensive reads: a vendor map/characteristics hiccup must degrade to "not advertised",
             // never fail the whole capability read.
-            val maxResJpeg: Size? = if (has(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_ULTRA_HIGH_RESOLUTION_SENSOR)) {
-                runCatching {
-                    chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP_MAXIMUM_RESOLUTION)
-                        ?.getOutputSizes(ImageFormat.JPEG)
-                        ?.maxByOrNull { it.width.toLong() * it.height }
-                }.getOrNull()
-            } else {
-                null
-            }
+            // BOTH documented sources of a full-sensor still, not just the capability-gated one.
+            // SENSOR_PIXEL_MODE's javadoc states the key "may also be present on devices which do
+            // not support the ULTRA_HIGH_RESOLUTION_SENSOR capability", and that the maximum-
+            // resolution stream map "will always be present" on those — the class this file's own
+            // comment flagged with "revisit before any multi-device build" and which the 2026-08-01
+            // multi-device landing missed. Reading the map for BOTH is safe: it is absent on
+            // ordinary devices, so this resolves to null exactly as before, and the returned size
+            // still rides the standalone-only, ladder-first-drop hi-res gates.
+            val maxResJpeg: Size? = runCatching {
+                chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP_MAXIMUM_RESOLUTION)
+                    ?.getOutputSizes(ImageFormat.JPEG)
+                    ?.maxByOrNull { it.width.toLong() * it.height }
+            }.getOrNull()
             val vendorHiResJpeg: Size? = pickVendorHiResSize(
                 jpegCandidates = jpegCandidates.map { it.width to it.height },
                 activeArrayW = activeArray?.width() ?: 0,
@@ -403,6 +415,10 @@ data class CameraCaps(
                 hiResJpegSize = hiResJpeg,
                 hiResUsesMaxResolutionMode = maxResJpeg != null,
                 largestYuvSize = yuvSize,
+                largestYuvMinFrameDurationNs = yuvSize?.let { size ->
+                    runCatching { map?.getOutputMinFrameDuration(ImageFormat.YUV_420_888, size) }
+                        .getOrNull() ?: 0L
+                } ?: 0L,
                 timestampSource = chars.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE)
                     ?: CameraMetadata.SENSOR_INFO_TIMESTAMP_SOURCE_UNKNOWN,
                 isLogicalMultiCamera = has(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA),

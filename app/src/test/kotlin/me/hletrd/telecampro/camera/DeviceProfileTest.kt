@@ -20,6 +20,8 @@ class DeviceProfileTest {
             assertTrue(model, p.frontStreamPreMirrored)
             assertTrue(model, p.vendorTcSessionType)
             assertTrue(model, p.vendorOplusRequestHints)
+            assertTrue(model, p.logicalStillRequiresYuv)
+            assertTrue(model, p.rawRequiresStandalone)
             assertEquals(model, HAL_SAFE_MAX_STILL_EXPOSURE_NS, p.stillExposureCeilingNs)
         }
     }
@@ -31,6 +33,8 @@ class DeviceProfileTest {
             assertFalse("$model", p.frontStreamPreMirrored)
             assertFalse("$model", p.vendorTcSessionType)
             assertFalse("$model", p.vendorOplusRequestHints)
+            assertFalse("$model", p.logicalStillRequiresYuv)
+            assertFalse("$model", p.rawRequiresStandalone)
             assertNull("$model", p.stillExposureCeilingNs)
         }
     }

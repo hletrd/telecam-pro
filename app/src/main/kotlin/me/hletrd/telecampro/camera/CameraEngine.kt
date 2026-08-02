@@ -2659,7 +2659,7 @@ class CameraEngine(private val context: Context) {
      * Falls back to the closest standalone id on devices without a logical back camera.
      */
     private fun resolveNonTeleId(choice: LensChoice): String? =
-        if (standaloneRouteWanted(videoMode, rawWanted)) {
+        if (standaloneRouteWanted(videoMode, rawWanted, deviceProfile.rawRequiresStandalone)) {
             cachedIdForFocal(choice.targetEquivMm)
         } else {
             cachedLogicalBack()
@@ -2674,9 +2674,9 @@ class CameraEngine(private val context: Context) {
      */
     fun setRawWanted(enabled: Boolean) {
         if (rawWanted == enabled) return
-        val before = standaloneRouteWanted(videoMode, rawWanted)
+        val before = standaloneRouteWanted(videoMode, rawWanted, deviceProfile.rawRequiresStandalone)
         rawWanted = enabled
-        if (standaloneRouteWanted(videoMode, rawWanted) == before) return
+        if (standaloneRouteWanted(videoMode, rawWanted, deviceProfile.rawRequiresStandalone) == before) return
         // Before start there is no session to move: the FIRST configure resolves the route from
         // `rawWanted` directly (that is how a restored DNG selection lands), and opening a
         // transaction here would bump the optics generation under the cold-start path for nothing.

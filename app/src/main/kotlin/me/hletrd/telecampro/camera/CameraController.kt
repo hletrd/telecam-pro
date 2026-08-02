@@ -256,9 +256,16 @@ class CameraController(context: Context) {
         } else {
             controls
         }
-        this.controls = modeIntent.normalizedFor(caps).normalizedForCaptureMode(
-            if (pinAutoFps) CaptureMode.VIDEO else CaptureMode.PHOTO,
-        )
+        // `controls` is camera-thread-confined by contract (see its declaration); open() runs on
+        // setupExecutor AFTER the engine has installed this controller, so a queued zoom fast-path
+        // read-modify-write could interleave with this packet write and lose one of them — the
+        // operator's manual exposure/WB/focus silently replaced by defaults on the session's first
+        // repeating request (2026-08-02 review). Take the same monitor the zoom RMWs take.
+        synchronized(controlsWriteLock) {
+            this.controls = modeIntent.normalizedFor(caps).normalizedForCaptureMode(
+                if (pinAutoFps) CaptureMode.VIDEO else CaptureMode.PHOTO,
+            )
+        }
         this.tenBitHlg = tenBitHlg
         this.highSpeedFps = highSpeedFps
         this.vendorLogMode = vendorLogMode
@@ -471,13 +478,16 @@ class CameraController(context: Context) {
      * full [startPreview] rebuild when no builder is cached yet (pre-first-preview) or in
      * constrained high-speed mode (whose repeating request is a burst list).
      */
+    /** Orders open()'s packet write against the camera thread's zoom read-modify-writes. */
+    private val controlsWriteLock = Any()
+
     fun setZoomRatio(ratio: Float, requestRatio: Float = ratio) {
         postToCamera {
             // [controls] feeds STILL requests too (capturePhoto snapshots it): store the EXACT
             // user-framed ratio, not the mid-gesture wide-aimed HAL target — a still captured in
             // the interaction tail otherwise frames ~17% wider than the viewfinder (the repeating
             // stream's wide aim is GL-compensated in the preview; a still has no compensation).
-            controls = controls.copy(zoomRatio = requestRatio)
+            synchronized(controlsWriteLock) { controls = controls.copy(zoomRatio = requestRatio) }
             submitZoomFastPath(ratio)
         }
     }
@@ -489,7 +499,7 @@ class CameraController(context: Context) {
      * repeating-request touch here — that is exactly what the throttle exists to avoid.
      */
     fun noteRequestZoom(requestRatio: Float) {
-        postToCamera { controls = controls.copy(zoomRatio = requestRatio) }
+        postToCamera { synchronized(controlsWriteLock) { controls = controls.copy(zoomRatio = requestRatio) } }
     }
 
     /** Camera-thread body of the zoom fast path; submits [ratio] on the repeating stream only. */
@@ -588,6 +598,8 @@ class CameraController(context: Context) {
             wantHiRes = hiResStill,
             tenBitVideoOnly = tenBitHlg && caps.supportsHlg10(),
             frontRoute = caps.lensFacingFront,
+            yuvStillRequired = deviceProfile.logicalStillRequiresYuv,
+            rawStandaloneOnly = deviceProfile.rawRequiresStandalone,
         )
         val useHlg = plan.useHlg
         val useJpeg = plan.useJpeg
@@ -610,7 +622,7 @@ class CameraController(context: Context) {
             // FRONT joins the YUV lane so it can feed the pseudo-ZSL ring (its HAL-JPEG path had
             // nothing to buffer, hence ~555 ms shutter lag vs the rear route's 0 ms). The YUV→encode
             // save lane is the same one the logical route has always used.
-            val useYuv = caps.isLogicalMultiCamera || caps.lensFacingFront
+            val useYuv = plan.useYuvStill
             // Hi-res admission RE-CHECKED at the seam (defensive, same discipline as the RAW gate
             // above): standalone only — the plan already gates, but a big blob reaching a routed or
             // logical session is exactly the gralloc/HAL-crash class this file exists to prevent.
@@ -1355,6 +1367,7 @@ class CameraController(context: Context) {
     private fun zslStreamingActive(): Boolean =
         !zslStreamingBroken && zslReaderDeep && zslDriveServePossible && !pinAutoFps &&
             (caps.isLogicalMultiCamera || caps.lensFacingFront) &&
+            zslStreamKeepsPreviewFluid(caps.largestYuvMinFrameDurationNs) &&
             !hiResReaderActive && jpegReader != null
 
     /**
@@ -1997,7 +2010,20 @@ class CameraController(context: Context) {
             }.onFailure { t ->
                 if (captureTokenIsCurrent(pending, newPending)) {
                     pending = null // nothing acquired yet — the readers only deliver after a queued capture
-                    newPending.done = true
+                    // Same completion hygiene as onCaptureFailed and tryComplete's finally: the
+                    // watchdog was armed BEFORE the request was built, so a synchronous throw here
+                    // (the async-teardown window this runCatching exists for) left its delayed
+                    // message retaining the Pending and its callback closure — a BURST/AEB
+                    // continuation and its optics snapshot — for the whole 8-12 s+ budget. Under the
+                    // Pending monitor like every other mutation of it (2026-08-02 review).
+                    synchronized(newPending) {
+                        newPending.done = true
+                        newPending.watchdog?.let { handler.removeCallbacks(it) }
+                        newPending.watchdog = null
+                        newPending.jpeg = null
+                        newPending.raw = null
+                        newPending.result = null
+                    }
                     cb.onError(t)
                 }
             }
@@ -2300,6 +2326,13 @@ internal data class SessionAttemptPlan(
      * attempt never re-deepens. It does not lengthen the ladder, so `maxSessionAttempt` is unchanged.
      */
     val useDeepZslReader: Boolean = false,
+    /**
+     * Take the still as YUV (encoded in-app) instead of a HAL JPEG blob. Required on the routes
+     * whose profile says the JPEG blob cannot be allocated; elsewhere it is the pseudo-ZSL
+     * optimisation and the ladder may fall back to HAL JPEG — the rung this ladder used to lack, so
+     * a device that rejects PRIV+YUV(MAXIMUM) degraded straight to preview-only (no stills at all).
+     */
+    val useYuvStill: Boolean = false,
 )
 
 /**
@@ -2354,6 +2387,10 @@ internal fun sessionAttemptPlan(
     wantHiRes: Boolean = false,
     tenBitVideoOnly: Boolean = false,
     frontRoute: Boolean = false,
+    /** [DeviceProfile.logicalStillRequiresYuv] — true keeps the YUV lane on every rung. */
+    yuvStillRequired: Boolean = true,
+    /** [DeviceProfile.rawRequiresStandalone] — true keeps the PMA110 standalone-only RAW law. */
+    rawStandaloneOnly: Boolean = true,
 ): SessionAttemptPlan {
     // 10-bit EXPERIMENT rung (debug-gated upstream). HLG10 + full-res JPEG + RAW together CRASH
     // this HAL — a crash, not a config rejection, so the fallback ladder below cannot rescue it.
@@ -2397,14 +2434,23 @@ internal fun sessionAttemptPlan(
     // Hi-res additionally FORCES RAW off on its one attempt: a 200MP blob + RAW in one session is
     // exactly the over-demanding stream combo this HAL punishes, and the maximum-resolution map
     // need not carry RAW at all.
-    useRaw = streamAttempt < 1 && supportsRaw && standalone && !logicalMultiCamera && !hiRes &&
-        !frontRoute,
+    // The standalone/logical terms are PMA110 HAL faults (see DeviceProfile.rawRequiresStandalone);
+    // a spec device may carry RAW on the logical camera or a routed sub-camera, and forcing the law
+    // there removed DNG entirely from phones whose rear lenses exist only as physical sub-cameras.
+    // The FRONT exclusion is not device-specific: that route drops both still readers by design.
+    useRaw = streamAttempt < 1 && supportsRaw && !hiRes && !frontRoute &&
+        (!rawStandaloneOnly || (standalone && !logicalMultiCamera)),
     useVendorOperationMode = vendorMode,
     useHiResStill = hiRes,
     // The deep pseudo-ZSL reader rides the FULL plan only — see [SessionAttemptPlan.useDeepZslReader].
     // Hi-res and deep-ZSL can never coexist (hi-res is standalone-only, the deep reader is
     // logical-only), so the hi-res rung taking attempt 0 costs the ZSL rung nothing.
     useDeepZslReader = ladderAttempt == 0 && !hiRes,
+    // YUV stills belong to the logical/front routes. Where the profile says the JPEG blob cannot be
+    // allocated they stay for every rung; elsewhere the third rung trades the ZSL optimisation for
+    // the always-guaranteed PRIV+JPEG combination before the ladder gives up on stills entirely.
+    useYuvStill = (logicalMultiCamera || frontRoute) && !hiRes &&
+        (yuvStillRequired || streamAttempt < 2),
     )
 }
 
@@ -2413,6 +2459,21 @@ internal fun sessionAttemptPlan(
  * hi-res-wanting configure sequence owns one extra attempt — a fixed bound would cut the
  * preview-only last resort off the end of the shifted ladder.
  */
+/**
+ * Whether the full-res YUV still reader may ride the REPEATING request. Camera2 bounds a repeating
+ * request by the SLOWEST attached stream's advertised minimum frame duration, so a reader the device
+ * serves slowly would cap the default photo viewfinder — the pseudo-ZSL ring buys 0 ms shutter lag,
+ * never at the cost of the finder. PMA110 advertises ~33 ms here (its measured 29-31 fps); anything
+ * that cannot sustain [ZSL_STREAM_MIN_FPS] keeps the reader OFF the repeating targets and simply
+ * takes a real capture per shot. An unreported (0) duration is treated as "no constraint", matching
+ * how every other absent Camera2 value is read in this file.
+ */
+internal fun zslStreamKeepsPreviewFluid(minFrameDurationNs: Long): Boolean =
+    minFrameDurationNs <= 0L || minFrameDurationNs <= 1_000_000_000L / ZSL_STREAM_MIN_FPS
+
+/** Floor for the viewfinder while the ZSL reader streams; below this the ring is not worth it. */
+internal const val ZSL_STREAM_MIN_FPS = 24L
+
 internal fun maxSessionAttempt(teleconverterMode: Boolean, wantHiRes: Boolean): Int =
     (if (teleconverterMode) MAX_TELE_CONFIG_ATTEMPT else MAX_CONFIG_ATTEMPT) +
         (if (wantHiRes) 1 else 0)

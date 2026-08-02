@@ -66,6 +66,14 @@ object EncoderCaps {
 
     fun isSupported(codec: VideoCodec): Boolean = byCodec.containsKey(codec)
 
+    /**
+     * Whether this device can encode HEIF stills. androidx HeifWriter encodes through the platform
+     * HEVC encoder, and HEVC encode is NOT CDD-mandatory at API 33 — on an entry-level handset
+     * without one, the app's DEFAULT still format silently produced no file at all (2026-08-02
+     * review). Same MediaCodecList scan as the video codecs, so it costs nothing extra.
+     */
+    fun heifEncodeAvailable(): Boolean = isSupported(VideoCodec.HEVC)
+
     // NOTE: no public isHardware(codec) accessor — it had no caller. The underlying `Info.hardware`
     // field IS load-bearing: it is pickBestEncoder's hardware-first tie-break.
 

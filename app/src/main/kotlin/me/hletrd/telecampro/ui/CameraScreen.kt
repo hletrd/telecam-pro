@@ -70,6 +70,7 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.Modifier
@@ -111,6 +112,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -190,6 +192,19 @@ import me.hletrd.telecampro.ui.theme.hudGlyph
 private val OSD_CLEARANCE_TOP = 100.dp
 
 /**
+ * [OSD_CLEARANCE_TOP] scaled by the user's font setting. The 100 dp was derived at font scale 1.0
+ * ("the status row ends ~88-90 dp"), but that row's height is text-driven: at the accessibility
+ * range's top (scale 2.0, Android 13+) it ends around 104 dp and the two fixed lanes below started
+ * INSIDE it (2026-08-02 review). Only the text-driven part scales — the status bar inset and the
+ * 60 dp row offset above it are fixed — so the constant grows by the ~40 dp of type it reserves.
+ */
+@Composable
+private fun osdClearanceTop(): Dp {
+    val scale = LocalDensity.current.fontScale.coerceIn(1f, 2f)
+    return OSD_CLEARANCE_TOP + (40.dp * (scale - 1f))
+}
+
+/**
  * Root camera UI, styled after Sony Alpha / Xperia Pro operation: a clear viewfinder at rest, compact
  * status readouts, and a bottom cluster of manual "Fn" dials + mode switch + shutter. Everything else
  * lives one tap away in [ProSheet], a Sony-menu-style tabbed settings system. Stateless: everything
@@ -245,11 +260,14 @@ fun CameraScreen(
         // the scope overlays compose only under detailsVisible, and a full-screen modal above
         // them leaves no composed consumer either.
         currentActions.value.onScopesVisibilityChanged(exposed)
+        // The MANUAL exposure meter renders without expanded DISP but is still hidden by any modal.
+        currentActions.value.onExposureMeterVisibilityChanged(!modalVisible)
     }
     DisposableEffect(Unit) {
         onDispose {
             currentActions.value.onStandbyAudioMeterVisibilityChanged(false)
             currentActions.value.onScopesVisibilityChanged(false)
+            currentActions.value.onExposureMeterVisibilityChanged(false)
         }
     }
 
@@ -710,7 +728,7 @@ fun CameraScreen(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
-                .padding(top = OSD_CLEARANCE_TOP),
+                .padding(top = osdClearanceTop()),
             horizontalAlignment = Alignment.CenterHorizontally,
             // Matches the taller scopes column on the top-end edge: two free-floating overlay lanes
             // on the same screen edge should not run different rhythms.
@@ -781,7 +799,7 @@ fun CameraScreen(
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .statusBarsPadding()
-                .padding(end = 12.dp, top = OSD_CLEARANCE_TOP),
+                .padding(end = 12.dp, top = osdClearanceTop()),
             horizontalAlignment = Alignment.End,
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -2561,12 +2579,20 @@ private fun ShutterRow(
         // REC start, shifting the control ~31 dp at the moment the thumb is on it). The dot offsets
         // from the fixed shutter instead: 38 dp shutter half + 14 dp gap + 24 dp dot half = 76 dp.
         if (mode == CaptureMode.VIDEO && isRecording && !isRecordingStarting) {
+            // 76 dp is the geometric offset (38 shutter half + 14 gap + 24 dot half) and it is
+            // correct on any window wide enough to hold it: on a narrow one (a 320 dp phone bucket,
+            // or a freeform window) the dot's 48 dp touch box overlapped the 52 dp gallery thumb
+            // (2026-08-02 review). Clamp so the dot never crosses the thumb's right edge; below
+            // that width the two simply sit adjacent instead of on top of each other.
+            val halfWidth = LocalConfiguration.current.screenWidthDp.dp / 2
+            val thumbEdge = 12.dp + 52.dp + 8.dp // one inset + thumb + breathing room
+            val snapshotOffset = minOf(76.dp, (halfWidth - thumbEdge - 24.dp).coerceAtLeast(0.dp))
             SnapshotButton(
                 onClick = onSnapshot,
                 enabled = stillCaptureAvailable,
                 modifier = Modifier
                     .align(Alignment.Center)
-                    .offset(x = (-76).dp),
+                    .offset(x = -snapshotOffset),
             )
         }
         ShutterButton(

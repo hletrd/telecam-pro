@@ -358,7 +358,14 @@ fun punchInResolved(enabled: Boolean, frontFacing: Boolean): Boolean = enabled &
  * zoom then steps between lenses with a reopen instead of crossing seamlessly, exactly as the video
  * route already does. That is the trade, and it is opt-in: turning DNG off restores seamless zoom.
  */
-fun standaloneRouteWanted(videoMode: Boolean, rawWanted: Boolean): Boolean = videoMode || rawWanted
+fun standaloneRouteWanted(
+    videoMode: Boolean,
+    rawWanted: Boolean,
+    // [DeviceProfile.rawRequiresStandalone]: only that HAL forces DNG off the seamless camera. A
+    // spec device carries RAW on the logical route, so moving it there would cost the seamless
+    // zoom for nothing. VIDEO's standalone pin is a separate, still-universal EIS decision.
+    rawForcesStandalone: Boolean = true,
+): Boolean = videoMode || (rawWanted && rawForcesStandalone)
 
 /**
  * Whether to ask the HAL for a 10-bit HLG10 session.
@@ -913,6 +920,16 @@ internal fun largestCenteredRect(
  * neither container is a straight byte passthrough. [dngRaw] adds a full-frame RAW sensor file and
  * can be the only output when the active standalone session actually exposes RAW.
  */
+/**
+ * Drops HEIF when this device cannot encode it, promoting JPEG so the shutter still writes a file.
+ * HeifWriter needs the platform HEVC encoder, which is not CDD-mandatory at API 33; without this a
+ * fresh install on such a handset produced NO output at all from its own default (2026-08-02).
+ */
+fun PhotoFormats.normalizedForEncoder(heifEncodeAvailable: Boolean): PhotoFormats = when {
+    heifEncodeAvailable || !heif -> this
+    else -> copy(heif = false, jpeg = true)
+}
+
 data class PhotoFormats(
     val heif: Boolean = true,
     val jpeg: Boolean = false,
@@ -1209,6 +1226,8 @@ data class CameraUiState(
     val caps: CameraCaps? = null,
     // Device-static, enumerated once: which lens presets this hardware can actually deliver.
     val lensInventory: LensInventory = LensInventory.ALL,
+    // Device-static: whether HEIF stills can be encoded here at all (HeifWriter needs HEVC).
+    val heifAvailable: Boolean = true,
     val cameraOverrideId: String? = null,
     val statusMessage: String? = null,
     // The newest saved capture owner (HEIF/JPEG/video, or RAW when no displayable sibling exists).

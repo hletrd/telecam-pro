@@ -1,0 +1,123 @@
+package me.hletrd.telecampro.camera
+
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * Two PMA110 HAL faults were written as universal law and only came out under review once the app
+ * became multi-device (2026-08-02): the logical camera's un-allocatable JPEG blob, and RAW's
+ * standalone-only requirement. Both are DeviceProfile-gated now. These pin BOTH sides — PMA110
+ * unchanged, spec devices getting the guaranteed/legal shape.
+ */
+class DeviceRouteLawsTest {
+
+    private fun plan(
+        attempt: Int,
+        logical: Boolean = true,
+        front: Boolean = false,
+        standalone: Boolean = false,
+        yuvRequired: Boolean,
+        rawStandaloneOnly: Boolean,
+    ) = sessionAttemptPlan(
+        attempt = attempt,
+        wantHlg = false,
+        supportsRaw = true,
+        standalone = standalone,
+        logicalMultiCamera = logical,
+        frontRoute = front,
+        yuvStillRequired = yuvRequired,
+        rawStandaloneOnly = rawStandaloneOnly,
+    )
+
+    // ---- YUV still lane -------------------------------------------------------------------------
+
+    @Test
+    fun `PMA110 keeps the YUV lane on every rung of the logical route`() {
+        for (attempt in 0..2) {
+            assertTrue(
+                "attempt $attempt",
+                plan(attempt, yuvRequired = true, rawStandaloneOnly = true).useYuvStill,
+            )
+        }
+    }
+
+    @Test
+    fun `a spec device trades YUV for HAL JPEG before giving up on stills`() {
+        val p = { a: Int -> plan(a, yuvRequired = false, rawStandaloneOnly = false) }
+        // Rungs 0-1 keep YUV (it is what feeds the pseudo-ZSL ring)…
+        assertTrue(p(0).useYuvStill)
+        assertTrue(p(1).useYuvStill)
+        // …then the ladder falls back to the always-guaranteed PRIV+JPEG combination, WITH a still
+        // target — previously this rung was byte-identical to the last and the next stop was
+        // preview-only, i.e. no stills at all on a device that rejects PRIV+YUV(MAXIMUM).
+        assertFalse(p(2).useYuvStill)
+        assertTrue(p(2).useJpeg)
+    }
+
+    @Test
+    fun `standalone routes never take the YUV lane on any device`() {
+        for (required in listOf(true, false)) {
+            assertFalse(
+                plan(0, logical = false, standalone = true, yuvRequired = required, rawStandaloneOnly = true)
+                    .useYuvStill,
+            )
+        }
+    }
+
+    // ---- RAW ------------------------------------------------------------------------------------
+
+    @Test
+    fun `PMA110 still refuses RAW anywhere but a standalone camera`() {
+        assertFalse(plan(0, yuvRequired = true, rawStandaloneOnly = true).useRaw)
+        assertTrue(
+            plan(0, logical = false, standalone = true, yuvRequired = true, rawStandaloneOnly = true).useRaw,
+        )
+    }
+
+    @Test
+    fun `a spec device may carry RAW on the logical or routed camera`() {
+        assertTrue(plan(0, yuvRequired = false, rawStandaloneOnly = false).useRaw)
+        // Routed sub-camera (standalone=false, logical=false) is legal there too.
+        assertTrue(
+            plan(0, logical = false, standalone = false, yuvRequired = false, rawStandaloneOnly = false).useRaw,
+        )
+    }
+
+    @Test
+    fun `the front route drops RAW on every device — its readers are gone by design`() {
+        assertFalse(
+            plan(0, logical = false, front = true, yuvRequired = false, rawStandaloneOnly = false).useRaw,
+        )
+    }
+
+    // ---- route forcing --------------------------------------------------------------------------
+
+    @Test
+    fun `DNG moves PMA110 off the seamless camera but leaves a spec device on it`() {
+        assertTrue(standaloneRouteWanted(videoMode = false, rawWanted = true, rawForcesStandalone = true))
+        assertFalse(standaloneRouteWanted(videoMode = false, rawWanted = true, rawForcesStandalone = false))
+        // VIDEO's standalone pin is an EIS decision and stays universal.
+        assertTrue(standaloneRouteWanted(videoMode = true, rawWanted = false, rawForcesStandalone = false))
+    }
+}
+
+/** The ZSL ring must never cost the viewfinder its frame rate (2026-08-02 review). */
+class ZslStreamFluidityTest {
+    @Test
+    fun `PMA110's advertised 33 ms YUV duration keeps streaming`() {
+        assertTrue(zslStreamKeepsPreviewFluid(33_333_333L))
+    }
+
+    @Test
+    fun `an unreported duration is treated as no constraint`() {
+        assertTrue(zslStreamKeepsPreviewFluid(0L))
+    }
+
+    @Test
+    fun `a slow large-YUV device keeps the reader off the repeating request`() {
+        // 50 ms = 20 fps, 100 ms = 10 fps: both below the 24 fps floor.
+        assertFalse(zslStreamKeepsPreviewFluid(50_000_000L))
+        assertFalse(zslStreamKeepsPreviewFluid(100_000_000L))
+    }
+}
