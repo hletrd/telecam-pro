@@ -1030,8 +1030,17 @@ class CameraController(context: Context) {
                         // a request-side bug.
                         val flashMode = result.get(CaptureResult.FLASH_MODE)
                         val flashState = result.get(CaptureResult.FLASH_STATE)
-                        val effectiveZoom = controls.zoomRatio.coerceAtLeast(1f) *
-                            if (teleconverterMode) teleconverterMagnification else 1f
+                        // The 1x floor belongs to the CONVERTER branch only, where the ratio is a
+                        // LENS-LOCAL value that starts at 1 by construction. Applying it
+                        // unconditionally made every sub-1x zoom print as "effZoom=1.0", so the
+                        // ultrawide looked REFUSED in the one log a reader would trust — a phantom
+                        // device bug chased for several steps on 2026-08-02 before ZoomTrace (the
+                        // HAL's own reported ratio) showed a true 0.6.
+                        val effectiveZoom = if (teleconverterMode) {
+                            controls.zoomRatio.coerceAtLeast(1f) * teleconverterMagnification
+                        } else {
+                            controls.zoomRatio
+                        }
                         Log.i(TAG, "3A: controllerId=$diagnosticId opticsGeneration=$requestOpticsGeneration requestGeneration=$requestGeneration mode=${requestMode.name} aeState=$ae afState=$af afMode=$afMode iso=${result.get(CaptureResult.SENSOR_SENSITIVITY)} expNs=${result.get(CaptureResult.SENSOR_EXPOSURE_TIME)} lens=$lastFocusDistance ois=$ois vstab=$vstab flashMode=$flashMode flashState=$flashState (req=$videoStabHalMode tele=$teleconverterMode effZoom=$effectiveZoom)")
                     }
                 }
