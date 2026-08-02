@@ -386,17 +386,22 @@ fun RecordingIndicator(elapsedMs: Long, modifier: Modifier = Modifier) {
 }
 
 /**
- * Thin horizontal audio input-level meter (0..1). Fill color shifts green -> yellow -> red as
- * [level] approaches clipping, so it doubles as a basic peak warning while recording.
+ * Thin horizontal audio input-level meter — ONE BAR PER CHANNEL (each 0..1), stacked.
+ *
+ * Per-channel rather than one averaged bar because that average is exactly what hides the failure an
+ * input meter exists to catch: on a stereo or multi-capsule external mic, one dead channel still
+ * leaves the average moving (2026-08-02). Fill colour shifts green -> yellow -> red per channel as
+ * it approaches clipping, so it doubles as a peak warning while recording.
+ *
+ * The overall footprint is held constant: the bar height splits between channels, so a stereo mic
+ * does not push the OSD around relative to a mono one.
  */
 @Composable
-fun AudioMeter(level: Float, modifier: Modifier = Modifier) {
-    val fill = level.coerceIn(0f, 1f)
-    val fillColor = when {
-        fill < 0.6f -> Color(0xFF4CD964)
-        fill < 0.85f -> CameraColors.ManualActive
-        else -> CameraColors.Record
-    }
+fun AudioMeter(levels: List<Float>, modifier: Modifier = Modifier) {
+    // An EMPTY list still draws the empty plate. The meter's own visibility is owned by the caller's
+    // gate; blanking the plate here would make it flicker away between AudioRecord generations and
+    // on every stop, which is a state the operator would read as "the mic died".
+    val gap = 2.dp
     Box(
         modifier = modifier
             .size(width = 120.dp, height = 8.dp)
@@ -405,8 +410,22 @@ fun AudioMeter(level: Float, modifier: Modifier = Modifier) {
             .background(HudPlate, RoundedCornerShape(4.dp)),
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
-            if (fill > 0f) {
-                drawRect(color = fillColor, size = Size(size.width * fill, size.height))
+            val gapPx = gap.toPx()
+            val totalGap = gapPx * (levels.size - 1).coerceAtLeast(0)
+            val barHeight = ((size.height - totalGap) / levels.size).coerceAtLeast(1f)
+            levels.forEachIndexed { index, level ->
+                val fill = level.coerceIn(0f, 1f)
+                if (fill <= 0f) return@forEachIndexed
+                val fillColor = when {
+                    fill < 0.6f -> Color(0xFF4CD964)
+                    fill < 0.85f -> CameraColors.ManualActive
+                    else -> CameraColors.Record
+                }
+                drawRect(
+                    color = fillColor,
+                    topLeft = Offset(0f, index * (barHeight + gapPx)),
+                    size = Size(size.width * fill, barHeight),
+                )
             }
         }
     }

@@ -277,3 +277,73 @@ class TransferEncoderHonestyTest {
         ColorTransfer.entries.forEach { assertEquals(it, it.normalizedForEncoder(true)) }
     }
 }
+
+/**
+ * Per-channel input metering (2026-08-02). One averaged bar hides the failure an input meter exists
+ * to catch: on a stereo or multi-capsule external mic, a dead channel still leaves the average
+ * moving.
+ */
+class ChannelLevelsTest {
+    private fun interleave(vararg channels: ShortArray): ShortArray {
+        val frames = channels.first().size
+        val out = ShortArray(frames * channels.size)
+        var i = 0
+        for (f in 0 until frames) for (c in channels.indices) out[i++] = c.let { channels[it][f] }
+        return out
+    }
+
+    @Test
+    fun `a dead right channel is visible instead of averaged away`() {
+        val loud = ShortArray(64) { 16000 }
+        val dead = ShortArray(64)
+        val buf = interleave(loud, dead)
+        val levels = me.hletrd.telecampro.video.channelRms(buf, buf.size, channelCount = 2)
+        assertEquals(2, levels.size)
+        assertTrue("left must read loud, got ${levels[0]}", levels[0] > 0.4f)
+        assertEquals(0f, levels[1], 1e-6f)
+    }
+
+    @Test
+    fun `mono input yields exactly one bar`() {
+        val buf = ShortArray(128) { 8000 }
+        assertEquals(1, me.hletrd.telecampro.video.channelRms(buf, buf.size, channelCount = 1).size)
+    }
+
+    @Test
+    fun `a trailing partial frame is dropped, not attributed to the wrong channel`() {
+        val loud = ShortArray(8) { 20000 }
+        val dead = ShortArray(8)
+        val buf = interleave(loud, dead) + shortArrayOf(20000) // one orphan LEFT sample
+        val levels = me.hletrd.telecampro.video.channelRms(buf, buf.size, channelCount = 2)
+        assertEquals("the orphan sample must not raise the right channel", 0f, levels[1], 1e-6f)
+    }
+
+    @Test
+    fun `gain scales the reading and still clamps at full scale`() {
+        val buf = ShortArray(32) { 16000 }
+        val unity = me.hletrd.telecampro.video.channelRms(buf, buf.size, 1, gain = 1f)[0]
+        val doubled = me.hletrd.telecampro.video.channelRms(buf, buf.size, 1, gain = 2f)[0]
+        assertTrue(doubled > unity)
+        assertTrue(me.hletrd.telecampro.video.channelRms(buf, buf.size, 1, gain = 100f)[0] <= 1f)
+    }
+
+    @Test
+    fun `an empty read yields silence per channel rather than NaN`() {
+        val levels = me.hletrd.telecampro.video.channelRms(ShortArray(0), 0, channelCount = 2)
+        assertEquals(2, levels.size)
+        levels.forEach { assertEquals(0f, it, 0f) }
+    }
+
+    @Test
+    fun `quantization is per channel so one jittering bit cannot defeat the dedup`() {
+        val a = me.hletrd.telecampro.video.quantizeLevels(floatArrayOf(0.5f, 0.25f))
+        val b = me.hletrd.telecampro.video.quantizeLevels(floatArrayOf(0.5001f, 0.2501f))
+        assertEquals(a, b)
+    }
+
+    @Test
+    fun `a channel count below one is treated as mono rather than dividing by zero`() {
+        val buf = ShortArray(16) { 1000 }
+        assertEquals(1, me.hletrd.telecampro.video.channelRms(buf, buf.size, channelCount = 0).size)
+    }
+}

@@ -108,7 +108,7 @@ class VideoRecorder(private val context: Context) {
     // Software input gain applied to recorded PCM (1f = passthrough) and a throttled level-meter
     // callback, both set by [start] and consumed on the audio-encode thread in [runAudio].
     private var audioGain = 1f
-    private var onLevel: ((Float) -> Unit)? = null
+    private var onLevel: ((FloatArray) -> Unit)? = null
     private var lastLevelEmitNs = 0L
     // Directional-audio scene (Sound Focus / Sound Stage) + the current zoom and device
     // orientation, applied to the audio HAL via AudioManager.setParameters after AudioRecord init.
@@ -140,7 +140,7 @@ class VideoRecorder(private val context: Context) {
         audioZoom: Float = 1f,
         audioInputPreference: AudioInputPreference = AudioInputPreference.AUTO,
         onRoute: ((String) -> Unit)? = null,
-        onLevel: ((Float) -> Unit)? = null,
+        onLevel: ((FloatArray) -> Unit)? = null,
         onFailure: ((Throwable) -> Unit)? = null,
     ): Surface? {
         this.uri = uri
@@ -403,7 +403,7 @@ class VideoRecorder(private val context: Context) {
     internal fun quarantineUnsafeNativeGraph(): Boolean {
         if (!terminallyQuarantined.compareAndSet(false, true)) return false
         running = false
-        runCatching { onLevel?.invoke(0f) }
+        runCatching { onLevel?.invoke(FloatArray(0)) }
         onFailure = null
         val ownedAudio = audioRecord
         val stopAudio = Runnable { runCatching { ownedAudio?.stop() } }
@@ -629,8 +629,8 @@ class VideoRecorder(private val context: Context) {
                             // a no-op, so the RMS pass is skipped entirely unless a level emit is due.
                             val emitDue = levelEmitDue()
                             if (audioGain != 1f || emitDue) {
-                                val level = applyGainAndLevel(pcmBuffer, readOutcome.byteCount, audioGain)
-                                if (emitDue) maybeEmitLevel(level)
+                                val levels = applyGainAndLevel(pcmBuffer, readOutcome.byteCount, audioGain, audioChannelCount)
+                                if (emitDue) maybeEmitLevel(levels)
                             }
                             codec.queueInputBuffer(inIdx, 0, readOutcome.byteCount, ptsUs, 0)
                             totalSamples += readOutcome.byteCount / bytesPerFrame
@@ -705,12 +705,12 @@ class VideoRecorder(private val context: Context) {
     /** True when enough time has passed since the last [onLevel] emit for a new one to go out. */
     private fun levelEmitDue(): Boolean = System.nanoTime() - lastLevelEmitNs >= LEVEL_THROTTLE_NS
 
-    /** Forwards [level] to [onLevel], throttled to roughly [LEVEL_THROTTLE_NS] between calls. */
-    private fun maybeEmitLevel(level: Float) {
+    /** Forwards per-channel [levels] to [onLevel], throttled to roughly [LEVEL_THROTTLE_NS]. */
+    private fun maybeEmitLevel(levels: FloatArray) {
         val now = System.nanoTime()
         if (now - lastLevelEmitNs < LEVEL_THROTTLE_NS) return
         lastLevelEmitNs = now
-        onLevel?.invoke(level)
+        onLevel?.invoke(levels)
     }
 
     private fun maybeStartMuxer() {
@@ -773,7 +773,7 @@ class VideoRecorder(private val context: Context) {
         onRoute?.invoke(audioUnavailableLabel(audioInputPreference.label))
         // Zero the live meter explicitly: the mic is dead, and a meter frozen at its last level
         // would mislead the operator into believing audio is still being captured (CRIT4-6).
-        onLevel?.invoke(0f)
+        onLevel?.invoke(FloatArray(0))
         synchronized(muxerLock) {
             expectedTracks = 1
             maybeStartMuxer()
@@ -1202,31 +1202,48 @@ internal fun audioUnavailableLabel(preferenceLabel: String): String = "$preferen
  * The short view shares [buf]'s backing memory, so writes here are visible to the caller
  * before the buffer is queued to the encoder. Top-level (pure java.nio) so it is unit-testable.
  */
-internal fun applyGainAndLevel(buf: ByteBuffer, byteCount: Int, gain: Float): Float {
+internal fun applyGainAndLevel(buf: ByteBuffer, byteCount: Int, gain: Float, channelCount: Int = 1): FloatArray {
     val safeGain = normalizeAudioGain(gain)
+    val channels = channelCount.coerceAtLeast(1)
     val samples = buf.duplicate().apply {
         order(ByteOrder.LITTLE_ENDIAN)
         position(0)
         limit(byteCount)
     }.asShortBuffer()
     val count = samples.remaining()
-    if (count == 0) return 0f
-    var sumSquares = 0.0
+    if (count == 0) return FloatArray(channels)
+    // Per channel, not one number for the buffer: on a stereo or multi-capsule external mic a dead
+    // channel is invisible behind a healthy one, and catching that is what an input meter is for.
+    val sums = DoubleArray(channels)
+    // Whole frames only, so a trailing partial frame cannot land in the wrong channel's accumulator.
+    val frames = count / channels
+    val usable = frames * channels
     if (safeGain == 1f) {
         // Unity gain (the default): the rewrite loop is a no-op transform — skip the per-sample
         // put() and only accumulate the RMS the level meter needs.
-        for (i in 0 until count) {
+        for (i in 0 until usable) {
             val v = samples[i].toDouble()
-            sumSquares += v * v
+            sums[i % channels] += v * v
         }
     } else {
-        for (i in 0 until count) {
+        for (i in 0 until usable) {
             val amplified = (samples[i] * safeGain).roundToInt()
                 .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
                 .toShort()
             samples.put(i, amplified)
-            sumSquares += amplified.toDouble() * amplified.toDouble()
+            sums[i % channels] += amplified.toDouble() * amplified.toDouble()
         }
     }
-    return (sqrt(sumSquares / count) / 32768.0).toFloat().coerceIn(0f, 1f)
+    // The gain rewrite must still cover a trailing partial frame — it is real audio the encoder
+    // gets — even though it is excluded from the metering average above.
+    if (safeGain != 1f) {
+        for (i in usable until count) {
+            val amplified = (samples[i] * safeGain).roundToInt()
+                .coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                .toShort()
+            samples.put(i, amplified)
+        }
+    }
+    if (frames == 0) return FloatArray(channels)
+    return FloatArray(channels) { c -> (sqrt(sums[c] / frames) / PCM_16_FULL_SCALE).toFloat().coerceIn(0f, 1f) }
 }

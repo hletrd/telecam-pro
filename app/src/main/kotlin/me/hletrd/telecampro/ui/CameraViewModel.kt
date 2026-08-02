@@ -764,16 +764,23 @@ class CameraViewModel @JvmOverloads constructor(
                 (mode == ExposureMode.PROGRAM && s.controls.programAppSide)
             if (h != null && drivesAppSideAe) mainHandler.post { applyAutoExposure(h.luma) }
         }
-        engine.onAudioLevel = { lvl ->
+        engine.onAudioLevel = { levels ->
             // Quantize BEFORE the compare, exactly as levelRoll does (perf review #4): the raw RMS
             // float never repeats — even a silent room's noise floor jitters — so StateFlow's
             // equality dedup never fired and all ~10 emissions/s were whole-CameraUiState copies
             // that recomposed the tree for an unchanged 120x8 dp bar. 1/256 is finer than one
             // On the densest panel here that is ~1.6 px of a 120 dp bar — below the eye's
             // threshold for a smoothly-moving meter, and the emission it saves is a whole-tree
-            // recomposition.
-            val q = kotlin.math.round(lvl.coerceIn(0f, 1f) * 256f) / 256f
-            _state.update { if (it.audioLevel == q) it else it.copy(audioLevel = q) }
+            // recomposition. Per CHANNEL, and before the list compare: N channels are N chances
+            // for a jittering low bit to defeat the dedup.
+            val q = me.hletrd.telecampro.video.quantizeLevels(levels)
+            if (me.hletrd.telecampro.BuildConfig.DEBUG && q.size != lastLoggedLevelChannels) {
+                lastLoggedLevelChannels = q.size
+                // Change-gated on the CHANNEL COUNT only — a per-emission line at ~10 Hz would
+                // spend the ColorOS 300-row process quota in half a minute.
+                android.util.Log.i("AudioLevels", "meter channels=${q.size}")
+            }
+            _state.update { if (it.audioLevels == q) it else it.copy(audioLevels = q) }
         }
         // Run-state edges only (engine is edge-gated); may arrive from the timelapse scheduler
         // thread — StateFlow.update is thread-safe.
@@ -1283,6 +1290,8 @@ class CameraViewModel @JvmOverloads constructor(
         standbyMeterEnabled = enabled
         engine.setStandbyAudioMonitor(enabled)
     }
+
+    private var lastLoggedLevelChannels = -1
 
     override fun onStandbyAudioMeterVisibilityChanged(visible: Boolean) {
         if (standbyMeterVisible == visible) return

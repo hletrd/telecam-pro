@@ -10,13 +10,16 @@ import android.media.MediaRecorder
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import me.hletrd.telecampro.video.AudioInputInspector
 import me.hletrd.telecampro.video.AudioReadOutcome
+import me.hletrd.telecampro.video.ColorProfiles
 import me.hletrd.telecampro.video.UnsafeRecorderQuarantine
+import me.hletrd.telecampro.video.channelRms
 import me.hletrd.telecampro.video.classifyAudioRead
+import me.hletrd.telecampro.video.resolveAudioChannelCount
 import me.hletrd.telecampro.video.standbyMeterShouldRecreate
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
-import kotlin.math.sqrt
 
 internal enum class StandbyAudioFailureReason {
     INVALID_BUFFER,
@@ -34,6 +37,12 @@ internal data class StandbyAudioUnavailable(
 )
 
 internal interface StandbyAudioInput {
+    /**
+     * Interleaved channel count of [read]'s buffer; drives per-channel metering. Defaults to mono,
+     * which is both the honest fallback for an input that does not report one and what keeps the
+     * JVM suite's fakes describing exactly the shape they actually produce.
+     */
+    val channelCount: Int get() = 1
     fun start()
     fun read(samples: ShortArray): Int
     fun stop()
@@ -80,7 +89,10 @@ private fun threadBackedStandbyRetryScheduler(): StandbyRetryScheduler =
         }.isSuccess
     }
 
-private class AndroidStandbyAudioInput(private val recorder: AudioRecord) : StandbyAudioInput {
+private class AndroidStandbyAudioInput(
+    private val recorder: AudioRecord,
+    override val channelCount: Int,
+) : StandbyAudioInput {
     override fun start() = recorder.startRecording()
     override fun read(samples: ShortArray): Int = recorder.read(samples, 0, samples.size)
     override fun stop() = recorder.stop()
@@ -90,14 +102,24 @@ private class AndroidStandbyAudioInput(private val recorder: AudioRecord) : Stan
 // The controller checks RECORD_AUDIO immediately before reserving every generation. Extraction into
 // this injectable factory hides that dominating guard from lint, so keep the suppression local.
 @SuppressLint("MissingPermission")
-private fun createAndroidStandbyAudioInput(): StandbyAudioSetupResult {
+private fun createAndroidStandbyAudioInput(
+    context: Context,
+    preference: AudioInputPreference,
+): StandbyAudioSetupResult {
     val sampleRate = 48_000
+    // The meter must listen to the SAME microphone the next take will record from. Before this it
+    // hardcoded MONO on the default route, so selecting a USB/BT/wired mic changed the recording
+    // but left the armed meter reading the phone's own capsule — the operator could not check the
+    // external mic was live until after a take (2026-08-02).
+    val device = runCatching { AudioInputInspector.preferredDevice(context, preference) }.getOrNull()
+    val channelCount = resolveAudioChannelCount(
+        device?.channelCounts,
+        device != null && AudioInputInspector.isBluetoothInput(device.type),
+    )
+    val channelMask =
+        if (channelCount >= ColorProfiles.AUDIO_CHANNELS) AudioFormat.CHANNEL_IN_STEREO else AudioFormat.CHANNEL_IN_MONO
     val minBuffer = runCatching {
-        AudioRecord.getMinBufferSize(
-            sampleRate,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-        )
+        AudioRecord.getMinBufferSize(sampleRate, channelMask, AudioFormat.ENCODING_PCM_16BIT)
     }.getOrNull()
     if (minBuffer == null || minBuffer <= 0) {
         return StandbyAudioSetupResult.Failure(StandbyAudioFailureReason.INVALID_BUFFER)
@@ -106,7 +128,7 @@ private fun createAndroidStandbyAudioInput(): StandbyAudioSetupResult {
         AudioRecord(
             MediaRecorder.AudioSource.CAMCORDER,
             sampleRate,
-            AudioFormat.CHANNEL_IN_MONO,
+            channelMask,
             AudioFormat.ENCODING_PCM_16BIT,
             minBuffer * 2,
         )
@@ -115,7 +137,20 @@ private fun createAndroidStandbyAudioInput(): StandbyAudioSetupResult {
         runCatching { recorder.release() }
         return StandbyAudioSetupResult.Failure(StandbyAudioFailureReason.UNINITIALIZED)
     }
-    return StandbyAudioSetupResult.Ready(AndroidStandbyAudioInput(recorder))
+    // Advisory, exactly as VideoRecorder treats it: a refused route still meters (on the default
+    // device), and the Route row already tells the operator which input actually resolved. Failing
+    // the meter outright would be a worse answer than a working meter on a different mic.
+    if (device != null) runCatching { recorder.setPreferredDevice(device) }
+    if (me.hletrd.telecampro.BuildConfig.DEBUG) {
+        // ONE line per AudioRecord generation, not per read: ColorOS drops everything past a
+        // 300-row per-process quota, so a per-buffer line would eat the traces that matter.
+        Log.i(
+            "StandbyAudioMeter",
+            "standby format: pref=${preference.name} device=${device?.type ?: -1} " +
+                "channels=$channelCount routed=${runCatching { recorder.routedDevice?.type }.getOrNull()}",
+        )
+    }
+    return StandbyAudioSetupResult.Ready(AndroidStandbyAudioInput(recorder, channelCount))
 }
 
 /**
@@ -127,7 +162,7 @@ private fun createAndroidStandbyAudioInput(): StandbyAudioSetupResult {
  */
 internal class StandbyAudioController(
     private val audioGain: () -> Float,
-    private val onLevel: (Float) -> Unit,
+    private val onLevels: (FloatArray) -> Unit,
     private val canStart: () -> Boolean,
     private val recorderAbsent: () -> Boolean,
     private val isPaused: () -> Boolean,
@@ -144,7 +179,12 @@ internal class StandbyAudioController(
     internal constructor(
         context: Context,
         audioGain: () -> Float,
-        onLevel: (Float) -> Unit,
+        onLevels: (FloatArray) -> Unit,
+        /**
+         * Read LIVE, never captured: the operator can change the input while video is armed, and
+         * each AudioRecord generation must resolve the choice that is current when it opens.
+         */
+        audioInputPreference: () -> AudioInputPreference,
         canStart: () -> Boolean,
         recorderAbsent: () -> Boolean,
         isPaused: () -> Boolean,
@@ -159,14 +199,14 @@ internal class StandbyAudioController(
         },
     ) : this(
         audioGain = audioGain,
-        onLevel = onLevel,
+        onLevels = onLevels,
         canStart = canStart,
         recorderAbsent = recorderAbsent,
         isPaused = isPaused,
         permissionGranted = {
             context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         },
-        audioSetup = StandbyAudioSetup(::createAndroidStandbyAudioInput),
+        audioSetup = StandbyAudioSetup { createAndroidStandbyAudioInput(context, audioInputPreference()) },
         threadLauncher = StandbyThreadLauncher { name, task ->
             runCatching { Thread({ task() }, name).start() }.isSuccess
         },
@@ -300,14 +340,16 @@ internal class StandbyAudioController(
                     val now = System.nanoTime()
                     if (now - lastEmit < METER_EMIT_INTERVAL_NS) continue
                     lastEmit = now
-                    var sum = 0.0
-                    for (index in 0 until readCount) {
-                        val value = samples[index].toDouble()
-                        sum += value * value
-                    }
-                    // Same signed-16-bit full scale as VideoRecorder: no handoff jump in the meter.
-                    val rms = sqrt(sum / readCount) / PCM_16_FULL_SCALE
-                    onLevel((rms * audioGain()).toFloat().coerceIn(0f, 1f))
+                    // Per channel, and on the same signed-16-bit full scale VideoRecorder uses, so
+                    // the meter does not jump at the standby -> REC handoff.
+                    onLevels(
+                        channelRms(
+                            samples,
+                            readCount,
+                            audioInput?.channelCount ?: 1,
+                            audioGain(),
+                        ),
+                    )
                 }
             } finally {
                 // Count the latch only after release on every path, including early returns.
@@ -334,7 +376,7 @@ internal class StandbyAudioController(
     ) {
         val completion = ownership.complete(owner)
         owner.release.countDown()
-        runCatching { onLevel(0f) }
+        runCatching { onLevels(FloatArray(0)) }
         if (!completion.completed) return
         if (retryForProcessBusy) {
             scheduleProcessBusyRetry()
@@ -405,7 +447,6 @@ internal class StandbyAudioController(
         private const val MAX_RECREATES = 3
         private const val RETRY_BACKOFF_MS = 300L
         private const val METER_EMIT_INTERVAL_NS = 100_000_000L
-        private const val PCM_16_FULL_SCALE = 32768.0
     }
 }
 

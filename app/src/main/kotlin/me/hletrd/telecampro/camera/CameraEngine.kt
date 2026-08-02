@@ -799,7 +799,8 @@ class CameraEngine(private val context: Context) {
     // all, because it deliberately rides that readback rather than triggering one.
     var onAnalysis: ((HistogramData?, WaveformData?, FocusDetailData?) -> Unit)? = null
     // Live recording-audio level (0..1 RMS, post-gain), throttled by VideoRecorder to ~10 Hz.
-    var onAudioLevel: ((Float) -> Unit)? = null
+    /** Per-channel input levels (0..1), one entry per interleaved channel; empty = meter off. */
+    var onAudioLevel: ((FloatArray) -> Unit)? = null
     // A timelapse RUN started (true) / ended (false). Run truth lives in [timelapseRun]'s
     // generation, which the UI cannot see — the OSD's TL tag keys off the SELECTED drive only.
     // Fired exactly on run-state edges (stopTimelapse with no active run is silent), from whichever
@@ -2330,8 +2331,25 @@ class CameraEngine(private val context: Context) {
     fun setAudioGain(g: Float) { audioGain = normalizeAudioGain(g) }
     /** Directional-audio scene (Sound Focus/Stage); applies on the next [startRecording]. */
     fun setAudioScene(s: AudioScene) { audioScene = s }
-    /** Preferred recording input; resolved against connected AudioDeviceInfo entries at record start. */
-    fun setAudioInputPreference(p: AudioInputPreference) { audioInputPreference = p }
+    /**
+     * Preferred audio input; resolved against connected AudioDeviceInfo entries at record start AND
+     * by every standby-meter generation.
+     *
+     * The standby meter is CYCLED on a real change rather than left to pick the new device up at the
+     * next arm: an AudioRecord's route is fixed when it is constructed, so without this the operator
+     * selects a USB/BT mic, watches the armed meter, and sees the phone's own capsule — the exact
+     * confusion this selector exists to remove. Disable-then-enable is self-sequencing: the running
+     * generation observes `wanted = false` and exits, and ownership defers the new reservation until
+     * it has completed.
+     */
+    fun setAudioInputPreference(p: AudioInputPreference) {
+        if (audioInputPreference == p) return
+        audioInputPreference = p
+        if (standbyAudioMonitorWanted) {
+            standbyAudioController.disable()
+            standbyAudioController.setEnabled(true)
+        }
+    }
 
     /** Still-photo center-crop aspect ratio; applies to HEIF and JPEG. W4_3 = no crop. */
     fun setAspectRatio(a: AspectRatio) {
@@ -4475,7 +4493,7 @@ class CameraEngine(private val context: Context) {
         standbyAudioController.disable()
         standbyAudioController.finishRecording()
         invalidateCameraReady()
-        runCatching { onAudioLevel?.invoke(0f) }
+        runCatching { onAudioLevel?.invoke(FloatArray(0)) }
         runCatching { onStatus?.invoke(UNSAFE_RECORDER_RESTART_STATUS) }
         runCatching { onRecordingTerminated?.invoke(failure) }
         android.util.Log.e(
@@ -4975,7 +4993,8 @@ class CameraEngine(private val context: Context) {
     private val standbyAudioController = StandbyAudioController(
         context = context,
         audioGain = { audioGain },
-        onLevel = { level -> onAudioLevel?.invoke(level) },
+        onLevels = { levels -> onAudioLevel?.invoke(levels) },
+        audioInputPreference = { audioInputPreference },
         canStart = {
             nativeAcquisitionMayProceed() && !paused && recorder == null && !recorderTeardownInFlight
         },
@@ -4986,7 +5005,11 @@ class CameraEngine(private val context: Context) {
         onUnavailable = { unavailable -> onStandbyAudioUnavailable?.invoke(unavailable) },
     )
 
+    // Latest standby-meter intent, so an input change knows whether a meter is even wanted.
+    @Volatile private var standbyAudioMonitorWanted = false
+
     fun setStandbyAudioMonitor(enabled: Boolean) {
+        standbyAudioMonitorWanted = enabled
         standbyAudioController.setEnabled(enabled)
     }
 

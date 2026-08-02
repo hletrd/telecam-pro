@@ -808,7 +808,7 @@ fun CameraScreen(
             // Sony-style standby metering: input levels are visible while video is ARMED,
             // not just while rolling (the engine runs a levels-only mic tap in standby).
             if (state.mode == CaptureMode.VIDEO && state.recordAudio && (detailsVisible || state.isRecording)) {
-                AudioMeter(level = state.audioLevel, modifier = Modifier.rotateLayout(overlayRotation))
+                AudioMeter(levels = state.audioLevels, modifier = Modifier.rotateLayout(overlayRotation))
             }
             // Composed on the SAME predicate that gates their data publication (review 2026-08-01):
             // the Fn overlay's 22%-alpha scrim deliberately leaves chrome legible, so a scope left

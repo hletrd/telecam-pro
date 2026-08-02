@@ -25,7 +25,7 @@ class AudioGainTest {
     @Test
     fun `unity gain leaves samples untouched and reports RMS`() {
         val buf = pcmBuffer(1000, -1000, 1000, -1000)
-        val level = applyGainAndLevel(buf, 8, 1f)
+        val level = applyGainAndLevel(buf, 8, 1f).single()
         assertEquals(listOf<Short>(1000, -1000, 1000, -1000), samplesOf(buf, 4).toList())
         // RMS of |1000| normalized by 32768.
         assertEquals(1000f / 32768f, level, 1e-4f)
@@ -34,7 +34,7 @@ class AudioGainTest {
     @Test
     fun `gain amplifies in place`() {
         val buf = pcmBuffer(1000, -2000)
-        val level = applyGainAndLevel(buf, 4, 2f)
+        val level = applyGainAndLevel(buf, 4, 2f).single()
         assertEquals(listOf<Short>(2000, -4000), samplesOf(buf, 2).toList())
         assertTrue(level > 0f)
     }
@@ -48,13 +48,13 @@ class AudioGainTest {
 
     @Test
     fun `empty buffer reports zero level`() {
-        assertEquals(0f, applyGainAndLevel(pcmBuffer(), 0, 1.5f), 0f)
+        assertEquals(0f, applyGainAndLevel(pcmBuffer(), 0, 1.5f).single(), 0f)
     }
 
     @Test
     fun `level is normalized into 0-1`() {
         val buf = pcmBuffer(Short.MAX_VALUE, Short.MIN_VALUE, Short.MAX_VALUE, Short.MIN_VALUE)
-        val level = applyGainAndLevel(buf, 8, 8f)
+        val level = applyGainAndLevel(buf, 8, 8f).single()
         assertTrue(level in 0f..1f)
     }
 
@@ -63,7 +63,7 @@ class AudioGainTest {
         // A non-frame-aligned byteCount (5 bytes = 2 whole 16-bit frames + 1 trailing byte): the short
         // view exposes only the 2 complete frames, so the third sample is never read or written.
         val buf = pcmBuffer(1000, -1000, 2000)
-        val level = applyGainAndLevel(buf, 5, 2f)
+        val level = applyGainAndLevel(buf, 5, 2f).single()
         assertEquals(listOf<Short>(2000, -2000, 2000), samplesOf(buf, 3).toList())
         assertTrue(level.isFinite())
         assertTrue(level in 0f..1f)
@@ -77,7 +77,7 @@ class AudioGainTest {
         assertEquals(2f, normalizeAudioGain(3f), 0f)
 
         val buf = pcmBuffer(1000, -1000)
-        val level = applyGainAndLevel(buf, 4, Float.NaN)
+        val level = applyGainAndLevel(buf, 4, Float.NaN).single()
         assertEquals(listOf<Short>(1000, -1000), samplesOf(buf, 2).toList())
         assertTrue(level.isFinite())
     }

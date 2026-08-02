@@ -55,7 +55,7 @@ class StandbyAudioControllerTest {
         return Fixture(
             controller = StandbyAudioController(
                 audioGain = { 1f },
-                onLevel = {},
+                onLevels = {},
                 canStart = canStart,
                 // A ready fake exits after setup/start without entering the blocking read loop.
                 recorderAbsent = recorderAbsent,
@@ -760,7 +760,7 @@ class StandbyAudioControllerTest {
         var levels = 0
         val controller = StandbyAudioController(
             audioGain = { 1f },
-            onLevel = { levels++ },
+            onLevels = { levels++ },
             canStart = { true },
             recorderAbsent = { false },
             isPaused = { false },
@@ -789,7 +789,7 @@ class StandbyAudioControllerTest {
         val input = FakeInput()
         val controller = StandbyAudioController(
             audioGain = { 1f },
-            onLevel = { if (it == 0f) zeroLevels.countDown() },
+            onLevels = { if (it.isEmpty()) zeroLevels.countDown() },
             canStart = { true },
             recorderAbsent = { false },
             isPaused = { false },
@@ -823,7 +823,7 @@ class StandbyAudioControllerTest {
         val setupCalls = AtomicInteger()
         val controller = StandbyAudioController(
             audioGain = { 1f },
-            onLevel = {},
+            onLevels = {},
             canStart = { true },
             recorderAbsent = { false },
             isPaused = {

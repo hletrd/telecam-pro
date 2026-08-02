@@ -1088,7 +1088,12 @@ data class CameraUiState(
     val audioInputPreference: AudioInputPreference = AudioInputPreference.AUTO,
     val audioRouteLabel: String = "Auto",
     val audioGain: Float = 1f, // 0..2 software gain applied to recorded PCM
-    val audioLevel: Float = 0f, // 0..1 live input level (RMS), for the meter
+    /**
+     * Live input level per CHANNEL (0..1 RMS), in interleave order; empty while the meter is off.
+     * A list rather than one number because a stereo or multi-capsule external mic can lose ONE
+     * channel, and a single averaged bar hides exactly that (2026-08-02).
+     */
+    val audioLevels: List<Float> = emptyList(),
     val aspectRatio: AspectRatio = AspectRatio.W4_3,
     // Displayed preview aspect (W/H as shown on the portrait screen; the ~90° sensor orientation
     // already swaps the stream's W/H). The viewfinder TextureView is sized to this and letterboxed,
