@@ -42,6 +42,26 @@ internal data class LensExifMetadata(
     val minFocusDiopters: Float = 0f,
 )
 
+/**
+ * Drops stream sizes below [MIN_USABLE_VIDEO_HEIGHT] from the offered list. The device advertises
+ * everything its encoder can take — a Lenovo tablet offered 640x360 and 192x108 beside 1440p
+ * (device-seen 2026-08-02) — and a professional camera app offering 192x108 is noise, not
+ * capability. Degrades safely: a device whose LARGEST size is below the floor keeps its whole list,
+ * because "small" is only meaningless while something better exists.
+ */
+internal fun List<Size>.withUsableVideoFloor(): List<Size> =
+    if (videoFloorKeepsAll(map { it.height })) this else filter { it.height >= MIN_USABLE_VIDEO_HEIGHT }
+
+/**
+ * Android-type-free core (same discipline as the other normalization seams here, so plain JVM tests
+ * can pin it): true when the floor must NOT be applied, i.e. nothing in [heights] clears it.
+ */
+internal fun videoFloorKeepsAll(heights: List<Int>): Boolean =
+    heights.none { it >= MIN_USABLE_VIDEO_HEIGHT }
+
+/** 720p: the lowest height a delivery-grade clip is cut at today. */
+internal const val MIN_USABLE_VIDEO_HEIGHT = 720
+
 /** Pure lens-metadata calculation shared by broad capability reads and lightweight EXIF prefetch. */
 internal fun lensExifMetadataOf(
     focalLengthMm: Float,
@@ -333,9 +353,11 @@ data class CameraCaps(
             val videoSizes = stSizes
                 .filter { matchesStreamAspect(it.width, it.height, fourByThree = false) }
                 .sortedByDescending { it.width.toLong() * it.height }
+                .withUsableVideoFloor()
             val openGateSizes = stSizes
                 .filter { matchesStreamAspect(it.width, it.height, fourByThree = true) }
                 .sortedByDescending { it.width.toLong() * it.height }
+                .withUsableVideoFloor()
 
             // High-speed (slow-motion) configs: size → max advertised fps. Read defensively — some
             // cameras/HALs return null or throw for getHighSpeedVideoFpsRangesFor on odd sizes.

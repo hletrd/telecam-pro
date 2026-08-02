@@ -1,5 +1,6 @@
 package me.hletrd.telecampro.camera
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -161,5 +162,25 @@ class YuvLaneShapeTest {
             if (!on) seenFalse = true
             assertTrue("rung $attempt re-deepened after dropping", !(seenFalse && on))
         }
+    }
+}
+
+/** The offered video sizes must be usable ones — but never an EMPTY list (2026-08-02). */
+class VideoSizeFloorTest {
+    @Test
+    fun `the floor applies while something clears it`() {
+        // 1440p/1080p/720p/360p/108p as a real device advertised them.
+        assertFalse(videoFloorKeepsAll(listOf(1440, 1080, 720, 360, 108)))
+    }
+
+    @Test
+    fun `a device whose largest size is below the floor keeps everything`() {
+        assertTrue(videoFloorKeepsAll(listOf(360, 108)))
+        assertTrue(videoFloorKeepsAll(emptyList()))
+    }
+
+    @Test
+    fun `PMA110 clears the floor, so nothing about its list changes`() {
+        assertFalse(videoFloorKeepsAll(listOf(2160, 1080, 720)))
     }
 }
