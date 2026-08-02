@@ -70,7 +70,6 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.Modifier
@@ -2567,7 +2566,13 @@ private fun ShutterRow(
     shutterEnabled: Boolean = true,
     stillCaptureAvailable: Boolean = true,
 ) {
-    Box(modifier = modifier) {
+    // BoxWithConstraints, not a plain Box: the snapshot-dot clamp below must measure THIS ROW, and
+    // the row is not the screen. Configuration.screenWidthDp (and LocalWindowInfo.containerSize)
+    // report the display/window, which in split-screen, freeform, or a letterboxed large-screen
+    // window is wider than the row that actually holds these controls — so the clamp would go
+    // slack exactly in the window shapes it exists for.
+    BoxWithConstraints(modifier = modifier) {
+        val rowWidth = maxWidth
         // Counter-rotate the review thumbnail so its image reads upright as the phone turns.
         GalleryThumb(
             uri = lastMediaUri,
@@ -2584,7 +2589,7 @@ private fun ShutterRow(
             // or a freeform window) the dot's 48 dp touch box overlapped the 52 dp gallery thumb
             // (2026-08-02 review). Clamp so the dot never crosses the thumb's right edge; below
             // that width the two simply sit adjacent instead of on top of each other.
-            val halfWidth = LocalConfiguration.current.screenWidthDp.dp / 2
+            val halfWidth = rowWidth / 2
             val thumbEdge = 12.dp + 52.dp + 8.dp // one inset + thumb + breathing room
             val snapshotOffset = minOf(76.dp, (halfWidth - thumbEdge - 24.dp).coerceAtLeast(0.dp))
             SnapshotButton(
