@@ -706,7 +706,6 @@ class CameraEngine(private val context: Context) {
      */
     private fun publishLensInventoryOnce() {
         if (lensInventoryPublished) return
-        lensInventoryPublished = true
         val equivalents = runCatching {
             CameraSelector2.candidatesOf(manager).map { it.equivFocalMm }
         }.getOrDefault(emptyList())
@@ -724,7 +723,12 @@ class CameraEngine(private val context: Context) {
                     "available=${inventory.available.map { it.label }} optical=${inventory.optical.map { it.label }}",
             )
         }
-        onLensInventory?.invoke(inventory)
+        // Latch only on a real publication: setting it first meant a null listener at this instant
+        // (or any throw) permanently pinned the UI to LensInventory.ALL — silently restoring the
+        // hardcoded rail with no retry (verification 2026-08-02).
+        val listener = onLensInventory ?: return
+        listener.invoke(inventory)
+        lensInventoryPublished = true
     }
 
     // Static-per-device like the focal→id cache: the front enumeration never changes at runtime and
@@ -1070,7 +1074,12 @@ class CameraEngine(private val context: Context) {
                     acquisitionAllowed = acquisitionAllowed,
                     started = started,
                     ownerCurrent = glOwners.owns(ownedGl),
-                    recording = recorder != null,
+                    // pause() nulls `recorder` at onStop, which ALWAYS precedes the TextureView
+                    // destroy at onDestroy — so `recorder != null` alone could never see a
+                    // recreation-during-recording, and the restart would race the ordered finalize
+                    // still in flight (verification 2026-08-02). recorderTeardownInFlight stays true
+                    // across exactly that window, which is the state the exemption meant to name.
+                    recording = recorder != null || recorderTeardownInFlight,
                 )
             ) {
                 return
@@ -5017,6 +5026,7 @@ internal fun previewSurfaceLossRestartAllowed(
     acquisitionAllowed: Boolean,
     started: Boolean,
     ownerCurrent: Boolean,
+    /** A live recorder OR one whose ordered finalize is still in flight — see the call site. */
     recording: Boolean,
 ): Boolean = acquisitionAllowed && started && ownerCurrent && !recording
 

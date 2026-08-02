@@ -39,7 +39,7 @@ class PreviewBoxFitTest {
             val w = previewBoxWidthPx(cw, ch, portrait4x3)
             val h = (w / portrait4x3).toInt()
             assertTrue("w=$w > $cw", w <= cw)
-            assertTrue("h=$h > $ch", h <= ch + 1)
+            assertTrue("h=$h > $ch", h <= ch)
         }
     }
 

@@ -233,6 +233,20 @@ internal fun lensFocalCaption(
 /** Within this fraction of the preset, the round label IS the lens's own marketing focal. */
 internal const val LENS_CAPTION_ROUNDING_BAND = 0.10f
 
+
+/**
+ * Names the lens a teleconverter will ACTUALLY clamp onto. The resolver
+ * (`CameraSelector2.pickBest` via `cachedIdForFocal`) is an UNBANDED closest-match, so keying this
+ * caption on the inventory's ±35% optical band alone could say "main lens" while the converter was
+ * resolved onto, say, a 50 mm lens that is neither (verification 2026-08-02). When the host is not
+ * the 3x lens, name it by its measured focal instead of guessing which preset it belongs to.
+ */
+internal fun teleconverterHostCaption(hostEquivMm: Float, teleIsOptical: Boolean): String = when {
+    teleIsOptical -> "Uses the 3\u00d7 lens"
+    hostEquivMm > 0f -> "Uses the ${formatFocalMm(hostEquivMm)} lens"
+    else -> "Uses the main lens"
+}
+
 internal fun driveModeLabel(mode: DriveMode): String = when (mode) {
     DriveMode.SINGLE -> "Single"
     DriveMode.BURST -> "Burst"

@@ -602,6 +602,17 @@ data class LensInventory(
      * told a 26 mm-lens tablet that a generic 1.5x clip-on yields 105 mm instead of 39 mm.
      */
     val teleHostEquivMm: Float = 0f,
+    /**
+     * What each preset ACTUALLY delivers here, in 35 mm-equivalent mm: the matched lens's measured
+     * focal for an optical preset, else the main lens scaled by the preset's ratio (a digital 3x on
+     * a 26 mm lens really is ~78 mm). Zero when unreadable.
+     *
+     * Per PRESET, never per ROUTE — the distinction is the whole point. On the seamless photo route
+     * every preset rides the SAME logical camera, so that camera's own equivalent (~23 mm on
+     * PMA110) describes only the 1x framing; using it for the caption made 3x read "23 mm" instead
+     * of "70 mm" (verification 2026-08-02, caught before release).
+     */
+    val presetEquivMm: Map<LensChoice, Float> = emptyMap(),
 ) {
     companion object {
         /**
@@ -631,22 +642,48 @@ internal fun lensInventoryOf(
     // The lens a converter clamps onto is the one the route resolver would pick: closest to the 3x
     // target (CameraSelector2 uses the same "closest measured equivalent" rule).
     val teleHost = usableLenses.minByOrNull { kotlin.math.abs(it - LensChoice.TELE3X.targetEquivMm) } ?: 0f
-    val optical = LensChoice.entries.filter { choice ->
-        usableLenses.any { equiv ->
-            val ratio = if (equiv >= choice.targetEquivMm) {
-                equiv / choice.targetEquivMm
-            } else {
-                choice.targetEquivMm / equiv
-            }
-            ratio <= LENS_MATCH_TOLERANCE
+    // MUTUAL nearest, not "any lens within the band": the bands overlap (ultrawide 10.4-18.9,
+    // main 17.0-31.1), so a single ~18 mm lens would otherwise claim BOTH presets and the rail
+    // would draw a "0.6x lens" chip for what is the main camera — the same falsehood this
+    // enumeration exists to remove (verification 2026-08-02).
+    val matched = HashMap<LensChoice, Float>()
+    for (equiv in usableLenses) {
+        val nearest = LensChoice.entries.minByOrNull { choice ->
+            kotlin.math.abs(kotlin.math.ln(equiv / choice.targetEquivMm))
+        } ?: continue
+        val ratio = if (equiv >= nearest.targetEquivMm) {
+            equiv / nearest.targetEquivMm
+        } else {
+            nearest.targetEquivMm / equiv
         }
-    }.toMutableSet()
+        if (ratio > LENS_MATCH_TOLERANCE) continue
+        // Two lenses nearest the same preset: keep the closer one.
+        val incumbent = matched[nearest]
+        if (incumbent == null ||
+            kotlin.math.abs(equiv - nearest.targetEquivMm) < kotlin.math.abs(incumbent - nearest.targetEquivMm)
+        ) {
+            matched[nearest] = equiv
+        }
+    }
+    val optical = matched.keys.toMutableSet()
     if (usableLenses.isNotEmpty()) optical += LensChoice.MAIN
     val available = LensChoice.entries.filter { choice ->
         choice in optical ||
             (zoomRange != null && choice.zoomPreset >= zoomRange.first && choice.zoomPreset <= zoomRange.second)
     }.toSet()
-    return LensInventory(available = available, optical = optical, teleHostEquivMm = teleHost)
+    // Main is the scale reference for every preset reachable only by zoom.
+    val mainEquiv = matched[LensChoice.MAIN]
+        ?: usableLenses.minByOrNull { kotlin.math.abs(kotlin.math.ln(it / LensChoice.MAIN.targetEquivMm)) }
+        ?: 0f
+    val presetEquiv = available.associateWith { choice ->
+        matched[choice] ?: if (mainEquiv > 0f) mainEquiv * choice.zoomPreset else 0f
+    }
+    return LensInventory(
+        available = available,
+        optical = optical,
+        teleHostEquivMm = teleHost,
+        presetEquivMm = presetEquiv,
+    )
 }
 
 enum class LensChoice(val targetEquivMm: Float, val label: String, val zoomPreset: Float) {

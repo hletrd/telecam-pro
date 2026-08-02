@@ -513,13 +513,16 @@ class CameraViewModel @JvmOverloads constructor(
         // selected camera's authoritative range on main before any delayed input can reuse it.
         engine.onLensInventory = { inventory ->
             _state.update { it.copy(lensInventory = inventory) }
-            // The inventory carries the MEASURED converter host lens, and it lands after the phone
-            // seed — re-push so an unknown phone's focal readouts and EXIF stop using the 70 mm
-            // assumption the moment the real number is known.
-            engine.setTeleconverterMagnification(
-                _state.value.teleconverterMagnification,
-                _state.value.teleconverterHostEquivMm,
-            )
+            // The inventory carries the MEASURED converter host lens and lands after the phone
+            // seed, so re-push it — but on MAIN, like every other engine setter in this class
+            // (this callback arrives on the setup thread; the seed path calls the same setter from
+            // main, and one setter must not be entered from two threads).
+            mainHandler.post {
+                engine.setTeleconverterMagnification(
+                    _state.value.teleconverterMagnification,
+                    _state.value.teleconverterHostEquivMm,
+                )
+            }
         }
         engine.onCapsReady = { caps, generation ->
             mainHandler.post {

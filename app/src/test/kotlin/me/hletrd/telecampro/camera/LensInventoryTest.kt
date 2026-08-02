@@ -65,3 +65,43 @@ class LensInventoryTest {
         assertFalse(LensChoice.TELE10X in lensInventoryOf(listOf(0f, -1f), 1f to 4f).available)
     }
 }
+
+/**
+ * Regressions caught by the 2026-08-02 verification pass, pinned so they cannot return.
+ */
+class LensInventoryVerificationTest {
+
+    @Test
+    fun `each preset carries ITS OWN measured focal, not the route's`() {
+        // PMA110: all four optical. The seamless photo route reports ~23 mm for EVERY preset, which
+        // is why the caption must read this map instead of caps.equivalentFocalMm.
+        val inv = lensInventoryOf(listOf(14f, 23f, 69.4f, 230f), 0.6f to 20f)
+        assertEquals(14f, inv.presetEquivMm[LensChoice.ULTRAWIDE]!!, 0.01f)
+        assertEquals(23f, inv.presetEquivMm[LensChoice.MAIN]!!, 0.01f)
+        assertEquals(69.4f, inv.presetEquivMm[LensChoice.TELE3X]!!, 0.01f)
+        assertEquals(230f, inv.presetEquivMm[LensChoice.TELE10X]!!, 0.01f)
+    }
+
+    @Test
+    fun `a zoom-only preset reports what the crop actually delivers`() {
+        // One 26 mm lens, zoom to 8x: 3x is digital and really is ~78 mm, not the 70 mm label.
+        val inv = lensInventoryOf(listOf(26f), 1f to 8f)
+        assertEquals(26f, inv.presetEquivMm[LensChoice.MAIN]!!, 0.01f)
+        assertEquals(78f, inv.presetEquivMm[LensChoice.TELE3X]!!, 0.01f)
+    }
+
+    @Test
+    fun `one lens cannot claim two presets through overlapping bands`() {
+        // 18 mm sits inside BOTH the ultrawide and main bands; mutual-nearest gives it to main only.
+        val inv = lensInventoryOf(listOf(18f), 1f to 4f)
+        assertFalse("18 mm must not read as an ultrawide lens", LensChoice.ULTRAWIDE in inv.optical)
+        assertTrue(LensChoice.MAIN in inv.optical)
+    }
+
+    @Test
+    fun `two lenses nearest the same preset keep the closer one`() {
+        val inv = lensInventoryOf(listOf(21f, 24f, 70f), 1f to 10f)
+        assertEquals(24f, inv.presetEquivMm[LensChoice.MAIN]!!, 0.01f)
+        assertTrue(LensChoice.TELE3X in inv.optical)
+    }
+}

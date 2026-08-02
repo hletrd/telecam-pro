@@ -93,3 +93,46 @@ class LensFocalCaptionMeasuredTest {
         )
     }
 }
+
+
+/**
+ * The exact combination the CALL SITE produces, which the first round of tests missed: on PMA110's
+ * seamless photo route the caption is asked about a preset while the ACTIVE route measures ~23 mm.
+ * Feeding the route's value made 3x read "23 mm"; feeding the PRESET's own value keeps "70 mm".
+ */
+class LensFocalCaptionRouteRegressionTest {
+    private val pma110 = me.hletrd.telecampro.camera.lensInventoryOf(
+        listOf(14f, 23f, 69.4f, 230f),
+        0.6f to 20f,
+    )
+
+    @Test
+    fun `every PMA110 preset keeps its own label on the seamless route`() {
+        val expected = mapOf(
+            LensChoice.ULTRAWIDE to "14 mm",
+            LensChoice.MAIN to "23 mm",
+            LensChoice.TELE3X to "70 mm",
+            LensChoice.TELE10X to "230 mm",
+        )
+        for ((lens, label) in expected) {
+            assertEquals(
+                label,
+                lensFocalCaption(
+                    lens,
+                    teleconverter = false,
+                    teleconverterFocalMm = 300f,
+                    measuredEquivMm = pma110.presetEquivMm[lens] ?: 0f,
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `the route's own equivalent would have broken it — pinned as the anti-case`() {
+        // 23 mm (the logical camera) against the 3x preset: this is what the regression fed in.
+        assertEquals(
+            "23 mm",
+            lensFocalCaption(LensChoice.TELE3X, teleconverter = false, teleconverterFocalMm = 300f, measuredEquivMm = 23f),
+        )
+    }
+}

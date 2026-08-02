@@ -1026,7 +1026,10 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
                 state.lens,
                 state.teleconverterMode,
                 state.teleconverterFocalMm,
-                measuredEquivMm = state.caps?.equivalentFocalMm ?: 0f,
+                // The SELECTED preset's own measured focal, never the active route's: on the
+                // seamless photo route every preset rides one logical camera, so its ~23 mm
+                // equivalent described 1x only and made 3x read "23 mm" (verification 2026-08-02).
+                measuredEquivMm = state.lensInventory.presetEquivMm[state.lens] ?: 0f,
             )
         } else {
             null
@@ -1051,7 +1054,10 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
     // a single-camera device would otherwise be told it uses a lens it does not have).
     Captioned(
         if (rearRoute) {
-            if (LensChoice.TELE3X in state.lensInventory.optical) "Uses the 3× lens" else "Uses the main lens"
+            teleconverterHostCaption(
+                state.lensInventory.teleHostEquivMm,
+                LensChoice.TELE3X in state.lensInventory.optical,
+            )
         } else {
             null
         },
