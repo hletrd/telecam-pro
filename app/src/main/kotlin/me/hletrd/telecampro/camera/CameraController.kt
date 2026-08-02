@@ -478,7 +478,13 @@ class CameraController(context: Context) {
      * full [startPreview] rebuild when no builder is cached yet (pre-first-preview) or in
      * constrained high-speed mode (whose repeating request is a burst list).
      */
-    /** Orders open()'s packet write against the camera thread's zoom read-modify-writes. */
+    /**
+     * Orders EVERY writer of [controls] against every other: open()'s packet write runs on the setup
+     * executor while the camera thread's zoom/boost/mode read-modify-writes are already queued
+     * against the freshly installed controller, so a lost update there puts the operator's manual
+     * exposure/WB/focus on the wire as defaults. A strict leaf lock — only `copy()` and pure
+     * normalization run inside it, never the engine monitor or the Pending monitor.
+     */
     private val controlsWriteLock = Any()
 
     fun setZoomRatio(ratio: Float, requestRatio: Float = ratio) {
@@ -639,7 +645,12 @@ class CameraController(context: Context) {
             // gralloc at 4096×3072 and is ALWAYS ON in release, so [SessionAttemptPlan.useDeepZslReader]
             // makes it a LADDER RUNG: see that field's doc for why the runtime zslStreamingBroken
             // fallback does not cover a configure-time rejection.
-            val deepZsl = useYuv && plan.useDeepZslReader
+            // The fluidity gate is a pure function of caps, so it is known HERE — allocating the
+            // ZSL_RING_DEPTH+2 full-res reader (~5 x 19 MB gralloc) on a device whose repeating
+            // request would be throttled by it wastes exactly the memory such a device is short of,
+            // and zslStreamingActive would refuse to fill it anyway (verification 2026-08-02).
+            val deepZsl = useYuv && plan.useDeepZslReader &&
+                zslStreamKeepsPreviewFluid(caps.largestYuvMinFrameDurationNs)
             size?.let {
                 val reader = ImageReader.newInstance(
                     it.width, it.height,
@@ -1257,7 +1268,7 @@ class CameraController(context: Context) {
         } else {
             null
         }
-        controls = normalized
+        synchronized(controlsWriteLock) { controls = normalized }
 
         if (retainedOpticsCommit) {
             // Clear before rebuilding/fast-submitting: startPreview and the sensor-key derivation
@@ -1671,7 +1682,9 @@ class CameraController(context: Context) {
             // rebuild-then-correct order at gesture end submitted the stale mid-gesture wide-aimed
             // ratio first (this field was last written by the throttled wide submit) and then paid
             // a second ~180 ms repeating-request stall for the correction.
-            if (finalZoom != null) controls = controls.copy(zoomRatio = finalZoom)
+            if (finalZoom != null) {
+                synchronized(controlsWriteLock) { controls = controls.copy(zoomRatio = finalZoom) }
+            }
             val wire = halZoom ?: finalZoom
             if (smoothPreviewBoost == active) {
                 // Boost state already correct (duplicate gesture edge): still honor the exact zoom
@@ -1723,9 +1736,11 @@ class CameraController(context: Context) {
             } else {
                 controls
             }
-            controls = modeIntent.normalizedFor(caps).normalizedForCaptureMode(
-                if (enabled) CaptureMode.VIDEO else CaptureMode.PHOTO,
-            )
+            synchronized(controlsWriteLock) {
+                controls = modeIntent.normalizedFor(caps).normalizedForCaptureMode(
+                    if (enabled) CaptureMode.VIDEO else CaptureMode.PHOTO,
+                )
+            }
             startPreview()
         }
     }
@@ -2449,8 +2464,15 @@ internal fun sessionAttemptPlan(
     // YUV stills belong to the logical/front routes. Where the profile says the JPEG blob cannot be
     // allocated they stay for every rung; elsewhere the third rung trades the ZSL optimisation for
     // the always-guaranteed PRIV+JPEG combination before the ladder gives up on stills entirely.
-    useYuvStill = (logicalMultiCamera || frontRoute) && !hiRes &&
-        (yuvStillRequired || streamAttempt < 2),
+    //
+    // NO `!hiRes` term (verification 2026-08-02): hi-res is standalone-only by construction, so it
+    // can never co-occur with these routes — but if a bad intent ever did reach here, that term
+    // turned the LOGICAL route's fail-safe OFF and asked the seam for the ~42 MB JPEG blob this
+    // HAL cannot allocate, i.e. it converted a wrong intent into the worst outcome instead of the
+    // safe one. And keyed on `ladderAttempt`, not `streamAttempt`, for the same reason
+    // [useDeepZslReader] is: degradation must be MONOTONIC, and the TELE table's stream sequence
+    // (0,1,2,0,1,2,3,3) would otherwise drop the lane at rung 2 and bring it BACK at rungs 3-4.
+    useYuvStill = (logicalMultiCamera || frontRoute) && (yuvStillRequired || ladderAttempt < 2),
     )
 }
 

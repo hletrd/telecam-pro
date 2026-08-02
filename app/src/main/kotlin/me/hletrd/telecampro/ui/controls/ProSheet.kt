@@ -689,6 +689,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         rawInSession = state.photoSessionOutputs.raw,
         onSetPhotoFormats = actions::onSetPhotoFormats,
         videoMode = state.mode == CaptureMode.VIDEO,
+        heifAvailable = state.heifAvailable,
     )
     // Hi-res still: visible only when the SELECTED camera is a standalone route that actually
     // advertises a full-sensor size (the logical seamless camera never qualifies — its gralloc

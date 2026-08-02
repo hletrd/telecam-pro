@@ -920,16 +920,6 @@ internal fun largestCenteredRect(
  * neither container is a straight byte passthrough. [dngRaw] adds a full-frame RAW sensor file and
  * can be the only output when the active standalone session actually exposes RAW.
  */
-/**
- * Drops HEIF when this device cannot encode it, promoting JPEG so the shutter still writes a file.
- * HeifWriter needs the platform HEVC encoder, which is not CDD-mandatory at API 33; without this a
- * fresh install on such a handset produced NO output at all from its own default (2026-08-02).
- */
-fun PhotoFormats.normalizedForEncoder(heifEncodeAvailable: Boolean): PhotoFormats = when {
-    heifEncodeAvailable || !heif -> this
-    else -> copy(heif = false, jpeg = true)
-}
-
 data class PhotoFormats(
     val heif: Boolean = true,
     val jpeg: Boolean = false,
@@ -945,6 +935,17 @@ data class PhotoFormats(
      */
     val wantsProcessedStill: Boolean get() = heif || jpeg
 }
+
+/**
+ * Drops HEIF when this device cannot encode it, promoting JPEG so the shutter still writes a file.
+ * HeifWriter needs the platform HEVC encoder, which is not CDD-mandatory at API 33; without this a
+ * fresh install on such a handset produced NO output at all from its own default (2026-08-02).
+ */
+fun PhotoFormats.normalizedForEncoder(heifEncodeAvailable: Boolean): PhotoFormats = when {
+    heifEncodeAvailable || !heif -> this
+    else -> copy(heif = false, jpeg = true)
+}
+
 
 /** Actual still readers present in one accepted Camera2 session. */
 data class PhotoSessionOutputs(

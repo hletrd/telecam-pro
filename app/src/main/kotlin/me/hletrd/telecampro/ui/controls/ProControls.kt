@@ -862,12 +862,18 @@ internal fun PhotoFormatToggles(
     // VIDEO reframes the "no still outputs" line: there it is the 10-bit session's deliberate trade,
     // not a capability the route failed to deliver.
     videoMode: Boolean = false,
+    // Whether this DEVICE can encode HEIF at all (HeifWriter needs a platform HEVC encoder, which
+    // is not CDD-mandatory at API 33). Without it the chip stayed live and a tap silently produced
+    // JPEG instead — the selection normalizer's doing, invisible at the control (verification
+    // 2026-08-02).
+    heifAvailable: Boolean = true,
 ) {
     val processedSelected = processedAvailable && formats.wantsProcessedStill
     val rawSelected = rawAvailable && formats.dngRaw
     // Hoisted so the chip's border sees the SAME enablement as the chip: at least one processed
     // format must survive unless RAW is on, and RAW needs a processed sibling.
-    val heifEnabled = processedAvailable && (!formats.heif || formats.jpeg || rawSelected)
+    val heifEnabled = heifAvailable && processedAvailable &&
+        (!formats.heif || formats.jpeg || rawSelected)
     val jpegEnabled = processedAvailable && (!formats.jpeg || formats.heif || rawSelected)
     val dngEnabled = rawAvailable && (!formats.dngRaw || processedSelected)
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {

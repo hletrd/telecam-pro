@@ -121,3 +121,45 @@ class ZslStreamFluidityTest {
         assertFalse(zslStreamKeepsPreviewFluid(100_000_000L))
     }
 }
+
+/** Coverage the verification pass asked for: the two shapes the new code could newly emit. */
+class YuvLaneShapeTest {
+    @Test
+    fun `a hi-res intent can never turn the logical route's YUV fail-safe off`() {
+        // hi-res is standalone-only by construction, but if a bad intent ever reached the plan the
+        // old caps-derived predicate still said YUV; the new one must not ask a logical camera for
+        // the JPEG blob it cannot allocate.
+        val p = sessionAttemptPlan(
+            attempt = 0,
+            wantHlg = false,
+            supportsRaw = false,
+            standalone = false,
+            logicalMultiCamera = true,
+            wantHiRes = true,
+            yuvStillRequired = true,
+            rawStandaloneOnly = true,
+        )
+        assertTrue(p.useYuvStill)
+    }
+
+    @Test
+    fun `the YUV lane degrades monotonically across the TELE table`() {
+        // TELE maps ladder rungs onto stream attempts 0,1,2,0,1,2,3,3 — keyed on streamAttempt the
+        // lane would drop at rung 2 and come BACK at rungs 3-4.
+        var seenFalse = false
+        for (attempt in 0..7) {
+            val on = sessionAttemptPlan(
+                attempt = attempt,
+                wantHlg = false,
+                supportsRaw = false,
+                standalone = false,
+                logicalMultiCamera = true,
+                teleconverterMode = true,
+                yuvStillRequired = false,
+                rawStandaloneOnly = false,
+            ).useYuvStill
+            if (!on) seenFalse = true
+            assertTrue("rung $attempt re-deepened after dropping", !(seenFalse && on))
+        }
+    }
+}

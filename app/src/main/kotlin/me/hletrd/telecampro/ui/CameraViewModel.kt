@@ -769,7 +769,9 @@ class CameraViewModel @JvmOverloads constructor(
             // float never repeats — even a silent room's noise floor jitters — so StateFlow's
             // equality dedup never fired and all ~10 emissions/s were whole-CameraUiState copies
             // that recomposed the tree for an unchanged 120x8 dp bar. 1/256 is finer than one
-            // pixel of that bar, so nothing visible is lost.
+            // On the densest panel here that is ~1.6 px of a 120 dp bar — below the eye's
+            // threshold for a smoothly-moving meter, and the emission it saves is a whole-tree
+            // recomposition.
             val q = kotlin.math.round(lvl.coerceIn(0f, 1f) * 256f) / 256f
             _state.update { if (it.audioLevel == q) it else it.copy(audioLevel = q) }
         }
@@ -2137,19 +2139,6 @@ class CameraViewModel @JvmOverloads constructor(
     }
 
     /**
-     * First-launch default for the converter PAIR, seeded from the phone.
-     *
-     * An afocal converter is passive glass on a clamp — no contacts, no ID — so the app can NEVER
-     * detect one. What it CAN read is the PHONE, and this is the ONE place in the codebase that does
-     * ([detectPhone] itself stays pure). A model match may only choose which entries start SELECTED
-     * and license the "Detected …" caption; no capability, route, or request decision may ever
-     * branch on a model string (every lens is still resolved by ENUMERATING Camera2 capabilities).
-     *
-     * Runs before [restoreSettingsIfEnabled], so a persisted pair always wins over this seed. On an
-     * unrecognised phone nothing is seeded: the state defaults stand and [phoneModelDetected] stays
-     * false, which is exactly what the caption must be able to say.
-     */
-    /**
      * Device-static still-encoder truth, seeded before settings restore so a persisted HEIF-only
      * selection cannot survive onto hardware that has no HEVC encoder.
      */
@@ -2165,6 +2154,19 @@ class CameraViewModel @JvmOverloads constructor(
         }
     }
 
+    /**
+     * First-launch default for the converter PAIR, seeded from the phone.
+     *
+     * An afocal converter is passive glass on a clamp — no contacts, no ID — so the app can NEVER
+     * detect one. What it CAN read is the PHONE, and this is the ONE place in the codebase that does
+     * ([detectPhone] itself stays pure). A model match may only choose which entries start SELECTED
+     * and license the "Detected …" caption; no capability, route, or request decision may ever
+     * branch on a model string (every lens is still resolved by ENUMERATING Camera2 capabilities).
+     *
+     * Runs before [restoreSettingsIfEnabled], so a persisted pair always wins over this seed. On an
+     * unrecognised phone nothing is seeded: the state defaults stand and [phoneModelDetected] stays
+     * false, which is exactly what the caption must be able to say.
+     */
     private fun seedPhoneModel() {
         // An UNRECOGNISED phone seeds PhoneModel.OTHER, not the state default: DEFAULT_PHONE_MODEL is
         // the Find X9 Ultra (this app's reason for existing), which was correct while the app only
