@@ -28,19 +28,24 @@ frozen artifact vs re-cut" decision is closed; both frozen candidates (`9541697`
 - **What is NOT re-run:** the full PMA110 release matrix against this exact artifact. Individual
   features were device-verified from this build (see cycle 9 below), but the formal matrix sweep
   recorded for `9541697` has not been repeated end to end.
-- **RE-CUT REQUIRED, AND CURRENTLY BLOCKED (updated 2026-08-02).** The pinned artifact
-  (`2d6c35b`) is nine `app/src` commits behind `main` — it predates the config-change dead-preview
-  fix, the any-window letterbox, the enumerated lens rail, the device-laws review batch, and the
-  sub-720p video-size floor.
-  **The blocker is the signing password, not the code.** `telecampro-upload-passwords.txt.gpg`
-  (2026-07-07) holds the password for the RETIRED keystore; `telecampro-upload.jks` is the
-  2026-07-25 replacement, and `keytool` rejects the backup's password against it (verified
-  2026-08-02). This is an owner action: supply the July-25 password, then re-encrypt the backup.
-  Everything that does not need a signature is already verified on `main` at `74afa26` —
-  `lintRelease` 0 errors / 8 warnings, 1329 host tests green, the packaged binary's manifest,
-  16 KiB alignment, baseline profile, zero `com.oplus.ocs`, and a two-handset device regression.
-  Details and the exact commands live in `docs/play-console-submit.md`.
-  Note the Play listing/Data Safety text may now also mention broader device support — owner's call.
+- **RE-CUT DONE AND PINNED (2026-08-02).** `main` at `fc43953` is cut, signed, validated, and
+  device-verified on TWO handsets; AAB `88d00e12…` / APK `ca2b9993…`, certificate `9dfdb903…`
+  unchanged. Hashes and the full matrix live in `docs/play-console-submit.md`. Both installs were
+  proven byte-identical to the artifact before testing.
+  - The re-cut had been blocked by a stale secret, now resolved: the GPG password backup
+    (2026-07-07) held the RETIRED keystore's password while the keystore is the 2026-07-25
+    replacement, so the documented rebuild procedure could not work. Backup re-encrypted against
+    the current key, with its creation date and certificate fingerprint in the header.
+  - Fallout worth keeping: `.gitignore` matched secrets by exact filename, so a `.bak` copy of the
+    old password file was committable during recovery (`fc43953` broadens it), and the snippet in
+    the submission sheet now pre-checks the password with `keytool` instead of discovering the
+    failure after a full minified build.
+  - **Open owner decision: the upload key's password is six digits and was transmitted in
+    plaintext.** Rotating costs one `keytool -genkeypair` while nothing is on Play; after the first
+    upload it becomes a Play support request.
+- **Device catalog is now a bigger decision than it was.** It used to lean on `minSdk 36` doing the
+  narrowing; at `minSdk 33` an open catalog reaches essentially the whole Android 13+ population
+  against two capture-verified devices. Owner call — see the Device Catalog section.
 
 ### Landed 2026-08-01 — perf review closure + multi-device + 200MP probe (device-verified)
 

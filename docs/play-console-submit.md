@@ -4,63 +4,94 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 ## Upload Artifact
 
-> ## ⛔ NOT UPLOAD-READY (2026-08-02) — a re-cut is REQUIRED and is BLOCKED on the signing password.
+> ## ✅ UPLOAD-READY (2026-08-02) — signed re-cut from `main` at `fc43953`, clean tree.
 >
-> **The pinned artifact below (`2d6c35b`) is stale**: eleven commits have landed since, **nine of
-> them touching `app/src`**, and they include user-visible behaviour the pinned bundle does not
-> have — the config-change dead-preview fix, the any-window letterbox, the enumerated lens rail
-> (a non-PMA110 phone showed a fabricated `0.6× 1× 3× 10×` rail), the device-laws review batch, and
-> the sub-720p video-size floor. Uploading `2d6c35b` would ship a build whose worst bug on
-> non-PMA110 hardware is already fixed in `main`.
+> Supersedes the `2d6c35b` cut and every candidate before it. `applicationId` is unchanged
+> (`me.hletrd.telecampro`) and the upload certificate is byte-identical to the recorded one
+> (`9dfdb903…`), so Play identity is unaffected.
 >
-> **Why the re-cut has not happened: `telecampro-upload-passwords.txt.gpg` no longer opens
-> `telecampro-upload.jks`.** Verified empirically 2026-08-02 — `keytool -list` with the decrypted
-> `storePassword` returns `keystore password was incorrect`. The reason is visible in the file
-> dates: the keystore is the **2026-07-25 replacement**, the encrypted password backup is from
-> **2026-07-07** and its own header still says so, i.e. it holds the password for the RETIRED
-> keystore (cert `A6:D0:A0:3F:…:BC:AF`) that was never uploaded. The backup was not re-encrypted
-> when the key was rotated.
+> Eleven commits landed since `2d6c35b`, nine touching `app/src`: the config-change dead-preview
+> fix, the any-window letterbox (Android 16 ignores `screenOrientation` at sw≥600dp), the
+> ENUMERATED lens rail — a non-PMA110 device used to be shown a fabricated `0.6× 1× 3× 10×` rail it
+> could not reach — its verification pass, the device-laws review batch and ITS verification pass,
+> the 3A sub-1× trace floor, the sub-720p video-size floor, and the snapshot-dot clamp measuring the
+> row instead of the screen.
 >
-> The current upload key's password therefore exists **only wherever the owner personally kept it**
-> — not in this repo, not in the GPG backup, not in the macOS keychain (checked). Two consequences,
-> both owner actions:
-> 1. **To cut a release at all**, supply `TELECAMPRO_STORE_PASSWORD` / `TELECAMPRO_KEY_PASSWORD`
->    for the July-25 keystore (see Local Signing Material).
-> 2. **Re-encrypt the backup immediately afterwards.** If that password is lost, this upload key is
->    unrecoverable. The app is not yet on Play, so today the recovery is "generate a new key and
->    upload that instead" — cheap. After the first upload it stops being cheap: recovery then
->    depends on Play App Signing being enabled, and an upload-key reset becomes a support request.
+> **The signing blocker recorded here earlier is RESOLVED.** The GPG backup had been left holding
+> the RETIRED keystore's password; the owner supplied the July-25 password and the backup has been
+> re-encrypted against the current keystore (see Local Signing Material). `.gitignore` was also
+> broadened, because the recovery surfaced a `.gpg.…bak` copy of the old secret that the
+> exact-filename rules did not match.
 >
-> Everything that does NOT require signing has been verified on `main` at `74afa26` — see
-> "Verified on current `main`" below. What is missing is only the signed bytes and their hashes.
+> **Screenshots: still the recaptured 2026-07-27 set.** Nothing in this cut changes what they show
+> on a PMA110 — see the screenshot section before uploading.
 
 Do not upload debug APKs or any unsigned/stale release bundle.
 
-### Verified on current `main` (`74afa26`, 2026-08-02) — unsigned, so NOT an upload candidate
+### Final v1 upload artifacts (built + device-verified 2026-08-02 from `main` at `fc43953`)
 
-Built with `:app:packageRelease` (which skips the signing guard), so this is the real R8-minified
-release binary minus the signature. It establishes that the only thing standing between `main` and
-an uploadable artifact is the password:
-
-- `lintRelease`: **0 errors / 8 warnings** (`UseKtx` ×4, `InlinedApi` ×2, `ApplySharedPref`,
-  `AndroidGradlePluginVersion` — all benign). The `ConfigurationScreenWidthHeight` warning that
-  appeared during this cycle was a real defect and is fixed, not suppressed (`74afa26`).
-- Host suite: **1329 tests, 0 failures**.
-- Packaged binary manifest (`aapt2 dump badging` + `xmltree`, i.e. the merged manifest as shipped):
-  `minSdkVersion 33`, `targetSdkVersion 36`, `compileSdkVersion 37`; permissions exactly `CAMERA`,
+- Artifact location: `app/build/outputs/bundle/release/app-release.aab`
+- AAB SHA-256: `88d00e127848c04d173c63f590e6f0432bdb64a272f2ed7741e06c58f720a887`
+- Matching release APK SHA-256:
+  `ca2b9993b5dce8609f18e79c600cd41600fd8ed7a707ca09e807bf2ba3c4250b`
+- Launch component: `me.hletrd.telecampro/me.hletrd.telecampro.MainActivity`
+- AAB `jarsigner -verify`: **jar verified**; `bundletool 1.18.3 validate`: **OK** (exit 0), both run
+  on this machine against these exact bytes
+- APK signing: **v2 valid, 1 signer**, `CN=Jiyong Youn, L=Seoul, ST=Seoul, C=KR`, certificate
+  SHA-256 `9dfdb903269238ef6de424052666b05814577b4b3bb43a5e3e3a05572660e584` — **unchanged from the
+  recorded upload certificate**, so this is the same upload key
+- APK alignment: 16 KiB passed (`zipalign -c -P 16 4`)
+- Packaged binary manifest (`aapt2 dump badging` + `xmltree`): `minSdkVersion 33`,
+  `targetSdkVersion 36`, `compileSdkVersion 37`; `uses-permission` is exactly `CAMERA`,
   `RECORD_AUDIO`, `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, `READ_MEDIA_VISUAL_USER_SELECTED` (plus
-  the framework's own dynamic-receiver permission); **no `INTERNET`**; **not debuggable**.
-- 16 KiB alignment: passed (`zipalign -c -P 16 4`).
-- Baseline profile packaged: `assets/dexopt/baseline.prof` (11066 B) + `.profm` (453 B).
-- **Zero `com.oplus.ocs` occurrences** in the release dex (raw byte scan) — the OEM SDK stays absent
-  from the shipped binary, which is what the Data-Safety answers rest on.
-- Device regression on the DEBUG package from these same sources, both handsets, 2026-08-02:
-  PMA110 came up `LensInventory … available=[0.6×, 1×, 3×, 10×]` with `Session configured
-  (fallback=0, jpeg=true, raw=true)`; the Lenovo TB336ZU came up `LensInventory: lenses=[26]
-  zoom=(1.0, 8.0) available=[1×, 3×]`, also `fallback=0`. Zero `FATAL EXCEPTION` and an empty crash
-  buffer on both. The tablet's Video tab now offers `1440p / 1080p / 720p` — the 640×360 and
-  192×108 entries it used to list are gone — while PMA110 still offers `4K / 3264×1836 / 1440p /
-  1080p`, unchanged.
+  the framework's own dynamic-receiver permission); **no `INTERNET`**; **not debuggable**
+- Release gate: `lintRelease` **0 errors / 8 warnings** (`UseKtx` ×4, `InlinedApi` ×2,
+  `ApplySharedPref`, `AndroidGradlePluginVersion` — all benign); host suite **1329 tests, 0
+  failures**
+- Carries a **baseline profile** (`assets/dexopt/baseline.prof` 11066 B + `.profm` 453 B) installed
+  by androidx.profileinstaller
+- **Release dex contains ZERO `com.oplus.ocs` occurrences** (raw byte scan) — the OEM SDK is absent
+  from the shipped binary, which is what the Data-Safety answers rest on
+- Superseded candidates (do NOT upload): `2d6c35b` (`02cbd69d…`), `c6722bb` (`a5654855…`),
+  `961b080` (`0516b0d8…`), `3a3d034` (`1c160b8c…`), `26266db` (`59ccb318…`), `3ff3b4b`
+  (`19ef2b7d…`), `9f367c1` (`f04028f7…`), `3c70639` (`70f83bdd…`), `6bf2325` (`c238c1cf…`),
+  `a0d4dbc` (`84a74f64…`), `69af1574…`, `a737483f…`, `7339e00d…`, `b45a3b8e…`
+
+### Device matrix for THIS artifact — TWO devices, 2026-08-02
+
+Both installs were confirmed **byte-identical to the artifact** with on-device `sha256sum`
+(`ca2b9993…` on both) BEFORE testing, so every line below is evidence for this bundle.
+
+| | OPPO PMA110 (Android 16) | Lenovo TB336ZU (Android 16 tablet) |
+|---|---|---|
+| Preview | live (frame-to-frame luma delta 0.96) | live (delta 10.8) |
+| Lens rail | `0.6× / 1× / 3× / 10×` — all four spoken as **lens** | `1× lens` + `3× zoom` — the non-optical preset is spoken as **zoom** |
+| Focal caption | `23 mm` | `26 mm` |
+| Teleconverter host | "Uses the 3× lens" | "Uses the 26 mm lens" |
+| Phone dropdown | detected model | **`Other`** — no false Find X9 Ultra claim |
+| Still | HEIF **3064×4080** | HEIF **1920×2560** |
+| EXIF Make / Model | `OPPO` / `PMA110` | `LENOVO` / `TB336ZU` |
+| EXIF LensModel | `OPPO PMA110 wide camera 23mm f/1.5` | `LENOVO TB336ZU wide camera 26mm f/2.0` |
+| EXIF 35 mm focal | 23 | 26 |
+| GPS IFD | **absent** | **absent** |
+| Video | HEVC **2160×3840** @29.97 + AAC 48 kHz stereo, 14.2 s | HEVC **1440×2560** @29.97 + AAC 48 kHz stereo, 14.4 s |
+| Video sizes offered | 4K / 3264×1836 / 1440p / 1080p | 1440p / 1080p / 720p (no 640×360, no 192×108) |
+| Audio route readout | `Auto · Phone mic · PMA110` | `Auto · Phone mic · TB336ZU` |
+| Crashes / ANRs | 0 / 0 | 0 / 0 |
+
+The EXIF row is the point of the device-independent identity work: on the older hardcoded path the
+Lenovo shot would have carried `OPPO` / `OPPO Find X9 Ultra` and a tele lens name, writing a false
+camera and a false focal band into a stranger's file.
+
+**Test-procedure note (cost a false alarm here).** The debug package is a separate `applicationId`,
+so both apps can be installed at once — but they contend for the same camera. Launching the release
+build while the debug build still held a device produced a black, frozen viewfinder with a disabled
+shutter and a photo that silently never landed; `dumpsys media.camera` showed the release client
+CONNECT then DISCONNECT ten seconds later. **Force-stop the other package before testing either
+one**; the failure is a two-client artifact, not a product defect.
+
+**Still not covered by this matrix**: the converter-mounted optical checks that need the physical
+teleconverter, and an HLG/log transfer check on the RELEASE package specifically.
 
 ### Last SIGNED artifacts (2026-08-01, `main` at `2d6c35b`) — SUPERSEDED BY SOURCE, do not upload
 
@@ -290,25 +321,27 @@ contradict the app's own UI.
 `minSdk 36` excluding almost every device on the market — Android 16 did the narrowing for us. The
 floor is now **`minSdk 33` (Android 13)**, so an open catalog reaches an enormous, entirely
 unverified device population. Only the PMA110 is device-verified; the Lenovo TB336ZU (Android 16
-tablet) has been exercised for enumeration, window shape, and session bring-up but not for image
-quality or a full capture matrix.
+tablet) has now been through a real capture pass on the shipping artifact — still, video, EXIF,
+enumeration, window shape — but not through optical quality judgement, and it is a tablet rather
+than a phone.
 
 Two options, an owner decision:
 
-- **Open catalog (matches the app's own claims).** Ship to all Android 16 phones. Only the Find X9
-  Ultra is device-verified, so accept that early reviews may come from untested hardware.
-- **Staged.** Launch restricted to the verified models below, then widen once another device has
-  been through a real capture pass. Slower, but no unverified first impressions.
+- **Open catalog (matches the app's own claims).** Ship to every Android 13+ device. Two devices
+  are capture-verified out of that entire population, so accept that early reviews may come from
+  untested hardware.
+- **Staged.** Launch restricted to the verified models below, then widen as devices go through a
+  real capture pass. Slower, but no unverified first impressions.
 
-Verified models: `CPH2841` (global) and `PMA110` (China/import).
+Capture-verified models: `PMA110` (China/import) and, as a generic-profile witness, `TB336ZU`.
+`CPH2841` is the same hardware as PMA110 under the global model code and is expected to behave
+identically, but has not itself been measured.
 
 ## Manual Console Sequence
 
-0. **Cut and pin a fresh signed artifact from current `main` first.** There is no uploadable bundle
-   right now — the newest signed one (`2d6c35b`) is nine source commits behind, and re-cutting is
-   blocked on the signing password (status block at the top). Record the new AAB/APK SHA-256 in
-   this file before touching the console.
-1. Upload that AAB. Every artifact listed in this file is superseded and must not be uploaded.
+1. Upload the AAB whose hashes are pinned at the top (`88d00e12…`, from `fc43953`). Every other
+   artifact listed in this file is superseded and must not be uploaded. If `main` has moved since,
+   re-cut and re-pin first rather than uploading a stale bundle.
 2. Enter the Store Listing and Data Safety answers from this repository. **The Data Safety "Photos
    and videos" ACCESS question must be re-answered** for the visual-media READ trio (see Data
    Safety below) — the last submission-ready answer set predates it.
@@ -327,24 +360,34 @@ These files are intentionally gitignored and stay only on the local machine:
 - `telecampro-upload-passwords.txt.gpg`
 - `keystore.properties`
 
-> ### ⛔ The GPG backup is STALE and the procedure below does not currently work
+> ### ✅ The stale-backup breakage is FIXED (2026-08-02) — and here is what it was
 >
-> `telecampro-upload-passwords.txt.gpg` is dated **2026-07-07** and its own header says so;
-> `telecampro-upload.jks` is the **2026-07-25 replacement** key. Decrypting the backup and feeding
-> its `storePassword` to `keytool -list` returns `keystore password was incorrect` (run
-> 2026-08-02), and `packageRelease` fails the same way. The backup holds the password for the
-> RETIRED keystore, which was never uploaded anywhere.
+> `telecampro-upload-passwords.txt.gpg` was dated **2026-07-07** and held the password for the
+> keystore that was **retired on 2026-07-25**. It was never re-encrypted when the key was rotated,
+> so the documented rebuild procedure silently pointed at a dead secret: `keytool -list` answered
+> `keystore password was incorrect` and `packageRelease` failed the same way.
 >
-> The July-25 password is not in this repo, not in the backup, and not in the macOS login keychain.
-> **Owner action: supply it, then immediately re-encrypt the backup so this cannot recur.** Verify
-> the fix with `keytool -list -keystore telecampro-upload.jks -alias telecampro` — the certificate
-> SHA-256 must print `9dfdb903269238ef6de424052666b05814577b4b3bb43a5e3e3a05572660e584`, which is
-> the recorded upload certificate. If it does not, the wrong keystore is in place.
+> Resolved: the owner supplied the July-25 password, it is now in `keystore.properties` (gitignored)
+> **and** in a re-encrypted backup that carries the keystore's creation date and certificate
+> fingerprint in its own header, so the next rotation cannot leave the same ambiguity. Verified by
+> round-trip decrypt and by a signed build whose certificate reads `9dfdb903…`.
 >
-> Losing this password is only cheap *until the first upload*: nothing is on Play yet, so today the
-> answer is "generate a new key and upload that". Afterwards it becomes a Play support request.
+> **Two things this incident should leave behind.**
+> 1. `.gitignore` matched secrets by exact filename, so the `.gpg.2026-07-07.bak` copy made during
+>    recovery — the RETIRED key's password — showed up as an untracked, committable file. The rules
+>    now match by extension AND by name shape (`*password*`, `*secret*`, `telecampro-upload-*`,
+>    `.bak`, `.orig`). Fixed in `fc43953`.
+> 2. **The password is weak (six digits) and has been transmitted in plaintext.** Nothing is on Play
+>    yet, so rotating the upload key today costs one `keytool -genkeypair` and one line in this
+>    file. After the first upload it stops being a local decision and becomes a Play support
+>    request. Rotating now is the cheap moment; this is an owner call, recorded here so it is not
+>    silently forgotten.
+>
+> Whenever the keystore is rotated, verify with
+> `keytool -list -keystore telecampro-upload.jks -alias telecampro` — the certificate SHA-256 must
+> match whatever this sheet records as the upload certificate, or the wrong keystore is in place.
 
-To rebuild the signed AAB locally (once the password above is available):
+To rebuild the signed AAB locally:
 
 ```bash
 export JAVA_HOME="/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home"
