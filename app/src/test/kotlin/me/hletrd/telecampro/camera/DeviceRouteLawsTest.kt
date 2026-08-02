@@ -184,3 +184,62 @@ class VideoSizeFloorTest {
         assertFalse(videoFloorKeepsAll(listOf(2160, 1080, 720)))
     }
 }
+
+/**
+ * The encoder-size fallback ladder (2026-08-02). Device-probed cause: the AOSP software HEVC
+ * encoder accepts 1280x720 and 1920x1080 but REFUSES 720x1280 and 1080x1920 — a height cap — while
+ * advertising `supportedWidths=[2,512]` and answering `isSizeSupported(1280,720)=false` for a size
+ * it demonstrably encodes. Capability queries cannot decide this; the ladder must.
+ */
+class EncoderSizeLadderTest {
+    @Test
+    fun `the requested size is always the first rung`() {
+        val ladder = me.hletrd.telecampro.video.encoderSizeLadder(720, 1280)
+        assertEquals(720 to 1280, ladder.first())
+    }
+
+    @Test
+    fun `every rung preserves the aspect ratio within a rounding pixel`() {
+        val want = 720.0 / 1280.0
+        me.hletrd.telecampro.video.encoderSizeLadder(720, 1280).forEach { (w, h) ->
+            val err = kotlin.math.abs(w.toDouble() / h - want)
+            assertTrue("rung ${w}x$h drifts from ${want}: err=$err", err < 0.01)
+        }
+    }
+
+    @Test
+    fun `every rung is even — 4-2-0 chroma cannot express an odd edge`() {
+        me.hletrd.telecampro.video.encoderSizeLadder(1080, 1920).forEach { (w, h) ->
+            assertEquals(0, w % 2)
+            assertEquals(0, h % 2)
+        }
+    }
+
+    @Test
+    fun `the ladder reaches a rung the probed encoder actually accepted`() {
+        // 480x854 and 360x640 PASSED on c2.android.hevc.encoder; 720x1280 FAILED.
+        val ladder = me.hletrd.telecampro.video.encoderSizeLadder(720, 1280)
+        assertTrue("ladder must descend below the refused height", ladder.any { it.second <= 854 })
+    }
+
+    @Test
+    fun `rungs strictly descend and never repeat`() {
+        val ladder = me.hletrd.telecampro.video.encoderSizeLadder(3840, 2160)
+        assertEquals(ladder.distinct(), ladder)
+        ladder.zipWithNext { a, b -> assertTrue("${a} then ${b}", b.first < a.first) }
+    }
+
+    @Test
+    fun `nothing below the usable floor is offered`() {
+        me.hletrd.telecampro.video.encoderSizeLadder(320, 240).forEach { (w, h) ->
+            assertTrue(w >= me.hletrd.telecampro.video.MIN_ENCODER_EDGE)
+            assertTrue(h >= me.hletrd.telecampro.video.MIN_ENCODER_EDGE)
+        }
+    }
+
+    @Test
+    fun `a degenerate size yields no rungs rather than a crash`() {
+        assertTrue(me.hletrd.telecampro.video.encoderSizeLadder(0, 1080).isEmpty())
+        assertTrue(me.hletrd.telecampro.video.encoderSizeLadder(1920, -1).isEmpty())
+    }
+}

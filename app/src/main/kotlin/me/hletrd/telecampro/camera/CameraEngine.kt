@@ -4045,10 +4045,15 @@ class CameraEngine(private val context: Context) {
         // Ownership is published before the asynchronous EGL handoff. A lease revocation therefore
         // reports through the identity-owned failure path and receives checked detach-before-stop;
         // before this point the Surface was never handed to EGL and direct stop remained safe.
+        // The recorder may have landed on a smaller SAME-ASPECT rung than we asked for, because some
+        // encoders refuse the portrait buffer at full height (VideoRecorder.encoderSizeLadder). GL
+        // must draw at the size the encoder actually took, or the viewport would not match the
+        // input Surface. Identical to `encoderSize` on every verified handset.
+        val acceptedEncoderSize = rec.configuredSize ?: encoderSize
         ownedGl.setEncoderOutput(
             surface,
-            encoderSize.width,
-            encoderSize.height,
+            acceptedEncoderSize.width,
+            acceptedEncoderSize.height,
             admission = encoderAdmission,
             onRuntimeFailure = reportRecorderFailure,
         ) { result ->
@@ -4087,7 +4092,9 @@ class CameraEngine(private val context: Context) {
                 "CameraEngine",
                 "RecordingSpec: admitted stem=${name.substringBeforeLast('.')} " +
                     "codec=${codec.name} source=${size.width}x${size.height} " +
-                    "encoder=${encoderSize.width}x${encoderSize.height} bitrate=$requestedBitRate " +
+                    "encoder=${acceptedEncoderSize.width}x${acceptedEncoderSize.height}" +
+                    (if (acceptedEncoderSize != encoderSize) " (asked ${encoderSize.width}x${encoderSize.height})" else "") +
+                    " bitrate=$requestedBitRate " +
                     "fps=${String.format(java.util.Locale.US, "%.9f", rate.encoderRate)} " +
                     "transfer=${fileTransfer.name} audio=$recordAudio",
             )

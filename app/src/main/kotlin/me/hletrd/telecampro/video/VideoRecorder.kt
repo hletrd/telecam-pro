@@ -56,6 +56,15 @@ class VideoRecorder(private val context: Context) {
 
     private var videoCodec: MediaCodec? = null
     private var audioCodec: MediaCodec? = null
+    /**
+     * The buffer size the encoder ACTUALLY accepted, which may be a smaller same-aspect rung than
+     * the caller asked for (see [encoderSizeLadder]). The engine must size the GL encoder viewport
+     * from this, not from its request, or it would draw at the wrong scale on such a device. Null
+     * until a successful configure.
+     */
+    @Volatile var configuredSize: Size? = null
+        private set
+
     private var muxer: MediaMuxer? = null
     private var pfd: ParcelFileDescriptor? = null
     private var uri: Uri? = null
@@ -160,13 +169,31 @@ class VideoRecorder(private val context: Context) {
             // upright. Must be set before start(). Sign is device-verify (see RotationMath helper doc).
             runCatching { muxer?.setOrientationHint(RotationMath.videoOrientationHint(orientationHint, frontFacing)) }
 
-            val vFmt = ColorProfiles.videoFormat(codec, size.width, size.height, encoderRate, captureRate, bitRate, transfer)
-            val vCodec = MediaCodec.createEncoderByType(ColorProfiles.mimeFor(codec))
-            // Assign the field BEFORE configure/createInputSurface/start: any of those can throw, and
-            // a codec held only in the local would slip past the failure cleanup below — orphaning a
-            // live HW encoder instance until process death.
-            videoCodec = vCodec
-            vCodec.configure(vFmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            // Walk the same-aspect ladder: some encoders refuse the PORTRAIT buffer the cycle-4
+            // framing contract asks for while accepting the identical pixel count in landscape (a
+            // height cap, device-probed — see [encoderSizeLadder]). Their advertised capabilities
+            // are wrong in both directions there, so an actual configure is the only honest oracle.
+            // Rung 0 IS the requested size, so every verified handset takes this path unchanged.
+            var chosen: Size? = null
+            var lastFailure: Throwable? = null
+            for ((lw, lh) in encoderSizeLadder(size.width, size.height)) {
+                val vFmt = ColorProfiles.videoFormat(codec, lw, lh, encoderRate, captureRate, bitRate, transfer)
+                val vCodec = MediaCodec.createEncoderByType(ColorProfiles.mimeFor(codec))
+                // Assign the field BEFORE configure/createInputSurface/start: any of those can throw,
+                // and a codec held only in the local would slip past the failure cleanup below —
+                // orphaning a live HW encoder instance until process death.
+                videoCodec = vCodec
+                val ok = runCatching {
+                    vCodec.configure(vFmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                }.onFailure { lastFailure = it }.isSuccess
+                if (ok) { chosen = Size(lw, lh); break }
+                // This rung's codec never produced an input Surface, so it has no exactly-once owner
+                // to hand back — release it directly before trying the next one.
+                runCatching { vCodec.release() }
+                videoCodec = null
+            }
+            val vCodec = videoCodec ?: throw (lastFailure ?: IllegalStateException("no encoder size accepted"))
+            configuredSize = chosen
             inputSurfaceOwner.install(vCodec.createInputSurface())
             vCodec.start()
         }.isSuccess
