@@ -1,6 +1,7 @@
 package me.hletrd.telecampro.camera
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -345,5 +346,62 @@ class ChannelLevelsTest {
     fun `a channel count below one is treated as mono rather than dividing by zero`() {
         val buf = ShortArray(16) { 1000 }
         assertEquals(1, me.hletrd.telecampro.video.channelRms(buf, buf.size, channelCount = 0).size)
+    }
+}
+
+/**
+ * Still-size selection must honour the sensor's SHAPE before its size (2026-08-02, device-probed).
+ * A Lenovo TB331FC advertises a square 2448x2448 JPEG with MORE pixels than its 4:3 2592x1944 on a
+ * 4:3 3264x2448 array; picking by area alone saved every still as a square.
+ */
+class StillSizePickerTest {
+    private val tb331 = listOf(
+        2448 to 2448, 2592 to 1944, 2592 to 1940, 2688 to 1512,
+        1920 to 1440, 1920 to 1080, 1600 to 1200, 1600 to 1000,
+    )
+
+    @Test
+    fun `the square is rejected in favour of the sensor's own 4-3 shape`() {
+        assertEquals(2592 to 1944, pickStillSize(tb331, 3264, 2448))
+    }
+
+    @Test
+    fun `PMA110-class lists are unchanged — its largest is already native`() {
+        val pma = listOf(4096 to 3072, 4080 to 3064, 1920 to 1080)
+        assertEquals(4080 to 3064, pickStillSize(pma, 4080, 3064))
+    }
+
+    @Test
+    fun `sizes larger than the array stay excluded — that cap wedges gralloc`() {
+        val over = listOf(4096 to 3072, 4080 to 3064)
+        assertEquals(4080 to 3064, pickStillSize(over, 4080, 3064))
+    }
+
+    @Test
+    fun `a device advertising no native-aspect size still gets its largest`() {
+        val none = listOf(1920 to 1080, 1280 to 720)
+        assertEquals(1920 to 1080, pickStillSize(none, 3264, 2448))
+    }
+
+    @Test
+    fun `a 16-9 sensor prefers 16-9, not 4-3`() {
+        val mixed = listOf(2592 to 1944, 1920 to 1080)
+        assertEquals(1920 to 1080, pickStillSize(mixed, 1920, 1080))
+    }
+
+    @Test
+    fun `an unknown array falls back to largest by area rather than refusing`() {
+        assertEquals(2448 to 2448, pickStillSize(tb331, 0, 0))
+    }
+
+    @Test
+    fun `no candidates yields null instead of a fabricated size`() {
+        assertNull(pickStillSize(emptyList(), 3264, 2448))
+    }
+
+    @Test
+    fun `when everything exceeds the array the largest is still offered`() {
+        val all = listOf(8000 to 6000, 4000 to 3000)
+        assertEquals(8000 to 6000, pickStillSize(all, 1000, 750))
     }
 }

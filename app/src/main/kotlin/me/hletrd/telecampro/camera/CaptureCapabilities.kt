@@ -309,10 +309,11 @@ data class CameraCaps(
             // and the capture wedges. Standalone cameras are unaffected (their max JPEG == array).
             val activeArray = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
             val jpegCandidates = map?.getOutputSizes(ImageFormat.JPEG)?.toList().orEmpty()
-            val jpegSize = jpegCandidates
-                .filter { activeArray == null || (it.width <= activeArray.width() && it.height <= activeArray.height()) }
-                .maxByOrNull { it.width.toLong() * it.height }
-                ?: jpegCandidates.maxByOrNull { it.width.toLong() * it.height }
+            val jpegSize = pickStillSize(
+                jpegCandidates.map { it.width to it.height },
+                activeArray?.width() ?: 0,
+                activeArray?.height() ?: 0,
+            )?.let { (w, h) -> Size(w, h) }
             // Full-sensor (remosaic) still size, both public-API paths. Standard: the ultra-high-res
             // capability's dedicated maximum-resolution stream map. Vendor: some OEM HALs skip that
             // capability and advertise the remosaic JPEG size directly in the REGULAR map — exactly
@@ -593,6 +594,44 @@ internal fun autoFpsBounds(ranges: List<Pair<Int, Int>>, maxFps: Int): Pair<Int,
  * THE stream-aspect rule (16:9 standard / 4:3 open-gate-and-photo), shared by [CameraCaps.read]'s
  * list building and the engine's pre-caps fallback picker so the two can't drift apart.
  */
+/**
+ * Picks the still (JPEG) reader size from [candidates] for a sensor whose active array is
+ * [arrayW] x [arrayH]. Returns null when there is nothing to choose from.
+ *
+ * "Largest that fits the array" is NOT enough, and a Lenovo TB331FC proved it (device-probed
+ * 2026-08-02). That tablet advertises a SQUARE 2448x2448 JPEG alongside a 4:3 2592x1944, on a 4:3
+ * 3264x2448 array — and the square has MORE pixels. Picking by area alone therefore chose it, and
+ * every still came out square: a shape the app does not offer (its aspect model is 4:3 or 16:9,
+ * with 16:9 taken as a centre crop of the 4:3 readout), silently cropping away the field the
+ * viewfinder had just shown. PMA110 never exposed this because its largest JPEG is already 4:3.
+ *
+ * So the shape comes first and the size second: prefer candidates matching the ARRAY's own aspect —
+ * the sensor's native frame, which is what the preview is composed against — and take the largest of
+ * those. Only if the device advertises none does this fall back to largest-by-area, because a
+ * mis-shaped still still beats no still at all.
+ *
+ * The array cap is kept: the logical multicamera advertises its physical sub-cameras' larger JPEGs,
+ * and allocating those on the logical session wedges gralloc (see the caller's comment).
+ */
+internal fun pickStillSize(
+    candidates: List<Pair<Int, Int>>,
+    arrayW: Int,
+    arrayH: Int,
+): Pair<Int, Int>? {
+    if (candidates.isEmpty()) return null
+    val area = { s: Pair<Int, Int> -> s.first.toLong() * s.second }
+    val withinArray = candidates.filter { arrayW <= 0 || arrayH <= 0 || (it.first <= arrayW && it.second <= arrayH) }
+    val pool = withinArray.ifEmpty { candidates }
+    if (arrayW > 0 && arrayH > 0) {
+        // Exact integer cross-multiply, the same test matchesStreamAspect uses: sensor arrays and
+        // advertised sizes are exact ratios, and a tolerance would re-admit the square on a 4:3
+        // array once the tolerance grew past 1/3.
+        val native = pool.filter { it.first.toLong() * arrayH == it.second.toLong() * arrayW }
+        native.maxByOrNull(area)?.let { return it }
+    }
+    return pool.maxByOrNull(area)
+}
+
 internal fun matchesStreamAspect(width: Int, height: Int, fourByThree: Boolean): Boolean =
     if (fourByThree) height * 4 == width * 3 else height * 16 == width * 9
 
