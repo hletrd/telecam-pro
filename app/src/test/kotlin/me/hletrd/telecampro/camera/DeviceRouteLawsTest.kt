@@ -243,3 +243,37 @@ class EncoderSizeLadderTest {
         assertTrue(me.hletrd.telecampro.video.encoderSizeLadder(1920, -1).isEmpty())
     }
 }
+
+/**
+ * Gamma options must not outrun the encoder (2026-08-02). Every transfer except SDR asks for
+ * HEVCProfileMain10 and BT.2020 tags; on an 8-bit-only encoder the device-probed result was a clip
+ * whose container read `bt2020 / arib-std-b67` over a `profile=Main, yuv420p` stream.
+ */
+class TransferEncoderHonestyTest {
+    @Test
+    fun `a Main10 encoder offers every gamma`() {
+        assertEquals(ColorTransfer.entries.toList(), availableTransfers(tenBitEncodeAvailable = true))
+    }
+
+    @Test
+    fun `an 8-bit-only encoder offers SDR alone`() {
+        assertEquals(listOf(ColorTransfer.SDR), availableTransfers(tenBitEncodeAvailable = false))
+    }
+
+    @Test
+    fun `SDR is never withheld — it is the 8-bit BT709 case by construction`() {
+        assertTrue(ColorTransfer.SDR in availableTransfers(true))
+        assertTrue(ColorTransfer.SDR in availableTransfers(false))
+    }
+
+    @Test
+    fun `a persisted HLG or log selection falls back to SDR on an 8-bit encoder`() {
+        listOf(ColorTransfer.HLG, ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3)
+            .forEach { assertEquals(ColorTransfer.SDR, it.normalizedForEncoder(false)) }
+    }
+
+    @Test
+    fun `PMA110-class hardware keeps whatever the operator chose`() {
+        ColorTransfer.entries.forEach { assertEquals(it, it.normalizedForEncoder(true)) }
+    }
+}

@@ -67,6 +67,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import me.hletrd.telecampro.camera.ColorTransfer
+import me.hletrd.telecampro.camera.availableTransfers
 import me.hletrd.telecampro.camera.PhotoFormats
 import me.hletrd.telecampro.ui.theme.CameraColors
 
@@ -783,6 +784,13 @@ internal fun TransferSelector(
     onTransfer: (ColorTransfer) -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    /**
+     * False on a device whose HEVC encoder has no Main10 profile. Every option except SDR is tagged
+     * BT.2020 with a 10-bit profile, and such an encoder silently returns 8-bit Main — a file whose
+     * container claims HDR while the picture is not (device-probed 2026-08-02). Withhold rather
+     * than mislabel; same shape as the lens rail refusing to draw presets the optics cannot reach.
+     */
+    tenBitEncodeAvailable: Boolean = true,
 ) {
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         // "Gamma", matching the Fn tile, dial chip, My Menu entry, and "Gamma Disp. Assist" — the row
@@ -810,7 +818,7 @@ internal fun TransferSelector(
                 .horizontalScroll(optionScroll),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            ColorTransfer.entries.forEach { option ->
+            availableTransfers(tenBitEncodeAvailable).forEach { option ->
                 val isSelected = transfer == option
                 val optionName = segmentedOptionName("Gamma", transferLabel(option))
                 MinTouchTarget48 {

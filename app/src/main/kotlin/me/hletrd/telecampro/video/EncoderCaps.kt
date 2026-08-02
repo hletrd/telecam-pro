@@ -74,6 +74,27 @@ object EncoderCaps {
      */
     fun heifEncodeAvailable(): Boolean = isSupported(VideoCodec.HEVC)
 
+    /**
+     * Whether the chosen HEVC encoder advertises the 10-bit **Main10** profile.
+     *
+     * Every transfer except SDR asks [ColorProfiles.hevcColorTagsFor] for `HEVCProfileMain10`. On an
+     * 8-bit-only encoder that request does not fail loudly — it produced a clip whose CONTAINER read
+     * `bt2020 / arib-std-b67` (HLG) while the stream was `profile=Main, yuv420p`, i.e. an 8-bit
+     * picture wearing HDR tags (device-probed on an Android 13 emulator, 2026-08-02). A file that
+     * misdescribes itself is worse than a missing option, so those transfers are not offered here.
+     *
+     * Under-advertising costs the user an option that might have worked; over-offering writes a
+     * false claim into their footage. This errs toward the first.
+     */
+    fun tenBitEncodeAvailable(): Boolean = runCatching {
+        val name = encoderName(VideoCodec.HEVC) ?: return@runCatching false
+        MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
+            .firstOrNull { it.isEncoder && it.name == name }
+            ?.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_HEVC)
+            ?.profileLevels
+            ?.any { it.profile == MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10 } == true
+    }.getOrDefault(true)
+
     // NOTE: no public isHardware(codec) accessor — it had no caller. The underlying `Info.hardware`
     // field IS load-bearing: it is pickBestEncoder's hardware-first tie-break.
 

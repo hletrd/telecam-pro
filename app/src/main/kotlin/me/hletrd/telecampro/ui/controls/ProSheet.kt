@@ -1283,6 +1283,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
             transfer = state.transfer,
             onTransfer = actions::onTransfer,
             enabled = codec == VideoCodec.HEVC && recordingMutable,
+            tenBitEncodeAvailable = state.tenBitEncodeAvailable,
         )
     }
 

@@ -1108,7 +1108,13 @@ class CameraViewModel @JvmOverloads constructor(
             it.copy(
                 rememberSettings = rememberSettings ?: it.rememberSettings,
                 controls = cSynced,
-                transfer = e.transfer,
+                // Normalized for the SAME reason photoFormats is on the next line: the seed at
+                // launch cannot be the only gate, because THIS path writes the persisted value back
+                // over it. A persisted HLG/log gamma restored onto an 8-bit-only encoder produced a
+                // clip tagged bt2020/arib-std-b67 over a Main yuv420p stream — the UI offered SDR
+                // alone while the wire still carried HLG (caught on an Android 13 emulator after
+                // the seed-only fix looked correct in the menu).
+                transfer = e.transfer.normalizedForEncoder(it.tenBitEncodeAvailable),
                 photoFormats = PhotoFormats(e.heif, e.jpeg, e.dngRaw).withDefaultIfEmpty()
                     .normalizedForEncoder(it.heifAvailable),
                 mode = e.mode,
@@ -1306,7 +1312,13 @@ class CameraViewModel @JvmOverloads constructor(
     ) {
         // Gamma/Log monitoring is a VIDEO concern. Keeping O-Log selected for the next clip must not
         // make the still-photo viewfinder look flat/log.
-        engine.setTransfer(if (mode == CaptureMode.VIDEO) transfer else ColorTransfer.SDR)
+        //
+        // Normalized HERE as well as at the state writers because this is the one choke point every
+        // writer funnels through — seed, settings restore, the live picker, and MR recall alike. A
+        // gamma the encoder cannot honestly carry must never reach the wire regardless of which of
+        // them produced it.
+        val safe = transfer.normalizedForEncoder(_state.value.tenBitEncodeAvailable)
+        engine.setTransfer(if (mode == CaptureMode.VIDEO) safe else ColorTransfer.SDR)
     }
 
     private fun publishStatus(message: String?) {
@@ -2146,10 +2158,17 @@ class CameraViewModel @JvmOverloads constructor(
         val available = runCatching {
             me.hletrd.telecampro.video.EncoderCaps.heifEncodeAvailable()
         }.getOrDefault(true)
+        val tenBit = runCatching {
+            me.hletrd.telecampro.video.EncoderCaps.tenBitEncodeAvailable()
+        }.getOrDefault(true)
         _state.update {
             it.copy(
                 heifAvailable = available,
                 photoFormats = it.photoFormats.normalizedForEncoder(available),
+                tenBitEncodeAvailable = tenBit,
+                // Same reason as photoFormats above: a persisted HLG/log selection must not survive
+                // onto an encoder that would tag an 8-bit stream as BT.2020 HDR.
+                transfer = it.transfer.normalizedForEncoder(tenBit),
             )
         }
     }

@@ -941,6 +941,19 @@ data class PhotoFormats(
  * HeifWriter needs the platform HEVC encoder, which is not CDD-mandatory at API 33; without this a
  * fresh install on such a handset produced NO output at all from its own default (2026-08-02).
  */
+/**
+ * The gamma choices this device can encode HONESTLY. HLG and all three log profiles are tagged
+ * BT.2020 and carry a 10-bit HEVC profile; on an 8-bit-only encoder they yield a Main/yuv420p stream
+ * wearing those tags, so they are withheld rather than offered as a claim the file cannot back.
+ * SDR always survives — it is the 8-bit BT.709 case by construction.
+ */
+fun availableTransfers(tenBitEncodeAvailable: Boolean): List<ColorTransfer> =
+    if (tenBitEncodeAvailable) ColorTransfer.entries.toList() else listOf(ColorTransfer.SDR)
+
+/** Falls back to SDR when the selected gamma is not one this device can encode honestly. */
+fun ColorTransfer.normalizedForEncoder(tenBitEncodeAvailable: Boolean): ColorTransfer =
+    if (this in availableTransfers(tenBitEncodeAvailable)) this else ColorTransfer.SDR
+
 fun PhotoFormats.normalizedForEncoder(heifEncodeAvailable: Boolean): PhotoFormats = when {
     heifEncodeAvailable || !heif -> this
     else -> copy(heif = false, jpeg = true)
@@ -1229,6 +1242,8 @@ data class CameraUiState(
     val lensInventory: LensInventory = LensInventory.ALL,
     // Device-static: whether HEIF stills can be encoded here at all (HeifWriter needs HEVC).
     val heifAvailable: Boolean = true,
+    /** False when the device's HEVC encoder has no Main10 profile; withholds HLG/log gammas. */
+    val tenBitEncodeAvailable: Boolean = true,
     val cameraOverrideId: String? = null,
     val statusMessage: String? = null,
     // The newest saved capture owner (HEIF/JPEG/video, or RAW when no displayable sibling exists).
