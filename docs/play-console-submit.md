@@ -4,94 +4,96 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 ## Upload Artifact
 
-> ## ✅ UPLOAD-READY (2026-08-02) — signed re-cut from `main` at `fc43953`, clean tree.
+> ## ✅ UPLOAD-READY (2026-08-02) — signed re-cut from `main` at `a4a7d12`, clean tree.
 >
-> Supersedes the `2d6c35b` cut and every candidate before it. `applicationId` is unchanged
-> (`me.hletrd.telecampro`) and the upload certificate is byte-identical to the recorded one
-> (`9dfdb903…`), so Play identity is unaffected.
+> Supersedes `fc43953` and every candidate before it. `applicationId` unchanged
+> (`me.hletrd.telecampro`); upload certificate byte-identical to the recorded one (`9dfdb903…`).
 >
-> Eleven commits landed since `2d6c35b`, nine touching `app/src`: the config-change dead-preview
-> fix, the any-window letterbox (Android 16 ignores `screenOrientation` at sw≥600dp), the
-> ENUMERATED lens rail — a non-PMA110 device used to be shown a fabricated `0.6× 1× 3× 10×` rail it
-> could not reach — its verification pass, the device-laws review batch and ITS verification pass,
-> the 3A sub-1× trace floor, the sub-720p video-size floor, and the snapshot-dot clamp measuring the
-> row instead of the screen.
+> **`fc43953` must not be uploaded: video recording was impossible on a whole class of device.**
+> Testing this cut on Android 13 (the `minSdk 33` floor, which had never been exercised) found two
+> real defects, both now fixed and both verified on real hardware as well as the emulator:
+> 1. The encoder buffer is swapped to PORTRAIT for the cycle-4 framing contract, and nothing ever
+>    asked the encoder whether it accepts that shape. Encoders that cap HEIGHT below width — the
+>    AOSP software HEVC encoder among them — refused every recording. Now a same-aspect fallback
+>    ladder finds a shape they take.
+> 2. Four of the five gamma options request 10-bit `Main10`; an 8-bit-only encoder does not refuse,
+>    it silently returns `Main`. The Lenovo TB336ZU (hardware `c2.mtk.hevc.encoder`, no Main10) was
+>    therefore writing clips tagged `bt2020 / arib-std-b67` (HLG) over an 8-bit `yuv420p` stream —
+>    files that misdescribed themselves. Those gammas are no longer offered where they cannot be
+>    honoured.
 >
-> **The signing blocker recorded here earlier is RESOLVED.** The GPG backup had been left holding
-> the RETIRED keystore's password; the owner supplied the July-25 password and the backup has been
-> re-encrypted against the current keystore (see Local Signing Material). `.gitignore` was also
-> broadened, because the recovery surfaced a `.gpg.…bak` copy of the old secret that the
-> exact-filename rules did not match.
+> Also in this cut: the standby audio meter now follows the SELECTED input (USB / Bluetooth / wired)
+> instead of always reading the built-in mic, and meters per channel so a dead channel on a stereo
+> mic is visible instead of averaged away.
 >
-> **Screenshots: still the recaptured 2026-07-27 set.** Nothing in this cut changes what they show
-> on a PMA110 — see the screenshot section before uploading.
+> **Screenshots: still the recaptured 2026-07-27 set.** Nothing here changes what they show on a
+> PMA110 — see the screenshot section before uploading.
 
 Do not upload debug APKs or any unsigned/stale release bundle.
 
-### Final v1 upload artifacts (built + device-verified 2026-08-02 from `main` at `fc43953`)
+### Final v1 upload artifacts (built + device-verified 2026-08-02 from `main` at `a4a7d12`)
 
 - Artifact location: `app/build/outputs/bundle/release/app-release.aab`
-- AAB SHA-256: `88d00e127848c04d173c63f590e6f0432bdb64a272f2ed7741e06c58f720a887`
+- AAB SHA-256: `5685b0c0319e6f23fc9d61054333e985dde210f61cfa2fd13992ce7d92d5180f`
 - Matching release APK SHA-256:
-  `ca2b9993b5dce8609f18e79c600cd41600fd8ed7a707ca09e807bf2ba3c4250b`
+  `4409fd452e037976b7b3818dc15f372d4f29d08245500b428a87d41a38466da1`
 - Launch component: `me.hletrd.telecampro/me.hletrd.telecampro.MainActivity`
-- AAB `jarsigner -verify`: **jar verified**; `bundletool 1.18.3 validate`: **OK** (exit 0), both run
-  on this machine against these exact bytes
+- AAB `jarsigner -verify`: **jar verified**; `bundletool 1.18.3 validate`: **OK**
 - APK signing: **v2 valid, 1 signer**, `CN=Jiyong Youn, L=Seoul, ST=Seoul, C=KR`, certificate
   SHA-256 `9dfdb903269238ef6de424052666b05814577b4b3bb43a5e3e3a05572660e584` — **unchanged from the
-  recorded upload certificate**, so this is the same upload key
+  recorded upload certificate**
 - APK alignment: 16 KiB passed (`zipalign -c -P 16 4`)
-- Packaged binary manifest (`aapt2 dump badging` + `xmltree`): `minSdkVersion 33`,
-  `targetSdkVersion 36`, `compileSdkVersion 37`; `uses-permission` is exactly `CAMERA`,
-  `RECORD_AUDIO`, `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, `READ_MEDIA_VISUAL_USER_SELECTED` (plus
-  the framework's own dynamic-receiver permission); **no `INTERNET`**; **not debuggable**
+- Packaged binary manifest: `minSdkVersion 33`, `targetSdkVersion 36`, `compileSdkVersion 37`;
+  `uses-permission` exactly `CAMERA`, `RECORD_AUDIO`, `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`,
+  `READ_MEDIA_VISUAL_USER_SELECTED` (plus the framework's dynamic-receiver permission); **no
+  `INTERNET`**; **not debuggable**
 - Release gate: `lintRelease` **0 errors / 8 warnings** (`UseKtx` ×4, `InlinedApi` ×2,
-  `ApplySharedPref`, `AndroidGradlePluginVersion` — all benign); host suite **1329 tests, 0
+  `ApplySharedPref`, `AndroidGradlePluginVersion` — all benign); host suite **1348 tests, 0
   failures**
-- Carries a **baseline profile** (`assets/dexopt/baseline.prof` 11066 B + `.profm` 453 B) installed
-  by androidx.profileinstaller
-- **Release dex contains ZERO `com.oplus.ocs` occurrences** (raw byte scan) — the OEM SDK is absent
-  from the shipped binary, which is what the Data-Safety answers rest on
-- Superseded candidates (do NOT upload): `2d6c35b` (`02cbd69d…`), `c6722bb` (`a5654855…`),
-  `961b080` (`0516b0d8…`), `3a3d034` (`1c160b8c…`), `26266db` (`59ccb318…`), `3ff3b4b`
-  (`19ef2b7d…`), `9f367c1` (`f04028f7…`), `3c70639` (`70f83bdd…`), `6bf2325` (`c238c1cf…`),
-  `a0d4dbc` (`84a74f64…`), `69af1574…`, `a737483f…`, `7339e00d…`, `b45a3b8e…`
+- Carries a **baseline profile** (`assets/dexopt/baseline.prof` + `.profm`)
+- **Release dex contains ZERO `com.oplus.ocs` occurrences** (raw byte scan)
+- Superseded candidates (do NOT upload): `fc43953` (`88d00e12…`), `2d6c35b` (`02cbd69d…`),
+  `c6722bb` (`a5654855…`), `961b080` (`0516b0d8…`), `3a3d034` (`1c160b8c…`), `26266db`
+  (`59ccb318…`), `3ff3b4b` (`19ef2b7d…`), `9f367c1` (`f04028f7…`), `3c70639` (`70f83bdd…`),
+  `6bf2325` (`c238c1cf…`), `a0d4dbc` (`84a74f64…`), `69af1574…`, `a737483f…`, `7339e00d…`,
+  `b45a3b8e…`
 
-### Device matrix for THIS artifact — TWO devices, 2026-08-02
+### Device matrix for THIS artifact — THREE targets, 2026-08-02
 
-Both installs were confirmed **byte-identical to the artifact** with on-device `sha256sum`
-(`ca2b9993…` on both) BEFORE testing, so every line below is evidence for this bundle.
+All three installs were confirmed **byte-identical to the artifact** with on-device `sha256sum`
+(`4409fd45…`) BEFORE testing, so every line below is evidence for this bundle.
 
-| | OPPO PMA110 (Android 16) | Lenovo TB336ZU (Android 16 tablet) |
+| | OPPO PMA110 (Android 16) | Lenovo TB336ZU (Android 16) | Android 13 emulator (API 33) |
+|---|---|---|---|
+| Why it is here | the target device | a generic-profile handset with ONE camera | the `minSdk 33` floor |
+| Launch / camera | clean, holds camera 0 | clean, holds camera 0 | clean, holds camera 0 |
+| Lens rail | `0.6× / 1× / 3× / 10×`, all spoken as **lens** | `1× lens` + `3× zoom` | `1× lens` + `3× zoom` + `10× zoom` |
+| Still | written | written | written |
+| Video | HEVC **Main 10** 2160×3840, `yuv420p10le`, `arib-std-b67` / `bt2020` | HEVC **Main** 1440×2560, `bt709` | HEVC **Main** 540×960 (ladder fell back from 720×1280), `bt709` |
+| Audio | AAC 48 kHz stereo | AAC 48 kHz stereo | AAC 48 kHz stereo |
+| Gammas offered | all five | SDR only (encoder has no Main10) | SDR only (encoder has no Main10) |
+| Crashes / ANRs | 0 / 0 | 0 / 0 | 0 / 0 |
+
+**Same-device before/after that justifies the gamma gate** — the TB336ZU, 1440p, hardware
+`c2.mtk.hevc.encoder`:
+
+| | stream | container tags |
 |---|---|---|
-| Preview | live (frame-to-frame luma delta 0.96) | live (delta 10.8) |
-| Lens rail | `0.6× / 1× / 3× / 10×` — all four spoken as **lens** | `1× lens` + `3× zoom` — the non-optical preset is spoken as **zoom** |
-| Focal caption | `23 mm` | `26 mm` |
-| Teleconverter host | "Uses the 3× lens" | "Uses the 26 mm lens" |
-| Phone dropdown | detected model | **`Other`** — no false Find X9 Ultra claim |
-| Still | HEIF **3064×4080** | HEIF **1920×2560** |
-| EXIF Make / Model | `OPPO` / `PMA110` | `LENOVO` / `TB336ZU` |
-| EXIF LensModel | `OPPO PMA110 wide camera 23mm f/1.5` | `LENOVO TB336ZU wide camera 26mm f/2.0` |
-| EXIF 35 mm focal | 23 | 26 |
-| GPS IFD | **absent** | **absent** |
-| Video | HEVC **2160×3840** @29.97 + AAC 48 kHz stereo, 14.2 s | HEVC **1440×2560** @29.97 + AAC 48 kHz stereo, 14.4 s |
-| Video sizes offered | 4K / 3264×1836 / 1440p / 1080p | 1440p / 1080p / 720p (no 640×360, no 192×108) |
-| Audio route readout | `Auto · Phone mic · PMA110` | `Auto · Phone mic · TB336ZU` |
-| Crashes / ANRs | 0 / 0 | 0 / 0 |
+| `fc43953` and earlier | `Main`, `yuv420p` (8-bit) | `bt2020nc / arib-std-b67 / bt2020` — HLG claim |
+| this cut | `Main`, `yuv420p` | `bt709 / bt709 / bt709` — matches the stream |
 
-The EXIF row is the point of the device-independent identity work: on the older hardcoded path the
-Lenovo shot would have carried `OPPO` / `OPPO Find X9 Ultra` and a tele lens name, writing a false
-camera and a false focal band into a stranger's file.
+**Honesty limits of the Android 13 coverage.** It is an emulator with a synthetic camera, so it
+proves API-level compatibility, Camera2 enumeration, session bring-up, the encoder paths, and the
+save pipeline — NOT image quality, optics, or any HAL-specific behaviour. A real Android 13 handset
+has not been tested. The converter-mounted optical checks still need the physical teleconverter.
 
 **Test-procedure note (cost a false alarm here).** The debug package is a separate `applicationId`,
 so both apps can be installed at once — but they contend for the same camera. Launching the release
 build while the debug build still held a device produced a black, frozen viewfinder with a disabled
 shutter and a photo that silently never landed; `dumpsys media.camera` showed the release client
 CONNECT then DISCONNECT ten seconds later. **Force-stop the other package before testing either
-one**; the failure is a two-client artifact, not a product defect.
-
-**Still not covered by this matrix**: the converter-mounted optical checks that need the physical
-teleconverter, and an HLG/log transfer check on the RELEASE package specifically.
+one**; the failure is a two-client artifact, not a product defect. Second gotcha: the release
+package launches in its PERSISTED mode, so select Photo explicitly before expecting a still.
 
 ### Last SIGNED artifacts (2026-08-01, `main` at `2d6c35b`) — SUPERSEDED BY SOURCE, do not upload
 
@@ -339,7 +341,7 @@ identically, but has not itself been measured.
 
 ## Manual Console Sequence
 
-1. Upload the AAB whose hashes are pinned at the top (`88d00e12…`, from `fc43953`). Every other
+1. Upload the AAB whose hashes are pinned at the top (`5685b0c0…`, from `a4a7d12`). Every other
    artifact listed in this file is superseded and must not be uploaded. If `main` has moved since,
    re-cut and re-pin first rather than uploading a stale bundle.
 2. Enter the Store Listing and Data Safety answers from this repository. **The Data Safety "Photos

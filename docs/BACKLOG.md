@@ -28,21 +28,29 @@ frozen artifact vs re-cut" decision is closed; both frozen candidates (`9541697`
 - **What is NOT re-run:** the full PMA110 release matrix against this exact artifact. Individual
   features were device-verified from this build (see cycle 9 below), but the formal matrix sweep
   recorded for `9541697` has not been repeated end to end.
-- **RE-CUT DONE AND PINNED (2026-08-02).** `main` at `fc43953` is cut, signed, validated, and
-  device-verified on TWO handsets; AAB `88d00e12…` / APK `ca2b9993…`, certificate `9dfdb903…`
-  unchanged. Hashes and the full matrix live in `docs/play-console-submit.md`. Both installs were
-  proven byte-identical to the artifact before testing.
-  - The re-cut had been blocked by a stale secret, now resolved: the GPG password backup
-    (2026-07-07) held the RETIRED keystore's password while the keystore is the 2026-07-25
-    replacement, so the documented rebuild procedure could not work. Backup re-encrypted against
-    the current key, with its creation date and certificate fingerprint in the header.
-  - Fallout worth keeping: `.gitignore` matched secrets by exact filename, so a `.bak` copy of the
-    old password file was committable during recovery (`fc43953` broadens it), and the snippet in
-    the submission sheet now pre-checks the password with `keytool` instead of discovering the
-    failure after a full minified build.
+- **RE-CUT DONE AND PINNED (2026-08-02, `a4a7d12`).** AAB `5685b0c0…` / APK `4409fd45…`,
+  certificate `9dfdb903…` unchanged, `jarsigner` + `bundletool validate` + 16 KiB alignment green,
+  `lintRelease` 0/8, 1348 host tests. Device-verified on THREE targets — PMA110, Lenovo TB336ZU,
+  and an Android 13 (API 33) emulator — all three proven byte-identical to the artifact first.
+  Full matrix in `docs/play-console-submit.md`.
+  - **The earlier `fc43953` pin must not be uploaded.** Exercising the `minSdk 33` floor for the
+    first time found that video recording was impossible on a whole class of device: the encoder
+    buffer is swapped to portrait for the cycle-4 framing contract and nothing asked the encoder
+    whether it takes that shape, so any encoder capping height below width refused every take.
+    Fixed with a same-aspect fallback ladder (`148e7db`).
+  - Same pass: four of five gammas request `Main10`, which an 8-bit-only encoder silently downgrades
+    to `Main`. The TB336ZU's hardware `c2.mtk.hevc.encoder` was writing clips tagged
+    `bt2020 / arib-std-b67` over an 8-bit stream. Now capability-gated (`8de0415`); same-device
+    before/after is recorded in the submission sheet.
+  - The signing blocker (a GPG backup holding the RETIRED keystore's password) is resolved and the
+    backup re-encrypted. `.gitignore` matched secrets by exact filename and is now pattern-based
+    (`fc43953`). **Audited 2026-08-02: no key, keystore, or password has ever entered git history
+    on any ref** — verified by path scan across all commits plus a content search.
   - **Open owner decision: the upload key's password is six digits and was transmitted in
-    plaintext.** Rotating costs one `keytool -genkeypair` while nothing is on Play; after the first
-    upload it becomes a Play support request.
+    plaintext.** Practical risk is low (the keystore is gitignored and local-only, and with Play App
+    Signing an upload key alone cannot ship to users without console access), but rotating costs one
+    `keytool -genkeypair` while nothing is uploaded and becomes a Play support request afterwards.
+
 - **Device catalog is now a bigger decision than it was.** It used to lean on `minSdk 36` doing the
   narrowing; at `minSdk 33` an open catalog reaches essentially the whole Android 13+ population
   against two capture-verified devices. Owner call — see the Device Catalog section.
