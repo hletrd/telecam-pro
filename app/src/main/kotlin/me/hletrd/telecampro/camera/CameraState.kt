@@ -1249,6 +1249,12 @@ data class CameraUiState(
     val heifAvailable: Boolean = true,
     /** False when the device's HEVC encoder has no Main10 profile; withholds HLG/log gammas. */
     val tenBitEncodeAvailable: Boolean = true,
+    /**
+     * The platform refuses to open the camera for THIS app although the runtime permission reads
+     * granted (appops/policy block). The UI shows the permission gate instead of a black viewfinder
+     * behind interactive-looking chrome.
+     */
+    val cameraPolicyBlocked: Boolean = false,
     val cameraOverrideId: String? = null,
     val statusMessage: String? = null,
     // The newest saved capture owner (HEIF/JPEG/video, or RAW when no displayable sibling exists).

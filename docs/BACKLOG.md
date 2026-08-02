@@ -54,23 +54,37 @@ frozen artifact vs re-cut" decision is closed; both frozen candidates (`9541697`
     upload key alone cannot ship to users without console access), but rotating costs one
     `keytool -genkeypair` now and becomes a Play support request after the first upload.
 
-### Open — camera blocked for ONE app is invisible to the user
+### CLOSED 2026-08-03 — camera blocked for ONE app now says so
 
-Found on the TB331FC 2026-08-02. The device had `appops CAMERA: ignore` at the UID level with
-`REVOKED_COMPAT` on the permission: `checkSelfPermission(CAMERA)` returns **GRANTED** while
-`openCamera` is rejected with `Camera "0" disabled by policy` (the stock camera app worked, so the
-block was per-app, not device-wide).
+Found on the TB331FC. The device had `appops CAMERA: ignore` at the UID level with `REVOKED_COMPAT`
+on the permission: `checkSelfPermission(CAMERA)` returned **GRANTED** while `openCamera` was
+rejected with `Camera "0" disabled by policy` (the stock camera app worked, so the block was
+per-app). The app behaved safely — no crash, shutter disabled — but said nothing, leaving normal
+viewfinder chrome over a black frame.
 
-The app behaves safely — no crash, shutter correctly disabled — but says **nothing**. The operator
-sees a normal viewfinder chrome over a black frame with a dead shutter and no explanation, because
-the permission gate is satisfied and the existing "Enable camera access in Settings." copy is keyed
-to a DENIED permission.
+Fixed with the operator's approved wording and surface: the EXISTING full-screen permission gate is
+reused (no new banner — `docs/UX_POLICY.md` forbids warning chips) with neutral, action-oriented
+copy that does not name a cause, because a work profile, kiosk provisioning, and an OEM privacy
+manager all produce this shape and naming one would be wrong on the others:
 
-This is realistic on managed/work profiles, kiosk devices, and OEM privacy managers. The fix is to
-treat a `CameraAccessException.CAMERA_DISABLED` / service-policy rejection as its own user-visible
-state with copy that points at the app's permission screen, distinct from both "permission denied"
-and the generic camera-error retry. Not attempted this pass: it needs UX wording the operator signs
-off on, and a way to reproduce on demand (`cmd appops set --uid <uid> CAMERA ignore`).
+> Camera blocked for this app on this device.  [Settings]
+
+`CameraPolicyBlockedException` + `cameraErrorCodeIsPolicyBlock` / `cameraFailureIsPolicyBlock`
+classify it apart from eviction and ordinary HAL faults. The state is LATCHED on the failure but
+ANNOUNCED only once the bounded reopen budget is spent, so a transient refusal cannot blank a
+working viewfinder.
+
+**The retract path is load-bearing and was wrong on the first attempt.** The gate REPLACES the
+viewfinder, so while it is up there is no preview Surface — and with no Surface the engine cannot
+open the camera, so it could never observe the block being lifted. The first implementation
+deadlocked the app on the very screen telling the user how to fix it (caught on device, not in
+review). `resume()` now clears the latch before anything else, which is exactly the moment the user
+returns from Settings; if the block is still in place the bounded reopen re-raises the gate within
+a second or two. Device-verified both directions on the TB331FC: blocked → gate; block cleared +
+foreground → gate retracts and the preview is live again. Healthy devices are unaffected
+(PMA110 and the Android 13 emulator both show `blocked-screen=0`).
+
+Reproduce with `cmd appops set --uid <uid> CAMERA ignore`.
 
 - **Device catalog is now a bigger decision than it was.** It used to lean on `minSdk 36` doing the
   narrowing; at `minSdk 33` an open catalog reaches essentially the whole Android 13+ population

@@ -269,8 +269,24 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
+                    // The camera is permitted but the PLATFORM refuses it for this app (appops /
+                    // policy). checkSelfPermission answers granted, so nothing else in the app
+                    // notices; without this the operator gets normal viewfinder chrome over a black
+                    // frame and a dead shutter, with no way to learn why (device-found on a Lenovo
+                    // TB331FC, 2026-08-02). Reuses the permission screen rather than inventing a
+                    // banner — same class of state, and docs/UX_POLICY.md forbids warning chips.
+                    if (state.cameraPolicyBlocked) {
+                        PermissionGate(
+                            permanentlyDenied = true,
+                            policyBlocked = true,
+                            onRequest = {},
+                            onOpenSettings = ::openAppSettings,
+                            onOpenPrivacy = ::openPrivacyPolicy,
+                        )
+                    } else {
                     CameraScreen(state = state, actions = permissionAwareActions, modifier = Modifier.fillMaxSize())
-                    if (showMicrophoneRationale) {
+                    }
+                    if (showMicrophoneRationale && !state.cameraPolicyBlocked) {
                         MicrophonePermissionRationale(
                             onContinue = {
                                 showMicrophoneRationale = false
@@ -698,6 +714,13 @@ private fun MicrophonePermissionRationale(
 @Composable
 private fun PermissionGate(
     permanentlyDenied: Boolean,
+    /**
+     * The permission is GRANTED but the platform still refuses the camera for this app. Different
+     * words from a denial because it is a different fact — and deliberately does NOT name a cause:
+     * a work profile, kiosk provisioning, and an OEM privacy manager all produce this, so naming
+     * one would be wrong on the others. The action is the same either way: the app's settings page.
+     */
+    policyBlocked: Boolean = false,
     onRequest: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenPrivacy: () -> Unit,
@@ -713,10 +736,10 @@ private fun PermissionGate(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
-                text = if (permanentlyDenied) {
-                    "Enable camera access in Settings."
-                } else {
-                    "Camera access required."
+                text = when {
+                    policyBlocked -> "Camera blocked for this app on this device."
+                    permanentlyDenied -> "Enable camera access in Settings."
+                    else -> "Camera access required."
                 },
                 textAlign = TextAlign.Center,
                 style = MaterialTheme.typography.bodyLarge,

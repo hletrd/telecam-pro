@@ -433,6 +433,13 @@ class CameraEngine(private val context: Context) {
                 "requestGeneration=${expectedController.latestPreviewRequestGeneration} " +
                 "mode=${acceptedMode.name} cameraId=$acceptedCameraId ready=$effectiveReady"
             cameraRecoveryAttempts = 0
+            if (cameraPolicyBlocked) {
+                // A session was accepted, so whatever refused us is gone. Retract the gate in the
+                // same commit that publishes Ready — leaving it up over a live camera would be a
+                // worse lie than the silence this feature replaced.
+                cameraPolicyBlocked = false
+                onCameraPolicyBlocked?.invoke(false)
+            }
         } ?: return false
         coldStartRetryGate.success(publicationGeneration)
         if (BuildConfig.DEBUG) Log.i("CameraEngine", checkNotNull(acceptedDiagnostic))
@@ -771,6 +778,9 @@ class CameraEngine(private val context: Context) {
     // Bounded auto-recovery when the camera HAL disconnects/errors mid-session (its provider process can
     // crash). Reset on a successful open so the viewfinder self-heals instead of sitting black.
     @Volatile private var cameraRecoveryAttempts = 0
+    // Latched by an owned policy-block failure; cleared by any accepted session, so the gate cannot
+    // outlive the user clearing the block and returning to the app.
+    @Volatile private var cameraPolicyBlocked = false
     private val coldStartRetryGate = ColdStartRetryGate(MAX_CAMERA_RECOVERY_ATTEMPTS)
 
     // Software recording-audio gain (1f = passthrough) and the still-photo aspect-ratio crop;
@@ -801,6 +811,14 @@ class CameraEngine(private val context: Context) {
     // Live recording-audio level (0..1 RMS, post-gain), throttled by VideoRecorder to ~10 Hz.
     /** Per-channel input levels (0..1), one entry per interleaved channel; empty = meter off. */
     var onAudioLevel: ((FloatArray) -> Unit)? = null
+
+    /**
+     * True once the platform has refused to open the camera FOR THIS APP while the runtime
+     * permission reads granted (`Camera "…" disabled by policy`), and the bounded reopen budget is
+     * spent. Retrying cannot clear it — only the user can, in the app's settings page — so the UI
+     * shows the permission gate rather than an interactive-looking black viewfinder.
+     */
+    var onCameraPolicyBlocked: ((Boolean) -> Unit)? = null
     // A timelapse RUN started (true) / ended (false). Run truth lives in [timelapseRun]'s
     // generation, which the UI cannot see — the OSD's TL tag keys off the SELECTED drive only.
     // Fired exactly on run-state edges (stopTimelapse with no active run is silent), from whichever
@@ -2231,6 +2249,12 @@ class CameraEngine(private val context: Context) {
         }
         onCameraReadyChange?.invoke(outcome.first)
         outcome.third?.let { onTapFocusChange?.invoke(it) }
+        if (cameraFailureIsPolicyBlock(failure)) {
+            // Latched here, ANNOUNCED only when the reopen budget is spent (below): a transient
+            // refusal must not blank a working viewfinder, and the retries are cheap because a
+            // policy rejection returns immediately.
+            cameraPolicyBlocked = true
+        }
         val evicted = cameraFailureIsEviction(failure)
         if (evicted) {
             // Another camera app took the device — ordinary multitasking, not a fault. The status
@@ -2267,7 +2291,13 @@ class CameraEngine(private val context: Context) {
             // Recovery exhausted: say so instead of silently leaving a black viewfinder behind an
             // interactive-looking UI. cameraReady stays false, so the shutter is dimmed too; a
             // background/foreground cycle (resume()) retries with a fresh attempt budget.
-            onStatus?.invoke("Camera unavailable. Reopen the app.")
+            if (cameraPolicyBlocked) {
+                // A policy block never heals by reopening, and "Reopen the app." would send the
+                // user around a loop that cannot end. Hand it to the permission gate instead.
+                onCameraPolicyBlocked?.invoke(true)
+            } else {
+                onStatus?.invoke("Camera unavailable. Reopen the app.")
+            }
             return
         }
         cameraRecoveryAttempts++
@@ -4565,6 +4595,18 @@ class CameraEngine(private val context: Context) {
         // budget is read from. A fabricated number there is worse than no line at all.
         StartupTrace.begin()
         paused = false
+        // Retract the policy-block gate on every foreground, BEFORE anything else. The gate replaces
+        // the viewfinder, so while it is up there is no preview Surface — and with no Surface the
+        // engine cannot open the camera, so it could never observe the block being lifted. Latching
+        // it across a resume would therefore deadlock the app on the very screen that tells the user
+        // how to fix it. Returning from Settings is exactly the moment to try again; if the block is
+        // still in place the bounded reopen re-raises the gate within a second or two, which is the
+        // same contract as "Camera unavailable. Reopen the app." one branch over.
+        if (cameraPolicyBlocked) {
+            cameraPolicyBlocked = false
+            cameraRecoveryAttempts = 0
+            onCameraPolicyBlocked?.invoke(false)
+        }
         if (!nativeAcquisitionMayProceed()) {
             StartupTrace.disarm()
             if (UnsafeRecorderQuarantine.isActive()) {

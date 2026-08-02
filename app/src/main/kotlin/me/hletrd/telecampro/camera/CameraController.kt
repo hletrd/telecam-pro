@@ -333,10 +333,11 @@ class CameraController(context: Context) {
                     // was silent, which cost a device-bisect session to attribute.
                     Log.e(TAG, "CameraDevice.StateCallback.onError: code=$error (device=${camera.id})")
                     onError.onError(
-                        if (cameraErrorCodeIsEviction(error)) {
-                            CameraEvictedException("Camera error $error")
-                        } else {
-                            IllegalStateException("Camera error $error")
+                        when {
+                            cameraErrorCodeIsEviction(error) -> CameraEvictedException("Camera error $error")
+                            cameraErrorCodeIsPolicyBlock(error) ->
+                                CameraPolicyBlockedException("Camera error $error (disabled)")
+                            else -> IllegalStateException("Camera error $error")
                         },
                     )
                     close()
@@ -2390,6 +2391,33 @@ internal fun cameraFailureIsEviction(failure: Throwable): Boolean =
                     failure.reason == android.hardware.camera2.CameraAccessException.CAMERA_IN_USE ||
                         failure.reason == android.hardware.camera2.CameraAccessException.MAX_CAMERAS_IN_USE
                     )
+            )
+
+/**
+ * The camera exists and the runtime permission is GRANTED, but the platform refuses to open it for
+ * THIS app — `Camera "0" disabled by policy` from the camera service.
+ *
+ * Device-found on a Lenovo TB331FC (2026-08-02): `appops CAMERA` was `ignore` at the UID level with
+ * `REVOKED_COMPAT` on the permission, so `checkSelfPermission` answered GRANTED while every open was
+ * rejected — and the stock camera app worked, so it was per-app, not device-wide. Managed profiles,
+ * kiosk provisioning, and OEM privacy managers all produce this shape.
+ *
+ * Distinguished from eviction and from ordinary HAL faults because the remedy is different in kind:
+ * retrying cannot help and the existing "permission denied" copy never fires (the permission is not
+ * denied). Only the user, in the app's own settings page, can clear it.
+ */
+internal class CameraPolicyBlockedException(message: String) : IllegalStateException(message)
+
+/** Pure classifier for the policy-block onError code. */
+internal fun cameraErrorCodeIsPolicyBlock(error: Int): Boolean =
+    error == android.hardware.camera2.CameraDevice.StateCallback.ERROR_CAMERA_DISABLED
+
+/** Whether a failure anywhere on the open/session path is policy-block class. */
+internal fun cameraFailureIsPolicyBlock(failure: Throwable): Boolean =
+    failure is CameraPolicyBlockedException ||
+        (
+            failure is android.hardware.camera2.CameraAccessException &&
+                failure.reason == android.hardware.camera2.CameraAccessException.CAMERA_DISABLED
             )
 
 internal fun sessionAttemptPlan(

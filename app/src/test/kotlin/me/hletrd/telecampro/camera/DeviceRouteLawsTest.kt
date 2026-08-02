@@ -405,3 +405,42 @@ class StillSizePickerTest {
         assertEquals(8000 to 6000, pickStillSize(all, 1000, 750))
     }
 }
+
+/**
+ * Camera refused for THIS app while the permission reads granted (2026-08-02, device-found on a
+ * Lenovo TB331FC whose appops CAMERA was `ignore` at UID level). It is neither a denial nor an
+ * eviction, and the two existing copies would both be wrong.
+ */
+class CameraPolicyBlockTest {
+    @Test
+    fun `ERROR_CAMERA_DISABLED is policy-block class`() {
+        assertTrue(cameraErrorCodeIsPolicyBlock(android.hardware.camera2.CameraDevice.StateCallback.ERROR_CAMERA_DISABLED))
+    }
+
+    @Test
+    fun `eviction codes are NOT policy-block — different remedy entirely`() {
+        listOf(
+            android.hardware.camera2.CameraDevice.StateCallback.ERROR_CAMERA_IN_USE,
+            android.hardware.camera2.CameraDevice.StateCallback.ERROR_MAX_CAMERAS_IN_USE,
+        ).forEach { assertFalse(cameraErrorCodeIsPolicyBlock(it)) }
+    }
+
+    @Test
+    fun `an ordinary device error is NOT policy-block`() {
+        assertFalse(cameraErrorCodeIsPolicyBlock(android.hardware.camera2.CameraDevice.StateCallback.ERROR_CAMERA_DEVICE))
+    }
+
+    @Test
+    fun `the typed exception classifies, whichever path raised it`() {
+        assertTrue(cameraFailureIsPolicyBlock(CameraPolicyBlockedException("x")))
+        assertFalse(cameraFailureIsPolicyBlock(CameraEvictedException("x")))
+        assertFalse(cameraFailureIsPolicyBlock(IllegalStateException("x")))
+    }
+
+    @Test
+    fun `policy-block and eviction never both claim the same failure`() {
+        val blocked = CameraPolicyBlockedException("x")
+        assertTrue(cameraFailureIsPolicyBlock(blocked))
+        assertFalse(cameraFailureIsEviction(blocked))
+    }
+}

@@ -785,6 +785,9 @@ class CameraViewModel @JvmOverloads constructor(
         // Run-state edges only (engine is edge-gated); may arrive from the timelapse scheduler
         // thread — StateFlow.update is thread-safe.
         engine.onTimelapseRun = { running -> _state.update { it.copy(timelapseRunning = running) } }
+        engine.onCameraPolicyBlocked = { blocked ->
+            _state.update { if (it.cameraPolicyBlocked == blocked) it else it.copy(cameraPolicyBlocked = blocked) }
+        }
         engine.onAudioRoute = { route -> _state.update { it.copy(audioRouteLabel = route) } }
         engine.onStandbyAudioAvailable = {
             mainHandler.post {
