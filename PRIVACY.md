@@ -24,7 +24,7 @@ uploaded, collected by the developer, or shared with third parties.
 
 ## Photos and videos you capture
 
-Photos and videos are saved in `DCIM/X9Tele` through Android MediaStore. Uninstalling TeleCam Pro
+Photos and videos are saved in `DCIM/TeleCamPro` through Android MediaStore. Uninstalling TeleCam Pro
 removes its settings but leaves captures in shared media storage. TeleCam Pro does not upload or
 back up captures. Delete them in TeleCam Pro, a gallery app, or a file manager.
 
