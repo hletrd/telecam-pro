@@ -902,13 +902,13 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     val customWbCaptureEnabled = state.cameraReady && availability.customWbCaptureEnabled
     // Both refusal branches are word for word the toast the SAME refusal already emits from the
     // ViewModel (onCaptureCustomWb guards these two conditions in this order): the caption and the
-    // toast are one instruction seen twice, not two instructions. "Camera reconfiguring" is also
+    // toast are one instruction seen twice, not two instructions. "Camera reconfiguring…" is also
     // the app's single name for !cameraReady everywhere else.
     Captioned(
         if (customWbCaptureEnabled) {
             "Aim at a white or gray card"
         } else if (!state.cameraReady) {
-            "Camera reconfiguring"
+            "Camera reconfiguring…"
         } else {
             "Use Auto WB with AWB Lock off"
         },
@@ -1481,8 +1481,7 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
     // ARRI marks are registered to the Cine Technik entity, not an "ARRI AG" (cycle-6 DS-8).
     Text(
         "S-Log is a trademark of Sony Group Corporation. LogC is a trademark of " +
-            "Arnold & Richter Cine Technik GmbH & Co. Betriebs KG (ARRI). " +
-            "This app is not affiliated with or endorsed by Sony or ARRI.",
+            "Arnold & Richter Cine Technik GmbH & Co. Betriebs KG (ARRI).",
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.bodySmall,
     )
@@ -1493,9 +1492,16 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
     Text(
         "Hasselblad is a trademark of Victor Hasselblad AB. OPPO is a trademark of Guangdong OPPO " +
             "Mobile Telecommunications Corp., Ltd. ZEISS is a trademark of Carl Zeiss AG. vivo is " +
-            "a trademark of vivo Mobile Communication Co., Ltd. This app is independent and is not " +
-            "affiliated with, endorsed by, or sponsored by any of them; their optics and phones are " +
-            "named only to describe hardware compatibility.",
+            "a trademark of vivo Mobile Communication Co., Ltd.",
+        color = CameraColors.TextSecondary,
+        style = MaterialTheme.typography.bodySmall,
+    )
+    // ONE affiliation disclaimer for every mark above, not one per paragraph. Adding the hardware
+    // marks left the section saying "not affiliated" twice in four lines — the same assurance
+    // stacked, which reads as boilerplate and is exactly what a Sony menu would not do.
+    Text(
+        "This app is independent and is not affiliated with, endorsed by, or sponsored by any of " +
+            "them. Names describe compatibility only.",
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.bodySmall,
     )

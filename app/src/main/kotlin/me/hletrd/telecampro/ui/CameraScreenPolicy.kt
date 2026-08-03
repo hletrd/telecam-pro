@@ -611,7 +611,7 @@ private fun railChipStateDescription(
     selectedDetail: String? = null,
 ): String = when {
     recording -> "Unavailable while recording"
-    !cameraReady -> "Camera reconfiguring"
+    !cameraReady -> "Camera reconfiguring…"
     selected -> selectedDetail ?: "Selected"
     else -> "Not selected"
 }

@@ -3261,7 +3261,7 @@ class CameraEngine(private val context: Context) {
         // instead of a shutter press that does nothing.
         val accepted = currentAcceptedCameraSession()
         if (accepted == null) {
-            onStatus?.invoke("Camera reconfiguring")
+            onStatus?.invoke("Camera reconfiguring…")
             return false
         }
         val effFormats = formats.normalizedFor(accepted.outputs)
@@ -3830,7 +3830,7 @@ class CameraEngine(private val context: Context) {
     private fun startRecordingBlocking(recordAudio: Boolean): Boolean {
         val acceptedSession = currentAcceptedRecordingSession()
         if (acceptedSession == null) {
-            onStatus?.invoke("Camera reconfiguring")
+            onStatus?.invoke("Camera reconfiguring…")
             return false
         }
         if (videoFrameRate !in VideoFrameRate.availableFor(caps, videoSize, videoCodec)) {
@@ -3905,7 +3905,7 @@ class CameraEngine(private val context: Context) {
         }
         if (currentAcceptedRecordingSession() !== acceptedSession) {
             abortRecordingStart()
-            onStatus?.invoke("Camera reconfiguring")
+            onStatus?.invoke("Camera reconfiguring…")
             return false
         }
         val ownedGl = glOwners.current()
@@ -4069,7 +4069,7 @@ class CameraEngine(private val context: Context) {
             // No EGL handoff occurred: direct recorder stop is safe and deletes the pending row.
             stopUnattachedRecording(rec, recordingCaptureId)
             onStatus?.invoke(
-                if (!processCommitted) UNSAFE_RECORDER_RESTART_STATUS else "Camera reconfiguring",
+                if (!processCommitted) UNSAFE_RECORDER_RESTART_STATUS else "Camera reconfiguring…",
             )
             return false
         }

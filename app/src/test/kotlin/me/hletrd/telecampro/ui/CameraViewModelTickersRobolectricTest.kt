@@ -151,6 +151,6 @@ class CameraViewModelTickersRobolectricTest {
         assertEquals(0, vm.state.value.timerCountdownSec)
         // The fire happened: with no accepted session (engine never resumed), capturePhoto's
         // admission gate declines with the authoritative status instead of a silent dead press.
-        assertEquals("Camera reconfiguring", vm.state.value.statusMessage)
+        assertEquals("Camera reconfiguring…", vm.state.value.statusMessage)
     }
 }

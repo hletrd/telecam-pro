@@ -124,7 +124,7 @@ class CameraUiPolicyTest {
 
         val reconfiguring = focalRailState(LensChoice.MAIN, LensChoice.MAIN, false, false, false)
         assertFalse(reconfiguring.enabled)
-        assertEquals("Camera reconfiguring", reconfiguring.stateDescription)
+        assertEquals("Camera reconfiguring…", reconfiguring.stateDescription)
 
         val recording = focalRailState(LensChoice.MAIN, LensChoice.MAIN, false, true, true)
         assertFalse(recording.enabled)

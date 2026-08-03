@@ -220,7 +220,7 @@ class ReviewSurfacedSeamsTest {
             teleZoomMarkState(selected = true, cameraReady = true, recording = true).stateDescription,
         )
         assertEquals(
-            "Camera reconfiguring",
+            "Camera reconfiguring…",
             teleZoomMarkState(selected = false, cameraReady = false, recording = false).stateDescription,
         )
         val selected = teleZoomMarkState(selected = true, cameraReady = true, recording = false)

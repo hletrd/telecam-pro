@@ -1639,7 +1639,7 @@ class CameraViewModel @JvmOverloads constructor(
         val current = _state.value
         val availability = controlAvailability(current.caps?.controlCapabilities(), current.controls)
         if (!current.cameraReady) {
-            showStatus("Camera reconfiguring")
+            showStatus("Camera reconfiguring…")
             return
         }
         if (!availability.customWbCaptureEnabled) {

@@ -764,7 +764,7 @@ private fun PermissionGate(
                 }
             } else {
                 MinTouchTarget48 {
-                    Button(onClick = onRequest, colors = primaryColors) { Text("Allow Camera Access") }
+                    Button(onClick = onRequest, colors = primaryColors) { Text("Allow camera access") }
                 }
             }
             Spacer(Modifier.height(8.dp))
