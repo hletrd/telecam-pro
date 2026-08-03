@@ -2406,13 +2406,30 @@ internal fun cameraFailureIsEviction(failure: Throwable): Boolean =
  * retrying cannot help and the existing "permission denied" copy never fires (the permission is not
  * denied). Only the user, in the app's own settings page, can clear it.
  */
+/**
+ * Pure predicate over an AppOps mode: is the camera op WITHHELD? Only ALLOWED and FOREGROUND let an
+ * app open the camera; IGNORED (the silent deny OEM privacy managers use), ERRORED, and DEFAULT all
+ * mean it cannot. Pure and top-level so the JVM suite pins it — the constants are plain ints.
+ */
+internal fun cameraOpModeWithheld(mode: Int): Boolean =
+    mode != android.app.AppOpsManager.MODE_ALLOWED &&
+        mode != android.app.AppOpsManager.MODE_FOREGROUND
+
 internal class CameraPolicyBlockedException(message: String) : IllegalStateException(message)
 
 /** Pure classifier for the policy-block onError code. */
 internal fun cameraErrorCodeIsPolicyBlock(error: Int): Boolean =
     error == android.hardware.camera2.CameraDevice.StateCallback.ERROR_CAMERA_DISABLED
 
-/** Whether a failure anywhere on the open/session path is policy-block class. */
+/**
+ * Whether a failure LOOKS policy-block class. NOT sufficient on its own — see
+ * [me.hletrd.telecampro.camera.cameraPolicyBlockConfirmed].
+ *
+ * `CAMERA_DISABLED` is ambiguous by design: the platform also raises it for the TRANSIENT
+ * background-proc-state refusal this project documents (a relaunch behind the keyguard, or the
+ * screen having just woken). Treating the code alone as proof would let a self-healing lifecycle
+ * race accuse the user's device of blocking the app — a claim that is both wrong and unactionable.
+ */
 internal fun cameraFailureIsPolicyBlock(failure: Throwable): Boolean =
     failure is CameraPolicyBlockedException ||
         (

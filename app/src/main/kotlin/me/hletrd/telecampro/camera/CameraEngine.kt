@@ -2216,6 +2216,25 @@ class CameraEngine(private val context: Context) {
      * publication or claims the published recorder; it cannot leave a phantom recorder between the
      * two transitions.
      */
+    /**
+     * True when AppOps is withholding the CAMERA op from this package, i.e. the runtime permission
+     * can read GRANTED while every open is refused. Device-confirmed shape on a Lenovo TB331FC:
+     * `appops CAMERA: ignore` at UID level with `REVOKED_COMPAT` on the permission.
+     *
+     * Defensive: any failure to ask (missing service, vendor throw) answers FALSE, so an
+     * unanswerable question can never produce the accusation. That biases toward the old silent
+     * behaviour rather than toward a wrong claim, which is the right way round.
+     */
+    private fun cameraOpWithheld(): Boolean = runCatching {
+        val ops = context.getSystemService(android.app.AppOpsManager::class.java) ?: return false
+        val mode = ops.unsafeCheckOpNoThrow(
+            android.app.AppOpsManager.OPSTR_CAMERA,
+            android.os.Process.myUid(),
+            context.packageName,
+        )
+        cameraOpModeWithheld(mode)
+    }.getOrDefault(false)
+
     private fun handleActiveCameraFailure(
         failedController: CameraController,
         failure: Throwable,
@@ -2249,12 +2268,19 @@ class CameraEngine(private val context: Context) {
         }
         onCameraReadyChange?.invoke(outcome.first)
         outcome.third?.let { onTapFocusChange?.invoke(it) }
-        if (cameraFailureIsPolicyBlock(failure)) {
-            // Latched here, ANNOUNCED only when the reopen budget is spent (below): a transient
-            // refusal must not blank a working viewfinder, and the retries are cheap because a
-            // policy rejection returns immediately.
-            cameraPolicyBlocked = true
-        }
+        // Latched here, ANNOUNCED only when the reopen budget is spent (below): a transient refusal
+        // must not blank a working viewfinder, and the retries are cheap because a policy rejection
+        // returns immediately. Device-confirmed on a TB331FC that BOTH failure paths arrive here —
+        // StateCallback.onError code=3 AND a synchronous CameraAccessException CAMERA_DISABLED — so
+        // both classifiers are load-bearing.
+        // The exception code alone is NOT proof: the platform raises CAMERA_DISABLED for the
+        // transient background-proc-state refusal too (relaunch behind the keyguard, screen just
+        // woken — documented in CLAUDE.md). So confirm it against AppOps, which answers the actual
+        // question — is the camera op withheld from THIS package right now — and turns an inference
+        // into a proof. A transient lifecycle race leaves the op ALLOWED and is therefore never
+        // accused; only a genuine withholding latches.
+        val policyBlocked = cameraFailureIsPolicyBlock(failure) && cameraOpWithheld()
+        if (policyBlocked) cameraPolicyBlocked = true
         val evicted = cameraFailureIsEviction(failure)
         if (evicted) {
             // Another camera app took the device — ordinary multitasking, not a fault. The status
@@ -2264,6 +2290,12 @@ class CameraEngine(private val context: Context) {
             // recording finalized and published, bounded recovery scheduled — resume() reopens
             // when the user returns, and a genuinely exhausted recovery still says so.
             android.util.Log.w("CameraEngine", "Camera evicted by another client", failure)
+        } else if (policyBlocked) {
+            // Suppressed for the same reason the eviction branch above suppresses it: we already
+            // know what this is. "Recovering." promises an outcome the retries cannot deliver — a
+            // policy block clears only when the user changes it — and the gate below says the true
+            // thing once the budget is spent. The retries still run; only the false promise goes.
+            android.util.Log.w("CameraEngine", "Camera blocked for this app by policy", failure)
         } else {
             android.util.Log.e("CameraEngine", "Active camera failure", failure)
             onStatus?.invoke("Camera error. Recovering.")

@@ -74,6 +74,20 @@ classify it apart from eviction and ordinary HAL faults. The state is LATCHED on
 ANNOUNCED only once the bounded reopen budget is spent, so a transient refusal cannot blank a
 working viewfinder.
 
+**The exception code alone is NOT proof, and treating it as proof would have been a false
+accusation.** `CAMERA_DISABLED` is the code the platform ALSO raises for the transient
+background-proc-state refusal this project already documents (relaunch behind the keyguard, screen
+just woken). The latch is therefore confirmed against AppOps — `unsafeCheckOpNoThrow(OPSTR_CAMERA)`,
+which answers the actual question: is the op withheld from this package right now. A lifecycle race
+leaves it `MODE_ALLOWED` and is never accused. Asking defensively answers "not withheld" on any
+failure to ask, so an unanswerable question degrades to the old silence rather than a wrong claim.
+Device-verified both ways on the TB331FC. `cameraOpModeWithheld` is pure and host-tested.
+
+Both failure paths were confirmed to arrive on device: `StateCallback.onError code=3` AND a
+synchronous `CameraAccessException CAMERA_DISABLED`. The generic "Camera error. Recovering." status
+is suppressed for this class — it promises an outcome the retries cannot deliver — while the honest
+log line is kept.
+
 **The retract path is load-bearing and was wrong on the first attempt.** The gate REPLACES the
 viewfinder, so while it is up there is no preview Surface — and with no Surface the engine cannot
 open the camera, so it could never observe the block being lifted. The first implementation

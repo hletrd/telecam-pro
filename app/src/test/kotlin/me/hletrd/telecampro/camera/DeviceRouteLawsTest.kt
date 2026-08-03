@@ -444,3 +444,28 @@ class CameraPolicyBlockTest {
         assertFalse(cameraFailureIsEviction(blocked))
     }
 }
+
+/**
+ * The AppOps confirmation that turns the policy-block inference into a proof (2026-08-03).
+ * CAMERA_DISABLED is ambiguous — this project documents the SAME code for the transient
+ * background-proc-state refusal (relaunch behind the keyguard) — so the exception alone must never
+ * accuse the device of blocking the app.
+ */
+class CameraOpWithheldTest {
+    @Test
+    fun `allowed and foreground can open the camera, so nothing is withheld`() {
+        assertFalse(cameraOpModeWithheld(android.app.AppOpsManager.MODE_ALLOWED))
+        assertFalse(cameraOpModeWithheld(android.app.AppOpsManager.MODE_FOREGROUND))
+    }
+
+    @Test
+    fun `ignored is withheld — the silent deny OEM privacy managers use`() {
+        assertTrue(cameraOpModeWithheld(android.app.AppOpsManager.MODE_IGNORED))
+    }
+
+    @Test
+    fun `errored and default are withheld too`() {
+        assertTrue(cameraOpModeWithheld(android.app.AppOpsManager.MODE_ERRORED))
+        assertTrue(cameraOpModeWithheld(android.app.AppOpsManager.MODE_DEFAULT))
+    }
+}
