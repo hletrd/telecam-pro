@@ -4,9 +4,9 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 ## Upload Artifact
 
-> ## ✅ UPLOAD-READY (2026-08-02) — signed re-cut from `main` at `66734db`, clean tree.
+> ## ✅ UPLOAD-READY (2026-08-02) — signed re-cut from `main` at `0f1421e`, clean tree.
 >
-> Supersedes `a4a7d12`, `fc43953`, and every candidate before it. `applicationId` unchanged
+> Supersedes `66734db`, `a4a7d12`, `fc43953`, and every candidate before it. `applicationId` unchanged
 > (`me.hletrd.telecampro`); upload certificate byte-identical to the recorded one (`9dfdb903…`).
 >
 > **`fc43953` must not be uploaded: video recording was impossible on a whole class of device.**
@@ -31,17 +31,25 @@ Use this sheet for the parts that must be entered manually in Play Console.
 > 2448x2448 with more pixels than its own 4:3 2592x1944 — so every photo saved square, throwing away
 > the field the viewfinder had composed. Shape now precedes size.
 >
+> A FOURTH, from the same tablet: it arrived with the camera withheld from this app alone
+> (`appops CAMERA: ignore` at UID level, `REVOKED_COMPAT` on the permission) so
+> `checkSelfPermission` read GRANTED while every open was refused — the app showed normal
+> viewfinder chrome over a black frame and said nothing. It now shows the existing permission gate
+> with "Camera blocked for this app on this device." + [Settings], confirmed against AppOps rather
+> than inferred from the ambiguous `CAMERA_DISABLED` code (the platform raises the same code for a
+> transient keyguard-relaunch race, so inferring it would have produced false accusations).
+>
 > **Screenshots: still the recaptured 2026-07-27 set.** Nothing here changes what they show on a
 > PMA110 — see the screenshot section before uploading.
 
 Do not upload debug APKs or any unsigned/stale release bundle.
 
-### Final v1 upload artifacts (built + device-verified 2026-08-02 from `main` at `66734db`)
+### Final v1 upload artifacts (built + device-verified 2026-08-03 from `main` at `0f1421e`)
 
 - Artifact location: `app/build/outputs/bundle/release/app-release.aab`
-- AAB SHA-256: `152f1c33015b039a16254283950a2a4d8fcf804925791b2e3e2b6579436f0d39`
+- AAB SHA-256: `543a834339977b9f7df02beec8397e506c1f75bc393e295ec788aed7dbb498d8`
 - Matching release APK SHA-256:
-  `d43776a261a00715122d406e411d191e6382fa9c116f8cb8948481506baa06bc`
+  `c3dec1a9f58e3d554e3e4a103b4d6593bdb9245c166690410f67084acc6e3f9d`
 - Launch component: `me.hletrd.telecampro/me.hletrd.telecampro.MainActivity`
 - AAB `jarsigner -verify`: **jar verified**; `bundletool 1.18.3 validate`: **OK**
 - APK signing: **v2 valid, 1 signer**, `CN=Jiyong Youn, L=Seoul, ST=Seoul, C=KR`, certificate
@@ -54,25 +62,40 @@ Do not upload debug APKs or any unsigned/stale release bundle.
   `INTERNET`**; **not debuggable**
 - Release gate: `lintRelease` **0 errors / 8 warnings** (`UseKtx` ×4, `InlinedApi` ×2,
   `ApplySharedPref`, `AndroidGradlePluginVersion` — all benign); host suite **1348 tests, 0
-  failures** (1356 at this cut)
+  failures** (1364 at this cut)
 - Carries a **baseline profile** (`assets/dexopt/baseline.prof` + `.profm`)
 - **Release dex contains ZERO `com.oplus.ocs` occurrences** (raw byte scan)
-- Superseded candidates (do NOT upload): `a4a7d12` (`5685b0c0…`), `fc43953` (`88d00e12…`), `2d6c35b` (`02cbd69d…`),
+- Superseded candidates (do NOT upload): `66734db` (`152f1c33…`), `a4a7d12` (`5685b0c0…`), `fc43953` (`88d00e12…`), `2d6c35b` (`02cbd69d…`),
   `c6722bb` (`a5654855…`), `961b080` (`0516b0d8…`), `3a3d034` (`1c160b8c…`), `26266db`
   (`59ccb318…`), `3ff3b4b` (`19ef2b7d…`), `9f367c1` (`f04028f7…`), `3c70639` (`70f83bdd…`),
   `6bf2325` (`c238c1cf…`), `a0d4dbc` (`84a74f64…`), `69af1574…`, `a737483f…`, `7339e00d…`,
   `b45a3b8e…`
 
-### Device matrix for THIS artifact — FOUR targets, 2026-08-02
+### Device matrix — 2026-08-02 (four targets) plus a 2026-08-03 re-check
 
-All four installs were confirmed **byte-identical to the artifact** with on-device `sha256sum`
-(`d43776a2…`) BEFORE testing.
+The four-target matrix below was measured on the `66734db` cut. `0f1421e` adds only the
+policy-block gate and its AppOps confirmation; it was re-verified 2026-08-03 on the two targets
+still reachable, both proven byte-identical to the artifact (`c3dec1a9…`) first:
+
+| | Lenovo TB331FC (A15) | Android 13 emulator |
+|---|---|---|
+| Launch / camera | clean, gate absent | clean, gate absent |
+| Lens rail | `1× lens` + `3× zoom` | `1× lens` + `3×` + `10× zoom` |
+| Still | written | written |
+| Video | written | written |
+| Policy-block gate | shown when blocked, retracts when cleared | n/a (not blocked) |
+| Crashes | 0 | 0 |
+
+**NOT re-verified on `0f1421e`: the PMA110 and the Lenovo TB336ZU.** The PMA110 went off Tailscale
+and is PIN-locked; the TB336ZU is off the network entirely (ping 100% loss, no mDNS). Their
+`66734db` results below stand, and the delta between the two cuts touches only a code path that is
+inert unless AppOps withholds the camera — but that is reasoning, not measurement, and is recorded
+as such.
 
 | | OPPO PMA110 | Lenovo TB336ZU | Lenovo TB331FC | Android 13 emulator |
 |---|---|---|---|---|
 | OS | Android 16 (36) | Android 16 (36) | **Android 15 (35)** | **Android 13 (33)** |
 | Why it is here | the target device | one-camera tablet, MediaTek encoder | one-camera tablet, **Qualcomm** encoder | the `minSdk 33` floor |
-| Launch / camera | clean | clean | clean | clean |
 | Lens rail | `0.6/1/3/10×` all **lens** | `1× lens` + `3× zoom` | `1× lens` + `3× zoom` | `1× lens` + `3×` + `10× zoom` |
 | Still | 3064×4080 | 1920×2560 | **1944×2592** (was 2448×2448 square) | 1392×1856 |
 | Video | Main 10 2160×3840 HLG | Main 1440×2560 `bt709` | Main 1008×1792 `bt709` (ladder −2 rungs) | Main 540×960 `bt709` (ladder −1 rung) |
