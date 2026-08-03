@@ -1,8 +1,8 @@
 # Privacy Policy — TeleCam Pro
 
-_Last updated: 2026-07-21_
+_Last updated: 2026-08-03_
 
-TeleCam Pro is a camera app for the OPPO Find X9 Ultra. This policy covers its permissions, captured
+TeleCam Pro is a camera app for Android phones and tablets. This policy covers its permissions, captured
 media, and data handling.
 
 ## Summary

@@ -112,5 +112,34 @@ for rel in ("docs/play-store-listing.md", "docs/play-console-submit.md", "README
         f"says {bad}, minSdk {min_sdk} = Android {android_release}",
     )
 
+# ---- the upload instruction must not name a superseded artifact -------------------------------
+# It did: step 1 hard-coded a hash that went stale while the pin above it moved, so the sheet told
+# the operator to upload a bundle its own superseded list forbids — caught mid-upload.
+submit = read("docs/play-console-submit.md")
+superseded = set(re.findall(r"\(`([0-9a-f]{8})…`\)", submit))
+# The signing CERTIFICATE fingerprint is a different kind of hash and is meant to recur — it is the
+# proof that the upload key did not change. Only ARTIFACT digests are at risk of going stale here.
+cert = set(re.findall(r"certificate\s+SHA-256[^`]*`([0-9a-f]{8})", submit, re.I))
+sequence = submit[submit.index("## Manual Console Sequence"):]
+named = set(re.findall(r"`([0-9a-f]{8})…`", sequence)) - cert
+check(not (named & superseded), "console sequence names no superseded artifact", f"{named & superseded}")
+check(not named, "console sequence hard-codes no artifact hash", f"{named}")
+
+# ---- no doc may carry a running cross-reference to a mutable count ------------------------------
+# A dated record keeps the number it measured — that is evidence. What cannot be maintained is a
+# parenthetical like "(main is now 1329)" inside such a record: it drifts the moment a test lands,
+# and one had already gone stale by 35 tests when this check was written.
+for rel in ("docs/play-console-submit.md", "docs/BACKLOG.md", "README.md"):
+    text = read(rel)
+    running = re.findall(r"\(?`?main`? is now [\d,]+", text)
+    check(not running, f"{rel} carries no running count cross-reference", f"{running}")
+
+# ---- referenced repo paths must exist -----------------------------------------------------------
+for rel in ("README.md", "docs/ARCHITECTURE.md", "docs/TESTING.md", "docs/FIELD_CHECKS.md"):
+    text = read(rel)
+    refs = re.findall(r"`((?:app|docs|tools|device-tests|gradle)/[A-Za-z0-9_./-]+\.(?:kt|md|py|txt|toml|kts))`", text)
+    dead = [r for r in refs if "..." not in r and not (ROOT / r).exists()]
+    check(not dead, f"{rel} references only files that exist", f"{dead}")
+
 print(f"\n{CHECKS} checks, {len(FAILURES)} failed")
 sys.exit(1 if FAILURES else 0)

@@ -5,7 +5,7 @@ Use this as the source of truth when filling Play Console > Policy > App content
 ## Evidence
 
 - Package name: `me.hletrd.telecampro`
-- Declared permissions: `CAMERA`, `RECORD_AUDIO`
+- Declared permissions: `CAMERA`, `RECORD_AUDIO`, `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, `READ_MEDIA_VISUAL_USER_SELECTED`
 - No declared `INTERNET` permission
 - No ads, analytics, accounts, cloud sync, or crash telemetry SDKs of any kind
 - NO build variant bundles a third-party OEM SDK. The OPPO CameraUnit/OCS availability probe and its

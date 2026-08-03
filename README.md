@@ -7,7 +7,7 @@
 <p><b>Manual camera for periscope telephoto phones and clip-on afocal teleconverters</b></p>
 
 <p>
-<img src="https://img.shields.io/badge/Android-16%20(API%2036)-3DDC84?logo=android&logoColor=white" alt="Android 16" />
+<img src="https://img.shields.io/badge/Android-13%2B%20(API%2033)-3DDC84?logo=android&logoColor=white" alt="Android 13 and newer" />
 <img src="https://img.shields.io/badge/Kotlin-2.4.10-7F52FF?logo=kotlin&logoColor=white" alt="Kotlin" />
 <img src="https://img.shields.io/badge/Jetpack%20Compose-2026.06-4285F4?logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
 <img src="https://img.shields.io/badge/Camera2-Pro%20manual-FF7043" alt="Camera2" />
@@ -46,9 +46,9 @@ shooting needs.
   cannot apply is not offered.
 
 **Capture**
-- HEIF and JPEG, selectable separately or together. RAW (DNG) is available in TELE mode, where the
-  app routes to a standalone camera that permits it.
-- Video: HEVC/AVC up to 4K UHD, 24/25/30/60 fps plus NTSC drop-frame, bitrate presets to ~120 Mbps,
+- HEIF, JPEG and RAW (DNG), selectable separately or together. Wanting RAW is what routes photo onto
+  a standalone camera, so DNG is offered on any rear lens that advertises it — not TELE only.
+- Video: HEVC/AVC up to 4K UHD, 24/25/30/60 fps plus NTSC drop-frame, bitrate presets to ~99 Mbps at 4K30,
   Open Gate 4:3, AAC 48 kHz stereo.
 - Colour profiles for HLG, S-Log3, S-Log3.Cine and LogC3 — see the honesty note below.
 - Video stabilization uses the device's own OIS + EIS path. At 300 mm, OIS is what cuts per-frame
@@ -87,11 +87,11 @@ device with both preview and record templates.
 
 ## Device support
 
-Requires **Android 16 (API 36)**. Hardware is resolved by enumerating Camera2 capabilities rather
+Requires **Android 13 (API 33)** or newer. Hardware is resolved by enumerating Camera2 capabilities rather
 than by model name, so the app adapts to whatever lenses and controls a phone advertises.
 
 Development and device verification happen on the **OPPO Find X9 Ultra**, which is also where the
-HAL workarounds in [`CLAUDE.md`](CLAUDE.md) were measured. Other Android 16 phones are supported on a
+HAL workarounds in [`CLAUDE.md`](CLAUDE.md) were measured. Other devices are supported on a
 best-effort basis.
 
 ## Build
@@ -102,7 +102,7 @@ best-effort basis.
 ```
 
 Requires JDK 21, Android SDK Platform 37, and Build Tools 36.0.0. Platform 37 is a compile-time
-requirement only; the runtime target and minimum stay API 36. AGP 9 bundles Kotlin, so the
+requirement only; the runtime target stays API 36 and the install floor is API 33. AGP 9 bundles Kotlin, so the
 `kotlin.android` plugin is not applied.
 
 | Component | Version |
@@ -111,7 +111,7 @@ requirement only; the runtime target and minimum stay API 36. AGP 9 bundles Kotl
 | Gradle | 9.6.1 |
 | Kotlin / Compose compiler | 2.4.10 |
 | Compose BOM | 2026.06.01 |
-| compileSdk / targetSdk / minSdk | 37 / 36 / 36 |
+| compileSdk / targetSdk / minSdk | 37 / 36 / 33 |
 | JDK | 21 |
 
 The Gradle wrapper is pinned to its published SHA-256, and resolved plugins and dependencies are

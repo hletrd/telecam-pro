@@ -28,9 +28,11 @@ frozen artifact vs re-cut" decision is closed; both frozen candidates (`9541697`
 - **What is NOT re-run:** the full PMA110 release matrix against this exact artifact. Individual
   features were device-verified from this build (see cycle 9 below), but the formal matrix sweep
   recorded for `9541697` has not been repeated end to end.
-- **RE-CUT DONE AND PINNED (2026-08-02, `66734db`).** AAB `152f1c33…` / APK `d43776a2…`,
-  certificate `9dfdb903…` unchanged, all signing/alignment/bundle checks green, `lintRelease` 0/8,
-  1356 host tests. Device-verified on FOUR targets — PMA110 (A16), Lenovo TB336ZU (A16), Lenovo
+- **RE-CUT DONE AND PINNED.** The live artifact identity — hashes, gate numbers, device matrix —
+  lives ONLY in `docs/play-console-submit.md`, which this file's own rule two bullets down already
+  says. It was restated here anyway and went a cut stale within a day. Current cut and its evidence:
+  see that sheet. Historical note: the 2026-08-02 `66734db` cut was the first verified on FOUR
+  targets — PMA110 (A16), Lenovo TB336ZU (A16), Lenovo
   TB331FC (**A15**), and an Android 13 (API 33) emulator — all proven byte-identical first. Matrix
   in `docs/play-console-submit.md`.
   - **Three device-found defects fixed this pass, none of which PMA110 could ever show:**

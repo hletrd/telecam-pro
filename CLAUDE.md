@@ -8,8 +8,11 @@ destructive-action safety, look-up-before-answering).
 
 ## What this is
 
-A **single-device** professional camera app for the **OPPO Find X9 Ultra (model PMA110, Android 16 /
-API 36)**. Its purpose is photography and video through a **Hasselblad "Earth Explorer" afocal 300 mm
+A professional camera app **built and measured on the OPPO Find X9 Ultra (model PMA110)** and
+installable from **Android 13 (API 33)** up. It was single-device until 2026-08-01; that framing
+survived here for two days after the decision that ended it, which is exactly the drift the
+constraints below exist to prevent. Its purpose is photography and video through a **Hasselblad
+"Earth Explorer" afocal 300 mm
 teleconverter** that clamps onto the phone's **3× / 70 mm periscope** lens (turning ~70 mm into
 ~300 mm, ≈4.286× magnification).
 
@@ -49,7 +52,7 @@ deprecated APIs, latest stable everything.
 | Kotlin | 2.4.10 | Compose compiler plugin version; AGP supplies Kotlin Android support |
 | Gradle | 9.6.1 | wrapper |
 | Compose BOM | 2026.06.01 | Material3 |
-| compileSdk / targetSdk / minSdk | 37 / 36 / 36 | compileSdk 37 required by lifecycle 2.11.0; decoupled from targetSdk 36 |
+| compileSdk / targetSdk / minSdk | 37 / 36 / **33** | compileSdk 37 required by lifecycle 2.11.0; minSdk 33 since the 2026-08-01 multi-device decision — this row said 36 for two days while the constraint bullet above said 33 |
 | JDK | 21 (aarch64) | Homebrew `openjdk@21` |
 | heifwriter | 1.1.0 | latest STABLE (the earlier "no stable 1.1.0 exists" note was wrong) |
 

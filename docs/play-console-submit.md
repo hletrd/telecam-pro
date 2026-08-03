@@ -183,7 +183,7 @@ could leave DNG permanently unable to produce a RAW file.
   **no INTERNET**
 - Release gate: `lintRelease` **0 errors / 8 warnings** (`ApplySharedPref`, `UseKtx`,
   `AndroidGradlePluginVersion`, plus `InlinedApi` newly surfaced by the minSdk 33 floor — all
-  benign); host suite **1291 tests, 0 failures** at the time of that cut (`main` is now 1329)
+  benign); host suite **1291 tests, 0 failures** at the time of that cut
 - Carries a **baseline profile** (`assets/dexopt/baseline.prof`, 11 KiB + `.profm`) installed by
   androidx.profileinstaller. Without it the shipped APK sat at `status=verify` and ran interpreted
   until JIT warmed; device-measured, the worst frame on opening the settings sheet went 61 ms → 22 ms
@@ -387,9 +387,10 @@ identically, but has not itself been measured.
 
 ## Manual Console Sequence
 
-1. Upload the AAB whose hashes are pinned at the top (`5685b0c0…`, from `a4a7d12`). Every other
-   artifact listed in this file is superseded and must not be uploaded. If `main` has moved since,
-   re-cut and re-pin first rather than uploading a stale bundle.
+1. Upload `app/build/outputs/bundle/release/app-release.aab` — the ONE artifact whose SHA-256 is
+   recorded under "Final v1 upload artifacts" above. Do not copy a hash into this step: it was
+   hard-coded here once and then went stale while the pin above moved, so this instruction named a
+   bundle the same file's superseded list forbids. If `main` has moved, re-cut and re-pin first.
 2. Enter the Store Listing and Data Safety answers from this repository. **The Data Safety "Photos
    and videos" ACCESS question must be re-answered** for the visual-media READ trio (see Data
    Safety below) — the last submission-ready answer set predates it.

@@ -155,6 +155,20 @@ store's largest asset advertised a limit the app does not have.
 5. `docs/assets/play/screenshots/05-lens-and-tele.png` - TELE engaged: the device-derived `13x / 30x / 60x` rail and the Loupe Overview with its framing hint. The one black-scene frame; swap in a handheld TELE capture to match the others.
 6. `docs/assets/play/screenshots/06-video-settings.png` - Video tab: codec, Open Gate, resolution, FPS, bitrate, live encoder summary, transfer curves.
 
+### Tablet screenshots
+
+Optional in Play, but without them a tablet user sees a "may not be designed for this device"
+notice. Four captured from the Lenovo TB331FC (1200x1920, smallestWidth 941dp — Play's 10-inch
+bucket), system bars cropped, alpha stripped because `screencap` emits RGBA and Play rejects
+screenshots carrying an alpha channel:
+
+`docs/assets/play/screenshots/tablet/` — `02-shooting`, `03-focus`, `04-video-settings`, `05-lens`.
+
+Both tablet slots ("7-inch" and "10-inch") accept any image meeting the size rules, and no tablet on
+hand is under sw720dp, so the same set serves both. The two VIEWFINDER frames were discarded rather
+than shipped: the tablet was pointing at nothing and they read as a black screen. Replace them with
+captures against a real subject before relying on this set for large-screen featuring.
+
 ## Release checklist
 
 1. Create the upload keystore and `keystore.properties` (see `keystore.properties.example`).
