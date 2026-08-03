@@ -25,6 +25,29 @@ Copy-paste source for the Play Console listing. Character limits noted; everythi
 Open-source manual camera for periscope telephoto + teleconverters.
 ```
 
+## Release notes (≤500 chars per language)
+
+First release. Paste into the Play Console "Release notes" field, language tags included.
+
+```
+<en-US>
+First release.
+
+TeleCam Pro is a manual camera for shooting through clip-on afocal teleconverters on a phone's
+periscope telephoto. It corrects the 180-degree flip those converters introduce, in the viewfinder
+and in saved photos and video.
+
+Manual focus tuned near infinity, PASM exposure, RAW/DNG, focus peaking, zebra, histogram and
+waveform.
+
+Open source. No ads, no analytics, no account, and no network permission.
+</en-US>
+```
+
+Deliberately makes no HDR or 10-bit claim: the capture source is the ISP's display-referred SDR
+stream, and the HLG/log profiles are curves applied to it (see CLAUDE.md). Saying otherwise in store
+copy would be a stronger claim than the pipeline can back.
+
 ## Full description (≤4000 chars)
 
 ```
@@ -57,9 +80,8 @@ FULL MANUAL CONTROL
 • Volume keys as a vibration-free hardware shutter.
 
 PHOTO
-• HEIF and JPEG can be selected separately or together. RAW (DNG) is available only in TELE mode on
-  the eligible standalone 3x camera; supported outputs can be combined. Saved formats use
-  device-orientation-aware rotation.
+• HEIF, JPEG and RAW (DNG) can be selected separately or together, on any lens your phone exposes as
+  a standalone camera. Saved formats use device-orientation-aware rotation.
 
 VIDEO
 • HEVC recording in HLG, app-rendered S-Log3 / S-Log3.Cine / LogC3 profiles, or SDR.
