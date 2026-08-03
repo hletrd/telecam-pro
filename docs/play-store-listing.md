@@ -27,18 +27,16 @@ Open-source manual camera for periscope telephoto + teleconverters.
 
 ## Release notes (≤500 chars per language)
 
-First release. Paste into the Play Console "Release notes" field, language tags included.
+First release. Paste into the Play Console "Release notes" field, language tags included — and like
+the full description, do not re-wrap it.
 
 ```
 <en-US>
 First release.
 
-TeleCam Pro is a manual camera for shooting through clip-on afocal teleconverters on a phone's
-periscope telephoto. It corrects the 180-degree flip those converters introduce, in the viewfinder
-and in saved photos and video.
+TeleCam Pro is a manual camera for shooting through clip-on afocal teleconverters on a phone's periscope telephoto. It corrects the 180-degree flip those converters introduce, in the viewfinder and in saved photos and video.
 
-Manual focus tuned near infinity, PASM exposure, RAW/DNG, focus peaking, zebra, histogram and
-waveform.
+Manual focus tuned near infinity, PASM exposure, RAW/DNG, focus peaking, zebra, histogram and waveform.
 
 Open source. No ads, no analytics, no account, and no network permission.
 </en-US>
@@ -50,74 +48,54 @@ copy would be a stronger claim than the pipeline can back.
 
 ## Full description (≤4000 chars)
 
+**Paste this block VERBATIM — it is deliberately NOT hard-wrapped.** Play renders the description
+literally, so a source file wrapped for readability puts a line break in the middle of every
+sentence. Each bullet and paragraph is therefore one long line; let the console wrap it.
+
+
 ```
-TeleCam Pro is an open-source manual camera for shooting through clip-on afocal teleconverters on a
-phone's periscope telephoto lens. It corrects the 180-degree flip those converters introduce, and
-gives you the manual controls that long-lens work needs.
+TeleCam Pro is an open-source manual camera for shooting through clip-on afocal teleconverters on a phone's periscope telephoto lens. It corrects the 180-degree flip those converters introduce, and gives you the manual controls that long-lens work needs.
 
 OPEN SOURCE
 • Public and auditable: github.com/hletrd/telecam-pro
 • No ads, analytics, in-app purchases, account, or cloud sync.
 
 TELECONVERTER MODE
-• The Teleconverter toggle pins the lens your converter clamps onto and corrects the afocal
-  180-degree flip in preview, photos, and video. Lens presets stay independent, so changing framing
-  never silently turns the converter on or off.
-• Tell the app which converter you mounted: pick your phone, then the optics that fit it. Presets
-  cover the Hasselblad 300 mm and 230 mm, ZEISS 200 mm and 400 mm, generic clip-ons, and a custom
-  magnification. Each preset's magnification is computed from the host lens it was designed for, so
-  the focal readout and EXIF report what the combination actually produces — not the number printed
-  on the barrel.
+• The Teleconverter toggle pins the lens your converter clamps onto and corrects the afocal 180-degree flip in preview, photos, and video. Lens presets stay independent, so changing framing never silently turns the converter on or off.
+• Tell the app which converter you mounted: pick your phone, then the optics that fit it. Presets cover the Hasselblad 300 mm and 230 mm, ZEISS 200 mm and 400 mm, generic clip-ons, and a custom magnification. Each preset's magnification is computed from the host lens it was designed for, so the focal readout and EXIF report what the combination actually produces — not the number printed on the barrel.
 • Uses the device's Camera2 OIS and video stabilization.
 
 LENSES
-• Focal presets filtered to the ones your phone can actually reach, with the live effective focal
-  length in the viewfinder. A preset reachable only by cropping is labelled zoom, not lens.
+• Focal presets filtered to the ones your phone can actually reach, with the live effective focal length in the viewfinder. A preset reachable only by cropping is labelled zoom, not lens.
 
 FULL MANUAL CONTROL
 • Manual focus with a nonlinear slider tuned near infinity — essential for a collimated converter.
-• ISO, shutter (speed or cine angle), white balance (presets, measured custom, manual Kelvin/tint),
-  exposure compensation, metering, and drive modes (single, burst, bracketing, timelapse) on
-  stop-snapping dials.
-• Vibration-free hardware controls: volume keys, and where the phone delivers them, the camera
-  button's full press, light press, and slide. Each is reassignable.
+• ISO, shutter (speed or cine angle), white balance (presets, measured custom, manual Kelvin/tint), exposure compensation, metering, and drive modes (single, burst, bracketing, timelapse) on stop-snapping dials.
+• Vibration-free hardware controls: volume keys, and where the phone delivers them, the camera button's full press, light press, and slide. Each is reassignable.
 
 PHOTO
-• HEIF (where the phone can encode it), JPEG and RAW (DNG) — separately or together, on any rear
-  lens that advertises RAW. Saved files use device-orientation-aware rotation.
+• HEIF (where the phone can encode it), JPEG and RAW (DNG) — separately or together, on any rear lens that advertises RAW. Saved files use device-orientation-aware rotation.
 
 VIDEO
-• HEVC or H.264. HEVC adds HLG and app-rendered S-Log3 / S-Log3.Cine / LogC3 alongside SDR on
-  phones whose encoder supports 10-bit; where it does not, SDR only — rather than a file that
-  misdescribes itself.
+• HEVC or H.264. HEVC adds HLG and app-rendered S-Log3 / S-Log3.Cine / LogC3 alongside SDR on phones whose encoder supports 10-bit; where it does not, SDR only — rather than a file that misdescribes itself.
 • Open Gate records the full sensor readout instead of a 16:9 crop.
 • Hardware OIS + EIS to cut motion blur at long focal length.
-• Sound Focus / Sound Stage audio scenes, passed to the device's audio system where its HAL
-  supports them.
-• Up to 4K UHD at standard and fractional NTSC rates, to ~99 Mbps at 4K30 Max. Resolutions and
-  frame rates come from what the selected camera and encoder advertise.
+• Sound Focus / Sound Stage audio scenes, passed to the device's audio system where its HAL supports them.
+• Up to 4K UHD at standard and fractional NTSC rates, to ~99 Mbps at 4K30 Max. Resolutions and frame rates come from what the selected camera and encoder advertise.
 
 FRAMING AND MONITORING
-• Focus peaking, zebra, false color, grid, level, punch-in loupe, histogram, waveform, and
-  pinch-to-zoom review to check focus right after the shot.
+• Focus peaking, zebra, false color, grid, level, punch-in loupe, histogram, waveform, and pinch-to-zoom review to check focus right after the shot.
 • Separate photo/video Fn menus, My Menu, and MR memory banks for Sony-style operation.
 
 PRIVACY
 • No ads, analytics, tracking, or internet permission.
-• Microphone: only for enabled video audio and the visible level meter while Video mode is armed.
-  Meter input is processed locally and never saved.
-• Photo and video access is optional, requested only when you open the in-app gallery and there is
-  nothing to show, so it can find captures saved before a reinstall. Declining changes nothing else.
+• Microphone: only for enabled video audio and the visible level meter while Video mode is armed. Meter input is processed locally and never saved.
+• Photo and video access is optional, requested only when you open the in-app gallery and there is nothing to show, so it can find captures saved before a reinstall. Declining changes nothing else.
 • Nothing is uploaded, collected by the developer, or shared with third parties.
 
-TeleCam Pro is independent and is not affiliated with, endorsed by, or sponsored by OPPO,
-Hasselblad, or any hardware maker. Product names describe hardware compatibility only. S-Log is a
-trademark of Sony Group Corporation; LogC of ARRI. The log profiles are this app's own
-implementations of the published curves, named only for grading compatibility.
+TeleCam Pro is independent and is not affiliated with, endorsed by, or sponsored by OPPO, Hasselblad, or any hardware maker. Product names describe hardware compatibility only. S-Log is a trademark of Sony Group Corporation; LogC of ARRI. The log profiles are this app's own implementations of the published curves, named only for grading compatibility.
 
-Requires Android 13 or newer. Built and measured on the OPPO Find X9 Ultra (PMA110); the app
-resolves lenses and features from each device's advertised Camera2 capabilities rather than a model
-list, so other Android devices are supported on a best-effort basis.
+Requires Android 13 or newer. Built and measured on the OPPO Find X9 Ultra (PMA110); the app resolves lenses and features from each device's advertised Camera2 capabilities rather than a model list, so other Android devices are supported on a best-effort basis.
 ```
 
 Every concrete claim above was audited against the shipping source on 2026-08-03; 15 inaccuracies
