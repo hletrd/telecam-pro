@@ -705,6 +705,14 @@ class CameraEngine(private val context: Context) {
     @Volatile private var lensInventoryPublished = false
 
     /**
+     * Retained beside the one-shot publication because the ZOOM SCALE needs it, not just the rail:
+     * a standalone route's lens-local divisor is the optical lens the route lands on, which only the
+     * inventory knows. Empty until the enumeration runs — [opticalBaseFor] answers 1× then, i.e.
+     * leave the ratio alone, which is the pre-enumeration behaviour.
+     */
+    @Volatile private var opticalPresets: Set<LensChoice> = emptySet()
+
+    /**
      * Enumerates the back optics ONCE and publishes which lens presets are actually reachable.
      * Runs on [setupExecutor] (several Binder IPCs) beside the other one-shot enumerations, and the
      * zoom half reads the PHOTO-HOME route's advertised range — device-static like the lens list,
@@ -723,6 +731,7 @@ class CameraEngine(private val context: Context) {
             cachedCaps(logical, physical)?.zoomRatioRange?.let { it.lower to it.upper }
         }
         val inventory = lensInventoryOf(equivalents, range)
+        opticalPresets = inventory.optical
         if (BuildConfig.DEBUG) {
             Log.i(
                 "CameraEngine",
@@ -2562,6 +2571,7 @@ class CameraEngine(private val context: Context) {
                 standaloneRoute = standaloneRouteWanted(
                     videoMode, rawWanted, deviceProfile.rawRequiresStandalone,
                 ),
+                opticalPresets = opticalPresets,
                 currentLens = lensChoice,
                 currentTeleconverter = teleconverterMode,
                 currentControls = controls,
@@ -5534,6 +5544,12 @@ internal fun resolveLensOpticsIntent(
      * cases. The value was never wrong; it was interpreted on the wrong scale.
      */
     standaloneRoute: Boolean,
+    /**
+     * The presets backed by a real lens here. A standalone route is pinned to ONE physical lens, so
+     * the lens-local divisor is the optical lens the route lands on — not the preset the user
+     * tapped. On a one-camera device those differ, and using the preset threw the framing away.
+     */
+    opticalPresets: Set<LensChoice>,
     currentLens: LensChoice,
     currentTeleconverter: Boolean,
     currentControls: ManualControls,
@@ -5567,7 +5583,7 @@ internal fun resolveLensOpticsIntent(
         teleconverter = false,
         controls = currentControls.copy(
             zoomRatio = if (standaloneRoute) {
-                (unified / band.zoomPreset).coerceAtLeast(1f)
+                (unified / opticalBaseFor(unified, opticalPresets).zoomPreset).coerceAtLeast(1f)
             } else {
                 unified
             },

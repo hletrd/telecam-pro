@@ -47,6 +47,7 @@ import me.hletrd.telecampro.camera.MemorySlot
 import me.hletrd.telecampro.camera.PeakingColor
 import me.hletrd.telecampro.camera.PeakingLevel
 import me.hletrd.telecampro.camera.PhotoFormats
+import me.hletrd.telecampro.camera.opticalBaseFor
 import me.hletrd.telecampro.camera.standaloneRouteWanted
 import me.hletrd.telecampro.camera.normalizedForEncoder
 import me.hletrd.telecampro.camera.PendingControlsDisposition
@@ -968,13 +969,19 @@ class CameraViewModel @JvmOverloads constructor(
                 (!e.preserveLensSelection && !requestedTeleconverter)
             )
         val requestedZoom = if (preserveChangedOptics) {
-            if (
-                requestedTeleconverter || standaloneRouteWanted(
+            if (requestedTeleconverter) {
+                1f
+            } else if (standaloneRouteWanted(
                     e.mode == CaptureMode.VIDEO,
                     PhotoFormats(e.heif, e.jpeg, e.dngRaw).withDefaultIfEmpty().dngRaw,
                     engine.rawForcesStandalone,
                 )
-            ) 1f else requestedLens.zoomPreset
+            ) {
+                (requestedLens.zoomPreset / opticalBaseFor(requestedLens.zoomPreset, _state.value.lensInventory.optical).zoomPreset)
+                    .coerceAtLeast(1f)
+            } else {
+                requestedLens.zoomPreset
+            }
         } else {
             c.zoomRatio
         }
@@ -2268,11 +2275,20 @@ class CameraViewModel @JvmOverloads constructor(
                 // DNG was on, so tapping 3× gave 3× digital zoom on the 70 mm lens: OSD "208 mm",
                 // readout 9.1× (3 × 70/23), wire zoom correctly 3.0 (device-reported 2026-08-03).
                 controls = it.controls.copy(
-                    zoomRatio = if (
-                        keepTc || standaloneRouteWanted(
+                    zoomRatio = if (keepTc) {
+                        1f
+                    } else if (standaloneRouteWanted(
                             it.mode == CaptureMode.VIDEO, it.photoFormats.dngRaw, it.rawForcesStandalone,
                         )
-                    ) 1f else choice.zoomPreset,
+                    ) {
+                        // Divide by the OPTICAL lens the standalone route lands on, not by the
+                        // preset: on a one-camera device "3×" is a crop of the main lens, and a flat
+                        // 1× would throw that framing away (device-seen: 3× read 27 mm, not 81 mm).
+                        (choice.zoomPreset / opticalBaseFor(choice.zoomPreset, it.lensInventory.optical).zoomPreset)
+                            .coerceAtLeast(1f)
+                    } else {
+                        choice.zoomPreset
+                    },
                 ),
             )
         }

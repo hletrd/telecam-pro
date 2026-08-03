@@ -217,6 +217,7 @@ class ReconfigurationGenerationTest {
 
         val resolved = resolveLensOpticsIntent(
             standaloneRoute = false,
+            opticalPresets = LensChoice.entries.toSet(),
             currentLens = LensChoice.TELE3X,
             currentTeleconverter = false,
             currentControls = current,
@@ -237,6 +238,7 @@ class ReconfigurationGenerationTest {
     fun `tele exit restores exact video framing as a complete packet`() {
         val resolved = resolveLensOpticsIntent(
             standaloneRoute = true,
+            opticalPresets = LensChoice.entries.toSet(),
             currentLens = LensChoice.TELE3X,
             currentTeleconverter = true,
             currentControls = ManualControls(zoomRatio = 2f),
@@ -258,6 +260,7 @@ class ReconfigurationGenerationTest {
         // the zoom the user held BEFORE the first TC entry, never the current TC-local ratio.
         val resolved = resolveLensOpticsIntent(
             standaloneRoute = false,
+            opticalPresets = LensChoice.entries.toSet(),
             currentLens = LensChoice.TELE3X,
             currentTeleconverter = true,
             currentControls = ManualControls(zoomRatio = 4f),
@@ -278,6 +281,7 @@ class ReconfigurationGenerationTest {
         // multiplies through the active lens preset. A sub-1 local remnant clamps to the preset.
         val resolved = resolveLensOpticsIntent(
             standaloneRoute = true,
+            opticalPresets = LensChoice.entries.toSet(),
             currentLens = LensChoice.TELE10X,
             currentTeleconverter = false,
             currentControls = ManualControls(zoomRatio = 1.5f),
@@ -290,6 +294,7 @@ class ReconfigurationGenerationTest {
 
         val clamped = resolveLensOpticsIntent(
             standaloneRoute = true,
+            opticalPresets = LensChoice.entries.toSet(),
             currentLens = LensChoice.TELE10X,
             currentTeleconverter = false,
             currentControls = ManualControls(zoomRatio = 0.5f),
@@ -307,6 +312,7 @@ class ReconfigurationGenerationTest {
         // unified value IS the zoom ratio (the logical camera's main-relative scale).
         val resolved = resolveLensOpticsIntent(
             standaloneRoute = false,
+            opticalPresets = LensChoice.entries.toSet(),
             currentLens = LensChoice.TELE3X,
             currentTeleconverter = true,
             currentControls = ManualControls(zoomRatio = 3f),
@@ -323,6 +329,7 @@ class ReconfigurationGenerationTest {
         // restore requested but the baseline never captured: same preset landing, no NaN leak.
         val noBaseline = resolveLensOpticsIntent(
             standaloneRoute = false,
+            opticalPresets = LensChoice.entries.toSet(),
             currentLens = LensChoice.TELE3X,
             currentTeleconverter = true,
             currentControls = ManualControls(zoomRatio = 3f),

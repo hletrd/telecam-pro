@@ -480,8 +480,13 @@ class CameraOpWithheldTest {
  * "208 mm" and 9.1× (3 × 70/23) while the wire zoom sat correctly at 3.0 in both cases.
  */
 class LensZoomScaleFollowsRouteTest {
-    private fun intent(standalone: Boolean, requested: LensChoice) = resolveLensOpticsIntent(
+    private fun intent(
+        standalone: Boolean,
+        requested: LensChoice,
+        optical: Set<LensChoice> = LensChoice.entries.toSet(),
+    ) = resolveLensOpticsIntent(
         standaloneRoute = standalone,
+        opticalPresets = optical,
         currentLens = LensChoice.MAIN,
         currentTeleconverter = false,
         currentControls = ManualControls(),
@@ -520,6 +525,20 @@ class LensZoomScaleFollowsRouteTest {
             assertEquals("$lens should select itself", lens, r.lens)
             assertTrue("$lens local zoom must not crop", r.controls.zoomRatio <= 1f + 1e-4f)
         }
+    }
+
+    @Test
+    fun `a one-camera device keeps the crop instead of losing the framing`() {
+        // Only 1x is optical (a Lenovo TB331FC). 3x is a CROP of it, so the lens-local ratio must
+        // stay 3.0 — a flat 1.0 silently discarded the framing (device-seen: 27 mm, not 81 mm).
+        val onlyMain = setOf(LensChoice.MAIN)
+        assertEquals(3f, intent(true, LensChoice.TELE3X, onlyMain).controls.zoomRatio, 1e-4f)
+        assertEquals(1f, intent(true, LensChoice.MAIN, onlyMain).controls.zoomRatio, 1e-4f)
+    }
+
+    @Test
+    fun `an unread inventory leaves the ratio alone rather than guessing`() {
+        assertEquals(3f, intent(true, LensChoice.TELE3X, emptySet()).controls.zoomRatio, 1e-4f)
     }
 
     @Test

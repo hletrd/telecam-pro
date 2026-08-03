@@ -358,6 +358,25 @@ fun punchInResolved(enabled: Boolean, frontFacing: Boolean): Boolean = enabled &
  * zoom then steps between lenses with a reopen instead of crossing seamlessly, exactly as the video
  * route already does. That is the trade, and it is opt-in: turning DNG off restores seamless zoom.
  */
+/**
+ * The OPTICAL lens a standalone route actually lands on for a main-relative [unified] ratio, and
+ * therefore the divisor that turns that ratio into a LENS-LOCAL one.
+ *
+ * A standalone session is pinned to one physical lens, so `zoomRatio` there is that lens's own
+ * scale. Dividing by the preset the user tapped is only right when the preset IS a lens: on a
+ * one-camera tablet the "3×" preset is a crop of the 26 mm main, so local 1.0 would silently throw
+ * the 3× framing away (device-seen 2026-08-03: 3× read 27 mm instead of 81 mm). Dividing by the
+ * nearest optical lens at or below the target is right in both cases — it is 3× itself on a phone
+ * that has a 3× lens, and 1× on a phone that does not.
+ *
+ * [optical] empty (caps not read yet) answers 1×, i.e. keep the ratio as-is: the honest fallback,
+ * since an unknown inventory cannot prove a crop is unnecessary.
+ */
+fun opticalBaseFor(unified: Float, optical: Set<LensChoice>): LensChoice =
+    optical.filter { it.zoomPreset <= unified + 1e-3f }.maxByOrNull { it.zoomPreset }
+        ?: optical.minByOrNull { it.zoomPreset }
+        ?: LensChoice.MAIN
+
 fun standaloneRouteWanted(
     videoMode: Boolean,
     rawWanted: Boolean,
