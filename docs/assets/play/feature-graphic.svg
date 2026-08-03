@@ -25,6 +25,13 @@
 
   <!-- wordmark + two short tagline lines, right; all within the center band and 1024 width -->
   <text x="440" y="500" font-family="Helvetica, Arial, sans-serif" font-size="78" font-weight="700" fill="#F4F4F6">TeleCam Pro</text>
+  <!--
+    The tagline names NO specific optic. It used to read "300 mm afocal teleconverter", which was
+    written when the app targeted one phone and one kit; the converter is now a selectable PAIR
+    (phone, then the optics that fit it — Hasselblad 300/230, ZEISS 200/400, generic clip-ons,
+    custom), so a fixed focal length on the store's largest asset advertised a limit the app does
+    not have. Kept to two short lines that read as one sentence and match the short description.
+  -->
   <text x="442" y="558" font-family="Helvetica, Arial, sans-serif" font-size="28" font-weight="400" fill="#9AA3B2">Open-source manual camera</text>
-  <text x="442" y="598" font-family="Helvetica, Arial, sans-serif" font-size="28" font-weight="400" fill="#9AA3B2">300&#8201;mm afocal teleconverter</text>
+  <text x="442" y="598" font-family="Helvetica, Arial, sans-serif" font-size="28" font-weight="400" fill="#9AA3B2">for clip-on afocal teleconverters</text>
 </svg>

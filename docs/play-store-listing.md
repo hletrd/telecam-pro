@@ -136,6 +136,25 @@ vivo X200 Ultra and X300 Ultra, plus generic clip-ons and a custom magnification
 |---|---|---|
 | Hi-res app icon | 512×512 PNG, 32-bit with alpha | `docs/assets/play/icon-512.png` (generated) |
 | Feature graphic | 1024×500 PNG/JPG, no alpha | `docs/assets/play/feature-graphic.png` (generated) |
+
+Regenerating the feature graphic from its SVG (macOS; the SVG is a 1024×1024 canvas whose design
+sits in the centre 500-row band, so it renders edge-to-edge and is then cropped):
+
+```bash
+cd docs/assets/play
+qlmanage -t -s 1024 -o /tmp/fg feature-graphic.svg
+python3 - <<'EOF'
+from PIL import Image
+im = Image.open('/tmp/fg/feature-graphic.svg.png')
+# RGB, not RGBA: Play REJECTS a feature graphic that carries an alpha channel.
+im.crop((0, 262, 1024, 762)).convert('RGB').save('feature-graphic.png', optimize=True)
+EOF
+```
+
+The tagline names no specific optic. It said "300 mm afocal teleconverter" while the app targeted
+one phone and one kit; the converter became a selectable pair, so a fixed focal length on the
+store's largest asset advertised a limit the app does not have.
+
 | Phone screenshots | >=2, PNG/JPG, 320-3840 px, max side <=2x min side, no alpha | `docs/assets/play/screenshots/` |
 
 ### Screenshots captured on PMA110
