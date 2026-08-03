@@ -98,7 +98,13 @@ for perm in sorted(declared):
 gradle = read("app/build.gradle.kts")
 min_sdk = re.search(r"minSdk\s*=\s*(\d+)", gradle).group(1)
 
-for rel in ("docs/play-store-listing.md", "docs/play-console-submit.md", "README.md"):
+for rel in (
+    "docs/play-store-listing.md", "docs/play-console-submit.md", "README.md",
+    # Added after an audit found the stale floor in BOTH of these while this check was green: it
+    # only looked at store-facing docs, and the as-built authority is exactly where a wrong floor
+    # does the most damage.
+    "docs/ARCHITECTURE.md", "CLAUDE.md",
+):
     text = read(rel)
     # "Requires Android 16" style claims are what the audit caught; tie them to the real floor.
     android_release = {33: "13", 34: "14", 35: "15", 36: "16"}[int(min_sdk)]
@@ -140,6 +146,17 @@ for rel in ("README.md", "docs/ARCHITECTURE.md", "docs/TESTING.md", "docs/FIELD_
     refs = re.findall(r"`((?:app|docs|tools|device-tests|gradle)/[A-Za-z0-9_./-]+\.(?:kt|md|py|txt|toml|kts))`", text)
     dead = [r for r in refs if "..." not in r and not (ROOT / r).exists()]
     check(not dead, f"{rel} references only files that exist", f"{dead}")
+
+# The specific shape that drifted: a doc naming a minSdk value that is not the build's.
+for rel in ("README.md", "CLAUDE.md", "docs/ARCHITECTURE.md"):
+    text = read(rel)
+    # Two shapes carry the floor: the "compileSdk / targetSdk / minSdk | A / B / C" table row, where
+    # only C is the floor, and prose "minSdk NN". Reading the row left-to-right takes compileSdk and
+    # reports a false failure — which this check did on its first run.
+    claimed = {m[2] for m in re.findall(r"compileSdk / targetSdk / minSdk \|\s*\**(\d{2})\**\s*/\s*\**(\d{2})\**\s*/\s*\**(\d{2})\**", text)}
+    claimed |= set(re.findall(r"minSdk\s*=?\s*\**(\d{2})\**(?!\s*/)", text))
+    wrong = {c for c in claimed if c != min_sdk}
+    check(not wrong, f"{rel} names no wrong minSdk", f"says {sorted(wrong)}, build says {min_sdk}")
 
 print(f"\n{CHECKS} checks, {len(FAILURES)} failed")
 sys.exit(1 if FAILURES else 0)

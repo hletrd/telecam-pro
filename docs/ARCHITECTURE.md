@@ -21,7 +21,7 @@
 
 ## Overview
 
-A professional manual camera app for Android 16 (API 36) phones, developed and device-verified on the **OPPO Find X9 Ultra**, that uses Camera2 to control the rear 3× periscope telephoto lens through a **Hasselblad "Earth Explorer" afocal 300 mm teleconverter** (≈4.286× magnification: 300 mm ÷ 70 mm). The app captures processed HEIF/JPEG stills, plus RAW/DNG when TELE uses a RAW-capable standalone 3× camera, and HEVC video with HLG, log (S-Log3 / S-Log3.Cine / LogC3), or SDR profiles. For HAL stability, the shipping Camera2 and EGL input path is display-referred SDR/8-bit. HLG maps that SDR signal according to ITU-R BT.2408-9 and cannot recover ISP-removed highlights; the log profiles bake standard curves onto the same display-referred SDR stream (grading convenience, not scene-referred camera log); HLG/log use an HEVC Main10 container profile but are not an end-to-end 10-bit source pipeline.
+A professional manual camera app installable from Android 13 (API 33) up, developed and device-measured on the **OPPO Find X9 Ultra**, that uses Camera2 to control the rear 3× periscope telephoto lens through a **Hasselblad "Earth Explorer" afocal 300 mm teleconverter** (≈4.286× magnification: 300 mm ÷ 70 mm). The app captures processed HEIF/JPEG stills, plus RAW/DNG on any rear lens that advertises it — wanting RAW is itself what routes photo onto a standalone camera, so DNG is not TELE-only — and HEVC video with HLG, log (S-Log3 / S-Log3.Cine / LogC3), or SDR profiles. For HAL stability, the shipping Camera2 and EGL input path is display-referred SDR/8-bit. HLG maps that SDR signal according to ITU-R BT.2408-9 and cannot recover ISP-removed highlights; the log profiles bake standard curves onto the same display-referred SDR stream (grading convenience, not scene-referred camera log); HLG/log use an HEVC Main10 container profile but are not an end-to-end 10-bit source pipeline.
 
 The UI/UX reference is **Sony Alpha / Sony Xperia Pro camera operation**. Use Fn access, My Menu, MR
 banks, PASM-style exposure, compact OSD, peaking, zebra, histogram, waveform, and review zoom. Keep
@@ -197,7 +197,7 @@ Two critical consequences of the afocal converter drive the entire design:
    relaunch adoption; only an interrupted, structurally invalid write is deleted.
 
 **Still-photo journey (DNG/RAW):**
-1. An eligible TELE/standalone Camera2 session → RAW_SENSOR ImageReader → photoCallback on camera thread.
+1. An eligible STANDALONE Camera2 session (TELE is one such route, not the requirement — wanting RAW is what selects a standalone lens) → RAW_SENSOR ImageReader → photoCallback on camera thread.
 2. Synchronously (Image still live): DngCreator.writeDng → map `captureRotationDegrees()` to the corresponding EXIF orientation tag → MediaStore write → durable `COMPLETE` marker.
 3. Cannot pixel-rotate Bayer CFA; EXIF tag is auto-applied by RAW renderers. The completed URI then
    crosses to `ioExecutor` for retrying publication; a publish-only failure keeps it for recovery.
@@ -1053,7 +1053,7 @@ See `CLAUDE.md` § **Toolchain** for complete toolchain versions and build setup
 
 **Quick reference:**
 - Kotlin / Compose compiler 2.4.10, AGP 9.3.0, Gradle 9.6.1
-- Android SDK Platform / compileSdk 37; targetSdk 36 / minSdk 36 (API 36 is Android 16)
+- Android SDK Platform / compileSdk 37; targetSdk 36 / minSdk 33 (API 36 is Android 16; API 33 is Android 13, the floor since the 2026-08-01 multi-device decision)
 - SDK Build Tools 36.0.0 (the AGP 9.3 default); compile and runtime API levels are intentionally decoupled
 - JDK 21 required; set JAVA_HOME for CLI builds
 - Compose BOM 2026.06.01
