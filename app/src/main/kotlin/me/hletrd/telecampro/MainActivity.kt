@@ -580,7 +580,14 @@ class MainActivity : ComponentActivity() {
                 vm.onAppStatus("Microphone denied — recording without audio")
                 vm.onToggleRecording()
             }
-            MicrophoneDeclineOutcome.AUDIO_OFF -> vm.onAppStatus("Microphone permission denied")
+            MicrophoneDeclineOutcome.AUDIO_OFF ->
+                  // Mirrors its two siblings exactly — "Microphone <verdict> — <consequence>". It
+                  // used to report the verdict alone, and inserted "permission" where they say
+                  // nothing, so three lines carried two nouns for one fact. The consequence is the
+                  // part the operator acts on: this branch fires when they explicitly asked to turn
+                  // audio ON, and onToggleRecordAudio(false) has just run, so the next take is
+                  // silent. Withholding that is the confusion AUDIO_OFF_BY_DENIAL exists to remove.
+                  vm.onAppStatus("Microphone denied — audio off")
         }
     }
 

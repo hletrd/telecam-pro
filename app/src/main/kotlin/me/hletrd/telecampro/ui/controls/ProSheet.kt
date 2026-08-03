@@ -705,7 +705,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         // SILENT consequences of the switch.
         val hiResCaption = caps?.hiResJpegSize?.let { hiResSize ->
             val mp = (hiResSize.width.toLong() * hiResSize.height / 1_000_000).toInt()
-            "${hiResSize.width}×${hiResSize.height} · $mp MP · JPEG, 4:3, no RAW"
+            "${hiResSize.width}×${hiResSize.height} · $mp MP · JPEG · 4:3 · no RAW"
         }
         Captioned(hiResCaption) {
             ToggleRow(
