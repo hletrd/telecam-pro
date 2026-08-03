@@ -47,6 +47,7 @@ import me.hletrd.telecampro.camera.MemorySlot
 import me.hletrd.telecampro.camera.PeakingColor
 import me.hletrd.telecampro.camera.PeakingLevel
 import me.hletrd.telecampro.camera.PhotoFormats
+import me.hletrd.telecampro.camera.standaloneRouteWanted
 import me.hletrd.telecampro.camera.normalizedForEncoder
 import me.hletrd.telecampro.camera.PendingControlsDisposition
 import me.hletrd.telecampro.camera.acceptedOpticsAuxState
@@ -967,7 +968,13 @@ class CameraViewModel @JvmOverloads constructor(
                 (!e.preserveLensSelection && !requestedTeleconverter)
             )
         val requestedZoom = if (preserveChangedOptics) {
-            if (requestedTeleconverter || e.mode == CaptureMode.VIDEO) 1f else requestedLens.zoomPreset
+            if (
+                requestedTeleconverter || standaloneRouteWanted(
+                    e.mode == CaptureMode.VIDEO,
+                    PhotoFormats(e.heif, e.jpeg, e.dngRaw).withDefaultIfEmpty().dngRaw,
+                    engine.rawForcesStandalone,
+                )
+            ) 1f else requestedLens.zoomPreset
         } else {
             c.zoomRatio
         }
@@ -2178,6 +2185,7 @@ class CameraViewModel @JvmOverloads constructor(
                 heifAvailable = available,
                 photoFormats = it.photoFormats.normalizedForEncoder(available),
                 tenBitEncodeAvailable = tenBit,
+                rawForcesStandalone = engine.rawForcesStandalone,
                 // Same reason as photoFormats above: a persisted HLG/log selection must not survive
                 // onto an encoder that would tag an 8-bit stream as BT.2020 HDR.
                 transfer = it.transfer.normalizedForEncoder(tenBit),
@@ -2253,9 +2261,18 @@ class CameraViewModel @JvmOverloads constructor(
             it.copy(
                 lens = choice,
                 teleconverterMode = keepTc,
-                // Same engine mirror as onToggleTeleconverter: video lens picks are lens-local (1×).
+                // Mirrors resolveLensOpticsIntent, and on the same axis it uses: the ROUTE, not the
+                // mode. zoomRatio is main-relative on the logical seamless camera and LENS-LOCAL on
+                // a standalone one — and wanting DNG is a standalone door just as video is. Asking
+                // "is this video?" here put the main-relative 3.0 into a lens-local slot whenever
+                // DNG was on, so tapping 3× gave 3× digital zoom on the 70 mm lens: OSD "208 mm",
+                // readout 9.1× (3 × 70/23), wire zoom correctly 3.0 (device-reported 2026-08-03).
                 controls = it.controls.copy(
-                    zoomRatio = if (keepTc || it.mode == CaptureMode.VIDEO) 1f else choice.zoomPreset,
+                    zoomRatio = if (
+                        keepTc || standaloneRouteWanted(
+                            it.mode == CaptureMode.VIDEO, it.photoFormats.dngRaw, it.rawForcesStandalone,
+                        )
+                    ) 1f else choice.zoomPreset,
                 ),
             )
         }

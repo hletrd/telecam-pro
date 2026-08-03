@@ -469,3 +469,63 @@ class CameraOpWithheldTest {
         assertTrue(cameraOpModeWithheld(android.app.AppOpsManager.MODE_DEFAULT))
     }
 }
+
+/**
+ * The zoom scale follows the ROUTE, not the mode (device-reproduced 2026-08-03 on PMA110).
+ *
+ * `zoomRatio` is MAIN-RELATIVE on the logical seamless camera and LENS-LOCAL on a standalone lens.
+ * The resolver used to ask "is this video?", which is true of the video route but misses the other
+ * standalone door: wanting DNG moves photo onto a standalone lens too. Tapping 3× with DNG on then
+ * wrote the main-relative 3.0 into a lens-local slot — 3× digital zoom on the 70 mm lens, shown as
+ * "208 mm" and 9.1× (3 × 70/23) while the wire zoom sat correctly at 3.0 in both cases.
+ */
+class LensZoomScaleFollowsRouteTest {
+    private fun intent(standalone: Boolean, requested: LensChoice) = resolveLensOpticsIntent(
+        standaloneRoute = standalone,
+        currentLens = LensChoice.MAIN,
+        currentTeleconverter = false,
+        currentControls = ManualControls(),
+        currentPreTeleUnifiedZoom = Float.NaN,
+        requestedLens = requested,
+        requestedTeleconverter = false,
+        restorePreTele = false,
+    )
+
+    @Test
+    fun `3x on a standalone route is lens-local 1x, not a 3x digital crop`() {
+        // The bug: this returned 3.0, which the 70 mm lens read as 3x digital zoom.
+        assertEquals(1f, intent(standalone = true, LensChoice.TELE3X).controls.zoomRatio, 1e-4f)
+    }
+
+    @Test
+    fun `3x on the logical route stays main-relative 3x`() {
+        assertEquals(3f, intent(standalone = false, LensChoice.TELE3X).controls.zoomRatio, 1e-4f)
+    }
+
+    @Test
+    fun `DNG-on photo and video resolve the SAME zoom — both are standalone`() {
+        assertEquals(
+            intent(standalone = true, LensChoice.TELE10X).controls.zoomRatio,
+            intent(standalone = true, LensChoice.TELE10X).controls.zoomRatio,
+            0f,
+        )
+        // and that is 1x local, not the 10x main-relative preset
+        assertEquals(1f, intent(standalone = true, LensChoice.TELE10X).controls.zoomRatio, 1e-4f)
+    }
+
+    @Test
+    fun `every preset lands at its own lens on a standalone route`() {
+        LensChoice.entries.forEach { lens ->
+            val r = intent(standalone = true, lens)
+            assertEquals("$lens should select itself", lens, r.lens)
+            assertTrue("$lens local zoom must not crop", r.controls.zoomRatio <= 1f + 1e-4f)
+        }
+    }
+
+    @Test
+    fun `the logical route keeps each preset's main-relative ratio`() {
+        LensChoice.entries.forEach { lens ->
+            assertEquals(lens.zoomPreset, intent(standalone = false, lens).controls.zoomRatio, 1e-4f)
+        }
+    }
+}

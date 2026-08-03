@@ -1250,6 +1250,13 @@ data class CameraUiState(
     /** False when the device's HEVC encoder has no Main10 profile; withholds HLG/log gammas. */
     val tenBitEncodeAvailable: Boolean = true,
     /**
+     * [DeviceProfile.rawRequiresStandalone], mirrored so the UI can answer the SAME route question
+     * the engine answers. `zoomRatio` is main-relative on the logical camera and lens-local on a
+     * standalone one, and wanting DNG is itself a standalone door — so the UI cannot decide the
+     * zoom scale from the capture mode alone.
+     */
+    val rawForcesStandalone: Boolean = true,
+    /**
      * The platform refuses to open the camera for THIS app although the runtime permission reads
      * granted (appops/policy block). The UI shows the permission gate instead of a black viewfinder
      * behind interactive-looking chrome.

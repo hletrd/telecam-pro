@@ -819,6 +819,9 @@ class CameraEngine(private val context: Context) {
      * shows the permission gate rather than an interactive-looking black viewfinder.
      */
     var onCameraPolicyBlocked: ((Boolean) -> Unit)? = null
+
+    /** [DeviceProfile.rawRequiresStandalone] for the UI's copy of the route question. */
+    val rawForcesStandalone: Boolean get() = deviceProfile.rawRequiresStandalone
     // A timelapse RUN started (true) / ended (false). Run truth lives in [timelapseRun]'s
     // generation, which the UI cannot see — the OSD's TL tag keys off the SELECTED drive only.
     // Fired exactly on run-state edges (stopTimelapse with no active run is silent), from whichever
@@ -2554,7 +2557,11 @@ class CameraEngine(private val context: Context) {
         val intentGeneration = lensIntentGeneration.incrementAndGet()
         val (transaction, resolved) = beginOpticsTransaction {
             val intent = resolveLensOpticsIntent(
-                mode = if (videoMode) CaptureMode.VIDEO else CaptureMode.PHOTO,
+                // The ROUTE, not the mode — DNG moves photo onto a standalone lens as surely as
+                // video does, and the zoom scale follows the route.
+                standaloneRoute = standaloneRouteWanted(
+                    videoMode, rawWanted, deviceProfile.rawRequiresStandalone,
+                ),
                 currentLens = lensChoice,
                 currentTeleconverter = teleconverterMode,
                 currentControls = controls,
@@ -5514,7 +5521,19 @@ internal data class ResolvedLensOpticsIntent(
 )
 
 internal fun resolveLensOpticsIntent(
-    mode: CaptureMode,
+    /**
+     * Whether the resolved route is a STANDALONE lens — not whether the mode is video.
+     *
+     * `zoomRatio` means two different things depending on the route: on the logical seamless camera
+     * it is MAIN-RELATIVE (0.6–20 spans the physical lenses), on a standalone lens it is LENS-LOCAL
+     * (1× is that lens's own field). This used to ask `mode == VIDEO`, which is true of the video
+     * route but MISSES the other standalone door: wanting DNG moves photo onto a standalone lens
+     * too. Tapping the 3× preset with DNG on then wrote the main-relative 3.0 into a lens-local
+     * slot, giving 3× digital zoom on the 70 mm lens — device-reproduced 2026-08-03 as "208 mm" in
+     * the OSD and 9.1× on the readout (3 × 70/23), with the wire zoom correctly at 3.0 in both
+     * cases. The value was never wrong; it was interpreted on the wrong scale.
+     */
+    standaloneRoute: Boolean,
     currentLens: LensChoice,
     currentTeleconverter: Boolean,
     currentControls: ManualControls,
@@ -5526,7 +5545,7 @@ internal fun resolveLensOpticsIntent(
     if (requestedTeleconverter) {
         val baseline = if (currentTeleconverter) {
             currentPreTeleUnifiedZoom
-        } else if (mode == CaptureMode.VIDEO) {
+        } else if (standaloneRoute) {
             currentLens.zoomPreset * currentControls.zoomRatio.coerceAtLeast(1f)
         } else {
             currentControls.zoomRatio
@@ -5547,7 +5566,7 @@ internal fun resolveLensOpticsIntent(
         lens = band,
         teleconverter = false,
         controls = currentControls.copy(
-            zoomRatio = if (mode == CaptureMode.VIDEO) {
+            zoomRatio = if (standaloneRoute) {
                 (unified / band.zoomPreset).coerceAtLeast(1f)
             } else {
                 unified
