@@ -57,7 +57,7 @@ gives you the manual controls that long-lens work needs.
 
 OPEN SOURCE
 • Public and auditable: github.com/hletrd/telecam-pro
-• No ads, no analytics, no in-app purchases, no account, no cloud sync.
+• No ads, analytics, in-app purchases, account, or cloud sync.
 
 TELECONVERTER MODE
 • The Teleconverter toggle pins the lens your converter clamps onto and corrects the afocal
@@ -77,8 +77,8 @@ LENSES
 FULL MANUAL CONTROL
 • Manual focus with a nonlinear slider tuned near infinity — essential for a collimated converter.
 • ISO, shutter (speed or cine angle), white balance (presets, measured custom, manual Kelvin/tint),
-  exposure compensation, metering, and drive modes (single, burst, bracketing, timelapse), on
-  tactile stop-snapping dials.
+  exposure compensation, metering, and drive modes (single, burst, bracketing, timelapse) on
+  stop-snapping dials.
 • Vibration-free hardware controls: volume keys, and where the phone delivers them, the camera
   button's full press, light press, and slide. Each is reassignable.
 
