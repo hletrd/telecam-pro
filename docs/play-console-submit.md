@@ -195,12 +195,16 @@ could leave DNG permanently unable to produce a RAW file.
   release package launches in its persisted mode) and wrote a HEIF still; zero crashes/ANRs. The
   measured-audio and DNG-route evidence below is from the earlier cuts and those pipelines are
   unchanged by this re-cut. Covered on
-  the R8-minified binary, which is the only place the shipped code path is actually exercised:
+  the release binary. **NOT on a minified one** — `isMinifyEnabled = false`, verified 2026-08-03 by
+  finding `CameraEngine` (155 hits), `encoderSizeLadder` and `pickStillSize` as plain strings in
+  `classes3.dex`. The earlier wording here claimed R8 coverage the build never had:
   - Photo: HEIF written.
   - Video: recorded and stopped, MP4 written.
   - **DNG: enabled live from the sheet, which re-resolves the route, then captured — DNG + HEIF
     written, DNG parsed at 4080×3064 16-bit, `FocalLength` 7.73 mm, Make `OPPO` / Model `PMA110`.**
-    This is the fix under test surviving minification; a `keep` rule miss would have shown here.
+    This proves the fix survives into the release VARIANT. It proves nothing about `keep` rules —
+    the earlier claim that "a keep rule miss would have shown here" was false, because nothing is
+    minified. If minification is ever enabled, this check must be repeated to mean that.
   - **Audio: measured, not assumed.** With audio off the clip carried a VIDEO track only (the
     `doAudio = recordAudio && hasRecordPermission()` path). With audio on, the same scene produced
     AAC 48 kHz stereo whose PCM measured mean −52.3 dB / peak −38.6 dB with 98.6 % non-zero samples —
@@ -449,7 +453,7 @@ done < <(gpg --batch --quiet --decrypt telecampro-upload-passwords.txt.gpg)
 
 # Fail loudly instead of building an artifact nobody can verify: prove the password opens the
 # keystore BEFORE spending a release build on it. (Skipping this is how the stale-backup breakage
-# above stayed invisible — the build's own error surfaces only after minification runs.)
+# above stayed invisible — the build's own error surfaces only at the packaging step.)
 keytool -list -keystore telecampro-upload.jks -alias telecampro \
   -storepass "$TELECAMPRO_STORE_PASSWORD" >/dev/null || {
     echo "keystore password rejected — see the stale-backup note above"; return 1 2>/dev/null || exit 1; }
@@ -457,7 +461,7 @@ keytool -list -keystore telecampro-upload.jks -alias telecampro \
 ./gradlew :app:lintRelease :app:assembleRelease :app:bundleRelease
 ```
 
-To inspect the real R8-minified release binary **without** signing (manifest, permissions,
+To inspect the real release binary **without** signing (manifest, permissions,
 alignment, dex scans — everything except the signature), use `:app:packageRelease`: it is outside
 the `hasReleaseSigning` guard and drops `app-release-unsigned.apk` in
 `app/build/outputs/apk/release/`. That is how the "Verified on current `main`" section above was

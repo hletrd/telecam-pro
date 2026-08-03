@@ -1,0 +1,53 @@
+TeleCam Pro
+Copyright 2026 Jiyong Youn
+
+This product includes software developed by Jiyong Youn.
+Licensed under the Apache License, Version 2.0 — see the LICENSE file.
+
+
+================================================================================
+BUNDLED THIRD-PARTY MATERIAL
+================================================================================
+
+Inter (app/src/main/res/font/inter_*.ttf)
+    Copyright (c) The Inter Project Authors.
+    Licensed under the SIL Open Font License, Version 1.1.
+    Full license text: docs/licenses/inter-OFL.txt
+    The OFL requires this notice and the license to travel with the font files.
+
+
+================================================================================
+TRADEMARKS
+================================================================================
+
+The Apache License, Version 2.0 grants no trademark rights (section 6). Every
+mark below belongs to its owner and is used here only nominatively — to say
+which hardware this software works with, or which published curve an option
+implements. No affiliation, sponsorship, or endorsement is claimed or implied,
+and no mark is used in this project's own name, icon, or branding.
+
+    Hasselblad          Victor Hasselblad AB
+    OPPO, Find          Guangdong OPPO Mobile Telecommunications Corp., Ltd.
+    ZEISS               Carl Zeiss AG
+    vivo                vivo Mobile Communication Co., Ltd.
+    Lenovo              Lenovo (Beijing) Limited
+    Sony, S-Log,        Sony Group Corporation
+      S-Gamut
+    ARRI, LogC,         Arnold & Richter Cine Technik GmbH & Co. Betriebs KG
+      ARRI Wide Gamut
+    Android,            Google LLC
+      Google Play
+    Qualcomm            Qualcomm Incorporated
+    MediaTek            MediaTek Inc.
+
+The S-Log3, S-Log3.Cine and LogC3 options are this project's own
+implementations of the corresponding published transfer-function and gamut
+specifications. They are named so that footage can be matched to an existing
+grading workflow. They are not licensed, certified, or supplied by Sony Group
+Corporation or by Arnold & Richter Cine Technik GmbH & Co. Betriebs KG, and
+neither company has reviewed or approved this implementation.
+
+Teleconverter presets name commercially available optics so that an owner can
+recognise their own hardware. The magnification each preset applies is computed
+from the converter's focal length and the focal length of the host lens it was
+designed for; it is not supplied by, nor verified with, the optic's maker.

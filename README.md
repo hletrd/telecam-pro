@@ -11,7 +11,7 @@
 <img src="https://img.shields.io/badge/Kotlin-2.4.10-7F52FF?logo=kotlin&logoColor=white" alt="Kotlin" />
 <img src="https://img.shields.io/badge/Jetpack%20Compose-2026.06-4285F4?logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
 <img src="https://img.shields.io/badge/Camera2-Pro%20manual-FF7043" alt="Camera2" />
-<img src="https://img.shields.io/badge/License-open%20source-000000" alt="Open source" />
+<img src="https://img.shields.io/badge/License-Apache%202.0-000000" alt="Apache License 2.0" />
 </p>
 
 </div>
@@ -124,10 +124,22 @@ checked against `gradle/verification-metadata.xml` in strict mode.
 environment — no keys live in git, and release bundling fails fast rather than emitting an unsigned
 artifact. R8/minify is off for v1.
 
-## Open source
+## Licence and trademarks
+
+Licensed under the [Apache License 2.0](LICENSE) — © 2026 Jiyong Youn. Until 2026-08-03 this project
+carried an "open source" badge with no licence file at all, which legally reserved every right; the
+badge now names the licence that is actually granted.
 
 No ads, analytics, in-app purchases, accounts, or cloud sync. Source at
 [`github.com/hletrd/telecam-pro`](https://github.com/hletrd/telecam-pro).
+
+Hardware and format names appear here and in the app only to say what the software works with.
+Apache-2.0 grants no trademark rights (§6), and the owners are listed in [`NOTICE`](NOTICE) —
+Hasselblad is a trademark of Victor Hasselblad AB, OPPO of Guangdong OPPO Mobile Telecommunications
+Corp., Ltd., ZEISS of Carl Zeiss AG, vivo of vivo Mobile Communication Co., Ltd., S-Log of Sony
+Group Corporation, and LogC of Arnold & Richter Cine Technik GmbH & Co. Betriebs KG. This project is
+independent of all of them. The bundled Inter typeface is © The Inter Project Authors under the SIL
+Open Font License 1.1 ([`docs/licenses/inter-OFL.txt`](docs/licenses/inter-OFL.txt)).
 
 ## Documentation
 

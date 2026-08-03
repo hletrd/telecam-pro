@@ -1486,10 +1486,32 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.bodySmall,
     )
+    // The HARDWARE marks, which are the most VISIBLE brand use in this app: the phone and converter
+    // pickers list them by name so an owner can recognise their own kit. Naming a product to say
+    // "this works with that" is nominative use, but it still needs the owners stated — and the log
+    // footnote above already set that precedent for Sony/ARRI while these went unattributed.
+    Text(
+        "Hasselblad is a trademark of Victor Hasselblad AB. OPPO is a trademark of Guangdong OPPO " +
+            "Mobile Telecommunications Corp., Ltd. ZEISS is a trademark of Carl Zeiss AG. vivo is " +
+            "a trademark of vivo Mobile Communication Co., Ltd. This app is independent and is not " +
+            "affiliated with, endorsed by, or sponsored by any of them; their optics and phones are " +
+            "named only to describe hardware compatibility.",
+        color = CameraColors.TextSecondary,
+        style = MaterialTheme.typography.bodySmall,
+    )
     // Bundled-typeface attribution (SIL OFL requires the license to travel with the font; the
     // full text ships in the repo at docs/licenses/inter-OFL.txt).
     Text(
         "UI typeface: Inter, © The Inter Project Authors, SIL Open Font License 1.1.",
+        color = CameraColors.TextSecondary,
+        style = MaterialTheme.typography.bodySmall,
+    )
+    // The app's OWN licence, which was missing entirely: the project called itself open source in
+    // its README badge and store copy while granting no licence at all, which legally means all
+    // rights reserved. Apache-2.0 as of 2026-08-03; §6 of that licence grants no trademark rights,
+    // which is why the attributions above are separate from it.
+    Text(
+        "TeleCam Pro © 2026 Jiyong Youn — Apache License 2.0. Source: github.com/hletrd/telecam-pro",
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.bodySmall,
     )

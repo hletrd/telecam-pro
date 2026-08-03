@@ -38,6 +38,28 @@ Official references:
 | Is your app committed to follow the Play Families Policy? | No - not child-directed |
 | Does your app contain ads? | No |
 
+## Photo and Video Permissions declaration
+
+Play requires a 250-character justification per permission on the "Photo and Video Permissions"
+form. Paste verbatim:
+
+**READ_MEDIA_IMAGES** (231/250)
+
+```text
+Lists photos the app previously saved, in its built-in review screen. After a reinstall Android no longer attributes those files to the app, so they are otherwise unreachable. Requested only when review is opened and finds nothing.
+```
+
+**READ_MEDIA_VIDEO** (234/250)
+
+```text
+Lists videos the app previously recorded, in its built-in review screen. After a reinstall Android no longer attributes those files to the app, so they are otherwise unreachable. Requested only when review is opened and finds nothing.
+```
+
+If Play asks why the Android photo picker is not used instead: the picker exists to let a user CHOOSE
+an arbitrary file. This app is not choosing — it is re-finding captures it wrote itself, to list them
+in its own review UI. A picker cannot express "show me the files this app saved", and the only reason
+they are unreachable is that reinstalling clears the app's ownership of its own MediaStore rows.
+
 ## Data Types
 
 Do not select any collected or shared data types.
