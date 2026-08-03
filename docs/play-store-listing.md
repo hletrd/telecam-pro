@@ -68,7 +68,7 @@ TELECONVERTER MODE
   magnification. Each preset's magnification is computed from the host lens it was designed for, so
   the focal readout and EXIF report what the combination actually produces — not the number printed
   on the barrel.
-• Uses the device's available Camera2 OIS and video stabilization.
+• Uses the device's Camera2 OIS and video stabilization.
 
 LENSES
 • Focal presets filtered to the ones your phone can actually reach, with the live effective focal
@@ -91,7 +91,7 @@ VIDEO
   phones whose encoder supports 10-bit; where it does not, SDR only — rather than a file that
   misdescribes itself.
 • Open Gate records the full sensor readout instead of a 16:9 crop.
-• Hardware OIS + EIS to cut motion blur at long focal lengths.
+• Hardware OIS + EIS to cut motion blur at long focal length.
 • Sound Focus / Sound Stage audio scenes, passed to the device's audio system where its HAL
   supports them.
 • Up to 4K UHD at standard and fractional NTSC rates, to ~99 Mbps at 4K30 Max. Resolutions and
