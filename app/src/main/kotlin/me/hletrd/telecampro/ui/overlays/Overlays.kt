@@ -33,6 +33,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import me.hletrd.telecampro.camera.unifiedZoom
 import me.hletrd.telecampro.camera.AfIndication
 import me.hletrd.telecampro.camera.AspectRatio
 import me.hletrd.telecampro.camera.CameraFacing
@@ -485,7 +486,7 @@ internal fun compactShootingStatusVisible(state: CameraUiState): Boolean =
             videoMode = state.mode == CaptureMode.VIDEO,
             aspect = state.aspectRatio,
             punchIn = state.punchInActive,
-            zoomRatio = state.controls.zoomRatio,
+            zoomRatio = state.unifiedZoom,
         )
 
 /** The one HEIF(+JPEG)(+DNG) string. Both StatusBar branches used to build it separately. */
@@ -712,7 +713,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                 videoMode = state.mode == CaptureMode.VIDEO,
                 aspect = state.aspectRatio,
                 punchIn = state.punchInActive,
-                zoomRatio = state.controls.zoomRatio,
+                zoomRatio = state.unifiedZoom,
             )
         ) {
             Text("OVERVIEW", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)

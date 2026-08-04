@@ -440,6 +440,32 @@ fun tenBitSessionWanted(videoMode: Boolean, transfer: ColorTransfer): Boolean =
     videoMode && transfer != ColorTransfer.SDR
 
 /**
+ * The zoom the OPERATOR sees: always MAIN-RELATIVE, whichever route the session is on.
+ *
+ * `controls.zoomRatio` is the wire value and carries two scales — main-relative on the logical
+ * seamless camera, LENS-LOCAL on any standalone one. Every predicate written against a
+ * main-relative threshold has to convert first, and [teleFinderResolved]'s [FINDER_MIN_ZOOM] is
+ * exactly such a threshold. Its three call sites passed the raw wire value, so on a standalone
+ * route (video, or photo with DNG wanted) picking the 3x LENS left the wire at lens-local 1.0 and
+ * the gate shut: the operator was at 3x and the loupe would not arm until they pinched further.
+ * Owner-reported as "switch the lens and the loupe does not show up".
+ *
+ * Derived here rather than at each site for the same reason the rail conversion is: three copies of
+ * a scale conversion is how one of them ends up reading the wrong scale.
+ */
+val CameraUiState.unifiedZoom: Float
+    get() = unifiedZoomOf(
+        lens = lens,
+        zoomRatio = controls.zoomRatio,
+        standaloneRoute = standaloneRouteWanted(
+            videoMode = mode == CaptureMode.VIDEO,
+            rawWanted = photoFormats.dngRaw,
+            rawForcesStandalone = rawForcesStandalone,
+        ),
+        optical = lensInventory.optical,
+    )
+
+/**
  * The zoom the REAR route resumes at when leaving FRONT.
  *
  * Restores the framing the operator actually had, not the lens PRESET. Falling back to the preset

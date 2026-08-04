@@ -1063,6 +1063,19 @@ class CameraEngine(private val context: Context) {
         rendererAssists.setFalseColor(enabled)
     }
 
+    /**
+     * The app WINDOW's rotation away from the device's natural orientation, pushed from the UI
+     * (only Compose sees configuration changes; the activity declares configChanges, so it is never
+     * recreated). Goes through [rendererAssists] so it joins the replayed snapshot and survives a GL
+     * generation replacement — the exact failure shape of the old log-preview bug.
+     *
+     * Preview and finder draws only; capture, encoder and analysis framing stay gravity-derived.
+     * Always 0 on a portrait-locked phone.
+     */
+    fun setWindowRotation(degrees: Int) {
+        rendererAssists.setWindowRotation(degrees)
+    }
+
     fun onPreviewSurfaceChanged(width: Int, height: Int) {
         previewSurfaceW = width
         previewSurfaceH = height
@@ -4816,7 +4829,18 @@ class CameraEngine(private val context: Context) {
                 teleconverterMode,
                 videoMode,
                 aspectRatio,
-                controls.zoomRatio,
+                // MAIN-RELATIVE, because FINDER_MIN_ZOOM is a main-relative threshold. `controls
+                // .zoomRatio` is lens-local on any standalone route, so passing it raw kept the GL
+                // PIP shut at a genuine 3x whenever the route was standalone — and the UI gate,
+                // which reads the same converted value, would then disagree with GL.
+                unifiedZoomOf(
+                    lens = lensChoice,
+                    zoomRatio = controls.zoomRatio,
+                    standaloneRoute = standaloneRouteWanted(
+                        videoMode, rawWanted, deviceProfile.rawRequiresStandalone,
+                    ),
+                    optical = opticalPresets,
+                ),
             )
             // Suppressing an identical re-push is safe for GL generations too: RendererAssists
             // stores the value in its replayed config snapshot, and replayAll — not this push — is

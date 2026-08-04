@@ -124,6 +124,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
+import me.hletrd.telecampro.camera.unifiedZoom
 import me.hletrd.telecampro.camera.AspectRatio
 import me.hletrd.telecampro.camera.CameraFacing
 import me.hletrd.telecampro.camera.CameraUiState
@@ -316,6 +317,12 @@ fun CameraScreen(
             else -> 0
         }
     }
+    // The GL preview draw needs the same term to keep the field upright in a rotated window. Sent
+    // through CameraActions like every other interaction; the engine parks it in the replayed
+    // renderer snapshot so a GL generation replacement cannot lose it.
+    LaunchedEffect(windowRotationDeg) {
+        currentActions.value.onWindowRotationChanged(windowRotationDeg)
+    }
 
     // Counter-rotates compact on-screen glyphs/labels so they stay upright as the phone turns.
     // GyroEis derives the discrete device value from gravity via atan2(x,y), which yields dev=90 for
@@ -385,7 +392,13 @@ fun CameraScreen(
         // portrait-window contract. Keep the alternative operator layout dormant until that entire
         // orientation pipeline is implemented and device-verified together.
         val landscapeOperator = false
-        val displayedPreviewAspect = state.previewAspect.coerceAtLeast(0.01f)
+        // previewAspect is the field as it displays in the device's NATURAL orientation; a rotated
+        // window shows it W/H-swapped. Device-measured on TB336ZU (2026-08-04): without the swap a
+        // 2560x1600 landscape window drew the portrait 3:4 box at ~1200x1600 and pillarboxed away
+        // ~53% of the width. Inert at ROTATION_0, so the phone keeps the exact prior box.
+        val displayedPreviewAspect = RotationMath
+            .displayedPreviewAspect(state.previewAspect, windowRotationDeg)
+            .coerceAtLeast(0.01f)
         // Rest-state height of the bottom cluster, feeding [previewTopPx]. Frozen while a manual
         // dial is open: the cluster growing upward must overlay the preview like every transient
         // panel, not shove the viewfinder around mid-interaction.
@@ -441,7 +454,7 @@ fun CameraScreen(
                 videoMode = state.mode == CaptureMode.VIDEO,
                 aspect = state.aspectRatio,
                 punchIn = state.punchInActive,
-                zoomRatio = state.controls.zoomRatio,
+                zoomRatio = state.unifiedZoom,
             )
             // Read inside the gesture loop through rememberUpdatedState, NOT as a pointerInput key.
             // The predicate carries the LIVE zoom, so a pinch crossing FINDER_MIN_ZOOM flips it
