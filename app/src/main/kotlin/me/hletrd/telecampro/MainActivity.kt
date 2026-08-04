@@ -1,5 +1,6 @@
 package me.hletrd.telecampro
 
+import android.content.pm.ActivityInfo
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Intent
@@ -142,8 +143,30 @@ class MainActivity : ComponentActivity() {
         handleDebugIntent(intent)
     }
 
+    /**
+     * Portrait-locks HANDSETS at runtime, and leaves anything sw600dp+ free to rotate.
+     *
+     * This used to be `android:screenOrientation="portrait"` in the manifest. The behaviour is the
+     * same — Android 16 already ignores that attribute at sw600dp+ and API 37 removes the opt-out
+     * entirely, so the lock was only ever reaching handsets. What changed is that Play's
+     * large-screen check reads the manifest STATICALLY: it cannot see that the lock is conditional,
+     * so the attribute earned a permanent advisory claiming the app is orientation-locked on
+     * tablets when it is not. Expressing the same rule in code says the true thing to both.
+     *
+     * `smallestScreenWidthDp` is the right axis: it is the width of the SHORTER side, so it does
+     * not change when the device turns, and 600 is the platform's own handset/tablet boundary.
+     */
+    private fun lockPortraitOnHandsets() {
+        requestedOrientation = if (resources.configuration.smallestScreenWidthDp < 600) {
+            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        lockPortraitOnHandsets()
         // Both bars are pinned DARK — meaning "this bar sits on a dark background", which is how
         // the system decides to draw LIGHT (white) icons: SystemBarStyle.dark sets
         // detectDarkMode = { true }, and setUp() applies isAppearanceLightStatusBars = !isDark.
