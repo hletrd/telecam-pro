@@ -104,6 +104,8 @@ for rel in (
     # only looked at store-facing docs, and the as-built authority is exactly where a wrong floor
     # does the most damage.
     "docs/ARCHITECTURE.md", "CLAUDE.md",
+    # The Korean console guide states the floor in its device-catalog note.
+    "docs/play-console-submit-ko.md",
 ):
     text = read(rel)
     # "Requires Android 16" style claims are what the audit caught; tie them to the real floor.
@@ -179,7 +181,12 @@ for rel in ("docs/play-console-submit.md", "docs/BACKLOG.md", "README.md"):
     check(not running, f"{rel} carries no running count cross-reference", f"{running}")
 
 # ---- referenced repo paths must exist -----------------------------------------------------------
-for rel in ("README.md", "docs/ARCHITECTURE.md", "docs/TESTING.md", "docs/FIELD_CHECKS.md"):
+for rel in (
+    "README.md", "docs/ARCHITECTURE.md", "docs/TESTING.md", "docs/FIELD_CHECKS.md",
+    # It is a pointer document by design — it deliberately holds no values, only the paths to the
+    # sheets that do — so a dead path in it costs the reader the value itself.
+    "docs/play-console-submit-ko.md",
+):
     text = read(rel)
     refs = re.findall(r"`((?:app|docs|tools|device-tests|gradle)/[A-Za-z0-9_./-]+\.(?:kt|md|py|txt|toml|kts))`", text)
     dead = [r for r in refs if "..." not in r and not (ROOT / r).exists()]

@@ -155,3 +155,7 @@ Open Font License 1.1 ([`docs/licenses/inter-OFL.txt`](docs/licenses/inter-OFL.t
 Store listing text, privacy policy, and Play assets live in
 [`docs/play-store-listing.md`](docs/play-store-listing.md),
 [`privacy-policy/`](privacy-policy/index.html), and [`docs/assets/play/`](docs/assets/play/).
+The Play Console walkthrough is [`docs/play-console-submit.md`](docs/play-console-submit.md), with a
+Korean-language operator guide at
+[`docs/play-console-submit-ko.md`](docs/play-console-submit-ko.md) — that one is a pointer document
+and deliberately holds no values of its own, so the two cannot disagree.
