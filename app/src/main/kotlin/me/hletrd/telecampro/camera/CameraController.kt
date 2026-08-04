@@ -125,10 +125,6 @@ class CameraController(context: Context) {
     private var tenBitHlg = false
     private var rawChars: CameraCharacteristics? = null
     private var configAttempt = 0
-    // HAL-native log (vendor com.oplus.log.video.mode; 0 = off). It is BOTH a request key and a
-    // SESSION key on this device, so it goes into the session parameters (pipeline configuration)
-    // AND every repeating/still request. Set once per open(); changing it requires a reopen.
-    private var vendorLogMode = 0
     // HAL video stabilization mode for the repeating preview/video request (CONTROL_VIDEO_
     // STABILIZATION_MODE: 0 off / 1 on / 2 preview-stabilization). Drives the HAL's OIS+EIS —
     // the only thing that cuts per-frame motion blur at 300 mm. Updated live via [setVideoStabMode].
@@ -231,7 +227,6 @@ class CameraController(context: Context) {
         controls: ManualControls,
         tenBitHlg: Boolean,
         highSpeedFps: Int = 0,
-        vendorLogMode: Int = 0,
         videoStabHalMode: Int = CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF,
         teleconverterMode: Boolean = false,
         teleconverterMagnification: Float = TELECONVERTER_MAGNIFICATION,
@@ -268,7 +263,6 @@ class CameraController(context: Context) {
         }
         this.tenBitHlg = tenBitHlg
         this.highSpeedFps = highSpeedFps
-        this.vendorLogMode = vendorLogMode
         this.videoStabHalMode = videoStabHalMode
         this.teleconverterMode = teleconverterMode
         this.teleconverterMagnification = teleconverterMagnification
@@ -377,41 +371,12 @@ class CameraController(context: Context) {
         return accepted
     }
 
-    /**
-     * Device log-pipeline selector. Advertised in this device's availableRequestKeys AND
-     * availableSessionKeys for the tele, so constructing the Key and setting it is standard Camera2
-     * vendor-tag usage — the framework resolves it against the device tag provider.
-     */
-    private val logVideoModeKey = CaptureRequest.Key("com.oplus.log.video.mode", Int::class.javaObjectType)
-
-    /**
-     * The stock app's log path carries MORE than the mode key, which is why setting that key alone
-     * produced 709 output and the earlier "the HAL ignores it" verdict (see docs/BACKLOG.md — the
-     * stock session was traced live in 4K/30/O-Log2 via `dumpsys media.camera`).
-     *
-     * `com.oplus.VideoColorBT709` is the suspected forced-709 switch; clearing it is step 1 of the
-     * replication. Both are guarded exactly like the mode key: a vendor tag that disappears or
-     * rejects a value across ColorOS builds must never take the preview down with it.
-     */
-    private val videoColorBt709Key = CaptureRequest.Key("com.oplus.VideoColorBT709", Int::class.javaObjectType)
-
-    /** Applies the HAL-native log mode (no-op at 0). Defensive: a rejected vendor tag must never kill the preview build. */
-    private fun CaptureRequest.Builder.applyVendorLog() {
-        if (vendorLogMode == 0) return
-        runCatching { set(logVideoModeKey, vendorLogMode) }
-            .onSuccess { if (BuildConfig.DEBUG) Log.i(TAG, "vendor log.video.mode=$vendorLogMode applied") }
-            .onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "vendor log.video.mode=$vendorLogMode rejected: ${it.message}") }
-        // Clear the forced-BT709 conversion the stock log path does not use. Independent
-        // runCatching: if this tag is absent the mode key above must still have been applied.
-        runCatching { set(videoColorBt709Key, 0) }
-            .onSuccess { if (BuildConfig.DEBUG) Log.i(TAG, "vendor VideoColorBT709=0 applied") }
-            .onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "vendor VideoColorBT709 rejected: ${it.message}") }
-    }
-
     // The QTI vendor "extras" (Auto HDR, in-sensor zoom, ideal RAW) were all removed: Auto HDR SIGABRTs
     // the camera-provider HAL on reopen+capture, in-sensor zoom is redundant with the standard
-    // CONTROL_ZOOM_RATIO API, and ideal RAW silently breaks DNG capture. Only the native log session key
-    // remains (see applyVendorLog) — set through Camera2, HAL-stable, device-verified.
+    // CONTROL_ZOOM_RATIO API, and ideal RAW silently breaks DNG capture. The native-log session key
+    // that once remained here was removed 2026-08-04 with the vendor-SDK decision: it was INERT for
+    // third-party Camera2 anyway (device-settled 2026-07-09) and only existed to keep a
+    // scene-referred vendor stream reachable.
 
     /**
      * The HAL's stabilization vendor tag (`com.oplus.video.stabilization.mode`, int) — the vendor
@@ -693,7 +658,7 @@ class CameraController(context: Context) {
                     session = s
                     StartupTrace.mark("onConfigured")
                     hlgConfigured = useHlg
-                    if (BuildConfig.DEBUG) Log.i(TAG, "Session configured (fallback=$attempt, hlg=$useHlg, jpeg=$useJpeg, raw=$useRaw, hiRes=$hiResReaderActive, vendorLog=$vendorLogMode)")
+                    if (BuildConfig.DEBUG) Log.i(TAG, "Session configured (fallback=$attempt, hlg=$useHlg, jpeg=$useJpeg, raw=$useRaw, hiRes=$hiResReaderActive)")
                     // Which HDR profiles this route ACTUALLY advertises. Logged once per session
                     // (not per frame, so it is quota-safe) because dumpsys formats this map
                     // ambiguously enough to mis-parse — the characteristics query is the only
@@ -757,7 +722,6 @@ class CameraController(context: Context) {
             val sp = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
             sp.applyVideoStab()
             sp.applyTeleconverterHints()
-            sp.applyVendorLog()
             sessionConfig.setSessionParameters(sp.build())
         }.onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "session params with vendor stabilization/log failed: ${it.message}") }
         // createCaptureSession can throw SYNCHRONOUSLY (realistic: a future ColorOS rejecting the
@@ -817,7 +781,6 @@ class CameraController(context: Context) {
             val sp = camera.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
             sp.applyVideoStab()
             sp.applyTeleconverterHints()
-            sp.applyVendorLog()
             sessionConfig.setSessionParameters(sp.build())
         }.onFailure { if (BuildConfig.DEBUG) Log.w(TAG, "high-speed session params with vendor stabilization/log failed: ${it.message}") }
         runCatching { camera.createCaptureSession(sessionConfig) }.onFailure {
@@ -939,7 +902,6 @@ class CameraController(context: Context) {
                     previewExposureCap = true,
                     enforceFrameRate = pinAutoFps,
                 )
-                applyVendorLog()
                 applyVideoStab()
                 applyTeleconverterHints()
                 applyMetering(this, controls)
@@ -1918,8 +1880,7 @@ class CameraController(context: Context) {
                     )
                     // Keep stills consistent with the session's pipeline: with the log session active the
                     // HAL processes everything scene-referred, so an unset key mid-session is undefined.
-                    applyVendorLog()
-                    applyTeleconverterHints()
+                        applyTeleconverterHints()
                     applyMetering(this, requestControls)
                     // The still must carry the SAME AF key state the repeating request holds — the
                     // one applier both repeating paths use (full rebuild + sensor fast path). Without

@@ -165,9 +165,6 @@ class FlipRenderer {
         peakR: Float = 1f,
         peakG: Float = 0.1f,
         peakB: Float = 0.7f,
-        // Gamma Display Assist: de-log the (native O-Log2) stream for the monitor (uTransfer = 3).
-        // Overrides [transfer]; only ever set on the preview draw.
-        delogAssist: Boolean = false,
         zebraThreshold: Float = 0.95f,
         // Preview-only zoom compensation (requested ÷ HAL-applied): every setRepeatingRequest stalls
         // this HAL's stream ~180 ms, so the LIVE zoom renders here as a texture crop while the HAL
@@ -224,7 +221,7 @@ class FlipRenderer {
         GLES20.glUniformMatrix4fv(uMvp, 1, false, mvp, 0)
         GLES20.glUniformMatrix4fv(uTexMatrix, 1, false, texMatrix, 0)
         GLES20.glUniform1i(uTexture, 0)
-        GLES20.glUniform1i(uTransfer, shaderTransferCode(transfer, delogAssist))
+        GLES20.glUniform1i(uTransfer, shaderTransferCode(transfer))
         // Route state: describes the FRAMES, so every draw role must agree. A field, not an
         // argument — preview, encoder, analysis and finder all read the same camera buffers.
         GLES20.glUniform1i(uSourceHlg, if (sourceHlg) 1 else 0)
@@ -385,11 +382,14 @@ internal fun coverScaleInto(
  * ColorTransfer -> fragment-shader `uTransfer` branch code, as ONE exhaustive mapping. The old
  * inline `when` ended in `else -> 0`, so a future ColorTransfer member compiled clean while
  * silently rendering as SDR — unlike the container-tag side (ColorProfiles), where the exhaustive
- * `when` breaks the build. `delogAssist` wins: the dormant native-log monitor de-log replaces the
- * forward curve entirely (branch 3), whatever the selected transfer is.
+ * `when` breaks the build.
+ *
+ * Code 3 is permanently vacant: it was the de-log branch for a scene-referred vendor stream that
+ * can no longer arrive (that path was declined 2026-08-04). The remaining codes keep their original
+ * numbers rather than closing the gap — renumbering would buy nothing and would silently
+ * re-map every value these tests pin.
  */
-internal fun shaderTransferCode(transfer: ColorTransfer?, delogAssist: Boolean): Int = when {
-    delogAssist -> 3
+internal fun shaderTransferCode(transfer: ColorTransfer?): Int = when {
     transfer == null -> 0 // preview/null path: camera frames are already SDR
     else -> when (transfer) {
         ColorTransfer.HLG -> 1

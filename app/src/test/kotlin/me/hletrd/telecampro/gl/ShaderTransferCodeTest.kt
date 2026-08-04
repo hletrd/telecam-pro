@@ -15,33 +15,34 @@ class ShaderTransferCodeTest {
     @Test
     fun `every transfer maps to its exact shader branch`() {
         // null = the preview path: camera frames are already SDR.
-        assertEquals(0, shaderTransferCode(null, delogAssist = false))
-        assertEquals(1, shaderTransferCode(ColorTransfer.HLG, delogAssist = false))
-        assertEquals(2, shaderTransferCode(ColorTransfer.SLOG3, delogAssist = false))
-        assertEquals(4, shaderTransferCode(ColorTransfer.SLOG3_CINE, delogAssist = false))
-        assertEquals(5, shaderTransferCode(ColorTransfer.LOGC3, delogAssist = false))
+        assertEquals(0, shaderTransferCode(null))
+        assertEquals(1, shaderTransferCode(ColorTransfer.HLG))
+        assertEquals(2, shaderTransferCode(ColorTransfer.SLOG3))
+        assertEquals(4, shaderTransferCode(ColorTransfer.SLOG3_CINE))
+        assertEquals(5, shaderTransferCode(ColorTransfer.LOGC3))
         // SDR = no OETF, deliberately the same branch as the null path.
-        assertEquals(0, shaderTransferCode(ColorTransfer.SDR, delogAssist = false))
+        assertEquals(0, shaderTransferCode(ColorTransfer.SDR))
     }
 
     @Test
-    fun `delog assist wins over every transfer including none`() {
-        // The dormant native-log monitor de-log replaces the forward curve entirely (branch 3),
-        // whatever the selected transfer is.
-        assertEquals(3, shaderTransferCode(null, delogAssist = true))
-        for (transfer in ColorTransfer.entries) {
-            assertEquals(transfer.name, 3, shaderTransferCode(transfer, delogAssist = true))
-        }
+    fun `code 3 stays vacant so the surviving branches keep their numbers`() {
+        // 3 was the de-log branch for a scene-referred vendor stream; that path was declined and the
+        // branch removed 2026-08-04. The gap is deliberate — renumbering would silently re-map every
+        // code above it, and the shader's own `uTransfer == N` comparisons would have to move in
+        // lockstep. Asserting the gap (rather than the deleted behaviour) keeps the mapping from
+        // quietly drifting into a slot the fragment shader no longer implements.
+        val used = (ColorTransfer.entries.map { shaderTransferCode(it) } + shaderTransferCode(null)).toSet()
+        org.junit.Assert.assertFalse("code 3 must stay unused", used.contains(3))
     }
 
     @Test
-    fun `forward curves never collide with each other or the de-log branch`() {
+    fun `forward curves never collide with each other or the vacant code`() {
         val curveCodes = listOf(ColorTransfer.HLG, ColorTransfer.SLOG3, ColorTransfer.SLOG3_CINE, ColorTransfer.LOGC3)
-            .map { shaderTransferCode(it, delogAssist = false) }
+            .map { shaderTransferCode(it) }
         assertEquals(curveCodes.size, curveCodes.toSet().size)
         curveCodes.forEach { code ->
             org.junit.Assert.assertNotEquals("must not alias SDR", 0, code)
-            org.junit.Assert.assertNotEquals("must not alias the de-log monitor", 3, code)
+            org.junit.Assert.assertNotEquals("must not alias the vacant code", 3, code)
         }
     }
 }

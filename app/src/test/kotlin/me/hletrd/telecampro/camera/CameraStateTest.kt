@@ -134,10 +134,4 @@ class CameraStateTest {
         assertEquals("3×", LensChoice.TELE3X.label)
     }
 
-    @Test
-    fun `dormant vendor log plumbing keeps its HAL wire values`() {
-        // CameraUnit-reserved; the enum stays truthful even while nothing selects it.
-        assertEquals(0, VendorLogMode.OFF.halValue)
-        assertEquals(1, VendorLogMode.ON.halValue)
-    }
 }

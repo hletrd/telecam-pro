@@ -530,6 +530,14 @@ change on this device has needed a real capture pass to trust.
 
 ### Native log — the stock app's recipe, CAPTURED (2026-07-28)
 
+> **HISTORICAL RECORD. The code described below no longer exists.** The vendor request keys
+> (`com.oplus.log.video.mode`, `com.oplus.VideoColorBT709`), the `applyVendorLog` builder extension,
+> the debug-only `nativelog` flag-file experiment and the de-log shader branch were all REMOVED on
+> 2026-08-04 when the authenticated vendor-SDK path was declined. This section is kept because the
+> INVESTIGATION is still worth having — it is the reason nobody should retry the key-setting
+> approach — but do not read it as a description of the current source, and do not restore the
+> plumbing to "finish" it. See the closed entry under Deferred Beyond v1.
+
 Traced the stock camera live in `4K·30·O-Log2` via `dumpsys media.camera`, which prints the active
 client's configured streams. The result overturns BOTH prior positions — mine and the older doc's.
 

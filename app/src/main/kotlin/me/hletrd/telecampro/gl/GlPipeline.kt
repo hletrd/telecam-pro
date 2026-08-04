@@ -123,9 +123,6 @@ class GlPipeline {
     private var frontRoute = false
     private var frontStreamPreMirrored = false
     private var gammaAssist = false
-    // True while the HAL-native O-Log2 stream is engaged: the frames arriving here are ALREADY log
-    // (scene-referred), so the preview passes through (flat) or de-logs for Gamma Display Assist.
-    private var nativeLog = false
     private var peaking = false
     // Adjustable focus-peaking edge threshold + highlight color, and the zebra clipping threshold.
     private var peakThreshold = 0.06f
@@ -475,8 +472,6 @@ class GlPipeline {
     /** Gamma Display Assist: monitor shows the normal 709-ish image while the FILE stays log. */
     fun setGammaAssist(enabled: Boolean) = post { gammaAssist = enabled }
 
-    /** HAL-native log engaged: frames are already scene-referred O-Log2 (see [nativeLog]). */
-    fun setNativeLog(enabled: Boolean) = post { nativeLog = enabled }
     fun setPeaking(enabled: Boolean) = post { peaking = enabled }
     fun setZebra(enabled: Boolean) = post { zebra = enabled }
 
@@ -911,8 +906,7 @@ class GlPipeline {
         // renders the same flat curve the encoder bakes, or — with Gamma Display Assist ON — skips it
         // and shows the normal display-referred image (the FILE always gets the curve). HLG/SDR keep
         // the natural SDR preview (an HLG curve on this SDR preview surface would just look washed;
-        // HDR is monitored on an HDR display, not here). delogAssist stays dormant: it is only for a
-        // true scene-referred (native/CameraUnit) stream, which third-party Camera2 cannot get.
+        // HDR is monitored on an HDR display, not here).
         val previewTransfer = transfer?.takeIf { it.isLog && !gammaAssist }
         val ownedPreview = previewEgl
         val ownedPreviewSignal = previewSignal
@@ -922,7 +916,6 @@ class GlPipeline {
                 renderer.draw(
                     stMatrix, previewW, previewH, previewTransfer, peaking, zebra, falseColor, sx, sy, roll, previewCrop, loupeX, loupeY,
                     peakThreshold = peakThreshold, peakR = peakR, peakG = peakG, peakB = peakB, zebraThreshold = zebraThreshold,
-                    delogAssist = nativeLog && gammaAssist,
                     zoomComp = zoomTarget / halZoom.coerceAtLeast(0.01f),
                     digitalGain = previewDigitalGain,
                     // NO preview mirror on this device: the front stream arrives pre-mirrored

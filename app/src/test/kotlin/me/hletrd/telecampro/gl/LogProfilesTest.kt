@@ -200,35 +200,25 @@ class LogProfilesTest {
         // No overlay may read the post-transfer `color` as its exposure signal.
         assertFalse(shader.contains("luma(clamp(color, 0.0, 1.0)) > uZebraThreshold"))
         assertFalse(shader.contains("float L = luma(color);"))
-        // The only reassignment lives inside the dormant assist branch (uTransfer == 3).
-        val reassignIndex = shader.indexOf("meter = color;")
-        val dormantBranch = shader.indexOf("uTransfer == 3")
-        val falseColorBlock = shader.indexOf("if (uFalseColor == 1)")
-        assertTrue("dormant assist must republish its de-logged image as the meter signal", reassignIndex >= 0)
-        assertTrue(reassignIndex > dormantBranch && reassignIndex < falseColorBlock)
-        assertTrue(shader.indexOf("meter = color;", reassignIndex + 1) == -1)
+        // `meter` is now write-once: the only reassignment lived in the de-log branch, which was
+        // removed 2026-08-04. Nothing may reintroduce one — an overlay metering a post-transfer
+        // signal is the exact defect this test guards.
+        assertFalse("no branch may republish `color` as the meter signal", shader.contains("meter = color;"))
     }
 
     @Test
-    fun `forward O-Log2 is gone while the dormant inverse survives`() {
+    fun `the declined vendor-log path leaves no shader residue`() {
         val shader = Shaders.FRAGMENT
         assertFalse("the removed forward O-Log2 OETF must not resurface", shader.contains("vec3 olog2("))
-        assertTrue("the dormant de-log assist inverse must stay", shader.contains("vec3 olog2Inv("))
-        assertTrue("the dormant de-log branch must stay", shader.contains("uTransfer == 3"))
+        // The de-log inverse and its branch existed only for a scene-referred vendor stream that can
+        // no longer arrive (path declined 2026-08-04). They were removed with it; re-adding either
+        // means re-adding dead code, so this asserts their absence rather than their survival.
+        assertFalse("the de-log inverse must not come back", shader.contains("olog2Inv"))
+        assertFalse("the de-log branch must not come back", shader.contains("uTransfer == 3"))
+        assertFalse("its 709 helper must not come back", shader.contains("toRec709"))
     }
 
     // ---- helpers ----
-
-    @Test
-    fun `dormant O-Log2 inverse boundary is the forward toe evaluated at its switch point`() {
-        // P(R = OLOG2_TOE_MAX_R) = TOE_SCALE·(R + TOE_OFFSET)². The boundary used to be a second
-        // hand-computed literal (0.20856) whose arithmetic squared the wrong sum (P6.7/CR4-8);
-        // pin the derived value against an independent evaluation of the forward toe.
-        val toeAtSwitch = Shaders.OLOG2_TOE_SCALE *
-            (Shaders.OLOG2_TOE_MAX_R + Shaders.OLOG2_TOE_OFFSET).pow(2)
-        assertEquals(toeAtSwitch, Shaders.OLOG2_INV_BOUNDARY, 0.0)
-        assertEquals(0.1841888797965, Shaders.OLOG2_INV_BOUNDARY, 1e-12)
-    }
 
     private fun sGamut3Matrix() = doubleArrayOf(
         LogProfiles.SG3_R_FROM_R, LogProfiles.SG3_R_FROM_G, LogProfiles.SG3_R_FROM_B,

@@ -22,20 +22,6 @@ package me.hletrd.telecampro.gl
  */
 object Shaders {
 
-    // O-Log2 shadow-toe constants (official white paper, 2026-04 EN v1) — the SINGLE source for
-    // the DORMANT inverse's toe and segment boundary (P6.7/CR4-8: the boundary used to be a
-    // second hand-computed literal, 0.20856, whose arithmetic slipped — it squared 0.06641088
-    // instead of 0.006 + 0.05641088 = 0.06241088, so the inverse used the toe branch for a band
-    // of P the forward had encoded with the log segment). The forward O-Log2 OETF left with the
-    // user-facing option (2026-07-22); these stay because olog2Inv below still inverts it.
-    const val OLOG2_TOE_SCALE = 47.28711236
-    const val OLOG2_TOE_OFFSET = 0.05641088
-    const val OLOG2_TOE_MAX_R = 0.006
-
-    /** P at the forward curve's R = [OLOG2_TOE_MAX_R] switch — the derived inverse boundary. */
-    val OLOG2_INV_BOUNDARY: Double =
-        OLOG2_TOE_SCALE * (OLOG2_TOE_MAX_R + OLOG2_TOE_OFFSET) * (OLOG2_TOE_MAX_R + OLOG2_TOE_OFFSET)
-
     const val VERTEX = """
         uniform mat4 uMvp;
         uniform mat4 uTexMatrix;
@@ -190,28 +176,6 @@ object Shaders {
             return mix(logY, linY, step(x, vec3(${LogProfiles.LOGC3_CUT})));
         }
 
-        // DORMANT: exact inverse of the OPPO O-Log2 OETF (white paper 2026-04 EN v1 —
-        //   P = 0.08550479 * log2(R + 0.00964052) + 0.69336945 for R >= 0.006, parabolic toe
-        //   below), for the Gamma Display Assist of a future native scene-referred stream. The
-        // forward curve was removed with the user-facing O-Log2 option. Main segment inverts the
-        // log; the shadow toe inverts the parabola (positive root). Segment boundary is DERIVED
-        // from the toe constants (Kotlin interpolation, one source): P(R = OLOG2_TOE_MAX_R) via
-        // the toe polynomial.
-        vec3 olog2Inv(vec3 P) {
-            vec3 logR = exp2((P - 0.69336945) / 0.08550479) - 0.00964052;
-            vec3 toeR = sqrt(max(P, 0.0) / $OLOG2_TOE_SCALE) - $OLOG2_TOE_OFFSET;
-            return mix(logR, toeR, step(P, vec3($OLOG2_INV_BOUNDARY)));
-        }
-
-        // Rec.2020 -> Rec.709 primaries (linear light), inverse of toRec2020 — the assist shows the
-        // scene-referred O-Gamut stream as an ordinary 709/γ2.2 monitor image.
-        vec3 toRec709(vec3 c) {
-            return vec3(
-                dot(vec3( 1.6605, -0.5876, -0.0728), c),
-                dot(vec3(-0.1246,  1.1329, -0.0083), c),
-                dot(vec3(-0.0182, -0.1006,  1.1187), c));
-        }
-
         void main() {
             vec3 base = dgain(texture2D(uTexture, vTexCoord).rgb);
             vec3 color = base;
@@ -249,14 +213,6 @@ object Shaders {
                 // ARRI LogC3 EI800 / ARRI Wide Gamut 3: identical chain.
                 vec3 lin = sourceLinear(color);
                 color = logc3(gamutFloor(toAwg3(lin)));
-            } else if (uTransfer == 3) {
-                // DORMANT Gamma Display Assist: the incoming stream IS native O-Log2 (scene-
-                // referred, O-Gamut) — a future CameraUnit path. De-log to linear, move to 709
-                // primaries, γ2.2-encode for the monitor. The RECORDED stream is untouched — this
-                // branch only ever runs on the preview.
-                vec3 lin = max(olog2Inv(clamp(color, 0.0, 1.0)), vec3(0.0));
-                color = pow(clamp(toRec709(lin), 0.0, 1.0), vec3(1.0 / 2.2));
-                meter = color;
             }
 
             // False color: map exposure (luma) to IRE-style bands (display-referred, see meter).

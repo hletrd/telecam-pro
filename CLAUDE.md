@@ -671,9 +671,15 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   instead (assist = skip the forward curve; the file always gets it; `ColorTransfer.isLog` is the
   one gate for all three). The user-facing O-Log2 option (`ColorTransfer.LOG`) was REMOVED
   2026-07-22 ("not a standard"); SettingsStore migrates a persisted `"LOG"` to `SLOG3_CINE`, and
-  its forward OETF left `Shaders.kt` with it. The O-Log2-shaped de-log shader (uTransfer=3, exact
-  inverse incl. the toe root) and `vendorLogMode`/`setNativeLog` plumbing stay DORMANT for a future
-  CameraUnit-authenticated scene-referred stream (which owns its own curve/tagging decisions).
+  its forward OETF left `Shaders.kt` with it. **The dormant native-log plumbing that survived that
+  removal is now GONE TOO (2026-08-04)**, because the vendor-SDK path it was waiting for was
+  declined: the O-Log2-shaped de-log shader branch (`uTransfer == 3`) with its `olog2Inv`/`toRec709`
+  helpers and toe constants, `shaderTransferCode`'s `delogAssist` parameter, `VendorLogMode`,
+  `CameraEngine.vendorLogMode`, `GlPipeline.setNativeLog`, the debug-only `nativelog` flag-file
+  experiment, and `CameraController`'s `com.oplus.log.video.mode` + `com.oplus.VideoColorBT709`
+  request keys. **Shader code 3 is now permanently VACANT and the surviving codes keep their
+  numbers** (0/1/2/4/5) — renumbering would silently re-map every branch and the shader's own
+  `uTransfer == N` comparisons; a test asserts the gap stays unused. Do not re-add any of it.
   NOTE: leaving `KEY_COLOR_TRANSFER` unset on a BT2020 full-range HEVC format makes the QTI encoder
   tag the VUI **ST2084 (PQ)** — players then tone-map log footage as HDR. Tag a transfer
   explicitly, always; all three log profiles share one container policy (BT.2020 full-range +
@@ -735,10 +741,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   without cause" — the option itself is CLOSED. The former re-enable checklist was deleted along
   with the decision (a step-by-step restore order under a declined item is how a closed decision
   quietly reopens itself); `docs/BACKLOG.md` carries the closure and what it rules out for good:
-  the 200 MP remosaic, a scene-referred log stream, and this OIS profile. The DORMANT code that
-  was kept alive for that future — the de-log shader branch and the `vendorLogMode`/`setNativeLog`
-  plumbing — now has no consumer that can ever arrive, so treat it as dead weight to be removed
-  rather than a hook to be filled.
+  the 200 MP remosaic, a scene-referred log stream, and this OIS profile. The dormant code kept
+  alive for that future — the de-log shader branch and the `vendorLogMode`/`setNativeLog` plumbing —
+  was REMOVED on 2026-08-04 in the same pass; see the log-profile entry for the exact inventory.
 - **The camera-control button: slides arrive as STANDARD `KEYCODE_ZOOM_IN`/`OUT` (live-verified
   2026-07-09).** Full mechanical press = standard `KEYCODE_CAMERA` (→ shutter, `onKeyDown`). The
   capacitive slide is re-emitted to the FOCUSED app as **KEYCODE_ZOOM_IN (168) / KEYCODE_ZOOM_OUT

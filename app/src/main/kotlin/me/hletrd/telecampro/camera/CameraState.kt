@@ -873,7 +873,6 @@ enum class LensChoice(val targetEquivMm: Float, val label: String, val zoomPrese
  * minimal in-camera processing. Deliberately NOT persisted: an experimental device mode must never
  * survive a relaunch.
  */
-enum class VendorLogMode(val halValue: Int) { OFF(0), ON(1) }
 
 /** Shutter drive mode. */
 enum class DriveMode { SINGLE, BURST, AEB, TIMELAPSE }

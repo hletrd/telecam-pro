@@ -796,8 +796,6 @@ class CameraEngine(private val context: Context) {
     @Volatile private var hiResStillIntent = false
     private val modeIntentGeneration = java.util.concurrent.atomic.AtomicLong(0)
     private val lensIntentGeneration = java.util.concurrent.atomic.AtomicLong(0)
-    // HAL-native log (vendor com.oplus.log.video.mode). Session key → changing it reopens the camera.
-    @Volatile private var vendorLogMode = VendorLogMode.OFF
     // Video stabilization strategy. Default ENHANCED = HAL OIS+EIS (motion-blur reduction at 300 mm).
     @Volatile private var videoStabMode = VideoStabMode.ENHANCED
     // Bounded auto-recovery when the camera HAL disconnects/errors mid-session (its provider process can
@@ -945,7 +943,6 @@ class CameraEngine(private val context: Context) {
                             if (glOwners.owns(ownedGl)) onAnalysis?.invoke(h, w, f)
                         }
                         // Re-seed desired GL state that may have been set before the handler existed.
-                        ownedGl.setNativeLog(false)
                         ownedGl.setTransfer(transfer)
                         ownedGl.setPreviewDigitalGain(lastPreviewDigitalGain)
                         rendererAssists.replayAll(ownedGl)
@@ -1436,7 +1433,6 @@ class CameraEngine(private val context: Context) {
                 // The shipping picker always resolves 0: constrained high-speed SIGABRTs this HAL.
                 // Non-zero support remains dormant for diagnostics/schema-compatible internal callers.
                 highSpeedFps = desiredHighSpeedFps(),
-                vendorLogMode = vendorLogMode.halValue,
                 videoStabHalMode = c.videoStabControlMode(videoStabMode),
                 teleconverterMode = teleconverterMode,
                 teleconverterMagnification = teleconverterMagnification,
@@ -1805,9 +1801,8 @@ class CameraEngine(private val context: Context) {
      * Selects the color transfer — the single source of truth. The log profiles (S-Log3 /
      * S-Log3.Cine / LogC3) are GL-baked curves (the shipping path): the encoder receives the curve
      * and the preview renders it flat. The device's native HAL log key (`com.oplus.log.video.mode`)
-     * is INERT for third-party Camera2 (device-settled 2026-07-09 — see the body comment), so
-     * [vendorLogMode] stays OFF; the dormant native-log plumbing (pass-through + de-log shader) is
-     * kept only for a future CameraUnit-authenticated scene-referred stream.
+     * is INERT for third-party Camera2 (device-settled 2026-07-09 — see the body comment), and the
+     * dormant plumbing that once carried it was REMOVED 2026-08-04 with the vendor-SDK decision.
      *
      * Changing the OETF mid-recording would tag the file with the start transfer but bake a different
      * curve into the second half, so the GL curve is only pushed when idle (the field still updates
@@ -1824,31 +1819,15 @@ class CameraEngine(private val context: Context) {
         // earlier "file looked log" was the BT.2020 full-range container tag being misread by
         // players as a washed look). So the GL path stays: encoder gets the selected curve, the
         // preview shows it flat, and Gamma Display Assist shows the normal display-referred image
-        // instead. vendorLogMode stays OFF (dormant, with the de-log shader, for a future
-        // CameraUnit-authenticated scene-referred path).
-        // DEBUG-ONLY native-log experiment (docs/BACKLOG.md "the stock app's recipe"). The stock
-        // session was traced in 4K/30/O-Log2 and carries MORE than the mode key, so the old "the
-        // HAL ignores it" verdict was drawn from an incomplete request. Enable with:
-        //     adb shell setprop debug.telecampro.nativelog 1
-        // and pick a log transfer in Video. Release builds ignore the property entirely, so the
-        // shipped behaviour is unchanged until a recorded FILE proves the path works.
-        // Flag file rather than a system property: SystemProperties is hidden API. Enable with
-        //   adb shell touch /sdcard/Android/data/me.hletrd.telecampro.debug/files/nativelog
-        val nativeLogExperiment = BuildConfig.DEBUG && t.isLog &&
-            runCatching { java.io.File(context.getExternalFilesDir(null), "nativelog").exists() }
-                .getOrDefault(false)
-        // The GL curve must NOT also bake in while the HAL is asked to emit log — two curves in
-        // series is not a test of either.
-        gl.setNativeLog(nativeLogExperiment)
-        // The transfer is now a SESSION input (it decides 10-bit), not just a GL/encoder setting, so
+        // instead. The debug-only native-log experiment that used to sit here, and the vendor
+        // request key it drove, were REMOVED 2026-08-04: they existed to keep a scene-referred
+        // vendor stream reachable, and that path is now declined, so the experiment could never
+        // have graduated into anything.
+        // The transfer is a SESSION input (it decides 10-bit), not just a GL/encoder setting, so
         // a change that flips that answer has to reconfigure or the new curve rides the old buffers.
         val tenBitChanged = tenBitSessionWanted(videoMode, previousTransfer) !=
             tenBitSessionWanted(videoMode, t)
-        val wasNativeLog = vendorLogMode != VendorLogMode.OFF
-        val nextLogMode = if (nativeLogExperiment) VendorLogMode.ON else VendorLogMode.OFF
-        val logModeChanged = wasNativeLog != (nextLogMode != VendorLogMode.OFF)
-        vendorLogMode = nextLogMode
-        if (logModeChanged || tenBitChanged) reopenForSession()
+        if (tenBitChanged) reopenForSession()
         if (recorder == null) gl.setTransfer(t)
     }
     fun setPeaking(enabled: Boolean) {
@@ -2977,8 +2956,7 @@ class CameraEngine(private val context: Context) {
                     // 10-bit exactly when the bits are spent on something: VIDEO + a non-SDR transfer.
                 tenBitHlg = tenBitSessionWanted(videoMode, transfer) || tenBitExperimentEnabled(),
                     highSpeedFps = desiredHighSpeedFps(),
-                    vendorLogMode = vendorLogMode.halValue,
-                    videoStabHalMode = c.videoStabControlMode(videoStabMode),
+                        videoStabHalMode = c.videoStabControlMode(videoStabMode),
                     teleconverterMode = teleconverterMode,
                     teleconverterMagnification = teleconverterMagnification,
                     pinAutoFps = videoMode,
@@ -3988,23 +3966,17 @@ class CameraEngine(private val context: Context) {
         // SIGABRTs the HAL — so desiredHighSpeedFps() is always 0 in practice.)
         val captureRate = if (desiredHighSpeedFps() != 0) rate.encoderRate else 0.0
         // AVC is 8-bit SDR only: force the GL color curve to SDR (no HLG/Log). HEVC/APV keep the
-        // 10-bit HLG/Log path. With HAL-native log active the stream is ALREADY log-encoded by the
-        // ISP — GL must pass it through untouched or the curve would be applied twice.
-        // (Resolution changes after this point stream the old size until reopen.)
+        // 10-bit HLG/Log path. (Resolution changes after this point stream the old size until reopen.)
+        // The HAL-native-log arm both of these carried was removed 2026-08-04 with the vendor-SDK
+        // decision: it only ever triggered on a stream this app can no longer be given.
         val glTransfer = when {
-            vendorLogMode != VendorLogMode.OFF -> null
             codec == VideoCodec.HEVC || codec == VideoCodec.APV -> transfer
             else -> null
         }
-        // File color tags: when the (DORMANT) native path emits O-Log2 the container MUST carry the
-        // log-class policy (BT.2020 full-range + explicit SDR-class transfer, never unset — the QTI
-        // PQ-mistag trap) regardless of the TF chip, so players don't HDR-tone-map it. All three
-        // log-class ColorTransfer members map to that identical tag set, so SLOG3_CINE serves as
-        // the internal marker since the user-facing O-Log2 entry was removed; a future CameraUnit
-        // activation owns its own curve/tagging decision (native O-Log2 is none of the GL curves).
-        // Otherwise use the selected transfer on the 10-bit paths (HEVC/APV); AVC is always SDR.
+        // File color tags: use the selected transfer on the 10-bit paths (HEVC/APV); AVC is always
+        // SDR. The log-class members still share one container policy (BT.2020 full-range + an
+        // explicit SDR-class transfer, never unset — the QTI PQ-mistag trap); see ColorProfiles.
         val fileTransfer = when {
-            vendorLogMode != VendorLogMode.OFF -> ColorTransfer.SLOG3_CINE
             codec == VideoCodec.HEVC || codec == VideoCodec.APV -> transfer
             else -> ColorTransfer.SDR
         }
