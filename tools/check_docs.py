@@ -54,8 +54,40 @@ full = fenced(listing, "## Full description")
 check(len(full) <= 4000, "full description <= 4000 chars", f"{len(full)}")
 
 notes = fenced(listing, "## Release notes")
-inner = re.sub(r"</?en-US>", "", notes).strip()
+inner = re.sub(r"</?(en-US|ko-KR)>", "", notes).strip()
 check(len(inner) <= 500, "release notes <= 500 chars", f"{len(inner)}")
+
+# ---- the Korean listing is held to the same limits and the same wrapping rule -------------------
+# Play applies its limits per language, and a translation that overruns is rejected at paste time
+# rather than at review. Indexed on the Korean headings because the English ones are substrings of
+# them ("## Short description" matches inside "### Short description — ...").
+ko_short = fenced(listing, "간단한 설명 (≤80자)")
+check(len(ko_short) <= 80, "ko short description <= 80 chars", f"{len(ko_short)}")
+
+ko_full = fenced(listing, "자세한 설명 (≤4000자)")
+check(len(ko_full) <= 4000, "ko full description <= 4000 chars", f"{len(ko_full)}")
+
+ko_notes = fenced(listing, "출시 노트 (≤500자)")
+ko_inner = re.sub(r"</?ko-KR>", "", ko_notes).strip()
+check(len(ko_inner) <= 500, "ko release notes <= 500 chars", f"{len(ko_inner)}")
+
+# The English wrap detector keys on a lower-case continuation, which Hangul has no notion of. The
+# language-neutral signal is structural: in the intended format every prose paragraph is ONE line,
+# so any two consecutive non-empty prose lines mean the block was re-wrapped. Bullets legitimately
+# run consecutively, and the language tags bracket the notes, so both are exempt.
+def prose_line(s: str) -> bool:
+    s = s.strip()
+    return bool(s) and not s.startswith("•") and not s.startswith("<")
+
+for label, block in (("ko full description", ko_full), ("ko release notes", ko_notes)):
+    lines = block.split("\n")
+    wrapped = [a for a, b in zip(lines, lines[1:]) if prose_line(a) and prose_line(b)]
+    check(not wrapped, f"{label} is not hard-wrapped", f"{len(wrapped)} continuation lines")
+
+# The two languages must state the same Android floor. A listing that promises a lower floor in one
+# language than the other is a support problem in exactly the market that reads the wrong one.
+ko_floor = re.findall(r"Android (\d+) 이상", listing)
+check(bool(ko_floor), "the Korean copy states an Android floor")
 
 # Play renders the description verbatim. A block re-wrapped for editor readability puts a break in
 # the middle of every sentence, which is how the listing shipped shredded the first time.
@@ -114,6 +146,9 @@ for rel in (
     # its audit note ("Requires Android 16" — the floor is minSdk 33), and flagging a doc for
     # quoting its own corrected mistake is the checker being fooled by its own subject matter.
     bad = re.findall(r'(?<!")Requires Android (\d+)', text)
+    # The Korean copy states the same fact as "Android 13 이상이 필요합니다"; without this it could
+    # drift below the English floor unnoticed, since nothing else in the file is in Hangul.
+    bad += re.findall(r"Android (\d+) 이상", text)
     check(
         all(v == android_release for v in bad),
         f"{rel} states the real Android floor",
