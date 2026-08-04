@@ -1,6 +1,5 @@
 package me.hletrd.telecampro.ui
 
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.constrainHeight
@@ -44,54 +43,6 @@ internal fun String.isUrgentStatus(): Boolean =
     // pins all of them by their exact shipped wording.
     listOf("error", "fail", "unable", "unavailable", "denied", "insufficient", "could not")
         .any { contains(it, ignoreCase = true) }
-
-/** Which edge of the WINDOW a chrome cluster hugs. Window-relative, never world-relative. */
-internal enum class ScreenEdge { BOTTOM, LEFT, TOP, RIGHT }
-
-/**
- * The window edge the CAPTURE cluster (shutter, gallery, chips, mode) hugs, given the glyph
- * residual — i.e. how far the device has turned that the window did NOT follow.
- *
- * The rule is that the capture cluster stays where the world's DOWN is, and the menu bar stays at
- * the world's UP, so the shutter is under the same thumb no matter how the phone is held. Turning
- * the device CCW by `r` turns the world CW by `r` inside the window, so screen-down (0, +1) maps to:
- *
- *   r=0   -> ( 0, +1)  BOTTOM      r=180 -> ( 0, -1)  TOP
- *   r=90  -> (-1,  0)  LEFT        r=270 -> (+1,  0)  RIGHT
- *
- * The 180 row is the one the owner specified in terms that cannot be misread — "for upside down,
- * record button should be in top and grid / settings button should be in bottom" — and it pins the
- * whole mapping, because the same world-fixed rule generates the other three. The 90/270 rows are
- * therefore derived, not chosen: if they read backwards on device, the device convention behind
- * `GyroEis` differs from the naming, and the fix is to negate the input here — one place, not four.
- *
- * This deliberately takes the RESIDUAL, not raw gravity. A window that turned with the device is
- * already world-aligned, so its cluster belongs at BOTTOM and the residual is 0 there — which is why
- * large screens keep an unmoving layout while a portrait-locked handset relocates.
- */
-internal fun captureClusterEdge(glyphResidualDeg: Int): ScreenEdge =
-    when (((glyphResidualDeg % 360) + 360) % 360) {
-        90 -> ScreenEdge.LEFT
-        180 -> ScreenEdge.TOP
-        270 -> ScreenEdge.RIGHT
-        else -> ScreenEdge.BOTTOM
-    }
-
-/** Window alignment that pins a cluster against [edge], centred along it. */
-internal fun edgeAlignment(edge: ScreenEdge): Alignment = when (edge) {
-    ScreenEdge.BOTTOM -> Alignment.BottomCenter
-    ScreenEdge.TOP -> Alignment.TopCenter
-    ScreenEdge.LEFT -> Alignment.CenterStart
-    ScreenEdge.RIGHT -> Alignment.CenterEnd
-}
-
-/** The menu bar takes the edge OPPOSITE the capture cluster, so the two can never collide. */
-internal fun menuBarEdge(captureEdge: ScreenEdge): ScreenEdge = when (captureEdge) {
-    ScreenEdge.BOTTOM -> ScreenEdge.TOP
-    ScreenEdge.TOP -> ScreenEdge.BOTTOM
-    ScreenEdge.LEFT -> ScreenEdge.RIGHT
-    ScreenEdge.RIGHT -> ScreenEdge.LEFT
-}
 
 /**
  * Whether the WINDOW, not gravity, is the trustworthy statement of which way is up.
