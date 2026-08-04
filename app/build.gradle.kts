@@ -55,8 +55,10 @@ android {
         targetSdk = 36
         // versionCode 1 is SPENT — it is the build published to Google Play on 2026-08-04. Play
         // rejects a re-used versionCode outright, so every subsequent upload must be strictly
-        // greater, including a re-upload of otherwise identical bytes.
-        versionCode = 2
+        // greater, including a re-upload of otherwise identical bytes. 2 was cut but never
+        // registered; 3 is the upload candidate. versionName stays 1.0.1 — the user-visible release
+        // is the same one, only the artifact moved.
+        versionCode = 3
         versionName = "1.0.1"
 
         // On-device instrumented smoke tier (app/src/androidTest). The external device-tests/
