@@ -444,6 +444,14 @@ fun CameraScreen(
             // edge to edge (measured 2560×1440 on TB336ZU) — that is the deliberate trade for a
             // viewfinder no control ever covers.
             val railReservePx = if (landscapeOperator) with(density) { operatorRailWidth.roundToPx() } else 0
+            // The bottom cluster exists ONLY in the portrait layout — the wide layout gives the
+            // controls their own COLUMN, whose width railReservePx already took out of the preview.
+            // bottomClusterRestHeightPx is written from inside the portrait branch, and
+            // configChanges keeps this composition (and therefore the remembered value) alive across
+            // the rotation that flips the branch — so reading it in the wide layout subtracts a
+            // chrome that is not there, using a stale measurement of a layout that is not current.
+            // Derived once here so neither reader can pick up the portrait number by accident.
+            val bottomReserveForLayoutPx = if (landscapeOperator) 0 else bottomClusterRestHeightPx
             val previewWidthPx = previewBoxWidthPx(
                 availableWidthPx = (constraints.maxWidth - railReservePx).coerceAtLeast(1),
                 availableHeightPx = constraints.maxHeight,
@@ -463,7 +471,7 @@ fun CameraScreen(
                 topChromeMinPx = with(density) {
                     WindowInsets.statusBars.getTop(this) + 100.dp.roundToPx()
                 },
-                bottomReservePx = bottomClusterRestHeightPx,
+                bottomReservePx = bottomReserveForLayoutPx,
             )
             previewTopForChromePx = topOffsetPx
             // How far the preview runs BEHIND the bottom chrome, plus breathing room — the number
@@ -475,7 +483,7 @@ fun CameraScreen(
             // form both can read without a unit conversion.
             finderBottomClearanceFraction = if (previewHeightPx > 0) {
                 val previewBottomPx = topOffsetPx + previewHeightPx
-                val chromeTopPx = constraints.maxHeight - bottomClusterRestHeightPx
+                val chromeTopPx = constraints.maxHeight - bottomReserveForLayoutPx
                 val overshootPx = (previewBottomPx - chromeTopPx).coerceAtLeast(0)
                 (overshootPx + sixteenDpPx).toFloat() / previewHeightPx
             } else 0f
