@@ -48,6 +48,7 @@ import me.hletrd.telecampro.camera.PeakingColor
 import me.hletrd.telecampro.camera.PeakingLevel
 import me.hletrd.telecampro.camera.PhotoFormats
 import me.hletrd.telecampro.camera.opticalBaseFor
+import me.hletrd.telecampro.camera.unifiedZoomOf
 import me.hletrd.telecampro.camera.standaloneRouteWanted
 import me.hletrd.telecampro.camera.normalizedForEncoder
 import me.hletrd.telecampro.camera.PendingControlsDisposition
@@ -1797,7 +1798,12 @@ class CameraViewModel @JvmOverloads constructor(
         // The chip band tracks the unified zoom only on the rear seamless camera; front zoom is
         // lens-local and must not remap the retained rear band (same guard as the engine's
         // reconcileControlsWithCaps).
-        val lensBand = if (!s.teleconverterMode && s.mode == CaptureMode.PHOTO && s.facing == CameraFacing.BACK) {
+        // Only the LOGICAL seamless camera speaks the unified scale forZoom() reads; every
+        // standalone route (video, TC, and DNG) carries a lens-local ratio.
+        val lensBand = if (
+            !s.teleconverterMode && s.facing == CameraFacing.BACK &&
+            !standaloneRouteWanted(s.mode == CaptureMode.VIDEO, s.photoFormats.dngRaw, s.rawForcesStandalone)
+        ) {
             LensChoice.forZoom(z)
         } else {
             s.lens
@@ -1921,6 +1927,12 @@ class CameraViewModel @JvmOverloads constructor(
             teleconverter = before.teleconverterMode,
             controls = exposureState.controls,
             frontFacing = before.facing == CameraFacing.FRONT,
+            // DNG keeps PHOTO on a standalone lens too, so there is no unified↔local gap to bridge.
+            photoIsStandalone = standaloneRouteWanted(
+                videoMode = false, rawWanted = before.photoFormats.dngRaw,
+                rawForcesStandalone = before.rawForcesStandalone,
+            ),
+            optical = before.lensInventory.optical,
         )
         _state.update {
             it.copy(mode = mode, lens = optics.lens, controls = optics.controls)
@@ -2042,11 +2054,16 @@ class CameraViewModel @JvmOverloads constructor(
         var enteredTele = false
         _state.update {
             if (enabled) {
-                capturedPreTele = if (it.mode == CaptureMode.VIDEO) {
-                    it.lens.zoomPreset * it.controls.zoomRatio.coerceAtLeast(1f)
-                } else {
-                    it.controls.zoomRatio
-                }
+                // The pre-TELE snapshot is a UNIFIED value, so it must be converted from whatever
+                // scale the CURRENT route stores — video and DNG both store lens-local.
+                capturedPreTele = unifiedZoomOf(
+                    it.lens,
+                    it.controls.zoomRatio,
+                    standaloneRouteWanted(
+                        it.mode == CaptureMode.VIDEO, it.photoFormats.dngRaw, it.rawForcesStandalone,
+                    ),
+                    it.lensInventory.optical,
+                )
                 enteredTele = true
                 it.copy(
                     teleconverterMode = true,
@@ -2484,8 +2501,10 @@ class CameraViewModel @JvmOverloads constructor(
             capsUpper = range?.upper,
         )
         val lens = if (
-            current.mode == CaptureMode.PHOTO && !current.teleconverterMode &&
-            current.facing == CameraFacing.BACK
+            !current.teleconverterMode && current.facing == CameraFacing.BACK &&
+            !standaloneRouteWanted(
+                current.mode == CaptureMode.VIDEO, current.photoFormats.dngRaw, current.rawForcesStandalone,
+            )
         ) {
             LensChoice.forZoom(normalizedControls.zoomRatio)
         } else {

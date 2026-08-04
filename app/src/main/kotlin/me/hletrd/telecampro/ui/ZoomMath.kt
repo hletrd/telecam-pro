@@ -2,6 +2,8 @@ package me.hletrd.telecampro.ui
 
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.LensChoice
+import me.hletrd.telecampro.camera.unifiedZoomOf
+import me.hletrd.telecampro.camera.localZoomOf
 import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.TELE_MAX_DISPLAY_ZOOM
 import me.hletrd.telecampro.camera.TELE_ZOOM_SNAPS
@@ -316,6 +318,14 @@ internal fun remapModeOptics(
     teleconverter: Boolean,
     controls: ManualControls,
     frontFacing: Boolean = false,
+    /**
+     * True when the PHOTO side is also pinned to a standalone lens — i.e. DNG is on. Then both modes
+     * already store a lens-local ratio and there is nothing to remap; converting anyway rewrote the
+     * framing on every mode flip.
+     */
+    photoIsStandalone: Boolean = false,
+    /** Optical presets, so the conversion divides by the lens the route reaches (one-camera safe). */
+    optical: Set<LensChoice> = LensChoice.entries.toSet(),
 ): ModeOptics {
     // PROGRAM is app-owned in Photo but normally HAL-owned in Video. Clear the Photo-derived flag
     // on an actual Video entry; route capability normalization may re-enable it later when a sparse
@@ -328,20 +338,24 @@ internal fun remapModeOptics(
     val modeControls = targetControls.normalizedForCaptureMode(toMode)
     // FRONT is one camera in both modes with lens-local zoom throughout — like TELE, the unified↔
     // local remap does not apply (it would rewrite the retained rear band from a front-local ratio).
-    if (fromMode == toMode || teleconverter || frontFacing) return ModeOptics(lens, modeControls)
+    // Same early return as TELE/FRONT, for the same reason: when photo is ALSO standalone both
+    // sides store a lens-local ratio, so a remap would corrupt rather than convert.
+    if (fromMode == toMode || teleconverter || frontFacing || photoIsStandalone) {
+        return ModeOptics(lens, modeControls)
+    }
     return if (toMode == CaptureMode.VIDEO) {
         val band = LensChoice.forZoom(modeControls.zoomRatio)
         ModeOptics(
             lens = band,
             controls = modeControls.copy(
-                zoomRatio = (modeControls.zoomRatio / band.zoomPreset).coerceIn(1f, MAX_VIDEO_LOCAL_ZOOM),
+                zoomRatio = localZoomOf(modeControls.zoomRatio, optical).coerceIn(1f, MAX_VIDEO_LOCAL_ZOOM),
             ),
         )
     } else {
         ModeOptics(
             lens = lens,
             controls = modeControls.copy(
-                zoomRatio = (lens.zoomPreset * modeControls.zoomRatio.coerceAtLeast(1f))
+                zoomRatio = unifiedZoomOf(lens, modeControls.zoomRatio, standaloneRoute = true, optical = optical)
                     .coerceIn(MIN_PHOTO_ZOOM, MAX_PHOTO_UNIFIED_ZOOM),
             ),
         )

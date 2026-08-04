@@ -260,9 +260,15 @@ class CameraEngine(private val context: Context) {
             capsUpper = range?.upper,
         )
         if (!videoMode) photoExposureTimeNs = controls.exposureTimeNs
-        // The lens band is a REAR unified-zoom concept; front zoom is lens-local and must not
-        // remap the retained rear band (it is what "leave FRONT" returns to).
-        if (!videoMode && !teleconverterMode && facing == CameraFacing.BACK) {
+        // The lens band is a REAR *unified*-zoom concept: it only means anything while zoomRatio is
+        // main-relative, i.e. on the LOGICAL seamless camera. Front zoom is lens-local and must not
+        // remap the retained rear band (it is what "leave FRONT" returns to) — and neither may any
+        // other standalone route. This asked `!videoMode`, which misses the DNG door: with RAW on,
+        // the lens-local 1.0 was read as main-relative and collapsed the band to 1×, so the rail
+        // highlighted 1× while the focal readout correctly said 69 mm (device-reported 2026-08-04).
+        if (!standaloneRouteWanted(videoMode, rawWanted, deviceProfile.rawRequiresStandalone) &&
+            !teleconverterMode && facing == CameraFacing.BACK
+        ) {
             lensChoice = LensChoice.forZoom(controls.zoomRatio)
         }
         seedGlZoom()

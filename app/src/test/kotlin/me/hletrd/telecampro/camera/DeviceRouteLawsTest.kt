@@ -548,3 +548,48 @@ class LensZoomScaleFollowsRouteTest {
         }
     }
 }
+
+/**
+ * The unified↔local conversion pair must ROUND-TRIP on every device shape (2026-08-04). Six call
+ * sites open-coded this and every one asked "is this video?", which misses the DNG standalone door.
+ */
+class UnifiedZoomRoundTripTest {
+    private val multiLens = setOf(LensChoice.ULTRAWIDE, LensChoice.MAIN, LensChoice.TELE3X, LensChoice.TELE10X)
+    private val oneCamera = setOf(LensChoice.MAIN)
+
+    @Test
+    fun `round-trips on a multi-lens phone`() {
+        multiLens.forEach { lens ->
+            val local = localZoomOf(lens.zoomPreset, multiLens)
+            assertEquals(
+                lens.zoomPreset,
+                unifiedZoomOf(lens, local, standaloneRoute = true, optical = multiLens),
+                1e-3f,
+            )
+        }
+    }
+
+    @Test
+    fun `round-trips on a one-camera device, where band and physical lens differ`() {
+        listOf(LensChoice.MAIN, LensChoice.TELE3X, LensChoice.TELE10X).forEach { lens ->
+            val local = localZoomOf(lens.zoomPreset, oneCamera)
+            assertEquals(
+                lens.zoomPreset,
+                unifiedZoomOf(lens, local, standaloneRoute = true, optical = oneCamera),
+                1e-3f,
+            )
+        }
+    }
+
+    @Test
+    fun `the logical route passes the ratio through untouched`() {
+        assertEquals(3f, unifiedZoomOf(LensChoice.TELE3X, 3f, standaloneRoute = false, optical = multiLens), 0f)
+        assertEquals(7.5f, unifiedZoomOf(LensChoice.MAIN, 7.5f, standaloneRoute = false, optical = multiLens), 0f)
+    }
+
+    @Test
+    fun `the band is never used as the multiplier when it is only a crop`() {
+        // Tablet: 3x band, 3.0 local. Using the BAND would give 9; the optical base gives 3.
+        assertEquals(3f, unifiedZoomOf(LensChoice.TELE3X, 3f, standaloneRoute = true, optical = oneCamera), 1e-3f)
+    }
+}

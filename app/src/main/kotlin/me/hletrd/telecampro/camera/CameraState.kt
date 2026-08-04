@@ -377,6 +377,32 @@ fun opticalBaseFor(unified: Float, optical: Set<LensChoice>): LensChoice =
         ?: optical.minByOrNull { it.zoomPreset }
         ?: LensChoice.MAIN
 
+/**
+ * The MAIN-RELATIVE ("unified") zoom for a route whose stored ratio may be LENS-LOCAL, and its
+ * inverse. One pair, so the six places that used to open-code this conversion cannot drift again —
+ * every one of them asked "is this video?", which is true of the video route but misses the DNG
+ * door, and each wrong answer showed up as a different symptom (208 mm focal, 9.1× readout, the
+ * rail highlighting 1× while the focal said 69 mm).
+ *
+ * The base is the OPTICAL lens the route lands on, not the band the user tapped: on a one-camera
+ * device the "3×" band is a crop of the 1× lens, so multiplying by 3 would double-count it.
+ * [unifiedZoomOf] and [localZoomOf] therefore round-trip on both device shapes.
+ */
+fun unifiedZoomOf(
+    lens: LensChoice,
+    zoomRatio: Float,
+    standaloneRoute: Boolean,
+    optical: Set<LensChoice>,
+): Float = if (standaloneRoute) {
+    opticalBaseFor(lens.zoomPreset, optical).zoomPreset * zoomRatio.coerceAtLeast(1f)
+} else {
+    zoomRatio
+}
+
+/** The LENS-LOCAL ratio a standalone route needs to sit at main-relative [unified]. */
+fun localZoomOf(unified: Float, optical: Set<LensChoice>): Float =
+    (unified / opticalBaseFor(unified, optical).zoomPreset).coerceAtLeast(1f)
+
 fun standaloneRouteWanted(
     videoMode: Boolean,
     rawWanted: Boolean,
