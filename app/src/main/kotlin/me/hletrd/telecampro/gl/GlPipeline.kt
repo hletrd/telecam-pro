@@ -1010,12 +1010,15 @@ class GlPipeline {
                                 // converter shrinks it 4.3× beyond the loupe fraction
                                 // (operator-specified 2026-07-31; see loupeHintRect).
                                 fieldScale = finderFieldScale,
-                                // MUST match the overview draw's own rotation, which is now pinned
-                                // upright above — not previewRotationDeg. The hint marks a position
-                                // INSIDE that box, so if the box stops rotating and the hint keeps
-                                // rotating, the mark lands point-mirrored from the field it claims
-                                // to describe (the same class of bug the y-sign bisect chased).
-                                rotationDegrees = 0,
+                                // MUST match the overview draw's own rotation above — not
+                                // previewRotationDeg. The hint marks a position INSIDE that box, so
+                                // if the box rotates and the hint does not, the mark lands
+                                // point-mirrored from the field it claims to describe (the same
+                                // class of bug the y-sign bisect chased). This was a literal 0 while
+                                // the box was pinned upright; once the box took the WINDOW term the
+                                // two silently diverged in a landscape window, so it reads the same
+                                // expression. Still 0 on any phone, where the window never rotates.
+                                rotationDegrees = RotationMath.windowPreviewRotationDegrees(windowRotationDeg),
                             )
                             val hx = hint.x.toInt()
                             val hy = hint.y.toInt()
