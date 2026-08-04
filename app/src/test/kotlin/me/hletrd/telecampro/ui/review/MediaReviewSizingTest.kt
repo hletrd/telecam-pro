@@ -1,5 +1,7 @@
 package me.hletrd.telecampro.ui.review
 
+import me.hletrd.telecampro.R
+
 import me.hletrd.telecampro.camera.MediaDeleteScope
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -43,11 +45,11 @@ class MediaReviewSizingTest {
 
     @Test
     fun `gallery semantics truthfully identify raw photo and video owners`() {
-        assertEquals("No capture to review", galleryReviewContentDescription(false, null))
-        assertEquals("Review last capture", galleryReviewContentDescription(true, null))
-        assertEquals("Review last RAW capture", galleryReviewContentDescription(true, ReviewMediaKind.RAW))
-        assertEquals("Review last photo", galleryReviewContentDescription(true, ReviewMediaKind.STILL))
-        assertEquals("Review last video", galleryReviewContentDescription(true, ReviewMediaKind.VIDEO))
+        assertEquals(R.string.a11y_no_capture_to_review, galleryReviewContentDescription(false, null))
+        assertEquals(R.string.a11y_review_last_capture, galleryReviewContentDescription(true, null))
+        assertEquals(R.string.a11y_review_last_raw, galleryReviewContentDescription(true, ReviewMediaKind.RAW))
+        assertEquals(R.string.a11y_review_last_photo, galleryReviewContentDescription(true, ReviewMediaKind.STILL))
+        assertEquals(R.string.a11y_review_last_video, galleryReviewContentDescription(true, ReviewMediaKind.VIDEO))
     }
 
     @Test

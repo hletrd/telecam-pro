@@ -10,6 +10,7 @@ import android.provider.Settings
 import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -143,7 +144,20 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        // Both bars are pinned DARK — meaning "this bar sits on a dark background", which is how
+        // the system decides to draw LIGHT (white) icons: SystemBarStyle.dark sets
+        // detectDarkMode = { true }, and setUp() applies isAppearanceLightStatusBars = !isDark.
+        // The bare enableEdgeToEdge() default is SystemBarStyle.auto(), which resolves that from the
+        // SYSTEM night setting — but TeleCamProTheme is unconditionally dark (TeleDarkColorScheme,
+        // no isSystemInDarkTheme, no values-night), so a phone in LIGHT mode drew BLACK status and
+        // navigation icons over the viewfinder. A viewfinder is dark at every hour and in every
+        // scene, so the app's own appearance is the only correct input here, never the system's.
+        // The theme's android:windowLightStatusBar=false was aimed at exactly this and cannot reach
+        // it: it seeds the starting window, and then this call overwrites the appearance flags.
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+        )
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         handleDebugIntent(intent)
         // Drop obscured touches before they reach camera/settings/delete consent surfaces. This is
@@ -767,17 +781,17 @@ private fun PermissionGate(
             // at a 40 dp container.
             if (permanentlyDenied) {
                 MinTouchTarget48 {
-                    Button(onClick = onOpenSettings, colors = primaryColors) { Text("Settings") }
+                    Button(onClick = onOpenSettings, colors = primaryColors) { Text(stringResource(R.string.action_settings)) }
                 }
             } else {
                 MinTouchTarget48 {
-                    Button(onClick = onRequest, colors = primaryColors) { Text("Allow camera access") }
+                    Button(onClick = onRequest, colors = primaryColors) { Text(stringResource(R.string.action_allow_camera_access)) }
                 }
             }
             Spacer(Modifier.height(8.dp))
             MinTouchTarget48 {
                 TextButton(onClick = onOpenPrivacy) {
-                    Text("Privacy Policy", color = CameraColors.TextSecondary)
+                    Text(stringResource(R.string.action_privacy_policy), color = CameraColors.TextSecondary)
                 }
             }
         }

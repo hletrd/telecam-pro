@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- These style the STARTING WINDOW only — the frame shown before MainActivity.onCreate runs.
+         From onCreate onward enableEdgeToEdge() owns the system bar appearance and overwrites
+         windowLightStatusBar, so that item cannot be the thing keeping the icons white on the
+         viewfinder; the SystemBarStyle.dark pinning in MainActivity is. statusBarColor and
+         navigationBarColor are deprecated no-ops at targetSdk 35+, but minSdk is 33 and they are
+         still honoured for the starting window on API 33/34 — which is why they stay. -->
     <style name="Theme.TeleCamPro" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">@color/ic_launcher_background</item>
         <item name="android:statusBarColor">@android:color/transparent</item>

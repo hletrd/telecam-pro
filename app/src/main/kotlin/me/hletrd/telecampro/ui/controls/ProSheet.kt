@@ -1,5 +1,7 @@
 package me.hletrd.telecampro.ui.controls
 
+import me.hletrd.telecampro.R
+
 import android.content.Context
 import android.content.Intent
 import android.util.Range
@@ -36,6 +38,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Text
+import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -215,7 +218,7 @@ internal fun ProSheet(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Menu", color = CameraColors.TextPrimary, style = MaterialTheme.typography.titleLarge)
+                Text(stringResource(R.string.label_menu), color = CameraColors.TextPrimary, style = MaterialTheme.typography.titleLarge)
                 CloseButton(
                     onClick = onDismiss,
                     modifier = Modifier.focusRequester(closeFocusRequester),
@@ -289,6 +292,7 @@ internal fun ProSheet(
 
 @Composable
 private fun CloseButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val a11yCloseSettings = stringResource(R.string.a11y_close_settings)
     // 48 dp touch target; 32 dp visual pill.
     val activate = onClick
     Box(
@@ -296,7 +300,7 @@ private fun CloseButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
             .size(48.dp)
             .focusable()
             .clearAndSetSemantics {
-                contentDescription = "Close settings"
+                contentDescription = a11yCloseSettings
                 role = Role.Button
                 onClick {
                     activate()
@@ -528,7 +532,7 @@ private fun MyMenuTab(
     }
     TabTitle("My Menu")
     if (state.myMenuSlots.isEmpty()) {
-        Text("Empty", color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
+        Text(stringResource(R.string.state_empty), color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
     } else {
         state.myMenuSlots.forEach { slot ->
             QuickFnRow(slot, state, actions, availability, openDial)
@@ -709,7 +713,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         }
         Captioned(hiResCaption) {
             ToggleRow(
-                label = "High Resolution",
+                label = stringResource(R.string.label_high_resolution),
                 checked = state.hiResStill,
                 onCheckedChange = actions::onToggleHiResStill,
                 enabled = hiResToggleEnabled(
@@ -722,7 +726,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         }
     }
     SegmentedSelector(
-        label = "Aspect",
+        label = stringResource(R.string.label_aspect),
         options = AspectRatio.entries,
         selected = state.aspectRatio,
         labelFor = ::aspectRatioLabel,
@@ -752,7 +756,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
             // the word covers the one live framing control this tab carries.
             SectionHeader("Framing")
             LabeledSlider(
-                label = "Zoom",
+                label = stringResource(R.string.label_zoom),
                 valueLabel = formatZoomMultiplier(state.controls.zoomRatio * zBase),
                 value = (state.controls.zoomRatio * zBase).coerceIn(loDisplay, zHi),
                 onValueChange = { v -> actions.onZoomRatio(v / zBase) },
@@ -764,7 +768,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         // "Still", not "JPEG": the slider governs BOTH still containers (StillCapturePipeline hands
         // the same value to HeifCapture), and HEIF is a default output — the old name claimed the
         // control skipped a HEIF-only shooter's files (UI review #8).
-        label = "Still Quality",
+        label = stringResource(R.string.label_still_quality),
         valueLabel = state.controls.jpegQuality.toString(),
         value = state.controls.jpegQuality.toFloat().coerceIn(1f, 100f),
         onValueChange = { actions.onJpegQuality(it.roundToInt()) },
@@ -775,7 +779,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
     // sat under "Format" and read as output-format settings.
     SectionHeader("Release")
     SegmentedSelector(
-        label = "Drive",
+        label = stringResource(R.string.label_drive),
         options = DriveMode.entries,
         selected = state.driveMode,
         labelFor = ::driveModeLabel,
@@ -783,7 +787,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
     )
     if (state.driveMode == DriveMode.TIMELAPSE) {
         LabeledSlider(
-            label = "Interval",
+            label = stringResource(R.string.label_interval),
             valueLabel = "${state.intervalSec}s",
             value = state.intervalSec.toFloat().coerceIn(1f, 30f),
             onValueChange = { actions.onIntervalSec(it.roundToInt()) },
@@ -791,7 +795,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         )
     }
     SegmentedSelector(
-        label = "Self-Timer",
+        label = stringResource(R.string.label_self_timer),
         options = ShutterTimer.entries,
         selected = state.timer,
         labelFor = ::shutterTimerLabel,
@@ -812,7 +816,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     // PASM-style: P (auto), S (shutter-priority, app auto-ISO), ISO (iso-priority, app auto-shutter),
     // M (manual). No aperture-priority — the tele aperture is fixed.
     SegmentedSelector(
-        label = "Mode",
+        label = stringResource(R.string.label_mode),
         options = availability.exposureModes,
         selected = controls.exposureMode,
         labelFor = { it.letter },
@@ -820,13 +824,13 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         enabled = availability.exposureModes.size > 1,
     )
     ToggleRow(
-        label = "AE Lock",
+        label = stringResource(R.string.label_ae_lock),
         checked = controls.aeLock,
         onCheckedChange = actions::onToggleAeLock,
         enabled = availability.aeLockEnabled,
     )
     SegmentedSelector(
-        label = "Flicker",
+        label = stringResource(R.string.label_flicker),
         options = availability.antibandingModes,
         selected = controls.antibanding,
         labelFor = ::antibandingLabel,
@@ -834,7 +838,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         enabled = availability.antibandingModes.size > 1,
     )
     SegmentedSelector(
-        label = "Shutter",
+        label = stringResource(R.string.label_shutter),
         options = ShutterMode.entries,
         selected = controls.shutterMode,
         labelFor = ::shutterModeLabel,
@@ -842,7 +846,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         enabled = availability.shutterDialEnabled,
     )
     SegmentedSelector(
-        label = "Step",
+        label = stringResource(R.string.label_step),
         options = ExposureStep.entries,
         selected = controls.exposureStep,
         labelFor = { "${it.label} EV" },
@@ -851,7 +855,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     )
     val isoRange = caps?.isoRange ?: Range(controls.iso, controls.iso)
     LabeledSlider(
-        label = "ISO",
+        label = stringResource(R.string.label_iso),
         valueLabel = controls.iso.toString(),
         value = controls.iso.toFloat().coerceIn(isoRange.lower.toFloat(), isoRange.upper.toFloat()),
         onValueChange = { actions.onIso(it.roundToInt()) },
@@ -861,7 +865,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     )
 
     SegmentedSelector(
-        label = "Metering",
+        label = stringResource(R.string.label_metering),
         options = availability.meteringModes,
         selected = controls.meteringMode,
         labelFor = ::meteringModeLabel,
@@ -873,7 +877,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     // a single train of thought from Mode, but WB opens a different subject mid-scroll.
     SectionHeader("White Balance")
     SegmentedSelector(
-        label = "WB",
+        label = stringResource(R.string.label_wb),
         options = availability.wbModes,
         selected = controls.wbMode,
         labelFor = ::wbModeLabel,
@@ -882,7 +886,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     )
     if (controls.wbMode == WbMode.MANUAL) {
         LabeledSlider(
-            label = "Kelvin",
+            label = stringResource(R.string.label_kelvin),
             valueLabel = "${controls.wbKelvin}K",
             value = controls.wbKelvin.toFloat().coerceIn(2000f, 10000f),
             onValueChange = { actions.onWbKelvin(it.roundToInt()) },
@@ -890,7 +894,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
             enabled = availability.wbDialEnabled,
         )
         LabeledSlider(
-            label = "Tint",
+            label = stringResource(R.string.label_tint),
             valueLabel = "%+d".format(Locale.US, controls.wbTint),
             value = controls.wbTint.toFloat().coerceIn(-50f, 50f),
             onValueChange = { actions.onWbTint(it.roundToInt()) },
@@ -919,14 +923,14 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
                 selected = controls.wbMode == WbMode.CUSTOM,
                 onClick = actions::onCaptureCustomWb,
                 enabled = customWbCaptureEnabled,
-                label = { Text("Capture Custom WB", style = MaterialTheme.typography.labelMedium) },
+                label = { Text(stringResource(R.string.action_capture_custom_wb), style = MaterialTheme.typography.labelMedium) },
                 colors = pixelChipColors(),
                 border = pixelChipBorder(controls.wbMode == WbMode.CUSTOM, customWbCaptureEnabled),
             )
         }
     }
     ToggleRow(
-        label = "AWB Lock",
+        label = stringResource(R.string.label_awb_lock),
         checked = controls.awbLock,
         onCheckedChange = actions::onToggleAwbLock,
         enabled = availability.awbLockEnabled,
@@ -935,13 +939,14 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
 
 @Composable
 private fun FocusTab(state: CameraUiState, actions: CameraActions) {
+    val a11yResetFocusPoint = stringResource(R.string.a11y_reset_focus_point)
     val controls = state.controls
     // remember(): see PERF4-8 note in ExposureColorTab.
     val availability = remember(state.caps, controls) { controlAvailability(state.caps?.controlCapabilities(), controls) }
     TabTitle("Focus")
     SectionHeader("Autofocus")
     SegmentedSelector(
-        label = "AF",
+        label = stringResource(R.string.label_af),
         options = availability.focusModes,
         selected = controls.focusMode,
         labelFor = ::focusModeLabel,
@@ -950,7 +955,7 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
     )
     // Sony Focus Area: Spot S/M/L — the size of the tap-AF/metering region.
     SegmentedSelector(
-        label = "Spot Size",
+        label = stringResource(R.string.label_spot_size),
         options = AfSpotSize.entries,
         selected = controls.afSpotSize,
         labelFor = { it.label },
@@ -959,28 +964,28 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
     )
     if (controls.focusMode != FocusMode.MANUAL) {
         ToggleRow(
-            label = "AF Lock",
+            label = stringResource(R.string.label_af_lock),
             checked = controls.afLock,
             onCheckedChange = actions::onAfLock,
             enabled = availability.afLockEnabled,
         )
     }
     LabelValueRow(
-        label = "Tap Focus",
+        label = stringResource(R.string.label_tap_focus),
         // "None", not "No point": in a value slot that phrase reads as "there is no point". The
         // stateDescription below is the one that gets to be a sentence.
         valueLabel = if (state.tapFocusHeld) "Reset" else "None",
         enabled = state.tapFocusHeld,
         onClick = actions::onResetFocusPoint,
         modifier = Modifier.semantics {
-            contentDescription = "Reset focus point"
+            contentDescription = a11yResetFocusPoint
             stateDescription = if (state.tapFocusHeld) "Tap focus held" else "No tap focus point"
         },
     )
     SectionHeader("MF Assist")
-    ToggleRow(label = "Peaking", checked = state.focusPeaking, onCheckedChange = actions::onTogglePeaking)
+    ToggleRow(label = stringResource(R.string.label_peaking), checked = state.focusPeaking, onCheckedChange = actions::onTogglePeaking)
     SegmentedSelector(
-        label = "Peaking Level",
+        label = stringResource(R.string.label_peaking_level),
         options = PeakingLevel.entries,
         selected = state.peakingLevel,
         labelFor = { it.name.lowercase().replaceFirstChar { c -> c.uppercase() } },
@@ -988,7 +993,7 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
         enabled = state.focusPeaking,
     )
     SegmentedSelector(
-        label = "Peaking Color",
+        label = stringResource(R.string.label_peaking_color),
         options = PeakingColor.entries,
         selected = state.peakingColor,
         labelFor = { it.name.lowercase().replaceFirstChar { c -> c.uppercase() } },
@@ -1016,7 +1021,7 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
     // dim sentence three times, 20 dp apart, under rows that were already grey.
     if (!rearRoute) {
         Text(
-            "Rear camera only",
+            stringResource(R.string.state_rear_camera_only),
             color = CameraColors.TextSecondary,
             style = MaterialTheme.typography.labelSmall,
         )
@@ -1040,7 +1045,7 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
         // teleconverter. TELE stays on only when it already is AND the pick is its 3× host lens; the
         // separate toggle below pins converter shooting (afocal 180° flip, standalone 3× camera).
         SegmentedSelector(
-            label = "Lens",
+            label = stringResource(R.string.label_lens),
             // Same enumerated inventory the viewfinder rail uses — a preset this device cannot
             // reach must not be offered in the menu either.
             options = LensChoice.entries.filter { it in state.lensInventory.available },
@@ -1064,7 +1069,7 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
         },
     ) {
         ToggleRow(
-            label = "Teleconverter",
+            label = stringResource(R.string.label_teleconverter),
             checked = state.teleconverterMode,
             onCheckedChange = actions::onToggleTeleconverter,
             enabled = rearOpticsMutable,
@@ -1075,7 +1080,7 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
     // optics read as a scrolling smear (user-rejected). Only the PHONE is ever resolved
     // automatically; passive glass cannot announce itself.
     DropdownRow(
-        label = "Phone",
+        label = stringResource(R.string.label_phone),
         options = PhoneModel.entries,
         selected = state.phoneModel,
         labelFor = { it.label },
@@ -1105,7 +1110,7 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
         },
     ) {
         DropdownRow(
-            label = "Converter",
+            label = stringResource(R.string.label_converter),
             // Narrowed to this phone's kits plus the fits-anything entries, so a converter that
             // cannot physically clamp on is not offerable in the first place.
             options = state.phoneModel.converters(),
@@ -1116,7 +1121,7 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
         )
         if (state.teleconverterProfile.isCustom) {
             LabeledSlider(
-                label = "Magnification",
+                label = stringResource(R.string.label_magnification),
                 valueLabel = "%.2f×".format(Locale.US, state.teleconverterMagnification),
                 value = state.teleconverterCustomMagnification,
                 onValueChange = actions::onTeleconverterCustomMagnification,
@@ -1141,7 +1146,7 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
         },
     ) {
         SegmentedSelector(
-            label = "Mode",
+            label = stringResource(R.string.label_mode),
             options = VideoStabMode.entries,
             selected = state.videoStabMode,
             labelFor = { it.label },
@@ -1152,7 +1157,7 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
         )
     }
     if (state.caps?.oisAvailable == true) {
-        ToggleRow(label = "Photo OIS", checked = state.controls.oisEnabled, onCheckedChange = actions::onToggleOis)
+        ToggleRow(label = stringResource(R.string.label_photo_ois), checked = state.controls.oisEnabled, onCheckedChange = actions::onToggleOis)
     }
 }
 
@@ -1164,7 +1169,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     TabTitle("Video")
     if (state.isRecording) {
         LabelValueRow(
-            label = "Recording",
+            label = stringResource(R.string.label_recording),
             valueLabel = "Settings locked",
         )
     }
@@ -1174,7 +1179,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     val codecOptions = remember { EncoderCaps.availableCodecs().ifEmpty { listOf(VideoCodec.HEVC, VideoCodec.AVC) } }
     SectionHeader("Recording Format")
     SegmentedSelector(
-        label = "Codec",
+        label = stringResource(R.string.label_codec),
         options = codecOptions,
         selected = codec,
         labelFor = ::videoCodecLabel,
@@ -1185,7 +1190,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     // Open Gate records the full 4:3 sensor readout instead of a 16:9 crop; it swaps the resolution
     // list to the camera's 4:3 sizes.
     ToggleRow(
-        label = "Open Gate 4:3",
+        label = stringResource(R.string.label_open_gate_43),
         checked = state.openGate,
         onCheckedChange = actions::onToggleOpenGate,
         enabled = recordingMutable,
@@ -1205,13 +1210,13 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         // in the one tab that also shows the real recording red mid-REC. Greying it also raises
         // contrast on the opaque sheet surface (6.35:1 vs red's 4.80:1 — see HudContrastTest).
         Text(
-            "No supported resolution",
+            stringResource(R.string.state_no_supported_resolution),
             color = CameraColors.TextSecondary,
             style = MaterialTheme.typography.labelSmall,
         )
     } else {
         SegmentedSelector(
-            label = "Resolution",
+            label = stringResource(R.string.label_resolution),
             options = resolutionOptions,
             selected = state.videoResolution,
             labelFor = ::videoResolutionLabel,
@@ -1228,13 +1233,13 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     if (fpsOptions.isEmpty()) {
         // Same capability-caption colour rule as the resolution branch above.
         Text(
-            "No supported FPS",
+            stringResource(R.string.state_no_supported_fps),
             color = CameraColors.TextSecondary,
             style = MaterialTheme.typography.labelSmall,
         )
     } else {
         SegmentedSelector(
-            label = "FPS",
+            label = stringResource(R.string.label_fps),
             options = fpsOptions,
             selected = state.videoFrameRate,
             labelFor = ::videoFrameRateLabel,
@@ -1243,7 +1248,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         )
     }
     SegmentedSelector(
-        label = "Bitrate",
+        label = stringResource(R.string.label_bitrate),
         options = BitrateLevel.entries,
         selected = state.bitrateLevel,
         labelFor = ::bitrateLevelLabel,
@@ -1291,13 +1296,13 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     ToggleRow(
         // "Record Audio", not a verbatim restatement of the section header above it — and the bare
         // word now belongs to nothing, so the Fn "Direction" cycler no longer collides (UI review #3).
-        label = "Record Audio",
+        label = stringResource(R.string.label_record_audio),
         checked = state.recordAudio,
         onCheckedChange = actions::onToggleRecordAudio,
         enabled = recordingMutable,
     )
     SegmentedSelector(
-        label = "Input",
+        label = stringResource(R.string.label_input),
         options = AudioInputPreference.entries,
         selected = state.audioInputPreference,
         labelFor = { it.label },
@@ -1305,7 +1310,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         enabled = state.recordAudio && recordingMutable,
     )
     LabelValueRow(
-        label = "Route",
+        label = stringResource(R.string.label_route),
         valueLabel = state.audioRouteLabel,
     )
     // Directional audio: Sound Focus aims the mic array at the framed subject and tightens with zoom;
@@ -1314,7 +1319,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         // "Directionality", not "Scene": the user-facing question this row answers is WHERE the
         // mics listen (subject-aimed Sound Focus vs wide Sound Stage) — "Scene" read as a picture
         // style and was reported un-findable (2026-07-31).
-        label = "Directionality",
+        label = stringResource(R.string.label_directionality),
         options = AudioScene.entries,
         selected = state.audioScene,
         labelFor = { it.label },
@@ -1322,7 +1327,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         enabled = state.recordAudio && recordingMutable,
     )
     LabeledSlider(
-        label = "Gain",
+        label = stringResource(R.string.label_gain),
         // NOT formatZoomMultiplier: that formatter is documented as the shared ZOOM typography, and
         // coupling a gain readout to it means any future zoom-only change (a suffix, a clamp, a
         // locale rule) silently reformats audio gain.
@@ -1342,7 +1347,7 @@ private fun ProcessingTab(state: CameraUiState, actions: CameraActions) {
     TabTitle("Image")
     SectionHeader("Processing")
     SegmentedSelector(
-        label = "Sharpness",
+        label = stringResource(R.string.label_sharpness),
         options = availability.edgeModes,
         selected = controls.edge,
         labelFor = ::processingLevelLabel,
@@ -1350,7 +1355,7 @@ private fun ProcessingTab(state: CameraUiState, actions: CameraActions) {
         enabled = availability.edgeModes.size > 1,
     )
     SegmentedSelector(
-        label = "NR",
+        label = stringResource(R.string.label_nr),
         options = availability.noiseReductionModes,
         selected = controls.noiseReduction,
         labelFor = ::processingLevelLabel,
@@ -1358,7 +1363,7 @@ private fun ProcessingTab(state: CameraUiState, actions: CameraActions) {
         enabled = availability.noiseReductionModes.size > 1,
     )
     SegmentedSelector(
-        label = "Color",
+        label = stringResource(R.string.label_color),
         options = availability.colorEffects,
         selected = controls.colorEffect,
         labelFor = ::colorEffectLabel,
@@ -1374,17 +1379,17 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
     // Gamma Display Assist (Sony): only meaningful while the Gamma is a log profile — the monitor
     // shows the normal image, the recorded file stays log.
     ToggleRow(
-        label = "Gamma Disp. Assist",
+        label = stringResource(R.string.label_gamma_disp_assist),
         checked = state.gammaAssist,
         onCheckedChange = actions::onToggleGammaAssist,
         enabled = state.transfer.isLog,
     )
     SectionHeader("Exposure Aids")
-    ToggleRow(label = "Zebra", checked = state.zebra, onCheckedChange = actions::onToggleZebra)
+    ToggleRow(label = stringResource(R.string.label_zebra), checked = state.zebra, onCheckedChange = actions::onToggleZebra)
     SegmentedSelector(
         // "Level" with % values (Sony: "Zebra Level"): the old label named IRE while every chip
         // printed a percent sign — one unit promised, another worn (UI review #19).
-        label = "Zebra Level",
+        label = stringResource(R.string.label_zebra_level),
         options = ZebraLevel.entries,
         selected = state.zebraLevel,
         labelFor = {
@@ -1398,30 +1403,30 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
         onSelect = actions::onZebraLevel,
         enabled = state.zebra,
     )
-    ToggleRow(label = "False Color", checked = state.falseColor, onCheckedChange = actions::onToggleFalseColor)
-    ToggleRow(label = "Histogram", checked = state.histogram, onCheckedChange = actions::onToggleHistogram)
-    ToggleRow(label = "Waveform", checked = state.waveform, onCheckedChange = actions::onToggleWaveform)
+    ToggleRow(label = stringResource(R.string.label_false_color), checked = state.falseColor, onCheckedChange = actions::onToggleFalseColor)
+    ToggleRow(label = stringResource(R.string.label_histogram), checked = state.histogram, onCheckedChange = actions::onToggleHistogram)
+    ToggleRow(label = stringResource(R.string.label_waveform), checked = state.waveform, onCheckedChange = actions::onToggleWaveform)
     SectionHeader("Framing")
     // Beside Grid, not under Monitor (UI review #20): both are framing overlays, and filing half of
     // them a section away made a user scanning for framing marks miss this one.
     SegmentedSelector(
-        label = "Frame Lines",
+        label = stringResource(R.string.label_frame_lines),
         options = FrameLineType.entries,
         selected = state.frameLines,
         labelFor = { it.label },
         onSelect = actions::onFrameLines,
     )
     SegmentedSelector(
-        label = "Grid",
+        label = stringResource(R.string.label_grid),
         options = GridType.entries,
         selected = state.grid,
         labelFor = ::gridTypeLabel,
         onSelect = actions::onGridType,
     )
-    ToggleRow(label = "Level", checked = state.level, onCheckedChange = actions::onToggleLevel)
+    ToggleRow(label = stringResource(R.string.label_level), checked = state.level, onCheckedChange = actions::onToggleLevel)
     SectionHeader("Focus Aids")
     // "Loupe" app-wide (cycle-6 D-04): Fn chip, key-action label, and LOUPE OSD tag already use it.
-    ToggleRow(label = "Loupe", checked = state.punchIn, onCheckedChange = actions::onTogglePunchIn)
+    ToggleRow(label = stringResource(R.string.label_loupe), checked = state.punchIn, onCheckedChange = actions::onTogglePunchIn)
     // NO section header here (UI review #9): the overview stopped being teleconverter-specific
     // when the zoom floor qualified any lens (2026-07-29) — the old "Teleconverter" header was the
     // stale claim the caption below already refutes — and the row's parent GATE is the Loupe toggle
@@ -1452,7 +1457,7 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
         // pre-arming a persisted preference. The caption carries those; the switch carries the
         // parent.
         ToggleRow(
-            label = "Loupe Overview",
+            label = stringResource(R.string.label_loupe_overview),
             checked = state.teleFinder,
             onCheckedChange = actions::onToggleTeleFinder,
             enabled = state.punchIn,
@@ -1466,7 +1471,7 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
     TabTitle("Setup")
     SectionHeader("App")
     LabelValueRow(
-        label = "Privacy Policy",
+        label = stringResource(R.string.action_privacy_policy),
         valueLabel = "View",
         onClick = { openPrivacyPolicy(context) },
     )
@@ -1523,18 +1528,18 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
     )
     SectionHeader("Startup")
     ToggleRow(
-        label = "Remember Settings",
+        label = stringResource(R.string.label_remember_settings),
         checked = state.rememberSettings,
         onCheckedChange = actions::onToggleRememberSettings,
     )
     ToggleRow(
-        label = "Remember Lens",
+        label = stringResource(R.string.label_remember_lens),
         checked = state.preserveLensSelection,
         onCheckedChange = actions::onTogglePreserveLensSelection,
         enabled = state.rememberSettings,
     )
     ToggleRow(
-        label = "Remember Teleconverter",
+        label = stringResource(R.string.label_remember_teleconverter),
         checked = state.preserveTeleconverter,
         onCheckedChange = actions::onTogglePreserveTeleconverter,
         enabled = state.rememberSettings,
@@ -1551,14 +1556,14 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
     // This one assignment governs the camera button's FULL press AND the volume keys
     // (MainActivity routes both to it) — say so in the label (cycle-6 D-13).
     SegmentedSelector(
-        label = "Full Press / Volume",
+        label = stringResource(R.string.label_full_press_volume),
         options = HardwareKeyAction.entries,
         selected = state.volumeKeyAction,
         labelFor = ::hardwareKeyActionLabel,
         onSelect = actions::onVolumeKeyAction,
     )
     SegmentedSelector(
-        label = "Half Press",
+        label = stringResource(R.string.label_half_press),
         options = HardwareKeyAction.entries,
         selected = state.halfPressAction,
         labelFor = ::hardwareKeyActionLabel,
@@ -1567,7 +1572,7 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
     // The OPPO quick/action button (system-injected 781). Discrete click — momentary bindings
     // (AEL, Loupe) blip on/off within one press, which is honest to what the key delivers.
     SegmentedSelector(
-        label = "Quick Button",
+        label = stringResource(R.string.label_quick_button),
         options = HardwareKeyAction.entries,
         selected = state.quickButtonAction,
         labelFor = ::hardwareKeyActionLabel,
@@ -1665,9 +1670,9 @@ private fun FnSlotOrderRow(
         // WHICH slot they were reordering. The visual text stays compact; the spoken action names
         // the slot.
         val name = fnSlotLabel(slot)
-        MiniTextButton(text = "Up", clickLabel = "Move $name up", enabled = index > 0, onClick = onMoveUp)
-        MiniTextButton(text = "Down", clickLabel = "Move $name down", enabled = index < count - 1, onClick = onMoveDown)
-        MiniTextButton(text = "Remove", clickLabel = "Remove $name", enabled = true, onClick = onRemove)
+        MiniTextButton(text = stringResource(R.string.action_up), clickLabel = "Move $name up", enabled = index > 0, onClick = onMoveUp)
+        MiniTextButton(text = stringResource(R.string.action_down), clickLabel = "Move $name down", enabled = index < count - 1, onClick = onMoveDown)
+        MiniTextButton(text = stringResource(R.string.action_remove), clickLabel = "Remove $name", enabled = true, onClick = onRemove)
     }
 }
 

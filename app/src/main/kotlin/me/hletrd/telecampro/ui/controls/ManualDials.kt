@@ -1,5 +1,7 @@
 package me.hletrd.telecampro.ui.controls
 
+import me.hletrd.telecampro.R
+
 import android.util.Range
 import android.view.HapticFeedbackConstants
 import androidx.activity.compose.BackHandler
@@ -46,6 +48,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -374,13 +377,14 @@ internal fun CompactFnButton(
     glyphRotation: Float,
     modifier: Modifier = Modifier,
 ) {
+    val a11yOpenFunctionMenu = stringResource(R.string.a11y_open_function_menu)
     val activate = onClick
     Box(
         modifier = modifier
             .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
             .focusable()
             .clearAndSetSemantics {
-                contentDescription = "Open function menu"
+                contentDescription = a11yOpenFunctionMenu
                 role = Role.Button
                 onClick {
                     activate()
@@ -404,7 +408,7 @@ internal fun CompactFnButton(
             contentAlignment = Alignment.Center,
         ) {
             Text(
-                text = "Fn",
+                text = stringResource(R.string.label_fn),
                 color = CameraColors.Accent,
                 style = hudGlyph(11.sp),
                 modifier = Modifier.rotate(glyphRotation),
@@ -415,13 +419,14 @@ internal fun CompactFnButton(
 
 @Composable
 private fun CompactDialCloseButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val a11yCloseAdjustment = stringResource(R.string.a11y_close_adjustment)
     val activate = onClick
     Box(
         modifier = modifier
             .size(48.dp)
             .focusable()
             .clearAndSetSemantics {
-                contentDescription = "Close adjustment"
+                contentDescription = a11yCloseAdjustment
                 role = Role.Button
                 onClick {
                     activate()
@@ -459,7 +464,7 @@ private fun FnDialChip(
     val policyEnabled = quickFnEnabled(slot, state)
     when (slot) {
         FnSlot.EXPOSURE_MODE -> DialChip(
-            label = "Mode", // not "AE" — "AE: M" read as auto-exposure: manual (UI review #22)
+            label = stringResource(R.string.label_mode), // not "AE" — "AE: M" read as auto-exposure: manual (UI review #22)
             value = controls.exposureMode.letter,
             active = controls.exposureMode != ExposureMode.PROGRAM,
             enabled = policyEnabled && availability.exposureModes.size > 1,
@@ -487,7 +492,7 @@ private fun FnDialChip(
             )
         }
         FnSlot.SHUTTER -> DialChip(
-            label = "SS",
+            label = stringResource(R.string.label_ss),
             // "SS" is a printed abbreviation with no spoken form; the slot name is "Shutter". Unlike
             // FOCUS this loses nothing to the rename: "SS" is only ever an abbreviation OF the name,
             // never a value, and the speed/angle distinction the value can carry is already in the
@@ -506,7 +511,7 @@ private fun FnDialChip(
             onLongClick = onOpenFnMenu,
         )
         FnSlot.ISO -> DialChip(
-            label = "ISO",
+            label = stringResource(R.string.label_iso),
             value = if (controls.exposureMode == ExposureMode.PROGRAM) {
                 autoIsoText(state)
             } else {
@@ -519,7 +524,7 @@ private fun FnDialChip(
             onLongClick = onOpenFnMenu,
         )
         FnSlot.WB -> DialChip(
-            label = "WB",
+            label = stringResource(R.string.label_wb),
             value = if (controls.wbMode == WbMode.MANUAL) "${controls.wbKelvin}K" else wbModeLabel(controls.wbMode),
             active = openDial == DialType.WB,
             enabled = policyEnabled && whiteBalanceFnChipEnabled(controls.wbMode, availability),
@@ -527,7 +532,7 @@ private fun FnDialChip(
             onLongClick = onOpenFnMenu,
         )
         FnSlot.EV -> DialChip(
-            label = "EV",
+            label = stringResource(R.string.label_ev),
             value = formatEvComp(evCompStops(state)),
             active = openDial == DialType.EV,
             enabled = policyEnabled && quickManualDialEnabled(DialType.EV, availability),
@@ -535,7 +540,7 @@ private fun FnDialChip(
             onLongClick = onOpenFnMenu,
         )
         FnSlot.ZOOM -> DialChip(
-            label = "Zoom",
+            label = stringResource(R.string.label_zoom),
             value = formatDisplayZoom(
                 controls.zoomRatio,
                 state.teleconverterMode,
@@ -556,7 +561,7 @@ private fun FnDialChip(
             // fit a 148 dp tile — "Stab", "Gate", "Std", "TL", "Day", "Tung." — while accessibility
             // keeps the complete label. That is a width seam with its own justification, not this
             // rule being overridden.
-            label = "Stabilization",
+            label = stringResource(R.string.label_stabilization),
             value = state.videoStabMode.label,
             active = state.videoStabMode != VideoStabMode.OFF,
             enabled = policyEnabled,
@@ -564,7 +569,7 @@ private fun FnDialChip(
             onLongClick = onOpenFnMenu,
         )
         FnSlot.DRIVE -> DialChip(
-            label = "Drive",
+            label = stringResource(R.string.label_drive),
             value = driveModeLabel(state.driveMode),
             active = state.driveMode != me.hletrd.telecampro.camera.DriveMode.SINGLE,
             enabled = policyEnabled,
@@ -572,7 +577,7 @@ private fun FnDialChip(
             onLongClick = onOpenFnMenu,
         )
         FnSlot.METERING -> DialChip(
-            label = "Meter",
+            label = stringResource(R.string.label_meter),
             value = meteringModeLabel(controls.meteringMode),
             active = controls.meteringMode != MeteringMode.MATRIX,
             enabled = policyEnabled && availability.meteringModes.size > 1,
@@ -580,7 +585,7 @@ private fun FnDialChip(
             onLongClick = onOpenFnMenu,
         )
         FnSlot.PEAKING -> DialChip(
-            label = "Peaking",
+            label = stringResource(R.string.label_peaking),
             value = if (state.focusPeaking) "On" else "Off",
             active = state.focusPeaking,
             enabled = policyEnabled,
@@ -588,7 +593,7 @@ private fun FnDialChip(
             onLongClick = onOpenFnMenu,
         )
         FnSlot.ZEBRA -> DialChip(
-            label = "Zebra",
+            label = stringResource(R.string.label_zebra),
             value = if (state.zebra) "On" else "Off",
             active = state.zebra,
             enabled = policyEnabled,
@@ -600,7 +605,7 @@ private fun FnDialChip(
             DialChip(
                 // "Gamma" is the standard camera term for the transfer curve (HLG / O-Log / SDR);
                 // the old "TF" abbreviation read as nonsense (feedback).
-                label = "Gamma",
+                label = stringResource(R.string.label_gamma),
                 value = transferLabelShort(state.transfer),
                 active = state.transfer != ColorTransfer.SDR,
                 enabled = transferMutable,
@@ -609,7 +614,7 @@ private fun FnDialChip(
             )
         }
         FnSlot.AUDIO_SCENE -> DialChip(
-            label = "Audio",
+            label = stringResource(R.string.label_audio),
             value = state.audioScene.label,
             active = state.audioScene != me.hletrd.telecampro.camera.AudioScene.STANDARD,
             enabled = policyEnabled,
@@ -617,7 +622,7 @@ private fun FnDialChip(
             onLongClick = onOpenFnMenu,
         )
         FnSlot.GRID -> DialChip(
-            label = "Grid",
+            label = stringResource(R.string.label_grid),
             value = gridTypeLabel(state.grid),
             active = state.grid != GridType.NONE,
             enabled = policyEnabled,
@@ -625,7 +630,7 @@ private fun FnDialChip(
             onLongClick = onOpenFnMenu,
         )
         FnSlot.LEVEL -> DialChip(
-            label = "Level",
+            label = stringResource(R.string.label_level),
             value = if (state.level) "On" else "Off",
             active = state.level,
             enabled = policyEnabled,
@@ -633,7 +638,7 @@ private fun FnDialChip(
             onLongClick = onOpenFnMenu,
         )
         FnSlot.PUNCH_IN -> DialChip(
-            label = "Loupe",
+            label = stringResource(R.string.label_loupe),
             value = if (state.punchIn) "On" else "Off",
             active = state.punchIn,
             enabled = policyEnabled,
@@ -641,7 +646,7 @@ private fun FnDialChip(
             onLongClick = onOpenFnMenu,
         )
         FnSlot.TELECONVERTER -> DialChip(
-            label = "Tele",
+            label = stringResource(R.string.label_tele),
             value = if (state.teleconverterMode) formatFocalMm(state.teleconverterFocalMm) else "Off",
             active = state.teleconverterMode,
             enabled = policyEnabled,
@@ -649,7 +654,7 @@ private fun FnDialChip(
             onLongClick = onOpenFnMenu,
         )
         FnSlot.OPEN_GATE -> DialChip(
-            label = "Open Gate",
+            label = stringResource(R.string.label_open_gate),
             value = if (state.openGate) "4:3" else "Off",
             active = state.openGate,
             enabled = policyEnabled,
@@ -657,7 +662,7 @@ private fun FnDialChip(
             onLongClick = onOpenFnMenu,
         )
         FnSlot.FRAME_LINES -> DialChip(
-            label = "Frame",
+            label = stringResource(R.string.label_frame),
             value = state.frameLines.label,
             active = state.frameLines != FrameLineType.OFF,
             enabled = policyEnabled,
@@ -665,7 +670,7 @@ private fun FnDialChip(
             onLongClick = onOpenFnMenu,
         )
         FnSlot.FLASH -> DialChip(
-            label = "Flash",
+            label = stringResource(R.string.label_flash),
             value = flashModeLabel(controls.flash),
             active = controls.flash != FlashMode.OFF,
             enabled = policyEnabled && availability.flashModes.size > 1,
@@ -673,7 +678,7 @@ private fun FnDialChip(
             onLongClick = onOpenFnMenu,
         )
         FnSlot.TIMER -> DialChip(
-            label = "Timer",
+            label = stringResource(R.string.label_timer),
             value = shutterTimerLabel(state.timer),
             active = state.timer != ShutterTimer.OFF,
             enabled = policyEnabled,
@@ -681,7 +686,7 @@ private fun FnDialChip(
             onLongClick = onOpenFnMenu,
         )
         FnSlot.ASPECT -> DialChip(
-            label = "Aspect",
+            label = stringResource(R.string.label_aspect),
             value = aspectRatioLabel(state.aspectRatio),
             active = state.aspectRatio != AspectRatio.W4_3,
             enabled = policyEnabled,
@@ -693,7 +698,7 @@ private fun FnDialChip(
             onLongClick = onOpenFnMenu,
         )
         FnSlot.AUDIO_INPUT -> DialChip(
-            label = "Mic Input",
+            label = stringResource(R.string.label_mic_input),
             value = state.audioInputPreference.label,
             active = state.audioInputPreference != AudioInputPreference.AUTO,
             enabled = policyEnabled,
@@ -737,6 +742,7 @@ private fun DialChip(
     // hears the honest word instead of a letter glued to digits.
     autoValue: Boolean = false,
 ) {
+    val a11yOpenFunctionMenu = stringResource(R.string.a11y_open_function_menu)
     val activate = onClick
     val longActivate = onLongClick
     // Idle plate is the shared [HudPlate], like every sibling chip. It used to be
@@ -774,7 +780,7 @@ private fun DialChip(
                 // "Open function menu", word for word what CompactFnButton above and the opened pane
                 // ("Function menu" / "Close function menu") already say: one destination gets one
                 // spoken name, and "Fn" is a printed glyph, not a word.
-                onLongClick(label = "Open function menu") {
+                onLongClick(label = a11yOpenFunctionMenu) {
                     if (!enabled) return@onLongClick false
                     longActivate()
                     true

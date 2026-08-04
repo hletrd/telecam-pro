@@ -53,8 +53,11 @@ android {
         // PMA110 behavior is byte-identical; other devices run spec paths via DeviceProfile.
         minSdk = 33
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        // versionCode 1 is SPENT — it is the build published to Google Play on 2026-08-04. Play
+        // rejects a re-used versionCode outright, so every subsequent upload must be strictly
+        // greater, including a re-upload of otherwise identical bytes.
+        versionCode = 2
+        versionName = "1.0.1"
 
         // On-device instrumented smoke tier (app/src/androidTest). The external device-tests/
         // harness owns functional depth; the instrumented suite exists to exercise real code
@@ -95,10 +98,15 @@ android {
                 providers.gradleProperty("androidTestCoverage").orNull == "true"
         }
         release {
-            // R8/minify intentionally OFF for v1 (Play does not require it; keeps the Camera2/HAL
-            // capture paths risk-free). Enabling it later needs keep-rules for the name-persisted
-            // enums in SettingsStore + a full on-device re-verification pass.
-            isMinifyEnabled = false
+            // R8 ON since 2026-08-04 (Play Console flagged the app as unoptimized). Both historical
+            // blockers are retired: the reflection-sensitive OEM SDK path left with the com.oplus.ocs
+            // removal on 2026-07-25, and the name-persisted enum keep rule in proguard-rules.pro is
+            // now live rather than staged. R8 runs in FULL mode — android.enableR8.fullMode defaults
+            // true on AGP 8+ and gradle.properties does not override it.
+            // isShrinkResources stays OFF: it is a separate concern from Play's ask (R8 shrinks
+            // CODE), and the audit for it is already done — no Resources.getIdentifier anywhere in
+            // app/src/main/kotlin, so it can be flipped whenever the size win is wanted.
+            isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -121,6 +129,16 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+
+    androidResources {
+        // Generates res/xml/locales_config and wires android:localeConfig from the values-* folders
+        // that actually exist. Without a localeConfig the platform does not treat the app as
+        // locale-aware: the per-app language entry is absent from Settings, and even an explicit
+        // `cmd locale set-app-locales ko-KR` leaves the UI in English with the Korean resources
+        // sitting unused in the APK — measured on device, which is how this was found. Generated
+        // rather than hand-written so adding a locale cannot silently forget to list it.
+        generateLocaleConfig = true
     }
 
     testOptions {

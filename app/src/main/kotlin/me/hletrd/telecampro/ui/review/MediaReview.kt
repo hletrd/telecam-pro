@@ -1,5 +1,9 @@
 package me.hletrd.telecampro.ui.review
 
+import androidx.annotation.StringRes
+
+import me.hletrd.telecampro.R
+
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -33,6 +37,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.ui.res.stringResource
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -116,15 +121,22 @@ internal fun reviewMediaKind(mimeType: String?): ReviewMediaKind {
     }
 }
 
+/**
+ * Returns the STRING RESOURCE for the gallery button's spoken name, not the string itself. The
+ * choice is a pure function of media state and belongs in a plain testable function, but the words
+ * are localized — returning text would have hard-coded English into a decision that has nothing to
+ * do with language. Tests assert the resource identity, which is what the decision actually is.
+ */
+@StringRes
 internal fun galleryReviewContentDescription(
     hasMedia: Boolean,
     kind: ReviewMediaKind?,
-): String = when {
-    !hasMedia -> "No capture to review"
-    kind == ReviewMediaKind.RAW -> "Review last RAW capture"
-    kind == ReviewMediaKind.VIDEO -> "Review last video"
-    kind == ReviewMediaKind.STILL -> "Review last photo"
-    else -> "Review last capture"
+): Int = when {
+    !hasMedia -> R.string.a11y_no_capture_to_review
+    kind == ReviewMediaKind.RAW -> R.string.a11y_review_last_raw
+    kind == ReviewMediaKind.VIDEO -> R.string.a11y_review_last_video
+    kind == ReviewMediaKind.STILL -> R.string.a11y_review_last_photo
+    else -> R.string.a11y_review_last_capture
 }
 
 /** Rotation + dimensions of a video, for sizing/orienting the in-review player. */
@@ -390,6 +402,7 @@ fun GalleryThumb(uri: Uri?, onClick: () -> Unit, modifier: Modifier = Modifier) 
         }
         value = GalleryThumbContent(kind, bitmap)
     }
+    val galleryDesc = stringResource(galleryReviewContentDescription(uri != null, content.kind))
     Box(
         modifier = modifier
             .size(52.dp)
@@ -397,7 +410,7 @@ fun GalleryThumb(uri: Uri?, onClick: () -> Unit, modifier: Modifier = Modifier) 
             .background(CameraColors.Pill)
             .border(1.dp, CameraColors.Hairline, RoundedCornerShape(14.dp))
             .semantics {
-                contentDescription = galleryReviewContentDescription(uri != null, content.kind)
+                contentDescription = galleryDesc
                 role = Role.Button
             }
             .clickable(enabled = uri != null, onClick = onClick),
@@ -474,6 +487,8 @@ fun MediaReviewOverlay(
     // rotated wide box pokes out of its layout slot.
     overlayRotation: Float = 0f,
 ) {
+    val a11yVideoReview = stringResource(R.string.a11y_video_review)
+    val a11yCloseReview = stringResource(R.string.a11y_close_review)
     val context = LocalContext.current
     var loadAttempt by remember(uri) { mutableIntStateOf(0) }
     var mediaState by remember(uri) { mutableStateOf<ReviewMediaState>(ReviewMediaState.Loading) }
@@ -675,7 +690,7 @@ fun MediaReviewOverlay(
                             alpha = (1f - abs(dismissDrag) / 1400f).coerceIn(0.3f, 1f),
                         )
                         .semantics {
-                            contentDescription = "Video review"
+                            contentDescription = a11yVideoReview
                             stateDescription = videoPlaybackStateDescription(playing)
                             role = Role.Button
                             onClick(label = videoPlaybackActionLabel(playing)) {
@@ -792,7 +807,7 @@ fun MediaReviewOverlay(
         if (still != null) {
             Image(
                 bitmap = still.bitmap,
-                contentDescription = "Photo review",
+                contentDescription = stringResource(R.string.a11y_photo_review),
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
                     .fillMaxSize()
@@ -816,7 +831,7 @@ fun MediaReviewOverlay(
             RawReviewPlaceholder(Modifier.fillMaxSize())
         } else when (val current = mediaState) {
             ReviewMediaState.Loading -> Text(
-                "Loading review…",
+                stringResource(R.string.review_loading),
                 color = CameraColors.TextSecondary,
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
@@ -835,7 +850,7 @@ fun MediaReviewOverlay(
                 )
                 MinTouchTarget48 {
                     TextButton(onClick = { loadAttempt += 1 }) {
-                        Text("Retry")
+                        Text(stringResource(R.string.action_retry))
                     }
                 }
             }
@@ -947,7 +962,7 @@ fun MediaReviewOverlay(
                 .clip(CircleShape)
                 .background(HudPlate)
                 .semantics {
-                    contentDescription = "Close review"
+                    contentDescription = a11yCloseReview
                     role = Role.Button
                 }
                 .clickable(onClick = onClose),
@@ -1026,13 +1041,13 @@ fun MediaReviewOverlay(
                     }) {
                         // Destructive action reads red (same delete-red as the trash glyph); the rest of
                         // the review chrome stays Sony-style monochrome.
-                        Text("Delete", color = CameraColors.Alert)
+                        Text(stringResource(R.string.action_delete), color = CameraColors.Alert)
                     }
                 }
             },
             dismissButton = {
                 MinTouchTarget48 {
-                    TextButton(onClick = { confirmDelete = false }) { Text("Cancel") }
+                    TextButton(onClick = { confirmDelete = false }) { Text(stringResource(R.string.action_cancel)) }
                 }
             },
         )
@@ -1060,12 +1075,14 @@ internal fun mediaDeleteConfirmationCopy(
 
 @Composable
 private fun RawReviewPlaceholder(modifier: Modifier = Modifier) {
+    val a11yRawDngCapture = stringResource(R.string.a11y_raw_dng_capture)
+    val reviewPreviewUnavailable = stringResource(R.string.review_preview_unavailable)
     Column(
         modifier = modifier
             .padding(48.dp)
             .semantics(mergeDescendants = true) {
-                contentDescription = "RAW DNG capture"
-                stateDescription = "Preview unavailable"
+                contentDescription = a11yRawDngCapture
+                stateDescription = reviewPreviewUnavailable
             },
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,

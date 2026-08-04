@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">TeleCam Pro</string>
+    <string name="app_name" translatable="false">TeleCam Pro</string>
     <string name="microphone_permission_title">Microphone access</string>
     <!--
       The two uses and the three negatives are load-bearing (Play data-safety parity), so they are
@@ -10,4 +10,135 @@
     <string name="microphone_permission_rationale">TeleCam Pro uses the microphone to record audio with video, and to show the input level meter while Video mode is armed. Audio stays on this device. It is never uploaded, collected by the developer, or shared with third parties.</string>
     <string name="microphone_permission_continue">Continue</string>
     <string name="microphone_permission_not_now">Not now</string>
+    <string name="label_high_resolution">High Resolution</string>
+    <string name="label_aspect">Aspect</string>
+    <string name="label_zoom">Zoom</string>
+    <string name="label_still_quality">Still Quality</string>
+    <string name="label_drive">Drive</string>
+    <string name="label_interval">Interval</string>
+    <string name="label_self_timer">Self-Timer</string>
+    <string name="label_mode">Mode</string>
+    <string name="label_ae_lock">AE Lock</string>
+    <string name="label_flicker">Flicker</string>
+    <string name="label_shutter">Shutter</string>
+    <string name="label_step">Step</string>
+    <string name="label_metering">Metering</string>
+    <string name="label_kelvin">Kelvin</string>
+    <string name="label_tint">Tint</string>
+    <string name="label_awb_lock">AWB Lock</string>
+    <string name="label_spot_size">Spot Size</string>
+    <string name="label_af_lock">AF Lock</string>
+    <string name="label_tap_focus">Tap Focus</string>
+    <string name="label_peaking">Peaking</string>
+    <string name="label_peaking_level">Peaking Level</string>
+    <string name="label_peaking_color">Peaking Color</string>
+    <string name="label_lens">Lens</string>
+    <string name="label_teleconverter">Teleconverter</string>
+    <string name="label_phone">Phone</string>
+    <string name="label_converter">Converter</string>
+    <string name="label_magnification">Magnification</string>
+    <string name="label_codec">Codec</string>
+    <string name="label_resolution">Resolution</string>
+    <string name="label_bitrate">Bitrate</string>
+    <string name="label_recording">Recording</string>
+    <string name="label_record_audio">Record Audio</string>
+    <string name="label_mic_input">Mic Input</string>
+    <string name="label_gain">Gain</string>
+    <string name="label_directionality">Directionality</string>
+    <string name="label_input">Input</string>
+    <string name="label_gamma">Gamma</string>
+    <string name="label_gamma_disp_assist">Gamma Disp. Assist</string>
+    <string name="label_grid">Grid</string>
+    <string name="label_level">Level</string>
+    <string name="label_loupe">Loupe</string>
+    <string name="label_loupe_overview">Loupe Overview</string>
+    <string name="label_frame_lines">Frame Lines</string>
+    <string name="label_false_color">False Color</string>
+    <string name="label_histogram">Histogram</string>
+    <string name="label_waveform">Waveform</string>
+    <string name="label_zebra">Zebra</string>
+    <string name="label_zebra_level">Zebra Level</string>
+    <string name="label_color">Color</string>
+    <string name="label_sharpness">Sharpness</string>
+    <string name="label_menu">Menu</string>
+    <string name="label_route">Route</string>
+    <string name="label_photo_ois">Photo OIS</string>
+    <string name="label_quick_button">Quick Button</string>
+    <string name="label_half_press">Half Press</string>
+    <string name="label_full_press_volume">Full Press / Volume</string>
+    <string name="label_remember_settings">Remember Settings</string>
+    <string name="label_remember_lens">Remember Lens</string>
+    <string name="label_remember_teleconverter">Remember Teleconverter</string>
+    <string name="label_open_gate_43">Open Gate 4:3</string>
+    <string name="label_stabilization">Stabilization</string>
+    <string name="label_audio">Audio</string>
+    <string name="label_frame">Frame</string>
+    <string name="label_meter">Meter</string>
+    <string name="label_timer">Timer</string>
+    <string name="label_tele">Tele</string>
+    <string name="label_flash">Flash</string>
+    <string name="label_aspect_ratio">Aspect ratio</string>
+    <string name="label_iso" translatable="false">ISO</string>
+    <string name="label_wb" translatable="false">WB</string>
+    <string name="label_ss" translatable="false">SS</string>
+    <string name="label_ev" translatable="false">EV</string>
+    <string name="label_af" translatable="false">AF</string>
+    <string name="label_nr" translatable="false">NR</string>
+    <string name="label_fps" translatable="false">FPS</string>
+    <string name="label_fn" translatable="false">Fn</string>
+    <string name="label_open_gate" translatable="false">Open Gate</string>
+    <string name="action_capture_custom_wb">Capture Custom WB</string>
+    <string name="action_remove">Remove</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_delete">Delete</string>
+    <string name="action_retry">Retry</string>
+    <string name="action_settings">Settings</string>
+    <string name="action_close">Close</string>
+    <string name="action_up">Up</string>
+    <string name="action_down">Down</string>
+    <string name="action_allow_camera_access">Allow camera access</string>
+    <string name="action_privacy_policy">Privacy Policy</string>
+    <string name="a11y_camera_viewfinder">Camera viewfinder</string>
+    <string name="a11y_open_settings">Open settings</string>
+    <string name="a11y_close_settings">Close settings</string>
+    <string name="a11y_open_function_menu">Open function menu</string>
+    <string name="a11y_close_function_menu">Close function menu</string>
+    <string name="a11y_close_adjustment">Close adjustment</string>
+    <string name="a11y_switch_camera">Switch camera</string>
+    <string name="a11y_reset_focus_point">Reset focus point</string>
+    <string name="a11y_tap_focus_held">Tap focus held</string>
+    <string name="a11y_no_tap_focus_point">No tap focus point</string>
+    <string name="a11y_self_timer">Self-timer</string>
+    <string name="a11y_loupe_overview">Loupe overview</string>
+    <string name="a11y_take_photo_while_recording">Take photo while recording</string>
+    <string name="a11y_close_review">Close review</string>
+    <string name="a11y_photo_review">Photo review</string>
+    <string name="a11y_video_review">Video review</string>
+    <string name="a11y_raw_dng_capture">RAW DNG capture</string>
+    <string name="review_loading">Loading review…</string>
+    <string name="review_preview_unavailable">Preview unavailable</string>
+    <string name="mode_photo">Photo</string>
+    <string name="mode_video">Video</string>
+    <string name="state_empty">Empty</string>
+    <string name="state_no_supported_fps">No supported FPS</string>
+    <string name="state_no_supported_resolution">No supported resolution</string>
+    <string name="state_rear_camera_only">Rear camera only</string>
+    <string name="a11y_mode_button">%1$s mode</string>
+    <string name="a11y_cancel_self_timer">Cancel self-timer</string>
+    <string name="a11y_take_photo">Take photo</string>
+    <string name="a11y_start_recording">Start recording</string>
+    <string name="a11y_stop_recording">Stop recording</string>
+    <string name="a11y_state_ready">Ready</string>
+    <string name="a11y_state_unavailable">Unavailable</string>
+    <string name="a11y_state_on">On</string>
+    <string name="a11y_state_off">Off</string>
+    <string name="a11y_show_shooting_info">Show shooting info</string>
+    <string name="a11y_hide_shooting_info">Hide shooting info</string>
+    <string name="a11y_no_capture_to_review">No capture to review</string>
+    <string name="a11y_review_last_raw">Review last RAW capture</string>
+    <string name="a11y_review_last_video">Review last video</string>
+    <string name="a11y_review_last_photo">Review last photo</string>
+    <string name="a11y_review_last_capture">Review last capture</string>
+    <string name="a11y_lens_optical">%1$s lens</string>
+    <string name="a11y_lens_zoom">%1$s zoom</string>
 </resources>
