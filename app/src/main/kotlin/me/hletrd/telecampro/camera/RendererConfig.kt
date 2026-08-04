@@ -34,6 +34,7 @@ internal data class RendererConfig(
      * grow the hint by the converter ratio.
      */
     val finderFieldScale: Float = 1f,
+    val finderBottomClearanceFraction: Float = 0f,
     /**
      * The app WINDOW's rotation away from the device's natural orientation (`Surface.ROTATION_*` in
      * degrees). 0 on any portrait-locked phone; non-zero only where Android 16+ ignores

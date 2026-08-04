@@ -58,6 +58,7 @@ class PerformQuickFnTest {
         override fun onPreviewSurfaceChanged(width: Int, height: Int) = hit("onPreviewSurfaceChanged")
         override fun onPreviewSurfaceDestroyed() = hit("onPreviewSurfaceDestroyed")
         override fun onWindowRotationChanged(degrees: Int) = hit("onWindowRotationChanged")
+        override fun onFinderBottomClearanceChanged(fraction: Float) = Unit
         override fun onFocusMode(mode: FocusMode) = hit("onFocusMode($mode)")
         override fun onFocusSlider(slider: Float) = hit("onFocusSlider")
         override fun onAfLock(locked: Boolean) = hit("onAfLock")

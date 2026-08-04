@@ -417,6 +417,10 @@ fun CameraScreen(
         // dial is open: the cluster growing upward must overlay the preview like every transient
         // panel, not shove the viewfinder around mid-interaction.
         var bottomClusterRestHeightPx by remember { mutableIntStateOf(0) }
+        // Published by the preview placement below and consumed by the Loupe Overview border; the
+        // engine forwards the same value to GL so the scissor box and this border stay one rect.
+        var finderBottomClearanceFraction by remember { mutableFloatStateOf(0f) }
+        val sixteenDpPx = with(LocalDensity.current) { 16.dp.roundToPx() }
         // The preview box's resolved top, exported for the TopBar's seam rule (the bar renders in a
         // SIBLING scope of the BoxWithConstraints that computes it).
         var previewTopForChromePx by remember { mutableIntStateOf(0) }
@@ -462,6 +466,25 @@ fun CameraScreen(
                 bottomReservePx = bottomClusterRestHeightPx,
             )
             previewTopForChromePx = topOffsetPx
+            // How far the preview runs BEHIND the bottom chrome, plus breathing room — the number
+            // the Loupe Overview needs and the one no fraction of the preview box could stand in
+            // for. Measured, the preview overshoots the chrome by 13 dp on a 411 dp phone in 4:3
+            // and 90 dp on a 941 dp tablet, so a fraction tuned on either shape sat the overview
+            // on the focal rail on the other. Kept as a FRACTION of the preview height because GL
+            // resolves the same rect in pixels from its own surface size; a fraction is the only
+            // form both can read without a unit conversion.
+            finderBottomClearanceFraction = if (previewHeightPx > 0) {
+                val previewBottomPx = topOffsetPx + previewHeightPx
+                val chromeTopPx = constraints.maxHeight - bottomClusterRestHeightPx
+                val overshootPx = (previewBottomPx - chromeTopPx).coerceAtLeast(0)
+                (overshootPx + sixteenDpPx).toFloat() / previewHeightPx
+            } else 0f
+            // Push to the engine so GL scissors the overview to the same rect this border draws.
+            // LaunchedEffect keyed on the value: it changes only when the aspect, the mode or the
+            // window size does, never at frame rate.
+            LaunchedEffect(finderBottomClearanceFraction) {
+                currentActions.value.onFinderBottomClearanceChanged(finderBottomClearanceFraction)
+            }
         Box(
             modifier = Modifier
                 .align(Alignment.TopCenter)
@@ -653,7 +676,11 @@ fun CameraScreen(
             // the sharp GL scissor rect.
             if (finderVisible) {
                 BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-                    val rect = finderRect(maxWidth.value, maxHeight.value)
+                    val rect = finderRect(
+                        boxWidth = maxWidth.value,
+                        boxHeight = maxHeight.value,
+                        bottomClearance = maxHeight.value * finderBottomClearanceFraction,
+                    )
                     Box(
                         modifier = Modifier
                             .align(AbsoluteAlignment.BottomLeft)

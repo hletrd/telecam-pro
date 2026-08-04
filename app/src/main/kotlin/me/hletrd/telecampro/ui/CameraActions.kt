@@ -49,6 +49,13 @@ interface CameraActions {
      */
     fun onWindowRotationChanged(degrees: Int)
 
+    /**
+     * How far the preview box runs behind the bottom chrome, as a fraction of the preview HEIGHT.
+     * Only the layout can measure it, and GL needs the same number to scissor the Loupe Overview to
+     * the rect the Compose border draws.
+     */
+    fun onFinderBottomClearanceChanged(fraction: Float)
+
     // Focus
     fun onFocusMode(mode: FocusMode)
     fun onFocusSlider(slider: Float)

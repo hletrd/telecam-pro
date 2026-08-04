@@ -329,26 +329,13 @@ const val FINDER_BOTTOM_MARGIN = 0.10f
 const val FINDER_TOP_ANCHOR = 0.84f
 
 /**
- * Floor for the gap under the overview, as a fraction of the frame HEIGHT. See [finderRect].
+ * Fallback floor for the gap under the overview, as a fraction of the frame HEIGHT.
  *
- * The top anchor is a fraction of the box WIDTH, and a tablet is more than twice a phone's dp width
- * while the focal rail stays 48 dp tall — so an anchor tuned on a phone leaves nothing under the box
- * on a tablet. A scale-free fraction cannot express a fixed-dp clearance; this floor is the part
- * that scales with the FRAME instead, and whichever sits higher wins.
- *
- * Chosen from measured preview bounds on both shapes on hand. TB331FC's 4:3 preview runs y 200-1736
- * with the rail's top edge at 1621 — the rail sits exactly 90 dp above the preview's bottom, which
- * is why 0.075 (also 90 dp there) landed the box flush against it:
- *
- *     floor    phone 4:3   phone 16:9   tablet 4:3
- *     0.075       98 px       103 px         0 px
- *     0.082      112 px       103 px        11 px
- *     0.088      123 px       103 px        20 px
- *     0.095      137 px       103 px        31 px
- *
- * 0.088 clears the rail on the tablet while keeping the phone far below the 271 px of dead space
- * the original bottom-relative inset left. The phone's 16:9 case never reaches the floor at all —
- * its anchor already sits higher — so video is untouched at every row above.
+ * Only used when the caller cannot supply the real number. The preview box extends BEHIND the
+ * bottom chrome by a distance that varies with device and aspect — measured, 13 dp on a 411 dp
+ * phone in 4:3 and 90 dp on a 941 dp tablet — so no scale-free fraction of that box can express a
+ * fixed clearance from chrome the box does not know about. Tuning this against one shape always
+ * broke the other, which is why [finderRect] now takes [bottomClearance] from the layout instead.
  */
 const val FINDER_MIN_BOTTOM_CLEARANCE = 0.088f
 // The punch-in loupe's texcoord crop: the magnified preview samples a (1-crop) span of the frame
@@ -585,6 +572,11 @@ fun finderRect(
     sideMargin: Float = FINDER_SIDE_MARGIN,
     @Suppress("UNUSED_PARAMETER") bottomMargin: Float = FINDER_BOTTOM_MARGIN,
     topAnchor: Float = FINDER_TOP_ANCHOR,
+    // How far the preview box extends BEHIND the bottom chrome, in the same units as the box, plus
+    // whatever breathing room the caller wants. Negative or NaN means "not known" and falls back to
+    // the fraction. This is the number that actually decides the placement; everything else here is
+    // an approximation of it that could not survive a second device shape.
+    bottomClearance: Float = Float.NaN,
 ): FinderRect {
     val shortEdge = minOf(boxWidth, boxHeight)
     val width = boxWidth * fraction
@@ -610,9 +602,17 @@ fun finderRect(
         // Lenovo TB331FC: overview bottom 1621, rail top 1621). A scale-free fraction cannot express
         // a fixed-dp clearance, so this floor is what keeps the box off the rail on wide screens; it
         // is inert on the phone, where the anchor already sits below it.
+        // Three lower bounds, largest wins. The measured clearance is the one that actually knows
+        // where the chrome is, but it is not always the biggest: it reports only the overlap, so an
+        // aspect whose preview stops ABOVE the chrome yields a small number that would sit the box
+        // lower than the fraction floor already guarantees. Keeping the floor as a bound means
+        // adding the measurement can never place the box lower than it was without it.
         y = maxOf(
-            boxHeight - boxWidth * topAnchor - boxHeight * fraction,
-            boxHeight * FINDER_MIN_BOTTOM_CLEARANCE,
+            maxOf(
+                boxHeight - boxWidth * topAnchor - boxHeight * fraction,
+                boxHeight * FINDER_MIN_BOTTOM_CLEARANCE,
+            ),
+            if (bottomClearance.isFinite() && bottomClearance >= 0f) bottomClearance else 0f,
         ),
         width = width,
         height = boxHeight * fraction,

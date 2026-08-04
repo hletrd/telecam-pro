@@ -41,6 +41,7 @@ internal object PreviewCameraActions : CameraActions {
     override fun onPreviewSurfaceChanged(width: Int, height: Int) = Unit
     override fun onPreviewSurfaceDestroyed() = Unit
     override fun onWindowRotationChanged(degrees: Int) = Unit
+    override fun onFinderBottomClearanceChanged(fraction: Float) = Unit
 
     override fun onFocusMode(mode: FocusMode) = Unit
     override fun onFocusSlider(slider: Float) = Unit

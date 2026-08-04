@@ -1086,6 +1086,11 @@ class CameraEngine(private val context: Context) {
         rendererAssists.setWindowRotation(degrees)
     }
 
+    /** Layout-measured chrome overlap for the Loupe Overview; forwarded to GL as renderer state. */
+    fun setFinderBottomClearance(fraction: Float) {
+        rendererAssists.setFinderBottomClearanceFraction(fraction)
+    }
+
     fun onPreviewSurfaceChanged(width: Int, height: Int) {
         previewSurfaceW = width
         previewSurfaceH = height

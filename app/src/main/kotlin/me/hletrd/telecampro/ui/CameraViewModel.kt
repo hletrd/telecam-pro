@@ -1517,6 +1517,10 @@ class CameraViewModel @JvmOverloads constructor(
         engine.setWindowRotation(degrees)
     }
 
+    override fun onFinderBottomClearanceChanged(fraction: Float) {
+        engine.setFinderBottomClearance(fraction)
+    }
+
     // ---- Focus ----
     override fun onFocusMode(mode: FocusMode) {
         val before = _state.value

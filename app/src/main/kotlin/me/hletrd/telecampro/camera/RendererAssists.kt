@@ -151,6 +151,13 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
         currentGl().setFinderFieldScale(scale)
     }
 
+    /** Layout-measured chrome overlap, as a fraction of preview height. See GlPipeline's setter. */
+    fun setFinderBottomClearanceFraction(fraction: Float) {
+        if (config.snapshot().finderBottomClearanceFraction == fraction) return
+        config.update { it.copy(finderBottomClearanceFraction = fraction) }
+        currentGl().setFinderBottomClearanceFraction(fraction)
+    }
+
     /**
      * The window's rotation away from natural. Inert (0) on a portrait-locked phone, so the PMA110
      * preview path is unchanged; non-zero only on the large screens where Android 16+ ignores
@@ -183,6 +190,7 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
         gl.setTeleFinder(snapshot.teleFinder)
         gl.setSourceHlg(snapshot.sourceHlg)
         gl.setFinderFieldScale(snapshot.finderFieldScale)
+        gl.setFinderBottomClearanceFraction(snapshot.finderBottomClearanceFraction)
         gl.setWindowRotation(snapshot.windowRotationDeg)
     }
 }

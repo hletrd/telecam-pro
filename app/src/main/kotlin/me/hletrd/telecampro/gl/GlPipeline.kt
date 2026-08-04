@@ -504,6 +504,19 @@ class GlPipeline {
     fun setFinderFieldScale(scale: Float) = post { finderFieldScale = scale.coerceAtLeast(1f) }
 
     /**
+     * How far the preview runs behind the bottom chrome, as a fraction of the preview HEIGHT. The
+     * layout measures it (only Compose knows where the chrome sits) and it arrives here so the
+     * scissor box and the Compose border keep resolving one rect. Cache is invalidated on change.
+     */
+    fun setFinderBottomClearanceFraction(fraction: Float) = post {
+        val f = fraction.coerceIn(0f, 0.5f)
+        if (finderBottomClearanceFraction != f) {
+            finderBottomClearanceFraction = f
+            finderRectCache = null
+        }
+    }
+
+    /**
      * The app WINDOW's rotation away from the device's natural orientation, in degrees. Applied to
      * the PREVIEW and FINDER draws only — never to the encoder or analysis draws, which must keep
      * framing the sensor field by GRAVITY (see [RotationMath.windowPreviewRotationDegrees]).
@@ -728,11 +741,12 @@ class GlPipeline {
     private var finderRectForW = -1f
     private var finderRectForH = -1f
     private var finderRectCache: me.hletrd.telecampro.camera.FinderRect? = null
+    private var finderBottomClearanceFraction = 0f
 
     private fun finderRectFor(w: Float, h: Float): me.hletrd.telecampro.camera.FinderRect {
         val cached = finderRectCache
         if (cached != null && finderRectForW == w && finderRectForH == h) return cached
-        return finderRect(w, h).also {
+        return finderRect(w, h, bottomClearance = h * finderBottomClearanceFraction).also {
             finderRectCache = it
             finderRectForW = w
             finderRectForH = h
