@@ -116,6 +116,14 @@ class CameraViewModel @JvmOverloads constructor(
 ) : AndroidViewModel(app), CameraActions {
 
     private val cameraReadyPublicationGate = CameraReadyPublicationGate()
+
+    // The focus-ruler loupe assist owns `punchIn` transiently; these keep the operator's own value
+
+    // available so a save during the assist persists intent rather than the assist's side effect.
+
+    private var autoPunchInActive = false
+
+    private var punchInBeforeAuto = false
     private val tapFocusPublicationGate = TapFocusPublicationGate()
     private val settingsStore = SettingsStore(app)
     private val _state = MutableStateFlow(CameraUiState())
@@ -1250,7 +1258,10 @@ class CameraViewModel @JvmOverloads constructor(
             waveform = s.waveform,
             grid = s.grid,
             level = s.level,
-            punchIn = s.punchIn,
+            // The OPERATOR's value, not the live one. While the focus-ruler assist owns the loupe
+            // the two differ, and every save path funnels through here — including the background
+            // save, which is exactly when the ruler can still be open.
+            punchIn = if (autoPunchInActive) punchInBeforeAuto else s.punchIn,
             teleFinder = s.teleFinder,
             hiResStill = s.hiResStill,
             videoCodec = s.videoCodec,
@@ -2656,10 +2667,27 @@ class CameraViewModel @JvmOverloads constructor(
         scheduleSettingsSave()
     }
     override fun onTogglePunchIn(enabled: Boolean) {
+        // An operator toggle ENDS the assist's ownership even if the ruler is still open: they have
+        // stated an intent, so it is theirs to persist. (The assist's own close branch already
+        // defers to this — "manual sheet toggles mid-drag win".)
+        autoPunchInActive = false
         engine.setPunchIn(enabled)
         _state.update { it.copy(punchIn = enabled) }
         markChanged(FnSlot.PUNCH_IN)
         scheduleSettingsSave()
+    }
+
+    override fun onAutoPunchIn(enabled: Boolean) {
+        if (enabled) {
+            // Snapshot what the operator had, so a save landing mid-assist writes THAT.
+            if (!autoPunchInActive) punchInBeforeAuto = _state.value.punchIn
+            autoPunchInActive = true
+        } else {
+            autoPunchInActive = false
+        }
+        engine.setPunchIn(enabled)
+        _state.update { it.copy(punchIn = enabled) }
+        // Deliberately no markChanged and no scheduleSettingsSave: the assist is not a setting.
     }
     override fun onToggleTeleFinder(enabled: Boolean) {
         engine.setTeleFinder(enabled)

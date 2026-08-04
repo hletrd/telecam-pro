@@ -124,6 +124,7 @@ class PerformQuickFnTest {
         override fun onGridType(type: GridType) = hit("onGridType($type)")
         override fun onToggleLevel(enabled: Boolean) = hit("onToggleLevel($enabled)")
         override fun onTogglePunchIn(enabled: Boolean) = hit("onTogglePunchIn($enabled)")
+        override fun onAutoPunchIn(enabled: Boolean) = Unit
         override fun onToggleTeleFinder(enabled: Boolean) = hit("onToggleTeleFinder")
         override fun onTimer(timer: ShutterTimer) = hit("onTimer")
         override fun onDriveMode(mode: DriveMode) = hit("onDriveMode($mode)")

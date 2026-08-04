@@ -245,10 +245,10 @@ fun ManualDialCluster(
     LaunchedEffect(focusOpen) {
         if (focusOpen && !state.punchIn) {
             loupeAutoOn = true
-            actions.onTogglePunchIn(true)
+            actions.onAutoPunchIn(true)
         } else if (!focusOpen && loupeAutoOn) {
             loupeAutoOn = false
-            if (state.punchIn) actions.onTogglePunchIn(false)
+            if (state.punchIn) actions.onAutoPunchIn(false)
         }
     }
 

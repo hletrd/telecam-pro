@@ -154,6 +154,14 @@ interface CameraActions {
     fun onGridType(type: GridType)
     fun onToggleLevel(enabled: Boolean)
     fun onTogglePunchIn(enabled: Boolean)
+
+    /**
+     * The FOCUS-RULER assist turning the loupe on and off by itself, as distinct from the operator
+     * asking for it. Same visible effect, but it must never reach the persisted settings: the ruler
+     * can be open when the app goes to the background, and then a loupe nobody asked for comes back
+     * on the next launch.
+     */
+    fun onAutoPunchIn(enabled: Boolean)
     /** Same-stream Loupe Overview toggle (default OFF); resolved against TELE + Photo + 4:3 + loupe. */
     fun onToggleTeleFinder(enabled: Boolean)
 

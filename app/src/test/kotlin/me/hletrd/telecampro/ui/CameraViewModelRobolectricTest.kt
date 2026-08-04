@@ -9,6 +9,7 @@ import me.hletrd.telecampro.camera.CameraFacing
 import me.hletrd.telecampro.camera.CameraReadyPublication
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.ExposureMode
+import me.hletrd.telecampro.camera.GridType
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.PhotoSessionOutputs
@@ -227,5 +228,53 @@ class CameraViewModelRobolectricTest {
         assertTrue(photo.controls.programAppSide)
         // The photographer's Photo shutter survives the round trip (the hidden photo bank).
         assertEquals(ManualControls().exposureTimeNs, photo.controls.exposureTimeNs)
+    }
+
+    // ---- The focus-ruler loupe assist must not become a persisted setting ----
+
+    @Test fun `the focus-ruler loupe assist never reaches the saved settings`() {
+        val (v, _) = createViewModel()
+        assertFalse("precondition: the operator has the loupe off", v.state.value.punchIn)
+
+        // Opening the Focus ruler magnifies by itself — visible immediately...
+        v.onAutoPunchIn(true)
+        assertTrue("the assist must actually punch in", v.state.value.punchIn)
+
+        // ...and now force a save to actually LAND while the assist owns the loupe. An unrelated
+        // user action is the honest way: without one, the fixed code writes nothing at all and the
+        // assertion below would pass for the wrong reason — which is exactly how the first version
+        // of this test failed to catch the defect it was written for.
+        v.onGridType(GridType.NONE)
+        idleFor(600)
+
+        val saved = SettingsStore(app).load()
+        assertNotNull("a save must have landed, or this test proves nothing", saved)
+        assertFalse(
+            "a save during the Focus-ruler assist persisted a loupe nobody asked for",
+            saved!!.extras.punchIn,
+        )
+    }
+
+    @Test fun `an operator toggle during the assist is theirs to keep`() {
+        val (v, _) = createViewModel()
+        v.onAutoPunchIn(true)
+        // The operator reaches into the sheet mid-assist and turns it ON deliberately. That ends the
+        // assist's ownership — "manual sheet toggles mid-drag win" — so it is what persists.
+        v.onTogglePunchIn(true)
+        idleFor(600)
+        val saved = SettingsStore(app).load()
+        assertNotNull(saved)
+        assertTrue(
+            "an explicit operator toggle during the assist must still be saved",
+            saved!!.extras.punchIn,
+        )
+    }
+
+    @Test fun `closing the ruler restores the operator value without saving it`() {
+        val (v, _) = createViewModel()
+        v.onAutoPunchIn(true)
+        assertTrue(v.state.value.punchIn)
+        v.onAutoPunchIn(false)
+        assertFalse("closing the ruler must undo the assist", v.state.value.punchIn)
     }
 }

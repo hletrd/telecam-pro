@@ -113,6 +113,7 @@ internal object PreviewCameraActions : CameraActions {
     override fun onGridType(type: GridType) = Unit
     override fun onToggleLevel(enabled: Boolean) = Unit
     override fun onTogglePunchIn(enabled: Boolean) = Unit
+    override fun onAutoPunchIn(enabled: Boolean) = Unit
     override fun onToggleTeleFinder(enabled: Boolean) = Unit
 
     override fun onTimer(timer: ShutterTimer) = Unit
