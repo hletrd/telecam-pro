@@ -265,12 +265,12 @@ captures against a real subject before relying on this set for large-screen feat
 ## Release checklist
 
 1. Create the upload keystore and `keystore.properties` (see `keystore.properties.example`).
-2. `./gradlew bundleRelease` -> `app/build/outputs/bundle/release/app-release.aab`; this now fails
+2. `./gradlew bundleRelease` → `app/build/outputs/bundle/release/app-release.aab`; this now fails
    fast when signing credentials are missing so an unsigned bundle cannot be uploaded by mistake.
 3. Play Console → create app → upload the signed AAB to an **internal testing** track.
-4. Set pricing to **free**, paste the descriptions above, set category/rating, complete the Data Safety form as above.
+4. Set pricing to **free**, paste the descriptions above, set category/rating, complete the Data Safety form from [`play-data-safety.md`](play-data-safety.md).
 5. Add the privacy policy URL, contact email, icon, feature graphic, and screenshots.
-6. Device catalog -> see play-console-submit.md; the app is no longer restricted to two model codes.
+6. Device catalog → see play-console-submit.md; the app is no longer restricted to two model codes.
 7. Roll out internal testing, review the pre-launch report, then promote to production. A closed test
    remains optional for this 2015 developer account.
 

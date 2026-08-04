@@ -175,7 +175,7 @@ check(not named, "console sequence hard-codes no artifact hash", f"{named}")
 # The pin must agree with itself. The banner names the commit, the artifacts heading names it again,
 # and the two drifted apart once — the banner moved to a new cut while the heading below it still
 # said the old one, which is the shape that sends an operator to the wrong bundle.
-banner = re.search(r"UPLOAD-READY \([\d-]+\)[^\n]*`main` at `([0-9a-f]{7})`", submit)
+banner = re.search(r"(?:UPLOAD-READY|PUBLISHED) \([\d-]+\)[^\n]*`main` at `([0-9a-f]{7})`", submit)
 pin_start = submit.index("### Final v1 upload artifacts")
 pin_section = submit[pin_start:submit.index("\n### ", pin_start + 1)]
 heading = re.search(r"`main` at `([0-9a-f]{7})`", pin_section)

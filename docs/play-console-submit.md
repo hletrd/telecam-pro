@@ -4,7 +4,12 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 ## Upload Artifact
 
-> ## ✅ UPLOAD-READY (2026-08-04) — signed re-cut from `main` at `ca3d33c`, clean tree.
+> ## ✅ PUBLISHED (2026-08-04) — v1.0, signed re-cut from `main` at `ca3d33c`, clean tree.
+>
+> This cut shipped to Google Play as `versionCode 1`, which is now SPENT (Play rejects a re-used
+> versionCode outright — see the note in `app/build.gradle.kts`). The next upload is a NEW cut:
+> `versionCode 2` / `1.0.1`, re-cut and re-pinned from current `main`; release notes for it live in
+> `docs/play-store-listing.md`.
 >
 > Supersedes `91b26a2`, `0f1421e`, `66734db`, `a4a7d12`, `fc43953`, and every candidate before it.
 > `applicationId` unchanged (`me.hletrd.telecampro`); upload certificate byte-identical to the
@@ -308,7 +313,7 @@ personal accounts created after November 13, 2023 does not apply.
 ## Store Listing
 
 - App name: `TeleCam Pro`
-- Short description: `Open-source manual camera for Find X9 Ultra telephoto.`
+- Short description: `Open-source manual camera for periscope telephoto + teleconverters.`
 - Category: Photography
 - Price: Free
 - Ads: No
@@ -318,8 +323,9 @@ personal accounts created after November 13, 2023 does not apply.
 - Source code URL: `https://github.com/hletrd/telecam-pro`
 - Full listing copy: [`docs/play-store-listing.md`](play-store-listing.md)
 
-The app uses OPPO and Hasselblad product names only to describe hardware compatibility. It is not
-affiliated with, endorsed by, or sponsored by either company.
+The app uses other companies' product names (OPPO, Hasselblad, ZEISS, vivo, Sony, ARRI) only to
+describe compatibility. It is not affiliated with, endorsed by, or sponsored by any of them; the
+listing copy carries the full trademark attribution.
 
 ## Data Safety
 
@@ -367,7 +373,8 @@ question has to be re-answered in Play Console at submission; no repo change can
     PMA110, since a menu needs no scene and must show the shipping UI.
   - Landscape captures were REJECTED for this set. The app counter-rotates glyphs by the
     gravity-derived device orientation, so a landscape-held capture renders the focal rail and mode
-    carousel sideways. This is app behaviour, not a bug — capture PORTRAIT.
+    carousel sideways. This is app behaviour, not a bug — capture PORTRAIT. All six current frames
+    render upright.
   - The 2026-07-10 and 2026-07-26 captures are retired: they showed a superseded UI, and every
     TELE-engaged frame among them shows the OLD focal rail (`0.6x 1x 3x 10x`) where the shipping
     build now reads `13x / 30x / 60x`.
@@ -383,10 +390,6 @@ question has to be re-answered in Play Console at submission; no repo change can
     lens story instead.
   - `screenshots/06-video-settings.png` — Video tab: codec, Open Gate, resolution, FPS, bitrate,
     live encoder summary, transfer curves
-  - All six render UPRIGHT: the first captures had every rotating glyph sideways because the app
-    counter-rotates glyphs by the gravity-derived device orientation and the phone was standing in
-    a landscape pose. Capture with the phone PORTRAIT — this is app behaviour, not a bug, and no
-    code change is involved.
   - 01 and 04 now carry LIT, real subjects (the "photography-led art" option this note always
     offered). **05 is still a BLACK-scene frame and is the one weak spot in the set**: it is the
     only slot that requires TELE engaged, and every real-subject TELE capture on hand predates the
