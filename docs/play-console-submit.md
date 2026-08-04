@@ -4,10 +4,33 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 ## Upload Artifact
 
-> ## ✅ UPLOAD-READY (2026-08-02) — signed re-cut from `main` at `0f1421e`, clean tree.
+> ## ✅ UPLOAD-READY (2026-08-04) — signed re-cut from `main` at `ca3d33c`, clean tree.
 >
-> Supersedes `66734db`, `a4a7d12`, `fc43953`, and every candidate before it. `applicationId` unchanged
-> (`me.hletrd.telecampro`); upload certificate byte-identical to the recorded one (`9dfdb903…`).
+> Supersedes `91b26a2`, `0f1421e`, `66734db`, `a4a7d12`, `fc43953`, and every candidate before it.
+> `applicationId` unchanged (`me.hletrd.telecampro`); upload certificate byte-identical to the
+> recorded one (`9dfdb903…`).
+>
+> **The main thing this cut adds over `0f1421e`: the zoom-scale fix — a user-reported defect on the
+> target device.** Tapping `3×` on a PMA110 jumped the viewfinder to 9.1×, and the rail pill then
+> disagreed with the zoom it had produced. `zoomRatio` carries TWO scales — main-relative on the
+> logical seamless camera, lens-local on any standalone lens — and three call sites were reading
+> whichever one they happened to receive. The route now decides, through one conversion pair
+> (`unifiedZoomOf` / `localZoomOf`, host-tested), so the preset, the wire ratio, the focal readout,
+> and the highlighted pill all describe the same framing. Fixed across three commits (`f94f2b5`,
+> `1914eac`, `c66993d`) because the first attempt was correct on the phone and wrong on both
+> tablets — a second device shape is what caught it.
+>
+> **And the second user-reported defect: starting the camera did not take long — the status pill
+> did.** `am start` returns in 412 ms and the session configures at ~950 ms, but `"Starting camera…"`
+> matched no keyword in the status classifier and fell into its neutral 2.5 s bucket, so the pill
+> outlived the bring-up it described. A progress message reports a condition, so an event ends it:
+> it now carries no display timer and the owned Ready publication retires it. Device A/B on two
+> shapes — before, still on screen 5.2 s (TB331FC) and 4.1 s (Android 13) after `am start`; after,
+> never sampled across a 20 s window on either.
+>
+> Also in this cut: five UI strings corrected (each contradicted a rule this project states
+> itself), Apache-2.0 licensing with a NOTICE naming every trademark owner, and the store/privacy
+> documents brought into agreement with the shipped permission set.
 >
 > **`fc43953` must not be uploaded: video recording was impossible on a whole class of device.**
 > Testing this cut on Android 13 (the `minSdk 33` floor, which had never been exercised) found two
@@ -44,12 +67,12 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 Do not upload debug APKs or any unsigned/stale release bundle.
 
-### Final v1 upload artifacts (built + device-verified 2026-08-03 from `main` at `0f1421e`)
+### Final v1 upload artifacts (built + device-verified 2026-08-04 from `main` at `ca3d33c`)
 
 - Artifact location: `app/build/outputs/bundle/release/app-release.aab`
-- AAB SHA-256: `543a834339977b9f7df02beec8397e506c1f75bc393e295ec788aed7dbb498d8`
+- AAB SHA-256: `674a9bd3c8f0bbf8bb6358530f99be1c803bcdfa472ddc01faec7566707a8581`
 - Matching release APK SHA-256:
-  `c3dec1a9f58e3d554e3e4a103b4d6593bdb9245c166690410f67084acc6e3f9d`
+  `aa475b91b30f3e389bd08e40518676daf971c157a4c0b828d00dcf703427d53c`
 - Launch component: `me.hletrd.telecampro/me.hletrd.telecampro.MainActivity`
 - AAB `jarsigner -verify`: **jar verified**; `bundletool 1.18.3 validate`: **OK**
 - APK signing: **v2 valid, 1 signer**, `CN=Jiyong Youn, L=Seoul, ST=Seoul, C=KR`, certificate
@@ -60,37 +83,54 @@ Do not upload debug APKs or any unsigned/stale release bundle.
   `uses-permission` exactly `CAMERA`, `RECORD_AUDIO`, `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`,
   `READ_MEDIA_VISUAL_USER_SELECTED` (plus the framework's dynamic-receiver permission); **no
   `INTERNET`**; **not debuggable**
-- Release gate: `lintRelease` **0 errors / 8 warnings** (`UseKtx` ×4, `InlinedApi` ×2,
-  `ApplySharedPref`, `AndroidGradlePluginVersion` — all benign); host suite **1348 tests, 0
-  failures** (1364 at this cut)
+- Release gate: `lintRelease` **0 errors**; host suite **1378 tests, 0 failures**
 - Carries a **baseline profile** (`assets/dexopt/baseline.prof` + `.profm`)
 - **Release dex contains ZERO `com.oplus.ocs` occurrences** (raw byte scan)
-- Superseded candidates (do NOT upload): `66734db` (`152f1c33…`), `a4a7d12` (`5685b0c0…`), `fc43953` (`88d00e12…`), `2d6c35b` (`02cbd69d…`),
+- Superseded candidates (do NOT upload): `91b26a2` (`8cb63592…`), `0f1421e` (`543a8343…`), `66734db` (`152f1c33…`), `a4a7d12` (`5685b0c0…`), `fc43953` (`88d00e12…`), `2d6c35b` (`02cbd69d…`),
   `c6722bb` (`a5654855…`), `961b080` (`0516b0d8…`), `3a3d034` (`1c160b8c…`), `26266db`
   (`59ccb318…`), `3ff3b4b` (`19ef2b7d…`), `9f367c1` (`f04028f7…`), `3c70639` (`70f83bdd…`),
   `6bf2325` (`c238c1cf…`), `a0d4dbc` (`84a74f64…`), `69af1574…`, `a737483f…`, `7339e00d…`,
   `b45a3b8e…`
 
-### Device matrix — 2026-08-02 (four targets) plus a 2026-08-03 re-check
+### Device matrix — 2026-08-02 (four targets) plus 08-03 and 08-04 re-checks
 
-The four-target matrix below was measured on the `66734db` cut. `0f1421e` adds only the
-policy-block gate and its AppOps confirmation; it was re-verified 2026-08-03 on the two targets
-still reachable, both proven byte-identical to the artifact (`c3dec1a9…`) first:
+The four-target matrix below was measured on the `66734db` cut. Two later cuts were re-checked on
+whichever targets were reachable at the time, each proven byte-identical to its artifact first.
+
+**The zoom fix in this cut was measured on all three physical devices** — on a debug build of the
+same code (`c66993d`), while all three were still on the network:
+
+| | OPPO PMA110 | Lenovo TB336ZU | Lenovo TB331FC |
+|---|---|---|---|
+| `1×` → focal | 23 mm | 26 mm | 27 mm |
+| `3×` → focal | **69 mm** (optical) | **78 mm** (crop, exactly ×3) | **81 mm** (crop, exactly ×3) |
+| `10×` → focal | **230 mm** | rail absent | rail absent |
+| Highlighted pill | matches the tapped preset | matches | matches |
+
+Only the PMA110 reads 69 mm at `3×`, because only it reaches that framing with an optical lens —
+that difference between phone and tablets is the evidence the route-based conversion works.
+
+**Re-checked 2026-08-04 on the signed `ca3d33c` RELEASE artifact (`aa475b91…`), bytes confirmed on
+device before testing:**
 
 | | Lenovo TB331FC (A15) | Android 13 emulator |
 |---|---|---|
-| Launch / camera | clean, gate absent | clean, gate absent |
+| Launch / camera | clean | clean |
 | Lens rail | `1× lens` + `3× zoom` | `1× lens` + `3×` + `10× zoom` |
+| Zoom scale | 27 → 81 mm | 36 → 107 → 357 mm |
+| Highlighted pill | matches the tapped preset | matches |
+| `"Starting camera…"` pill | never sampled (was 5.2 s) | never sampled (was 4.1 s) |
 | Still | written | written |
-| Video | written | written |
-| Policy-block gate | shown when blocked, retracts when cleared | n/a (not blocked) |
 | Crashes | 0 | 0 |
 
-**NOT re-verified on `0f1421e`: the PMA110 and the Lenovo TB336ZU.** The PMA110 went off Tailscale
-and is PIN-locked; the TB336ZU is off the network entirely (ping 100% loss, no mDNS). Their
-`66734db` results below stand, and the delta between the two cuts touches only a code path that is
-inert unless AppOps withholds the camera — but that is reasoning, not measurement, and is recorded
-as such.
+**NOT re-checked on the `ca3d33c` release artifact: the PMA110 and the Lenovo TB336ZU.** The
+PMA110 is reachable on Tailscale but has wireless debugging off — a full connect-scan of ports
+1024–65535 found nothing open, so adb cannot attach without someone re-enabling it on the handset.
+The TB336ZU is off the network entirely (no mDNS advertisement on any interface, tunnel dead).
+Their measurements above stand on the same code, from a debug build. Nothing between a debug and
+release build of `c66993d` is expected to move zoom — `isMinifyEnabled = false`, so there is not
+even a shrinker between them — **but that is reasoning, not measurement, and is recorded as such.**
+Re-run the zoom row on both once they are reachable.
 
 | | OPPO PMA110 | Lenovo TB336ZU | Lenovo TB331FC | Android 13 emulator |
 |---|---|---|---|---|
@@ -137,34 +177,20 @@ CONNECT then DISCONNECT ten seconds later. **Force-stop the other package before
 one**; the failure is a two-client artifact, not a product defect. Second gotcha: the release
 package launches in its PERSISTED mode, so select Photo explicitly before expecting a still.
 
-### Last SIGNED artifacts (2026-08-01, `main` at `2d6c35b`) — SUPERSEDED BY SOURCE, do not upload
+### PMA110 smoke test on a signed binary — 2026-08-01 artifact `e95aa8d4…` (SUPERSEDED)
 
-Kept as the record of the last successful signed cut and of what has been smoke-tested on a signed
-binary. It is **not** the upload candidate: see the drift list in the status block above.
+**Do not upload this artifact.** It is kept for its MEASUREMENTS: this is the most recent run of
+the photo / video / DNG / audio pipelines against a *signed release* binary on the target phone,
+and those pipelines are unchanged by the cuts since. The upload candidate is the one pinned at the
+top of this sheet.
 
-**This supersedes the `c6722bb` cut** (AAB `a5654855…`, APK `7fd036ee…`) — adds BOTH perf batches
-(16-item CPU/memory review incl. the ZSL never-serve drive gate and the unattended-timelapse dim),
-`minSdk 33` + the DeviceProfile multi-device seam, the scope-stride fix, the 17-finding dual-lens
-review closure (timelapse press-to-stop + run OSD, front-mirror parametrization, host-focal EXIF),
-and the contextual READ_MEDIA reinstall gallery restore. **The manifest permission set CHANGED**
-(visual-media READ trio added): re-answer the Data Safety "Photos and videos" ACCESS question and
-use the updated `docs/play-data-safety.md` / `PRIVACY.md` wording at submission. Before it the
-`961b080` cut (AAB `0516b0d8…`, APK `54035d8a…`) — that one predates the OPPO
-quick-button binding (781), the eviction-quiet camera health path, and the route-switch RAW toast
-removal — and before it the `3a3d034` cut (AAB `1c160b8c…`, APK `8d73388e…`) — that one predates
-the loupe-hint pre-converter scaling (operator-requested) and the OPPO-767 half-press routing fix —
-and before it the `26266db` cut (AAB `59ccb318…`, APK `9658300c…`) — that one predates the
-adversarial verification closure (must-fix: recall packets re-normalized against outgoing caps;
-plus finder zoom-OUT edge, late-RAW retention veto, rollback mirror leg, OIS strip gate) — and
-before it the `3ff3b4b` cut (AAB `19ef2b7d…`, APK `870ac286…`), which predates the
-2026-07-30 whole-app review fixes (pre-open caps guard, finder zoom re-resolve, pending-sibling
-sweep, MR recall/store fidelity, hardware-key audio scoping, gesture closure lifetimes, EXIF
-honesty) — before it the `9f367c1` cut (AAB `f04028f7…`, APK `ad66b179…`), and before it the `3c70639` cut (AAB `70f83bdd…`, APK
-`97e53333…`), which in turn superseded
-the `6bf2325` cycle-9 cut (AAB `c238c1cf…`, APK `615ff06d…`). Do not upload either older bundle.
-The re-cut exists because `3c70639` predates the DNG route-input fixes (`d6ef232`, `968f13b`,
-`9f367c1`): on that artifact a persisted DNG selection was inert at launch, and a Video→Photo trip
-could leave DNG permanently unable to produce a RAW file.
+The full supersession chain behind it lives in `git log`; every superseded digest is listed in the
+do-not-upload bullet under the current pin. Re-narrating each cut's delta here is what let this
+section's own heading claim "last signed cut" through two later signed cuts.
+
+One carry-forward that is a submission action, not history: the manifest permission set CHANGED at
+`2d6c35b` (the visual-media READ trio was added). Re-answer the Data Safety "Photos and videos"
+ACCESS question and use the current `docs/play-data-safety.md` / `PRIVACY.md` wording.
 
 - Artifact location: `app/build/outputs/bundle/release/app-release.aab`
 - AAB SHA-256: `02cbd69dbcf3e7eff5745667911c2c8774203d24454ef98507232c4d11cf2602`
