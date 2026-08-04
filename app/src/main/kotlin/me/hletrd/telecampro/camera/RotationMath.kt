@@ -82,9 +82,24 @@ object RotationMath {
      * device, the layout is upright on its own and no glyph rotation is owed.
      *
      * Locked portrait is ROTATION_0, so this reduces EXACTLY to the historical `+dev`.
+     *
+     * [windowFollowsDevice] says the activity is NOT orientation-locked, and it short-circuits the
+     * whole residual to 0. That is not an optimization — the residual is UNSOUND in that regime.
+     * Both terms hold their last confident value when the device goes flat, but they hold
+     * INDEPENDENTLY: `GyroEis` needs in-plane gravity above `FLAT_GRAVITY_THRESHOLD`, the platform
+     * applies its own hysteresis and history. A tablet resting on a desk is the ordinary way to use
+     * a tablet, and there both holds are stale — device-seen on TB331FC, whose window sat at
+     * ROTATION_90 while gravity never left its initial 0, yielding a bogus 270 that laid every label,
+     * chip, and OSD tag on its side while the un-rotated menu rail stayed upright beside them. When
+     * the window is free, its rotation IS the system's answer to the same physical question, tracked
+     * with better history than ours and already applied to the layout, so no glyph rotation is owed
+     * and consulting a second, weaker sensor can only disagree with what the user is looking at.
      */
-    fun glyphRotationDegrees(deviceOrientation: Int, windowRotationDeg: Int): Int =
-        normalize(deviceOrientation - normalize(windowRotationDeg))
+    fun glyphRotationDegrees(
+        deviceOrientation: Int,
+        windowRotationDeg: Int,
+        windowFollowsDevice: Boolean,
+    ): Int = if (windowFollowsDevice) 0 else normalize(deviceOrientation - normalize(windowRotationDeg))
 
     /**
      * Un-rotates a NORMALIZED view tap (0..1 in each axis) from a window rotated

@@ -176,7 +176,7 @@ class RotationMathTest {
     fun `glyph rotation reduces to the historical +dev when the window is locked portrait`() {
         // This is the regression fence for the phone: ROTATION_0 must reproduce +dev exactly.
         for (dev in listOf(0, 90, 180, 270)) {
-            assertEquals(dev, RotationMath.glyphRotationDegrees(dev, 0))
+            assertEquals(dev, RotationMath.glyphRotationDegrees(dev, 0, windowFollowsDevice = false))
         }
     }
 
@@ -222,14 +222,28 @@ class RotationMathTest {
     }
 
     @Test
-    fun `glyph rotation cancels when the window has already turned with the device`() {
-        // Tablet held in left landscape with the window following: layout is upright on its own,
-        // so no glyph rotation is owed. The pre-fix `+dev` would have laid every label on its side.
-        assertEquals(0, RotationMath.glyphRotationDegrees(90, 90))
-        assertEquals(0, RotationMath.glyphRotationDegrees(270, 270))
-        // Window turned but device not (a fixed-landscape tablet held upright): full residual.
-        assertEquals(270, RotationMath.glyphRotationDegrees(0, 90))
-        // Device turned past the window: residual only.
-        assertEquals(90, RotationMath.glyphRotationDegrees(180, 90))
+    fun `a free window owes no glyph rotation, whatever gravity claims`() {
+        // Tablet held in left landscape with the window following: the layout is upright on its own.
+        assertEquals(0, RotationMath.glyphRotationDegrees(90, 90, windowFollowsDevice = true))
+        assertEquals(0, RotationMath.glyphRotationDegrees(270, 270, windowFollowsDevice = true))
+        // The device-seen defect (TB331FC, flat on a desk): the window held ROTATION_90 while
+        // GyroEis held its initial 0, because the two hold their last confident value on INDEPENDENT
+        // thresholds. The residual read a confident 270 out of two stale numbers and laid every
+        // label, chip, and OSD tag on its side. A free window is the system's own answer to the same
+        // question, so gravity may disagree by any amount and still be owed nothing.
+        for (dev in listOf(0, 90, 180, 270)) {
+            for (w in listOf(0, 90, 180, 270)) {
+                assertEquals(0, RotationMath.glyphRotationDegrees(dev, w, windowFollowsDevice = true))
+            }
+        }
+    }
+
+    @Test
+    fun `a locked window still takes the full residual when the system turns it anyway`() {
+        // Locked is not a promise of ROTATION_0 — the platform can hand a locked activity a turned
+        // window. Gravity is then the only statement of which way is up, so the residual stands.
+        assertEquals(270, RotationMath.glyphRotationDegrees(0, 90, windowFollowsDevice = false))
+        assertEquals(90, RotationMath.glyphRotationDegrees(180, 90, windowFollowsDevice = false))
+        assertEquals(0, RotationMath.glyphRotationDegrees(90, 90, windowFollowsDevice = false))
     }
 }

@@ -57,6 +57,7 @@ import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.ui.CameraActions
 import me.hletrd.telecampro.ui.CameraScreen
 import me.hletrd.telecampro.ui.CameraViewModel
+import me.hletrd.telecampro.ui.windowFollowsDevice
 import me.hletrd.telecampro.ui.theme.CameraColors
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
 
@@ -153,14 +154,21 @@ class MainActivity : ComponentActivity() {
      * so the attribute earned a permanent advisory claiming the app is orientation-locked on
      * tablets when it is not. Expressing the same rule in code says the true thing to both.
      *
+     * Briefly lifted on 2026-08-05 so a sideways phone would get a re-laid-out landscape window, and
+     * restored the same day: the owner's rule is that orientation moves NO control ("placing shutter
+     * button regardless of screen orientation, and also gallery button and functional buttons"). A
+     * turned handset window is ~420 dp tall, which cannot hold the one arrangement, so the only way
+     * to keep the shutter where the thumb expects it is to not turn the window. Everything the
+     * operator has to READ still follows the device, via the glyph residual.
+     *
      * `smallestScreenWidthDp` is the right axis: it is the width of the SHORTER side, so it does
      * not change when the device turns, and 600 is the platform's own handset/tablet boundary.
      */
     private fun lockPortraitOnHandsets() {
-        requestedOrientation = if (resources.configuration.smallestScreenWidthDp < 600) {
-            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-        } else {
+        requestedOrientation = if (windowFollowsDevice(resources.configuration.smallestScreenWidthDp)) {
             ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        } else {
+            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         }
     }
 

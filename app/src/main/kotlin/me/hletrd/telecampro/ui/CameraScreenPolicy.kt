@@ -45,6 +45,29 @@ internal fun String.isUrgentStatus(): Boolean =
         .any { contains(it, ignoreCase = true) }
 
 /**
+ * Whether the WINDOW, not gravity, is the trustworthy statement of which way is up.
+ *
+ * Since the activity stopped locking orientation, both are free to turn, and the glyph residual
+ * (`deviceOrientation - windowRotation`) is the correct general model — including under the user's
+ * system rotation lock, where the window deliberately stays put and the residual is the only thing
+ * keeping labels upright. It has exactly one blind spot: a device lying FLAT. In-plane gravity
+ * vanishes there, so `GyroEis` holds its last confident value while the platform independently holds
+ * the window's, and two stale numbers subtract into a confident-looking lie.
+ *
+ * A large screen is the form factor that lives flat — on a desk, in a stand, on a keyboard case —
+ * and it is the one where that lie was actually seen (TB331FC: window at ROTATION_90, gravity never
+ * past its initial 0, every label laid on its side). A handset is essentially always in a hand, so
+ * its gravity read is live and the residual stands. The 600dp boundary is the platform's own, and
+ * `smallestScreenWidthDp` is the right axis because it measures the SHORTER side and therefore does
+ * not change when the device turns.
+ *
+ * Note this is NOT `landscapeOperator`: that keys on window SHAPE (a wide window earns the rail,
+ * even in split-screen at ROTATION_0), while this keys on the DISPLAY's smallest side. A tablet held
+ * in portrait is window-authoritative here too.
+ */
+internal fun windowFollowsDevice(smallestScreenWidthDp: Int): Boolean = smallestScreenWidthDp >= 600
+
+/**
  * PROGRESS statuses describe a condition that is either true or false right now, so an EVENT ends
  * them — never a timer. [CAMERA_STARTING_STATUS] is the one the app emits: the owner reported
  * "starting the camera takes a long time" on a device whose session configures in ~950 ms, and the
