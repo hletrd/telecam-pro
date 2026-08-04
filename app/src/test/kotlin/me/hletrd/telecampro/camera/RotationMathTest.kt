@@ -137,4 +137,58 @@ class RotationMathTest {
         assertEquals(2160 to 3840, RotationMath.encoderSurfaceSize(3840, 2160, 270, 0))
         assertEquals(1080 to 1920, RotationMath.encoderSurfaceSize(1920, 1080, 270, 0))
     }
+
+    // --- Large-screen window rotation (Android 16 sw600dp+ ignores screenOrientation) ------------
+    // The load-bearing property in every test below is that ROTATION_0 is INERT: a portrait-locked
+    // phone must come out bit-identical to the pre-2026-08-04 behaviour, so the PMA110 path cannot
+    // regress no matter what the window terms do on a tablet.
+
+    @Test
+    fun `window preview rotation is inert at ROTATION_0 and negates otherwise`() {
+        assertEquals(0, RotationMath.windowPreviewRotationDegrees(0))
+        assertEquals(270, RotationMath.windowPreviewRotationDegrees(90))
+        assertEquals(180, RotationMath.windowPreviewRotationDegrees(180))
+        assertEquals(90, RotationMath.windowPreviewRotationDegrees(270))
+    }
+
+    @Test
+    fun `window aspect swaps only for the quarter-turn window classes`() {
+        org.junit.Assert.assertFalse(RotationMath.windowAspectSwapped(0))
+        org.junit.Assert.assertTrue(RotationMath.windowAspectSwapped(90))
+        org.junit.Assert.assertFalse(RotationMath.windowAspectSwapped(180))
+        org.junit.Assert.assertTrue(RotationMath.windowAspectSwapped(270))
+    }
+
+    @Test
+    fun `displayed preview aspect inverts the 3-to-4 box into a 4-to-3 one for a landscape window`() {
+        val natural = 3f / 4f
+        assertEquals(natural, RotationMath.displayedPreviewAspect(natural, 0), 1e-6f)
+        assertEquals(natural, RotationMath.displayedPreviewAspect(natural, 180), 1e-6f)
+        assertEquals(4f / 3f, RotationMath.displayedPreviewAspect(natural, 90), 1e-6f)
+        assertEquals(4f / 3f, RotationMath.displayedPreviewAspect(natural, 270), 1e-6f)
+        // The measured TB336ZU case: a 2560x1600 window fits 2133x1600 at 4:3 instead of 1200x1600.
+        val h = 1600f
+        assertEquals(2133f, h * RotationMath.displayedPreviewAspect(natural, 90), 1f)
+        assertEquals(1200f, h * RotationMath.displayedPreviewAspect(natural, 0), 1f)
+    }
+
+    @Test
+    fun `glyph rotation reduces to the historical +dev when the window is locked portrait`() {
+        // This is the regression fence for the phone: ROTATION_0 must reproduce +dev exactly.
+        for (dev in listOf(0, 90, 180, 270)) {
+            assertEquals(dev, RotationMath.glyphRotationDegrees(dev, 0))
+        }
+    }
+
+    @Test
+    fun `glyph rotation cancels when the window has already turned with the device`() {
+        // Tablet held in left landscape with the window following: layout is upright on its own,
+        // so no glyph rotation is owed. The pre-fix `+dev` would have laid every label on its side.
+        assertEquals(0, RotationMath.glyphRotationDegrees(90, 90))
+        assertEquals(0, RotationMath.glyphRotationDegrees(270, 270))
+        // Window turned but device not (a fixed-landscape tablet held upright): full residual.
+        assertEquals(270, RotationMath.glyphRotationDegrees(0, 90))
+        // Device turned past the window: residual only.
+        assertEquals(90, RotationMath.glyphRotationDegrees(180, 90))
+    }
 }

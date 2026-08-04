@@ -73,6 +73,8 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.Modifier
@@ -135,6 +137,7 @@ import me.hletrd.telecampro.camera.finderContainsTopLeftPoint
 import me.hletrd.telecampro.camera.teleFinderVisible
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.MediaDeleteScope
+import me.hletrd.telecampro.camera.RotationMath
 import me.hletrd.telecampro.camera.ShutterTimer
 import me.hletrd.telecampro.camera.controlAvailability
 import me.hletrd.telecampro.camera.controlCapabilities
@@ -297,16 +300,37 @@ fun CameraScreen(
         if (transition.openExposureSheet) openSheet(ProSheetTab.EXPOSURE)
     }
 
-    // Counter-rotates compact on-screen glyphs/labels so they stay upright as the phone turns, even
-    // though the activity is portrait-locked. The counter-rotation is +deviceOrientation:
-    // GyroEis derives the discrete value from gravity via atan2(x,y), which yields dev=90 for a
-    // COUNTER-clockwise (left) landscape and dev=270 for a clockwise (right) landscape — the opposite
-    // of the naive assumption. So the glyph must rotate by +dev to undo the phone's turn (a −dev sign
-    // left both landscapes 180° off — invisible on symmetric icons, obvious once text rotates).
+    // The app WINDOW's rotation away from the device's natural orientation. Locked portrait is
+    // always ROTATION_0, so every term derived from this is inert on a phone — but from Android 16 a
+    // display whose smaller side is >= 600dp IGNORES screenOrientation and hands this activity a
+    // LANDSCAPE window (API 37 removes the opt-out; see docs/BACKLOG.md). Keyed on LocalConfiguration
+    // so it re-reads on a configuration change: the activity declares configChanges for orientation,
+    // so it is NOT recreated and only recomposition can pick the new value up.
+    val windowConfiguration = LocalConfiguration.current
+    val windowContext = LocalContext.current
+    val windowRotationDeg = remember(windowConfiguration) {
+        when (windowContext.display?.rotation) {
+            Surface.ROTATION_90 -> 90
+            Surface.ROTATION_180 -> 180
+            Surface.ROTATION_270 -> 270
+            else -> 0
+        }
+    }
+
+    // Counter-rotates compact on-screen glyphs/labels so they stay upright as the phone turns.
+    // GyroEis derives the discrete device value from gravity via atan2(x,y), which yields dev=90 for
+    // a COUNTER-clockwise (left) landscape and dev=270 for a clockwise (right) landscape — the
+    // opposite of the naive assumption; a −dev sign left both landscapes 180° off (invisible on
+    // symmetric icons, obvious once text rotates). Since 2026-08-04 the glyph takes only the
+    // RESIDUAL between gravity and the WINDOW (RotationMath.glyphRotationDegrees): when the window
+    // has already turned with the device the layout is upright on its own and no rotation is owed,
+    // where the old bare +dev would have laid every label on its side. Locked portrait is
+    // ROTATION_0, so this reduces exactly to the historical +dev.
     // Accumulate an UNWRAPPED target so the animation always takes the shortest ≤90° path.
-    var overlayRotationTarget by remember { mutableFloatStateOf(state.deviceOrientation.toFloat()) }
-    LaunchedEffect(state.deviceOrientation) {
-        overlayRotationTarget = shortestRotationTarget(overlayRotationTarget, state.deviceOrientation.toFloat())
+    val glyphRotationDeg = RotationMath.glyphRotationDegrees(state.deviceOrientation, windowRotationDeg)
+    var overlayRotationTarget by remember { mutableFloatStateOf(glyphRotationDeg.toFloat()) }
+    LaunchedEffect(glyphRotationDeg) {
+        overlayRotationTarget = shortestRotationTarget(overlayRotationTarget, glyphRotationDeg.toFloat())
     }
     val overlayRotation by animateFloatAsState(targetValue = overlayRotationTarget, label = "overlayRotation")
 
@@ -683,6 +707,40 @@ fun CameraScreen(
             )
         }
 
+        // The OSD row and the button row are ONE piece of chrome and must move together. This
+        // offset used to be computed just above TopBar and applied only there, so in 16:9 video —
+        // the one aspect whose preview starts high enough to trigger it — the buttons shifted down
+        // onto the OSD row, which is pinned at a fixed 60 dp. Device-measured: buttons y=332-500
+        // over OSD text at y=391-436, with STEADY/LOUPE/battery squeezed into the 28 px gaps
+        // between buttons. Hoisted here so the row below can take the same shift.
+        // When the preview is too tall to clear the top chrome (the 16:9 portrait frame:
+        // previewTopPx's centered branch fires and the image starts ABOVE the chips' default home),
+        // the chip plates used to STRADDLE the seam — a ~10 dp sliver of each translucent plate over
+        // the image, the rest invisible on the black band, reading as amputated bumps (UI review
+        // #5, measured). The rule the seam work already established: chrome sits wholly on the
+        // image or wholly on the band, never across the edge. Here only "wholly on the image" is
+        // possible (the band above is what is too short), so the bar shifts down to previewTop+8dp
+        // exactly when its default home would collide.
+        val topBarDensity = LocalDensity.current
+        val statusBarPx = WindowInsets.statusBars.getTop(topBarDensity)
+        val eightDpPx = with(topBarDensity) { 8.dp.roundToPx() }
+        var topBarHeightPx by remember { mutableIntStateOf(0) }
+        val topBarDefaultTopPx = statusBarPx + eightDpPx
+        // Offset ONLY on a genuine straddle — the preview's top edge falling INSIDE the bar's
+        // default vertical span. Fully-on-band (4:3: preview starts below the bar) and
+        // fully-on-image placements are both fine as-is; an unconditional offset pushed the bar
+        // down onto the image even when its default home was wholly on the band (caught on-device
+        // during this fix's own verification).
+        val topBarSeamOffsetPx = if (
+            topBarHeightPx > 0 &&
+            previewTopForChromePx > topBarDefaultTopPx &&
+            previewTopForChromePx < topBarDefaultTopPx + topBarHeightPx
+        ) {
+            previewTopForChromePx + eightDpPx - topBarDefaultTopPx
+        } else {
+            0
+        }
+
         Row(
             // The full-width CONTAINER stays fixed — spinning a fillMaxWidth row would swing a
             // screen-wide box off screen no matter how the slot is reserved. Its children rotate
@@ -691,7 +749,10 @@ fun CameraScreen(
                 .align(Alignment.TopStart)
                 .statusBarsPadding()
                 .fillMaxWidth()
-                .padding(start = 12.dp, end = 12.dp, top = 60.dp),
+                .padding(start = 12.dp, end = 12.dp, top = 60.dp)
+                // Same shift as the button row above: they are one piece of chrome, and the fixed
+                // 60 dp only clears the buttons while the buttons are in their default home.
+                .offset { IntOffset(0, topBarSeamOffsetPx) },
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.Top,
         ) {
@@ -890,33 +951,6 @@ fun CameraScreen(
             )
         }
 
-        // When the preview is too tall to clear the top chrome (the 16:9 portrait frame:
-        // previewTopPx's centered branch fires and the image starts ABOVE the chips' default home),
-        // the chip plates used to STRADDLE the seam — a ~10 dp sliver of each translucent plate over
-        // the image, the rest invisible on the black band, reading as amputated bumps (UI review
-        // #5, measured). The rule the seam work already established: chrome sits wholly on the
-        // image or wholly on the band, never across the edge. Here only "wholly on the image" is
-        // possible (the band above is what is too short), so the bar shifts down to previewTop+8dp
-        // exactly when its default home would collide.
-        val topBarDensity = LocalDensity.current
-        val statusBarPx = WindowInsets.statusBars.getTop(topBarDensity)
-        val eightDpPx = with(topBarDensity) { 8.dp.roundToPx() }
-        var topBarHeightPx by remember { mutableIntStateOf(0) }
-        val topBarDefaultTopPx = statusBarPx + eightDpPx
-        // Offset ONLY on a genuine straddle — the preview's top edge falling INSIDE the bar's
-        // default vertical span. Fully-on-band (4:3: preview starts below the bar) and
-        // fully-on-image placements are both fine as-is; an unconditional offset pushed the bar
-        // down onto the image even when its default home was wholly on the band (caught on-device
-        // during this fix's own verification).
-        val topBarSeamOffsetPx = if (
-            topBarHeightPx > 0 &&
-            previewTopForChromePx > topBarDefaultTopPx &&
-            previewTopForChromePx < topBarDefaultTopPx + topBarHeightPx
-        ) {
-            previewTopForChromePx + eightDpPx - topBarDefaultTopPx
-        } else {
-            0
-        }
         TopBar(
             state = state,
             actions = actions,

@@ -34,6 +34,58 @@ object RotationMath {
      */
     fun previewRotationDegrees(teleconverterMode: Boolean): Int = if (teleconverterMode) AFOCAL_FLIP else 0
 
+    /**
+     * Extra CW degrees the PREVIEW draw adds on top of [previewRotationDegrees] when the app WINDOW
+     * sits rotated away from the device's NATURAL orientation.
+     *
+     * Why this exists: from Android 16 a display whose smaller side is >= 600dp IGNORES
+     * `screenOrientation`, so a tablet or unfolded foldable hands this portrait-designed activity a
+     * LANDSCAPE window (API 37 removes the opt-out entirely — see docs/BACKLOG.md). The camera
+     * SurfaceTexture transform only ever produces content that is upright in the device's NATURAL
+     * orientation, so a rotated window must undo the residual or the field lands sideways.
+     *
+     * [windowRotationDeg] is `Surface.ROTATION_*` in degrees — the CCW rotation of the drawing
+     * surface away from natural, the SAME sense as GyroEis's CCW-positive `deviceOrientation` — so
+     * the correction is its negation.
+     *
+     * **PREVIEW-ONLY BY CONSTRUCTION.** Callers MUST pass this through `FlipRenderer.draw`'s
+     * per-call `rotationOverrideDeg` and NEVER through `setRotationDegrees`: renderer rotation is
+     * STATE shared by every draw role, and the ENCODER and ANALYSIS draws must keep framing by
+     * GRAVITY rather than by window shape. Otherwise the same device, held the same way, would
+     * record a differently-framed clip in a landscape window than in a portrait one — and
+     * `encoderSurfaceSize`/`coverScale` would silently overscan-crop again (the cycle-4 bug).
+     *
+     * A portrait-locked phone is always ROTATION_0, so this returns 0 and every existing path is
+     * unchanged by construction — that is what keeps PMA110 byte-identical.
+     */
+    fun windowPreviewRotationDegrees(windowRotationDeg: Int): Int = normalize(-windowRotationDeg)
+
+    /**
+     * True when a window rotated [windowRotationDeg] from natural displays the preview's W and H
+     * swapped. Device-measured on a TB336ZU (2026-08-04): in a 2560x1600 landscape window the
+     * un-swapped box drew the portrait 3:4 preview at ~1200x1600 and pillarboxed away ~53% of the
+     * window width; the swapped 4:3 box is ~2133x1600, i.e. +78% image area.
+     */
+    fun windowAspectSwapped(windowRotationDeg: Int): Boolean = normalize(windowRotationDeg) % 180 == 90
+
+    /** [naturalAspect] (W/H) as it must be DISPLAYED in a window rotated [windowRotationDeg]. */
+    fun displayedPreviewAspect(naturalAspect: Float, windowRotationDeg: Int): Float =
+        if (windowAspectSwapped(windowRotationDeg)) 1f / naturalAspect else naturalAspect
+
+    /**
+     * CW degrees compact on-screen glyphs counter-rotate to stay upright as the device turns.
+     *
+     * Both terms are CCW-positive in the device's NATURAL frame: [deviceOrientation] is GyroEis's
+     * `atan2(x, y)` gravity read (dev=90 is a COUNTER-clockwise/left landscape — the device-confirmed
+     * convention behind the historical `+dev`), and [windowRotationDeg] is `Surface.ROTATION_*`. The
+     * glyph only needs the RESIDUAL between them: when the window has already turned with the
+     * device, the layout is upright on its own and no glyph rotation is owed.
+     *
+     * Locked portrait is ROTATION_0, so this reduces EXACTLY to the historical `+dev`.
+     */
+    fun glyphRotationDegrees(deviceOrientation: Int, windowRotationDeg: Int): Int =
+        normalize(deviceOrientation - normalize(windowRotationDeg))
+
     /** Rear-camera form of [captureRotationDegrees]; kept so existing callers/tests pin the back matrix. */
     fun captureRotationDegrees(sensorOrientation: Int, teleconverterMode: Boolean, deviceOrientation: Int): Int =
         captureRotationDegrees(sensorOrientation, teleconverterMode, deviceOrientation, frontFacing = false)
