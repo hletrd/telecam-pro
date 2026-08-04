@@ -57,6 +57,7 @@ class PerformQuickFnTest {
         override fun onPreviewSurfaceAvailable(surface: android.view.Surface, width: Int, height: Int) = hit("onPreviewSurfaceAvailable")
         override fun onPreviewSurfaceChanged(width: Int, height: Int) = hit("onPreviewSurfaceChanged")
         override fun onPreviewSurfaceDestroyed() = hit("onPreviewSurfaceDestroyed")
+        override fun onWindowRotationChanged(degrees: Int) = hit("onWindowRotationChanged")
         override fun onFocusMode(mode: FocusMode) = hit("onFocusMode($mode)")
         override fun onFocusSlider(slider: Float) = hit("onFocusSlider")
         override fun onAfLock(locked: Boolean) = hit("onAfLock")

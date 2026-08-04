@@ -40,6 +40,7 @@ internal object PreviewCameraActions : CameraActions {
     override fun onExposureMeterVisibilityChanged(visible: Boolean) = Unit
     override fun onPreviewSurfaceChanged(width: Int, height: Int) = Unit
     override fun onPreviewSurfaceDestroyed() = Unit
+    override fun onWindowRotationChanged(degrees: Int) = Unit
 
     override fun onFocusMode(mode: FocusMode) = Unit
     override fun onFocusSlider(slider: Float) = Unit

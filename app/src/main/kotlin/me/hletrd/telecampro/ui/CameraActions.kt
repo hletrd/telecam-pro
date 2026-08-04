@@ -41,6 +41,14 @@ interface CameraActions {
     fun onPreviewSurfaceChanged(width: Int, height: Int)
     fun onPreviewSurfaceDestroyed()
 
+    /**
+     * The app WINDOW's rotation away from the device's natural orientation (0/90/180/270). Only
+     * Compose observes configuration changes — the activity declares configChanges and is never
+     * recreated — so the UI is the only place that can source this. Always 0 on a portrait-locked
+     * phone; non-zero only where Android 16+ ignores screenOrientation (sw600dp+).
+     */
+    fun onWindowRotationChanged(degrees: Int)
+
     // Focus
     fun onFocusMode(mode: FocusMode)
     fun onFocusSlider(slider: Float)

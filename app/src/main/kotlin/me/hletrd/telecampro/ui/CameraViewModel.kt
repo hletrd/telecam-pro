@@ -1513,6 +1513,10 @@ class CameraViewModel @JvmOverloads constructor(
     override fun onPreviewSurfaceChanged(width: Int, height: Int) = engine.onPreviewSurfaceChanged(width, height)
     override fun onPreviewSurfaceDestroyed() = engine.onPreviewSurfaceDestroyed()
 
+    override fun onWindowRotationChanged(degrees: Int) {
+        engine.setWindowRotation(degrees)
+    }
+
     // ---- Focus ----
     override fun onFocusMode(mode: FocusMode) {
         val before = _state.value

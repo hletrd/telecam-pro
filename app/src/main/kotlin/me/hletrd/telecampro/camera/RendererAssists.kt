@@ -151,6 +151,17 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
         currentGl().setFinderFieldScale(scale)
     }
 
+    /**
+     * The window's rotation away from natural. Inert (0) on a portrait-locked phone, so the PMA110
+     * preview path is unchanged; non-zero only on the large screens where Android 16+ ignores
+     * `screenOrientation`.
+     */
+    fun setWindowRotation(degrees: Int) {
+        val normalized = RotationMath.normalize(degrees)
+        config.update { it.copy(windowRotationDeg = normalized) }
+        currentGl().setWindowRotation(normalized)
+    }
+
     /** Replays all desired handler-backed assists into exactly one fresh GL generation. */
     fun replayAll(
         gl: GlPipeline = currentGl(),
@@ -169,5 +180,6 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
         gl.setTeleFinder(snapshot.teleFinder)
         gl.setSourceHlg(snapshot.sourceHlg)
         gl.setFinderFieldScale(snapshot.finderFieldScale)
+        gl.setWindowRotation(snapshot.windowRotationDeg)
     }
 }

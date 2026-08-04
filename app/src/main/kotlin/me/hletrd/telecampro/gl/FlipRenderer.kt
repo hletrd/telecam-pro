@@ -132,6 +132,13 @@ class FlipRenderer {
         rotationDeg = ((deg % 360) + 360) % 360
     }
 
+    /**
+     * The shared content rotation state, so a caller can build a per-call [draw] `rotationOverrideDeg`
+     * RELATIVE to it (the preview/finder draws add the window term on top). Reading it is the only
+     * way to extend the rotation for one draw role without mutating state every role sees.
+     */
+    fun contentRotationDegrees(): Int = rotationDeg
+
     /** Sensor orientation the SurfaceTexture transform already applies; used only for aspect choice. */
     fun setSensorOrientation(deg: Int) {
         sensorOrientationDeg = ((deg % 360) + 360) % 360

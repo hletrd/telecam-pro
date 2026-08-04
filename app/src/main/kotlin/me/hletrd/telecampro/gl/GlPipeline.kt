@@ -12,6 +12,7 @@ import me.hletrd.telecampro.camera.PUNCH_IN_CROP
 import me.hletrd.telecampro.camera.finderRect
 import me.hletrd.telecampro.camera.loupeHintRect
 import me.hletrd.telecampro.camera.FocusDetailData
+import me.hletrd.telecampro.camera.RotationMath
 import me.hletrd.telecampro.camera.HistogramData
 import me.hletrd.telecampro.camera.WaveformData
 import me.hletrd.telecampro.video.UnsafeRecorderQuarantine
@@ -142,6 +143,10 @@ class GlPipeline {
     // from the tapped point so the loupe follows an off-center subject. Preview-only.
     private var punchInX = 0.5f
     private var finderFieldScale = 1f
+
+    // Window rotation away from natural (0/90/180/270). Preview/finder draws only — see
+    // setWindowRotation. 0 on every portrait-locked phone, which is what keeps PMA110 unchanged.
+    private var windowRotationDeg = 0
     private var punchInY = 0.5f
     // TELE finder PIP: the RESOLVED enable flag (user toggle && TELE && 4:3, resolved by
     // CameraEngine.pushTeleFinder). The finder actually draws only when this is set AND the
@@ -494,6 +499,14 @@ class GlPipeline {
 
     /** Loupe Overview pretend-field scale (converter magnification while TELE, else 1). */
     fun setFinderFieldScale(scale: Float) = post { finderFieldScale = scale.coerceAtLeast(1f) }
+
+    /**
+     * The app WINDOW's rotation away from the device's natural orientation, in degrees. Applied to
+     * the PREVIEW and FINDER draws only — never to the encoder or analysis draws, which must keep
+     * framing the sensor field by GRAVITY (see [RotationMath.windowPreviewRotationDegrees]).
+     * Always 0 on a portrait-locked phone, so this whole path is inert there.
+     */
+    fun setWindowRotation(degrees: Int) = post { windowRotationDeg = RotationMath.normalize(degrees) }
 
     /** TELE finder PIP: with the resolved flag on and the punch-in loupe active, draw a small
      *  corner viewport re-drawing the FULL current camera frame (single-stream: the HAL zoom crop
@@ -900,6 +913,19 @@ class GlPipeline {
                     // encoder/analysis draws below apply the inversion instead to record the true
                     // scene. All four draw roles derive from the ONE convention constant.
                     mirrorX = FrontMirrorConvention.previewDrawMirrorX(frontRoute, frontStreamPreMirrored),
+                    // Undo the WINDOW's rotation so the field stays upright when a large screen
+                    // hands this portrait-designed activity a landscape window (Android 16+ ignores
+                    // screenOrientation at sw600dp+). Added on top of the SHARED rotation state
+                    // rather than written into it: the encoder and analysis draws below must keep
+                    // framing by gravity, or the same device held the same way would record a
+                    // differently-framed clip in a landscape window and coverScale would overscan
+                    // (the cycle-4 bug). null when the window is unrotated, so a phone takes the
+                    // byte-identical pre-existing path.
+                    rotationOverrideDeg = windowRotationDeg.takeIf { it != 0 }?.let {
+                        RotationMath.normalize(
+                            renderer.contentRotationDegrees() + RotationMath.windowPreviewRotationDegrees(it),
+                        )
+                    },
                 )
                 // TELE finder PIP (opt-in, resolved by CameraEngine.pushTeleFinder): a corner
                 // viewport re-drawing the FULL current camera frame while the main view is
@@ -955,7 +981,11 @@ class GlPipeline {
                                 // is the second-stream wide finder already on the BACKLOG; that
                                 // stream comes off a lens the converter is NOT clamped to, and is
                                 // upright for real rather than by declining a rotation.
-                                rotationOverrideDeg = 0,
+                                // The overview deliberately declines the afocal 180° so the world sits
+                                // the right way up in the corner (user-specified 2026-07-28). "Upright"
+                                // is relative to the WINDOW, not the device, so a rotated window still
+                                // owes its own term — this stays 0 on any phone.
+                                rotationOverrideDeg = RotationMath.windowPreviewRotationDegrees(windowRotationDeg),
                             )
                             // iPhone-style framing hint: a thin rectangle inside the overview
                             // marking WHERE THE MAGNIFIED MAIN VIEW IS LOOKING. Drawn with
