@@ -307,6 +307,23 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   outside the coalescer rewrites zoom (mode flip, lens preset, TC toggle) — the ease target is an
   ABSOLUTE number in the old zoom scale, and a glide surviving a scale remap eases toward an
   un-commanded framing in the new scale.
+- **System bar icons are PINNED light; `enableEdgeToEdge()`'s default follows the SYSTEM night
+  setting, not the app's (device-verified A/B 2026-08-04).** `TeleCamProTheme` is unconditionally
+  dark (`TeleDarkColorScheme` — no `isSystemInDarkTheme`, no `values-night`), but a bare
+  `enableEdgeToEdge()` defaults to `SystemBarStyle.auto()`, whose `detectDarkMode` reads the DEVICE's
+  night setting. On a phone in LIGHT mode that resolved `isAppearanceLightStatusBars = true`, and the
+  status bar went effectively BLANK over the dark viewfinder: clock, wifi, 5G, signal bars and the
+  charging bolt all black-on-black, with only the green-backed battery pill showing through. It
+  survived to v1 because every device in the lab sits in dark mode, where `auto()` and the fix agree.
+  `MainActivity` now passes `SystemBarStyle.dark(...)` for BOTH bars — **"dark" names the BACKGROUND,
+  so it yields WHITE icons** (`dark` sets `detectDarkMode = { true }`, and `setUp()` applies
+  `isAppearanceLightStatusBars = !isDark`). The theme's `android:windowLightStatusBar=false` CANNOT
+  do this job and never could: it seeds only the STARTING window, and `enableEdgeToEdge()` overwrites
+  the appearance flags in `onCreate`. Device A/B on the PMA110 in light mode, one variable (the APK):
+  `AppearanceRegion{LIGHT_STATUS_BARS bounds=…}` → `AppearanceRegion{ bounds=…}`, bright pixels in the
+  status-bar band 0.33 % → 1.77 %. The probe is `dumpsys window | grep -A2
+  mLastStatusBarAppearanceRegions`; screenshots alone are weak evidence here because the viewfinder
+  behind the bar is live camera content.
 - **The REC tally border must follow the panel's rounded corners.** A square full-screen border's
   corner segments fall OUTSIDE the visible display area and vanish. Read the radius from the
   WindowInsets RoundedCorner API and scale ×1.2 — the glass corner is a continuous-curvature

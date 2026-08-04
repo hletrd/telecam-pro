@@ -1103,11 +1103,29 @@ These do not require a code or metadata change unless the result exposes a defec
 
 ## Deferred Beyond v1
 
-- **R8/minify:** keep disabled until enum persistence has explicit keep rules and another
-  physical-device release pass. (The "reflection-sensitive OEM SDK paths" half of this blocker
-  retired with the `com.oplus.ocs` removal on 2026-07-25 — no build variant links an OEM SDK now,
-  and `app/proguard-rules.pro` carries no vendor keep rules, only the staged, still-commented
-  SettingsStore enum rule.)
+- **R8/minify — NO LONGER DEFERRED (enabled 2026-08-04).** Kept here as a pointer because this is
+  where the blocker lived for the whole of v1. Google Play's "app is not optimized" recommended
+  action forced the question and BOTH exit criteria named above were met, so `isMinifyEnabled = true`
+  now ships: the SettingsStore enum keep rule in `app/proguard-rules.pro` is LIVE (it was staged and
+  commented), and the physical-device release pass ran on the PMA110. Full evidence lives in
+  `docs/play-console-submit.md` under the minified-build entry — 316 enum constants across 82 enum
+  classes with ZERO renamed while the enum classes themselves were still obfuscated, a `CaptureMode`
+  round trip across `force-stop`, HEIF+DNG and a 4K HEVC/AAC clip written by the minified binary, and
+  DEX 46.67 MB → 2.48 MB. The "reflection-sensitive OEM SDK paths" half of the original blocker had
+  already retired with the `com.oplus.ocs` removal on 2026-07-25. **`isShrinkResources` stays OFF**
+  and is a separate follow-up whose audit is already done: there is no `Resources.getIdentifier`
+  anywhere in `app/src/main/kotlin`, so it can be flipped whenever the extra size win is wanted.
+- **Large-screen orientation/resizability:** Play Console recommends removing
+  `android:screenOrientation="portrait"` from `MainActivity`. **Declined 2026-08-04 (user decision)
+  — it is a recommendation, not a policy requirement, and does not block publishing.** The portrait
+  lock is load-bearing rather than incidental: the glyph counter-rotation system (`+deviceOrientation`,
+  CLAUDE.md) exists precisely BECAUSE the layout is device-fixed, so freeing the activity would make
+  that rotation double-apply, and preview aspect/rotation currently key off `sensorOrientation`
+  assuming a fixed display. Unlocking is a layout+pipeline project with its own device pass, not a
+  manifest edit. `PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY` (added 2026-08-02 after the
+  landscape-window problem was reproduced on a Lenovo TB336ZU) still restores the pre-Android-16
+  behaviour, but it is TEMPORARY by Android's own schedule — **the opt-out is removed at API 37**, so
+  this must be resolved before `targetSdk` is raised to 37.
 - **Dolby Vision:** device-probed end to end on 2026-07-26 and the technical path WORKS — the
   blockers are legal and honesty, not engineering. `DolbyVisionProbeTest` (androidTest; logs under
   `DVProbe`, never fails the build) showed `c2.qti.dv.encoder` is HW and visible to our own

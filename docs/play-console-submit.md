@@ -212,21 +212,41 @@ ACCESS question and use the current `docs/play-data-safety.md` / `PRIVACY.md` wo
   release package launches in its persisted mode) and wrote a HEIF still; zero crashes/ANRs. The
   measured-audio and DNG-route evidence below is from the earlier cuts and those pipelines are
   unchanged by this re-cut. Covered on
-  the release binary. **NOT on a minified one** — `isMinifyEnabled = false`, verified 2026-08-03 by
-  finding `CameraEngine` (155 hits), `encoderSizeLadder` and `pickStillSize` as plain strings in
-  `classes3.dex`. The earlier wording here claimed R8 coverage the build never had:
+  the release binary. **NOT on a minified one** — THAT cut had `isMinifyEnabled = false`, verified
+  2026-08-03 by finding `CameraEngine` (155 hits), `encoderSizeLadder` and `pickStillSize` as plain
+  strings in `classes3.dex`. The earlier wording here claimed R8 coverage the build never had. R8 was
+  enabled on 2026-08-04 and re-earned its own evidence — see the minified-build entry below:
   - Photo: HEIF written.
   - Video: recorded and stopped, MP4 written.
   - **DNG: enabled live from the sheet, which re-resolves the route, then captured — DNG + HEIF
     written, DNG parsed at 4080×3064 16-bit, `FocalLength` 7.73 mm, Make `OPPO` / Model `PMA110`.**
     This proves the fix survives into the release VARIANT. It proves nothing about `keep` rules —
     the earlier claim that "a keep rule miss would have shown here" was false, because nothing is
-    minified. If minification is ever enabled, this check must be repeated to mean that.
+    minified. That repeat came due when minification landed and was carried out — see below.
   - **Audio: measured, not assumed.** With audio off the clip carried a VIDEO track only (the
     `doAudio = recordAudio && hasRecordPermission()` path). With audio on, the same scene produced
     AAC 48 kHz stereo whose PCM measured mean −52.3 dB / peak −38.6 dB with 98.6 % non-zero samples —
     real room ambience, not a silent track. The recording level meter was visible throughout.
   - `logcat`: **zero** `FATAL EXCEPTION` and zero ANRs for `me.hletrd.telecampro` across the run.
+- **Minified-build verification (2026-08-04) — R8 enabled in response to Play Console's "app is not
+  optimized" recommended action.** `isMinifyEnabled = true`; every claim above that was explicitly
+  scoped to an unminified binary is re-earned here on a minified one.
+  - **Static, from `mapping.txt`:** 82 app enum classes carrying 316 constants, **0 constants
+    renamed**, while all 82 enum CLASSES were themselves obfuscated (`CameraEngine -> gj`,
+    `GlPipeline -> ib0`) and 1161 non-enum app fields were renamed. That two-sidedness is the point:
+    the keep rule pins the names `Enum.name`/`enumValueOf` depend on WITHOUT disabling optimization.
+  - **The keep-rule failure mode, tested directly on device:** set mode to VIDEO → `am force-stop`
+    (a swipe-kill equivalent) → relaunch came back in VIDEO. A renamed constant would make
+    `enumValueOf` throw, `SettingsStore`'s `runCatching` would swallow it, and the app would relaunch
+    into defaults with no crash and nothing in logcat — silent corruption of every persisted setting.
+  - **Capture on the minified binary:** a still wrote HEIF 2.77 MB + DNG 25.2 MB
+    (`CameraEngine: CaptureFamily: settled … outputs=heic,dng`); an 8 s clip muxed to HEVC
+    **2160×3840** @ 29.95 fps + AAC 48 kHz stereo, 2 streams, `ffprobe` duration 7.98 s — the
+    portrait encoder buffer of the cycle-4 framing fix, not a landscape band.
+  - `logcat`: zero `FATAL EXCEPTION` for the package across launch, capture and recording.
+  - **Size:** DEX **46.67 MB → 2.48 MB**, APK **47.91 MB → 3.71 MB** (−92.3 %), measured against the
+    installed non-minified v1.0 on the same device. The bulk is `material-icons-extended`, which
+    ships its entire icon set unless R8 strips it — this app references a handful of icons.
 - Packaged binary manifest (not just the source): `minSdkVersion 33`, `targetSdkVersion 36`,
   `compileSdkVersion 37`, **no `INTERNET`**, **no debuggable flag**. `uses-permission` is `CAMERA`,
   `RECORD_AUDIO`, and the visual-media READ trio (plus the framework's own dynamic-receiver
