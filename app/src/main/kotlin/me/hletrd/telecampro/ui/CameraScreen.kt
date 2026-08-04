@@ -1188,6 +1188,12 @@ fun CameraScreen(
                     .navigationBarsPadding()
                     .statusBarsPadding()
                     .padding(vertical = 12.dp),
+                // Centred, deliberately. SpaceEvenly was tried on device 2026-08-04 and is WORSE:
+                // it allocates an equal slot to manualPane, which renders empty in compact mode, so
+                // the visible controls slid to ~69% down the rail and left the top half dead. A
+                // centred stack keeps the shutter near thumb-neutral for a hand gripping the right
+                // edge. Do not "balance" this with an even distribution until the manual cluster
+                // actually occupies its slot.
                 verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
