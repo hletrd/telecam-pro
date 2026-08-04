@@ -27,8 +27,21 @@ Open-source manual camera for periscope telephoto + teleconverters.
 
 ## Release notes (≤500 chars per language)
 
-First release. Paste into the Play Console "Release notes" field, language tags included — and like
-the full description, do not re-wrap it.
+Notes for the NEXT upload — **v1.0.1 (`versionCode 2`)**; `versionCode 1` is spent (see
+`play-console-submit.md`). Paste into the Play Console "Release notes" field, language tags
+included — and like the full description, do not re-wrap it.
+
+```
+<en-US>
+The interface is now available in Korean.
+
+Tablets and other large screens now use a landscape layout with a side control rail.
+
+Much smaller download: release builds are now minified.
+</en-US>
+```
+
+### Shipped v1.0 notes (`versionCode 1` — published 2026-08-04; spent, do not reuse)
 
 ```
 <en-US>
@@ -130,6 +143,20 @@ transliterated "하셀블라드" would not match what the operator sees on scree
 ```
 
 ### Release notes — 출시 노트 (≤500자)
+
+v1.0.1 (`versionCode 2`) 출시 노트입니다. 영어본과 같은 규칙: 줄바꿈을 그대로 두고 붙여넣으세요.
+
+```
+<ko-KR>
+한국어 UI를 추가했습니다.
+
+태블릿 같은 큰 화면에서는 옆쪽 컨트롤 레일이 있는 가로 레이아웃을 씁니다.
+
+다운로드 용량을 크게 줄였습니다.
+</ko-KR>
+```
+
+#### v1.0 notes (superseded — `versionCode 1` is spent; this translation postdates the v1.0 publication and was never pasted)
 
 ```
 <ko-KR>
