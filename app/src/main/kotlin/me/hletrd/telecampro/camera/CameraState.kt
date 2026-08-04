@@ -331,19 +331,26 @@ const val FINDER_TOP_ANCHOR = 0.84f
 /**
  * Floor for the gap under the overview, as a fraction of the frame HEIGHT. See [finderRect].
  *
- * Device-measured clearance above the focal rail at each candidate, on the two shapes on hand — a
- * 411 dp phone (PMA110) and a 941 dp tablet (TB331FC), whose rail sits at very different fractions
- * of the frame:
+ * The top anchor is a fraction of the box WIDTH, and a tablet is more than twice a phone's dp width
+ * while the focal rail stays 48 dp tall — so an anchor tuned on a phone leaves nothing under the box
+ * on a tablet. A scale-free fraction cannot express a fixed-dp clearance; this floor is the part
+ * that scales with the FRAME instead, and whichever sits higher wins.
  *
- *     floor   phone 4:3   phone 16:9   tablet 4:3
- *     0.060      91 px      103 px         0 px   <- tablet touches the rail exactly
- *     0.075      98 px      103 px        22 px
- *     0.090     127 px      103 px        45 px   <- phone starts drifting back up
+ * Chosen from measured preview bounds on both shapes on hand. TB331FC's 4:3 preview runs y 200-1736
+ * with the rail's top edge at 1621 — the rail sits exactly 90 dp above the preview's bottom, which
+ * is why 0.075 (also 90 dp there) landed the box flush against it:
  *
- * 0.075 is the landing point: it lifts the tablet off the rail while leaving the phone within 7 px
- * of where the top anchor alone put it, so the "placed too up" complaint stays fixed.
+ *     floor    phone 4:3   phone 16:9   tablet 4:3
+ *     0.075       98 px       103 px         0 px
+ *     0.082      112 px       103 px        11 px
+ *     0.088      123 px       103 px        20 px
+ *     0.095      137 px       103 px        31 px
+ *
+ * 0.088 clears the rail on the tablet while keeping the phone far below the 271 px of dead space
+ * the original bottom-relative inset left. The phone's 16:9 case never reaches the floor at all —
+ * its anchor already sits higher — so video is untouched at every row above.
  */
-const val FINDER_MIN_BOTTOM_CLEARANCE = 0.075f
+const val FINDER_MIN_BOTTOM_CLEARANCE = 0.088f
 // The punch-in loupe's texcoord crop: the magnified preview samples a (1-crop) span of the frame
 // (0.6 → 2.5× magnification). Shared between the GL draw (gl/GlPipeline) and the tap-mapping
 // composition in CameraEngine (P2.8/AGG4-11) so the two cannot drift.

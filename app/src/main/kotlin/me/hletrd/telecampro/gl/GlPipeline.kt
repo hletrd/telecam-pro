@@ -147,6 +147,9 @@ class GlPipeline {
     // Window rotation away from natural (0/90/180/270). Preview/finder draws only — see
     // setWindowRotation. 0 on every portrait-locked phone, which is what keeps PMA110 unchanged.
     private var windowRotationDeg = 0
+
+    // Change gate for the finder-draw failure log; see its onFailure arm.
+    private var lastFinderFailureSig: String? = null
     private var punchInY = 0.5f
     // TELE finder PIP: the RESOLVED enable flag (user toggle && TELE && 4:3, resolved by
     // CameraEngine.pushTeleFinder). The finder actually draws only when this is set AND the
@@ -1038,6 +1041,20 @@ class GlPipeline {
                             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
                         } finally {
                             GLES20.glDisable(GLES20.GL_SCISSOR_TEST)
+                        }
+                    }.onFailure { e ->
+                        // The isolation above is deliberate — a finder fault must never reach
+                        // preview health — but it was also SILENT, so "the overview is an empty
+                        // rectangle" was undiagnosable: the main draw has already filled this box,
+                        // so a failed finder draw looks exactly like a transparent one. Change-gated
+                        // because the ColorOS 300-row process quota would eat the rest of logcat if
+                        // this logged per frame (see CLAUDE.md).
+                        if (me.hletrd.telecampro.BuildConfig.DEBUG) {
+                            val sig = "${e.javaClass.simpleName}:${e.message}"
+                            if (sig != lastFinderFailureSig) {
+                                lastFinderFailureSig = sig
+                                android.util.Log.w("GlPipeline", "FinderDrawFailed rect=$fx,$fy,${fw}x$fh of ${previewW}x$previewH: $sig")
+                            }
                         }
                     }
                 }

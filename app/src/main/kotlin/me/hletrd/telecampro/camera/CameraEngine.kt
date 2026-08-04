@@ -738,6 +738,16 @@ class CameraEngine(private val context: Context) {
         }
         val inventory = lensInventoryOf(equivalents, range)
         opticalPresets = inventory.optical
+        // opticalPresets is a finder-gate INPUT, not just rail decoration: pushTeleFinder resolves
+        // FINDER_MIN_ZOOM against unifiedZoomOf(..., optical = opticalPresets). Enumeration is
+        // deliberately queued AFTER the first route/open task (see the caller), so every push before
+        // this line resolved the gate against the PRE-ENUMERATION default — and nothing re-resolved
+        // it afterwards. On a launch restored to 3x or 10x that left the GL flag false while the
+        // Compose border, which recomputes live from state.unifiedZoom, drew anyway: an empty
+        // rectangle that only healed once a zoom or mode change happened to re-push (user-reported
+        // 2026-08-04, "loupe is sometimes just a transparent rectangle" on first launch at 3x/10x).
+        // The change gate inside pushTeleFinder makes this free when the answer did not move.
+        pushTeleFinder()
         if (BuildConfig.DEBUG) {
             Log.i(
                 "CameraEngine",

@@ -130,7 +130,9 @@ class FinderGeometryTest {
         // Screen position of each box's LOWER edge, using the measured preview bottoms.
         val photoBottom = 2430f - photo.y
         val videoBottom = 2864f - video.y
-        assertEquals("both aspects must land the box at the same height", photoBottom, videoBottom, 20f)
+        // Close, not identical: the clearance floor lifts whichever aspect reaches it (4:3 here) a
+        // little above the anchor line, which is the floor doing its job rather than a drift.
+        assertEquals("both aspects must land the box at about the same height", photoBottom, videoBottom, 40f)
         // And both must stay clear of the focal rail, whose top edge is at 2384 on this device.
         assertTrue("photo overview overlaps the rail", photoBottom < 2384f)
         assertTrue("video overview overlaps the rail", videoBottom < 2384f)
