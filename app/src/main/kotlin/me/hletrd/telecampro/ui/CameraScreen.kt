@@ -411,6 +411,13 @@ fun CameraScreen(
         // The menu-side column, opposite the capture rail. Narrower because it holds one stack of
         // 48 dp glyphs, where the rail holds the dial cluster, the mode carousel and the shutter.
         val operatorMenuRailWidth = 76.dp
+        // Hoisted: the preview box computes with these, and the OSD row — which is emitted in a
+        // different scope — has to inset by exactly the same two numbers or it runs over the frame.
+        val outerDensity = LocalDensity.current
+        val railReservePx = if (landscapeOperator) with(outerDensity) { operatorRailWidth.roundToPx() } else 0
+        val menuReservePx = if (landscapeOperator) with(outerDensity) { operatorMenuRailWidth.roundToPx() } else 0
+        val operatorMenuLeftInset = if (landscapeOperator) operatorMenuRailWidth else 0.dp
+        val operatorRailRightInset = if (landscapeOperator) operatorRailWidth else 0.dp
         // previewAspect is the field as it displays in the device's NATURAL orientation; a rotated
         // window shows it W/H-swapped. Device-measured on TB336ZU (2026-08-04): without the swap a
         // 2560x1600 landscape window drew the portrait 3:4 box at ~1200x1600 and pillarboxed away
@@ -448,13 +455,11 @@ fun CameraScreen(
             // frame. Costs image size on a 16:9 preview, which already fills a landscape window
             // edge to edge (measured 2560×1440 on TB336ZU) — that is the deliberate trade for a
             // viewfinder no control ever covers.
-            val railReservePx = if (landscapeOperator) with(density) { operatorRailWidth.roundToPx() } else 0
             // Reserved on the LEFT for the menu column. Putting every control in the right rail made
             // a landscape grip fight itself: the shutter hand owns that edge, and Grid / TELE / flip
             // / DISP / gear were stacked on top of the dial cluster and the shutter — 12 controls in
             // one column, none on the other (owner-reported). They take their own side instead, and
             // like the rail it is SUBTRACTED from the preview so neither column sits on the frame.
-            val menuReservePx = if (landscapeOperator) with(density) { operatorMenuRailWidth.roundToPx() } else 0
             // The bottom cluster exists ONLY in the portrait layout — the wide layout gives the
             // controls their own COLUMN, whose width railReservePx already took out of the preview.
             // bottomClusterRestHeightPx is written from inside the portrait branch, and
@@ -507,9 +512,13 @@ fun CameraScreen(
         Box(
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                // TopCenter centres across the FULL width; the rail owns the right edge, so shift
-                // left by half the reserve to centre the frame in the space actually left for it.
-                .offset { IntOffset(-railReservePx / 2, topOffsetPx) }
+                // TopCenter centres across the FULL width, but the frame's space is bounded by BOTH
+                // reserved columns — the menu column on the left and the capture rail on the right.
+                // Shifting by half the RAIL alone (what this did while only one column existed) left
+                // the frame 45 px too far left once the menu column arrived, so the menu glyphs sat
+                // straddling the image's edge, half on black and half on live pixels — the exact
+                // chrome-on-the-seam defect both columns exist to prevent.
+                .offset { IntOffset((menuReservePx - railReservePx) / 2, topOffsetPx) }
                 // Explicit width (not fillMaxWidth) so a height-bound window letterboxes on the
                 // SIDES; TopCenter then centres it horizontally. aspectRatio still derives the
                 // height, keeping one source of truth for the box shape.
@@ -834,7 +843,17 @@ fun CameraScreen(
                 .align(Alignment.TopStart)
                 .statusBarsPadding()
                 .fillMaxWidth()
-                .padding(start = 12.dp, end = 12.dp, top = 60.dp)
+                // Inset by BOTH reserved columns in the wide layout, and by 12 dp in portrait where
+                // there are none. Without this the readout began inside the menu column and ran
+                // across the live frame, so it was simultaneously interleaved with the menu glyphs
+                // and drawn over the image — the same seam violation the two columns exist to stop.
+                // The top inset drops too: 60 dp clears a horizontal button ROW, and in the wide
+                // layout the buttons are a column beside the frame, not above it.
+                .padding(
+                    start = operatorMenuLeftInset + 12.dp,
+                    end = operatorRailRightInset + 12.dp,
+                    top = if (landscapeOperator) 8.dp else 60.dp,
+                )
                 // Same shift as the button row above: they are one piece of chrome, and the fixed
                 // 60 dp only clears the buttons while the buttons are in their default home.
                 .offset { IntOffset(0, topBarSeamOffsetPx) },
