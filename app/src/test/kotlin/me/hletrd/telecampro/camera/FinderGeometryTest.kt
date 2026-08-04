@@ -25,11 +25,11 @@ class FinderGeometryTest {
         )
         assertEquals(300f, r.width, 1e-4f)
         assertEquals(225f, r.height, 1e-4f)
-        // Short edge is 750 → 22.5 side inset and 75 bottom inset. The box is anchored to the
-        // RIGHT edge (2026-07-29): the left column carries the vertical exposure/zoom ruler, which
-        // the overview used to sit under.
+        // Short edge is 750 → 22.5 side inset. The box is anchored to the RIGHT edge (2026-07-29):
+        // the left column carries the vertical exposure/zoom ruler, which the overview used to sit
+        // under. Vertically it hangs from the box TOP (2026-08-04), so y is whatever is left below.
         assertEquals(1000f - 300f - 22.5f, r.x, 1e-4f)
-        assertEquals(75f, r.y, 1e-4f)
+        assertEquals(750f - 1000f * FINDER_TOP_ANCHOR - 225f, r.y, 1e-4f)
     }
 
     @Test
@@ -38,7 +38,7 @@ class FinderGeometryTest {
         assertEquals(1080f * FINDER_FRACTION, r.width, 1e-3f)
         assertEquals(1440f * FINDER_FRACTION, r.height, 1e-3f)
         assertEquals(1080f - 1080f * FINDER_FRACTION - 1080f * FINDER_SIDE_MARGIN, r.x, 1e-3f)
-        assertEquals(1080f * FINDER_BOTTOM_MARGIN, r.y, 1e-3f)
+        assertEquals(1440f - 1080f * FINDER_TOP_ANCHOR - 1440f * FINDER_FRACTION, r.y, 1e-3f)
     }
 
     @Test
@@ -76,20 +76,11 @@ class FinderGeometryTest {
     }
 
     @Test
-    fun `side and bottom margins move only their own axes`() {
-        val baseline = finderRect(
-            boxWidth = 1000f,
-            boxHeight = 1500f,
-            sideMargin = 0.03f,
-            bottomMargin = 0.03f,
-        )
-        val raised = finderRect(
-            boxWidth = 1000f,
-            boxHeight = 1500f,
-            sideMargin = 0.03f,
-            bottomMargin = 0.14f,
-        )
+    fun `side and top-anchor margins move only their own axes`() {
+        val baseline = finderRect(boxWidth = 1000f, boxHeight = 1500f, sideMargin = 0.03f, topAnchor = 0.60f)
+        val raised = finderRect(boxWidth = 1000f, boxHeight = 1500f, sideMargin = 0.03f, topAnchor = 0.49f)
         assertEquals(baseline.x, raised.x, 1e-4f)
+        // A SMALLER top anchor hangs the box higher, so its distance from the bottom grows.
         assertEquals(110f, raised.y - baseline.y, 1e-4f)
     }
 
@@ -112,23 +103,24 @@ class FinderGeometryTest {
     }
 
     @Test
-    fun `the overview lands in the same place in 4-3 and 16-9`() {
-        // The bottom inset clears the bottom chrome (focal rail, mode carousel), which sits at a
-        // fixed offset from the SCREEN bottom. The preview box grows DOWNWARD with its aspect, so
-        // anchoring the inset to the box's own bottom put a 16:9 video frame's overview ~640 px
-        // lower on a 1440-wide phone — right on the rail, overlapping the last zoom chip by
-        // 133x168 px. Owner-reported. Both aspects must resolve the same distance from the point a
-        // 4:3 preview would end at.
+    fun `the overview clears the bottom chrome in 4-3 and 16-9 alike`() {
+        // Device-measured on a 1440-wide phone: the 4:3 preview occupies screen y 510-2430 and the
+        // 16:9 one 304-2864 — the taller aspect grows in BOTH directions, so its bottom edge is only
+        // ~434 px lower, not the 640 px the aspect difference alone suggests. A bottom-relative
+        // inset therefore cannot place the box against screen-fixed chrome: tuning it for 4:3 drops
+        // 16:9 onto the focal rail, and subtracting the full aspect difference lifts 16:9 ~300 px
+        // clear of it. Both were reported. Measured from the box TOP the two agree.
         val w = 1440f
         val photo = finderRect(w, w * 4f / 3f)
         val video = finderRect(w, w * 16f / 9f)
-        // Same width, same x: only the vertical anchor was ever in question.
         assertEquals(photo.width, video.width, 0.01f)
         assertEquals(photo.x, video.x, 0.01f)
-        // The 4:3 case is unchanged — the correction term is zero exactly there.
-        assertEquals(w * FINDER_BOTTOM_MARGIN, photo.y, 0.01f)
-        // The load-bearing consequence, stated directly: measured from the SCREEN bottom the box's
-        // lower edge is the same in both aspects, which is what keeps it off the rail.
-        assertEquals(w * FINDER_BOTTOM_MARGIN, video.y - (w * 16f / 9f - w * 4f / 3f), 0.01f)
+        // Screen position of each box's LOWER edge, using the measured preview bottoms.
+        val photoBottom = 2430f - photo.y
+        val videoBottom = 2864f - video.y
+        assertEquals("both aspects must land the box at the same height", photoBottom, videoBottom, 20f)
+        // And both must stay clear of the focal rail, whose top edge is at 2384 on this device.
+        assertTrue("photo overview overlaps the rail", photoBottom < 2384f)
+        assertTrue("video overview overlaps the rail", videoBottom < 2384f)
     }
 }

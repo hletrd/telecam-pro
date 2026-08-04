@@ -317,12 +317,16 @@ const val FINDER_SIDE_MARGIN = 0.03f
 // 0.14 → 0.22 (2026-07-29): once the box moved to the RIGHT edge it came alongside the focal rail,
 // whose last chip ran into it. The rail is a 48 dp row sitting just above the preview's bottom, so
 // the inset has to clear the rail's full height plus its breathing room, not just the edge.
-// 0.22 → 0.10 (2026-08-04, owner: "for photo it is also placed too up"). 0.22 was compensating for
-// the box being dragged DOWN by a tall preview, by lifting it in every aspect; the aspect term in
-// finderRect now handles that directly, so the margin only has to do its own job — clear the rail.
-// On a 1440-wide phone this is 144 px, putting the box's lower edge ~98 px above the rail's top
-// edge in both aspects, rather than the 271 px of dead space 0.22 left.
+// REPLACED by FINDER_TOP_ANCHOR (2026-08-04): a bottom-relative inset cannot place the box against
+// screen-fixed chrome, because the preview box's bottom edge moves with its aspect while the chrome
+// does not. Kept only as finderRect's unused default so existing callers and tests still compile.
 const val FINDER_BOTTOM_MARGIN = 0.10f
+
+// How far below the preview's TOP edge the overview's top sits, as a fraction of the box WIDTH.
+// Device-measured on a 1440-wide phone: the placement that clears the focal rail by ~90 px lands
+// the box ~1200 px below the preview top in 4:3 and ~1218 px in 16:9 — the same distance to within
+// 1.5% of the box, which is why this edge is the stable one to measure from.
+const val FINDER_TOP_ANCHOR = 0.84f
 // The punch-in loupe's texcoord crop: the magnified preview samples a (1-crop) span of the frame
 // (0.6 → 2.5× magnification). Shared between the GL draw (gl/GlPipeline) and the tap-mapping
 // composition in CameraEngine (P2.8/AGG4-11) so the two cannot drift.
@@ -555,7 +559,8 @@ fun finderRect(
     boxHeight: Float,
     fraction: Float = FINDER_FRACTION,
     sideMargin: Float = FINDER_SIDE_MARGIN,
-    bottomMargin: Float = FINDER_BOTTOM_MARGIN,
+    @Suppress("UNUSED_PARAMETER") bottomMargin: Float = FINDER_BOTTOM_MARGIN,
+    topAnchor: Float = FINDER_TOP_ANCHOR,
 ): FinderRect {
     val shortEdge = minOf(boxWidth, boxHeight)
     val width = boxWidth * fraction
@@ -564,15 +569,17 @@ fun finderRect(
         // overview sat under it (user-reported 2026-07-29 — "loupe is overlapping with zoom bar").
         // The right column is the only side of the image with no persistent control on it.
         x = boxWidth - width - shortEdge * sideMargin,
-        // Anchored to where a 4:3 preview would END, not to this box's own bottom. The margin exists
-        // to clear the bottom chrome (focal rail, mode carousel), which sits at a FIXED offset from
-        // the SCREEN bottom — but the preview box grows downward with its aspect, so a 16:9 video
-        // frame is ~640 px taller than the 4:3 one on a 1440-wide phone and dragged the overview
-        // down onto the rail with it. User-reported: "on video, loupe is overlapping with zoom chips
-        // in mobile phones". The extra height is added back to the inset, so the box lands in the
-        // same place in every aspect and 4:3 is unchanged (the term is zero there). Derived from the
-        // box alone, so the GL scissor and the Compose border still resolve it identically.
-        y = shortEdge * bottomMargin + (boxHeight - minOf(boxHeight, boxWidth * 4f / 3f)),
+        // Measured DOWN FROM THE BOX TOP, not up from its bottom. The inset exists to clear the
+        // bottom chrome (focal rail, mode carousel), which sits at a fixed offset from the SCREEN
+        // bottom — and the box's own bottom is the one edge that does not track the screen. Device-
+        // measured on a 1440-wide phone: the 4:3 preview runs y 510-2430, the 16:9 one 304-2864, so
+        // the taller aspect grows in BOTH directions and its bottom is only ~434 px lower, not the
+        // 640 px the aspect difference suggests. Anchoring to the bottom therefore either dropped
+        // the overview onto the rail (0.22, the original report) or lifted it 300 px clear of it
+        // (subtracting the full aspect difference, the second report). The box top, by contrast,
+        // sits ~1200 px below the preview top in BOTH aspects, so that is the edge to measure from.
+        // Still a pure function of the box, so the GL scissor and the Compose border agree.
+        y = boxHeight - boxWidth * topAnchor - boxHeight * fraction,
         width = width,
         height = boxHeight * fraction,
     )
