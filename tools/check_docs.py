@@ -176,7 +176,11 @@ check(not named, "console sequence hard-codes no artifact hash", f"{named}")
 # and the two drifted apart once — the banner moved to a new cut while the heading below it still
 # said the old one, which is the shape that sends an operator to the wrong bundle.
 banner = re.search(r"(?:UPLOAD-READY|PUBLISHED) \([\d-]+\)[^\n]*`main` at `([0-9a-f]{7})`", submit)
-pin_start = submit.index("### Final v1 upload artifacts")
+# The pin heading carries the version it pins ("v1.0.1 upload artifacts"), so match the shape,
+# not one version's literal — the literal went stale the first time the pin moved past v1.
+pin_match = re.search(r"^### .*\bupload artifacts\b", submit, re.M)
+assert pin_match, "no upload-artifacts pin heading"
+pin_start = pin_match.start()
 pin_section = submit[pin_start:submit.index("\n### ", pin_start + 1)]
 heading = re.search(r"`main` at `([0-9a-f]{7})`", pin_section)
 check(bool(banner and heading), "the pin states its commit in both places")
