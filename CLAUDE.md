@@ -219,8 +219,20 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   an uncorrected EIS warp band (~6% of width) on one edge — in the PREVIEW and in the RECORDED
   FILE (device-verified frame extraction; displays as a rainbow-smear band at the bottom in
   portrait playback). `resolveNonTeleId`: photo=logical/seamless, video=matching standalone;
-  `setVideoMode` remaps zoom between the unified main-relative scale and the lens-local scale so
-  framing carries across the mode flip.
+  **The zoom SCALE follows the ROUTE, not the mode (corrected 2026-08-04 after three
+  user-visible symptoms).** `zoomRatio` is main-relative on the logical seamless camera and
+  LENS-LOCAL on any standalone one. Six places decided which by asking `mode == VIDEO` — true of
+  the video route but blind to the OTHER standalone door, since wanting DNG is itself what moves
+  photo off the seamless camera. With DNG on, tapping 3× wrote the main-relative 3.0 into a
+  lens-local slot: 3× digital zoom on the 70 mm lens, OSD "208 mm", readout 9.1× (3 × 70/23), and
+  the rail collapsing to 1× because `forZoom()` read a lens-local 1.0 as unified. The wire zoom was
+  correct at 3.0 throughout, which is why every zoom test kept passing — the value was never wrong,
+  only the scale it was read on. ONE round-tripping pair now owns the conversion
+  (`unifiedZoomOf`/`localZoomOf`), keyed on `standaloneRouteWanted(...)`, and it divides by the
+  OPTICAL lens the route REACHES — not the band tapped: on a one-camera device the "3×" band is a
+  crop of the 1× lens, so using the band double-counts it (the first fix did exactly that and broke
+  the tablets while looking right on PMA110). Device-verified on all three: PMA110 23/69/230 mm,
+  TB336ZU 26/78 mm, TB331FC 27/81 mm — the tablets' ×3 readings are the crop, and are correct.
 - **setRepeatingRequest STALLS this HAL's preview ~180 ms per swap (measured 2026-07-14) — live
   zoom is GL-rendered.** Swapping the repeating request (zoom tick, control change, AE-OFF manual
   values, HAL-AE alike) gaps the stream 170–250 ms; per-tick zoom submits made zoom read as ~5 fps
@@ -394,7 +406,8 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   describe container/codec truthfully but predate this framing fix.
 - **Release output files verified on PMA110 (2026-07-10).** A serialized rapid double-shutter test
   produced exactly one valid DNG+HEIF pair (that 07-10 DNG measured 4080×3064 pre-RAW-re-route;
-  since the 07-14 TELE-only RAW gating, TELE DNG is **4096×3072, 16-bit** — standalone cam 4's
+  since RAW moved onto standalone routes on 07-14 — a gating the 07-29 route-input model then
+  widened to EVERY lens — TELE DNG is **4096×3072, 16-bit**, standalone cam 4's
   advertised RAW16 array, device-measured 2026-07-24 by `tele_dng_parity`). A 4K HLG clip was HEVC Main10
   3840×2160 at 30000/1001 with AAC 48 kHz stereo; Open Gate produced HEVC Main10 2560×1920 4:3 at
   30000/1001 with AAC. The release smoke test had no crash or ANR. Saved-STILL uprightness in
