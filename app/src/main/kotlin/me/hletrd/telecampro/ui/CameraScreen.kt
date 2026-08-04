@@ -189,6 +189,7 @@ import me.hletrd.telecampro.ui.review.GalleryThumb
 import me.hletrd.telecampro.ui.review.MediaReviewOverlay
 import me.hletrd.telecampro.ui.theme.CameraColors
 import me.hletrd.telecampro.ui.theme.hudGlyph
+import kotlin.math.roundToInt
 
 /**
  * Top inset every free-floating viewfinder lane starts below, so nothing lands on the OSD status
@@ -336,7 +337,11 @@ fun CameraScreen(
     // where the old bare +dev would have laid every label on its side. Locked portrait is
     // ROTATION_0, so this reduces exactly to the historical +dev.
     // Accumulate an UNWRAPPED target so the animation always takes the shortest ≤90° path.
-    val glyphRotationDeg = RotationMath.glyphRotationDegrees(state.deviceOrientation, windowRotationDeg)
+    val glyphRotationDeg = RotationMath.glyphRotationDegrees(
+        state.deviceOrientation,
+        windowRotationDeg,
+        windowFollowsDevice(windowConfiguration.smallestScreenWidthDp),
+    )
     var overlayRotationTarget by remember { mutableFloatStateOf(glyphRotationDeg.toFloat()) }
     LaunchedEffect(glyphRotationDeg) {
         overlayRotationTarget = shortestRotationTarget(overlayRotationTarget, glyphRotationDeg.toFloat())
@@ -402,12 +407,36 @@ fun CameraScreen(
         //   - glyph counter-rotation: RotationMath.glyphRotationDegrees.
         //   - capture masks and encoder framing are UNCHANGED ON PURPOSE. Both derive from GRAVITY,
         //     not from window shape, so a clip records the same field however the window is turned.
-        // Keyed on window SHAPE, not on rotation: a split-screen or freeform window can be wide at
-        // ROTATION_0, and the rail is a layout answer to "wide", not to "turned".
-        val landscapeOperator = windowConfiguration.screenWidthDp > windowConfiguration.screenHeightDp
+        // FALSE ALWAYS since 2026-08-05 (owner decision): "placing shutter button regardless of
+        // screen orientation, and also gallery button and functional buttons. just rotate the texts
+        // and histogram / waveform view".
+        //
+        // So orientation moves NO control. A wide window used to earn a different SHAPE of chrome —
+        // leading menu column, trailing capture rail — which meant the shutter, gallery and Fn each
+        // had two homes and the operator had to re-find them after a turn. One arrangement now: bar
+        // along the top, capture cluster along the bottom. What rotates is only what has to be READ
+        // — text, chips, hints, and the histogram/waveform — via `overlayRotation`.
+        //
+        // This only holds because handsets stay portrait-LOCKED (MainActivity.lockPortraitOnHandsets):
+        // a landscape handset window is ~420 dp tall, and a top bar plus a bottom cluster would eat
+        // it from both ends. Large screens rotate freely and have the height to spare — verified on
+        // TB336ZU at 2560x1600, where the same cluster sits along the bottom with room over it.
+        //
+        // Kept as a named val rather than deleted inline: the reserves, insets and placement branches
+        // below all read it, and one seam that is provably false everywhere is easier to audit — and
+        // to revisit — than the same decision re-derived at each of those sites.
+        val landscapeOperator = false
         // Reserved width for the operator rail. Chrome must not overlay the image (the whole point
         // of the rail), so the preview box is fitted into the REMAINDER — see previewWidthPx below.
-        val operatorRailWidth = 208.dp
+        // Sized so the PORTRAIT cluster fits unchanged, because it is the same composable: the rail
+        // re-flows nothing, it only gives the phone's bottom cluster a column instead of a row. At
+        // 208 dp it did not fit — the centred focal chips ran into the edge-anchored Fn button
+        // (measured on TB331FC: Fn ending at x=1731, the 1x chip starting at exactly 1731), and every
+        // attempt to fix that by re-arranging the cluster made landscape structurally diverge from
+        // portrait, which is the one thing it must not do. A phone's bottom cluster gets ~420 dp;
+        // 360 dp clears the 4-chip rail (~240 dp) plus a 48 dp Fn at each edge with margin to spare,
+        // and a 1506 dp-wide tablet window can afford it without crowding the frame.
+        val operatorRailWidth = 360.dp
         // The menu-side column, opposite the capture rail. Narrower because it holds one stack of
         // 48 dp glyphs, where the rail holds the dial cluster, the mode carousel and the shutter.
         val operatorMenuRailWidth = 76.dp
@@ -1158,7 +1187,12 @@ fun CameraScreen(
                         )
                     }
                     if (!detailsVisible) {
-                        val entryAnchor = fnEntryAnchor(state.deviceOrientation)
+                        // Residual, not raw gravity — see the FnOverlay note: with the window free to
+                        // turn, gravity alone would move Fn to the thumb edge of a layout that had
+                        // already moved. It also made two identical tablets disagree (Fn LEFT of the
+                        // chips on TB331FC, RIGHT on TB336ZU) purely from each one's stale flat-desk
+                        // gravity hold.
+                        val entryAnchor = fnEntryAnchor(overlayRotation.roundToInt())
                         CompactFnButton(
                             onClick = {
                                 currentActions.value.onCameraInputBlockedChange(true)
@@ -2167,11 +2201,19 @@ private fun FnOverlay(
     val slots = remember(state.mode, state.activeFnSlots) {
         fnOverlaySlots(state.mode, state.activeFnSlots)
     }
-    val trayAnchor = fnOverlayAnchor(state.deviceOrientation)
-    val gridRows = remember(slots, state.deviceOrientation) {
-        fnOverlayGridRows(slots, state.deviceOrientation)
+    // Every "held sideways" adaptation below keys on the glyph RESIDUAL, not on raw gravity. These
+    // reshapes exist because a portrait-LOCKED window could not follow the device; now that the
+    // window turns, a sideways phone already gets a rotated LAYOUT, and reshaping the tray for a
+    // sideways device on top of that would turn it twice. The residual is 0 exactly when the layout
+    // absorbed the turn, and non-zero only when it could not (the user's system rotation lock),
+    // which is the case these were written for. Rounding the animated float is safe: the value is
+    // normalized downstream, and a mid-tween anchor flip is invisible against the tween itself.
+    val glyphOrientation = glyphRotation.roundToInt()
+    val trayAnchor = fnOverlayAnchor(glyphOrientation)
+    val gridRows = remember(slots, glyphOrientation) {
+        fnOverlayGridRows(slots, glyphOrientation)
     }
-    val contentAxis = fnTileContentAxis(state.deviceOrientation)
+    val contentAxis = fnTileContentAxis(glyphOrientation)
     val availability = remember(state.caps, state.controls) {
         controlAvailability(state.caps?.controlCapabilities(), state.controls)
     }
