@@ -22,7 +22,7 @@ import org.junit.runner.RunWith
  * both verified on this device. Instrumentation is the one route left: `UiAutomation` holds
  * INJECT_EVENTS, so it can post multi-pointer `MotionEvent`s into our own activity.
  *
- * Like [me.hletrd.telecampro.video.DolbyVisionProbeTest] this is a PROBE: it measures and logs under
+ * Like [me.hletrd.telecampro.video.EncoderProfileLevelProbeTest] this is a PROBE: it measures and logs under
  * [TAG] and must never fail the build. The thing being measured is a HAL stall, so an assertion here
  * would encode a timing threshold as a correctness claim.
  *

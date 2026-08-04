@@ -766,7 +766,7 @@ and decoded the main 4K stream:
 | Stock mode | main 4K format | dynamic-range profile | dataspace |
 |---|---|---|---|
 | HDR **off** (Rec.709 / SDR) | `YUV_420_888` — **8-bit** | `0x1` STANDARD | `0x10c10000` = BT709 \| SMPTE_170M \| **LIMITED** |
-| HDR **on** (Rec.2020) | `YCBCR_P010` — **10-bit** | `0x40` **DOLBY_VISION_10B_HDR_OEM** | `0x12060000` = BT2020 \| **HLG** \| LIMITED |
+| HDR **on** (Rec.2020) | `YCBCR_P010` — **10-bit** | `0x40` — a **proprietary licensed** OEM HDR profile | `0x12060000` = BT2020 \| **HLG** \| LIMITED |
 | **O-Log2** | `YCBCR_P010` — **10-bit** | `0x1` **STANDARD** | `0x8c60000` = BT2020 \| SMPTE_170M \| **FULL** |
 
 **The specific way log works, and why it is closed to us, is now exact.** Log is a **10-bit P010
@@ -782,9 +782,9 @@ tag". Combined with the three walls already recorded (P010 absent from
 third parties), this closes the question: the stock log path is structurally privileged, not merely
 undocumented.
 
-Incidental confirmation: the stock app's HDR-on video really is **Dolby Vision** (profile `0x40`),
-matching the 2026-07-26 `DolbyVisionProbeTest` finding that `c2.qti.dv.encoder` is visible and
-MediaMuxer accepts a DV track — and its base layer is HLG, exactly as the probe reported.
+Incidental confirmation: the stock app's HDR-on video uses a PROPRIETARY licensed HDR format
+(dynamic-range profile `0x40`) whose base layer is HLG. We do not implement, detect or name such
+formats — see the closed entry under Deferred Beyond v1.
 
 ### How the STOCK app gets its log stream — ANSWERED 2026-07-28 (and why we cannot copy it)
 
@@ -1147,24 +1147,18 @@ These do not require a code or metadata change unless the result exposes a defec
     but worth knowing before chasing it as a new defect.
   - **Play Console will still flag this.** Its check reads the `screenOrientation` attribute, which
     is deliberately retained; the recommendation is advisory and does not block publishing.
-- **Dolby Vision:** device-probed end to end on 2026-07-26 and the technical path WORKS — the
-  blockers are legal and honesty, not engineering. `DolbyVisionProbeTest` (androidTest; logs under
-  `DVProbe`, never fails the build) showed `c2.qti.dv.encoder` is HW and visible to our own
-  third-party package, configured it, encoded 12 P010 frames, and MediaMuxer accepted the track and
-  closed a file `ffprobe` reads as a genuine DV stream: `dvvC` box, `dby1` brand, `dv_profile=8`,
-  `dv_level=11`, `rpu_present_flag=1`, `bl_present_flag=1`. Do NOT reason from the APV exclusion —
-  AOSP's `MPEG4Writer` special-cases `video/dolby-vision` rather than rejecting it. The emitted
-  transfer is `arib-std-b67` (HLG) even when PQ is requested, i.e. **Profile 8.4**, whose base layer
-  is the same HLG signal our GL pipeline already builds, with the encoder generating the RPU. So the
-  remaining engineering is small (a 10-bit encoder EGL config plus the DV MIME/profile). What must
-  be resolved first, in order:
-  1. **Source honesty.** The stream is still the ISP's display-referred 8-bit SDR output (see the
-     entry below). A DV-branded file would assert more than the pipeline can back — the same rule
-     that already forbids marketing our HLG as end-to-end 10-bit.
-  2. **Trademark.** Using the device's licensed encoder through public Camera2/MediaCodec is one
-     question; putting "Dolby Vision" in the UI or the Play listing is a separate permission
-     question that public Dolby documentation does not answer (their Implementation Handbook covers
-     chip and device makers only). Requires contacting Dolby before any user-visible naming.
+- **Proprietary / licensed HDR video formats — CLOSED, not deferred (owner decision 2026-08-04).**
+  Previously carried here as a deferred option after an exploratory probe. That probe, its recorded
+  findings, and the encoder-inventory detection for such formats were REMOVED from the repository on
+  2026-08-04: they are trademarked, and the owner's decision is that they must not remain in the
+  source. The shipping video ladder is HEVC and AVC only.
+  Two independent reasons, either of which is sufficient, so reopening needs BOTH answered:
+  1. **Source honesty.** The Camera2 stream is the ISP's display-referred 8-bit SDR output (see the
+     entry below). Any HDR-branded container would assert more than the pipeline can back — the same
+     rule that already forbids marketing our HLG as end-to-end 10-bit.
+  2. **Licensing.** Use is governed by agreements between the format owner and chip/device makers; a
+     third-party app riding a device's implementation is a separate permission question that public
+     documentation does not answer. This is a legal answer to obtain first, never a probe to re-run.
 - **End-to-end 10-bit Camera2 input:** the stable shipping Camera2/EGL source is SDR/8-bit; the prior
   HLG10 + JPEG + RAW combination crashed the HAL.
 - **Authenticated CameraUnit path:** still a legitimate deferred option, but the groundwork was

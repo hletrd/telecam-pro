@@ -24,7 +24,7 @@ import org.junit.runner.RunWith
  * bisects it on hardware instead of guessing: it configures the SAME size/rate/bitrate five ways and
  * reports which succeed.
  *
- * Like [DolbyVisionProbeTest], it NEVER fails the build — a device that lacks the codec must not
+ * Like every probe in this source set, it NEVER fails the build — a device that lacks the codec must not
  * break CI. Read the verdict with `adb logcat -s EncProbe`.
  */
 @RunWith(AndroidJUnit4::class)

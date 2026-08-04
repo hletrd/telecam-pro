@@ -705,12 +705,10 @@ class CameraController(context: Context) {
                                 DynamicRangeProfiles.HLG10 -> "HLG10"
                                 DynamicRangeProfiles.HDR10 -> "HDR10"
                                 DynamicRangeProfiles.HDR10_PLUS -> "HDR10_PLUS"
-                                DynamicRangeProfiles.DOLBY_VISION_10B_HDR_REF -> "DV_10B_REF"
-                                DynamicRangeProfiles.DOLBY_VISION_10B_HDR_REF_PO -> "DV_10B_REF_PO"
-                                DynamicRangeProfiles.DOLBY_VISION_10B_HDR_OEM -> "DV_10B_OEM"
-                                DynamicRangeProfiles.DOLBY_VISION_10B_HDR_OEM_PO -> "DV_10B_OEM_PO"
-                                DynamicRangeProfiles.DOLBY_VISION_8B_HDR_REF -> "DV_8B_REF"
-                                DynamicRangeProfiles.DOLBY_VISION_8B_HDR_OEM -> "DV_8B_OEM"
+                                // Profiles this app does not implement are logged as their raw
+                                // constant rather than named. The app ships SDR/HLG only, so a name
+                                // here would decorate the dump with a format we neither produce nor
+                                // consume; the hex value still identifies it against the AOSP header.
                                 else -> "0x${p.toString(16)}"
                             }
                         })

@@ -11,8 +11,6 @@ import me.hletrd.telecampro.camera.VideoCodec
  * On the Find X9 Ultra (SM8850 / Snapdragon 8 Elite Gen 5) this resolves to:
  *  - HEVC → `c2.qti.hevc.encoder` (HW, 8K30 / 4K120, ≤180 Mbps)
  *  - AVC  → `c2.qti.avc.encoder`  (HW, 8K30 / 4K120, ≤220 Mbps)
- *  - Dolby Vision `c2.qti.dv.encoder` exists in HW and is detected via [hasDolbyVision], but is not
- *    offered as a recording codec (clean MP4 muxing of a DV elementary stream is not straightforward).
  *
  * (AV1 was removed as a recording codec: the only AV1 encoder on this SoC is software
  * `c2.android.av1.encoder` — too slow/low-res to ship.)
@@ -25,9 +23,6 @@ object EncoderCaps {
 
     // codec → best encoder (prefer a hardware one) or null if the device has no encoder for it.
     private val byCodec: Map<VideoCodec, Info> by lazy { buildMap { scan(this) } }
-
-    /** True if the device advertises a Dolby Vision (video/dolby-vision) encoder — HW on this SoC. */
-    val hasDolbyVision: Boolean by lazy { encoderFor(MIME_DOLBY_VISION) != null }
 
     private fun scan(out: MutableMap<VideoCodec, Info>) {
         for ((codec, mime) in listOf(
@@ -101,7 +96,6 @@ object EncoderCaps {
     /** The concrete encoder component name chosen for [codec] (for diagnostics), or null. */
     fun encoderName(codec: VideoCodec): String? = byCodec[codec]?.name
 
-    const val MIME_DOLBY_VISION = "video/dolby-vision"
     // APV (Advanced Professional Video, ISO/IEC 21794) — HW `c2.qti.apv.encoder` on this SoC.
     const val MIME_APV = "video/apv"
 }

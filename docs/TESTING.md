@@ -201,7 +201,7 @@ return `false`, not null, into a primitive).
 `adb shell input` is single-pointer and `sendevent` on the touchpanel is refused by SELinux (shell
 sits in the `input` group, so it is a policy denial). INSTRUMENTATION is the way in:
 `UiAutomation` holds INJECT_EVENTS, so `PinchGestureProbeTest` posts multi-pointer `MotionEvent`s
-into our own activity to measure the zoom-gesture submit policy. Like `DolbyVisionProbeTest` it is
+into our own activity to measure the zoom-gesture submit policy. Like every probe in that source set it is
 a PROBE — it logs under its own tag and must never fail the build, because the thing measured is a
 HAL stall and an assertion would freeze a timing threshold into a correctness claim. Read it by
 streaming a FILTERED logcat while the class runs; an unfiltered buffer rolls over long before a

@@ -632,24 +632,22 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   the selected camera's `StreamConfigurationMap`, with the shipping selector capped at 3840 pixels
   wide; PMA110 tops out at 4K UHD in the UI. Standard and NTSC drop-frame rates are gated against the
   selected size. High-speed 120 fps is excluded because its constrained session crashes this HAL.
-- **Dolby Vision RECORDING is technically possible here — the blocker is legal/honesty, not the
-  pipeline (device-probed 2026-07-26).** Do NOT reason from the APV precedent: it does not transfer.
-  `c2.qti.dv.encoder` is HW, `vendor:1`, and **visible to a plain third-party package**; AOSP's
-  `MPEG4Writer` genuinely special-cases `video/dolby-vision` (`mHasDolbyVision` → `getDoviFourCC()`)
-  instead of rejecting it. `DolbyVisionProbeTest` (androidTest, never fails the build) configured it
-  from our own debug package, encoded 12 P010 frames, and MediaMuxer accepted the track and closed a
-  file that `ffprobe` reads as a real DV stream: `dvvC` box, `dby1` ftyp brand, `dv_profile=8`,
-  `dv_level=11`, `rpu_present_flag=1`, `bl_present_flag=1`, `el_present_flag=0`. The advertised
-  profile is `256/1024` (DvheSt) and the emitted transfer is **`arib-std-b67` (HLG), not PQ — even
-  though the probe requested ST2084** — i.e. this is **Profile 8.4**, whose base layer is exactly the
-  HLG signal our GL pipeline already produces, with the encoder generating the RPU itself. So the
-  engineering gap is small (a 10-bit encoder EGL config + the DV MIME/profile). What stops it:
-  (1) our source is the ISP's display-referred **8-bit SDR** stream, so a DV-branded file would make a
-  stronger HDR claim than the pipeline can back — the same honesty rule already applied to HLG; and
-  (2) "Dolby Vision" is a TRADEMARK — the codec use itself rides OPPO's device-level implementation
-  license, but naming it in the UI or the Play listing is a separate permission question that public
-  Dolby documentation does not answer (their handbook covers Implementation Licensees, i.e. chip and
-  device makers, only). Treat as a BACKLOG item requiring Dolby contact, not a v1 feature.
+- **PROPRIETARY / LICENSED HDR FORMATS ARE OUT OF SCOPE — do not add them, do not probe for them
+  (owner decision 2026-08-04).** The video ladder is HEVC and AVC only. Some vendor encoders on this
+  SoC advertise trademarked HDR formats and the platform muxer will accept them, so this is
+  reachable — which is exactly why the rule is written down rather than left to judgement. Two
+  independent reasons stand:
+  1. **Honesty.** The Camera2 source is the ISP's display-referred **8-bit SDR** stream. Any
+     HDR-branded container would assert more than the pipeline can deliver — the same rule that
+     already keeps HLG and the log profiles described as display-referred mappings rather than
+     recovered HDR.
+  2. **Licensing.** Those formats are trademarked and their use is governed by agreements between
+     the format owner and chip/device makers. A third-party app riding a device's implementation is
+     a separate permission question that public documentation does not answer, and the owner's
+     decision is not to touch it.
+  The former exploratory probe and its findings were REMOVED from this repository on 2026-08-04, and
+  the encoder inventory no longer detects or names such formats. Do not reintroduce either; if the
+  question is ever reopened it starts with a licensing answer, not a probe.
 - **Settings persist across launches** via `storage/SettingsStore.kt` (SharedPreferences, enums by
   name, defensive load). Gated by a "Remember Settings" toggle that **defaults ON**; saved on
   background, restored on launch (pushed to the engine pre-start). Fresh launch defaults to the 1×
