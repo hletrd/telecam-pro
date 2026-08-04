@@ -103,7 +103,7 @@ FRAMING AND MONITORING
 PRIVACY
 • No ads, analytics, tracking, or internet permission.
 • Microphone: only for enabled video audio and the visible level meter while Video mode is armed. Meter input is processed locally and never saved.
-• Photo and video access is optional, asked only when the in-app gallery is opened with nothing to show, so it can find captures saved before a reinstall. Declining changes nothing else.
+• Photo and video access is optional, asked only when the in-app gallery is opened with nothing to show, so it can find captures saved before a reinstall.
 • Nothing is uploaded, collected by the developer, or shared with third parties.
 
 TeleCam Pro is independent and is not affiliated with, endorsed by, or sponsored by any hardware or format owner. Names are used only to describe compatibility. Hasselblad is a trademark of Victor Hasselblad AB; OPPO of Guangdong OPPO Mobile Telecommunications Corp., Ltd.; ZEISS of Carl Zeiss AG; vivo of vivo Mobile Communication Co., Ltd.; S-Log of Sony Group Corporation; LogC of Arnold & Richter Cine Technik GmbH & Co. Betriebs KG. The log profiles are this app's own implementations of the published curves. Apache License 2.0.
@@ -212,7 +212,7 @@ TeleCam Pro는 휴대폰의 페리스코프 망원 렌즈에 클립온 아포컬
 개인정보
 • 광고, 분석, 트래킹, 인터넷 권한이 없습니다.
 • 마이크: 동영상 오디오를 켰을 때와 동영상 모드에서 입력 레벨 미터가 화면에 보이는 동안에만 씁니다. 미터 입력은 기기 안에서만 처리하고 저장하지 않습니다.
-• 사진과 동영상 접근 권한은 선택 사항이며, 앱 안의 갤러리를 열었는데 보여 줄 것이 없을 때만 요청합니다. 재설치 전에 저장해 둔 촬영물을 다시 찾는 용도입니다. 거부해도 나머지 기능은 그대로입니다.
+• 사진과 동영상 접근 권한은 선택 사항이며, 앱 안의 갤러리를 열었는데 보여 줄 것이 없을 때만 요청합니다. 재설치 전에 저장해 둔 촬영물을 다시 찾는 용도입니다.
 • 아무것도 업로드하지 않고, 개발자가 수집하지도, 제3자와 공유하지도 않습니다.
 
 TeleCam Pro는 독립적으로 개발한 앱이며, 어떤 하드웨어 제조사나 포맷 권리자와도 제휴, 보증, 후원 관계가 없습니다. 상표명은 호환성을 설명하는 데만 썼습니다. Hasselblad는 Victor Hasselblad AB, OPPO는 Guangdong OPPO Mobile Telecommunications Corp., Ltd., ZEISS는 Carl Zeiss AG, vivo는 vivo Mobile Communication Co., Ltd., S-Log는 Sony Group Corporation, LogC는 Arnold & Richter Cine Technik GmbH & Co. Betriebs KG의 상표입니다. 로그 프로파일은 공개된 커브를 이 앱이 자체 구현한 것입니다. Apache License 2.0.
