@@ -317,7 +317,12 @@ const val FINDER_SIDE_MARGIN = 0.03f
 // 0.14 → 0.22 (2026-07-29): once the box moved to the RIGHT edge it came alongside the focal rail,
 // whose last chip ran into it. The rail is a 48 dp row sitting just above the preview's bottom, so
 // the inset has to clear the rail's full height plus its breathing room, not just the edge.
-const val FINDER_BOTTOM_MARGIN = 0.22f
+// 0.22 → 0.10 (2026-08-04, owner: "for photo it is also placed too up"). 0.22 was compensating for
+// the box being dragged DOWN by a tall preview, by lifting it in every aspect; the aspect term in
+// finderRect now handles that directly, so the margin only has to do its own job — clear the rail.
+// On a 1440-wide phone this is 144 px, putting the box's lower edge ~98 px above the rail's top
+// edge in both aspects, rather than the 271 px of dead space 0.22 left.
+const val FINDER_BOTTOM_MARGIN = 0.10f
 // The punch-in loupe's texcoord crop: the magnified preview samples a (1-crop) span of the frame
 // (0.6 → 2.5× magnification). Shared between the GL draw (gl/GlPipeline) and the tap-mapping
 // composition in CameraEngine (P2.8/AGG4-11) so the two cannot drift.
@@ -559,7 +564,15 @@ fun finderRect(
         // overview sat under it (user-reported 2026-07-29 — "loupe is overlapping with zoom bar").
         // The right column is the only side of the image with no persistent control on it.
         x = boxWidth - width - shortEdge * sideMargin,
-        y = shortEdge * bottomMargin,
+        // Anchored to where a 4:3 preview would END, not to this box's own bottom. The margin exists
+        // to clear the bottom chrome (focal rail, mode carousel), which sits at a FIXED offset from
+        // the SCREEN bottom — but the preview box grows downward with its aspect, so a 16:9 video
+        // frame is ~640 px taller than the 4:3 one on a 1440-wide phone and dragged the overview
+        // down onto the rail with it. User-reported: "on video, loupe is overlapping with zoom chips
+        // in mobile phones". The extra height is added back to the inset, so the box lands in the
+        // same place in every aspect and 4:3 is unchanged (the term is zero there). Derived from the
+        // box alone, so the GL scissor and the Compose border still resolve it identically.
+        y = shortEdge * bottomMargin + (boxHeight - minOf(boxHeight, boxWidth * 4f / 3f)),
         width = width,
         height = boxHeight * fraction,
     )

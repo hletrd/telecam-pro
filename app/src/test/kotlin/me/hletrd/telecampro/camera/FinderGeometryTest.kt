@@ -110,4 +110,25 @@ class FinderGeometryTest {
         assertFalse(finderContainsTopLeftPoint(r.x + 1f, top - 1f, 1080f, 1440f))
         assertFalse(finderContainsTopLeftPoint(0f, 0f, 0f, 1440f))
     }
+
+    @Test
+    fun `the overview lands in the same place in 4-3 and 16-9`() {
+        // The bottom inset clears the bottom chrome (focal rail, mode carousel), which sits at a
+        // fixed offset from the SCREEN bottom. The preview box grows DOWNWARD with its aspect, so
+        // anchoring the inset to the box's own bottom put a 16:9 video frame's overview ~640 px
+        // lower on a 1440-wide phone — right on the rail, overlapping the last zoom chip by
+        // 133x168 px. Owner-reported. Both aspects must resolve the same distance from the point a
+        // 4:3 preview would end at.
+        val w = 1440f
+        val photo = finderRect(w, w * 4f / 3f)
+        val video = finderRect(w, w * 16f / 9f)
+        // Same width, same x: only the vertical anchor was ever in question.
+        assertEquals(photo.width, video.width, 0.01f)
+        assertEquals(photo.x, video.x, 0.01f)
+        // The 4:3 case is unchanged — the correction term is zero exactly there.
+        assertEquals(w * FINDER_BOTTOM_MARGIN, photo.y, 0.01f)
+        // The load-bearing consequence, stated directly: measured from the SCREEN bottom the box's
+        // lower edge is the same in both aspects, which is what keeps it off the rail.
+        assertEquals(w * FINDER_BOTTOM_MARGIN, video.y - (w * 16f / 9f - w * 4f / 3f), 0.01f)
+    }
 }
