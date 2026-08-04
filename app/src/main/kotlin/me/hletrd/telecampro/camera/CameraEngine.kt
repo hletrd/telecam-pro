@@ -1993,6 +1993,9 @@ class CameraEngine(private val context: Context) {
             sensorCenter = loupeCenterSensorX to loupeCenterSensorY,
             loupeCenter = loupeCenterTexX to loupeCenterTexY,
             previewRotationDegrees = previewRotationDegrees(),
+            // Same term the GL preview draw applies, so a tap lands on the subject the operator
+            // actually sees in a rotated window. 0 on a phone, where this is inert.
+            windowRotationDeg = rendererAssists.windowRotationDegrees(),
             // No un-flip on this device: the front stream is PRE-mirrored by the HAL and the GL
             // preview adds no mirror of its own, so displayed x == texture x and the plain mapping
             // already lands on the tapped subject — user-verified before the preview-mirror roles
@@ -5725,11 +5728,20 @@ internal fun mapTapFocusGeometry(
     // of the selfie is on the right of the array. Applied to the RAW view x, before the rotation
     // into array space, matching where the device-verified encoder un-mirror acts.
     meteringMirrorX: Boolean = false,
+    // The WINDOW's rotation away from natural. 0 for a portrait-locked activity, non-zero only
+    // where Android 16+ ignores screenOrientation (sw600dp+). Defaulted so every existing caller and
+    // test pins the unrotated matrix unchanged.
+    windowRotationDeg: Int = 0,
 ): TapFocusGeometry {
-    val cx = if (mirrorX) 1f - nx else nx
-    val meterX = if (meteringMirrorX) 1f - nx else nx
-    val sensorRaw = viewTapToSensorPoint(meterX, ny, sensorOrientation, teleconverter)
-    val loupeRaw = viewTapToLoupeCenter(cx, ny, previewRotationDegrees)
+    // The tap arrives in the WINDOW's frame; viewTapToSensorPoint and viewTapToLoupeCenter both
+    // assume the device's NATURAL frame. Un-rotate ONCE here so neither has to grow its own window
+    // term and the metering/loupe/punch-in composition below stays byte-identical. viewPoint keeps
+    // the RAW display coordinates — the focus reticle is drawn in view space, not sensor space.
+    val (vx, vy) = RotationMath.unrotateViewPoint(nx, ny, windowRotationDeg)
+    val cx = if (mirrorX) 1f - vx else vx
+    val meterX = if (meteringMirrorX) 1f - vx else vx
+    val sensorRaw = viewTapToSensorPoint(meterX, vy, sensorOrientation, teleconverter)
+    val loupeRaw = viewTapToLoupeCenter(cx, vy, previewRotationDegrees)
     if (!punchActive) return TapFocusGeometry(nx to ny, sensorRaw, loupeRaw)
     val span = 1f - PUNCH_IN_CROP
     return TapFocusGeometry(

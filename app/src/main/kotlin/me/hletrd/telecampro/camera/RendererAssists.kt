@@ -162,6 +162,9 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
         currentGl().setWindowRotation(normalized)
     }
 
+    /** The window rotation currently applied to the preview — read by tap mapping. */
+    fun windowRotationDegrees(): Int = config.snapshot().windowRotationDeg
+
     /** Replays all desired handler-backed assists into exactly one fresh GL generation. */
     fun replayAll(
         gl: GlPipeline = currentGl(),

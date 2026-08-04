@@ -86,6 +86,32 @@ object RotationMath {
     fun glyphRotationDegrees(deviceOrientation: Int, windowRotationDeg: Int): Int =
         normalize(deviceOrientation - normalize(windowRotationDeg))
 
+    /**
+     * Un-rotates a NORMALIZED view tap (0..1 in each axis) from a window rotated
+     * [windowRotationDeg] back into the device's NATURAL view frame.
+     *
+     * Tap mapping (`mapTapFocusGeometry` → `viewTapToSensorPoint` / `viewTapToLoupeCenter`) assumes
+     * the view frame IS the natural frame — true for a portrait-locked activity, false the moment a
+     * large screen hands it a rotated window. Un-rotating here keeps that assumption valid, so every
+     * downstream mapping (metering array coordinates, loupe recentre, the punch-in composition)
+     * stays byte-identical instead of each growing its own window term.
+     *
+     * This is the exact inverse of the preview draw's [windowPreviewRotationDegrees]: that rotates
+     * the content by −w, so recovering the source point rotates the tap by +w. DEVICE-MEASURED
+     * anchor for the pair (TB336ZU, 2026-08-04): the preview's brightness asymmetry moved from the
+     * TOP in a portrait window to the LEFT in a landscape one, i.e. source top-centre (0.5, 0) is
+     * displayed at left-centre (0, 0.5) — which is what the w=90 case below inverts.
+     *
+     * Identity at ROTATION_0, so the phone tap path is unchanged.
+     */
+    fun unrotateViewPoint(nx: Float, ny: Float, windowRotationDeg: Int): Pair<Float, Float> =
+        when (normalize(windowRotationDeg)) {
+            90 -> (1f - ny) to nx
+            180 -> (1f - nx) to (1f - ny)
+            270 -> ny to (1f - nx)
+            else -> nx to ny
+        }
+
     /** Rear-camera form of [captureRotationDegrees]; kept so existing callers/tests pin the back matrix. */
     fun captureRotationDegrees(sensorOrientation: Int, teleconverterMode: Boolean, deviceOrientation: Int): Int =
         captureRotationDegrees(sensorOrientation, teleconverterMode, deviceOrientation, frontFacing = false)

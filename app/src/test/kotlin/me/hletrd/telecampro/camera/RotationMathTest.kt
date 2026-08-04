@@ -181,6 +181,47 @@ class RotationMathTest {
     }
 
     @Test
+    fun `unrotating a view tap is the identity in an unrotated window`() {
+        // The phone fence again: tap mapping must be untouched at ROTATION_0.
+        for (p in listOf(0f to 0f, 0.5f to 0f, 1f to 1f, 0.25f to 0.75f)) {
+            assertEquals(p, RotationMath.unrotateViewPoint(p.first, p.second, 0))
+        }
+    }
+
+    @Test
+    fun `unrotating a view tap inverts the preview draw's window rotation`() {
+        // DEVICE-MEASURED anchor (TB336ZU 2026-08-04): the preview's bright region sat at the TOP in
+        // a portrait window and at the LEFT in a landscape one, so source top-centre (0.5, 0) is
+        // DISPLAYED at left-centre (0, 0.5) when w=90. Un-rotating that display point must recover
+        // the source point — if this inverse were the wrong way round, a tap near the top of the
+        // frame would meter near the bottom.
+        val (x, y) = RotationMath.unrotateViewPoint(0f, 0.5f, 90)
+        assertEquals(0.5f, x, 1e-6f)
+        assertEquals(0f, y, 1e-6f)
+        // w=270 turns the other way: source top-centre is displayed at RIGHT-centre.
+        val (x270, y270) = RotationMath.unrotateViewPoint(1f, 0.5f, 270)
+        assertEquals(0.5f, x270, 1e-6f)
+        assertEquals(0f, y270, 1e-6f)
+        // 180 is the point reflection.
+        assertEquals(0.75f to 0.25f, RotationMath.unrotateViewPoint(0.25f, 0.75f, 180))
+    }
+
+    @Test
+    fun `unrotating a view tap round-trips through all four window classes`() {
+        // Composing with the opposite rotation must return the original point, which is what makes
+        // the reticle (view space) and the metering region (sensor space) agree.
+        val pts = listOf(0.1f to 0.2f, 0.9f to 0.3f, 0.5f to 0.5f)
+        for ((w, inv) in listOf(0 to 0, 90 to 270, 180 to 180, 270 to 90)) {
+            for ((px, py) in pts) {
+                val (ax, ay) = RotationMath.unrotateViewPoint(px, py, w)
+                val (bx, by) = RotationMath.unrotateViewPoint(ax, ay, inv)
+                assertEquals(px, bx, 1e-6f)
+                assertEquals(py, by, 1e-6f)
+            }
+        }
+    }
+
+    @Test
     fun `glyph rotation cancels when the window has already turned with the device`() {
         // Tablet held in left landscape with the window following: layout is upright on its own,
         // so no glyph rotation is owed. The pre-fix `+dev` would have laid every label on its side.

@@ -388,10 +388,24 @@ fun CameraScreen(
             .background(CameraColors.Background)
             .then(if (modalVisible) Modifier.clearAndSetSemantics { } else Modifier),
     ) {
-        // GL sampling, capture masks, tap mapping, and encoder framing currently share a deliberate
-        // portrait-window contract. Keep the alternative operator layout dormant until that entire
-        // orientation pipeline is implemented and device-verified together.
-        val landscapeOperator = false
+        // LIVE since 2026-08-04. This stayed dormant while "GL sampling, capture masks, tap mapping
+        // and encoder framing" shared a portrait-window contract; that contract is now broken in the
+        // three places that actually assumed it, and the two that must NOT change were left alone
+        // deliberately:
+        //   - preview rotation + displayed aspect: RotationMath.windowPreviewRotationDegrees /
+        //     displayedPreviewAspect, applied through the per-call rotationOverrideDeg.
+        //     DEVICE-VERIFIED on TB336ZU — the brightness asymmetry moved top → left (90° CCW, the
+        //     designed sign) and the preview width in a 2560-wide window went 1216 → 2560 px.
+        //   - tap mapping: RotationMath.unrotateViewPoint inside mapTapFocusGeometry.
+        //   - glyph counter-rotation: RotationMath.glyphRotationDegrees.
+        //   - capture masks and encoder framing are UNCHANGED ON PURPOSE. Both derive from GRAVITY,
+        //     not from window shape, so a clip records the same field however the window is turned.
+        // Keyed on window SHAPE, not on rotation: a split-screen or freeform window can be wide at
+        // ROTATION_0, and the rail is a layout answer to "wide", not to "turned".
+        val landscapeOperator = windowConfiguration.screenWidthDp > windowConfiguration.screenHeightDp
+        // Reserved width for the operator rail. Chrome must not overlay the image (the whole point
+        // of the rail), so the preview box is fitted into the REMAINDER — see previewWidthPx below.
+        val operatorRailWidth = 208.dp
         // previewAspect is the field as it displays in the device's NATURAL orientation; a rotated
         // window shows it W/H-swapped. Device-measured on TB336ZU (2026-08-04): without the swap a
         // 2560x1600 landscape window drew the portrait 3:4 box at ~1200x1600 and pillarboxed away
@@ -420,13 +434,23 @@ fun CameraScreen(
             val density = LocalDensity.current
             // FIT INSIDE both axes (see [previewBoxWidthPx]) — a landscape/split/freeform window is
             // height-bound, and the old width-bound-only math pushed the viewfinder off-window there.
+            // The rail is SUBTRACTED from the width the preview may use, rather than drawn over the
+            // image: in the wide layout the controls own their own column, so nothing sits on the
+            // frame. Costs image size on a 16:9 preview, which already fills a landscape window
+            // edge to edge (measured 2560×1440 on TB336ZU) — that is the deliberate trade for a
+            // viewfinder no control ever covers.
+            val railReservePx = if (landscapeOperator) with(density) { operatorRailWidth.roundToPx() } else 0
             val previewWidthPx = previewBoxWidthPx(
-                availableWidthPx = constraints.maxWidth,
+                availableWidthPx = (constraints.maxWidth - railReservePx).coerceAtLeast(1),
                 availableHeightPx = constraints.maxHeight,
                 aspect = displayedPreviewAspect,
             )
             val previewHeightPx = (previewWidthPx / displayedPreviewAspect).toInt()
-            val topOffsetPx = previewTopPx(
+            // Wide layout centres vertically: the adaptive upward bias exists to keep the bottom
+            // cluster off the image, and in the rail layout there IS no cluster below the frame.
+            val topOffsetPx = if (landscapeOperator) {
+                ((constraints.maxHeight - previewHeightPx) / 2).coerceAtLeast(0)
+            } else previewTopPx(
                 availableHeightPx = constraints.maxHeight,
                 previewHeightPx = previewHeightPx,
                 // Status bar + the 56dp top icon row + the OSD strip line + breathing room. A dp
@@ -441,7 +465,9 @@ fun CameraScreen(
         Box(
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .offset { IntOffset(0, topOffsetPx) }
+                // TopCenter centres across the FULL width; the rail owns the right edge, so shift
+                // left by half the reserve to centre the frame in the space actually left for it.
+                .offset { IntOffset(-railReservePx / 2, topOffsetPx) }
                 // Explicit width (not fillMaxWidth) so a height-bound window letterboxes on the
                 // SIDES; TopCenter then centres it horizontally. aspectRatio still derives the
                 // height, keeping one source of truth for the box shape.
@@ -1140,17 +1166,33 @@ fun CameraScreen(
             .navigationBarsPadding()
 
         if (landscapeOperator) {
-            Row(
+            // Sony-style right rail: in a landscape grip the shutter hand is on the right, so the
+            // capture controls belong under it rather than along the bottom edge. The rail owns its
+            // own column (its width is subtracted from the preview above), so no control is ever
+            // drawn over the frame — that separation is the whole reason for this layout.
+            // The gradient runs horizontally here, not vertically: it is a legibility scrim against
+            // the letterbox seam on the rail's LEFT edge, and the portrait chrome's top-to-bottom
+            // fade would leave the top of the rail unscrimmed.
+            Column(
                 modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .fillMaxWidth(0.82f)
-                    .then(operatorChrome)
-                    .padding(top = 10.dp, bottom = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.Bottom,
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight()
+                    .width(operatorRailWidth)
+                    .background(
+                        Brush.horizontalGradient(
+                            0f to Color.Transparent,
+                            0.35f to Color.Black.copy(alpha = 0.6f),
+                            1f to Color.Black.copy(alpha = 0.6f),
+                        ),
+                    )
+                    .navigationBarsPadding()
+                    .statusBarsPadding()
+                    .padding(vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Box(modifier = Modifier.weight(1f)) { manualPane() }
-                Box(modifier = Modifier.weight(1f)) { capturePane() }
+                manualPane()
+                capturePane()
             }
         } else {
             Column(

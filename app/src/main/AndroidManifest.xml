@@ -54,17 +54,22 @@
             android:theme="@style/Theme.TeleCamPro"
             tools:ignore="DiscouragedApi,LockedOrientationActivity">
 
-            <!-- Android 16 (API 36) IGNORES screenOrientation/aspect/resizability on any display
-                 whose smaller side is >= 600dp, so a tablet or unfolded foldable hands this
-                 portrait-designed viewfinder a landscape window (device-reproduced on a Lenovo
-                 TB336ZU / Android 16 / 1600x2560, 2026-08-02). This documented property restores the
-                 previous behaviour for now; it is TEMPORARY by Android's own schedule — the opt-out
-                 is removed at API 37, so the durable answer is the layout itself, which is why the
-                 preview box was fixed to letterbox correctly in ANY window shape rather than relying
-                 on this flag. Re-evaluate before raising targetSdk to 37. -->
-            <property
-                android:name="android.window.PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY"
-                android:value="true" />
+            <!-- screenOrientation stays: it is still honoured on PHONES (smaller side < 600dp), and
+                 the whole app — glyph counter-rotation, capture masks, encoder framing — is built
+                 around a device-fixed portrait layout there. PMA110 behaviour is unchanged.
+
+                 What is GONE (2026-08-04) is PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY, which
+                 used to force the restriction back on at sw600dp+. Android 16 ignores
+                 screenOrientation on those displays and API 37 removes the opt-out outright, so the
+                 durable answer was always the layout. It now exists: a wide window gets the operator
+                 RAIL (CameraScreen's landscapeOperator), the preview takes the window-rotated aspect,
+                 and preview rotation / tap mapping / glyph rotation each carry the window term
+                 (RotationMath). Device-verified on the Lenovo TB336ZU (Android 16, 1600x2560) — the
+                 same device that reproduced the original problem on 2026-08-02.
+
+                 Deliberately NOT window-dependent: capture masks and encoder framing still derive
+                 from GRAVITY, so a still or clip records the same field however the window is
+                 turned. Do not "fix" those to follow window shape — see RotationMath. -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
