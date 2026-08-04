@@ -47,4 +47,4 @@ Hasselblad, or any hardware maker.
 
 ## Contact
 
-Questions about this policy: `mnmnnmnnn@gmail.com`
+Questions about this policy: `01@0101010101.com`

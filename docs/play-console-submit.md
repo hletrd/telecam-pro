@@ -318,7 +318,7 @@ personal accounts created after November 13, 2023 does not apply.
 - Price: Free
 - Ads: No
 - In-app purchases: No
-- Contact email: `mnmnnmnnn@gmail.com`
+- Contact email: `01@0101010101.com`
 - Privacy policy URL: `https://hletrd.github.io/telecam-pro/privacy-policy/`
 - Source code URL: `https://github.com/hletrd/telecam-pro`
 - Full listing copy: [`docs/play-store-listing.md`](play-store-listing.md)
