@@ -58,3 +58,12 @@ device-tests/reports/
 __pycache__/
 *.jks.*
 *.keystore.*
+
+# Internal working docs and agent artifacts — kept locally, not part of the open-source tree.
+# docs/assets/ and docs/licenses/ stay tracked: the Pages logo, Play art, and the Inter OFL
+# (which must ship with the bundled font) are public on purpose.
+/docs/*.md
+/docs/plans/
+/docs/reviews/
+/docs/superpowers/
+/device-tests/

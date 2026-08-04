@@ -55,8 +55,7 @@ shooting needs.
   motion blur; frame-warping EIS cannot.
 
 **Viewfinder**
-- Sony-style: Fn, My Menu, MR banks, compact OSD. No tutorial banners or coach marks over the image
-  ([UX policy](docs/UX_POLICY.md)).
+- Sony-style: Fn, My Menu, MR banks, compact OSD. No tutorial banners or coach marks over the image.
 - Focus peaking, zebra, false colour, grid, spirit level, histogram, waveform.
 - A movable punch-in loupe, with an optional corner overview that marks the magnified field.
 - Pinch-to-zoom review of the last shot, in app.
@@ -122,7 +121,7 @@ checked against `gradle/verification-metadata.xml` in strict mode.
 `./gradlew bundleRelease` produces the Play App Bundle. Signing is driven by a gitignored
 `keystore.properties` plus `TELECAMPRO_STORE_PASSWORD` / `TELECAMPRO_KEY_PASSWORD` in the
 environment — no keys live in git, and release bundling fails fast rather than emitting an unsigned
-artifact. R8/minify is off for v1.
+artifact. Release builds are R8-minified.
 
 ## Licence and trademarks
 
@@ -143,15 +142,7 @@ Open Font License 1.1 ([`docs/licenses/inter-OFL.txt`](docs/licenses/inter-OFL.t
 
 ## Documentation
 
-| | |
-|---|---|
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | As-built design authority: module map, threading, ownership, data flow |
-| [`CLAUDE.md`](CLAUDE.md) | Hard-won device and HAL facts, and the conventions that follow from them |
-| [`docs/BACKLOG.md`](docs/BACKLOG.md) | Release board, residual field checks, deferred work |
-| [`docs/FIELD_CHECKS.md`](docs/FIELD_CHECKS.md) | Hands-on device checks: setup, command, pass criteria |
-| [`docs/TESTING.md`](docs/TESTING.md) | Test tiers and coverage policy |
-| [`docs/UX_POLICY.md`](docs/UX_POLICY.md) | Viewfinder rules |
-
-Store listing text, privacy policy, and Play assets live in
-[`docs/play-store-listing.md`](docs/play-store-listing.md),
-[`privacy-policy/`](privacy-policy/index.html), and [`docs/assets/play/`](docs/assets/play/).
+Hard-won device and HAL facts, and the conventions that follow from them, live in
+[`CLAUDE.md`](CLAUDE.md). The privacy policy lives in
+[`privacy-policy/`](privacy-policy/index.html); Play store assets in
+[`docs/assets/play/`](docs/assets/play/).
