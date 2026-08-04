@@ -577,6 +577,15 @@ class CameraViewModel @JvmOverloads constructor(
                     }
                 }
             } else {
+                // An owned READY publication is what ENDS "Starting camera…": the message reports a
+                // condition, so an EVENT retires it and it carries no display timer at all (see
+                // statusIsProgress). Retired HERE, on the gate's ordering alone, rather than inside
+                // the post below — that block additionally rechecks engine truth to protect the
+                // ACCEPTED aux state (formats, pre-TELE baseline) from a stale cross-thread post,
+                // and a progress pill has no such hazard: the worst a superseded ready can do is
+                // clear it slightly early, and a genuinely new cold start re-emits it (a reopen
+                // says "Camera reconfiguring…", which is a different message with its own timer).
+                clearProgressStatus()
                 mainHandler.post {
                     // A newer optics intent or pause/session reopen can land while this camera-thread
                     // callback is queued for main. Both generations bind its output snapshot.
@@ -1357,6 +1366,19 @@ class CameraViewModel @JvmOverloads constructor(
     }
 
     private fun showStatus(message: String) = publishStatus(message)
+
+    /**
+     * Retires a timer-less progress status once the condition it reports has ended. Guarded on the
+     * message still being that progress status: anything published since owns the pill and must not
+     * be swallowed by a late arrival of the event this clears on.
+     */
+    private fun clearProgressStatus() {
+        _state.update { current ->
+            val message = current.statusMessage
+            if (message != null && statusIsProgress(message)) current.copy(statusMessage = null)
+            else current
+        }
+    }
 
     private fun rejectIfRecording(message: String): Boolean {
         if (!_state.value.isRecording) return false

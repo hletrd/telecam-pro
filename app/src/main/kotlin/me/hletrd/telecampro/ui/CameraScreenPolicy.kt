@@ -6,6 +6,7 @@ import androidx.compose.ui.unit.constrainHeight
 import androidx.compose.ui.unit.constrainWidth
 import me.hletrd.telecampro.camera.AspectRatio
 import me.hletrd.telecampro.camera.AutoExposure
+import me.hletrd.telecampro.camera.CAMERA_STARTING_STATUS
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.ExposureMode
 import me.hletrd.telecampro.camera.FlashMode
@@ -43,9 +44,24 @@ internal fun String.isUrgentStatus(): Boolean =
     listOf("error", "fail", "unable", "unavailable", "denied", "insufficient", "could not")
         .any { contains(it, ignoreCase = true) }
 
+/**
+ * PROGRESS statuses describe a condition that is either true or false right now, so an EVENT ends
+ * them — never a timer. [CAMERA_STARTING_STATUS] is the one the app emits: the owner reported
+ * "starting the camera takes a long time" on a device whose session configures in ~950 ms, and the
+ * cause was this classifier dropping the message into the 2.5 s neutral bucket. The pill therefore
+ * sat for its full 2.5 s after the camera was already live, and the wait the user was reading was
+ * the timer, not the camera. A timer is wrong in BOTH directions here: too long makes a fast start
+ * look slow, and too short would clear the message while the camera is still coming up, which
+ * claims ready before it is. Nothing bounds this one — while the camera has genuinely not come up,
+ * "Starting camera…" is true, and every way that attempt can end (Ready, an error status, the
+ * exhausted-retry terminal status) replaces it.
+ */
+internal fun statusIsProgress(message: String): Boolean = message == CAMERA_STARTING_STATUS
+
 /** Keeps successful acknowledgements quiet while leaving actionable failures readable. */
 internal fun statusDisplayDurationMs(message: String?): Long? = when {
     message == null -> null
+    statusIsProgress(message) -> null
     message.isUrgentStatus() -> 6_000L
     listOf("saved", "deleted", "loaded").any { token -> message.contains(token, ignoreCase = true) } ->
         1_500L

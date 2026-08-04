@@ -122,7 +122,13 @@ for rel in (
 # It did: step 1 hard-coded a hash that went stale while the pin above it moved, so the sheet told
 # the operator to upload a bundle its own superseded list forbids — caught mid-upload.
 submit = read("docs/play-console-submit.md")
-superseded = set(re.findall(r"\(`([0-9a-f]{8})…`\)", submit))
+
+# Only the do-not-upload bullets define "superseded". Reading every parenthesised short digest in the
+# file instead swept in ordinary prose — the device matrix names the CURRENT artifact that way — and
+# reported the live pin as superseded.
+superseded = set()
+for block in re.findall(r"Superseded candidates \(do NOT upload\):(.*?)(?:\n\n|\n#)", submit, re.S):
+    superseded |= set(re.findall(r"`([0-9a-f]{8})…`", block))
 # The signing CERTIFICATE fingerprint is a different kind of hash and is meant to recur — it is the
 # proof that the upload key did not change. Only ARTIFACT digests are at risk of going stale here.
 cert = set(re.findall(r"certificate\s+SHA-256[^`]*`([0-9a-f]{8})", submit, re.I))
@@ -130,6 +136,38 @@ sequence = submit[submit.index("## Manual Console Sequence"):]
 named = set(re.findall(r"`([0-9a-f]{8})…`", sequence)) - cert
 check(not (named & superseded), "console sequence names no superseded artifact", f"{named & superseded}")
 check(not named, "console sequence hard-codes no artifact hash", f"{named}")
+
+# The pin must agree with itself. The banner names the commit, the artifacts heading names it again,
+# and the two drifted apart once — the banner moved to a new cut while the heading below it still
+# said the old one, which is the shape that sends an operator to the wrong bundle.
+banner = re.search(r"UPLOAD-READY \([\d-]+\)[^\n]*`main` at `([0-9a-f]{7})`", submit)
+pin_start = submit.index("### Final v1 upload artifacts")
+pin_section = submit[pin_start:submit.index("\n### ", pin_start + 1)]
+heading = re.search(r"`main` at `([0-9a-f]{7})`", pin_section)
+check(bool(banner and heading), "the pin states its commit in both places")
+if banner and heading:
+    check(banner.group(1) == heading.group(1), "banner and artifact heading name the same commit",
+          f"{banner.group(1)} vs {heading.group(1)}")
+
+# A pinned digest must never also appear in the do-not-upload list: that combination tells the
+# operator both to upload and not to upload the same bytes. Scoped to the CURRENT pin's section —
+# the historical sections quote their own digests, which are superseded on purpose.
+pinned = set(re.findall(r"([0-9a-f]{64})", pin_section))
+check(
+    not any(p[:8] in superseded for p in pinned),
+    "no pinned artifact is also listed as superseded",
+    f"{[p[:8] for p in pinned if p[:8] in superseded]}",
+)
+
+# Only the current pin may claim to be the newest signed cut. A historical section that keeps that
+# claim in its HEADING outlives its own truth silently — this one survived two later signed cuts
+# while still titled "Last SIGNED artifacts".
+stale_claims = [
+    h for h in re.findall(r"^#{3,4} (.+)$", submit, re.M)
+    if re.search(r"\b(last|latest|current)\b.{0,20}\b(signed|artifact|cut)\b", h, re.I)
+    and "SUPERSEDED" not in h.upper()
+]
+check(not stale_claims, "no historical heading claims to be the current cut", f"{stale_claims}")
 
 # ---- no doc may carry a running cross-reference to a mutable count ------------------------------
 # A dated record keeps the number it measured — that is evidence. What cannot be maintained is a

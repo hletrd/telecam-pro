@@ -3,6 +3,15 @@ package me.hletrd.telecampro.camera
 import android.util.Size
 import androidx.compose.runtime.Immutable
 
+/**
+ * The cold-start PROGRESS status. It lives here, not in either layer that uses it, because the
+ * engine EMITS it and the UI's display-duration policy must recognise it to keep it timer-less —
+ * matched by literal in two layers, those two would drift apart silently and the pill would strand
+ * on screen with nothing able to clear it. `CameraEngine`'s own companion is private, and the
+ * camera layer must not import the UI layer to reach a string.
+ */
+const val CAMERA_STARTING_STATUS = "Starting camera…"
+
 /** Photo vs video capture mode. */
 enum class CaptureMode { PHOTO, VIDEO }
 

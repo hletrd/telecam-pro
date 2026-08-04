@@ -3,12 +3,15 @@ package me.hletrd.telecampro.ui
 import android.app.Application
 import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
+import me.hletrd.telecampro.camera.CAMERA_STARTING_STATUS
 import me.hletrd.telecampro.camera.CameraEngine
 import me.hletrd.telecampro.camera.CameraFacing
+import me.hletrd.telecampro.camera.CameraReadyPublication
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.ExposureMode
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.ManualControls
+import me.hletrd.telecampro.camera.PhotoSessionOutputs
 import me.hletrd.telecampro.camera.ShutterTimer
 import me.hletrd.telecampro.storage.ExtraSettings
 import me.hletrd.telecampro.storage.SettingsStore
@@ -149,6 +152,49 @@ class CameraViewModelRobolectricTest {
         idleFor(2_499)
         assertEquals("Test status", v.state.value.statusMessage)
         idleFor(1) // ordinary messages clear at 2.5 s (statusDisplayDurationMs)
+        assertNull(v.state.value.statusMessage)
+    }
+
+    @Test fun `the cold-start progress status waits for Ready, not for a timer`() {
+        val (v, e) = createViewModel()
+        e.onStatus!!.invoke(CAMERA_STARTING_STATUS)
+        // Deliberately far past every display duration in the policy (the longest is 6 s). Before
+        // this fix the pill cleared at 2.5 s regardless of the camera, which is what made a ~950 ms
+        // bring-up read as a multi-second wait: the user was watching the timer, not the camera.
+        idleFor(10_000)
+        assertEquals(CAMERA_STARTING_STATUS, v.state.value.statusMessage)
+
+        e.onCameraReadyChange!!.invoke(
+            CameraReadyPublication(
+                sequence = 1L,
+                ready = true,
+                opticsGeneration = 0L,
+                sessionGeneration = 0L,
+                photoOutputs = PhotoSessionOutputs(processed = true),
+            )
+        )
+        idleFor(0)
+        assertNull(v.state.value.statusMessage)
+    }
+
+    @Test fun `Ready does not swallow a status published during bring-up`() {
+        val (v, e) = createViewModel()
+        e.onStatus!!.invoke(CAMERA_STARTING_STATUS)
+        // Anything published after it owns the pill; the progress clear is not a blanket reset, or
+        // a message arriving in the bring-up window would vanish the instant the camera came up.
+        e.onStatus!!.invoke("Photo saved")
+        e.onCameraReadyChange!!.invoke(
+            CameraReadyPublication(
+                sequence = 1L,
+                ready = true,
+                opticsGeneration = 0L,
+                sessionGeneration = 0L,
+                photoOutputs = PhotoSessionOutputs(processed = true),
+            )
+        )
+        idleFor(0)
+        assertEquals("Photo saved", v.state.value.statusMessage)
+        idleFor(1_500) // and it still keeps its own timer
         assertNull(v.state.value.statusMessage)
     }
 

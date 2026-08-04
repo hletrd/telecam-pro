@@ -900,7 +900,7 @@ class CameraEngine(private val context: Context) {
         }
         if (!dispatchStart) return
         // Cold-start feedback: GL creation + Camera2 preflight/open happen before the first frame.
-        onStatus?.invoke("Starting camera…")
+        onStatus?.invoke(CAMERA_STARTING_STATUS)
 
         // Start GL before resolving a camera route. Any mode/lens/MR intent arriving before the GL
         // input Surface exists is retained, and the input callback snapshots that latest complete
