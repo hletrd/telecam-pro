@@ -34,6 +34,8 @@ import androidx.compose.foundation.layout.absolutePadding
 import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -1039,8 +1041,22 @@ fun CameraScreen(
                 detailsVisible = !detailsVisible
             },
             glyphRotation = overlayRotation,
+            vertical = landscapeOperator,
             modifier = Modifier
-                .align(Alignment.TopCenter)
+                // In the WIDE layout the bar belongs to the RAIL's column, not to the window. Spanning
+                // the window put its SpaceBetween ends 1600 px apart on a 1920 px tablet: the leading
+                // group sat alone over the top-left of the FRAME while the trailing group sat on the
+                // rail — measured on a TB331FC as Grid at x=15 with its siblings at x>=1631. Drawing
+                // chrome over the frame is exactly what the rail layout exists to avoid, and its own
+                // comment says so. Constrained to the rail, the leading group's existing horizontal
+                // scroll absorbs the crowding it already handles in portrait.
+                .then(
+                    if (landscapeOperator) {
+                        Modifier.align(Alignment.TopEnd).width(operatorRailWidth)
+                    } else {
+                        Modifier.align(Alignment.TopCenter)
+                    }
+                )
                 .statusBarsPadding()
                 .padding(top = 8.dp)
                 .onSizeChanged { topBarHeightPx = it.height }
@@ -1351,6 +1367,74 @@ internal fun Modifier.rotateLayout(degrees: Float): Modifier = this
 // Top bar: quick toggles (flash/timer/aspect/grid/teleconverter) + settings entry point.
 // ---------------------------------------------------------------------------
 
+
+/**
+ * The top bar's outer container: a Row across the window in portrait, a Column down the rail in the
+ * wide layout. Both keep SpaceBetween, so the leading (scrolling) group and the fixed trailing group
+ * stay pinned to opposite ends of whichever axis the bar runs along.
+ */
+@Composable
+private fun TopBarContainer(
+    vertical: Boolean,
+    modifier: Modifier,
+    content: @Composable TopBarScope.() -> Unit,
+) {
+    if (vertical) {
+        // Hugs the TOP of the rail rather than filling it. SpaceBetween over the full height pushed
+        // the trailing group (TELE / flip / DISP / gear) onto the bottom edge, where the gear fell
+        // off screen entirely — and the rail's middle is already spoken for by the capture cluster,
+        // which is centred there. Both groups therefore stack together under the status bar and
+        // leave the rest of the column to the controls that were there first.
+        Column(
+            modifier = modifier.padding(vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) { TopBarScope(this, null).content() }
+    } else {
+        Row(
+            modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) { TopBarScope(null, this).content() }
+    }
+}
+
+/** Carries whichever of the two scopes the container chose, so a child can still ask for weight. */
+private class TopBarScope(val column: ColumnScope?, val row: RowScope?) {
+    fun weightModifier(): Modifier = when {
+        // fill = false in a Column: the leading group must take only the height its buttons need.
+        // A filling weight expanded it down the whole rail and pushed the trailing group onto the
+        // bottom edge, where the gear left the screen entirely (measured: TELE/flip/DISP at
+        // y 996-1199 on a 1200 px tablet, gear absent). In a Row the filling weight is what pins
+        // the trailing group to the far end, so that behaviour is unchanged.
+        column != null -> with(column) { Modifier.weight(1f, fill = false) }
+        row != null -> with(row) { Modifier.weight(1f) }
+        else -> Modifier
+    }
+}
+
+/** One group inside [TopBarContainer], laid out along the container's own axis. */
+@Composable
+private fun TopBarGroup(
+    vertical: Boolean,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    if (vertical) {
+        Column(
+            modifier = modifier,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) { content() }
+    } else {
+        Row(
+            modifier = modifier,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) { content() }
+    }
+}
+
 @Composable
 private fun TopBar(
     state: CameraUiState,
@@ -1360,6 +1444,10 @@ private fun TopBar(
     onToggleDisp: () -> Unit,
     modifier: Modifier = Modifier,
     glyphRotation: Float = 0f,
+    // The WIDE layout hands this bar the rail's COLUMN, which is ~196 dp across — four 48 dp targets
+    // and no room for the fifth. Stacking is not a style choice there: the rail has 1200 px of unused
+    // height and the row does not fit its width. Same children, same scroll behaviour, turned 90°.
+    vertical: Boolean = false,
 ) {
     val recordingLocked = state.isRecording
     // Keyed remember: capability projection allocates ~9 filtered lists; recomputing it on EVERY
@@ -1374,20 +1462,15 @@ private fun TopBar(
     // Session-scoped on purpose — the grid TYPE itself is the persisted value (SettingsStore).
     var lastActiveGrid by rememberSaveable { mutableStateOf(GridType.THIRDS) }
     LaunchedEffect(state.grid) { if (state.grid != GridType.NONE) lastActiveGrid = state.grid }
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Row(
-            modifier = Modifier
-                .weight(1f)
+    TopBarContainer(vertical, modifier) {
+        TopBarGroup(
+            vertical = vertical,
+            modifier = weightModifier()
                 .trailingEdgeFadeScrollHint(topBarScroll)
-                .horizontalScroll(topBarScroll),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
+                .then(
+                    if (vertical) Modifier.verticalScroll(topBarScroll)
+                    else Modifier.horizontalScroll(topBarScroll)
+                ),
         ) {
             // Compact circular glyphs counter-rotate to stay upright as the phone turns (iPhone-style);
             // the TELE chip is wide text, so it stays fixed to avoid poking out of its slot.
@@ -1446,7 +1529,7 @@ private fun TopBar(
             }
         }
         // Counter-rotate the settings glyph so it stays upright as the phone turns (iPhone-style).
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        TopBarGroup(vertical = vertical) {
             // FIXED slot (like flip/DISP/gear), not the scrolling row: as the last scrolling item
             // the chip vanished off-screen whenever photo full-DISP filled the row — the app's
             // headline function must keep one stable, always-visible home in every rear mode.
