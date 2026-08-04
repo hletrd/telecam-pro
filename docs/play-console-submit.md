@@ -97,40 +97,31 @@ Do not upload debug APKs or any unsigned/stale release bundle.
 The four-target matrix below was measured on the `66734db` cut. Two later cuts were re-checked on
 whichever targets were reachable at the time, each proven byte-identical to its artifact first.
 
-**The zoom fix in this cut was measured on all three physical devices** — on a debug build of the
-same code (`c66993d`), while all three were still on the network:
+**Measured 2026-08-04 on the signed `ca3d33c` RELEASE artifact (`aa475b91…`), all four targets,
+each proven byte-identical to the artifact on device before testing:**
 
-| | OPPO PMA110 | Lenovo TB336ZU | Lenovo TB331FC |
-|---|---|---|---|
-| `1×` → focal | 23 mm | 26 mm | 27 mm |
-| `3×` → focal | **69 mm** (optical) | **78 mm** (crop, exactly ×3) | **81 mm** (crop, exactly ×3) |
-| `10×` → focal | **230 mm** | rail absent | rail absent |
-| Highlighted pill | matches the tapped preset | matches | matches |
+| | OPPO PMA110 | Lenovo TB336ZU | Lenovo TB331FC | Android 13 emulator |
+|---|---|---|---|---|
+| OS | Android 16 (36) | Android 16 (36) | **Android 15 (35)** | **Android 13 (33)** |
+| Launch / camera | clean | clean | clean | clean |
+| Lens rail | `0.6/1/3/10×` all **lens** | `1× lens` + `3× zoom` | `1× lens` + `3× zoom` | `1× lens` + `3×` + `10× zoom` |
+| Focal at each preset | 14 / 23 / **70** / **234 mm** | 26 / **78 mm** | 27 / **81 mm** | 36 / **107** / **357 mm** |
+| Highlighted pill | matches the tapped preset | matches | matches | matches |
+| `"Starting camera…"` pill | never sampled | never sampled | never sampled (was 5.2 s) | never sampled (was 4.1 s) |
+| Still | written | written | written | written |
+| Crashes / ANRs | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
 
-Only the PMA110 reads 69 mm at `3×`, because only it reaches that framing with an optical lens —
-that difference between phone and tablets is the evidence the route-based conversion works.
+**Every focal is an exact multiple of that device's own `1×`**, which is the point: the OSD renders
+`caps.equivalentFocalMm × zoomRatio`, so a preset that wrote into the wrong scale shows up here
+immediately (the reported defect put ~208 mm behind the PMA110's "3×"). PMA110 measures 23.4 mm
+equivalent on this route, hence 14.0 / 23.4 / 70.2 / 234. An earlier debug run on the same code
+read 23 / 69 / 230 — the same exact multiples of a route whose measured equivalent was 23.0 mm, not
+a discrepancy.
 
-**Re-checked 2026-08-04 on the signed `ca3d33c` RELEASE artifact (`aa475b91…`), bytes confirmed on
-device before testing:**
-
-| | Lenovo TB331FC (A15) | Android 13 emulator |
-|---|---|---|
-| Launch / camera | clean | clean |
-| Lens rail | `1× lens` + `3× zoom` | `1× lens` + `3×` + `10× zoom` |
-| Zoom scale | 27 → 81 mm | 36 → 107 → 357 mm |
-| Highlighted pill | matches the tapped preset | matches |
-| `"Starting camera…"` pill | never sampled (was 5.2 s) | never sampled (was 4.1 s) |
-| Still | written | written |
-| Crashes | 0 | 0 |
-
-**NOT re-checked on the `ca3d33c` release artifact: the PMA110 and the Lenovo TB336ZU.** The
-PMA110 is reachable on Tailscale but has wireless debugging off — a full connect-scan of ports
-1024–65535 found nothing open, so adb cannot attach without someone re-enabling it on the handset.
-The TB336ZU is off the network entirely (no mDNS advertisement on any interface, tunnel dead).
-Their measurements above stand on the same code, from a debug build. Nothing between a debug and
-release build of `c66993d` is expected to move zoom — `isMinifyEnabled = false`, so there is not
-even a shrinker between them — **but that is reasoning, not measurement, and is recorded as such.**
-Re-run the zoom row on both once they are reachable.
+Only the PMA110 reaches `3×` and `10×` with real glass; both tablets' `3×` is a crop and reads
+exactly ×3 of their own main lens, which is why they say "3× zoom" rather than "3× lens". That
+split between phone and tablets is the evidence the conversion resolves by ROUTE rather than by the
+preset tapped.
 
 | | OPPO PMA110 | Lenovo TB336ZU | Lenovo TB331FC | Android 13 emulator |
 |---|---|---|---|---|
