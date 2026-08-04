@@ -35,16 +35,17 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.TeleCamPro">
 
-        <!-- CameraUnit is NOT integrated: the com.oplus.ocs SDK dependency, the OPPO
-             OpenCapability maven repo, and the debug-only availability probe were all removed
-             2026-07-25 (see "Authenticated CameraUnit path" in docs/BACKLOG.md). Pasting an
-             AUTH_CODE here alone does NOTHING — the SDK dependency must be restored first, and
-             BACKLOG carries the full re-enable order. Once it is back, and after registering
-             me.hletrd.telecampro (the applicationId — NOT the Kotlin namespace) + our signing
-             cert on OPPO's CameraUnit developer portal, the issued AUTH_CODE goes here:
-             <meta-data android:name="com.coloros.ocs.camera.AUTH_CODE" android:value="…" />
-             None of this affects the shipped TC path: vendor session type 0x80b4 and the plain
-             com.oplus.* Camera2 request keys need no AUTH_CODE and no SDK. -->
+        <!-- No vendor camera SDK is integrated, and none will be: the authenticated OEM path was
+             DECLINED by the owner on 2026-08-04, so this is a closed decision rather than a gap
+             waiting to be filled. The SDK dependency, its maven repo and the debug-only probe were
+             removed on 2026-07-25 and must not come back; there is deliberately no auth-code
+             meta-data here and no instruction for adding one.
+
+             This costs the shipped app nothing. The teleconverter path rides the vendor session
+             type 0x80b4 and the plain com.oplus.* Camera2 request keys, which need no
+             authentication and no SDK — see CLAUDE.md. What stays out of reach as a result (the
+             200 MP remosaic, a scene-referred log stream, the 300 mm OIS profile) is documented
+             where each is described, so nothing here needs re-deriving. -->
 
         <activity
             android:name=".MainActivity"

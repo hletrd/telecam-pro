@@ -712,8 +712,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   off on that one attempt; a rejected hi-res session falls back to full-with-RAW), fast commits
   compare intent against the CONFIGURED session (`hiResConfigured`), the still saves via the
   EXIF-orientation-only passthrough-JPEG lane, and the `HR` OSD tag keys on accepted-session truth.
-- **300 mm teleconverter OIS would depend on OPPO CameraUnit, which is NOT integrated — SDK and
-  probe REMOVED 2026-07-25; do not re-add without the BACKLOG checklist.** The 4.3× teleconverter
+- **300 mm teleconverter OIS would depend on OPPO CameraUnit, which is NOT integrated and NEVER
+  WILL BE — the authenticated path was DECLINED by the owner 2026-08-04. Do not re-add the SDK,
+  do not re-probe, do not plan around it.** The 4.3× teleconverter
   stabilization profile appears to use CameraUnit extension parameters that are not exposed through
   raw Camera2 request/result keys. What the app actually applies is the public Camera2 overlap
   (`com.oplus.camera.mode=40`, `com.oplus.original.zoomRatio` 4.286×) plus the vendor 0x80b4 TC
@@ -730,11 +731,14 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   it; the isolated A/B above is the honest figure. The decisive cost was not milliseconds but the
   200+ log rows it emitted inside the cold-start window, which blew the ColorOS log quota (see that
   bullet below) and silently ate our own `StartupTrace` instrumentation — a measurement tax that
-  corrupted measurement. Like the 200 MP entry above: **do not re-probe without cause.** CameraUnit
-  remains a legitimate deferred OPTION; the full re-enable order (registration → issued AUTH_CODE →
-  restore dependency/repo/catalog/verification-metadata → build flag → re-measure) is in the
-  "Authenticated CameraUnit path" entry under Deferred Beyond v1 in `docs/BACKLOG.md`. Restore from
-  the removal commits rather than re-deriving coordinates and credentials.
+  corrupted measurement. Unlike the 200 MP entry above, this is no longer merely "do not re-probe
+  without cause" — the option itself is CLOSED. The former re-enable checklist was deleted along
+  with the decision (a step-by-step restore order under a declined item is how a closed decision
+  quietly reopens itself); `docs/BACKLOG.md` carries the closure and what it rules out for good:
+  the 200 MP remosaic, a scene-referred log stream, and this OIS profile. The DORMANT code that
+  was kept alive for that future — the de-log shader branch and the `vendorLogMode`/`setNativeLog`
+  plumbing — now has no consumer that can ever arrive, so treat it as dead weight to be removed
+  rather than a hook to be filled.
 - **The camera-control button: slides arrive as STANDARD `KEYCODE_ZOOM_IN`/`OUT` (live-verified
   2026-07-09).** Full mechanical press = standard `KEYCODE_CAMERA` (→ shutter, `onKeyDown`). The
   capacitive slide is re-emitted to the FOCUSED app as **KEYCODE_ZOOM_IN (168) / KEYCODE_ZOOM_OUT

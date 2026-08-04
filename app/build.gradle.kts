@@ -43,7 +43,7 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        // Public app id (Play URL / Settings / OPPO CameraUnit auth-code binding). The Kotlin
+        // Public app id (Play URL / Settings). The Kotlin
         // namespace shares the me.hletrd vendor prefix (repo-wide move 2026-07-25) while keeping the
         // package now matches the applicationId; nothing here names a handset.
         applicationId = "me.hletrd.telecampro"

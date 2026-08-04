@@ -1161,32 +1161,27 @@ These do not require a code or metadata change unless the result exposes a defec
      documentation does not answer. This is a legal answer to obtain first, never a probe to re-run.
 - **End-to-end 10-bit Camera2 input:** the stable shipping Camera2/EGL source is SDR/8-bit; the prior
   HLG10 + JPEG + RAW combination crashed the HAL.
-- **Authenticated CameraUnit path:** still a legitimate deferred option, but the groundwork was
-  REMOVED 2026-07-25 (commits `c27744c` probe + `2b4bc55` build graph) — restore from those rather
-  than re-deriving coordinates or credentials. Gone: the `com.oplus.ocs` dependency (camera 1.1.0 +
-  base 1.0.16 and its base-auth/base-internal transitives), the OPPO OpenCapability maven repo and
-  its credentials, the four `gradle/verification-metadata.xml` components, and the debug-only
-  `OcsProbe` availability check. **Why:** without an AUTH_CODE the probe could only ever return
-  `errorCode=1004` (AUTHCODE_EXPECTED) — a constant of the missing registration, not of the device,
-  so it could never be what tells us the answer changed — while costing ~32 ms of debug cold start
-  (isolated A/B, proc-start → `configure_streams` END, median of 4 runs each: 527 ms with the SDK,
-  495 ms without; the release-vs-debug 354/535 ms gap is debug-BUILD overhead and must not be
-  quoted as the SDK's cost) and, decisively, 200+ log rows that blew ColorOS's 300-row per-process
-  quota and ate our own `StartupTrace` instrumentation. Re-enable order, which
-  is the ONLY sanctioned path:
-  1. an AUTH_CODE actually ISSUED (not merely applied for) for applicationId `me.hletrd.telecampro`
-     plus the signing cert, via OPPO developer registration;
-  2. that code as a `com.coloros.ocs.camera.AUTH_CODE` manifest meta-data (the placeholder comment
-     in `app/src/main/AndroidManifest.xml` marks the spot);
-  3. restore the maven repo block, the version-catalog entries, the `debugImplementation` lines and
-     the four `com.oplus.ocs` verification-metadata components from the commits above;
-  4. re-add behind a build flag so it is NOT on by default even in debug, and re-measure cold start
-     and startup log volume before merging;
-  5. a product decision on a separate CameraUnit video session that lacks the current RAW/manual
-     Camera2 surface.
-  Orthogonal to the shipped TC path: vendor session type 0x80b4 and the public `com.oplus.*` Camera2
-  request keys are device-verified, need no AUTH_CODE and no SDK, and were untouched by the removal
-  (see "Verified 2026-07-14 (late)" above).
+- **Authenticated CameraUnit path — DECLINED 2026-08-04 (owner decision). Not deferred; closed.**
+  The owner will not pursue an authenticated vendor camera SDK, so this stops being an option the
+  backlog holds open. The former re-enable checklist was deleted with the decision: it existed only
+  to make the work resumable, and leaving a step-by-step restore order under a declined item is how
+  a closed decision quietly reopens itself. The groundwork was already removed on 2026-07-25
+  (commits `c27744c` probe + `2b4bc55` build graph) — the `com.oplus.ocs` dependency, the vendor
+  maven repo and its credentials, the four `gradle/verification-metadata.xml` components, and the
+  debug-only availability probe. It stays removed, and the manifest carries no auth-code slot.
+  **Why it was never worth much anyway:** without an issued AUTH_CODE the probe could only ever
+  return `errorCode=1004` (AUTHCODE_EXPECTED) — a constant of the missing registration, not of the
+  device, so it could never be the thing that tells us an answer changed — while costing ~32 ms of
+  debug cold start (isolated A/B, proc-start → `configure_streams` END, median of 4 runs each:
+  527 ms with the SDK, 495 ms without; the release-vs-debug 354/535 ms gap is debug-BUILD overhead
+  and must not be quoted as the SDK's cost) and, decisively, 200+ log rows that blew ColorOS's
+  300-row per-process quota and ate our own `StartupTrace` instrumentation.
+  **What this closes off, so nobody re-opens it hoping otherwise:** the 200 MP remosaic, a genuinely
+  scene-referred log stream, and the 300 mm teleconverter OIS profile all live behind that stack and
+  are now permanently out of scope. Each is documented where it is described.
+  **What it does NOT affect:** the shipped teleconverter path. Vendor session type 0x80b4 and the
+  public `com.oplus.*` Camera2 request keys are device-verified, need no AUTH_CODE and no SDK, and
+  were untouched by the removal (see "Verified 2026-07-14 (late)" above).
 - **Optional product work:** configurable keep-screen-on, geotagging, custom save locations, slow-
   motion playback metadata, and advanced focus/bracketing workflows.
 - **TELE pseudo-ZSL (cycle-8 deferral):** the ring design targets the LOGICAL photo route only;
