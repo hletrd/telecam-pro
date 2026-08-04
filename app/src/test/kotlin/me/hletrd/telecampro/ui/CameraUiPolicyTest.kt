@@ -16,6 +16,7 @@ import me.hletrd.telecampro.focus.focusConfidenceLabel
 import me.hletrd.telecampro.ui.controls.proSheetUsesSideLayout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -445,5 +446,44 @@ class CameraUiPolicyTest {
         // An unrecognized token degrades to the battery fact instead of speaking punctuation.
         assertEquals("Battery 42 percent", statusInfoDescription(batteryPct = 42, remaining = "??", video = true))
         assertEquals("Battery 42 percent", statusInfoDescription(batteryPct = 42, remaining = "??", video = false))
+    }
+
+    @Test
+    fun `upside down puts capture at the TOP and the menu bar at the BOTTOM`() {
+        // The one case the owner stated in terms that cannot be misread: "for upside down, record
+        // button should be in top and grid / settings button should be in bottom". It pins the whole
+        // world-fixed rule, from which the 90/270 rows are derived rather than chosen.
+        assertEquals(ScreenEdge.TOP, captureClusterEdge(180))
+        assertEquals(ScreenEdge.BOTTOM, menuBarEdge(captureClusterEdge(180)))
+    }
+
+    @Test
+    fun `an unturned window keeps the capture cluster at the bottom`() {
+        // The regression fence: portrait, and every large screen whose window followed the device
+        // (residual 0), must place exactly where they always did.
+        assertEquals(ScreenEdge.BOTTOM, captureClusterEdge(0))
+        assertEquals(ScreenEdge.TOP, menuBarEdge(captureClusterEdge(0)))
+        assertEquals(ScreenEdge.BOTTOM, captureClusterEdge(360))
+        assertEquals(ScreenEdge.BOTTOM, captureClusterEdge(-360))
+    }
+
+    @Test
+    fun `the two quarter turns take opposite side edges`() {
+        // Derived from the same world-fixed rule as the 180 case: turning the device CCW by r turns
+        // the world CW by r inside the window, so screen-down maps to LEFT at 90 and RIGHT at 270.
+        assertEquals(ScreenEdge.LEFT, captureClusterEdge(90))
+        assertEquals(ScreenEdge.RIGHT, menuBarEdge(captureClusterEdge(90)))
+        assertEquals(ScreenEdge.RIGHT, captureClusterEdge(270))
+        assertEquals(ScreenEdge.LEFT, menuBarEdge(captureClusterEdge(270)))
+        // Unwrapped animation targets normalize, so a -90 target is the same pose as 270.
+        assertEquals(ScreenEdge.RIGHT, captureClusterEdge(-90))
+    }
+
+    @Test
+    fun `the menu bar never shares an edge with the capture cluster`() {
+        for (r in listOf(0, 90, 180, 270, -90, 450)) {
+            val capture = captureClusterEdge(r)
+            assertNotEquals(capture, menuBarEdge(capture))
+        }
     }
 }

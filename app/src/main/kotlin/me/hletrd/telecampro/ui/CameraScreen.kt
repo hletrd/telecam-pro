@@ -348,6 +348,18 @@ fun CameraScreen(
     }
     val overlayRotation by animateFloatAsState(targetValue = overlayRotationTarget, label = "overlayRotation")
 
+    // The two CLUSTERS relocate; the window does not. captureClusterEdge keeps the shutter at the
+    // world's down edge and the menu bar at the world's up edge, so the same thumb finds the same
+    // control however the phone is held, without the system ever turning the layout.
+    val captureEdge = captureClusterEdge(glyphRotationDeg)
+    val captureEdgeAlignment = edgeAlignment(captureEdge)
+    val menuEdgeAlignment = edgeAlignment(menuBarEdge(captureEdge))
+    // Contents of those two clusters must NOT turn again: a glyph rotation inside a container that
+    // already turned is applied twice, which is how "Photo" ends up upside down inside a correctly
+    // placed cluster. Everything OUTSIDE them — OSD tags, scopes, exposure meter, review overlay,
+    // the Fn tray — is still individually rotated and keeps `overlayRotation`.
+    val inClusterGlyphRotation = 0f
+
     // Live zoom readout: show a bar + "N.N×" whenever the zoom ratio CHANGES (including a genuine
     // move to exactly 1×), then fade it out ~1.4 s after the last change. Dropping snapshotFlow's
     // initial sample prevents a restored non-1× setup from flashing the pill on launch.
@@ -496,7 +508,12 @@ fun CameraScreen(
             // the rotation that flips the branch — so reading it in the wide layout subtracts a
             // chrome that is not there, using a stale measurement of a layout that is not current.
             // Derived once here so neither reader can pick up the portrait number by accident.
-            val bottomReserveForLayoutPx = if (landscapeOperator) 0 else bottomClusterRestHeightPx
+            // Also 0 once the cluster has LEFT the bottom edge: at 90/270 its recorded extent is the
+            // rotated AABB — nearly the full window height — and subtracting that from the bottom
+            // would collapse the preview to nothing. The reserve exists to stop the frame's bottom
+            // edge cutting through the Fn circle, which is only a bottom-edge problem.
+            val bottomReserveForLayoutPx =
+                if (landscapeOperator || captureEdge != ScreenEdge.BOTTOM) 0 else bottomClusterRestHeightPx
             val previewWidthPx = previewBoxWidthPx(
                 availableWidthPx = (constraints.maxWidth - railReservePx - menuReservePx).coerceAtLeast(1),
                 availableHeightPx = constraints.maxHeight,
@@ -1097,7 +1114,7 @@ fun CameraScreen(
                 openManualDial = null
                 detailsVisible = !detailsVisible
             },
-            glyphRotation = overlayRotation,
+            glyphRotation = inClusterGlyphRotation,
             vertical = landscapeOperator,
             modifier = Modifier
                 // In the WIDE layout the bar belongs to the RAIL's column, not to the window. Spanning
@@ -1111,7 +1128,10 @@ fun CameraScreen(
                     if (landscapeOperator) {
                         Modifier.align(Alignment.TopStart).width(operatorMenuRailWidth)
                     } else {
-                        Modifier.align(Alignment.TopCenter)
+                        // Opposite edge from the capture cluster, turning with it — so Grid and
+                        // Settings stay at the world's top however the phone is held, and the two
+                        // clusters can never meet. Same rotateLayout reasoning as the cluster.
+                        Modifier.align(menuEdgeAlignment).rotateLayout(overlayRotation)
                     }
                 )
                 .statusBarsPadding()
@@ -1159,7 +1179,7 @@ fun CameraScreen(
                 openDial = openManualDial,
                 onSelectDial = ::selectManualDial,
                 onCloseDial = { openManualDial = null },
-                glyphRotation = overlayRotation,
+                glyphRotation = inClusterGlyphRotation,
                 compact = !detailsVisible,
                 onOpenFnMenu = {
                     currentActions.value.onCameraInputBlockedChange(true)
@@ -1182,7 +1202,7 @@ fun CameraScreen(
                             state = state,
                             onLens = actions::onLens,
                             onTeleZoomMark = actions::onTeleZoomMark,
-                            glyphRotation = overlayRotation,
+                            glyphRotation = inClusterGlyphRotation,
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
@@ -1192,13 +1212,13 @@ fun CameraScreen(
                         // already moved. It also made two identical tablets disagree (Fn LEFT of the
                         // chips on TB331FC, RIGHT on TB336ZU) purely from each one's stale flat-desk
                         // gravity hold.
-                        val entryAnchor = fnEntryAnchor(overlayRotation.roundToInt())
+                        val entryAnchor = fnEntryAnchor(inClusterGlyphRotation.roundToInt())
                         CompactFnButton(
                             onClick = {
                                 currentActions.value.onCameraInputBlockedChange(true)
                                 fnOverlayVisible = true
                             },
-                            glyphRotation = overlayRotation,
+                            glyphRotation = inClusterGlyphRotation,
                             modifier = when (entryAnchor) {
                                 FnEntryAnchor.START -> Modifier
                                     .align(AbsoluteAlignment.CenterLeft)
@@ -1215,7 +1235,7 @@ fun CameraScreen(
                     mode = state.mode,
                     onModeChange = actions::onModeChange,
                     enabled = !state.isRecording,
-                    glyphRotation = overlayRotation,
+                    glyphRotation = inClusterGlyphRotation,
                     modifier = Modifier.fillMaxWidth(),
                 )
 
@@ -1255,7 +1275,7 @@ fun CameraScreen(
                     cameraHealthy = state.primaryShutterHealthy,
                     shutterEnabled = state.primaryShutterEnabled,
                     stillCaptureAvailable = state.stillCaptureReady,
-                    glyphRotation = overlayRotation,
+                    glyphRotation = inClusterGlyphRotation,
                     modifier = Modifier
                         .fillMaxWidth()
                         // 12 dp, the ONE left inset (see the rule stated above the top-start
@@ -1316,7 +1336,19 @@ fun CameraScreen(
         } else {
             Column(
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
+                    // The cluster HUGS the world's down edge and turns with it, rather than sitting
+                    // at the window's bottom while its glyphs turn inside it. Owner rule: "rotation
+                    // should not rotate the entire system ... for upside down, record button should
+                    // be in top and grid / settings button should be in bottom". So the window is
+                    // still portrait-locked, and it is the cluster that moves.
+                    //
+                    // rotateLayout, not rotate: it measures the child against the SWAPPED axis and
+                    // reserves the rotated AABB, so `fillMaxWidth` below spans the edge the cluster
+                    // actually lies along (the window's HEIGHT at 90/270). A plain draw rotation
+                    // would keep measuring against the window width and leave the cluster stunted to
+                    // ~411 dp along a 926 dp edge.
+                    .align(captureEdgeAlignment)
+                    .rotateLayout(overlayRotation)
                     .fillMaxWidth()
                     // Rest-state measurement for the preview's adaptive top ([previewTopPx]); a
                     // dial-open growth spike must not re-place the viewfinder, so only the closed
