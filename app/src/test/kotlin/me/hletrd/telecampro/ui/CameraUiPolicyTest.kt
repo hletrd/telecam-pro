@@ -330,7 +330,19 @@ class CameraUiPolicyTest {
             grid = GridType.NONE,
         )
         assertEquals(ChromeToggles(false, false, false, false), quiet())
-        assertEquals(ChromeToggles(true, true, true, true), quiet(compact = false))
+        // Full DISP draws every toggle EXCEPT the idle self-timer. Eight 48 dp targets need 384 dp and
+        // a 411 dp phone leaves 387 dp after padding, so the eighth was clipped to a 12 px sliver on
+        // device — and the loser was GRID, whose lines paint on the live image and whose button is the
+        // only thing that clears them. The timer gives up its idle slot instead (owner's call).
+        assertEquals(ChromeToggles(flash = true, timer = false, aspect = true, grid = true), quiet(compact = false))
+        // An ARMED timer draws in BOTH densities: a shutter that will not fire immediately has to be
+        // visible and cancellable, so this is the one toggle whose rule ignores compact entirely.
+        for (compact in listOf(true, false)) {
+            assertTrue(
+                "an armed self-timer must stay visible (compact=$compact)",
+                chromeToggles(compact, true, FlashMode.OFF, ShutterTimer.SEC3, AspectRatio.W4_3, GridType.NONE).timer,
+            )
+        }
 
         // One toggle off its quiet value at a time: each must move alone, or two rules are crossed.
         assertEquals(

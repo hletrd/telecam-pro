@@ -238,7 +238,16 @@ internal fun chromeToggles(
     grid: GridType,
 ): ChromeToggles = ChromeToggles(
     flash = chromeToggleVisible(compact, flash == FlashMode.OFF),
-    timer = photo && chromeToggleVisible(compact, timer == ShutterTimer.OFF),
+    // The self-timer is the ONE toggle that does not follow chromeToggleVisible: it draws only while
+    // a timer is actually armed, in full DISP as well as compact. The row cannot hold everyone —
+    // eight 48 dp targets need 384 dp and a 411 dp phone leaves 387 dp after padding, so the eighth
+    // was clipped to a 12 px sliver and vanished. GRID is what lost that race on device, which is the
+    // worst possible loser: the grid lines paint on the live image and this button is the only thing
+    // that clears them. Dropping the timer's idle slot leaves seven (384 dp) and everything fits.
+    // Chosen by the owner as the control that earns its always-visible slot least; it stays reachable
+    // in the Fn menu and the Shoot tab, and an ARMED timer still shows here because a shutter that
+    // will not fire immediately must be visible and cancellable.
+    timer = photo && timer != ShutterTimer.OFF,
     aspect = photo && chromeToggleVisible(compact, aspect == AspectRatio.W4_3),
     grid = chromeToggleVisible(compact, grid == GridType.NONE),
 )
