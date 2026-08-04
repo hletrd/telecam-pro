@@ -408,6 +408,9 @@ fun CameraScreen(
         // Reserved width for the operator rail. Chrome must not overlay the image (the whole point
         // of the rail), so the preview box is fitted into the REMAINDER — see previewWidthPx below.
         val operatorRailWidth = 208.dp
+        // The menu-side column, opposite the capture rail. Narrower because it holds one stack of
+        // 48 dp glyphs, where the rail holds the dial cluster, the mode carousel and the shutter.
+        val operatorMenuRailWidth = 76.dp
         // previewAspect is the field as it displays in the device's NATURAL orientation; a rotated
         // window shows it W/H-swapped. Device-measured on TB336ZU (2026-08-04): without the swap a
         // 2560x1600 landscape window drew the portrait 3:4 box at ~1200x1600 and pillarboxed away
@@ -446,6 +449,12 @@ fun CameraScreen(
             // edge to edge (measured 2560×1440 on TB336ZU) — that is the deliberate trade for a
             // viewfinder no control ever covers.
             val railReservePx = if (landscapeOperator) with(density) { operatorRailWidth.roundToPx() } else 0
+            // Reserved on the LEFT for the menu column. Putting every control in the right rail made
+            // a landscape grip fight itself: the shutter hand owns that edge, and Grid / TELE / flip
+            // / DISP / gear were stacked on top of the dial cluster and the shutter — 12 controls in
+            // one column, none on the other (owner-reported). They take their own side instead, and
+            // like the rail it is SUBTRACTED from the preview so neither column sits on the frame.
+            val menuReservePx = if (landscapeOperator) with(density) { operatorMenuRailWidth.roundToPx() } else 0
             // The bottom cluster exists ONLY in the portrait layout — the wide layout gives the
             // controls their own COLUMN, whose width railReservePx already took out of the preview.
             // bottomClusterRestHeightPx is written from inside the portrait branch, and
@@ -455,7 +464,7 @@ fun CameraScreen(
             // Derived once here so neither reader can pick up the portrait number by accident.
             val bottomReserveForLayoutPx = if (landscapeOperator) 0 else bottomClusterRestHeightPx
             val previewWidthPx = previewBoxWidthPx(
-                availableWidthPx = (constraints.maxWidth - railReservePx).coerceAtLeast(1),
+                availableWidthPx = (constraints.maxWidth - railReservePx - menuReservePx).coerceAtLeast(1),
                 availableHeightPx = constraints.maxHeight,
                 aspect = displayedPreviewAspect,
             )
@@ -1052,7 +1061,7 @@ fun CameraScreen(
                 // scroll absorbs the crowding it already handles in portrait.
                 .then(
                     if (landscapeOperator) {
-                        Modifier.align(Alignment.TopEnd).width(operatorRailWidth)
+                        Modifier.align(Alignment.TopStart).width(operatorMenuRailWidth)
                     } else {
                         Modifier.align(Alignment.TopCenter)
                     }
