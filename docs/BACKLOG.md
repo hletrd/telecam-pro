@@ -1115,17 +1115,38 @@ These do not require a code or metadata change unless the result exposes a defec
   already retired with the `com.oplus.ocs` removal on 2026-07-25. **`isShrinkResources` stays OFF**
   and is a separate follow-up whose audit is already done: there is no `Resources.getIdentifier`
   anywhere in `app/src/main/kotlin`, so it can be flipped whenever the extra size win is wanted.
-- **Large-screen orientation/resizability:** Play Console recommends removing
-  `android:screenOrientation="portrait"` from `MainActivity`. **Declined 2026-08-04 (user decision)
-  — it is a recommendation, not a policy requirement, and does not block publishing.** The portrait
-  lock is load-bearing rather than incidental: the glyph counter-rotation system (`+deviceOrientation`,
-  CLAUDE.md) exists precisely BECAUSE the layout is device-fixed, so freeing the activity would make
-  that rotation double-apply, and preview aspect/rotation currently key off `sensorOrientation`
-  assuming a fixed display. Unlocking is a layout+pipeline project with its own device pass, not a
-  manifest edit. `PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY` (added 2026-08-02 after the
-  landscape-window problem was reproduced on a Lenovo TB336ZU) still restores the pre-Android-16
-  behaviour, but it is TEMPORARY by Android's own schedule — **the opt-out is removed at API 37**, so
-  this must be resolved before `targetSdk` is raised to 37.
+- **Large-screen orientation/resizability — DONE 2026-08-04, no longer deferred.** Briefly recorded
+  here as "declined" earlier the same day; the owner reversed that and the work was carried out, so
+  this entry is kept only to correct the record. `PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY` is
+  REMOVED, so a display at sw600dp+ now takes the landscape window Android 16 wants to give it —
+  ahead of API 37, which deletes the opt-out outright. `android:screenOrientation="portrait"` STAYS:
+  it is still honoured below sw600dp, and PMA110 measures **411 dp** (1440 px ÷ 560 dpi × 160), so
+  the phone never rotates and its device-fixed layout is untouched.
+  - **What carries the window term:** preview rotation and displayed aspect
+    (`RotationMath.windowPreviewRotationDegrees` / `displayedPreviewAspect`, applied through
+    `FlipRenderer.draw`'s per-call `rotationOverrideDeg`), tap mapping (`unrotateViewPoint` inside
+    `mapTapFocusGeometry`), and glyph counter-rotation (`glyphRotationDegrees`). Each is proven inert
+    at `ROTATION_0` by a unit test — that degeneracy IS the phone's regression fence.
+  - **What deliberately does NOT:** capture masks and encoder framing stay GRAVITY-derived, so a
+    still or clip records the same field however the window is turned. Do not "fix" them to follow
+    window shape; that re-opens the cycle-4 overscan bug.
+  - **Layout:** a wide window gets the Sony-style operator rail (`landscapeOperator`, 208 dp), whose
+    width is SUBTRACTED from the preview box rather than drawn over it, so no control covers the
+    frame. Keyed on window SHAPE, not rotation — split-screen can be wide at `ROTATION_0`.
+  - **Device-verified.** TB336ZU (Android 16, 1600×2560), the same tablet that reproduced the
+    original problem on 2026-08-02: the rotation sign was BISECTED rather than assumed — the
+    preview's brightness asymmetry moved top (dy −2.46) to left (dx −3.64), i.e. 90° CCW, matching
+    `windowPreviewRotationDegrees(90) = 270° CW`; preview width in the landscape window went
+    1216 → 2560 px, and 2144×1206 with the rail; the portrait window was unchanged at x=64..1536.
+    PMA110 regression: window stayed 1440×3168, portrait layout and all four lens presets intact,
+    HEIF 1.5 MB + DNG 25 MB with the still UPRIGHT, and a 10.4 s clip at HEVC 2160×3840 / 29.92 fps
+    + AAC 48 kHz stereo. Zero `FATAL EXCEPTION` on either device.
+  - **Known-good caveat:** after an accidental ~2-minute 4K recording the PMA110 session came back
+    with every control dimmed and refused a REC press. A force-stop/relaunch cleared it and the
+    clip above recorded normally. Not attributable to this change (which is inert at `ROTATION_0`),
+    but worth knowing before chasing it as a new defect.
+  - **Play Console will still flag this.** Its check reads the `screenOrientation` attribute, which
+    is deliberately retained; the recommendation is advisory and does not block publishing.
 - **Dolby Vision:** device-probed end to end on 2026-07-26 and the technical path WORKS — the
   blockers are legal and honesty, not engineering. `DolbyVisionProbeTest` (androidTest; logs under
   `DVProbe`, never fails the build) showed `c2.qti.dv.encoder` is HW and visible to our own

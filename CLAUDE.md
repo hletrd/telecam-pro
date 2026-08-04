@@ -359,7 +359,23 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   `engine.pause`. `TerminalAcquisitionGate` closes before release's final
   `gl.stop`, so queued cold start cannot resurrect a GL generation afterward. Preview-window tasks
   also carry synchronous invalidation generations; stale/released native windows cannot bind later.
-- **Sensor orientation = 90; activity is portrait-locked; preview verified upright on device.** The
+- **Large screens take a LANDSCAPE window; phones do not (2026-08-04).** `screenOrientation="portrait"`
+  is still declared and is still honoured below sw600dp — PMA110 measures **411 dp**, so the phone is
+  device-fixed portrait exactly as before. But `PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY` is
+  GONE, so at sw600dp+ Android 16 gives the activity a landscape window (API 37 removes that opt-out
+  outright). Four things take a window term — preview rotation, displayed aspect, tap mapping
+  (`RotationMath.unrotateViewPoint` inside `mapTapFocusGeometry`), and glyph counter-rotation — and
+  **every one is proven inert at `ROTATION_0` by a unit test; that degeneracy is the phone's
+  regression fence.** The preview term rides `FlipRenderer.draw`'s per-call `rotationOverrideDeg` and
+  must NEVER be written into `setRotationDegrees`: rotation is renderer STATE shared by every draw
+  role, and **capture masks and encoder framing stay GRAVITY-derived on purpose** so a clip records
+  the same field however the window is turned — routing them through window shape re-opens the
+  cycle-4 overscan bug. A wide window gets the operator rail (`landscapeOperator`, 208 dp), keyed on
+  window SHAPE not rotation (split-screen can be wide at `ROTATION_0`), whose width is SUBTRACTED
+  from the preview box so no control covers the frame. Sign device-BISECTED on TB336ZU, not assumed:
+  the preview's brightness asymmetry moved top → left, i.e. 90° CCW. Details in `docs/BACKLOG.md`.
+- **Sensor orientation = 90; the activity is portrait-locked ON PHONES (see the entry above for
+  large screens); preview verified upright on device.** The
   camera SurfaceTexture transform *already* rotates the sampled image by the sensor orientation, so
   the GL renderer adds **only the afocal 180°** in tele mode (`CameraEngine.previewRotationDegrees()`
   returns 180 in tele, 0 otherwise) — NOT `±sensorOrientation` (both 270° and 90° read 90° off on
