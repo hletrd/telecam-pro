@@ -327,6 +327,23 @@ const val FINDER_BOTTOM_MARGIN = 0.10f
 // the box ~1200 px below the preview top in 4:3 and ~1218 px in 16:9 — the same distance to within
 // 1.5% of the box, which is why this edge is the stable one to measure from.
 const val FINDER_TOP_ANCHOR = 0.84f
+
+/**
+ * Floor for the gap under the overview, as a fraction of the frame HEIGHT. See [finderRect].
+ *
+ * Device-measured clearance above the focal rail at each candidate, on the two shapes on hand — a
+ * 411 dp phone (PMA110) and a 941 dp tablet (TB331FC), whose rail sits at very different fractions
+ * of the frame:
+ *
+ *     floor   phone 4:3   phone 16:9   tablet 4:3
+ *     0.060      91 px      103 px         0 px   <- tablet touches the rail exactly
+ *     0.075      98 px      103 px        22 px
+ *     0.090     127 px      103 px        45 px   <- phone starts drifting back up
+ *
+ * 0.075 is the landing point: it lifts the tablet off the rail while leaving the phone within 7 px
+ * of where the top anchor alone put it, so the "placed too up" complaint stays fixed.
+ */
+const val FINDER_MIN_BOTTOM_CLEARANCE = 0.075f
 // The punch-in loupe's texcoord crop: the magnified preview samples a (1-crop) span of the frame
 // (0.6 → 2.5× magnification). Shared between the GL draw (gl/GlPipeline) and the tap-mapping
 // composition in CameraEngine (P2.8/AGG4-11) so the two cannot drift.
@@ -579,7 +596,17 @@ fun finderRect(
         // (subtracting the full aspect difference, the second report). The box top, by contrast,
         // sits ~1200 px below the preview top in BOTH aspects, so that is the edge to measure from.
         // Still a pure function of the box, so the GL scissor and the Compose border agree.
-        y = boxHeight - boxWidth * topAnchor - boxHeight * fraction,
+        // ...but never closer to the bottom edge than [FINDER_MIN_BOTTOM_CLEARANCE] of the frame
+        // height. The top anchor is a fraction of the box WIDTH, and a tablet is far wider in dp
+        // than a phone while the focal rail stays 48 dp tall — so the same anchor that leaves 88 px
+        // under the box on a 411 dp phone left EXACTLY 0 px on a 941 dp tablet in 4:3 (measured on a
+        // Lenovo TB331FC: overview bottom 1621, rail top 1621). A scale-free fraction cannot express
+        // a fixed-dp clearance, so this floor is what keeps the box off the rail on wide screens; it
+        // is inert on the phone, where the anchor already sits below it.
+        y = maxOf(
+            boxHeight - boxWidth * topAnchor - boxHeight * fraction,
+            boxHeight * FINDER_MIN_BOTTOM_CLEARANCE,
+        ),
         width = width,
         height = boxHeight * fraction,
     )

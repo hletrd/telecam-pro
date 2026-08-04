@@ -29,7 +29,10 @@ class FinderGeometryTest {
         // the left column carries the vertical exposure/zoom ruler, which the overview used to sit
         // under. Vertically it hangs from the box TOP (2026-08-04), so y is whatever is left below.
         assertEquals(1000f - 300f - 22.5f, r.x, 1e-4f)
-        assertEquals(750f - 1000f * FINDER_TOP_ANCHOR - 225f, r.y, 1e-4f)
+        // A LANDSCAPE box is shorter than the top anchor reaches, so the anchor alone would put the
+        // box below the frame (-315 here). The clearance floor is what stops that.
+        assertEquals(750f * FINDER_MIN_BOTTOM_CLEARANCE, r.y, 1e-4f)
+        assertTrue("the overview must never hang below the frame", r.y >= 0f)
     }
 
     @Test
@@ -38,7 +41,16 @@ class FinderGeometryTest {
         assertEquals(1080f * FINDER_FRACTION, r.width, 1e-3f)
         assertEquals(1440f * FINDER_FRACTION, r.height, 1e-3f)
         assertEquals(1080f - 1080f * FINDER_FRACTION - 1080f * FINDER_SIDE_MARGIN, r.x, 1e-3f)
-        assertEquals(1440f - 1080f * FINDER_TOP_ANCHOR - 1440f * FINDER_FRACTION, r.y, 1e-3f)
+        // 1080x1440 is a 4:3 box whose anchor lands BELOW the clearance floor, so the floor wins —
+        // which is the whole point of it on wide screens.
+        assertEquals(
+            maxOf(
+                1440f - 1080f * FINDER_TOP_ANCHOR - 1440f * FINDER_FRACTION,
+                1440f * FINDER_MIN_BOTTOM_CLEARANCE,
+            ),
+            r.y,
+            1e-3f,
+        )
     }
 
     @Test
