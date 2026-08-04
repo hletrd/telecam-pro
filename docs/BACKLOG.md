@@ -51,10 +51,72 @@ frozen artifact vs re-cut" decision is closed; both frozen candidates (`9541697`
   - The signing blocker (a GPG backup holding the RETIRED keystore's password) is resolved and the
     backup re-encrypted; `.gitignore` is now pattern-based (`fc43953`). **Audited: no key,
     keystore, or password has ever entered git history on any ref.**
-  - **Open owner decision: the upload key's password is six digits and was transmitted in
-    plaintext.** Practical risk is low (keystore gitignored and local-only; with Play App Signing an
-    upload key alone cannot ship to users without console access), but rotating costs one
-    `keytool -genkeypair` now and becomes a Play support request after the first upload.
+  - **CLOSED 2026-08-03 by the owner: the upload key will NOT be rotated.** The password is six
+    digits and was transmitted in plaintext; rotation was offered before the first upload (one
+    `keytool -genkeypair` then, a Play support request afterwards) and **declined**. The residual
+    risk is accepted and bounded by Play App Signing: an upload key alone cannot ship to users
+    without console access, and the keystore is gitignored and local-only. Do not re-raise this.
+
+### CLOSED 2026-08-04 — the slow camera start was the status timer, not the camera
+
+Owner-reported: "starting the camera takes a long time." It did not. Measured on the reported
+device, `am start` returns in 412 ms and the Camera2 session configures at ~950 ms (DNG-independent:
+943 ms with RAW wanted, 958 ms without), which matches the documented `resume → first camera frame
+≈ 544 ms` budget. What took seconds was the **`"Starting camera…"` pill**.
+
+`statusDisplayDurationMs` classifies by wording, and this message matched nothing, so it landed in
+the `else -> 2_500L` neutral bucket. A PROGRESS message reports a condition that is true or false
+right now — a fixed timer is wrong in **both** directions: too long and a fast bring-up reads as a
+multi-second wait (what the owner saw), too short and the pill vanishes while the camera is still
+coming up, which claims ready before it is.
+
+It now has NO display duration and is retired by the owned Ready publication. Retired on the
+publication gate's ordering alone, **not** inside the `mainHandler.post` below it: that post
+additionally rechecks engine truth to protect the ACCEPTED aux state (formats, pre-TELE baseline)
+from a stale cross-thread post, and a progress pill has no such hazard. The clear is guarded on the
+message still BEING that status, so anything published during bring-up keeps the pill and its own
+timer. Nothing bounds the message otherwise — while the camera genuinely has not come up,
+"Starting camera…" is true, and every way that attempt can end (Ready, an error status, the
+exhausted-retry terminal status) replaces it.
+
+The literal lives in `camera/CameraState.kt`: the engine emits it, the UI policy must recognise it,
+`CameraEngine`'s companion is private, and the camera layer must not import the UI layer to reach a
+string. Two literals in two layers would drift apart silently and strand the pill.
+
+**Device-measured A/B, two shapes.** Before: the pill was still on screen **5.2 s** (TB331FC) and
+**4.1 s** (Android 13 emulator) after `am start`. After: never sampled across a 20 s window at
+~0.5–1 s cadence on either. Host tests pin both halves — the timer-less classification and that
+Ready clears it without swallowing a later message.
+
+### CLOSED 2026-08-04 — `zoomRatio` carries two scales, and the route decides which
+
+Owner-reported on the PMA110: tapping `3×` jumped the viewfinder to **9.1×**, and the rail pill then
+disagreed with the zoom it had just produced.
+
+`zoomRatio` means **main-relative** on the logical seamless camera and **lens-local** on any
+standalone lens. Three call sites — the lens-preset handler, settings restore, and the pre-TELE
+capture — read whichever scale they happened to be handed, and the mode→optics remap keyed off
+`CaptureMode` when the thing that actually decides the scale is the ROUTE. Photo on a standalone
+route (which is what wanting DNG produces) is exactly the case where mode and route disagree, so
+3 × 3.03 landed as 9.1.
+
+Fixed as one conversion pair in `camera/CameraState.kt`, host-tested, with every site going through
+it: `unifiedZoomOf(lens, ratio, standaloneRoute, optical)` and `localZoomOf(unified, optical)`,
+both resolving the base through `opticalBaseFor` — **the optical lens the route actually reaches**,
+not the preset the finger touched. `resolveLensOpticsIntent` now takes `standaloneRoute` +
+`opticalPresets` instead of the capture mode, and `remapModeOptics` early-returns when photo is
+already standalone.
+
+Three commits because the first was **correct on the phone and wrong on both tablets** (it divided
+by the tapped preset, which on a crop-only device is not a lens that exists). A second device shape
+is what caught it; a single-device check would have shipped the regression.
+
+Device-measured on all three (debug build, code `c66993d`): PMA110 `1×/3×/10×` → 23 / **69** /
+**230 mm**; TB336ZU → 26 / **78 mm**; TB331FC → 27 / **81 mm**. Only the phone reads 69 mm at `3×`,
+because only it reaches that framing optically — the tablets' exact ×3 is the crop, and that split
+is the evidence the conversion is route-based rather than preset-based. The highlighted pill
+matched the tapped preset on every device (checked by pixel, since selection is not exposed in the
+UI dump). Re-checked 2026-08-04 on the signed release artifact on the two targets still reachable.
 
 ### CLOSED 2026-08-03 — camera blocked for ONE app now says so
 

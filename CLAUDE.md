@@ -911,6 +911,16 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   open — an armed zero-mark trace was otherwise finished by the next ordinary `startPreview` rebuild
   and printed a fabricated number. **The earlier "~1150 ms of HAL bring-up" figure is RETRACTED**: it
   was an artifact of quota-dropped log rows (above), not a measurement — do not optimize against it.
+  **A "camera starts slowly" report is a UI question before it is a camera one (owner-reported,
+  device-bisected 2026-08-04).** The one such report resolved to the STATUS PILL, not the pipeline:
+  `am start` 412 ms, session configured ~950 ms, yet the `"Starting camera…"` pill was still on
+  screen 5.2 s later because `statusDisplayDurationMs` classifies by wording and this message fell
+  into the neutral 2.5 s bucket. **A PROGRESS status must carry no timer** — it reports a condition,
+  so an EVENT ends it (`statusIsProgress` → null duration; the owned Ready publication clears it,
+  guarded on the message still being that status so a message published during bring-up is not
+  swallowed). A timer is wrong both ways: too long makes a fast start read slow, too short claims
+  ready before it is. Measure the pipeline before believing a latency report, and measure the pill
+  too.
 - **`FLASH_STATE` LIES about the torch, and preview LUMA is not a light meter in any AE-active mode
   (2026-07-25).** This HAL reports `flashState = 3` (FIRED) on frames where the lamp is physically
   dark, so "state != 3" is NOT a torch discriminator — only a human eye, or a luma read taken under
