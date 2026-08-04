@@ -4,12 +4,38 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 ## Upload Artifact
 
-> ## ✅ PUBLISHED (2026-08-04) — v1.0, signed re-cut from `main` at `ca3d33c`, clean tree.
+> ## ✅ UPLOAD-READY (2026-08-04) — v1.0.1, signed cut from `main` at `0bc4c2f`, clean tree.
 >
-> This cut shipped to Google Play as `versionCode 1`, which is now SPENT (Play rejects a re-used
-> versionCode outright — see the note in `app/build.gradle.kts`). The next upload is a NEW cut:
-> `versionCode 2` / `1.0.1`, re-cut and re-pinned from current `main`; release notes for it live in
-> `docs/play-store-listing.md`.
+> `versionCode 2` / `versionName 1.0.1`. `versionCode 1` shipped to Play from `ca3d33c` and is SPENT
+> — Play rejects a re-used versionCode outright (see the note in `app/build.gradle.kts`). Release
+> notes live in `docs/play-store-listing.md`.
+>
+> **What 1.0.1 adds over the published 1.0:**
+> - **Korean UI.** 131 strings became resources with a `ko` translation, and the app declares
+>   `localeConfig` so the platform treats it as locale-aware — without that, an explicit
+>   `cmd locale set-app-locales ko-KR` left the UI in English with the Korean resources unused in the
+>   APK. Camera-standard abbreviations (ISO, WB, SS, EV, AF, NR, FPS, Fn, Open Gate) are
+>   `translatable="false"`: Korean camera bodies print them in Latin too, so that DECLARES the intent
+>   rather than suppressing the lint warning that asked.
+> - **Top chrome no longer collides.** In VIDEO the button row shifts down to clear the preview edge
+>   while the OSD row was pinned at a fixed 60 dp, so the buttons landed on top of it — measured on
+>   PMA110 as buttons y=332-500 over OSD text at y=391-436, with STEADY/LOUPE/battery squeezed into
+>   the 28 px gaps between buttons. Both rows now take the same offset. In PHOTO, eight 48 dp targets
+>   need 384 dp and a 411 dp phone leaves 387 dp after padding, so the eighth was clipped to a 12 px
+>   sliver — and GRID lost that race, whose lines paint on the live image and whose button is the only
+>   thing that clears them. The self-timer gives up its IDLE slot (owner's call); an armed timer still
+>   draws.
+> - **Loupe Overview clears the focal rail in every aspect.** Its inset is now measured by the layout
+>   rather than guessed as a fraction of the preview box: the preview runs BEHIND the bottom chrome by
+>   13 dp on a 411 dp phone and 90 dp on a 941 dp tablet, so no scale-free fraction could express it.
+>   A related defect went with it — the wide (tablet rail) layout was reading a STALE portrait
+>   bottom-cluster height across the rotation that flips the branch, which affected the preview
+>   placement itself, not just the overview.
+> - **Play's large-screen orientation flag is gone.** `android:screenOrientation="portrait"` only ever
+>   reached handsets (Android 16 ignores it at sw600dp+, API 37 removes the opt-out), but Play's check
+>   reads the manifest statically and could not see that. The lock is applied at runtime from
+>   `smallestScreenWidthDp` instead — identical behaviour, and now the static claim is true.
+> - Korean store copy for the listing, and a deslop pass over the UI strings and both descriptions.
 >
 > Supersedes `91b26a2`, `0f1421e`, `66734db`, `a4a7d12`, `fc43953`, and every candidate before it.
 > `applicationId` unchanged (`me.hletrd.telecampro`); upload certificate byte-identical to the
@@ -72,12 +98,12 @@ Use this sheet for the parts that must be entered manually in Play Console.
 
 Do not upload debug APKs or any unsigned/stale release bundle.
 
-### Final v1 upload artifacts (built + device-verified 2026-08-04 from `main` at `ca3d33c`)
+### v1.0.1 upload artifacts (built + device-verified 2026-08-04 from `main` at `0bc4c2f`)
 
 - Artifact location: `app/build/outputs/bundle/release/app-release.aab`
-- AAB SHA-256: `674a9bd3c8f0bbf8bb6358530f99be1c803bcdfa472ddc01faec7566707a8581`
+- AAB SHA-256: `bfd3eb2e0d38ad53feeb94f04562690f7f54f7f00cff2bbfe1125337016afadc`
 - Matching release APK SHA-256:
-  `aa475b91b30f3e389bd08e40518676daf971c157a4c0b828d00dcf703427d53c`
+  `1c2d98b06c5855e31575249cf5441733c1243bd7c712c227f46e131798c34d79`
 - Launch component: `me.hletrd.telecampro/me.hletrd.telecampro.MainActivity`
 - AAB `jarsigner -verify`: **jar verified**; `bundletool 1.18.3 validate`: **OK**
 - APK signing: **v2 valid, 1 signer**, `CN=Jiyong Youn, L=Seoul, ST=Seoul, C=KR`, certificate
@@ -88,10 +114,10 @@ Do not upload debug APKs or any unsigned/stale release bundle.
   `uses-permission` exactly `CAMERA`, `RECORD_AUDIO`, `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`,
   `READ_MEDIA_VISUAL_USER_SELECTED` (plus the framework's dynamic-receiver permission); **no
   `INTERNET`**; **not debuggable**
-- Release gate: `lintRelease` **0 errors**; host suite **1378 tests, 0 failures**
+- Release gate: `lintRelease` **0 errors**; host suite **1385 tests, 0 failures**
 - Carries a **baseline profile** (`assets/dexopt/baseline.prof` + `.profm`)
 - **Release dex contains ZERO `com.oplus.ocs` occurrences** (raw byte scan)
-- Superseded candidates (do NOT upload): `91b26a2` (`8cb63592…`), `0f1421e` (`543a8343…`), `66734db` (`152f1c33…`), `a4a7d12` (`5685b0c0…`), `fc43953` (`88d00e12…`), `2d6c35b` (`02cbd69d…`),
+- Superseded candidates (do NOT upload): `ca3d33c` (`674a9bd3…`, the PUBLISHED v1.0), `91b26a2` (`8cb63592…`), `0f1421e` (`543a8343…`), `66734db` (`152f1c33…`), `a4a7d12` (`5685b0c0…`), `fc43953` (`88d00e12…`), `2d6c35b` (`02cbd69d…`),
   `c6722bb` (`a5654855…`), `961b080` (`0516b0d8…`), `3a3d034` (`1c160b8c…`), `26266db`
   (`59ccb318…`), `3ff3b4b` (`19ef2b7d…`), `9f367c1` (`f04028f7…`), `3c70639` (`70f83bdd…`),
   `6bf2325` (`c238c1cf…`), `a0d4dbc` (`84a74f64…`), `69af1574…`, `a737483f…`, `7339e00d…`,
@@ -102,19 +128,25 @@ Do not upload debug APKs or any unsigned/stale release bundle.
 The four-target matrix below was measured on the `66734db` cut. Two later cuts were re-checked on
 whichever targets were reachable at the time, each proven byte-identical to its artifact first.
 
-**Measured 2026-08-04 on the signed `ca3d33c` RELEASE artifact (`aa475b91…`), all four targets,
-each proven byte-identical to the artifact on device before testing:**
+**Measured 2026-08-04 on the signed `0bc4c2f` RELEASE artifact (`1c2d98b0…`), bytes confirmed on
+each device before testing:**
 
-| | OPPO PMA110 | Lenovo TB336ZU | Lenovo TB331FC | Android 13 emulator |
-|---|---|---|---|---|
-| OS | Android 16 (36) | Android 16 (36) | **Android 15 (35)** | **Android 13 (33)** |
-| Launch / camera | clean | clean | clean | clean |
-| Lens rail | `0.6/1/3/10×` all **lens** | `1× lens` + `3× zoom` | `1× lens` + `3× zoom` | `1× lens` + `3×` + `10× zoom` |
-| Focal at each preset | 14 / 23 / **70** / **234 mm** | 26 / **78 mm** | 27 / **81 mm** | 36 / **107** / **357 mm** |
-| Highlighted pill | matches the tapped preset | matches | matches | matches |
-| `"Starting camera…"` pill | never sampled | never sampled | never sampled (was 5.2 s) | never sampled (was 4.1 s) |
-| Still | written | written | written | written |
-| Crashes / ANRs | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| | OPPO PMA110 | Lenovo TB336ZU | Lenovo TB331FC |
+|---|---|---|---|
+| OS | Android 16 (36) | Android 16 (36) | **Android 15 (35)** |
+| Top-chrome overlaps, photo / video | 0 / 0 | 0 / 0 | 0 / 0 |
+| Loupe Overview vs focal rail | 98 px clear in BOTH aspects | no chip overlap (rail layout) | no chip overlap (rail layout) |
+| Still | written | written | written |
+| Video | operator-verified | operator-verified | operator-verified |
+| Crashes / ANRs | 0 / 0 | 0 / 0 | 0 / 0 |
+
+Overlap is counted as a real rectangle intersection (>4 px on both axes) between every pair of
+top-area nodes, not by eye. The tablets sit in the WIDE layout, where the controls own a side column
+rather than a row under the frame, so the overview and the rail are separated horizontally — the
+vertical distance there is not a clearance and is not reported as one.
+
+**The Android 13 emulator is out of scope for this cut (owner's call) and was not re-verified.** Its
+`minSdk 33` floor coverage stands from the `66734db` matrix below.
 
 **Every focal is an exact multiple of that device's own `1×`**, which is the point: the OSD renders
 `caps.equivalentFocalMm × zoomRatio`, so a preset that wrote into the wrong scale shows up here
