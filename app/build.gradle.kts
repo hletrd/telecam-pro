@@ -53,15 +53,16 @@ android {
         // PMA110 behavior is byte-identical; other devices run spec paths via DeviceProfile.
         minSdk = 33
         targetSdk = 36
-        // versionCode 1 is SPENT — it is the build published to Google Play on 2026-08-04. Play
-        // rejects a re-used versionCode outright, so every subsequent upload must be strictly
-        // greater, including a re-upload of otherwise identical bytes. 2 and 3 were cut but never
-        // registered, so 1.0.1 never reached anyone; 4 is the upload candidate.
+        // versionCode 1 (v1.0, published 2026-08-04) and 3 (v1.0.1) are both SPENT — both reached
+        // Google Play. Play rejects a re-used versionCode outright, so every upload must be strictly
+        // greater, including a re-upload of otherwise identical bytes. 4 is the candidate.
         //
-        // versionName moves to 1.0.2 rather than staying 1.0.1 because the CONTENT changed after
-        // 3 was cut: the large-screen side rail that 1.0.1's release notes advertised is gone, and
-        // orientation no longer moves any control. Shipping that under the same user-visible name
-        // would put a note in front of users describing a layout the binary does not have.
+        // 1.0.1 SHIPPED, which is what makes 1.0.2 a real release rather than a re-cut: its notes
+        // told tablet owners they were getting "a landscape layout with a side control rail", and
+        // 1.0.2 REMOVES that rail — orientation now moves no control on any device. That is a
+        // visible change to something users already have, so it takes its own version and its own
+        // release notes, and those notes must not re-announce the Korean UI or the smaller download
+        // that 1.0.1 already delivered.
         versionCode = 4
         versionName = "1.0.2"
 
