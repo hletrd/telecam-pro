@@ -68,11 +68,13 @@
                  What is GONE (2026-08-04) is PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY, which
                  used to force the restriction back on at sw600dp+. Android 16 ignores
                  screenOrientation on those displays and API 37 removes the opt-out outright, so the
-                 durable answer was always the layout. It now exists: a wide window gets the operator
-                 RAIL (CameraScreen's landscapeOperator), the preview takes the window-rotated aspect,
-                 and preview rotation / tap mapping / glyph rotation each carry the window term
-                 (RotationMath). Device-verified on the Lenovo TB336ZU (Android 16, 1600x2560) — the
-                 same device that reproduced the original problem on 2026-08-02.
+                 durable answer was always the layout. It now exists: the preview takes the
+                 window-rotated aspect, and preview rotation / tap mapping / glyph rotation each
+                 carry the window term (RotationMath). Device-verified on the Lenovo TB336ZU
+                 (Android 16, 1600x2560) — the same device that reproduced the original problem on
+                 2026-08-02. A wide window briefly earned a separate operator RAIL as well; that was
+                 removed on 2026-08-05 because orientation must move no control, and the one
+                 arrangement now serves every window shape.
 
                  Deliberately NOT window-dependent: capture masks and encoder framing still derive
                  from GRAVITY, so a still or clip records the same field however the window is

@@ -61,9 +61,8 @@ internal fun String.isUrgentStatus(): Boolean =
  * `smallestScreenWidthDp` is the right axis because it measures the SHORTER side and therefore does
  * not change when the device turns.
  *
- * Note this is NOT `landscapeOperator`: that keys on window SHAPE (a wide window earns the rail,
- * even in split-screen at ROTATION_0), while this keys on the DISPLAY's smallest side. A tablet held
- * in portrait is window-authoritative here too.
+ * Keyed on the DISPLAY's smallest side, which does not change when the device turns, so a tablet
+ * held in portrait is window-authoritative here too.
  */
 internal fun windowFollowsDevice(smallestScreenWidthDp: Int): Boolean = smallestScreenWidthDp >= 600
 

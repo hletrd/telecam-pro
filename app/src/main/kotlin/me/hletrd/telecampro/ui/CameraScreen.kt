@@ -35,7 +35,6 @@ import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.RowScope
-import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -407,46 +406,18 @@ fun CameraScreen(
         //   - glyph counter-rotation: RotationMath.glyphRotationDegrees.
         //   - capture masks and encoder framing are UNCHANGED ON PURPOSE. Both derive from GRAVITY,
         //     not from window shape, so a clip records the same field however the window is turned.
-        // FALSE ALWAYS since 2026-08-05 (owner decision): "placing shutter button regardless of
-        // screen orientation, and also gallery button and functional buttons. just rotate the texts
-        // and histogram / waveform view".
+        // A wide window used to earn a different SHAPE of chrome — a leading menu column and a
+        // trailing capture rail, with both widths reserved out of the preview box. That is GONE
+        // (2026-08-05, owner decision): "placing shutter button regardless of screen orientation,
+        // and also gallery button and functional buttons. just rotate the texts and histogram /
+        // waveform view". Two homes for the shutter meant re-finding it after every turn. There is
+        // one arrangement now — bar along the top, capture cluster along the bottom — and only what
+        // must be READ rotates, via `overlayRotation`.
         //
-        // So orientation moves NO control. A wide window used to earn a different SHAPE of chrome —
-        // leading menu column, trailing capture rail — which meant the shutter, gallery and Fn each
-        // had two homes and the operator had to re-find them after a turn. One arrangement now: bar
-        // along the top, capture cluster along the bottom. What rotates is only what has to be READ
-        // — text, chips, hints, and the histogram/waveform — via `overlayRotation`.
-        //
-        // This only holds because handsets stay portrait-LOCKED (MainActivity.lockPortraitOnHandsets):
-        // a landscape handset window is ~420 dp tall, and a top bar plus a bottom cluster would eat
-        // it from both ends. Large screens rotate freely and have the height to spare — verified on
-        // TB336ZU at 2560x1600, where the same cluster sits along the bottom with room over it.
-        //
-        // Kept as a named val rather than deleted inline: the reserves, insets and placement branches
-        // below all read it, and one seam that is provably false everywhere is easier to audit — and
-        // to revisit — than the same decision re-derived at each of those sites.
-        val landscapeOperator = false
-        // Reserved width for the operator rail. Chrome must not overlay the image (the whole point
-        // of the rail), so the preview box is fitted into the REMAINDER — see previewWidthPx below.
-        // Sized so the PORTRAIT cluster fits unchanged, because it is the same composable: the rail
-        // re-flows nothing, it only gives the phone's bottom cluster a column instead of a row. At
-        // 208 dp it did not fit — the centred focal chips ran into the edge-anchored Fn button
-        // (measured on TB331FC: Fn ending at x=1731, the 1x chip starting at exactly 1731), and every
-        // attempt to fix that by re-arranging the cluster made landscape structurally diverge from
-        // portrait, which is the one thing it must not do. A phone's bottom cluster gets ~420 dp;
-        // 360 dp clears the 4-chip rail (~240 dp) plus a 48 dp Fn at each edge with margin to spare,
-        // and a 1506 dp-wide tablet window can afford it without crowding the frame.
-        val operatorRailWidth = 360.dp
-        // The menu-side column, opposite the capture rail. Narrower because it holds one stack of
-        // 48 dp glyphs, where the rail holds the dial cluster, the mode carousel and the shutter.
-        val operatorMenuRailWidth = 76.dp
-        // Hoisted: the preview box computes with these, and the OSD row — which is emitted in a
-        // different scope — has to inset by exactly the same two numbers or it runs over the frame.
-        val outerDensity = LocalDensity.current
-        val railReservePx = if (landscapeOperator) with(outerDensity) { operatorRailWidth.roundToPx() } else 0
-        val menuReservePx = if (landscapeOperator) with(outerDensity) { operatorMenuRailWidth.roundToPx() } else 0
-        val operatorMenuLeftInset = if (landscapeOperator) operatorMenuRailWidth else 0.dp
-        val operatorRailRightInset = if (landscapeOperator) operatorRailWidth else 0.dp
+        // It holds because handsets stay portrait-LOCKED (MainActivity.lockPortraitOnHandsets): a
+        // turned handset window is ~420 dp tall and a top bar plus a bottom cluster would eat it
+        // from both ends. Large screens rotate freely and have the height to spare — verified on
+        // TB336ZU at 2560x1600, where the same cluster sits along the bottom with room above it.
         // previewAspect is the field as it displays in the device's NATURAL orientation; a rotated
         // window shows it W/H-swapped. Device-measured on TB336ZU (2026-08-04): without the swap a
         // 2560x1600 landscape window drew the portrait 3:4 box at ~1200x1600 and pillarboxed away
@@ -479,35 +450,14 @@ fun CameraScreen(
             val density = LocalDensity.current
             // FIT INSIDE both axes (see [previewBoxWidthPx]) — a landscape/split/freeform window is
             // height-bound, and the old width-bound-only math pushed the viewfinder off-window there.
-            // The rail is SUBTRACTED from the width the preview may use, rather than drawn over the
-            // image: in the wide layout the controls own their own column, so nothing sits on the
-            // frame. Costs image size on a 16:9 preview, which already fills a landscape window
-            // edge to edge (measured 2560×1440 on TB336ZU) — that is the deliberate trade for a
-            // viewfinder no control ever covers.
-            // Reserved on the LEFT for the menu column. Putting every control in the right rail made
-            // a landscape grip fight itself: the shutter hand owns that edge, and Grid / TELE / flip
-            // / DISP / gear were stacked on top of the dial cluster and the shutter — 12 controls in
-            // one column, none on the other (owner-reported). They take their own side instead, and
-            // like the rail it is SUBTRACTED from the preview so neither column sits on the frame.
-            // The bottom cluster exists ONLY in the portrait layout — the wide layout gives the
-            // controls their own COLUMN, whose width railReservePx already took out of the preview.
-            // bottomClusterRestHeightPx is written from inside the portrait branch, and
-            // configChanges keeps this composition (and therefore the remembered value) alive across
-            // the rotation that flips the branch — so reading it in the wide layout subtracts a
-            // chrome that is not there, using a stale measurement of a layout that is not current.
-            // Derived once here so neither reader can pick up the portrait number by accident.
-            val bottomReserveForLayoutPx = if (landscapeOperator) 0 else bottomClusterRestHeightPx
+            val bottomReserveForLayoutPx = bottomClusterRestHeightPx
             val previewWidthPx = previewBoxWidthPx(
-                availableWidthPx = (constraints.maxWidth - railReservePx - menuReservePx).coerceAtLeast(1),
+                availableWidthPx = constraints.maxWidth,
                 availableHeightPx = constraints.maxHeight,
                 aspect = displayedPreviewAspect,
             )
             val previewHeightPx = (previewWidthPx / displayedPreviewAspect).toInt()
-            // Wide layout centres vertically: the adaptive upward bias exists to keep the bottom
-            // cluster off the image, and in the rail layout there IS no cluster below the frame.
-            val topOffsetPx = if (landscapeOperator) {
-                ((constraints.maxHeight - previewHeightPx) / 2).coerceAtLeast(0)
-            } else previewTopPx(
+            val topOffsetPx = previewTopPx(
                 availableHeightPx = constraints.maxHeight,
                 previewHeightPx = previewHeightPx,
                 // Status bar + the 56dp top icon row + the OSD strip line + breathing room. A dp
@@ -547,7 +497,7 @@ fun CameraScreen(
                 // the frame 45 px too far left once the menu column arrived, so the menu glyphs sat
                 // straddling the image's edge, half on black and half on live pixels — the exact
                 // chrome-on-the-seam defect both columns exist to prevent.
-                .offset { IntOffset((menuReservePx - railReservePx) / 2, topOffsetPx) }
+                .offset { IntOffset(0, topOffsetPx) }
                 // Explicit width (not fillMaxWidth) so a height-bound window letterboxes on the
                 // SIDES; TopCenter then centres it horizontally. aspectRatio still derives the
                 // height, keeping one source of truth for the box shape.
@@ -878,11 +828,7 @@ fun CameraScreen(
                 // and drawn over the image — the same seam violation the two columns exist to stop.
                 // The top inset drops too: 60 dp clears a horizontal button ROW, and in the wide
                 // layout the buttons are a column beside the frame, not above it.
-                .padding(
-                    start = operatorMenuLeftInset + 12.dp,
-                    end = operatorRailRightInset + 12.dp,
-                    top = if (landscapeOperator) 8.dp else 60.dp,
-                )
+                .padding(start = 12.dp, end = 12.dp, top = 60.dp)
                 // Same shift as the button row above: they are one piece of chrome, and the fixed
                 // 60 dp only clears the buttons while the buttons are in their default home.
                 .offset { IntOffset(0, topBarSeamOffsetPx) },
@@ -1098,7 +1044,6 @@ fun CameraScreen(
                 detailsVisible = !detailsVisible
             },
             glyphRotation = overlayRotation,
-            vertical = landscapeOperator,
             modifier = Modifier
                 // In the WIDE layout the bar belongs to the RAIL's column, not to the window. Spanning
                 // the window put its SpaceBetween ends 1600 px apart on a 1920 px tablet: the leading
@@ -1107,13 +1052,7 @@ fun CameraScreen(
                 // chrome over the frame is exactly what the rail layout exists to avoid, and its own
                 // comment says so. Constrained to the rail, the leading group's existing horizontal
                 // scroll absorbs the crowding it already handles in portrait.
-                .then(
-                    if (landscapeOperator) {
-                        Modifier.align(Alignment.TopStart).width(operatorMenuRailWidth)
-                    } else {
-                        Modifier.align(Alignment.TopCenter)
-                    }
-                )
+                .align(Alignment.TopCenter)
                 .statusBarsPadding()
                 .padding(top = 8.dp)
                 .onSizeChanged { topBarHeightPx = it.height }
@@ -1171,7 +1110,7 @@ fun CameraScreen(
         val capturePane: @Composable () -> Unit = {
             Column(
                 modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(if (landscapeOperator) 4.dp else 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Box(modifier = Modifier.fillMaxWidth()) {
                     // GONE while FRONT (not disabled): the 0.6/1/3/10 presets are rear-lens
@@ -1278,68 +1217,31 @@ fun CameraScreen(
             )
             .navigationBarsPadding()
 
-        if (landscapeOperator) {
-            // Sony-style right rail: in a landscape grip the shutter hand is on the right, so the
-            // capture controls belong under it rather than along the bottom edge. The rail owns its
-            // own column (its width is subtracted from the preview above), so no control is ever
-            // drawn over the frame — that separation is the whole reason for this layout.
-            // The gradient runs horizontally here, not vertically: it is a legibility scrim against
-            // the letterbox seam on the rail's LEFT edge, and the portrait chrome's top-to-bottom
-            // fade would leave the top of the rail unscrimmed.
-            Column(
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .fillMaxHeight()
-                    .width(operatorRailWidth)
-                    .background(
-                        Brush.horizontalGradient(
-                            0f to Color.Transparent,
-                            0.35f to Color.Black.copy(alpha = 0.6f),
-                            1f to Color.Black.copy(alpha = 0.6f),
-                        ),
-                    )
-                    .navigationBarsPadding()
-                    .statusBarsPadding()
-                    .padding(vertical = 12.dp),
-                // Centred, deliberately. SpaceEvenly was tried on device 2026-08-04 and is WORSE:
-                // it allocates an equal slot to manualPane, which renders empty in compact mode, so
-                // the visible controls slid to ~69% down the rail and left the top half dead. A
-                // centred stack keeps the shutter near thumb-neutral for a hand gripping the right
-                // edge. Do not "balance" this with an even distribution until the manual cluster
-                // actually occupies its slot.
-                verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                manualPane()
-                capturePane()
-            }
-        } else {
-            Column(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    // Rest-state measurement for the preview's adaptive top ([previewTopPx]); a
-                    // dial-open growth spike must not re-place the viewfinder, so only the closed
-                    // state records. BEFORE the chrome/padding modifiers, so the reported height is
-                    // the cluster's FULL outer extent (nav-bar inset and the 12/20 dp panel padding
-                    // included): measured inside them it ran ~40 dp short, which let a 4:3 preview's
-                    // bottom edge cut through the Fn circle on the FRONT route — the exact
-                    // chrome-straddles-the-seam defect this reserve exists to prevent (UI review #6).
-                    .onSizeChanged {
-                        if (openManualDial == null) bottomClusterRestHeightPx = it.height
-                    }
-                    .then(operatorChrome)
-                    // bottom 20: the gesture-nav inset on this panel is thin, and 8 dp left the
-                    // shutter nearly touching the home-bar swipe zone (user-reported 2026-07-25).
-                    .padding(top = 12.dp, bottom = 20.dp),
-                verticalArrangement = Arrangement.Top,
-            ) {
-                // Keep the dial cluster composed at zero height in compact rest state. Disposing it
-                // on close skipped the MF-assist cleanup and left the auto loupe enabled.
-                manualPane()
-                if (detailsVisible || openManualDial != null) Spacer(modifier = Modifier.height(8.dp))
-                capturePane()
-            }
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                // Rest-state measurement for the preview's adaptive top ([previewTopPx]); a
+                // dial-open growth spike must not re-place the viewfinder, so only the closed
+                // state records. BEFORE the chrome/padding modifiers, so the reported height is
+                // the cluster's FULL outer extent (nav-bar inset and the 12/20 dp panel padding
+                // included): measured inside them it ran ~40 dp short, which let a 4:3 preview's
+                // bottom edge cut through the Fn circle on the FRONT route — the exact
+                // chrome-straddles-the-seam defect this reserve exists to prevent (UI review #6).
+                .onSizeChanged {
+                    if (openManualDial == null) bottomClusterRestHeightPx = it.height
+                }
+                .then(operatorChrome)
+                // bottom 20: the gesture-nav inset on this panel is thin, and 8 dp left the
+                // shutter nearly touching the home-bar swipe zone (user-reported 2026-07-25).
+                .padding(top = 12.dp, bottom = 20.dp),
+            verticalArrangement = Arrangement.Top,
+        ) {
+            // Keep the dial cluster composed at zero height in compact rest state. Disposing it
+            // on close skipped the MF-assist cleanup and left the auto loupe enabled.
+            manualPane()
+            if (detailsVisible || openManualDial != null) Spacer(modifier = Modifier.height(8.dp))
+            capturePane()
         }
     }
     } // end of the viewfinder's Ltr scope
@@ -1431,70 +1333,36 @@ internal fun Modifier.rotateLayout(degrees: Float): Modifier = this
 
 
 /**
- * The top bar's outer container: a Row across the window in portrait, a Column down the rail in the
- * wide layout. Both keep SpaceBetween, so the leading (scrolling) group and the fixed trailing group
- * stay pinned to opposite ends of whichever axis the bar runs along.
+ * The top bar's outer container: one Row across the window, SpaceBetween, so the leading (scrolling)
+ * group and the fixed trailing group stay pinned to opposite ends.
+ *
+ * This was a Row-or-Column pair while a wide window earned a side rail. That layout is gone
+ * (2026-08-05): orientation moves no control, so the bar has exactly one shape on every device.
  */
 @Composable
 private fun TopBarContainer(
-    vertical: Boolean,
     modifier: Modifier,
-    content: @Composable TopBarScope.() -> Unit,
+    content: @Composable RowScope.() -> Unit,
 ) {
-    if (vertical) {
-        // Hugs the TOP of the rail rather than filling it. SpaceBetween over the full height pushed
-        // the trailing group (TELE / flip / DISP / gear) onto the bottom edge, where the gear fell
-        // off screen entirely — and the rail's middle is already spoken for by the capture cluster,
-        // which is centred there. Both groups therefore stack together under the status bar and
-        // leave the rest of the column to the controls that were there first.
-        Column(
-            modifier = modifier.padding(vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) { TopBarScope(this, null).content() }
-    } else {
-        Row(
-            modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) { TopBarScope(null, this).content() }
-    }
+    Row(
+        modifier = modifier.fillMaxWidth().padding(horizontal = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+        content = content,
+    )
 }
 
-/** Carries whichever of the two scopes the container chose, so a child can still ask for weight. */
-private class TopBarScope(val column: ColumnScope?, val row: RowScope?) {
-    fun weightModifier(): Modifier = when {
-        // fill = false in a Column: the leading group must take only the height its buttons need.
-        // A filling weight expanded it down the whole rail and pushed the trailing group onto the
-        // bottom edge, where the gear left the screen entirely (measured: TELE/flip/DISP at
-        // y 996-1199 on a 1200 px tablet, gear absent). In a Row the filling weight is what pins
-        // the trailing group to the far end, so that behaviour is unchanged.
-        column != null -> with(column) { Modifier.weight(1f, fill = false) }
-        row != null -> with(row) { Modifier.weight(1f) }
-        else -> Modifier
-    }
-}
-
-/** One group inside [TopBarContainer], laid out along the container's own axis. */
+/** One group inside [TopBarContainer], laid out along its Row axis. */
 @Composable
 private fun TopBarGroup(
-    vertical: Boolean,
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
-    if (vertical) {
-        Column(
-            modifier = modifier,
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) { content() }
-    } else {
-        Row(
-            modifier = modifier,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) { content() }
-    }
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) { content() }
 }
 
 @Composable
@@ -1506,10 +1374,6 @@ private fun TopBar(
     onToggleDisp: () -> Unit,
     modifier: Modifier = Modifier,
     glyphRotation: Float = 0f,
-    // The WIDE layout hands this bar the rail's COLUMN, which is ~196 dp across — four 48 dp targets
-    // and no room for the fifth. Stacking is not a style choice there: the rail has 1200 px of unused
-    // height and the row does not fit its width. Same children, same scroll behaviour, turned 90°.
-    vertical: Boolean = false,
 ) {
     val recordingLocked = state.isRecording
     // Keyed remember: capability projection allocates ~9 filtered lists; recomputing it on EVERY
@@ -1524,15 +1388,12 @@ private fun TopBar(
     // Session-scoped on purpose — the grid TYPE itself is the persisted value (SettingsStore).
     var lastActiveGrid by rememberSaveable { mutableStateOf(GridType.THIRDS) }
     LaunchedEffect(state.grid) { if (state.grid != GridType.NONE) lastActiveGrid = state.grid }
-    TopBarContainer(vertical, modifier) {
+    TopBarContainer(modifier) {
         TopBarGroup(
-            vertical = vertical,
-            modifier = weightModifier()
+            modifier = Modifier
+                .weight(1f)
                 .trailingEdgeFadeScrollHint(topBarScroll)
-                .then(
-                    if (vertical) Modifier.verticalScroll(topBarScroll)
-                    else Modifier.horizontalScroll(topBarScroll)
-                ),
+                .horizontalScroll(topBarScroll),
         ) {
             // Compact circular glyphs counter-rotate to stay upright as the phone turns (iPhone-style);
             // the TELE chip is wide text, so it stays fixed to avoid poking out of its slot.
@@ -1591,7 +1452,7 @@ private fun TopBar(
             }
         }
         // Counter-rotate the settings glyph so it stays upright as the phone turns (iPhone-style).
-        TopBarGroup(vertical = vertical) {
+        TopBarGroup {
             // FIXED slot (like flip/DISP/gear), not the scrolling row: as the last scrolling item
             // the chip vanished off-screen whenever photo full-DISP filled the row — the app's
             // headline function must keep one stable, always-visible home in every rear mode.
