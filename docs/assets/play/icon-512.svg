@@ -10,7 +10,7 @@
     <!-- periscope / tele barrel -->
     <rect x="72" y="104" width="16" height="22" rx="3" fill="#E6E6EA"/>
     <rect x="66" y="122" width="28" height="8" rx="4" fill="#4C9AFF"/>
-    <!-- 300mm tick marks -->
+    <!-- barrel index marks (no focal length: the converter is a selectable pair, not one 300 mm kit) -->
     <rect x="40" y="66" width="10" height="4" rx="2" fill="#8A8A93"/>
     <rect x="110" y="66" width="10" height="4" rx="2" fill="#8A8A93"/>
   </g>
