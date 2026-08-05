@@ -24,7 +24,7 @@
     <string name="label_awb_lock">AWB 잠금</string>
     <string name="label_spot_size">스팟 크기</string>
     <string name="label_af_lock">AF 잠금</string>
-    <string name="label_tap_focus">탭 포커스</string>
+    <string name="label_tap_focus">탭 초점</string>
     <string name="label_peaking">피킹</string>
     <string name="label_peaking_level">피킹 레벨</string>
     <string name="label_peaking_color">피킹 색상</string>
@@ -43,7 +43,7 @@
     <string name="label_directionality">지향성</string>
     <string name="label_input">입력</string>
     <string name="label_gamma">감마</string>
-    <string name="label_gamma_disp_assist">감마 표시 보조</string>
+    <string name="label_gamma_disp_assist">감마 표시 지원</string>
     <string name="label_grid">그리드</string>
     <string name="label_level">수평계</string>
     <string name="label_loupe">루페</string>
@@ -61,7 +61,7 @@
     <string name="label_photo_ois">사진 OIS</string>
     <string name="label_quick_button">퀵 버튼</string>
     <string name="label_half_press">반누름</string>
-    <string name="label_full_press_volume">완전 누름 / 볼륨</string>
+    <string name="label_full_press_volume">완전 누름/볼륨</string>
     <string name="label_remember_settings">설정 기억</string>
     <string name="label_remember_lens">렌즈 기억</string>
     <string name="label_remember_teleconverter">텔레컨버터 기억</string>
@@ -111,7 +111,7 @@
     <string name="state_no_supported_resolution">지원하는 해상도 없음</string>
     <string name="state_rear_camera_only">후면 카메라 전용</string>
     <string name="microphone_permission_title">마이크 접근</string>
-    <string name="microphone_permission_rationale">TeleCam Pro는 동영상에 오디오를 녹음할 때와 동영상 모드에서 입력 레벨 미터가 보이는 동안 마이크를 사용합니다. 오디오는 이 기기에만 남습니다. 어디에도 업로드하지 않고 개발자가 수집하지 않으며 제3자와 공유하지 않습니다.</string>
+    <string name="microphone_permission_rationale">TeleCam Pro는 동영상에 오디오를 녹음할 때, 그리고 동영상 모드에서 입력 레벨 미터가 보이는 동안 마이크를 사용합니다. 오디오는 이 기기에만 남습니다. 어디에도 업로드하지 않으며, 개발자가 수집하거나 제3자와 공유하지 않습니다.</string>
     <string name="microphone_permission_continue">계속</string>
     <string name="microphone_permission_not_now">나중에</string>
     <string name="a11y_mode_button">%1$s 모드</string>
@@ -125,11 +125,11 @@
     <string name="a11y_state_off">꺼짐</string>
     <string name="a11y_show_shooting_info">촬영 정보 표시</string>
     <string name="a11y_hide_shooting_info">촬영 정보 숨기기</string>
-    <string name="a11y_no_capture_to_review">볼 촬영물 없음</string>
+    <string name="a11y_no_capture_to_review">볼 사진이나 동영상 없음</string>
     <string name="a11y_review_last_raw">마지막 RAW 촬영 보기</string>
     <string name="a11y_review_last_video">마지막 동영상 보기</string>
     <string name="a11y_review_last_photo">마지막 사진 보기</string>
-    <string name="a11y_review_last_capture">마지막 촬영물 보기</string>
+    <string name="a11y_review_last_capture">마지막 촬영 보기</string>
     <string name="a11y_lens_optical">%1$s 렌즈</string>
     <string name="a11y_lens_zoom">%1$s 줌</string>
 </resources>
