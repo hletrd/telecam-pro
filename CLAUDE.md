@@ -370,10 +370,17 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   must NEVER be written into `setRotationDegrees`: rotation is renderer STATE shared by every draw
   role, and **capture masks and encoder framing stay GRAVITY-derived on purpose** so a clip records
   the same field however the window is turned — routing them through window shape re-opens the
-  cycle-4 overscan bug. A wide window gets the operator rail (`landscapeOperator`, 208 dp), keyed on
-  window SHAPE not rotation (split-screen can be wide at `ROTATION_0`), whose width is SUBTRACTED
-  from the preview box so no control covers the frame. Sign device-BISECTED on TB336ZU, not assumed:
-  the preview's brightness asymmetry moved top → left, i.e. 90° CCW. Details in `docs/BACKLOG.md`.
+  cycle-4 overscan bug. Sign device-BISECTED on TB336ZU, not assumed: the preview's brightness
+  asymmetry moved top → left, i.e. 90° CCW. Details in `docs/BACKLOG.md`.
+- **ORIENTATION MOVES NO CONTROL (2026-08-05, owner decision).** The shutter, gallery and Fn stay at
+  the device's physical bottom however it is held; only what must be READ — text, chips, hints, and
+  the histogram/waveform — rotates, in place, via `overlayRotation`. A wide window briefly earned a
+  separate operator rail (`landscapeOperator`: a leading menu column plus a trailing capture rail,
+  both widths subtracted from the preview box). It is DELETED, along with the TopBar Row-or-Column
+  machinery it needed, because two shapes of chrome gave the shutter two homes and made the operator
+  re-find it after every turn. Do not reintroduce a layout keyed on window aspect: a turned handset
+  window is ~420 dp tall, so a top bar plus a bottom cluster eat it from both ends and push the rest
+  of the chrome back onto the image — measured on PMA110 when exactly that was tried.
 - **Sensor orientation = 90; the activity is portrait-locked ON PHONES (see the entry above for
   large screens); preview verified upright on device.** The
   camera SurfaceTexture transform *already* rotates the sampled image by the sensor orientation, so
@@ -727,7 +734,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   session type — **none of which needs an AUTH_CODE**, and none of which is affected by this
   removal. The `com.oplus.ocs` dependency (camera 1.1.0 + base 1.0.16 and its
   base-auth/base-internal transitives), the OPPO OpenCapability maven repo, and the debug-only
-  `OcsProbe` availability check were deleted because the probe's answer was a CONSTANT of the
+  `OcsProbe` availability check were deleted on 2026-07-25 (`2b4bc55`, `c27744c`) — the CODE went
+  first, the owner's decision that closed the option for good followed on 08-04 — because the probe's
+  answer was a CONSTANT of the
   missing AUTH_CODE, not of the device: it returned `errorCode=1004` (AUTHCODE_EXPECTED) on every
   run and could never report anything else without an OPPO developer registration — which is itself
   the prerequisite for re-adding the SDK. For that constant it cost ~32 ms of DEBUG cold start

@@ -125,9 +125,7 @@ artifact. Release builds are R8-minified.
 
 ## Licence and trademarks
 
-Licensed under the [Apache License 2.0](LICENSE) — © 2026 Jiyong Youn. Until 2026-08-03 this project
-carried an "open source" badge with no licence file at all, which legally reserved every right; the
-badge now names the licence that is actually granted.
+Licensed under the [Apache License 2.0](LICENSE) — © 2026 Jiyong Youn.
 
 No ads, analytics, in-app purchases, accounts, or cloud sync. Source at
 [`github.com/hletrd/telecam-pro`](https://github.com/hletrd/telecam-pro).
