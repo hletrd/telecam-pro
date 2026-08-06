@@ -24,6 +24,23 @@
     <uses-feature android:name="android.hardware.camera.any" android:required="true" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
 
+    <!-- Both of these are IMPLIED features that Play would otherwise default to required="true",
+         and both are STRICTER than what the app actually needs (aapt2 dump badging on the release
+         APK: "uses-implied-feature ... reason='requested android.permission.CAMERA permission'" and
+         the same for RECORD_AUDIO). Left implied, Play filters the app off devices that it runs on
+         perfectly well — which started to matter with the 2026-08-01 multi-device decision.
+
+         android.hardware.camera is REAR-camera-specific. The app's real requirement is camera.any
+         above: FRONT is a first-class optics door (CameraEngine.setFrontCamera), so a device
+         without a rear camera is degraded, not broken.
+
+         android.hardware.microphone contradicts the app's own documented design outright: a
+         declined mic still records, video-only and silently (CameraPermissionPolicy
+         .microphoneDeclineOutcome, VideoRecorder's expectedTracks = 1). Filtering the app off
+         mic-less devices withholds a clip the pipeline can fully deliver. -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+
     <application
         android:name=".TeleCameraApp"
         android:allowBackup="false"
