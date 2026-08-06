@@ -7,12 +7,15 @@
 <p><b>Manual camera for periscope telephoto phones and clip-on afocal teleconverters</b></p>
 
 <p>
+<a href="https://play.google.com/store/apps/details?id=me.hletrd.telecampro"><img src="https://img.shields.io/badge/Google%20Play-Download-414141?logo=googleplay&logoColor=white" alt="Get TeleCam Pro on Google Play" /></a>
 <img src="https://img.shields.io/badge/Android-13%2B%20(API%2033)-3DDC84?logo=android&logoColor=white" alt="Android 13 and newer" />
 <img src="https://img.shields.io/badge/Kotlin-2.4.10-7F52FF?logo=kotlin&logoColor=white" alt="Kotlin" />
 <img src="https://img.shields.io/badge/Jetpack%20Compose-2026.06-4285F4?logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
 <img src="https://img.shields.io/badge/Camera2-Pro%20manual-FF7043" alt="Camera2" />
 <img src="https://img.shields.io/badge/License-Apache%202.0-000000" alt="Apache License 2.0" />
 </p>
+
+<p><a href="https://play.google.com/store/apps/details?id=me.hletrd.telecampro"><b>Get it on Google Play</b></a></p>
 
 </div>
 
@@ -127,8 +130,10 @@ artifact. Release builds are R8-minified.
 
 Licensed under the [Apache License 2.0](LICENSE) — © 2026 Jiyong Youn.
 
-No ads, analytics, in-app purchases, accounts, or cloud sync. Source at
-[`github.com/hletrd/telecam-pro`](https://github.com/hletrd/telecam-pro).
+No ads, analytics, in-app purchases, accounts, or cloud sync. Published on
+[Google Play](https://play.google.com/store/apps/details?id=me.hletrd.telecampro); source at
+[`github.com/hletrd/telecam-pro`](https://github.com/hletrd/telecam-pro). The Play build is the same
+source, R8-minified and signed — the store listing adds no code and no tracking.
 
 Hardware and format names appear here and in the app only to say what the software works with.
 Apache-2.0 grants no trademark rights (§6), and the owners are listed in [`NOTICE`](NOTICE) —
@@ -143,4 +148,5 @@ Open Font License 1.1 ([`docs/licenses/inter-OFL.txt`](docs/licenses/inter-OFL.t
 Hard-won device and HAL facts, and the conventions that follow from them, live in
 [`CLAUDE.md`](CLAUDE.md). The privacy policy lives in
 [`privacy-policy/`](privacy-policy/index.html); Play store assets in
-[`docs/assets/play/`](docs/assets/play/).
+[`docs/assets/play/`](docs/assets/play/). The published app is on
+[Google Play](https://play.google.com/store/apps/details?id=me.hletrd.telecampro).
