@@ -100,9 +100,22 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   (`ChiMulticameraBase::configureStreams` → `Broken pipe -32` / SIGSEGV). `CameraSelector2` picks the
   35 mm-equiv **closest to 70 mm** (NOT the longest lens — that's the 230 mm 10×), and **prefers
   `physicalId == null`** on ties. Opening standalone `4` works and permits RAW.
-- **SDR/8-bit shipping session.** HLG10 preview + full-res JPEG + RAW together crash the HAL. The
-  Camera2 stream and EGL config therefore stay SDR/8-bit (`tenBit = false`). HLG/Log files use HEVC
-  Main10 container profiles, but v1 is not end-to-end 10-bit capture and must not be marketed as such.
+- **A session that carries STILLS is SDR/8-bit; a video session with a transfer is REALLY 10-bit,
+  and it buys that by dropping the stills (corrected 2026-08-05 — this bullet said "SDR/8-bit
+  shipping session … `tenBit = false`" flatly, which stopped being true when video gained its own
+  session and was still being quoted as a hard constraint months later).** The HAL fact is unchanged
+  and is the whole reason for the split: HLG10 preview + full-res JPEG + RAW together crash it. So
+  the trade is structural, not a limitation — `tenBitSessionWanted(videoMode, transfer) = videoMode
+  && transfer != SDR` (`CameraState.kt`) feeds `wantHlg`/`tenBitVideoOnly`
+  (`CameraController.kt`), whose ladder rung configures HLG10 with **no still readers at all**.
+  That is exactly what the UI means by `"10-bit video · stills off"`, and it is why
+  `acceptedOpticsAuxState` must not normalize `photoFormats` in a still-less session (see the DNG
+  route-input entry — a trip through log video otherwise wrote an empty format set over the
+  operator's selection).
+  **What is still NOT claimable, and this is the part that must survive any rewrite of this bullet:**
+  the SOURCE is the ISP's display-referred, already tone-mapped stream. Ten-bit video is a real
+  10-bit *encode* of that stream, NOT recovered HDR and NOT scene-referred capture — see the next
+  two bullets, which remain correct as written. Photo, and any video left on SDR, stay 8-bit.
 - **HLG is a display-referred SDR-to-HLG mapping, not recovered HDR.** `Shaders.kt` follows the
   simplified ITU-R BT.2408-9 §5.1.3.4 order: BT.1886 2.4 decode, linear BT.709→BT.2020, explicit
   inverse-OOTF/reference-white scaling (100% SDR → 75% HLG), then the BT.2100 HLG OETF. The ISP has
@@ -682,9 +695,14 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   removal is now GONE TOO (2026-08-04)**, because the vendor-SDK path it was waiting for was
   declined: the O-Log2-shaped de-log shader branch (`uTransfer == 3`) with its `olog2Inv`/`toRec709`
   helpers and toe constants, `shaderTransferCode`'s `delogAssist` parameter, `VendorLogMode`,
-  `CameraEngine.vendorLogMode`, `GlPipeline.setNativeLog`, the debug-only `nativelog` flag-file
-  experiment, and `CameraController`'s `com.oplus.log.video.mode` + `com.oplus.VideoColorBT709`
-  request keys. **Shader code 3 is now permanently VACANT and the surviving codes keep their
+  `CameraEngine.vendorLogMode`, `GlPipeline.setNativeLog`, and `CameraController`'s
+  `com.oplus.log.video.mode` + `com.oplus.VideoColorBT709` request keys.
+  **The `nativelog` FLAG FILE itself survives, and this bullet used to claim it did not (corrected
+  2026-08-05).** What went is the native-LOG plumbing that read it; the file is still the gate for a
+  SEPARATE debug-only 10-bit experiment — `CameraEngine.tenBitExperimentEnabled()` reads
+  `getExternalFilesDir(null)/nativelog` and is `BuildConfig.DEBUG &&`-guarded, so release builds
+  always read false. Either delete that gate too or leave it; do not re-delete it from the DOC while
+  the code keeps it. **Shader code 3 is now permanently VACANT and the surviving codes keep their
   numbers** (0/1/2/4/5) — renumbering would silently re-map every branch and the shader's own
   `uTransfer == N` comparisons; a test asserts the gap stays unused. Do not re-add any of it.
   NOTE: leaving `KEY_COLOR_TRANSFER` unset on a BT2020 full-range HEVC format makes the QTI encoder
