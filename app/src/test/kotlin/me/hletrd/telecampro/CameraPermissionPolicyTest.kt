@@ -163,4 +163,104 @@ class CameraPermissionPolicyTest {
             ),
         )
     }
+
+    // --- visual-media access level -------------------------------------------------------------
+
+    @Test
+    fun noGrantIsNoAccess() {
+        assertEquals(
+            VisualMediaAccess.NONE,
+            visualMediaAccessLevel(
+                imagesGranted = false,
+                videoGranted = false,
+                userSelectedGranted = false,
+            ),
+        )
+    }
+
+    /** "Select photos" grants ONLY user-selected — real access, but to a set the user chose. */
+    @Test
+    fun userSelectedAloneIsPartial() {
+        assertEquals(
+            VisualMediaAccess.PARTIAL,
+            visualMediaAccessLevel(
+                imagesGranted = false,
+                videoGranted = false,
+                userSelectedGranted = true,
+            ),
+        )
+    }
+
+    /** Either broad permission subsumes user-selected, so the pair granted together is still FULL. */
+    @Test
+    fun eitherBroadGrantIsFullEvenAlongsideUserSelected() {
+        assertEquals(
+            VisualMediaAccess.FULL,
+            visualMediaAccessLevel(
+                imagesGranted = true,
+                videoGranted = false,
+                userSelectedGranted = true,
+            ),
+        )
+        assertEquals(
+            VisualMediaAccess.FULL,
+            visualMediaAccessLevel(
+                imagesGranted = false,
+                videoGranted = true,
+                userSelectedGranted = false,
+            ),
+        )
+    }
+
+    /** hasVisualMediaAccess must stay exactly "level != NONE" for all eight grant combinations. */
+    @Test
+    fun accessPredicateAgreesWithLevelOnEveryCombination() {
+        for (images in listOf(false, true)) {
+            for (video in listOf(false, true)) {
+                for (userSelected in listOf(false, true)) {
+                    assertEquals(
+                        "images=$images video=$video userSelected=$userSelected",
+                        visualMediaAccessLevel(images, video, userSelected) != VisualMediaAccess.NONE,
+                        hasVisualMediaAccess(images, video, userSelected),
+                    )
+                }
+            }
+        }
+    }
+
+    // --- the empty-gallery re-request (Play review policy:H1) ----------------------------------
+
+    /**
+     * THE REGRESSION FENCE. A partial grant must still re-open the picker: the empty-gallery tap
+     * only fires when the restore found nothing, so "we already have access" is precisely the wrong
+     * conclusion — it was what stranded a "Select photos" user with no way to widen their selection.
+     */
+    @Test
+    fun partialGrantStillRequestsSoTheUserCanWidenTheSelection() {
+        assertEquals(true, shouldRequestVisualMediaAccess(VisualMediaAccess.PARTIAL))
+    }
+
+    @Test
+    fun noAccessRequests() {
+        assertEquals(true, shouldRequestVisualMediaAccess(VisualMediaAccess.NONE))
+    }
+
+    /** Full access must never re-ask — there is nothing left to grant, so a prompt would be nag. */
+    @Test
+    fun fullAccessNeverRequestsAgain() {
+        assertEquals(false, shouldRequestVisualMediaAccess(VisualMediaAccess.FULL))
+    }
+
+    /**
+     * Guards the exact bug: had the call site kept using hasVisualMediaAccess, PARTIAL and FULL
+     * would decide alike. They must not.
+     */
+    @Test
+    fun partialAndFullDecideDifferently() {
+        assertEquals(
+            true,
+            shouldRequestVisualMediaAccess(VisualMediaAccess.PARTIAL) !=
+                shouldRequestVisualMediaAccess(VisualMediaAccess.FULL),
+        )
+    }
 }

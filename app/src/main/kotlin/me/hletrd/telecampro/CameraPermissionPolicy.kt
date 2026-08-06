@@ -130,14 +130,66 @@ internal fun hardwareShutterAudioDrop(
     )
 
 /**
+ * Which visual-media READ grant is in force.
+ *
+ * [PARTIAL] is Android 14+'s "Select photos": READ_MEDIA_VISUAL_USER_SELECTED granted while the full
+ * permissions are denied. It is genuinely access — MediaStore widens to the user-selected set — but
+ * it is access to a set the USER chose, which is why it cannot be collapsed into [FULL]. See
+ * [shouldRequestVisualMediaAccess] for the distinction that costs a bug when it is missing.
+ */
+internal enum class VisualMediaAccess { NONE, PARTIAL, FULL }
+
+/** Resolves the grant triple to a level. FULL wins: either broad permission subsumes USER_SELECTED. */
+internal fun visualMediaAccessLevel(
+    imagesGranted: Boolean,
+    videoGranted: Boolean,
+    userSelectedGranted: Boolean,
+): VisualMediaAccess = when {
+    imagesGranted || videoGranted -> VisualMediaAccess.FULL
+    userSelectedGranted -> VisualMediaAccess.PARTIAL
+    else -> VisualMediaAccess.NONE
+}
+
+/**
  * Whether ANY visual-media READ grant is in force. Android 14+'s "Select photos" flow grants
  * READ_MEDIA_VISUAL_USER_SELECTED while denying the full permissions — that partial grant still
  * widens MediaStore visibility to the user-selected set and must count as access, not a denial
  * (2026-08-01, reinstall gallery restore). Pure so the three-way OR is pinned by a host test
  * rather than re-derived at each call site.
+ *
+ * Expressed via [visualMediaAccessLevel] so "is there access" and "which level" cannot drift apart.
  */
 internal fun hasVisualMediaAccess(
     imagesGranted: Boolean,
     videoGranted: Boolean,
     userSelectedGranted: Boolean,
-): Boolean = imagesGranted || videoGranted || userSelectedGranted
+): Boolean = visualMediaAccessLevel(imagesGranted, videoGranted, userSelectedGranted) !=
+    VisualMediaAccess.NONE
+
+/**
+ * Whether an empty-gallery tap should (re-)launch the media-access request rather than just re-run
+ * the restore.
+ *
+ * WHY THIS IS NOT `!hasVisualMediaAccess(...)` (the bug it exists to fix, 2026-08-06 Play review
+ * policy:H1): a PARTIAL grant answers "yes, there is access", so the old call site took the
+ * already-have-access branch and only re-ran the restore. But the restore is exactly what just came
+ * back empty — the gallery tap only happens when there is nothing to review. A user who chose
+ * "Select photos" and did not hand-pick their own `DCIM/TeleCamPro` files was therefore left with an
+ * empty gallery and NO in-app path to widen the selection, ever: every subsequent tap re-ran the
+ * same empty query and the system picker was never shown again.
+ *
+ * Re-requesting under a partial grant is Android's own documented remedy — the platform re-shows the
+ * selection UI rather than treating it as an already-answered permission. So:
+ *
+ * - [VisualMediaAccess.NONE] → request (the original contextual ask).
+ * - [VisualMediaAccess.PARTIAL] → request AGAIN, so the user can add the files they missed.
+ * - [VisualMediaAccess.FULL] → never; there is nothing further to grant, and re-asking a user who
+ *   already said yes to everything is pure nag.
+ *
+ * No loop risk: the launcher's result callback re-runs the restore on any access and does not call
+ * back into this predicate, so a user who cancels or picks nothing simply stays where they were.
+ * PARTIAL is unreachable below API 34 (the permission does not exist), so API 33 sees only
+ * NONE/FULL and behaves exactly as before.
+ */
+internal fun shouldRequestVisualMediaAccess(level: VisualMediaAccess): Boolean =
+    level != VisualMediaAccess.FULL

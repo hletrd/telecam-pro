@@ -297,12 +297,17 @@ class MainActivity : ComponentActivity() {
 
                             override fun onGalleryAccessRequested() {
                                 // Contextual media-access request (2026-08-01): the empty-gallery
-                                // tap IS the context, so the system dialog needs no rationale
-                                // sheet. With access already in force, fall through to the VM's
-                                // re-restore (covers a grant made in Settings mid-session).
-                                if (hasVisualMediaPermission()) {
-                                    vm.onGalleryAccessRequested()
-                                } else {
+                                // tap IS the context, so the system dialog needs no rationale sheet.
+                                //
+                                // Branches on the access LEVEL, not on "is there any access"
+                                // (2026-08-06): a partial "Select photos" grant answers yes to the
+                                // latter, so this used to fall straight to the re-restore — which is
+                                // the very query that just came back empty. That left a partial-grant
+                                // user who had not hand-picked their own captures with no way to
+                                // widen the selection, ever. FULL still falls through to the
+                                // re-restore (it covers a grant made in Settings mid-session, and
+                                // there is nothing further to ask for).
+                                if (shouldRequestVisualMediaAccess(visualMediaAccess())) {
                                     mediaAccessLauncher.launch(
                                         arrayOf(
                                             Manifest.permission.READ_MEDIA_IMAGES,
@@ -310,6 +315,8 @@ class MainActivity : ComponentActivity() {
                                             Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED,
                                         ),
                                     )
+                                } else {
+                                    vm.onGalleryAccessRequested()
                                 }
                             }
                         }
@@ -673,6 +680,13 @@ class MainActivity : ComponentActivity() {
 
     /** Live visual-media access truth, partial ("Select photos") grants included. */
     private fun hasVisualMediaPermission(): Boolean = hasVisualMediaAccess(
+        imagesGranted = hasPermission(Manifest.permission.READ_MEDIA_IMAGES),
+        videoGranted = hasPermission(Manifest.permission.READ_MEDIA_VIDEO),
+        userSelectedGranted = hasPermission(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED),
+    )
+
+    /** Live access LEVEL — the finer answer, so a partial grant is distinguishable from a full one. */
+    private fun visualMediaAccess(): VisualMediaAccess = visualMediaAccessLevel(
         imagesGranted = hasPermission(Manifest.permission.READ_MEDIA_IMAGES),
         videoGranted = hasPermission(Manifest.permission.READ_MEDIA_VIDEO),
         userSelectedGranted = hasPermission(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED),
