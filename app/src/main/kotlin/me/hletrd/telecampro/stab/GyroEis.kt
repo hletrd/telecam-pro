@@ -17,9 +17,15 @@ import kotlin.math.hypot
  *
  * The gyroscope residual-shake integration ([currentCorrection]) fed the app-side GL EIS, which was
  * REMOVED (frame warping cannot de-blur at 300 mm; the HAL's OIS+EIS owns stabilization — see
- * [me.hletrd.telecampro.camera.VideoStabMode]). The math is kept for a possible future consumer,
- * but the gyroscope is no longer registered: integrating a 200 Hz stream nothing reads was pure
- * CPU/battery waste. Re-enable by registering [gyroscope] in [start] again.
+ * [me.hletrd.telecampro.camera.VideoStabMode]). That math is kept for a possible future consumer but
+ * remains dead: nothing reads it.
+ *
+ * The gyroscope is still NOT registered by default — integrating a ~200 Hz stream nothing reads was
+ * pure battery waste then and would be now. It is instead ARMABLE via [setRotationTracking], which
+ * feeds [drainRotation] alone (2026-08-08). That accumulator is deliberately separate from the EIS
+ * integrators: those are high-passed to isolate shake, and a motion-vs-gyro comparison needs exactly
+ * the deliberate pan that high-pass discards. Consumers arm it for the seconds they need an answer
+ * and disarm immediately — see `gl/MotionInversion.kt`.
  */
 class GyroEis(context: Context) : SensorEventListener {
 
@@ -56,16 +62,72 @@ class GyroEis(context: Context) : SensorEventListener {
     // NOTE: no isAvailable accessor. It reported `gyroscope != null` — availability of a sensor
     // this class deliberately never registers (see [start]) — so it was misleading, not just unused.
 
+    // Rotation accumulated since the last [drainRotation], radians. SEPARATE from the EIS
+    // integrators above on purpose: those are high-passed (corr* = ang* - smooth*) to isolate shake,
+    // which is precisely the component a motion-vs-gyro comparison must NOT use — it needs the
+    // deliberate pan the high-pass throws away. Guarded by [rotationLock] rather than @Volatile
+    // because drain is a read-AND-RESET pair that must be atomic against the sensor thread.
+    private val rotationLock = Any()
+    private var accYaw = 0f
+    private var accPitch = 0f
+
+    /** Whether the caller currently wants [drainRotation] to produce anything. */
+    @Volatile private var rotationTracking = false
+
     fun start() {
         reset()
-        // Gyroscope deliberately NOT registered: its only consumer (app-side GL EIS) was removed,
-        // so [currentCorrection] stays zero. The accelerometer alone feeds roll + orientation.
         accelerometer?.let { sensorManager?.registerListener(this, it, SAMPLING_PERIOD_US) }
+        // Re-arm across a pause/resume if the consumer still wants tracking. Registration does not
+        // survive [stop]'s blanket unregisterListener, and the INTENT lives here, so a resume that
+        // did not re-apply it would silently strand the consumer with a dead sensor — the same
+        // "works only after something else re-pushes it" failure GlPipeline's start callback exists
+        // to prevent.
+        if (rotationTracking) registerGyroscope()
     }
 
     fun stop() {
         sensorManager?.unregisterListener(this)
         reset()
+    }
+
+    /**
+     * Arms or disarms gyroscope rotation tracking.
+     *
+     * The gyroscope is NOT registered by default and must not become so: integrating a ~200 Hz
+     * stream nothing reads is pure battery waste, which is exactly why the dead EIS registration was
+     * removed. Consumers arm it for the seconds they need an answer and disarm immediately after.
+     *
+     * Idempotent. Disarming zeroes the accumulator so a later re-arm cannot serve rotation that
+     * happened while nobody was watching.
+     */
+    fun setRotationTracking(enabled: Boolean) {
+        if (rotationTracking == enabled) return
+        rotationTracking = enabled
+        if (enabled) {
+            registerGyroscope()
+        } else {
+            gyroscope?.let { sensorManager?.unregisterListener(this, it) }
+            synchronized(rotationLock) { accYaw = 0f; accPitch = 0f }
+        }
+    }
+
+    private fun registerGyroscope() {
+        gyroscope?.let { sensorManager?.registerListener(this, it, SAMPLING_PERIOD_US) }
+    }
+
+    /**
+     * Rotation accumulated since the previous call: `[0]` = yaw (about device y), `[1]` = pitch
+     * (about device x), radians. Reads and RESETS atomically, so successive calls partition the
+     * timeline with no gap and no double-count — which is what lets a consumer pair each interval
+     * with the frame pair it spans without plumbing timestamps.
+     *
+     * Returns zeroes when tracking is disarmed or no gyroscope exists.
+     */
+    fun drainRotation(): FloatArray = synchronized(rotationLock) {
+        val out = floatArrayOf(accYaw, accPitch)
+        accYaw = 0f
+        accPitch = 0f
+        out
     }
 
     /** Latest high-frequency shake to counter: [0]=yaw, [1]=pitch, [2]=roll, all radians. */
@@ -96,6 +158,17 @@ class GyroEis(context: Context) : SensorEventListener {
                 angPitch += event.values[0] * dt
                 angYaw += event.values[1] * dt
                 angRoll += event.values[2] * dt
+
+                // Raw (un-high-passed) accumulation for [drainRotation]. Same axis mapping as the
+                // integrators above: values[0] is rotation about device x (pitch), values[1] about
+                // device y (yaw). Kept inside the same dt guard so a dropped/glitched sample cannot
+                // inject a spurious pan.
+                if (rotationTracking) {
+                    synchronized(rotationLock) {
+                        accPitch += event.values[0] * dt
+                        accYaw += event.values[1] * dt
+                    }
+                }
 
                 smoothPitch += LOW_PASS_ALPHA * (angPitch - smoothPitch)
                 smoothYaw += LOW_PASS_ALPHA * (angYaw - smoothYaw)
@@ -140,6 +213,11 @@ class GyroEis(context: Context) : SensorEventListener {
         angPitch = 0f; angYaw = 0f; angRoll = 0f
         smoothPitch = 0f; smoothYaw = 0f; smoothRoll = 0f
         corrPitch = 0f; corrYaw = 0f; corrRoll = 0f
+        // The drain accumulator IS cleared here, unlike the gravity values below: it is a DELTA over
+        // an interval, and the interval does not survive a pause. Carrying it across resume would
+        // hand the first frame pair after resume all the rotation that happened while the camera was
+        // down, which is a fabricated pan pointing anywhere.
+        synchronized(rotationLock) { accYaw = 0f; accPitch = 0f }
         // rollDegrees and stableOrientation are deliberately NOT zeroed. reset() runs on BOTH start()
         // and stop(), and those two are gravity-derived ABSOLUTE values whose documented design is
         // "hold the last confident value" (see their field comments + CLAUDE.md). Zeroing them on
