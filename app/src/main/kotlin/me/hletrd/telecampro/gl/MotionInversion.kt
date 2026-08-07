@@ -108,14 +108,112 @@ internal const val MOTION_MIN_VOTING_BLOCKS = 6
 internal const val MOTION_SUPERMAJORITY = 0.80
 
 /**
- * The gyro must predict at least this much motion (analysis px over the frame interval) for the
- * frame to be judged at all. Guards the degenerate case the whole metric rests on: with no rotation
- * there is no predicted direction, and any measured displacement is parallax or subject motion.
+ * The gyro must report at least this much rotation over the frame interval for the frame to be
+ * judged. Guards the degenerate case the whole metric rests on: with no rotation there is no
+ * predicted direction, and any measured displacement is parallax or subject motion.
+ *
+ * UNITS ARE MILLIRADIANS, not pixels — deliberately. Converting the predicted rotation to pixels
+ * would require focal length, zoom ratio and crop, i.e. exactly the optical model this design exists
+ * without; being wrong about it by the converter's 4.3x would silently move the gate. An angular
+ * threshold needs none of that and means the same thing on every lens. 3 mrad over the ~166 ms
+ * analysis interval is ~1 deg/s: a slow deliberate pan clears it, a hand-held phone at rest does not.
  */
-internal const val MOTION_MIN_PREDICTED_PX = 3.0
+internal const val MOTION_MIN_PREDICTED_MRAD = 3.0
 
 /** Consecutive same-verdict frames required before the result may be shown. */
 internal const val MOTION_CONFIRM_FRAMES = 4
+
+/**
+ * ============================ THE BISECTION GATE — READ BEFORE ENABLING ============================
+ *
+ * FALSE until the two signs below have been measured on a real device. While false the detector must
+ * be unreachable: no gyro registration, no readback rider, no OSD tag.
+ *
+ * WHY A GATE AND NOT A BEST GUESS. Everything else in this file degrades safely — a bad threshold
+ * costs coverage, an ambiguous frame goes UNJUDGEABLE. A wrong sign here does not degrade: it
+ * INVERTS every verdict, turning "may miss, must never false-fire" into "always false-fires". It
+ * would tell an operator with a correct setting that their setting is wrong, which is strictly worse
+ * than saying nothing, and it is the one error the metric's own statistics cannot detect.
+ *
+ * This codebase has paid for that lesson four separate times in this exact composition, all recorded
+ * in CLAUDE.md: the rear capture `+dev` vs `-dev` (every landscape-held still saved 180 out), the
+ * front/rear gravity term, the glyph counter-rotation (`+dev`, not `-dev` — invisible on symmetric
+ * icons until text rotated), and the EIS axis. Every one was found on hardware, none by reasoning.
+ *
+ * HOW TO BISECT (one session, ~10 minutes, no code changes needed beyond flipping these):
+ * 1. TELE off, converter physically OFF, so the frame is known-upright. Flip this flag true.
+ * 2. Pan RIGHT slowly and steadily, ~1 second. Read the logged verdict.
+ * 3. MATCHES means the signs are right. INVERTED means both are wrong — flip both constants.
+ * 4. Repeat panning UP. If yaw was right but pitch is wrong the verdict flips only on this axis, so
+ *    fix [MOTION_PITCH_SIGN] alone. (A 180 rotation flips BOTH, so a single-axis disagreement is
+ *    proof of a sign bug, never of an inverted image.)
+ * 5. Mount the converter, turn TELE ON, repeat step 2 — must still read MATCHES.
+ * 6. Turn TELE OFF with the converter still mounted — must now read INVERTED. That is the feature.
+ *
+ * Pin the outcome with a device note in CLAUDE.md, exactly as `captureRotationDegrees` did.
+ */
+internal const val MOTION_SIGNS_VERIFIED = false
+
+/**
+ * Scene-x per unit device YAW (rotation about the device's y axis), before the app's own rotation.
+ * UNVERIFIED — see [MOTION_SIGNS_VERIFIED]. Reasoning says panning right moves content left, hence
+ * negative; reasoning is exactly what has been wrong here four times, so it is not load-bearing.
+ */
+internal const val MOTION_YAW_SIGN = -1.0
+
+/**
+ * Scene-y per unit device PITCH (rotation about the device's x axis), before the app's own rotation.
+ * UNVERIFIED — see [MOTION_SIGNS_VERIFIED].
+ */
+internal const val MOTION_PITCH_SIGN = -1.0
+
+/**
+ * Gyro rotation -> predicted scene-motion direction in ANALYSIS-frame axes, or null when the phone
+ * did not turn enough to define one.
+ *
+ * The composition is deliberately shallow, because depth is where the sign bugs lived. Only ONE
+ * term here is unmeasured — the ([MOTION_YAW_SIGN], [MOTION_PITCH_SIGN]) pair. Everything else is
+ * already device-verified elsewhere and is reused rather than re-derived:
+ *
+ * - The SurfaceTexture transform already rotates the sampled image by `sensorOrientation`, so the
+ *   camera frame arrives device-upright and no sensor-orientation term belongs here. (This is the
+ *   same fact that makes `CameraEngine.previewRotationDegrees()` return only the afocal 180 rather
+ *   than any +/-sensorOrientation — both 270 and 90 read 90 off on device.)
+ * - [rotationDegrees] is whatever the analysis draw actually applied, taken from renderer state, not
+ *   recomputed. That is what makes the verdict mean "is the frame 180 out relative to the CURRENT
+ *   setting" and lets one test cover both failure directions.
+ * - [frontFacing] mirrors x because the ENCODER/ANALYSIS draws apply the x-inversion while the
+ *   preview does not — this HAL pre-mirrors the front stream (device-diagnosed 2026-07-23).
+ *
+ * @param yawRadians accumulated rotation about device y since the previous analysis frame
+ * @param pitchRadians accumulated rotation about device x since the previous analysis frame
+ * @param rotationDegrees rotation the analysis draw applied (0/90/180/270)
+ * @return (x, y) in milliradians, analysis axes (x right, y down), or null if below the angular gate
+ */
+internal fun predictedSceneMotion(
+    yawRadians: Float,
+    pitchRadians: Float,
+    rotationDegrees: Int,
+    frontFacing: Boolean,
+): DoubleArray? {
+    val yawMrad = yawRadians.toDouble() * 1000.0
+    val pitchMrad = pitchRadians.toDouble() * 1000.0
+
+    var x = MOTION_YAW_SIGN * yawMrad
+    var y = MOTION_PITCH_SIGN * pitchMrad
+
+    // Rotate into analysis axes by the SAME rotation the analysis draw applied. Whole quadrants
+    // only, so this is exact integer-ish arithmetic with no trig and no accumulation of error.
+    when (((rotationDegrees % 360) + 360) % 360) {
+        90 -> { val t = x; x = -y; y = t }
+        180 -> { x = -x; y = -y }
+        270 -> { val t = x; x = y; y = -t }
+    }
+
+    if (frontFacing) x = -x
+
+    return if (hypot(x, y) < MOTION_MIN_PREDICTED_MRAD) null else doubleArrayOf(x, y)
+}
 
 /**
  * One frame's block votes -> verdict. Pure; the counters exist so a device bring-up can tell WHICH
@@ -206,10 +304,11 @@ internal fun motionLuma(bytes: ByteArray, w: Int, h: Int, out: IntArray) {
 /**
  * Compares two consecutive analysis luma planes against a gyro-predicted motion direction.
  *
- * [predictedX]/[predictedY] are the displacement the gyro expects the SCENE to undergo between the
- * two frames, in analysis-frame pixel coordinates (x right, y down), already carrying whatever
- * rotation the analysis draw applied. Only its direction is used; its magnitude gates judgeability
- * via [MOTION_MIN_PREDICTED_PX] and is otherwise discarded.
+ * [predictedX]/[predictedY] are the direction the gyro expects the SCENE to move between the two
+ * frames, in analysis-frame axes (x right, y down), already carrying whatever rotation the analysis
+ * draw applied — build it with [predictedSceneMotion]. Magnitude is in MILLIRADIANS of device
+ * rotation: it gates judgeability via [MOTION_MIN_PREDICTED_MRAD] and is otherwise discarded, so no
+ * pixel/focal conversion is needed or wanted anywhere in this file.
  *
  * Pure and allocation-light: runs on the analysis executor over bytes an existing readback already
  * produced, never on the GL thread.
@@ -228,7 +327,7 @@ internal fun computeMotionInversion(
     }
     val predictedLen = hypot(predictedX, predictedY)
     // Not enough rotation to have a direction worth testing. This is the common resting case.
-    if (predictedLen < MOTION_MIN_PREDICTED_PX) return MotionInversionData.UNJUDGED
+    if (predictedLen < MOTION_MIN_PREDICTED_MRAD) return MotionInversionData.UNJUDGED
 
     val ux = predictedX / predictedLen
     val uy = predictedY / predictedLen

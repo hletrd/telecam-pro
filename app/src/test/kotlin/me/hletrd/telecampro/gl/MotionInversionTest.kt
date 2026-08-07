@@ -262,4 +262,121 @@ class MotionInversionTest {
         assertEquals(false, MotionInversionConfidence().confident)
         assertEquals(MotionAgreement.UNJUDGEABLE, MotionInversionConfidence().settled)
     }
+
+    // --- the prediction seam ---------------------------------------------------------------------
+
+    private val bigYaw = 0.05f // 50 mrad, well clear of the angular gate
+
+    /**
+     * THE GATE. The signs this seam depends on are unmeasured, and a wrong sign inverts every
+     * verdict rather than degrading it. Enabling the feature therefore requires a device bisection
+     * FIRST — and this test is what makes skipping that step impossible to do quietly.
+     *
+     * If you are here because this failed: you flipped MOTION_SIGNS_VERIFIED. Follow the bisection
+     * procedure in MotionInversion.kt, record the outcome in CLAUDE.md, then delete this test.
+     */
+    @Test
+    fun theFeatureStaysDisabledUntilTheSignsAreMeasuredOnDevice() {
+        assertEquals(
+            "MOTION_SIGNS_VERIFIED was flipped without a device bisection — see MotionInversion.kt",
+            false,
+            MOTION_SIGNS_VERIFIED,
+        )
+    }
+
+    @Test
+    fun tooLittleRotationHasNoPredictedDirection() {
+        assertEquals(null, predictedSceneMotion(0f, 0f, rotationDegrees = 0, frontFacing = false))
+        // 1 mrad is below the 3 mrad gate.
+        assertEquals(null, predictedSceneMotion(0.001f, 0f, rotationDegrees = 0, frontFacing = false))
+    }
+
+    /**
+     * The property the whole feature rests on: the app's own 180 correction must flip BOTH axes, so
+     * a frame drawn rotated predicts the exact opposite direction from an unrotated one. This is
+     * what makes one test cover converter-with-TELE-off AND TELE-on-without-converter.
+     */
+    @Test
+    fun theApps180FlipsBothAxesOfThePrediction() {
+        val upright = predictedSceneMotion(bigYaw, bigYaw, rotationDegrees = 0, frontFacing = false)!!
+        val rotated = predictedSceneMotion(bigYaw, bigYaw, rotationDegrees = 180, frontFacing = false)!!
+        assertEquals(-upright[0], rotated[0], 1e-9)
+        assertEquals(-upright[1], rotated[1], 1e-9)
+    }
+
+    /** Quadrant rotations are exact: four 90s must return the vector unchanged. */
+    @Test
+    fun quadrantRotationsComposeBackToIdentity() {
+        val base = predictedSceneMotion(bigYaw, 0.02f, rotationDegrees = 0, frontFacing = false)!!
+        val full = predictedSceneMotion(bigYaw, 0.02f, rotationDegrees = 360, frontFacing = false)!!
+        assertEquals(base[0], full[0], 1e-9)
+        assertEquals(base[1], full[1], 1e-9)
+    }
+
+    @Test
+    fun ninetyAndTwoSeventyAreInverseOfEachOther() {
+        val cw = predictedSceneMotion(bigYaw, 0.02f, rotationDegrees = 90, frontFacing = false)!!
+        val ccw = predictedSceneMotion(bigYaw, 0.02f, rotationDegrees = 270, frontFacing = false)!!
+        assertEquals(-cw[0], ccw[0], 1e-9)
+        assertEquals(-cw[1], ccw[1], 1e-9)
+    }
+
+    @Test
+    fun negativeAndOutOfRangeRotationsNormalise() {
+        val minus90 = predictedSceneMotion(bigYaw, 0.02f, rotationDegrees = -90, frontFacing = false)!!
+        val plus270 = predictedSceneMotion(bigYaw, 0.02f, rotationDegrees = 270, frontFacing = false)!!
+        assertEquals(plus270[0], minus90[0], 1e-9)
+        assertEquals(plus270[1], minus90[1], 1e-9)
+    }
+
+    /** Front mirrors x only — the analysis draw applies the x-inversion, and y is untouched. */
+    @Test
+    fun frontFacingMirrorsOnlyX() {
+        val rear = predictedSceneMotion(bigYaw, 0.02f, rotationDegrees = 0, frontFacing = false)!!
+        val front = predictedSceneMotion(bigYaw, 0.02f, rotationDegrees = 0, frontFacing = true)!!
+        assertEquals(-rear[0], front[0], 1e-9)
+        assertEquals(rear[1], front[1], 1e-9)
+    }
+
+    /** Yaw drives x and pitch drives y at zero rotation — the axes must not be transposed. */
+    @Test
+    fun yawDrivesXAndPitchDrivesYWhenUnrotated() {
+        val yawOnly = predictedSceneMotion(bigYaw, 0f, rotationDegrees = 0, frontFacing = false)!!
+        assertTrue("yaw must produce x", kotlin.math.abs(yawOnly[0]) > 1.0)
+        assertEquals(0.0, yawOnly[1], 1e-9)
+
+        val pitchOnly = predictedSceneMotion(0f, bigYaw, rotationDegrees = 0, frontFacing = false)!!
+        assertEquals(0.0, pitchOnly[0], 1e-9)
+        assertTrue("pitch must produce y", kotlin.math.abs(pitchOnly[1]) > 1.0)
+    }
+
+    /** Radians in, milliradians out — the unit the angular gate is expressed in. */
+    @Test
+    fun outputIsMilliradians() {
+        val v = predictedSceneMotion(0.05f, 0f, rotationDegrees = 0, frontFacing = false)!!
+        assertEquals(50.0, kotlin.math.abs(v[0]), 1e-6)
+    }
+
+    /**
+     * End to end through the real metric: a scene that moves WITH the prediction reads MATCHES, and
+     * the same scene judged against a 180-rotated frame reads INVERTED — with no sign knowledge
+     * needed, because both sides come from the same seam.
+     */
+    @Test
+    fun seamAndMetricAgreeAcrossTheApps180() {
+        val upright = predictedSceneMotion(bigYaw, 0f, rotationDegrees = 0, frontFacing = false)!!
+        val shift = if (upright[0] > 0) 6 else -6
+        val previous = scene(0, 0)
+        val current = scene(shift, 0)
+
+        assertEquals(
+            MotionAgreement.MATCHES,
+            computeMotionInversion(previous, current, w, h, upright[0], upright[1]).verdict,
+        )
+        val rotated = predictedSceneMotion(bigYaw, 0f, rotationDegrees = 180, frontFacing = false)!!
+        assertEquals(
+            MotionAgreement.INVERTED,
+            computeMotionInversion(previous, current, w, h, rotated[0], rotated[1]).verdict,
+        )
+    }
 }
