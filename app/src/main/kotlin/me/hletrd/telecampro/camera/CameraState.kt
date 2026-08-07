@@ -1514,6 +1514,42 @@ data class FocusDetailData(
 }
 
 /**
+ * Whether scene motion agrees with the rotation the gyro measured.
+ *
+ * - [MATCHES]: the frame moves the way the phone turned — the current rotation setting is right.
+ * - [INVERTED]: it moves the opposite way, so the frame is 180 degrees out relative to the setting.
+ *   An afocal converter with TELE off, or TELE on with no converter — the metric cannot tell which,
+ *   and does not need to: the remedy is the same toggle either way.
+ * - [UNJUDGEABLE]: not enough rotation, not enough directional texture, or no supermajority. The
+ *   overwhelmingly common state, and the only safe default.
+ *
+ * See `gl/MotionInversion.kt` for what this can and cannot prove. It proves the IMAGE is inverted,
+ * never that a teleconverter is attached — no user-facing string may name the accessory.
+ */
+enum class MotionAgreement { UNJUDGEABLE, MATCHES, INVERTED }
+
+/**
+ * One frame's motion-inversion verdict plus the block tallies, so a device bring-up can tell which
+ * gate refused from a single log line (same ColorOS 300-row-quota constraint as [FocusDetailData]).
+ *
+ * @Immutable: constructed once by the analysis executor before publication.
+ */
+@Immutable
+data class MotionInversionData(
+    val verdict: MotionAgreement,
+    val totalBlocks: Int,
+    /** Blocks that carried enough directional texture AND a decisive SAD profile to vote. */
+    val votingBlocks: Int,
+    val agreeVotes: Int,
+    val opposeVotes: Int,
+) {
+    companion object {
+        /** Degenerate buffer, too little predicted rotation, or no block cleared the gates. */
+        val UNJUDGED = MotionInversionData(MotionAgreement.UNJUDGEABLE, 0, 0, 0, 0)
+    }
+}
+
+/**
  * Which proof raised the focus-confidence OSD tag. They are NOT interchangeable — see
  * focus/MacroProximity.kt for the wording each one licenses.
  *
