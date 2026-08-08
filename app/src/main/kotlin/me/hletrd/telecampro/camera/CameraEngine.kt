@@ -830,7 +830,9 @@ class CameraEngine(private val context: Context) {
     // here so the ViewModel can hoist it into UI state. Each arg is null when its analysis is
     // disabled — the frame-detail arg is additionally null whenever no scope/AE readback ran at
     // all, because it deliberately rides that readback rather than triggering one.
-    var onAnalysis: ((HistogramData?, WaveformData?, FocusDetailData?) -> Unit)? = null
+    var onAnalysis: (
+        (HistogramData?, WaveformData?, FocusDetailData?, MotionInversionData?) -> Unit
+    )? = null
     // Live recording-audio level (0..1 RMS, post-gain), throttled by VideoRecorder to ~10 Hz.
     /** Per-channel input levels (0..1), one entry per interleaved channel; empty = meter off. */
     var onAudioLevel: ((FloatArray) -> Unit)? = null
@@ -939,8 +941,8 @@ class CameraEngine(private val context: Context) {
                         glInputPending = false
                         if (paused || UnsafeRecorderQuarantine.isActive()) return@inputReady
                         ownedGl.setEisProvider { gyro.currentCorrection() }
-                        ownedGl.setAnalysisCallback { h, w, f ->
-                            if (glOwners.owns(ownedGl)) onAnalysis?.invoke(h, w, f)
+                        ownedGl.setAnalysisCallback { h, w, f, m ->
+                            if (glOwners.owns(ownedGl)) onAnalysis?.invoke(h, w, f, m)
                         }
                         // Re-seed desired GL state that may have been set before the handler existed.
                         ownedGl.setTransfer(transfer)
@@ -1878,6 +1880,21 @@ class CameraEngine(private val context: Context) {
      */
     fun setFocusDetail(enabled: Boolean) {
         rendererAssists.setFocusDetail(enabled)
+    }
+
+    /**
+     * Arms or disarms the motion-inversion rider AND the gyroscope it needs, as one operation — the
+     * two must never disagree: an armed rider with a dead sensor reads every frame as "no rotation"
+     * and answers UNJUDGEABLE forever, while a live sensor with no consumer is the battery waste
+     * that got the gyro unregistered in the first place.
+     *
+     * Like [setFocusDetail] this adds no GL work; it computes over the readback that was already
+     * happening. The gyroscope is the only real cost, which is why the caller is expected to disarm
+     * as soon as the verdict settles (see [MotionInversionConfidence]).
+     */
+    fun setMotionInversionArmed(enabled: Boolean) {
+        gyro.setRotationTracking(enabled)
+        rendererAssists.setMotionInversion(enabled) { gyro.drainRotation() }
     }
 
     /** Gamma Display Assist: normal monitor image while recording O-Log (the file stays log). */

@@ -29,6 +29,10 @@ import me.hletrd.telecampro.camera.DriveMode
 import me.hletrd.telecampro.camera.AfSpotSize
 import me.hletrd.telecampro.camera.AutoExposure
 import me.hletrd.telecampro.camera.ExposureMode
+import me.hletrd.telecampro.gl.MotionInversionConfidence
+import me.hletrd.telecampro.gl.MOTION_SIGNS_VERIFIED
+import me.hletrd.telecampro.camera.MotionInversionData
+import me.hletrd.telecampro.camera.MotionAgreement
 import me.hletrd.telecampro.camera.ExposureStep
 import me.hletrd.telecampro.camera.FrameLineType
 import me.hletrd.telecampro.camera.effectiveExposureNs
@@ -503,6 +507,60 @@ class CameraViewModel @JvmOverloads constructor(
         focusConfidenceHold.reset()
         mainHandler.removeCallbacks(focusConfidenceRefreshRunnable)
         if (_state.value.focusConfidence != null) _state.update { it.copy(focusConfidence = null) }
+        // An optics door is the ONLY thing that can change the inversion answer (the operator
+        // toggling TELE, or changing lens/mode), so it is both where a settled verdict stops being
+        // valid and where it is worth paying for the gyro again.
+        restartMotionInversion()
+    }
+
+    // Confidence accumulated across analysis frames. Main-thread confined: written only from the
+    // onAnalysis main post and the optics-door reset, read only here.
+    private var motionConfidence = MotionInversionConfidence()
+    private var motionArmed = false
+
+    /**
+     * Re-arms the inversion detector for a fresh question. Called at every optics door.
+     *
+     * Deliberately gated on [MOTION_SIGNS_VERIFIED]: until the gyro→image signs are bisected on
+     * hardware, a verdict would be as likely inverted as correct, and arming the gyro to compute an
+     * answer nobody may trust is pure battery cost. This is the single switch that makes the whole
+     * feature dark — see the bisection procedure in gl/MotionInversion.kt.
+     */
+    private fun restartMotionInversion() {
+        motionConfidence = MotionInversionConfidence()
+        val want = MOTION_SIGNS_VERIFIED
+        if (motionArmed == want) return
+        motionArmed = want
+        engine.setMotionInversionArmed(want)
+    }
+
+    /**
+     * Folds one frame verdict into the accumulator and disarms once it settles.
+     *
+     * Disarming on confidence is the whole power story: the gyro runs for the few seconds it takes
+     * to answer, then stops until the next optics door. A phone left pointing at a static scene
+     * simply never settles and never publishes — which is correct, and costs only the gyro until
+     * the operator moves on.
+     */
+    private fun observeMotionInversion(data: MotionInversionData) {
+        if (!motionArmed) return
+        val before = motionConfidence.settled
+        motionConfidence = motionConfidence.observe(data.verdict)
+        val after = motionConfidence.settled
+        if (after == before) return
+
+        // ONE line, on CHANGE only. ColorOS drops app logs past a 300-row-per-process quota, and a
+        // ~6 Hz per-frame line would spend it in under a minute — taking the startup and focus
+        // traces with it. This is also the readout the device bisection reads.
+        Log.i(
+            "MotionInversion",
+            "verdict=$after blocks=${data.votingBlocks}/${data.totalBlocks} " +
+                "agree=${data.agreeVotes} oppose=${data.opposeVotes}",
+        )
+        if (motionConfidence.confident) {
+            motionArmed = false
+            engine.setMotionInversionArmed(false)
+        }
     }
 
     // One shared background lane for the ViewModel's own MediaStore/StatFs work (PERF4-6/PERF4-9):
@@ -741,7 +799,7 @@ class CameraViewModel @JvmOverloads constructor(
             _state.update { it.copy(afIndication = ind) }
             mainHandler.post(focusConfidenceRefreshRunnable)
         }
-        engine.onAnalysis = { h, w, f ->
+        engine.onAnalysis = { h, w, f, m ->
             // Publish scope data into UI state only when something actually renders it: the
             // histogram/waveform overlays while ACTUALLY COMPOSED (scope settings alone are not
             // enough — [scopesVisible] carries the Compose-local expanded-DISP/no-modal truth the
@@ -773,6 +831,16 @@ class CameraViewModel @JvmOverloads constructor(
                     lastFocusDetail = f
                     lastFocusDetailAtMs = SystemClock.uptimeMillis()
                     refreshFocusConfidence()
+                }
+            }
+            // Motion-inversion verdict. Rides the same epoch as the focus evidence: an optics door
+            // is exactly when the answer can change, so a verdict computed before one must never be
+            // folded into the accumulator after it.
+            if (m != null && m.verdict != MotionAgreement.UNJUDGEABLE) {
+                val epoch = focusEvidenceEpoch
+                mainHandler.post {
+                    if (focusEvidenceEpoch != epoch) return@post
+                    observeMotionInversion(m)
                 }
             }
             // Feed the app-side auto-exposure loop only in the modes that DRIVE from it (PERF4-7):

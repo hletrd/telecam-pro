@@ -12,6 +12,7 @@ import me.hletrd.telecampro.camera.PUNCH_IN_CROP
 import me.hletrd.telecampro.camera.finderRect
 import me.hletrd.telecampro.camera.loupeHintRect
 import me.hletrd.telecampro.camera.FocusDetailData
+import me.hletrd.telecampro.camera.MotionInversionData
 import me.hletrd.telecampro.camera.RotationMath
 import me.hletrd.telecampro.camera.HistogramData
 import me.hletrd.telecampro.camera.WaveformData
@@ -178,7 +179,17 @@ class GlPipeline {
     // it is silent in the modes where no scope/AE readback runs at all (video-P, flash-metered P),
     // which is a MISS we accept rather than new per-frame GL work.
     private var analysisFocus = false
-    private var analysisCallback: ((HistogramData?, WaveformData?, FocusDetailData?) -> Unit)? = null
+    // Motion-inversion rider. Like [analysisFocus] this NEVER forces a readback — it only decides
+    // whether to compute over a snapshot some other consumer already paid for. Unlike it, this one
+    // needs the PREVIOUS frame's luma too, so the generation carries a one-frame history.
+    private var analysisMotion = false
+    // Supplies the gyro rotation for the interval since the last analysis frame, drained by the GL
+    // thread at snapshot time so the interval lines up with the frame pair rather than with whenever
+    // the executor happens to run. Returns (yawRadians, pitchRadians).
+    private var motionRotationProvider: (() -> FloatArray)? = null
+    private var analysisCallback: (
+        (HistogramData?, WaveformData?, FocusDetailData?, MotionInversionData?) -> Unit
+    )? = null
     // One immutable owner per GL generation. Buffer/FBO storage and the single-in-flight guard never
     // cross a restart, so a retired analysis task cannot read replacement pixels, publish stale AE,
     // or clear the replacement generation's guard from its finally block.
@@ -195,6 +206,23 @@ class GlPipeline {
         var textureW = 0
         var textureH = 0
 
+        // One-frame luma history for the motion rider, GENERATION-owned so a GL restart cannot pair
+        // a frame with one from before the discontinuity (different surface, different framing —
+        // the displacement between them is meaningless). Two buffers swapped rather than copied.
+        var motionPrev: IntArray? = null
+        var motionCur: IntArray? = null
+        @Volatile var motionW = 0
+        @Volatile var motionH = 0
+        // False until a SECOND frame at the current size arrives; the first has no predecessor.
+        //
+        // @Volatile because this one flag genuinely crosses threads: the executor SETS it, the GL
+        // thread READS it before dispatch and CLEARS it from [clearMotionHistory]. The busy gate
+        // already orders the set/read pair (the executor's release and the GL thread's acquire are
+        // a CAS pair, so the write is visible), but a clear racing an in-flight computation has no
+        // such edge — and losing a clear is the one failure that matters, because it pairs frames
+        // across the discontinuity the clear existed to mark.
+        @Volatile var motionHasHistory = false
+
         fun retire() {
             owner.retire()
             executor.shutdown()
@@ -205,6 +233,12 @@ class GlPipeline {
             bytes = null
             bufferW = 0
             bufferH = 0
+            clearMotionHistory()
+        }
+
+        /** Drops the retained frame; the next pair starts fresh. Cheap and always safe. */
+        fun clearMotionHistory() {
+            motionHasHistory = false
         }
     }
 
@@ -556,8 +590,24 @@ class GlPipeline {
      */
     fun setFocusDetailEnabled(enabled: Boolean) = post { analysisFocus = enabled }
 
+    /**
+     * Arms the motion-inversion rider. Never forces a readback (see [analysisMotion]); it only
+     * decides whether to compute over a snapshot the scopes/AE readback already produced.
+     *
+     * [rotationProvider] must return the gyro rotation accumulated since ITS OWN previous call —
+     * `GyroEis.drainRotation`'s read-and-reset contract — as (yawRadians, pitchRadians). Passing
+     * null disarms and drops the retained frame history.
+     */
+    fun setMotionInversionEnabled(enabled: Boolean, rotationProvider: (() -> FloatArray)?) = post {
+        analysisMotion = enabled && rotationProvider != null
+        motionRotationProvider = if (analysisMotion) rotationProvider else null
+        if (!analysisMotion) analysisGeneration?.clearMotionHistory()
+    }
+
     /** Sink for computed scopes; invoked on the current analysis generation's executor, not GL. */
-    fun setAnalysisCallback(cb: ((HistogramData?, WaveformData?, FocusDetailData?) -> Unit)?) = post {
+    fun setAnalysisCallback(
+        cb: ((HistogramData?, WaveformData?, FocusDetailData?, MotionInversionData?) -> Unit)?,
+    ) = post {
         analysisCallback = cb
     }
 
@@ -1198,6 +1248,58 @@ class GlPipeline {
     }
 
     /**
+     * Extracts this frame's luma, compares it with the retained previous frame, and rotates the
+     * history. Runs on the ANALYSIS EXECUTOR, which is single-flight by construction (the
+     * generation's busy gate), so the generation's motion buffers are effectively thread-confined
+     * here — the GL thread only reads [AnalysisGeneration.motionHasHistory] and the dimensions,
+     * both of which it wrote itself before dispatching.
+     *
+     * Always updates the history, even when it returns UNJUDGED: a frame that could not be judged is
+     * still a perfectly good PREDECESSOR for the next one, and dropping it would halve the sample
+     * rate for no benefit.
+     */
+    private fun computeMotionInversionFrame(
+        generation: AnalysisGeneration,
+        bytes: ByteArray,
+        w: Int,
+        h: Int,
+        paired: Boolean,
+        rotation: FloatArray?,
+        rotationDegrees: Int,
+        frontFacing: Boolean,
+    ): MotionInversionData {
+        val size = w * h
+        var cur = generation.motionCur
+        if (cur == null || cur.size < size) {
+            cur = IntArray(size)
+            generation.motionCur = cur
+        }
+        motionLuma(bytes, w, h, cur)
+
+        var result = MotionInversionData.UNJUDGED
+        val prev = generation.motionPrev
+        if (paired && prev != null && prev.size >= size && rotation != null && rotation.size >= 2) {
+            val predicted = predictedSceneMotion(
+                yawRadians = rotation[0],
+                pitchRadians = rotation[1],
+                rotationDegrees = rotationDegrees,
+                frontFacing = frontFacing,
+            )
+            if (predicted != null) {
+                result = computeMotionInversion(prev, cur, w, h, predicted[0], predicted[1])
+            }
+        }
+
+        // Swap rather than copy: this frame becomes the next call's predecessor.
+        generation.motionCur = prev
+        generation.motionPrev = cur
+        generation.motionW = w
+        generation.motionH = h
+        generation.motionHasHistory = true
+        return result
+    }
+
+    /**
      * Redraws capture framing into a bounded offscreen framebuffer and dispatches its pixels to
      * the generation-owned executor. Runs on the GL thread; the generation owner ensures only one
      * readback is in flight so its byte snapshot is never overwritten while the executor reads it.
@@ -1223,6 +1325,7 @@ class GlPipeline {
         if (!doHist && !doWave) return
         // Rider (see [analysisFocus]): computed only when the readback is already happening.
         val doFocus = analysisFocus
+        val doMotion = analysisMotion && motionRotationProvider != null
         if (!generation.owner.tryAcquire()) return
         try {
             val target = analysisTargetSize(previewW, previewH)
@@ -1280,6 +1383,20 @@ class GlPipeline {
             // and the app-side AE loop then read the same simulated still exposure the finder
             // shows, and the boost is counted exactly once.
             val analysisGain = previewDigitalGain
+            // Drained on the GL THREAD, at snapshot time, not on the executor: this must measure the
+            // interval between the two FRAMES being compared. Draining on the executor would fold in
+            // however long the previous computation and its queue wait took, which varies with load —
+            // a rotation attributed to the wrong interval is a fabricated pan.
+            val rotation = if (doMotion) motionRotationProvider?.invoke() else null
+            // Whether the RETAINED frame can be paired with this one. Read on the GL thread because
+            // the flag is GL-thread state; the executor only consumes the answer.
+            val motionPaired = doMotion && generation.motionHasHistory &&
+                generation.motionW == w && generation.motionH == h
+            // The rotation the ANALYSIS draw applied — i.e. the app's own afocal correction as it
+            // currently stands. That is what makes the verdict mean "is the frame 180 out relative
+            // to the CURRENT setting" rather than "is a converter present".
+            val motionRotationDeg = previewRotationDeg
+            val motionFront = frontRoute
             generation.executor.execute {
                 try {
                     val lut = digitalGainDisplayLut(analysisGain)
@@ -1289,8 +1406,15 @@ class GlPipeline {
                     // unboosted snapshot on purpose. Its verdict is about the optics, and must not
                     // move when a display-only brightness simulation moves (gl/FocusDetail.kt).
                     val focus = if (doFocus) computeFocusDetail(bytes, w, h) else null
+                    // Same reasoning for the motion rider, and the same missing `lut`: an inverted
+                    // image is an optical fact, and a brightness simulation must not reach it.
+                    val motion = if (doMotion) {
+                        computeMotionInversionFrame(generation, bytes, w, h, motionPaired, rotation, motionRotationDeg, motionFront)
+                    } else {
+                        null
+                    }
                     if (generation.owner.mayPublish() && analysisGeneration === generation) {
-                        cb.invoke(hist, wave, focus)
+                        cb.invoke(hist, wave, focus, motion)
                     }
                 } catch (_: Throwable) {
                     // Analysis is best-effort; swallow so a bad frame never surfaces to the UI.

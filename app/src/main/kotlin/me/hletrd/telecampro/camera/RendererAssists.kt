@@ -30,6 +30,8 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
     // first GL restart — the exact shape of the old log-preview bug.
     @Volatile
     private var focusDetail = false
+    private var motionInversion = false
+    private var motionRotationProvider: (() -> FloatArray)? = null
 
     // The user's punch-in INTENT, remembered independently of the resolved value for the same
     // reason as [teleFinderEnabled]: only the route-resolved flag is pushed to GL or replayed, but
@@ -119,6 +121,21 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
         currentGl().setFocusDetailEnabled(enabled)
     }
 
+    /**
+     * Arms/disarms the motion-inversion rider, carrying the gyro drain with it.
+     *
+     * Lives here rather than as engine state because it is REPLAYED STATE: every GL generation must
+     * be re-armed, and [replayAll] is the single authority that guarantees it. The provider is
+     * re-supplied on each call so a replay after a GL restart binds the live drain rather than a
+     * captured stale one.
+     */
+    fun setMotionInversion(enabled: Boolean, rotationProvider: () -> FloatArray) {
+        motionRotationProvider = rotationProvider
+        if (motionInversion == enabled) return
+        motionInversion = enabled
+        currentGl().setMotionInversionEnabled(enabled, rotationProvider)
+    }
+
     fun setGammaAssist(enabled: Boolean) {
         gammaAssist = enabled
         currentGl().setGammaAssist(enabled)
@@ -179,6 +196,10 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
     ) {
         gl.setAeMetering(aeMetering)
         gl.setFocusDetailEnabled(focusDetail)
+        // Replayed like every other assist. A GL restart drops the arming AND the frame history, so
+        // the new generation starts pairing from scratch — correct, since frames either side of the
+        // restart are not comparable anyway.
+        motionRotationProvider?.let { gl.setMotionInversionEnabled(motionInversion, it) }
         gl.setGammaAssist(gammaAssist)
         gl.setPeaking(snapshot.peaking)
         applyPeaking(snapshot, gl)
