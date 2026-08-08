@@ -965,6 +965,22 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   `COMPLETE` marker remain synchronous while the RAW `Image` is valid; `saveDng` returns a frozen
   `PendingDngPublication`, and only `publishDng` (including resolver retry backoff and callbacks)
   runs on `ioExecutor`. Queue rejection keeps the complete pending row for launch recovery.
+- **A logged `CameraAccessException` may have NO app frame in it — read the stack before believing
+  the app did something (2026-08-09).** Rapid Photo↔Video / front-rear churn logs
+  `E CameraCaptureSession: CAMERA_ERROR (3) ... Function not implemented (-38)`, which reads like an
+  app fault and was filed as one. The stack is
+  `stopRepeating ← CameraCaptureSessionImpl.close ← CameraCaptureSessionImpl$2.onDisconnected ←
+  CameraDeviceImpl$9.run` — **entirely framework-internal**: on a device disconnect the framework
+  closes the session, which calls `stopRepeating` on the device it was just told is gone, gets
+  ENOSYS, then CATCHES AND LOGS ITS OWN EXCEPTION. `CameraCaptureSessionImpl` is not ours; this
+  cannot be fixed app-side and does not need to be. Measured recovery is ~1.3 s to `ready=true`, and
+  the app's own fault path never fires. **Do not "fix" it, and do not let it mask the line under
+  it** — the real defect in that same log was `Long monitor contention ...
+  TerminalAcquisitionGate.runIfOpen ... in isOpen() for 192ms` with waiter tid == pid, i.e. a
+  MAIN-THREAD stall, which is what a user actually sees. `isOpen()` is now a lock-free `@Volatile`
+  read (advisory only; the authoritative check is inside `runIfOpen`, and `close()` must still block
+  behind an in-flight acquisition — both directions are pinned by tests). The general rule:
+  `grep -c telecampro` the stack first; zero app frames means the platform is talking to itself.
 - **ColorOS enforces a 300-row per-process log quota — diagnostics that log per frame destroy the
   diagnostics you actually need (device-observed 2026-07-25).** Past the cap the platform prints
   `LOG_FLOWCTRL: LOGS OVER PROC QUOTA(300) ... DROPPED` and silently eats everything else this
