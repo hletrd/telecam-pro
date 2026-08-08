@@ -37,8 +37,16 @@ deprecated APIs, latest stable everything.
   routing, `LENS_FOCUS_DISTANCE`, manual sensor, RAW/DNG, 10-bit HDR. Non-PMA110 handsets are
   UNVALIDATED until measured on-device; add quirks only with measurements, never speculatively.
 - **Latest toolchain, no deprecated APIs.** See versions below; bump when newer stable ships.
-- **Everything user-facing in English.** (Historical commit messages are Korean; do not rewrite
-  history — that's a destructive op requiring explicit sign-off.)
+- **User-facing text is ENGLISH + KOREAN (corrected 2026-08-08 — this said "everything user-facing
+  in English", which stopped being true when v1.0.1 shipped 126 Korean strings and `localeConfig`).**
+  New user-facing text needs a `values-ko` entry too. Two standing exceptions, both deliberate:
+  camera-standard abbreviations (ISO, WB, SS, EV, AF, NR, FPS, Fn, Open Gate) are
+  `translatable="false"` because Korean camera bodies print them in Latin as well; and company and
+  trademark names stay in the original inside translated text, because they IDENTIFY a rightsholder
+  and translating them changes who is named. Prose is not covered by either exception — the Setup
+  tab's Legal block sat in hardcoded English for exactly that reason until 2026-08-08.
+  (Historical commit messages are Korean; do not rewrite history — that's a destructive op
+  requiring explicit sign-off.)
 - **UI/UX reference: Sony Alpha / Xperia Pro.** Keep the viewfinder quiet. Use Fn, My Menu, MR banks,
   PASM-style exposure, compact OSD, peaking, zebra, histogram, waveform, and review zoom. Do not add
   tutorial banners, warning chips, coach marks, marketing copy, or helper overlays unless the user
