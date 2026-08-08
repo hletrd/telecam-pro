@@ -106,7 +106,7 @@
     <string name="review_preview_unavailable">미리보기 없음</string>
     <string name="mode_photo">사진</string>
     <string name="mode_video">동영상</string>
-    <string name="state_empty">비어 있음</string>
+    <string name="mr_slot_state_empty">비어 있음</string>
     <string name="state_no_supported_fps">지원하는 FPS 없음</string>
     <string name="state_no_supported_resolution">지원하는 해상도 없음</string>
     <string name="state_rear_camera_only">후면 카메라 전용</string>
@@ -132,4 +132,11 @@
     <string name="a11y_review_last_capture">마지막 촬영 보기</string>
     <string name="a11y_lens_optical">%1$s 렌즈</string>
     <string name="a11y_lens_zoom">%1$s 줌</string>
+    <!-- Legal / attribution block (Setup tab). 상표권자 이름과 법인명은 원문 그대로 둔다 — 번역하면
+         가리키는 대상이 달라진다. -->
+    <string name="legal_trademark_log">S-Log은 Sony Group Corporation의 상표입니다. LogC는 Arnold &amp; Richter Cine Technik GmbH &amp; Co. Betriebs KG(ARRI)의 상표입니다.</string>
+    <string name="legal_trademark_hardware">Hasselblad은 Victor Hasselblad AB의 상표입니다. OPPO는 Guangdong OPPO Mobile Telecommunications Corp., Ltd.의 상표입니다. ZEISS는 Carl Zeiss AG의 상표입니다. vivo는 vivo Mobile Communication Co., Ltd.의 상표입니다.</string>
+    <string name="legal_no_affiliation">이 앱은 독립적으로 만들어졌으며, 위 회사들과 제휴하거나 후원 또는 보증을 받지 않았습니다. 제품명은 호환되는 기기를 가리킬 뿐입니다.</string>
+    <string name="legal_typeface">UI 서체: Inter, © The Inter Project Authors, SIL Open Font License 1.1.</string>
+    <string name="legal_app_license">TeleCam Pro © 2026 Jiyong Youn — Apache License 2.0. 소스: github.com/hletrd/telecam-pro</string>
 </resources>
