@@ -544,19 +544,26 @@ class CameraViewModel @JvmOverloads constructor(
      */
     private fun observeMotionInversion(data: MotionInversionData) {
         if (!motionArmed) return
-        val before = motionConfidence.settled
+        val beforeSettled = motionConfidence.settled
+        val beforePending = motionConfidence.pending
         motionConfidence = motionConfidence.observe(data.verdict)
-        val after = motionConfidence.settled
-        if (after == before) return
+        val settled = motionConfidence.settled
+        val pending = motionConfidence.pending
 
-        // ONE line, on CHANGE only. ColorOS drops app logs past a 300-row-per-process quota, and a
-        // ~6 Hz per-frame line would spend it in under a minute — taking the startup and focus
-        // traces with it. This is also the readout the device bisection reads.
-        Log.i(
-            "MotionInversion",
-            "verdict=$after blocks=${data.votingBlocks}/${data.totalBlocks} " +
-                "agree=${data.agreeVotes} oppose=${data.opposeVotes}",
-        )
+        // Logs on CHANGE only — of either the settled answer or the pending candidate. ColorOS drops
+        // app logs past a 300-row-per-process quota, and a ~6 Hz per-frame line would spend it in
+        // under a minute, taking the startup and focus traces with it. Including PENDING costs
+        // almost nothing (a deliberate pan changes it once or twice) and is what makes a
+        // non-settling result diagnosable: without it, "the detector said nothing" cannot be told
+        // apart from "the detector never ran". This is the readout the device sign bisection reads.
+        if (settled != beforeSettled || pending != beforePending) {
+            Log.i(
+                "MotionInversion",
+                "settled=$settled pending=$pending streak=${motionConfidence.streak} " +
+                    "frame=${data.verdict} blocks=${data.votingBlocks}/${data.totalBlocks} " +
+                    "agree=${data.agreeVotes} oppose=${data.opposeVotes}",
+            )
+        }
         if (motionConfidence.confident) {
             motionArmed = false
             engine.setMotionInversionArmed(false)
