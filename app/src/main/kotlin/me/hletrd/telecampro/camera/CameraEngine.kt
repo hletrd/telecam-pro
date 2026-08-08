@@ -5532,8 +5532,31 @@ internal class CaptureSequenceGeneration {
  * deliberately executed while holding the monitor: close either waits for the in-flight acquisition
  * and owns its teardown, or prevents it from beginning.
  */
+/**
+ * Gate that stops a queued native acquisition from resurrecting a released generation after
+ * teardown has begun.
+ *
+ * The monitor held by [runIfOpen] and [close] is LOAD-BEARING and must stay: the whole point is that
+ * a close cannot slip in mid-acquisition, so `close()` blocks until an in-flight block finishes and
+ * a block cannot start once close has won. `runIfOpen` therefore holds the monitor across a process
+ * lock plus a native camera open — hundreds of milliseconds, by design.
+ *
+ * [isOpen] is the ADVISORY half and deliberately does NOT take that monitor (2026-08-09). Its only
+ * caller is `nativeAcquisitionMayProceed`, which feeds the pure `nativeAcquisitionAllowed` predicate
+ * as a "should I bother starting this" hint; it participates in no compound operation, and the
+ * authoritative check is the one inside [runIfOpen]. Synchronizing it bought no correctness — the
+ * answer can change the instant it returns either way — and cost a MAIN-THREAD stall for as long as
+ * whatever the HAL was doing: device-diagnosed at 192 ms under rapid Photo↔Video churn on an
+ * SM-S918N (`Long monitor contention ... at TerminalAcquisitionGate.runIfOpen ... in isOpen()`,
+ * waiter tid == pid). A `@Volatile` read gives the same answer and the same visibility — `close()`
+ * still publishes under the monitor, and a volatile write happens-before the volatile read — without
+ * ever queueing behind camera work.
+ *
+ * Both directions are pinned by tests: `close waits for in-flight acquisition` and
+ * `isOpen does not block behind an in-flight acquisition`.
+ */
 internal class TerminalAcquisitionGate {
-    private var open = true
+    @Volatile private var open = true
 
     @Synchronized
     fun runIfOpen(block: () -> Unit): Boolean {
@@ -5547,7 +5570,7 @@ internal class TerminalAcquisitionGate {
         open = false
     }
 
-    @Synchronized
+    /** Advisory, lock-free. See the class doc for why this must not take the monitor. */
     fun isOpen(): Boolean = open
 }
 
