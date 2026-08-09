@@ -517,6 +517,8 @@ class CameraViewModel @JvmOverloads constructor(
     // onAnalysis main post and the optics-door reset, read only here.
     private var motionConfidence = MotionInversionConfidence()
     private var motionArmed = false
+    private var lastMotionHeartbeatMs = 0L
+    private var lastMotionShape = -1
 
     /**
      * Re-arms the inversion detector for a fresh question. Called at every optics door.
@@ -544,6 +546,33 @@ class CameraViewModel @JvmOverloads constructor(
      */
     private fun observeMotionInversion(data: MotionInversionData) {
         if (!motionArmed) return
+
+        // LIVENESS HEARTBEAT, at most once a second. An all-UNJUDGEABLE run is otherwise completely
+        // silent, which during a device sign bisection is indistinguishable from "the rider never
+        // ran" — the operator is left panning at a detector that may or may not exist. This says
+        // which gate refused: totalBlocks=0 means the frame never reached the block grid (no
+        // rotation cleared the angular gate), votingBlocks=0 means the scene carries no texture
+        // along the pan axis, and a near-even agree/oppose split means periodic content.
+        // Throttled because ColorOS drops app logs past 300 rows per process.
+        // CHANGE-GATED, with a slow floor. A 1 Hz heartbeat burns the ColorOS 300-row-per-process
+        // quota in ~5 minutes and then silences the very trace the bisection is reading — the exact
+        // trap CLAUDE.md documents, walked into by this line's first draft. What matters is the
+        // SHAPE change: whether rotation is reaching the block grid at all (totalBlocks 0 <-> n) and
+        // whether blocks are voting (votingBlocks 0 <-> n). Those move a handful of times per pan.
+        val now = SystemClock.uptimeMillis()
+        val shape = (if (data.totalBlocks > 0) 2 else 0) + (if (data.votingBlocks > 0) 1 else 0)
+        if (shape != lastMotionShape || now - lastMotionHeartbeatMs >= 15_000L) {
+            lastMotionShape = shape
+            lastMotionHeartbeatMs = now
+            Log.i(
+                "MotionInversion",
+                "tick frame=${data.verdict} blocks=${data.votingBlocks}/${data.totalBlocks} " +
+                    "agree=${data.agreeVotes} oppose=${data.opposeVotes} " +
+                    "settled=${motionConfidence.settled} streak=${motionConfidence.streak}",
+            )
+        }
+        if (data.verdict == MotionAgreement.UNJUDGEABLE) return
+
         val beforeSettled = motionConfidence.settled
         val beforePending = motionConfidence.pending
         motionConfidence = motionConfidence.observe(data.verdict)
@@ -843,7 +872,7 @@ class CameraViewModel @JvmOverloads constructor(
             // Motion-inversion verdict. Rides the same epoch as the focus evidence: an optics door
             // is exactly when the answer can change, so a verdict computed before one must never be
             // folded into the accumulator after it.
-            if (m != null && m.verdict != MotionAgreement.UNJUDGEABLE) {
+            if (m != null) {
                 val epoch = focusEvidenceEpoch
                 mainHandler.post {
                     if (focusEvidenceEpoch != epoch) return@post
