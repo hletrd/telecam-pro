@@ -26,6 +26,7 @@ PROXY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/adb_proxy.py"
 # label            device-ip         local-port
 FLEET=(
   "SM-S918N        172.30.50.112     5512"
+  "POCO            172.30.50.114     5514"
   "TB331FC         172.30.50.161     5561"
   "TB336ZU         172.30.50.249     5549"
 )
