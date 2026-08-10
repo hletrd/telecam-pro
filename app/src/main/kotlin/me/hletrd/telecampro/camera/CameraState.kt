@@ -1542,10 +1542,21 @@ data class MotionInversionData(
     val votingBlocks: Int,
     val agreeVotes: Int,
     val opposeVotes: Int,
+    /**
+     * Magnitude of the gyro rotation this frame pair was judged against, in milliradians.
+     *
+     * DIAGNOSTIC ONLY — no verdict reads it; the metric uses the DIRECTION and discards the length
+     * (see gl/MotionInversion.kt on why being scale-free is the point). It is carried because the
+     * counters alone cannot distinguish the two ways a judged frame can be meaningless: a large
+     * rotation that the image genuinely followed, versus a barely-over-threshold rotation whose
+     * image motion actually came from TRANSLATION or a moving subject. Those look identical in
+     * agree/oppose and produce opposite conclusions about whether the answer can be trusted.
+     */
+    val predictedMrad: Float = 0f,
 ) {
     companion object {
         /** Degenerate buffer, too little predicted rotation, or no block cleared the gates. */
-        val UNJUDGED = MotionInversionData(MotionAgreement.UNJUDGEABLE, 0, 0, 0, 0)
+        val UNJUDGED = MotionInversionData(MotionAgreement.UNJUDGEABLE, 0, 0, 0, 0, 0f)
     }
 }
 

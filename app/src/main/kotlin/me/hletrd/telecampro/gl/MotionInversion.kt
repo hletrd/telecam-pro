@@ -399,6 +399,7 @@ internal fun computeMotionInversion(
         votingBlocks = voting,
         agreeVotes = agree,
         opposeVotes = oppose,
+        predictedMrad = predictedLen.toFloat(),
     )
 }
 
