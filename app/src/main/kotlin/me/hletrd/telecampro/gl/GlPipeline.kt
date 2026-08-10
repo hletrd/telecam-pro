@@ -28,6 +28,7 @@ import kotlin.math.roundToInt
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.math.hypot
 
 /** A process-owned lease that can atomically reject an encoder EGL ownership commit. */
 class EncoderOutputAdmission(
@@ -1285,8 +1286,20 @@ class GlPipeline {
                 rotationDegrees = rotationDegrees,
                 frontFacing = frontFacing,
             )
-            if (predicted != null) {
-                result = computeMotionInversion(prev, cur, w, h, predicted[0], predicted[1])
+            result = if (predicted != null) {
+                computeMotionInversion(prev, cur, w, h, predicted[0], predicted[1])
+            } else {
+                // BELOW the angular gate: no verdict, but report how far below. Without this the
+                // trace prints 0.0 for everything from a phone on a desk to a movement just shy of
+                // judgeable, which gives a person trying to produce a valid gesture nothing to aim
+                // at — they cannot tell "not moving" from "nearly there". Diagnostic only; the
+                // verdict is still UNJUDGEABLE and no caller reads the magnitude.
+                MotionInversionData.UNJUDGED.copy(
+                    predictedMrad = hypot(
+                        rotation[0].toDouble() * 1000.0,
+                        rotation[1].toDouble() * 1000.0,
+                    ).toFloat(),
+                )
             }
         }
 

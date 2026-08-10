@@ -561,7 +561,12 @@ class CameraViewModel @JvmOverloads constructor(
         // whether blocks are voting (votingBlocks 0 <-> n). Those move a handful of times per pan.
         val now = SystemClock.uptimeMillis()
         val shape = (if (data.totalBlocks > 0) 2 else 0) + (if (data.votingBlocks > 0) 1 else 0)
-        if (shape != lastMotionShape || now - lastMotionHeartbeatMs >= 15_000L) {
+        // While the phone is actually MOVING, log at 2 Hz so the operator gets a live meter to aim
+        // at — a gesture lasts a couple of seconds and a 15 s heartbeat would report it once, after
+        // it ended. At rest the 15 s floor still applies, so an idle phone cannot drain the quota.
+        val moving = data.predictedMrad >= 1f
+        val floorMs = if (moving) 500L else 15_000L
+        if (shape != lastMotionShape || now - lastMotionHeartbeatMs >= floorMs) {
             lastMotionShape = shape
             lastMotionHeartbeatMs = now
             Log.i(
