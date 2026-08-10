@@ -23,12 +23,20 @@ set -u
 
 PROXY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/adb_proxy.py"
 
+# Local ports are 6000 + the device's last octet, so a serial in a log says which
+# handset it was without a lookup table.
+#
+# 6xxx, NOT 5xxx: adb reserves 5554-5585 for emulator consoles and labels anything
+# on those ports `emulator-NNNN`. The first cut of this table used 5561 for
+# TB331FC, and adb duly reported a Lenovo tablet as "emulator-5560" — which breaks
+# every `adb -s` invocation that expects the assigned serial. 6000+ is clear of it.
+#
 # label            device-ip         local-port
 FLEET=(
-  "SM-S918N        172.30.50.112     5512"
-  "POCO            172.30.50.114     5514"
-  "TB331FC         172.30.50.161     5561"
-  "TB336ZU         172.30.50.249     5549"
+  "SM-S918N        172.30.50.112     6112"
+  "POCO            172.30.50.114     6114"
+  "TB331FC         172.30.50.161     6161"
+  "TB336ZU         172.30.50.249     6249"
 )
 PMA110_DIRECT="100.125.100.120:5555"
 
