@@ -124,6 +124,37 @@ internal const val MOTION_MIN_PREDICTED_MRAD = 3.0
 internal const val MOTION_CONFIRM_FRAMES = 4
 
 /**
+ * ================= KNOWN DEFECT, FOUND ON DEVICE 2026-08-11 — FIX BEFORE ENABLING =================
+ *
+ * THE GYRO INTERVAL IS NOT ALIGNED TO THE FRAMES IT JUDGES, and that is why no bisection has ever
+ * settled honestly.
+ *
+ * `GlPipeline` drains the gyro on the GL thread at READBACK time, so the rotation covers the wall
+ * interval between two drain calls. The pixels in that readback left the sensor EARLIER — camera
+ * pipeline latency — so the metric compares image motion from moment T against rotation measured
+ * over an interval ending at roughly T + lag.
+ *
+ * A slow one-direction pan hides this completely: the rotation has one sign throughout, so a shifted
+ * window still points the same way and the verdict is right for the wrong reason. A reversing or
+ * shaky motion exposes it, because the direction flips INSIDE the lag window.
+ *
+ * MEASURED (PMA110, hand-held sweep, 11 judged frames, 141 block votes):
+ *   aggregate           80 agree / 61 oppose  = 57% — barely off a coin flip
+ *   predicted y > 0     64% MATCHES
+ *   predicted y < 0     43% MATCHES
+ * A ~20-point swing with the SIGN of the predicted direction. That must not happen: reversing a pan
+ * reverses the gyro reading and the image motion together, so a sign comparison is
+ * direction-invariant by construction. Correlation with direction is the defect's signature.
+ *
+ * THE FIX: integrate the gyro over exactly [previousFrame.timestamp, currentFrame.timestamp].
+ * `SurfaceTexture.timestamp` is already the camera/sensor clock and is already consumed for encoder
+ * PTS (`GlPipeline`), so the frame side needs no new plumbing. What changes is `GyroEis`: it must
+ * retain timestamped samples and answer "rotation between these two instants" instead of the current
+ * `drainRotation()`, which can only answer "rotation since you last asked me".
+ *
+ * Until that lands, a bisection can produce a settled verdict, but only by hiding the defect behind a
+ * sufficiently smooth gesture — which is not a measurement.
+ *
  * ============================ THE BISECTION GATE — READ BEFORE ENABLING ============================
  *
  * FALSE until the two signs below have been measured on a real device. While false the detector must
