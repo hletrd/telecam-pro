@@ -400,6 +400,8 @@ internal fun computeMotionInversion(
         agreeVotes = agree,
         opposeVotes = oppose,
         predictedMrad = predictedLen.toFloat(),
+        predictedX = predictedX.toFloat(),
+        predictedY = predictedY.toFloat(),
     )
 }
 

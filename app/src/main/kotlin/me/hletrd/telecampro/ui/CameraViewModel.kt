@@ -573,7 +573,7 @@ class CameraViewModel @JvmOverloads constructor(
                 "MotionInversion",
                 "tick frame=${data.verdict} blocks=${data.votingBlocks}/${data.totalBlocks} " +
                     "agree=${data.agreeVotes} oppose=${data.opposeVotes} " +
-                    "rot=${"%.1f".format(data.predictedMrad)}mrad " +
+                    "rot=${"%.1f".format(data.predictedMrad)} dir=${"%+.0f".format(data.predictedX)},${"%+.0f".format(data.predictedY)} " +
                     "settled=${motionConfidence.settled} streak=${motionConfidence.streak}",
             )
         }
@@ -597,7 +597,7 @@ class CameraViewModel @JvmOverloads constructor(
                 "settled=$settled pending=$pending streak=${motionConfidence.streak} " +
                     "frame=${data.verdict} blocks=${data.votingBlocks}/${data.totalBlocks} " +
                     "agree=${data.agreeVotes} oppose=${data.opposeVotes} " +
-                    "rot=${"%.1f".format(data.predictedMrad)}mrad",
+                    "rot=${"%.1f".format(data.predictedMrad)} dir=${"%+.0f".format(data.predictedX)},${"%+.0f".format(data.predictedY)}",
             )
         }
         if (motionConfidence.confident) {

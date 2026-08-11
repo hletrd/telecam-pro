@@ -1553,6 +1553,22 @@ data class MotionInversionData(
      * agree/oppose and produce opposite conclusions about whether the answer can be trusted.
      */
     val predictedMrad: Float = 0f,
+    /**
+     * SIGNED predicted scene-motion direction in analysis-frame axes (x right, y down), milliradians.
+     *
+     * DIAGNOSTIC ONLY, and the one that makes a sloppy gesture usable. The magnitude alone cannot
+     * answer the question a device bisection actually turns on: does the verdict flip WITH the
+     * direction of rotation? It must not — a sign comparison is direction-invariant, because
+     * reversing the pan reverses the gyro reading and the image motion together. So verdict
+     * correlated with the sign of [predictedX] is the signature of a pairing error (rotation from
+     * one interval judged against image motion from another), while a verdict independent of it
+     * points at the optics instead.
+     *
+     * With this, ANY back-and-forth sweep is a valid experiment and the operator does not have to
+     * produce a perfectly steady one-direction pan.
+     */
+    val predictedX: Float = 0f,
+    val predictedY: Float = 0f,
 ) {
     companion object {
         /** Degenerate buffer, too little predicted rotation, or no block cleared the gates. */
