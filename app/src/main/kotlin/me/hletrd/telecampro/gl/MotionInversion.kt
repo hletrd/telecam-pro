@@ -124,13 +124,13 @@ internal const val MOTION_MIN_PREDICTED_MRAD = 3.0
 internal const val MOTION_CONFIRM_FRAMES = 4
 
 /**
- * ================= KNOWN DEFECT, FOUND ON DEVICE 2026-08-11 — FIX BEFORE ENABLING =================
+ * ============ GYRO/FRAME ALIGNMENT — DEFECT FOUND 2026-08-11, FIXED 2026-08-12 ============
  *
- * THE GYRO INTERVAL IS NOT ALIGNED TO THE FRAMES IT JUDGES, and that is why no bisection has ever
- * settled honestly.
+ * THE GYRO INTERVAL USED TO BE MISALIGNED FROM THE FRAMES IT JUDGED, which is why no bisection ever
+ * settled honestly. Fixed; kept here because the symptom is worth recognising if it ever returns.
  *
- * `GlPipeline` drains the gyro on the GL thread at READBACK time, so the rotation covers the wall
- * interval between two drain calls. The pixels in that readback left the sensor EARLIER — camera
+ * WAS: `GlPipeline` drained the gyro at READBACK time, so the rotation covered the wall interval
+ * between two drain calls. The pixels in that readback left the sensor EARLIER — camera
  * pipeline latency — so the metric compares image motion from moment T against rotation measured
  * over an interval ending at roughly T + lag.
  *
@@ -146,14 +146,20 @@ internal const val MOTION_CONFIRM_FRAMES = 4
  * reverses the gyro reading and the image motion together, so a sign comparison is
  * direction-invariant by construction. Correlation with direction is the defect's signature.
  *
- * THE FIX: integrate the gyro over exactly [previousFrame.timestamp, currentFrame.timestamp].
+ * NOW: the gyro is integrated over exactly [previousFrame.timestamp, currentFrame.timestamp].
  * `SurfaceTexture.timestamp` is already the camera/sensor clock and is already consumed for encoder
  * PTS (`GlPipeline`), so the frame side needs no new plumbing. What changes is `GyroEis`: it must
  * retain timestamped samples and answer "rotation between these two instants" instead of the current
  * `drainRotation()`, which can only answer "rotation since you last asked me".
  *
- * Until that lands, a bisection can produce a settled verdict, but only by hiding the defect behind a
- * sufficiently smooth gesture — which is not a measurement.
+ * `GyroEis.rotationBetween` answers that window from a timestamped ring and returns NULL — never a
+ * fabricated zero — when it cannot (window outside the retained history, tracking disarmed, or the
+ * camera reporting a non-REALTIME timestamp source, where its clock is `System.nanoTime` and the
+ * two bases drift apart by accumulated deep sleep). `rotationBetweenSamples` is the pure seam and
+ * carries the reversal fence: rotate out and back, and the two legs must cancel.
+ *
+ * The signs below remain UNMEASURED. What changed is that measuring them no longer requires a
+ * gesture smooth enough to hide the defect.
  *
  * ============================ THE BISECTION GATE — READ BEFORE ENABLING ============================
  *

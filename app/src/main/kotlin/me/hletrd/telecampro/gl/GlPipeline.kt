@@ -187,7 +187,7 @@ class GlPipeline {
     // Supplies the gyro rotation for the interval since the last analysis frame, drained by the GL
     // thread at snapshot time so the interval lines up with the frame pair rather than with whenever
     // the executor happens to run. Returns (yawRadians, pitchRadians).
-    private var motionRotationProvider: (() -> FloatArray)? = null
+    private var motionRotationProvider: ((Long, Long) -> FloatArray?)? = null
     private var analysisCallback: (
         (HistogramData?, WaveformData?, FocusDetailData?, MotionInversionData?) -> Unit
     )? = null
@@ -214,6 +214,9 @@ class GlPipeline {
         var motionCur: IntArray? = null
         @Volatile var motionW = 0
         @Volatile var motionH = 0
+        // Sensor-clock timestamp of the retained frame, so the gyro can be integrated over exactly
+        // the interval those two frames span rather than over whenever the readback happened to run.
+        var motionPrevTsNs = 0L
         // False until a SECOND frame at the current size arrives; the first has no predecessor.
         //
         // @Volatile because this one flag genuinely crosses threads: the executor SETS it, the GL
@@ -240,6 +243,7 @@ class GlPipeline {
         /** Drops the retained frame; the next pair starts fresh. Cheap and always safe. */
         fun clearMotionHistory() {
             motionHasHistory = false
+            motionPrevTsNs = 0L
         }
     }
 
@@ -596,10 +600,11 @@ class GlPipeline {
      * decides whether to compute over a snapshot the scopes/AE readback already produced.
      *
      * [rotationProvider] must return the gyro rotation accumulated since ITS OWN previous call —
-     * `GyroEis.drainRotation`'s read-and-reset contract — as (yawRadians, pitchRadians). Passing
-     * null disarms and drops the retained frame history.
+     * `GyroEis.rotationBetween`'s window contract — as (yawRadians, pitchRadians) over exactly the
+     * two frames' own sensor timestamps, or null when it cannot answer that window. Passing null
+     * disarms and drops the retained frame history.
      */
-    fun setMotionInversionEnabled(enabled: Boolean, rotationProvider: (() -> FloatArray)?) = post {
+    fun setMotionInversionEnabled(enabled: Boolean, rotationProvider: ((Long, Long) -> FloatArray?)?) = post {
         analysisMotion = enabled && rotationProvider != null
         motionRotationProvider = if (analysisMotion) rotationProvider else null
         if (!analysisMotion) analysisGeneration?.clearMotionHistory()
@@ -1243,6 +1248,7 @@ class GlPipeline {
                     crop = frame.crop,
                     centerX = frame.centerX,
                     centerY = frame.centerY,
+                    frameTimestampNs = st.timestamp,
                 )
             }
         }
@@ -1268,6 +1274,7 @@ class GlPipeline {
         rotation: FloatArray?,
         rotationDegrees: Int,
         frontFacing: Boolean,
+        frameTsNs: Long,
     ): MotionInversionData {
         val size = w * h
         var cur = generation.motionCur
@@ -1308,6 +1315,7 @@ class GlPipeline {
         generation.motionPrev = cur
         generation.motionW = w
         generation.motionH = h
+        generation.motionPrevTsNs = frameTsNs
         generation.motionHasHistory = true
         return result
     }
@@ -1328,6 +1336,12 @@ class GlPipeline {
         crop: Float,
         centerX: Float,
         centerY: Float,
+        /**
+         * `SurfaceTexture.timestamp` for the frame being read back — the camera/sensor clock, the
+         * same one the encoder uses for PTS. Load-bearing for the motion rider only; 0 means
+         * unavailable, which makes the rider refuse rather than approximate.
+         */
+        frameTimestampNs: Long,
     ) {
         if (previewEgl == EGL14.EGL_NO_SURFACE || previewW <= 0 || previewH <= 0) return
         val cb = analysisCallback ?: return
@@ -1400,7 +1414,17 @@ class GlPipeline {
             // interval between the two FRAMES being compared. Draining on the executor would fold in
             // however long the previous computation and its queue wait took, which varies with load —
             // a rotation attributed to the wrong interval is a fabricated pan.
-            val rotation = if (doMotion) motionRotationProvider?.invoke() else null
+            // The window is the two FRAMES' own sensor timestamps, not "since I last asked".
+            // Those frames left the sensor before this readback ran, so any interval keyed on
+            // readback time is offset by the camera pipeline latency — which is invisible during a
+            // steady pan and inverts the verdict during a reversing one (device-diagnosed
+            // 2026-08-11, see gl/MotionInversion.kt). Keying on the frames cancels the lag.
+            val curTsNs = frameTimestampNs
+            val rotation = if (doMotion && generation.motionPrevTsNs > 0L && curTsNs > 0L) {
+                motionRotationProvider?.invoke(generation.motionPrevTsNs, curTsNs)
+            } else {
+                null
+            }
             // Whether the RETAINED frame can be paired with this one. Read on the GL thread because
             // the flag is GL-thread state; the executor only consumes the answer.
             val motionPaired = doMotion && generation.motionHasHistory &&
@@ -1422,7 +1446,7 @@ class GlPipeline {
                     // Same reasoning for the motion rider, and the same missing `lut`: an inverted
                     // image is an optical fact, and a brightness simulation must not reach it.
                     val motion = if (doMotion) {
-                        computeMotionInversionFrame(generation, bytes, w, h, motionPaired, rotation, motionRotationDeg, motionFront)
+                        computeMotionInversionFrame(generation, bytes, w, h, motionPaired, rotation, motionRotationDeg, motionFront, curTsNs)
                     } else {
                         null
                     }

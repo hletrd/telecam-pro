@@ -1894,7 +1894,18 @@ class CameraEngine(private val context: Context) {
      */
     fun setMotionInversionArmed(enabled: Boolean) {
         gyro.setRotationTracking(enabled)
-        rendererAssists.setMotionInversion(enabled) { gyro.drainRotation() }
+        rendererAssists.setMotionInversion(enabled) { fromNs, toNs ->
+            // REFUSE unless the camera stamps frames on the SAME clock the gyro does. REALTIME means
+            // SENSOR_TIMESTAMP is SystemClock.elapsedRealtimeNanos, which is what SensorEvent uses;
+            // UNKNOWN means System.nanoTime, and the two bases drift apart by accumulated deep sleep
+            // (the same trap CaptureCapabilities.timestampSource documents for pseudo-ZSL ages).
+            // Comparing across them would not be a small error — it would silently pair a frame with
+            // rotation from an unrelated instant, which is exactly the class of defect this whole
+            // interval API exists to remove. Null here reads as "unjudgeable", never as "no motion".
+            val realtime = caps?.timestampSource ==
+                android.hardware.camera2.CameraMetadata.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME
+            if (realtime) gyro.rotationBetween(fromNs, toNs) else null
+        }
     }
 
     /** Gamma Display Assist: normal monitor image while recording O-Log (the file stays log). */

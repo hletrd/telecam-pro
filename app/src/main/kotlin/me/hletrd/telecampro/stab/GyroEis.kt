@@ -22,10 +22,14 @@ import kotlin.math.hypot
  *
  * The gyroscope is still NOT registered by default — integrating a ~200 Hz stream nothing reads was
  * pure battery waste then and would be now. It is instead ARMABLE via [setRotationTracking], which
- * feeds [drainRotation] alone (2026-08-08). That accumulator is deliberately separate from the EIS
- * integrators: those are high-passed to isolate shake, and a motion-vs-gyro comparison needs exactly
- * the deliberate pan that high-pass discards. Consumers arm it for the seconds they need an answer
- * and disarm immediately — see `gl/MotionInversion.kt`.
+ * feeds [rotationBetween] alone. That history is deliberately separate from the EIS integrators:
+ * those are high-passed to isolate shake, and a motion-vs-gyro comparison needs exactly the
+ * deliberate pan that high-pass discards. Consumers arm it for the seconds they need an answer and
+ * disarm immediately — see `gl/MotionInversion.kt`.
+ *
+ * It answers for an explicit [fromNs, toNs] window rather than "since you last asked" (2026-08-11):
+ * the camera frames it is compared against left the sensor before the consumer saw them, so only an
+ * interval keyed on THEIR timestamps cancels the pipeline latency.
  */
 class GyroEis(context: Context) : SensorEventListener {
 
@@ -62,16 +66,24 @@ class GyroEis(context: Context) : SensorEventListener {
     // NOTE: no isAvailable accessor. It reported `gyroscope != null` — availability of a sensor
     // this class deliberately never registers (see [start]) — so it was misleading, not just unused.
 
-    // Rotation accumulated since the last [drainRotation], radians. SEPARATE from the EIS
-    // integrators above on purpose: those are high-passed (corr* = ang* - smooth*) to isolate shake,
-    // which is precisely the component a motion-vs-gyro comparison must NOT use — it needs the
-    // deliberate pan the high-pass throws away. Guarded by [rotationLock] rather than @Volatile
-    // because drain is a read-AND-RESET pair that must be atomic against the sensor thread.
+    // TIMESTAMPED cumulative rotation history, radians, in the SensorEvent clock
+    // (SystemClock.elapsedRealtimeNanos). SEPARATE from the EIS integrators above on purpose: those
+    // are high-passed (corr* = ang* - smooth*) to isolate shake, which is precisely the component a
+    // motion-vs-gyro comparison must NOT use — it needs the deliberate pan the high-pass throws away.
+    //
+    // A HISTORY rather than a running total, because the consumer does not want "rotation since you
+    // last asked" — it wants "rotation between these two camera frames", and those frames left the
+    // sensor before the consumer ever saw them (see [rotationBetween]).
     private val rotationLock = Any()
-    private var accYaw = 0f
-    private var accPitch = 0f
+    private val sampleTimeNs = LongArray(ROTATION_HISTORY)
+    private val sampleYaw = FloatArray(ROTATION_HISTORY)
+    private val samplePitch = FloatArray(ROTATION_HISTORY)
+    private var sampleCount = 0
+    private var sampleHead = 0
+    private var cumYaw = 0f
+    private var cumPitch = 0f
 
-    /** Whether the caller currently wants [drainRotation] to produce anything. */
+    /** Whether the caller currently wants [rotationBetween] to produce anything. */
     @Volatile private var rotationTracking = false
 
     fun start() {
@@ -97,8 +109,8 @@ class GyroEis(context: Context) : SensorEventListener {
      * stream nothing reads is pure battery waste, which is exactly why the dead EIS registration was
      * removed. Consumers arm it for the seconds they need an answer and disarm immediately after.
      *
-     * Idempotent. Disarming zeroes the accumulator so a later re-arm cannot serve rotation that
-     * happened while nobody was watching.
+     * Idempotent. Disarming drops the retained history so a later re-arm cannot answer for a window
+     * that spans the gap when nobody was watching.
      */
     fun setRotationTracking(enabled: Boolean) {
         if (rotationTracking == enabled) return
@@ -107,27 +119,61 @@ class GyroEis(context: Context) : SensorEventListener {
             registerGyroscope()
         } else {
             gyroscope?.let { sensorManager?.unregisterListener(this, it) }
-            synchronized(rotationLock) { accYaw = 0f; accPitch = 0f }
+            clearRotationHistory()
         }
     }
 
+    /** Drops every retained sample. A window spanning a pause is not answerable and must not be. */
+    private fun clearRotationHistory() = synchronized(rotationLock) {
+        sampleCount = 0
+        sampleHead = 0
+        cumYaw = 0f
+        cumPitch = 0f
+    }
+
     private fun registerGyroscope() {
-        gyroscope?.let { sensorManager?.registerListener(this, it, SAMPLING_PERIOD_US) }
+        gyroscope?.let { sensorManager?.registerListener(this, it, GYRO_SAMPLING_PERIOD_US) }
     }
 
     /**
-     * Rotation accumulated since the previous call: `[0]` = yaw (about device y), `[1]` = pitch
-     * (about device x), radians. Reads and RESETS atomically, so successive calls partition the
-     * timeline with no gap and no double-count — which is what lets a consumer pair each interval
-     * with the frame pair it spans without plumbing timestamps.
+     * Rotation between two instants on the SENSOR clock: `[0]` = yaw (about device y), `[1]` = pitch
+     * (about device x), radians. Returns null when the window cannot be answered honestly.
      *
-     * Returns zeroes when tracking is disarmed or no gyroscope exists.
+     * WHY AN INTERVAL AND NOT A DRAIN (device-diagnosed 2026-08-11). The previous API answered
+     * "rotation since you last asked me", which the caller then paired with two camera frames. Those
+     * frames left the sensor EARLIER than the asking — camera pipeline latency — so image motion
+     * from moment T was being judged against rotation over an interval ending near T + lag. A slow
+     * one-direction pan hides that completely (the rotation keeps one sign, so a shifted window
+     * still points the same way); a reversing motion exposes it, because the direction flips inside
+     * the lag window. Measured symptom: verdicts correlated with the SIGN of the rotation, which a
+     * direction-invariant comparison cannot do. See `gl/MotionInversion.kt`.
+     *
+     * Answering an explicit [fromNs, toNs] removes the latency from the question entirely: the
+     * caller passes the two frames' own timestamps and the lag cancels.
+     *
+     * NULL — not zero — when the window is unanswerable: tracking disarmed, fewer than two samples,
+     * or either bound outside the retained history (the phone was asleep, the consumer stalled, or
+     * the window is older than [ROTATION_HISTORY] samples). Zero would read as "no rotation", which
+     * is a claim; null is the absence of one, and the caller refuses on it.
+     *
+     * CLOCK CONTRACT: [fromNs]/[toNs] must be in the same base as `SensorEvent.timestamp`
+     * (`SystemClock.elapsedRealtimeNanos`). Camera frames satisfy that only when the device reports
+     * `SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME`; the caller checks, because on an UNKNOWN source the
+     * camera clock is `System.nanoTime` and the two bases drift apart by accumulated deep sleep.
      */
-    fun drainRotation(): FloatArray = synchronized(rotationLock) {
-        val out = floatArrayOf(accYaw, accPitch)
-        accYaw = 0f
-        accPitch = 0f
-        out
+    fun rotationBetween(fromNs: Long, toNs: Long): FloatArray? {
+        if (!rotationTracking) return null
+        synchronized(rotationLock) {
+            return rotationBetweenSamples(
+                timeNs = sampleTimeNs,
+                yaw = sampleYaw,
+                pitch = samplePitch,
+                count = sampleCount,
+                head = sampleHead,
+                fromNs = fromNs,
+                toNs = toNs,
+            )
+        }
     }
 
     /** Latest high-frequency shake to counter: [0]=yaw, [1]=pitch, [2]=roll, all radians. */
@@ -159,14 +205,22 @@ class GyroEis(context: Context) : SensorEventListener {
                 angYaw += event.values[1] * dt
                 angRoll += event.values[2] * dt
 
-                // Raw (un-high-passed) accumulation for [drainRotation]. Same axis mapping as the
+                // Raw (un-high-passed) accumulation for [rotationBetween]. Same axis mapping as the
                 // integrators above: values[0] is rotation about device x (pitch), values[1] about
                 // device y (yaw). Kept inside the same dt guard so a dropped/glitched sample cannot
                 // inject a spurious pan.
                 if (rotationTracking) {
                     synchronized(rotationLock) {
-                        accPitch += event.values[0] * dt
-                        accYaw += event.values[1] * dt
+                        cumPitch += event.values[0] * dt
+                        cumYaw += event.values[1] * dt
+                        // Retain the SAMPLE TIMESTAMP, not the arrival time: the whole point is to
+                        // be able to answer for a window that closed before anyone asked.
+                        val slot = sampleHead
+                        sampleTimeNs[slot] = event.timestamp
+                        sampleYaw[slot] = cumYaw
+                        samplePitch[slot] = cumPitch
+                        sampleHead = (sampleHead + 1) % ROTATION_HISTORY
+                        if (sampleCount < ROTATION_HISTORY) sampleCount++
                     }
                 }
 
@@ -217,7 +271,7 @@ class GyroEis(context: Context) : SensorEventListener {
         // an interval, and the interval does not survive a pause. Carrying it across resume would
         // hand the first frame pair after resume all the rotation that happened while the camera was
         // down, which is a fabricated pan pointing anywhere.
-        synchronized(rotationLock) { accYaw = 0f; accPitch = 0f }
+        clearRotationHistory()
         // rollDegrees and stableOrientation are deliberately NOT zeroed. reset() runs on BOTH start()
         // and stop(), and those two are gravity-derived ABSOLUTE values whose documented design is
         // "hold the last confident value" (see their field comments + CLAUDE.md). Zeroing them on
@@ -235,6 +289,21 @@ class GyroEis(context: Context) : SensorEventListener {
         // 12× more samples than anything consumed (battery). If the gyroscope is ever
         // re-registered for EIS it needs its OWN faster period; do not reuse this one.
         const val SAMPLING_PERIOD_US = 60_000
+
+        /**
+         * Retained gyro samples. At [GYRO_SAMPLING_PERIOD_US] this spans ~2.5 s, comfortably more
+         * than any camera pipeline latency plus the ~166 ms analysis interval the consumer asks
+         * about — a window that falls off the end is answered null rather than approximated.
+         */
+        const val ROTATION_HISTORY = 128
+
+        /**
+         * Gyro rate while tracking, FASTER than [SAMPLING_PERIOD_US]. The accelerometer's 60 ms is
+         * ample for a gravity direction; integrating rotation across a ~166 ms window at that rate
+         * gives under three samples, so the interpolation carries most of the answer. 20 ms gives
+         * ~8, and it only runs during the seconds the detector is armed.
+         */
+        const val GYRO_SAMPLING_PERIOD_US = 20_000
 
         // In-plane gravity magnitude (m/s²) above which the phone is considered clearly HELD (not
         // flat), so its discrete orientation can be trusted. ~4.9 = half g ≈ tilted ≥30° from flat.
@@ -324,3 +393,54 @@ internal fun wrapDegrees(d: Float): Float {
  */
 internal fun smoothedRoll(current: Float, sample: Float, alpha: Float): Float =
     wrapDegrees(current + alpha * wrapDegrees(sample - current))
+
+/**
+ * Rotation between two instants, from a ring of TIMESTAMPED cumulative samples. Pure so the window
+ * and interpolation logic is unit-testable; [GyroEis] itself needs a live SensorManager.
+ *
+ * Returns null rather than zero whenever the window cannot be answered — fewer than two samples, an
+ * inverted or empty window, or either bound outside the retained range. Zero would assert "the phone
+ * did not rotate", which is a claim; null is the absence of one, and the consumer refuses on it
+ * (a fabricated "no rotation" would make every frame trivially agree with a still image).
+ */
+internal fun rotationBetweenSamples(
+    timeNs: LongArray,
+    yaw: FloatArray,
+    pitch: FloatArray,
+    count: Int,
+    head: Int,
+    fromNs: Long,
+    toNs: Long,
+): FloatArray? {
+    if (count < 2 || toNs <= fromNs) return null
+    val capacity = timeNs.size
+    fun idx(i: Int): Int {
+        val start = if (count < capacity) 0 else head
+        return (start + i) % capacity
+    }
+    if (fromNs < timeNs[idx(0)] || toNs > timeNs[idx(count - 1)]) return null
+
+    fun cumulativeAt(t: Long): FloatArray {
+        var lo = 0
+        var hi = count - 1
+        while (lo < hi) {
+            val mid = (lo + hi + 1) / 2
+            if (timeNs[idx(mid)] <= t) lo = mid else hi = mid - 1
+        }
+        val i0 = idx(lo)
+        if (lo >= count - 1) return floatArrayOf(yaw[i0], pitch[i0])
+        val i1 = idx(lo + 1)
+        val t0 = timeNs[i0]
+        val t1 = timeNs[i1]
+        if (t1 <= t0) return floatArrayOf(yaw[i0], pitch[i0])
+        val f = ((t - t0).toDouble() / (t1 - t0).toDouble()).toFloat()
+        return floatArrayOf(
+            yaw[i0] + f * (yaw[i1] - yaw[i0]),
+            pitch[i0] + f * (pitch[i1] - pitch[i0]),
+        )
+    }
+
+    val a = cumulativeAt(fromNs)
+    val b = cumulativeAt(toNs)
+    return floatArrayOf(b[0] - a[0], b[1] - a[1])
+}

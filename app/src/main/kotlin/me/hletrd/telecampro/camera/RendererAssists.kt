@@ -31,7 +31,7 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
     @Volatile
     private var focusDetail = false
     private var motionInversion = false
-    private var motionRotationProvider: (() -> FloatArray)? = null
+    private var motionRotationProvider: ((Long, Long) -> FloatArray?)? = null
 
     // The user's punch-in INTENT, remembered independently of the resolved value for the same
     // reason as [teleFinderEnabled]: only the route-resolved flag is pushed to GL or replayed, but
@@ -129,7 +129,7 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
      * re-supplied on each call so a replay after a GL restart binds the live drain rather than a
      * captured stale one.
      */
-    fun setMotionInversion(enabled: Boolean, rotationProvider: () -> FloatArray) {
+    fun setMotionInversion(enabled: Boolean, rotationProvider: (Long, Long) -> FloatArray?) {
         motionRotationProvider = rotationProvider
         if (motionInversion == enabled) return
         motionInversion = enabled
