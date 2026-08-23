@@ -84,7 +84,9 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
             output = Path(temp_dir) / "immutable-output"
 
             def mutate_snapshot(_: Path, snapshot: Path) -> None:
-                snapshot.joinpath("app/src/main/tracked.txt").write_text(
+                target = snapshot.joinpath("app/src/main/tracked.txt")
+                target.chmod(0o644)
+                target.write_text(
                     "changed snapshot bytes\n", encoding="utf-8"
                 )
 
@@ -94,13 +96,43 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
                 artifact.write_bytes(snapshot.joinpath("app/src/main/tracked.txt").read_bytes())
                 return subprocess.CompletedProcess(command, 0, "", "")
 
-            with self.assertRaisesRegex(RuntimeError, "snapshot changed during build"):
+            with self.assertRaisesRegex(RuntimeError, "immutable release source owner changed"):
                 release.build_immutable_release(
                     root,
                     [":app:bundleRelease"],
                     output,
                     run=package,
                     after_snapshot=mutate_snapshot,
+                )
+            self.assertFalse(output.exists())
+
+    def test_transient_snapshot_mutation_blocks_b_derived_output_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "fixture"
+            root.mkdir()
+            self.fixture(root)
+            output = Path(temp_dir) / "immutable-output"
+
+            def package(command: list[str], snapshot: Path) -> subprocess.CompletedProcess[str]:
+                source = snapshot / "app/src/main/tracked.txt"
+                source.chmod(0o644)
+                source.write_text("transient B bytes\n", encoding="utf-8")
+                artifact = snapshot / "app/build/outputs/bundle/release/app-release.aab"
+                artifact.parent.mkdir(parents=True)
+                artifact.write_bytes(source.read_bytes())
+                source.write_text("committed bytes\n", encoding="utf-8")
+                source.chmod(0o444)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "sealed immutable release source owner changed during compilation",
+            ):
+                release.build_immutable_release(
+                    root,
+                    [":app:bundleRelease"],
+                    output,
+                    run=package,
                 )
             self.assertFalse(output.exists())
 
@@ -162,10 +194,11 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
 
             def replace_with_fifo(_: Path, snapshot: Path) -> None:
                 tracked = snapshot / "app/src/main/tracked.txt"
+                tracked.parent.chmod(0o755)
                 tracked.unlink()
                 os.mkfifo(tracked)
 
-            with self.assertRaisesRegex(RuntimeError, "snapshot changed during build"):
+            with self.assertRaisesRegex(RuntimeError, "immutable release source owner changed"):
                 release.build_immutable_release(
                     root,
                     [":app:bundleRelease"],
@@ -186,7 +219,7 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
                 source.rename(retained)
                 source.symlink_to(retained, target_is_directory=True)
 
-            with self.assertRaisesRegex(RuntimeError, "snapshot changed during build"):
+            with self.assertRaisesRegex(RuntimeError, "immutable release source owner changed"):
                 release.build_immutable_release(
                     root,
                     [":app:bundleRelease"],

@@ -14,10 +14,80 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Sequence
+from typing import NamedTuple
 
 
 Run = Callable[[Sequence[str], pathlib.Path], subprocess.CompletedProcess[str]]
 AfterSnapshot = Callable[[pathlib.Path, pathlib.Path], None]
+
+BUILD_OUTPUT_DIRECTORIES = (".gradle", ".kotlin", "build", "app/build")
+
+
+class _SealedPath(NamedTuple):
+    path: pathlib.Path
+    original_mode: int
+    sealed_mode: int
+    device: int
+    inode: int
+    file_type: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+
+
+class ReleaseSnapshotSeal:
+    """Read-only release inputs plus metadata a transient content restore cannot reset."""
+
+    def __init__(self, entries: Sequence[_SealedPath]):
+        self._entries = tuple(entries)
+
+    def verify(self) -> None:
+        for entry in self._entries:
+            try:
+                current = entry.path.lstat()
+            except OSError as error:
+                raise RuntimeError(
+                    f"sealed immutable release source owner disappeared: {entry.path}"
+                ) from error
+            observed = (
+                current.st_dev,
+                current.st_ino,
+                stat.S_IFMT(current.st_mode),
+                stat.S_IMODE(current.st_mode),
+                current.st_size,
+                current.st_mtime_ns,
+                current.st_ctime_ns,
+            )
+            expected = (
+                entry.device,
+                entry.inode,
+                entry.file_type,
+                entry.sealed_mode,
+                entry.size,
+                entry.mtime_ns,
+                entry.ctime_ns,
+            )
+            if observed != expected:
+                raise RuntimeError(
+                    "sealed immutable release source owner changed during compilation: "
+                    f"{entry.path}"
+                )
+
+    def release(self) -> None:
+        # Restore ancestors first so TemporaryDirectory can remove the private checkout. Never chmod
+        # an attacker-installed replacement whose identity differs from the sealed owner.
+        for entry in sorted(self._entries, key=lambda item: len(item.path.parts)):
+            try:
+                current = entry.path.lstat()
+                if (current.st_dev, current.st_ino, stat.S_IFMT(current.st_mode)) != (
+                    entry.device,
+                    entry.inode,
+                    entry.file_type,
+                ):
+                    continue
+                os.chmod(entry.path, entry.original_mode, follow_symlinks=False)
+            except OSError:
+                pass
 
 
 def run_checked(command: Sequence[str], cwd: pathlib.Path) -> subprocess.CompletedProcess[str]:
@@ -144,6 +214,77 @@ def export_commit(root: pathlib.Path, destination: pathlib.Path, commit: str) ->
     }
 
 
+def _release_owner_paths(
+    root: pathlib.Path,
+    tracked_paths: Sequence[str],
+) -> list[pathlib.Path]:
+    paths = {root}
+
+    def include_with_ancestors(path: pathlib.Path) -> None:
+        current = path
+        while True:
+            paths.add(current)
+            if current == root:
+                return
+            current = current.parent
+
+    for relative in tracked_paths:
+        include_with_ancestors(root / relative)
+    return sorted(paths, key=lambda path: (len(path.parts), path.as_posix()))
+
+
+def seal_release_snapshot(
+    root: pathlib.Path,
+    tracked_paths: Sequence[str],
+) -> ReleaseSnapshotSeal:
+    """Seal every tracked compiler/package input while leaving only build roots writable."""
+    for relative in BUILD_OUTPUT_DIRECTORIES:
+        (root / relative).mkdir(parents=True, exist_ok=True)
+    # Gradle requires the configured project directories themselves to remain writable even when
+    # every output directory already exists. Their identity metadata is still sealed, so a rename or
+    # replacement is detected before any artifact can leave the private checkout.
+    gradle_writable_project_directories = {root, root / "app"}
+
+    entries: list[_SealedPath] = []
+    try:
+        for path in _release_owner_paths(root, tracked_paths):
+            before = path.lstat()
+            file_type = stat.S_IFMT(before.st_mode)
+            if file_type not in {stat.S_IFREG, stat.S_IFDIR}:
+                raise RuntimeError(f"release compiler owner path is unsafe: {path}")
+            original_mode = stat.S_IMODE(before.st_mode)
+            sealed_mode = (
+                original_mode
+                if path in gradle_writable_project_directories
+                else original_mode & ~0o222
+            )
+            os.chmod(path, sealed_mode, follow_symlinks=False)
+            sealed = path.lstat()
+            if (sealed.st_dev, sealed.st_ino, stat.S_IFMT(sealed.st_mode)) != (
+                before.st_dev,
+                before.st_ino,
+                file_type,
+            ):
+                raise RuntimeError(f"release compiler owner changed while sealing: {path}")
+            entries.append(
+                _SealedPath(
+                    path=path,
+                    original_mode=original_mode,
+                    sealed_mode=sealed_mode,
+                    device=sealed.st_dev,
+                    inode=sealed.st_ino,
+                    file_type=file_type,
+                    size=sealed.st_size,
+                    mtime_ns=sealed.st_mtime_ns,
+                    ctime_ns=sealed.st_ctime_ns,
+                )
+            )
+    except BaseException:
+        ReleaseSnapshotSeal(entries).release()
+        raise
+    return ReleaseSnapshotSeal(entries)
+
+
 def copy_local_build_inputs(root: pathlib.Path, snapshot: pathlib.Path) -> None:
     """Copy only machine/signing configuration; application inputs stay Git-exported."""
     for name in ("local.properties", "keystore.properties"):
@@ -225,29 +366,36 @@ def build_immutable_release(
         snapshot = pathlib.Path(temp_dir) / "source"
         expected = export_commit(root, snapshot, commit)
         copy_local_build_inputs(root, snapshot)
-        if after_snapshot is not None:
-            after_snapshot(root, snapshot)
-        command = [
-            "./gradlew",
-            *tasks,
-            f"-PimmutableReleaseCommit={commit}",
-            f"-PimmutableReleaseTree={tree}",
-        ]
-        run(command, snapshot)
-        verify_export(snapshot, expected)
+        seal = seal_release_snapshot(snapshot, tuple(expected))
+        try:
+            if after_snapshot is not None:
+                after_snapshot(root, snapshot)
+            command = [
+                "./gradlew",
+                *tasks,
+                f"-PimmutableReleaseCommit={commit}",
+                f"-PimmutableReleaseTree={tree}",
+            ]
+            run(command, snapshot)
+            # Digest equality cannot detect A -> B -> A. The seal additionally proves the exact
+            # input/ancestor identities and their unforgeable ctime transitions stayed unchanged.
+            seal.verify()
+            verify_export(snapshot, expected)
 
-        built_outputs = snapshot / "app/build/outputs"
-        lint_reports = sorted((snapshot / "app/build/reports").glob("lint-results-*"))
-        if built_outputs.is_dir():
-            output_root.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(built_outputs, output_root)
-        if lint_reports:
-            output_root.mkdir(parents=True, exist_ok=True)
-            logs = output_root / "logs"
-            logs.mkdir(exist_ok=True)
-            for report in lint_reports:
-                if report.is_file():
-                    shutil.copy2(report, logs / report.name)
+            built_outputs = snapshot / "app/build/outputs"
+            lint_reports = sorted((snapshot / "app/build/reports").glob("lint-results-*"))
+            if built_outputs.is_dir():
+                output_root.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(built_outputs, output_root)
+            if lint_reports:
+                output_root.mkdir(parents=True, exist_ok=True)
+                logs = output_root / "logs"
+                logs.mkdir(exist_ok=True)
+                for report in lint_reports:
+                    if report.is_file():
+                        shutil.copy2(report, logs / report.name)
+        finally:
+            seal.release()
     return commit, tree
 
 
