@@ -1605,8 +1605,12 @@ class CameraEngine internal constructor(
         }
         invalidateCameraReady()
         val teardown = Runnable {
-            outgoingController?.close()
+            val release = outgoingController?.close()
             stopGlOwner(ownedGl, restartPreviewOnAbandon = false)
+            if (!cameraReplacementMayAcquire(release)) {
+                onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
+                return@Runnable
+            }
             // The replacement surface usually arrives while this is still queued and cold-starts
             // itself; this covers the reverse order (surface already published before teardown ran).
             restartPreviewAfterGlReset()
@@ -1833,7 +1837,15 @@ class CameraEngine internal constructor(
         val c = caps ?: return
         seedGlZoom(ownedGl)
         invalidateCameraReady()
-        controller?.close() // idempotent: closes any prior controller so two never race for the device
+        val outgoing = controller
+        val release = outgoing?.close()
+        if (!cameraReplacementMayAcquire(release)) {
+            synchronized(this) {
+                if (controller === outgoing) controller = null
+            }
+            onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
+            return
+        }
         val ctrl = wireController(ownedGl)
         val installedPublication = synchronized(this) {
             if (UnsafeRecorderQuarantine.isActive() || paused || !glInputTransactionMayProceed(
@@ -3623,7 +3635,18 @@ class CameraEngine internal constructor(
             // shared SurfaceTexture; resizing it earlier would distort its final frames.
             emitPreviewAspect(deliveredGeneration)
             ownedGl.setCameraPreviewSize(previewStreamSize.width, previewStreamSize.height)
-            old?.close()
+            val outgoingRelease = old?.close()
+            if (!cameraReplacementMayAcquire(outgoingRelease)) {
+                // The next CameraDevice may have been admitted by the deliberate dual-open path,
+                // but its deferred session has not started. Retire it and refuse every sequential
+                // or session-start acquisition: timeout is retained ownership, never release proof.
+                next.close()
+                synchronized(this) {
+                    if (controller === next) controller = null
+                }
+                onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
+                return@execute
+            }
             if (deviceOk.get()) {
                 var sessionStarted = false
                 terminalAcquisitionGate.runIfOpen sessionStart@{
@@ -3639,9 +3662,13 @@ class CameraEngine internal constructor(
                 }
             } else {
                 // Sequential fallback: the HAL refused the concurrent open.
-                next.close()
+                val refusedCandidateRelease = next.close()
                 synchronized(this) {
                     if (controller === next) controller = null
+                }
+                if (!cameraReplacementMayAcquire(refusedCandidateRelease)) {
+                    onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
+                    return@execute
                 }
                 if (!nativeAcquisitionMayProceed() || paused || recorder != null) return@execute
                 openCamera(ownedGl, input, transaction)
@@ -5584,7 +5611,7 @@ class CameraEngine internal constructor(
             current
         }
         val reset = Runnable {
-            failedController?.close()
+            val cameraRelease = failedController?.close()
             val resourcesReleased = java.util.concurrent.atomic.AtomicBoolean(false)
             val outcome = stopGlOwner(
                 ownedGl,
@@ -5596,8 +5623,12 @@ class CameraEngine internal constructor(
             )
             if (outcome == GlStopOutcome.ABANDONED && !resourcesReleased.get()) {
                 onAbandoned()
-            } else if (resourcesReleased.get() && !UnsafeRecorderQuarantine.isActive()) {
+            } else if (resourcesReleased.get() && cameraReplacementMayAcquire(cameraRelease) &&
+                !UnsafeRecorderQuarantine.isActive()
+            ) {
                 restartPreviewAfterGlReset()
+            } else if (!cameraReplacementMayAcquire(cameraRelease)) {
+                onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
             }
         }
         if (runCatching { setupExecutor.execute(reset) }.isFailure) {
@@ -5605,7 +5636,13 @@ class CameraEngine internal constructor(
             // off the GL callback thread while preserving stop-before-codec-finalize ordering.
             runCatching { Thread(reset, "egl-reset-fallback").start() }
                 .onFailure {
-                    runCatching { failedController?.close() }
+                    val cameraRelease = failedController?.let { controller ->
+                        runCatching { controller.close() }
+                            .getOrElse {
+                                UnsafeRecorderQuarantine.quarantineNativeGraph(controller)
+                                CameraControllerCloseResult.QUARANTINED
+                            }
+                    }
                     val resourcesReleased = java.util.concurrent.atomic.AtomicBoolean(false)
                     val outcome = stopGlOwner(
                         ownedGl,
@@ -5617,8 +5654,12 @@ class CameraEngine internal constructor(
                     )
                     if (outcome == GlStopOutcome.ABANDONED && !resourcesReleased.get()) {
                         onAbandoned()
-                    } else if (resourcesReleased.get() && !UnsafeRecorderQuarantine.isActive()) {
+                    } else if (resourcesReleased.get() && cameraReplacementMayAcquire(cameraRelease) &&
+                        !UnsafeRecorderQuarantine.isActive()
+                    ) {
                         restartPreviewAfterGlReset()
+                    } else if (!cameraReplacementMayAcquire(cameraRelease)) {
+                        onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
                     }
                 }
         }
@@ -6048,16 +6089,22 @@ class CameraEngine internal constructor(
             ownedRecording.gl.setTransfer(transfer)
         }
         gyro.stop()
-        // Close OFF the main thread: close() blocks until the HAL device releases (bounded 1.5 s
-        // join — see CameraController.close), and onStop already competes with other teardown work
-        // inside the ANR budget. setupExecutor serializes this close ahead of any queued/subsequent
-        // reopen, so ordering is preserved.
+        // Close OFF the main thread: close() awaits strict handler teardown for at most 1.5 s, and
+        // onStop already competes with other teardown work inside the ANR budget. setupExecutor
+        // serializes this close ahead of any queued/subsequent reopen; a miss closes process native
+        // admission, so elapsed time alone can never authorize resume acquisition.
         val ctrl = synchronized(this) {
             val current = controller
             controller = null
             current
         }
-        if (ctrl != null) setupExecutor.execute { ctrl.close() }
+        if (ctrl != null) {
+            setupExecutor.execute {
+                if (!cameraReplacementMayAcquire(ctrl.close())) {
+                    onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
+                }
+            }
+        }
     }
 
     /** Reopens the camera after [pause], reusing the existing GL input surface and start state. */
@@ -6364,7 +6411,10 @@ class CameraEngine internal constructor(
             controller = null
             current
         }
-        ctrl?.close()
+        val controllerRelease = ctrl?.close()
+        if (!cameraReplacementMayAcquire(controllerRelease)) {
+            Log.e("CameraEngine", "Camera graph retained in process quarantine during release")
+        }
         stopGlOwner(glOwners.current())
         starting = false
         // Never perform ContentResolver work on this release thread. Accepted discard work remains

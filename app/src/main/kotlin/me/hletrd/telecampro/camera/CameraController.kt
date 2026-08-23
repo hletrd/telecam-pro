@@ -114,6 +114,9 @@ class CameraController(context: Context) {
     // CAS gate for close(): reachable from main (pause), setupExecutor (reopens), and the GL-start
     // continuation (openCamera → controller?.close()), so the closed check-then-act alone can race.
     private val closeStarted = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val closeTerminal = CameraTeardownTerminal {
+        UnsafeRecorderQuarantine.quarantineNativeGraph(this)
+    }
 
     private lateinit var selection: TeleSelection
     // @Volatile: written once on setupExecutor in open(); the pre-open ::caps.isInitialized
@@ -2138,57 +2141,84 @@ class CameraController(context: Context) {
         }
     }
 
-    fun close() {
+    internal fun close(): CameraControllerCloseResult {
         // Idempotent AND atomic: a second close() must not run — the looper is already quitting, so
         // posting the teardown again would throw on OPPO's LegacyMessageQueue. setCameraOverride() →
         // openCamera() both call close() on the same controller, AND close() is reachable from three
         // threads (pause() on main, reopens on setupExecutor, openCamera() from the GL continuation),
         // so a plain `if (closed) return; closed = true` check-then-act can double-run. CAS decides.
-        if (!closeStarted.compareAndSet(false, true)) return
-        closed = true
-        val teardown = Runnable {
-            pendingCustomWbSample?.let { finishCustomWbSample(it.id, null) }
-            pending?.let { p ->
-                synchronized(p) {
-                    if (!p.done) {
-                        p.done = true
-                        runCatching { p.jpeg?.close() }
-                        runCatching { p.raw?.close() }
-                        runCatching { p.cb.onError(IllegalStateException("Camera closed during capture")) }
+        if (closeStarted.compareAndSet(false, true)) {
+            closed = true
+            val teardown = Runnable {
+                runCatching {
+                    var nativeReleaseFailure: Throwable? = null
+                    fun releaseOwned(block: () -> Unit) {
+                        runCatching(block).onFailure { failure ->
+                            if (nativeReleaseFailure == null) nativeReleaseFailure = failure
+                        }
                     }
-                }
+                    releaseOwned {
+                        pendingCustomWbSample?.let { finishCustomWbSample(it.id, null) }
+                    }
+                    pending?.let { p ->
+                        synchronized(p) {
+                            if (!p.done) {
+                                p.done = true
+                                runCatching { p.jpeg?.close() }
+                                runCatching { p.raw?.close() }
+                                runCatching { p.cb.onError(IllegalStateException("Camera closed during capture")) }
+                            }
+                        }
+                    }
+                    pending = null
+                    releaseOwned { session?.close() }
+                    releaseOwned { device?.close() }
+                    // Ring images belong to the YUV reader — close them before it.
+                    releaseOwned { zslRingFlush() }
+                    releaseOwned { jpegReader?.close() }
+                    releaseOwned { rawReader?.close() }
+                    nativeReleaseFailure?.let { throw it }
+                    session = null
+                    device = null
+                    jpegReader = null
+                    rawReader = null
+                }.fold(
+                    onSuccess = { closeTerminal.strictlyReleased() },
+                    onFailure = { failure ->
+                        Log.e(TAG, "Camera teardown failed; native graph quarantined", failure)
+                        closeTerminal.quarantine()
+                    },
+                )
             }
-            pending = null
-            runCatching { session?.close() }
-            runCatching { device?.close() }
-            // Ring images belong to the YUV reader — close them before it.
-            zslRingFlush()
-            runCatching { jpegReader?.close() }
-            runCatching { rawReader?.close() }
-            session = null
-            device = null
-            jpegReader = null
-            rawReader = null
+            // Same dead-thread quirk postToCamera guards against: if this instance somehow closes
+            // after its looper died (OS kill ordering), the raw post throws instead of returning
+            // false. A close invoked by the camera thread itself tears down inline: it cannot join
+            // itself, but it can still produce strict proof before returning from this callback.
+            var teardownPosted = false
+            val onCameraThread = Thread.currentThread() === bg
+            runCatching {
+                callbackDispatchGate.beginClose {
+                    if (!onCameraThread) {
+                        teardownPosted = runCatching { handler.post(teardown) }.getOrDefault(false)
+                    }
+                    // Quit inside the same gate that admits callback posts. A framework callback is
+                    // either already queued before teardown or observes closing and uses the inline
+                    // fallback; it can never probe the dead Handler between admission and quitSafely.
+                    bg.quitSafely()
+                }
+            }.onFailure { failure ->
+                Log.e(TAG, "Camera queue shutdown failed; native graph quarantined", failure)
+                closeTerminal.quarantine()
+            }
+            if (onCameraThread || !teardownPosted) teardown.run()
         }
-        // Same dead-thread quirk postToCamera guards against: if this instance somehow closes after
-        // its looper died (OS kill ordering), the raw post throws instead of returning false.
-        var teardownPosted = false
-        callbackDispatchGate.beginClose {
-            teardownPosted = runCatching { handler.post(teardown) }.getOrDefault(false)
-            // Quit inside the same gate that admits callback posts. A framework callback is either
-            // already queued ahead of teardown or observes closing and uses the inline fallback;
-            // it can never probe the dead Handler in between teardown admission and quitSafely.
-            bg.quitSafely()
-        }
-        if (!teardownPosted) teardown.run()
         // Teardown was posted before quitSafely, so the queued cleanup runs first and then the
         // HandlerThread exits. (Previously the thread leaked once per controller / override switch.)
-        // Block (bounded) until that teardown actually runs and the HAL device is released, so a
-        // subsequent open of the SAME physical camera on a session-key reopen (Auto HDR / in-sensor
-        // zoom / lens / high-speed fps) doesn't race a half-closed device — that race surfaces as
-        // Camera3-Device "Broken pipe -32" → ERROR_CAMERA_DEVICE and a dead session that needs an app
-        // relaunch to recover. Never join from the camera thread itself (would deadlock).
-        if (Thread.currentThread() !== bg) runCatching { bg.join(CLOSE_JOIN_TIMEOUT_MS) }
+        // Await the teardown's explicit terminal instead of treating elapsed join time as release.
+        // On timeout the process-wide native gate closes before QUARANTINED is published, so no
+        // caller can use this return as authority to acquire a replacement Camera2 graph. Concurrent
+        // and repeated close callers observe this same exactly-once terminal classification.
+        return closeTerminal.await(CLOSE_JOIN_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
     }
 
     private class Pending(val wantJpeg: Boolean, val wantRaw: Boolean, val cb: PhotoCallback) {
@@ -2223,8 +2253,8 @@ class CameraController(context: Context) {
         // Sensor fast-path pacing: every repeating-request swap gaps this HAL ~180 ms (measured),
         // so high-churn sensor submits hold the same >=200 ms floor as the zoom fast path.
         const val SENSOR_SUBMIT_MIN_INTERVAL_MS = 200L
-        // Max time close() waits for the camera thread to release the HAL device before a reopen.
-        // Device close is normally well under this; the cap keeps a wedged close from hanging the UI.
+        // Max time close() waits for strict Camera2 teardown proof. A miss quarantines process-wide
+        // native acquisition; it is never interpreted as permission to reopen over the old graph.
         const val CLOSE_JOIN_TIMEOUT_MS = 1500L
         const val OPLUS_CAMERA_MODE_TELEPHOTO_HASSELBLAD: Byte = 40
     }

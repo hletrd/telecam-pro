@@ -1331,6 +1331,7 @@ internal class RecorderQuarantineAdmissionGate {
 internal object UnsafeRecorderQuarantine {
     private val admissionGate = RecorderQuarantineAdmissionGate()
     private val retained = Collections.synchronizedList(mutableListOf<VideoRecorder>())
+    private val retainedNativeOwners = Collections.synchronizedList(mutableListOf<Any>())
 
     fun snapshotAdmission(owner: Any): UnsafeRecorderAdmissionToken? = admissionGate.snapshot(owner)
 
@@ -1374,6 +1375,20 @@ internal object UnsafeRecorderQuarantine {
 
     fun finishAdmission(token: UnsafeRecorderAdmissionToken?) {
         admissionGate.finish(token)
+    }
+
+    /**
+     * Irreversibly refuses every later native graph after a non-recorder owner cannot prove release.
+     * The process gate already spans EGL, Camera2, codec/muxer, and AudioRecord acquisition; camera
+     * teardown therefore uses the same authority without manufacturing a VideoRecorder to retain.
+     */
+    fun quarantineNativeGraph(owner: Any): Boolean {
+        // Retain the Java owner as well as closing acquisition. A timed-out handler normally keeps
+        // its queued teardown reachable, but a cleanup throw or dead queue must not let GC/finalizer
+        // behavior become an accidental native-release strategy after quarantine has won.
+        val firstClose = admissionGate.close()
+        retainedNativeOwners += owner
+        return firstClose
     }
 
     fun retain(recorder: VideoRecorder): Boolean {
