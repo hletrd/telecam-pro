@@ -95,6 +95,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsPropertyKey
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
@@ -147,9 +148,11 @@ import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.MediaDeleteScope
 import me.hletrd.telecampro.camera.RotationMath
 import me.hletrd.telecampro.camera.ShutterTimer
+import me.hletrd.telecampro.camera.ViewfinderFocusActionAvailability
 import me.hletrd.telecampro.camera.controlAvailability
 import me.hletrd.telecampro.camera.controlCapabilities
 import me.hletrd.telecampro.camera.teleDisplayBase
+import me.hletrd.telecampro.camera.viewfinderFocusActionAvailability
 import me.hletrd.telecampro.ui.controls.formatZoomMark
 import me.hletrd.telecampro.ui.controls.CompactFnButton
 import me.hletrd.telecampro.ui.controls.DialType
@@ -314,6 +317,32 @@ internal fun SelfTimerCountdownOverlay(
             modifier = Modifier.fillMaxSize(),
             rotationDegrees = rotationDegrees,
         )
+    }
+}
+
+/** One semantics projection for the preview's capability-dependent focus commands. */
+internal fun Modifier.viewfinderFocusSemantics(
+    contentDescription: String,
+    availability: ViewfinderFocusActionAvailability,
+    focusAtCenterLabel: String,
+    resetFocusPointLabel: String,
+    onFocusAtCenter: () -> Unit,
+    onResetFocusPoint: () -> Unit,
+): Modifier = semantics {
+    this.contentDescription = contentDescription
+    customActions = buildList {
+        if (availability.focusAtCenter) {
+            add(CustomAccessibilityAction(focusAtCenterLabel) {
+                onFocusAtCenter()
+                true
+            })
+        }
+        if (availability.resetFocusPoint) {
+            add(CustomAccessibilityAction(resetFocusPointLabel) {
+                onResetFocusPoint()
+                true
+            })
+        }
     }
 }
 
@@ -640,22 +669,24 @@ fun CameraScreen(
             // fingers — the restarted awaitFirstDown never matches already-pressed pointers, so zoom
             // froze for the rest of the pinch and onPinchEnd never fired (review C9).
             val liveFinderVisible by rememberUpdatedState(finderVisible)
+            val focusActionAvailability = viewfinderFocusActionAvailability(
+                cameraReady = state.cameraReady,
+                maxAfRegions = state.caps?.maxAfRegions ?: 0,
+                focusMode = state.controls.focusMode,
+                afModes = state.caps?.afModes ?: IntArray(0),
+                tapFocusHeld = state.tapFocusHeld,
+            )
             AndroidView(
                 modifier = Modifier
                     .fillMaxSize()
-                    .semantics {
-                        contentDescription = a11yCameraViewfinder
-                        customActions = listOf(
-                            CustomAccessibilityAction(a11yFocusAtCenter) {
-                                currentActions.value.onTapFocus(0.5f, 0.5f)
-                                true
-                            },
-                            CustomAccessibilityAction(a11yResetFocusPoint) {
-                                currentActions.value.onResetFocusPoint()
-                                true
-                            },
-                        )
-                    }
+                    .viewfinderFocusSemantics(
+                        contentDescription = a11yCameraViewfinder,
+                        availability = focusActionAvailability,
+                        focusAtCenterLabel = a11yFocusAtCenter,
+                        resetFocusPointLabel = a11yResetFocusPoint,
+                        onFocusAtCenter = { currentActions.value.onTapFocus(0.5f, 0.5f) },
+                        onResetFocusPoint = { currentActions.value.onResetFocusPoint() },
+                    )
                     // Tap-to-focus AND pinch-to-zoom share ONE gesture loop. Two separate pointerInput
                     // blocks (detectTapGestures + detectTransformGestures) fought each other: the tap
                     // detector consumed the gesture and killed the pinch after ~2 frames, so the pinch
@@ -2960,6 +2991,12 @@ private const val SNAPSHOT_TARGET_DP = 48f
 private const val SHUTTER_TARGET_DP = 76f
 private const val SNAPSHOT_IDEAL_OFFSET_DP = 76f
 
+/** Internal test probe; custom semantics keys are not exposed to accessibility services. */
+internal val ShutterVisualAlpha = SemanticsPropertyKey<Float>("ShutterVisualAlpha")
+
+/** The single value applied to both the composed layer and its non-announced test probe. */
+internal fun shutterVisualAlpha(cameraHealthy: Boolean): Float = if (cameraHealthy) 1f else 0.35f
+
 /** Large circular shutter: white ring; PHOTO = solid white; VIDEO idle = red dot; recording = red square. */
 @Composable
 internal fun ShutterButton(
@@ -2984,6 +3021,7 @@ internal fun ShutterButton(
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val shutterScale by animateFloatAsState(if (pressed) 0.9f else 1f, label = "shutterScale")
+    val visualAlpha = shutterVisualAlpha(cameraHealthy)
     val activate = {
         view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
         onClick()
@@ -2999,7 +3037,7 @@ internal fun ShutterButton(
             // cancels): the tap is swallowed, not declined with a message. The dimming IS the
             // feedback — an earlier version of this comment promised a status message that the
             // enabled=shutterEnabled clickable below can never reach.
-            .alpha(if (cameraHealthy) 1f else 0.35f)
+            .alpha(visualAlpha)
             .clickable(
                 enabled = enabled,
                 interactionSource = interaction,
@@ -3022,6 +3060,10 @@ internal fun ShutterButton(
                     else -> unavailableDesc
                 }
                 if (!enabled) disabled()
+                // Unknown/custom semantics properties are invisible to TalkBack. This key proves
+                // the exact value already applied to the graphics layer without asking Robolectric
+                // to rasterize a custom Canvas, which it does not do.
+                this[ShutterVisualAlpha] = visualAlpha
                 onClick {
                     if (!enabled) return@onClick false
                     activate()

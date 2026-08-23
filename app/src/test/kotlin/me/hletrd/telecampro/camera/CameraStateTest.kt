@@ -114,7 +114,44 @@ class CameraStateTest {
         )
 
         assertFalse(blocked.stillCaptureReady)
+        assertFalse(blocked.primaryShutterHealthy)
         assertFalse(blocked.primaryShutterEnabled)
+    }
+
+    @Test
+    fun `viewfinder focus actions follow accepted AUTO region AF and held point truth`() {
+        val auto = intArrayOf(CameraMetadata.CONTROL_AF_MODE_AUTO)
+
+        assertEquals(
+            ViewfinderFocusActionAvailability(focusAtCenter = true, resetFocusPoint = false),
+            viewfinderFocusActionAvailability(
+                cameraReady = true,
+                maxAfRegions = 1,
+                focusMode = FocusMode.CONTINUOUS,
+                afModes = auto,
+                tapFocusHeld = false,
+            ),
+        )
+        listOf(
+            viewfinderFocusActionAvailability(false, 1, FocusMode.CONTINUOUS, auto, false),
+            viewfinderFocusActionAvailability(true, 0, FocusMode.CONTINUOUS, auto, false),
+            viewfinderFocusActionAvailability(true, 1, FocusMode.MANUAL, auto, false),
+            viewfinderFocusActionAvailability(true, 1, FocusMode.CONTINUOUS, IntArray(0), false),
+        ).forEach { availability ->
+            assertFalse(availability.focusAtCenter)
+            assertFalse(availability.resetFocusPoint)
+        }
+
+        assertEquals(
+            ViewfinderFocusActionAvailability(focusAtCenter = false, resetFocusPoint = true),
+            viewfinderFocusActionAvailability(
+                cameraReady = false,
+                maxAfRegions = 0,
+                focusMode = FocusMode.MANUAL,
+                afModes = IntArray(0),
+                tapFocusHeld = true,
+            ),
+        )
     }
 
     @Test

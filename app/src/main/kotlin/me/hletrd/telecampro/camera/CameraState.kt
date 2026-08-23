@@ -1495,7 +1495,10 @@ data class CameraUiState(
     val stillCaptureReady: Boolean
         get() = cameraReady && photoSessionOutputs.hasStillTarget && stillCaptureAdmissionAvailable
     val primaryShutterHealthy: Boolean
-        get() = cameraReady && (mode == CaptureMode.VIDEO || photoSessionOutputs.hasStillTarget)
+        get() = cameraReady && (
+            mode == CaptureMode.VIDEO ||
+                (photoSessionOutputs.hasStillTarget && stillCaptureAdmissionAvailable)
+        )
     val primaryShutterEnabled: Boolean
         get() = when {
             // A running self-timer is itself a primary-shutter action: tapping the shutter again
@@ -1564,6 +1567,32 @@ data class FocusDetailData(
         val UNJUDGED = FocusDetailData(FrameDetail.UNJUDGEABLE, 0, 0, 0, 0f)
     }
 }
+
+/** Capability/session truth for the viewfinder's accessibility-only focus commands. */
+internal data class ViewfinderFocusActionAvailability(
+    val focusAtCenter: Boolean,
+    val resetFocusPoint: Boolean,
+)
+
+/**
+ * Mirrors the Engine's region-AUTO-AF admission using state that crossed the accepted Ready seam.
+ * Reset is independent: a held point remains worth clearing if the camera becomes Not-Ready.
+ */
+internal fun viewfinderFocusActionAvailability(
+    cameraReady: Boolean,
+    maxAfRegions: Int,
+    focusMode: FocusMode,
+    afModes: IntArray,
+    tapFocusHeld: Boolean,
+): ViewfinderFocusActionAvailability = ViewfinderFocusActionAvailability(
+    focusAtCenter = cameraReady && touchAfMayTrigger(
+        touchAfActive = true,
+        maxAfRegions = maxAfRegions,
+        focusMode = focusMode,
+        afModes = afModes,
+    ),
+    resetFocusPoint = tapFocusHeld,
+)
 
 /**
  * Whether scene motion agrees with the rotation the gyro measured.
