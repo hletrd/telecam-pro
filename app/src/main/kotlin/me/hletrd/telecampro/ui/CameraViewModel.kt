@@ -108,9 +108,7 @@ import me.hletrd.telecampro.focus.frameDefocusCandidate
 import me.hletrd.telecampro.focus.macroTooCloseCandidate
 import me.hletrd.telecampro.storage.ExtraSettings
 import me.hletrd.telecampro.storage.MediaStoreWriter
-import me.hletrd.telecampro.storage.RestoredDeleteScope
 import me.hletrd.telecampro.storage.SettingsStore
-import me.hletrd.telecampro.storage.StoredMediaOutputKind
 import me.hletrd.telecampro.video.AudioInputInspector
 import me.hletrd.telecampro.video.AudioRouteAvailability
 import me.hletrd.telecampro.video.AudioRouteStatus
@@ -1045,21 +1043,9 @@ class CameraViewModel @JvmOverloads constructor(
         runCatching {
             ioExecutor.execute execute@{
                 val restored = MediaStoreWriter.latestOwnCapture(getApplication()) ?: return@execute
-                val priorOutputs = restored.outputs.map { output ->
-                    PriorCaptureOutput(
-                        output = output.output,
-                        kind = when (output.kind) {
-                            StoredMediaOutputKind.DISPLAYABLE -> CaptureOutputKind.DISPLAYABLE
-                            StoredMediaOutputKind.RAW -> CaptureOutputKind.RAW
-                        },
-                    )
-                }
                 val preferred = restored.preferred.output
-                if (!captureOutputs.seedPriorCapture(priorOutputs, preferred)) return@execute
-                val deleteScope = when (restored.deleteScope) {
-                    RestoredDeleteScope.CAPTURE_FAMILY -> MediaDeleteScope.CAPTURE_FAMILY
-                    RestoredDeleteScope.FILE_ONLY -> MediaDeleteScope.FILE_ONLY
-                }
+                if (!captureOutputs.seedRestoredCapture(restored)) return@execute
+                val deleteScope = captureOutputs.deleteScopeFor(preferred)
                 _state.update {
                     if (it.lastMediaUri == null && captureOutputs.isCurrentReviewOutput(preferred)) {
                         it.copy(lastMediaUri = preferred, lastMediaDeleteScope = deleteScope)
@@ -3259,7 +3245,7 @@ class CameraViewModel @JvmOverloads constructor(
             // launch recovery would ADOPT it later — resurrecting part of a deleted capture). Runs
             // only for a real capture family; a legacy URI parses to no family and sweeps nothing.
             // Reads the tapped URI's display name, so it must precede that row's own deletion.
-            if (deletePlan.captureId != null) {
+            if (deletePlan.deleteScope == MediaDeleteScope.CAPTURE_FAMILY) {
                 MediaStoreWriter.deletePendingFamilySiblings(getApplication(), uri)
             }
             val survivors = outputs.filterTo(linkedSetOf()) { output ->
@@ -3272,11 +3258,7 @@ class CameraViewModel @JvmOverloads constructor(
                         if (captureOutputs.isCurrentReviewOutput(restored)) {
                             current.copy(
                                 lastMediaUri = restored,
-                                lastMediaDeleteScope = if (deletePlan.captureId != null) {
-                                    MediaDeleteScope.CAPTURE_FAMILY
-                                } else {
-                                    MediaDeleteScope.FILE_ONLY
-                                },
+                                lastMediaDeleteScope = deletePlan.deleteScope,
                             )
                         } else {
                             current
