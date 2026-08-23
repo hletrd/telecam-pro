@@ -1317,15 +1317,6 @@ internal data class RecoveryReport(
     )
 }
 
-private fun RecoveryReport.merge(other: RecoveryReport): RecoveryReport = RecoveryReport(
-    scanned = scanned + other.scanned,
-    adopted = adopted + other.adopted,
-    deleted = deleted + other.deleted,
-    retained = retained + other.retained,
-    errors = errors + other.errors,
-    failureClasses = failureClasses + other.failureClasses,
-)
-
 internal enum class RecoveryEvent {
     SCANNED,
     ADOPTED,

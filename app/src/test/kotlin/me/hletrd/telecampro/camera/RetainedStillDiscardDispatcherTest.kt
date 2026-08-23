@@ -61,6 +61,44 @@ class RetainedStillDiscardDispatcherTest {
     }
 
     @Test
+    fun `injected facade exposes its exact finite active and queued capacity`() {
+        val releaseWorker = CountDownLatch(1)
+        val workerEntered = CountDownLatch(1)
+        val finished = CountDownLatch(2)
+        val facade = RetainedStillDiscardDispatcher(
+            workerCount = 1,
+            backlogCapacity = 1,
+            threadFactory = ThreadFactory { task ->
+                Thread(task, "test-retained-facade").apply { isDaemon = true }
+            },
+        )
+        try {
+            assertEquals(
+                RetainedStillDiscardDispatch.ACCEPTED,
+                facade.dispatch(
+                    Runnable {
+                        workerEntered.countDown()
+                        releaseWorker.await()
+                        finished.countDown()
+                    },
+                ),
+            )
+            assertTrue(workerEntered.await(5, TimeUnit.SECONDS))
+            assertEquals(
+                RetainedStillDiscardDispatch.ACCEPTED,
+                facade.dispatch(Runnable { finished.countDown() }),
+            )
+            assertEquals(1, facade.activeTaskCount())
+            assertEquals(1, facade.queuedTaskCount())
+            releaseWorker.countDown()
+            assertTrue(finished.await(5, TimeUnit.SECONDS))
+        } finally {
+            releaseWorker.countDown()
+            facade.shutdown()
+        }
+    }
+
+    @Test
     fun `blocked provider stays finite across repeated Engine replacement`() {
         val releaseProvider = CountDownLatch(1)
         val providerEntered = CountDownLatch(1)

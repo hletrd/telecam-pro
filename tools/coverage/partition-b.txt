@@ -106,6 +106,11 @@ me/hletrd/telecampro/ui/review/MediaReviewKt
 me/hletrd/telecampro/ui/review/MediaReviewKt$*
 me/hletrd/telecampro/ui/review/ComposableSingletons$MediaReviewKt
 me/hletrd/telecampro/ui/review/VideoPlaybackHandle
+# These setup owners directly retain Android Context/Uri/Surface/MediaPlayer instances. The generic
+# latest-wins state machine is separately host-tested as LatestReviewSetupLane and stays in A.
+me/hletrd/telecampro/ui/review/VideoPlaybackSetupRequest
+me/hletrd/telecampro/ui/review/VideoPlaybackSetupResult
+me/hletrd/telecampro/ui/review/VideoPlaybackSetupResult$*
 me/hletrd/telecampro/ui/review/VideoInfo
 me/hletrd/telecampro/ui/review/ReviewMetadata
 me/hletrd/telecampro/ui/review/GalleryThumbContent
