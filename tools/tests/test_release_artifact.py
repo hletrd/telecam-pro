@@ -11,6 +11,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "check_release_artifact.py"
@@ -247,7 +248,14 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
             with zipfile.ZipFile(jar, "a") as bundle:
                 bundle.writestr("base/assets/unsigned-payload.bin", b"not authenticated")
 
-            failure = release.strict_jar_verification_failure(root, jar, release.default_run)
+            tool_path = str(Path(keytool).parent)
+            with patch.dict(
+                os.environ,
+                {"PATH": tool_path + os.pathsep + os.environ.get("PATH", "")},
+            ):
+                failure = release.strict_jar_verification_failure(
+                    root, jar, release.default_run
+                )
 
             self.assertIsNotNone(failure)
             self.assertIn("strict jarsigner", failure)
