@@ -591,11 +591,13 @@ def inspect_apk_contract(
     run_text: Callable[[Sequence[str]], str] = _run_text,
     aapt: str | None = None,
     aapt2: str | None = None,
+    verify_artifact: Callable[[str], None] = lambda _phase: None,
 ) -> ApkContract:
     """Read identity from the same APK bytes whose SHA is attested."""
     if not apk.is_file():
         raise ContractError(f"APK does not exist: {apk}")
     badging = run_text([aapt or find_build_tool("aapt"), "dump", "badging", str(apk)])
+    verify_artifact("after aapt inspection")
     xmltree = run_text(
         [
             aapt2 or find_build_tool("aapt2"),
@@ -606,6 +608,7 @@ def inspect_apk_contract(
             str(apk),
         ]
     )
+    verify_artifact("after aapt2 inspection")
     return parse_apk_contract(badging, xmltree)
 
 

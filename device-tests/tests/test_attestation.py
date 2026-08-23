@@ -90,6 +90,7 @@ class RunAttestationTest(unittest.TestCase):
                 runner.DEFAULT_APK,
                 runner.DEFAULT_APK,
                 "a" * 64,
+                SimpleNamespace(verify=lambda _phase: None),
             )
             with (
                 patch.object(sys, "argv", ["run.py", "--serial", "serial-a"]),
@@ -770,9 +771,24 @@ class RunAttestationTest(unittest.TestCase):
                 self.assertNotEqual(snapshot.private_path, source)
                 self.assertEqual(snapshot.private_path.read_bytes(), b"apk-A")
                 self.assertEqual(snapshot.sha256, hashlib.sha256(b"apk-A").hexdigest())
-                self.assertEqual(snapshot.private_path.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(snapshot.private_path.stat().st_mode & 0o777, 0o400)
                 source.write_bytes(b"apk-B")
                 self.assertEqual(snapshot.private_path.read_bytes(), b"apk-A")
+                snapshot.verify("after original-path mutation")
+
+    def test_private_apk_snapshot_rejects_permanent_and_transient_mutation(self) -> None:
+        for restore in (False, True):
+            with self.subTest(restore=restore), tempfile.TemporaryDirectory() as temp_dir:
+                source = Path(temp_dir) / "app-debug.apk"
+                source.write_bytes(b"apk-A")
+                with runner.apk_inspection_snapshot(source) as snapshot:
+                    snapshot.private_path.chmod(0o600)
+                    snapshot.private_path.write_bytes(b"apk-B")
+                    if restore:
+                        snapshot.private_path.write_bytes(b"apk-A")
+                    snapshot.private_path.chmod(0o400)
+                    with self.assertRaisesRegex(ContractError, "private APK snapshot changed"):
+                        snapshot.verify("between inspectors")
 
     def test_apk_snapshot_rejects_symlink_and_special_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -803,7 +819,7 @@ class RunAttestationTest(unittest.TestCase):
                 source.unlink()
                 (root / "saved.apk").rename(source)
 
-                def inspect(path: Path):
+                def inspect(path: Path, **_kwargs):
                     inspected.append(path)
                     return SimpleNamespace(application_id="wrong.package")
 

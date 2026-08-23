@@ -61,6 +61,73 @@ class ApkInspectionSnapshot:
     source_path: Path
     private_path: Path
     sha256: str
+    private_seal: "PrivateRegularFileSeal"
+
+    def verify(self, phase: str) -> None:
+        self.private_seal.verify(phase)
+
+
+@dataclass(frozen=True)
+class PrivateRegularFileSeal:
+    """One read-only private artifact identity retained across every independent inspector."""
+
+    path: Path
+    device: int
+    inode: int
+    mode: int
+    size: int
+    modified_ns: int
+    changed_ns: int
+    sha256: str
+
+    @classmethod
+    def create(cls, path: Path, expected_sha256: str) -> "PrivateRegularFileSeal":
+        os.chmod(path, 0o400, follow_symlinks=False)
+        attributes = path.lstat()
+        size, digest = _digest_regular_absolute_no_follow(path)
+        if digest != expected_sha256 or size != attributes.st_size:
+            raise ContractError("private APK snapshot changed while it was sealed")
+        return cls(
+            path=path,
+            device=attributes.st_dev,
+            inode=attributes.st_ino,
+            mode=stat.S_IMODE(attributes.st_mode),
+            size=attributes.st_size,
+            modified_ns=attributes.st_mtime_ns,
+            changed_ns=attributes.st_ctime_ns,
+            sha256=digest,
+        )
+
+    def verify(self, phase: str) -> None:
+        try:
+            attributes = self.path.lstat()
+            size, digest = _digest_regular_absolute_no_follow(self.path)
+        except (OSError, ContractError) as error:
+            raise ContractError(f"private APK snapshot changed {phase}: {error}") from error
+        observed = (
+            attributes.st_dev,
+            attributes.st_ino,
+            stat.S_IFMT(attributes.st_mode),
+            stat.S_IMODE(attributes.st_mode),
+            attributes.st_size,
+            attributes.st_mtime_ns,
+            attributes.st_ctime_ns,
+            size,
+            digest,
+        )
+        expected = (
+            self.device,
+            self.inode,
+            stat.S_IFREG,
+            self.mode,
+            self.size,
+            self.modified_ns,
+            self.changed_ns,
+            self.size,
+            self.sha256,
+        )
+        if observed != expected:
+            raise ContractError(f"private APK snapshot changed {phase}")
 
 
 def _open_regular_absolute_no_follow(path: Path) -> tuple[int, list[int], os.stat_result]:
@@ -160,7 +227,9 @@ def apk_inspection_snapshot(source_path: Path):
                 or private_path.stat().st_size != after.st_size
             ):
                 raise ContractError("APK changed while its private inspection snapshot was copied")
-            yield ApkInspectionSnapshot(source_path, private_path, digest.hexdigest())
+            expected_sha256 = digest.hexdigest()
+            seal = PrivateRegularFileSeal.create(private_path, expected_sha256)
+            yield ApkInspectionSnapshot(source_path, private_path, expected_sha256, seal)
         finally:
             for descriptor in reversed(descriptors):
                 try:
@@ -1479,16 +1548,20 @@ def _run_snapshotted_cli(
     source_apk = snapshot.source_path
     try:
         expected_sha = snapshot.sha256
-        apk_contract = inspect_apk_contract(expected_apk)
+        snapshot.verify("before inspection")
+        apk_contract = inspect_apk_contract(
+            expected_apk,
+            verify_artifact=snapshot.verify,
+        )
         packaged_source = require_apk_source_match(expected_apk, REPO_ROOT)
-        if sha256_file(expected_apk) != expected_sha:
-            raise ContractError("private APK snapshot changed while its contract was inspected")
+        snapshot.verify("after ZIP/source inspection")
         production_subdir = production_capture_subdir(REPO_ROOT)
         require_harness_identity_unchanged(
             IMPORTED_HARNESS_IDENTITY,
             HARNESS_ROOT,
             phase="before device preflight",
         )
+        snapshot.verify("before device preflight")
     except (ContractError, OSError) as error:
         print(f"could not establish APK/harness contract: {error}", file=sys.stderr)
         return 2

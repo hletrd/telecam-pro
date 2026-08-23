@@ -370,6 +370,35 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
                 self.assertTrue(all(path != aab for path in inspected_paths))
                 self.assertEqual(1, len({path for path in inspected_paths if path.suffix == ".aab"}))
 
+    def test_private_aab_copy_rejects_permanent_and_transient_mutation(self) -> None:
+        for restore in (False, True):
+            with self.subTest(restore=restore), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                attestation, _, commit = self.fixture(root)
+                base = self.runner(commit)
+                mutated = False
+
+                def run(command, cwd):
+                    nonlocal mutated
+                    if not mutated and command[:2] == ["keytool", "-printcert"]:
+                        private = Path(command[-1])
+                        original = private.read_bytes()
+                        private.chmod(0o600)
+                        private.write_bytes(b"private-B")
+                        if restore:
+                            private.write_bytes(original)
+                        private.chmod(0o400)
+                        mutated = True
+                    return base(command, cwd)
+
+                failures = release.check_release_identity(root, attestation, run=run)
+
+                self.assertTrue(mutated)
+                self.assertTrue(
+                    any("private AAB inspection copy changed" in item for item in failures),
+                    failures,
+                )
+
     def test_artifact_symlink_and_special_file_inputs_fail_before_tools(self) -> None:
         for absolute_target in (False, True):
             with self.subTest(absolute_target=absolute_target), tempfile.TemporaryDirectory() as temp_dir:

@@ -46,10 +46,30 @@ class SourceVersion:
 class RegularFileIdentity:
     device: int
     inode: int
+    mode: int
     size: int
     modified_ns: int
     changed_ns: int
     sha256: str
+
+
+@dataclass(frozen=True)
+class PrivateArtifactSeal:
+    path: pathlib.Path
+    identity: RegularFileIdentity
+
+    @classmethod
+    def create(cls, path: pathlib.Path, expected_sha256: str) -> "PrivateArtifactSeal":
+        os.chmod(path, 0o400, follow_symlinks=False)
+        identity = regular_file_identity(path.parent, pathlib.PurePath(path.name))
+        if identity.sha256 != expected_sha256:
+            raise OSError("private AAB inspection copy changed while it was sealed")
+        return cls(path, identity)
+
+    def verify(self, phase: str) -> None:
+        current = regular_file_identity(self.path.parent, pathlib.PurePath(self.path.name))
+        if current != self.identity:
+            raise OSError(f"private AAB inspection copy changed {phase}")
 
 
 def _open_regular_beneath(root: pathlib.Path, relative: pathlib.PurePath) -> tuple[int, list[int]]:
@@ -122,6 +142,7 @@ def snapshot_regular_file(
         return RegularFileIdentity(
             device=attributes.st_dev,
             inode=attributes.st_ino,
+            mode=stat.S_IMODE(attributes.st_mode),
             size=attributes.st_size,
             modified_ns=attributes.st_mtime_ns,
             changed_ns=attributes.st_ctime_ns,
@@ -149,6 +170,7 @@ def regular_file_identity(
         return RegularFileIdentity(
             device=attributes.st_dev,
             inode=attributes.st_ino,
+            mode=stat.S_IMODE(attributes.st_mode),
             size=attributes.st_size,
             modified_ns=attributes.st_mtime_ns,
             changed_ns=attributes.st_ctime_ns,
@@ -236,11 +258,13 @@ def strict_jar_verification_failure(
     root: pathlib.Path,
     aab_path: pathlib.Path,
     run: Callable[[Sequence[str], pathlib.Path], subprocess.CompletedProcess[str]],
+    verify_artifact: Callable[[str], None] = lambda _phase: None,
 ) -> str | None:
     """Trust the pinned public cert, then require strict signature coverage for every JAR entry."""
     cert_result = run(
         ["keytool", "-printcert", "-rfc", "-jarfile", str(aab_path)], root
     )
+    verify_artifact("after strict certificate inspection")
     pem_blocks = re.findall(
         r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----",
         cert_result.stdout + "\n" + cert_result.stderr,
@@ -262,6 +286,7 @@ def strict_jar_verification_failure(
             ],
             root,
         )
+        verify_artifact("after temporary trust-store creation")
         if imported.returncode != 0:
             return "could not create the temporary upload-certificate truststore"
         verified = run(
@@ -271,6 +296,7 @@ def strict_jar_verification_failure(
             ],
             root,
         )
+        verify_artifact("after strict JAR verification")
         if verified.returncode != 0:
             return "strict jarsigner verification failed (unsigned or invalid entry/certificate)"
     return None
@@ -376,9 +402,21 @@ def check_release_identity(
     verified_aab_path = pathlib.Path(artifact_temp.name) / "verified.aab"
     try:
         source_identity = snapshot_regular_file(root, relative_aab, verified_aab_path)
+        private_seal = PrivateArtifactSeal.create(
+            verified_aab_path,
+            source_identity.sha256,
+        )
     except OSError as error:
         artifact_temp.cleanup()
         return failures + [f"AAB is not a readable no-follow regular file: {error}"]
+
+    def private_artifact_current(phase: str) -> bool:
+        try:
+            private_seal.verify(phase)
+            return True
+        except OSError as error:
+            failures.append(str(error))
+            return False
 
     attested_aab_sha = normalize_sha256(str(document["aab_sha256"]))
     actual_aab_sha = source_identity.sha256
@@ -389,6 +427,9 @@ def check_release_identity(
         if any(token not in aab_path.name.casefold() for token in immutable_tokens):
             failures.append("AAB filename must contain the short commit and SHA-256 prefix")
         packaged_commits = packaged_source_commits(verified_aab_path)
+        if not private_artifact_current("after AGP provenance inspection"):
+            artifact_temp.cleanup()
+            return failures
         if packaged_commits != {attested_commit}:
             failures.append(
                 "packaged AGP source revision does not uniquely match the attested commit"
@@ -396,6 +437,9 @@ def check_release_identity(
         tree_result = run(["git", "rev-parse", f"{attested_commit}^{{tree}}"], root)
         expected_tree = tree_result.stdout.strip() if tree_result.returncode == 0 else ""
         source_provenance = packaged_source_provenance(verified_aab_path)
+        if not private_artifact_current("after release provenance inspection"):
+            artifact_temp.cleanup()
+            return failures
         if (
             not re.fullmatch(r"[0-9a-f]{40}", expected_tree)
             or source_provenance != (attested_commit, expected_tree)
@@ -409,6 +453,9 @@ def check_release_identity(
         failures.append("attested signer is not the recorded Play upload certificate")
 
     cert_result = run(["keytool", "-printcert", "-jarfile", str(verified_aab_path)], root)
+    if not private_artifact_current("after signer inspection"):
+        artifact_temp.cleanup()
+        return failures
     cert_output = cert_result.stdout + "\n" + cert_result.stderr
     actual_signers = {
         normalized
@@ -418,15 +465,30 @@ def check_release_identity(
     if cert_result.returncode != 0 or actual_signers != {signer}:
         failures.append("AAB signer certificate does not match attestation")
     else:
-        strict_failure = strict_jar_verification_failure(root, verified_aab_path, run)
+        try:
+            strict_failure = strict_jar_verification_failure(
+                root,
+                verified_aab_path,
+                run,
+                verify_artifact=private_seal.verify,
+            )
+        except OSError as error:
+            artifact_temp.cleanup()
+            return failures + [str(error)]
         if strict_failure is not None:
             failures.append(strict_failure)
 
     validate_result = run(["bundletool", "validate", f"--bundle={verified_aab_path}"], root)
+    if not private_artifact_current("after bundle validation"):
+        artifact_temp.cleanup()
+        return failures
     if validate_result.returncode != 0:
         failures.append("bundletool validation failed")
 
     manifest_result = run(["bundletool", "dump", "manifest", f"--bundle={verified_aab_path}"], root)
+    if not private_artifact_current("after manifest inspection"):
+        artifact_temp.cleanup()
+        return failures
     manifest = manifest_result.stdout
     packaged_application = re.search(r'<manifest[^>]+\bpackage="([^"]+)"', manifest)
     packaged_code = re.search(r'android:versionCode="(\d+)"', manifest)
@@ -457,6 +519,9 @@ def check_release_identity(
                 failures.append("packaged minSdk does not match source")
             if int(packaged_target_sdk.group(1)) != source_version.target_sdk:
                 failures.append("packaged targetSdk does not match source")
+    if not private_artifact_current("before verification completion"):
+        artifact_temp.cleanup()
+        return failures
     try:
         final_source_identity = regular_file_identity(root, relative_aab)
     except OSError as error:
