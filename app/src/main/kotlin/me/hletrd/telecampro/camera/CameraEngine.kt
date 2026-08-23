@@ -3204,8 +3204,9 @@ class CameraEngine internal constructor(
      * entering FRONT forces the teleconverter OFF in the SAME publication (the converter is a
      * rear-3× accessory; a front session with the afocal 180° or the TC session type would be
      * nonsense), so no intermediate front+TC state is ever observable. Zoom becomes front-lens-local
-     * 1× on entry; leaving returns to the retained rear band's home framing (unified preset in
-     * photo, lens-local 1× in video — resolveNonTeleId's mode-split homes). Remap-door hygiene:
+     * 1× on entry; leaving converts the retained canonical rear framing into the target route's
+     * coordinates: logical BACK is unified, while every standalone route (Video or RAW/DNG Photo)
+     * is lens-local. Remap-door hygiene:
      * beginOpticsTransaction retires tap focus, pushTeleFinder re-resolves (false — TC just went
      * off), the ViewModel invalidates its zoom glide at the same door, and hi-res is re-resolved by
      * reconfigureCamera's route-explicit resolvedHiResStill(sel, c) — the facing door ALWAYS

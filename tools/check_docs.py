@@ -587,6 +587,9 @@ media_store_writer = read(
     "app/src/main/kotlin/me/hletrd/telecampro/storage/MediaStoreWriter.kt",
 )
 media_review = read("app/src/main/kotlin/me/hletrd/telecampro/ui/review/MediaReview.kt")
+review_lane = read(
+    "app/src/main/kotlin/me/hletrd/telecampro/ui/review/LatestHeavyWorkLane.kt",
+)
 check(
     "RETAINED_STILL_DISCARD_WORKER_COUNT = 2" in retained_discard_dispatcher
     and "RETAINED_STILL_DISCARD_BACKLOG_CAPACITY = 8" in retained_discard_dispatcher
@@ -595,6 +598,12 @@ check(
     and "discardAfterKey" in media_store_writer
     and "independent 64-entry lexicographic durable-DISCARD pages" in architecture
     and "LatestReviewSetupLane" in media_review
+    and "REVIEW_PROCESS_WORKER_COUNT = 4" in review_lane
+    and "REVIEW_LANE_WORKER_COUNT = 2" in review_lane
+    and "REVIEW_WORK_TERMINAL_TIMEOUT_MS = 5_000L" in review_lane
+    and "Submission.CapacityExhausted" in media_review
+    and "one shared four-daemon pool" in architecture
+    and "5 s caller-side deadline" in architecture
     and "player.setDataSource" in media_review
     and "after transfer to Compose it is GC-owned" in architecture,
     "architecture describes current retained-discard, paged recovery, and review-work ownership",
@@ -648,6 +657,22 @@ check(
     "architecture keeps DNG routing standalone-any-rear rather than TELE-only",
 )
 current_comments = read("app/src/main/kotlin/me/hletrd/telecampro/camera/CaptureCapabilities.kt")
+route_comments = "\n".join(
+    read(rel) for rel in (
+        "app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt",
+        "app/src/main/kotlin/me/hletrd/telecampro/ui/ZoomMath.kt",
+        "app/src/main/kotlin/me/hletrd/telecampro/ui/CameraViewModel.kt",
+    )
+)
+check(
+    "unified preset in\n     * photo, lens-local 1× in video" not in route_comments
+    and "Photo zoom is unified/main-relative" not in route_comments
+    and "seamless (photo) camera" not in route_comments
+    and "logical BACK is unified" in route_comments
+    and "every standalone route" in route_comments
+    and "RAW/DNG Photo" in route_comments,
+    "active zoom comments keep coordinate ownership route-based",
+)
 build_script = read("app/build.gradle.kts")
 check(
     "capability-gated read here misses" not in current_comments
@@ -813,6 +838,20 @@ check(
     and "landscapeOperator" not in camera_screen
     and "TopBarScope" not in camera_screen,
     "CameraScreen keeps one full-width top-bar layout and no deleted operator-rail guidance",
+)
+tablet_guidance_match = re.search(
+    r"### Tablet screenshots(.*?)\nBoth tablet slots",
+    listing,
+    re.S,
+)
+tablet_guidance = tablet_guidance_match.group(1) if tablet_guidance_match else ""
+check(
+    bool(tablet_guidance_match)
+    and "operator RAIL layout" not in tablet_guidance
+    and "controls in their own column" not in tablet_guidance
+    and "Camera controls keep the same homes" in tablet_guidance
+    and "settings panel may dock as a side sheet" in tablet_guidance,
+    "active tablet asset guidance keeps the deleted operator rail retired",
 )
 stale_handset_rotation_guidance = (
     "Since the activity stopped locking orientation",

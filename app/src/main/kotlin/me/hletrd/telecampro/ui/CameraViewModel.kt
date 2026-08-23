@@ -2038,8 +2038,9 @@ class CameraViewModel @JvmOverloads constructor(
         mainHandler.postDelayed(zoomQuietLanding, 250)
         // Straight to the engine fast path (cached-builder resubmit) — updateControls would re-apply
         // the FULL control set. The leading zoom-OUT tick already submitted above; every other tick
-        // submits here. Chip highlight follows the zoom band only on the seamless (photo) camera;
-        // video zoom is lens-local. Persistence rides the debounced settings save.
+        // submits here. Chip highlight follows the zoom band only on the logical seamless route;
+        // every standalone route is lens-local, including RAW/DNG Photo. Persistence rides the
+        // debounced settings save.
         if (!leadingWide) engine.setZoomRatio(z)
         val s = _state.value
         // The chip band tracks the unified zoom only on the rear seamless camera; front zoom is

@@ -312,8 +312,9 @@ internal fun modeExposureState(
 }
 
 /**
- * Resolves one Photo/Video transition. Photo zoom is unified/main-relative; non-TELE Video zoom is
- * local to the selected standalone lens. TELE is local in both modes and therefore stays unchanged.
+ * Resolves one Photo/Video transition by route, never by mode alone. Logical BACK zoom is
+ * unified/main-relative; every standalone route is lens-local, including RAW/DNG Photo when its
+ * device profile requires that home. TELE and FRONT are local in both modes and stay unchanged.
  */
 internal fun remapModeOptics(
     fromMode: CaptureMode,
