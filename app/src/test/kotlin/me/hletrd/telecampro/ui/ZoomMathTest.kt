@@ -2,6 +2,7 @@ package me.hletrd.telecampro.ui
 
 import me.hletrd.telecampro.camera.reconcileZoomWithCaps
 import me.hletrd.telecampro.camera.CaptureMode
+import me.hletrd.telecampro.camera.CameraRoute
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.TELECONVERTER_MAGNIFICATION
@@ -24,6 +25,41 @@ class ZoomMathTest {
 
     private fun kitBounds(lower: Float?, upper: Float?, teleconverter: Boolean): ZoomBounds? =
         effectiveZoomBounds(lower, upper, teleconverter, TELECONVERTER_MAGNIFICATION)
+
+    @Test
+    fun `external zoom presentation stays lens local`() {
+        assertEquals(
+            1f,
+            zoomDisplayMultiplier(
+                teleconverter = false,
+                teleconverterMagnification = TELECONVERTER_MAGNIFICATION,
+                equivalentFocalMm = LensChoice.TELE10X.targetEquivMm,
+                activeRoute = CameraRoute.EXTERNAL,
+            ),
+            0f,
+        )
+        assertEquals(
+            "2.0×",
+            formatDisplayZoom(
+                2f,
+                false,
+                TELECONVERTER_MAGNIFICATION,
+                LensChoice.TELE10X.targetEquivMm,
+                activeRoute = CameraRoute.EXTERNAL,
+            ),
+        )
+
+        val modeFlip = remapModeOptics(
+            fromMode = CaptureMode.PHOTO,
+            toMode = CaptureMode.VIDEO,
+            lens = LensChoice.TELE3X,
+            teleconverter = false,
+            controls = ManualControls(zoomRatio = 2f),
+            lensLocalRoute = true,
+        )
+        assertEquals(LensChoice.TELE3X, modeFlip.lens)
+        assertEquals(2f, modeFlip.controls.zoomRatio, 0f)
+    }
 
     @Test fun `shared zoom formatter uses photographic glyph and stable decimal`() {
         val previous = Locale.getDefault()

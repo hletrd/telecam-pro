@@ -1,6 +1,7 @@
 package me.hletrd.telecampro.ui.overlays
 
 import me.hletrd.telecampro.camera.CameraFacing
+import me.hletrd.telecampro.camera.CameraRoute
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.ColorTransfer
@@ -39,7 +40,8 @@ class CompactStatusVisibilityTest {
             "focus confidence (AF limit)" to base.copy(focusConfidence = FocusConfidenceSource.AF_LIMIT),
             "focus confidence (frame detail)" to base.copy(focusConfidence = FocusConfidenceSource.FRAME_DETAIL),
             // Facing is the one state that changes what the app is for; rear stays untagged.
-            "front camera" to base.copy(facing = CameraFacing.FRONT),
+            "front camera" to base.copy(facing = CameraFacing.FRONT, activeCameraRoute = CameraRoute.FRONT),
+            "external camera" to base.copy(activeCameraRoute = CameraRoute.EXTERNAL),
         )
         cases.forEach { (label, state) -> assertTrue(label, compactShootingStatusVisible(state)) }
     }

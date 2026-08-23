@@ -7,6 +7,23 @@ import org.junit.Test
 class RotationMathTest {
 
     @Test
+    fun `external capture and video orientation ignore unrelated host gravity`() {
+        for (device in listOf(0, 90, 180, 270)) {
+            assertEquals(
+                90,
+                RotationMath.captureRotationDegrees(
+                    sensorOrientation = 90,
+                    teleconverterMode = true,
+                    deviceOrientation = device,
+                    frontFacing = false,
+                    route = CameraRoute.EXTERNAL,
+                ),
+            )
+            assertEquals(0, RotationMath.videoOrientationHint(device, CameraRoute.EXTERNAL))
+        }
+    }
+
+    @Test
     fun `preview rotation is afocal 180 in tele mode, 0 otherwise`() {
         assertEquals(180, RotationMath.previewRotationDegrees(true))
         assertEquals(0, RotationMath.previewRotationDegrees(false))

@@ -9,6 +9,8 @@ import me.hletrd.telecampro.camera.ColorTransfer
 import me.hletrd.telecampro.camera.status
 import me.hletrd.telecampro.camera.CameraEngine
 import me.hletrd.telecampro.camera.CameraFacing
+import me.hletrd.telecampro.camera.CameraRoute
+import me.hletrd.telecampro.camera.CameraRouteInventory
 import me.hletrd.telecampro.camera.CameraReadyPublication
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.DeletedStillPublication
@@ -123,6 +125,20 @@ class CameraViewModelRobolectricTest {
         assertEquals(ExposureMode.PROGRAM, s.controls.exposureMode)
         assertTrue(s.controls.programAppSide)
         assertEquals(1f, s.controls.zoomRatio)
+    }
+
+    @Test fun `engine route publication installs explicit external truth without hidden tele`() {
+        val (v, e) = createViewModel()
+        e.onCameraRouteInventory?.invoke(
+            CameraRouteInventory(back = false, front = false, external = true),
+            CameraRoute.EXTERNAL,
+        )
+
+        val state = v.state.value
+        assertEquals(CameraRoute.EXTERNAL, state.activeCameraRoute)
+        assertEquals(CameraFacing.BACK, state.facing)
+        assertFalse(state.teleconverterMode)
+        assertEquals(1f, state.controls.zoomRatio)
     }
 
     @Test fun `init wires every engine callback the ViewModel depends on`() {

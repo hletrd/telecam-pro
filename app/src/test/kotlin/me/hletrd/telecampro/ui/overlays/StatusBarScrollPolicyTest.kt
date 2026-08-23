@@ -2,6 +2,7 @@ package me.hletrd.telecampro.ui.overlays
 
 import android.util.Size
 import me.hletrd.telecampro.camera.CameraFacing
+import me.hletrd.telecampro.camera.CameraRoute
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.ColorTransfer
@@ -50,7 +51,8 @@ class StatusBarScrollPolicyTest {
     fun `lens route and every leading video output tag reset OSD to logical start`() {
         val key = statusBarPriorityResetKey(base, "70 mm", compact = false)
         assertNotEquals(key, statusBarPriorityResetKey(base, "300 mm TELE", false))
-        assertNotEquals(key, statusBarPriorityResetKey(base.copy(facing = CameraFacing.FRONT), "70 mm", false))
+        assertNotEquals(key, statusBarPriorityResetKey(base.copy(facing = CameraFacing.FRONT, activeCameraRoute = CameraRoute.FRONT), "70 mm", false))
+        assertNotEquals(key, statusBarPriorityResetKey(base.copy(activeCameraRoute = CameraRoute.EXTERNAL), "70 mm", false))
         assertNotEquals(key, statusBarPriorityResetKey(base.copy(videoCodec = VideoCodec.AVC), "70 mm", false))
         assertNotEquals(key, statusBarPriorityResetKey(base.copy(transfer = ColorTransfer.SDR), "70 mm", false))
         assertNotEquals(key, statusBarPriorityResetKey(base.copy(openGate = true), "70 mm", false))

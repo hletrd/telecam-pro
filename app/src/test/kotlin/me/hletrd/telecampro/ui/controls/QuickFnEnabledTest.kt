@@ -1,6 +1,7 @@
 package me.hletrd.telecampro.ui.controls
 
 import me.hletrd.telecampro.camera.CameraFacing
+import me.hletrd.telecampro.camera.CameraRoute
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.FnSlot
@@ -71,7 +72,8 @@ class QuickFnEnabledTest {
     fun `teleconverter tile dims on the selfie route`() {
         // onToggleTeleconverter refuses while FRONT (backOpticsDoorRefusal) — the tile must not
         // render hot and merely toast on tap (the exact drift this predicate's contract forbids).
-        assertFalse(quickFnEnabled(FnSlot.TELECONVERTER, idle.copy(facing = CameraFacing.FRONT)))
+        assertFalse(quickFnEnabled(FnSlot.TELECONVERTER, idle.copy(facing = CameraFacing.FRONT, activeCameraRoute = CameraRoute.FRONT)))
+        assertFalse(quickFnEnabled(FnSlot.TELECONVERTER, idle.copy(activeCameraRoute = CameraRoute.EXTERNAL)))
         assertTrue(quickFnEnabled(FnSlot.TELECONVERTER, idle.copy(facing = CameraFacing.BACK)))
     }
 

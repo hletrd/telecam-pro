@@ -186,4 +186,75 @@ class CameraSelector2Test {
             )
         }
     }
+
+    @Test
+    fun `unknown and failed advertised ids keep inventory incomplete`() {
+        val partial = cameraRouteInventoryOfObservations(
+            listOf(
+                CameraRouteObservation.BACK,
+                CameraRouteObservation.UNKNOWN,
+                CameraRouteObservation.READ_FAILED,
+            ),
+        )
+        assertTrue(partial.back)
+        assertFalse(partial.front)
+        assertFalse(partial.complete)
+
+        val proved = cameraRouteInventoryOfObservations(
+            listOf(CameraRouteObservation.BACK, CameraRouteObservation.EXTERNAL),
+        )
+        assertTrue(proved.complete)
+        assertTrue(proved.external)
+    }
+
+    @Test
+    fun `recall route respects proved no-rear topology`() {
+        val frontExternal = CameraRouteInventory(back = false, front = true, external = true)
+        assertEquals(CameraRoute.FRONT, recalledCameraRoute(frontExternal, CameraRoute.FRONT))
+        assertEquals(CameraRoute.EXTERNAL, recalledCameraRoute(frontExternal, CameraRoute.EXTERNAL))
+        assertEquals(
+            CameraRoute.BACK,
+            recalledCameraRoute(CameraRouteInventory(true, true, true), CameraRoute.EXTERNAL),
+        )
+        assertNull(recalledCameraRoute(CameraRouteInventory(false, false, false), CameraRoute.BACK))
+    }
+
+    @Test
+    fun `topology decisions cover external attach detach and replacement`() {
+        val external = CameraRouteInventory(back = false, front = false, external = true)
+        val attached = cameraRouteTopologyDecision(
+            previousIds = emptySet(),
+            currentIds = setOf("usb-a"),
+            inventory = external,
+            currentRoute = CameraRoute.BACK,
+        )
+        assertTrue(attached.topologyChanged)
+        assertEquals(CameraRoute.EXTERNAL, attached.targetRoute)
+
+        val removed = cameraRouteTopologyDecision(
+            previousIds = setOf("usb-a"),
+            currentIds = emptySet(),
+            inventory = CameraRouteInventory(false, false, false),
+            currentRoute = CameraRoute.EXTERNAL,
+        )
+        assertTrue(removed.topologyChanged)
+        assertNull(removed.targetRoute)
+
+        val replaced = cameraRouteTopologyDecision(
+            previousIds = setOf("usb-a"),
+            currentIds = setOf("usb-b"),
+            inventory = external,
+            currentRoute = CameraRoute.EXTERNAL,
+        )
+        assertTrue(replaced.topologyChanged)
+        assertEquals(CameraRoute.EXTERNAL, replaced.targetRoute)
+
+        val busyOnly = cameraRouteTopologyDecision(
+            previousIds = setOf("usb-b"),
+            currentIds = setOf("usb-b"),
+            inventory = external,
+            currentRoute = CameraRoute.EXTERNAL,
+        )
+        assertFalse(busyOnly.topologyChanged)
+    }
 }
