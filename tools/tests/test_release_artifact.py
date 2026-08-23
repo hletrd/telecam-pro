@@ -616,6 +616,34 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
             self.assertEqual(2, status_calls)
             self.assertIn("HEAD changed during verification", failures)
 
+    def test_dirty_tree_change_during_final_identity_scan_is_detected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            attestation, _, commit = self.fixture(root)
+            base = self.runner(commit)
+            current_status = ""
+            mutated = False
+            actual_identity = release.regular_file_identity
+
+            def run(command, cwd):
+                if command[:2] == ["git", "status"]:
+                    return subprocess.CompletedProcess(command, 0, current_status, "")
+                return base(command, cwd)
+
+            def identity(identity_root, relative):
+                nonlocal current_status, mutated
+                result = actual_identity(identity_root, relative)
+                if str(relative).endswith("release-attestation.json.sha256"):
+                    current_status = " M app/build.gradle.kts\n"
+                    mutated = True
+                return result
+
+            with patch.object(release, "regular_file_identity", side_effect=identity):
+                failures = release.check_release_identity(root, attestation, run=run)
+
+            self.assertTrue(mutated)
+            self.assertIn("working-tree status changed during verification", failures)
+
     def test_ignored_packageable_source_is_rejected_initially_and_if_added_late(self) -> None:
         package_inputs = (
             "app/src/main/kotlin/example/release_password.secret",
