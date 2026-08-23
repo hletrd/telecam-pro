@@ -101,6 +101,51 @@ class ImmutableDebugBuildTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "regular file"):
                 builder.snapshot_debug_worktree(root, Path(temp_dir) / "snapshot")
 
+    def test_actual_snapshot_a_b_a_mutation_is_rejected_without_evidence_export(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "fixture"
+            root.mkdir()
+            initialize_fixture(root)
+            output = Path(temp_dir) / "output"
+            ordinary_write_refused = False
+
+            def compile_mutated_snapshot(command, cwd):
+                nonlocal ordinary_write_refused
+                source = cwd / "app/src/main/source.txt"
+                sealed_mode = source.stat().st_mode & 0o777
+                self.assertEqual(0, sealed_mode & 0o222)
+                try:
+                    source.write_text("source-B\n", encoding="utf-8")
+                except PermissionError:
+                    ordinary_write_refused = True
+
+                # Simulate a same-owner build step deliberately undoing the permission boundary,
+                # compiling B, and restoring both A and the seal before the wrapper regains control.
+                # The final content digest is A again; inode ctime still proves the attempted write.
+                source.chmod(sealed_mode | 0o200)
+                source.write_text("source-B\n", encoding="utf-8")
+                compiled = source.read_text(encoding="utf-8")
+                source.write_text("source-A\n", encoding="utf-8")
+                source.chmod(sealed_mode)
+                apk = cwd / "app/build/outputs/apk/debug/app-debug.apk"
+                apk.parent.mkdir(parents=True, exist_ok=True)
+                apk.write_text(compiled, encoding="utf-8")
+                return subprocess.CompletedProcess(command, 0)
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "sealed immutable debug source owner changed during compilation",
+            ):
+                builder.build_immutable_debug(
+                    root,
+                    output,
+                    run=compile_mutated_snapshot,
+                )
+
+            if hasattr(os, "geteuid") and os.geteuid() != 0:
+                self.assertTrue(ordinary_write_refused)
+            self.assertFalse(output.exists())
+
     def test_gradle_generator_packages_the_evidence_owner_marker(self) -> None:
         environment = {**os.environ}
         java_home = Path("/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home")

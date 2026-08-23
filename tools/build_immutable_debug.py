@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Sequence
+from typing import NamedTuple
 
 
 IMMUTABLE_DEBUG_SOURCE_OWNER = "immutable-debug-worktree-v1"
@@ -29,9 +30,77 @@ DEBUG_SOURCE_SCOPES = (
     "gradle/wrapper/gradle-wrapper.properties",
 )
 LOCAL_BUILD_INPUTS = ("local.properties",)
+BUILD_OUTPUT_DIRECTORIES = (".gradle", ".kotlin", "build", "app/build")
 
 Run = Callable[[Sequence[str], pathlib.Path], subprocess.CompletedProcess[str]]
 AfterSnapshot = Callable[[pathlib.Path, pathlib.Path], None]
+
+
+class _SealedPath(NamedTuple):
+    path: pathlib.Path
+    original_mode: int
+    sealed_mode: int
+    device: int
+    inode: int
+    file_type: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+
+
+class DebugSnapshotSeal:
+    """Read-only compiler-owner paths plus metadata that a content restore cannot reset."""
+
+    def __init__(self, entries: Sequence[_SealedPath]):
+        self._entries = tuple(entries)
+
+    def verify(self) -> None:
+        for entry in self._entries:
+            try:
+                current = entry.path.lstat()
+            except OSError as error:
+                raise RuntimeError(
+                    f"sealed immutable debug source owner disappeared: {entry.path}"
+                ) from error
+            observed = (
+                current.st_dev,
+                current.st_ino,
+                stat.S_IFMT(current.st_mode),
+                stat.S_IMODE(current.st_mode),
+                current.st_size,
+                current.st_mtime_ns,
+                current.st_ctime_ns,
+            )
+            expected = (
+                entry.device,
+                entry.inode,
+                entry.file_type,
+                entry.sealed_mode,
+                entry.size,
+                entry.mtime_ns,
+                entry.ctime_ns,
+            )
+            if observed != expected:
+                raise RuntimeError(
+                    "sealed immutable debug source owner changed during compilation: "
+                    f"{entry.path}"
+                )
+
+    def release(self) -> None:
+        # Restore ancestors first so TemporaryDirectory cleanup can remove the private worktree even
+        # after a failed build. Never chmod a replacement that appeared during an adversarial test.
+        for entry in sorted(self._entries, key=lambda item: len(item.path.parts)):
+            try:
+                current = entry.path.lstat()
+                if (current.st_dev, current.st_ino, stat.S_IFMT(current.st_mode)) != (
+                    entry.device,
+                    entry.inode,
+                    entry.file_type,
+                ):
+                    continue
+                os.chmod(entry.path, entry.original_mode, follow_symlinks=False)
+            except OSError:
+                pass
 
 
 def run_checked(command: Sequence[str], cwd: pathlib.Path) -> subprocess.CompletedProcess[str]:
@@ -141,6 +210,79 @@ def _current_scope_files(root: pathlib.Path) -> list[tuple[str, bytes, int]]:
     return files
 
 
+def _compiler_owner_paths(root: pathlib.Path) -> list[pathlib.Path]:
+    paths = {root}
+
+    def include_with_ancestors(path: pathlib.Path) -> None:
+        current = path
+        while True:
+            paths.add(current)
+            if current == root:
+                return
+            current = current.parent
+
+    for scope in DEBUG_SOURCE_SCOPES:
+        source = root / scope
+        include_with_ancestors(source)
+        if source.is_dir():
+            for candidate in source.rglob("*"):
+                include_with_ancestors(candidate)
+    for relative in LOCAL_BUILD_INPUTS:
+        local_input = root / relative
+        if local_input.exists():
+            include_with_ancestors(local_input)
+    return sorted(paths, key=lambda path: (len(path.parts), path.as_posix()))
+
+
+def seal_debug_snapshot(root: pathlib.Path) -> DebugSnapshotSeal:
+    """Seal compiler inputs and metadata-pin project dirs that Gradle requires writable."""
+    for relative in BUILD_OUTPUT_DIRECTORIES:
+        (root / relative).mkdir(parents=True, exist_ok=True)
+    # Gradle 9.7 rejects a configured root/module whose directory itself is not writable, even when
+    # its build output already exists. Keep only those two directories writable. They remain in the
+    # seal manifest, so an unlink/rename replacement changes their ctime and is rejected after build.
+    gradle_writable_project_directories = {root, root / "app"}
+
+    entries: list[_SealedPath] = []
+    try:
+        for path in _compiler_owner_paths(root):
+            before = path.lstat()
+            file_type = stat.S_IFMT(before.st_mode)
+            if file_type not in {stat.S_IFREG, stat.S_IFDIR}:
+                raise RuntimeError(f"debug compiler owner path is unsafe: {path}")
+            original_mode = stat.S_IMODE(before.st_mode)
+            sealed_mode = (
+                original_mode
+                if path in gradle_writable_project_directories
+                else original_mode & ~0o222
+            )
+            os.chmod(path, sealed_mode, follow_symlinks=False)
+            sealed = path.lstat()
+            if (sealed.st_dev, sealed.st_ino, stat.S_IFMT(sealed.st_mode)) != (
+                before.st_dev,
+                before.st_ino,
+                file_type,
+            ):
+                raise RuntimeError(f"debug compiler owner changed while sealing: {path}")
+            entries.append(
+                _SealedPath(
+                    path=path,
+                    original_mode=original_mode,
+                    sealed_mode=sealed_mode,
+                    device=sealed.st_dev,
+                    inode=sealed.st_ino,
+                    file_type=file_type,
+                    size=sealed.st_size,
+                    mtime_ns=sealed.st_mtime_ns,
+                    ctime_ns=sealed.st_ctime_ns,
+                )
+            )
+    except BaseException:
+        DebugSnapshotSeal(entries).release()
+        raise
+    return DebugSnapshotSeal(entries)
+
+
 def _scope_digest(root: pathlib.Path) -> str:
     digest = hashlib.sha256()
     for relative, payload, _ in _current_scope_files(root):
@@ -200,24 +342,31 @@ def build_immutable_debug(
     with tempfile.TemporaryDirectory(prefix="telecam-debug-source-") as temp_dir:
         snapshot = pathlib.Path(temp_dir) / "source"
         commit, expected_digest = snapshot_debug_worktree(root, snapshot)
-        if after_snapshot is not None:
-            after_snapshot(root, snapshot)
-        run(
-            [
-                "./gradlew",
-                ":app:assembleDebug",
-                f"-PimmutableDebugSourceOwner={IMMUTABLE_DEBUG_SOURCE_OWNER}",
-            ],
-            snapshot,
-        )
-        if _scope_digest(snapshot) != expected_digest:
-            raise RuntimeError("immutable debug source owner changed during compilation")
-        built_apk = snapshot / "app/build/outputs/apk/debug/app-debug.apk"
-        if not built_apk.is_file():
-            raise RuntimeError("debug build did not produce app-debug.apk")
-        destination = output_root / "apk/debug/app-debug.apk"
-        destination.parent.mkdir(parents=True)
-        shutil.copy2(built_apk, destination)
+        seal = seal_debug_snapshot(snapshot)
+        try:
+            if after_snapshot is not None:
+                after_snapshot(root, snapshot)
+            run(
+                [
+                    "./gradlew",
+                    ":app:assembleDebug",
+                    f"-PimmutableDebugSourceOwner={IMMUTABLE_DEBUG_SOURCE_OWNER}",
+                ],
+                snapshot,
+            )
+            # Content equality alone cannot detect A -> B -> A. The seal also pins inode, ctime,
+            # mtime, type, and permissions for every compiler input and replacement-relevant parent.
+            seal.verify()
+            if _scope_digest(snapshot) != expected_digest:
+                raise RuntimeError("immutable debug source owner changed during compilation")
+            built_apk = snapshot / "app/build/outputs/apk/debug/app-debug.apk"
+            if not built_apk.is_file():
+                raise RuntimeError("debug build did not produce app-debug.apk")
+            destination = output_root / "apk/debug/app-debug.apk"
+            destination.parent.mkdir(parents=True)
+            shutil.copy2(built_apk, destination)
+        finally:
+            seal.release()
     return commit, destination
 
 
