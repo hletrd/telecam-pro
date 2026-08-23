@@ -12,6 +12,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.ScrollState
@@ -52,6 +53,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -62,7 +64,13 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -396,14 +404,12 @@ internal fun LabeledSlider(
     val accessibility = sliderSettingSemantics(label, valueLabel)
     Column(
         modifier = modifier
-            .fillMaxWidth()
-            .semantics(mergeDescendants = true) {
-                contentDescription = accessibility.label
-                stateDescription = accessibility.state
-            },
+            .fillMaxWidth(),
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            // The focusable slider below owns the merged name/value/progress contract. These two
+            // visible texts are decorative mirrors, not extra TalkBack stops.
+            modifier = Modifier.fillMaxWidth().clearAndSetSemantics { },
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -425,6 +431,7 @@ internal fun LabeledSlider(
             fraction = fraction,
             onFraction = { f -> onValueChange(valueRange.start + f * span) },
             enabled = enabled,
+            semanticLabel = accessibility.label,
             valueDescription = valueLabel,
         )
     }
@@ -433,6 +440,7 @@ internal fun LabeledSlider(
 // Fixed tick count: the single call site never varied it, and a per-slider tick rhythm would read
 // as inconsistency across the settings sheet rather than as information.
 private const val CAMERA_SLIDER_TICKS = 11
+private const val CAMERA_SLIDER_KEY_UNITS = 100
 
 /**
  * A pro-camera-style slider: a tick-marked track with an accent fill and a thin needle thumb (not the
@@ -440,14 +448,18 @@ private const val CAMERA_SLIDER_TICKS = 11
  * jump, or drag the needle. Operates on a normalized [fraction]; the caller maps it to its own range.
  */
 @Composable
-private fun CameraSlider(
+internal fun CameraSlider(
     fraction: Float,
     onFraction: (Float) -> Unit,
     enabled: Boolean,
+    semanticLabel: String,
     valueDescription: String,
+    modifier: Modifier = Modifier,
 ) {
     // Fresh callback for the running gesture: see the stale-closure note at the pointerInput below.
     val currentOnFraction by rememberUpdatedState(onFraction)
+    val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+    var keyboardFocused by remember { mutableStateOf(false) }
     val accent = if (enabled) CameraColors.ManualActive else CameraColors.TextSecondary
     // Two one-off PAIRS, not four numbers: each is an enabled/disabled ramp for one part of this
     // slider, and the pair is what carries the disabled state (the accent needle changes hue, the
@@ -456,15 +468,30 @@ private fun CameraSlider(
     val trackColor = Color.White.copy(alpha = if (enabled) 0.16f else 0.08f)
     val tickColor = Color.White.copy(alpha = if (enabled) 0.35f else 0.15f)
     Canvas(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             // The track remains visually compact around the centre line, but the pointer and
             // adjustable-semantics node must meet the app-wide 48 dp interaction floor.
             .height(48.dp)
+            .onFocusChanged { keyboardFocused = it.isFocused }
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                val target = sliderKeyTargetFraction(
+                    currentFraction = fraction,
+                    key = event.key,
+                    totalUnits = CAMERA_SLIDER_KEY_UNITS,
+                    rtlHorizontal = rtl,
+                    enabled = enabled,
+                ) ?: return@onPreviewKeyEvent false
+                if (target != fraction.coerceIn(0f, 1f)) currentOnFraction(target)
+                true
+            }
+            .focusable(enabled = enabled)
             // TalkBack: a bare Canvas is invisible to accessibility services — this backs every
             // settings slider, so expose it as an adjustable value with a set action.
             .progressSemantics(value = fraction.coerceIn(0f, 1f), valueRange = 0f..1f)
             .semantics {
+                contentDescription = semanticLabel
                 stateDescription = valueDescription
                 if (!enabled) disabled()
                 setProgress { target ->
@@ -473,13 +500,16 @@ private fun CameraSlider(
                     true
                 }
             }
-            .pointerInput(enabled) {
+            .pointerInput(enabled, rtl) {
                 if (!enabled) return@pointerInput
                 awaitEachGesture {
                     val down = awaitFirstDown()
                     val pad = 8.dp.toPx()
                     val trackSpan = (size.width - 2f * pad).coerceAtLeast(1f)
-                    fun fractionAt(x: Float) = ((x - pad) / trackSpan).coerceIn(0f, 1f)
+                    fun fractionAt(x: Float): Float {
+                        val physical = ((x - pad) / trackSpan).coerceIn(0f, 1f)
+                        return cameraSliderAxisFraction(physical, rtl)
+                    }
                     // NOTE: emissions below go through [currentOnFraction], not the captured
                     // parameter — same stale-closure class as RulerSlider (review C10/L10): the
                     // pointerInput key never changes when the slider's DOMAIN rebinds, so a drag
@@ -518,6 +548,7 @@ private fun CameraSlider(
         val trackH = 5.dp.toPx()
         val span = size.width - 2f * pad
         val radius = CornerRadius(trackH / 2f, trackH / 2f)
+        val physicalFraction = cameraSliderAxisFraction(fraction, rtl)
         drawRoundRect(
             color = trackColor,
             topLeft = Offset(pad, cy - trackH / 2f),
@@ -531,17 +562,17 @@ private fun CameraSlider(
             val th = (if (major) 8.dp else 4.dp).toPx()
             drawLine(tickColor, Offset(x, cy - th / 2f), Offset(x, cy + th / 2f), strokeWidth = 1.5.dp.toPx())
         }
-        val fillW = (span * fraction).coerceIn(0f, span)
+        val fillW = (span * fraction.coerceIn(0f, 1f)).coerceIn(0f, span)
         if (fillW > 0f) {
             drawRoundRect(
                 color = accent,
-                topLeft = Offset(pad, cy - trackH / 2f),
+                topLeft = Offset(if (rtl) pad + span - fillW else pad, cy - trackH / 2f),
                 size = androidx.compose.ui.geometry.Size(fillW, trackH),
                 cornerRadius = radius,
             )
         }
         // Needle thumb: a tall rounded bar in the accent colour.
-        val thumbX = pad + span * fraction
+        val thumbX = pad + span * physicalFraction
         val thumbW = 4.dp.toPx()
         val thumbH = 22.dp.toPx()
         drawRoundRect(
@@ -550,6 +581,16 @@ private fun CameraSlider(
             size = androidx.compose.ui.geometry.Size(thumbW, thumbH),
             cornerRadius = CornerRadius(thumbW / 2f, thumbW / 2f),
         )
+        if (keyboardFocused) {
+            val stroke = 1.5.dp.toPx()
+            drawRoundRect(
+                color = CameraColors.Accent,
+                topLeft = Offset(stroke / 2f, stroke / 2f),
+                size = androidx.compose.ui.geometry.Size(size.width - stroke, size.height - stroke),
+                cornerRadius = CornerRadius(8.dp.toPx()),
+                style = Stroke(width = stroke),
+            )
+        }
     }
 }
 

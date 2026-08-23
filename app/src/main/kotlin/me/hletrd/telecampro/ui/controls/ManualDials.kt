@@ -62,11 +62,16 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
@@ -1308,6 +1313,7 @@ fun RulerSlider(
     // clicks between stops instead of scrolling smoothly.
     var contUnit by remember { mutableFloatStateOf(fraction.coerceIn(0f, 1f) * totalUnits) }
     var localUnit by remember { mutableFloatStateOf(contUnit) }
+    var keyboardFocused by remember { mutableStateOf(false) }
     if (!isDragging) {
         contUnit = fraction.coerceIn(0f, 1f) * totalUnits
         localUnit = if (snap) contUnit.roundToInt().toFloat() else contUnit
@@ -1328,6 +1334,33 @@ fun RulerSlider(
             // and its minor ticks (0.28 white) washed out against bright scenes — same class as
             // the 05486cb scrim sweep, which this control originally missed.
             .background(HudPlate, RoundedCornerShape(16.dp))
+            .then(
+                if (keyboardFocused) {
+                    Modifier.border(1.5.dp, CameraColors.Accent, RoundedCornerShape(16.dp))
+                } else {
+                    Modifier
+                },
+            )
+            .onFocusChanged { keyboardFocused = it.isFocused }
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                val current = (localUnit / totalUnits.coerceAtLeast(1)).coerceIn(0f, 1f)
+                val target = sliderKeyTargetFraction(
+                    currentFraction = current,
+                    key = event.key,
+                    totalUnits = totalUnits,
+                    // The finder ruler is physical camera geometry and deliberately never mirrors.
+                    rtlHorizontal = false,
+                    enabled = enabled,
+                ) ?: return@onPreviewKeyEvent false
+                if (target != current) {
+                    contUnit = target * totalUnits
+                    localUnit = contUnit
+                    currentOnFractionChange(target)
+                }
+                true
+            }
+            .focusable(enabled = enabled)
             // TalkBack: a bare Canvas is invisible to accessibility services — every manual dial
             // rides this control, so expose it as an adjustable value with a set action.
             .progressSemantics(value = fraction.coerceIn(0f, 1f), valueRange = 0f..1f)
