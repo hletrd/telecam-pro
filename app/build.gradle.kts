@@ -397,7 +397,38 @@ fun signingValue(propertyName: String, envName: String): String? =
         ?.takeIf { it.isNotEmpty() && it != "CHANGE_ME" }
         ?: System.getenv(envName)?.trim()?.takeIf { it.isNotEmpty() }
 
-val releaseStoreFile = signingValue("storeFile", "TELECAMPRO_STORE_FILE")
+// File ownership is deliberately NOT environment-configurable. The immutable wrapper parses the
+// same Java Properties bytes, descriptor-copies the repository-relative JKS into its private
+// checkout, and supplies this exact override. Ambient TELECAMPRO_STORE_FILE used to bypass that
+// owner entirely. Password and alias values remain safe environment inputs because they are values,
+// not mutable file paths.
+fun normalizedRepositoryStoreFile(raw: String?): String? {
+    val value = raw?.trim()?.takeIf { it.isNotEmpty() && it != "CHANGE_ME" } ?: return null
+    val parts = value.split('/')
+    if (
+        value.startsWith('/') ||
+        value.contains('\\') ||
+        Regex("^[A-Za-z]:").containsMatchIn(value) ||
+        parts.any { it.isEmpty() || it == "." || it == ".." }
+    ) {
+        throw GradleException("Release storeFile must be one normalized repository-relative path")
+    }
+    return value
+}
+val configuredReleaseStoreFile = normalizedRepositoryStoreFile(
+    keystoreProps.getProperty("storeFile"),
+)
+val immutableReleaseStoreFile = normalizedRepositoryStoreFile(
+    providers.gradleProperty("immutableReleaseStoreFile").orNull,
+)
+if (immutableReleaseStoreFile != null && immutableReleaseStoreFile != configuredReleaseStoreFile) {
+    throw GradleException(
+        "Immutable release storeFile does not match the frozen keystore.properties contract",
+    )
+}
+// A path in the local properties is configuration input, not signing authority by itself. Only the
+// immutable wrapper's matching override makes that copied file effective for a release task.
+val releaseStoreFile = immutableReleaseStoreFile
 val releaseKeyAlias = signingValue("keyAlias", "TELECAMPRO_KEY_ALIAS")
 val releaseStorePassword = signingValue("storePassword", "TELECAMPRO_STORE_PASSWORD")
 val releaseKeyPassword = signingValue("keyPassword", "TELECAMPRO_KEY_PASSWORD") ?: releaseStorePassword

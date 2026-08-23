@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import os
 import pathlib
+import re
 import secrets
 import stat
 import subprocess
@@ -34,6 +35,8 @@ RELEASE_OUTPUT_PREFIXES = (
 )
 RELEASE_OUTPUT_FILES = frozenset({"logs/manifest-merger-release-report.txt"})
 RELEASE_REPORT_PREFIXES = ("resources_config_map_file/release/",)
+STORE_FILE_ENVIRONMENT = "TELECAMPRO_STORE_FILE"
+IMMUTABLE_STORE_FILE_PROPERTY = "immutableReleaseStoreFile"
 
 
 class _SealedPath(NamedTuple):
@@ -46,6 +49,11 @@ class _SealedPath(NamedTuple):
     size: int
     mtime_ns: int
     ctime_ns: int
+
+
+class ReleaseLocalInputs(NamedTuple):
+    sealed_paths: tuple[str, ...]
+    store_file: str | None
 
 
 class ReleaseSnapshotSeal:
@@ -104,7 +112,11 @@ class ReleaseSnapshotSeal:
 
 
 def run_checked(command: Sequence[str], cwd: pathlib.Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, cwd=cwd, text=True, check=True)
+    environment = dict(os.environ)
+    # The immutable wrapper owns the only effective file path. Password/key-alias environment
+    # values remain available, but an ambient store path can never point Gradle outside the seal.
+    environment.pop(STORE_FILE_ENVIRONMENT, None)
+    return subprocess.run(command, cwd=cwd, env=environment, text=True, check=True)
 
 
 def git_value(root: pathlib.Path, *arguments: str) -> str:
@@ -364,8 +376,122 @@ def seal_release_snapshot(
     return ReleaseSnapshotSeal(entries)
 
 
-def copy_local_build_inputs(root: pathlib.Path, snapshot: pathlib.Path) -> tuple[str, ...]:
-    """Descriptor-copy local inputs and return every private path that must join the seal."""
+def _java_property_logical_lines(text: str) -> list[str]:
+    """Join physical lines using the continuation rules of ``Properties.load(InputStream)``."""
+    logical: list[str] = []
+    current = ""
+    continuing = False
+    # Properties.LineReader recognizes CR, LF, and CRLF—not Python's wider Unicode splitlines set.
+    for physical in re.split(r"\r\n|\n|\r", text):
+        segment = physical.lstrip(" \t\f") if continuing else physical
+        current += segment
+        trailing_slashes = len(current) - len(current.rstrip("\\"))
+        if trailing_slashes % 2 == 1:
+            current = current[:-1]
+            continuing = True
+            continue
+        logical.append(current)
+        current = ""
+        continuing = False
+    if continuing or current:
+        logical.append(current)
+    return logical
+
+
+def _decode_java_property_token(raw: str) -> str:
+    decoded: list[str] = []
+    index = 0
+    escapes = {"t": "\t", "n": "\n", "r": "\r", "f": "\f"}
+    while index < len(raw):
+        char = raw[index]
+        if char != "\\":
+            decoded.append(char)
+            index += 1
+            continue
+        index += 1
+        if index >= len(raw):
+            # An odd terminal slash is consumed as a continuation marker before this decoder.
+            raise RuntimeError("release signing properties contain an incomplete escape")
+        escaped = raw[index]
+        index += 1
+        if escaped == "u":
+            digits = raw[index:index + 4]
+            if len(digits) != 4 or re.fullmatch(r"[0-9A-Fa-f]{4}", digits) is None:
+                raise RuntimeError("release signing properties contain an invalid Unicode escape")
+            decoded.append(chr(int(digits, 16)))
+            index += 4
+        else:
+            decoded.append(escapes.get(escaped, escaped))
+    return "".join(decoded)
+
+
+def parse_java_properties(payload: bytes) -> list[tuple[str, str]]:
+    """Parse the Java-properties syntax needed to share one exact signing-path decision."""
+    text = payload.decode("iso-8859-1")
+    entries: list[tuple[str, str]] = []
+    for logical in _java_property_logical_lines(text):
+        stripped = logical.lstrip(" \t\f")
+        if not stripped or stripped[0] in "#!":
+            continue
+        escaped = False
+        separator = len(stripped)
+        separator_kind: str | None = None
+        for index, char in enumerate(stripped):
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if char in "=:" or char in " \t\f":
+                separator = index
+                separator_kind = char
+                break
+        raw_key = stripped[:separator]
+        value_start = separator
+        if separator_kind is not None:
+            if separator_kind in " \t\f":
+                while value_start < len(stripped) and stripped[value_start] in " \t\f":
+                    value_start += 1
+                if value_start < len(stripped) and stripped[value_start] in "=:":
+                    value_start += 1
+            else:
+                value_start += 1
+            while value_start < len(stripped) and stripped[value_start] in " \t\f":
+                value_start += 1
+        raw_value = stripped[value_start:]
+        entries.append((
+            _decode_java_property_token(raw_key),
+            _decode_java_property_token(raw_value),
+        ))
+    return entries
+
+
+def release_store_file(properties_payload: bytes) -> str:
+    matches = [value for key, value in parse_java_properties(properties_payload) if key == "storeFile"]
+    if len(matches) != 1:
+        raise RuntimeError("release signing properties must contain exactly one storeFile")
+    # Gradle applies String.trim() after Properties.load(); resolve the same effective value.
+    value = matches[0].strip()
+    if (
+        not value or
+        any(ord(char) < 0x20 or 0xD800 <= ord(char) <= 0xDFFF for char in value) or
+        "\\" in value or
+        value.startswith("/") or
+        re.match(r"^[A-Za-z]:", value) is not None
+    ):
+        raise RuntimeError("release storeFile must be one repository-relative path")
+    raw_parts = value.split("/")
+    if any(part in {"", ".", ".."} for part in raw_parts):
+        raise RuntimeError("release storeFile must be one normalized repository-relative path")
+    relative = pathlib.PurePosixPath(*raw_parts)
+    if relative.is_absolute():
+        raise RuntimeError("release storeFile must be repository-relative")
+    return relative.as_posix()
+
+
+def copy_local_build_inputs(root: pathlib.Path, snapshot: pathlib.Path) -> ReleaseLocalInputs:
+    """Descriptor-copy local inputs and resolve the sole effective release store-file path."""
     copied: list[str] = []
     frozen_properties: dict[str, bytes] = {}
     for name in ("local.properties", "keystore.properties"):
@@ -376,34 +502,14 @@ def copy_local_build_inputs(root: pathlib.Path, snapshot: pathlib.Path) -> tuple
             copied.append(name)
             frozen_properties[name] = payload
     signing_payload = frozen_properties.get("keystore.properties")
+    store_file: str | None = None
     if signing_payload is not None:
-        try:
-            signing_text = signing_payload.decode("utf-8")
-        except UnicodeDecodeError as error:
-            raise RuntimeError("release signing properties are not UTF-8") from error
-        store_file = next(
-            (
-                line.partition("=")[2].strip()
-                for line in signing_text.splitlines()
-                if line.partition("=")[0].strip() == "storeFile"
-            ),
-            "",
-        )
-        configured_store = pathlib.Path(store_file)
-        if store_file:
-            if configured_store.is_absolute():
-                raise RuntimeError("absolute release keystore paths are outside the immutable owner")
-            normalized_store = pathlib.PurePosixPath(os.path.normpath(store_file))
-            if not normalized_store.parts or any(
-                part in {"", ".", ".."} for part in normalized_store.parts
-            ):
-                raise RuntimeError("relative release keystore escapes the repository")
-            relative_store = pathlib.Path(*normalized_store.parts)
-            relative_text = relative_store.as_posix()
-            payload, mode = read_regular_beneath(root, relative_text)
-            write_regular_exclusive(snapshot / relative_store, payload, mode)
-            copied.append(relative_text)
-    return tuple(copied)
+        store_file = release_store_file(signing_payload)
+        relative_store = pathlib.Path(*pathlib.PurePosixPath(store_file).parts)
+        payload, mode = read_regular_beneath(root, store_file)
+        write_regular_exclusive(snapshot / relative_store, payload, mode)
+        copied.append(store_file)
+    return ReleaseLocalInputs(tuple(copied), store_file)
 
 
 def verify_export(snapshot: pathlib.Path, expected: dict[str, str]) -> None:
@@ -459,7 +565,7 @@ def build_immutable_release(
         snapshot = pathlib.Path(temp_dir) / "source"
         expected = export_commit(root, snapshot, commit)
         local_inputs = copy_local_build_inputs(root, snapshot)
-        seal = seal_release_snapshot(snapshot, (*expected, *local_inputs))
+        seal = seal_release_snapshot(snapshot, (*expected, *local_inputs.sealed_paths))
         try:
             if after_snapshot is not None:
                 after_snapshot(root, snapshot)
@@ -469,6 +575,10 @@ def build_immutable_release(
                 f"-PimmutableReleaseCommit={commit}",
                 f"-PimmutableReleaseTree={tree}",
             ]
+            if local_inputs.store_file is not None:
+                command.append(
+                    f"-P{IMMUTABLE_STORE_FILE_PROPERTY}={local_inputs.store_file}"
+                )
             run(command, snapshot)
             # Digest equality cannot detect A -> B -> A. The seal additionally proves the exact
             # input/ancestor identities and their unforgeable ctime transitions stayed unchanged.

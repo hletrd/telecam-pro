@@ -139,10 +139,12 @@ lint outputs are discovered under that root's `bundle/release/`, `apk/release/`,
 directories rather than the mutable `app/build/outputs` tree. Unsigned binary inspection likewise
 uses `python3 tools/build_immutable_release.py :app:packageRelease` and the printed root's
 `apk/release/*-unsigned.apk`.
-Signing is driven by a gitignored
-`keystore.properties` plus `TELECAMPRO_STORE_PASSWORD` / `TELECAMPRO_KEY_PASSWORD` in the
-environment — no keys live in git, and release bundling fails fast rather than emitting an unsigned
-artifact. Release builds are R8-minified.
+Signing is driven by a gitignored `keystore.properties`. Its required `storeFile` is one normalized,
+repository-relative regular file that the immutable wrapper copies and seals; an ambient
+`TELECAMPRO_STORE_FILE` cannot override it. Secret values may come from
+`TELECAMPRO_KEY_ALIAS`, `TELECAMPRO_STORE_PASSWORD`, and `TELECAMPRO_KEY_PASSWORD` — no keys live in
+git, and release bundling fails fast rather than emitting an unsigned artifact. Release builds are
+R8-minified.
 
 ## Licence and trademarks
 

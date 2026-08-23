@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "build_immutable_release.py"
@@ -34,6 +35,10 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
         subprocess.run(["git", "add", "."], cwd=root, check=True)
         subprocess.run(["git", "commit", "-m", "fixture"], cwd=root, check=True, capture_output=True)
         return tracked
+
+    def signing_fixture(self, root: Path, properties: bytes) -> None:
+        (root / "keystore.properties").write_bytes(properties)
+        (root / "release-key.jks").write_bytes(b"key-A")
 
     def test_post_identity_worktree_mutation_cannot_reach_packaging(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -191,6 +196,164 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
                 target.chmod(sealed_mode | 0o200)
                 target.write_bytes(b"sdk.dir=/hostile/sdk\n")
                 target.write_bytes(original)
+                target.chmod(sealed_mode)
+                artifact = snapshot / "app/build/outputs/bundle/release/app-release.aab"
+                artifact.parent.mkdir(parents=True)
+                artifact.write_bytes(b"artifact")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "sealed immutable release source owner changed",
+            ):
+                release.build_immutable_release(
+                    root,
+                    [":app:bundleRelease"],
+                    output,
+                    run=package,
+                )
+            self.assertFalse(output.exists())
+
+    def test_java_properties_store_file_syntax_resolves_one_exact_path(self) -> None:
+        cases = {
+            "equals": b"storeFile=release-key.jks\n",
+            "colon": b"storeFile: release-key.jks\n",
+            "whitespace": b"storeFile release-key.jks\n",
+            "escaped-key": b"storeF\\u0069le=release-key.jks\n",
+            "escaped-value": b"storeFile=release\\-key.jks\n",
+            "continuation": b"storeFile=release-\\\n  key.jks\n",
+            "trimmed-like-gradle": b"storeFile=  release-key.jks  \n",
+        }
+        for label, payload in cases.items():
+            with self.subTest(label=label):
+                self.assertEqual("release-key.jks", release.release_store_file(payload))
+
+    def test_ambient_store_file_never_overrides_frozen_properties(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "fixture"
+            root.mkdir()
+            self.fixture(root)
+            self.signing_fixture(root, b"storeFile: release-key.jks\n")
+            output = Path(temp_dir) / "immutable-output"
+            commands: list[list[str]] = []
+
+            def package(command: list[str], snapshot: Path) -> subprocess.CompletedProcess[str]:
+                commands.append(command)
+                self.assertEqual(b"key-A", snapshot.joinpath("release-key.jks").read_bytes())
+                artifact = snapshot / "app/build/outputs/bundle/release/app-release.aab"
+                artifact.parent.mkdir(parents=True)
+                artifact.write_bytes(b"artifact")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with patch.dict(
+                os.environ,
+                {release.STORE_FILE_ENVIRONMENT: "/outside/ambient-key.jks"},
+            ):
+                release.build_immutable_release(
+                    root,
+                    [":app:bundleRelease"],
+                    output,
+                    run=package,
+                )
+
+            self.assertEqual(1, len(commands))
+            self.assertIn(
+                "-PimmutableReleaseStoreFile=release-key.jks",
+                commands[0],
+            )
+            self.assertNotIn("/outside/ambient-key.jks", " ".join(commands[0]))
+
+    def test_default_runner_clears_ambient_store_file_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(
+            os.environ,
+            {
+                release.STORE_FILE_ENVIRONMENT: "/outside/ambient-key.jks",
+                "TELECAMPRO_KEY_ALIAS": "alias-value",
+            },
+        ):
+            result = release.run_checked(
+                [
+                    "sh",
+                    "-c",
+                    'test -z "$TELECAMPRO_STORE_FILE" && test "$TELECAMPRO_KEY_ALIAS" = alias-value',
+                ],
+                Path(temp_dir),
+            )
+            self.assertEqual(0, result.returncode)
+
+    def test_environment_only_store_file_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "fixture"
+            root.mkdir()
+            self.fixture(root)
+            (root / "keystore.properties").write_text(
+                "keyAlias=telecampro\nstorePassword=secret-A\n",
+                encoding="utf-8",
+            )
+            outside = Path(temp_dir) / "outside.jks"
+            outside.write_bytes(b"key-B")
+
+            with patch.dict(os.environ, {release.STORE_FILE_ENVIRONMENT: str(outside)}):
+                with self.assertRaisesRegex(RuntimeError, "exactly one storeFile") as raised:
+                    release.build_immutable_release(
+                        root,
+                        [":app:bundleRelease"],
+                        Path(temp_dir) / "output",
+                        run=lambda command, cwd: subprocess.CompletedProcess(command, 0, "", ""),
+                    )
+            self.assertNotIn("secret-A", str(raised.exception))
+            self.assertNotIn(str(outside), str(raised.exception))
+
+    def test_ambiguous_or_non_relative_store_file_is_rejected(self) -> None:
+        cases = {
+            "duplicate": b"storeFile=release-key.jks\nstoreFile=other.jks\n",
+            "absolute": b"storeFile=/outside/release-key.jks\n",
+            "windows-absolute": b"storeFile=C\\:\\\\outside\\\\release-key.jks\n",
+            "parent": b"storeFile=../release-key.jks\n",
+            "dot": b"storeFile=./release-key.jks\n",
+            "empty-component": b"storeFile=keys//release-key.jks\n",
+            "missing": b"keyAlias=telecampro\n",
+        }
+        for label, payload in cases.items():
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(RuntimeError, "storeFile"):
+                    release.release_store_file(payload)
+
+    def test_symlink_store_file_is_rejected_without_copying_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "fixture"
+            root.mkdir()
+            self.fixture(root)
+            (root / "keystore.properties").write_text(
+                "storeFile=release-key.jks\n",
+                encoding="utf-8",
+            )
+            target = Path(temp_dir) / "outside.jks"
+            target.write_bytes(b"outside-key")
+            (root / "release-key.jks").symlink_to(target)
+
+            with self.assertRaisesRegex(RuntimeError, "safely read release local input"):
+                release.build_immutable_release(
+                    root,
+                    [":app:bundleRelease"],
+                    Path(temp_dir) / "output",
+                    run=lambda command, cwd: subprocess.CompletedProcess(command, 0, "", ""),
+                )
+
+    def test_transient_keystore_mutation_is_detected_after_restore(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "fixture"
+            root.mkdir()
+            self.fixture(root)
+            self.signing_fixture(root, b"storeFile=release-key.jks\n")
+            output = Path(temp_dir) / "immutable-output"
+
+            def package(command: list[str], snapshot: Path) -> subprocess.CompletedProcess[str]:
+                target = snapshot / "release-key.jks"
+                sealed_mode = target.stat().st_mode & 0o777
+                target.chmod(sealed_mode | 0o200)
+                target.write_bytes(b"key-B")
+                target.write_bytes(b"key-A")
                 target.chmod(sealed_mode)
                 artifact = snapshot / "app/build/outputs/bundle/release/app-release.aab"
                 artifact.parent.mkdir(parents=True)
