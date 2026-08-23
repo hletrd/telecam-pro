@@ -344,7 +344,7 @@ dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)
-    // debug-only: the only @Preview lives in src/debug (release keeps minify off, so a preview
+    // debug-only: the only @Preview lives in src/debug (release minification is enabled, but a preview
     // entry point on the main source set would ship inside the AAB).
     debugImplementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)

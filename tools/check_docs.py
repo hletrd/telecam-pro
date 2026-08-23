@@ -311,6 +311,35 @@ check(
     "production comments carry no affirmative retired native-log plumbing",
 )
 
+# ---- current orientation/route/build comments must agree with implementation -------------------
+manifest = read("app/src/main/AndroidManifest.xml")
+main_activity = read("app/src/main/kotlin/me/hletrd/telecampro/MainActivity.kt")
+claude = read("CLAUDE.md")
+backlog = read("docs/BACKLOG.md")
+check(
+    re.search(r"<activity\b[^>]*\bandroid:screenOrientation=", manifest, re.S) is None
+    and "lockPortraitOnHandsets" in main_activity
+    and "manifest carries no" in claude
+    and "manifest orientation restriction is" in backlog,
+    "orientation authority joins absent manifest restriction to handset runtime lock",
+)
+check(
+    "current TELE capture is eligible" not in architecture
+    and "DNG is not TELE-only" in architecture,
+    "architecture keeps DNG routing standalone-any-rear rather than TELE-only",
+)
+current_comments = read("app/src/main/kotlin/me/hletrd/telecampro/camera/CaptureCapabilities.kt")
+build_script = read("app/build.gradle.kts")
+check(
+    "capability-gated read here misses" not in current_comments
+    and "release keeps minify off" not in build_script,
+    "current comments describe maximum-resolution discovery and enabled R8",
+)
+check(
+    "python3 tools/verify_host.py" in claude,
+    "CLAUDE documents the consolidated non-device host gate",
+)
+
 # ---- Device Catalog is one classified matrix, not mutually inconsistent counts -----------------
 catalog_start = submit.index("## Device Catalog")
 catalog_end = submit.index("\n## ", catalog_start + 4)

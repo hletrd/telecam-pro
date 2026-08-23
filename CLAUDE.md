@@ -73,10 +73,14 @@ export PATH="$JAVA_HOME/bin:$PATH"
 ## Build / deploy / verify loop
 
 ```bash
+# authoritative non-device host gate (Android + coverage + Python tools/harness/docs)
+python3 tools/verify_host.py
+
 # normal implementation gate
 ./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
 
-# Play-release gate (requires local signing credentials)
+# Play-release gate (requires clean committed source + local signing credentials)
+python3 tools/verify_host.py --release
 ./gradlew :app:lintRelease :app:assembleRelease :app:bundleRelease
 
 # device is over wireless ADB — IP/port change between sessions, ask the user for the current one
@@ -387,11 +391,12 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   `engine.pause`. `TerminalAcquisitionGate` closes before release's final
   `gl.stop`, so queued cold start cannot resurrect a GL generation afterward. Preview-window tasks
   also carry synchronous invalidation generations; stale/released native windows cannot bind later.
-- **Large screens take a LANDSCAPE window; phones do not (2026-08-04).** `screenOrientation="portrait"`
-  is still declared and is still honoured below sw600dp — PMA110 measures **411 dp**, so the phone is
-  device-fixed portrait exactly as before. But `PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY` is
-  GONE, so at sw600dp+ Android 16 gives the activity a landscape window (API 37 removes that opt-out
-  outright). Four things take a window term — preview rotation, displayed aspect, tap mapping
+- **Large screens take a LANDSCAPE window; phones do not (2026-08-04).** The manifest carries no
+  `screenOrientation` restriction. `MainActivity.lockPortraitOnHandsets` applies the portrait lock
+  only when `smallestScreenWidthDp < 600`; PMA110 measures **411 dp**, so the phone remains
+  device-fixed portrait while sw600dp+ is left free for Android 16/17 large-screen behavior.
+  `PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY` is also GONE. Four things take a window term —
+  preview rotation, displayed aspect, tap mapping
   (`RotationMath.unrotateViewPoint` inside `mapTapFocusGeometry`), and glyph counter-rotation — and
   **every one is proven inert at `ROTATION_0` by a unit test; that degeneracy is the phone's
   regression fence.** The preview term rides `FlipRenderer.draw`'s per-call `rotationOverrideDeg` and
