@@ -231,7 +231,8 @@ internal fun quickFnEnabled(slot: FnSlot, state: CameraUiState): Boolean = fnSlo
     // The TC toggle is a rear-only optics door: onToggleTeleconverter also refuses while FRONT
     // (backOpticsDoorRefusal), so the tile must dim on the selfie route or it renders hot and
     // only toasts on tap — exactly the drift this predicate's contract forbids.
-    FnSlot.TELECONVERTER -> !state.isRecording && state.facing == CameraFacing.BACK
+    FnSlot.TELECONVERTER ->
+        !state.isRecording && state.facing == CameraFacing.BACK && state.cameraRoutes.back
     FnSlot.OPEN_GATE -> state.mode == CaptureMode.VIDEO && !state.isRecording
     FnSlot.STABILIZATION -> !state.isRecording
     FnSlot.AUDIO_SCENE -> !state.isRecording

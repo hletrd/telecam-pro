@@ -1,7 +1,9 @@
 package me.hletrd.telecampro.camera
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -144,5 +146,44 @@ class CameraSelector2Test {
     @Test
     fun `front pick returns null when the device exposes no front camera`() {
         assertNull(CameraSelector2.pickFrontBest(emptyList()))
+    }
+
+    @Test
+    fun `startup route inventory prefers rear then front then external`() {
+        val all = cameraRouteInventoryOf(CameraRoute.entries)
+        assertEquals(CameraRoute.BACK, all.initialRoute())
+        assertTrue(all.switchAvailable)
+
+        val frontExternal = cameraRouteInventoryOf(
+            listOf(CameraRoute.FRONT, CameraRoute.EXTERNAL),
+        )
+        assertEquals(CameraRoute.FRONT, frontExternal.initialRoute())
+        assertTrue(frontExternal.switchAvailable)
+
+        val externalOnly = cameraRouteInventoryOf(listOf(CameraRoute.EXTERNAL))
+        assertEquals(CameraRoute.EXTERNAL, externalOnly.initialRoute())
+        assertFalse(externalOnly.switchAvailable)
+    }
+
+    @Test
+    fun `every route inventory matrix has an honest startup and switch projection`() {
+        assertFalse(CameraRouteInventory.UNKNOWN.complete)
+        for (mask in 0 until 8) {
+            val routes = CameraRoute.entries.filterIndexed { index, _ -> mask and (1 shl index) != 0 }
+            val inventory = cameraRouteInventoryOf(routes)
+            assertTrue(inventory.complete)
+            assertEquals(routes.isNotEmpty(), inventory.any)
+            assertEquals(
+                CameraRoute.BACK.takeIf { CameraRoute.BACK in routes }
+                    ?: CameraRoute.FRONT.takeIf { CameraRoute.FRONT in routes }
+                    ?: CameraRoute.EXTERNAL.takeIf { CameraRoute.EXTERNAL in routes },
+                inventory.initialRoute(),
+            )
+            assertEquals(
+                CameraRoute.FRONT in routes &&
+                    (CameraRoute.BACK in routes || CameraRoute.EXTERNAL in routes),
+                inventory.switchAvailable,
+            )
+        }
     }
 }

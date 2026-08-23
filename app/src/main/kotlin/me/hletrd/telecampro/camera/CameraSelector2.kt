@@ -29,6 +29,59 @@ data class FrontCandidate(
     val activeArrayArea: Long,
 )
 
+/** Camera directions the app can open without inheriting any device-specific behavior. */
+internal enum class CameraRoute {
+    BACK,
+    FRONT,
+    EXTERNAL,
+}
+
+/**
+ * One device-static projection of the Camera2 inventory, resolved before the first open.
+ *
+ * BACK remains the preferred route so PMA110 starts exactly as before. A front-only device starts
+ * on FRONT instead of exhausting a known-impossible rear retry. EXTERNAL is a conservative final
+ * fallback: it is opened plainly under the GENERIC [DeviceProfile], never physical-routed and never
+ * given rear-only teleconverter controls.
+ */
+data class CameraRouteInventory(
+    val back: Boolean,
+    val front: Boolean,
+    val external: Boolean,
+    /** False when at least one advertised id could not be classified this attempt. */
+    val complete: Boolean = true,
+) {
+    val any: Boolean get() = back || front || external
+    val nonFront: Boolean get() = back || external
+    val switchAvailable: Boolean get() = front && nonFront
+
+    internal fun initialRoute(): CameraRoute? = when {
+        back -> CameraRoute.BACK
+        front -> CameraRoute.FRONT
+        external -> CameraRoute.EXTERNAL
+        else -> null
+    }
+
+    companion object {
+        /** Keeps pre-enumeration PMA110 chrome unchanged until the real inventory arrives. */
+        val UNKNOWN = CameraRouteInventory(
+            back = true,
+            front = true,
+            external = false,
+            complete = false,
+        )
+    }
+}
+
+internal fun cameraRouteInventoryOf(routes: Iterable<CameraRoute>): CameraRouteInventory {
+    val set = routes.toSet()
+    return CameraRouteInventory(
+        back = CameraRoute.BACK in set,
+        front = CameraRoute.FRONT in set,
+        external = CameraRoute.EXTERNAL in set,
+    )
+}
+
 /**
  * Selects the lens the teleconverter mounts on: the back camera whose 35mm-equivalent focal length
  * is CLOSEST to [TARGET_EQUIV_MM] (the 3x/70mm periscope) — NOT the longest lens.
@@ -51,6 +104,34 @@ object CameraSelector2 {
             }
         }
         return pickBest(candidatesOf(manager))
+    }
+
+    /** Enumerates the route directions the app can actually open. */
+    internal fun routeInventory(manager: CameraManager): CameraRouteInventory {
+        val ids = runCatching { manager.cameraIdList }.getOrElse {
+            return CameraRouteInventory(
+                back = false,
+                front = false,
+                external = false,
+                complete = false,
+            )
+        }
+        var complete = true
+        val routes = ids.mapNotNull { id ->
+            val chars = runCatching { manager.getCameraCharacteristics(id) }.getOrNull()
+            if (chars == null) {
+                complete = false
+                return@mapNotNull null
+            }
+            val facing = chars.get(CameraCharacteristics.LENS_FACING)
+            when (facing) {
+                CameraMetadata.LENS_FACING_BACK -> CameraRoute.BACK
+                CameraMetadata.LENS_FACING_FRONT -> CameraRoute.FRONT
+                CameraMetadata.LENS_FACING_EXTERNAL -> CameraRoute.EXTERNAL
+                else -> null
+            }
+        }
+        return cameraRouteInventoryOf(routes).copy(complete = complete)
     }
 
     /** Enumerates every back-facing lens as a candidate (standalone ids + logical physical sub-cameras). */
@@ -138,6 +219,25 @@ object CameraSelector2 {
     fun pickFront(manager: CameraManager): TeleSelection? {
         val best = pickFrontBest(frontCandidatesOf(manager)) ?: return null
         return TeleSelection(best.id, null, equivFocalOf(manager, best.id))
+    }
+
+    /**
+     * Plain external-camera fallback for a device with no built-in rear/front route.
+     *
+     * External ids are never physical-output-routed. Prefer the external camera nearest the normal
+     * 1× band when focal metadata exists, otherwise the first stable camera id.
+     */
+    internal fun pickExternal(manager: CameraManager): TeleSelection? {
+        val ids = runCatching { manager.cameraIdList }.getOrDefault(emptyArray())
+        val candidates = ids.mapNotNull { id ->
+            val chars = runCatching { manager.getCameraCharacteristics(id) }.getOrNull()
+                ?: return@mapNotNull null
+            if (chars.get(CameraCharacteristics.LENS_FACING) != CameraMetadata.LENS_FACING_EXTERNAL) {
+                return@mapNotNull null
+            }
+            TeleSelection(id, null, equivFocalOf(manager, id))
+        }
+        return pickClosest(candidates, LensChoice.MAIN.targetEquivMm)
     }
 
     /** Enumerates every LENS_FACING_FRONT id as a plainly-openable candidate (no physical routing). */

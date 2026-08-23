@@ -31,8 +31,10 @@
          perfectly well — which started to matter with the 2026-08-01 multi-device decision.
 
          android.hardware.camera is REAR-camera-specific. The app's real requirement is camera.any
-         above: FRONT is a first-class optics door (CameraEngine.setFrontCamera), so a device
-         without a rear camera is degraded, not broken.
+         above: route inventory is resolved before the first open, FRONT starts automatically when
+         no rear route exists, and an external-only camera is opened plainly on the capability-
+         enumerated GENERIC path. Rear-only TELE/focal controls remain absent on that fallback, so
+         neither an external nor front-only device inherits PMA110 quirks.
 
          android.hardware.microphone contradicts the app's own documented design outright: a
          declined mic still records, video-only and silently (CameraPermissionPolicy

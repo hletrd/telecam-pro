@@ -84,3 +84,7 @@ internal data class DeviceProfile(
             if (model?.trim()?.equals("PMA110", ignoreCase = true) == true) PMA110 else GENERIC
     }
 }
+
+/** External camera devices never inherit quirks keyed from the host handset's model string. */
+internal fun deviceProfileForRoute(base: DeviceProfile, externalRoute: Boolean): DeviceProfile =
+    if (externalRoute) DeviceProfile.GENERIC else base

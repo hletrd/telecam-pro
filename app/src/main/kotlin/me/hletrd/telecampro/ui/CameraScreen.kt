@@ -1197,7 +1197,7 @@ fun CameraScreen(
                     // GONE while FRONT (not disabled): the 0.6/1/3/10 presets are rear-lens
                     // concepts — the selfie route has exactly one lens, so a disabled rail would
                     // advertise choices that cannot exist (same rationale as the TELE chip).
-                    if (state.facing == CameraFacing.BACK) {
+                    if (state.facing == CameraFacing.BACK && state.cameraRoutes.back) {
                         FocalRail(
                             state = state,
                             onLens = actions::onLens,
@@ -1565,7 +1565,7 @@ private fun TopBar(
             // headline function must keep one stable, always-visible home in every rear mode.
             // GONE (not disabled) while FRONT: the converter is a rear-3× accessory, so the chip is
             // a rear-only concept with no meaningful disabled state on the selfie route.
-            if (state.facing == CameraFacing.BACK) {
+            if (state.facing == CameraFacing.BACK && state.cameraRoutes.back) {
                 TeleChip(
                     active = state.teleconverterMode,
                     enabled = !recordingLocked,
@@ -1580,7 +1580,8 @@ private fun TopBar(
             // be a front-camera fault at all — the punch-in LOUPE crops the preview to
             // 1 - PUNCH_IN_CROP = 40% of the frame, preview-only by design, on whichever camera is
             // live. It simply reads louder on a 21.5 mm-equivalent selfie lens than at rear 3x.
-            FlipCameraButton(
+            CameraSwitchButton(
+                available = state.cameraRoutes.switchAvailable,
                 onClick = actions::onToggleFrontCamera,
                 enabled = !recordingLocked,
                 modifier = Modifier.rotate(glyphRotation),
@@ -1959,6 +1960,24 @@ private fun FlipCameraButton(
             arrowHead(angleDeg = 140f, tangentDeg = 230f)
         }
     }
+}
+
+/** Emits no dead switch action when the enumerated inventory has only one route side. */
+@Composable
+internal fun CameraSwitchButton(
+    available: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    frontFacing: Boolean = false,
+) {
+    if (!available) return
+    FlipCameraButton(
+        onClick = onClick,
+        modifier = modifier,
+        enabled = enabled,
+        frontFacing = frontFacing,
+    )
 }
 
 @Composable

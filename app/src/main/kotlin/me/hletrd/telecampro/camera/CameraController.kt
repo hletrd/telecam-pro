@@ -56,7 +56,13 @@ class CameraController(context: Context) {
 
     private val manager = context.getSystemService(CameraManager::class.java)
     // Measured per-device HAL quirks (multi-device 2026-08-01); gates the vendor TC session type.
-    private val deviceProfile = DeviceProfile.resolve(android.os.Build.MODEL)
+    private var deviceProfile = DeviceProfile.resolve(android.os.Build.MODEL)
+
+    /** External cameras are independent devices and must never inherit handset-model HAL quirks. */
+    internal fun useGenericDeviceProfile() {
+        check(device == null) { "Device profile must be selected before opening Camera2" }
+        deviceProfile = DeviceProfile.GENERIC
+    }
     private val bg = HandlerThread("camera").apply { start() }
     private val handler = Handler(bg.looper)
     private val callbackDispatchGate = CameraCallbackDispatchGate()

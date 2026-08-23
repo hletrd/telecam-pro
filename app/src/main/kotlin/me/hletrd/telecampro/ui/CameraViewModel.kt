@@ -20,6 +20,7 @@ import me.hletrd.telecampro.camera.CameraEngine
 import me.hletrd.telecampro.camera.CameraFacing
 import me.hletrd.telecampro.camera.CameraReadyPublication
 import me.hletrd.telecampro.camera.CameraReadyPublicationGate
+import me.hletrd.telecampro.camera.CameraRouteInventory
 import me.hletrd.telecampro.camera.CameraStatus
 import me.hletrd.telecampro.camera.CameraStatusArgument
 import me.hletrd.telecampro.camera.CameraStatusLifecycle
@@ -636,6 +637,19 @@ class CameraViewModel @JvmOverloads constructor(
                 } else {
                     clearTapFocusUi()
                 }
+            }
+        }
+        // Route inventory is resolved before the first Camera2 open. Mirror both availability and
+        // the Engine's selected initial facing in one fold so a front-only device never renders a
+        // dead rear route while its first session is already opening on FRONT.
+        engine.onCameraRouteInventory = { routes, initialFacing ->
+            _state.update { current ->
+                cameraRoutePublishedState(
+                    current = current,
+                    routes = routes,
+                    initialFacing = initialFacing,
+                    rawForcesStandalone = engine.rawForcesStandalone,
+                )
             }
         }
         // Caps arrive on the setup thread. Reconcile restored/schema-normalized zoom against the
@@ -1564,7 +1578,10 @@ class CameraViewModel @JvmOverloads constructor(
      */
     private fun rejectBackOnlyOpticsDoor(): Boolean {
         val message = when (
-            backOpticsDoorRefusal(_state.value.isRecording, _state.value.facing == CameraFacing.FRONT)
+            backOpticsDoorRefusal(
+                _state.value.isRecording,
+                _state.value.facing == CameraFacing.FRONT || !_state.value.cameraRoutes.back,
+            )
         ) {
             BackOpticsRefusal.RECORDING -> CameraStatusMessage.STOP_RECORDING_FIRST
             BackOpticsRefusal.FRONT_ROUTE -> CameraStatusMessage.SWITCH_TO_REAR_FIRST
@@ -3516,6 +3533,24 @@ class CameraViewModel @JvmOverloads constructor(
         const val SETTINGS_SAVE_DEBOUNCE_MS = 500L
     }
 }
+
+/** Mirrors the pre-open route decision into UI truth without inventing a second selection policy. */
+internal fun cameraRoutePublishedState(
+    current: CameraUiState,
+    routes: CameraRouteInventory,
+    initialFacing: CameraFacing,
+    rawForcesStandalone: Boolean,
+): CameraUiState = current.copy(
+    cameraRoutes = routes,
+    facing = initialFacing,
+    teleconverterMode = current.teleconverterMode && routes.back,
+    rawForcesStandalone = rawForcesStandalone,
+    controls = if (initialFacing == CameraFacing.FRONT || !routes.back) {
+        current.controls.copy(zoomRatio = 1f)
+    } else {
+        current.controls
+    },
+)
 
 internal fun standbyAudioMeterShouldRun(
     lifecycleStarted: Boolean,

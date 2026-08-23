@@ -1265,6 +1265,9 @@ data class CameraUiState(
     // files stay unmirrored. Not persisted — fresh launch is always BACK (see [CameraFacing]).
     // [lens] keeps the last rear band across a front trip so flipping back restores that preset.
     val facing: CameraFacing = CameraFacing.BACK,
+    // Device-static route truth, enumerated before the first Camera2 open. UNKNOWN deliberately
+    // preserves the historical PMA110 chrome for the few milliseconds before publication.
+    val cameraRoutes: CameraRouteInventory = CameraRouteInventory.UNKNOWN,
     // Teleconverter mode: manual (not auto-detected). ON = afocal 180° flip; locked to the 3× lens.
     val teleconverterMode: Boolean = false,
     // The converter setting is a PAIR (see Teleconverter.kt): the phone decides WHICH kits clamp on,

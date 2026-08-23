@@ -290,7 +290,7 @@ class CameraEngine(private val context: Context) {
         // other standalone route. This asked `!videoMode`, which misses the DNG door: with RAW on,
         // the lens-local 1.0 was read as main-relative and collapsed the band to 1×, so the rail
         // highlighted 1× while the focal readout correctly said 69 mm (device-reported 2026-08-04).
-        if (!standaloneRouteWanted(videoMode, rawWanted, deviceProfile.rawRequiresStandalone) &&
+        if (!standaloneRouteWanted(videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone) &&
             !teleconverterMode && facing == CameraFacing.BACK
         ) {
             lensChoice = LensChoice.forZoom(controls.zoomRatio)
@@ -677,6 +677,13 @@ class CameraEngine(private val context: Context) {
     // shipped workaround byte-identical, anything else gets spec behavior. See DeviceProfile.kt.
     private val deviceProfile = DeviceProfile.resolve(android.os.Build.MODEL)
 
+    private fun activeDeviceProfile(): DeviceProfile =
+        deviceProfileForRoute(
+            deviceProfile,
+            externalRoute = externalRouteActive &&
+                facing != CameraFacing.FRONT && !cameraRouteInventory.back,
+        )
+
     private fun cachedCaps(logicalId: String, physicalId: String?): CameraCaps? =
         runCatching {
             capsCache.getOrPut("$logicalId:$physicalId") {
@@ -684,7 +691,7 @@ class CameraEngine(private val context: Context) {
                     manager,
                     logicalId,
                     physicalId,
-                    stillExposureCeilingNs = deviceProfile.stillExposureCeilingNs,
+                    stillExposureCeilingNs = activeDeviceProfile().stillExposureCeilingNs,
                     // A process-lifetime cache must never memoize the logical-fallback read
                     // (review 2026-08-01): a transient service outage during the first physical
                     // read otherwise stamps the LOGICAL camera's focal into every later still on
@@ -757,10 +764,19 @@ class CameraEngine(private val context: Context) {
      */
     private fun publishLensInventoryOnce() {
         if (lensInventoryPublished) return
-        val equivalents = runCatching {
-            CameraSelector2.candidatesOf(manager).map { it.equivFocalMm }
+        val candidates = runCatching {
+            if (cameraRouteInventory.back) {
+                CameraSelector2.candidatesOf(manager)
+            } else {
+                listOfNotNull(cachedExternal())
+            }
         }.getOrDefault(emptyList())
-        val homeId = cachedLogicalBack() ?: cachedIdForFocal(LensChoice.MAIN.targetEquivMm)
+        val equivalents = candidates.map { it.equivFocalMm }
+        val homeId = if (cameraRouteInventory.back) {
+            cachedLogicalBack() ?: cachedIdForFocal(LensChoice.MAIN.targetEquivMm)
+        } else {
+            cachedExternal()?.logicalId
+        }
         val range = homeId?.let { id ->
             val logical = id.substringBefore(':')
             val physical = id.substringAfter(':', "").takeIf { it.isNotEmpty() }
@@ -799,6 +815,60 @@ class CameraEngine(private val context: Context) {
 
     private fun cachedFront(): TeleSelection? =
         cachedFrontSelection ?: CameraSelector2.pickFront(manager)?.also { cachedFrontSelection = it }
+
+    @Volatile private var cachedExternalSelection: TeleSelection? = null
+    @Volatile private var cameraRouteInventory = CameraRouteInventory.UNKNOWN
+    @Volatile private var cameraRouteInventoryResolved = false
+    // External cameras take the non-front side of the existing switch without pretending to be
+    // rear optics. They stay on GENERIC DeviceProfile paths and never expose TELE/focal chrome.
+    @Volatile private var externalRouteActive = false
+
+    private fun cachedExternal(): TeleSelection? =
+        cachedExternalSelection
+            ?: CameraSelector2.pickExternal(manager)?.also { cachedExternalSelection = it }
+
+    /** Resolve an honest startup route before snapshotting the first optics transaction. */
+    private fun resolveInitialCameraRouteAvailability() {
+        if (cameraRouteInventoryResolved) return
+        val inventory = CameraSelector2.routeInventory(manager)
+        if (!inventory.complete) return
+        cameraRouteInventory = inventory
+        if (!inventory.any) {
+            // CameraService can transiently enumerate nothing. Publish the honest temporary state,
+            // but retry enumeration with the existing bounded cold-start retry rather than caching it.
+            runCatching { onCameraRouteInventory?.invoke(inventory, facing) }
+            return
+        }
+        when (inventory.initialRoute()) {
+            CameraRoute.BACK -> {
+                // PMA110 and every ordinary phone remain byte-for-byte on the historical BACK path.
+                externalRouteActive = false
+            }
+            CameraRoute.FRONT -> {
+                facing = CameraFacing.FRONT
+                externalRouteActive = inventory.external
+                teleconverterMode = false
+                controls = controls.copy(zoomRatio = 1f)
+                overrideId = null
+                userCameraPin = null
+            }
+            CameraRoute.EXTERNAL -> {
+                // Reuse non-mirrored capture semantics, but route selection and UI availability
+                // remain explicitly external so no PMA110/rear-only quirk leaks onto this camera.
+                facing = CameraFacing.BACK
+                externalRouteActive = true
+                teleconverterMode = false
+                controls = controls.copy(zoomRatio = 1f)
+                overrideId = null
+                userCameraPin = null
+            }
+            null -> return
+        }
+        cameraRouteInventoryResolved = true
+        // UI publication cannot own camera startup: a detached or throwing observer must not turn
+        // valid enumerated hardware into a black viewfinder.
+        runCatching { onCameraRouteInventory?.invoke(inventory, facing) }
+    }
 
     private val gyro = me.hletrd.telecampro.stab.GyroEis(context)
     @Volatile private var teleconverterMode = false
@@ -844,6 +914,8 @@ class CameraEngine(private val context: Context) {
     @Volatile private var aspectRatio = AspectRatio.W4_3
     var onStatus: ((CameraStatus?) -> Unit)? = null
     var onCapsReady: ((CameraCaps, generation: Long) -> Unit)? = null
+    /** Device-static route truth plus the initial facing selected before first Camera2 open. */
+    var onCameraRouteInventory: ((CameraRouteInventory, CameraFacing) -> Unit)? = null
     // Device-static lens inventory (enumerated once, published once): which lens presets this
     // hardware can actually deliver. The rail rendered the PMA110 set unconditionally before.
     var onLensInventory: ((LensInventory) -> Unit)? = null
@@ -878,7 +950,7 @@ class CameraEngine(private val context: Context) {
     var onCameraPolicyBlocked: ((Boolean) -> Unit)? = null
 
     /** [DeviceProfile.rawRequiresStandalone] for the UI's copy of the route question. */
-    val rawForcesStandalone: Boolean get() = deviceProfile.rawRequiresStandalone
+    val rawForcesStandalone: Boolean get() = activeDeviceProfile().rawRequiresStandalone
     // A timelapse RUN started (true) / ended (false). Run truth lives in [timelapseRun]'s
     // generation, which the UI cannot see — the OSD's TL tag keys off the SELECTED drive only.
     // Fired exactly on run-state edges (stopTimelapse with no active run is silent), from whichever
@@ -975,6 +1047,11 @@ class CameraEngine(private val context: Context) {
                         ownedGl.setPreviewDigitalGain(lastPreviewDigitalGain)
                         rendererAssists.replayAll(ownedGl)
                         gyro.start()
+                        // Resolve device-static route truth before the first optics snapshot. This
+                        // leaves ordinary BACK-first phones unchanged, but lets a front-only device
+                        // avoid a known-impossible rear retry and admits a plain GENERIC external
+                        // camera when it is the sole route.
+                        resolveInitialCameraRouteAvailability()
                         // Capture route + token after GL input exists. A newer intent invalidates it.
                         val desired = currentOpticsReconfiguration()
                         reconfigureCamera(desired.overrideId, desired.transaction, startup = true)
@@ -1054,7 +1131,7 @@ class CameraEngine(private val context: Context) {
         // and take the naive roles (preview mirrors, encoder/analysis pass through).
         gl.setFrontMirrorConvention(
             facing == CameraFacing.FRONT,
-            deviceProfile.frontStreamPreMirrored,
+            activeDeviceProfile().frontStreamPreMirrored,
         )
         // TELE finder PIP: re-resolve on every session (re)config and tele change, like rotation
         // (the user toggle, TELE state, or aspect may all have changed since the last push).
@@ -1353,6 +1430,9 @@ class CameraEngine(private val context: Context) {
         // exact submit for one gesture).
         zoomInteractionActive = false
         val ctrl = CameraController(context)
+        if (externalRouteActive && facing != CameraFacing.FRONT && !cameraRouteInventory.back) {
+            ctrl.useGenericDeviceProfile()
+        }
         // Every result callback is identity-gated: a CLOSING controller's capture results keep
         // arriving on its camera thread for a beat after the replacement is wired, and an ungated
         // setHalZoom could clobber the new generation's GL zoom compensation for a frame during a
@@ -2057,7 +2137,7 @@ class CameraEngine(private val context: Context) {
             // and the GL draw roles disagreeing (cycle-6 architect F4).
             mirrorX = me.hletrd.telecampro.gl.FrontMirrorConvention.tapDisplayMirrorX(
                 facing == CameraFacing.FRONT,
-                deviceProfile.frontStreamPreMirrored,
+                activeDeviceProfile().frontStreamPreMirrored,
             ),
             // The METERING half is a different question and a different answer: AE/AF regions are
             // ACTIVE-ARRAY coordinates, and the array holds the TRUE scene while the selfie preview
@@ -2065,7 +2145,7 @@ class CameraEngine(private val context: Context) {
             // drift apart.
             meteringMirrorX = me.hletrd.telecampro.gl.FrontMirrorConvention.meteringMirrorX(
                 facing == CameraFacing.FRONT,
-                deviceProfile.frontStreamPreMirrored,
+                activeDeviceProfile().frontStreamPreMirrored,
             ),
         )
         val attempt = PendingTapFocus(
@@ -2476,6 +2556,7 @@ class CameraEngine(private val context: Context) {
                                     retryable,
                                 )
                             ) return@schedule
+                            resolveInitialCameraRouteAvailability()
                             val desired = currentOpticsReconfiguration()
                             reconfigureCamera(
                                 desired.overrideId,
@@ -2651,7 +2732,12 @@ class CameraEngine(private val context: Context) {
         // FRONT they refuse instead of silently flipping the route out from under the operator —
         // the flip button is the one exit. Defensive twin of the ViewModel's gate, through the same
         // shared decision so their answers cannot drift.
-        when (backOpticsDoorRefusal(recorder != null, facing == CameraFacing.FRONT)) {
+        when (
+            backOpticsDoorRefusal(
+                recorder != null,
+                facing == CameraFacing.FRONT || !cameraRouteInventory.back,
+            )
+        ) {
             BackOpticsRefusal.RECORDING -> { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return }
             BackOpticsRefusal.FRONT_ROUTE -> { onStatus?.invoke(CameraStatusMessage.SWITCH_TO_REAR_FIRST.status()); return }
             BackOpticsRefusal.NONE -> Unit
@@ -2662,7 +2748,7 @@ class CameraEngine(private val context: Context) {
                 // The ROUTE, not the mode — DNG moves photo onto a standalone lens as surely as
                 // video does, and the zoom scale follows the route.
                 standaloneRoute = standaloneRouteWanted(
-                    videoMode, rawWanted, deviceProfile.rawRequiresStandalone,
+                    videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone,
                 ),
                 opticalPresets = opticalPresets,
                 currentLens = lensChoice,
@@ -2855,7 +2941,9 @@ class CameraEngine(private val context: Context) {
      * Falls back to the closest standalone id on devices without a logical back camera.
      */
     private fun resolveNonTeleId(choice: LensChoice): String? =
-        if (standaloneRouteWanted(videoMode, rawWanted, deviceProfile.rawRequiresStandalone)) {
+        if (externalRouteActive && facing != CameraFacing.FRONT && !cameraRouteInventory.back) {
+            cachedExternal()?.logicalId
+        } else if (standaloneRouteWanted(videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone)) {
             cachedIdForFocal(choice.targetEquivMm)
         } else {
             cachedLogicalBack()
@@ -2870,9 +2958,9 @@ class CameraEngine(private val context: Context) {
      */
     fun setRawWanted(enabled: Boolean) {
         if (rawWanted == enabled) return
-        val before = standaloneRouteWanted(videoMode, rawWanted, deviceProfile.rawRequiresStandalone)
+        val before = standaloneRouteWanted(videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone)
         rawWanted = enabled
-        if (standaloneRouteWanted(videoMode, rawWanted, deviceProfile.rawRequiresStandalone) == before) return
+        if (standaloneRouteWanted(videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone) == before) return
         // Before start there is no session to move: the FIRST configure resolves the route from
         // `rawWanted` directly (that is how a restored DNG selection lands), and opening a
         // transaction here would bump the optics generation under the cold-start path for nothing.
@@ -3188,6 +3276,7 @@ class CameraEngine(private val context: Context) {
         // shaped (physicalId == null), so every downstream session/capture axis behaves like the
         // proven rear standalone path.
         if (facing == CameraFacing.FRONT) return cachedFront()
+        if (externalRouteActive && !cameraRouteInventory.back) return cachedExternal()
         val id = overrideId
             ?: (if (!teleconverterMode) resolveNonTeleId(lensChoice) else null)
             ?: cachedIdForFocal(lensChoice.targetEquivMm)
@@ -5209,6 +5298,7 @@ class CameraEngine(private val context: Context) {
             // Resume always carries an ownership token. Without one, a lens/TELE tap during the
             // dual-open wait could let this older attempt publish outgoing caps/Ready under the
             // newer generation even when there was no pre-pause rollback baseline.
+            resolveInitialCameraRouteAvailability()
             val desired = currentOpticsReconfiguration()
             reconfigureCamera(desired.overrideId, desired.transaction)
         }
@@ -5327,7 +5417,7 @@ class CameraEngine(private val context: Context) {
                     lens = lensChoice,
                     zoomRatio = controls.zoomRatio,
                     standaloneRoute = standaloneRouteWanted(
-                        videoMode, rawWanted, deviceProfile.rawRequiresStandalone,
+                        videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone,
                     ),
                     optical = opticalPresets,
                 ),
@@ -5358,6 +5448,8 @@ class CameraEngine(private val context: Context) {
         onTapFocusChange = null
         onStatus = null
         onCapsReady = null
+        onCameraRouteInventory = null
+        onLensInventory = null
         onVideoSizeChosen = null
         onEncoderSizeAccepted = null
         onPreviewAspect = null

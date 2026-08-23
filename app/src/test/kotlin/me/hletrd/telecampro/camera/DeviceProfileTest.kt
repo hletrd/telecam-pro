@@ -54,4 +54,10 @@ class DeviceProfileTest {
             assertFalse("attempt $attempt", plan.useVendorOperationMode)
         }
     }
+
+    @Test
+    fun `an external camera never inherits host handset quirks`() {
+        assertEquals(DeviceProfile.GENERIC, deviceProfileForRoute(DeviceProfile.PMA110, externalRoute = true))
+        assertEquals(DeviceProfile.PMA110, deviceProfileForRoute(DeviceProfile.PMA110, externalRoute = false))
+    }
 }
