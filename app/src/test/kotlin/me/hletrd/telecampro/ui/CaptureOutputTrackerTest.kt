@@ -14,6 +14,20 @@ import org.junit.Test
 
 class CaptureOutputTrackerTest {
     @Test
+    fun deletePlan_defaultHasNoPreservedSiblingSnapshot() {
+        val plan = CaptureDeletePlan(
+            requestedOutput = "external.jpg",
+            outputs = setOf("external.jpg"),
+            deleteScope = MediaDeleteScope.FILE_ONLY,
+            captureId = null,
+            kindsByOutput = emptyMap(),
+            preferredOutput = "external.jpg",
+        )
+
+        assertTrue(plan.preservedOutputs.isEmpty())
+    }
+
+    @Test
     fun fileOnlyReducerScope_targetsExactlyDisplayedUriForUnownedAndMixedFamilies() {
         listOf(
             false to false, // reinstall cleared both owners
@@ -38,6 +52,48 @@ class CaptureOutputTrackerTest {
                 tracker.deleteScopeFor(restored.preferred.output),
             )
         }
+    }
+
+    @Test
+    fun successfulFileOnlyDelete_promotesUntouchedKnownSibling() {
+        val restored = checkNotNull(
+            restoredStillFamily(processedOwned = false, rawOwned = false),
+        )
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
+        assertTrue(tracker.seedRestoredCapture(restored))
+
+        val plan = tracker.beginDelete("photo.heic")
+
+        assertEquals(MediaDeleteScope.FILE_ONLY, plan.deleteScope)
+        assertEquals(setOf("photo.heic"), plan.outputs)
+        assertEquals(setOf("photo.dng"), plan.preservedOutputs)
+        // Empty resolver survivors means the one requested file was deleted successfully. The DNG
+        // was never targeted and therefore remains a truthful file-only review owner.
+        assertEquals("photo.dng", tracker.restoreDeleteSurvivors(plan, emptySet()))
+        assertTrue(tracker.isCurrentReviewOutput("photo.dng"))
+        assertEquals(MediaDeleteScope.FILE_ONLY, tracker.deleteScopeFor("photo.dng"))
+        assertEquals(setOf("photo.dng"), tracker.takeForDelete("photo.dng"))
+    }
+
+    @Test
+    fun successfulFileOnlyDelete_prefersUntouchedDisplayableBeforeRaw() {
+        val tracker = CaptureOutputTracker<String>(maxCaptureHistory = 4)
+        assertTrue(
+            tracker.seedPriorCapture(
+                outputs = listOf(
+                    PriorCaptureOutput("shot.heic", CaptureOutputKind.DISPLAYABLE),
+                    PriorCaptureOutput("shot.jpg", CaptureOutputKind.DISPLAYABLE),
+                    PriorCaptureOutput("shot.dng", CaptureOutputKind.RAW),
+                ),
+                preferredOutput = "shot.heic",
+                deleteScope = MediaDeleteScope.FILE_ONLY,
+            ),
+        )
+
+        val plan = tracker.beginDelete("shot.heic")
+
+        assertEquals("shot.jpg", tracker.restoreDeleteSurvivors(plan, emptySet()))
+        assertTrue(tracker.isCurrentReviewOutput("shot.jpg"))
     }
 
     @Test

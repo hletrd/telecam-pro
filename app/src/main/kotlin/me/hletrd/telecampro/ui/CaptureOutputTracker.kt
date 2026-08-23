@@ -30,6 +30,8 @@ internal data class PriorCaptureOutput<T>(
 internal data class CaptureDeletePlan<T>(
     val requestedOutput: T,
     val outputs: Set<T>,
+    /** Known FILE_ONLY siblings intentionally left on disk and retained for review ownership. */
+    val preservedOutputs: Set<T> = emptySet(),
     val deleteScope: MediaDeleteScope,
     internal val captureId: Int?,
     internal val kindsByOutput: Map<T, CaptureOutputKind>,
@@ -188,6 +190,7 @@ internal class CaptureOutputTracker<T>(
             ?: return CaptureDeletePlan(
                 requestedOutput = output,
                 outputs = setOf(output),
+                preservedOutputs = emptySet(),
                 deleteScope = MediaDeleteScope.FILE_ONLY,
                 captureId = null,
                 kindsByOutput = emptyMap(),
@@ -218,6 +221,11 @@ internal class CaptureOutputTracker<T>(
         } else {
             tracked + output
         }
+        val preserved = if (deleteScope == MediaDeleteScope.FILE_ONLY) {
+            tracked - output
+        } else {
+            emptySet()
+        }
         val kinds = tracked.mapNotNull { ownedOutput ->
             kindByOutput[ownedOutput]?.let { ownedOutput to it }
         }.toMap()
@@ -233,6 +241,7 @@ internal class CaptureOutputTracker<T>(
         return CaptureDeletePlan(
             requestedOutput = output,
             outputs = targets,
+            preservedOutputs = preserved,
             deleteScope = deleteScope,
             captureId = planCaptureId,
             kindsByOutput = kinds,
@@ -256,7 +265,11 @@ internal class CaptureOutputTracker<T>(
      */
     @Synchronized
     fun restoreDeleteSurvivors(plan: CaptureDeletePlan<T>, survivors: Set<T>): T? {
-        val retained = plan.outputs.filterTo(linkedSetOf()) { it in survivors }
+        // FILE_ONLY targets only the displayed URI. Every other known sibling is a confirmed
+        // survivor by construction: no resolver delete was attempted for it. Keep those siblings
+        // in review ownership instead of making the gallery appear empty while files remain.
+        val retained = plan.preservedOutputs.toCollection(linkedSetOf())
+        plan.outputs.filterTo(retained) { it in survivors }
         if (retained.isEmpty()) return null
         val captureId = plan.captureId
         if (captureId == null) {
@@ -269,7 +282,11 @@ internal class CaptureOutputTracker<T>(
                             plan.kindsByOutput[it] ?: CaptureOutputKind.DISPLAYABLE,
                         )
                     },
-                    preferredOutput = plan.requestedOutput.takeIf { it in retained } ?: retained.first(),
+                    preferredOutput = plan.requestedOutput.takeIf { it in retained }
+                        ?: retained.firstOrNull {
+                            plan.kindsByOutput[it] == CaptureOutputKind.DISPLAYABLE
+                        }
+                        ?: retained.first(),
                     deleteScope = plan.deleteScope,
                 )
             ) {
