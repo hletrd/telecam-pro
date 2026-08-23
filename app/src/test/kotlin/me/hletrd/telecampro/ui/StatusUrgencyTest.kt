@@ -40,6 +40,24 @@ class StatusUrgencyTest {
     }
 
     @Test
+    fun `complete outputs awaiting publication are polite recoverable warnings`() {
+        listOf(
+            CameraStatusMessage.DNG_SAVE_DELAYED,
+            CameraStatusMessage.OUTPUT_SAVED_PENDING,
+        ).forEach {
+            val status = it.status()
+            assertEquals(CameraStatusSeverity.WARNING, status.severity)
+            assertEquals(CameraStatusLivePriority.POLITE, status.livePriority)
+            assertEquals(CameraStatusLifecycle.EVENT, status.lifecycle)
+            assertEquals(2_500L, status.durationMs)
+        }
+        assertEquals(
+            CameraStatusSeverity.ERROR,
+            CameraStatusMessage.OUTPUT_SAVED_PENDING_RECOVERY.status().severity,
+        )
+    }
+
+    @Test
     fun `the cold-start progress status is cleared by an event, never by a timer`() {
         val starting = CameraStatusMessage.STARTING_CAMERA.status()
         assertEquals(null, starting.durationMs)

@@ -591,9 +591,17 @@ internal fun previewTopPx(
 internal data class FocalRailState(
     val selected: Boolean,
     val enabled: Boolean,
-    val stateDescription: String,
+    val state: CameraControlSelectionState,
     val accessibilityRole: Role,
 )
+
+internal enum class CameraControlSelectionState {
+    UNAVAILABLE_WHILE_RECORDING,
+    CAMERA_RECONFIGURING,
+    SELECTED,
+    SELECTED_TELECONVERTER_ON,
+    NOT_SELECTED,
+}
 
 internal fun focalRailState(
     choice: LensChoice,
@@ -609,12 +617,11 @@ internal fun focalRailState(
     return FocalRailState(
         selected = selected,
         enabled = cameraReady && !recording,
-        stateDescription = railChipStateDescription(
+        state = railChipState(
             selected = selected,
             cameraReady = cameraReady,
             recording = recording,
-            selectedDetail = "Selected; teleconverter on"
-                .takeIf { teleconverter && choice == LensChoice.TELE3X },
+            teleconverterSelected = teleconverter && choice == LensChoice.TELE3X,
         ),
         accessibilityRole = Role.RadioButton,
     )
@@ -634,26 +641,27 @@ internal fun teleZoomMarkState(
 ): FocalRailState = FocalRailState(
     selected = selected,
     enabled = cameraReady && !recording,
-    stateDescription = railChipStateDescription(selected, cameraReady, recording),
+    state = railChipState(selected, cameraReady, recording),
     accessibilityRole = Role.RadioButton,
 )
 
-private fun railChipStateDescription(
+private fun railChipState(
     selected: Boolean,
     cameraReady: Boolean,
     recording: Boolean,
-    selectedDetail: String? = null,
-): String = when {
-    recording -> "Unavailable while recording"
-    !cameraReady -> "Camera reconfiguring…"
-    selected -> selectedDetail ?: "Selected"
-    else -> "Not selected"
+    teleconverterSelected: Boolean = false,
+): CameraControlSelectionState = when {
+    recording -> CameraControlSelectionState.UNAVAILABLE_WHILE_RECORDING
+    !cameraReady -> CameraControlSelectionState.CAMERA_RECONFIGURING
+    teleconverterSelected -> CameraControlSelectionState.SELECTED_TELECONVERTER_ON
+    selected -> CameraControlSelectionState.SELECTED
+    else -> CameraControlSelectionState.NOT_SELECTED
 }
 
 internal data class ModeCarouselState(
     val selected: Boolean,
     val enabled: Boolean,
-    val stateDescription: String,
+    val state: CameraControlSelectionState,
     val accessibilityRole: Role,
 )
 
@@ -661,7 +669,7 @@ internal fun modeCarouselState(active: Boolean, enabled: Boolean): ModeCarouselS
     ModeCarouselState(
         selected = active,
         enabled = enabled,
-        stateDescription = if (active) "Selected" else "Not selected",
+        state = if (active) CameraControlSelectionState.SELECTED else CameraControlSelectionState.NOT_SELECTED,
         accessibilityRole = Role.RadioButton,
     )
 

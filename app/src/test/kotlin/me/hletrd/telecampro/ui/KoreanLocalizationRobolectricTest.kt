@@ -67,6 +67,16 @@ class KoreanLocalizationRobolectricTest {
             R.string.a11y_start_recording,
             R.string.review_error_open_image,
             R.string.review_delete_family_body,
+            R.string.a11y_unavailable_while_recording,
+            R.string.a11y_selected_teleconverter_on,
+            R.string.a11y_raw_capture_review,
+            R.string.a11y_media_review,
+            R.string.a11y_focus_locked,
+            R.string.a11y_autofocus_failed,
+            R.string.output_10_bit_video_stills_off,
+            R.string.video_tone_mapped_source,
+            R.string.mr_default_photo_name,
+            R.string.mr_default_video_name,
         )
         ids.forEach { id ->
             val rendered = ko.getString(id)

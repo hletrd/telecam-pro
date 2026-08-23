@@ -303,6 +303,20 @@ class CameraViewModelRobolectricTest {
         )
     }
 
+    @Test fun `MR tele focal uses the device host lens instead of a 70 mm default`() {
+        val extras = ExtraSettings(
+            teleconverter = true,
+            teleconverterProfile = TeleconverterProfile.CUSTOM,
+            teleconverterCustomMagnification = 4f,
+        )
+        assertEquals(340f, memoryPresetFocalMm(extras, hostTeleEquivMm = 85f), 0.001f)
+        assertEquals(
+            LensChoice.MAIN.targetEquivMm,
+            memoryPresetFocalMm(extras.copy(teleconverter = false), hostTeleEquivMm = 85f),
+            0.001f,
+        )
+    }
+
     @Test fun `an operator toggle during the assist is theirs to keep`() {
         val (v, _) = createViewModel()
         v.onAutoPunchIn(true)

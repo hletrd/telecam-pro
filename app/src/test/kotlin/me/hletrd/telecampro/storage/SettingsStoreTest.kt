@@ -362,15 +362,72 @@ class SettingsStoreTest {
 
         assertEquals(setOf(MemorySlot.MR1, MemorySlot.MR2, MemorySlot.MR3), store.savedPresetSlots())
         val info = store.savedPresetInfo()
-        assertEquals(SettingsStore.PresetInfo("Birds", "1/300 ISO A"), info[MemorySlot.MR1])
-        // A blank saved name falls back to the slot label; a missing summary reads empty. Neither
-        // may drop the slot — the MR bank row must still show a recallable entry.
-        assertEquals(SettingsStore.PresetInfo("MR2", "moon"), info[MemorySlot.MR2])
-        assertEquals(SettingsStore.PresetInfo("MR3", ""), info[MemorySlot.MR3])
+        assertEquals("Birds", info[MemorySlot.MR1]?.customName)
+        assertEquals("1/300 ISO A", info[MemorySlot.MR1]?.customSummary)
+        // Blank/missing presentation stays null so the UI can derive it in the active locale. Neither
+        // may drop the slot or its typed control packet.
+        assertNull(info[MemorySlot.MR2]?.customName)
+        assertEquals("moon", info[MemorySlot.MR2]?.customSummary)
+        assertNull(info[MemorySlot.MR3]?.customName)
+        assertNull(info[MemorySlot.MR3]?.customSummary)
+        assertEquals(nonDefaultControls, info[MemorySlot.MR1]?.loaded?.controls)
 
         val empty = SettingsStore(FakePrefs())
         assertTrue(empty.savedPresetSlots().isEmpty())
         assertTrue(empty.savedPresetInfo().isEmpty())
+    }
+
+    @Test
+    fun generatedPreset_persistsOnlyCanonicalInputs_notLocaleSpecificDisplayProse() {
+        val prefs = FakePrefs()
+        val store = SettingsStore(prefs)
+
+        store.saveGeneratedPreset(MemorySlot.MR1, nonDefaultControls, nonDefaultExtras)
+
+        val info = requireNotNull(store.savedPresetInfo()[MemorySlot.MR1])
+        assertNull(info.customName)
+        assertNull(info.customSummary)
+        assertEquals(nonDefaultControls, info.loaded.controls)
+        assertEquals(nonDefaultExtras, info.loaded.extras)
+        assertFalse(prefs.contains("preset_MR1_name"))
+        assertFalse(prefs.contains("preset_MR1_summary"))
+    }
+
+    @Test
+    fun generatedPreset_migratesPreMarkerGeneratedPresentation() {
+        val prefs = FakePrefs(
+            mutableMapOf(
+                "preset_MR1_name" to "Photo 300 mm",
+                "preset_MR1_summary" to "300 mm · M · HEIF",
+            ),
+        )
+        val store = SettingsStore(prefs)
+
+        store.saveGeneratedPreset(MemorySlot.MR1, nonDefaultControls, nonDefaultExtras)
+
+        val info = requireNotNull(store.savedPresetInfo()[MemorySlot.MR1])
+        assertNull(info.customName)
+        assertNull(info.customSummary)
+        assertFalse(prefs.contains("preset_MR1_name"))
+        assertFalse(prefs.contains("preset_MR1_summary"))
+    }
+
+    @Test
+    fun generatedPresetOverwrite_preservesUserAuthoredPresentation() {
+        val store = SettingsStore(FakePrefs())
+        store.savePreset(MemorySlot.MR1, nonDefaultControls, nonDefaultExtras, "Birds", "moon")
+
+        store.saveGeneratedPreset(
+            MemorySlot.MR1,
+            nonDefaultControls.copy(iso = 800),
+            nonDefaultExtras.copy(mode = CaptureMode.VIDEO),
+        )
+
+        val info = requireNotNull(store.savedPresetInfo()[MemorySlot.MR1])
+        assertEquals("Birds", info.customName)
+        assertEquals("moon", info.customSummary)
+        assertEquals(800, info.loaded.controls.iso)
+        assertEquals(CaptureMode.VIDEO, info.loaded.extras.mode)
     }
 
     @Test

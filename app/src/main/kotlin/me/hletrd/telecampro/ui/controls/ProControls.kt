@@ -562,7 +562,10 @@ internal fun ToggleRow(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
 ) {
-    val accessibility = toggleSettingSemantics(label, checked)
+    val accessibility = toggleSettingSemantics(
+        label,
+        stringResource(if (checked) R.string.a11y_state_on else R.string.a11y_state_off),
+    )
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -920,7 +923,10 @@ internal fun PhotoFormatToggles(
                 // Same reasoning as the Ready-publication status: in VIDEO this is a designed trade
                 // (the 10-bit session drops the still readers), not a fault, so the sheet says what
                 // it BOUGHT rather than what it lost.
-                if (videoMode) "10-bit video · stills off" else "Still capture unavailable",
+                stringResource(
+                    if (videoMode) R.string.output_10_bit_video_stills_off
+                    else R.string.status_still_capture_unavailable,
+                ),
                 color = CameraColors.TextSecondary,
                 style = MaterialTheme.typography.labelSmall,
             )

@@ -22,8 +22,8 @@ class SettingSemanticsTest {
     @Test
     fun `slider and switch helpers bind visible names to interactive state`() {
         assertEquals(SettingSemantics("ISO", "1250"), sliderSettingSemantics("ISO", "1250"))
-        assertEquals(SettingSemantics("Peaking", "On"), toggleSettingSemantics("Peaking", true))
-        assertEquals(SettingSemantics("Peaking", "Off"), toggleSettingSemantics("Peaking", false))
+        assertEquals(SettingSemantics("Peaking", "On"), toggleSettingSemantics("Peaking", "On"))
+        assertEquals(SettingSemantics("Peaking", "Off"), toggleSettingSemantics("Peaking", "Off"))
     }
 
     @Test

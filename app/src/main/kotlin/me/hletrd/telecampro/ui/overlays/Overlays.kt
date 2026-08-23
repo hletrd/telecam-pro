@@ -31,6 +31,8 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -329,12 +331,14 @@ fun FocusReticle(
         AfIndication.FAILED -> Color(0xFFFF453A)
         AfIndication.SCANNING, AfIndication.IDLE -> CameraColors.ManualActive
     }
-    val focusDescription = when (indication) {
-        AfIndication.FOCUSED -> "Focus locked"
-        AfIndication.FAILED -> "Autofocus failed"
-        AfIndication.SCANNING -> "Autofocus searching"
-        AfIndication.IDLE -> "Focus point"
-    }
+    val focusDescription = stringResource(
+        when (indication) {
+            AfIndication.FOCUSED -> R.string.a11y_focus_locked
+            AfIndication.FAILED -> R.string.a11y_autofocus_failed
+            AfIndication.SCANNING -> R.string.a11y_autofocus_searching
+            AfIndication.IDLE -> R.string.a11y_focus_point
+        },
+    )
     Canvas(modifier = modifier.semantics { contentDescription = focusDescription }) {
         val cx = point.first * size.width
         val cy = point.second * size.height
@@ -354,6 +358,28 @@ fun FocusReticle(
         drawLine(color, Offset(right, bottom), Offset(right - corner, bottom), strokeWidth)
         drawLine(color, Offset(right, bottom), Offset(right, bottom - corner), strokeWidth)
     }
+}
+
+/** Stable, off-focus status node that announces only terminal tap-AF outcomes. */
+@Composable
+fun FocusResultLiveRegion(
+    indication: AfIndication,
+    active: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val terminalDescription = if (!active) null else when (indication) {
+        AfIndication.FOCUSED -> stringResource(R.string.a11y_focus_locked)
+        AfIndication.FAILED -> stringResource(R.string.a11y_autofocus_failed)
+        AfIndication.SCANNING, AfIndication.IDLE -> null
+    }
+    Box(
+        modifier = modifier.clearAndSetSemantics {
+            terminalDescription?.let {
+                contentDescription = it
+                liveRegion = LiveRegionMode.Polite
+            }
+        },
+    )
 }
 
 /** Red recording dot + elapsed mm:ss, shown while [me.hletrd.telecampro.camera.CameraUiState.isRecording] is true. */

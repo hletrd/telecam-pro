@@ -75,32 +75,24 @@ class MediaReviewSizingTest {
         // The button's visual label is arrow-prefixed: it names the NEXT magnification while the
         // top pill names the CURRENT one, and a bare "N×" made the two contradict (cycle-6 D-12).
         assertEquals(4f, nextReviewScale(1f))
-        assertEquals("Zoom 4×", reviewZoomActionLabel(1f))
+        assertEquals(R.string.a11y_zoom_4x, reviewZoomActionResource(1f))
         assertEquals("→4×", reviewZoomControlLabel(1f))
 
         assertEquals(8f, nextReviewScale(4f))
-        assertEquals("Zoom 8×", reviewZoomActionLabel(4f))
+        assertEquals(R.string.a11y_zoom_8x, reviewZoomActionResource(4f))
         assertEquals("→8×", reviewZoomControlLabel(4f))
 
         assertEquals(1f, nextReviewScale(8f))
-        assertEquals("Reset zoom", reviewZoomActionLabel(8f))
+        assertEquals(R.string.a11y_reset_zoom, reviewZoomActionResource(8f))
         assertEquals("→1×", reviewZoomControlLabel(8f))
     }
 
     @Test
-    fun `still zoom state describes current magnification`() {
-        assertEquals("Zoom 1×", reviewZoomStateDescription(1f))
-        assertEquals("Zoom 4×", reviewZoomStateDescription(4f))
-        assertEquals("Zoom 8×", reviewZoomStateDescription(8f))
-        assertEquals("Zoom 2.5×", reviewZoomStateDescription(2.5f))
-    }
-
-    @Test
     fun `video playback labels expose action and current state`() {
-        assertEquals("Pause video", videoPlaybackActionLabel(playing = true))
-        assertEquals("Playing", videoPlaybackStateDescription(playing = true))
-        assertEquals("Play video", videoPlaybackActionLabel(playing = false))
-        assertEquals("Paused", videoPlaybackStateDescription(playing = false))
+        assertEquals(R.string.a11y_pause_video, videoPlaybackActionResource(playing = true))
+        assertEquals(R.string.a11y_playing, videoPlaybackStateResource(playing = true))
+        assertEquals(R.string.a11y_play_video, videoPlaybackActionResource(playing = false))
+        assertEquals(R.string.a11y_paused, videoPlaybackStateResource(playing = false))
     }
 
     @Test

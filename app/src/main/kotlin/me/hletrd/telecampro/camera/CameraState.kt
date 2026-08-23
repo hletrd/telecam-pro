@@ -135,6 +135,22 @@ enum class VideoStabMode {
 /** Sony-style memory recall banks: complete shooting setups saved by the user. */
 enum class MemorySlot { MR1, MR2, MR3 }
 
+/** Locale-neutral inputs for an MR row; Compose resolves the display prose for the active locale. */
+@Immutable
+data class MemoryPresetPresentation(
+    val customName: String? = null,
+    val customSummary: String? = null,
+    val mode: CaptureMode,
+    val focalMm: Float,
+    val exposureMode: ExposureMode,
+    val photoFormats: PhotoFormats,
+    val videoWidth: Int,
+    val videoHeight: Int,
+    val videoFrameRate: VideoFrameRate,
+    val transfer: ColorTransfer,
+    val bitrateLevel: BitrateLevel,
+)
+
 /**
  * Customizable shooting-screen Fn bar slots. The first six defaults mirror the current always-visible
  * dials; the rest are quick toggles/cycles a Sony user expects to keep out of the deep menu.
@@ -1336,8 +1352,7 @@ data class CameraUiState(
     val recentSettingSlots: List<FnSlot> = emptyList(),
     val activeMemorySlot: MemorySlot? = null,
     val savedMemorySlots: Set<MemorySlot> = emptySet(),
-    val memorySlotNames: Map<MemorySlot, String> = emptyMap(),
-    val memorySlotSummaries: Map<MemorySlot, String> = emptyMap(),
+    val memorySlotPresentations: Map<MemorySlot, MemoryPresetPresentation> = emptyMap(),
     // Hardware controls. The OPPO half-press key defaults to AF-ON; volume/camera full press defaults
     // to shutter/REC. [halfPressActive] only drives the viewfinder feedback ring/chip.
     val volumeKeyAction: HardwareKeyAction = HardwareKeyAction.SHUTTER,

@@ -143,6 +143,27 @@ class SettingsStore(private val prefs: SharedPreferences) {
             putLoaded(prefix, c, e)
             putString("${prefix}name", name)
             putString("${prefix}summary", summary)
+            putBoolean("${prefix}customPresentation", true)
+            putBoolean("${prefix}hasSaved", true)
+        }
+    }
+
+    /**
+     * Saves generated MR inputs without freezing display prose in the locale active at save time.
+     * Existing explicit presentation is left untouched so a future/user-authored name survives an
+     * ordinary overwrite of the bank.
+     */
+    fun saveGeneratedPreset(slot: MemorySlot, c: ManualControls, e: ExtraSettings) {
+        val prefix = presetPrefix(slot)
+        val hasCustomPresentation = prefs.getBoolean("${prefix}customPresentation", false)
+        prefs.edit(commit = true) {
+            putLoaded(prefix, c, e)
+            if (!hasCustomPresentation) {
+                // Pre-marker releases stored generated English prose in these keys. It was never
+                // user-authored, and retaining it would freeze both locale and stale control data.
+                remove("${prefix}name")
+                remove("${prefix}summary")
+            }
             putBoolean("${prefix}hasSaved", true)
         }
     }
@@ -157,9 +178,16 @@ class SettingsStore(private val prefs: SharedPreferences) {
         MemorySlot.entries.mapNotNull { slot ->
             val prefix = presetPrefix(slot)
             if (!prefs.getBoolean("${prefix}hasSaved", false)) return@mapNotNull null
+            val loaded = loadPreset(slot) ?: return@mapNotNull null
+            val hasCustomPresentation = prefs.getBoolean("${prefix}customPresentation", false)
             slot to PresetInfo(
-                name = prefs.getString("${prefix}name", null)?.takeIf { it.isNotBlank() } ?: slot.name,
-                summary = prefs.getString("${prefix}summary", null).orEmpty(),
+                customName = if (hasCustomPresentation) {
+                    prefs.getString("${prefix}name", null)?.takeIf { it.isNotBlank() }
+                } else null,
+                customSummary = if (hasCustomPresentation) {
+                    prefs.getString("${prefix}summary", null)?.takeIf { it.isNotBlank() }
+                } else null,
+                loaded = loaded,
             )
         }.toMap()
 
@@ -411,7 +439,11 @@ class SettingsStore(private val prefs: SharedPreferences) {
     }
 
     data class Loaded(val controls: ManualControls, val extras: ExtraSettings)
-    data class PresetInfo(val name: String, val summary: String)
+    data class PresetInfo(
+        val customName: String?,
+        val customSummary: String?,
+        val loaded: Loaded,
+    )
 
     private companion object {
         const val K_REMEMBER = "rememberSettings"

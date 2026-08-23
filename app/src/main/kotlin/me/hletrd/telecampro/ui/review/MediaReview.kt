@@ -490,15 +490,12 @@ fun MediaReviewOverlay(
     // trap the camera preview hit). Tap toggles play/pause; the clip loops.
     val playerRef = remember { mutableStateOf<android.media.MediaPlayer?>(null) }
     var playing by remember { mutableStateOf(true) }
-    val reviewZoomAction = stringResource(
-        when (nextReviewScale(scale)) {
-            4f -> R.string.a11y_zoom_4x
-            8f -> R.string.a11y_zoom_8x
-            else -> R.string.a11y_reset_zoom
-        },
+    val reviewZoomAction = stringResource(reviewZoomActionResource(scale))
+    val playbackAction = stringResource(videoPlaybackActionResource(playing))
+    val playbackState = stringResource(videoPlaybackStateResource(playing))
+    val reviewPaneTitle = stringResource(
+        if (rawReady) R.string.a11y_raw_capture_review else R.string.a11y_media_review,
     )
-    val playbackAction = stringResource(if (playing) R.string.a11y_pause_video else R.string.a11y_play_video)
-    val playbackState = stringResource(if (playing) R.string.a11y_playing else R.string.a11y_paused)
     // Stock-gallery-style dismiss: at 1x, a vertical drag slides the image and past a threshold
     // closes the review; below it springs back. Zoomed in, vertical pan just pans.
     var dismissDrag by remember { mutableFloatStateOf(0f) }
@@ -536,7 +533,7 @@ fun MediaReviewOverlay(
             .fillMaxSize()
             .background(CameraColors.Background)
             .semantics {
-                paneTitle = if (rawReady) "RAW capture review" else "Media review"
+                paneTitle = reviewPaneTitle
                 isTraversalGroup = true
             },
         contentAlignment = Alignment.Center,
@@ -675,9 +672,9 @@ fun MediaReviewOverlay(
                         )
                         .semantics {
                             contentDescription = a11yVideoReview
-                            stateDescription = videoPlaybackStateDescription(playing)
+                            stateDescription = playbackState
                             role = Role.Button
-                            onClick(label = videoPlaybackActionLabel(playing)) {
+                            onClick(label = playbackAction) {
                                 toggleVideoPlayback()
                             }
                         },
@@ -1157,10 +1154,10 @@ internal fun reviewScaleLabel(scale: Float): String = when {
     else -> "%.1f×".format(java.util.Locale.US, scale)
 }
 
-internal fun reviewZoomActionLabel(scale: Float): String = when (nextReviewScale(scale)) {
-    4f -> "Zoom 4×"
-    8f -> "Zoom 8×"
-    else -> "Reset zoom"
+internal fun reviewZoomActionResource(scale: Float): Int = when (nextReviewScale(scale)) {
+    4f -> R.string.a11y_zoom_4x
+    8f -> R.string.a11y_zoom_8x
+    else -> R.string.a11y_reset_zoom
 }
 
 /** Visual label on the corner zoom button: the magnification the NEXT press applies, arrow-prefixed
@@ -1170,14 +1167,11 @@ internal fun reviewZoomActionLabel(scale: Float): String = when (nextReviewScale
 internal fun reviewZoomControlLabel(scale: Float): String =
     "→" + reviewScaleLabel(nextReviewScale(scale))
 
-internal fun reviewZoomStateDescription(scale: Float): String =
-    "Zoom ${reviewScaleLabel(scale)}"
+internal fun videoPlaybackActionResource(playing: Boolean): Int =
+    if (playing) R.string.a11y_pause_video else R.string.a11y_play_video
 
-internal fun videoPlaybackActionLabel(playing: Boolean): String =
-    if (playing) "Pause video" else "Play video"
-
-internal fun videoPlaybackStateDescription(playing: Boolean): String =
-    if (playing) "Playing" else "Paused"
+internal fun videoPlaybackStateResource(playing: Boolean): Int =
+    if (playing) R.string.a11y_playing else R.string.a11y_paused
 
 internal fun reviewMetadataLine(raw: Boolean, width: Int, height: Int, sizeBytes: Long): String =
     buildList {

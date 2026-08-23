@@ -196,8 +196,8 @@ private val TeleDarkColorScheme = darkColorScheme(
  * Inter (SIL Open Font License 1.1 — bundled, license at docs/licenses/inter-OFL.txt): a
  * professional UI face with unambiguous licensing, replacing whatever sans the OEM ships (ColorOS
  * substitutes its own default, so the chrome looked different from any design reference). Three
- * weights are bundled (~1.2 MB total). Korean never renders in-app (everything user-facing is
- * English), so no CJK subset is needed; system fallback would cover it.
+ * weights are bundled (~1.2 MB total). Inter has no Korean glyphs, so Android's system fallback
+ * supplies CJK while the bundled family keeps Latin camera abbreviations and numerals stable.
  *
  * The family stops at SemiBold(600) DELIBERATELY, and no call site asks for Bold(700) any more
  * (BACKLOG UI16, resolved). The 22 sites that used to were all resolving to SemiBold by font

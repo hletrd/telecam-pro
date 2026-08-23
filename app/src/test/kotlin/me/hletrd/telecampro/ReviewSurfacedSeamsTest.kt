@@ -17,6 +17,7 @@ import me.hletrd.telecampro.ui.controls.formatFocusRelative
 import me.hletrd.telecampro.ui.overlays.compactPhotoFormatLabel
 import me.hletrd.telecampro.ui.overlays.photoFormatLabel
 import me.hletrd.telecampro.ui.teleZoomMarkState
+import me.hletrd.telecampro.ui.CameraControlSelectionState
 import me.hletrd.telecampro.video.AudioInputPortInfo
 import me.hletrd.telecampro.video.AudioInputInspector
 import me.hletrd.telecampro.video.AudioPortKind
@@ -204,15 +205,15 @@ class ReviewSurfacedSeamsTest {
     @Test
     fun `tele zoom marks share the rail's availability wording`() {
         assertEquals(
-            "Unavailable while recording",
-            teleZoomMarkState(selected = true, cameraReady = true, recording = true).stateDescription,
+            CameraControlSelectionState.UNAVAILABLE_WHILE_RECORDING,
+            teleZoomMarkState(selected = true, cameraReady = true, recording = true).state,
         )
         assertEquals(
-            "Camera reconfiguring…",
-            teleZoomMarkState(selected = false, cameraReady = false, recording = false).stateDescription,
+            CameraControlSelectionState.CAMERA_RECONFIGURING,
+            teleZoomMarkState(selected = false, cameraReady = false, recording = false).state,
         )
         val selected = teleZoomMarkState(selected = true, cameraReady = true, recording = false)
-        assertEquals("Selected", selected.stateDescription)
+        assertEquals(CameraControlSelectionState.SELECTED, selected.state)
         assertTrue(selected.enabled)
         assertFalse(
             teleZoomMarkState(selected = false, cameraReady = true, recording = true).enabled,

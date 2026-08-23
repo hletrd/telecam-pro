@@ -94,13 +94,13 @@ class CameraUiPolicyTest {
         val selected = modeCarouselState(active = true, enabled = true)
         assertTrue(selected.selected)
         assertTrue(selected.enabled)
-        assertEquals("Selected", selected.stateDescription)
+        assertEquals(CameraControlSelectionState.SELECTED, selected.state)
         assertEquals(Role.RadioButton, selected.accessibilityRole)
 
         val locked = modeCarouselState(active = false, enabled = false)
         assertFalse(locked.selected)
         assertFalse(locked.enabled)
-        assertEquals("Not selected", locked.stateDescription)
+        assertEquals(CameraControlSelectionState.NOT_SELECTED, locked.state)
         assertEquals(Role.RadioButton, locked.accessibilityRole)
     }
 
@@ -116,20 +116,20 @@ class CameraUiPolicyTest {
         val selected = focalRailState(LensChoice.TELE3X, LensChoice.TELE3X, true, true, false)
         assertTrue(selected.selected)
         assertTrue(selected.enabled)
-        assertEquals("Selected; teleconverter on", selected.stateDescription)
+        assertEquals(CameraControlSelectionState.SELECTED_TELECONVERTER_ON, selected.state)
         assertEquals(Role.RadioButton, selected.accessibilityRole)
 
         val unselected = focalRailState(LensChoice.MAIN, LensChoice.TELE3X, true, true, false)
         assertFalse(unselected.selected)
-        assertEquals("Not selected", unselected.stateDescription)
+        assertEquals(CameraControlSelectionState.NOT_SELECTED, unselected.state)
 
         val reconfiguring = focalRailState(LensChoice.MAIN, LensChoice.MAIN, false, false, false)
         assertFalse(reconfiguring.enabled)
-        assertEquals("Camera reconfiguring…", reconfiguring.stateDescription)
+        assertEquals(CameraControlSelectionState.CAMERA_RECONFIGURING, reconfiguring.state)
 
         val recording = focalRailState(LensChoice.MAIN, LensChoice.MAIN, false, true, true)
         assertFalse(recording.enabled)
-        assertEquals("Unavailable while recording", recording.stateDescription)
+        assertEquals(CameraControlSelectionState.UNAVAILABLE_WHILE_RECORDING, recording.state)
     }
 
     @Test

@@ -2,7 +2,7 @@ package me.hletrd.telecampro.ui.controls
 
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
-import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import java.lang.reflect.Proxy
 import me.hletrd.telecampro.camera.CameraUiState
@@ -50,6 +50,7 @@ class LoupeOverviewGateTest {
         as CameraActions
 
     private fun showAssistTab(state: CameraUiState) {
+        compose.mainClock.autoAdvance = true
         compose.setContent {
             TeleCamProTheme {
                 ProSheet(
@@ -60,6 +61,7 @@ class LoupeOverviewGateTest {
                 )
             }
         }
+        compose.waitForIdle()
     }
 
     @Test

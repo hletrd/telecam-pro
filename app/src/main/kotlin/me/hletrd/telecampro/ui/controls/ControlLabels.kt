@@ -43,8 +43,8 @@ internal data class SettingSemantics(val label: String, val state: String)
 internal fun sliderSettingSemantics(label: String, value: String): SettingSemantics =
     SettingSemantics(label = label, state = value)
 
-internal fun toggleSettingSemantics(label: String, checked: Boolean): SettingSemantics =
-    SettingSemantics(label = label, state = if (checked) "On" else "Off")
+internal fun toggleSettingSemantics(label: String, state: String): SettingSemantics =
+    SettingSemantics(label = label, state = state)
 
 /**
  * A dropdown trigger reads as "<label>, <selected>" so a device UI test can find the row by its

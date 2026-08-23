@@ -83,6 +83,8 @@
     <string name="action_close">닫기</string>
     <string name="action_up">위</string>
     <string name="action_down">아래</string>
+    <string name="action_save">저장</string>
+    <string name="action_update">업데이트</string>
     <string name="action_allow_camera_access">카메라 권한 허용</string>
     <string name="action_privacy_policy">개인정보처리방침</string>
     <string name="a11y_camera_viewfinder">카메라 뷰파인더</string>
@@ -121,6 +123,8 @@
     <string name="a11y_stop_recording">녹화 중지</string>
     <string name="a11y_state_ready">준비됨</string>
     <string name="a11y_state_unavailable">사용 불가</string>
+    <string name="a11y_unavailable_while_recording">녹화 중에는 사용할 수 없음</string>
+    <string name="a11y_selected_teleconverter_on">선택됨, 텔레컨버터 켜짐</string>
     <string name="a11y_state_on">켜짐</string>
     <string name="a11y_state_off">꺼짐</string>
     <string name="a11y_show_shooting_info">촬영 정보 표시</string>
@@ -132,6 +136,12 @@
     <string name="a11y_review_last_capture">마지막 촬영 보기</string>
     <string name="a11y_lens_optical">%1$s 렌즈</string>
     <string name="a11y_lens_zoom">%1$s 줌</string>
+    <string name="a11y_raw_capture_review">RAW 촬영 보기</string>
+    <string name="a11y_media_review">미디어 보기</string>
+    <string name="a11y_focus_locked">초점 고정됨</string>
+    <string name="a11y_autofocus_failed">자동 초점 실패</string>
+    <string name="a11y_autofocus_searching">자동 초점 맞추는 중</string>
+    <string name="a11y_focus_point">초점 지점</string>
     <string name="status_starting_camera">카메라를 시작하는 중…</string>
     <string name="status_preview_unavailable_reopen">미리보기를 사용할 수 없습니다. 앱을 다시 여세요.</string>
     <string name="status_preview_interrupted_recovering">미리보기가 중단되었습니다. 복구 중입니다.</string>
@@ -279,6 +289,12 @@
     <string name="output_raw_unavailable">RAW 사용 불가</string>
     <string name="output_switching_single_lens">RAW를 위해 단일 렌즈로 전환 중</string>
     <string name="output_processed_unavailable_dng_only">HEIF/JPEG 사용 불가 · DNG만 가능</string>
+    <string name="output_10_bit_video_stills_off">10비트 동영상 · 사진 꺼짐</string>
+    <string name="stabilization_ois_eis">OIS+EIS</string>
+    <string name="stabilization_ois_eis_crop">OIS+EIS · 크롭</string>
+    <string name="video_tone_mapped_source">카메라에서 이미 톤 매핑된 스트림에 적용됩니다</string>
+    <string name="mr_default_photo_name">사진 %1$s</string>
+    <string name="mr_default_video_name">동영상 %1$s</string>
     <string name="label_output">출력</string>
     <string name="value_manual">수동</string>
     <string name="value_auto">자동</string>

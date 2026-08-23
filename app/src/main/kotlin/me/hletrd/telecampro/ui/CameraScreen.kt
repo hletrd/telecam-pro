@@ -182,6 +182,7 @@ import me.hletrd.telecampro.ui.overlays.AspectMask
 import me.hletrd.telecampro.ui.overlays.AudioMeter
 import me.hletrd.telecampro.ui.overlays.FrameLinesOverlay
 import me.hletrd.telecampro.ui.overlays.FocusReticle
+import me.hletrd.telecampro.ui.overlays.FocusResultLiveRegion
 import me.hletrd.telecampro.ui.overlays.GridOverlay
 import me.hletrd.telecampro.ui.overlays.HistogramOverlay
 import me.hletrd.telecampro.ui.overlays.HudPlate
@@ -689,6 +690,11 @@ fun CameraScreen(
             AspectMask(ratio = state.aspectRatio, modifier = Modifier.fillMaxSize())
 
             FocusReticle(point = state.tapPoint, indication = state.afIndication, modifier = Modifier.fillMaxSize())
+            FocusResultLiveRegion(
+                indication = state.afIndication,
+                active = state.tapFocusHeld,
+                modifier = Modifier.size(1.dp),
+            )
 
             // The level belongs to the FRAMING overlays, so it lives inside the aspect box with the
             // grid. Outside it (where this used to sit) `fillMaxSize` is the whole SCREEN, so the
@@ -2551,7 +2557,7 @@ private fun FocalRail(
                     val label = formatZoomMark(mark)
                     RailChip(
                         label = label,
-                        contentDescription = "$label zoom",
+                        contentDescription = stringResource(R.string.a11y_lens_zoom, label),
                         presentation = teleZoomMarkState(
                             selected = mark == activeMark,
                             cameraReady = state.cameraReady,
@@ -2605,6 +2611,15 @@ private fun RailChip(
     glyphRotation: Float,
 ) {
     val description = contentDescription
+    val selectionDescription = stringResource(
+        when (presentation.state) {
+            CameraControlSelectionState.UNAVAILABLE_WHILE_RECORDING -> R.string.a11y_unavailable_while_recording
+            CameraControlSelectionState.CAMERA_RECONFIGURING -> R.string.status_camera_reconfiguring
+            CameraControlSelectionState.SELECTED -> R.string.a11y_selected
+            CameraControlSelectionState.SELECTED_TELECONVERTER_ON -> R.string.a11y_selected_teleconverter_on
+            CameraControlSelectionState.NOT_SELECTED -> R.string.a11y_not_selected
+        },
+    )
     // The press ripple is drawn by the indication on whichever node carries `selectable`. That used
     // to be this 48 dp SQUARE touch target, so a square slab flashed behind a round pill; clipping
     // the square merely made it a 48 dp CIRCLE, still visibly bigger and rounder than the stadium it
@@ -2622,7 +2637,7 @@ private fun RailChip(
             // actionable AccessibilityNodeInfo on PMA110.
             .clearAndSetSemantics {
                 this.contentDescription = description
-                stateDescription = presentation.stateDescription
+                stateDescription = selectionDescription
                 role = presentation.accessibilityRole
                 selected = presentation.selected
                 if (!presentation.enabled) disabled()
@@ -2707,6 +2722,9 @@ private fun ModeCarousel(
 private fun ModeLabel(text: String, active: Boolean, enabled: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val modeButtonDescription = stringResource(R.string.a11y_mode_button, text)
     val presentation = modeCarouselState(active, enabled)
+    val selectionDescription = stringResource(
+        if (presentation.state == CameraControlSelectionState.SELECTED) R.string.a11y_selected else R.string.a11y_not_selected,
+    )
     val activate = onClick
     Box(
         modifier = modifier
@@ -2714,7 +2732,7 @@ private fun ModeLabel(text: String, active: Boolean, enabled: Boolean, onClick: 
             .focusable()
             .clearAndSetSemantics {
                 contentDescription = modeButtonDescription
-                stateDescription = presentation.stateDescription
+                stateDescription = selectionDescription
                 role = presentation.accessibilityRole
                 selected = presentation.selected
                 if (!presentation.enabled) disabled()
@@ -2937,6 +2955,7 @@ private fun ShutterButton(
 @Composable
 private fun SnapshotButton(onClick: () -> Unit, enabled: Boolean, modifier: Modifier = Modifier) {
     val a11yTakePhotoWhileRecording = stringResource(R.string.a11y_take_photo_while_recording)
+    val state = stringResource(if (enabled) R.string.a11y_state_ready else R.string.a11y_state_unavailable)
     // 48 dp touch target, 36 dp visual dot.
     val activate = onClick
     Box(
@@ -2947,7 +2966,7 @@ private fun SnapshotButton(onClick: () -> Unit, enabled: Boolean, modifier: Modi
             .clearAndSetSemantics {
                 contentDescription = a11yTakePhotoWhileRecording
                 role = Role.Button
-                stateDescription = if (enabled) "Ready" else "Unavailable"
+                stateDescription = state
                 if (!enabled) disabled()
                 onClick {
                     if (!enabled) return@onClick false

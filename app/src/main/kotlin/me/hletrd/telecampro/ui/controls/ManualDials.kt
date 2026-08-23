@@ -466,6 +466,8 @@ private fun FnDialChip(
 ) {
     val controls = state.controls
     val labelContext = LocalContext.current
+    val onValue = stringResource(R.string.value_on)
+    val offValue = stringResource(R.string.value_off)
     val caps = state.caps
     val policyEnabled = quickFnEnabled(slot, state)
     when (slot) {
@@ -592,7 +594,7 @@ private fun FnDialChip(
         )
         FnSlot.PEAKING -> DialChip(
             label = stringResource(R.string.label_peaking),
-            value = if (state.focusPeaking) "On" else "Off",
+            value = if (state.focusPeaking) onValue else offValue,
             active = state.focusPeaking,
             enabled = policyEnabled,
             onClick = { actions.onTogglePeaking(!state.focusPeaking) },
@@ -600,7 +602,7 @@ private fun FnDialChip(
         )
         FnSlot.ZEBRA -> DialChip(
             label = stringResource(R.string.label_zebra),
-            value = if (state.zebra) "On" else "Off",
+            value = if (state.zebra) onValue else offValue,
             active = state.zebra,
             enabled = policyEnabled,
             onClick = { actions.onToggleZebra(!state.zebra) },
@@ -637,7 +639,7 @@ private fun FnDialChip(
         )
         FnSlot.LEVEL -> DialChip(
             label = stringResource(R.string.label_level),
-            value = if (state.level) "On" else "Off",
+            value = if (state.level) onValue else offValue,
             active = state.level,
             enabled = policyEnabled,
             onClick = { actions.onToggleLevel(!state.level) },
@@ -645,7 +647,7 @@ private fun FnDialChip(
         )
         FnSlot.PUNCH_IN -> DialChip(
             label = stringResource(R.string.label_loupe),
-            value = if (state.punchIn) "On" else "Off",
+            value = if (state.punchIn) onValue else offValue,
             active = state.punchIn,
             enabled = policyEnabled,
             onClick = { actions.onTogglePunchIn(!state.punchIn) },
@@ -653,7 +655,7 @@ private fun FnDialChip(
         )
         FnSlot.TELECONVERTER -> DialChip(
             label = stringResource(R.string.label_tele),
-            value = if (state.teleconverterMode) formatFocalMm(state.teleconverterFocalMm) else "Off",
+            value = if (state.teleconverterMode) formatFocalMm(state.teleconverterFocalMm) else offValue,
             active = state.teleconverterMode,
             enabled = policyEnabled,
             onClick = { if (policyEnabled) actions.onToggleTeleconverter(!state.teleconverterMode) },
@@ -661,7 +663,7 @@ private fun FnDialChip(
         )
         FnSlot.OPEN_GATE -> DialChip(
             label = stringResource(R.string.label_open_gate),
-            value = if (state.openGate) "4:3" else "Off",
+            value = if (state.openGate) "4:3" else offValue,
             active = state.openGate,
             enabled = policyEnabled,
             onClick = { if (policyEnabled) actions.onToggleOpenGate(!state.openGate) },
@@ -749,6 +751,7 @@ private fun DialChip(
     autoValue: Boolean = false,
 ) {
     val a11yOpenFunctionMenu = stringResource(R.string.a11y_open_function_menu)
+    val spokenValue = if (autoValue) stringResource(R.string.a11y_auto_value, value) else value
     val activate = onClick
     val longActivate = onLongClick
     // Idle plate is the shared [HudPlate], like every sibling chip. It used to be
@@ -772,7 +775,7 @@ private fun DialChip(
             .focusable()
             .clearAndSetSemantics {
                 contentDescription = accessibleName
-                stateDescription = accessibleState ?: if (autoValue) "Auto $value" else value
+                stateDescription = accessibleState ?: spokenValue
                 role = Role.Button
                 if (!enabled) disabled()
                 onClick {
@@ -864,6 +867,7 @@ internal fun formatFocusRelative(diopters: Float, minDiopters: Float): String {
 
 @Composable
 private fun RulerReadout(value: String, modifier: Modifier = Modifier, autoValue: Boolean = false) {
+    val spokenValue = if (autoValue) stringResource(R.string.a11y_auto_value, value) else value
     Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         // The one number the photographer is actively adjusting sits near the TOP of the bottom
         // cluster's gradient, where the scrim is nearly transparent — over sky/snow it competed
@@ -889,7 +893,7 @@ private fun RulerReadout(value: String, modifier: Modifier = Modifier, autoValue
             style = MaterialTheme.typography.titleMedium,
             modifier = Modifier
                 .clearAndSetSemantics {
-                    contentDescription = if (autoValue) "Auto $value" else value
+                    contentDescription = spokenValue
                 }
                 .clip(RoundedCornerShape(50))
                 .background(HudPlate)
@@ -982,7 +986,9 @@ private fun ShutterRuler(
 
 /** Small Speed⇄Angle segmented switch on the shutter ruler (also mirrored in the settings sheet). */
 @Composable
-private fun SpeedAngleToggle(mode: ShutterMode, enabled: Boolean, onSelect: (ShutterMode) -> Unit) {
+internal fun SpeedAngleToggle(mode: ShutterMode, enabled: Boolean, onSelect: (ShutterMode) -> Unit) {
+    val selectedDescription = stringResource(R.string.a11y_selected)
+    val notSelectedDescription = stringResource(R.string.a11y_not_selected)
     Row(
         modifier = Modifier.selectableGroup(),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -990,13 +996,19 @@ private fun SpeedAngleToggle(mode: ShutterMode, enabled: Boolean, onSelect: (Shu
         ShutterMode.entries.forEach { m ->
             val on = mode == m
             val activate = { onSelect(m) }
+            val semanticLabel = stringResource(
+                if (m == ShutterMode.SPEED) R.string.a11y_shutter_speed else R.string.a11y_shutter_angle,
+            )
+            val visualLabel = stringResource(
+                if (m == ShutterMode.SPEED) R.string.value_speed else R.string.value_angle,
+            )
             Box(
                 modifier = Modifier
                     .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
                     .focusable()
                     .clearAndSetSemantics {
-                        contentDescription = if (m == ShutterMode.SPEED) "Shutter speed" else "Shutter angle"
-                        stateDescription = if (on) "Selected" else "Not selected"
+                        contentDescription = semanticLabel
+                        stateDescription = if (on) selectedDescription else notSelectedDescription
                         role = Role.RadioButton
                         selected = on
                         if (!enabled) disabled()
@@ -1021,7 +1033,7 @@ private fun SpeedAngleToggle(mode: ShutterMode, enabled: Boolean, onSelect: (Shu
                         .padding(horizontal = 12.dp, vertical = 6.dp),
                 ) {
                     Text(
-                        text = if (m == ShutterMode.SPEED) "Speed" else "Angle",
+                        text = visualLabel,
                         color = when {
                             on -> Color.Black
                             enabled -> CameraColors.TextPrimary

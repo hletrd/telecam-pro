@@ -114,6 +114,7 @@ import me.hletrd.telecampro.camera.rawSelectable
 import me.hletrd.telecampro.ui.CameraActions
 import me.hletrd.telecampro.ui.formatZoomMultiplier
 import me.hletrd.telecampro.ui.resolve
+import me.hletrd.telecampro.ui.overlays.photoFormatLabel
 import me.hletrd.telecampro.ui.theme.CameraColors
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -608,16 +609,33 @@ private fun QuickFnRow(
 @Composable
 private fun MemoryRecallControls(state: CameraUiState, actions: CameraActions) {
     SectionHeader(stringResource(R.string.section_memory_recall))
+    val labelContext = LocalContext.current
     MemorySlot.entries.forEach { slot ->
         val saved = slot in state.savedMemorySlots
-        val name = state.memorySlotNames[slot] ?: slot.name
-        val summary = state.memorySlotSummaries[slot].orEmpty()
+        val presentation = state.memorySlotPresentations[slot]
+        val focal = presentation?.let { formatFocalMm(it.focalMm) }.orEmpty()
+        val generatedName = presentation?.let {
+            when (it.mode) {
+                CaptureMode.PHOTO -> stringResource(R.string.mr_default_photo_name, focal)
+                CaptureMode.VIDEO -> stringResource(R.string.mr_default_video_name, transferLabel(it.transfer))
+            }
+        }.orEmpty()
+        val generatedSummary = presentation?.let {
+            when (it.mode) {
+                CaptureMode.PHOTO ->
+                    "$focal · ${exposureModeLetter(it.exposureMode)} · ${photoFormatLabel(it.photoFormats)}"
+                CaptureMode.VIDEO ->
+                    "$focal · ${videoResolutionLabelFor(it.videoWidth, it.videoHeight)} " +
+                        "${videoFrameRateLabel(it.videoFrameRate)}p · ${transferLabel(it.transfer)} · " +
+                        labelContext.localizedLabel(it.bitrateLevel)
+            }
+        }.orEmpty()
         MemoryPresetRow(
             slot = slot,
-            name = if (saved) name else "Empty",
+            name = if (saved) presentation?.customName ?: generatedName else stringResource(R.string.mr_slot_state_empty),
             // The app's own null token, not an instruction: this slot holds the bank's SUMMARY, and
             // the Save chip immediately to its right already says what to do about an empty one.
-            summary = if (saved) summary else "--",
+            summary = if (saved) presentation?.customSummary ?: generatedSummary else "--",
             active = state.activeMemorySlot == slot,
             saved = saved,
             locked = state.isRecording,
@@ -685,7 +703,7 @@ private fun MemoryPresetRow(
                 enabled = !locked,
                 label = {
                     Text(
-                        if (saved) "Update" else "Save",
+                        stringResource(if (saved) R.string.action_update else R.string.action_save),
                         style = MaterialTheme.typography.labelMedium,
                     )
                 },
@@ -1190,8 +1208,8 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
             // (UI review #10). The other branches earn their line. " · ", not a comma — the app's
             // one separator register (#17).
             VideoStabMode.OFF -> null
-            VideoStabMode.STANDARD -> "OIS+EIS"
-            VideoStabMode.ENHANCED -> "OIS+EIS · crop"
+            VideoStabMode.STANDARD -> stringResource(R.string.stabilization_ois_eis)
+            VideoStabMode.ENHANCED -> stringResource(R.string.stabilization_ois_eis_crop)
         },
     ) {
         SegmentedSelector(
@@ -1331,7 +1349,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     // "SDR stream" stopped being true when video gained a 10-bit session; the honesty point was
     // never the bit depth but that the ISP has ALREADY tone-mapped what the curve is applied to.
     Captioned(
-        if (state.transfer != ColorTransfer.SDR) "Applied to the camera's already tone-mapped stream" else null,
+        if (state.transfer != ColorTransfer.SDR) stringResource(R.string.video_tone_mapped_source) else null,
     ) {
         // Transfer is part of the encoded image format, so keep it with codec/rate controls instead
         // of below the unrelated audio controls.

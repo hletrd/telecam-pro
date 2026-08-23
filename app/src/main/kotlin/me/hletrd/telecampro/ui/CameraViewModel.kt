@@ -52,6 +52,7 @@ import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.MediaDeleteScope
 import me.hletrd.telecampro.camera.MeteringMode
 import me.hletrd.telecampro.camera.MemorySlot
+import me.hletrd.telecampro.camera.MemoryPresetPresentation
 import me.hletrd.telecampro.camera.PeakingColor
 import me.hletrd.telecampro.camera.PeakingLevel
 import me.hletrd.telecampro.camera.PhotoFormats
@@ -83,6 +84,7 @@ import me.hletrd.telecampro.camera.PhoneModel
 import me.hletrd.telecampro.camera.defaultConverterFor
 import me.hletrd.telecampro.camera.detectPhone
 import me.hletrd.telecampro.camera.effectiveMagnification
+import me.hletrd.telecampro.camera.effectiveFocalMm
 import me.hletrd.telecampro.camera.normalizeMagnification
 import me.hletrd.telecampro.camera.reconcileConverter
 import me.hletrd.telecampro.camera.teleDisplayBase
@@ -91,15 +93,6 @@ import me.hletrd.telecampro.camera.VideoFrameRate
 import me.hletrd.telecampro.camera.WbMode
 import me.hletrd.telecampro.camera.ZebraLevel
 import me.hletrd.telecampro.camera.rearReturnZoom
-import me.hletrd.telecampro.ui.controls.bitrateLevelLabel
-import me.hletrd.telecampro.ui.controls.audioInputPreferenceLabel
-import me.hletrd.telecampro.ui.controls.formatFocalMm
-import me.hletrd.telecampro.ui.controls.exposureModeLetter
-import me.hletrd.telecampro.ui.controls.videoFrameRateLabel
-import me.hletrd.telecampro.ui.controls.localizedLabel
-import me.hletrd.telecampro.ui.controls.transferLabel
-import me.hletrd.telecampro.ui.controls.videoResolutionLabel
-import me.hletrd.telecampro.ui.overlays.photoFormatLabel
 import me.hletrd.telecampro.focus.FocusMapping
 import me.hletrd.telecampro.focus.MACRO_HOLD_MS
 import me.hletrd.telecampro.focus.FocusConfidenceHold
@@ -658,6 +651,7 @@ class CameraViewModel @JvmOverloads constructor(
                     _state.value.teleconverterMagnification,
                     _state.value.teleconverterHostEquivMm,
                 )
+                refreshMemorySlotInfo()
             }
         }
         engine.onCapsReady = { caps, generation ->
@@ -1636,41 +1630,32 @@ class CameraViewModel @JvmOverloads constructor(
 
     private fun refreshMemorySlotInfo(activeSlot: MemorySlot? = _state.value.activeMemorySlot) {
         val info = settingsStore.savedPresetInfo()
+        val hostTeleEquivMm = _state.value.teleconverterHostEquivMm
         _state.update {
             it.copy(
                 savedMemorySlots = info.keys,
-                memorySlotNames = info.mapValues { entry -> entry.value.name },
-                memorySlotSummaries = info.mapValues { entry -> entry.value.summary },
+                memorySlotPresentations = info.mapValues { entry ->
+                    val preset = entry.value
+                    val extras = preset.loaded.extras
+                    val videoSize = parseVideoResolution(extras.videoResolution)
+                    MemoryPresetPresentation(
+                        customName = preset.customName,
+                        customSummary = preset.customSummary,
+                        mode = extras.mode,
+                        focalMm = memoryPresetFocalMm(extras, hostTeleEquivMm),
+                        exposureMode = preset.loaded.controls.exposureMode,
+                        photoFormats = PhotoFormats(extras.heif, extras.jpeg, extras.dngRaw),
+                        videoWidth = videoSize?.width ?: 0,
+                        videoHeight = videoSize?.height ?: 0,
+                        videoFrameRate = extras.videoFrameRate,
+                        transfer = extras.transfer,
+                        bitrateLevel = extras.bitrateLevel,
+                    )
+                },
                 activeMemorySlot = activeSlot,
             )
         }
     }
-
-    // An MR summary is a READ-ONLY restatement of what the other surfaces already show, so every
-    // fragment below goes through that surface's canonical formatter. The private re-implementations
-    // that used to live here had already drifted: the local video-size bucket printed "1440p" for
-    // the 2560×1920 Open Gate size the OSD and Encoder row call "2.5K 4:3", and the focal branch
-    // truncated where formatFocalMm rounds.
-    private fun presetNameFor(s: CameraUiState): String {
-        val focal = focalSummary(s)
-        return when (s.mode) {
-            CaptureMode.PHOTO -> "Photo $focal"
-            CaptureMode.VIDEO -> "Video ${transferLabel(s.transfer)}"
-        }
-    }
-
-    private fun presetSummaryFor(s: CameraUiState): String = when (s.mode) {
-        CaptureMode.PHOTO ->
-            "${focalSummary(s)} · ${exposureModeLetter(s.controls.exposureMode)} · ${photoFormatLabel(s.photoFormats)}"
-        CaptureMode.VIDEO -> {
-            "${focalSummary(s)} · ${videoResolutionLabel(s.videoResolution)} ${videoFrameRateLabel(s.videoFrameRate)}p · " +
-                "${transferLabel(s.transfer)} · ${getApplication<Application>().localizedLabel(s.bitrateLevel)}"
-        }
-    }
-
-    private fun focalSummary(s: CameraUiState): String =
-        if (s.teleconverterMode) formatFocalMm(s.teleconverterFocalMm)
-        else formatFocalMm(s.lens.targetEquivMm)
 
     /** Parses a persisted "WxH" video-resolution string; null for "" or anything malformed. */
     private fun parseVideoResolution(raw: String): Size? {
@@ -3202,12 +3187,10 @@ class CameraViewModel @JvmOverloads constructor(
         } else {
             currentExtras()
         }
-        settingsStore.savePreset(
+        settingsStore.saveGeneratedPreset(
             slot,
             snapshot.controls,
             extras,
-            name = presetNameFor(snapshot),
-            summary = presetSummaryFor(snapshot),
         )
         refreshMemorySlotInfo(activeSlot = slot)
         showStatus(
@@ -3560,6 +3543,20 @@ internal fun focusModeChangeClearsTapPoint(
     current: FocusMode,
     requested: FocusMode,
 ): Boolean = current != requested
+
+/** Reconstructs an MR row against this device's declared/measured converter host lens. */
+internal fun memoryPresetFocalMm(extras: ExtraSettings, hostTeleEquivMm: Float): Float =
+    if (extras.teleconverter) {
+        effectiveFocalMm(
+            effectiveMagnification(
+                extras.teleconverterProfile,
+                extras.teleconverterCustomMagnification,
+            ),
+            hostTeleEquivMm,
+        )
+    } else {
+        extras.lens.targetEquivMm
+    }
 
 /** A new accepted AF trigger starts yellow/searching; a prior point's verdict cannot carry over. */
 internal fun submittedTapFocusUiState(
