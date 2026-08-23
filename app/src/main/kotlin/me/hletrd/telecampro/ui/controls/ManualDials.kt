@@ -1143,15 +1143,20 @@ private fun IsoRuler(controls: ManualControls, caps: CameraCaps?, onIso: (Int) -
         stops.indices.minByOrNull { kotlin.math.abs(stops[it] - controls.iso) } ?: 0
     }
     val fraction = if (n <= 1) 0f else idx.toFloat() / (n - 1)
-    val readout = if (controls.autoIsoDriven) "Auto ISO ${controls.iso}" else "ISO ${controls.iso}"
+    val isoReadout = "ISO ${controls.iso}"
+    val spokenReadout = if (controls.autoIsoDriven) {
+        stringResource(R.string.a11y_auto_value, isoReadout)
+    } else {
+        isoReadout
+    }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        RulerReadout("ISO ${controls.iso}", autoValue = controls.autoIsoDriven)
+        RulerReadout(isoReadout, autoValue = controls.autoIsoDriven)
         RulerSlider(
             fraction = fraction,
             onFractionChange = { f -> onIso(stops[(f * (n - 1)).roundToInt().coerceIn(0, n - 1)]) },
             enabled = enabled,
             semanticLabel = "ISO",
-            valueDescription = readout,
+            valueDescription = spokenReadout,
             totalUnits = (n - 1).coerceAtLeast(1), // one tick per stop → snappy, short strip
             majorEvery = stepMajorEvery(controls.exposureStep),
             snap = true,
