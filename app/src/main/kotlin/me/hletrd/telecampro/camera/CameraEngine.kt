@@ -845,6 +845,15 @@ class CameraEngine internal constructor(
     @Volatile private var cameraRouteInventory = CameraRouteInventory.UNKNOWN
     @Volatile private var cameraRouteInventoryResolved = false
     @Volatile private var knownCameraIds: Set<String> = emptySet()
+    private val cameraIdentityEpochCounter = java.util.concurrent.atomic.AtomicLong(0L)
+    private val cameraIdentityEpochs = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    @Volatile private var knownCameraIdentityEpochs: Map<String, Long> = emptyMap()
+    private val routeTopologyRevision = java.util.concurrent.atomic.AtomicLong(0L)
+    @Volatile private var pendingRouteTopologyRevision = 0L
+    private val routeTopologyConvergence = CameraRouteTopologyConvergence()
+    private val activeRecordingTopologyLease = java.util.concurrent.atomic.AtomicLong(0L)
+    private val deferredRouteTopologyScheduled = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val routeAvailabilityReleased = java.util.concurrent.atomic.AtomicBoolean(false)
     @Volatile private var routeAvailabilityRegistered = false
     private val routeAvailabilityRefreshScheduled = java.util.concurrent.atomic.AtomicBoolean(false)
     private val routeInventoryRetryScheduled = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -859,50 +868,8 @@ class CameraEngine internal constructor(
         facing = route.facing
     }
 
-    /** Resolve an honest startup route before snapshotting the first optics transaction. */
-    private fun resolveInitialCameraRouteAvailability(force: Boolean = false) {
-        if (cameraRouteInventoryResolved && !force) {
-            runCatching { onCameraRouteInventory?.invoke(cameraRouteInventory, activeCameraRoute) }
-            return
-        }
-        val inventory = CameraSelector2.routeInventory(manager)
-        val ids = runCatching { manager.cameraIdList.toSet() }.getOrDefault(emptySet())
-        if (!inventory.complete) {
-            cameraRouteInventory = inventory
-            runCatching { onCameraRouteInventory?.invoke(inventory, activeCameraRoute) }
-            scheduleRouteInventoryRetry()
-            return
-        }
-        routeInventoryRetryAttempts = 0
-        routeInventoryRetryScheduled.set(false)
-        val topology = cameraRouteTopologyDecision(
-            previousIds = knownCameraIds,
-            currentIds = ids,
-            inventory = inventory,
-            currentRoute = activeCameraRoute,
-        )
-        val topologyChanged = topology.topologyChanged
-        if (topologyChanged) {
-            knownCameraIds = ids
-            cachedExternalSelection = null
-            cachedFrontSelection = null
-            cachedLogicalBackId = null
-            idForFocalCache.clear()
-            capsCache.clear()
-            lensExifCache.clear()
-            lensInventoryPublished = false
-        }
-        cameraRouteInventory = inventory
-        if (!inventory.any) {
-            // CameraService can transiently enumerate nothing. Publish the honest temporary state,
-            // but retry enumeration with the existing bounded cold-start retry rather than caching it.
-            cameraRouteInventoryResolved = false
-            runCatching { onCameraRouteInventory?.invoke(inventory, activeCameraRoute) }
-            scheduleRouteInventoryRetry()
-            return
-        }
-        val resolvedRoute = topology.targetRoute ?: return
-        when (resolvedRoute) {
+    private fun applyResolvedCameraRoute(route: CameraRoute) {
+        when (route) {
             CameraRoute.BACK -> setActiveCameraRoute(CameraRoute.BACK)
             CameraRoute.FRONT -> {
                 setActiveCameraRoute(CameraRoute.FRONT)
@@ -921,6 +888,83 @@ class CameraEngine internal constructor(
                 userCameraPin = null
             }
         }
+    }
+
+    /** Identity change invalidates every fact derived from CameraCharacteristics or route choice. */
+    private fun invalidateCameraTopologyCaches() {
+        cachedExternalSelection = null
+        cachedFrontSelection = null
+        cachedLogicalBackId = null
+        idForFocalCache.clear()
+        capsCache.clear()
+        lensExifCache.clear()
+        opticalPresets = emptySet()
+        lensInventoryPublished = false
+    }
+
+    /** Resolve an honest startup route before snapshotting the first optics transaction. */
+    private fun resolveInitialCameraRouteAvailability(force: Boolean = false) {
+        if (cameraRouteInventoryResolved && !force) {
+            runCatching { onCameraRouteInventory?.invoke(cameraRouteInventory, activeCameraRoute) }
+            return
+        }
+        if (routeAvailabilityReleased.get()) return
+        val inventory = CameraSelector2.routeInventory(manager)
+        val idsResult = runCatching { manager.cameraIdList.toSet() }
+        val ids = idsResult.getOrNull()
+        val identityEpochs = cameraIdentityEpochs.toMap()
+        if (ids != null) {
+            val changedIds = changedCameraTopologyIds(
+                previous = CameraTopologyStamp(knownCameraIds, knownCameraIdentityEpochs),
+                current = CameraTopologyStamp(ids, identityEpochs),
+            )
+            if (changedIds.isNotEmpty()) {
+                knownCameraIds = ids
+                knownCameraIdentityEpochs = identityEpochs
+                invalidateCameraTopologyCaches()
+                pendingRouteTopologyRevision = routeTopologyRevision.incrementAndGet()
+            }
+        }
+        if (!inventory.complete || ids == null) {
+            cameraRouteInventory = inventory
+            runCatching { onCameraRouteInventory?.invoke(inventory, activeCameraRoute) }
+            scheduleRouteInventoryRetry()
+            return
+        }
+        routeInventoryRetryAttempts = 0
+        routeInventoryRetryScheduled.set(false)
+        val topology = cameraRouteTopologyDecision(
+            previousIds = knownCameraIds,
+            currentIds = ids,
+            inventory = inventory,
+            currentRoute = activeCameraRoute,
+        )
+        val topologyChanged = pendingRouteTopologyRevision != 0L
+        cameraRouteInventory = inventory
+        if (!inventory.any) {
+            // CameraService can transiently enumerate nothing. Publish the honest temporary state,
+            // but retry enumeration with the existing bounded cold-start retry rather than caching it.
+            cameraRouteInventoryResolved = false
+            runCatching { onCameraRouteInventory?.invoke(inventory, activeCameraRoute) }
+            scheduleRouteInventoryRetry()
+            return
+        }
+        val topologyAction = if (topologyChanged) {
+            routeTopologyConvergence.offer(pendingRouteTopologyRevision)
+            pendingRouteTopologyRevision = 0L
+            routeTopologyConvergence.claim()
+        } else {
+            null
+        }
+        if (topologyChanged && topologyAction == null) {
+            // REC admission, rolling, and native teardown all retain the currently accepted route.
+            // Inventory and cache truth above is already current; only route mutation/reopen waits.
+            cameraRouteInventoryResolved = true
+            runCatching { onCameraRouteInventory?.invoke(inventory, activeCameraRoute) }
+            return
+        }
+        val resolvedRoute = topology.targetRoute ?: return
+        applyResolvedCameraRoute(resolvedRoute)
         cameraRouteInventoryResolved = true
         // UI publication cannot own camera startup: a detached or throwing observer must not turn
         // valid enumerated hardware into a black viewfinder.
@@ -928,7 +972,9 @@ class CameraEngine internal constructor(
         // Ordinary startup/resume callers immediately snapshot and reconfigure after this method.
         // Only asynchronous availability/retry (`force`) owns convergence itself; doing both paid
         // two optics generations and could dual-open the same initial route.
-        if (force && topologyChanged && started && !paused) convergeAfterRouteTopologyChange()
+        if (force && topologyAction != null && started && !paused) {
+            convergeAfterRouteTopologyChange()
+        }
     }
 
     private fun scheduleRouteInventoryRetry() {
@@ -949,13 +995,16 @@ class CameraEngine internal constructor(
     }
 
     private fun scheduleRouteAvailabilityRefresh() {
+        if (routeAvailabilityReleased.get()) return
         if (!routeAvailabilityRefreshScheduled.compareAndSet(false, true)) return
         runCatching {
             setupExecutor.execute {
                 routeAvailabilityRefreshScheduled.set(false)
-                val ids = runCatching { manager.cameraIdList.toSet() }.getOrDefault(emptySet())
+                if (routeAvailabilityReleased.get()) return@execute
+                val ids = runCatching { manager.cameraIdList.toSet() }.getOrNull()
+                val identitiesUnchanged = cameraIdentityEpochs.toMap() == knownCameraIdentityEpochs
                 // Opening our own camera emits onCameraUnavailable without changing topology.
-                if (cameraRouteInventoryResolved && ids == knownCameraIds) return@execute
+                if (cameraRouteInventoryResolved && ids == knownCameraIds && identitiesUnchanged) return@execute
                 resolveInitialCameraRouteAvailability(force = true)
             }
         }.onFailure { routeAvailabilityRefreshScheduled.set(false) }
@@ -964,7 +1013,11 @@ class CameraEngine internal constructor(
     private val routeAvailabilityCallback = object : CameraManager.AvailabilityCallback() {
         override fun onCameraAvailable(cameraId: String) = scheduleRouteAvailabilityRefresh()
         override fun onCameraUnavailable(cameraId: String) = scheduleRouteAvailabilityRefresh()
-        override fun onCameraRemoved(cameraId: String) = scheduleRouteAvailabilityRefresh()
+        override fun onCameraRemoved(cameraId: String) {
+            if (routeAvailabilityReleased.get()) return
+            cameraIdentityEpochs[cameraId] = cameraIdentityEpochCounter.incrementAndGet()
+            scheduleRouteAvailabilityRefresh()
+        }
     }
 
     private fun registerRouteAvailabilityIfNeeded() {
@@ -973,7 +1026,33 @@ class CameraEngine internal constructor(
         manager.registerAvailabilityCallback(context.mainExecutor, routeAvailabilityCallback)
     }
 
+    private fun runDeferredRouteTopologyConvergence(): Boolean {
+        if (routeAvailabilityReleased.get() || paused || !started || !nativeAcquisitionMayProceed()) return false
+        routeTopologyConvergence.claim() ?: return false
+        convergeAfterRouteTopologyChange()
+        return true
+    }
+
+    private fun scheduleDeferredRouteTopologyConvergence() {
+        if (routeAvailabilityReleased.get() || !routeTopologyConvergence.hasClaimableAction() ||
+            !deferredRouteTopologyScheduled.compareAndSet(false, true)
+        ) return
+        runCatching {
+            setupExecutor.execute {
+                deferredRouteTopologyScheduled.set(false)
+                runDeferredRouteTopologyConvergence()
+            }
+        }.onFailure { deferredRouteTopologyScheduled.set(false) }
+    }
+
     private fun convergeAfterRouteTopologyChange() {
+        val targetRoute = cameraRouteTopologyDecision(
+            previousIds = knownCameraIds,
+            currentIds = knownCameraIds,
+            inventory = cameraRouteInventory,
+            currentRoute = activeCameraRoute,
+        ).targetRoute ?: return
+        applyResolvedCameraRoute(targetRoute)
         val transaction = beginOpticsTransaction {
             teleconverterMode = teleconverterMode && activeCameraRoute == CameraRoute.BACK
             if (activeCameraRoute != CameraRoute.BACK) controls = controls.copy(zoomRatio = 1f)
@@ -4195,7 +4274,18 @@ class CameraEngine internal constructor(
         // Video-mode snapshot that accidentally started an interval run). This invalidates only the
         // active sequence; the selected TIMELAPSE drive mode remains available on return to Photo.
         stopTimelapse()
+        val topologyLease = routeTopologyConvergence.beginRecording()
         if (!recAdmission.tryBeginAdmission()) {
+            routeTopologyConvergence.finishRecording(topologyLease)
+            scheduleDeferredRouteTopologyConvergence()
+            onResult(false)
+            return
+        }
+        if (topologyLease == 0L || !activeRecordingTopologyLease.compareAndSet(0L, topologyLease)) {
+            recAdmission.completeAdmission(succeeded = false)
+            routeTopologyConvergence.finishRecording(topologyLease)
+            scheduleDeferredRouteTopologyConvergence()
+            onStatus?.invoke(CameraStatusMessage.RECORDING_ALREADY_ACTIVE.status())
             onResult(false)
             return
         }
@@ -4203,6 +4293,7 @@ class CameraEngine internal constructor(
         val completeAttempt: (Boolean) -> Unit = { succeeded ->
             if (attemptCompleted.compareAndSet(false, true)) {
                 val stopNow = recAdmission.completeAdmission(succeeded)
+                if (!succeeded) releaseRecordingTopologyLease(topologyLease)
                 onResult(succeeded)
                 if (stopNow) stopRecording()
             }
@@ -4900,6 +4991,19 @@ class CameraEngine internal constructor(
     // steal the route from the finalizing clip).
     @Volatile private var recorderTeardownInFlight = false
 
+    /** Ends the REC topology lease exactly once, after native/container ownership is gone. */
+    private fun releaseRecordingTopologyLease(expected: Long? = null) {
+        while (true) {
+            val current = activeRecordingTopologyLease.get()
+            if (current == 0L || expected != null && current != expected) return
+            if (activeRecordingTopologyLease.compareAndSet(current, 0L)) {
+                routeTopologyConvergence.finishRecording(current)
+                scheduleDeferredRouteTopologyConvergence()
+                return
+            }
+        }
+    }
+
     private fun handleUnexpectedRecorderFailure(
         ownedGl: GlPipeline,
         rec: VideoRecorder,
@@ -5034,6 +5138,7 @@ class CameraEngine internal constructor(
                                                     // withholding same-Engine REC or microphone use.
                                                     recorderTeardownInFlight = false
                                                     standbyAudioController.finishRecording()
+                                                    releaseRecordingTopologyLease()
                                                 },
                                             )
                                         },
@@ -5380,6 +5485,7 @@ class CameraEngine internal constructor(
             glInputPending = false
         }
         recorderTeardownInFlight = false
+        releaseRecordingTopologyLease()
         // Clear visible intent before yielding the recording mic claim, otherwise standby could
         // transiently open another AudioRecord during terminal convergence.
         standbyAudioController.disable()
@@ -5515,6 +5621,7 @@ class CameraEngine internal constructor(
             // dual-open wait could let this older attempt publish outgoing caps/Ready under the
             // newer generation even when there was no pre-pause rollback baseline.
             resolveInitialCameraRouteAvailability()
+            if (runDeferredRouteTopologyConvergence()) return@execute
             val desired = currentOpticsReconfiguration()
             reconfigureCamera(desired.overrideId, desired.transaction)
         }
@@ -5688,6 +5795,7 @@ class CameraEngine internal constructor(
         // Terminal before state/executor teardown: either an in-flight acquisition completes before
         // this close (and the stop below owns it), or close wins and no later task can call gl.start.
         terminalAcquisitionGate.close()
+        routeAvailabilityReleased.set(true)
         paused = true
         retirePreNativeRecordingAllocation()
         started = false
@@ -5754,6 +5862,8 @@ class CameraEngine internal constructor(
             runCatching { manager.unregisterAvailabilityCallback(routeAvailabilityCallback) }
             routeAvailabilityRegistered = false
         }
+        routeTopologyConvergence.close()
+        activeRecordingTopologyLease.set(0L)
         setupExecutor.shutdown()
         ioExecutor.shutdown()
         mediaRecoveryExecutor.shutdown()

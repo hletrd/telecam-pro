@@ -93,6 +93,73 @@ internal data class CameraRouteTopologyDecision(
     val targetRoute: CameraRoute?,
 )
 
+/**
+ * Membership plus definite physical-identity epochs from [CameraManager.AvailabilityCallback].
+ *
+ * Camera ids are provider handles, not durable hardware identities: a removed UVC device can be
+ * replaced by different hardware that is advertised under the same id. The removal epoch keeps
+ * that A -> B transition observable even when callback coalescing sees identical final id sets.
+ */
+internal data class CameraTopologyStamp(
+    val ids: Set<String>,
+    val identityEpochs: Map<String, Long> = emptyMap(),
+)
+
+internal fun changedCameraTopologyIds(
+    previous: CameraTopologyStamp,
+    current: CameraTopologyStamp,
+): Set<String> = buildSet {
+    addAll(previous.ids subtract current.ids)
+    addAll(current.ids subtract previous.ids)
+    (previous.identityEpochs.keys + current.identityEpochs.keys).forEach { id ->
+        if (previous.identityEpochs[id] != current.identityEpochs[id]) add(id)
+    }
+}
+
+/**
+ * Latest-wins topology convergence owner spanning REC admission, recording, and native teardown.
+ * Inventory/cache work remains independent; only the camera optics action waits for all leases.
+ */
+internal class CameraRouteTopologyConvergence {
+    private var nextLease = 0L
+    private val recordingLeases = mutableSetOf<Long>()
+    private var pendingRevision = 0L
+    private var closed = false
+
+    @Synchronized
+    fun beginRecording(): Long {
+        if (closed) return 0L
+        return (++nextLease).also(recordingLeases::add)
+    }
+
+    @Synchronized
+    fun finishRecording(lease: Long) {
+        if (lease != 0L) recordingLeases.remove(lease)
+    }
+
+    @Synchronized
+    fun offer(revision: Long) {
+        if (!closed && revision > pendingRevision) pendingRevision = revision
+    }
+
+    /** Claims exactly one newest action only after the recorder has yielded the session. */
+    @Synchronized
+    fun claim(): Long? {
+        if (closed || recordingLeases.isNotEmpty() || pendingRevision == 0L) return null
+        return pendingRevision.also { pendingRevision = 0L }
+    }
+
+    @Synchronized
+    fun hasClaimableAction(): Boolean = !closed && recordingLeases.isEmpty() && pendingRevision != 0L
+
+    @Synchronized
+    fun close() {
+        closed = true
+        recordingLeases.clear()
+        pendingRevision = 0L
+    }
+}
+
 /** Pure attach/detach/replacement decision used by the Engine's ordered availability owner. */
 internal fun cameraRouteTopologyDecision(
     previousIds: Set<String>,

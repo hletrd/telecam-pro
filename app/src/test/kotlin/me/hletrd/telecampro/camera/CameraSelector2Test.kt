@@ -266,4 +266,100 @@ class CameraSelector2Test {
         assertFalse(frontStillPresent.topologyChanged)
         assertEquals(CameraRoute.FRONT, frontStillPresent.targetRoute)
     }
+
+    @Test
+    fun `same id removal epoch invalidates replacement identity`() {
+        val deviceA = CameraTopologyStamp(
+            ids = setOf("usb-0"),
+            identityEpochs = emptyMap(),
+        )
+        val deviceB = CameraTopologyStamp(
+            ids = setOf("usb-0"),
+            identityEpochs = mapOf("usb-0" to 17L),
+        )
+
+        assertEquals(setOf("usb-0"), changedCameraTopologyIds(deviceA, deviceB))
+        assertTrue(changedCameraTopologyIds(deviceB, deviceB).isEmpty())
+    }
+
+    @Test
+    fun `membership and identity changes identify every invalid cache owner`() {
+        val before = CameraTopologyStamp(
+            ids = setOf("back", "usb-a"),
+            identityEpochs = mapOf("usb-a" to 3L),
+        )
+        val after = CameraTopologyStamp(
+            ids = setOf("back", "usb-b"),
+            identityEpochs = mapOf("usb-a" to 4L),
+        )
+
+        assertEquals(setOf("usb-a", "usb-b"), changedCameraTopologyIds(before, after))
+    }
+
+    @Test
+    fun `recording defers topology without consuming accepted readiness`() {
+        val convergence = CameraRouteTopologyConvergence()
+        var ready = true
+        val starting = convergence.beginRecording()
+
+        convergence.offer(1L) // harmless external attach while REC is Starting
+        assertNull(convergence.claim())
+        assertTrue(ready)
+
+        // The same lease spans Starting -> Recording -> native teardown. No intermediate edge may
+        // claim the camera session or publish Not Ready.
+        convergence.offer(2L) // active-route replacement while Recording
+        assertNull(convergence.claim())
+        convergence.offer(3L) // another callback while teardown owns native resources
+        assertNull(convergence.claim())
+
+        convergence.finishRecording(starting)
+        assertEquals(3L, convergence.claim())
+        ready = false // production begins exactly one optics transaction at this point
+        assertFalse(ready)
+        assertNull(convergence.claim())
+    }
+
+    @Test
+    fun `overlapping rejected rec lease cannot release the active recording owner`() {
+        val convergence = CameraRouteTopologyConvergence()
+        val active = convergence.beginRecording()
+        val rejected = convergence.beginRecording()
+        convergence.offer(9L)
+
+        convergence.finishRecording(rejected)
+        assertNull(convergence.claim())
+        convergence.finishRecording(active)
+        assertEquals(9L, convergence.claim())
+    }
+
+    @Test
+    fun `incomplete inventory can retry without losing its identity action`() {
+        val convergence = CameraRouteTopologyConvergence()
+        val recording = convergence.beginRecording()
+
+        // Production invalidates caches on the definite epoch immediately, but offers the action
+        // only after a later characteristics pass proves a complete route inventory.
+        assertFalse(convergence.hasClaimableAction())
+        convergence.offer(12L)
+        assertFalse(convergence.hasClaimableAction())
+        convergence.finishRecording(recording)
+        assertTrue(convergence.hasClaimableAction())
+        assertEquals(12L, convergence.claim())
+    }
+
+    @Test
+    fun `release closes late callback and recorder completions`() {
+        val convergence = CameraRouteTopologyConvergence()
+        val recording = convergence.beginRecording()
+        convergence.offer(4L)
+
+        convergence.close()
+        convergence.finishRecording(recording)
+        convergence.offer(5L)
+
+        assertFalse(convergence.hasClaimableAction())
+        assertNull(convergence.claim())
+        assertEquals(0L, convergence.beginRecording())
+    }
 }
