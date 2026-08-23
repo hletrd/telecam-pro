@@ -75,16 +75,30 @@ object MediaStoreWriter {
     private class FamilyJournalAuthority(
         val monitor: Any = Any(),
         var users: Int = 0,
+        // Registered before a publication caller waits for [monitor]. Retirement consults this
+        // count after its exact-family absence query, so it cannot erase the durable veto in front
+        // of an old-Engine publication that is already queued behind it.
+        var publicationClaims: Int = 0,
     )
 
-    private inline fun <T> withFamilyJournalAuthority(key: String, block: () -> T): T {
+    private inline fun <T> withFamilyJournalAuthority(
+        key: String,
+        publication: Boolean = false,
+        onRegistered: () -> Unit = {},
+        block: (FamilyJournalAuthority) -> T,
+    ): T {
         val authority = synchronized(familyAuthorityRegistryLock) {
-            familyAuthorities.getOrPut(key, ::FamilyJournalAuthority).also { it.users += 1 }
+            familyAuthorities.getOrPut(key, ::FamilyJournalAuthority).also {
+                it.users += 1
+                if (publication) it.publicationClaims += 1
+            }
         }
         return try {
-            synchronized(authority.monitor, block)
+            onRegistered()
+            synchronized(authority.monitor) { block(authority) }
         } finally {
             synchronized(familyAuthorityRegistryLock) {
+                if (publication) authority.publicationClaims -= 1
                 authority.users -= 1
                 if (authority.users == 0 && familyAuthorities[key] === authority) {
                     familyAuthorities.remove(key)
@@ -424,7 +438,7 @@ object MediaStoreWriter {
     ): FamilyDeletionRetirementResult {
         if (!producersTerminal) return FamilyDeletionRetirementResult.PRODUCERS_ACTIVE
         val key = deletedFamilyJournalKey(family)
-        return withFamilyJournalAuthority(key) {
+        return withFamilyJournalAuthority(key) { authority ->
             val preferences = context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE)
             val markerPresent = synchronized(familyJournalMetadataLock) { preferences.contains(key) }
             if (!markerPresent) {
@@ -438,13 +452,22 @@ object MediaStoreWriter {
                 return@withFamilyJournalAuthority FamilyDeletionRetirementResult.RETAINED
             }
 
-            synchronized(familyJournalMetadataLock) {
-                if (!preferences.contains(key)) {
-                    FamilyDeletionRetirementResult.ALREADY_ABSENT
-                } else if (preferences.edit().remove(key).commit()) {
-                    FamilyDeletionRetirementResult.RETIRED
-                } else {
+            synchronized(familyAuthorityRegistryLock) {
+                // A publication registers before it waits for this family's monitor. If one
+                // arrived during the absence query, retain the marker: after we release the exact
+                // authority that publication must observe the durable delete and discard its row.
+                if (authority.publicationClaims > 0) {
                     FamilyDeletionRetirementResult.RETAINED
+                } else {
+                    synchronized(familyJournalMetadataLock) {
+                        if (!preferences.contains(key)) {
+                            FamilyDeletionRetirementResult.ALREADY_ABSENT
+                        } else if (preferences.edit().remove(key).commit()) {
+                            FamilyDeletionRetirementResult.RETIRED
+                        } else {
+                            FamilyDeletionRetirementResult.RETAINED
+                        }
+                    }
                 }
             }
         }
@@ -480,10 +503,51 @@ object MediaStoreWriter {
         },
     )
 
-    /** Fast shared-preference read used by still publication and launch restoration. */
+    /** Fast shared-preference read used by launch restoration and recovery. */
     internal fun isFamilyDeleted(context: Context, family: CaptureFamilyKey): Boolean =
         context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE)
             .contains(deletedFamilyJournalKey(family))
+
+    /**
+     * Orders one complete still publication decision against deletion of its exact family.
+     *
+     * Publication registers its claim before waiting for the family monitor, then keeps that
+     * authority through provider publication and the saved callback. A replacement Engine's
+     * same-family delete therefore either commits first and selects [deleted], or waits until
+     * [live] is wholly complete. Unrelated families use different monitors. The global registry
+     * and metadata locks never span [live], [deleted], provider calls, or retry sleeps.
+     *
+     * Journal-read uncertainty selects [unavailable], retaining complete bytes privately rather
+     * than guessing that the family is live or destructively treating an unreadable marker as a
+     * confirmed delete.
+     */
+    internal fun <T> withFamilyPublicationAuthority(
+        context: Context,
+        family: CaptureFamilyKey,
+        deleted: () -> T,
+        unavailable: () -> T,
+        live: () -> T,
+        publicationRegistered: () -> Unit = {},
+    ): T {
+        val key = deletedFamilyJournalKey(family)
+        return withFamilyJournalAuthority(
+            key,
+            publication = true,
+            onRegistered = publicationRegistered,
+        ) {
+            val markerPresent = runCatching {
+                synchronized(familyJournalMetadataLock) {
+                    context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE)
+                        .contains(key)
+                }
+            }.getOrNull()
+            when (markerPresent) {
+                true -> deleted()
+                false -> live()
+                null -> unavailable()
+            }
+        }
+    }
 
     /** Durable reject/delete path for any output the app has already classified as failed. */
     internal fun discardRejectedOutput(context: Context, uri: Uri): PendingOutputDiscardResult =
@@ -587,33 +651,22 @@ object MediaStoreWriter {
     }.getOrNull()
 
     /**
-     * Deletes still-PENDING rows belonging to [familyUri]'s capture family.
+     * Deletes every untracked row belonging to one exact versioned capture family.
      *
-     * A whole-family delete walks the TRACKER's known outputs — but an output whose MediaStore
-     * publish failed (transient provider error after the bytes were written) stays IS_PENDING with a
-     * COMPLETE journal entry and the tracker never learned it exists. Left behind, the next launch's
-     * [cleanupOrphanedPending] would ADOPT and publish it, resurrecting part of a capture the user
-     * already deleted (2026-07-30 review C3). So the family delete sweeps them here first.
-     *
-     * Scope is deliberately narrow: only the exact versioned-F1 display names of THIS family
-     * ([CaptureFamilyKey.knownOutputDisplayNames]) and only rows still IS_PENDING=1 — published
-     * siblings are the tracker's job, and a legacy (non-F1) [familyUri] parses to null so nothing is
-     * ever proximity-swept. Best-effort; never throws.
+     * The durable family marker has already won before this sweep starts. Usually the unknown rows
+     * are complete-but-pending outputs whose earlier publication failed. The exact-family
+     * publication authority also permits the opposite ordering, though: an old Engine can finish
+     * publication immediately before a replacement Engine commits Delete. Include published rows
+     * here so that winner is still discovered and deleted instead of remaining Gallery-visible.
+     * [excluded] is the tracker's frozen set; its caller keeps exact survivor accounting for those
+     * rows. Exact F1 names, package ownership, and capture directories prevent proximity or foreign
+     * media deletion. Best-effort; unresolved rows remain owned by the durable family marker.
      */
-    fun deletePendingFamilySiblings(context: Context, familyUri: Uri): Int {
-        val displayName = runCatching {
-            val queryArgs = Bundle().apply {
-                putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
-            }
-            context.contentResolver.query(
-                familyUri,
-                arrayOf(MediaStore.MediaColumns.DISPLAY_NAME),
-                queryArgs,
-                null,
-            )?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
-        }.getOrNull()
-        val family = CaptureFamilyKey.parse(displayName)?.familyKey ?: return 0
-        val names = family.knownOutputDisplayNames()
+    internal fun deleteUntrackedFamilySiblings(
+        context: Context,
+        family: CaptureFamilyKey,
+        excluded: Set<Uri>,
+    ): Int {
         val base = when (family.media) {
             CaptureFamilyMedia.STILL -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
             CaptureFamilyMedia.VIDEO -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
@@ -621,41 +674,21 @@ object MediaStoreWriter {
         var swept = 0
         runCatching {
             val queryArgs = Bundle().apply {
-                // Same OWNER + directory scoping as orphanSweepSelection: display names are exact,
-                // but a foreign app can own an identically-named pending row elsewhere — its delete
-                // would fail anyway (not ours to delete), yet scoping keeps this sweep's SELECTION
-                // aligned with its recovery-side sibling instead of relying on delete() to refuse
-                // (verification note, 2026-07-30).
-                val paths = CAPTURE_SUBDIRS.joinToString(" OR ") {
-                    MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?"
-                }
-                putString(
-                    ContentResolver.QUERY_ARG_SQL_SELECTION,
-                    "($paths) AND " + MediaStore.MediaColumns.OWNER_PACKAGE_NAME + " = ? AND " +
-                        MediaStore.MediaColumns.DISPLAY_NAME + " IN (" +
-                        names.joinToString(",") { "?" } + ")",
-                )
-                putStringArray(
-                    ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS,
-                    (CAPTURE_SUBDIRS.map { "DCIM/$it/%" } + context.packageName + names).toTypedArray(),
-                )
+                val query = deletedFamilyQuery(family, CAPTURE_SUBDIRS, context.packageName)
+                putString(ContentResolver.QUERY_ARG_SQL_SELECTION, query.selection)
+                putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, query.args)
                 putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
             }
             context.contentResolver.query(
                 base,
-                arrayOf(MediaStore.MediaColumns._ID, MediaStore.MediaColumns.IS_PENDING),
+                arrayOf(MediaStore.MediaColumns._ID),
                 queryArgs,
                 null,
             )?.use { cursor ->
                 val idCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
-                val pendingCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.IS_PENDING)
                 while (cursor.moveToNext()) {
-                    if (cursor.getInt(pendingCol) != 1) continue
                     val rowUri = ContentUris.withAppendedId(base, cursor.getLong(idCol))
-                    // Never sweep the row the caller is about to delete itself — identical outcome,
-                    // but keeping the contract "this function touches only rows the tracker does
-                    // NOT know" makes the caller's survivor accounting exact.
-                    if (rowUri == familyUri) continue
+                    if (rowUri in excluded) continue
                     if (delete(context, rowUri)) swept++
                 }
             }

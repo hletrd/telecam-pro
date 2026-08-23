@@ -217,9 +217,9 @@ class StillPublicationDurabilityTest {
             captureId = 90,
             markerDurable = true,
             effects = StillPublicationEffects(
-                familyDeleted = {
+                withFamilyPublicationAuthority = { deleted, _, _ ->
                     events += "family-veto"
-                    true
+                    deleted()
                 },
                 discardDeletedFamily = { output ->
                     events += "discard:$output"
@@ -251,7 +251,7 @@ class StillPublicationDurabilityTest {
             captureId = 92,
             markerDurable = true,
             effects = StillPublicationEffects(
-                familyDeleted = { true },
+                withFamilyPublicationAuthority = { deleted, _, _ -> deleted() },
                 publishOwned = { _, _ -> error("deleted family must not publish") },
                 finishPublished = { _, _ -> error("not published") },
                 emitSaved = { _, _ -> error("not saved") },
@@ -261,5 +261,39 @@ class StillPublicationDurabilityTest {
         )
 
         assertEquals(StillOutputPublication.DISCARDED_DELETED_CAPTURE, result)
+    }
+
+    @Test
+    fun `unavailable family authority retains complete output without publish or saved callback`() {
+        val events = mutableListOf<String>()
+        val result = completeStillPublication(
+            kind = "DNG",
+            output = "private-dng-row",
+            captureId = 93,
+            markerDurable = true,
+            effects = StillPublicationEffects(
+                withFamilyPublicationAuthority = { _, unavailable, _ -> unavailable() },
+                publishOwned = { _, _ ->
+                    events += "publish"
+                    DeletedStillPublication.LIVE_PUBLISHED
+                },
+                finishPublished = { _, _ -> events += "finish" },
+                emitSaved = { _, _ -> events += "saved" },
+                emitRetained = { output, id ->
+                    events += "retained:$output:$id"
+                    RetainedStillDisposition.RETAIN_FOR_RECOVERY
+                },
+                emitStatus = { events += "status:${it.message}" },
+            ),
+        )
+
+        assertEquals(StillOutputPublication.RETAINED_PUBLICATION_UNAVAILABLE, result)
+        assertEquals(
+            listOf(
+                "status:${CameraStatusMessage.OUTPUT_SAVED_PENDING}",
+                "retained:private-dng-row:93",
+            ),
+            events,
+        )
     }
 }

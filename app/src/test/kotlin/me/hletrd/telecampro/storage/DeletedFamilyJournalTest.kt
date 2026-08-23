@@ -2,8 +2,10 @@ package me.hletrd.telecampro.storage
 
 import android.content.Context
 import android.net.Uri
+import android.provider.MediaStore
 import androidx.test.core.app.ApplicationProvider
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
@@ -214,6 +216,173 @@ class DeletedFamilyJournalTest {
     }
 
     @Test
+    fun `replacement engine delete wins after old engine stale family precheck`() {
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_024_000_000L, 24L)
+        val events = mutableListOf<String>()
+
+        // Engine A performed the former bare precheck before Engine B committed Delete.
+        assertFalse(MediaStoreWriter.isFamilyDeleted(context, family))
+        assertEquals(FamilyDeletionMarkResult.DURABLE, MediaStoreWriter.markFamilyDeletedResult(context, family))
+
+        val result = MediaStoreWriter.withFamilyPublicationAuthority(
+            context = context,
+            family = family,
+            deleted = {
+                events += "discard"
+                "deleted"
+            },
+            unavailable = { "unavailable" },
+            live = {
+                events += "publish"
+                "published"
+            },
+        )
+
+        assertEquals("deleted", result)
+        assertEquals(listOf("discard"), events)
+    }
+
+    @Test
+    fun `publication first owns provider and callback interval before family delete`() {
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_025_000_000L, 25L)
+        val publicationEntered = CountDownLatch(1)
+        val allowCallbackToFinish = CountDownLatch(1)
+        val events = CopyOnWriteArrayList<String>()
+        val executor = Executors.newFixedThreadPool(2)
+
+        try {
+            val publication = executor.submit<String> {
+                MediaStoreWriter.withFamilyPublicationAuthority(
+                    context = context,
+                    family = family,
+                    deleted = { error("delete did not win") },
+                    unavailable = { error("journal unavailable") },
+                    live = {
+                        events += "provider-publish"
+                        publicationEntered.countDown()
+                        assertTrue(allowCallbackToFinish.await(2, TimeUnit.SECONDS))
+                        events += "saved-callback"
+                        "published"
+                    },
+                )
+            }
+            assertTrue(publicationEntered.await(2, TimeUnit.SECONDS))
+            val deletion = executor.submit<FamilyDeletionMarkResult> {
+                val marked = MediaStoreWriter.markFamilyDeletedResult(context, family)
+                events += "delete-mark"
+                marked
+            }
+            assertThrows(TimeoutException::class.java) {
+                deletion.get(100, TimeUnit.MILLISECONDS)
+            }
+
+            allowCallbackToFinish.countDown()
+            assertEquals("published", publication.get(2, TimeUnit.SECONDS))
+            assertEquals(FamilyDeletionMarkResult.DURABLE, deletion.get(2, TimeUnit.SECONDS))
+            assertEquals(listOf("provider-publish", "saved-callback", "delete-mark"), events)
+        } finally {
+            allowCallbackToFinish.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `blocked family publication does not block unrelated delete mark`() {
+        val blockedFamily = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_026_000_000L, 26L)
+        val independentFamily = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_027_000_000L, 27L)
+        val publicationEntered = CountDownLatch(1)
+        val allowPublication = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+
+        try {
+            val publication = executor.submit<Boolean> {
+                MediaStoreWriter.withFamilyPublicationAuthority(
+                    context = context,
+                    family = blockedFamily,
+                    deleted = { false },
+                    unavailable = { false },
+                    live = {
+                        publicationEntered.countDown()
+                        assertTrue(allowPublication.await(2, TimeUnit.SECONDS))
+                        true
+                    },
+                )
+            }
+            assertTrue(publicationEntered.await(2, TimeUnit.SECONDS))
+
+            assertEquals(
+                FamilyDeletionMarkResult.DURABLE,
+                executor.submit<FamilyDeletionMarkResult> {
+                    MediaStoreWriter.markFamilyDeletedResult(context, independentFamily)
+                }.get(2, TimeUnit.SECONDS),
+            )
+            assertFalse(publication.isDone)
+
+            allowPublication.countDown()
+            assertTrue(publication.get(2, TimeUnit.SECONDS))
+        } finally {
+            allowPublication.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `queued publication prevents retirement from erasing its family veto`() {
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_028_000_000L, 28L)
+        assertTrue(MediaStoreWriter.markFamilyDeleted(context, family))
+        val queryEntered = CountDownLatch(1)
+        val allowQuery = CountDownLatch(1)
+        val publicationRegistered = CountDownLatch(1)
+        val executor = Executors.newFixedThreadPool(2)
+
+        try {
+            val retirement = executor.submit<FamilyDeletionRetirementResult> {
+                MediaStoreWriter.retireFamilyDeletionMarker(context, family, true) {
+                    queryEntered.countDown()
+                    assertTrue(allowQuery.await(2, TimeUnit.SECONDS))
+                    true
+                }
+            }
+            assertTrue(queryEntered.await(2, TimeUnit.SECONDS))
+            val publication = executor.submit<String> {
+                MediaStoreWriter.withFamilyPublicationAuthority(
+                    context = context,
+                    family = family,
+                    deleted = { "discard" },
+                    unavailable = { "unavailable" },
+                    live = { "publish" },
+                    publicationRegistered = { publicationRegistered.countDown() },
+                )
+            }
+            assertTrue(publicationRegistered.await(2, TimeUnit.SECONDS))
+
+            allowQuery.countDown()
+            assertEquals(FamilyDeletionRetirementResult.RETAINED, retirement.get(2, TimeUnit.SECONDS))
+            assertEquals("discard", publication.get(2, TimeUnit.SECONDS))
+            assertTrue(MediaStoreWriter.isFamilyDeleted(context, family))
+        } finally {
+            allowQuery.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `publication failure releases exact family authority for deletion`() {
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_029_000_000L, 29L)
+
+        assertFalse(
+            MediaStoreWriter.withFamilyPublicationAuthority(
+                context = context,
+                family = family,
+                deleted = { true },
+                unavailable = { true },
+                live = { false },
+            ),
+        )
+        assertEquals(FamilyDeletionMarkResult.DURABLE, MediaStoreWriter.markFamilyDeletedResult(context, family))
+    }
+
+    @Test
     fun `deleted family query binds paths owner then every exact output name`() {
         val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_300_000L, 3L)
         val query = deletedFamilyQuery(family, listOf("TeleCamPro", "Legacy"), "me.test")
@@ -225,6 +394,7 @@ class DeletedFamilyJournalTest {
         )
         assertTrue(query.selection.contains("owner_package_name = ?"))
         assertTrue(query.selection.contains("_display_name IN"))
+        assertFalse(query.selection.contains(MediaStore.MediaColumns.IS_PENDING))
     }
 
     @Test

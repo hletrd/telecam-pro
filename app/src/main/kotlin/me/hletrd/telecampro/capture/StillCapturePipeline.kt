@@ -383,7 +383,15 @@ internal class StillCapturePipeline(
         familyKey: CaptureFamilyKey,
         emitSaved: (android.net.Uri, Int) -> Unit = emitMediaSaved,
     ) = StillPublicationEffects(
-        familyDeleted = { MediaStoreWriter.isFamilyDeleted(context, familyKey) },
+        withFamilyPublicationAuthority = { deleted, unavailable, live ->
+            MediaStoreWriter.withFamilyPublicationAuthority(
+                context = context,
+                family = familyKey,
+                deleted = deleted,
+                unavailable = unavailable,
+                live = live,
+            )
+        },
         discardDeletedFamily = { output -> MediaStoreWriter.discardPendingOutput(context, output) },
         publishOwned = { output, captureId ->
             publishStillOutput(output, captureId) { MediaStoreWriter.publish(context, output) }
@@ -454,7 +462,16 @@ internal class StillCapturePipeline(
 
 /** Injectable still-caller effects for the durable-before-publication contract. */
 internal data class StillPublicationEffects<T>(
-    val familyDeleted: () -> Boolean = { false },
+    /**
+     * Runs exactly one deleted/unavailable/live branch under the output's process-wide exact-family
+     * authority. The production branch spans the provider publish and saved callback; pure tests
+     * default to a live family unless they explicitly select another branch.
+     */
+    val withFamilyPublicationAuthority: (
+        deleted: () -> StillOutputPublication,
+        unavailable: () -> StillOutputPublication,
+        live: () -> StillOutputPublication,
+    ) -> StillOutputPublication = { _, _, live -> live() },
     val discardDeletedFamily: (T) -> PendingOutputDiscardResult = {
         PendingOutputDiscardResult.UNRESOLVED
     },
@@ -484,42 +501,58 @@ internal fun <T> completeStillPublication(
     captureId: Int,
     markerDurable: Boolean,
     effects: StillPublicationEffects<T>,
-): StillOutputPublication {
-    if (effects.familyDeleted()) {
+): StillOutputPublication = effects.withFamilyPublicationAuthority(
+    {
         // The family marker itself is the durable launch veto. Exact-URI DISCARD/delete remains a
         // best-effort cleanup; even its double-failure must never fall through to publication.
         effects.discardDeletedFamily(output)
-        return StillOutputPublication.DISCARDED_DELETED_CAPTURE
-    }
-    if (!markerDurable) {
-        effects.emitStatus(retainedSaveStatus(kind, markerDurable = false))
-        return effects.emitRetained(output, captureId).toStillOutputPublication(
-            live = StillOutputPublication.RETAINED_MARKER_UNAVAILABLE,
+        StillOutputPublication.DISCARDED_DELETED_CAPTURE
+    },
+    {
+        // An unreadable family journal is neither LIVE nor DELETED. Preserve complete bytes
+        // privately and reuse the Engine's retained-output ownership so a same-Engine tombstone
+        // that landed independently can still take the exact DISCARD path.
+        effects.emitStatus(retainedSaveStatus(kind, markerDurable = markerDurable))
+        effects.emitRetained(output, captureId).toStillOutputPublication(
+            live = if (markerDurable) {
+                StillOutputPublication.RETAINED_PUBLICATION_UNAVAILABLE
+            } else {
+                StillOutputPublication.RETAINED_MARKER_UNAVAILABLE
+            },
         )
-    }
-    return when (effects.publishOwned(output, captureId)) {
-        DeletedStillPublication.LIVE_PUBLISHED -> {
-            try {
-                effects.emitSaved(output, captureId)
-            } finally {
-                effects.finishPublished(output, captureId)
-            }
-            StillOutputPublication.PUBLISHED
-        }
-        DeletedStillPublication.LIVE_PUBLICATION_FAILED -> {
-            effects.emitStatus(retainedSaveStatus(kind, markerDurable = true))
+    },
+    {
+        if (!markerDurable) {
+            effects.emitStatus(retainedSaveStatus(kind, markerDurable = false))
             effects.emitRetained(output, captureId).toStillOutputPublication(
-                live = StillOutputPublication.RETAINED_PUBLICATION_UNAVAILABLE,
+                live = StillOutputPublication.RETAINED_MARKER_UNAVAILABLE,
             )
+        } else {
+            when (effects.publishOwned(output, captureId)) {
+                DeletedStillPublication.LIVE_PUBLISHED -> {
+                    try {
+                        effects.emitSaved(output, captureId)
+                    } finally {
+                        effects.finishPublished(output, captureId)
+                    }
+                    StillOutputPublication.PUBLISHED
+                }
+                DeletedStillPublication.LIVE_PUBLICATION_FAILED -> {
+                    effects.emitStatus(retainedSaveStatus(kind, markerDurable = true))
+                    effects.emitRetained(output, captureId).toStillOutputPublication(
+                        live = StillOutputPublication.RETAINED_PUBLICATION_UNAVAILABLE,
+                    )
+                }
+                DeletedStillPublication.DISCARD_DELETED_CAPTURE ->
+                    StillOutputPublication.DISCARDED_DELETED_CAPTURE
+                DeletedStillPublication.DISCARD_RETRY_PENDING -> {
+                    effects.emitStatus(CameraStatusMessage.COULD_NOT_DELETE_FILE.status())
+                    StillOutputPublication.DISCARD_RETRY_PENDING
+                }
+            }
         }
-        DeletedStillPublication.DISCARD_DELETED_CAPTURE ->
-            StillOutputPublication.DISCARDED_DELETED_CAPTURE
-        DeletedStillPublication.DISCARD_RETRY_PENDING -> {
-            effects.emitStatus(CameraStatusMessage.COULD_NOT_DELETE_FILE.status())
-            StillOutputPublication.DISCARD_RETRY_PENDING
-        }
-    }
-}
+    },
+)
 
 private fun RetainedStillDisposition.toStillOutputPublication(
     live: StillOutputPublication,

@@ -3347,13 +3347,18 @@ class CameraViewModel @JvmOverloads constructor(
                 }
             }
             val accepted = runCatching { ioExecutor.execute {
-            // BEFORE the known outputs go: sweep still-PENDING family siblings the tracker never
-            // learned about (a publish-failed output keeps its bytes + a COMPLETE journal entry, and
-            // launch recovery would ADOPT it later — resurrecting part of a deleted capture). Runs
-            // only for a real capture family; a legacy URI parses to no family and sweeps nothing.
-            // Reads the tapped URI's display name, so it must precede that row's own deletion.
+            // BEFORE the known outputs go, sweep exact-family siblings the tracker never learned
+            // about. This includes a publish-failed pending row and the cross-Engine ordering where
+            // an old publication completed immediately before this Delete committed its marker.
+            // The tracker's frozen rows stay excluded so survivor accounting below remains exact.
             if (deletePlan.deleteScope == MediaDeleteScope.CAPTURE_FAMILY) {
-                MediaStoreWriter.deletePendingFamilySiblings(getApplication(), uri)
+                deletePlan.familyKey?.let { family ->
+                    MediaStoreWriter.deleteUntrackedFamilySiblings(
+                        context = getApplication(),
+                        family = family,
+                        excluded = deletePlan.outputs,
+                    )
+                }
             }
             val survivors = outputs.filterTo(linkedSetOf()) { output ->
                 !MediaStoreWriter.delete(getApplication(), output)
