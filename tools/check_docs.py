@@ -130,6 +130,33 @@ for perm in sorted(declared):
 gradle = read("app/build.gradle.kts")
 min_sdk = re.search(r"minSdk\s*=\s*(\d+)", gradle).group(1)
 
+# The README carried three different Compose versions at once: the badge, its toolchain table, and
+# the catalog pin. Make the catalog the source of truth and compare both public surfaces plus the
+# project authority table against it.
+catalog = read("gradle/libs.versions.toml")
+catalog_compose = re.search(r'^composeBom\s*=\s*"([^"]+)"', catalog, re.MULTILINE)
+assert catalog_compose, "composeBom missing from version catalog"
+compose_version = catalog_compose.group(1)
+readme = read("README.md")
+readme_compose_table = re.search(r"^\| Compose BOM \| ([^|]+) \|$", readme, re.MULTILINE)
+readme_compose_badge = re.search(r"Jetpack%20Compose-([0-9]{4}\.[0-9]{2})-", readme)
+claude_compose_table = re.search(r"^\| Compose BOM \| ([^|]+) \|", read("CLAUDE.md"), re.MULTILINE)
+check(
+    bool(readme_compose_table and readme_compose_table.group(1).strip() == compose_version),
+    "README Compose table matches version catalog",
+    f"catalog={compose_version}, table={readme_compose_table.group(1).strip() if readme_compose_table else '?'}",
+)
+check(
+    bool(readme_compose_badge and compose_version.startswith(readme_compose_badge.group(1) + ".")),
+    "README Compose badge matches version catalog series",
+    f"catalog={compose_version}, badge={readme_compose_badge.group(1) if readme_compose_badge else '?'}",
+)
+check(
+    bool(claude_compose_table and claude_compose_table.group(1).strip() == compose_version),
+    "CLAUDE Compose table matches version catalog",
+    f"catalog={compose_version}, table={claude_compose_table.group(1).strip() if claude_compose_table else '?'}",
+)
+
 for rel in (
     "docs/play-store-listing.md", "docs/play-console-submit.md", "README.md",
     # Added after an audit found the stale floor in BOTH of these while this check was green: it
@@ -172,31 +199,39 @@ named = set(re.findall(r"`([0-9a-f]{8})…`", sequence)) - cert
 check(not (named & superseded), "console sequence names no superseded artifact", f"{named & superseded}")
 check(not named, "console sequence hard-codes no artifact hash", f"{named}")
 
-# The pin must agree with itself. The banner names the commit, the artifacts heading names it again,
-# and the two drifted apart once — the banner moved to a new cut while the heading below it still
-# said the old one, which is the shape that sends an operator to the wrong bundle.
-banner = re.search(r"(?:UPLOAD-READY|PUBLISHED) \([\d-]+\)[^\n]*`main` at `([0-9a-f]{7})`", submit)
-# The pin heading carries the version it pins ("v1.0.1 upload artifacts"), so match the shape,
-# not one version's literal — the literal went stale the first time the pin moved past v1.
-pin_match = re.search(r"^### .*\bupload artifacts\b", submit, re.M)
-assert pin_match, "no upload-artifacts pin heading"
-pin_start = pin_match.start()
-pin_section = submit[pin_start:submit.index("\n### ", pin_start + 1)]
-heading = re.search(r"`main` at `([0-9a-f]{7})`", pin_section)
-check(bool(banner and heading), "the pin states its commit in both places")
-if banner and heading:
-    check(banner.group(1) == heading.group(1), "banner and artifact heading name the same commit",
-          f"{banner.group(1)} vs {heading.group(1)}")
-
-# A pinned digest must never also appear in the do-not-upload list: that combination tells the
-# operator both to upload and not to upload the same bytes. Scoped to the CURRENT pin's section —
-# the historical sections quote their own digests, which are superseded on purpose.
-pinned = set(re.findall(r"([0-9a-f]{64})", pin_section))
-check(
-    not any(p[:8] in superseded for p in pinned),
-    "no pinned artifact is also listed as superseded",
-    f"{[p[:8] for p in pinned if p[:8] in superseded]}",
-)
+# Upload-ready and not-ready sheets have deliberately different contracts. A ready sheet must pin
+# one commit/digest section. A not-ready sheet must not accidentally retain that blessing and must
+# route the operator through the immutable identity checker instead of mutable Gradle output.
+upload_ready = "✅ UPLOAD-READY" in submit
+not_ready = "🚫 NOT UPLOAD-READY" in submit
+check(upload_ready != not_ready, "submission sheet has exactly one release readiness state")
+if upload_ready:
+    banner = re.search(r"UPLOAD-READY \([\d-]+\)[^\n]*`main` at `([0-9a-f]{7})`", submit)
+    pin_match = re.search(r"^### .*\bupload artifacts\b", submit, re.M)
+    check(bool(banner and pin_match), "the ready pin states its commit in both places")
+    if banner and pin_match:
+        pin_start = pin_match.start()
+        next_heading = submit.find("\n### ", pin_start + 1)
+        pin_section = submit[pin_start:next_heading if next_heading >= 0 else len(submit)]
+        heading = re.search(r"`main` at `([0-9a-f]{7})`", pin_section)
+        check(bool(heading and banner.group(1) == heading.group(1)),
+              "banner and artifact heading name the same commit")
+        pinned = set(re.findall(r"([0-9a-f]{64})", pin_section))
+        check(
+            not any(p[:8] in superseded for p in pinned),
+            "no pinned artifact is also listed as superseded",
+            f"{[p[:8] for p in pinned if p[:8] in superseded]}",
+        )
+else:
+    check(not_ready, "submission sheet explicitly says not upload-ready")
+    check(
+        "python3 tools/check_release_artifact.py" in sequence,
+        "not-ready console sequence requires immutable artifact checker",
+    )
+    check(
+        "app/build/outputs" in sequence and "reject" in sequence.casefold(),
+        "not-ready console sequence rejects mutable Gradle output",
+    )
 
 # Only the current pin may claim to be the newest signed cut. A historical section that keeps that
 # claim in its HEADING outlives its own truth silently — this one survived two later signed cuts

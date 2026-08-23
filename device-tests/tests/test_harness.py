@@ -55,6 +55,12 @@ class FakeTree:
             None,
         )
 
+    def find_selector_any(self, selector):
+        return next(
+            (object() for label in selector.all_labels() if label in self.descriptions),
+            None,
+        )
+
 
 class GuardAdb(Adb):
     def __init__(
@@ -103,6 +109,17 @@ class RecordingControlTree:
         if self.state == "idle" and description == "Start recording":
             return SimpleNamespace(center=(100, 100))
         return None
+
+    def find_selector_any(self, selector):
+        return next(
+            (
+                SimpleNamespace(center=(100, 100))
+                for label in selector.all_labels()
+                if (self.state == "recording" and label == "Stop recording")
+                or (self.state == "idle" and label == "Start recording")
+            ),
+            None,
+        )
 
 
 class StopRetryAdb:
@@ -572,7 +589,7 @@ class UiSemanticsTest(unittest.TestCase):
             )
 
         top_descriptions = (
-            ("Flash Off", "Self timer Off", "Aspect ratio 4:3", "Grid off") if detailed else ()
+            ("Flash", "Self-timer", "Aspect ratio", "Grid") if detailed else ()
         ) + ("Teleconverter", "Hide shooting info", "Open settings")
         for index, description in enumerate(top_descriptions):
             left = index * 52
@@ -766,7 +783,7 @@ class UiSemanticsTest(unittest.TestCase):
     ) -> str:
         physical_order = [
             "AE", "Focus", "Shutter", "ISO",
-            "WB", "Gamma", "Stabilization", "Audio",
+            "WB", "Gamma", "Stabilization", "Directionality",
         ]
         if wrong_order:
             physical_order[0], physical_order[1] = physical_order[1], physical_order[0]
@@ -833,7 +850,7 @@ class UiSemanticsTest(unittest.TestCase):
         metrics = DisplayMetrics(360, 800, 160)
         expected = (
             "AE", "Focus", "Shutter", "ISO",
-            "WB", "Gamma", "Stabilization", "Audio",
+            "WB", "Gamma", "Stabilization", "Directionality",
         )
         for orientation in (90, 270):
             with self.subTest(orientation=orientation):

@@ -26,30 +26,57 @@ from dtest.adb import (
     UiNode,
 )
 from dtest.selectors import (
+    ASPECT_RATIO,
+    CLOSE_ADJUSTMENT,
+    CLOSE_FUNCTION_MENU,
+    CLOSE_SETTINGS,
+    FN_TILES,
+    FLASH,
+    FOCAL_PRESETS as FOCAL_PRESET_SELECTORS,
+    GAMMA,
+    GALLERY,
+    GRID,
+    HIDE_SHOOTING_INFO,
+    ISO,
+    LOUPE_OVERVIEW,
     OPEN_FUNCTION_MENU,
     OPEN_SETTINGS,
+    PHOTO_SETTING_SELECTORS,
     PHOTO_MODE,
+    RECORDING,
+    RESET_FOCUS_POINT,
+    SELF_TIMER,
+    SETTINGS_PAGE_TITLES as SETTINGS_PAGE_TITLE_SELECTORS,
+    SETTINGS_TABS as SETTINGS_TAB_SELECTORS,
+    SHUTTER_SPEED,
+    SHOW_SHOOTING_INFO,
     START_RECORDING,
+    STOP_RECORDING,
+    SWITCH_CAMERA,
     TAKE_PHOTO,
+    TAKE_PHOTO_WHILE_RECORDING,
+    TELECONVERTER,
     VIDEO_MODE,
 )
 from dtest.framework import Context, Incomplete, Skip, UnsafeState, test
 from dtest import media
 
-FOCAL_PRESETS = ("0.6× lens", "1× lens", "3× lens", "10× lens")
+FOCAL_PRESETS = tuple(selector.labels_for("en")[0] for selector in FOCAL_PRESET_SELECTORS)
+FOCAL_SELECTOR_BY_LABEL = dict(zip(FOCAL_PRESETS, FOCAL_PRESET_SELECTORS, strict=True))
 CAPTURE_MODES = ("Photo mode", "Video mode")
-SETTINGS_TABS = ("My", "Shoot", "Exposure", "Focus", "Lens", "Video", "Image", "Assist", "Setup")
-SETTINGS_TITLES = (
-    "My Menu", "Shooting", "Exposure", "Focus", "Lens", "Video", "Image", "Assist", "Setup"
-)
+CAPTURE_MODE_SELECTORS = {"Photo mode": PHOTO_MODE, "Video mode": VIDEO_MODE}
+SETTINGS_TABS = tuple(selector.labels_for("en")[0] for selector in SETTINGS_TAB_SELECTORS)
+SETTINGS_TAB_BY_LABEL = dict(zip(SETTINGS_TABS, SETTINGS_TAB_SELECTORS, strict=True))
+SETTINGS_TITLES = tuple(selector.labels_for("en")[0] for selector in SETTINGS_PAGE_TITLE_SELECTORS)
 FN_TILE_LABELS = {
     "AE", "Focus", "Shutter", "ISO", "WB", "EV", "Zoom", "Stabilization", "Drive",
-    "Meter", "Peaking", "Zebra", "Gamma", "Audio", "Grid", "Level", "Loupe", "Tele",
+    "Meter", "Peaking", "Zebra", "Gamma", "Directionality", "Grid", "Level", "Loupe", "Tele",
     "Open Gate", "Frame",
 }
+FN_SELECTOR_BY_LABEL = {label: FN_TILES[label] for label in FN_TILE_LABELS}
 FN_NUMERIC_TILE_LABELS = {"Focus", "Shutter", "ISO", "WB", "EV", "Zoom"}
 FN_DEFAULT_PHYSICAL_ORDER = (
-    "AE", "Focus", "Shutter", "ISO", "WB", "Gamma", "Stabilization", "Audio",
+    "AE", "Focus", "Shutter", "ISO", "WB", "Gamma", "Stabilization", "Directionality",
 )
 FN_HELD_MAX_DEPTH_FRACTION = 0.40
 CAPTURE_SETTLED = re.compile(
@@ -62,7 +89,7 @@ VIDEO_OSD = re.compile(
 )
 RECORDING_SPEC = re.compile(
     r"RecordingSpec: admitted stem=(VID_TELECAM_F1_[0-9]{13}_[0-9]{10}) "
-    r"codec=(HEVC|AVC|APV) source=([0-9]+)x([0-9]+) "
+    r"codec=(HEVC|AVC|APV)(?:/\S+)? source=([0-9]+)x([0-9]+) "
     r"encoder=([0-9]+)x([0-9]+) bitrate=([0-9]+) "
     # transfer= carries ColorTransfer.name: the O-Log2 "LOG" option was replaced by the
     # standard log profiles (2026-07-22); a stale alternation here made every recording
@@ -150,6 +177,19 @@ class PhotoSettingMarkers:
 
 # ---------------------------------------------------------------- helpers
 
+def effective_locale(ctx: Context) -> str:
+    return ctx.adb.locale_state()["effective"]
+
+
+def find_identity(ctx: Context, selector, tree=None):
+    # The runner attests the effective locale once; read-only checks accept only exact labels from the
+    # identity's EN/KO allow-list so cleanup can remain deterministic even in lightweight test fakes.
+    return (tree or ctx.adb.ui()).find_selector_any(selector)
+
+
+def tap_identity(ctx: Context, selector):
+    return ctx.adb.tap_selector(selector, effective_locale(ctx))
+
 def ensure_foreground(ctx: Context) -> int:
     pid = ctx.adb.pid()
     if pid is None or ctx.adb.resumed_activity() != ctx.adb.main_activity:
@@ -158,7 +198,7 @@ def ensure_foreground(ctx: Context) -> int:
         pid = ctx.adb.launch()
     ctx.adb.shell("input keyevent KEYCODE_WAKEUP")
     tree = ctx.adb.ui()
-    locale = ctx.adb.locale_state()["effective"]
+    locale = effective_locale(ctx)
     if not (
         tree.find_selector(OPEN_SETTINGS, locale)
         or tree.find_selector(PHOTO_MODE, locale)
@@ -171,8 +211,8 @@ def ensure_foreground(ctx: Context) -> int:
 
 def ensure_photo_mode(ctx: Context) -> None:
     tree = ctx.adb.ui()
-    locale = ctx.adb.locale_state()["effective"]
-    shutter = tree.find_selector(TAKE_PHOTO, locale) or tree.find(desc="Shutter")
+    locale = effective_locale(ctx)
+    shutter = tree.find_selector(TAKE_PHOTO, locale)
     if shutter:
         return
     ctx.adb.tap_selector(PHOTO_MODE, locale)
@@ -181,7 +221,7 @@ def ensure_photo_mode(ctx: Context) -> None:
 
 def ensure_video_mode(ctx: Context) -> None:
     tree = ctx.adb.ui()
-    locale = ctx.adb.locale_state()["effective"]
+    locale = effective_locale(ctx)
     if tree.find_selector(START_RECORDING, locale):
         return
     ctx.adb.tap_selector(VIDEO_MODE, locale)
@@ -350,7 +390,7 @@ def toggle_teleconverter(
     facts are the mode-independent evidence (device-root-caused 2026-07-23).
     """
     mark = ctx.adb.log_mark()
-    ctx.adb.tap_ui(desc="Teleconverter")
+    tap_identity(ctx, TELECONVERTER)
     acceptance = wait_session_acceptance(
         ctx,
         mark,
@@ -391,7 +431,7 @@ def restore_teleconverter_off_verified(
 
 def shutter_node(ctx: Context):
     tree = ctx.adb.ui()
-    n = tree.find(desc="Take photo") or tree.find(desc="Shutter") or tree.find(desc="Capture")
+    n = find_identity(ctx, TAKE_PHOTO, tree)
     assert n, f"no shutter control; visible: {sorted(tree.all_labels())[:20]}"
     return n
 
@@ -445,13 +485,19 @@ def selected_option_labels(tree, labels: set[str]) -> set[str]:
     return selected
 
 
-def selected_photo_setting_options(tree) -> tuple[set[str], set[str]]:
-    selected = selected_option_labels(tree, PHOTO_DRIVE_OPTIONS | PHOTO_TIMER_OPTIONS)
+def selected_photo_setting_options(tree, locale: str = "en") -> tuple[set[str], set[str]]:
+    selected: set[str] = set()
+    for canonical, selector in PHOTO_SETTING_SELECTORS.items():
+        labels = set(selector.labels_for(locale))
+        if any(label in selected_option_labels(tree, labels) for label in labels):
+            selected.add(canonical)
     return selected & PHOTO_DRIVE_OPTIONS, selected & PHOTO_TIMER_OPTIONS
 
 
 def _settings_option(ctx: Context, label: str, *, max_scrolls: int = 12) -> None:
     """Select one exact Shooting-sheet chip, scrolling only inside the settings content pane."""
+    selector = PHOTO_SETTING_SELECTORS[label]
+    localized_labels = {value.casefold() for value in selector.labels_for(effective_locale(ctx))}
     metrics = ctx.adb.display_metrics()
     x = metrics.width_px * 4 // 5
     top = metrics.height_px // 3
@@ -460,7 +506,7 @@ def _settings_option(ctx: Context, label: str, *, max_scrolls: int = 12) -> None
         tree = ctx.adb.ui()
         candidates = [
             node for node in tree.nodes
-            if node.text.casefold() == label.casefold() and node.enabled
+            if node.text.casefold() in localized_labels and node.enabled
             and 0 <= node.center[0] < metrics.width_px
             and 0 <= node.center[1] < metrics.height_px
         ]
@@ -472,7 +518,10 @@ def _settings_option(ctx: Context, label: str, *, max_scrolls: int = 12) -> None
                 # Selection state lives on the checkable chip container, not the tapped
                 # text node — read it the same way selected_photo_setting_options does.
                 # Verify against the node's exact text (candidates matched casefolded).
-                if target.text in selected_option_labels(ctx.adb.ui(), {target.text}):
+                selected_drives, selected_timers = selected_photo_setting_options(
+                    ctx.adb.ui(), effective_locale(ctx)
+                )
+                if label in selected_drives | selected_timers:
                     return
                 time.sleep(0.25)
             raise AssertionError(f"settings option {label!r} did not become selected")
@@ -484,14 +533,15 @@ def _settings_option(ctx: Context, label: str, *, max_scrolls: int = 12) -> None
 def _close_settings_with_back(ctx: Context) -> None:
     """Dismiss settings without requiring a fake full-screen accessibility action."""
     tree = ctx.adb.ui()
-    close_nodes = [node for node in tree.nodes if node.desc == "Close settings"]
+    close_match = tree.find_selector_any(CLOSE_SETTINGS)
+    close_nodes = [close_match] if close_match is not None else []
     if len(close_nodes) != 1:
         raise AssertionError(f"settings sheet exposed {len(close_nodes)} close targets; expected one")
     ctx.adb.shell("input keyevent KEYCODE_BACK")
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         tree = ctx.adb.ui()
-        if tree.find(desc="Open settings") and tree.find_desc_exact("Close settings") is None:
+        if find_identity(ctx, OPEN_SETTINGS, tree) and find_identity(ctx, CLOSE_SETTINGS, tree) is None:
             time.sleep(0.8)  # allow the persisted-settings debounce to flush
             return
         time.sleep(0.25)
@@ -500,14 +550,14 @@ def _close_settings_with_back(ctx: Context) -> None:
 
 def set_photo_settings(ctx: Context, *, drive: str, timer: str) -> None:
     """Set exact Photo drive/timer chips through the idempotent settings UI."""
-    if ctx.adb.ui().find_desc_exact("Close settings") is not None:
+    if find_identity(ctx, CLOSE_SETTINGS) is not None:
         _close_settings_with_back(ctx)
     ensure_photo_mode(ctx)
-    ctx.adb.tap_ui(desc="Open settings")
+    tap_identity(ctx, OPEN_SETTINGS)
     try:
         # The tab rail exposes labels ONLY via content-desc (text is always empty on device);
         # a text= query can never match it — see settings_tab_nodes, which matches desc too.
-        ctx.adb.tap_ui(desc="Shoot")
+        tap_identity(ctx, SETTINGS_TAB_BY_LABEL["Shoot"])
         metrics = ctx.adb.display_metrics()
         x = metrics.width_px * 4 // 5
         top = metrics.height_px // 3
@@ -519,19 +569,19 @@ def set_photo_settings(ctx: Context, *, drive: str, timer: str) -> None:
         _settings_option(ctx, drive)
         _settings_option(ctx, timer)
     finally:
-        if ctx.adb.ui().find_desc_exact("Close settings") is not None:
+        if find_identity(ctx, CLOSE_SETTINGS) is not None:
             _close_settings_with_back(ctx)
 
 
 def read_photo_settings(ctx: Context) -> PhotoSettingMarkers:
     """Read exact selected Shooting-sheet chips; OSD absence must never be inferred as Single."""
-    if ctx.adb.ui().find_desc_exact("Close settings") is not None:
+    if find_identity(ctx, CLOSE_SETTINGS) is not None:
         _close_settings_with_back(ctx)
     ensure_photo_mode(ctx)
-    ctx.adb.tap_ui(desc="Open settings")
+    tap_identity(ctx, OPEN_SETTINGS)
     try:
         # Same device fact as set_photo_settings: the tab rail is content-desc-only.
-        ctx.adb.tap_ui(desc="Shoot")
+        tap_identity(ctx, SETTINGS_TAB_BY_LABEL["Shoot"])
         metrics = ctx.adb.display_metrics()
         x = metrics.width_px * 4 // 5
         top = metrics.height_px // 3
@@ -543,7 +593,9 @@ def read_photo_settings(ctx: Context) -> PhotoSettingMarkers:
         drives: set[str] = set()
         timers: set[str] = set()
         for _ in range(12):
-            selected_drives, selected_timers = selected_photo_setting_options(ctx.adb.ui())
+            selected_drives, selected_timers = selected_photo_setting_options(
+                ctx.adb.ui(), effective_locale(ctx)
+            )
             drives.update(selected_drives)
             timers.update(selected_timers)
             if len(drives) > 1 or len(timers) > 1:
@@ -558,7 +610,7 @@ def read_photo_settings(ctx: Context) -> PhotoSettingMarkers:
             f"could not read selected Photo settings: drives={drives}, timers={timers}"
         )
     finally:
-        if ctx.adb.ui().find_desc_exact("Close settings") is not None:
+        if find_identity(ctx, CLOSE_SETTINGS) is not None:
             _close_settings_with_back(ctx)
 
 
@@ -718,8 +770,8 @@ def wait_recording_running(ctx: Context, pid: int, *, timeout_s: float = 12.0) -
         if ctx.adb.pid() != pid:
             raise UnsafeState(f"app process changed before REC became ready: expected {pid}")
         tree = ctx.adb.ui()
-        stop = tree.find_desc_exact("Stop recording")
-        running = tree.find_desc_exact("Recording")
+        stop = find_identity(ctx, STOP_RECORDING, tree)
+        running = find_identity(ctx, RECORDING, tree)
         last_state = f"stop={stop is not None}, recording={running is not None}"
         if stop is not None and running is not None:
             return
@@ -739,14 +791,14 @@ def assert_recording_continues(ctx: Context, pid: int, seconds: float) -> None:
         time.sleep(min(0.75, remaining))
         assert ctx.adb.pid() == pid, "app process changed during REC soak interval"
         tree = ctx.adb.ui()
-        assert tree.find_desc_exact("Stop recording"), "REC stopped before the requested interval"
-        assert tree.find_desc_exact("Recording"), "first-frame REC semantics disappeared early"
+        assert find_identity(ctx, STOP_RECORDING, tree), "REC stopped before the requested interval"
+        assert find_identity(ctx, RECORDING, tree), "first-frame REC semantics disappeared early"
         if not preview_checked and time.monotonic() - started >= seconds / 2:
             assert ctx.adb.preview_is_live(), "preview froze during REC soak interval"
             preview_checked = True
     final_tree = ctx.adb.ui()
-    assert final_tree.find_desc_exact("Stop recording"), "REC was not active at the stop boundary"
-    assert final_tree.find_desc_exact("Recording"), "REC tally vanished before the stop boundary"
+    assert find_identity(ctx, STOP_RECORDING, final_tree), "REC was not active at the stop boundary"
+    assert find_identity(ctx, RECORDING, final_tree), "REC tally vanished before the stop boundary"
     assert preview_checked, "REC interval ended before preview liveness could be verified"
 
 
@@ -770,8 +822,8 @@ def stop_recording_verified(
             if current_pid != pid:
                 raise UnsafeState(f"app process changed during REC cleanup: {pid} -> {current_pid}")
             tree = ctx.adb.ui()
-            start = tree.find_desc_exact("Start recording")
-            stop = tree.find_desc_exact("Stop recording")
+            start = find_identity(ctx, START_RECORDING, tree)
+            stop = find_identity(ctx, STOP_RECORDING, tree)
             last_state = f"start={start is not None}, stop={stop is not None}"
             if start is not None and stop is None:
                 return observed_recording
@@ -1136,7 +1188,10 @@ def exact_media_delta_error(
 
 
 def focal_rail_error(tree, expected: str) -> str | None:
-    nodes = {description: tree.find_desc_exact(description) for description in FOCAL_PRESETS}
+    nodes = {
+        description: tree.find_selector_any(FOCAL_SELECTOR_BY_LABEL[description])
+        for description in FOCAL_PRESETS
+    }
     missing = [description for description, node in nodes.items() if node is None]
     if missing:
         return f"focal controls missing: {missing}"
@@ -1155,7 +1210,10 @@ def focal_rail_error(tree, expected: str) -> str | None:
 
 
 def mode_carousel_error(tree, expected: str) -> str | None:
-    nodes = {description: tree.find_desc_exact(description) for description in CAPTURE_MODES}
+    nodes = {
+        description: tree.find_selector_any(CAPTURE_MODE_SELECTORS[description])
+        for description in CAPTURE_MODES
+    }
     missing = [description for description, node in nodes.items() if node is None]
     if missing:
         return f"capture-mode controls missing: {missing}"
@@ -1182,15 +1240,15 @@ def restore_capture_mode_verified(ctx: Context, initial_mode: str, pid: int) -> 
 
 def _restore_capture_mode_verified(ctx: Context, initial_mode: str, pid: int) -> None:
     """Restore the exact entry mode and prove its UI, accepted session, 3A, and preview state."""
-    expected_shutter = "Start recording" if initial_mode == "VIDEO" else "Take photo"
+    expected_shutter = START_RECORDING if initial_mode == "VIDEO" else TAKE_PHOTO
     expected_carousel = "Video mode" if initial_mode == "VIDEO" else "Photo mode"
     tree = ctx.adb.ui()
-    if tree.find_desc_exact("Stop recording"):
+    if find_identity(ctx, STOP_RECORDING, tree):
         raise UnsafeState("refusing capture-mode restore while REC is active")
-    transition_needed = tree.find_desc_exact(expected_shutter) is None
+    transition_needed = find_identity(ctx, expected_shutter, tree) is None
     transition_mark = ctx.adb.log_mark() if transition_needed else None
     if transition_needed:
-        ctx.adb.tap_ui(desc=expected_carousel)
+        tap_identity(ctx, CAPTURE_MODE_SELECTORS[expected_carousel])
 
     deadline = time.monotonic() + 20
     last_error = "not checked"
@@ -1199,8 +1257,8 @@ def _restore_capture_mode_verified(ctx: Context, initial_mode: str, pid: int) ->
             raise UnsafeState(f"app process changed while restoring {initial_mode}: expected {pid}")
         tree = ctx.adb.ui()
         carousel_error = mode_carousel_error(tree, expected_carousel)
-        idle = tree.find_desc_exact(expected_shutter)
-        stopped = tree.find_desc_exact("Stop recording") is None
+        idle = find_identity(ctx, expected_shutter, tree)
+        stopped = find_identity(ctx, STOP_RECORDING, tree) is None
         last_error = f"idle={idle is not None}, stopped={stopped}, carousel={carousel_error}"
         if idle is not None and stopped and carousel_error is None:
             break
@@ -1298,40 +1356,42 @@ def camera_chrome_layout_errors(
         return matches[0] if matches else None
 
     if detailed is None:
-        detailed = any(node.desc in ("Grid on", "Grid off") for node in tree.nodes)
-    photo_mode = any(node.desc == "Take photo" for node in tree.nodes)
+        detailed = tree.find_selector_any(GRID) is not None
+    photo_mode = tree.find_selector_any(TAKE_PHOTO) is not None
     optional_top_specs = [
-        ("Flash", lambda node: node.desc.startswith("Flash ")),
-        ("Self timer", lambda node: node.desc.startswith("Self timer ")),
-        ("Aspect ratio", lambda node: node.desc.startswith("Aspect ratio ")),
-        ("Grid", lambda node: node.desc in ("Grid on", "Grid off")),
+        ("Flash", FLASH),
+        ("Self timer", SELF_TIMER),
+        ("Aspect ratio", ASPECT_RATIO),
+        ("Grid", GRID),
     ]
     top = []
-    for label, predicate in optional_top_specs:
+    for label, selector_identity in optional_top_specs:
         required = detailed and (label == "Grid" or photo_mode)
-        top.append((label, one(label, predicate) if required else optional_one(label, predicate)))
+        node = tree.find_selector_any(selector_identity)
+        if required and node is None:
+            errors.append(f"{label}: expected one node, got 0")
+        top.append((label, node))
     top.extend([
-        ("Teleconverter", one("Teleconverter", lambda node: node.desc == "Teleconverter")),
+        ("Teleconverter", tree.find_selector_any(TELECONVERTER)),
         (
             "Shooting info",
             one(
                 "Shooting info",
-                lambda node: node.desc in ("Show shooting info", "Hide shooting info"),
+                lambda node: node is tree.find_selector_any(SHOW_SHOOTING_INFO)
+                or node is tree.find_selector_any(HIDE_SHOOTING_INFO),
             ),
         ),
-        ("Open settings", one("Open settings", lambda node: node.desc == "Open settings")),
+        ("Open settings", tree.find_selector_any(OPEN_SETTINGS)),
     ])
-    fn = one("Open function menu", lambda node: node.desc == "Open function menu")
-    focal = [(label, one(label, lambda node, label=label: node.desc == label)) for label in FOCAL_PRESETS]
-    modes = [(label, one(label, lambda node, label=label: node.desc == label)) for label in CAPTURE_MODES]
-    shutter = one(
-        "Idle shutter",
-        lambda node: node.desc in ("Take photo", "Start recording"),
-    )
-    gallery = one(
-        "Gallery",
-        lambda node: node.desc == "No capture to review" or node.desc.startswith("Review last "),
-    )
+    fn = tree.find_selector_any(OPEN_FUNCTION_MENU)
+    focal = [
+        (label, tree.find_selector_any(FOCAL_SELECTOR_BY_LABEL[label])) for label in FOCAL_PRESETS
+    ]
+    modes = [
+        (label, tree.find_selector_any(CAPTURE_MODE_SELECTORS[label])) for label in CAPTURE_MODES
+    ]
+    shutter = tree.find_selector_any(TAKE_PHOTO) or tree.find_selector_any(START_RECORDING)
+    gallery = tree.find_selector_any(GALLERY)
 
     named_nodes = [*top, ("Open function menu", fn), *focal, *modes, ("Shutter", shutter), ("Gallery", gallery)]
     minimum_px = _minimum_touch_px(metrics)
@@ -1478,7 +1538,8 @@ def fn_entry_layout_errors(
 ) -> list[str]:
     """The direct Fn entry stays in the same physical bottom reach zone as its held tray."""
     errors: list[str] = []
-    entries = [node for node in tree.nodes if node.desc == "Open function menu"]
+    entry_match = tree.find_selector_any(OPEN_FUNCTION_MENU)
+    entries = [entry_match] if entry_match is not None else []
     if len(entries) != 1:
         return [f"Fn entry: expected one action node, got {len(entries)}"]
     entry = entries[0]
@@ -1514,10 +1575,7 @@ def fn_entry_layout_errors(
 def settings_tab_nodes(tree) -> dict[str, list[UiNode]]:
     """Return each settings-tab action by its exact merged accessibility name."""
     return {
-        label: [
-            node for node in tree.nodes
-            if node.desc.casefold() == label.casefold()
-        ]
+        label: tree.find_all_selector_any(SETTINGS_TAB_BY_LABEL[label])
         for label in SETTINGS_TABS
     }
 
@@ -1525,7 +1583,7 @@ def settings_tab_nodes(tree) -> dict[str, list[UiNode]]:
 def settings_modal_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
     """One close action and nine coherent named 48 dp tab targets."""
     errors: list[str] = []
-    close_nodes = [node for node in tree.nodes if node.desc == "Close settings"]
+    close_nodes = tree.find_all_selector_any(CLOSE_SETTINGS)
     if len(close_nodes) != 1:
         errors.append(f"Settings close: expected one explicit action node, got {len(close_nodes)}")
     else:
@@ -1582,7 +1640,8 @@ def settings_modal_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
 
 def adjustment_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
     """Compact manual ruler owns one coherent close action inside the lower control band."""
-    close_nodes = [node for node in tree.nodes if node.desc == "Close adjustment"]
+    close_match = tree.find_selector_any(CLOSE_ADJUSTMENT)
+    close_nodes = [close_match] if close_match is not None else []
     if len(close_nodes) != 1:
         return [f"Adjustment close: expected one action node, got {len(close_nodes)}"]
     close = close_nodes[0]
@@ -1597,7 +1656,7 @@ def adjustment_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
         )
     if top < metrics.height_px // 2:
         errors.append(f"Adjustment close: escaped the lower control band {close.bounds}")
-    if tree.find_desc_exact("Close function menu") is not None:
+    if tree.find_selector_any(CLOSE_FUNCTION_MENU) is not None:
         errors.append("Adjustment ruler and Fn modal are visible at the same time")
     return errors
 
@@ -1634,7 +1693,8 @@ def loupe_copy_errors(labels: set[str]) -> list[str]:
 def loupe_layout_errors(tree, metrics: DisplayMetrics) -> list[str]:
     """Keep the non-interactive same-stream overview inside preview and off direct controls."""
     errors = []
-    overviews = [node for node in tree.nodes if node.desc == "Loupe overview"]
+    overview_match = tree.find_selector_any(LOUPE_OVERVIEW)
+    overviews = [overview_match] if overview_match is not None else []
     if len(overviews) != 1:
         return [f"Loupe overview: expected one region, got {len(overviews)}"]
     overview = overviews[0]
@@ -1678,7 +1738,10 @@ def function_menu_layout_errors(
 ) -> list[str]:
     """Constrained-window and one-action-node contract for the production Fn tile grid."""
     errors: list[str] = []
-    tiles = [node for node in tree.nodes if node.desc in FN_TILE_LABELS]
+    tiles_by_label = {
+        label: tree.find_selector_any(FN_SELECTOR_BY_LABEL[label]) for label in FN_TILE_LABELS
+    }
+    tiles = [node for node in tiles_by_label.values() if node is not None]
     if not 1 <= len(tiles) <= 8:
         errors.append(f"Fn tiles: expected 1..8 nodes, got {len(tiles)}")
 
@@ -1699,7 +1762,8 @@ def function_menu_layout_errors(
             if _overlap_area(first, second) > 0:
                 errors.append(f"Fn tiles overlap: {first.desc} and {second.desc}")
 
-    close_nodes = [node for node in tree.nodes if node.desc == "Close function menu"]
+    close_match = tree.find_selector_any(CLOSE_FUNCTION_MENU)
+    close_nodes = [close_match] if close_match is not None else []
     if len(close_nodes) != 1:
         errors.append(f"Fn close: expected one explicit action node, got {len(close_nodes)}")
     else:
@@ -1767,8 +1831,11 @@ def function_menu_layout_errors(
             elif len(tiles) != 8:
                 errors.append(f"Fn tray: held 4x2 check requires 8 tiles, got {len(tiles)}")
             else:
+                canonical_labels = {
+                    id(node): label for label, node in tiles_by_label.items() if node is not None
+                }
                 physical = [
-                    (tile.desc, *_physical_point(*tile.center, metrics, orientation))
+                    (canonical_labels[id(tile)], *_physical_point(*tile.center, metrics, orientation))
                     for tile in tiles
                 ]
                 by_y = sorted(physical, key=lambda item: (item[2], item[1]))
@@ -1846,7 +1913,7 @@ def t_camera_chrome_layout(ctx: Context) -> None:
     pid = ensure_foreground(ctx)
     mark = ctx.adb.log_mark()
     tree = ctx.adb.ui()
-    if tree.find_desc_exact("Stop recording"):
+    if find_identity(ctx, STOP_RECORDING, tree):
         raise UnsafeState("layout contract cannot inspect an active recording")
     metrics = ctx.adb.display_metrics()
     errors = camera_chrome_layout_errors(tree, metrics)
@@ -1868,9 +1935,9 @@ def t_modes(ctx: Context) -> None:
     """Photo↔Video flips reconfigure the session without camera errors."""
     pid = ensure_foreground(ctx)
     tree = ctx.adb.ui()
-    if tree.find(desc="Stop recording"):
+    if find_identity(ctx, STOP_RECORDING, tree):
         raise UnsafeState("mode round-trip entered while recording was active")
-    initial_mode = "VIDEO" if tree.find(desc="Start recording") else "PHOTO"
+    initial_mode = "VIDEO" if find_identity(ctx, START_RECORDING, tree) else "PHOTO"
     assert initial_mode == "VIDEO" or shutter_node(ctx), "could not determine initial capture mode"
     expected_initial_mode = "Video mode" if initial_mode == "VIDEO" else "Photo mode"
     assert mode_carousel_error(tree, expected_initial_mode) is None, (
@@ -1913,7 +1980,7 @@ def t_modes(ctx: Context) -> None:
     mark = ctx.adb.log_mark()
     ensure_video_mode(ctx)
     video_tree = ctx.adb.ui()
-    assert video_tree.find(desc="Start recording"), "video mode did not arm the REC button"
+    assert find_identity(ctx, START_RECORDING, video_tree), "video mode did not arm the REC button"
     assert mode_carousel_error(video_tree, "Video mode") is None, (
         mode_carousel_error(video_tree, "Video mode")
     )
@@ -1974,7 +2041,7 @@ def t_lenses(ctx: Context) -> None:
     ensure_photo_mode(ctx)
     mark = ctx.adb.log_mark()
     for lens in ("1× lens", "3× lens", "10× lens", "0.6× lens", "1× lens"):
-        ctx.adb.tap_ui(desc=lens)
+        tap_identity(ctx, FOCAL_SELECTOR_BY_LABEL[lens])
         deadline = time.time() + 6
         error = "selection state did not settle"
         while time.time() < deadline:
@@ -2109,7 +2176,7 @@ def t_video(ctx: Context) -> None:
     try:
         # The start call itself is inside the cleanup boundary: a transport exception can arrive
         # after the tap reached the phone, so even a raised call may have started REC.
-        ctx.adb.tap_ui(desc="Start recording")
+        tap_identity(ctx, START_RECORDING)
         admitted_line = ctx.adb.wait_log(mark, RECORDING_SPEC.pattern, timeout_s=12, pid=pid)
         assert admitted_line, "recording did not publish its admitted encoder spec"
         admitted = RECORDING_SPEC.search(admitted_line)
@@ -2140,7 +2207,7 @@ def t_video(ctx: Context) -> None:
         for checkpoint in range(1, 7):
             time.sleep(10)
             assert ctx.adb.pid() == pid, f"app process changed during REC at {checkpoint * 10}s"
-            assert ctx.adb.ui().find(desc="Stop recording"), (
+            assert find_identity(ctx, STOP_RECORDING), (
                 f"REC UI was lost at {checkpoint * 10}s"
             )
             if checkpoint in (2, 5):
@@ -2219,7 +2286,7 @@ def t_tap_af(ctx: Context) -> None:
     baseline_af = AF_MODE.search(baseline.line)
     assert baseline_af, f"baseline 3A omitted afMode: {baseline.line}"
     tree = ctx.adb.ui()
-    gear = tree.find(desc="Open settings")
+    gear = find_identity(ctx, OPEN_SETTINGS, tree)
     assert gear, "no reference chrome to locate the preview"
     # Tap mid-preview (center of screen, above the control cluster).
     x = 720
@@ -2233,7 +2300,7 @@ def t_tap_af(ctx: Context) -> None:
     assert recent and "afMode=1" in recent[-1], (
         f"AF hold released after reticle timeout: {recent[-1] if recent else 'no 3A'}"
     )
-    reset = ctx.adb.ui().find_desc_exact("Reset focus point")
+    reset = find_identity(ctx, RESET_FOCUS_POINT)
     assert reset and reset.enabled, "tap-AF became an invisible hold after the reticle faded"
     reset_mark = ctx.adb.log_mark()
     ctx.adb.tap(*reset.center)
@@ -2247,7 +2314,7 @@ def t_tap_af(ctx: Context) -> None:
         pid=pid,
     )
     assert restored, f"reset did not restore prior afMode={baseline_af.group(1)}"
-    assert ctx.adb.ui().find_desc_exact("Reset focus point") is None, (
+    assert find_identity(ctx, RESET_FOCUS_POINT) is None, (
         "tap-focus reset affordance remained after the point was cleared"
     )
     fatals = ctx.adb.fatal_lines(mark, pid)
@@ -2261,9 +2328,9 @@ def t_settings(ctx: Context) -> None:
     pid = ensure_foreground(ctx)
     mark = ctx.adb.log_mark()
     metrics = ctx.adb.display_metrics()
-    ctx.adb.tap_ui(desc="Open settings")
+    tap_identity(ctx, OPEN_SETTINGS)
     opened = ctx.adb.ui()
-    assert opened.find_desc_exact("Close settings"), "settings modal did not open"
+    assert find_identity(ctx, CLOSE_SETTINGS, opened), "settings modal did not open"
     minimum_px = _minimum_touch_px(metrics)
     modal_errors = settings_modal_layout_errors(opened, metrics)
     assert not modal_errors, "settings modal layout violations: " + "; ".join(modal_errors)
@@ -2293,11 +2360,7 @@ def t_settings(ctx: Context) -> None:
                     tree = ctx.adb.ui()
                     selected = [
                         label for label in SETTINGS_TABS
-                        if any(
-                            node.desc.casefold() == label.casefold()
-                            and node.selected
-                            for node in tree.nodes
-                        )
+                        if any(node.selected for node in settings_tab_nodes(tree)[label])
                     ]
                     if selected == [tab]:
                         break
@@ -2311,9 +2374,13 @@ def t_settings(ctx: Context) -> None:
                 assert selected == [tab], f"settings selected state is ambiguous: {selected}"
 
             rail_right = max(tab_nodes[label][0].bounds[2] for label in SETTINGS_TABS)
+            title_selector = SETTINGS_PAGE_TITLE_SELECTORS[SETTINGS_TITLES.index(title)]
+            title_labels = {
+                label.casefold() for label in title_selector.labels_for(effective_locale(ctx))
+            }
             page_titles = [
                 node for node in tree.nodes
-                if node.text.casefold() == title.casefold()
+                if node.text.casefold() in title_labels
                 and not node.clickable
                 and node.bounds[0] >= rail_right
             ]
@@ -2321,23 +2388,27 @@ def t_settings(ctx: Context) -> None:
             ctx.adb.screenshot(f"settings_{tab.lower()}")
 
         modal = ctx.adb.ui()
-        background_descriptions = {
-            *FOCAL_PRESETS,
-            *CAPTURE_MODES,
-            "Take photo",
-            "Start recording",
-            "Open function menu",
-            "Open settings",
-        }
-        leaked = sorted(node.desc for node in modal.nodes if node.desc in background_descriptions)
+        background_selectors = (
+            *FOCAL_PRESET_SELECTORS,
+            PHOTO_MODE,
+            VIDEO_MODE,
+            TAKE_PHOTO,
+            START_RECORDING,
+            OPEN_FUNCTION_MENU,
+            OPEN_SETTINGS,
+        )
+        leaked = sorted(
+            selector.identity for selector in background_selectors
+            if modal.find_selector(selector, effective_locale(ctx)) is not None
+        )
         assert not leaked, f"settings modal leaked background camera actions: {leaked}"
     finally:
         ctx.adb.shell("input keyevent KEYCODE_BACK")
         time.sleep(1)
 
     restored = ctx.adb.ui()
-    assert restored.find(desc="Open settings"), "Back did not restore camera chrome"
-    assert restored.find_desc_exact("Close settings") is None, "Back left the settings modal open"
+    assert find_identity(ctx, OPEN_SETTINGS, restored), "Back did not restore camera chrome"
+    assert find_identity(ctx, CLOSE_SETTINGS, restored) is None, "Back left the settings modal open"
     fatals = ctx.adb.fatal_lines(mark, pid)
     assert not fatals, f"errors during settings traversal: {fatals[:2]}"
     ctx.note("all 9 tabs selected their page; modal isolated; Back restored camera")
@@ -2347,29 +2418,35 @@ def t_settings(ctx: Context) -> None:
 def t_function_menu(ctx: Context) -> None:
     """The visible Sony-style Fn entry opens actionable tiles and Back restores camera chrome."""
     pid = ensure_foreground(ctx)
-    opener = ctx.adb.ui().find_desc_exact("Open function menu")
+    opener = find_identity(ctx, OPEN_FUNCTION_MENU)
     assert opener and opener.enabled, "shooting screen has no visible, enabled Fn entry point"
     mark = ctx.adb.log_mark()
     ctx.adb.tap(*opener.center)
     menu = ctx.adb.ui()
-    assert menu.find_desc_exact("Close function menu"), "Fn overlay did not expose its close control"
+    assert find_identity(ctx, CLOSE_FUNCTION_MENU, menu), "Fn overlay did not expose its close control"
     metrics = ctx.adb.display_metrics()
     layout_errors = function_menu_layout_errors(menu, metrics)
     assert not layout_errors, "Fn overlay layout violations: " + "; ".join(layout_errors)
-    tiles = [node for node in menu.nodes if node.desc in FN_TILE_LABELS and node.enabled]
+    tiles = [
+        node for label in FN_TILE_LABELS
+        if (node := menu.find_selector_any(FN_SELECTOR_BY_LABEL[label])) is not None and node.enabled
+    ]
     assert tiles, "Fn overlay exposed no enabled setting tile"
     quick_tiles = [
         node for node in tiles
-        if node.desc not in FN_NUMERIC_TILE_LABELS and node.clickable and node.focusable
+        if not any(
+            node is menu.find_selector_any(FN_SELECTOR_BY_LABEL[label])
+            for label in FN_NUMERIC_TILE_LABELS
+        ) and node.clickable and node.focusable
     ]
     assert quick_tiles, "Fn overlay exposed no activatable in-place quick action"
     ctx.adb.screenshot("function_menu")
     ctx.adb.shell("input keyevent KEYCODE_BACK")
     time.sleep(1)
     restored = ctx.adb.ui()
-    assert restored.find_desc_exact("Open function menu"), "Back did not restore the Fn entry"
-    assert restored.find_desc_exact("Close function menu") is None, "Back left the Fn overlay open"
-    assert restored.find(desc="Open settings"), "camera chrome was not restored after Fn dismiss"
+    assert find_identity(ctx, OPEN_FUNCTION_MENU, restored), "Back did not restore the Fn entry"
+    assert find_identity(ctx, CLOSE_FUNCTION_MENU, restored) is None, "Back left the Fn overlay open"
+    assert find_identity(ctx, OPEN_SETTINGS, restored), "camera chrome was not restored after Fn dismiss"
     fatals = ctx.adb.fatal_lines(mark, pid)
     assert not fatals, f"errors during Fn open/dismiss: {fatals[:2]}"
     ctx.note(
@@ -2395,13 +2472,13 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
             assert not idle_errors, (
                 f"snapshot idle {orientation}° violations: " + "; ".join(idle_errors)
             )
-            assert idle.find_desc_exact("Close adjustment") is None
+            assert find_identity(ctx, CLOSE_ADJUSTMENT, idle) is None
             assert not any(label in {"MR1", "MR2", "MR3"} for label in idle.all_labels())
             gamma_errors = snapshot_gamma_state_errors(idle, "HLG")
             assert not gamma_errors, "; ".join(gamma_errors)
             ctx.adb.screenshot(f"snapshot_idle_{orientation}")
 
-            ctx.adb.tap_ui(desc="Open function menu")
+            tap_identity(ctx, OPEN_FUNCTION_MENU)
             menu = ctx.adb.ui(f"snapshot_fn_{orientation}")
             menu_errors = function_menu_layout_errors(
                 menu,
@@ -2415,16 +2492,16 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
                 f"snapshot Fn {orientation}° violations: " + "; ".join(menu_errors)
             )
             if orientation == 0:
-                gamma = menu.find_desc_exact("Gamma")
+                gamma = find_identity(ctx, GAMMA, menu)
                 assert gamma and gamma.enabled, "snapshot Gamma quick action is unavailable"
                 before = ctx.adb.exec_out("screencap")
                 ctx.adb.tap(*gamma.center)
                 time.sleep(0.9)
                 sticky = ctx.adb.ui("snapshot_fn_0_sticky")
-                assert sticky.find_desc_exact("Close function menu"), (
+                assert find_identity(ctx, CLOSE_FUNCTION_MENU, sticky), (
                     "Gamma quick action dismissed the Fn modal"
                 )
-                assert sticky.find_desc_exact("Gamma"), "Gamma quick action disappeared after update"
+                assert find_identity(ctx, GAMMA, sticky), "Gamma quick action disappeared after update"
                 # One cycle tap from the snapshot's HLG start lands on S-Log3 (the O-Log2 option
                 # was replaced by the standard log profiles, 2026-07-22 — see ControlCycles).
                 gamma_errors = snapshot_gamma_state_errors(sticky, "S-Log3")
@@ -2438,8 +2515,8 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
             ctx.adb.shell("input keyevent KEYCODE_BACK")
 
             restored = ctx.adb.ui()
-            assert restored.find_desc_exact("Open function menu"), "Back did not dismiss snapshot Fn"
-            ctx.adb.tap_ui(desc="Open settings")
+            assert find_identity(ctx, OPEN_FUNCTION_MENU, restored), "Back did not dismiss snapshot Fn"
+            tap_identity(ctx, OPEN_SETTINGS)
             settings = ctx.adb.ui(f"snapshot_settings_{orientation}")
             settings_errors = settings_modal_layout_errors(settings, metrics)
             assert not settings_errors, (
@@ -2455,12 +2532,12 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
                 f"active memory is not one compact MR1 tag: {sorted(memory_labels)}"
             )
             assert not ({"MR2", "MR3"} & memory_labels), "inactive MR banks leaked onto viewfinder"
-            assert memory.find_desc_exact("Close adjustment") is None
+            assert find_identity(ctx, CLOSE_ADJUSTMENT, memory) is None
             ctx.adb.screenshot(f"snapshot_memory_{orientation}")
 
             launch_ui_snapshot(ctx, orientation=orientation, scenario="adjustment")
-            ctx.adb.tap_ui(desc="Open function menu")
-            ctx.adb.tap_ui(desc="ISO")
+            tap_identity(ctx, OPEN_FUNCTION_MENU)
+            tap_identity(ctx, ISO)
             adjustment = ctx.adb.ui(f"snapshot_adjustment_{orientation}")
             adjustment_errors = adjustment_layout_errors(adjustment, metrics)
             assert not adjustment_errors, (
@@ -2475,10 +2552,10 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
             loupe_layout = loupe_layout_errors(loupe, metrics)
             assert not loupe_layout, "; ".join(loupe_layout)
             assert "OVERVIEW" in loupe.all_labels(), "visible overview omitted the OVERVIEW truth tag"
-            assert loupe.find_desc_exact("Close adjustment") is None, (
+            assert find_identity(ctx, CLOSE_ADJUSTMENT, loupe) is None, (
                 "Loupe scenario retained a prior manual-adjustment ruler"
             )
-            assert loupe.find_desc_exact("Close function menu") is None, (
+            assert find_identity(ctx, CLOSE_FUNCTION_MENU, loupe) is None, (
                 "Loupe scenario retained the Fn modal"
             )
             assert "ISO 400" not in loupe.all_labels(), "Loupe scenario retained the ISO ruler"
@@ -2507,7 +2584,7 @@ def t_debug_snapshot_ui_contract(ctx: Context) -> None:
                     "; ".join(rtl_errors)
                 )
                 ctx.adb.screenshot(f"snapshot_idle_rtl_{orientation}")
-                ctx.adb.tap_ui(desc="Open function menu")
+                tap_identity(ctx, OPEN_FUNCTION_MENU)
                 rtl_menu = ctx.adb.ui(f"snapshot_fn_rtl_{orientation}")
                 rtl_menu_errors = function_menu_layout_errors(
                     rtl_menu,
@@ -2540,7 +2617,7 @@ def t_persist(ctx: Context) -> None:
     time.sleep(1)
     ctx.adb.launch()
     tree = ctx.adb.ui()
-    is_video = tree.find(desc="Start recording") is not None
+    is_video = find_identity(ctx, START_RECORDING, tree) is not None
     ensure_photo_mode(ctx)
     assert is_video, "video mode was not restored after kill (Remember Settings broken?)"
     ctx.note("mode persisted across force-stop")
@@ -2843,11 +2920,11 @@ def shutter_readout_seconds(label: str) -> Fraction | None:
 
 
 def _open_settings_tab(ctx: Context, tab: str) -> None:
-    if ctx.adb.ui().find_desc_exact("Close settings") is not None:
+    if find_identity(ctx, CLOSE_SETTINGS) is not None:
         _close_settings_with_back(ctx)
-    ctx.adb.tap_ui(desc="Open settings")
+    tap_identity(ctx, OPEN_SETTINGS)
     # The tab rail exposes labels ONLY via content-desc (device fact shared with set_photo_settings).
-    ctx.adb.tap_ui(desc=tab)
+    tap_identity(ctx, SETTINGS_TAB_BY_LABEL[tab])
 
 
 def _chip_option_nodes(tree, label: str) -> list[UiNode]:
@@ -3064,34 +3141,36 @@ def select_video_transfer(ctx: Context, label: str) -> None:
 def _ruler_node(tree, ruler_desc: str) -> UiNode | None:
     """The ruler Canvas surfaces as a SeekBar via progressSemantics — the Speed/Angle toggle can
     share the same content description, so the class filter is load-bearing."""
+    selector = ISO if ruler_desc == "ISO" else SHUTTER_SPEED
+    labels = {label.casefold() for label in selector.all_labels()}
     nodes = [
         node for node in tree.nodes
-        if node.desc == ruler_desc and node.class_name.endswith("SeekBar")
+        if node.desc.casefold() in labels and node.class_name.endswith("SeekBar")
     ]
     return nodes[0] if len(nodes) == 1 else None
 
 
 def open_manual_dial(ctx: Context, tile: str, ruler_desc: str) -> None:
-    if ctx.adb.ui().find_desc_exact("Close adjustment") is not None:
+    if find_identity(ctx, CLOSE_ADJUSTMENT) is not None:
         close_manual_dial(ctx)
-    ctx.adb.tap_ui(desc="Open function menu")
-    ctx.adb.tap_ui(desc=tile)
+    tap_identity(ctx, OPEN_FUNCTION_MENU)
+    tap_identity(ctx, FN_SELECTOR_BY_LABEL[tile])
     deadline = time.monotonic() + 6
     while time.monotonic() < deadline:
         tree = ctx.adb.ui()
-        if tree.find_desc_exact("Close adjustment") and _ruler_node(tree, ruler_desc):
+        if find_identity(ctx, CLOSE_ADJUSTMENT, tree) and _ruler_node(tree, ruler_desc):
             return
         time.sleep(0.3)
     raise AssertionError(f"Fn {tile} did not open the {ruler_desc!r} adjustment ruler")
 
 
 def close_manual_dial(ctx: Context) -> None:
-    node = ctx.adb.ui().find_desc_exact("Close adjustment")
+    node = find_identity(ctx, CLOSE_ADJUSTMENT)
     if node is not None:
         ctx.adb.tap(*node.center)
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
-        if ctx.adb.ui().find_desc_exact("Close adjustment") is None:
+        if find_identity(ctx, CLOSE_ADJUSTMENT) is None:
             return
         time.sleep(0.3)
     raise AssertionError("adjustment dial did not close")
@@ -3248,7 +3327,7 @@ def await_focal_rail(ctx: Context, timeout_s: float = 12.0) -> None:
     """
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        if ctx.adb.ui().find_desc_exact(FOCAL_PRESETS[0]) is not None:
+        if find_identity(ctx, FOCAL_SELECTOR_BY_LABEL[FOCAL_PRESETS[0]]) is not None:
             return
         time.sleep(0.4)
     raise AssertionError(
@@ -3260,7 +3339,7 @@ def await_focal_rail(ctx: Context, timeout_s: float = 12.0) -> None:
 def restore_lens_preset(ctx: Context, lens: str) -> None:
     # Wait for the rail to exist before aiming at it (see await_focal_rail).
     await_focal_rail(ctx)
-    ctx.adb.tap_ui(desc=lens)
+    tap_identity(ctx, FOCAL_SELECTOR_BY_LABEL[lens])
     deadline = time.time() + 6
     error = "lens restore did not settle"
     while time.time() < deadline:
@@ -3281,7 +3360,7 @@ def switch_camera_verified(
 ) -> tuple[SessionAcceptance, ModeThreeAEvidence]:
     """Cross the facing door and prove the accepted route faces the expected way (dumpsys join)."""
     mark = ctx.adb.log_mark()
-    ctx.adb.tap_ui(desc="Switch camera")
+    tap_identity(ctx, SWITCH_CAMERA)
     acceptance = wait_session_acceptance(
         ctx,
         mark,
@@ -3362,7 +3441,7 @@ def t_per_lens_still_geometry(ctx: Context) -> None:
     rail = ctx.adb.ui()
     checked = [
         description for description in FOCAL_PRESETS
-        if (node := rail.find_desc_exact(description)) is not None and node.checked
+        if (node := rail.find_selector_any(FOCAL_SELECTOR_BY_LABEL[description])) is not None and node.checked
     ]
     assert len(checked) == 1, f"expected one checked lens preset, got {checked}"
     initial_lens = checked[0]
@@ -3376,7 +3455,7 @@ def t_per_lens_still_geometry(ctx: Context) -> None:
             set_selected_aspect(ctx, "4:3")
             aspect_changed = True
         for lens in FOCAL_PRESETS:
-            ctx.adb.tap_ui(desc=lens)
+            tap_identity(ctx, FOCAL_SELECTOR_BY_LABEL[lens])
             deadline = time.time() + 6
             error = "lens selection did not settle"
             while time.time() < deadline:
@@ -3434,11 +3513,11 @@ def t_per_lens_still_geometry(ctx: Context) -> None:
         if on_front:
             cleanup_transport_or_unsafe(
                 "could not leave the front camera",
-                lambda: ctx.adb.tap_ui(desc="Switch camera"),
+                lambda: tap_identity(ctx, SWITCH_CAMERA),
             )
             time.sleep(2)
             tree = cleanup_transport_or_unsafe("front-return UI state unavailable", ctx.adb.ui)
-            if tree.find_desc_exact("Take photo") is None:
+            if find_identity(ctx, TAKE_PHOTO, tree) is None:
                 raise UnsafeState("front-camera return could not be proven")
         cleanup_transport_or_unsafe(
             "could not restore the entry lens preset",
@@ -3681,8 +3760,8 @@ def assert_recording_ui_continues(ctx: Context, pid: int, seconds: float) -> Non
         time.sleep(min(0.75, remaining))
         assert ctx.adb.pid() == pid, "app process changed during the REC interval"
         tree = ctx.adb.ui()
-        assert tree.find_desc_exact("Stop recording"), "REC stopped before the requested interval"
-        assert tree.find_desc_exact("Recording"), "first-frame REC semantics disappeared early"
+        assert find_identity(ctx, STOP_RECORDING, tree), "REC stopped before the requested interval"
+        assert find_identity(ctx, RECORDING, tree), "first-frame REC semantics disappeared early"
 
 
 def record_container_truth_clip(
@@ -3699,7 +3778,7 @@ def record_container_truth_clip(
     admitted = None
     recording_may_be_active = True
     try:
-        ctx.adb.tap_ui(desc="Start recording")
+        tap_identity(ctx, START_RECORDING)
         admitted_line = ctx.adb.wait_log(mark, RECORDING_SPEC.pattern, timeout_s=12, pid=pid)
         assert admitted_line, f"{transfer_label}: recorder did not publish an admitted spec"
         admitted = RECORDING_SPEC.search(admitted_line)
@@ -3765,9 +3844,9 @@ def t_video_container_truth(ctx: Context) -> None:
     """SDR and HLG clips (plus a persisted log preset) carry the documented container color policy."""
     pid = ensure_foreground(ctx)
     entry_tree = ctx.adb.ui()
-    if entry_tree.find_desc_exact("Stop recording"):
+    if find_identity(ctx, STOP_RECORDING, entry_tree):
         raise UnsafeState("container truth entered while REC was active")
-    initial_mode = "VIDEO" if entry_tree.find_desc_exact("Start recording") else "PHOTO"
+    initial_mode = "VIDEO" if find_identity(ctx, START_RECORDING, entry_tree) else "PHOTO"
     suite_mark = ctx.adb.log_mark()
     require_recording_storage(
         ctx,
@@ -3818,11 +3897,11 @@ def t_rec_teardown_soak(ctx: Context) -> None:
     """Five finalized clips prove recorder teardown can hand ownership to the next admission."""
     pid = ensure_foreground(ctx)
     initial_tree = ctx.adb.ui()
-    if initial_tree.find_desc_exact("Stop recording"):
+    if find_identity(ctx, STOP_RECORDING, initial_tree):
         raise UnsafeState("REC soak entered while recording was already active")
-    if initial_tree.find_desc_exact("Start recording"):
+    if find_identity(ctx, START_RECORDING, initial_tree):
         initial_mode = "VIDEO"
-    elif initial_tree.find_desc_exact("Take photo"):
+    elif find_identity(ctx, TAKE_PHOTO, initial_tree):
         initial_mode = "PHOTO"
     else:
         raise UnsafeState("REC soak could not prove an idle capture mode")
@@ -3864,7 +3943,7 @@ def t_rec_teardown_soak(ctx: Context) -> None:
             recorder_idle = False
             try:
                 assert ctx.adb.pid() == pid, f"cycle {cycle}: app process changed before admission"
-                start = ctx.adb.ui().find_desc_exact("Start recording")
+                start = find_identity(ctx, START_RECORDING)
                 assert start is not None and start.enabled, (
                     f"cycle {cycle}: previous recorder did not re-arm the next admission"
                 )
@@ -3920,7 +3999,7 @@ def t_rec_teardown_soak(ctx: Context) -> None:
             ctx.note(f"cycle {cycle}/{REC_SOAK_CYCLES}: finalized for immediate hand-off")
 
         assert ctx.adb.pid() == pid, "app process changed after the final soak owner"
-        assert ctx.adb.ui().find_desc_exact("Start recording"), (
+        assert find_identity(ctx, START_RECORDING), (
             "final soak owner did not re-arm REC"
         )
 
@@ -4033,11 +4112,11 @@ def t_recording_snapshot(ctx: Context) -> None:
     """A still captured mid-REC publishes beside a fully finalized, decodable video owner."""
     pid = ensure_foreground(ctx)
     initial_tree = ctx.adb.ui()
-    if initial_tree.find_desc_exact("Stop recording"):
+    if find_identity(ctx, STOP_RECORDING, initial_tree):
         raise UnsafeState("recording snapshot entered while REC was already active")
-    if initial_tree.find_desc_exact("Start recording"):
+    if find_identity(ctx, START_RECORDING, initial_tree):
         initial_mode = "VIDEO"
-    elif initial_tree.find_desc_exact("Take photo"):
+    elif find_identity(ctx, TAKE_PHOTO, initial_tree):
         initial_mode = "PHOTO"
     else:
         raise UnsafeState("recording snapshot could not prove an idle capture mode")
@@ -4108,7 +4187,7 @@ def t_recording_snapshot(ctx: Context) -> None:
         recording_may_be_active = True
         recorder_idle = False
         try:
-            ctx.adb.tap_ui(desc="Start recording")
+            tap_identity(ctx, START_RECORDING)
             admitted_line = ctx.adb.wait_log(mark, RECORDING_SPEC.pattern, timeout_s=12, pid=pid)
             assert admitted_line, "recording snapshot did not receive a recorder admission"
             admitted = RECORDING_SPEC.search(admitted_line)
@@ -4142,7 +4221,7 @@ def t_recording_snapshot(ctx: Context) -> None:
             snapshot_deadline = time.time() + 12
             snapshot = None
             while time.time() < snapshot_deadline:
-                snapshot = ctx.adb.ui().find_desc_exact("Take photo while recording")
+                snapshot = find_identity(ctx, TAKE_PHOTO_WHILE_RECORDING)
                 if snapshot is not None and snapshot.enabled:
                     break
                 time.sleep(0.5)
@@ -4208,10 +4287,10 @@ def t_recording_snapshot(ctx: Context) -> None:
             assert ctx.adb.pid() == pid, "app process changed during mid-REC still"
             assert ctx.adb.preview_is_live(), "preview froze after mid-REC still"
             post_snapshot_tree = ctx.adb.ui()
-            assert post_snapshot_tree.find_desc_exact("Stop recording"), (
+            assert find_identity(ctx, STOP_RECORDING, post_snapshot_tree), (
                 "mid-REC still disrupted the active recorder UI"
             )
-            assert post_snapshot_tree.find_desc_exact("Recording"), (
+            assert find_identity(ctx, RECORDING, post_snapshot_tree), (
                 "mid-REC still removed first-frame REC semantics"
             )
             # Give the post-snapshot encoder path its own intentional interval; file length is not
@@ -4442,7 +4521,7 @@ def t_rec_background(ctx: Context) -> None:
     ensure_video_mode(ctx)
     before = {row.key for row in ctx.adb.media_store_rows()}
     mark = ctx.adb.log_mark()
-    ctx.adb.tap_ui(desc="Start recording")
+    tap_identity(ctx, START_RECORDING)
     # Sibling rigor (rec_teardown_soak/rec_stop_then_kill): the dropped-tap device fact means a
     # bare sleep can background an idle camera and then "fail" with a misleading no-clip message.
     admitted_line = ctx.adb.wait_log(mark, RECORDING_SPEC.pattern, timeout_s=12, pid=pid)
@@ -4493,9 +4572,9 @@ def t_rec_stop_kill(ctx: Context) -> None:
     ensure_foreground(ctx)
     ensure_video_mode(ctx)
     before = {row.key for row in ctx.adb.media_store_rows()}
-    ctx.adb.tap_ui(desc="Start recording")
+    tap_identity(ctx, START_RECORDING)
     time.sleep(4)
-    ctx.adb.tap_ui(desc="Stop recording")
+    tap_identity(ctx, STOP_RECORDING)
     time.sleep(0.5)  # inside the stop→publish window
     ctx.adb.force_stop()
     ctx.note("killed 0.5 s after REC stop")

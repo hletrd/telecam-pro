@@ -16,7 +16,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
-from dtest.selectors import Selector
+from dtest.selectors import START_RECORDING, STOP_RECORDING, TAKE_PHOTO, Selector
 
 APP_ID = "me.hletrd.telecampro.debug"
 MAIN_ACTIVITY = f"{APP_ID}/me.hletrd.telecampro.MainActivity"
@@ -335,9 +335,9 @@ class Adb:
             return
 
         tree = self.ui()
-        if tree.find(desc="Stop recording"):
+        if tree.find_selector_any(STOP_RECORDING):
             raise AdbError("refusing force-stop while recording is active")
-        if not (tree.find(desc="Take photo") or tree.find(desc="Start recording")):
+        if not (tree.find_selector_any(TAKE_PHOTO) or tree.find_selector_any(START_RECORDING)):
             raise AdbError("refusing force-stop because an idle camera state cannot be proven")
         self.shell(f"am force-stop {self.application_id}")
 
@@ -714,7 +714,31 @@ class UiTree:
 
     def find_selector(self, selector: Selector, locale: str) -> UiNode | None:
         labels = {label.casefold() for label in selector.labels_for(locale)}
-        return next((node for node in self.nodes if node.desc.casefold() in labels), None)
+        return next(
+            (
+                node for node in self.nodes
+                if node.desc.casefold() in labels or node.text.casefold() in labels
+            ),
+            None,
+        )
+
+    def find_selector_any(self, selector: Selector) -> UiNode | None:
+        """Exact identity match for pure layout helpers whose caller already attested locale."""
+        labels = {label.casefold() for label in selector.all_labels()}
+        return next(
+            (
+                node for node in self.nodes
+                if node.desc.casefold() in labels or node.text.casefold() in labels
+            ),
+            None,
+        )
+
+    def find_all_selector_any(self, selector: Selector) -> list[UiNode]:
+        labels = {label.casefold() for label in selector.all_labels()}
+        return [
+            node for node in self.nodes
+            if node.desc.casefold() in labels or node.text.casefold() in labels
+        ]
 
     def all_labels(self) -> set[str]:
         out = set()

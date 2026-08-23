@@ -59,9 +59,12 @@ python3 -m unittest discover -s device-tests/tests -v
 ```
 
 Locale is read without changing device state: the app-specific override is queried for the current
-Android user and falls back to the system BCP-47 locale. Smoke semantics use stable harness
-identities with exact English/Korean accessibility labels, so either supported locale yields honest
-non-mutating coverage rather than English-only "control missing" failures.
+Android user and falls back to the system BCP-47 locale. Smoke, full, and reliability actions use
+stable harness identities with exact English/Korean accessibility labels for camera chrome,
+settings tabs, Fn actions, lens/zoom presets, focus reset, and REC state. The contract tests resolve
+every declared identity in both languages and AST-scan state-changing cases so a raw English
+`tap_ui`/`find` selector cannot quietly re-enter. Camera-standard abbreviations and numeric/profile
+tokens remain identical by design.
 
 The runner refuses any device other than PMA110/API 36 and refuses an installed `base.apk`
 whose SHA-256 does not match `app/build/outputs/apk/debug/app-debug.apk` (override the host

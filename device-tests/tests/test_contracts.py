@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import ast
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
@@ -11,6 +13,7 @@ REPO_ROOT = DEVICE_TESTS.parent
 sys.path.insert(0, str(DEVICE_TESTS))
 
 from dtest.adb import Adb, MEDIA_RELATIVE_PATH, UiTree  # noqa: E402
+from dtest import selectors  # noqa: E402
 from dtest.contracts import (  # noqa: E402
     harness_source_manifest,
     inspect_apk_contract,
@@ -18,7 +21,7 @@ from dtest.contracts import (  # noqa: E402
     production_capture_subdir,
     source_manifest_sha256,
 )
-from dtest.selectors import OPEN_SETTINGS, START_RECORDING  # noqa: E402
+from dtest.selectors import FULL_ACTION_SELECTORS, OPEN_SETTINGS, START_RECORDING  # noqa: E402
 
 
 BADGING = """\
@@ -113,6 +116,97 @@ class LocalizedSelectorTest(unittest.TestCase):
         self.assertIsNotNone(korean.find_selector(OPEN_SETTINGS, "ko-KR"))
         self.assertIsNotNone(korean.find_selector(START_RECORDING, "ko-KR"))
         self.assertIsNone(korean.find_selector(OPEN_SETTINGS, "en-US"))
+
+    def test_every_full_action_identity_resolves_in_english_and_korean(self) -> None:
+        identities = [selector.identity for selector in FULL_ACTION_SELECTORS]
+        self.assertEqual(len(identities), len(set(identities)))
+        for selector in FULL_ACTION_SELECTORS:
+            for locale in ("en-US", "ko-KR"):
+                labels = selector.labels_for(locale)
+                self.assertTrue(labels, selector.identity)
+                tree = self.tree(*labels)
+                self.assertIsNotNone(tree.find_selector(selector, locale), selector.identity)
+
+    def test_core_selector_labels_match_android_resources_in_both_languages(self) -> None:
+        pairs = [
+            (selectors.OPEN_SETTINGS, "a11y_open_settings"),
+            (selectors.CLOSE_SETTINGS, "a11y_close_settings"),
+            (selectors.OPEN_FUNCTION_MENU, "a11y_open_function_menu"),
+            (selectors.CLOSE_FUNCTION_MENU, "a11y_close_function_menu"),
+            (selectors.CLOSE_ADJUSTMENT, "a11y_close_adjustment"),
+            (selectors.SWITCH_CAMERA, "a11y_switch_camera"),
+            (selectors.RESET_FOCUS_POINT, "a11y_reset_focus_point"),
+            (selectors.TAKE_PHOTO, "a11y_take_photo"),
+            (selectors.START_RECORDING, "a11y_start_recording"),
+            (selectors.STOP_RECORDING, "a11y_stop_recording"),
+            (selectors.RECORDING, "a11y_recording"),
+            (selectors.TAKE_PHOTO_WHILE_RECORDING, "a11y_take_photo_while_recording"),
+            (selectors.TELECONVERTER, "label_teleconverter"),
+            (selectors.GAMMA, "label_gamma"),
+            (selectors.SHUTTER_SPEED, "a11y_shutter_speed"),
+        ]
+        tab_names = (
+            "my", "shoot", "exposure", "focus", "lens", "video", "image", "assist", "setup"
+        )
+        pairs.extend(zip(selectors.SETTINGS_TABS, (f"settings_tab_{name}" for name in tab_names)))
+        fn_resources = {
+            "Focus": "settings_tab_focus",
+            "Shutter": "label_shutter",
+            "Zoom": "label_zoom",
+            "Stabilization": "label_stabilization",
+            "Drive": "label_drive",
+            "Meter": "label_meter",
+            "Peaking": "label_peaking",
+            "Zebra": "label_zebra",
+            "Gamma": "label_gamma",
+            "Directionality": "label_directionality",
+            "Grid": "label_grid",
+            "Level": "label_level",
+            "Loupe": "label_loupe",
+            "Tele": "label_tele",
+            "Frame": "label_frame",
+        }
+        pairs.extend((selectors.FN_TILES[name], resource) for name, resource in fn_resources.items())
+
+        for locale, directory in (("en-US", "values"), ("ko-KR", "values-ko")):
+            root = ET.parse(REPO_ROOT / f"app/src/main/res/{directory}/strings.xml").getroot()
+            resources = {node.attrib["name"]: "".join(node.itertext()) for node in root.findall("string")}
+            for selector, resource_name in pairs:
+                self.assertEqual(
+                    (resources[resource_name],),
+                    selector.labels_for(locale),
+                    f"{selector.identity}/{locale} drifted from {resource_name}",
+                )
+
+    def test_state_changing_cases_do_not_reintroduce_raw_localized_selectors(self) -> None:
+        source_path = DEVICE_TESTS / "cases.py"
+        tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+        forbidden = {
+            label
+            for selector in FULL_ACTION_SELECTORS
+            for label in selector.labels_for("en-US")
+            if any(character.isalpha() for character in label)
+        }
+        violations: list[tuple[int, str, str]] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr not in {"tap_ui", "find", "find_desc_exact"}:
+                continue
+            values = [
+                argument.value for argument in node.args
+                if isinstance(argument, ast.Constant) and isinstance(argument.value, str)
+            ]
+            values += [
+                keyword.value.value for keyword in node.keywords
+                if keyword.arg in {"desc", "text"}
+                and isinstance(keyword.value, ast.Constant)
+                and isinstance(keyword.value.value, str)
+            ]
+            violations.extend(
+                (node.lineno, node.func.attr, value) for value in values if value in forbidden
+            )
+        self.assertEqual([], violations)
 
     def test_locale_attestation_uses_current_user_override_then_system_fallback(self) -> None:
         class LocaleAdb(Adb):
