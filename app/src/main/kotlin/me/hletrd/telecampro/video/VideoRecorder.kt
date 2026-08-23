@@ -753,10 +753,9 @@ class VideoRecorder(private val context: Context) {
         var eosAttempts = 0
 
         while (true) {
-            if (terminallyQuarantined.get()) return
-            if (audioDegradedMidRec) {
-                runCatching { record.stop() }
-                return
+            when (audioWorkerLoopDisposition(terminallyQuarantined.get(), audioDegradedMidRec)) {
+                AudioWorkerLoopDisposition.CONTINUE -> Unit
+                AudioWorkerLoopDisposition.EXIT_RETAIN_INPUT -> return
             }
             if (!sentEos) {
                 val inIdx = codec.dequeueInputBuffer(TIMEOUT_US)
@@ -1407,6 +1406,22 @@ internal fun nativeCleanupOutcome(
         outcome.result.isSuccess -> NativeCleanupOutcome.Completed
         else -> NativeCleanupOutcome.Failed(checkNotNull(outcome.result.exceptionOrNull()))
     }
+}
+
+internal enum class AudioWorkerLoopDisposition {
+    CONTINUE,
+    /** The recorder/finalizer retains sole authority to stop and release the AudioRecord. */
+    EXIT_RETAIN_INPUT,
+}
+
+/** Degradation and quarantine end worker activity without creating a second native stop owner. */
+internal fun audioWorkerLoopDisposition(
+    terminallyQuarantined: Boolean,
+    audioDegraded: Boolean,
+): AudioWorkerLoopDisposition = if (terminallyQuarantined || audioDegraded) {
+    AudioWorkerLoopDisposition.EXIT_RETAIN_INPUT
+} else {
+    AudioWorkerLoopDisposition.CONTINUE
 }
 
 /**

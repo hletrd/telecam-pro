@@ -344,4 +344,24 @@ class VideoRecorderMuxerStartTest {
         assertEquals(NativeGraphDisposition.QUARANTINE_REQUIRED, hung.nativeGraphDisposition)
         assertEquals(hung, hung.copy())
     }
+
+    @Test
+    fun `audio worker exits without taking stop ownership after degradation or quarantine`() {
+        assertEquals(
+            AudioWorkerLoopDisposition.CONTINUE,
+            audioWorkerLoopDisposition(terminallyQuarantined = false, audioDegraded = false),
+        )
+        assertEquals(
+            AudioWorkerLoopDisposition.EXIT_RETAIN_INPUT,
+            audioWorkerLoopDisposition(terminallyQuarantined = false, audioDegraded = true),
+        )
+        assertEquals(
+            AudioWorkerLoopDisposition.EXIT_RETAIN_INPUT,
+            audioWorkerLoopDisposition(terminallyQuarantined = true, audioDegraded = false),
+        )
+        assertEquals(
+            AudioWorkerLoopDisposition.EXIT_RETAIN_INPUT,
+            audioWorkerLoopDisposition(terminallyQuarantined = true, audioDegraded = true),
+        )
+    }
 }
