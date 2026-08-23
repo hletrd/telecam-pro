@@ -12,6 +12,28 @@ import org.junit.Test
 class CameraStateTest {
 
     @Test
+    fun `other phone uses the measured converter host focal when available`() {
+        val inventory = LensInventory(
+            available = setOf(LensChoice.MAIN, LensChoice.TELE3X),
+            optical = setOf(LensChoice.MAIN, LensChoice.TELE3X),
+            teleHostEquivMm = 82f,
+        )
+
+        assertEquals(
+            82f,
+            CameraUiState(phoneModel = PhoneModel.OTHER, lensInventory = inventory)
+                .teleconverterHostEquivMm,
+            0f,
+        )
+        assertEquals(
+            DEFAULT_PHONE_MODEL.teleEquivMm,
+            CameraUiState(phoneModel = DEFAULT_PHONE_MODEL, lensInventory = inventory)
+                .teleconverterHostEquivMm,
+            0f,
+        )
+    }
+
+    @Test
     fun `accepted encoder fallback replaces requested raster only while active`() {
         val requested = Size(3840, 2160)
         val accepted = Size(1920, 1080)

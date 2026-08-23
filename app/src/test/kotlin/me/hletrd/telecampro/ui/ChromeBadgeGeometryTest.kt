@@ -1,6 +1,7 @@
 package me.hletrd.telecampro.ui
 
 import me.hletrd.telecampro.camera.ShutterTimer
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -14,6 +15,11 @@ import org.junit.Test
  * a nudged inset, a larger badge or a larger centred glyph fails here and not on a device.
  */
 class ChromeBadgeGeometryTest {
+
+    @Test
+    fun unknownBadgeCharacterUsesTheWidestKnownAdvance() {
+        assertEquals(chromeBadgeAdvanceDp("A"), chromeBadgeAdvanceDp("?"), 0f)
+    }
 
     /** Every string either badge can show: the armed self-timer values, plus flash AUTO's "A". */
     private val badgeStrings: List<String> =

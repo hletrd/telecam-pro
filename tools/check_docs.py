@@ -340,6 +340,37 @@ check(
     "CLAUDE documents the consolidated non-device host gate",
 )
 
+# ---- coverage residual authority must stay machine-checked, not copied into prose --------------
+testing_doc = read("docs/TESTING.md")
+residual_manifest = read("tools/coverage/partition-a-residuals.txt")
+check(
+    "tools/coverage/partition-a-residuals.txt" in testing_doc
+    and "unexpected miss" in testing_doc
+    and "resolved-but-still-listed" in testing_doc
+    and "count drift" in testing_doc,
+    "TESTING points to the exact checked Partition-A residual authority",
+)
+check(
+    "cycle-7 close (10 lines" not in testing_doc
+    and "`storage/SettingsStore` 1" not in testing_doc,
+    "TESTING carries no obsolete hand-maintained residual inventory",
+)
+manifest_rows = [
+    line for line in residual_manifest.splitlines()
+    if line.strip() and not line.lstrip().startswith("#")
+]
+check(
+    bool(manifest_rows)
+    and all(len(line.split("\t")) == 4 for line in manifest_rows)
+    and all(
+        line.split("\t", 3)[3].startswith(
+            ("framework-bound:", "proven-unreachable:", "race-only:"),
+        )
+        for line in manifest_rows
+    ),
+    "Partition-A residual authority carries class count source and reviewed reason",
+)
+
 # ---- Device Catalog is one classified matrix, not mutually inconsistent counts -----------------
 catalog_start = submit.index("## Device Catalog")
 catalog_end = submit.index("\n## ", catalog_start + 4)

@@ -22,8 +22,17 @@ def report_xml(*classes: str) -> str:
     return "<report><package name=\"pkg\">" + "".join(classes) + "</package></report>"
 
 
-def class_xml(name: str, missed: int, covered: int, methods: str = "") -> str:
-    return f'<class name="{name}">{methods}{counter(missed, covered)}</class>'
+def class_xml(
+    name: str,
+    missed: int,
+    covered: int,
+    methods: str = "",
+    source_filename: str = "Pure.kt",
+) -> str:
+    return (
+        f'<class name="{name}" sourcefilename="{source_filename}">'
+        f'{methods}{counter(missed, covered)}</class>'
+    )
 
 
 def method_xml(name: str, descriptor: str, missed: int, covered: int) -> str:
@@ -39,15 +48,36 @@ class PartitionReportTest(unittest.TestCase):
         report: str,
         partition: str,
         excluded: str,
+        residuals: str = "# no reviewed residuals\n",
     ) -> tuple[int, str, str]:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             report_path = root / "report.xml"
             partition_path = root / "partition-b.txt"
             excluded_path = root / "partition-excluded.txt"
+            residuals_path = root / "partition-a-residuals.txt"
             report_path.write_text(report, encoding="utf-8")
             partition_path.write_text(partition, encoding="utf-8")
             excluded_path.write_text(excluded, encoding="utf-8")
+            residuals_path.write_text(residuals, encoding="utf-8")
+            for raw in residuals.splitlines():
+                if not raw.strip() or raw.lstrip().startswith("#"):
+                    continue
+                fields = raw.split("\t")
+                if len(fields) != 4 or ":" not in fields[2]:
+                    continue
+                source_text, line_text = fields[2].rsplit(":", 1)
+                if not source_text.endswith(("/Pure.kt", "/Other.kt")):
+                    continue
+                numbers = [
+                    int(value)
+                    for item in line_text.split(",")
+                    for value in item.split("-")
+                    if value.isdigit()
+                ]
+                source = root / source_text
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_text("line\n" * max(numbers, default=1), encoding="utf-8")
 
             stdout = io.StringIO()
             stderr = io.StringIO()
@@ -58,6 +88,8 @@ class PartitionReportTest(unittest.TestCase):
                         str(report_path),
                         "--partition", str(partition_path),
                         "--excluded", str(excluded_path),
+                        "--residuals", str(residuals_path),
+                        "--source-root", str(root),
                     ])
                 except SystemExit as error:
                     exit_code = int(error.code)
@@ -149,6 +181,93 @@ class PartitionReportTest(unittest.TestCase):
             text = (TOOLS_DIR / name).read_text(encoding="utf-8")
             self.assertNotIn("me/hletrd/findx9tele", text)
             self.assertIn("me/hletrd/telecampro", text)
+
+    def residual(self, class_name: str, missed: int = 2) -> str:
+        return (
+            f"{class_name}\t{missed}\tapp/src/main/kotlin/Pure.kt:1-{missed}"
+            "\tproven-unreachable: fixture branch is structurally unreachable\n"
+        )
+
+    def residual_report(self, missed: int = 2) -> str:
+        return report_xml(
+            class_xml("pkg/Device", 1, 0),
+            class_xml("pkg/Excluded", 0, 1),
+            class_xml("pkg/Pure", missed, 8),
+        )
+
+    def test_exact_reviewed_residual_manifest_passes(self) -> None:
+        code, stdout, stderr = self.run_report(
+            self.residual_report(),
+            "pkg/Device\n",
+            "pkg/Excluded\n",
+            self.residual("pkg/Pure"),
+        )
+
+        self.assertEqual(0, code, stderr)
+        self.assertIn("REVIEWED A RESIDUALS: 2 lines across 1 classes", stdout)
+
+    def test_unexpected_resolved_and_count_drifted_residuals_are_fatal(self) -> None:
+        cases = {
+            "unexpected residual": (self.residual_report(), "# empty\n"),
+            "resolved/stale residual": (
+                self.residual_report(missed=0),
+                self.residual("pkg/Pure"),
+            ),
+            "residual count drift": (
+                self.residual_report(missed=2),
+                self.residual("pkg/Pure", missed=1),
+            ),
+            "residual source drift": (
+                self.residual_report(missed=2),
+                self.residual("pkg/Pure").replace("Pure.kt", "Other.kt"),
+            ),
+        }
+        for message, (report, residuals) in cases.items():
+            with self.subTest(message=message):
+                code, _, stderr = self.run_report(
+                    report,
+                    "pkg/Device\n",
+                    "pkg/Excluded\n",
+                    residuals,
+                )
+                self.assertEqual(1, code)
+                self.assertIn(message, stderr)
+
+    def test_malformed_duplicate_unsorted_and_unjustified_residuals_are_fatal(self) -> None:
+        valid = self.residual("pkg/Pure")
+        cases = {
+            "expected 4 tab-separated fields": "pkg/Pure\t2\n",
+            "missed count must be a positive integer": valid.replace("\t2\t", "\tzero\t"),
+            "invalid source region": valid.replace("Pure.kt:1-2", "Pure.kt"),
+            "source file does not exist": valid.replace("Pure.kt", "Missing.kt"),
+            "reason must have a concrete": valid.replace(
+                "proven-unreachable: fixture branch is structurally unreachable",
+                "later: no",
+            ),
+            "duplicate class": valid + valid,
+            "classes must be strictly sorted": self.residual("pkg/Zed") + valid,
+        }
+        for message, residuals in cases.items():
+            with self.subTest(message=message):
+                code, _, stderr = self.run_report(
+                    self.residual_report(),
+                    "pkg/Device\n",
+                    "pkg/Excluded\n",
+                    residuals,
+                )
+                self.assertEqual(1, code)
+                self.assertIn(message, stderr)
+
+    def test_missing_residual_manifest_is_fatal(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                with self.assertRaises(SystemExit):
+                    partition_report.Residuals(
+                        Path(td) / "missing.txt",
+                        Path(td),
+                    )
+        self.assertIn("could not read Partition-A residual manifest", stderr.getvalue())
 
 
 if __name__ == "__main__":

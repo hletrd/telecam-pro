@@ -23,6 +23,12 @@ import org.junit.Test
 
 class CameraUiPolicyTest {
     @Test
+    fun `window authority begins at the platform large-screen boundary`() {
+        assertFalse(windowFollowsDevice(599))
+        assertTrue(windowFollowsDevice(600))
+    }
+
+    @Test
     fun `standby meter owns mic only while armed Video level is visible`() {
         fun allowed(
             started: Boolean = true,

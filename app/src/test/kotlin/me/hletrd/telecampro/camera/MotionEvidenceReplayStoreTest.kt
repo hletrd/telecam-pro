@@ -49,4 +49,19 @@ class MotionEvidenceReplayStoreTest {
         assertFalse(disarmed.armed)
         assertTrue(disarmed.evidenceEpoch > armed.evidenceEpoch)
     }
+
+    @Test
+    fun `unchanged provider preserves epoch while a replacement provider advances it`() {
+        val store = MotionEvidenceReplayStore()
+        val firstProvider: (Long, Long) -> FloatArray? = { _, _ -> null }
+        val secondProvider: (Long, Long) -> FloatArray? = { _, _ -> floatArrayOf(1f) }
+        val initial = store.publish(true, firstProvider, resetEvidence = false)
+
+        val unchanged = store.publish(true, firstProvider, resetEvidence = false)
+        val replaced = store.publish(true, secondProvider, resetEvidence = false)
+
+        assertTrue(unchanged.evidenceEpoch == initial.evidenceEpoch)
+        assertTrue(replaced.evidenceEpoch > unchanged.evidenceEpoch)
+        assertSame(secondProvider, store.snapshot().rotationProvider)
+    }
 }

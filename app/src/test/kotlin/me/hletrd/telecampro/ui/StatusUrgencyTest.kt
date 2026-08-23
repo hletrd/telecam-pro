@@ -1,5 +1,6 @@
 package me.hletrd.telecampro.ui
 
+import me.hletrd.telecampro.camera.CameraStatus
 import me.hletrd.telecampro.camera.CameraStatusLifecycle
 import me.hletrd.telecampro.camera.CameraStatusLivePriority
 import me.hletrd.telecampro.camera.CameraStatusMessage
@@ -13,6 +14,19 @@ import org.junit.Test
  * Pins typed status metadata. Translated copy is deliberately absent from these decisions.
  */
 class StatusUrgencyTest {
+
+    @Test
+    fun `status constructor defaults to no presentation arguments`() {
+        val status = CameraStatus(
+            message = CameraStatusMessage.STARTING_CAMERA,
+            severity = CameraStatusSeverity.INFO,
+            livePriority = CameraStatusLivePriority.POLITE,
+            lifecycle = CameraStatusLifecycle.PROGRESS,
+            durationMs = null,
+        )
+
+        assertTrue(status.arguments.isEmpty())
+    }
 
     @Test
     fun `real failure identities stay assertive and long lived`() {

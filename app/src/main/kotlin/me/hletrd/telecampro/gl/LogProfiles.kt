@@ -164,7 +164,7 @@ internal object LogProfiles {
         gr: Double, gg: Double, gb: Double,
         br: Double, bg: Double, bb: Double,
         oetf: (Double) -> Double,
-        sourceHlg: Boolean = false,
+        sourceHlg: Boolean,
     ): Rgb {
         val linear709 = Rgb(red, green, blue).map { sourceLinear(it, sourceHlg) }
         val linearTarget = Rgb(

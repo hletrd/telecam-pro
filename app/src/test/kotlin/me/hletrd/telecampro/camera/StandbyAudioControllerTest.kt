@@ -29,6 +29,11 @@ class StandbyAudioControllerTest {
         override fun release() { releases++ }
     }
 
+    @Test
+    fun `standby input defaults to one interleaved channel`() {
+        assertEquals(1, FakeInput().channelCount)
+    }
+
     private data class Fixture(
         val controller: StandbyAudioController,
         val scheduled: ArrayDeque<() -> Unit>,

@@ -77,6 +77,31 @@ class LoupeHintRectTest {
     }
 
     @Test
+    fun `quarter turns rotate both off-centre axes with the renderer convention`() {
+        val turn90 = loupeHintRect(
+            finder,
+            visibleFraction = 0.4f,
+            centerTexX = 0.75f,
+            centerTexY = 0.25f,
+            rotationDegrees = 90,
+        )
+        val turn270 = loupeHintRect(
+            finder,
+            visibleFraction = 0.4f,
+            centerTexX = 0.75f,
+            centerTexY = 0.25f,
+            rotationDegrees = 270,
+        )
+        val finderCenterX = finder.x + finder.width / 2f
+        val finderCenterY = finder.y + finder.height / 2f
+
+        assertTrue(turn90.x + turn90.width / 2f > finderCenterX)
+        assertTrue(turn90.y + turn90.height / 2f > finderCenterY)
+        assertTrue(turn270.x + turn270.width / 2f < finderCenterX)
+        assertTrue(turn270.y + turn270.height / 2f < finderCenterY)
+    }
+
+    @Test
     fun `the hint never escapes the finder box`() {
         // Two ways out: a loupe pushed to the very edge, and zoomComp < 1 mid-gesture, which makes
         // the main view genuinely wider than the delivered frame. A hint drawn outside its own
