@@ -81,6 +81,8 @@ class VideoRecorder(private val context: Context) {
     private val inputSurfaceOwner = ExactlyOnceResourceOwner<Surface>()
     /** Linearizes every recorder-owned native create/start/stop/release against quarantine. */
     private val nativeOperations = RecorderNativeOperationGate()
+    /** First admitted cleanup call that threw; any such graph must be retained process-long. */
+    private val nativeCleanupFailure = AtomicReference<Throwable?>()
     /** Strong owners for attempts that quarantine may freeze before publication or cleanup. */
     private val provisionalVideoOwners = Collections.synchronizedList(
         mutableListOf<MediaCodecAttemptOwner>(),
@@ -150,13 +152,23 @@ class VideoRecorder(private val context: Context) {
         }
     }
 
-    /** True only when the cleanup call both entered and returned before quarantine closed. */
-    private fun nativeCleanup(block: () -> Unit): Boolean = when (
-        val outcome = nativeOperations.run(block)
-    ) {
-        RecorderNativeOperationResult.Rejected -> false
-        is RecorderNativeOperationResult.Returned -> outcome.stillOpen
+    /** True only when the cleanup call entered, succeeded, and returned before quarantine closed. */
+    private fun nativeCleanup(block: () -> Unit): Boolean {
+        // Once one required release is unproved, no later cleanup phase may begin. Quarantine needs
+        // the complete graph exactly as it stood at the first failure, not a half-mutated remainder.
+        if (nativeCleanupFailure.get() != null) return false
+        return when (val outcome = nativeCleanupOutcome(nativeOperations.run(block))) {
+            NativeCleanupOutcome.Completed -> true
+            NativeCleanupOutcome.Revoked -> false
+            is NativeCleanupOutcome.Failed -> {
+                nativeCleanupFailure.compareAndSet(null, outcome.cause)
+                false
+            }
+        }
     }
+
+    /** Non-null means [start] returned no Surface while retaining an unproved native owner graph. */
+    internal fun unsafeStartupFailure(): Throwable? = nativeCleanupFailure.get()
 
     /**
      * Returns the encoder input Surface for the GL pipeline, or null on failure. [encoderRate] is the
@@ -217,13 +229,10 @@ class VideoRecorder(private val context: Context) {
             // GL already bakes the afocal 180° into the frames; this hint adds ONLY the physical device
             // orientation (0/90/180/270) captured at record start, so a landscape-held clip plays
             // upright. Must be set before start(). Sign is device-verify (see RotationMath helper doc).
-            if (!nativeCleanup {
-                    muxer?.setOrientationHint(
-                        RotationMath.videoOrientationHint(orientationHint, frontFacing),
-                    )
-                }
-            ) {
-                throw RecorderNativeOperationRevokedException()
+            nativeOperation {
+                muxer?.setOrientationHint(
+                    RotationMath.videoOrientationHint(orientationHint, frontFacing),
+                )
             }
 
             // Walk the same-aspect ladder: some encoders refuse the PORTRAIT buffer the cycle-4
@@ -489,7 +498,8 @@ class VideoRecorder(private val context: Context) {
 
     private fun quarantinedStopResult(): StopResult = StopResult(
         saved = false,
-        error = firstFailure.cause
+        error = nativeCleanupFailure.get()
+            ?: firstFailure.cause
             ?: java.util.concurrent.TimeoutException("Recorder graph was quarantined"),
         nativeGraphDisposition = NativeGraphDisposition.QUARANTINE_REQUIRED,
     )
@@ -1379,6 +1389,24 @@ internal sealed interface RecorderNativeOperationResult<out T> {
         /** False when quarantine closed admission while this already-entered call was returning. */
         val stillOpen: Boolean,
     ) : RecorderNativeOperationResult<T>
+}
+
+internal sealed interface NativeCleanupOutcome {
+    data object Completed : NativeCleanupOutcome
+    data object Revoked : NativeCleanupOutcome
+    data class Failed(val cause: Throwable) : NativeCleanupOutcome
+}
+
+/** Keeps native-call success separate from the admission bit that may revoke an entered return. */
+internal fun nativeCleanupOutcome(
+    outcome: RecorderNativeOperationResult<Unit>,
+): NativeCleanupOutcome = when (outcome) {
+    RecorderNativeOperationResult.Rejected -> NativeCleanupOutcome.Revoked
+    is RecorderNativeOperationResult.Returned -> when {
+        !outcome.stillOpen -> NativeCleanupOutcome.Revoked
+        outcome.result.isSuccess -> NativeCleanupOutcome.Completed
+        else -> NativeCleanupOutcome.Failed(checkNotNull(outcome.result.exceptionOrNull()))
+    }
 }
 
 /**

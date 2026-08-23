@@ -4180,6 +4180,13 @@ class CameraEngine(private val context: Context) {
         if (!setupDeadline.complete()) return false
         val surface = configuredSurface
         if (surface == null) {
+            rec.unsafeStartupFailure()?.let { failure ->
+                // A required native cleanup threw. The recorder retains every unproved owner and
+                // its still-open pending row; launch recovery classifies that row after process
+                // restart. Deleting or merely abandoning admission here would overlap the graph.
+                enterUnsafeRecorderQuarantine(rec, recordingCaptureId, failure)
+                return false
+            }
             // Encoder/muxer failed to configure; drop the pending MediaStore row we created so it
             // doesn't linger as a 0-byte orphan (VideoRecorder.start already released its own half).
             MediaStoreWriter.delete(context, uri)

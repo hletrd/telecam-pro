@@ -45,6 +45,53 @@ class RecorderQuarantineAdmissionGateTest {
         assertFalse(gate.close())
     }
 
+    @Test
+    fun `cleanup requires both successful native effect and open admission`() {
+        val failure = IllegalStateException("native release failed")
+        assertEquals(
+            NativeCleanupOutcome.Completed,
+            nativeCleanupOutcome(
+                RecorderNativeOperationResult.Returned(Result.success(Unit), stillOpen = true),
+            ),
+        )
+        assertEquals(
+            NativeCleanupOutcome.Revoked,
+            nativeCleanupOutcome(
+                RecorderNativeOperationResult.Returned(Result.success(Unit), stillOpen = false),
+            ),
+        )
+        assertEquals(
+            NativeCleanupOutcome.Revoked,
+            nativeCleanupOutcome(RecorderNativeOperationResult.Rejected),
+        )
+        val failed = nativeCleanupOutcome(
+            RecorderNativeOperationResult.Returned(Result.failure(failure), stillOpen = true),
+        ) as NativeCleanupOutcome.Failed
+        assertTrue(failed.cause === failure)
+    }
+
+    @Test
+    fun `every required recorder cleanup owner fails closed on an admitted exception`() {
+        listOf(
+            "input surface",
+            "video codec stop",
+            "video codec release",
+            "audio record stop",
+            "audio record release",
+            "audio codec stop",
+            "audio codec release",
+            "muxer release",
+            "descriptor close",
+        ).forEach { owner ->
+            val failure = IllegalStateException("$owner failed")
+            val outcome = nativeCleanupOutcome(
+                RecorderNativeOperationResult.Returned(Result.failure(failure), stillOpen = true),
+            )
+            assertTrue(owner, outcome is NativeCleanupOutcome.Failed)
+            assertTrue(owner, (outcome as NativeCleanupOutcome.Failed).cause === failure)
+        }
+    }
+
     private fun awaitQuarantine(gate: RecorderQuarantineAdmissionGate): Boolean {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
         while (!gate.isQuarantined() && System.nanoTime() < deadline) Thread.yield()
