@@ -158,7 +158,7 @@ class SettingsStore(private val prefs: SharedPreferences) {
             val prefix = presetPrefix(slot)
             if (!prefs.getBoolean("${prefix}hasSaved", false)) return@mapNotNull null
             slot to PresetInfo(
-                name = prefs.getString("${prefix}name", null)?.takeIf { it.isNotBlank() } ?: slot.label,
+                name = prefs.getString("${prefix}name", null)?.takeIf { it.isNotBlank() } ?: slot.name,
                 summary = prefs.getString("${prefix}summary", null).orEmpty(),
             )
         }.toMap()

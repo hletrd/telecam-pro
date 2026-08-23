@@ -14,6 +14,7 @@ import me.hletrd.telecampro.camera.ShutterTimer
 import me.hletrd.telecampro.camera.normalizeFnSlots
 import me.hletrd.telecampro.focus.focusConfidenceLabel
 import me.hletrd.telecampro.ui.controls.proSheetUsesSideLayout
+import me.hletrd.telecampro.ui.controls.lensLabel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -282,7 +283,10 @@ class CameraUiPolicyTest {
 
     @Test
     fun `the focus-confidence OSD tag renders only what its proof supports`() {
-        fun tag(state: CameraUiState) = focusConfidenceLabel(state.focusConfidence, state.macroCloserLensLabel)
+        fun tag(state: CameraUiState) = focusConfidenceLabel(
+            state.focusConfidence,
+            state.macroCloserLens?.let(::lensLabel),
+        )
         assertNull("no proof, no tag", tag(CameraUiState()))
         assertEquals(
             "TOO CLOSE",
@@ -290,7 +294,7 @@ class CameraUiPolicyTest {
         )
         assertEquals(
             "TOO CLOSE → 1×",
-            tag(CameraUiState(focusConfidence = FocusConfidenceSource.AF_LIMIT, macroCloserLensLabel = "1×")),
+            tag(CameraUiState(focusConfidence = FocusConfidenceSource.AF_LIMIT, macroCloserLens = LensChoice.MAIN)),
         )
         assertEquals(
             "SOFT",
@@ -299,7 +303,7 @@ class CameraUiPolicyTest {
         assertEquals(
             "the detail proof cannot recommend a distance remedy",
             "SOFT",
-            tag(CameraUiState(focusConfidence = FocusConfidenceSource.FRAME_DETAIL, macroCloserLensLabel = "1×")),
+            tag(CameraUiState(focusConfidence = FocusConfidenceSource.FRAME_DETAIL, macroCloserLens = LensChoice.MAIN)),
         )
     }
 

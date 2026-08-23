@@ -1,65 +1,54 @@
 package me.hletrd.telecampro.ui
 
-import me.hletrd.telecampro.camera.CAMERA_STARTING_STATUS
+import me.hletrd.telecampro.camera.CameraStatusLifecycle
+import me.hletrd.telecampro.camera.CameraStatusLivePriority
+import me.hletrd.telecampro.camera.CameraStatusMessage
+import me.hletrd.telecampro.camera.CameraStatusSeverity
+import me.hletrd.telecampro.camera.status
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Pins [isUrgentStatus] (TEST4-14, now internal): the keyword classifier decides whether a status
- * toast renders urgent/red AND whether accessibility announces it assertively — a wording change
- * in the emitting sites must fail here, not silently downgrade an error to polite styling.
+ * Pins typed status metadata. Translated copy is deliberately absent from these decisions.
  */
 class StatusUrgencyTest {
 
     @Test
-    fun `real failure statuses classify urgent`() {
-        // Exact strings CameraViewModel/engine emit today.
-        assertTrue("Photo capture failed".isUrgentStatus())
-        assertTrue("DNG save failed".isUrgentStatus())
-        assertTrue("Still capture unavailable".isUrgentStatus())
-        // Found while writing this pin: delete failures matched no keyword and rendered polite —
-        // "could not" joined the classifier with this test. Every delete-failure string the app can
-        // actually emit is listed, because "could not" is the ONLY keyword any of them contains: the
-        // two partial-family ones do not say "fail" or "unavailable" anywhere, and the phrase sits
-        // mid-sentence and lower-case there, so this is also the pin on the ignoreCase match.
-        assertTrue("Could not delete file".isUrgentStatus())
-        assertTrue("Some files could not be deleted. Open the capture and retry.".isUrgentStatus())
-        assertTrue("Some files could not be deleted. Retry in Gallery.".isUrgentStatus())
-        assertTrue("Camera permission denied".isUrgentStatus())
-        assertTrue("Insufficient storage".isUrgentStatus())
+    fun `real failure identities stay assertive and long lived`() {
+        listOf(
+            CameraStatusMessage.PHOTO_CAPTURE_FAILED,
+            CameraStatusMessage.DNG_SAVE_FAILED,
+            CameraStatusMessage.STILL_CAPTURE_UNAVAILABLE,
+            CameraStatusMessage.COULD_NOT_DELETE_FILE,
+            CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_CAPTURE,
+            CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY,
+        ).forEach {
+            val status = it.status()
+            assertEquals(CameraStatusSeverity.ERROR, status.severity)
+            assertEquals(CameraStatusLivePriority.ASSERTIVE, status.livePriority)
+            assertEquals(6_000L, status.durationMs)
+        }
     }
 
     @Test
-    fun `ordinary statuses stay quiet`() {
-        assertFalse("Video saved".isUrgentStatus())
-        assertFalse("Custom WB set".isUrgentStatus())
-        assertFalse("MR1 loaded".isUrgentStatus())
-        assertFalse("Stop REC first".isUrgentStatus())
-    }
-
-    @Test
-    fun `status lifetime is long for failures short for success and neutral for guidance`() {
-        assertEquals(6_000L, statusDisplayDurationMs("HEIF save failed"))
-        assertEquals(1_500L, statusDisplayDurationMs("Video saved"))
-        assertEquals(2_500L, statusDisplayDurationMs("Stop REC first"))
-        assertEquals(null, statusDisplayDurationMs(null))
+    fun `success and guidance identities preserve their durations`() {
+        assertEquals(1_500L, CameraStatusMessage.VIDEO_SAVED.status().durationMs)
+        assertEquals(1_500L, CameraStatusMessage.CUSTOM_WB_SET.status().durationMs)
+        assertEquals(1_500L, CameraStatusMessage.MEMORY_SLOT_LOADED.status().durationMs)
+        assertEquals(2_500L, CameraStatusMessage.STOP_RECORDING_FIRST.status().durationMs)
     }
 
     @Test
     fun `the cold-start progress status is cleared by an event, never by a timer`() {
-        // Owner-reported as "starting the camera takes a long time" on a device whose session
-        // configures in ~950 ms: this message fell into the 2.5 s neutral bucket, so the pill
-        // outlived the bring-up it described and the timer became the wait the user read.
-        assertEquals(null, statusDisplayDurationMs(CAMERA_STARTING_STATUS))
-        assertTrue(statusIsProgress(CAMERA_STARTING_STATUS))
-        // It is progress, not a failure: it must not render red or announce assertively.
-        assertFalse(CAMERA_STARTING_STATUS.isUrgentStatus())
-        // Nothing else may go timer-less by accident — an ordinary status that silently stopped
-        // expiring would strand on screen with no event able to clear it.
-        assertFalse(statusIsProgress("Stop REC first"))
-        assertFalse(statusIsProgress("Camera reconfiguring…"))
-        assertEquals(2_500L, statusDisplayDurationMs("Camera reconfiguring…"))
+        val starting = CameraStatusMessage.STARTING_CAMERA.status()
+        assertEquals(null, starting.durationMs)
+        assertEquals(CameraStatusLifecycle.PROGRESS, starting.lifecycle)
+        assertEquals(CameraStatusLivePriority.POLITE, starting.livePriority)
+        assertEquals(CameraStatusLifecycle.EVENT, CameraStatusMessage.CAMERA_RECONFIGURING.status().lifecycle)
+        assertEquals(2_500L, CameraStatusMessage.CAMERA_RECONFIGURING.status().durationMs)
+        assertTrue(CameraStatusMessage.entries
+            .filterNot { it == CameraStatusMessage.STARTING_CAMERA }
+            .all { it.status().lifecycle == CameraStatusLifecycle.EVENT })
     }
 }

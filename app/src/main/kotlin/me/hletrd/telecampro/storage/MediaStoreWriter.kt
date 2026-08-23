@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
+import androidx.core.content.edit
 import java.io.FileInputStream
 import java.io.IOException
 import java.io.OutputStream
@@ -135,6 +136,13 @@ object MediaStoreWriter {
             MediaStore.MediaColumns.OWNER_PACKAGE_NAME,
         )
         val queryArgs = Bundle().apply {
+            val ownerPolicy = restoreOwnerQueryPolicy(
+                collection = collection,
+                packageName = context.packageName,
+                ownerColumn = MediaStore.MediaColumns.OWNER_PACKAGE_NAME,
+                displayNameColumn = MediaStore.MediaColumns.DISPLAY_NAME,
+                mimeTypeColumn = MediaStore.MediaColumns.MIME_TYPE,
+            )
             val nameSelection = displayNames
                 ?.takeIf { it.isNotEmpty() }
                 ?.joinToString(prefix = " AND ${MediaStore.MediaColumns.DISPLAY_NAME} IN (", postfix = ")") { "?" }
@@ -145,24 +153,23 @@ object MediaStoreWriter {
             // any package name. Device evidence (2026-07-27): four rows in our own capture directory
             // with our own IMG_TELECAM_* filenames sat at owner NULL, invisible to this query,
             // which is why the gallery button fell back to its placeholder after a reinstall even
-            // though the photos were right there. A NULL owner is therefore ACCEPTED — the
-            // relative-path and filename filters already establish the file is ours — and the
-            // resulting row is flagged unowned so it cannot promise a delete it can no longer
-            // perform. A row owned by a DIFFERENT package is still excluded.
+            // though the photos were right there. A NULL owner is therefore accepted only through
+            // the explicit historical/current filename + collection + MIME rules. The reducer
+            // repeats their exact grammar after this coarse provider filter. A row owned by a
+            // DIFFERENT package is still excluded.
             putString(
                 ContentResolver.QUERY_ARG_SQL_SELECTION,
                 "${MediaStore.MediaColumns.RELATIVE_PATH} IN " +
                     subDirs.joinToString(", ", "(", ")") { "?" } + " AND " +
                     "${MediaStore.MediaColumns.IS_PENDING} = ? AND " +
-                    "(${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} = ? OR " +
-                    "${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} IS NULL)" + nameSelection,
+                    ownerPolicy.selection + nameSelection,
             )
             putStringArray(
                 ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS,
                 buildList {
                     subDirs.forEach { add("DCIM/$it/") }
                     add("0")
-                    add(context.packageName)
+                    addAll(ownerPolicy.selectionArgs)
                     displayNames?.let(::addAll)
                 }.toTypedArray(),
             )
@@ -197,9 +204,9 @@ object MediaStoreWriter {
                             dateAddedEpochSeconds = cursor.getLong(addedColumn),
                             dateModifiedEpochSeconds = cursor.getLong(modifiedColumn),
                             isPending = cursor.getInt(pendingColumn) != 0,
-                            // The selection admits our package OR a cleared owner, so this is
-                            // exactly "a previous install wrote it": restorable for display,
-                            // but no longer deletable by us without a consent flow.
+                            // The selection admits our package OR a cleared owner matching the
+                            // historical/current TeleCam contract. Cleared-owner rows remain
+                            // display-only because deleting them requires a system consent flow.
                             isOwned = !cursor.isNull(ownerColumn),
                         ),
                     )
@@ -526,9 +533,7 @@ object MediaStoreWriter {
 
     private fun clearPending(context: Context, uri: Uri) {
         context.getSharedPreferences(PENDING_JOURNAL, Context.MODE_PRIVATE)
-            .edit()
-            .remove(uri.toString())
-            .commit()
+            .edit(commit = true) { remove(uri.toString()) }
     }
 
     private fun probePendingMedia(

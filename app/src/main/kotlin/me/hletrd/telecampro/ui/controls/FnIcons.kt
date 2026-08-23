@@ -1,6 +1,7 @@
 package me.hletrd.telecampro.ui.controls
 
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ShowChart
 import androidx.compose.material.icons.outlined.AspectRatio
 import androidx.compose.material.icons.outlined.Contrast
 import androidx.compose.material.icons.outlined.Deblur
@@ -15,7 +16,6 @@ import androidx.compose.material.icons.outlined.Iso
 import androidx.compose.material.icons.outlined.Lens
 import androidx.compose.material.icons.outlined.Loupe
 import androidx.compose.material.icons.outlined.Mic
-import androidx.compose.material.icons.outlined.ShowChart
 import androidx.compose.material.icons.outlined.ShutterSpeed
 import androidx.compose.material.icons.outlined.Straighten
 import androidx.compose.material.icons.outlined.SurroundSound
@@ -53,7 +53,7 @@ internal fun fnSlotIcon(slot: FnSlot): ImageVector = when (slot) {
     // opposite (UI review #39).
     FnSlot.PEAKING -> Icons.Outlined.Deblur
     FnSlot.ZEBRA -> Icons.Outlined.Texture
-    FnSlot.TRANSFER -> Icons.Outlined.ShowChart
+    FnSlot.TRANSFER -> Icons.AutoMirrored.Outlined.ShowChart
     FnSlot.AUDIO_SCENE -> Icons.Outlined.SurroundSound
     FnSlot.GRID -> Icons.Outlined.GridOn
     FnSlot.LEVEL -> Icons.Outlined.Straighten

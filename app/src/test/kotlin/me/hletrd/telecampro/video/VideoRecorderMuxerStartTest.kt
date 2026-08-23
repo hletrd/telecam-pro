@@ -20,6 +20,56 @@ import org.junit.Test
 class VideoRecorderMuxerStartTest {
 
     @Test
+    fun `track rendezvous degrades only missing optional audio`() {
+        assertEquals(
+            MuxerRendezvousTimeoutAction.DEGRADE_AUDIO,
+            muxerRendezvousTimeoutAction(
+                videoTrackReady = true,
+                expectedTracks = 2,
+                audioTrackReady = false,
+            ),
+        )
+        assertEquals(
+            MuxerRendezvousTimeoutAction.FAIL_VIDEO,
+            muxerRendezvousTimeoutAction(
+                videoTrackReady = false,
+                expectedTracks = 2,
+                audioTrackReady = true,
+            ),
+        )
+        assertEquals(
+            MuxerRendezvousTimeoutAction.FAIL_VIDEO,
+            muxerRendezvousTimeoutAction(
+                videoTrackReady = false,
+                expectedTracks = 1,
+                audioTrackReady = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `video startup proof requires format and first muxed sample`() {
+        val noFormat = VideoStartupProof()
+        assertEquals(
+            "Video encoder produced no output format before startup deadline",
+            noFormat.expire(),
+        )
+
+        val noSample = VideoStartupProof()
+        assertFalse(noSample.observeFormat())
+        assertEquals(
+            "Video encoder produced no muxed sample before startup deadline",
+            noSample.expire(),
+        )
+
+        val complete = VideoStartupProof()
+        assertFalse(complete.observeFormat())
+        assertTrue(complete.observeMuxedSample())
+        assertEquals(null, complete.expire())
+        assertEquals(null, complete.expire())
+    }
+
+    @Test
     fun `video track plus single expected track starts regardless of audio (AGG2-6 wedge and mid-REC degrade)`() {
         // The literal AGG2-6 case AND the new AGG3-2 mid-REC audio degrade share this predicate:
         // expectedTracks dropped to 1 (a wedged AAC encoder OR a mid-REC audio fault degrading to

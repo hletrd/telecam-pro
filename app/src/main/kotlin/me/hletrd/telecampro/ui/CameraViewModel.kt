@@ -20,6 +20,10 @@ import me.hletrd.telecampro.camera.CameraEngine
 import me.hletrd.telecampro.camera.CameraFacing
 import me.hletrd.telecampro.camera.CameraReadyPublication
 import me.hletrd.telecampro.camera.CameraReadyPublicationGate
+import me.hletrd.telecampro.camera.CameraStatus
+import me.hletrd.telecampro.camera.CameraStatusArgument
+import me.hletrd.telecampro.camera.CameraStatusLifecycle
+import me.hletrd.telecampro.camera.CameraStatusMessage
 import me.hletrd.telecampro.camera.backOpticsDoorRefusal
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
@@ -69,6 +73,7 @@ import me.hletrd.telecampro.camera.pendingControlsForTransition
 import me.hletrd.telecampro.camera.seedExposureForRouteChange
 import me.hletrd.telecampro.camera.exposureUpperBoundForCaptureMode
 import me.hletrd.telecampro.camera.withDefaultIfEmpty
+import me.hletrd.telecampro.camera.status
 import me.hletrd.telecampro.camera.ProcessingLevel
 import me.hletrd.telecampro.camera.ShutterMode
 import me.hletrd.telecampro.camera.ShutterTimer
@@ -87,7 +92,11 @@ import me.hletrd.telecampro.camera.WbMode
 import me.hletrd.telecampro.camera.ZebraLevel
 import me.hletrd.telecampro.camera.rearReturnZoom
 import me.hletrd.telecampro.ui.controls.bitrateLevelLabel
+import me.hletrd.telecampro.ui.controls.audioInputPreferenceLabel
 import me.hletrd.telecampro.ui.controls.formatFocalMm
+import me.hletrd.telecampro.ui.controls.exposureModeLetter
+import me.hletrd.telecampro.ui.controls.videoFrameRateLabel
+import me.hletrd.telecampro.ui.controls.localizedLabel
 import me.hletrd.telecampro.ui.controls.transferLabel
 import me.hletrd.telecampro.ui.controls.videoResolutionLabel
 import me.hletrd.telecampro.ui.overlays.photoFormatLabel
@@ -103,6 +112,10 @@ import me.hletrd.telecampro.storage.RestoredDeleteScope
 import me.hletrd.telecampro.storage.SettingsStore
 import me.hletrd.telecampro.storage.StoredMediaOutputKind
 import me.hletrd.telecampro.video.AudioInputInspector
+import me.hletrd.telecampro.video.AudioRouteAvailability
+import me.hletrd.telecampro.video.AudioRouteStatus
+import me.hletrd.telecampro.video.CodecInventory
+import me.hletrd.telecampro.video.EncoderCaps
 import me.hletrd.telecampro.video.audioUnavailableLabel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -254,9 +267,11 @@ class CameraViewModel @JvmOverloads constructor(
     // controller callback inert before it can publish gains or a stale status message.
     private var customWbSampleGeneration = 0L
 
-    // Auto-dismisses the transient status toast ("Video saved" / errors) so it doesn't hang
-    // on screen forever (QA: "video saved" stuck). Each new message re-arms the 2 s timer.
-    private val clearStatusRunnable = Runnable { _state.update { it.copy(statusMessage = null) } }
+    // Status timer ownership is sequence-based: removing a Runnable cannot stop one already running,
+    // so an old event may clear only the exact publication it armed for.
+    private var statusSequence = 0L
+    private var clearStatusRunnable: Runnable? = null
+    private val statusLock = Any()
 
     private var reticleHideRunnable: Runnable? = null
     // Tap publications can originate on camera/setup/main threads while the visual timeout runs on
@@ -531,9 +546,11 @@ class CameraViewModel @JvmOverloads constructor(
     private fun restartMotionInversion() {
         motionConfidence = MotionInversionConfidence()
         val want = MOTION_SIGNS_VERIFIED
-        if (motionArmed == want) return
         motionArmed = want
-        engine.setMotionInversionArmed(want)
+        // This is an evidence-epoch boundary, not merely an armed-state setter. Re-publish even on
+        // true -> true so neither gyro samples nor GL's retained predecessor can span the optics
+        // door. The renderer epoch also rejects a result already computing on its old executor.
+        engine.setMotionInversionArmed(want, resetEvidence = true)
     }
 
     /**
@@ -613,6 +630,10 @@ class CameraViewModel @JvmOverloads constructor(
     private val ioExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
         Thread(r, "vm-io").apply { isDaemon = true }
     }
+    @Volatile private var cleared = false
+    private var pendingCodecUntilInventory: VideoCodec? = null
+    private var pendingTransferUntilInventory: ColorTransfer? = null
+    private var pendingPhotoFormatsUntilInventory: PhotoFormats? = null
 
     init {
         engine.onStatus = ::publishStatus
@@ -647,8 +668,8 @@ class CameraViewModel @JvmOverloads constructor(
                 reconcileFrameRate()
                 // Macro hint is static per route: resolve the closer-focusing lens label once per
                 // caps delivery, and re-evaluate the tag against the new route's min focus.
-                val hintLabel = engine.closerFocusingLensLabel(caps)
-                _state.update { it.copy(macroCloserLensLabel = hintLabel) }
+                val hintLens = engine.closerFocusingLens(caps)
+                _state.update { it.copy(macroCloserLens = hintLens) }
                 refreshFocusConfidence()
             }
         }
@@ -699,7 +720,7 @@ class CameraViewModel @JvmOverloads constructor(
                     // A newer optics intent or pause/session reopen can land while this camera-thread
                     // callback is queued for main. Both generations bind its output snapshot.
                     if (!engine.isCameraReadyPublicationCurrent(publication)) return@post
-                    var formatStatus: String? = null
+                    var formatStatus: CameraStatus? = null
                     // Captured inside the transform, assigned after it (tracer T10): update()
                     // retries on CAS contention, and writing the field mid-transform feeds run 1's
                     // output into run 2's `preTeleUnifiedZoom` input.
@@ -733,14 +754,14 @@ class CameraViewModel @JvmOverloads constructor(
                             // designed trade read as a fault on every mode switch (user-reported).
                             current.mode == CaptureMode.VIDEO -> null
                             !publication.photoOutputs.hasStillTarget ->
-                                "Still capture unavailable"
+                                CameraStatusMessage.STILL_CAPTURE_UNAVAILABLE.status()
                             current.photoFormats.wantsProcessedStill &&
                                 !accepted.photoFormats.wantsProcessedStill && accepted.photoFormats.dngRaw ->
                                 // Word for word the engine's capture-time refusal and the
                                 // PhotoFormatToggles caption: this fires on Ready publication and
                                 // those fire at the shutter, so one user sees all three for one
                                 // output mask.
-                                "HEIF/JPEG unavailable · DNG only"
+                                CameraStatusMessage.PROCESSED_STILL_UNAVAILABLE_DNG_ONLY.status()
                             // NO route-switch "RAW unavailable" toast (user-removed 2026-07-31:
                             // "too noisy" — every front flip with DNG selected announced a state
                             // the vanished chrome already shows). The sheet caption under the
@@ -919,13 +940,13 @@ class CameraViewModel @JvmOverloads constructor(
         engine.onCameraPolicyBlocked = { blocked ->
             _state.update { if (it.cameraPolicyBlocked == blocked) it else it.copy(cameraPolicyBlocked = blocked) }
         }
-        engine.onAudioRoute = { route -> _state.update { it.copy(audioRouteLabel = route) } }
+        engine.onAudioRoute = { route -> _state.update { it.copy(audioRoute = route) } }
         engine.onStandbyAudioAvailable = {
             mainHandler.post {
                 val current = _state.value
                 if (!current.isRecording && standbyMeterVisible) {
                     _state.update {
-                        it.copy(audioRouteLabel = audioInputStatusLabel(it.audioInputPreference))
+                        it.copy(audioRoute = audioInputStatus(it.audioInputPreference).route)
                     }
                 }
             }
@@ -937,9 +958,14 @@ class CameraViewModel @JvmOverloads constructor(
                     _state.update {
                         // The canonical helper, not a hand-rolled copy of its format: every Route-row
                         // degradation must keep spelling this one way.
-                        it.copy(audioRouteLabel = audioUnavailableLabel(it.audioInputPreference.label))
+                        it.copy(
+                            audioRoute = AudioRouteStatus(
+                                it.audioInputPreference,
+                                AudioRouteAvailability.UNAVAILABLE,
+                            ),
+                        )
                     }
-                    publishStatus("Standby microphone unavailable")
+                    publishStatus(CameraStatusMessage.STANDBY_MICROPHONE_UNAVAILABLE.status())
                 }
             }
         }
@@ -963,7 +989,7 @@ class CameraViewModel @JvmOverloads constructor(
                         isRecording = false,
                         isRecordingStarting = false,
                         recordElapsedMs = 0,
-                        audioRouteLabel = audioInputStatusLabel(it.audioInputPreference),
+                        audioRoute = audioInputStatus(it.audioInputPreference).route,
                     )
                 }
                 refreshStandbyAudioMeter()
@@ -999,9 +1025,9 @@ class CameraViewModel @JvmOverloads constructor(
                 ioExecutor.execute { MediaStoreWriter.delete(getApplication(), uri) }
             }
         }
-        seedStillEncoderAvailability()
         seedPhoneModel()
         restoreSettingsIfEnabled()
+        loadEncoderInventoryAsync()
         refreshProgramAppSide()
         // Sweep prior-process pending rows first, then restore the newest published family. This
         // includes a row adopted by recovery without ever letting provider probes delay Camera2
@@ -1060,7 +1086,7 @@ class CameraViewModel @JvmOverloads constructor(
         loaded: SettingsStore.Loaded,
         rememberSettings: Boolean? = null,
         activeSlot: MemorySlot? = null,
-        status: String? = null,
+        status: CameraStatus? = null,
         honorPreserveOptions: Boolean = false,
     ) {
         val c = loaded.controls
@@ -1083,11 +1109,25 @@ class CameraViewModel @JvmOverloads constructor(
         // The fallback must be a codec this DEVICE has, not the ExtraSettings default (HEVC) — on a
         // handset with no HEVC encoder that default IS the unavailable one, so the "safe" value was
         // the broken value (2026-08-02 review). HEVC encode is not CDD-mandatory at API 33.
-        val deviceCodecs = me.hletrd.telecampro.video.EncoderCaps.availableCodecs()
+        val inventoryLoaded = _state.value.encoderInventoryLoaded
+        val deviceCodecs = _state.value.availableVideoCodecs
         val safeCodec = when {
+            !inventoryLoaded -> e.videoCodec
             deviceCodecs.contains(e.videoCodec) -> e.videoCodec
             deviceCodecs.contains(ExtraSettings().videoCodec) -> ExtraSettings().videoCodec
             else -> deviceCodecs.firstOrNull() ?: ExtraSettings().videoCodec
+        }
+        val requestedFormats = PhotoFormats(e.heif, e.jpeg, e.dngRaw).withDefaultIfEmpty()
+        val safeFormats = requestedFormats.normalizedForEncoder(
+            inventoryLoaded && _state.value.heifAvailable,
+        )
+        val safeTransfer = e.transfer.normalizedForEncoder(
+            inventoryLoaded && _state.value.tenBitEncodeAvailable,
+        )
+        if (!inventoryLoaded) {
+            pendingCodecUntilInventory = e.videoCodec
+            pendingTransferUntilInventory = e.transfer
+            pendingPhotoFormatsUntilInventory = requestedFormats
         }
         // Keep the exposure fps in lockstep with the restored video rate (mirrors onVideoFrameRate;
         // restoring them independently let the AE/shutter-angle math run at a stale fps).
@@ -1225,7 +1265,7 @@ class CameraViewModel @JvmOverloads constructor(
         // Manual/priority modes need luma analysis even when scopes are hidden: priority AE drives
         // from it, and full manual uses it for the live exposure meter.
         engine.setAeMetering(exposureAnalysisRequired(cSynced))
-        applyEngineTransfer(e.mode, e.transfer)
+        applyEngineTransfer(e.mode, safeTransfer)
         engine.setGammaAssist(e.gammaAssist)
         engine.setVideoStabMode(e.videoStabMode)
         engine.setAspectRatio(e.aspectRatio)
@@ -1241,7 +1281,11 @@ class CameraViewModel @JvmOverloads constructor(
         engine.setPunchIn(e.punchIn)
         engine.setTeleFinder(e.teleFinder)
         engine.setHiResStill(e.hiResStill)
-        engine.setVideoCodec(safeCodec)
+        if (inventoryLoaded) {
+            engine.setVideoEncoder(EncoderCaps.currentInventory().selectionFor(safeCodec))
+        } else {
+            engine.setVideoCodec(safeCodec)
+        }
         engine.setBitrateLevel(e.bitrateLevel)
         engine.setOpenGate(e.openGate)
         engine.setAudioGain(e.audioGain)
@@ -1252,7 +1296,7 @@ class CameraViewModel @JvmOverloads constructor(
         // one. Without this the persisted choice was silently inert on every launch: the sheet
         // showed DNG selected, the session came up on the logical route with raw=false, and the
         // shutter produced outputs=jpg with no DNG at all (found by the 2026-07-29 review pass).
-        engine.setRawWanted(PhotoFormats(e.heif, e.jpeg, e.dngRaw).withDefaultIfEmpty().dngRaw)
+        engine.setRawWanted(safeFormats.dngRaw)
         // Restore the user-selected recording resolution ("Remember Settings" previously dropped it
         // silently — the engine re-picked the largest size on every launch). The engine re-validates
         // the request against the live caps once the camera opens and falls back to auto if the
@@ -1267,9 +1311,8 @@ class CameraViewModel @JvmOverloads constructor(
                 // clip tagged bt2020/arib-std-b67 over a Main yuv420p stream — the UI offered SDR
                 // alone while the wire still carried HLG (caught on an Android 13 emulator after
                 // the seed-only fix looked correct in the menu).
-                transfer = e.transfer.normalizedForEncoder(it.tenBitEncodeAvailable),
-                photoFormats = PhotoFormats(e.heif, e.jpeg, e.dngRaw).withDefaultIfEmpty()
-                    .normalizedForEncoder(it.heifAvailable),
+                transfer = safeTransfer,
+                photoFormats = safeFormats,
                 mode = e.mode,
                 lens = restoredLens,
                 teleconverterMode = restoredTeleconverter,
@@ -1312,7 +1355,7 @@ class CameraViewModel @JvmOverloads constructor(
                 gammaAssist = e.gammaAssist,
                 frameLines = e.frameLines,
                 audioInputPreference = e.audioInputPreference,
-                audioRouteLabel = audioInputStatusLabel(e.audioInputPreference),
+                audioRoute = audioInputStatus(e.audioInputPreference).route,
                 photoFnSlots = normalizeFnSlots(e.photoFnSlots, FnSlot.PHOTO_DEFAULT),
                 videoFnSlots = normalizeFnSlots(e.videoFnSlots, FnSlot.VIDEO_DEFAULT),
                 myMenuSlots = normalizeFnSlots(e.myMenuSlots, FnSlot.MY_MENU_DEFAULT),
@@ -1322,15 +1365,12 @@ class CameraViewModel @JvmOverloads constructor(
                 preserveLensSelection = if (honorPreserveOptions) e.preserveLensSelection else it.preserveLensSelection,
                 preserveTeleconverter = if (honorPreserveOptions) e.preserveTeleconverter else it.preserveTeleconverter,
                 activeMemorySlot = activeSlot,
-                statusMessage = status,
+                status = status,
             )
         }
         mainHandler.removeCallbacks(levelTicker)
         if (e.level && lifecycleStarted) mainHandler.post(levelTicker)
-        mainHandler.removeCallbacks(clearStatusRunnable)
-        statusDisplayDurationMs(status)?.let { durationMs ->
-            mainHandler.postDelayed(clearStatusRunnable, durationMs)
-        }
+        armStatusTimer(status)
         // NOTE deliberately NO refreshProgramAppSide() here: the flag is already derived into
         // cSynced above, and calling the refresher would route the recalled packet back through
         // updateControls' whole-packet normalization against the outgoing route's caps (the
@@ -1479,15 +1519,34 @@ class CameraViewModel @JvmOverloads constructor(
         engine.setTransfer(if (mode == CaptureMode.VIDEO) safe else ColorTransfer.SDR)
     }
 
-    private fun publishStatus(message: String?) {
-        _state.update { it.copy(statusMessage = message) }
-        mainHandler.removeCallbacks(clearStatusRunnable)
-        statusDisplayDurationMs(message)?.let { durationMs ->
-            mainHandler.postDelayed(clearStatusRunnable, durationMs)
+    private fun publishStatus(status: CameraStatus?) {
+        synchronized(statusLock) {
+            _state.update { it.copy(status = status) }
+            armStatusTimer(status)
         }
     }
 
-    private fun showStatus(message: String) = publishStatus(message)
+    private fun showStatus(message: CameraStatusMessage, vararg arguments: CameraStatusArgument) =
+        publishStatus(message.status(*arguments))
+
+    private fun showStatus(status: CameraStatus) = publishStatus(status)
+
+    private fun armStatusTimer(status: CameraStatus?) {
+        clearStatusRunnable?.let(mainHandler::removeCallbacks)
+        clearStatusRunnable = null
+        val sequence = ++statusSequence
+        status?.durationMs?.let { durationMs ->
+            val runnable = Runnable {
+                synchronized(statusLock) {
+                    if (statusSequence == sequence) _state.update { current ->
+                        if (current.status == status) current.copy(status = null) else current
+                    }
+                }
+            }
+            clearStatusRunnable = runnable
+            mainHandler.postDelayed(runnable, durationMs)
+        }
+    }
 
     /**
      * Retires a timer-less progress status once the condition it reports has ended. Guarded on the
@@ -1495,14 +1554,20 @@ class CameraViewModel @JvmOverloads constructor(
      * be swallowed by a late arrival of the event this clears on.
      */
     private fun clearProgressStatus() {
-        _state.update { current ->
-            val message = current.statusMessage
-            if (message != null && statusIsProgress(message)) current.copy(statusMessage = null)
-            else current
+        synchronized(statusLock) {
+            if (_state.value.status?.lifecycle != CameraStatusLifecycle.PROGRESS) return
+            _state.update { current ->
+                val status = current.status
+                if (status?.lifecycle == CameraStatusLifecycle.PROGRESS) current.copy(status = null)
+                else current
+            }
+            statusSequence++
+            clearStatusRunnable?.let(mainHandler::removeCallbacks)
+            clearStatusRunnable = null
         }
     }
 
-    private fun rejectIfRecording(message: String): Boolean {
+    private fun rejectIfRecording(message: CameraStatusMessage = CameraStatusMessage.STOP_RECORDING_FIRST): Boolean {
         if (!_state.value.isRecording) return false
         showStatus(message)
         return true
@@ -1517,15 +1582,15 @@ class CameraViewModel @JvmOverloads constructor(
         val message = when (
             backOpticsDoorRefusal(_state.value.isRecording, _state.value.facing == CameraFacing.FRONT)
         ) {
-            BackOpticsRefusal.RECORDING -> "Stop REC first"
-            BackOpticsRefusal.FRONT_ROUTE -> "Switch to rear camera first"
+            BackOpticsRefusal.RECORDING -> CameraStatusMessage.STOP_RECORDING_FIRST
+            BackOpticsRefusal.FRONT_ROUTE -> CameraStatusMessage.SWITCH_TO_REAR_FIRST
             BackOpticsRefusal.NONE -> return false
         }
         showStatus(message)
         return true
     }
 
-    fun onAppStatus(message: String) = showStatus(message)
+    fun onAppStatus(message: CameraStatusMessage) = showStatus(message)
 
     /** Recomputes [ManualControls.programAppSide] after mode/flash/exposure-mode changes, seeding a smooth handoff. */
     private fun refreshProgramAppSide() {
@@ -1569,9 +1634,6 @@ class CameraViewModel @JvmOverloads constructor(
     private fun audioInputStatus(preference: AudioInputPreference = _state.value.audioInputPreference) =
         AudioInputInspector.status(getApplication(), preference)
 
-    private fun audioInputStatusLabel(preference: AudioInputPreference = _state.value.audioInputPreference): String =
-        audioInputStatus(preference).label
-
     private fun refreshMemorySlotInfo(activeSlot: MemorySlot? = _state.value.activeMemorySlot) {
         val info = settingsStore.savedPresetInfo()
         _state.update {
@@ -1599,10 +1661,10 @@ class CameraViewModel @JvmOverloads constructor(
 
     private fun presetSummaryFor(s: CameraUiState): String = when (s.mode) {
         CaptureMode.PHOTO ->
-            "${focalSummary(s)} · ${s.controls.exposureMode.letter} · ${photoFormatLabel(s.photoFormats)}"
+            "${focalSummary(s)} · ${exposureModeLetter(s.controls.exposureMode)} · ${photoFormatLabel(s.photoFormats)}"
         CaptureMode.VIDEO -> {
-            "${focalSummary(s)} · ${videoResolutionLabel(s.videoResolution)} ${s.videoFrameRate.label}p · " +
-                "${transferLabel(s.transfer)} · ${bitrateLevelLabel(s.bitrateLevel)}"
+            "${focalSummary(s)} · ${videoResolutionLabel(s.videoResolution)} ${videoFrameRateLabel(s.videoFrameRate)}p · " +
+                "${transferLabel(s.transfer)} · ${getApplication<Application>().localizedLabel(s.bitrateLevel)}"
         }
     }
 
@@ -1806,11 +1868,11 @@ class CameraViewModel @JvmOverloads constructor(
         val current = _state.value
         val availability = controlAvailability(current.caps?.controlCapabilities(), current.controls)
         if (!current.cameraReady) {
-            showStatus("Camera reconfiguring…")
+            showStatus(CameraStatusMessage.CAMERA_RECONFIGURING)
             return
         }
         if (!availability.customWbCaptureEnabled) {
-            showStatus("Use Auto WB with AWB Lock off")
+            showStatus(CameraStatusMessage.USE_AUTO_WB)
             return
         }
         // Land a just-selected AUTO/unlocked packet before the controller registers its tagged
@@ -1821,7 +1883,7 @@ class CameraViewModel @JvmOverloads constructor(
             mainHandler.post {
                 if (generation != customWbSampleGeneration) return@post
                 if (sample == null) {
-                    showStatus("Custom WB measurement failed")
+                    showStatus(CameraStatusMessage.CUSTOM_WB_MEASUREMENT_FAILED)
                     return@post
                 }
                 val applied = engine.consumeCustomWbSampleIfCurrent(sample) { gains ->
@@ -1829,7 +1891,10 @@ class CameraViewModel @JvmOverloads constructor(
                         it.copy(wbMode = WbMode.CUSTOM, customWbGains = gains)
                     }
                 }
-                showStatus(if (applied) "Custom WB set" else "Custom WB measurement failed")
+                showStatus(
+                    if (applied) CameraStatusMessage.CUSTOM_WB_SET
+                    else CameraStatusMessage.CUSTOM_WB_MEASUREMENT_FAILED,
+                )
             }
         }
     }
@@ -2058,7 +2123,7 @@ class CameraViewModel @JvmOverloads constructor(
         // that asked for nothing (review L8).
         if (mode == _state.value.mode) return
         if (_state.value.isRecording) {
-            showStatus("Stop REC first")
+            showStatus(CameraStatusMessage.STOP_RECORDING_FIRST)
             return
         }
         // Invalidate any delayed full-controls packet before resolving the transition; otherwise it
@@ -2113,7 +2178,8 @@ class CameraViewModel @JvmOverloads constructor(
         saveSettingsIfEnabled()
     }
     override fun onTransfer(transfer: ColorTransfer) {
-        if (rejectIfRecording("Stop REC first")) return
+        if (rejectIfRecording()) return
+        if (!_state.value.encoderInventoryLoaded) pendingTransferUntilInventory = transfer
         applyEngineTransfer(_state.value.mode, transfer)
         _state.update { it.copy(transfer = transfer) }
         markChanged(FnSlot.TRANSFER)
@@ -2125,6 +2191,7 @@ class CameraViewModel @JvmOverloads constructor(
         // A device with no HEVC encoder cannot write HEIF at all — promote JPEG instead of letting
         // the shutter produce nothing (2026-08-02 review).
         val formats = formats.normalizedForEncoder(s.heifAvailable)
+        if (!s.encoderInventoryLoaded) pendingPhotoFormatsUntilInventory = formats
         // DNG is a ROUTE input: RAW cannot come off the logical photo camera, so wanting it moves
         // the session to a standalone lens. Pushed BEFORE the state write so the reopen it may
         // trigger is already in flight when the UI reflects the new selection.
@@ -2143,7 +2210,7 @@ class CameraViewModel @JvmOverloads constructor(
     override fun onToggleHiResStill(enabled: Boolean) {
         // Flipping admission rebuilds the Camera2 session (the still reader size is fixed at
         // configureStreams) — the same mid-REC gate every session-reconfiguring control has.
-        if (rejectIfRecording("Stop REC first")) return
+        if (rejectIfRecording()) return
         cancelCountdown()
         engine.setHiResStill(enabled)
         _state.update { it.copy(hiResStill = enabled, activeMemorySlot = null) }
@@ -2156,13 +2223,13 @@ class CameraViewModel @JvmOverloads constructor(
         scheduleSettingsSave()
     }
     override fun onToggleRecordAudio(enabled: Boolean) {
-        if (rejectIfRecording("Stop REC first")) return
+        if (rejectIfRecording()) return
         _state.update { it.copy(recordAudio = enabled, activeMemorySlot = null) }
         refreshStandbyAudioMeter()
         saveSettingsIfEnabled()
     }
     override fun onAudioGain(gain: Float) {
-        if (rejectIfRecording("Stop REC first")) return
+        if (rejectIfRecording()) return
         val normalized = normalizeAudioGain(gain)
         engine.setAudioGain(normalized)
         _state.update { it.copy(audioGain = normalized, activeMemorySlot = null) }
@@ -2171,19 +2238,19 @@ class CameraViewModel @JvmOverloads constructor(
         scheduleSettingsSave()
     }
     override fun onAudioScene(scene: me.hletrd.telecampro.camera.AudioScene) {
-        if (rejectIfRecording("Stop REC first")) return
+        if (rejectIfRecording()) return
         engine.setAudioScene(scene)
         _state.update { it.copy(audioScene = scene) }
         markChanged(FnSlot.AUDIO_SCENE)
         scheduleSettingsSave()
     }
     override fun onAudioInputPreference(preference: AudioInputPreference) {
-        if (rejectIfRecording("Stop REC first")) return
+        if (rejectIfRecording()) return
         engine.setAudioInputPreference(preference)
         _state.update {
             it.copy(
                 audioInputPreference = preference,
-                audioRouteLabel = if (it.isRecording) it.audioRouteLabel else audioInputStatusLabel(preference),
+                audioRoute = if (it.isRecording) it.audioRoute else audioInputStatus(preference).route,
                 activeMemorySlot = null,
             )
         }
@@ -2345,28 +2412,54 @@ class CameraViewModel @JvmOverloads constructor(
         pendingControls = pendingControls?.copy(zoomRatio = z)
     }
 
-    /**
-     * Device-static still-encoder truth, seeded before settings restore so a persisted HEIF-only
-     * selection cannot survive onto hardware that has no HEVC encoder.
-     */
-    private fun seedStillEncoderAvailability() {
-        val available = runCatching {
-            me.hletrd.telecampro.video.EncoderCaps.heifEncodeAvailable()
-        }.getOrDefault(true)
-        val tenBit = runCatching {
-            me.hletrd.telecampro.video.EncoderCaps.tenBitEncodeAvailable()
-        }.getOrDefault(true)
+    /** Loads the one immutable platform codec inventory off main, then reconciles retained intent. */
+    private fun loadEncoderInventoryAsync() {
+        if (EncoderCaps.isLoaded()) {
+            applyEncoderInventory(EncoderCaps.currentInventory())
+            return
+        }
+        runCatching {
+            ioExecutor.execute {
+                val inventory = EncoderCaps.load()
+                mainHandler.post {
+                    if (!cleared) applyEncoderInventory(inventory)
+                }
+            }
+        }
+    }
+
+    private fun applyEncoderInventory(inventory: CodecInventory) {
+        val before = _state.value
+        val requestedCodec = pendingCodecUntilInventory ?: before.videoCodec
+        val requestedTransfer = pendingTransferUntilInventory ?: before.transfer
+        val requestedFormats = pendingPhotoFormatsUntilInventory ?: before.photoFormats
+        pendingCodecUntilInventory = null
+        pendingTransferUntilInventory = null
+        pendingPhotoFormatsUntilInventory = null
+        val codecs = inventory.availableVideoCodecs
+        val safeCodec = when {
+            requestedCodec in codecs -> requestedCodec
+            ExtraSettings().videoCodec in codecs -> ExtraSettings().videoCodec
+            else -> codecs.firstOrNull() ?: requestedCodec
+        }
+        val safeTransfer = requestedTransfer.normalizedForEncoder(inventory.tenBitEncodeAvailable)
+        val safeFormats = requestedFormats.normalizedForEncoder(inventory.heifEncodeAvailable)
+        engine.setVideoEncoder(inventory.selectionFor(safeCodec))
+        applyEngineTransfer(before.mode, safeTransfer)
+        engine.setRawWanted(safeFormats.dngRaw)
         _state.update {
             it.copy(
-                heifAvailable = available,
-                photoFormats = it.photoFormats.normalizedForEncoder(available),
-                tenBitEncodeAvailable = tenBit,
+                encoderInventoryLoaded = true,
+                availableVideoCodecs = codecs,
+                videoCodec = safeCodec,
+                heifAvailable = inventory.heifEncodeAvailable,
+                photoFormats = safeFormats,
+                tenBitEncodeAvailable = inventory.tenBitEncodeAvailable,
+                transfer = safeTransfer,
                 rawForcesStandalone = engine.rawForcesStandalone,
-                // Same reason as photoFormats above: a persisted HLG/log selection must not survive
-                // onto an encoder that would tag an 8-bit stream as BT.2020 HDR.
-                transfer = it.transfer.normalizedForEncoder(tenBit),
             )
         }
+        reconcileFrameRate()
     }
 
     /**
@@ -2510,7 +2603,7 @@ class CameraViewModel @JvmOverloads constructor(
 
     override fun onToggleFrontCamera() {
         // The flip itself is recording-gated only; FRONT is where it leads, not a refusal input.
-        if (rejectIfRecording("Stop REC first")) return
+        if (rejectIfRecording()) return
         cancelCountdown()
         drainPendingControls()
         val entering = _state.value.facing == CameraFacing.BACK
@@ -2569,20 +2662,21 @@ class CameraViewModel @JvmOverloads constructor(
     }
 
     override fun onVideoCodec(codec: VideoCodec) {
-        if (rejectIfRecording("Stop REC first")) return
-        engine.setVideoCodec(codec)
+        if (rejectIfRecording()) return
+        val selection = EncoderCaps.currentInventory().selectionFor(codec) ?: return
+        engine.setVideoEncoder(selection)
         _state.update { it.copy(videoCodec = codec, activeMemorySlot = null) }
         reconcileFrameRate()
         scheduleSettingsSave()
     }
     override fun onBitrateLevel(level: BitrateLevel) {
-        if (rejectIfRecording("Stop REC first")) return
+        if (rejectIfRecording()) return
         engine.setBitrateLevel(level)
         _state.update { it.copy(bitrateLevel = level, activeMemorySlot = null) }
         scheduleSettingsSave()
     }
     override fun onVideoResolution(size: Size) {
-        if (rejectIfRecording("Stop REC first")) return
+        if (rejectIfRecording()) return
         if (!engine.setVideoResolution(size)) return
         _state.update { it.copy(videoResolution = size, activeMemorySlot = null) }
         reconcileFrameRate()
@@ -2591,7 +2685,7 @@ class CameraViewModel @JvmOverloads constructor(
         scheduleSettingsSave()
     }
     override fun onVideoFrameRate(rate: VideoFrameRate) {
-        if (rejectIfRecording("Stop REC first")) return
+        if (rejectIfRecording()) return
         engine.setVideoFrameRate(rate)
         // Keep the exposure fps in step so the AE target-fps range, cine shutter angle and sensor
         // frame duration follow the selected video rate (drop-frame rates use their rounded parent).
@@ -2609,7 +2703,7 @@ class CameraViewModel @JvmOverloads constructor(
         scheduleSettingsSave()
     }
     override fun onToggleOpenGate(enabled: Boolean) {
-        if (rejectIfRecording("Stop REC first")) return
+        if (rejectIfRecording()) return
         engine.setOpenGate(enabled)
         _state.update { it.copy(openGate = enabled, activeMemorySlot = null) }
         reconcileFrameRate()
@@ -2701,7 +2795,7 @@ class CameraViewModel @JvmOverloads constructor(
         // Mid-clip the HAL would apply the new OIS/EIS profile LIVE (setVideoStabMode rebuilds the
         // repeating request immediately) — a visible stabilization discontinuity baked into the
         // file. Same gate as every other session-reconfiguring control.
-        if (rejectIfRecording("Stop REC first")) return
+        if (rejectIfRecording()) return
         engine.setVideoStabMode(mode)
         _state.update { it.copy(videoStabMode = mode) }
         markChanged(FnSlot.STABILIZATION)
@@ -2928,7 +3022,7 @@ class CameraViewModel @JvmOverloads constructor(
                     isRecording = false,
                     isRecordingStarting = false,
                     recordElapsedMs = 0,
-                    audioRouteLabel = audioInputStatusLabel(it.audioInputPreference),
+                    audioRoute = audioInputStatus(it.audioInputPreference).route,
                 )
             }
         } else {
@@ -2941,7 +3035,10 @@ class CameraViewModel @JvmOverloads constructor(
             // run synchronously for an immediate refusal).
             _state.update {
                 it.copy(
-                    audioRouteLabel = if (s.recordAudio) "Starting…" else "Off",
+                    audioRoute = AudioRouteStatus(
+                        s.audioInputPreference,
+                        if (s.recordAudio) AudioRouteAvailability.STARTING else AudioRouteAvailability.OFF,
+                    ),
                     isRecording = true,
                     isRecordingStarting = true,
                     recordElapsedMs = 0,
@@ -2951,7 +3048,10 @@ class CameraViewModel @JvmOverloads constructor(
                 // ";" is the clause joiner every sibling status uses ("Camera unavailable; mode
                 // unchanged"). A comma cannot do it here: the left operand is a port label that can
                 // itself read "Auto · No mic", so a comma would bind a clause inside a · list.
-                showStatus("${inputStatus.label}; using default")
+                showStatus(
+                    CameraStatusMessage.AUDIO_INPUT_USING_DEFAULT,
+                    CameraStatusArgument.AudioInput(inputStatus.route.preference),
+                )
             }
             // THREAD CONTRACT: this callback runs on the RECORDER EXECUTOR for a queued admission,
             // or synchronously on MAIN for an immediate refusal. Reconcile a refusal on MAIN as one
@@ -2974,7 +3074,7 @@ class CameraViewModel @JvmOverloads constructor(
                                 isRecording = false,
                                 isRecordingStarting = false,
                                 recordElapsedMs = 0,
-                                audioRouteLabel = audioInputStatusLabel(it.audioInputPreference),
+                                audioRoute = audioInputStatus(it.audioInputPreference).route,
                             )
                         }
                         refreshStandbyAudioMeter()
@@ -3034,7 +3134,7 @@ class CameraViewModel @JvmOverloads constructor(
     }
 
     override fun onStoreMemorySlot(slot: MemorySlot) {
-        if (rejectIfRecording("Stop REC first")) return
+        if (rejectIfRecording()) return
         val live = _state.value
         // Same FRONT substitution as saveSettingsIfEnabled: recalled packets are REAR-route optics
         // by contract (setResolvedOptics exits FRONT), so a preset stored while FRONT must persist
@@ -3075,22 +3175,29 @@ class CameraViewModel @JvmOverloads constructor(
             summary = presetSummaryFor(snapshot),
         )
         refreshMemorySlotInfo(activeSlot = slot)
-        showStatus("${slot.label} saved · ${presetNameFor(snapshot)}")
+        showStatus(
+            CameraStatusMessage.MEMORY_SLOT_SAVED,
+            CameraStatusArgument.Text(slot.name),
+        )
     }
 
     override fun onRecallMemorySlot(slot: MemorySlot) {
         if (_state.value.isRecording) {
             // The canonical REC refusal, word for word: every other site in the VM and the engine
             // says exactly this, and StatusUrgencyTest pins it. One refusal, one voice.
-            showStatus("Stop REC first")
+            showStatus(CameraStatusMessage.STOP_RECORDING_FIRST)
             return
         }
         val loaded = settingsStore.loadPreset(slot)
         if (loaded == null) {
-            showStatus("${slot.label} empty")
+            showStatus(CameraStatusMessage.MEMORY_SLOT_EMPTY, CameraStatusArgument.Text(slot.name))
             return
         }
-        applyLoaded(loaded, activeSlot = slot, status = "${slot.label} loaded")
+        applyLoaded(
+            loaded,
+            activeSlot = slot,
+            status = CameraStatusMessage.MEMORY_SLOT_LOADED.status(CameraStatusArgument.Text(slot.name)),
+        )
     }
 
     override fun onVolumeKeyAction(action: HardwareKeyAction) {
@@ -3178,9 +3285,9 @@ class CameraViewModel @JvmOverloads constructor(
                 }
                 showStatus(
                     when {
-                        survivors.isEmpty() -> "Deleted"
-                        restored != null -> "Some files could not be deleted. Open the capture and retry."
-                        else -> "Some files could not be deleted. Retry in Gallery."
+                        survivors.isEmpty() -> CameraStatusMessage.DELETED.status()
+                        restored != null -> CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_CAPTURE.status()
+                        else -> CameraStatusMessage.SOME_FILES_NOT_DELETED_RETRY_GALLERY.status()
                     },
                 )
             }
@@ -3212,7 +3319,7 @@ class CameraViewModel @JvmOverloads constructor(
     private fun deleteLateCaptureOutput(uri: Uri) {
         ioExecutor.execute {
             if (!MediaStoreWriter.delete(getApplication(), uri)) {
-                mainHandler.post { showStatus("Could not delete file") }
+                mainHandler.post { showStatus(CameraStatusMessage.COULD_NOT_DELETE_FILE) }
             }
         }
     }
@@ -3361,6 +3468,7 @@ class CameraViewModel @JvmOverloads constructor(
     }
 
     override fun onCleared() {
+        cleared = true
         recordingAttemptGeneration++
         mainHandler.removeCallbacksAndMessages(null)
         debugZoomReceiver?.let { receiver -> runCatching { getApplication<Application>().unregisterReceiver(receiver) } }

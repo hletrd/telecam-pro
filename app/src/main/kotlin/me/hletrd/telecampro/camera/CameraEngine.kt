@@ -32,6 +32,8 @@ import me.hletrd.telecampro.storage.RecoveryReport
 import me.hletrd.telecampro.storage.RecoveryRetryDecision
 import me.hletrd.telecampro.storage.recoveryRetryDecision
 import me.hletrd.telecampro.video.NativeGraphDisposition
+import me.hletrd.telecampro.video.AudioRouteStatus
+import me.hletrd.telecampro.video.EncoderSelection
 import me.hletrd.telecampro.video.UnsafeRecorderQuarantine
 import me.hletrd.telecampro.video.VideoRecorder
 
@@ -107,6 +109,7 @@ class CameraEngine(private val context: Context) {
     // silently mis-frames every photo.
     @Volatile private var previewStreamSize = Size(1920, 1080)
     @Volatile private var videoCodec: VideoCodec = VideoCodec.HEVC
+    @Volatile private var videoEncoderSelection: EncoderSelection? = null
     @Volatile private var bitrateLevel: BitrateLevel = BitrateLevel.ULTRA
     @Volatile private var videoFrameRate: VideoFrameRate = VideoFrameRate.DEFAULT
     @Volatile private var openGate = false
@@ -531,7 +534,7 @@ class CameraEngine(private val context: Context) {
     )
 
     @Synchronized
-    private fun rollbackOptics(transaction: OpticsTransaction, message: String) {
+    private fun rollbackOptics(transaction: OpticsTransaction, status: CameraStatus) {
         val before = transaction.before
         val restored = rollbackOpticsState(
             currentGeneration = opticsIntentGeneration.get(),
@@ -626,7 +629,7 @@ class CameraEngine(private val context: Context) {
             )
         }
         onCameraReadyChange?.invoke(readyPublication)
-        onStatus?.invoke(message)
+        onStatus?.invoke(status)
     }
     @Volatile private var previewSurface: Surface? = null
     // Last-known preview surface dimensions, kept alongside previewSurface so the async start
@@ -690,7 +693,7 @@ class CameraEngine(private val context: Context) {
      * otherwise masquerade as a rear wide lens by focal alone. Pure lookup over concurrent caches;
      * callers pass the generation-guarded caps they just received (onCapsReady), not engine state.
      */
-    fun closerFocusingLensLabel(active: CameraCaps): String? {
+    fun closerFocusingLens(active: CameraCaps): LensChoice? {
         val front = cachedFrontSelection
         val frontIds = setOfNotNull(front?.logicalId, front?.physicalId)
         val hint = me.hletrd.telecampro.focus.closerLensHint(
@@ -698,7 +701,7 @@ class CameraEngine(private val context: Context) {
             activeMinFocusDiopters = active.minFocusDistanceDiopters,
             candidates = lensExifCache.filterKeys { it !in frontIds }.values,
         ) ?: return null
-        return me.hletrd.telecampro.focus.lensLabelForEquivFocal(hint.equivalentFocalMm)
+        return me.hletrd.telecampro.focus.lensChoiceForEquivFocal(hint.equivalentFocalMm)
     }
 
     private fun cachedIdForFocal(equivMm: Float): String? =
@@ -752,7 +755,7 @@ class CameraEngine(private val context: Context) {
             Log.i(
                 "CameraEngine",
                 "LensInventory: lenses=${equivalents.map { it.toInt() }} zoom=$range " +
-                    "available=${inventory.available.map { it.label }} optical=${inventory.optical.map { it.label }}",
+                    "available=${inventory.available.map { it.name }} optical=${inventory.optical.map { it.name }}",
             )
         }
         // Latch only on a real publication: setting it first meant a null listener at this instant
@@ -812,7 +815,7 @@ class CameraEngine(private val context: Context) {
     @Volatile private var audioScene = AudioScene.STANDARD
     @Volatile private var audioInputPreference = AudioInputPreference.AUTO
     @Volatile private var aspectRatio = AspectRatio.W4_3
-    var onStatus: ((String?) -> Unit)? = null
+    var onStatus: ((CameraStatus?) -> Unit)? = null
     var onCapsReady: ((CameraCaps, generation: Long) -> Unit)? = null
     // Device-static lens inventory (enumerated once, published once): which lens presets this
     // hardware can actually deliver. The rail rendered the PMA110 set unconditionally before.
@@ -854,7 +857,7 @@ class CameraEngine(private val context: Context) {
     // Consumer: the unattended-timelapse screen dim (perf review #10) and any future run OSD.
     var onTimelapseRun: ((Boolean) -> Unit)? = null
     // Actual AudioRecord route once recording starts, e.g. "USB · DJI Mic Mini".
-    var onAudioRoute: ((String) -> Unit)? = null
+    var onAudioRoute: ((AudioRouteStatus) -> Unit)? = null
     /** First successful standby PCM after enable/recovery; safe point to clear unavailable UI. */
     internal var onStandbyAudioAvailable: (() -> Unit)? = null
     /** Bounded standby setup/read budget exhausted while the visible meter is still requested. */
@@ -886,7 +889,7 @@ class CameraEngine(private val context: Context) {
         if (BuildConfig.DEBUG) Log.i("CameraEngine", "PreviewSurface: AVAILABLE ${System.identityHashCode(surface)} ${width}x$height started=$started paused=$paused")
         if (!nativeAcquisitionMayProceed()) {
             if (UnsafeRecorderQuarantine.isActive()) {
-                onStatus?.invoke(UNSAFE_RECORDER_RESTART_STATUS)
+                onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
             }
             invalidateCameraReady()
             return
@@ -910,7 +913,7 @@ class CameraEngine(private val context: Context) {
         }
         if (!dispatchStart) return
         // Cold-start feedback: GL creation + Camera2 preflight/open happen before the first frame.
-        onStatus?.invoke(CAMERA_STARTING_STATUS)
+        onStatus?.invoke(CameraStatusMessage.STARTING_CAMERA.status())
 
         // Start GL before resolving a camera route. Any mode/lens/MR intent arriving before the GL
         // input Surface exists is retained, and the input callback snapshots that latest complete
@@ -1293,9 +1296,9 @@ class CameraEngine(private val context: Context) {
         when (outcome.first) {
             PreviewRecoveryDecision.IGNORE -> Unit
             PreviewRecoveryDecision.EXHAUSTED ->
-                onStatus?.invoke("Preview unavailable. Reopen the app.")
+                onStatus?.invoke(CameraStatusMessage.PREVIEW_UNAVAILABLE_REOPEN.status())
             PreviewRecoveryDecision.RETRY -> {
-                onStatus?.invoke("Preview interrupted. Recovering.")
+                onStatus?.invoke(CameraStatusMessage.PREVIEW_INTERRUPTED_RECOVERING.status())
                 runCatching {
                     timelapseScheduler.schedule(
                         {
@@ -1310,7 +1313,7 @@ class CameraEngine(private val context: Context) {
                         java.util.concurrent.TimeUnit.MILLISECONDS,
                     )
                 }.onFailure {
-                    onStatus?.invoke("Preview unavailable. Reopen the app.")
+                    onStatus?.invoke(CameraStatusMessage.PREVIEW_UNAVAILABLE_REOPEN.status())
                 }
             }
         }
@@ -1600,7 +1603,7 @@ class CameraEngine(private val context: Context) {
             ) return@execute
             if (paused) return@execute
             if (recorder != null) {
-                rollbackOptics(transaction, "Stop REC first; mode unchanged")
+                rollbackOptics(transaction, CameraStatusMessage.STOP_RECORDING_MODE_UNCHANGED.status())
                 return@execute
             }
             // FRONT keeps its one camera across the mode flip (photo/video are stream-size, not
@@ -1611,7 +1614,7 @@ class CameraEngine(private val context: Context) {
                 else -> resolveNonTeleId(lensChoice)
             }
             if (id == null) {
-                rollbackOptics(transaction, "Camera unavailable; mode unchanged")
+                rollbackOptics(transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_MODE_UNCHANGED.status())
                 return@execute
             }
             val beforeCameraId = transaction.before.selection?.let { it.physicalId ?: it.logicalId }
@@ -1686,7 +1689,7 @@ class CameraEngine(private val context: Context) {
         resolvedPhotoExposureTimeNs: Long,
         recalledVideoSize: Size?,
     ): Boolean {
-        if (recorder != null) { onStatus?.invoke("Stop REC first"); return false }
+        if (recorder != null) { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return false }
         if (captureModeTransitionStopsTimelapse(videoMode, enabledVideo)) {
             // MR/settings recall is a second route into VIDEO and must own the same interval boundary
             // as the direct Photo/Video carousel transition.
@@ -1735,7 +1738,7 @@ class CameraEngine(private val context: Context) {
             if (recorder != null) {
                 // Same symmetric rollback as setVideoMode: a silent return leaves the desired
                 // packet published and Not-Ready latched with no convergence path (tracer T8).
-                rollbackOptics(transaction, "Stop REC first; recalled optics unchanged")
+                rollbackOptics(transaction, CameraStatusMessage.STOP_RECORDING_RECALL_UNCHANGED.status())
                 return@execute
             }
             val id = if (resolvedTeleconverter) {
@@ -1744,7 +1747,7 @@ class CameraEngine(private val context: Context) {
                 resolveNonTeleId(resolvedLens)
             }
             if (id == null) {
-                rollbackOptics(transaction, "Camera unavailable; recalled optics unchanged")
+                rollbackOptics(transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_RECALL_UNCHANGED.status())
                 return@execute
             }
             val before = transaction.before
@@ -1892,20 +1895,19 @@ class CameraEngine(private val context: Context) {
      * happening. The gyroscope is the only real cost, which is why the caller is expected to disarm
      * as soon as the verdict settles (see [MotionInversionConfidence]).
      */
-    fun setMotionInversionArmed(enabled: Boolean) {
+    fun setMotionInversionArmed(enabled: Boolean, resetEvidence: Boolean = false) {
         gyro.setRotationTracking(enabled)
-        rendererAssists.setMotionInversion(enabled) { fromNs, toNs ->
-            // REFUSE unless the camera stamps frames on the SAME clock the gyro does. REALTIME means
-            // SENSOR_TIMESTAMP is SystemClock.elapsedRealtimeNanos, which is what SensorEvent uses;
-            // UNKNOWN means System.nanoTime, and the two bases drift apart by accumulated deep sleep
-            // (the same trap CaptureCapabilities.timestampSource documents for pseudo-ZSL ages).
-            // Comparing across them would not be a small error — it would silently pair a frame with
-            // rotation from an unrelated instant, which is exactly the class of defect this whole
-            // interval API exists to remove. Null here reads as "unjudgeable", never as "no motion".
-            val realtime = caps?.timestampSource ==
-                android.hardware.camera2.CameraMetadata.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME
-            if (realtime) gyro.rotationBetween(fromNs, toNs) else null
-        }
+        if (resetEvidence) gyro.resetRotationEvidence()
+        rendererAssists.setMotionInversion(
+            enabled = enabled,
+            rotationProvider = { fromNs, toNs ->
+                // REFUSE unless camera frames use the same clock as SensorEvent timestamps.
+                val realtime = caps?.timestampSource ==
+                    android.hardware.camera2.CameraMetadata.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME
+                if (realtime) gyro.rotationBetween(fromNs, toNs) else null
+            },
+            resetEvidence = resetEvidence,
+        )
     }
 
     /** Gamma Display Assist: normal monitor image while recording O-Log (the file stays log). */
@@ -2186,7 +2188,16 @@ class CameraEngine(private val context: Context) {
         controller?.setZslServePossible(m == DriveMode.SINGLE)
     }
     fun setIntervalSec(s: Int) { intervalSec = s }
-    fun setVideoCodec(c: VideoCodec) { videoCodec = c }
+    fun setVideoCodec(c: VideoCodec) {
+        videoCodec = c
+        if (videoEncoderSelection?.codec != c) videoEncoderSelection = null
+    }
+
+    /** Installs the exact component token admitted by the immutable codec inventory. */
+    fun setVideoEncoder(selection: EncoderSelection?) {
+        videoEncoderSelection = selection
+        selection?.let { videoCodec = it.codec }
+    }
     fun setBitrateLevel(b: BitrateLevel) { bitrateLevel = b }
 
     /**
@@ -2204,7 +2215,7 @@ class CameraEngine(private val context: Context) {
     fun setOpenGate(enabled: Boolean) {
         if (openGate == enabled) return
         // Open Gate changes the recorded aspect/size; refuse mid-recording (the encoder is fixed-size).
-        if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
+        if (recorder != null) { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return }
         openGate = enabled
         val sel = selection ?: return
         applyVideoSize(chooseVideoSize(sel))
@@ -2283,7 +2294,7 @@ class CameraEngine(private val context: Context) {
      */
     private fun cameraOpWithheld(): Boolean = runCatching {
         val ops = context.getSystemService(android.app.AppOpsManager::class.java) ?: return false
-        val mode = ops.unsafeCheckOpNoThrow(
+        val mode = ops.checkOpNoThrow(
             android.app.AppOpsManager.OPSTR_CAMERA,
             android.os.Process.myUid(),
             context.packageName,
@@ -2354,7 +2365,7 @@ class CameraEngine(private val context: Context) {
             android.util.Log.w("CameraEngine", "Camera blocked for this app by policy", failure)
         } else {
             android.util.Log.e("CameraEngine", "Active camera failure", failure)
-            onStatus?.invoke("Camera error. Recovering.")
+            onStatus?.invoke(CameraStatusMessage.CAMERA_ERROR_RECOVERING.status())
         }
         outcome.second?.let { owned ->
             detachAndFinalizeRecording(owned.gl, owned.recorder, owned.uri, owned.captureId)
@@ -2384,7 +2395,7 @@ class CameraEngine(private val context: Context) {
                 // user around a loop that cannot end. Hand it to the permission gate instead.
                 onCameraPolicyBlocked?.invoke(true)
             } else {
-                onStatus?.invoke("Camera unavailable. Reopen the app.")
+                onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
             }
             return
         }
@@ -2403,7 +2414,7 @@ class CameraEngine(private val context: Context) {
     }
 
     /** Bounded retry for transient selection/capability failures before the first Ready session. */
-    private fun scheduleColdStartRetry(transaction: OpticsTransaction, reason: String) {
+    private fun scheduleColdStartRetry(transaction: OpticsTransaction, reason: CameraStatusMessage) {
         val canRun = nativeAcquisitionMayProceed() && started && !paused &&
             recorder == null && gl.inputSurface != null
         when (val failure = coldStartRetryGate.failed(
@@ -2413,9 +2424,9 @@ class CameraEngine(private val context: Context) {
         )) {
             ColdStartRetryGate.Failure.Ignore -> Unit
             ColdStartRetryGate.Failure.Exhausted ->
-                onStatus?.invoke("Camera unavailable. Reopen the app.")
+                onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
             is ColdStartRetryGate.Failure.Retry -> {
-                onStatus?.invoke("$reason. Retrying…")
+                onStatus?.invoke(reason.status())
                 runCatching {
                     timelapseScheduler.schedule(
                         {
@@ -2439,7 +2450,7 @@ class CameraEngine(private val context: Context) {
                     )
                 }.onFailure {
                     coldStartRetryGate.abandon(failure.token)
-                    onStatus?.invoke("Camera unavailable. Reopen the app.")
+                    onStatus?.invoke(CameraStatusMessage.CAMERA_UNAVAILABLE_REOPEN.status())
                 }
             }
         }
@@ -2549,7 +2560,7 @@ class CameraEngine(private val context: Context) {
     fun setVideoResolution(s: Size): Boolean {
         val offered = caps?.let { if (openGate) it.openGateVideoSizes else it.availableVideoSizes }
         if (offered != null && s !in offered) {
-            onStatus?.invoke("Selected resolution unavailable")
+            onStatus?.invoke(CameraStatusMessage.SELECTED_RESOLUTION_UNAVAILABLE.status())
             return false
         }
         // Remember the user's pick so lens switches and the initial open don't silently re-derive
@@ -2603,8 +2614,8 @@ class CameraEngine(private val context: Context) {
         // the flip button is the one exit. Defensive twin of the ViewModel's gate, through the same
         // shared decision so their answers cannot drift.
         when (backOpticsDoorRefusal(recorder != null, facing == CameraFacing.FRONT)) {
-            BackOpticsRefusal.RECORDING -> { onStatus?.invoke("Stop REC first"); return }
-            BackOpticsRefusal.FRONT_ROUTE -> { onStatus?.invoke("Switch to rear camera first"); return }
+            BackOpticsRefusal.RECORDING -> { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return }
+            BackOpticsRefusal.FRONT_ROUTE -> { onStatus?.invoke(CameraStatusMessage.SWITCH_TO_REAR_FIRST.status()); return }
             BackOpticsRefusal.NONE -> Unit
         }
         val intentGeneration = lensIntentGeneration.incrementAndGet()
@@ -2646,7 +2657,7 @@ class CameraEngine(private val context: Context) {
             if (recorder != null) {
                 // Symmetric with setVideoMode's recheck: silent return latched Not-Ready with the
                 // new lens published over the old streaming camera (tracer T8).
-                rollbackOptics(transaction, "Stop REC first; lens unchanged")
+                rollbackOptics(transaction, CameraStatusMessage.STOP_RECORDING_LENS_UNCHANGED.status())
                 return@execute
             }
             // The TC state is SESSION-scoped: the session TYPE (0x80b4, the stock TC operation mode
@@ -2662,7 +2673,7 @@ class CameraEngine(private val context: Context) {
                 // Digital 1–10× only, afocal flip on, RAW available (standalone id).
                 val id = cachedIdForFocal(LensChoice.TELE3X.targetEquivMm)
                 if (id == null) {
-                    rollbackOptics(transaction, "3× unavailable; lens unchanged")
+                    rollbackOptics(transaction, CameraStatusMessage.TELE_LENS_UNAVAILABLE_UNCHANGED.status())
                     return@execute
                 }
                 val beforeCameraId = transaction.before.selection?.let { it.physicalId ?: it.logicalId }
@@ -2685,7 +2696,12 @@ class CameraEngine(private val context: Context) {
                 // lens (lens-local zoom resets to 1×).
                 val id = resolveNonTeleId(resolved.lens)
                 if (id == null) {
-                    rollbackOptics(transaction, "${resolved.lens.label} unavailable; lens unchanged")
+                    rollbackOptics(
+                        transaction,
+                        CameraStatusMessage.LENS_UNAVAILABLE_UNCHANGED.status(
+                            CameraStatusArgument.Lens(resolved.lens),
+                        ),
+                    )
                     return@execute
                 }
                 val beforeCameraId = transaction.before.selection?.let { it.physicalId ?: it.logicalId }
@@ -2720,7 +2736,7 @@ class CameraEngine(private val context: Context) {
      * A failed open rolls back facing with the rest of the packet through rollbackOptics.
      */
     fun setFrontCamera(enabled: Boolean) {
-        if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
+        if (recorder != null) { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return }
         if ((facing == CameraFacing.FRONT) == enabled) return
         val intentGeneration = facingIntentGeneration.incrementAndGet()
         val transaction = beginOpticsTransaction {
@@ -2771,7 +2787,7 @@ class CameraEngine(private val context: Context) {
             if (recorder != null) {
                 // Symmetric with setVideoMode's recheck: silent return latched Not-Ready with the
                 // new facing published over the old streaming camera (tracer T8).
-                rollbackOptics(transaction, "Stop REC first; camera unchanged")
+                rollbackOptics(transaction, CameraStatusMessage.STOP_RECORDING_CAMERA_UNCHANGED.status())
                 return@execute
             }
             val id = if (enabled) {
@@ -2782,7 +2798,8 @@ class CameraEngine(private val context: Context) {
             if (id == null) {
                 rollbackOptics(
                     transaction,
-                    if (enabled) "Front camera unavailable" else "Camera unavailable; facing unchanged",
+                    if (enabled) CameraStatusMessage.FRONT_CAMERA_UNAVAILABLE.status()
+                    else CameraStatusMessage.CAMERA_UNAVAILABLE_FACING_UNCHANGED.status(),
                 )
                 return@execute
             }
@@ -2841,7 +2858,7 @@ class CameraEngine(private val context: Context) {
     fun setCameraOverride(id: String?) {
         // Switching the physical lens mid-recording reconfigures the camera under the encoder and
         // gaps/corrupts the clip. Refuse until recording stops; the UI also gates this.
-        if (recorder != null) { onStatus?.invoke("Stop REC first"); return }
+        if (recorder != null) { onStatus?.invoke(CameraStatusMessage.STOP_RECORDING_FIRST.status()); return }
         // A debug override pins an explicit rear-route id; it is not the facing door, so it also
         // drops FRONT (selectCurrentLens would otherwise ignore the pinned id while facing FRONT).
         val transaction = beginOpticsTransaction {
@@ -2869,9 +2886,9 @@ class CameraEngine(private val context: Context) {
             // remains Not-Ready. The input callback snapshots the latest generation and converges it.
             if (glInputPending) return
             if (startup || controller == null) {
-                scheduleColdStartRetry(transaction, "Preview unavailable")
+                scheduleColdStartRetry(transaction, CameraStatusMessage.PREVIEW_UNAVAILABLE_RETRYING)
             } else {
-                rollbackOptics(transaction, "Preview unavailable; camera unchanged")
+                rollbackOptics(transaction, CameraStatusMessage.PREVIEW_UNAVAILABLE_CAMERA_UNCHANGED.status())
             }
             return
         } // @Volatile in GlPipeline: safe cross-thread read
@@ -2895,18 +2912,18 @@ class CameraEngine(private val context: Context) {
             // the old camera keeps streaming while they run, shrinking the visible freeze.
             val sel = selectCurrentLens() ?: run {
                 if (recoverColdPreflight) {
-                    scheduleColdStartRetry(transaction, "Camera unavailable")
+                    scheduleColdStartRetry(transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING)
                 } else {
-                    rollbackOptics(transaction, "Camera unavailable; camera unchanged")
+                    rollbackOptics(transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_CAMERA_UNCHANGED.status())
                 }
                 return@execute
             }
             val c = cachedCaps(sel.logicalId, sel.physicalId)
                 ?: run {
                     if (recoverColdPreflight) {
-                        scheduleColdStartRetry(transaction, "Camera unavailable")
+                        scheduleColdStartRetry(transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_RETRYING)
                     } else {
-                        rollbackOptics(transaction, "Camera unavailable; camera unchanged")
+                        rollbackOptics(transaction, CameraStatusMessage.CAMERA_UNAVAILABLE_CAMERA_UNCHANGED.status())
                     }
                     return@execute
                 }
@@ -3321,20 +3338,20 @@ class CameraEngine(private val context: Context) {
         // instead of a shutter press that does nothing.
         val accepted = currentAcceptedCameraSession()
         if (accepted == null) {
-            onStatus?.invoke("Camera reconfiguring…")
+            onStatus?.invoke(CameraStatusMessage.CAMERA_RECONFIGURING.status())
             return false
         }
         val effFormats = formats.normalizedFor(accepted.outputs)
         if (!effFormats.wantsProcessedStill && !effFormats.dngRaw) {
-            onStatus?.invoke("Still capture unavailable")
+            onStatus?.invoke(CameraStatusMessage.STILL_CAPTURE_UNAVAILABLE.status())
             return false
         }
         when {
             formats.wantsProcessedStill && !effFormats.wantsProcessedStill && effFormats.dngRaw ->
                 // Word for word the caption PhotoFormatToggles shows for the same output mask.
-                onStatus?.invoke("HEIF/JPEG unavailable · DNG only")
+                onStatus?.invoke(CameraStatusMessage.PROCESSED_STILL_UNAVAILABLE_DNG_ONLY.status())
             formats.dngRaw && !effFormats.dngRaw ->
-                onStatus?.invoke("RAW unavailable")
+                onStatus?.invoke(CameraStatusMessage.RAW_UNAVAILABLE.status())
         }
         val ctrl = accepted.controller
         when (captureDriveMode(driveMode, singleShot)) {
@@ -3345,7 +3362,7 @@ class CameraEngine(private val context: Context) {
                     null
                 }
                 if (effFormats.wantsProcessedStill && snapshotLease == null) {
-                    onStatus?.invoke("Finishing previous photo")
+                    onStatus?.invoke(CameraStatusMessage.FINISHING_PREVIOUS_PHOTO.status())
                     return false
                 }
                 val callback = runCatching {
@@ -3359,7 +3376,7 @@ class CameraEngine(private val context: Context) {
                 }.getOrElse { failure ->
                     snapshotLease?.release()
                     android.util.Log.e("CameraEngine", "Photo callback creation failed", failure)
-                    onStatus?.invoke("Photo capture failed")
+                    onStatus?.invoke(CameraStatusMessage.PHOTO_CAPTURE_FAILED.status())
                     return false
                 }
                 val dispatched = runCatching {
@@ -3512,7 +3529,7 @@ class CameraEngine(private val context: Context) {
                             }
                             val formats = requestedFormats.normalizedFor(accepted.outputs)
                             if (!formats.wantsProcessedStill && !formats.dngRaw) {
-                                onStatus?.invoke("Still capture unavailable")
+                                onStatus?.invoke(CameraStatusMessage.STILL_CAPTURE_UNAVAILABLE.status())
                                 stopTimelapseIfOwns(generation)
                                 return@schedule
                             }
@@ -3570,7 +3587,7 @@ class CameraEngine(private val context: Context) {
     // the live listener fields at invoke time so late wiring behaves exactly as before.
     private val stillPipeline = StillCapturePipeline(
         context,
-        emitStatus = { msg -> onStatus?.invoke(msg) },
+        emitStatus = { status -> onStatus?.invoke(status) },
         emitMediaSaved = { uri, id -> onMediaSaved?.invoke(uri, id) },
         emitRawSaved = { uri, id -> onRawSaved?.invoke(uri, id) },
         emitPublishRetained = { uri, id -> onStillPublishRetained?.invoke(uri, id) },
@@ -3711,8 +3728,8 @@ class CameraEngine(private val context: Context) {
         }
         // Status observers are UI-owned and must never strand a retained-snapshot lease or a
         // BURST/AEB/timelapse continuation if one is detached or throws during teardown.
-        val reportStatus: (String) -> Unit = { message ->
-            runCatching { onStatus?.invoke(message) }
+        val reportStatus: (CameraStatus) -> Unit = { status ->
+            runCatching { onStatus?.invoke(status) }
         }
         return object : CameraController.PhotoCallback {
             override fun onPhoto(
@@ -3743,7 +3760,7 @@ class CameraEngine(private val context: Context) {
                                         try {
                                             val bytes = runCatching { processedSnapshot.jpegBytes() }.getOrNull()
                                             if (bytes == null) {
-                                                reportStatus("Photo save failed")
+                                                reportStatus(CameraStatusMessage.PHOTO_SAVE_FAILED.status())
                                             } else {
                                                 stillPipeline.saveProcessedStills(
                                                     bytes,
@@ -3761,13 +3778,13 @@ class CameraEngine(private val context: Context) {
                                 processedQueued = queued.isSuccess
                                 queued.onFailure { failure ->
                                     android.util.Log.e("CameraEngine", "Photo save dispatch failed", failure)
-                                    reportStatus("Photo save failed")
+                                    reportStatus(CameraStatusMessage.PHOTO_SAVE_FAILED.status())
                                 }
                             } else {
-                                reportStatus("Photo save failed")
+                                reportStatus(CameraStatusMessage.PHOTO_SAVE_FAILED.status())
                             }
                         } else {
-                            reportStatus("Photo capture failed")
+                            reportStatus(CameraStatusMessage.PHOTO_CAPTURE_FAILED.status())
                         }
                     }
 
@@ -3780,7 +3797,7 @@ class CameraEngine(private val context: Context) {
                             }
                             write.onFailure { failure ->
                                 android.util.Log.e("CameraEngine", "DNG write failed", failure)
-                                reportStatus("DNG save failed")
+                                reportStatus(CameraStatusMessage.DNG_SAVE_FAILED.status())
                             }
                             val pending = write.getOrNull()
                             if (pending != null) {
@@ -3796,15 +3813,15 @@ class CameraEngine(private val context: Context) {
                                 dngPublishQueued = queued.isSuccess
                                 queued.onFailure {
                                     // The bytes are COMPLETE and remain pending for launch recovery.
-                                    reportStatus("DNG save delayed. Will retry.")
+                                    reportStatus(CameraStatusMessage.DNG_SAVE_DELAYED.status())
                                 }
                             }
                         } else {
-                            reportStatus("DNG capture failed")
+                            reportStatus(CameraStatusMessage.DNG_CAPTURE_FAILED.status())
                         }
                     }
                     if (!formats.wantsProcessedStill && !formats.dngRaw) {
-                        reportStatus("Still capture unavailable")
+                        reportStatus(CameraStatusMessage.STILL_CAPTURE_UNAVAILABLE.status())
                     }
                 } finally {
                     if (!processedQueued) finishProcessed()
@@ -3816,7 +3833,7 @@ class CameraEngine(private val context: Context) {
             override fun onError(t: Throwable) {
                 try {
                     android.util.Log.e("CameraEngine", "Photo capture failed", t)
-                    reportStatus("Photo capture failed")
+                    reportStatus(CameraStatusMessage.PHOTO_CAPTURE_FAILED.status())
                 } finally {
                     finishProcessed()
                     finishDng()
@@ -3890,28 +3907,32 @@ class CameraEngine(private val context: Context) {
     private fun startRecordingBlocking(recordAudio: Boolean): Boolean {
         val acceptedSession = currentAcceptedRecordingSession()
         if (acceptedSession == null) {
-            onStatus?.invoke("Camera reconfiguring…")
+            onStatus?.invoke(CameraStatusMessage.CAMERA_RECONFIGURING.status())
             return false
         }
         if (videoFrameRate !in VideoFrameRate.availableFor(caps, videoSize, videoCodec)) {
             // Bare "<X> unavailable" like every sibling status in this file; the copula was the one
             // status that read as a sentence in a register of clipped labels.
-            onStatus?.invoke("Selected FPS unavailable")
+            onStatus?.invoke(CameraStatusMessage.SELECTED_FPS_UNAVAILABLE.status())
+            return false
+        }
+        val encoderSelection = videoEncoderSelection?.takeIf { it.codec == videoCodec } ?: run {
+            onStatus?.invoke(CameraStatusMessage.SELECTED_CODEC_UNAVAILABLE.status())
             return false
         }
         // A just-stopped clip's async teardown still owns the mic (and the encoder pipeline is being
         // finalized) — refuse until finishRecording completes rather than starting a second recorder
         // whose AudioRecord init would fail (silent video-only clip).
         if (recorderTeardownInFlight) {
-            onStatus?.invoke("Finishing previous clip")
+            onStatus?.invoke(CameraStatusMessage.FINISHING_PREVIOUS_CLIP.status())
             return false
         }
         val processAdmission = UnsafeRecorderQuarantine.snapshotAdmission(processNativeOwner) ?: run {
             onStatus?.invoke(
                 if (UnsafeRecorderQuarantine.isActive()) {
-                    UNSAFE_RECORDER_RESTART_STATUS
+                    CameraStatusMessage.UNSAFE_RECORDER_RESTART.status()
                 } else {
-                    "Recording already active"
+                    CameraStatusMessage.RECORDING_ALREADY_ACTIVE.status()
                 },
             )
             return false
@@ -3925,11 +3946,17 @@ class CameraEngine(private val context: Context) {
             } else {
                 // Unexpected failures between mic claim and publication must release both claims.
                 try {
-                    startRecordingClaimed(recordAudio, acceptedSession, audioClaim, processAdmission)
+                    startRecordingClaimed(
+                        recordAudio,
+                        acceptedSession,
+                        audioClaim,
+                        processAdmission,
+                        encoderSelection,
+                    )
                 } catch (t: Throwable) {
                     android.util.Log.w("CameraEngine", "REC admission threw; releasing mic claim", t)
                     abortRecordingStart()
-                    onStatus?.invoke("Recording failed")
+                    onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
                     false
                 }
             }
@@ -3945,18 +3972,19 @@ class CameraEngine(private val context: Context) {
         acceptedSession: AcceptedCameraSession,
         audioClaim: StandbyMeterOwnership.RecordingClaim<java.util.concurrent.CountDownLatch>,
         processAdmission: me.hletrd.telecampro.video.UnsafeRecorderAdmissionToken,
+        encoderSelection: EncoderSelection,
     ): Boolean {
         val meterReleased = audioClaim.release?.let {
             runCatching { it.await(400, java.util.concurrent.TimeUnit.MILLISECONDS) }.getOrDefault(false)
         } ?: true
         if (!meterReleased) {
             abortRecordingStart()
-            onStatus?.invoke("Microphone busy. Try again.")
+            onStatus?.invoke(CameraStatusMessage.MICROPHONE_BUSY.status())
             return false
         }
         if (!UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission)) {
             abortRecordingStart()
-            onStatus?.invoke(UNSAFE_RECORDER_RESTART_STATUS)
+            onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
             return false
         }
         if (recorder != null) {
@@ -3965,7 +3993,7 @@ class CameraEngine(private val context: Context) {
         }
         if (currentAcceptedRecordingSession() !== acceptedSession) {
             abortRecordingStart()
-            onStatus?.invoke("Camera reconfiguring…")
+            onStatus?.invoke(CameraStatusMessage.CAMERA_RECONFIGURING.status())
             return false
         }
         val ownedGl = glOwners.current()
@@ -3983,11 +4011,11 @@ class CameraEngine(private val context: Context) {
         if (!UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission)) {
             MediaStoreWriter.delete(context, uri)
             abortRecordingStart()
-            onStatus?.invoke(UNSAFE_RECORDER_RESTART_STATUS)
+            onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
             return false
         }
         val size = videoSize
-        val codec = videoCodec
+        val codec = encoderSelection.codec
         val rate = videoFrameRate
         // High-speed (≥120 fps via the constrained session) tells the encoder it is fed faster than
         // real-time via KEY_CAPTURE_RATE; a regular clip leaves it 0. (High-speed is disabled — it
@@ -4061,14 +4089,14 @@ class CameraEngine(private val context: Context) {
         if (!UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission)) {
             MediaStoreWriter.delete(context, uri)
             abortRecordingStart()
-            onStatus?.invoke(UNSAFE_RECORDER_RESTART_STATUS)
+            onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
             return false
         }
         var configuredSurface: Surface? = null
         val nativeSetupAdmitted = UnsafeRecorderQuarantine.commitAdmission(processAdmission) {
             configuredSurface = rec.start(
                 uri, encoderSize, rate.encoderRate, captureRate, requestedBitRate,
-                fileTransfer, codec, recordAudio, audioGain, orientationHint,
+                fileTransfer, encoderSelection, recordAudio, audioGain, orientationHint,
                 frontFacing = facing == CameraFacing.FRONT,
                 audioScene, controls.zoomRatio, audioInputPreference,
                 onRoute = { route -> onAudioRoute?.invoke(route) },
@@ -4079,7 +4107,7 @@ class CameraEngine(private val context: Context) {
         if (!nativeSetupAdmitted) {
             MediaStoreWriter.delete(context, uri)
             abortRecordingStart()
-            onStatus?.invoke(UNSAFE_RECORDER_RESTART_STATUS)
+            onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
             return false
         }
         val surface = configuredSurface
@@ -4088,11 +4116,11 @@ class CameraEngine(private val context: Context) {
             // doesn't linger as a 0-byte orphan (VideoRecorder.start already released its own half).
             MediaStoreWriter.delete(context, uri)
             abortRecordingStart()
-            onStatus?.invoke("Recording failed"); return false
+            onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status()); return false
         }
         if (!UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission)) {
             stopUnattachedRecording(rec, recordingCaptureId)
-            onStatus?.invoke(UNSAFE_RECORDER_RESTART_STATUS)
+            onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
             return false
         }
         var admitted = false
@@ -4123,7 +4151,8 @@ class CameraEngine(private val context: Context) {
             // No EGL handoff occurred: direct recorder stop is safe and deletes the pending row.
             stopUnattachedRecording(rec, recordingCaptureId)
             onStatus?.invoke(
-                if (!processCommitted) UNSAFE_RECORDER_RESTART_STATUS else "Camera reconfiguring…",
+                if (!processCommitted) CameraStatusMessage.UNSAFE_RECORDER_RESTART.status()
+                else CameraStatusMessage.CAMERA_RECONFIGURING.status(),
             )
             return false
         }
@@ -4325,7 +4354,7 @@ class CameraEngine(private val context: Context) {
         if (!claimed) return
         detachAndFinalizeRecording(ownedGl, rec, uri, captureId)
         android.util.Log.e("CameraEngine", "Recording failed", failure)
-        onStatus?.invoke("Recording failed")
+        onStatus?.invoke(CameraStatusMessage.RECORDING_FAILED.status())
         onRecordingTerminated?.invoke(failure)
         ownedGl.setTransfer(transfer)
     }
@@ -4421,7 +4450,7 @@ class CameraEngine(private val context: Context) {
     ) {
         android.util.Log.e("CameraEngine", "Renderer reset after encoder detach failure", failure)
         if (glOwners.owns(ownedGl)) {
-            onStatus?.invoke("Camera error. Recovering.")
+            onStatus?.invoke(CameraStatusMessage.CAMERA_ERROR_RECOVERING.status())
             invalidateCameraReady()
         }
         val failedController = synchronized(this) {
@@ -4567,9 +4596,9 @@ class CameraEngine(private val context: Context) {
             } else if (result.saved && uri != null) {
                 // Surface only a fully finalized, published clip to the review UI.
                 onMediaSaved?.invoke(uri, captureId)
-                onStatus?.invoke("Video saved")
+                onStatus?.invoke(CameraStatusMessage.VIDEO_SAVED.status())
             } else {
-                onStatus?.invoke("Video save failed")
+                onStatus?.invoke(CameraStatusMessage.VIDEO_SAVE_FAILED.status())
             }
             return result
         } finally {
@@ -4610,7 +4639,7 @@ class CameraEngine(private val context: Context) {
         standbyAudioController.finishRecording()
         invalidateCameraReady()
         runCatching { onAudioLevel?.invoke(FloatArray(0)) }
-        runCatching { onStatus?.invoke(UNSAFE_RECORDER_RESTART_STATUS) }
+        runCatching { onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status()) }
         runCatching { onRecordingTerminated?.invoke(failure) }
         android.util.Log.e(
             "CameraEngine",
@@ -4696,7 +4725,7 @@ class CameraEngine(private val context: Context) {
         if (!nativeAcquisitionMayProceed()) {
             StartupTrace.disarm()
             if (UnsafeRecorderQuarantine.isActive()) {
-                onStatus?.invoke(UNSAFE_RECORDER_RESTART_STATUS)
+                onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
             }
             invalidateCameraReady()
             return
@@ -5178,7 +5207,6 @@ class CameraEngine(private val context: Context) {
         const val RECORDER_QUARANTINE_TIMEOUT_MS = 4_500L
         const val MAX_MEDIA_RECOVERY_ATTEMPTS = 3
         const val MEDIA_RECOVERY_RETRY_BACKOFF_MS = 75L
-        const val UNSAFE_RECORDER_RESTART_STATUS = "Recording failed. Force stop and reopen the app."
     }
 }
 

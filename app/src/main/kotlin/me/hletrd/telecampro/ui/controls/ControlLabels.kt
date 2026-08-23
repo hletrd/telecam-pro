@@ -1,13 +1,19 @@
 package me.hletrd.telecampro.ui.controls
 
 import me.hletrd.telecampro.camera.Antibanding
+import me.hletrd.telecampro.camera.AudioInputPreference
+import me.hletrd.telecampro.camera.AudioScene
 import me.hletrd.telecampro.camera.AspectRatio
 import me.hletrd.telecampro.camera.BitrateLevel
 import me.hletrd.telecampro.camera.ColorEffect
 import me.hletrd.telecampro.camera.ColorTransfer
 import me.hletrd.telecampro.camera.DriveMode
+import me.hletrd.telecampro.camera.ExposureMode
+import me.hletrd.telecampro.camera.ExposureStep
+import me.hletrd.telecampro.camera.AfSpotSize
 import me.hletrd.telecampro.camera.FlashMode
 import me.hletrd.telecampro.camera.FnSlot
+import me.hletrd.telecampro.camera.FrameLineType
 import me.hletrd.telecampro.camera.FocusMode
 import me.hletrd.telecampro.camera.GridType
 import me.hletrd.telecampro.camera.HardwareKeyAction
@@ -17,6 +23,7 @@ import me.hletrd.telecampro.camera.ShutterMode
 import me.hletrd.telecampro.camera.ShutterTimer
 import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.camera.VideoFrameRate
+import me.hletrd.telecampro.camera.VideoStabMode
 import me.hletrd.telecampro.camera.WbMode
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -177,6 +184,25 @@ internal fun lensLabel(lens: me.hletrd.telecampro.camera.LensChoice): String = w
     me.hletrd.telecampro.camera.LensChoice.TELE10X -> "10×"
 }
 
+internal fun exposureModeLetter(mode: ExposureMode): String = when (mode) {
+    ExposureMode.PROGRAM -> "P"
+    ExposureMode.SHUTTER -> "S"
+    ExposureMode.ISO -> "ISO"
+    ExposureMode.MANUAL -> "M"
+}
+
+internal fun exposureStepLabel(step: ExposureStep): String = when (step) {
+    ExposureStep.THIRD -> "1/3"
+    ExposureStep.HALF -> "1/2"
+    ExposureStep.FULL -> "1"
+}
+
+internal fun afSpotSizeLabel(size: AfSpotSize): String = when (size) {
+    AfSpotSize.SMALL -> "S"
+    AfSpotSize.MEDIUM -> "M"
+    AfSpotSize.LARGE -> "L"
+}
+
 /**
  * Compact zoom typography for the TELE rail's magnification marks. The rail's own idiom is
  * `0.6× / 1× / 3× / 10×` — a decimal only where it carries information — so a derived mark rounds to
@@ -254,9 +280,69 @@ internal fun driveModeLabel(mode: DriveMode): String = when (mode) {
     DriveMode.TIMELAPSE -> "Timelapse"
 }
 
-internal fun fnSlotLabel(slot: FnSlot): String = slot.label
+internal fun fnSlotLabel(slot: FnSlot): String = when (slot) {
+    FnSlot.EXPOSURE_MODE -> "Mode"
+    FnSlot.FOCUS -> "Focus"
+    FnSlot.SHUTTER -> "Shutter"
+    FnSlot.ISO -> "ISO"
+    FnSlot.WB -> "WB"
+    FnSlot.EV -> "EV"
+    FnSlot.ZOOM -> "Zoom"
+    FnSlot.STABILIZATION -> "Stabilization"
+    FnSlot.DRIVE -> "Drive"
+    FnSlot.METERING -> "Meter"
+    FnSlot.PEAKING -> "Peaking"
+    FnSlot.ZEBRA -> "Zebra"
+    FnSlot.TRANSFER -> "Gamma"
+    FnSlot.AUDIO_SCENE -> "Direction"
+    FnSlot.GRID -> "Grid"
+    FnSlot.LEVEL -> "Level"
+    FnSlot.PUNCH_IN -> "Loupe"
+    FnSlot.TELECONVERTER -> "Tele"
+    FnSlot.OPEN_GATE -> "Open Gate"
+    FnSlot.FRAME_LINES -> "Frame"
+    FnSlot.FLASH -> "Flash"
+    FnSlot.TIMER -> "Self-Timer"
+    FnSlot.ASPECT -> "Aspect"
+    FnSlot.AUDIO_INPUT -> "Mic Input"
+}
 
-internal fun hardwareKeyActionLabel(action: HardwareKeyAction): String = action.label
+internal fun hardwareKeyActionLabel(action: HardwareKeyAction): String = when (action) {
+    HardwareKeyAction.SHUTTER -> "Shutter/REC"
+    HardwareKeyAction.AF_ON -> "AF-ON"
+    HardwareKeyAction.AEL -> "AEL"
+    HardwareKeyAction.PUNCH_IN -> "Loupe"
+    HardwareKeyAction.ZOOM_IN -> "Zoom In"
+    HardwareKeyAction.ZOOM_OUT -> "Zoom Out"
+    HardwareKeyAction.NONE -> "None"
+}
+
+internal fun videoStabModeLabel(mode: VideoStabMode): String = when (mode) {
+    VideoStabMode.OFF -> "Off"
+    VideoStabMode.STANDARD -> "Standard"
+    VideoStabMode.ENHANCED -> "Active"
+}
+
+internal fun audioSceneLabel(scene: AudioScene): String = when (scene) {
+    AudioScene.STANDARD -> "Standard"
+    AudioScene.SOUND_FOCUS -> "Sound Focus"
+    AudioScene.SOUND_STAGE -> "Sound Stage"
+}
+
+internal fun audioInputPreferenceLabel(input: AudioInputPreference): String = when (input) {
+    AudioInputPreference.AUTO -> "Auto"
+    AudioInputPreference.BUILT_IN -> "Phone"
+    AudioInputPreference.WIRED -> "Wired"
+    AudioInputPreference.USB -> "USB"
+    AudioInputPreference.BLUETOOTH -> "BT"
+}
+
+internal fun frameLineTypeLabel(type: FrameLineType): String = when (type) {
+    FrameLineType.OFF -> "Off"
+    FrameLineType.CINEMA -> "2.39:1"
+    FrameLineType.SQUARE -> "1:1"
+    FrameLineType.VERTICAL -> "9:16"
+}
 
 internal fun aspectRatioLabel(ratio: AspectRatio): String = when (ratio) {
     AspectRatio.W16_9 -> "16:9"
@@ -273,7 +359,17 @@ internal fun videoCodecLabel(codec: VideoCodec): String = when (codec) {
     VideoCodec.APV -> "APV Intra"
 }
 
-internal fun videoFrameRateLabel(rate: VideoFrameRate): String = rate.label
+internal fun videoFrameRateLabel(rate: VideoFrameRate): String = when (rate) {
+    VideoFrameRate.FPS_23_976 -> "23.976"
+    VideoFrameRate.FPS_24 -> "24"
+    VideoFrameRate.FPS_25 -> "25"
+    VideoFrameRate.FPS_29_97 -> "29.97"
+    VideoFrameRate.FPS_30 -> "30"
+    VideoFrameRate.FPS_50 -> "50"
+    VideoFrameRate.FPS_59_94 -> "59.94"
+    VideoFrameRate.FPS_60 -> "60"
+    VideoFrameRate.FPS_120 -> "120"
+}
 
 /** Compact codec name for the encoder-summary row (no "(SW, slow)" qualifier). */
 internal fun videoCodecLabelShort(codec: VideoCodec): String = when (codec) {

@@ -8,16 +8,21 @@ import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.TotalCaptureResult
 import android.media.Image
 import android.util.Log
+import androidx.core.graphics.createBitmap
 import java.io.File
 import java.io.FileOutputStream
 import me.hletrd.telecampro.camera.AspectRatio
 import me.hletrd.telecampro.camera.CameraCaps
+import me.hletrd.telecampro.camera.CameraStatus
+import me.hletrd.telecampro.camera.CameraStatusArgument
+import me.hletrd.telecampro.camera.CameraStatusMessage
 import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.MeteringMode
 import me.hletrd.telecampro.camera.RotationMath
 import me.hletrd.telecampro.camera.TeleSelection
 import me.hletrd.telecampro.camera.CropBox
 import me.hletrd.telecampro.camera.centerCropBox
+import me.hletrd.telecampro.camera.status
 import me.hletrd.telecampro.storage.CaptureFamilyKey
 import me.hletrd.telecampro.storage.MediaStoreWriter
 
@@ -100,7 +105,7 @@ internal data class PendingDngPublication(
  */
 internal class StillCapturePipeline(
     private val context: Context,
-    private val emitStatus: (String) -> Unit,
+    private val emitStatus: (CameraStatus) -> Unit,
     private val emitMediaSaved: (android.net.Uri, Int) -> Unit,
     private val emitRawSaved: (android.net.Uri, Int) -> Unit,
     // A COMPLETE output whose MediaStore publish failed: retained for launch recovery, but the
@@ -136,7 +141,7 @@ internal class StillCapturePipeline(
                 runCatching { writePassthroughJpeg(bytes, spec, exifShot) }
                     .onFailure {
                         Log.e("StillCapturePipeline", "JPEG save failed", it)
-                        emitStatus("JPEG save failed")
+                        emitStatus(CameraStatusMessage.JPEG_SAVE_FAILED.status())
                     }
             }
             return
@@ -145,7 +150,7 @@ internal class StillCapturePipeline(
         var rotated: Bitmap? = null
         try {
             val d = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-            if (d == null) { emitStatus("Photo save failed"); return }
+            if (d == null) { emitStatus(CameraStatusMessage.PHOTO_SAVE_FAILED.status()); return }
             decoded = d
             // ONE createBitmap does crop AND rotate (perf review #3b): the old crop-then-rotate
             // chain materialized a ~37 MB 16:9 intermediate that existed only to be re-read by the
@@ -179,17 +184,17 @@ internal class StillCapturePipeline(
             if (wantHeif) runCatching { writeProcessedHeif(r, spec, exifShot) }
                 .onFailure {
                     Log.e("StillCapturePipeline", "HEIF save failed", it)
-                    emitStatus("HEIF save failed")
+                    emitStatus(CameraStatusMessage.HEIF_SAVE_FAILED.status())
                 }
             if (wantJpeg) runCatching { writeProcessedJpeg(r, spec, exifShot) }
                 .onFailure {
                     Log.e("StillCapturePipeline", "JPEG save failed", it)
-                    emitStatus("JPEG save failed")
+                    emitStatus(CameraStatusMessage.JPEG_SAVE_FAILED.status())
                 }
         } catch (t: Throwable) {
             if (t is ThreadDeath || t is VirtualMachineError && t !is OutOfMemoryError) throw t
             Log.e("StillCapturePipeline", "Photo processing failed", t)
-            emitStatus("Photo save failed")
+            emitStatus(CameraStatusMessage.PHOTO_SAVE_FAILED.status())
         } finally {
             val rr = rotated
             val dd = decoded
@@ -210,7 +215,7 @@ internal class StillCapturePipeline(
             spec.familyKey.displayName("heic"),
             "image/heic",
         )
-        if (u == null) { emitStatus("HEIF save failed"); return }
+        if (u == null) { emitStatus(CameraStatusMessage.HEIF_SAVE_FAILED.status()); return }
         // The Setup quality slider governs BOTH still containers (it used to silently apply only
         // to JPEG, leaving the DEFAULT photo format pinned at the encoder's 95).
         val quality = spec.jpegQuality
@@ -219,7 +224,7 @@ internal class StillCapturePipeline(
                 HeifCapture.writeHeif(pfd.fileDescriptor, rotated, quality, exifData); true
             } ?: false
         }.getOrElse { failure -> MediaStoreWriter.delete(context, u); throw failure }
-        if (!wrote) { MediaStoreWriter.delete(context, u); emitStatus("HEIF save failed"); return }
+        if (!wrote) { MediaStoreWriter.delete(context, u); emitStatus(CameraStatusMessage.HEIF_SAVE_FAILED.status()); return }
         val completion = MediaStoreWriter.markWriteComplete(context, u)
         if (!MediaStoreWriter.publish(context, u)) {
             emitStatus(retainedSaveStatus("HEIF", completion.durable))
@@ -239,14 +244,14 @@ internal class StillCapturePipeline(
             spec.familyKey.displayName("jpg"),
             "image/jpeg",
         )
-        if (u == null) { emitStatus("JPEG save failed"); return }
+        if (u == null) { emitStatus(CameraStatusMessage.JPEG_SAVE_FAILED.status()); return }
         val quality = spec.jpegQuality
         val wrote = runCatching {
             MediaStoreWriter.openOutputStream(context, u)?.use { out ->
                 rotated.compress(Bitmap.CompressFormat.JPEG, quality, out)
             } ?: false
         }.getOrElse { failure -> MediaStoreWriter.delete(context, u); throw failure }
-        if (!wrote) { MediaStoreWriter.delete(context, u); emitStatus("JPEG save failed"); return }
+        if (!wrote) { MediaStoreWriter.delete(context, u); emitStatus(CameraStatusMessage.JPEG_SAVE_FAILED.status()); return }
         // Bitmap.compress strips all metadata, so stamp the exposure EXIF back before publishing
         // (best-effort — a failed EXIF write must never lose the image itself).
         runCatching { writeJpegExif(u, exifShot) }
@@ -271,14 +276,14 @@ internal class StillCapturePipeline(
             spec.familyKey.displayName("jpg"),
             "image/jpeg",
         )
-        if (u == null) { emitStatus("JPEG save failed"); return }
+        if (u == null) { emitStatus(CameraStatusMessage.JPEG_SAVE_FAILED.status()); return }
         val wrote = runCatching {
             MediaStoreWriter.openOutputStream(context, u)?.use { out ->
                 out.write(bytes)
                 true
             } ?: false
         }.getOrElse { failure -> MediaStoreWriter.delete(context, u); throw failure }
-        if (!wrote) { MediaStoreWriter.delete(context, u); emitStatus("JPEG save failed"); return }
+        if (!wrote) { MediaStoreWriter.delete(context, u); emitStatus(CameraStatusMessage.JPEG_SAVE_FAILED.status()); return }
         // Best-effort like the processed lane — a failed EXIF write must never lose the image. The
         // orientation tag is the one exception a viewer NEEDS for uprightness, but a passthrough
         // with EXIF missing still beats a deleted take.
@@ -361,7 +366,7 @@ internal class StillCapturePipeline(
     private fun buildHeifExifData(shot: ExifShot, width: Int, height: Int): ByteArray {
         val temp = File.createTempFile("heif-exif-", ".jpg", context.cacheDir)
         return try {
-            val seed = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+            val seed = createBitmap(1, 1, Bitmap.Config.ARGB_8888)
             try {
                 FileOutputStream(temp).use { out ->
                     check(seed.compress(Bitmap.CompressFormat.JPEG, 90, out)) { "EXIF seed encode failed" }
@@ -399,9 +404,10 @@ internal class StillCapturePipeline(
 }
 
 /** Truthful retained-take status for a completed artifact whose MediaStore publish failed. */
-internal fun retainedSaveStatus(kind: String, markerDurable: Boolean): String =
-    if (markerDurable) "$kind save delayed. Will retry."
-    else "$kind save retained. Recovery marker failed."
+internal fun retainedSaveStatus(kind: String, markerDurable: Boolean): CameraStatus =
+    (if (markerDurable) CameraStatusMessage.OUTPUT_SAVED_PENDING
+    else CameraStatusMessage.OUTPUT_SAVED_PENDING_RECOVERY)
+        .status(CameraStatusArgument.Text(kind))
 
 /**
  * The complete tag→value list one [ExifShot] stamps into a processed still, hoisted out of the

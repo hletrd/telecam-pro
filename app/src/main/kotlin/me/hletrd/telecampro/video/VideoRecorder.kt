@@ -26,10 +26,15 @@ import me.hletrd.telecampro.storage.MediaStoreWriter
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Collections
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.thread
+import kotlin.concurrent.withLock
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
@@ -77,14 +82,13 @@ class VideoRecorder(private val context: Context) {
     private var videoTrack = -1
     private var audioTrack = -1
     private var expectedTracks = 1
-    // Written under muxerLock (compound check-then-start), but read by awaitMuxerStart()'s spin
-    // loop WITHOUT the lock from the other drain thread — @Volatile provides that JMM edge. A
-    // terminal attempt is retained as well as success so neither drain worker can retry a refused
-    // or throwing MediaMuxer.start().
+    // A terminal attempt is retained as well as success so neither drain worker can retry a refused
+    // or throwing MediaMuxer.start(). The Condition replaces the historical 2 ms hot poll.
     @Volatile private var muxerStartState = MuxerStartState.WAITING
     private val muxerStarted: Boolean
         get() = muxerStartState == MuxerStartState.STARTED
-    private val muxerLock = Any()
+    private val muxerLock = ReentrantLock()
+    private val muxerStateChanged = muxerLock.newCondition()
 
     @Volatile private var running = false
     // An encoder whose EGL input ownership could not be proven released is never stopped/released
@@ -92,6 +96,11 @@ class VideoRecorder(private val context: Context) {
     // this flag lets both drain loops leave without touching the unsafe native graph.
     private val terminallyQuarantined = AtomicBoolean(false)
     private val firstFailure = FirstFailureSignal()
+    private val videoStartupProof = VideoStartupProof()
+    private val videoStartupDeadlineExecutor = Executors.newSingleThreadScheduledExecutor { runnable ->
+        Thread(runnable, "video-start-proof").apply { isDaemon = true }
+    }
+    private var videoStartupDeadline: ScheduledFuture<*>? = null
     private var onFailure: ((Throwable) -> Unit)? = null
     @Volatile private var wroteVideoSample = false
     // Set the first time an AUDIO sample is muxed, and when a mid-REC audio fault degrades the
@@ -117,7 +126,7 @@ class VideoRecorder(private val context: Context) {
     private var audioOrientation = 0
     private var audioInputPreference = AudioInputPreference.AUTO
     private var audioChannelCount = ColorProfiles.AUDIO_CHANNELS
-    private var onRoute: ((String) -> Unit)? = null
+    private var onRoute: ((AudioRouteStatus) -> Unit)? = null
 
     /**
      * Returns the encoder input Surface for the GL pipeline, or null on failure. [encoderRate] is the
@@ -131,7 +140,7 @@ class VideoRecorder(private val context: Context) {
         captureRate: Double,
         bitRate: Int,
         transfer: ColorTransfer,
-        codec: VideoCodec,
+        encoderSelection: EncoderSelection,
         recordAudio: Boolean,
         audioGain: Float = 1f,
         orientationHint: Int = 0,
@@ -139,10 +148,12 @@ class VideoRecorder(private val context: Context) {
         audioScene: AudioScene = AudioScene.STANDARD,
         audioZoom: Float = 1f,
         audioInputPreference: AudioInputPreference = AudioInputPreference.AUTO,
-        onRoute: ((String) -> Unit)? = null,
+        onRoute: ((AudioRouteStatus) -> Unit)? = null,
         onLevel: ((FloatArray) -> Unit)? = null,
         onFailure: ((Throwable) -> Unit)? = null,
     ): Surface? {
+        val codec = encoderSelection.codec
+        if (!encoderSelectionAdmitsTransfer(encoderSelection, transfer)) return null
         this.uri = uri
         this.audioGain = normalizeAudioGain(audioGain)
         this.audioScene = audioScene
@@ -178,7 +189,7 @@ class VideoRecorder(private val context: Context) {
             var lastFailure: Throwable? = null
             for ((lw, lh) in encoderSizeLadder(size.width, size.height)) {
                 val vFmt = ColorProfiles.videoFormat(codec, lw, lh, encoderRate, captureRate, bitRate, transfer)
-                val vCodec = MediaCodec.createEncoderByType(ColorProfiles.mimeFor(codec))
+                val vCodec = MediaCodec.createByCodecName(encoderSelection.codecName)
                 // Assign the field BEFORE configure/createInputSurface/start: any of those can throw,
                 // and a codec held only in the local would slip past the failure cleanup below —
                 // orphaning a live HW encoder instance until process death.
@@ -215,6 +226,7 @@ class VideoRecorder(private val context: Context) {
             videoCodec = null
             muxer = null
             pfd = null
+            videoStartupDeadlineExecutor.shutdownNow()
             return null
         }
 
@@ -228,7 +240,7 @@ class VideoRecorder(private val context: Context) {
             runCatching { startAudio() }.onFailure {
                 // Audio setup failed after video was already configured; degrade to video-only
                 // instead of aborting the whole recording.
-                onRoute?.invoke(audioUnavailableLabel(audioInputPreference.label))
+                onRoute?.invoke(AudioRouteStatus(audioInputPreference, AudioRouteAvailability.UNAVAILABLE))
                 runCatching { audioRecord?.release() }
                 runCatching { audioCodec?.stop() }
                 runCatching { audioCodec?.release() }
@@ -238,12 +250,15 @@ class VideoRecorder(private val context: Context) {
             }
         }
 
+        armVideoStartupDeadline()
         videoThread = thread(name = "video-drain") { drainVideo() }
         return inputSurface
     }
 
     fun stop(): StopResult {
         running = false
+        muxerLock.withLock { muxerStateChanged.signalAll() }
+        cancelVideoStartupDeadline()
         var finalizedValidation = FinalizedRecordingValidation.NOT_REQUIRED
         runCatching { videoCodec?.signalEndOfInputStream() }
 
@@ -280,7 +295,7 @@ class VideoRecorder(private val context: Context) {
             // HAL), and release() under a live read races native AudioRecord state the same way
             // codec/muxer release would — so it is only released on the clean path.
             runCatching { audioRecord?.release() }
-            synchronized(muxerLock) {
+            muxerLock.withLock {
                 if (muxerStarted) {
                     // A muxer.stop() throw is normally VIDEO-terminal (moov not finalized → delete).
                     // The one tolerated case is the TR4-2 corner: audio degraded mid-REC after its
@@ -403,6 +418,8 @@ class VideoRecorder(private val context: Context) {
     internal fun quarantineUnsafeNativeGraph(): Boolean {
         if (!terminallyQuarantined.compareAndSet(false, true)) return false
         running = false
+        muxerLock.withLock { muxerStateChanged.signalAll() }
+        cancelVideoStartupDeadline()
         runCatching { onLevel?.invoke(FloatArray(0)) }
         onFailure = null
         val ownedAudio = audioRecord
@@ -442,8 +459,9 @@ class VideoRecorder(private val context: Context) {
                 // yet, and breaking early would truncate the tail. stop() bounds this loop via
                 // videoThread.join(timeout) after signalling EOS, so looping is safe.
                 idx == MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
-                idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> synchronized(muxerLock) {
+                idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> muxerLock.withLock {
                     videoTrack = muxer!!.addTrack(codec.outputFormat)
+                    videoStartupProof.observeFormat()
                     maybeStartMuxer()
                 }
                 idx >= 0 -> {
@@ -452,9 +470,14 @@ class VideoRecorder(private val context: Context) {
                     if (info.size > 0 && buf != null && awaitMuxerStart()) {
                         buf.position(info.offset)
                         buf.limit(info.offset + info.size)
-                        synchronized(muxerLock) {
-                            runCatching { muxer?.writeSampleData(videoTrack, buf, info) }
-                                .onSuccess { wroteVideoSample = true }
+                        muxerLock.withLock {
+                            runCatching { checkNotNull(muxer).writeSampleData(videoTrack, buf, info) }
+                                .onSuccess {
+                                    wroteVideoSample = true
+                                    if (videoStartupProof.observeMuxedSample()) {
+                                        cancelVideoStartupDeadline()
+                                    }
+                                }
                                 .onFailure(::recordFailure)
                         }
                     }
@@ -484,7 +507,7 @@ class VideoRecorder(private val context: Context) {
         }
         if (minBuf <= 0) {
             expectedTracks = 1
-            onRoute?.invoke(audioUnavailableLabel(audioInputPreference.label))
+            onRoute?.invoke(AudioRouteStatus(audioInputPreference, AudioRouteAvailability.UNAVAILABLE))
             return
         }
         val audioFormat = AudioFormat.Builder()
@@ -501,7 +524,7 @@ class VideoRecorder(private val context: Context) {
                 .build()
         }.getOrNull() ?: run {
             expectedTracks = 1
-            onRoute?.invoke(audioUnavailableLabel(audioInputPreference.label))
+            onRoute?.invoke(AudioRouteStatus(audioInputPreference, AudioRouteAvailability.UNAVAILABLE))
             return
         }
         // An AudioRecord that failed to initialize (busy mic, unsupported config) is left in
@@ -510,11 +533,13 @@ class VideoRecorder(private val context: Context) {
         if (record.state != AudioRecord.STATE_INITIALIZED) {
             runCatching { record.release() }
             expectedTracks = 1
-            onRoute?.invoke(audioUnavailableLabel(audioInputPreference.label))
+            onRoute?.invoke(AudioRouteStatus(audioInputPreference, AudioRouteAvailability.UNAVAILABLE))
             return
         }
         if (preferredDevice != null && !record.setPreferredDevice(preferredDevice)) {
-            if (me.hletrd.telecampro.BuildConfig.DEBUG) Log.w(TAG, "preferred audio input rejected: ${AudioInputInspector.routeLabel(audioInputPreference, preferredDevice)}")
+            if (me.hletrd.telecampro.BuildConfig.DEBUG) {
+                Log.w(TAG, "preferred audio input rejected: ${preferredDevice.productName}")
+            }
         }
         audioChannelCount = channelCount
         audioRecord = record
@@ -592,15 +617,15 @@ class VideoRecorder(private val context: Context) {
         // audio degrades to video-only. Process/local terminal refusal is different: quarantine owns
         // the graph, so this thread stops Java-side progression without touching any native owner.
         if (audioStart.isFailure) {
-            onRoute?.invoke(audioUnavailableLabel(audioInputPreference.label))
-            synchronized(muxerLock) {
+            onRoute?.invoke(AudioRouteStatus(audioInputPreference, AudioRouteAvailability.UNAVAILABLE))
+            muxerLock.withLock {
                 expectedTracks = 1
                 maybeStartMuxer()
             }
             return
         }
         if (audioStart.getOrThrow() == NativeStartOutcome.REFUSED) return
-        onRoute?.invoke(AudioInputInspector.routeLabel(audioInputPreference, record.routedDevice ?: record.preferredDevice))
+        onRoute?.invoke(AudioInputInspector.routeStatus(audioInputPreference, record.routedDevice ?: record.preferredDevice))
         val info = MediaCodec.BufferInfo()
         var totalSamples = 0L
         val bytesPerFrame = 2 * audioChannelCount
@@ -609,6 +634,10 @@ class VideoRecorder(private val context: Context) {
 
         while (true) {
             if (terminallyQuarantined.get()) return
+            if (audioDegradedMidRec) {
+                runCatching { record.stop() }
+                return
+            }
             if (!sentEos) {
                 val inIdx = codec.dequeueInputBuffer(TIMEOUT_US)
                 if (inIdx >= 0) {
@@ -671,7 +700,7 @@ class VideoRecorder(private val context: Context) {
             var outIdx = codec.dequeueOutputBuffer(info, outTimeout)
             while (outIdx != MediaCodec.INFO_TRY_AGAIN_LATER) {
                 if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    synchronized(muxerLock) {
+                    muxerLock.withLock {
                         audioTrack = muxer!!.addTrack(codec.outputFormat)
                         maybeStartMuxer()
                     }
@@ -681,7 +710,7 @@ class VideoRecorder(private val context: Context) {
                     if (info.size > 0 && buf != null && awaitMuxerStart()) {
                         buf.position(info.offset)
                         buf.limit(info.offset + info.size)
-                        synchronized(muxerLock) {
+                        muxerLock.withLock {
                             // An audio-track muxer write failure is AUDIO-side: let it propagate to
                             // this thread's catch, which degrades to video-only (AGG3-2). The shared
                             // firstFailure/delete latch is reserved for VIDEO codec/muxer errors — a
@@ -731,22 +760,70 @@ class VideoRecorder(private val context: Context) {
             )
         }
         muxerStartState = transition.state
+        muxerStateChanged.signalAll()
         transition.failure?.let(::recordFailure)
     }
 
     /**
-     * Blocks until the muxer has started, or [running] flips false while it is still waiting.
-     * Returns true if the muxer actually started (safe to write samples), false if it gave up
-     * because recording was stopped before all expected tracks were added (e.g. audio never
-     * emitted a format) — callers must skip the sample write in that case.
+     * Condition-based, bounded rendezvous for the drain workers. If audio misses the deadline after
+     * video is ready, preserve the take through the established video-only degradation. A missing
+     * video format is clip-terminal. No codec output buffer is retained beyond this deadline.
      */
     private fun awaitMuxerStart(): Boolean {
-        while (running && muxerStartState == MuxerStartState.WAITING) Thread.sleep(2)
-        return muxerStarted
+        val deadlineNs = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(TRACK_RENDEZVOUS_TIMEOUT_MS)
+        while (true) {
+            var timeoutAction: MuxerRendezvousTimeoutAction? = null
+            val started = muxerLock.withLock {
+                while (running && muxerStartState == MuxerStartState.WAITING) {
+                    val remainingNs = deadlineNs - System.nanoTime()
+                    if (remainingNs <= 0L) {
+                        timeoutAction = muxerRendezvousTimeoutAction(
+                            videoTrackReady = videoTrack >= 0,
+                            expectedTracks = expectedTracks,
+                            audioTrackReady = audioTrack >= 0,
+                        )
+                        break
+                    }
+                    muxerStateChanged.awaitNanos(remainingNs)
+                }
+                muxerStarted
+            }
+            when (timeoutAction) {
+                MuxerRendezvousTimeoutAction.DEGRADE_AUDIO -> {
+                    degradeAudioToVideoOnly(IllegalStateException("Audio track setup timed out"))
+                    continue
+                }
+                MuxerRendezvousTimeoutAction.FAIL_VIDEO -> {
+                    recordFailure(IllegalStateException("Video output format timed out"))
+                    return false
+                }
+                null -> return started
+            }
+        }
+    }
+
+    private fun armVideoStartupDeadline() {
+        videoStartupDeadline = videoStartupDeadlineExecutor.schedule(
+            {
+                videoStartupProof.expire()?.let { reason ->
+                    recordFailure(IllegalStateException(reason))
+                }
+            },
+            VIDEO_STARTUP_PROOF_TIMEOUT_MS,
+            TimeUnit.MILLISECONDS,
+        )
+    }
+
+    private fun cancelVideoStartupDeadline() {
+        videoStartupDeadline?.cancel(false)
+        videoStartupDeadline = null
+        videoStartupDeadlineExecutor.shutdownNow()
     }
 
     private fun recordFailure(t: Throwable) {
         running = false
+        muxerLock.withLock { muxerStateChanged.signalAll() }
+        cancelVideoStartupDeadline()
         // Codec/muxer failures happen on the drain threads. Notify the owner immediately so it can
         // leave REC state and start ordered teardown instead of waiting for a manual Stop tap. The
         // atomic signal retains the first cause and invokes this callback at most once even when the
@@ -770,11 +847,11 @@ class VideoRecorder(private val context: Context) {
     private fun degradeAudioToVideoOnly(cause: Throwable) {
         if (me.hletrd.telecampro.BuildConfig.DEBUG) Log.w(TAG, "audio degraded to video-only (mid-REC): ${cause.message}")
         audioDegradedMidRec = true
-        onRoute?.invoke(audioUnavailableLabel(audioInputPreference.label))
+        onRoute?.invoke(AudioRouteStatus(audioInputPreference, AudioRouteAvailability.UNAVAILABLE))
         // Zero the live meter explicitly: the mic is dead, and a meter frozen at its last level
         // would mislead the operator into believing audio is still being captured (CRIT4-6).
         onLevel?.invoke(FloatArray(0))
-        synchronized(muxerLock) {
+        muxerLock.withLock {
             expectedTracks = 1
             maybeStartMuxer()
         }
@@ -796,6 +873,8 @@ class VideoRecorder(private val context: Context) {
     private companion object {
         const val TAG = "VideoRecorder"
         const val TIMEOUT_US = 10_000L
+        const val TRACK_RENDEZVOUS_TIMEOUT_MS = 1_000L
+        const val VIDEO_STARTUP_PROOF_TIMEOUT_MS = 4_000L
         // ~10 Hz cap on onLevel callbacks so the UI meter isn't spammed once per PCM buffer.
         const val LEVEL_THROTTLE_NS = 100_000_000L
         // ~3 s of 10 ms input-dequeue timeouts: how long the stop path keeps asking for a free
@@ -823,14 +902,16 @@ internal class UnsafeStandbyAdmissionToken internal constructor(
 
 /** Process-global linearization between REC publication/native handoff and terminal quarantine. */
 internal class RecorderQuarantineAdmissionGate {
-    private val lock = Any()
+    private val lock = ReentrantLock()
+    private val nativeAcquisitionsDrained = lock.newCondition()
     private val epoch = AtomicLong(0L)
     private val quarantined = AtomicBoolean(false)
     private var pendingToken: Long? = null
     private var activeToken: Long? = null
     private var standbyToken: UnsafeStandbyAdmissionToken? = null
+    private var nativeAcquisitions = 0
 
-    fun snapshot(owner: Any): UnsafeRecorderAdmissionToken? = synchronized(lock) {
+    fun snapshot(owner: Any): UnsafeRecorderAdmissionToken? = lock.withLock {
         val foreignStandby = standbyToken?.owner?.let { it !== owner } == true
         if (quarantined.get() || pendingToken != null || activeToken != null || foreignStandby) {
             null
@@ -842,7 +923,7 @@ internal class RecorderQuarantineAdmissionGate {
     }
 
     /** Exactly one process standby mic, and never while any recorder admission owns the process. */
-    fun reserveStandby(owner: Any): UnsafeStandbyAdmissionToken? = synchronized(lock) {
+    fun reserveStandby(owner: Any): UnsafeStandbyAdmissionToken? = lock.withLock {
         if (quarantined.get() || pendingToken != null || activeToken != null || standbyToken != null) {
             null
         } else {
@@ -850,53 +931,69 @@ internal class RecorderQuarantineAdmissionGate {
         }
     }
 
-    fun finishStandby(token: UnsafeStandbyAdmissionToken) = synchronized(lock) {
+    fun finishStandby(token: UnsafeStandbyAdmissionToken) = lock.withLock {
         if (standbyToken?.epoch == token.epoch && standbyToken?.owner === token.owner) {
             standbyToken = null
             epoch.incrementAndGet()
         }
     }
 
-    fun isCurrent(token: UnsafeRecorderAdmissionToken): Boolean = synchronized(lock) {
+    fun isCurrent(token: UnsafeRecorderAdmissionToken): Boolean = lock.withLock {
         !quarantined.get() && (pendingToken == token.epoch || activeToken == token.epoch)
     }
 
-    fun commit(token: UnsafeRecorderAdmissionToken, block: () -> Unit): Boolean = synchronized(lock) {
-        if (!isCurrent(token)) return@synchronized false
+    fun commit(token: UnsafeRecorderAdmissionToken, block: () -> Unit): Boolean = lock.withLock {
+        if (!isCurrent(token)) return@withLock false
         block()
         true
     }
 
     /**
-     * Refuses new native create/open/start after irreversible process quarantine. The NATIVE CALL
-     * runs OUTSIDE the lock: holding the process-global lock across seconds-long Binder/driver
-     * work (manager.openCamera, codec/muxer construction, EGL init, AudioRecord create)
-     * serialized every native acquisition process-wide and was the enabling half of the T6 ABBA
-     * inversion (cycle-6 tracer T6/T7). A close() landing while a call is in flight is
-     * semantically unchanged: the quarantine CAUSE predates the close, an already-running native
-     * call cannot be un-called under either ordering, and its RESULT is refused downstream by the
-     * token checks (isCurrent/commit/publish all re-check under the lock). close() therefore no
-     * longer waits for in-flight natives — only ADMISSION (snapshot/commit/publish) linearizes
-     * with quarantine.
+     * Takes one counted native-admission lease, executes outside [lock], then reports success only
+     * if quarantine did not revoke the lease while the native call was in flight.
+     *
+     * The count closes the old check -> close -> native-entry hole: [close] first prevents another
+     * lease, then waits for every already-admitted block to leave before returning. The wait is on a
+     * [java.util.concurrent.locks.Condition], so it RELEASES [lock]; native work never holds the
+     * process monitor and cannot recreate the historical process-lock <-> terminal-gate ABBA
+     * deadlock. A block admitted before close may finish because a native call cannot be un-called,
+     * but its false result prevents downstream publication or cleanup after quarantine owns the
+     * graph. Once close returns, no admitted block is executing and no later block can enter.
      */
     fun runNativeIfSafe(block: () -> Unit): Boolean {
-        if (quarantined.get()) return false
-        block()
-        return true
+        val admitted = lock.withLock {
+            if (quarantined.get()) {
+                false
+            } else {
+                nativeAcquisitions++
+                true
+            }
+        }
+        if (!admitted) return false
+        try {
+            block()
+        } finally {
+            lock.withLock {
+                nativeAcquisitions--
+                check(nativeAcquisitions >= 0) { "Native admission count underflow" }
+                if (nativeAcquisitions == 0) nativeAcquisitionsDrained.signalAll()
+            }
+        }
+        return lock.withLock { !quarantined.get() }
     }
 
-    fun publish(token: UnsafeRecorderAdmissionToken, block: () -> Boolean): Boolean = synchronized(lock) {
+    fun publish(token: UnsafeRecorderAdmissionToken, block: () -> Boolean): Boolean = lock.withLock {
         if (quarantined.get() || pendingToken != token.epoch || activeToken != null) {
-            return@synchronized false
+            return@withLock false
         }
-        if (!block()) return@synchronized false
+        if (!block()) return@withLock false
         pendingToken = null
         activeToken = token.epoch
         true
     }
 
     /** Clears a setup lease only; a successfully published owner remains process-exclusive. */
-    fun abandonPending(token: UnsafeRecorderAdmissionToken) = synchronized(lock) {
+    fun abandonPending(token: UnsafeRecorderAdmissionToken) = lock.withLock {
         if (pendingToken == token.epoch) {
             pendingToken = null
             epoch.incrementAndGet()
@@ -904,21 +1001,39 @@ internal class RecorderQuarantineAdmissionGate {
     }
 
     /** Strict recorder finalization releases the one process-wide active recording lease. */
-    fun finish(token: UnsafeRecorderAdmissionToken?) = synchronized(lock) {
+    fun finish(token: UnsafeRecorderAdmissionToken?) = lock.withLock {
         if (token != null && activeToken == token.epoch) {
             activeToken = null
             epoch.incrementAndGet()
         }
     }
 
-    /** Irreversible. Publication under [commit] either finishes before this or is rejected after it. */
-    fun close(): Boolean = synchronized(lock) {
-        if (quarantined.getAndSet(true)) return@synchronized false
-        epoch.incrementAndGet()
-        pendingToken = null
-        activeToken = null
-        standbyToken = null
-        true
+    /**
+     * Irreversible. Closes admission first, then drains counted native leases without holding the
+     * monitor while waiting. Interrupts cannot weaken the terminal boundary: the drain continues
+     * and the caller's interrupt status is restored before returning.
+     */
+    fun close(): Boolean {
+        var interrupted = false
+        val newlyClosed = lock.withLock {
+            val firstClose = !quarantined.getAndSet(true)
+            if (firstClose) {
+                epoch.incrementAndGet()
+                pendingToken = null
+                activeToken = null
+                standbyToken = null
+            }
+            while (nativeAcquisitions > 0) {
+                try {
+                    nativeAcquisitionsDrained.await()
+                } catch (_: InterruptedException) {
+                    interrupted = true
+                }
+            }
+            firstClose
+        }
+        if (interrupted) Thread.currentThread().interrupt()
+        return newlyClosed
     }
 
     fun isQuarantined(): Boolean = quarantined.get()
@@ -1050,6 +1165,63 @@ internal fun shouldStartMuxer(
     audioTrackReady: Boolean,
 ): Boolean = !muxerStarted && videoTrackReady && (expectedTracks == 1 || audioTrackReady)
 
+/** Final recorder-side defense against a stale/mismatched exact-component capability token. */
+internal fun encoderSelectionAdmitsTransfer(
+    selection: EncoderSelection,
+    transfer: ColorTransfer,
+): Boolean = selection.mime == ColorProfiles.mimeFor(selection.codec) &&
+    (selection.codec != VideoCodec.HEVC || transfer == ColorTransfer.SDR || selection.main10)
+
+internal enum class MuxerRendezvousTimeoutAction { DEGRADE_AUDIO, FAIL_VIDEO }
+
+/** The only recoverable track-start timeout is a missing optional audio track after video is ready. */
+internal fun muxerRendezvousTimeoutAction(
+    videoTrackReady: Boolean,
+    expectedTracks: Int,
+    audioTrackReady: Boolean,
+): MuxerRendezvousTimeoutAction = if (
+    videoTrackReady && expectedTracks > 1 && !audioTrackReady
+) {
+    MuxerRendezvousTimeoutAction.DEGRADE_AUDIO
+} else {
+    MuxerRendezvousTimeoutAction.FAIL_VIDEO
+}
+
+/**
+ * Independent recorder-output proof. EGL attach proves only that frames reached the codec input;
+ * this state proves that the codec emitted a format and MediaMuxer accepted the first video sample.
+ */
+internal class VideoStartupProof {
+    private var formatObserved = false
+    private var muxedSampleObserved = false
+    private var terminal = false
+
+    @Synchronized
+    fun observeFormat(): Boolean {
+        if (terminal) return false
+        formatObserved = true
+        return muxedSampleObserved
+    }
+
+    @Synchronized
+    fun observeMuxedSample(): Boolean {
+        if (terminal) return false
+        muxedSampleObserved = true
+        return formatObserved
+    }
+
+    @Synchronized
+    fun expire(): String? {
+        if (terminal || (formatObserved && muxedSampleObserved)) return null
+        terminal = true
+        return if (!formatObserved) {
+            "Video encoder produced no output format before startup deadline"
+        } else {
+            "Video encoder produced no muxed sample before startup deadline"
+        }
+    }
+}
+
 /** One-shot lifecycle of the recording's shared MediaMuxer native start. */
 internal enum class MuxerStartState { WAITING, STARTED, TERMINAL }
 
@@ -1085,12 +1257,12 @@ internal fun startNativeOwnerIfSafe(
     start: () -> Unit,
 ): NativeStartOutcome {
     var started = false
-    runNativeAcquisition {
+    val admissionSurvived = runNativeAcquisition {
         if (isTerminal()) return@runNativeAcquisition
         start()
         started = true
     }
-    return if (started) NativeStartOutcome.STARTED else NativeStartOutcome.REFUSED
+    return if (admissionSurvived && started) NativeStartOutcome.STARTED else NativeStartOutcome.REFUSED
 }
 
 /**

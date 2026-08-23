@@ -1,5 +1,6 @@
 package me.hletrd.telecampro.ui.overlays
 
+import me.hletrd.telecampro.R
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
@@ -31,6 +32,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import me.hletrd.telecampro.camera.unifiedZoom
@@ -41,6 +43,7 @@ import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.ColorTransfer
 import me.hletrd.telecampro.camera.DriveMode
+import me.hletrd.telecampro.camera.FocusConfidenceSource
 import me.hletrd.telecampro.camera.GridType
 import me.hletrd.telecampro.camera.HistogramData
 import me.hletrd.telecampro.camera.MeteringMode
@@ -52,10 +55,11 @@ import me.hletrd.telecampro.camera.displayedStillAspect
 import me.hletrd.telecampro.camera.largestCenteredRect
 import me.hletrd.telecampro.camera.teleFinderVisible
 import me.hletrd.telecampro.camera.videoBitRate
-import me.hletrd.telecampro.focus.focusConfidenceLabel
 import me.hletrd.telecampro.ui.controls.transferLabelShort
 import me.hletrd.telecampro.ui.controls.videoCodecLabelShort
 import me.hletrd.telecampro.ui.controls.videoResolutionLabel
+import me.hletrd.telecampro.ui.controls.videoFrameRateLabel
+import me.hletrd.telecampro.ui.controls.lensLabel
 import me.hletrd.telecampro.ui.theme.CameraColors
 import java.util.Locale
 import kotlin.math.abs
@@ -359,11 +363,12 @@ fun RecordingIndicator(elapsedMs: Long, modifier: Modifier = Modifier) {
     val minutes = totalSeconds / 60L
     val seconds = totalSeconds % 60L
     val timeLabel = "%02d:%02d".format(Locale.US, minutes, seconds)
+    val recordingDescription = stringResource(R.string.a11y_recording)
     Row(
         modifier = modifier
             .background(HudPlate, RoundedCornerShape(50))
             // Keep a stable REC description; elapsed telemetry must not be re-announced every second.
-            .clearAndSetSemantics { contentDescription = "Recording" }
+            .clearAndSetSemantics { contentDescription = recordingDescription }
             // The ONE HUD pill inset, 12/6 (canonical note in CameraScreen's ModeLabel). This
             // pill is why "one inset" needs stating twice: it hand-rolled ~2/10 horizontal and 4
             // vertical out of a leading Spacer plus one-sided Text padding, so the sweep that unified
@@ -560,12 +565,12 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
             Text(it, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
         }
         state.activeMemorySlot?.let {
-            Text(it.label, color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+            Text(it.name, color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
         }
         // Facing: the one state that changes what the app is for. Rear is the norm and stays
         // untagged (UX_POLICY: keep the viewfinder quiet); FRONT is the exception and says so.
         if (state.facing == CameraFacing.FRONT) {
-            Text("FRONT", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+            Text(stringResource(R.string.osd_front), color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
         }
         if (state.mode == CaptureMode.VIDEO) {
             if (!compact) {
@@ -580,7 +585,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                     // A bare "M" is the finder convention for a bitrate; "Mb" named megabits, which
                     // is a quantity, not a rate. The menu's Encoder row spells the full "Mbps" —
                     // two registers on purpose, both now correct.
-                    "${videoResolutionLabel(state.videoResolution)} ${state.videoFrameRate.label}p " +
+                    "${videoResolutionLabel(state.videoResolution)} ${videoFrameRateLabel(state.videoFrameRate)}p " +
                         "${videoCodecLabelShort(state.videoCodec)} ${mbps}M"
                 }
                 Text(spec, color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
@@ -604,22 +609,22 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                 // treatment. (The other 0.55s in this file are the frame lines and the grid — they
                 // are CameraColors.GuideLine now: graphics over the image, not tags. The old note
                 // here said "the level scale", which was never one of them; that gauge is 0.4.)
-                Text("ASSIST", color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
+                Text(stringResource(R.string.osd_assist), color = CameraColors.TextPrimary, style = MaterialTheme.typography.labelMedium)
             }
             if (state.openGate) {
                 Text("4:3", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
             }
             if (!state.recordAudio) {
-                Text("MUTE", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+                Text(stringResource(R.string.osd_mute), color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
             }
             val stabTag = when (state.videoStabMode) {
                 // One word family for one control (UI review #7): STANDARD used to read "OIS+",
                 // borrowing the word of the SEPARATE photo "OIS OFF" tag, so across a mode flip two
                 // independent controls read as one. STEADY stays — it is the marketing-free name
                 // the ENHANCED value already owns app-wide.
-                VideoStabMode.STANDARD -> "STAB STD"
-                VideoStabMode.ENHANCED -> "STEADY"
-                VideoStabMode.OFF -> "STAB OFF"
+                VideoStabMode.STANDARD -> stringResource(R.string.osd_stabilization_standard)
+                VideoStabMode.ENHANCED -> stringResource(R.string.osd_stabilization_steady)
+                VideoStabMode.OFF -> stringResource(R.string.osd_stabilization_off)
             }
             Text(
                 stabTag,
@@ -641,11 +646,11 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
             if (state.photoSessionOutputs.hiRes) {
                 // ACCEPTED-session truth, never the toggle intent (the ladder drops hi-res first) —
                 // the same honesty rule as the finder PIP tag.
-                Text("HR", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+                Text(stringResource(R.string.osd_high_resolution), color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
             }
             if (state.driveMode != DriveMode.SINGLE) {
                 val driveLabel = when (state.driveMode) {
-                    DriveMode.BURST -> "BURST"
+                    DriveMode.BURST -> stringResource(R.string.osd_drive_burst)
                     DriveMode.AEB -> "AEB±2"
                     DriveMode.TIMELAPSE -> "TL${state.intervalSec}s" // no space: the compound-tag family (T3s, AEB±2) writes tight (UI #30)
                     DriveMode.SINGLE -> ""
@@ -671,7 +676,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                     oisEnabled = state.controls.oisEnabled,
                 )
             ) {
-                Text("OIS OFF", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+                Text(stringResource(R.string.osd_ois_off), color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
             }
             if (!compact && state.timer != ShutterTimer.OFF) {
                 Text("T${state.timer.seconds}s", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
@@ -679,7 +684,10 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
         }
         if (state.controls.meteringMode != MeteringMode.MATRIX) {
             Text(
-                if (state.controls.meteringMode == MeteringMode.SPOT) "SPOT" else "CENTER",
+                stringResource(
+                    if (state.controls.meteringMode == MeteringMode.SPOT) R.string.osd_metering_spot
+                    else R.string.osd_metering_center,
+                ),
                 color = CameraColors.TextPrimary,
                 style = MaterialTheme.typography.labelMedium,
             )
@@ -688,24 +696,31 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
         // silently "ignoring" the scene reads as a broken camera. Amber tags, Sony-style, in the OSD
         // row per UX policy ("important states belong in the OSD").
         if (state.controls.aeLock) {
-            Text("AEL", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+            Text(stringResource(R.string.osd_ael), color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
         }
         if (state.controls.awbLock) {
-            Text("AWL", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+            Text(stringResource(R.string.osd_awl), color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
         }
         if (state.controls.afLock) {
-            Text("AFL", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+            Text(stringResource(R.string.osd_afl), color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
         }
         // Focus confidence: ONE compact amber tag whose text follows whichever proof holds —
         // TOO CLOSE (AF admitted defeat with the lens racked at its close limit, optionally
         // suffixed with a genuinely closer-focusing lens) or SOFT (the frame itself resolved no
         // fine detail, which cannot establish distance and so advises nothing). Same Sony-style
         // register as AEL/AFL; the wording rule and the 700 ms hold live in focus/MacroProximity.kt.
-        focusConfidenceLabel(state.focusConfidence, state.macroCloserLensLabel)?.let { tag ->
+        val focusConfidenceTag = when (state.focusConfidence) {
+            null -> null
+            FocusConfidenceSource.FRAME_DETAIL -> stringResource(R.string.focus_confidence_soft)
+            FocusConfidenceSource.AF_LIMIT -> state.macroCloserLens?.let {
+                stringResource(R.string.focus_confidence_too_close_lens, lensLabel(it))
+            } ?: stringResource(R.string.focus_confidence_too_close)
+        }
+        focusConfidenceTag?.let { tag ->
             Text(tag, color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
         }
         if (state.punchInActive) {
-            Text("LOUPE", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+            Text(stringResource(R.string.osd_loupe), color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
         }
         if (teleFinderVisible(
                 enabled = state.teleFinder,
@@ -716,7 +731,7 @@ fun StatusBar(state: CameraUiState, modifier: Modifier = Modifier, compact: Bool
                 zoomRatio = state.unifiedZoom,
             )
         ) {
-            Text("OVERVIEW", color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
+            Text(stringResource(R.string.osd_overview), color = CameraColors.ManualActive, style = MaterialTheme.typography.labelMedium)
         }
     }
 }

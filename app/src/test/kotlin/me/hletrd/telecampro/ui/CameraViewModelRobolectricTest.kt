@@ -3,7 +3,8 @@ package me.hletrd.telecampro.ui
 import android.app.Application
 import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
-import me.hletrd.telecampro.camera.CAMERA_STARTING_STATUS
+import me.hletrd.telecampro.camera.CameraStatusMessage
+import me.hletrd.telecampro.camera.status
 import me.hletrd.telecampro.camera.CameraEngine
 import me.hletrd.telecampro.camera.CameraFacing
 import me.hletrd.telecampro.camera.CameraReadyPublication
@@ -90,7 +91,7 @@ class CameraViewModelRobolectricTest {
         assertFalse(s.teleconverterMode)
         // Camera health starts NOT ready — only an owned engine Ready publication may set it.
         assertFalse(s.cameraReady)
-        assertNull(s.statusMessage)
+        assertNull(s.status)
         assertEquals(ShutterTimer.OFF, s.timer)
         assertEquals(0, s.timerCountdownSec)
         // "Remember settings" defaults ON even when nothing was ever saved.
@@ -148,22 +149,24 @@ class CameraViewModelRobolectricTest {
 
     @Test fun `engine status publications auto-clear after the ordinary display duration`() {
         val (v, e) = createViewModel()
-        e.onStatus!!.invoke("Test status")
-        assertEquals("Test status", v.state.value.statusMessage)
+        val guidance = CameraStatusMessage.STOP_RECORDING_FIRST.status()
+        e.onStatus!!.invoke(guidance)
+        assertEquals(guidance, v.state.value.status)
         idleFor(2_499)
-        assertEquals("Test status", v.state.value.statusMessage)
+        assertEquals(guidance, v.state.value.status)
         idleFor(1) // ordinary messages clear at 2.5 s (statusDisplayDurationMs)
-        assertNull(v.state.value.statusMessage)
+        assertNull(v.state.value.status)
     }
 
     @Test fun `the cold-start progress status waits for Ready, not for a timer`() {
         val (v, e) = createViewModel()
-        e.onStatus!!.invoke(CAMERA_STARTING_STATUS)
+        val starting = CameraStatusMessage.STARTING_CAMERA.status()
+        e.onStatus!!.invoke(starting)
         // Deliberately far past every display duration in the policy (the longest is 6 s). Before
         // this fix the pill cleared at 2.5 s regardless of the camera, which is what made a ~950 ms
         // bring-up read as a multi-second wait: the user was watching the timer, not the camera.
         idleFor(10_000)
-        assertEquals(CAMERA_STARTING_STATUS, v.state.value.statusMessage)
+        assertEquals(starting, v.state.value.status)
 
         e.onCameraReadyChange!!.invoke(
             CameraReadyPublication(
@@ -175,15 +178,16 @@ class CameraViewModelRobolectricTest {
             )
         )
         idleFor(0)
-        assertNull(v.state.value.statusMessage)
+        assertNull(v.state.value.status)
     }
 
     @Test fun `Ready does not swallow a status published during bring-up`() {
         val (v, e) = createViewModel()
-        e.onStatus!!.invoke(CAMERA_STARTING_STATUS)
+        e.onStatus!!.invoke(CameraStatusMessage.STARTING_CAMERA.status())
         // Anything published after it owns the pill; the progress clear is not a blanket reset, or
         // a message arriving in the bring-up window would vanish the instant the camera came up.
-        e.onStatus!!.invoke("Photo saved")
+        val saved = CameraStatusMessage.VIDEO_SAVED.status()
+        e.onStatus!!.invoke(saved)
         e.onCameraReadyChange!!.invoke(
             CameraReadyPublication(
                 sequence = 1L,
@@ -194,22 +198,24 @@ class CameraViewModelRobolectricTest {
             )
         )
         idleFor(0)
-        assertEquals("Photo saved", v.state.value.statusMessage)
+        assertEquals(saved, v.state.value.status)
         idleFor(1_500) // and it still keeps its own timer
-        assertNull(v.state.value.statusMessage)
+        assertNull(v.state.value.status)
     }
 
     @Test fun `saved-confirmation statuses clear on the shorter timer and re-arm per message`() {
         val (v, e) = createViewModel()
-        e.onStatus!!.invoke("Video saved")
+        val videoSaved = CameraStatusMessage.VIDEO_SAVED.status()
+        e.onStatus!!.invoke(videoSaved)
         idleFor(1_400)
-        assertEquals("Video saved", v.state.value.statusMessage)
+        assertEquals(videoSaved, v.state.value.status)
         // A newer message replaces the text AND re-arms its own timer; the old deadline is dead.
-        e.onStatus!!.invoke("Photo saved")
+        val wbSet = CameraStatusMessage.CUSTOM_WB_SET.status()
+        e.onStatus!!.invoke(wbSet)
         idleFor(1_499)
-        assertEquals("Photo saved", v.state.value.statusMessage)
+        assertEquals(wbSet, v.state.value.status)
         idleFor(1) // "saved" confirmations clear at 1.5 s
-        assertNull(v.state.value.statusMessage)
+        assertNull(v.state.value.status)
     }
 
     // ---- Mode change ----

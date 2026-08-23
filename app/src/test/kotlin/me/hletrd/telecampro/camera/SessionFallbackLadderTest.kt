@@ -305,6 +305,25 @@ class SessionFallbackLadderTest {
     }
 
     @Test
+    fun `ten bit video first rung removes every still reader`() {
+        val plan = sessionAttemptPlan(
+            attempt = 0,
+            wantHlg = true,
+            supportsRaw = true,
+            standalone = true,
+            teleconverterMode = true,
+            tenBitVideoOnly = true,
+        )
+
+        assertTrue(plan.useHlg)
+        assertFalse(plan.useJpeg)
+        assertFalse(plan.useRaw)
+        assertTrue(plan.useVendorOperationMode)
+        assertFalse(plan.useHiResStill)
+        assertFalse(plan.useDeepZslReader)
+    }
+
+    @Test
     fun `accepted hi-res truth requires the processed reader`() {
         assertTrue(
             acceptedPhotoSessionOutputs(

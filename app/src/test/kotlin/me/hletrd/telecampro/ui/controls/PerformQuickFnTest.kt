@@ -94,7 +94,7 @@ class PerformQuickFnTest {
         override fun onTransfer(transfer: ColorTransfer) = hit("onTransfer($transfer)")
         override fun onSetPhotoFormats(formats: PhotoFormats) = hit("onSetPhotoFormats")
         override fun onToggleHiResStill(enabled: Boolean) = hit("onToggleHiResStill")
-        override fun onAspectRatio(ratio: AspectRatio) = hit("onAspectRatio")
+        override fun onAspectRatio(ratio: AspectRatio) = hit("onAspectRatio($ratio)")
         override fun onToggleRecordAudio(enabled: Boolean) = hit("onToggleRecordAudio")
         override fun onAudioGain(gain: Float) = hit("onAudioGain")
         override fun onAudioScene(scene: AudioScene) = hit("onAudioScene($scene)")
@@ -126,7 +126,7 @@ class PerformQuickFnTest {
         override fun onTogglePunchIn(enabled: Boolean) = hit("onTogglePunchIn($enabled)")
         override fun onAutoPunchIn(enabled: Boolean) = Unit
         override fun onToggleTeleFinder(enabled: Boolean) = hit("onToggleTeleFinder")
-        override fun onTimer(timer: ShutterTimer) = hit("onTimer")
+        override fun onTimer(timer: ShutterTimer) = hit("onTimer($timer)")
         override fun onDriveMode(mode: DriveMode) = hit("onDriveMode($mode)")
         override fun onIntervalSec(sec: Int) = hit("onIntervalSec")
         override fun onCapturePhoto() = hit("onCapturePhoto")
@@ -263,6 +263,23 @@ class PerformQuickFnTest {
         for (slot in listOf(FnSlot.SHUTTER, FnSlot.EV, FnSlot.ZOOM)) {
             assertEquals("$slot needs its dial gate", emptyList<String>(), dispatched(slot, idle))
         }
+    }
+
+    @Test
+    fun `timer and aspect taps advance from either current state`() {
+        val idle = CameraUiState()
+        assertEquals(
+            listOf("onTimer(${ShutterTimer.SEC3})"),
+            dispatched(FnSlot.TIMER, idle),
+        )
+        assertEquals(
+            listOf("onAspectRatio(${AspectRatio.W16_9})"),
+            dispatched(FnSlot.ASPECT, idle),
+        )
+        assertEquals(
+            listOf("onAspectRatio(${AspectRatio.W4_3})"),
+            dispatched(FnSlot.ASPECT, idle.copy(aspectRatio = AspectRatio.W16_9)),
+        )
     }
 
     @Test

@@ -83,7 +83,7 @@ class MacroProximityTest {
             candidates = listOf(lens(14f, 25f), lens(23f, 6.67f), lens(230f, 0.5f), lens(70f, teleMin)),
         )
         assertEquals(23f, checkNotNull(hint).equivalentFocalMm, 0f)
-        assertEquals("1×", lensLabelForEquivFocal(hint.equivalentFocalMm))
+        assertEquals(me.hletrd.telecampro.camera.LensChoice.MAIN, lensChoiceForEquivFocal(hint.equivalentFocalMm))
         assertTrue("the real advantage is ~8x", hint.minFocusDiopters / teleMin > 7f)
     }
 

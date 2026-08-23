@@ -346,7 +346,7 @@ internal class StandbyAudioController(
                         channelRms(
                             samples,
                             readCount,
-                            audioInput?.channelCount ?: 1,
+                            audioInput.channelCount,
                             audioGain(),
                         ),
                     )

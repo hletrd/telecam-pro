@@ -188,6 +188,10 @@ class GlPipeline {
     // thread at snapshot time so the interval lines up with the frame pair rather than with whenever
     // the executor happens to run. Returns (yawRadians, pitchRadians).
     private var motionRotationProvider: ((Long, Long) -> FloatArray?)? = null
+    // Published synchronously by setMotionInversionEnabled before its GL command is queued. An old
+    // analysis task therefore sees an optics-door reset immediately and cannot publish or seed
+    // history while the GL thread is still draining commands from the previous evidence epoch.
+    private val motionEvidenceEpoch = AtomicLong(0L)
     private var analysisCallback: (
         (HistogramData?, WaveformData?, FocusDetailData?, MotionInversionData?) -> Unit
     )? = null
@@ -226,6 +230,7 @@ class GlPipeline {
         // such edge — and losing a clear is the one failure that matters, because it pairs frames
         // across the discontinuity the clear existed to mark.
         @Volatile var motionHasHistory = false
+        @Volatile var motionHistoryEpoch = Long.MIN_VALUE
 
         fun retire() {
             owner.retire()
@@ -241,9 +246,10 @@ class GlPipeline {
         }
 
         /** Drops the retained frame; the next pair starts fresh. Cheap and always safe. */
-        fun clearMotionHistory() {
+        fun clearMotionHistory(evidenceEpoch: Long = Long.MIN_VALUE) {
             motionHasHistory = false
             motionPrevTsNs = 0L
+            motionHistoryEpoch = evidenceEpoch
         }
     }
 
@@ -604,10 +610,27 @@ class GlPipeline {
      * two frames' own sensor timestamps, or null when it cannot answer that window. Passing null
      * disarms and drops the retained frame history.
      */
-    fun setMotionInversionEnabled(enabled: Boolean, rotationProvider: ((Long, Long) -> FloatArray?)?) = post {
-        analysisMotion = enabled && rotationProvider != null
-        motionRotationProvider = if (analysisMotion) rotationProvider else null
-        if (!analysisMotion) analysisGeneration?.clearMotionHistory()
+    fun setMotionInversionEnabled(
+        enabled: Boolean,
+        rotationProvider: ((Long, Long) -> FloatArray?)?,
+        evidenceEpoch: Long = motionEvidenceEpoch.get(),
+    ) {
+        // This write is intentionally outside post(): it is the cancellation publication for an
+        // already-running analysis task. The queued GL half resets pairing state before the next
+        // dispatch, while the atomic epoch prevents an old executor result from sneaking through.
+        motionEvidenceEpoch.accumulateAndGet(evidenceEpoch, ::maxOf)
+        post {
+            val currentEpoch = motionEvidenceEpoch.get()
+            // A command from an older concurrently-published replay must not disarm the newer one.
+            if (evidenceEpoch != currentEpoch) return@post
+            analysisMotion = enabled && rotationProvider != null
+            motionRotationProvider = if (analysisMotion) rotationProvider else null
+            analysisGeneration?.let { generation ->
+                if (generation.motionHistoryEpoch != currentEpoch) {
+                    generation.clearMotionHistory(currentEpoch)
+                }
+            }
+        }
     }
 
     /** Sink for computed scopes; invoked on the current analysis generation's executor, not GL. */
@@ -1275,7 +1298,9 @@ class GlPipeline {
         rotationDegrees: Int,
         frontFacing: Boolean,
         frameTsNs: Long,
+        evidenceEpoch: Long,
     ): MotionInversionData {
+        if (motionEvidenceEpoch.get() != evidenceEpoch) return MotionInversionData.UNJUDGED
         val size = w * h
         var cur = generation.motionCur
         if (cur == null || cur.size < size) {
@@ -1286,7 +1311,9 @@ class GlPipeline {
 
         var result = MotionInversionData.UNJUDGED
         val prev = generation.motionPrev
-        if (paired && prev != null && prev.size >= size && rotation != null && rotation.size >= 2) {
+        if (paired && generation.motionHistoryEpoch == evidenceEpoch && prev != null &&
+            prev.size >= size && rotation != null && rotation.size >= 2
+        ) {
             val predicted = predictedSceneMotion(
                 yawRadians = rotation[0],
                 pitchRadians = rotation[1],
@@ -1310,12 +1337,16 @@ class GlPipeline {
             }
         }
 
+        // A reset can race the CPU work above. Never let a late old-epoch task reseed the new
+        // history; its callback is suppressed by the matching publication guard below as well.
+        if (motionEvidenceEpoch.get() != evidenceEpoch) return MotionInversionData.UNJUDGED
         // Swap rather than copy: this frame becomes the next call's predecessor.
         generation.motionCur = prev
         generation.motionPrev = cur
         generation.motionW = w
         generation.motionH = h
         generation.motionPrevTsNs = frameTsNs
+        generation.motionHistoryEpoch = evidenceEpoch
         generation.motionHasHistory = true
         return result
     }
@@ -1353,6 +1384,7 @@ class GlPipeline {
         // Rider (see [analysisFocus]): computed only when the readback is already happening.
         val doFocus = analysisFocus
         val doMotion = analysisMotion && motionRotationProvider != null
+        val evidenceEpoch = motionEvidenceEpoch.get()
         if (!generation.owner.tryAcquire()) return
         try {
             val target = analysisTargetSize(previewW, previewH)
@@ -1428,6 +1460,7 @@ class GlPipeline {
             // Whether the RETAINED frame can be paired with this one. Read on the GL thread because
             // the flag is GL-thread state; the executor only consumes the answer.
             val motionPaired = doMotion && generation.motionHasHistory &&
+                generation.motionHistoryEpoch == evidenceEpoch &&
                 generation.motionW == w && generation.motionH == h
             // The rotation the ANALYSIS draw applied — i.e. the app's own afocal correction as it
             // currently stands. That is what makes the verdict mean "is the frame 180 out relative
@@ -1446,11 +1479,24 @@ class GlPipeline {
                     // Same reasoning for the motion rider, and the same missing `lut`: an inverted
                     // image is an optical fact, and a brightness simulation must not reach it.
                     val motion = if (doMotion) {
-                        computeMotionInversionFrame(generation, bytes, w, h, motionPaired, rotation, motionRotationDeg, motionFront, curTsNs)
+                        computeMotionInversionFrame(
+                            generation,
+                            bytes,
+                            w,
+                            h,
+                            motionPaired,
+                            rotation,
+                            motionRotationDeg,
+                            motionFront,
+                            curTsNs,
+                            evidenceEpoch,
+                        )
                     } else {
                         null
                     }
-                    if (generation.owner.mayPublish() && analysisGeneration === generation) {
+                    if (generation.owner.mayPublish() && analysisGeneration === generation &&
+                        motionEvidenceEpoch.get() == evidenceEpoch
+                    ) {
                         cb.invoke(hist, wave, focus, motion)
                     }
                 } catch (_: Throwable) {

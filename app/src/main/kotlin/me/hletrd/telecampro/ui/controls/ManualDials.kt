@@ -49,6 +49,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -68,6 +69,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.AnnotatedString
@@ -463,12 +465,13 @@ private fun FnDialChip(
     availability: ControlAvailability,
 ) {
     val controls = state.controls
+    val labelContext = LocalContext.current
     val caps = state.caps
     val policyEnabled = quickFnEnabled(slot, state)
     when (slot) {
         FnSlot.EXPOSURE_MODE -> DialChip(
             label = stringResource(R.string.label_mode), // not "AE" — "AE: M" read as auto-exposure: manual (UI review #22)
-            value = controls.exposureMode.letter,
+            value = exposureModeLetter(controls.exposureMode),
             active = controls.exposureMode != ExposureMode.PROGRAM,
             enabled = policyEnabled && availability.exposureModes.size > 1,
             onClick = { actions.onExposureMode(nextAvailable(controls.exposureMode, availability.exposureModes)) },
@@ -481,11 +484,11 @@ private fun FnDialChip(
                 caps?.minFocusDistanceDiopters ?: 0f,
             )
             DialChip(
-                label = focusModeLabel(controls.focusMode),
+                label = labelContext.localizedLabel(controls.focusMode),
                 // The drawn label is the LIVE AF mode, so the node's name has to come from the slot —
                 // and the mode then rides the STATE with the distance, or it is spoken nowhere on the
                 // chip while a sighted user reads it in the pill.
-                accessibleName = fnSlotLabel(slot),
+                accessibleName = labelContext.localizedLabel(slot),
                 value = focusDistance,
                 accessibleState = focusDialStateDescription(controls.focusMode, focusDistance),
                 active = openDial == DialType.FOCUS,
@@ -500,7 +503,7 @@ private fun FnDialChip(
             // FOCUS this loses nothing to the rename: "SS" is only ever an abbreviation OF the name,
             // never a value, and the speed/angle distinction the value can carry is already in the
             // value's own glyphs ("1/250s" vs "180°"). So this chip needs no accessibleState.
-            accessibleName = fnSlotLabel(slot),
+            accessibleName = labelContext.localizedLabel(slot),
             value = when {
                 controls.exposureMode == ExposureMode.PROGRAM -> autoShutterText(state)
                 controls.autoShutterDriven -> formatShutterSpeed(controls.exposureTimeNs)
@@ -528,7 +531,7 @@ private fun FnDialChip(
         )
         FnSlot.WB -> DialChip(
             label = stringResource(R.string.label_wb),
-            value = if (controls.wbMode == WbMode.MANUAL) "${controls.wbKelvin}K" else wbModeLabel(controls.wbMode),
+            value = if (controls.wbMode == WbMode.MANUAL) "${controls.wbKelvin}K" else labelContext.localizedLabel(controls.wbMode),
             active = openDial == DialType.WB,
             enabled = policyEnabled && whiteBalanceFnChipEnabled(controls.wbMode, availability),
             onClick = { onSelect(DialType.WB) },
@@ -565,7 +568,7 @@ private fun FnDialChip(
             // keeps the complete label. That is a width seam with its own justification, not this
             // rule being overridden.
             label = stringResource(R.string.label_stabilization),
-            value = state.videoStabMode.label,
+            value = labelContext.localizedLabel(state.videoStabMode),
             active = state.videoStabMode != VideoStabMode.OFF,
             enabled = policyEnabled,
             onClick = { actions.onVideoStabMode(nextVideoStabMode(state.videoStabMode)) },
@@ -573,7 +576,7 @@ private fun FnDialChip(
         )
         FnSlot.DRIVE -> DialChip(
             label = stringResource(R.string.label_drive),
-            value = driveModeLabel(state.driveMode),
+            value = labelContext.localizedLabel(state.driveMode),
             active = state.driveMode != me.hletrd.telecampro.camera.DriveMode.SINGLE,
             enabled = policyEnabled,
             onClick = { actions.onDriveMode(nextDriveMode(state.driveMode)) },
@@ -581,7 +584,7 @@ private fun FnDialChip(
         )
         FnSlot.METERING -> DialChip(
             label = stringResource(R.string.label_meter),
-            value = meteringModeLabel(controls.meteringMode),
+            value = labelContext.localizedLabel(controls.meteringMode),
             active = controls.meteringMode != MeteringMode.MATRIX,
             enabled = policyEnabled && availability.meteringModes.size > 1,
             onClick = { actions.onMeteringMode(nextAvailable(controls.meteringMode, availability.meteringModes)) },
@@ -618,7 +621,7 @@ private fun FnDialChip(
         }
         FnSlot.AUDIO_SCENE -> DialChip(
             label = stringResource(R.string.label_audio),
-            value = state.audioScene.label,
+            value = labelContext.localizedLabel(state.audioScene),
             active = state.audioScene != me.hletrd.telecampro.camera.AudioScene.STANDARD,
             enabled = policyEnabled,
             onClick = { actions.onAudioScene(nextAudioScene(state.audioScene)) },
@@ -626,7 +629,7 @@ private fun FnDialChip(
         )
         FnSlot.GRID -> DialChip(
             label = stringResource(R.string.label_grid),
-            value = gridTypeLabel(state.grid),
+            value = labelContext.localizedLabel(state.grid),
             active = state.grid != GridType.NONE,
             enabled = policyEnabled,
             onClick = { actions.onGridType(nextGridType(state.grid)) },
@@ -666,7 +669,7 @@ private fun FnDialChip(
         )
         FnSlot.FRAME_LINES -> DialChip(
             label = stringResource(R.string.label_frame),
-            value = state.frameLines.label,
+            value = labelContext.localizedLabel(state.frameLines),
             active = state.frameLines != FrameLineType.OFF,
             enabled = policyEnabled,
             onClick = { actions.onFrameLines(nextFrameLine(state.frameLines)) },
@@ -674,7 +677,7 @@ private fun FnDialChip(
         )
         FnSlot.FLASH -> DialChip(
             label = stringResource(R.string.label_flash),
-            value = flashModeLabel(controls.flash),
+            value = labelContext.localizedLabel(controls.flash),
             active = controls.flash != FlashMode.OFF,
             enabled = policyEnabled && availability.flashModes.size > 1,
             onClick = { actions.onFlash(nextAvailable(controls.flash, availability.flashModes)) },
@@ -682,7 +685,7 @@ private fun FnDialChip(
         )
         FnSlot.TIMER -> DialChip(
             label = stringResource(R.string.label_timer),
-            value = shutterTimerLabel(state.timer),
+            value = labelContext.localizedLabel(state.timer),
             active = state.timer != ShutterTimer.OFF,
             enabled = policyEnabled,
             onClick = { actions.onTimer(nextShutterTimer(state.timer)) },
@@ -702,7 +705,7 @@ private fun FnDialChip(
         )
         FnSlot.AUDIO_INPUT -> DialChip(
             label = stringResource(R.string.label_mic_input),
-            value = state.audioInputPreference.label,
+            value = labelContext.localizedLabel(state.audioInputPreference),
             active = state.audioInputPreference != AudioInputPreference.AUTO,
             enabled = policyEnabled,
             onClick = { if (policyEnabled) actions.onAudioInputPreference(nextAudioInput(state.audioInputPreference)) },
@@ -793,7 +796,7 @@ private fun DialChip(
                 enabled = enabled,
                 role = Role.Button,
                 onClick = onClick,
-                onLongClickLabel = "Open function menu",
+                onLongClickLabel = stringResource(R.string.a11y_open_function_menu),
                 onLongClick = onLongClick,
             ),
         contentAlignment = Alignment.Center,
@@ -909,7 +912,7 @@ private fun FocusRuler(controls: ManualControls, caps: CameraCaps?, onFocusSlide
             fraction = fraction,
             onFractionChange = onFocusSlider,
             enabled = enabled,
-            semanticLabel = "Focus distance",
+            semanticLabel = stringResource(R.string.a11y_focus_distance),
             valueDescription = readout,
             totalUnits = 100,
             majorEvery = 10,
@@ -933,13 +936,15 @@ private fun ShutterRuler(
         if (controls.shutterMode == ShutterMode.ANGLE) {
             val fraction = ((controls.shutterAngle - 1f) / 359f).coerceIn(0f, 1f)
             val readout = "%.0f°  (%s)".format(Locale.US, controls.shutterAngle, formatShutterSpeed(controls.effectiveExposureNsForDisplay()))
-            val describedReadout = if (controls.autoShutterDriven) "Auto $readout" else readout
+            val describedReadout = if (controls.autoShutterDriven) {
+                stringResource(R.string.a11y_auto_value, readout)
+            } else readout
             RulerReadout(readout, autoValue = controls.autoShutterDriven)
             RulerSlider(
                 fraction = fraction,
                 onFractionChange = { f -> actions.onShutterAngle((1f + f * 359f).coerceIn(1f, 360f)) },
                 enabled = enabled,
-                semanticLabel = "Shutter angle",
+                semanticLabel = stringResource(R.string.a11y_shutter_angle),
                 valueDescription = describedReadout,
             )
         } else {
@@ -963,8 +968,10 @@ private fun ShutterRuler(
                 fraction = fraction,
                 onFractionChange = { f -> actions.onShutterNs(stops[(f * (n - 1)).roundToInt().coerceIn(0, n - 1)]) },
                 enabled = enabled,
-                semanticLabel = "Shutter speed",
-                valueDescription = if (controls.autoShutterDriven) "Auto $readout" else readout,
+                semanticLabel = stringResource(R.string.a11y_shutter_speed),
+                valueDescription = if (controls.autoShutterDriven) {
+                    stringResource(R.string.a11y_auto_value, readout)
+                } else readout,
                 totalUnits = (n - 1).coerceAtLeast(1),
                 majorEvery = stepMajorEvery(controls.exposureStep),
                 snap = true,
@@ -1138,7 +1145,7 @@ private const val WB_KELVIN_MAX = 10000f
 @Composable
 private fun WbRuler(controls: ManualControls, onWbKelvin: (Int) -> Unit) {
     val fraction = ((controls.wbKelvin - WB_KELVIN_MIN) / (WB_KELVIN_MAX - WB_KELVIN_MIN)).coerceIn(0f, 1f)
-    val readout = "${controls.wbKelvin} kelvin"
+    val readout = pluralStringResource(R.plurals.a11y_kelvin_value, controls.wbKelvin, controls.wbKelvin)
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         RulerReadout("${controls.wbKelvin}K")
         RulerSlider(
@@ -1148,7 +1155,7 @@ private fun WbRuler(controls: ManualControls, onWbKelvin: (Int) -> Unit) {
                 onWbKelvin(kelvin)
             },
             enabled = controls.wbMode == WbMode.MANUAL,
-            semanticLabel = "White balance",
+            semanticLabel = stringResource(R.string.a11y_white_balance),
             valueDescription = readout,
         )
     }
@@ -1174,7 +1181,7 @@ private fun EvRuler(controls: ManualControls, caps: CameraCaps?, onEv: (Int) -> 
                 onEv(ev)
             },
             enabled = controls.exposureMode != ExposureMode.MANUAL,
-            semanticLabel = "Exposure compensation",
+            semanticLabel = stringResource(R.string.a11y_exposure_compensation),
             valueDescription = readout,
             totalUnits = (hi - lo).coerceAtLeast(1),
             majorEvery = majorEvery,
@@ -1218,7 +1225,7 @@ private fun ZoomRuler(
             fraction = fraction,
             onFractionChange = { f -> onZoomRatio(((lo + f * (hi - lo)) / base).coerceIn(range.lower, hi / base)) },
             enabled = hi > lo,
-            semanticLabel = "Zoom",
+            semanticLabel = stringResource(R.string.label_zoom),
             valueDescription = readout,
             totalUnits = 120,
             majorEvery = 12,
@@ -1263,8 +1270,14 @@ fun RulerSlider(
     // No default: "Value" would be a meaningless TalkBack name for a real camera control, and a
     // ruler that silently fell back to it would announce nothing an operator can act on.
     semanticLabel: String,
-    valueDescription: String = "${(fraction.coerceIn(0f, 1f) * 100).roundToInt()} percent",
+    valueDescription: String? = null,
 ) {
+    val percent = (fraction.coerceIn(0f, 1f) * 100).roundToInt()
+    val resolvedValueDescription = valueDescription ?: pluralStringResource(
+        R.plurals.a11y_percent_value,
+        percent,
+        percent,
+    )
     val density = LocalDensity.current
     val view = LocalView.current
     val pxPerUnit = remember(density) { with(density) { RULER_TICK_SPACING.toPx() } }
@@ -1304,7 +1317,7 @@ fun RulerSlider(
             .progressSemantics(value = fraction.coerceIn(0f, 1f), valueRange = 0f..1f)
             .semantics {
                 contentDescription = semanticLabel
-                stateDescription = valueDescription
+                stateDescription = resolvedValueDescription
                 if (!enabled) disabled()
                 setProgress { target ->
                     if (!enabled) return@setProgress false

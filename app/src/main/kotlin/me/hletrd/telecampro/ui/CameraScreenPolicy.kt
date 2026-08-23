@@ -6,7 +6,6 @@ import androidx.compose.ui.unit.constrainHeight
 import androidx.compose.ui.unit.constrainWidth
 import me.hletrd.telecampro.camera.AspectRatio
 import me.hletrd.telecampro.camera.AutoExposure
-import me.hletrd.telecampro.camera.CAMERA_STARTING_STATUS
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.ExposureMode
 import me.hletrd.telecampro.camera.FlashMode
@@ -36,13 +35,6 @@ import kotlin.math.sin
  * CameraScreen.kt.
  */
 
-internal fun String.isUrgentStatus(): Boolean =
-    // "could not": the delete-failure statuses ("Could not delete file", "Some files could not be
-    // deleted. …") matched no keyword and rendered as polite toasts — found while pinning this
-    // classifier (TEST4-14). It is the only keyword those three strings contain, so StatusUrgencyTest
-    // pins all of them by their exact shipped wording.
-    listOf("error", "fail", "unable", "unavailable", "denied", "insufficient", "could not")
-        .any { contains(it, ignoreCase = true) }
 
 /**
  * Whether the WINDOW, not gravity, is the trustworthy statement of which way is up.
@@ -78,17 +70,6 @@ internal fun windowFollowsDevice(smallestScreenWidthDp: Int): Boolean = smallest
  * "Starting camera…" is true, and every way that attempt can end (Ready, an error status, the
  * exhausted-retry terminal status) replaces it.
  */
-internal fun statusIsProgress(message: String): Boolean = message == CAMERA_STARTING_STATUS
-
-/** Keeps successful acknowledgements quiet while leaving actionable failures readable. */
-internal fun statusDisplayDurationMs(message: String?): Long? = when {
-    message == null -> null
-    statusIsProgress(message) -> null
-    message.isUrgentStatus() -> 6_000L
-    listOf("saved", "deleted", "loaded").any { token -> message.contains(token, ignoreCase = true) } ->
-        1_500L
-    else -> 2_500L
-}
 
 /**
  * The self-timer countdown, spoken. Its node is a 1 Hz `LiveRegionMode.Polite` region, so TalkBack
@@ -496,15 +477,21 @@ internal fun fnTileContentAxis(deviceOrientation: Int): FnTileContentAxis =
     }
 
 /** Short visual copy for the narrow physical strip; accessibility keeps the complete slot label. */
-internal fun fnOverlayVisualLabel(slot: FnSlot, heldLandscape: Boolean): String = when {
+internal fun fnOverlayVisualLabel(
+    slot: FnSlot,
+    heldLandscape: Boolean,
+    fullLabel: String = fnSlotLabel(slot),
+    stabilizationLabel: String = "Stab",
+    openGateLabel: String = "Gate",
+): String = when {
     // "Stab" in BOTH axes since the tiles gained icons (2026-07-31): the 14 dp glyph + 4 dp gap
     // eats exactly the width that let "Stabilization" fit a portrait tile, and "Stabilizati…" is
     // worse than the compression. NOT "Steady": the OSD owns STEADY for ONE value (ENHANCED), so a
     // tile named after a state it is not in reads as a lie; "Stab" matches the OSD's STAB OFF tag.
-    slot == FnSlot.STABILIZATION -> "Stab"
-    !heldLandscape -> fnSlotLabel(slot)
-    slot == FnSlot.OPEN_GATE -> "Gate"
-    else -> fnSlotLabel(slot)
+    slot == FnSlot.STABILIZATION -> stabilizationLabel
+    !heldLandscape -> fullLabel
+    slot == FnSlot.OPEN_GATE -> openGateLabel
+    else -> fullLabel
 }
 
 /** Short visual values for held-landscape tiles; accessibility keeps the complete value. */

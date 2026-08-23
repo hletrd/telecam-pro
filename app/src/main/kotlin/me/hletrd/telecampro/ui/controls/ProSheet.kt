@@ -100,6 +100,7 @@ import me.hletrd.telecampro.camera.MAX_TELECONVERTER_MAGNIFICATION
 import me.hletrd.telecampro.camera.MIN_TELECONVERTER_MAGNIFICATION
 import me.hletrd.telecampro.camera.ShutterTimer
 import me.hletrd.telecampro.camera.PhoneModel
+import me.hletrd.telecampro.camera.TeleconverterProfile
 import me.hletrd.telecampro.camera.VideoCodec
 import me.hletrd.telecampro.camera.VideoStabMode
 import me.hletrd.telecampro.camera.VideoFrameRate
@@ -110,9 +111,9 @@ import me.hletrd.telecampro.camera.controlCapabilities
 import me.hletrd.telecampro.camera.hiResToggleEnabled
 import me.hletrd.telecampro.camera.videoBitRate
 import me.hletrd.telecampro.camera.rawSelectable
-import me.hletrd.telecampro.video.EncoderCaps
 import me.hletrd.telecampro.ui.CameraActions
 import me.hletrd.telecampro.ui.formatZoomMultiplier
+import me.hletrd.telecampro.ui.resolve
 import me.hletrd.telecampro.ui.theme.CameraColors
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -125,17 +126,45 @@ import kotlin.math.roundToInt
  * category tabs on a left rail (mirroring Sony's own camera menu), rather than one long scroll.
  * Every row is a thin wrapper around a [CameraActions] method; this file owns no camera state.
  */
-internal enum class ProSheetTab(val label: String) {
-    MY_MENU("My"),
-    SHOOTING("Shoot"),
-    EXPOSURE("Exposure"),
-    FOCUS("Focus"),
-    LENS("Lens"),
-    VIDEO("Video"),
-    PROCESSING("Image"),
-    ASSISTS("Assist"),
-    ADVANCED("Setup"),
-}
+internal enum class ProSheetTab { MY_MENU, SHOOTING, EXPOSURE, FOCUS, LENS, VIDEO, PROCESSING, ASSISTS, ADVANCED }
+
+@Composable
+private fun proSheetTabLabel(tab: ProSheetTab): String = stringResource(
+    when (tab) {
+        ProSheetTab.MY_MENU -> R.string.settings_tab_my
+        ProSheetTab.SHOOTING -> R.string.settings_tab_shoot
+        ProSheetTab.EXPOSURE -> R.string.settings_tab_exposure
+        ProSheetTab.FOCUS -> R.string.settings_tab_focus
+        ProSheetTab.LENS -> R.string.settings_tab_lens
+        ProSheetTab.VIDEO -> R.string.settings_tab_video
+        ProSheetTab.PROCESSING -> R.string.settings_tab_image
+        ProSheetTab.ASSISTS -> R.string.settings_tab_assist
+        ProSheetTab.ADVANCED -> R.string.settings_tab_setup
+    },
+)
+
+@Composable
+private fun phoneModelLabel(model: PhoneModel): String = stringResource(when (model) {
+    PhoneModel.FIND_X9_ULTRA -> R.string.phone_oppo_find_x9_ultra
+    PhoneModel.FIND_X9_PRO -> R.string.phone_oppo_find_x9_pro
+    PhoneModel.VIVO_X200_ULTRA -> R.string.phone_vivo_x200_ultra
+    PhoneModel.VIVO_X300_ULTRA -> R.string.phone_vivo_x300_ultra
+    PhoneModel.OTHER -> R.string.phone_other
+})
+
+@Composable
+private fun teleconverterProfileLabel(profile: TeleconverterProfile): String = stringResource(when (profile) {
+    TeleconverterProfile.EXPLORER_300 -> R.string.converter_hasselblad_300
+    TeleconverterProfile.HASSELBLAD_230 -> R.string.converter_hasselblad_230
+    TeleconverterProfile.ZEISS_200_X200,
+    TeleconverterProfile.ZEISS_200_X300,
+    -> R.string.converter_zeiss_200
+    TeleconverterProfile.ZEISS_400 -> R.string.converter_zeiss_400
+    TeleconverterProfile.GENERIC_1_5 -> R.string.converter_generic_15
+    TeleconverterProfile.GENERIC_2 -> R.string.converter_generic_2
+    TeleconverterProfile.GENERIC_3 -> R.string.converter_generic_3
+    TeleconverterProfile.CUSTOM -> R.string.converter_custom
+})
 
 internal data class ProSheetTabSelection(val tab: ProSheetTab, val selected: Boolean)
 
@@ -200,12 +229,13 @@ internal fun ProSheet(
         } else {
             RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
         }
+        val cameraSettingsPaneTitle = stringResource(R.string.a11y_camera_settings)
         Column(
             modifier = panelModifier
                 .clip(panelShape)
                 .background(CameraColors.Pill)
                 .semantics {
-                    paneTitle = "Camera settings"
+                    paneTitle = cameraSettingsPaneTitle
                     isTraversalGroup = true
                 }
                 // Consume panel taps without adding a nameless dummy Button to the semantics tree.
@@ -356,6 +386,8 @@ private fun TabRail(selected: ProSheetTab, onSelect: (ProSheetTab) -> Unit, modi
 private fun TabRailItem(tab: ProSheetTab, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val fg = if (selected) CameraColors.TextPrimary else CameraColors.TextSecondary
     val activate = onClick
+    val tabLabel = proSheetTabLabel(tab)
+    val selectedState = stringResource(if (selected) R.string.a11y_selected else R.string.a11y_not_selected)
     Column(
         modifier = modifier
             .fillMaxWidth()
@@ -369,8 +401,8 @@ private fun TabRailItem(tab: ProSheetTab, selected: Boolean, onClick: () -> Unit
             // so switch/TalkBack users could focus a tab without hearing which tab it was.
             .focusable()
             .clearAndSetSemantics {
-                contentDescription = tab.label
-                stateDescription = if (selected) "Selected" else "Not selected"
+                contentDescription = tabLabel
+                stateDescription = selectedState
                 role = Role.Tab
                 this.selected = selected
                 onClick {
@@ -392,7 +424,7 @@ private fun TabRailItem(tab: ProSheetTab, selected: Boolean, onClick: () -> Unit
         Canvas(modifier = Modifier.size(20.dp)) { drawTabIcon(tab, fg) }
         Spacer(modifier = Modifier.height(4.dp))
         Text(
-            text = tab.label,
+            text = tabLabel,
             color = fg,
             // labelSmall (11 sp), not a hand-rolled 10 sp: this is the sheet's PRIMARY navigation,
             // not a badge, and 10 sp was the smallest permanent text in the app. The longest label
@@ -530,7 +562,7 @@ private fun MyMenuTab(
     val availability = remember(state.caps, state.controls) {
         controlAvailability(state.caps?.controlCapabilities(), state.controls)
     }
-    TabTitle("My Menu")
+    TabTitle(stringResource(R.string.section_my_menu))
     if (state.myMenuSlots.isEmpty()) {
         Text(stringResource(R.string.mr_slot_state_empty), color = CameraColors.TextSecondary, style = MaterialTheme.typography.labelSmall)
     } else {
@@ -539,7 +571,7 @@ private fun MyMenuTab(
         }
     }
     if (state.recentSettingSlots.isNotEmpty()) {
-        SectionHeader("Recent")
+        SectionHeader(stringResource(R.string.section_recent))
         state.recentSettingSlots.forEach { slot ->
             QuickFnRow(slot, state, actions, availability, openDial)
         }
@@ -564,8 +596,8 @@ private fun QuickFnRow(
         else -> quickManualDialEnabled(manualDial, availability)
     }
     LabelValueRow(
-        label = fnSlotLabel(slot),
-        valueLabel = fnSlotValue(slot, state),
+        label = LocalContext.current.localizedLabel(slot),
+        valueLabel = fnSlotValue(slot, state, LocalContext.current),
         enabled = enabled,
         onClick = {
             if (manualDial != null) openDial(manualDial) else performQuickFn(slot, state, actions)
@@ -575,10 +607,10 @@ private fun QuickFnRow(
 
 @Composable
 private fun MemoryRecallControls(state: CameraUiState, actions: CameraActions) {
-    SectionHeader("MR")
+    SectionHeader(stringResource(R.string.section_memory_recall))
     MemorySlot.entries.forEach { slot ->
         val saved = slot in state.savedMemorySlots
-        val name = state.memorySlotNames[slot] ?: slot.label
+        val name = state.memorySlotNames[slot] ?: slot.name
         val summary = state.memorySlotSummaries[slot].orEmpty()
         MemoryPresetRow(
             slot = slot,
@@ -626,7 +658,7 @@ private fun MemoryPresetRow(
             .clickable(
                 enabled = saved && !locked,
                 role = Role.Button,
-                onClickLabel = "Recall ${slot.label}",
+                onClickLabel = stringResource(R.string.action_recall_memory, slot.name),
                 onClick = onRecall,
             )
             .padding(horizontal = 12.dp, vertical = 9.dp),
@@ -634,7 +666,7 @@ private fun MemoryPresetRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            text = slot.label,
+            text = slot.name,
             color = if (active) CameraColors.ManualActive else CameraColors.TextSecondary,
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.SemiBold,
@@ -666,14 +698,15 @@ private fun MemoryPresetRow(
 
 @Composable
 private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
+    val labelContext = LocalContext.current
     val caps = state.caps
     // Same capability projection every other tab consumes (PERF4-8 remember pattern); the hi-res
     // row reads its route fact from here instead of re-deriving admission axes from raw caps.
     val availability = remember(state.caps, state.controls) {
         controlAvailability(state.caps?.controlCapabilities(), state.controls)
     }
-    TabTitle("Shoot")
-    SectionHeader("Format")
+    TabTitle(stringResource(R.string.settings_tab_shoot))
+    SectionHeader(stringResource(R.string.section_format))
     PhotoFormatToggles(
         formats = state.photoFormats,
         processedAvailable = state.photoSessionOutputs.processed,
@@ -709,7 +742,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         // SILENT consequences of the switch.
         val hiResCaption = caps?.hiResJpegSize?.let { hiResSize ->
             val mp = (hiResSize.width.toLong() * hiResSize.height / 1_000_000).toInt()
-            "${hiResSize.width}×${hiResSize.height} · $mp MP · JPEG · 4:3 · no RAW"
+            stringResource(R.string.high_resolution_summary, hiResSize.width, hiResSize.height, mp)
         }
         Captioned(hiResCaption) {
             ToggleRow(
@@ -754,7 +787,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
             // Framing state, not an output-format fact — the same misfiling Release fixed for the
             // drive rows (UI review #14). The Assist tab already owns "Framing" for overlays; here
             // the word covers the one live framing control this tab carries.
-            SectionHeader("Framing")
+            SectionHeader(stringResource(R.string.section_framing))
             LabeledSlider(
                 label = stringResource(R.string.label_zoom),
                 valueLabel = formatZoomMultiplier(state.controls.zoomRatio * zBase),
@@ -777,12 +810,12 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
     // "Release", the Sony group name for drive mode + interval + self-timer. A bare "Drive" header
     // would only echo the row directly under it, but WITHOUT a header here the three release rows
     // sat under "Format" and read as output-format settings.
-    SectionHeader("Release")
+    SectionHeader(stringResource(R.string.section_release))
     SegmentedSelector(
         label = stringResource(R.string.label_drive),
         options = DriveMode.entries,
         selected = state.driveMode,
-        labelFor = ::driveModeLabel,
+        labelFor = { labelContext.localizedLabel(it) },
         onSelect = actions::onDriveMode,
     )
     if (state.driveMode == DriveMode.TIMELAPSE) {
@@ -798,7 +831,7 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
         label = stringResource(R.string.label_self_timer),
         options = ShutterTimer.entries,
         selected = state.timer,
-        labelFor = ::shutterTimerLabel,
+        labelFor = { labelContext.localizedLabel(it) },
         onSelect = actions::onTimer,
     )
     MemoryRecallControls(state = state, actions = actions)
@@ -806,20 +839,21 @@ private fun ShootingTab(state: CameraUiState, actions: CameraActions) {
 
 @Composable
 private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
+    val labelContext = LocalContext.current
     val controls = state.controls
     val caps = state.caps
     // remember(): the projection allocates ~9 filtered lists and caps/controls rarely change,
     // while telemetry ticks recompose the open tab ~10-25 Hz (PERF4-8; TopBar/ManualDials
     // already memoize the identical projection).
     val availability = remember(caps, controls) { controlAvailability(caps?.controlCapabilities(), controls) }
-    TabTitle("Exposure")
+    TabTitle(stringResource(R.string.settings_tab_exposure))
     // PASM-style: P (auto), S (shutter-priority, app auto-ISO), ISO (iso-priority, app auto-shutter),
     // M (manual). No aperture-priority — the tele aperture is fixed.
     SegmentedSelector(
         label = stringResource(R.string.label_mode),
         options = availability.exposureModes,
         selected = controls.exposureMode,
-        labelFor = { it.letter },
+        labelFor = { exposureModeLetter(it) },
         onSelect = actions::onExposureMode,
         enabled = availability.exposureModes.size > 1,
     )
@@ -833,7 +867,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         label = stringResource(R.string.label_flicker),
         options = availability.antibandingModes,
         selected = controls.antibanding,
-        labelFor = ::antibandingLabel,
+        labelFor = { labelContext.localizedLabel(it) },
         onSelect = actions::onAntibanding,
         enabled = availability.antibandingModes.size > 1,
     )
@@ -841,7 +875,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         label = stringResource(R.string.label_shutter),
         options = ShutterMode.entries,
         selected = controls.shutterMode,
-        labelFor = ::shutterModeLabel,
+        labelFor = { labelContext.localizedLabel(it) },
         onSelect = actions::onShutterMode,
         enabled = availability.shutterDialEnabled,
     )
@@ -849,7 +883,7 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         label = stringResource(R.string.label_step),
         options = ExposureStep.entries,
         selected = controls.exposureStep,
-        labelFor = { "${it.label} EV" },
+        labelFor = { "${exposureStepLabel(it)} EV" },
         onSelect = actions::onExposureStep,
         enabled = availability.shutterDialEnabled,
     )
@@ -868,19 +902,19 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
         label = stringResource(R.string.label_metering),
         options = availability.meteringModes,
         selected = controls.meteringMode,
-        labelFor = ::meteringModeLabel,
+        labelFor = { labelContext.localizedLabel(it) },
         onSelect = actions::onMeteringMode,
         enabled = availability.meteringModes.size > 1,
     )
 
     // The one eyebrow this longest-scrolling tab gets (UI review #15): the exposure block above is
     // a single train of thought from Mode, but WB opens a different subject mid-scroll.
-    SectionHeader("White Balance")
+    SectionHeader(stringResource(R.string.section_white_balance))
     SegmentedSelector(
         label = stringResource(R.string.label_wb),
         options = availability.wbModes,
         selected = controls.wbMode,
-        labelFor = ::wbModeLabel,
+        labelFor = { labelContext.localizedLabel(it) },
         onSelect = actions::onWbMode,
         enabled = availability.wbModes.size > 1,
     )
@@ -910,11 +944,11 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
     // the app's single name for !cameraReady everywhere else.
     Captioned(
         if (customWbCaptureEnabled) {
-            "Aim at a white or gray card"
+            stringResource(R.string.custom_wb_aim_card)
         } else if (!state.cameraReady) {
-            "Camera reconfiguring…"
+            stringResource(R.string.status_camera_reconfiguring)
         } else {
-            "Use Auto WB with AWB Lock off"
+            stringResource(R.string.status_use_auto_wb)
         },
     ) {
         // DES4-3: standalone action chip missed by the d875eea sweep — same 48 dp wrapper.
@@ -939,17 +973,20 @@ private fun ExposureColorTab(state: CameraUiState, actions: CameraActions) {
 
 @Composable
 private fun FocusTab(state: CameraUiState, actions: CameraActions) {
+    val labelContext = LocalContext.current
     val a11yResetFocusPoint = stringResource(R.string.a11y_reset_focus_point)
+    val a11yTapFocusHeld = stringResource(R.string.a11y_tap_focus_held)
+    val a11yNoTapFocusPoint = stringResource(R.string.a11y_no_tap_focus_point)
     val controls = state.controls
     // remember(): see PERF4-8 note in ExposureColorTab.
     val availability = remember(state.caps, controls) { controlAvailability(state.caps?.controlCapabilities(), controls) }
-    TabTitle("Focus")
-    SectionHeader("Autofocus")
+    TabTitle(stringResource(R.string.settings_tab_focus))
+    SectionHeader(stringResource(R.string.section_autofocus))
     SegmentedSelector(
         label = stringResource(R.string.label_af),
         options = availability.focusModes,
         selected = controls.focusMode,
-        labelFor = ::focusModeLabel,
+        labelFor = { labelContext.localizedLabel(it) },
         onSelect = actions::onFocusMode,
         enabled = availability.focusModes.size > 1,
     )
@@ -958,7 +995,7 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
         label = stringResource(R.string.label_spot_size),
         options = AfSpotSize.entries,
         selected = controls.afSpotSize,
-        labelFor = { it.label },
+        labelFor = { labelContext.localizedLabel(it) },
         onSelect = actions::onAfSpotSize,
         enabled = availability.afSpotSizeEnabled,
     )
@@ -974,21 +1011,23 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
         label = stringResource(R.string.label_tap_focus),
         // "None", not "No point": in a value slot that phrase reads as "there is no point". The
         // stateDescription below is the one that gets to be a sentence.
-        valueLabel = if (state.tapFocusHeld) "Reset" else "None",
+        valueLabel = stringResource(
+            if (state.tapFocusHeld) R.string.action_reset else R.string.value_none,
+        ),
         enabled = state.tapFocusHeld,
         onClick = actions::onResetFocusPoint,
         modifier = Modifier.semantics {
             contentDescription = a11yResetFocusPoint
-            stateDescription = if (state.tapFocusHeld) "Tap focus held" else "No tap focus point"
+            stateDescription = if (state.tapFocusHeld) a11yTapFocusHeld else a11yNoTapFocusPoint
         },
     )
-    SectionHeader("MF Assist")
+    SectionHeader(stringResource(R.string.section_mf_assist))
     ToggleRow(label = stringResource(R.string.label_peaking), checked = state.focusPeaking, onCheckedChange = actions::onTogglePeaking)
     SegmentedSelector(
         label = stringResource(R.string.label_peaking_level),
         options = PeakingLevel.entries,
         selected = state.peakingLevel,
-        labelFor = { it.name.lowercase().replaceFirstChar { c -> c.uppercase() } },
+        labelFor = { labelContext.localizedLabel(it) },
         onSelect = actions::onPeakingLevel,
         enabled = state.focusPeaking,
     )
@@ -996,7 +1035,7 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
         label = stringResource(R.string.label_peaking_color),
         options = PeakingColor.entries,
         selected = state.peakingColor,
-        labelFor = { it.name.lowercase().replaceFirstChar { c -> c.uppercase() } },
+        labelFor = { labelContext.localizedLabel(it) },
         onSelect = actions::onPeakingColor,
         enabled = state.focusPeaking,
     )
@@ -1004,6 +1043,7 @@ private fun FocusTab(state: CameraUiState, actions: CameraActions) {
 
 @Composable
 private fun LensTab(state: CameraUiState, actions: CameraActions) {
+    val labelContext = LocalContext.current
     // Both onLens and onToggleTeleconverter refuse mid-REC deeper in the ViewModel (a full optics-
     // generation reopen — the afocal 180° flip — would tear the recording); these rows used to stay
     // visually hot and only silently no-op (a "Stop REC first" toast) on tap, inconsistent with My
@@ -1014,8 +1054,8 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
     val rearRoute = state.facing == CameraFacing.BACK
     val recordingMutable = !state.isRecording
     val rearOpticsMutable = recordingMutable && rearRoute
-    TabTitle("Lens")
-    SectionHeader("Optics")
+    TabTitle(stringResource(R.string.settings_tab_lens))
+    SectionHeader(stringResource(R.string.section_optics))
     // Every row in this section shares ONE gate (rearOpticsMutable), so the precondition is stated
     // ONCE for the section instead of once per dimmed row — the selfie route used to stack the same
     // dim sentence three times, 20 dp apart, under rows that were already grey.
@@ -1079,17 +1119,21 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
     // converter decides the magnification. Dropdowns, not chips — the flat catalog of every brand's
     // optics read as a scrolling smear (user-rejected). Only the PHONE is ever resolved
     // automatically; passive glass cannot announce itself.
+    val phoneLabels = PhoneModel.entries.associateWith { phoneModelLabel(it) }
     DropdownRow(
         label = stringResource(R.string.label_phone),
         options = PhoneModel.entries,
         selected = state.phoneModel,
-        labelFor = { it.label },
+        labelFor = phoneLabels::getValue,
         onSelect = actions::onPhoneModel,
         enabled = rearOpticsMutable,
     )
     // The computed focal for THIS phone's host lens, never the preset's product number: a "ZEISS
     // 200 mm" is 2.35x glass, and 2.35x on this phone's 70 mm periscope is 165 mm.
-    val converterFocal = "${formatFocalMm(state.teleconverterFocalMm)} equiv."
+    val converterFocal = stringResource(
+        R.string.converter_focal_equivalent,
+        formatFocalMm(state.teleconverterFocalMm),
+    )
     // Converter and Magnification are ONE setting (the slider exists only for a custom converter),
     // and the caption states what the pair resolves to — so all three bind as one block.
     Captioned(
@@ -1104,18 +1148,23 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
                 // a warning about a correct action (this app does not nag — docs/UX_POLICY.md).
                 // Two independent facts, joined by the app's own ` · ` — the old sentence period
                 // ran them together right after the "equiv." abbreviation dot.
-                state.phoneModelDetected -> "$converterFocal · ${state.phoneModel.label} detected"
+                state.phoneModelDetected -> stringResource(
+                    R.string.phone_detected_summary,
+                    converterFocal,
+                    phoneModelLabel(state.phoneModel),
+                )
                 else -> converterFocal
             }
         },
     ) {
+        val converterLabels = state.phoneModel.converters().associateWith { teleconverterProfileLabel(it) }
         DropdownRow(
             label = stringResource(R.string.label_converter),
             // Narrowed to this phone's kits plus the fits-anything entries, so a converter that
             // cannot physically clamp on is not offerable in the first place.
             options = state.phoneModel.converters(),
             selected = state.teleconverterProfile,
-            labelFor = { it.label },
+            labelFor = converterLabels::getValue,
             onSelect = actions::onTeleconverterProfile,
             enabled = rearOpticsMutable,
         )
@@ -1133,7 +1182,7 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
 
     // Stabilization lives here with the rest of the optics — it does not need its own menu tab
     // (feedback). HAL OIS+EIS path; OIS physically cuts per-frame motion blur at 300 mm.
-    SectionHeader("Stabilization")
+    SectionHeader(stringResource(R.string.section_stabilization))
     Captioned(
         when (state.videoStabMode) {
             // null, not "Off": the selected chip already says Off, and a caption restating the
@@ -1149,7 +1198,7 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
             label = stringResource(R.string.label_mode),
             options = VideoStabMode.entries,
             selected = state.videoStabMode,
-            labelFor = { it.label },
+            labelFor = { labelContext.localizedLabel(it) },
             onSelect = actions::onVideoStabMode,
             // Same REC guard as the Lens/TC rows above (CR4-6): onVideoStabMode refuses mid-REC with
             // a toast, so a visually-hot selector here silently no-oped while its siblings greyed out.
@@ -1163,21 +1212,22 @@ private fun LensTab(state: CameraUiState, actions: CameraActions) {
 
 @Composable
 private fun VideoTab(state: CameraUiState, actions: CameraActions) {
+    val labelContext = LocalContext.current
     val caps = state.caps
     val codec = state.videoCodec
     val recordingMutable = !state.isRecording
-    TabTitle("Video")
+    TabTitle(stringResource(R.string.settings_tab_video))
     if (state.isRecording) {
         LabelValueRow(
             label = stringResource(R.string.label_recording),
-            valueLabel = "Settings locked",
+            valueLabel = stringResource(R.string.settings_locked),
         )
     }
 
     // Codecs are limited to what MediaCodecList actually advertises a muxable HW encoder for
     // (HEVC/AVC on this SoC).
-    val codecOptions = remember { EncoderCaps.availableCodecs().ifEmpty { listOf(VideoCodec.HEVC, VideoCodec.AVC) } }
-    SectionHeader("Recording Format")
+    val codecOptions = state.availableVideoCodecs
+    SectionHeader(stringResource(R.string.section_recording_format))
     SegmentedSelector(
         label = stringResource(R.string.label_codec),
         options = codecOptions,
@@ -1251,7 +1301,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         label = stringResource(R.string.label_bitrate),
         options = BitrateLevel.entries,
         selected = state.bitrateLevel,
-        labelFor = ::bitrateLevelLabel,
+        labelFor = { labelContext.localizedLabel(it) },
         onSelect = actions::onBitrateLevel,
         enabled = recordingMutable,
     )
@@ -1268,7 +1318,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
     // can change, and the 12 dp base gap returns to being the boundary before Gamma
     // (UI review #16).
     Text(
-        "${videoCodecLabelShort(codec)} · ${videoResolutionLabel(state.videoResolution)} · ${state.videoFrameRate.label}p · $mbps Mbps",
+        "${videoCodecLabelShort(codec)} · ${videoResolutionLabel(state.videoResolution)} · ${videoFrameRateLabel(state.videoFrameRate)}p · $mbps Mbps",
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.labelSmall,
     )
@@ -1292,7 +1342,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         )
     }
 
-    SectionHeader("Audio")
+    SectionHeader(stringResource(R.string.label_audio))
     ToggleRow(
         // "Record Audio", not a verbatim restatement of the section header above it — and the bare
         // word now belongs to nothing, so the Fn "Direction" cycler no longer collides (UI review #3).
@@ -1305,13 +1355,13 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         label = stringResource(R.string.label_input),
         options = AudioInputPreference.entries,
         selected = state.audioInputPreference,
-        labelFor = { it.label },
+        labelFor = { labelContext.localizedLabel(it) },
         onSelect = actions::onAudioInputPreference,
         enabled = state.recordAudio && recordingMutable,
     )
     LabelValueRow(
         label = stringResource(R.string.label_route),
-        valueLabel = state.audioRouteLabel,
+        valueLabel = state.audioRoute.resolve(LocalContext.current),
     )
     // Directional audio: Sound Focus aims the mic array at the framed subject and tightens with zoom;
     // Sound Stage keeps a wider stereo image.
@@ -1322,7 +1372,7 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
         label = stringResource(R.string.label_directionality),
         options = AudioScene.entries,
         selected = state.audioScene,
-        labelFor = { it.label },
+        labelFor = { labelContext.localizedLabel(it) },
         onSelect = actions::onAudioScene,
         enabled = state.recordAudio && recordingMutable,
     )
@@ -1341,16 +1391,17 @@ private fun VideoTab(state: CameraUiState, actions: CameraActions) {
 
 @Composable
 private fun ProcessingTab(state: CameraUiState, actions: CameraActions) {
+    val labelContext = LocalContext.current
     val controls = state.controls
     // remember(): see PERF4-8 note in ExposureColorTab.
     val availability = remember(state.caps, controls) { controlAvailability(state.caps?.controlCapabilities(), controls) }
-    TabTitle("Image")
-    SectionHeader("Processing")
+    TabTitle(stringResource(R.string.settings_tab_image))
+    SectionHeader(stringResource(R.string.section_processing))
     SegmentedSelector(
         label = stringResource(R.string.label_sharpness),
         options = availability.edgeModes,
         selected = controls.edge,
-        labelFor = ::processingLevelLabel,
+        labelFor = { labelContext.localizedLabel(it) },
         onSelect = actions::onEdge,
         enabled = availability.edgeModes.size > 1,
     )
@@ -1358,7 +1409,7 @@ private fun ProcessingTab(state: CameraUiState, actions: CameraActions) {
         label = stringResource(R.string.label_nr),
         options = availability.noiseReductionModes,
         selected = controls.noiseReduction,
-        labelFor = ::processingLevelLabel,
+        labelFor = { labelContext.localizedLabel(it) },
         onSelect = actions::onNoiseReduction,
         enabled = availability.noiseReductionModes.size > 1,
     )
@@ -1366,7 +1417,7 @@ private fun ProcessingTab(state: CameraUiState, actions: CameraActions) {
         label = stringResource(R.string.label_color),
         options = availability.colorEffects,
         selected = controls.colorEffect,
-        labelFor = ::colorEffectLabel,
+        labelFor = { labelContext.localizedLabel(it) },
         onSelect = actions::onColorEffect,
         enabled = availability.colorEffects.size > 1,
     )
@@ -1374,8 +1425,9 @@ private fun ProcessingTab(state: CameraUiState, actions: CameraActions) {
 
 @Composable
 private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
-    TabTitle("Assist")
-    SectionHeader("Monitor")
+    val labelContext = LocalContext.current
+    TabTitle(stringResource(R.string.settings_tab_assist))
+    SectionHeader(stringResource(R.string.section_monitor))
     // Gamma Display Assist (Sony): only meaningful while the Gamma is a log profile — the monitor
     // shows the normal image, the recorded file stays log.
     ToggleRow(
@@ -1384,7 +1436,7 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
         onCheckedChange = actions::onToggleGammaAssist,
         enabled = state.transfer.isLog,
     )
-    SectionHeader("Exposure Aids")
+    SectionHeader(stringResource(R.string.section_exposure_aids))
     ToggleRow(label = stringResource(R.string.label_zebra), checked = state.zebra, onCheckedChange = actions::onToggleZebra)
     SegmentedSelector(
         // "Level" with % values (Sony: "Zebra Level"): the old label named IRE while every chip
@@ -1406,25 +1458,25 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
     ToggleRow(label = stringResource(R.string.label_false_color), checked = state.falseColor, onCheckedChange = actions::onToggleFalseColor)
     ToggleRow(label = stringResource(R.string.label_histogram), checked = state.histogram, onCheckedChange = actions::onToggleHistogram)
     ToggleRow(label = stringResource(R.string.label_waveform), checked = state.waveform, onCheckedChange = actions::onToggleWaveform)
-    SectionHeader("Framing")
+    SectionHeader(stringResource(R.string.section_framing))
     // Beside Grid, not under Monitor (UI review #20): both are framing overlays, and filing half of
     // them a section away made a user scanning for framing marks miss this one.
     SegmentedSelector(
         label = stringResource(R.string.label_frame_lines),
         options = FrameLineType.entries,
         selected = state.frameLines,
-        labelFor = { it.label },
+        labelFor = { labelContext.localizedLabel(it) },
         onSelect = actions::onFrameLines,
     )
     SegmentedSelector(
         label = stringResource(R.string.label_grid),
         options = GridType.entries,
         selected = state.grid,
-        labelFor = ::gridTypeLabel,
+        labelFor = { labelContext.localizedLabel(it) },
         onSelect = actions::onGridType,
     )
     ToggleRow(label = stringResource(R.string.label_level), checked = state.level, onCheckedChange = actions::onToggleLevel)
-    SectionHeader("Focus Aids")
+    SectionHeader(stringResource(R.string.section_focus_aids))
     // "Loupe" app-wide (cycle-6 D-04): Fn chip, key-action label, and LOUPE OSD tag already use it.
     ToggleRow(label = stringResource(R.string.label_loupe), checked = state.punchIn, onCheckedChange = actions::onTogglePunchIn)
     // NO section header here (UI review #9): the overview stopped being teleconverter-specific
@@ -1441,7 +1493,7 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
     // Says what the aid IS, not the four gates it passes through. The dotted condition list read
     // like the predicate printed out, and it went stale the moment video qualified (2026-07-29) —
     // a caption that enumerates its own preconditions has to be re-edited every time one moves.
-    Captioned("A corner view of the full frame while the loupe magnifies") {
+    Captioned(stringResource(R.string.loupe_overview_caption)) {
         // Loupe Overview is a same-stream full-frame reference, never an automatic 1x camera feed.
         // Exact predicate: enabled + active punch-in + (TELE or past the zoom floor), and in PHOTO
         // also 4:3. Default remains off.
@@ -1467,18 +1519,19 @@ private fun AssistsTab(state: CameraUiState, actions: CameraActions) {
 
 @Composable
 private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
+    val labelContext = LocalContext.current
     val context = LocalContext.current
-    TabTitle("Setup")
-    SectionHeader("App")
+    TabTitle(stringResource(R.string.settings_tab_setup))
+    SectionHeader(stringResource(R.string.section_app))
     LabelValueRow(
         label = stringResource(R.string.action_privacy_policy),
-        valueLabel = "View",
+        valueLabel = stringResource(R.string.action_view),
         onClick = { openPrivacyPolicy(context) },
     )
     // Own section eyebrow (UI review #43): a dim TextSecondary block at the uniform gap directly
     // under the interactive Privacy Policy row wore the exact shape of that row's caption while
     // being unrelated to it.
-    SectionHeader("Legal")
+    SectionHeader(stringResource(R.string.section_legal))
     // Trademark attribution for the named log profiles offered in the Video tab — a legal
     // footnote, deliberately non-interactive and dim. bodySmall, NOT labelSmall: these two are the
     // only multi-sentence PROSE in the sheet, and labelSmall is a label treatment (Medium weight)
@@ -1522,7 +1575,7 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
         color = CameraColors.TextSecondary,
         style = MaterialTheme.typography.bodySmall,
     )
-    SectionHeader("Startup")
+    SectionHeader(stringResource(R.string.section_startup))
     ToggleRow(
         label = stringResource(R.string.label_remember_settings),
         checked = state.rememberSettings,
@@ -1540,29 +1593,29 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
         onCheckedChange = actions::onTogglePreserveTeleconverter,
         enabled = state.rememberSettings,
     )
-    SectionHeader("Photo Fn")
+    SectionHeader(stringResource(R.string.section_photo_fn))
     // Each shooting list only offers slots that can act in ITS mode (fnSlotAppliesTo). My Menu is a
     // settings surface, not a shooting one, so it keeps the full set.
     FnSlotEditor(selected = state.photoFnSlots, mode = CaptureMode.PHOTO, onSet = actions::onSetPhotoFnSlots)
-    SectionHeader("Video Fn")
+    SectionHeader(stringResource(R.string.section_video_fn))
     FnSlotEditor(selected = state.videoFnSlots, mode = CaptureMode.VIDEO, onSet = actions::onSetVideoFnSlots)
-    SectionHeader("My Menu")
+    SectionHeader(stringResource(R.string.section_my_menu))
     FnSlotEditor(selected = state.myMenuSlots, mode = null, onSet = actions::onSetMyMenuSlots)
-    SectionHeader("Keys")
+    SectionHeader(stringResource(R.string.section_keys))
     // This one assignment governs the camera button's FULL press AND the volume keys
     // (MainActivity routes both to it) — say so in the label (cycle-6 D-13).
     SegmentedSelector(
         label = stringResource(R.string.label_full_press_volume),
         options = HardwareKeyAction.entries,
         selected = state.volumeKeyAction,
-        labelFor = ::hardwareKeyActionLabel,
+        labelFor = { labelContext.localizedLabel(it) },
         onSelect = actions::onVolumeKeyAction,
     )
     SegmentedSelector(
         label = stringResource(R.string.label_half_press),
         options = HardwareKeyAction.entries,
         selected = state.halfPressAction,
-        labelFor = ::hardwareKeyActionLabel,
+        labelFor = { labelContext.localizedLabel(it) },
         onSelect = actions::onHalfPressAction,
     )
     // The OPPO quick/action button (system-injected 781). Discrete click — momentary bindings
@@ -1571,7 +1624,7 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
         label = stringResource(R.string.label_quick_button),
         options = HardwareKeyAction.entries,
         selected = state.quickButtonAction,
-        labelFor = ::hardwareKeyActionLabel,
+        labelFor = { labelContext.localizedLabel(it) },
         onSelect = actions::onQuickButtonAction,
     )
     // A stale diagnostic override must remain recoverable, but normal release users should not see
@@ -1581,8 +1634,8 @@ private fun AdvancedTab(state: CameraUiState, actions: CameraActions) {
             // The VALUE slot carries the ACTION, per every other tappable LabelValueRow ("View",
             // "Add"): the old layout put the raw id there, so tapping looked like it would edit the
             // id while it actually CLEARS the override (UI review #11).
-            label = "Camera ID $cameraId",
-            valueLabel = "Reset",
+            label = stringResource(R.string.camera_id_label, cameraId),
+            valueLabel = stringResource(R.string.action_reset),
             onClick = { actions.onCameraOverride(null) },
         )
     }
@@ -1621,8 +1674,8 @@ private fun FnSlotEditor(selected: List<FnSlot>, mode: CaptureMode?, onSet: (Lis
         // true (an added slot leaves this list), so TalkBack announced "Off" for what is an add
         // action (cycle-6 D-11). LabelValueRow is the app's plain-action row idiom.
         LabelValueRow(
-            label = fnSlotLabel(slot),
-            valueLabel = "Add",
+            label = LocalContext.current.localizedLabel(slot),
+            valueLabel = stringResource(R.string.action_add),
             enabled = normalized.size < 8,
             onClick = { if (normalized.size < 8) onSet(normalized + slot) },
             // One list, one left edge: FnSlotOrderRow's 26 dp index column + 8 dp gap indents the
@@ -1656,7 +1709,7 @@ private fun FnSlotOrderRow(
             modifier = Modifier.width(26.dp),
         )
         Text(
-            text = fnSlotLabel(slot),
+            text = LocalContext.current.localizedLabel(slot),
             color = CameraColors.TextPrimary,
             style = MaterialTheme.typography.labelMedium,
             modifier = Modifier.weight(1f),
@@ -1665,10 +1718,10 @@ private fun FnSlotOrderRow(
         // only its bare text, so a TalkBack user heard "Up, button" eight times with no way to tell
         // WHICH slot they were reordering. The visual text stays compact; the spoken action names
         // the slot.
-        val name = fnSlotLabel(slot)
-        MiniTextButton(text = stringResource(R.string.action_up), clickLabel = "Move $name up", enabled = index > 0, onClick = onMoveUp)
-        MiniTextButton(text = stringResource(R.string.action_down), clickLabel = "Move $name down", enabled = index < count - 1, onClick = onMoveDown)
-        MiniTextButton(text = stringResource(R.string.action_remove), clickLabel = "Remove $name", enabled = true, onClick = onRemove)
+        val name = LocalContext.current.localizedLabel(slot)
+        MiniTextButton(text = stringResource(R.string.action_up), clickLabel = stringResource(R.string.action_move_up, name), enabled = index > 0, onClick = onMoveUp)
+        MiniTextButton(text = stringResource(R.string.action_down), clickLabel = stringResource(R.string.action_move_down, name), enabled = index < count - 1, onClick = onMoveDown)
+        MiniTextButton(text = stringResource(R.string.action_remove), clickLabel = stringResource(R.string.action_remove_named, name), enabled = true, onClick = onRemove)
     }
 }
 

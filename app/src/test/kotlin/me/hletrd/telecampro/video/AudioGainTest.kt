@@ -70,6 +70,16 @@ class AudioGainTest {
     }
 
     @Test
+    fun `partial multichannel frame is rewritten but excluded from channel meters`() {
+        val buf = pcmBuffer(1_000)
+
+        val levels = applyGainAndLevel(buf, byteCount = 2, gain = 2f, channelCount = 2)
+
+        assertEquals(listOf<Short>(2_000), samplesOf(buf, 1).toList())
+        assertEquals(listOf(0f, 0f), levels.toList())
+    }
+
+    @Test
     fun `non-finite and out-of-range gain is normalized at PCM boundary`() {
         assertEquals(1f, normalizeAudioGain(Float.NaN), 0f)
         assertEquals(1f, normalizeAudioGain(Float.POSITIVE_INFINITY), 0f)

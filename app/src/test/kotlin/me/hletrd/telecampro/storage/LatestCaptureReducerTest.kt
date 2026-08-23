@@ -1,7 +1,9 @@
 package me.hletrd.telecampro.storage
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LatestCaptureReducerTest {
@@ -406,6 +408,159 @@ class LatestCaptureReducerTest {
         assertEquals(RestoredDeleteScope.CAPTURE_FAMILY, restored?.deleteScope)
     }
 
+    @Test
+    fun `current-package ownership admits names outside the historical grammar`() {
+        val owned = contractRow(
+            output = "owned",
+            name = "operator-renamed-export.webp",
+            collection = StoredMediaCollection.IMAGE,
+            mime = "image/webp",
+            owned = true,
+        )
+
+        assertTrue(isRestorableStoredMediaRow(owned))
+        assertEquals("owned", restoreLatestCapture(listOf(owned))?.preferred?.output)
+    }
+
+    @Test
+    fun `unowned arbitrary directory occupants cannot replace a real capture`() {
+        val real = familyRow("real.heic", stillKey(1_000L, 1L), "heic", id = 1L)
+        val foreign = contractRow(
+            output = "foreign",
+            name = "holiday.jpg",
+            collection = StoredMediaCollection.IMAGE,
+            mime = "image/jpeg",
+            owned = false,
+            takenAt = 9_000L,
+        )
+
+        assertFalse(isRestorableStoredMediaRow(foreign))
+        assertEquals("real.heic", restoreLatestCapture(listOf(real, foreign))?.preferred?.output)
+        assertNull(restoreLatestCapture(listOf(foreign)))
+    }
+
+    @Test
+    fun `owner-cleared current names require exact collection extension and MIME`() {
+        val stillKey = stillKey(1_700_000_000_000L, 7L)
+        val videoKey = videoKey(1_700_000_000_001L, 8L)
+        val accepted = listOf(
+            contractRow("heic", stillKey.displayName("heic"), StoredMediaCollection.IMAGE, "image/heic", false),
+            contractRow("heif", stillKey.displayName("heif"), StoredMediaCollection.IMAGE, "image/heif", false),
+            contractRow("jpg", stillKey.displayName("jpg"), StoredMediaCollection.IMAGE, "image/jpeg", false),
+            contractRow("jpeg", stillKey.displayName("jpeg"), StoredMediaCollection.IMAGE, "image/jpeg", false),
+            contractRow("dng", stillKey.displayName("dng"), StoredMediaCollection.IMAGE, "image/dng", false),
+            contractRow("mp4", videoKey.displayName("mp4"), StoredMediaCollection.VIDEO, "video/mp4", false),
+        )
+        accepted.forEach { assertTrue(it.displayName, isRestorableStoredMediaRow(it)) }
+
+        val rejected = listOf(
+            contractRow("wrong mime", stillKey.displayName("heic"), StoredMediaCollection.IMAGE, "image/jpeg", false),
+            contractRow("wrong extension", stillKey.displayName("webp"), StoredMediaCollection.IMAGE, "image/webp", false),
+            contractRow("wrong collection", stillKey.displayName("heic"), StoredMediaCollection.VIDEO, "video/mp4", false),
+            contractRow("video mime", videoKey.displayName("mp4"), StoredMediaCollection.VIDEO, "video/quicktime", false),
+            contractRow("missing mime", stillKey.displayName("jpg"), StoredMediaCollection.IMAGE, null, false),
+            contractRow(
+                "malformed current",
+                "IMG_TELECAM_F1_1700000000000_7.heic",
+                StoredMediaCollection.IMAGE,
+                "image/heic",
+                false,
+            ),
+        )
+        rejected.forEach { assertFalse(it.displayName, isRestorableStoredMediaRow(it)) }
+    }
+
+    @Test
+    fun `owner-cleared historical names require an emitted timestamp and media lane`() {
+        val accepted = listOf(
+            contractRow(
+                "old still",
+                "IMG_TELECAM_20260716_120000_123_007.heic",
+                StoredMediaCollection.IMAGE,
+                "image/heic",
+                false,
+            ),
+            contractRow(
+                "old raw",
+                "IMG_TELECAM_20260716_120000_123_008.dng",
+                StoredMediaCollection.IMAGE,
+                "application/x-adobe-dng",
+                false,
+            ),
+            contractRow(
+                "old video",
+                "VID_TELECAM_20260716_120000_123_009.mp4",
+                StoredMediaCollection.VIDEO,
+                "video/mp4",
+                false,
+            ),
+        )
+        accepted.forEach { assertTrue(it.displayName, isRestorableStoredMediaRow(it)) }
+
+        val rejected = listOf(
+            contractRow(
+                "invalid calendar",
+                "IMG_TELECAM_20261340_256199_999_001.heic",
+                StoredMediaCollection.IMAGE,
+                "image/heic",
+                false,
+            ),
+            contractRow(
+                "still in video",
+                "IMG_TELECAM_20260716_120000_123_001.mp4",
+                StoredMediaCollection.VIDEO,
+                "video/mp4",
+                false,
+            ),
+            contractRow(
+                "video in images",
+                "VID_TELECAM_20260716_120000_123_001.jpg",
+                StoredMediaCollection.IMAGE,
+                "image/jpeg",
+                false,
+            ),
+        )
+        rejected.forEach { assertFalse(it.displayName, isRestorableStoredMediaRow(it)) }
+    }
+
+    @Test
+    fun `provider null-owner rules are collection-scoped and MIME paired`() {
+        val imageRules = nullOwnerRestoreQueryRules(StoredMediaCollection.IMAGE)
+        val videoRules = nullOwnerRestoreQueryRules(StoredMediaCollection.VIDEO)
+
+        assertEquals(18, imageRules.size)
+        assertTrue(imageRules.all { it.displayNameGlob.startsWith("IMG_TELECAM_") })
+        assertTrue(imageRules.all { "?" !in it.displayNameGlob && "[0-9]" in it.displayNameGlob })
+        assertTrue(imageRules.none { it.displayNameGlob.endsWith(".mp4") || it.mimeType.startsWith("video/") })
+        assertEquals(
+            setOf("video/mp4"),
+            videoRules.map { it.mimeType }.toSet(),
+        )
+        assertEquals(2, videoRules.size)
+        assertTrue(videoRules.all { it.displayNameGlob.startsWith("VID_TELECAM_") && it.displayNameGlob.endsWith(".mp4") })
+    }
+
+    @Test
+    fun `provider owner policy keeps unrestricted names exclusive to the current package`() {
+        val policy = restoreOwnerQueryPolicy(
+            collection = StoredMediaCollection.VIDEO,
+            packageName = "me.hletrd.telecampro",
+            ownerColumn = "owner",
+            displayNameColumn = "name",
+            mimeTypeColumn = "mime",
+        )
+
+        assertTrue(policy.selection.startsWith("(owner = ? OR (owner IS NULL AND ("))
+        assertTrue(policy.selection.contains("name GLOB ? AND mime = ?"))
+        assertFalse(policy.selection.contains("owner IS NULL)"))
+        assertEquals("me.hletrd.telecampro", policy.selectionArgs.first())
+        assertEquals(5, policy.selectionArgs.size)
+        assertEquals(
+            listOf("video/mp4", "video/mp4"),
+            policy.selectionArgs.drop(1).chunked(2).map { it[1] },
+        )
+    }
+
     private fun familyRow(
         output: String,
         key: CaptureFamilyKey,
@@ -431,6 +586,26 @@ class LatestCaptureReducerTest {
         dateModifiedEpochSeconds = key.capturedAtEpochMillis / 1_000L,
         isPending = pending,
         isPresent = present,
+        isOwned = owned,
+    )
+
+    private fun contractRow(
+        output: String,
+        name: String,
+        collection: StoredMediaCollection,
+        mime: String?,
+        owned: Boolean,
+        takenAt: Long = 2_000L,
+    ) = StoredMediaRow(
+        output = output,
+        collection = collection,
+        rowId = takenAt,
+        displayName = name,
+        mimeType = mime,
+        dateTakenEpochMillis = takenAt,
+        dateAddedEpochSeconds = takenAt / 1_000L,
+        dateModifiedEpochSeconds = takenAt / 1_000L,
+        isPending = false,
         isOwned = owned,
     )
 

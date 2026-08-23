@@ -18,8 +18,9 @@ import me.hletrd.telecampro.ui.overlays.compactPhotoFormatLabel
 import me.hletrd.telecampro.ui.overlays.photoFormatLabel
 import me.hletrd.telecampro.ui.teleZoomMarkState
 import me.hletrd.telecampro.video.AudioInputPortInfo
+import me.hletrd.telecampro.video.AudioInputInspector
+import me.hletrd.telecampro.video.AudioPortKind
 import me.hletrd.telecampro.video.ColorProfiles
-import me.hletrd.telecampro.video.audioPortLabel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -148,29 +149,16 @@ class ReviewSurfacedSeamsTest {
     // --- audioPortLabel --------------------------------------------------------------------------
 
     @Test
-    fun `a meaningful product name joins the type label`() {
-        assertEquals(
-            "USB mic · Yeti Stereo Microphone",
-            audioPortLabel(
-                AudioInputPortInfo(AudioDeviceInfo.TYPE_USB_DEVICE, "Yeti Stereo Microphone"),
-            ),
-        )
+    fun `audio port type maps independently from its product identity`() {
+        val port = AudioInputPortInfo(AudioDeviceInfo.TYPE_USB_DEVICE, "Yeti Stereo Microphone")
+        assertEquals(AudioPortKind.USB, AudioInputInspector.portKind(port.type))
+        assertEquals("Yeti Stereo Microphone", port.productName)
     }
 
     @Test
     fun `blank or literal Unknown product names collapse to the type label alone`() {
-        assertEquals(
-            "Phone mic",
-            audioPortLabel(AudioInputPortInfo(AudioDeviceInfo.TYPE_BUILTIN_MIC, " ")),
-        )
-        assertEquals(
-            "Phone mic",
-            audioPortLabel(AudioInputPortInfo(AudioDeviceInfo.TYPE_BUILTIN_MIC, "Unknown")),
-        )
-        assertEquals(
-            "BT mic",
-            audioPortLabel(AudioInputPortInfo(AudioDeviceInfo.TYPE_BLUETOOTH_SCO, null)),
-        )
+        assertEquals(AudioPortKind.PHONE, AudioInputInspector.portKind(AudioDeviceInfo.TYPE_BUILTIN_MIC))
+        assertEquals(AudioPortKind.BLUETOOTH, AudioInputInspector.portKind(AudioDeviceInfo.TYPE_BLUETOOTH_SCO))
     }
 
     // --- storedMediaOutputKind -------------------------------------------------------------------

@@ -1,6 +1,7 @@
 package me.hletrd.telecampro.gl
 
 import me.hletrd.telecampro.camera.MotionAgreement
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -37,6 +38,22 @@ class MotionInversionTest {
 
     private fun verdict(shiftX: Int, shiftY: Int, predX: Double, predY: Double): MotionAgreement =
         computeMotionInversion(scene(0, 0), scene(shiftX, shiftY), w, h, predX, predY).verdict
+
+    @Test
+    fun rgbaAnalysisPixelsUseRoundedRec2020LumaAndIgnoreAlpha() {
+        val rgba = byteArrayOf(
+            0, 0, 0, 127,
+            (-1).toByte(), (-1).toByte(), (-1).toByte(), 0,
+            (-1).toByte(), 0, 0, (-1).toByte(),
+            0, (-1).toByte(), 0, 42,
+            0, 0, (-1).toByte(), 1,
+        )
+        val luma = IntArray(5)
+
+        motionLuma(rgba, w = 5, h = 1, out = luma)
+
+        assertArrayEquals(intArrayOf(0, 255, 67, 173, 15), luma)
+    }
 
     // --- the two answers it exists to give ------------------------------------------------------
 

@@ -14,20 +14,20 @@ class AudioInputInspectorTest {
 
     @Test
     fun typeLabel_mapsEveryNamedBranch() {
-        assertEquals("Phone mic", AudioInputInspector.typeLabel(AudioDeviceInfo.TYPE_BUILTIN_MIC))
-        assertEquals("Wired mic", AudioInputInspector.typeLabel(AudioDeviceInfo.TYPE_WIRED_HEADSET))
-        assertEquals("USB mic", AudioInputInspector.typeLabel(AudioDeviceInfo.TYPE_USB_DEVICE))
-        assertEquals("USB mic", AudioInputInspector.typeLabel(AudioDeviceInfo.TYPE_USB_ACCESSORY))
-        assertEquals("USB mic", AudioInputInspector.typeLabel(AudioDeviceInfo.TYPE_USB_HEADSET))
-        assertEquals("BT mic", AudioInputInspector.typeLabel(AudioDeviceInfo.TYPE_BLUETOOTH_SCO))
-        assertEquals("BLE mic", AudioInputInspector.typeLabel(AudioDeviceInfo.TYPE_BLE_HEADSET))
-        assertEquals("BT hearing aid", AudioInputInspector.typeLabel(AudioDeviceInfo.TYPE_HEARING_AID))
+        assertEquals(AudioPortKind.PHONE, AudioInputInspector.portKind(AudioDeviceInfo.TYPE_BUILTIN_MIC))
+        assertEquals(AudioPortKind.WIRED, AudioInputInspector.portKind(AudioDeviceInfo.TYPE_WIRED_HEADSET))
+        assertEquals(AudioPortKind.USB, AudioInputInspector.portKind(AudioDeviceInfo.TYPE_USB_DEVICE))
+        assertEquals(AudioPortKind.USB, AudioInputInspector.portKind(AudioDeviceInfo.TYPE_USB_ACCESSORY))
+        assertEquals(AudioPortKind.USB, AudioInputInspector.portKind(AudioDeviceInfo.TYPE_USB_HEADSET))
+        assertEquals(AudioPortKind.BLUETOOTH, AudioInputInspector.portKind(AudioDeviceInfo.TYPE_BLUETOOTH_SCO))
+        assertEquals(AudioPortKind.BLE, AudioInputInspector.portKind(AudioDeviceInfo.TYPE_BLE_HEADSET))
+        assertEquals(AudioPortKind.HEARING_AID, AudioInputInspector.portKind(AudioDeviceInfo.TYPE_HEARING_AID))
     }
 
     @Test
     fun typeLabel_unknownTypeFallsBackToMic() {
-        assertEquals("Mic", AudioInputInspector.typeLabel(AudioDeviceInfo.TYPE_UNKNOWN))
-        assertEquals("Mic", AudioInputInspector.typeLabel(99999))
+        assertEquals(AudioPortKind.OTHER, AudioInputInspector.portKind(AudioDeviceInfo.TYPE_UNKNOWN))
+        assertEquals(AudioPortKind.OTHER, AudioInputInspector.portKind(99999))
     }
 
     @Test
@@ -91,7 +91,7 @@ class AudioInputInspectorTest {
     fun status_autoWithNoDevices_isHonestlyUnavailable() {
         val s = resolveAudioInputStatus(emptyList(), me.hletrd.telecampro.camera.AudioInputPreference.AUTO)
         assertFalse(s.available)
-        org.junit.Assert.assertEquals("Auto · No mic", s.label)
+        assertEquals(AudioRouteAvailability.AUTO_NO_MIC, s.route.availability)
     }
 
     @Test
@@ -101,7 +101,7 @@ class AudioInputInspectorTest {
             me.hletrd.telecampro.camera.AudioInputPreference.AUTO,
         )
         assertTrue(s.available)
-        org.junit.Assert.assertEquals("Auto · Phone mic", s.label)
+        assertEquals(AudioPortKind.PHONE, s.route.portKind)
     }
 
     @Test
@@ -114,7 +114,8 @@ class AudioInputInspectorTest {
             me.hletrd.telecampro.camera.AudioInputPreference.AUTO,
         )
         assertTrue(s.available)
-        org.junit.Assert.assertEquals("Auto · USB mic · Rode VideoMic", s.label)
+        assertEquals(AudioPortKind.USB, s.route.portKind)
+        assertEquals("Rode VideoMic", s.route.productName)
     }
 
     @Test
@@ -129,7 +130,7 @@ class AudioInputInspectorTest {
             me.hletrd.telecampro.camera.AudioInputPreference.AUTO,
         )
         assertTrue(s.available)
-        org.junit.Assert.assertEquals("Auto · Phone mic", s.label)
+        assertEquals(AudioPortKind.PHONE, s.route.portKind)
     }
 
     @Test
@@ -144,7 +145,8 @@ class AudioInputInspectorTest {
             me.hletrd.telecampro.camera.AudioInputPreference.AUTO,
         )
         assertTrue(s.available)
-        org.junit.Assert.assertEquals("Auto · Mic · FM", s.label)
+        assertEquals(AudioPortKind.OTHER, s.route.portKind)
+        assertEquals("FM", s.route.productName)
     }
 
     @Test
@@ -156,8 +158,8 @@ class AudioInputInspectorTest {
         assertFalse(s.available)
         // Pins the CROSS-SURFACE wording, not just this branch: the Route row must read the same
         // before REC and during it, so this label has to BE audioUnavailableLabel's output.
-        org.junit.Assert.assertEquals("Wired unavailable", s.label)
-        org.junit.Assert.assertEquals(audioUnavailableLabel("Wired"), s.label)
+        assertEquals(AudioRouteAvailability.UNAVAILABLE, s.route.availability)
+        assertEquals(me.hletrd.telecampro.camera.AudioInputPreference.WIRED, s.route.preference)
     }
 
     @Test
@@ -170,6 +172,8 @@ class AudioInputInspectorTest {
             me.hletrd.telecampro.camera.AudioInputPreference.WIRED,
         )
         assertTrue(s.available)
-        org.junit.Assert.assertEquals("Wired mic · Lav ready", s.label)
+        assertEquals(AudioRouteAvailability.READY, s.route.availability)
+        assertEquals(AudioPortKind.WIRED, s.route.portKind)
+        assertEquals("Lav", s.route.productName)
     }
 }

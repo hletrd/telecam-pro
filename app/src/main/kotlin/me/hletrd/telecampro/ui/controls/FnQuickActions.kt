@@ -1,5 +1,7 @@
 package me.hletrd.telecampro.ui.controls
 
+import android.content.Context
+import me.hletrd.telecampro.R
 import me.hletrd.telecampro.camera.AspectRatio
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.ExposureMode
@@ -26,23 +28,26 @@ internal fun proSheetTabSelection(selected: ProSheetTab): List<ProSheetTabSelect
 
 internal fun proSheetUsesSideLayout(width: Float, height: Float): Boolean = width > height
 
-internal fun fnSlotValue(slot: FnSlot, state: CameraUiState): String {
+internal fun fnSlotValue(slot: FnSlot, state: CameraUiState, context: Context? = null): String {
     val c = state.controls
+    fun auto(value: String) = context?.getString(R.string.a11y_auto_value, value) ?: "Auto $value"
+    fun onOff(value: Boolean) = context?.getString(if (value) R.string.value_on else R.string.value_off)
+        ?: if (value) "On" else "Off"
     return when (slot) {
-        FnSlot.EXPOSURE_MODE -> c.exposureMode.letter
-        FnSlot.FOCUS -> focusModeLabel(c.focusMode)
+        FnSlot.EXPOSURE_MODE -> exposureModeLetter(c.exposureMode)
+        FnSlot.FOCUS -> context?.localizedLabel(c.focusMode) ?: focusModeLabel(c.focusMode)
         FnSlot.SHUTTER -> when {
-            c.exposureMode == ExposureMode.PROGRAM -> "Auto ${autoShutterText(state)}"
-            c.autoShutterDriven -> "Auto ${formatShutterSpeed(c.exposureTimeNs)}"
+            c.exposureMode == ExposureMode.PROGRAM -> auto(autoShutterText(state))
+            c.autoShutterDriven -> auto(formatShutterSpeed(c.exposureTimeNs))
             c.shutterMode == ShutterMode.ANGLE -> "%.0f°".format(Locale.US, c.shutterAngle)
             else -> formatShutterSpeed(c.exposureTimeNs)
         }
         FnSlot.ISO -> when {
-            c.exposureMode == ExposureMode.PROGRAM -> "Auto ${autoIsoText(state)}"
-            c.autoIsoDriven -> "Auto ${c.iso}"
+            c.exposureMode == ExposureMode.PROGRAM -> auto(autoIsoText(state))
+            c.autoIsoDriven -> auto(c.iso.toString())
             else -> c.iso.toString()
         }
-        FnSlot.WB -> if (c.wbMode == WbMode.MANUAL) "${c.wbKelvin}K" else wbModeLabel(c.wbMode)
+        FnSlot.WB -> if (c.wbMode == WbMode.MANUAL) "${c.wbKelvin}K" else context?.localizedLabel(c.wbMode) ?: wbModeLabel(c.wbMode)
         FnSlot.EV -> formatEvComp(evCompStops(state))
         // Same main-relative display scale and formatter as the HUD pill and persistent Fn row.
         FnSlot.ZOOM -> formatDisplayZoom(
@@ -52,23 +57,23 @@ internal fun fnSlotValue(slot: FnSlot, state: CameraUiState): String {
             state.caps?.equivalentFocalMm,
             frontFacing = state.facing == me.hletrd.telecampro.camera.CameraFacing.FRONT,
         )
-        FnSlot.STABILIZATION -> state.videoStabMode.label
-        FnSlot.DRIVE -> driveModeLabel(state.driveMode)
-        FnSlot.METERING -> meteringModeLabel(c.meteringMode)
-        FnSlot.PEAKING -> if (state.focusPeaking) "On" else "Off"
-        FnSlot.ZEBRA -> if (state.zebra) "On" else "Off"
+        FnSlot.STABILIZATION -> context?.localizedLabel(state.videoStabMode) ?: videoStabModeLabel(state.videoStabMode)
+        FnSlot.DRIVE -> context?.localizedLabel(state.driveMode) ?: driveModeLabel(state.driveMode)
+        FnSlot.METERING -> context?.localizedLabel(c.meteringMode) ?: meteringModeLabel(c.meteringMode)
+        FnSlot.PEAKING -> onOff(state.focusPeaking)
+        FnSlot.ZEBRA -> onOff(state.zebra)
         FnSlot.TRANSFER -> transferLabelShort(state.transfer)
-        FnSlot.AUDIO_SCENE -> state.audioScene.label
-        FnSlot.GRID -> gridTypeLabel(state.grid)
-        FnSlot.LEVEL -> if (state.level) "On" else "Off"
-        FnSlot.PUNCH_IN -> if (state.punchIn) "On" else "Off"
-        FnSlot.TELECONVERTER -> if (state.teleconverterMode) formatFocalMm(state.teleconverterFocalMm) else "Off"
-        FnSlot.OPEN_GATE -> if (state.openGate) "4:3" else "Off"
-        FnSlot.FRAME_LINES -> state.frameLines.label
-        FnSlot.FLASH -> flashModeLabel(c.flash)
-        FnSlot.TIMER -> shutterTimerLabel(state.timer)
+        FnSlot.AUDIO_SCENE -> context?.localizedLabel(state.audioScene) ?: audioSceneLabel(state.audioScene)
+        FnSlot.GRID -> context?.localizedLabel(state.grid) ?: gridTypeLabel(state.grid)
+        FnSlot.LEVEL -> onOff(state.level)
+        FnSlot.PUNCH_IN -> onOff(state.punchIn)
+        FnSlot.TELECONVERTER -> if (state.teleconverterMode) formatFocalMm(state.teleconverterFocalMm) else onOff(false)
+        FnSlot.OPEN_GATE -> if (state.openGate) "4:3" else onOff(false)
+        FnSlot.FRAME_LINES -> context?.localizedLabel(state.frameLines) ?: frameLineTypeLabel(state.frameLines)
+        FnSlot.FLASH -> context?.localizedLabel(c.flash) ?: flashModeLabel(c.flash)
+        FnSlot.TIMER -> context?.localizedLabel(state.timer) ?: shutterTimerLabel(state.timer)
         FnSlot.ASPECT -> aspectRatioLabel(state.aspectRatio)
-        FnSlot.AUDIO_INPUT -> state.audioInputPreference.label
+        FnSlot.AUDIO_INPUT -> context?.localizedLabel(state.audioInputPreference) ?: audioInputPreferenceLabel(state.audioInputPreference)
     }
 }
 

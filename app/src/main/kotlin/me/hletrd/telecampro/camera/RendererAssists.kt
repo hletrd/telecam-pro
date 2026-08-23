@@ -1,6 +1,39 @@
 package me.hletrd.telecampro.camera
 
 import me.hletrd.telecampro.gl.GlPipeline
+import java.util.concurrent.atomic.AtomicReference
+
+internal data class MotionEvidenceReplay(
+    val armed: Boolean,
+    val rotationProvider: ((Long, Long) -> FloatArray?)?,
+    val evidenceEpoch: Long,
+)
+
+/** Atomic publication of the three values that define one motion-evidence generation. */
+internal class MotionEvidenceReplayStore {
+    private val state = AtomicReference(MotionEvidenceReplay(false, null, 0L))
+
+    fun publish(
+        armed: Boolean,
+        rotationProvider: (Long, Long) -> FloatArray?,
+        resetEvidence: Boolean,
+    ): MotionEvidenceReplay {
+        while (true) {
+            val old = state.get()
+            val newEpoch = if (resetEvidence || old.armed != armed ||
+                old.rotationProvider !== rotationProvider
+            ) {
+                old.evidenceEpoch + 1L
+            } else {
+                old.evidenceEpoch
+            }
+            val next = MotionEvidenceReplay(armed, rotationProvider, newEpoch)
+            if (state.compareAndSet(old, next)) return next
+        }
+    }
+
+    fun snapshot(): MotionEvidenceReplay = state.get()
+}
 
 /**
  * Owns renderer-only state across GL thread generations.
@@ -30,8 +63,7 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
     // first GL restart — the exact shape of the old log-preview bug.
     @Volatile
     private var focusDetail = false
-    private var motionInversion = false
-    private var motionRotationProvider: ((Long, Long) -> FloatArray?)? = null
+    private val motionEvidence = MotionEvidenceReplayStore()
 
     // The user's punch-in INTENT, remembered independently of the resolved value for the same
     // reason as [teleFinderEnabled]: only the route-resolved flag is pushed to GL or replayed, but
@@ -129,11 +161,17 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
      * re-supplied on each call so a replay after a GL restart binds the live drain rather than a
      * captured stale one.
      */
-    fun setMotionInversion(enabled: Boolean, rotationProvider: (Long, Long) -> FloatArray?) {
-        motionRotationProvider = rotationProvider
-        if (motionInversion == enabled) return
-        motionInversion = enabled
-        currentGl().setMotionInversionEnabled(enabled, rotationProvider)
+    fun setMotionInversion(
+        enabled: Boolean,
+        rotationProvider: (Long, Long) -> FloatArray?,
+        resetEvidence: Boolean = false,
+    ) {
+        val replay = motionEvidence.publish(enabled, rotationProvider, resetEvidence)
+        currentGl().setMotionInversionEnabled(
+            replay.armed,
+            replay.rotationProvider,
+            replay.evidenceEpoch,
+        )
     }
 
     fun setGammaAssist(enabled: Boolean) {
@@ -199,7 +237,10 @@ internal class RendererAssists(private val currentGl: () -> GlPipeline) {
         // Replayed like every other assist. A GL restart drops the arming AND the frame history, so
         // the new generation starts pairing from scratch — correct, since frames either side of the
         // restart are not comparable anyway.
-        motionRotationProvider?.let { gl.setMotionInversionEnabled(motionInversion, it) }
+        val motion = motionEvidence.snapshot()
+        motion.rotationProvider?.let {
+            gl.setMotionInversionEnabled(motion.armed, it, motion.evidenceEpoch)
+        }
         gl.setGammaAssist(gammaAssist)
         gl.setPeaking(snapshot.peaking)
         applyPeaking(snapshot, gl)

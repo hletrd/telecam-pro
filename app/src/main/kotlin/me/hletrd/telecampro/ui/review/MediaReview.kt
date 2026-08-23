@@ -64,7 +64,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.core.graphics.scale
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -142,25 +141,18 @@ internal fun galleryReviewContentDescription(
 /** Rotation + dimensions of a video, for sizing/orienting the in-review player. */
 private data class VideoInfo(val rotationDeg: Int, val width: Int, val height: Int)
 
-/** Positive decoder target whose longest side never exceeds the requested bound. */
-internal data class BoundedVideoFrameSize(val width: Int, val height: Int)
+/** Exact provider thumbnail request; it never depends on untrusted video metadata. */
+internal data class ProviderThumbnailRequest(val width: Int, val height: Int)
 
-internal fun boundedVideoFrameSize(width: Int, height: Int, maxDim: Int): BoundedVideoFrameSize? {
-    if (width <= 0 || height <= 0 || maxDim <= 0) return null
-    val longest = maxOf(width, height)
-    if (longest <= maxDim) return BoundedVideoFrameSize(width, height)
-    return if (width >= height) {
-        BoundedVideoFrameSize(
-            width = maxDim,
-            height = (height.toLong() * maxDim / width).toInt().coerceAtLeast(1),
-        )
-    } else {
-        BoundedVideoFrameSize(
-            width = (width.toLong() * maxDim / height).toInt().coerceAtLeast(1),
-            height = maxDim,
-        )
-    }
-}
+internal fun providerThumbnailRequest(maxDim: Int): ProviderThumbnailRequest? =
+    maxDim.takeIf { it > 0 }?.let { ProviderThumbnailRequest(it, it) }
+
+/** Rejects a broken provider response instead of allocating another bitmap to repair it. */
+internal fun providerThumbnailFitsRequest(
+    width: Int,
+    height: Int,
+    request: ProviderThumbnailRequest,
+): Boolean = width in 1..request.width && height in 1..request.height
 
 /** A MediaPlayer and the caller-owned Surface passed to it; both share one release generation. */
 private class VideoPlaybackHandle(
@@ -184,7 +176,7 @@ private sealed interface ReviewMediaState {
         data class Video(val info: VideoInfo) : Ready
         data object Raw : Ready
     }
-    data class Error(val message: String) : ReviewMediaState
+    data class Error(@StringRes val messageRes: Int) : ReviewMediaState
 }
 
 private const val REVIEW_PREVIEW_MAX_DIM = 3000
@@ -203,53 +195,28 @@ private fun loadVideoInfo(context: Context, uri: Uri): VideoInfo? = runCatching 
     }
 }.getOrNull()
 
-/** First frame of a video, for the thumbnail/review of a just-recorded clip (BitmapFactory can't). */
-private fun loadVideoFrame(context: Context, uri: Uri, maxDim: Int): ImageBitmap? = runCatching {
-    val mmr = MediaMetadataRetriever()
-    try {
-        mmr.setDataSource(context, uri)
-        val metadataTarget = boundedVideoFrameSize(
-            width = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0,
-            height = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0,
-            maxDim = maxDim,
+/**
+ * Bounded provider thumbnail for the gallery button.
+ *
+ * This path intentionally has no MediaMetadataRetriever frame fallback. Missing/invalid metadata,
+ * provider failure, and a provider that violates the requested bound all produce the existing
+ * placeholder; none can trigger a full native video-frame allocation.
+ */
+private fun loadVideoThumbnail(context: Context, uri: Uri, maxDim: Int): ImageBitmap? {
+    val request = providerThumbnailRequest(maxDim) ?: return null
+    val bitmap = runCatching {
+        context.contentResolver.loadThumbnail(
+            uri,
+            android.util.Size(request.width, request.height),
+            null,
         )
-        metadataTarget?.let { target ->
-            runCatching {
-                mmr.getScaledFrameAtTime(
-                    0,
-                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
-                    target.width,
-                    target.height,
-                )
-            }.getOrNull()?.let { return@runCatching it.asImageBitmap() }
-        }
-
-        // Invalid/missing metadata or decoder-specific scaled-frame failure: decode once, then
-        // preserve the same bound and promptly recycle the distinct full-size source bitmap.
-        val source = mmr.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-            ?: return@runCatching null
-        val fallbackTarget = boundedVideoFrameSize(source.width, source.height, maxDim)
-        if (fallbackTarget == null ||
-            (fallbackTarget.width == source.width && fallbackTarget.height == source.height)
-        ) {
-            source.asImageBitmap()
-        } else {
-            val scaled = try {
-                source.scale(fallbackTarget.width, fallbackTarget.height)
-            } catch (error: Throwable) {
-                source.recycle()
-                throw error
-            }
-            try {
-                scaled.asImageBitmap()
-            } finally {
-                if (scaled !== source) source.recycle()
-            }
-        }
-    } finally {
-        runCatching { mmr.release() }
+    }.getOrNull() ?: return null
+    if (!providerThumbnailFitsRequest(bitmap.width, bitmap.height, request)) {
+        bitmap.recycle()
+        return null
     }
-}.getOrNull()
+    return bitmap.asImageBitmap()
+}
 
 private suspend fun loadBitmap(context: Context, uri: Uri, maxDim: Int): ImageBitmap? =
     withContext(Dispatchers.IO) {
@@ -312,14 +279,14 @@ private suspend fun loadReviewMedia(context: Context, uri: Uri): ReviewMediaStat
         ReviewMediaKind.VIDEO -> {
             withContext(Dispatchers.IO) { loadVideoInfo(context, uri) }
                 ?.let { ReviewMediaState.Ready.Video(it) }
-                ?: ReviewMediaState.Error("Unable to open this video.")
+                ?: ReviewMediaState.Error(R.string.review_error_open_video)
         }
         ReviewMediaKind.STILL -> {
             // A capped first decode avoids a 50 MP ARGB allocation (~200 MB) before Compose/GPU copies.
             // The resulting 3000 px preview still carries ample detail for the existing 4×/8× focus check.
             loadBitmap(context, uri, REVIEW_PREVIEW_MAX_DIM)
                 ?.let { ReviewMediaState.Ready.Still(it) }
-                ?: ReviewMediaState.Error("Unable to open this image.")
+                ?: ReviewMediaState.Error(R.string.review_error_open_image)
         }
     }
 }
@@ -397,7 +364,9 @@ fun GalleryThumb(uri: Uri?, onClick: () -> Unit, modifier: Modifier = Modifier) 
         val kind = reviewMediaKind(mimeType)
         val bitmap = when (kind) {
             ReviewMediaKind.RAW -> null
-            ReviewMediaKind.VIDEO -> withContext(Dispatchers.IO) { loadVideoFrame(context, uri, 240) }
+            ReviewMediaKind.VIDEO -> withContext(Dispatchers.IO) {
+                loadVideoThumbnail(context, uri, 240)
+            }
             ReviewMediaKind.STILL -> loadBitmap(context, uri, 240)
         }
         value = GalleryThumbContent(kind, bitmap)
@@ -429,13 +398,13 @@ fun GalleryThumb(uri: Uri?, onClick: () -> Unit, modifier: Modifier = Modifier) 
         } else if (content.kind == ReviewMediaKind.RAW) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    text = "RAW",
+                    text = stringResource(R.string.format_raw),
                     color = CameraColors.TextPrimary,
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
-                    text = "DNG",
+                    text = stringResource(R.string.format_dng),
                     color = CameraColors.TextSecondary,
                     style = MaterialTheme.typography.labelSmall,
                 )
@@ -501,11 +470,17 @@ fun MediaReviewOverlay(
         mediaState is ReviewMediaState.Ready.Still || mediaState is ReviewMediaState.Ready.Video
     val rawReady = mediaState is ReviewMediaState.Ready.Raw
     val deleteCopy = mediaDeleteConfirmationCopy(deleteScope, rawReady)
+    val deleteTitle = stringResource(deleteCopy.title)
+    val deleteBody = stringResource(deleteCopy.body)
+    val zoom4Action = stringResource(R.string.a11y_zoom_4x)
+    val zoom8Action = stringResource(R.string.a11y_zoom_8x)
+    val resetZoomAction = stringResource(R.string.a11y_reset_zoom)
     val metadata by produceState<ReviewMetadata?>(initialValue = null, uri) {
         value = null
         value = loadMetadata(context, uri)
     }
     var scale by remember { mutableFloatStateOf(1f) }
+    val reviewZoomDescription = stringResource(R.string.a11y_review_zoom, reviewScaleLabel(scale))
     var offset by remember { mutableStateOf(Offset.Zero) }
     var confirmDelete by remember { mutableStateOf(false) }
     BackHandler(enabled = confirmDelete) { confirmDelete = false }
@@ -515,6 +490,15 @@ fun MediaReviewOverlay(
     // trap the camera preview hit). Tap toggles play/pause; the clip loops.
     val playerRef = remember { mutableStateOf<android.media.MediaPlayer?>(null) }
     var playing by remember { mutableStateOf(true) }
+    val reviewZoomAction = stringResource(
+        when (nextReviewScale(scale)) {
+            4f -> R.string.a11y_zoom_4x
+            8f -> R.string.a11y_zoom_8x
+            else -> R.string.a11y_reset_zoom
+        },
+    )
+    val playbackAction = stringResource(if (playing) R.string.a11y_pause_video else R.string.a11y_play_video)
+    val playbackState = stringResource(if (playing) R.string.a11y_playing else R.string.a11y_paused)
     // Stock-gallery-style dismiss: at 1x, a vertical drag slides the image and past a threshold
     // closes the review; below it springs back. Zoomed in, vertical pan just pans.
     var dismissDrag by remember { mutableFloatStateOf(0f) }
@@ -720,7 +704,7 @@ fun MediaReviewOverlay(
                                     } catch (_: Throwable) {
                                         runCatching { mp.release() }
                                         playing = false
-                                        mediaState = ReviewMediaState.Error("Unable to play this video.")
+                                        mediaState = ReviewMediaState.Error(R.string.review_error_play_video)
                                         return
                                     }
                                     val handle = VideoPlaybackHandle(mp, playbackSurface)
@@ -733,7 +717,7 @@ fun MediaReviewOverlay(
                                         if (viewHandle === handle) viewHandle = null
                                         releaseIfOwned(handle)
                                         playing = false
-                                        mediaState = ReviewMediaState.Error("Unable to play this video.")
+                                        mediaState = ReviewMediaState.Error(R.string.review_error_play_video)
                                     }
 
                                     runCatching {
@@ -819,11 +803,11 @@ fun MediaReviewOverlay(
                         alpha = (1f - abs(dismissDrag) / 1400f).coerceIn(0.3f, 1f),
                     )
                     .semantics {
-                        stateDescription = reviewZoomStateDescription(scale)
+                        stateDescription = reviewZoomDescription
                         customActions = listOf(
-                            CustomAccessibilityAction("Zoom 4×") { setReviewScale(4f) },
-                            CustomAccessibilityAction("Zoom 8×") { setReviewScale(8f) },
-                            CustomAccessibilityAction("Reset zoom") { setReviewScale(1f) },
+                            CustomAccessibilityAction(zoom4Action) { setReviewScale(4f) },
+                            CustomAccessibilityAction(zoom8Action) { setReviewScale(8f) },
+                            CustomAccessibilityAction(resetZoomAction) { setReviewScale(1f) },
                         )
                     },
             )
@@ -844,7 +828,7 @@ fun MediaReviewOverlay(
                     .semantics { liveRegion = LiveRegionMode.Assertive },
             ) {
                 Text(
-                    current.message,
+                    stringResource(current.messageRes),
                     color = CameraColors.TextPrimary,
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -917,8 +901,8 @@ fun MediaReviewOverlay(
 
         when {
             videoInfo != null -> ReviewActionButton(
-                actionLabel = videoPlaybackActionLabel(playing),
-                stateLabel = videoPlaybackStateDescription(playing),
+                actionLabel = playbackAction,
+                stateLabel = playbackState,
                 onClick = { toggleVideoPlayback() },
                 // Bottom-END, not center: the centered slot overlapped the bottom-left metadata
                 // panel's filename line (user-reported); the right corner is the one free anchor
@@ -932,8 +916,8 @@ fun MediaReviewOverlay(
             }
 
             mediaState is ReviewMediaState.Ready.Still -> ReviewActionButton(
-                actionLabel = reviewZoomActionLabel(scale),
-                stateLabel = reviewZoomStateDescription(scale),
+                actionLabel = reviewZoomAction,
+                stateLabel = reviewZoomDescription,
                 onClick = { setReviewScale(nextReviewScale(scale)) },
                 // Same bottom-end anchor as the playback control (metadata owns bottom-left).
                 modifier = Modifier
@@ -996,7 +980,7 @@ fun MediaReviewOverlay(
                 .clip(CircleShape)
                 .background(HudPlate)
                 .semantics {
-                    contentDescription = deleteCopy.title.removeSuffix("?")
+                    contentDescription = deleteTitle.removeSuffix("?")
                     role = Role.Button
                 }
                 .clickable { confirmDelete = true },
@@ -1029,8 +1013,8 @@ fun MediaReviewOverlay(
             // derived surface (Theme.kt's 0xFF0B0B0B), making the one destructive surface in the app
             // the only one not using the app's palette.
             containerColor = CameraColors.Pill,
-            title = { Text(deleteCopy.title) },
-            text = { Text(deleteCopy.body) },
+            title = { Text(deleteTitle) },
+            text = { Text(deleteBody) },
             confirmButton = {
                 // 48 dp outer targets (DES4-2): a mis-tap is costliest right here, next to the
                 // app's one destructive, irreversible action.
@@ -1054,22 +1038,22 @@ fun MediaReviewOverlay(
     }
 }
 
-internal data class MediaDeleteConfirmationCopy(val title: String, val body: String)
+internal data class MediaDeleteConfirmationCopy(@StringRes val title: Int, @StringRes val body: Int)
 
 internal fun mediaDeleteConfirmationCopy(
     scope: MediaDeleteScope,
     raw: Boolean,
 ): MediaDeleteConfirmationCopy = when (scope) {
     MediaDeleteScope.CAPTURE_FAMILY -> MediaDeleteConfirmationCopy(
-        title = if (raw) "Delete RAW capture?" else "Delete capture?",
-        body = "All saved formats for this capture will be deleted.",
+        title = if (raw) R.string.review_delete_raw_capture_title else R.string.review_delete_capture_title,
+        body = R.string.review_delete_family_body,
     )
     MediaDeleteScope.FILE_ONLY -> MediaDeleteConfirmationCopy(
-        title = if (raw) "Delete RAW file?" else "Delete file?",
+        title = if (raw) R.string.review_delete_raw_file_title else R.string.review_delete_file_title,
         // FILE_ONLY is exactly the degraded path where siblings SURVIVE — that difference from
         // CAPTURE_FAMILY is the whole reason the two dialogs exist, so the body states it instead
         // of restating the title in the passive voice.
-        body = "Only this file is deleted.",
+        body = R.string.review_delete_file_body,
     )
 }
 
@@ -1088,12 +1072,12 @@ private fun RawReviewPlaceholder(modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.Center,
     ) {
         Text(
-            text = "RAW",
+            text = stringResource(R.string.format_raw),
             color = CameraColors.TextPrimary,
             style = MaterialTheme.typography.displaySmall,
         )
         Text(
-            text = "DNG",
+            text = stringResource(R.string.format_dng),
             color = CameraColors.TextSecondary,
             style = MaterialTheme.typography.titleMedium,
         )

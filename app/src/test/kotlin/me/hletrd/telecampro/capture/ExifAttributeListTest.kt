@@ -3,6 +3,8 @@ package me.hletrd.telecampro.capture
 import androidx.exifinterface.media.ExifInterface
 import me.hletrd.telecampro.camera.AspectRatio
 import me.hletrd.telecampro.camera.ManualControls
+import me.hletrd.telecampro.camera.CameraStatusArgument
+import me.hletrd.telecampro.camera.CameraStatusMessage
 import me.hletrd.telecampro.camera.TELECONVERTER_MAGNIFICATION
 import me.hletrd.telecampro.camera.MeteringMode
 import me.hletrd.telecampro.storage.CaptureFamilyKey
@@ -124,8 +126,12 @@ class ExifAttributeListTest {
 
     @Test
     fun `retained-save status copy is truthful about the recovery marker`() {
-        assertEquals("HEIF save delayed. Will retry.", retainedSaveStatus("HEIF", markerDurable = true))
-        assertEquals("DNG save retained. Recovery marker failed.", retainedSaveStatus("DNG", markerDurable = false))
+        val delayed = retainedSaveStatus("HEIF", markerDurable = true)
+        assertEquals(CameraStatusMessage.OUTPUT_SAVED_PENDING, delayed.message)
+        assertEquals(listOf(CameraStatusArgument.Text("HEIF")), delayed.arguments)
+        val retained = retainedSaveStatus("DNG", markerDurable = false)
+        assertEquals(CameraStatusMessage.OUTPUT_SAVED_PENDING_RECOVERY, retained.message)
+        assertEquals(listOf(CameraStatusArgument.Text("DNG")), retained.arguments)
     }
 
     @Test

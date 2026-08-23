@@ -56,6 +56,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
@@ -119,6 +120,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
@@ -129,6 +131,7 @@ import me.hletrd.telecampro.camera.unifiedZoom
 import me.hletrd.telecampro.camera.AspectRatio
 import me.hletrd.telecampro.camera.CameraFacing
 import me.hletrd.telecampro.camera.CameraUiState
+import me.hletrd.telecampro.camera.CameraStatusLivePriority
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.ExposureMode
 import me.hletrd.telecampro.camera.FlashMode
@@ -164,9 +167,12 @@ import me.hletrd.telecampro.ui.controls.fnSlotIcon
 import me.hletrd.telecampro.ui.controls.formatEvComp
 import me.hletrd.telecampro.ui.controls.fnSlotLabel
 import me.hletrd.telecampro.ui.controls.gridTypeLabel
+import me.hletrd.telecampro.ui.controls.hardwareKeyActionLabel
+import me.hletrd.telecampro.ui.controls.localizedLabel
 import me.hletrd.telecampro.ui.controls.fnSlotValue
 import me.hletrd.telecampro.ui.controls.manualDialForFnSlot
 import me.hletrd.telecampro.ui.controls.manualDialTransition
+import me.hletrd.telecampro.ui.controls.lensLabel
 import me.hletrd.telecampro.ui.controls.performQuickFn
 import me.hletrd.telecampro.ui.controls.quickManualDialEnabled
 import me.hletrd.telecampro.ui.controls.shutterTimerLabel
@@ -212,6 +218,45 @@ private fun osdClearanceTop(): Dp {
     return OSD_CLEARANCE_TOP + (40.dp * (scale - 1f))
 }
 
+@Composable
+private fun localizedTimerCountdownDescription(seconds: Int): String =
+    pluralStringResource(R.plurals.a11y_seconds_remaining, seconds, seconds)
+
+@Composable
+private fun localizedStatusInfoDescription(batteryPct: Int, remaining: String?, video: Boolean): String {
+    val battery = batteryPct.takeIf { it >= 0 }?.let {
+        pluralStringResource(R.plurals.a11y_battery_percent, it, it)
+    }
+    val media = remaining?.let { token ->
+        val over = token.endsWith("+")
+        val body = token.removeSuffix("+")
+        val description = if (video) {
+            val hourMark = body.indexOf('h')
+            val hours = if (hourMark < 0) 0 else body.substring(0, hourMark).toIntOrNull() ?: return@let null
+            val minuteText = (if (hourMark < 0) body else body.substring(hourMark + 1)).removeSuffix("m")
+            val minutes = if (minuteText.isEmpty()) 0 else minuteText.toIntOrNull() ?: return@let null
+            when {
+                hours > 0 && minutes > 0 -> stringResource(
+                    R.string.a11y_hours_minutes_join,
+                    pluralStringResource(R.plurals.a11y_hours_unit, hours, hours),
+                    pluralStringResource(R.plurals.a11y_minutes_remaining, minutes, minutes),
+                )
+                hours > 0 -> pluralStringResource(R.plurals.a11y_hours_remaining, hours, hours)
+                else -> pluralStringResource(R.plurals.a11y_minutes_remaining, minutes, minutes)
+            }
+        } else {
+            val shots = body.toIntOrNull() ?: return@let null
+            pluralStringResource(R.plurals.a11y_shots_remaining, shots, shots)
+        }
+        if (over) stringResource(R.string.a11y_over_remaining, description) else description
+    }
+    return when {
+        battery != null && media != null -> stringResource(R.string.a11y_status_join, battery, media)
+        battery != null -> battery
+        else -> media.orEmpty()
+    }
+}
+
 /**
  * Root camera UI, styled after Sony Alpha / Xperia Pro operation: a clear viewfinder at rest, compact
  * status readouts, and a bottom cluster of manual "Fn" dials + mode switch + shutter. Everything else
@@ -229,6 +274,9 @@ fun CameraScreen(
     val a11yCameraViewfinder = stringResource(R.string.a11y_camera_viewfinder)
     val a11yLoupeOverview = stringResource(R.string.a11y_loupe_overview)
     val a11ySelfTimer = stringResource(R.string.a11y_self_timer)
+    val a11yFocusAtCenter = stringResource(R.string.a11y_focus_at_center)
+    val a11yResetFocusPoint = stringResource(R.string.a11y_reset_focus_point)
+    val a11yCancelSelfTimer = stringResource(R.string.a11y_cancel_self_timer)
     var sheetVisible by remember { mutableStateOf(false) }
     // Start preview-first. DISP adds the detailed OSD and inline dials for deliberate setup; compact
     // mode still preserves active/critical state and opens one requested ruler at a time.
@@ -249,7 +297,7 @@ fun CameraScreen(
     var reviewUri by rememberSaveable(
         stateSaver = Saver<android.net.Uri?, String>(
             save = { it?.toString() ?: "" },
-            restore = { if (it.isEmpty()) null else android.net.Uri.parse(it) },
+            restore = { if (it.isEmpty()) null else it.toUri() },
         ),
     ) { mutableStateOf<android.net.Uri?>(null) }
     var reviewDeleteScope by rememberSaveable { mutableStateOf(MediaDeleteScope.FILE_ONLY) }
@@ -312,7 +360,7 @@ fun CameraScreen(
     val windowConfiguration = LocalConfiguration.current
     val windowContext = LocalContext.current
     val windowRotationDeg = remember(windowConfiguration) {
-        when (windowContext.display?.rotation) {
+        when (windowContext.display.rotation) {
             Surface.ROTATION_90 -> 90
             Surface.ROTATION_180 -> 180
             Surface.ROTATION_270 -> 270
@@ -524,11 +572,11 @@ fun CameraScreen(
                     .semantics {
                         contentDescription = a11yCameraViewfinder
                         customActions = listOf(
-                            CustomAccessibilityAction("Focus at center") {
+                            CustomAccessibilityAction(a11yFocusAtCenter) {
                                 currentActions.value.onTapFocus(0.5f, 0.5f)
                                 true
                             },
-                            CustomAccessibilityAction("Reset focus point") {
+                            CustomAccessibilityAction(a11yResetFocusPoint) {
                                 currentActions.value.onResetFocusPoint()
                                 true
                             },
@@ -914,7 +962,7 @@ fun CameraScreen(
 
             if (showHalfPressLabel(state.halfPressActive, state.halfPressAction, state.tapFocusHeld)) {
                 Text(
-                    text = state.halfPressAction.label,
+                    text = LocalContext.current.localizedLabel(state.halfPressAction),
                     color = CameraColors.ManualActive,
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
@@ -971,6 +1019,7 @@ fun CameraScreen(
         }
 
         if (state.timerCountdownSec > 0) {
+            val countdownDescription = localizedTimerCountdownDescription(state.timerCountdownSec)
             // The 120 sp digit is the largest orientation-sensitive glyph on screen — a sideways
             // "6" reads ambiguously in a landscape self-timer, so it counter-rotates too.
             Box(
@@ -980,7 +1029,7 @@ fun CameraScreen(
                     .clearAndSetSemantics {
                         // "Self-timer": one feature, one spelling across every spoken string.
                         contentDescription = a11ySelfTimer
-                        stateDescription = timerCountdownDescription(state.timerCountdownSec)
+                        stateDescription = countdownDescription
                         // POLITE, not Assertive: the stateDescription changes at 1 Hz, so Assertive
                         // made a 10 s timer interrupt TalkBack ten times. The sibling ticking readout
                         // already takes the opposite line for the same reason (RecordingIndicator:
@@ -993,7 +1042,7 @@ fun CameraScreen(
                         }
                     }
                     .clickable(
-                        onClickLabel = "Cancel self-timer",
+                        onClickLabel = a11yCancelSelfTimer,
                         role = Role.Button,
                         onClick = { currentActions.value.onCapturePhoto() },
                     ),
@@ -1006,7 +1055,8 @@ fun CameraScreen(
             }
         }
 
-        state.statusMessage?.let { message ->
+        state.status?.let { status ->
+            val message = status.resolve(LocalContext.current)
             // Centered transient toast ("Video saved" / errors). Previously pinned near the
             // top, where it collided with the OSD status row (300mm / codec / etc.) — QA-reported.
             // This is the channel for capture/permission/storage ERRORS, so its scrim rides the tested
@@ -1020,7 +1070,7 @@ fun CameraScreen(
                     .align(Alignment.Center)
                     .background(HudPlate, RoundedCornerShape(8.dp))
                     .semantics {
-                        liveRegion = if (message.isUrgentStatus()) {
+                        liveRegion = if (status.livePriority == CameraStatusLivePriority.ASSERTIVE) {
                             LiveRegionMode.Assertive
                         } else {
                             LiveRegionMode.Polite
@@ -1509,7 +1559,7 @@ private fun TapFocusHoldChip(onReset: () -> Unit, modifier: Modifier = Modifier)
                     true
                 }
             }
-            .clickable(role = Role.Button, onClickLabel = "Reset focus point", onClick = onReset),
+            .clickable(role = Role.Button, onClickLabel = a11yResetFocusPoint, onClick = onReset),
         contentAlignment = Alignment.Center,
     ) {
         Text(
@@ -1517,7 +1567,7 @@ private fun TapFocusHoldChip(onReset: () -> Unit, modifier: Modifier = Modifier)
             // state above spells the same concept out as "Tap focus held". It replaced "AF HOLD",
             // which read as a sibling of the unrelated AFL exposure-lock tag in the OSD.
             // "AF HOLD" remains the INTERNAL concept name (CameraEngine, docs/ARCHITECTURE.md).
-            text = "TAP AF ×",
+            text = stringResource(R.string.osd_tap_af),
             color = CameraColors.Accent,
             style = hudGlyph(11.sp),
             modifier = Modifier
@@ -1621,7 +1671,7 @@ private fun FlashButton(mode: FlashMode, onClick: () -> Unit, modifier: Modifier
     ChromeIconButton(
         onClick = onClick,
         contentDescription = stringResource(R.string.label_flash),
-        stateDescription = flashModeLabel(mode),
+        stateDescription = LocalContext.current.localizedLabel(mode),
         modifier = modifier,
         enabled = enabled,
     ) {
@@ -1675,7 +1725,7 @@ private fun TimerButton(timer: ShutterTimer, onClick: () -> Unit, modifier: Modi
     ChromeIconButton(
         onClick = onClick,
         contentDescription = stringResource(R.string.a11y_self_timer),
-        stateDescription = shutterTimerLabel(timer),
+        stateDescription = LocalContext.current.localizedLabel(timer),
         modifier = modifier,
         enabled = enabled,
     ) {
@@ -1732,7 +1782,7 @@ private fun GridButton(type: GridType, onClick: () -> Unit, modifier: Modifier =
     ChromeIconButton(
         onClick = onClick,
         contentDescription = stringResource(R.string.label_grid),
-        stateDescription = gridTypeLabel(type),
+        stateDescription = LocalContext.current.localizedLabel(type),
         modifier = modifier,
     ) {
         Canvas(Modifier.size(16.dp)) {
@@ -1797,7 +1847,7 @@ private fun TeleChip(active: Boolean, onClick: () -> Unit, modifier: Modifier = 
                 .padding(horizontal = 12.dp),
             contentAlignment = Alignment.Center,
         ) {
-            Text("TELE", color = fg, style = hudGlyph(11.sp))
+            Text(stringResource(R.string.osd_tele), color = fg, style = hudGlyph(11.sp))
         }
     }
 }
@@ -1817,7 +1867,9 @@ private fun FlipCameraButton(
         enabled = enabled,
         // The glyph is the same on both cameras, so without this a TalkBack user has no way at all
         // to tell which camera is live — and entering FRONT silently forces the teleconverter off.
-        stateDescription = if (frontFacing) "Front camera" else "Rear camera",
+        stateDescription = stringResource(
+            if (frontFacing) R.string.a11y_front_camera else R.string.a11y_rear_camera,
+        ),
     ) {
         Canvas(Modifier.size(18.dp)) {
             val color = CameraColors.TextPrimary.copy(alpha = if (enabled) 1f else 0.38f)
@@ -1956,6 +2008,11 @@ private fun StatusInfoPill(state: CameraUiState, modifier: Modifier = Modifier) 
             }
         }
     }
+    val statusDescription = localizedStatusInfoDescription(
+        batteryPct = state.batteryPct,
+        remaining = remaining,
+        video = state.mode == CaptureMode.VIDEO,
+    )
     Row(
         modifier = modifier
             .background(HudPlate, RoundedCornerShape(8.dp))
@@ -1964,11 +2021,7 @@ private fun StatusInfoPill(state: CameraUiState, modifier: Modifier = Modifier) 
             // TalkBack read the raw glyphs — "45m" (which is a distance aloud) and a bare "1234"
             // that names nothing. The visible shortening stays; only the spoken form spells it out.
             .clearAndSetSemantics {
-                contentDescription = statusInfoDescription(
-                    batteryPct = state.batteryPct,
-                    remaining = remaining,
-                    video = state.mode == CaptureMode.VIDEO,
-                )
+                contentDescription = statusDescription
             },
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -2057,6 +2110,8 @@ private fun FnOverlay(
     glyphRotation: Float = 0f,
 ) {
     val a11yCloseFunctionMenu = stringResource(R.string.a11y_close_function_menu)
+    val functionMenuPane = stringResource(R.string.a11y_function_menu)
+    val labelContext = LocalContext.current
     val dismiss = onDismiss
     BackHandler(onBack = onDismiss)
     val slots = remember(state.mode, state.activeFnSlots) {
@@ -2135,7 +2190,7 @@ private fun FnOverlay(
                     .background(CameraColors.Pill)
                     .border(1.dp, CameraColors.Hairline, RoundedCornerShape(8.dp))
                     .semantics {
-                        paneTitle = "Function menu"
+                        paneTitle = functionMenuPane
                         isTraversalGroup = true
                     }
                     // Consume blank-panel taps without exposing a nameless dummy Button.
@@ -2204,7 +2259,7 @@ private fun FnOverlay(
                                 }
                                 FnOverlayTile(
                                     slot = slot,
-                                    value = fnSlotValue(slot, state),
+                                    value = fnSlotValue(slot, state, labelContext),
                                     enabled = enabled,
                                     onClick = {
                                         if (manualDial != null) {
@@ -2241,7 +2296,14 @@ private fun FnOverlayTile(
 ) {
     val activate = onClick
     val heldLandscape = contentAxis != FnTileContentAxis.PORTRAIT
-    val visualLabel = fnOverlayVisualLabel(slot, heldLandscape)
+    val localizedSlotLabel = LocalContext.current.localizedLabel(slot)
+    val visualLabel = fnOverlayVisualLabel(
+        slot,
+        heldLandscape,
+        localizedSlotLabel,
+        stringResource(R.string.fn_short_stabilization),
+        stringResource(R.string.fn_short_open_gate),
+    )
     val visualValue = fnOverlayVisualValue(slot, value, heldLandscape)
     val foregroundAlpha = if (enabled) 1f else 0.55f
     Box(
@@ -2252,7 +2314,7 @@ private fun FnOverlayTile(
             .border(1.dp, CameraColors.Hairline, RoundedCornerShape(8.dp))
             .focusable()
             .clearAndSetSemantics {
-                contentDescription = fnSlotLabel(slot)
+                contentDescription = localizedSlotLabel
                 stateDescription = value
                 role = Role.Button
                 if (!enabled) disabled()
@@ -2509,12 +2571,12 @@ private fun FocalRail(
                 offered.forEach { choice ->
                     val optical = choice in state.lensInventory.optical
                     RailChip(
-                        label = choice.label,
+                        label = lensLabel(choice),
                         // Same honesty rule the tele marks already follow: a digital-zoom preset is
                         // not a lens, so it must not be spoken as one.
                         contentDescription = stringResource(
                             if (optical) R.string.a11y_lens_optical else R.string.a11y_lens_zoom,
-                            choice.label,
+                            lensLabel(choice),
                         ),
                         presentation = focalRailState(
                             choice = choice,
@@ -2791,6 +2853,7 @@ private fun ShutterButton(
     val startRecordingDesc = stringResource(R.string.a11y_start_recording)
     val readyDesc = stringResource(R.string.a11y_state_ready)
     val unavailableDesc = stringResource(R.string.a11y_state_unavailable)
+    val countdownDesc = localizedTimerCountdownDescription(timerCountdownSec)
     // Tactile confirmation: a brief press-scale + a CONFIRM haptic so the shutter never fires "into
     // the void" (designer UX-2). Full-screen flash / thumbnail fly-in are deferred.
     val view = LocalView.current
@@ -2823,7 +2886,7 @@ private fun ShutterButton(
                 }
                 role = Role.Button
                 stateDescription = when {
-                    timerCountdownSec > 0 -> timerCountdownDescription(timerCountdownSec)
+                    timerCountdownSec > 0 -> countdownDesc
                     enabled -> readyDesc
                     else -> unavailableDesc
                 }
@@ -2839,7 +2902,7 @@ private fun ShutterButton(
                 interactionSource = interaction,
                 indication = null,
                 role = Role.Button,
-                onClickLabel = if (timerCountdownSec > 0) "Cancel self-timer" else null,
+                onClickLabel = if (timerCountdownSec > 0) cancelSelfTimerDesc else null,
                 onClick = activate,
             ),
     ) {

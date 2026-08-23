@@ -1,5 +1,8 @@
 package me.hletrd.telecampro.storage
 
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import java.time.format.ResolverStyle
 import java.util.Locale
 
 internal enum class StoredMediaCollection {
@@ -45,9 +48,10 @@ internal data class StoredMediaRow<T>(
      * False is the normal state for a file this app really did write in a PREVIOUS install:
      * Android clears `OWNER_PACKAGE_NAME` when the owning package is uninstalled, so every
      * reinstall or debug/release swap orphans that build's rows permanently. Such a row is still
-     * ours by directory and filename, and must still be restorable for DISPLAY — but it can no
-     * longer be deleted without a system consent flow, so it may never carry a capture-family
-     * delete promise (see [restoreLatestCapture]).
+     * considered ours only when its filename, collection, extension, and MIME match an explicit
+     * historical/current save contract. Such a row is restorable for DISPLAY, but it can no longer
+     * be deleted without a system consent flow, so it may never carry a capture-family delete
+     * promise (see [restoreLatestCapture]).
      */
     val isOwned: Boolean = true,
 )
@@ -71,6 +75,137 @@ private val rawMimeTypes = setOf(
     "image/dng",
     "application/x-adobe-dng",
 )
+
+private val heifMimeTypes = setOf("image/heic", "image/heif")
+private const val jpegMimeType = "image/jpeg"
+private const val videoMimeType = "video/mp4"
+
+/**
+ * Provider-side coarse allow-list for owner-cleared rows.
+ *
+ * The GLOBs deliberately mirror only filename shapes TeleCam has emitted. SQLite GLOB cannot
+ * validate numeric ranges, so [isRestorableStoredMediaRow] repeats the check exactly after the
+ * provider returns each row. Keeping the MIME alongside each pattern prevents a null-owner file
+ * from entering the native review path merely by borrowing a TeleCam-looking suffix.
+ */
+internal data class NullOwnerRestoreQueryRule(
+    val displayNameGlob: String,
+    val mimeType: String,
+)
+
+internal data class RestoreOwnerQueryPolicy(
+    val selection: String,
+    val selectionArgs: List<String>,
+)
+
+internal fun nullOwnerRestoreQueryRules(
+    collection: StoredMediaCollection,
+): List<NullOwnerRestoreQueryRule> {
+    val mediaPrefix = when (collection) {
+        StoredMediaCollection.IMAGE -> "IMG"
+        StoredMediaCollection.VIDEO -> "VID"
+    }
+    val digit = "[0-9]"
+    val stems = listOf(
+        "${mediaPrefix}_TELECAM_F1_${digit.repeat(13)}_${digit.repeat(10)}",
+        "${mediaPrefix}_TELECAM_${digit.repeat(8)}_${digit.repeat(6)}_" +
+            "${digit.repeat(3)}_${digit.repeat(3)}",
+    )
+    val extensionMimes = when (collection) {
+        StoredMediaCollection.IMAGE -> listOf(
+            "heic" to heifMimeTypes,
+            "heif" to heifMimeTypes,
+            "jpg" to setOf(jpegMimeType),
+            "jpeg" to setOf(jpegMimeType),
+            "dng" to rawMimeTypes,
+        )
+        StoredMediaCollection.VIDEO -> listOf("mp4" to setOf(videoMimeType))
+    }
+    return buildList {
+        stems.forEach { stem ->
+            extensionMimes.forEach { (extension, mimeTypes) ->
+                mimeTypes.forEach { mimeType ->
+                    add(NullOwnerRestoreQueryRule("$stem.$extension", mimeType))
+                }
+            }
+        }
+    }
+}
+
+/** Pure SQL fragment used by the MediaStore provider query and pinned by host tests. */
+internal fun restoreOwnerQueryPolicy(
+    collection: StoredMediaCollection,
+    packageName: String,
+    ownerColumn: String,
+    displayNameColumn: String,
+    mimeTypeColumn: String,
+): RestoreOwnerQueryPolicy {
+    val rules = nullOwnerRestoreQueryRules(collection)
+    val nullOwnerSelection = rules.joinToString(" OR ", "(", ")") {
+        "($displayNameColumn GLOB ? AND $mimeTypeColumn = ?)"
+    }
+    return RestoreOwnerQueryPolicy(
+        selection = "($ownerColumn = ? OR " +
+            "($ownerColumn IS NULL AND $nullOwnerSelection))",
+        selectionArgs = buildList {
+            add(packageName)
+            rules.forEach { rule ->
+                add(rule.displayNameGlob)
+                add(rule.mimeType)
+            }
+        },
+    )
+}
+
+private data class RecognizedTeleCamFile(
+    val media: CaptureFamilyMedia,
+    val extension: String,
+)
+
+private val legacyFileName = Regex(
+    "^(IMG|VID)_TELECAM_([0-9]{8}_[0-9]{6}_[0-9]{3})_([0-9]{3})\\.([a-z0-9]+)$",
+)
+private val legacyTimestamp = DateTimeFormatter
+    .ofPattern("uuuuMMdd_HHmmss_SSS", Locale.ROOT)
+    .withResolverStyle(ResolverStyle.STRICT)
+
+/**
+ * Trust boundary for rows whose MediaStore owner was cleared by uninstall.
+ *
+ * Current-package rows are admitted without a filename restriction because MediaStore ownership is
+ * authoritative. Owner-cleared rows need a current or historical TeleCam filename AND a collection,
+ * extension, and MIME combination that the corresponding save lane could actually have emitted.
+ */
+internal fun <T> isRestorableStoredMediaRow(row: StoredMediaRow<T>): Boolean {
+    if (row.isOwned) return true
+    val file = recognizedTeleCamFile(row.displayName) ?: return false
+    if (!file.media.matches(row.collection)) return false
+    val mimeType = row.mimeType ?: return false
+    return when (row.collection) {
+        StoredMediaCollection.IMAGE -> when (file.extension) {
+            "heic", "heif" -> mimeType in heifMimeTypes
+            "jpg", "jpeg" -> mimeType == jpegMimeType
+            "dng" -> mimeType in rawMimeTypes
+            else -> false
+        }
+        StoredMediaCollection.VIDEO -> file.extension == "mp4" && mimeType == videoMimeType
+    }
+}
+
+private fun recognizedTeleCamFile(displayName: String?): RecognizedTeleCamFile? {
+    CaptureFamilyKey.parse(displayName)?.let {
+        return RecognizedTeleCamFile(it.familyKey.media, it.extension)
+    }
+    val match = displayName?.let(legacyFileName::matchEntire) ?: return null
+    runCatching { LocalDateTime.parse(match.groupValues[2], legacyTimestamp) }.getOrNull()
+        ?: return null
+    val media = when (match.groupValues[1]) {
+        "IMG" -> CaptureFamilyMedia.STILL
+        "VID" -> CaptureFamilyMedia.VIDEO
+        else -> return null
+    }
+    return RecognizedTeleCamFile(media, match.groupValues[4])
+}
 
 internal fun storedMediaOutputKind(
     collection: StoredMediaCollection,
@@ -140,7 +275,9 @@ private data class CaptureRank(
 internal fun <T> restoreLatestCapture(rows: Iterable<StoredMediaRow<T>>): RestoredCapture<T>? {
     val groups = LinkedHashMap<CaptureGroupIdentity, MutableList<Candidate<T>>>()
     rows.forEachIndexed { ordinal, row ->
-        if (!row.isPresent || row.isPending) return@forEachIndexed
+        if (!row.isPresent || row.isPending || !isRestorableStoredMediaRow(row)) {
+            return@forEachIndexed
+        }
         val parsed = CaptureFamilyKey.parse(row.displayName)
             ?.takeIf { it.familyKey.media.matches(row.collection) }
         val identity = parsed?.let { CaptureGroupIdentity.Proven(it.familyKey) }

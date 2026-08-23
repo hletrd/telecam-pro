@@ -214,7 +214,7 @@ class ControlLabelsTest {
         ),
         // The identity wrapper this used to call had no main-source callers (MemoryPresetRow reads
         // slot.label directly); pin the property the UI actually renders.
-        MemorySlot::label,
+        MemorySlot::name,
     )
 
     @Test

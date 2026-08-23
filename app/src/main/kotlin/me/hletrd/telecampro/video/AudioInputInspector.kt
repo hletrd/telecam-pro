@@ -6,8 +6,17 @@ import android.media.AudioManager
 import me.hletrd.telecampro.camera.AudioInputPreference
 
 internal data class AudioInputStatus(
-    val label: String,
+    val route: AudioRouteStatus,
     val available: Boolean,
+)
+
+enum class AudioPortKind { PHONE, WIRED, USB, BLUETOOTH, BLE, HEARING_AID, OTHER }
+enum class AudioRouteAvailability { AUTO, AUTO_NO_MIC, READY, UNAVAILABLE, STARTING, OFF }
+data class AudioRouteStatus(
+    val preference: AudioInputPreference,
+    val availability: AudioRouteAvailability,
+    val portKind: AudioPortKind? = null,
+    val productName: String? = null,
 )
 
 internal object AudioInputInspector {
@@ -24,14 +33,16 @@ internal object AudioInputInspector {
         return inputDevices(context).firstOrNull { it.matches(preference) }
     }
 
-    fun routeLabel(preference: AudioInputPreference, device: AudioDeviceInfo?): String {
-        // "unavailable", not "missing": VideoRecorder.audioUnavailableLabel spells the SAME fact for
-        // the SAME Route row once REC starts, so two words for one fact read as two situations.
+    fun routeStatus(preference: AudioInputPreference, device: AudioDeviceInfo?): AudioRouteStatus {
         if (device == null) {
-            return if (preference == AudioInputPreference.AUTO) "Auto" else audioUnavailableLabel(preference.label)
+            return AudioRouteStatus(
+                preference,
+                if (preference == AudioInputPreference.AUTO) AudioRouteAvailability.AUTO
+                else AudioRouteAvailability.UNAVAILABLE,
+            )
         }
         val name = device.productName?.toString()?.takeIf { it.isNotBlank() && it != "Unknown" }
-        return listOfNotNull(typeLabel(device.type), name).joinToString(" · ")
+        return AudioRouteStatus(preference, AudioRouteAvailability.READY, portKind(device.type), name)
     }
 
     fun isBluetoothInput(type: Int): Boolean = type in BLUETOOTH_INPUT_TYPES
@@ -45,16 +56,16 @@ internal object AudioInputInspector {
         matchesAudioPreference(type, preference)
 
     // internal (not private): opened for unit tests (plain TYPE_* int constants are JVM-safe).
-    internal fun typeLabel(type: Int): String = when (type) {
-        AudioDeviceInfo.TYPE_BUILTIN_MIC -> "Phone mic"
-        AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired mic"
+    internal fun portKind(type: Int): AudioPortKind = when (type) {
+        AudioDeviceInfo.TYPE_BUILTIN_MIC -> AudioPortKind.PHONE
+        AudioDeviceInfo.TYPE_WIRED_HEADSET -> AudioPortKind.WIRED
         AudioDeviceInfo.TYPE_USB_DEVICE,
         AudioDeviceInfo.TYPE_USB_ACCESSORY,
-        AudioDeviceInfo.TYPE_USB_HEADSET -> "USB mic"
-        AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "BT mic"
-        AudioDeviceInfo.TYPE_BLE_HEADSET -> "BLE mic"
-        AudioDeviceInfo.TYPE_HEARING_AID -> "BT hearing aid"
-        else -> "Mic"
+        AudioDeviceInfo.TYPE_USB_HEADSET -> AudioPortKind.USB
+        AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> AudioPortKind.BLUETOOTH
+        AudioDeviceInfo.TYPE_BLE_HEADSET -> AudioPortKind.BLE
+        AudioDeviceInfo.TYPE_HEARING_AID -> AudioPortKind.HEARING_AID
+        else -> AudioPortKind.OTHER
     }
 
     internal val USB_INPUT_TYPES = setOf(
@@ -83,12 +94,6 @@ internal fun matchesAudioPreference(type: Int, preference: AudioInputPreference)
         AudioInputPreference.BLUETOOTH -> type in AudioInputInspector.BLUETOOTH_INPUT_TYPES
     }
 
-/** The label for one port: type label plus a meaningful product name. */
-internal fun audioPortLabel(port: AudioInputPortInfo): String {
-    val name = port.productName?.takeIf { it.isNotBlank() && it != "Unknown" }
-    return listOfNotNull(AudioInputInspector.typeLabel(port.type), name).joinToString(" · ")
-}
-
 /**
  * The audio-input status decision over plain ports (TEST4-18 — the branching used to live inside
  * status() against live AudioDeviceInfo and was untestable on the JVM):
@@ -107,19 +112,38 @@ internal fun resolveAudioInputStatus(
     if (preference == AudioInputPreference.AUTO) {
         // Capitalized after the separator like every sibling ("Auto · Phone mic"): the label is a
         // port name in that slot, not a sentence about one.
-        if (ports.isEmpty()) return AudioInputStatus("Auto · No mic", available = false)
+        if (ports.isEmpty()) return AudioInputStatus(
+            AudioRouteStatus(preference, AudioRouteAvailability.AUTO_NO_MIC),
+            available = false,
+        )
         val recognizedExternal = AudioInputInspector.USB_INPUT_TYPES +
             AudioInputInspector.BLUETOOTH_INPUT_TYPES +
             AudioDeviceInfo.TYPE_WIRED_HEADSET
         val pick = ports.firstOrNull { it.type in recognizedExternal }
             ?: ports.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
             ?: ports.first()
-        return AudioInputStatus("Auto · ${audioPortLabel(pick)}", available = true)
+        return AudioInputStatus(
+            AudioRouteStatus(
+                preference,
+                AudioRouteAvailability.AUTO,
+                AudioInputInspector.portKind(pick.type),
+                pick.productName?.takeIf { it.isNotBlank() && it != "Unknown" },
+            ),
+            available = true,
+        )
     }
     val match = ports.firstOrNull { matchesAudioPreference(it.type, preference) }
     return if (match != null) {
-        AudioInputStatus("${audioPortLabel(match)} ready", available = true)
+        AudioInputStatus(
+            AudioRouteStatus(
+                preference,
+                AudioRouteAvailability.READY,
+                AudioInputInspector.portKind(match.type),
+                match.productName?.takeIf { it.isNotBlank() && it != "Unknown" },
+            ),
+            available = true,
+        )
     } else {
-        AudioInputStatus(audioUnavailableLabel(preference.label), available = false)
+        AudioInputStatus(AudioRouteStatus(preference, AudioRouteAvailability.UNAVAILABLE), available = false)
     }
 }

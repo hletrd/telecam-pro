@@ -1,5 +1,6 @@
 package me.hletrd.telecampro.ui.controls
 
+import me.hletrd.telecampro.R
 import android.util.Size
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.progressSemantics
@@ -51,6 +52,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.graphics.BlendMode
@@ -350,12 +352,15 @@ private fun OutputFormatChip(
     enabled: Boolean,
     onToggle: () -> Unit,
 ) {
+    val outputLabel = stringResource(R.string.label_output)
     MinTouchTarget48 {
         FilterChip(
             selected = selected,
             onClick = onToggle,
             enabled = enabled,
-            modifier = Modifier.semantics { contentDescription = segmentedOptionName("Output", name) },
+            modifier = Modifier.semantics {
+                contentDescription = segmentedOptionName(outputLabel, name)
+            },
             leadingIcon = if (selected) {
                 {
                     Icon(
@@ -796,7 +801,7 @@ internal fun TransferSelector(
         // "Gamma", matching the Fn tile, dial chip, My Menu entry, and "Gamma Disp. Assist" — the row
         // that OWNS the setting was the odd one out, so a user cycling the Gamma tile found no Gamma
         // row in the menu (UI review #2; the same findability failure as Scene → Directionality).
-        SettingsRowLabel("Gamma", enabled = enabled)
+        SettingsRowLabel(stringResource(R.string.label_gamma), enabled = enabled)
         // Scrollable like SegmentedSelector. Five entries USED to exceed the sheet width outright:
         // a fixed Row squeezed the last visible chip until its label broke mid-word ("Log/C3")
         // while SDR fell off entirely. Binding the chips to labelMedium (12 sp, from 14 sp) took
@@ -820,7 +825,7 @@ internal fun TransferSelector(
         ) {
             availableTransfers(tenBitEncodeAvailable).forEach { option ->
                 val isSelected = transfer == option
-                val optionName = segmentedOptionName("Gamma", transferLabel(option))
+                val optionName = segmentedOptionName(stringResource(R.string.label_gamma), transferLabel(option))
                 MinTouchTarget48 {
                     FilterChip(
                         selected = isSelected,
@@ -887,7 +892,7 @@ internal fun PhotoFormatToggles(
     Column(modifier = modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
         // No `enabled` axis on this row: each format chip carries its own availability, so the label
         // itself is never the thing that is unavailable.
-        SettingsRowLabel("Output")
+        SettingsRowLabel(stringResource(R.string.label_output))
         // Chips + caption bind at the documented 4 dp caption gap (Captioned's own rhythm) while
         // the label keeps the 6 dp row gap — the caption used to float at the page rhythm and read
         // as a separate row (UI review #32).
@@ -924,20 +929,20 @@ internal fun PhotoFormatToggles(
             // request itself survives — it is intent, and it applies again the moment the operator
             // returns to a route that can serve it.
             Text(
-                "RAW unavailable",
+                stringResource(R.string.output_raw_unavailable),
                 color = CameraColors.TextSecondary,
                 style = MaterialTheme.typography.labelSmall,
             )
         } else if (!rawInSession && formats.dngRaw) {
             Text(
-                "Switching to a single lens for RAW",
+                stringResource(R.string.output_switching_single_lens),
                 color = CameraColors.TextSecondary,
                 style = MaterialTheme.typography.labelSmall,
             )
         } else if (!processedAvailable) {
             Text(
                 // Word for word the status CameraEngine emits for the same accepted-output mask.
-                "HEIF/JPEG unavailable · DNG only",
+                stringResource(R.string.output_processed_unavailable_dng_only),
                 color = CameraColors.TextSecondary,
                 style = MaterialTheme.typography.labelSmall,
             )

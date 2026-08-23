@@ -29,7 +29,6 @@ package me.hletrd.telecampro.camera
  * equivalent focal, never by id), and that rule is unchanged.
  */
 enum class PhoneModel(
-    val label: String,
     /**
      * The 35 mm-equivalent focal of the telephoto its kit converter clamps onto. Used ONLY to derive
      * that kit's magnification — the focal the app reports always comes from the lens actually
@@ -39,10 +38,10 @@ enum class PhoneModel(
     /** `Build.MODEL` values for this phone, matched case-insensitively. */
     val deviceModels: List<String> = emptyList(),
 ) {
-    FIND_X9_ULTRA("OPPO Find X9 Ultra", 70f, listOf("PMA110", "CPH2841")),
-    FIND_X9_PRO("OPPO Find X9 Pro", 70f, listOf("CPH2791")),
-    VIVO_X200_ULTRA("vivo X200 Ultra", 85f, listOf("V2454A", "V2454DA")),
-    VIVO_X300_ULTRA("vivo X300 Ultra", 85f, listOf("V2562")),
+    FIND_X9_ULTRA(70f, listOf("PMA110", "CPH2841")),
+    FIND_X9_PRO(70f, listOf("CPH2791")),
+    VIVO_X200_ULTRA(85f, listOf("V2454A", "V2454DA")),
+    VIVO_X300_ULTRA(85f, listOf("V2562")),
 
     /**
      * Anything without a first-party kit. Offers only the generic clip-ons and CUSTOM, so it needs
@@ -50,7 +49,7 @@ enum class PhoneModel(
      */
     // Labelled just "Other": the row it renders in is already labelled "Phone", so the old
     // "Other phone" read back as "Phone   Other phone".
-    OTHER("Other", 70f),
+    OTHER(70f),
     ;
 
     /** The converters that clamp onto this phone, plus the ones that fit anything. */
@@ -62,7 +61,6 @@ enum class PhoneModel(
 val DEFAULT_PHONE_MODEL = PhoneModel.FIND_X9_ULTRA
 
 enum class TeleconverterProfile(
-    val label: String,
     /**
      * The focal this kit is SOLD as, on [phone]'s telephoto. Zero for entries whose magnification is
      * intrinsic rather than derived (the generic clip-ons and [CUSTOM]).
@@ -77,27 +75,27 @@ enum class TeleconverterProfile(
      * Hasselblad "Earth Explorer" 300 mm — the Kepler afocal optic this whole app was built around.
      * 300 ÷ 70 = 4.286, matching the published 4.28×.
      */
-    EXPLORER_300("Hasselblad 300 mm", 300f, 0f, PhoneModel.FIND_X9_ULTRA),
+    EXPLORER_300(300f, 0f, PhoneModel.FIND_X9_ULTRA),
 
     /** Hasselblad Professional Teleconverter Kit: 230 ÷ 70 = 3.286, published as 3.28×. */
-    HASSELBLAD_230("Hasselblad 230 mm", 230f, 0f, PhoneModel.FIND_X9_PRO),
+    HASSELBLAD_230(230f, 0f, PhoneModel.FIND_X9_PRO),
 
     /** vivo ZEISS 2.35× extender: 200 ÷ 85 = 2.353, published as 2.35×. */
-    ZEISS_200_X200("ZEISS 200 mm", 200f, 0f, PhoneModel.VIVO_X200_ULTRA),
+    ZEISS_200_X200(200f, 0f, PhoneModel.VIVO_X200_ULTRA),
 
     /** The same ZEISS 2.35× optic, which the X300 series also takes. */
-    ZEISS_200_X300("ZEISS 200 mm", 200f, 0f, PhoneModel.VIVO_X300_ULTRA),
+    ZEISS_200_X300(200f, 0f, PhoneModel.VIVO_X300_ULTRA),
 
     /** vivo ZEISS 4.7× "G2 Ultra": 400 ÷ 85 = 4.706, published as 4.7×. */
-    ZEISS_400("ZEISS 400 mm", 400f, 0f, PhoneModel.VIVO_X300_ULTRA),
+    ZEISS_400(400f, 0f, PhoneModel.VIVO_X300_ULTRA),
 
     /** Generic clip-ons: the barrel states a magnification, not a focal, so it is intrinsic. */
-    GENERIC_1_5("Generic 1.5×", 0f, 1.5f, null),
-    GENERIC_2("Generic 2×", 0f, 2f, null),
-    GENERIC_3("Generic 3×", 0f, 3f, null),
+    GENERIC_1_5(0f, 1.5f, null),
+    GENERIC_2(0f, 2f, null),
+    GENERIC_3(0f, 3f, null),
 
     /** User-entered magnification; see [effectiveMagnification]. */
-    CUSTOM("Custom", 0f, 0f, null),
+    CUSTOM(0f, 0f, null),
     ;
 
     val isCustom: Boolean get() = this == CUSTOM

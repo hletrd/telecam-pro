@@ -54,12 +54,16 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import me.hletrd.telecampro.camera.CaptureMode
+import me.hletrd.telecampro.camera.CameraStatusMessage
 import me.hletrd.telecampro.ui.CameraActions
 import me.hletrd.telecampro.ui.CameraScreen
 import me.hletrd.telecampro.ui.CameraViewModel
 import me.hletrd.telecampro.ui.windowFollowsDevice
 import me.hletrd.telecampro.ui.theme.CameraColors
 import me.hletrd.telecampro.ui.theme.TeleCamProTheme
+
+private const val READ_MEDIA_VISUAL_USER_SELECTED_PERMISSION =
+    "android.permission.READ_MEDIA_VISUAL_USER_SELECTED"
 
 class MainActivity : ComponentActivity() {
 
@@ -312,7 +316,7 @@ class MainActivity : ComponentActivity() {
                                         arrayOf(
                                             Manifest.permission.READ_MEDIA_IMAGES,
                                             Manifest.permission.READ_MEDIA_VIDEO,
-                                            Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED,
+                                            READ_MEDIA_VISUAL_USER_SELECTED_PERMISSION,
                                         ),
                                     )
                                 } else {
@@ -432,7 +436,7 @@ class MainActivity : ComponentActivity() {
                             putBoolean(AUDIO_OFF_BY_DENIAL_KEY, true)
                         }
                         vm.onToggleRecordAudio(false)
-                        vm.onAppStatus("Recording without audio")
+                        vm.onAppStatus(CameraStatusMessage.RECORDING_WITHOUT_AUDIO)
                     }
                 }
                 activeTransition?.let { vm.onHardwareFullKey(active = it) }
@@ -511,7 +515,7 @@ class MainActivity : ComponentActivity() {
                                 putBoolean(AUDIO_OFF_BY_DENIAL_KEY, true)
                             }
                             vm.onToggleRecordAudio(false)
-                            vm.onAppStatus("Recording without audio")
+                            vm.onAppStatus(CameraStatusMessage.RECORDING_WITHOUT_AUDIO)
                         }
                     }
                     transition?.let(vm::onHardwareHalfPress)
@@ -551,7 +555,7 @@ class MainActivity : ComponentActivity() {
                                 putBoolean(AUDIO_OFF_BY_DENIAL_KEY, true)
                             }
                             vm.onToggleRecordAudio(false)
-                            vm.onAppStatus("Recording without audio")
+                            vm.onAppStatus(CameraStatusMessage.RECORDING_WITHOUT_AUDIO)
                         }
                     }
                     transition?.let(vm::onHardwareQuickButton)
@@ -629,7 +633,7 @@ class MainActivity : ComponentActivity() {
         vm.onToggleRecordAudio(false)
         when (microphoneDeclineOutcome(action)) {
             MicrophoneDeclineOutcome.AUDIO_OFF_AND_RECORD -> {
-                vm.onAppStatus("Microphone denied — recording without audio")
+                vm.onAppStatus(CameraStatusMessage.MICROPHONE_DENIED_RECORDING_WITHOUT_AUDIO)
                 vm.onToggleRecording()
             }
             MicrophoneDeclineOutcome.AUDIO_OFF ->
@@ -639,7 +643,7 @@ class MainActivity : ComponentActivity() {
                   // part the operator acts on: this branch fires when they explicitly asked to turn
                   // audio ON, and onToggleRecordAudio(false) has just run, so the next take is
                   // silent. Withholding that is the confusion AUDIO_OFF_BY_DENIAL exists to remove.
-                  vm.onAppStatus("Microphone denied — audio off")
+                  vm.onAppStatus(CameraStatusMessage.MICROPHONE_DENIED_AUDIO_OFF)
         }
     }
 
@@ -660,7 +664,7 @@ class MainActivity : ComponentActivity() {
         ) {
             permissionPreferences.edit(commit = true) { putBoolean(AUDIO_OFF_BY_DENIAL_KEY, false) }
             vm.onToggleRecordAudio(true)
-            vm.onAppStatus("Microphone allowed — audio on")
+            vm.onAppStatus(CameraStatusMessage.MICROPHONE_ALLOWED_AUDIO_ON)
         }
         cameraPermanentlyDenied = classifyCameraPermission(
             granted = hasCameraPermission,
@@ -682,14 +686,14 @@ class MainActivity : ComponentActivity() {
     private fun hasVisualMediaPermission(): Boolean = hasVisualMediaAccess(
         imagesGranted = hasPermission(Manifest.permission.READ_MEDIA_IMAGES),
         videoGranted = hasPermission(Manifest.permission.READ_MEDIA_VIDEO),
-        userSelectedGranted = hasPermission(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED),
+        userSelectedGranted = hasPermission(READ_MEDIA_VISUAL_USER_SELECTED_PERMISSION),
     )
 
     /** Live access LEVEL — the finer answer, so a partial grant is distinguishable from a full one. */
     private fun visualMediaAccess(): VisualMediaAccess = visualMediaAccessLevel(
         imagesGranted = hasPermission(Manifest.permission.READ_MEDIA_IMAGES),
         videoGranted = hasPermission(Manifest.permission.READ_MEDIA_VIDEO),
-        userSelectedGranted = hasPermission(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED),
+        userSelectedGranted = hasPermission(READ_MEDIA_VISUAL_USER_SELECTED_PERMISSION),
     )
 
     private fun hasPermission(permission: String): Boolean =
@@ -803,9 +807,9 @@ private fun PermissionGate(
         ) {
             Text(
                 text = when {
-                    policyBlocked -> "Camera blocked for this app on this device."
-                    permanentlyDenied -> "Enable camera access in Settings."
-                    else -> "Camera access required."
+                    policyBlocked -> stringResource(R.string.camera_permission_policy_blocked)
+                    permanentlyDenied -> stringResource(R.string.camera_permission_permanently_denied)
+                    else -> stringResource(R.string.camera_permission_required)
                 },
                 textAlign = TextAlign.Center,
                 style = MaterialTheme.typography.bodyLarge,

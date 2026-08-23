@@ -5,118 +5,161 @@ import android.media.MediaCodecList
 import android.media.MediaFormat
 import me.hletrd.telecampro.camera.VideoCodec
 
+/** The exact encoder component admitted by capability discovery and used for recording. */
+data class EncoderSelection(
+    val codec: VideoCodec,
+    val codecName: String,
+    val mime: String,
+    val hardwareAccelerated: Boolean,
+    val main10: Boolean,
+)
+
 /**
- * Runtime video-encoder inventory, queried once from [MediaCodecList] (REGULAR_CODECS).
+ * One immutable result of the process-wide platform codec walk.
  *
- * On the Find X9 Ultra (SM8850 / Snapdragon 8 Elite Gen 5) this resolves to:
- *  - HEVC → `c2.qti.hevc.encoder` (HW, 8K30 / 4K120, ≤180 Mbps)
- *  - AVC  → `c2.qti.avc.encoder`  (HW, 8K30 / 4K120, ≤220 Mbps)
- *
- * (AV1 was removed as a recording codec: the only AV1 encoder on this SoC is software
- * `c2.android.av1.encoder` — too slow/low-res to ship.)
- *
- * All lookups are defensive so a missing/renamed codec degrades to "unavailable" rather than throwing.
+ * Every UI and recorder decision is derived from this same snapshot. In particular, [selectionFor]
+ * is the token handed to VideoRecorder, so a capability admitted on one component can never be
+ * instantiated later through MIME-based factory selection as a different component.
  */
-object EncoderCaps {
+class CodecInventory internal constructor(
+    private val selections: Map<VideoCodec, EncoderSelection>,
+) {
+    val availableVideoCodecs: List<VideoCodec> =
+        listOf(VideoCodec.HEVC, VideoCodec.AVC).filter(selections::containsKey)
+    val heifEncodeAvailable: Boolean = selections.containsKey(VideoCodec.HEVC)
+    val tenBitEncodeAvailable: Boolean = selections[VideoCodec.HEVC]?.main10 == true
 
-    private data class Info(val name: String, val hardware: Boolean)
+    fun selectionFor(codec: VideoCodec): EncoderSelection? = selections[codec]
 
-    // codec → best encoder (prefer a hardware one) or null if the device has no encoder for it.
-    private val byCodec: Map<VideoCodec, Info> by lazy { buildMap { scan(this) } }
+    companion object {
+        val EMPTY = CodecInventory(emptyMap())
+    }
+}
 
-    private fun scan(out: MutableMap<VideoCodec, Info>) {
+/** Android-free input to [buildCodecInventory], retained so failure cases are host-testable. */
+internal data class CodecComponent(
+    val name: String,
+    val encoder: Boolean,
+    val supportedTypes: Set<String>,
+    val hardwareAccelerated: Boolean,
+    /** null means the capability query failed; Main10 must then fail closed. */
+    val hevcProfiles: Set<Int>?,
+)
+
+/**
+ * Builds one immutable codec inventory. A failed outer scan is represented by an empty list; a
+ * failed HEVC capability query is represented by null profiles and never grants Main10.
+ */
+internal fun buildCodecInventory(components: List<CodecComponent>): CodecInventory {
+    val selections = buildMap {
         for ((codec, mime) in listOf(
             VideoCodec.HEVC to MediaFormat.MIMETYPE_VIDEO_HEVC,
             VideoCodec.AVC to MediaFormat.MIMETYPE_VIDEO_AVC,
-            VideoCodec.APV to MIME_APV,
+            VideoCodec.APV to EncoderCaps.MIME_APV,
         )) {
-            encoderFor(mime)?.let { out[codec] = it }
+            val candidates = components.asSequence()
+                .filter { component ->
+                    component.encoder && component.supportedTypes.any { it.equals(mime, ignoreCase = true) }
+                }
+                .map { component ->
+                    EncoderSelection(
+                        codec = codec,
+                        codecName = component.name,
+                        mime = mime,
+                        hardwareAccelerated = component.hardwareAccelerated,
+                        main10 = codec == VideoCodec.HEVC &&
+                            component.hevcProfiles?.contains(
+                                MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10,
+                            ) == true,
+                    ) to component.hardwareAccelerated
+                }
+                .toList()
+            pickBestEncoder(candidates)?.let { put(codec, it) }
+        }
+    }
+    return CodecInventory(selections.toMap())
+}
+
+/** Fail-closed boundary for platform-list and component-metadata failures. */
+internal fun discoverCodecInventory(load: () -> List<CodecComponent>): CodecInventory =
+    runCatching { buildCodecInventory(load()) }.getOrDefault(CodecInventory.EMPTY)
+
+/**
+ * Runtime encoder inventory. [load] performs at most one platform list walk process-wide and must be
+ * called off main; all other methods are non-blocking reads of the resulting immutable snapshot.
+ */
+object EncoderCaps {
+    private val loadLock = Any()
+    @Volatile private var loaded = false
+    @Volatile private var inventory = CodecInventory.EMPTY
+
+    fun load(): CodecInventory {
+        if (loaded) return inventory
+        return synchronized(loadLock) {
+            if (!loaded) {
+                inventory = discoverCodecInventory(::scanPlatformComponents)
+                loaded = true
+            }
+            inventory
         }
     }
 
-    /** Best encoder for [mime]: prefers a hardware-accelerated one, falling back to any software one. */
-    private fun encoderFor(mime: String): Info? {
-        val infos = runCatching {
-            MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
-        }.getOrNull() ?: return null
-        val candidates = infos.mapNotNull { ci ->
-            if (!ci.isEncoder) return@mapNotNull null
-            if (ci.supportedTypes.none { it.equals(mime, ignoreCase = true) }) return@mapNotNull null
-            val hw = runCatching { ci.isHardwareAccelerated }
-                .getOrDefault(looksHardwareAccelerated(ci.name))
-            Info(ci.name, hw) to hw
+    fun currentInventory(): CodecInventory = inventory
+
+    fun isLoaded(): Boolean = loaded
+
+    fun availableCodecs(): List<VideoCodec> = inventory.availableVideoCodecs
+
+    fun isSupported(codec: VideoCodec): Boolean = inventory.selectionFor(codec) != null
+
+    fun heifEncodeAvailable(): Boolean = inventory.heifEncodeAvailable
+
+    fun tenBitEncodeAvailable(): Boolean = inventory.tenBitEncodeAvailable
+
+    fun selectionFor(codec: VideoCodec): EncoderSelection? = inventory.selectionFor(codec)
+
+    fun encoderName(codec: VideoCodec): String? = selectionFor(codec)?.codecName
+
+    private fun scanPlatformComponents(): List<CodecComponent> {
+        val infos = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.toList()
+        return infos.map { info ->
+            val supportedTypes = runCatching { info.supportedTypes.toSet() }.getOrDefault(emptySet())
+            val advertisesHevc = supportedTypes.any {
+                it.equals(MediaFormat.MIMETYPE_VIDEO_HEVC, ignoreCase = true)
+            }
+            CodecComponent(
+                name = info.name,
+                encoder = runCatching { info.isEncoder }.getOrDefault(false),
+                supportedTypes = supportedTypes,
+                hardwareAccelerated = runCatching { info.isHardwareAccelerated }
+                    .getOrDefault(looksHardwareAccelerated(info.name)),
+                hevcProfiles = if (advertisesHevc) {
+                    runCatching {
+                        info.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_HEVC)
+                            .profileLevels
+                            .mapTo(mutableSetOf()) { it.profile }
+                            .toSet()
+                    }.getOrNull()
+                } else {
+                    emptySet()
+                },
+            )
         }
-        return pickBestEncoder(candidates)
     }
-
-    /**
-     * Codecs the device can actually encode AND that we can mux into MP4, in UI order (HEVC, AVC).
-     * APV is intentionally EXCLUDED: the HW `c2.qti.apv.encoder` exists, but Android's MediaMuxer
-     * (API 36) rejects APV in an MP4 container — device-verified it errors the encoder mid-drain —
-     * so there is no working recording path for it via MediaCodec+MediaMuxer. [isSupported]/
-     * [encoderName] still report it for diagnostics.
-     */
-    fun availableCodecs(): List<VideoCodec> =
-        listOf(VideoCodec.HEVC, VideoCodec.AVC).filter { byCodec.containsKey(it) }
-
-    fun isSupported(codec: VideoCodec): Boolean = byCodec.containsKey(codec)
-
-    /**
-     * Whether this device can encode HEIF stills. androidx HeifWriter encodes through the platform
-     * HEVC encoder, and HEVC encode is NOT CDD-mandatory at API 33 — on an entry-level handset
-     * without one, the app's DEFAULT still format silently produced no file at all (2026-08-02
-     * review). Same MediaCodecList scan as the video codecs, so it costs nothing extra.
-     */
-    fun heifEncodeAvailable(): Boolean = isSupported(VideoCodec.HEVC)
-
-    /**
-     * Whether the chosen HEVC encoder advertises the 10-bit **Main10** profile.
-     *
-     * Every transfer except SDR asks [ColorProfiles.hevcColorTagsFor] for `HEVCProfileMain10`. On an
-     * 8-bit-only encoder that request does not fail loudly — it produced a clip whose CONTAINER read
-     * `bt2020 / arib-std-b67` (HLG) while the stream was `profile=Main, yuv420p`, i.e. an 8-bit
-     * picture wearing HDR tags (device-probed on an Android 13 emulator, 2026-08-02). A file that
-     * misdescribes itself is worse than a missing option, so those transfers are not offered here.
-     *
-     * Under-advertising costs the user an option that might have worked; over-offering writes a
-     * false claim into their footage. This errs toward the first.
-     */
-    fun tenBitEncodeAvailable(): Boolean = runCatching {
-        val name = encoderName(VideoCodec.HEVC) ?: return@runCatching false
-        MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
-            .firstOrNull { it.isEncoder && it.name == name }
-            ?.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_HEVC)
-            ?.profileLevels
-            ?.any { it.profile == MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10 } == true
-    }.getOrDefault(true)
-
-    // NOTE: no public isHardware(codec) accessor — it had no caller. The underlying `Info.hardware`
-    // field IS load-bearing: it is pickBestEncoder's hardware-first tie-break.
-
-    /** The concrete encoder component name chosen for [codec] (for diagnostics), or null. */
-    fun encoderName(codec: VideoCodec): String? = byCodec[codec]?.name
 
     // APV (Advanced Professional Video, ISO/IEC 21794) — HW `c2.qti.apv.encoder` on this SoC.
     const val MIME_APV = "video/apv"
 }
 
-/**
- * Name-based hardware heuristic used only when [android.media.MediaCodecInfo.isHardwareAccelerated]
- * itself throws (TEST4-19): the two Android software-encoder prefixes are the reliable negatives.
- * Extracted pure so misclassifying a new vendor name fails a host test, not a device recording.
- */
+/** Fallback heuristic when MediaCodecInfo.isHardwareAccelerated itself throws. */
 internal fun looksHardwareAccelerated(codecName: String): Boolean =
     !codecName.startsWith("c2.android") && !codecName.startsWith("OMX.google")
 
-/**
- * The encoder tie-break, extracted pure (TEST4-19): the FIRST hardware candidate wins immediately;
- * otherwise the FIRST software candidate is the remembered fallback (a later software match must
- * never displace an earlier one); null on no candidates.
- */
+/** First hardware candidate, otherwise the first software candidate. */
 internal fun <T> pickBestEncoder(candidates: List<Pair<T, Boolean>>): T? {
     var fallback: T? = null
-    for ((value, hw) in candidates) {
-        if (hw) return value
+    for ((value, hardware) in candidates) {
+        if (hardware) return value
         if (fallback == null) fallback = value
     }
     return fallback

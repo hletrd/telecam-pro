@@ -123,6 +123,17 @@ class GyroEis(context: Context) : SensorEventListener {
         }
     }
 
+    /**
+     * Starts a new motion-evidence epoch without changing sensor registration intent.
+     *
+     * Optics and lifecycle doors call this even when tracking remains armed: an idempotent
+     * `setRotationTracking(true)` must not leave pre-door samples available to the first frame pair
+     * on the new route.
+     */
+    fun resetRotationEvidence() {
+        clearRotationHistory()
+    }
+
     /** Drops every retained sample. A window spanning a pause is not answerable and must not be. */
     private fun clearRotationHistory() = synchronized(rotationLock) {
         sampleCount = 0

@@ -222,5 +222,5 @@ internal fun closerLensHint(
 }
 
 /** The user-facing lens-preset label nearest an equivalent focal (e.g. 23 mm → "1×"). */
-internal fun lensLabelForEquivFocal(equivMm: Float): String? =
-    LensChoice.entries.minByOrNull { abs(it.targetEquivMm - equivMm) }?.label
+internal fun lensChoiceForEquivFocal(equivMm: Float): LensChoice? =
+    LensChoice.entries.minByOrNull { abs(it.targetEquivMm - equivMm) }

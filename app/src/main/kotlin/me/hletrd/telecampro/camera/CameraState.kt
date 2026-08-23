@@ -2,15 +2,8 @@ package me.hletrd.telecampro.camera
 
 import android.util.Size
 import androidx.compose.runtime.Immutable
-
-/**
- * The cold-start PROGRESS status. It lives here, not in either layer that uses it, because the
- * engine EMITS it and the UI's display-duration policy must recognise it to keep it timer-less —
- * matched by literal in two layers, those two would drift apart silently and the pill would strand
- * on screen with nothing able to clear it. `CameraEngine`'s own companion is private, and the
- * camera layer must not import the UI layer to reach a string.
- */
-const val CAMERA_STARTING_STATUS = "Starting camera…"
+import me.hletrd.telecampro.video.AudioRouteAvailability
+import me.hletrd.telecampro.video.AudioRouteStatus
 
 /** Photo vs video capture mode. */
 enum class CaptureMode { PHOTO, VIDEO }
@@ -89,18 +82,18 @@ enum class GridType { NONE, THIRDS, GOLDEN, SQUARE, CENTER }
  * Delivery-framing markers drawn over the viewfinder (Sony "Frame Lines"): a centered box of the
  * target aspect, for judging a crop that will happen in post (scope, square, vertical).
  */
-enum class FrameLineType(val label: String, val ratio: Float?) {
-    OFF("Off", null),
-    CINEMA("2.39:1", 2.39f),
-    SQUARE("1:1", 1f),
-    VERTICAL("9:16", 9f / 16f),
+enum class FrameLineType(val ratio: Float?) {
+    OFF(null),
+    CINEMA(2.39f),
+    SQUARE(1f),
+    VERTICAL(9f / 16f),
 }
 
 /** Tap-AF / spot-metering region size as a fraction of the active array (Sony Spot S/M/L). */
-enum class AfSpotSize(val fraction: Float, val label: String) {
-    SMALL(0.06f, "S"),
-    MEDIUM(0.10f, "M"),
-    LARGE(0.16f, "L"),
+enum class AfSpotSize(val fraction: Float) {
+    SMALL(0.06f),
+    MEDIUM(0.10f),
+    LARGE(0.16f),
 }
 
 /** Self-timer before the shutter fires. */
@@ -125,10 +118,10 @@ enum class ShutterMode { SPEED, ANGLE }
  *
  * The HAL modes are gated by `CameraCaps.videoStabModes`.
  */
-enum class VideoStabMode(val label: String) {
-    OFF("Off"),
-    STANDARD("Standard"),
-    ENHANCED("Active");
+enum class VideoStabMode {
+    OFF,
+    STANDARD,
+    ENHANCED;
 
     /** CONTROL_VIDEO_STABILIZATION_MODE value for the HAL modes; null for [OFF]. */
     val halControlMode: Int?
@@ -140,46 +133,46 @@ enum class VideoStabMode(val label: String) {
 }
 
 /** Sony-style memory recall banks: complete shooting setups saved by the user. */
-enum class MemorySlot(val label: String) { MR1("MR1"), MR2("MR2"), MR3("MR3") }
+enum class MemorySlot { MR1, MR2, MR3 }
 
 /**
  * Customizable shooting-screen Fn bar slots. The first six defaults mirror the current always-visible
  * dials; the rest are quick toggles/cycles a Sony user expects to keep out of the deep menu.
  */
-enum class FnSlot(val label: String) {
+enum class FnSlot {
     // "Mode", not "AE": this is the PASM selector, and "AE: M" (auto-exposure: manual) read as a
     // contradiction on the pro surface (2026-07-31 UI review #22). The sheet row is already "Mode".
-    EXPOSURE_MODE("Mode"),
-    FOCUS("Focus"),
-    SHUTTER("Shutter"),
-    ISO("ISO"),
-    WB("WB"),
-    EV("EV"),
-    ZOOM("Zoom"),
-    STABILIZATION("Stabilization"),
-    DRIVE("Drive"),
-    METERING("Meter"),
-    PEAKING("Peaking"),
-    ZEBRA("Zebra"),
-    TRANSFER("Gamma"),
+    EXPOSURE_MODE,
+    FOCUS,
+    SHUTTER,
+    ISO,
+    WB,
+    EV,
+    ZOOM,
+    STABILIZATION,
+    DRIVE,
+    METERING,
+    PEAKING,
+    ZEBRA,
+    TRANSFER,
     // Pairs with the sheet row's "Directionality" (the "Audio" word belongs to the record toggle;
     // one word naming two controls was the findability failure — 2026-07-31 UI review #3).
-    AUDIO_SCENE("Direction"),
-    GRID("Grid"),
-    LEVEL("Level"),
-    PUNCH_IN("Loupe"),
-    TELECONVERTER("Tele"),
-    OPEN_GATE("Open Gate"),
-    FRAME_LINES("Frame"),
+    AUDIO_SCENE,
+    GRID,
+    LEVEL,
+    PUNCH_IN,
+    TELECONVERTER,
+    OPEN_GATE,
+    FRAME_LINES,
 
     // 2026-07-31 additions (user: "some fn functions are not available"). Persistence stores enum
     // NAMES, so appending here never disturbs saved lists; normalizeFnSlots drops unknowns on
     // downgrade by construction.
-    FLASH("Flash"),
+    FLASH,
     // Full sheet name; the held-landscape tile shortens through fnOverlayVisualLabel like STAB.
-    TIMER("Self-Timer"),
-    ASPECT("Aspect"),
-    AUDIO_INPUT("Mic Input");
+    TIMER,
+    ASPECT,
+    AUDIO_INPUT;
 
     companion object {
         val PHOTO_DEFAULT = listOf(EXPOSURE_MODE, FOCUS, SHUTTER, ISO, WB, EV)
@@ -190,16 +183,16 @@ enum class FnSlot(val label: String) {
 }
 
 /** Assignable action for physical keys. Camera slide zoom remains fixed because it has direction. */
-enum class HardwareKeyAction(val label: String) {
-    SHUTTER("Shutter/REC"),
-    AF_ON("AF-ON"),
-    AEL("AEL"),
+enum class HardwareKeyAction {
+    SHUTTER,
+    AF_ON,
+    AEL,
     // Label unified on "Loupe" app-wide (cycle-6 D-04; matches the Fn chip and the LOUPE OSD tag).
     // The enum NAME stays PUNCH_IN — persistence stores names, and renaming would drop the setting.
-    PUNCH_IN("Loupe"),
-    ZOOM_IN("Zoom In"),
-    ZOOM_OUT("Zoom Out"),
-    NONE("None"),
+    PUNCH_IN,
+    ZOOM_IN,
+    ZOOM_OUT,
+    NONE,
 }
 
 /** Focus-peaking edge-detection threshold; a LOWER threshold highlights more edges (more sensitive). */
@@ -275,22 +268,22 @@ enum class MeteringMode { MATRIX, CENTER, SPOT }
  *    tightens with optical/digital zoom (the 300 mm use case). Sets focus_zoom + focus_angle too.
  *  - SOUND_STAGE (5) — widened spatial stereo image.
  */
-enum class AudioScene(val effectType: Int, val label: String) {
-    STANDARD(1, "Standard"),
-    SOUND_FOCUS(2, "Sound Focus"),
-    SOUND_STAGE(5, "Sound Stage"),
+enum class AudioScene(val effectType: Int) {
+    STANDARD(1),
+    SOUND_FOCUS(2),
+    SOUND_STAGE(5),
 }
 
 /**
  * Preferred recording input. AUTO lets Android pick the route; the others are resolved against
  * currently connected input-capable AudioDeviceInfo entries when video recording starts.
  */
-enum class AudioInputPreference(val label: String) {
-    AUTO("Auto"),
-    BUILT_IN("Phone"),
-    WIRED("Wired"),
-    USB("USB"),
-    BLUETOOTH("BT"),
+enum class AudioInputPreference {
+    AUTO,
+    BUILT_IN,
+    WIRED,
+    USB,
+    BLUETOOTH,
 }
 
 // The teleconverter's magnification, its preset catalog, and the derived display/focal scales now
@@ -827,11 +820,11 @@ internal fun lensInventoryOf(
     )
 }
 
-enum class LensChoice(val targetEquivMm: Float, val label: String, val zoomPreset: Float) {
-    ULTRAWIDE(14f, "0.6×", 0.6f),
-    MAIN(23f, "1×", 1f),
-    TELE3X(70f, "3×", 3f),
-    TELE10X(230f, "10×", 10f);
+enum class LensChoice(val targetEquivMm: Float, val zoomPreset: Float) {
+    ULTRAWIDE(14f, 0.6f),
+    MAIN(23f, 1f),
+    TELE3X(70f, 3f),
+    TELE10X(230f, 10f);
 
     val isTeleconverterLens: Boolean get() = this == TELE3X
 
@@ -910,22 +903,21 @@ enum class BitrateLevel(val bpp: Float) {
  * always excludes them because the constrained high-speed session SIGABRTs this device's HAL.
  */
 enum class VideoFrameRate(
-    val label: String,
     val encoderRate: Double,
     val fps: Int,
     val dropFrame: Boolean,
     val highSpeed: Boolean = false,
 ) {
-    FPS_23_976("23.976", 24000.0 / 1001.0, 24, true),
-    FPS_24("24", 24.0, 24, false),
-    FPS_25("25", 25.0, 25, false),
-    FPS_29_97("29.97", 30000.0 / 1001.0, 30, true),
-    FPS_30("30", 30.0, 30, false),
-    FPS_50("50", 50.0, 50, false),
-    FPS_59_94("59.94", 60000.0 / 1001.0, 60, true),
-    FPS_60("60", 60.0, 60, false),
+    FPS_23_976(24000.0 / 1001.0, 24, true),
+    FPS_24(24.0, 24, false),
+    FPS_25(25.0, 25, false),
+    FPS_29_97(30000.0 / 1001.0, 30, true),
+    FPS_30(30.0, 30, false),
+    FPS_50(50.0, 50, false),
+    FPS_59_94(60000.0 / 1001.0, 60, true),
+    FPS_60(60.0, 60, false),
     // Dormant in the shipping picker; see availableFor and CameraViewModel's restore guard.
-    FPS_120("120", 120.0, 120, false, highSpeed = true);
+    FPS_120(120.0, 120, false, highSpeed = true);
 
     companion object {
         /** The default: 29.97 fps NTSC drop-frame (the standard cine/broadcast rate). */
@@ -1219,7 +1211,10 @@ data class CameraUiState(
     // Directional audio (Sound Focus / Sound Stage) via device audio-HAL params.
     val audioScene: AudioScene = AudioScene.STANDARD,
     val audioInputPreference: AudioInputPreference = AudioInputPreference.AUTO,
-    val audioRouteLabel: String = "Auto",
+    val audioRoute: AudioRouteStatus = AudioRouteStatus(
+        preference = AudioInputPreference.AUTO,
+        availability = AudioRouteAvailability.AUTO,
+    ),
     val audioGain: Float = 1f, // 0..2 software gain applied to recorded PCM
     /**
      * Live input level per CHANNEL (0..1 RMS), in interleave order; empty while the meter is off.
@@ -1244,7 +1239,7 @@ data class CameraUiState(
     // SOFT. [macroCloserLensLabel] names a rear lens that focuses closer (resolved per route from
     // the per-lens metadata cache, null when none qualifies); only AF_LIMIT may show it.
     val focusConfidence: FocusConfidenceSource? = null,
-    val macroCloserLensLabel: String? = null,
+    val macroCloserLens: LensChoice? = null,
     // Live camera health: false while opening/reconfiguring/recovering (and after recovery gives
     // up). The shutter dims on it so a dead session never hides behind a ready-looking button.
     val cameraReady: Boolean = false,
@@ -1378,10 +1373,13 @@ data class CameraUiState(
     val caps: CameraCaps? = null,
     // Device-static, enumerated once: which lens presets this hardware can actually deliver.
     val lensInventory: LensInventory = LensInventory.ALL,
-    // Device-static: whether HEIF stills can be encoded here at all (HeifWriter needs HEVC).
-    val heifAvailable: Boolean = true,
+    // Device-static codec truth starts conservative until the one off-main inventory completes.
+    val encoderInventoryLoaded: Boolean = false,
+    val availableVideoCodecs: List<VideoCodec> = emptyList(),
+    // Whether HEIF stills can be encoded here at all (HeifWriter needs HEVC).
+    val heifAvailable: Boolean = false,
     /** False when the device's HEVC encoder has no Main10 profile; withholds HLG/log gammas. */
-    val tenBitEncodeAvailable: Boolean = true,
+    val tenBitEncodeAvailable: Boolean = false,
     /**
      * [DeviceProfile.rawRequiresStandalone], mirrored so the UI can answer the SAME route question
      * the engine answers. `zoomRatio` is main-relative on the logical camera and lens-local on a
@@ -1396,7 +1394,7 @@ data class CameraUiState(
      */
     val cameraPolicyBlocked: Boolean = false,
     val cameraOverrideId: String? = null,
-    val statusMessage: String? = null,
+    val status: CameraStatus? = null,
     // The newest saved capture owner (HEIF/JPEG/video, or RAW when no displayable sibling exists).
     val lastMediaUri: android.net.Uri? = null,
     // Canonical live/restored families can delete every known sibling; legacy filenames cannot.

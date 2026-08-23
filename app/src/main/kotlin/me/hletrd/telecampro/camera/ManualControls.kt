@@ -301,18 +301,13 @@ private fun autoFlashAvailable(mode: FlashMode, caps: CameraControlCapabilities)
  * PASM-style exposure mode. No aperture-priority: the tele's aperture is fixed, so there is nothing
  * to prioritize. [letter] is the compact dial badge; [label] the settings-row name.
  */
-enum class ExposureMode(val letter: String, val label: String) {
-    PROGRAM("P", "Program"),
-    SHUTTER("S", "Shutter priority"),
-    ISO("ISO", "ISO priority"),
-    MANUAL("M", "Manual"),
-}
+enum class ExposureMode { PROGRAM, SHUTTER, ISO, MANUAL }
 
 /** Snap increment for the manual ISO/shutter dials, in EV (stops). */
-enum class ExposureStep(val ev: Float, val label: String) {
-    THIRD(1f / 3f, "1/3"),
-    HALF(1f / 2f, "1/2"),
-    FULL(1f, "1"),
+enum class ExposureStep(val ev: Float) {
+    THIRD(1f / 3f),
+    HALF(1f / 2f),
+    FULL(1f),
 }
 
 /** Effective exposure time (ns): derived from the cine angle in ANGLE mode, else the raw speed. */

@@ -131,7 +131,7 @@ class CameraStateTest {
             listOf(LensChoice.TELE3X),
             LensChoice.entries.filter { it.isTeleconverterLens },
         )
-        assertEquals("3×", LensChoice.TELE3X.label)
+        assertEquals(3f, LensChoice.TELE3X.zoomPreset)
     }
 
 }

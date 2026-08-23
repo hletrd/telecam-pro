@@ -10,6 +10,12 @@ import org.junit.Test
 
 class RecorderQuarantineAdmissionGateTest {
 
+    private fun awaitQuarantine(gate: RecorderQuarantineAdmissionGate): Boolean {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (!gate.isQuarantined() && System.nanoTime() < deadline) Thread.yield()
+        return gate.isQuarantined()
+    }
+
     @Test
     fun `quarantine invalidates snapshots and rejects every later commit`() {
         val gate = RecorderQuarantineAdmissionGate()
@@ -125,14 +131,7 @@ class RecorderQuarantineAdmissionGateTest {
     }
 
     @Test
-    fun `terminal close does not wait for an in-flight native acquisition and rejects every later one`() {
-        // DELIBERATE contract change (cycle-6 tracer T6/T7): the old gate held the process lock
-        // across the whole native call, which (a) serialized every native acquisition
-        // process-wide behind seconds-long Binder work and (b) enabled the app's single ABBA
-        // deadlock (process lock here vs the terminal-acquisition monitor on the camera-open
-        // path). close() now closes IMMEDIATELY: an in-flight call cannot be un-called under
-        // either ordering (the quarantine cause predates the close), and its result is refused
-        // downstream by the token checks. Only ADMISSION linearizes with quarantine.
+    fun `terminal close drains a counted native lease without holding the process monitor`() {
         val gate = RecorderQuarantineAdmissionGate()
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
@@ -154,17 +153,21 @@ class RecorderQuarantineAdmissionGateTest {
         acquirer.start()
         assertTrue(entered.await(5, TimeUnit.SECONDS))
         closer.start()
-        // close() must complete WHILE the admitted native call is still blocked.
-        closer.join(5_000)
-        assertTrue(closeDone.get())
+        // The close boundary waits for the admitted block, but wait() releases the process monitor:
+        // isQuarantined remains promptly observable and no ABBA-style lock hold blocks the worker.
+        assertTrue(awaitQuarantine(gate))
+        closer.join(50)
+        assertFalse(closeDone.get())
         assertFalse(acquisitionDone.get())
         release.countDown()
         acquirer.join(5_000)
+        closer.join(5_000)
 
-        // The in-flight call completes and reports success — its RESULT is what downstream
-        // token checks refuse (isCurrent/commit/publish are all quarantine-checked).
+        // The already-admitted call may finish, but the racing close revokes its result. Once close
+        // returns, no native block remains and every later attempt is refused before entry.
         assertTrue(acquisitionDone.get())
-        assertTrue(acquisitionAccepted.get())
+        assertFalse(acquisitionAccepted.get())
+        assertTrue(closeDone.get())
         var lateAcquisition = false
         assertFalse(gate.runNativeIfSafe { lateAcquisition = true })
         assertFalse(lateAcquisition)

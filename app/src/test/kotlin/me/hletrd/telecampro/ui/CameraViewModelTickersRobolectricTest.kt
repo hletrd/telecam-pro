@@ -4,6 +4,8 @@ import android.app.Application
 import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import me.hletrd.telecampro.camera.CameraEngine
+import me.hletrd.telecampro.camera.CameraStatusMessage
+import me.hletrd.telecampro.camera.status
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.ManualControls
 import java.time.Duration
@@ -141,7 +143,7 @@ class CameraViewModelTickersRobolectricTest {
         idleFor(2_000)
         // Cancelled means cancelled: no late tick, no fire (no status from a capture attempt).
         assertEquals(0, vm.state.value.timerCountdownSec)
-        assertNull(vm.state.value.statusMessage)
+        assertNull(vm.state.value.status)
     }
 
     @Test fun `countdown reaching zero fires the shutter against the truthful unready session`() {
@@ -151,6 +153,6 @@ class CameraViewModelTickersRobolectricTest {
         assertEquals(0, vm.state.value.timerCountdownSec)
         // The fire happened: with no accepted session (engine never resumed), capturePhoto's
         // admission gate declines with the authoritative status instead of a silent dead press.
-        assertEquals("Camera reconfiguring…", vm.state.value.statusMessage)
+        assertEquals(CameraStatusMessage.CAMERA_RECONFIGURING.status(), vm.state.value.status)
     }
 }
