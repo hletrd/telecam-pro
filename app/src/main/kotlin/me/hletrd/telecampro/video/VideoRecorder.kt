@@ -56,6 +56,12 @@ class VideoRecorder(private val context: Context) {
         val nativeGraphDisposition: NativeGraphDisposition = NativeGraphDisposition.RELEASED,
     )
 
+    internal data class NativeStopResult(
+        val error: Throwable? = null,
+        val nativeGraphDisposition: NativeGraphDisposition = NativeGraphDisposition.RELEASED,
+        val storageTail: RecordingStorageTail? = null,
+    )
+
     /** Process-wide REC lease, released only after strict finalization; assigned before native setup. */
     internal var processAdmissionToken: UnsafeRecorderAdmissionToken? = null
 
@@ -335,20 +341,37 @@ class VideoRecorder(private val context: Context) {
     }
 
     fun stop(nativeReleaseAccepted: () -> Boolean = { true }): StopResult {
+        val native = stopNative(nativeReleaseAccepted)
+        return native.storageTail?.complete() ?: StopResult(
+            saved = false,
+            error = native.error,
+            nativeGraphDisposition = native.nativeGraphDisposition,
+        )
+    }
+
+    /**
+     * Completes every recorder-owned native/container operation and freezes the remaining provider
+     * work into a provider-only continuation. The returned tail owns no codec, muxer, descriptor,
+     * Surface, AudioRecord, or process REC lease and is therefore safe to run on an independent
+     * executor while this Engine admits another recording.
+     */
+    internal fun stopNative(nativeReleaseAccepted: () -> Boolean = { true }): NativeStopResult {
         running = false
         muxerLock.withLock { muxerStateChanged.signalAll() }
-        if (terminallyQuarantined.get()) return quarantinedStopResult()
+        if (terminallyQuarantined.get()) return quarantinedNativeStopResult()
         cancelVideoStartupDeadline()
         var finalizedValidation = FinalizedRecordingValidation.NOT_REQUIRED
-        if (!nativeCleanup { videoCodec?.signalEndOfInputStream() }) return quarantinedStopResult()
+        if (!nativeCleanup { videoCodec?.signalEndOfInputStream() }) return quarantinedNativeStopResult()
 
         // AudioRecord.read() may still be blocked after running flips false. Stop the input before
         // joining so the worker can queue AAC EOS instead of timing out while waiting for PCM.
-        if (!nativeCleanup { audioRecord?.stop() }) return quarantinedStopResult()
-        if (terminallyQuarantined.get()) return quarantinedStopResult()
+        if (!releaseRecorderNativeOwners(listOf(RecorderNativeOwnerOperation.AUDIO_INPUT_STOP))) {
+            return quarantinedNativeStopResult()
+        }
+        if (terminallyQuarantined.get()) return quarantinedNativeStopResult()
         videoThread?.join(3000)
         audioThread?.join(3000)
-        if (terminallyQuarantined.get()) return quarantinedStopResult()
+        if (terminallyQuarantined.get()) return quarantinedNativeStopResult()
 
         // A drain thread still alive after its join timeout is wedged INSIDE the codec/muxer (e.g. a
         // dequeueOutputBuffer that never returns). Releasing those objects out from under it races
@@ -364,8 +387,7 @@ class VideoRecorder(private val context: Context) {
             // Keep every graph owner and the still-open pending row intact. CameraEngine retains
             // this recorder process-long and closes process admission; clearing Java references
             // here would let a known-live drain coexist with the next recording.
-            return StopResult(
-                saved = false,
+            return NativeStopResult(
                 error = firstFailure.cause ?: timeout,
                 nativeGraphDisposition = NativeGraphDisposition.QUARANTINE_REQUIRED,
             )
@@ -376,7 +398,9 @@ class VideoRecorder(private val context: Context) {
             // record.read() on this exact object (stop() above doesn't always unblock it on this
             // HAL), and release() under a live read races native AudioRecord state the same way
             // codec/muxer release would — so it is only released on the clean path.
-            if (!nativeCleanup { audioRecord?.release() }) return quarantinedStopResult()
+            if (!releaseRecorderNativeOwners(RECORDER_POST_DRAIN_PRE_MUXER_NATIVE_OWNERS)) {
+                return quarantinedNativeStopResult()
+            }
             muxerLock.withLock {
                 if (muxerStarted) {
                     // A muxer.stop() throw is normally VIDEO-terminal (moov not finalized → delete).
@@ -389,7 +413,7 @@ class VideoRecorder(private val context: Context) {
                     if (stopOutcome is RecorderNativeOperationResult.Rejected ||
                         stopOutcome is RecorderNativeOperationResult.Returned && !stopOutcome.stillOpen
                     ) {
-                        return quarantinedStopResult()
+                        return quarantinedNativeStopResult()
                     }
                     check(stopOutcome is RecorderNativeOperationResult.Returned)
                     stopOutcome.result.onFailure { t ->
@@ -407,72 +431,23 @@ class VideoRecorder(private val context: Context) {
             // CameraEngine calls stop() only after GlPipeline's checked EGL detach callback. The
             // codec input Surface can therefore be released now, exactly once, before codec cleanup
             // and before videoCodec ownership is cleared below.
-            val surfaceReleased = inputSurfaceOwner.releaseConditionally { surface ->
-                nativeCleanup { surface.release() }
+            if (!releaseRecorderNativeOwners(RECORDER_POST_DRAIN_NATIVE_OWNERS)) {
+                return quarantinedNativeStopResult()
             }
-            if (inputSurfaceOwner.get() != null && !surfaceReleased) return quarantinedStopResult()
-            if (!nativeCleanup { videoCodec?.stop() }) return quarantinedStopResult()
-            if (!nativeCleanup { videoCodec?.release() }) return quarantinedStopResult()
-            if (!nativeCleanup { audioCodec?.stop() }) return quarantinedStopResult()
-            if (!nativeCleanup { audioCodec?.release() }) return quarantinedStopResult()
-            if (!nativeCleanup { muxer?.release() }) return quarantinedStopResult()
-            if (!nativeCleanup { pfd?.close() }) return quarantinedStopResult()
         }
         // The deadline protects only native graph ownership. MediaStore journal/publish work below
         // can be slow without making a fully released codec/muxer graph unsafe.
-        if (!nativeReleaseAccepted()) return quarantinedStopResult()
+        if (!nativeReleaseAccepted()) return quarantinedNativeStopResult()
         audioRecord = null
 
         val outputUri = uri
-        // The tolerated empty-audio-track stop exception is not proof of a finalized container.
-        // Reopen only after muxer/codec/fd owners are closed, and require an extractor-readable
-        // video track. FAILED or accidentally SKIPPED validation can never reach publication.
-        if (finalizedValidation == FinalizedRecordingValidation.SKIPPED) {
-            finalizedValidation = if (
-                outputUri != null && MediaStoreWriter.hasReadableVideoTrack(context, outputUri)
-            ) {
-                FinalizedRecordingValidation.PASSED
-            } else {
-                FinalizedRecordingValidation.FAILED
-            }
-            if (finalizedValidation == FinalizedRecordingValidation.FAILED) {
-                recordFailure(IllegalStateException("Finalized video track validation failed"))
-            }
-        }
-
-        // A track alone is not enough: require at least one successfully muxed video sample and no
-        // asynchronous VIDEO codec/muxer error (firstFailure). Keep failed or empty recordings out of
-        // the gallery. An AUDIO-only mid-REC fault degraded to video-only and never touched
-        // firstFailure (see degradeAudioToVideoOnly), so a clean video track still publishes here.
-        val complete = shouldPublishRecording(
+        val frozenStorage = FrozenRecordingStorage(
+            outputUri = outputUri,
             muxerStarted = muxerStarted,
             wroteVideoSample = wroteVideoSample,
-            hasFailure = firstFailure.cause != null,
-            hasUri = outputUri != null,
+            failure = firstFailure.cause,
             finalizedValidation = finalizedValidation,
         )
-        val saved = if (complete && outputUri != null) {
-            // Persist FINALIZED before the resolver publish call. A provider outage or process death
-            // after muxer.stop() must lead launch recovery to adopt this take, never sweep it.
-            val completion = MediaStoreWriter.markWriteComplete(context, outputUri)
-            // publish() retries transient resolver failures internally (CRIT4-5). If it STILL fails,
-            // leave the COMPLETE journal entry pending. Launch recovery retries adoption and never
-            // deletes the valuable clip merely because MediaProvider is still unavailable.
-            MediaStoreWriter.publish(context, outputUri).also { published ->
-                if (!published && me.hletrd.telecampro.BuildConfig.DEBUG) {
-                    Log.w(
-                        TAG,
-                        "publish() failed after retries; finalized file retained for recovery " +
-                            "(completionMarker=${completion.durable})",
-                    )
-                }
-            }
-        } else {
-            // Incomplete or VIDEO-failed recording: remove the pending file now so an empty/corrupt
-            // clip never surfaces in the gallery.
-            if (outputUri != null) MediaStoreWriter.delete(context, outputUri)
-            false
-        }
 
         videoCodec = null
         audioCodec = null
@@ -493,11 +468,34 @@ class VideoRecorder(private val context: Context) {
         videoThread = null
         audioThread = null
         onFailure = null
-        return StopResult(saved = saved, error = firstFailure.cause)
+        return NativeStopResult(
+            error = frozenStorage.failure,
+            storageTail = RecordingStorageTail(context, frozenStorage),
+        )
     }
 
-    private fun quarantinedStopResult(): StopResult = StopResult(
-        saved = false,
+    private fun releaseRecorderNativeOwners(owners: List<RecorderNativeOwnerOperation>): Boolean =
+        runRecorderNativeOwnerSequence(owners) { owner ->
+            when (owner) {
+                RecorderNativeOwnerOperation.AUDIO_INPUT_STOP -> nativeCleanup { audioRecord?.stop() }
+                RecorderNativeOwnerOperation.AUDIO_INPUT_RELEASE -> nativeCleanup { audioRecord?.release() }
+                RecorderNativeOwnerOperation.INPUT_SURFACE_RELEASE -> {
+                    if (inputSurfaceOwner.get() == null) {
+                        true
+                    } else {
+                        inputSurfaceOwner.releaseConditionally { surface -> nativeCleanup { surface.release() } }
+                    }
+                }
+                RecorderNativeOwnerOperation.VIDEO_CODEC_STOP -> nativeCleanup { videoCodec?.stop() }
+                RecorderNativeOwnerOperation.VIDEO_CODEC_RELEASE -> nativeCleanup { videoCodec?.release() }
+                RecorderNativeOwnerOperation.AUDIO_CODEC_STOP -> nativeCleanup { audioCodec?.stop() }
+                RecorderNativeOwnerOperation.AUDIO_CODEC_RELEASE -> nativeCleanup { audioCodec?.release() }
+                RecorderNativeOwnerOperation.MUXER_RELEASE -> nativeCleanup { muxer?.release() }
+                RecorderNativeOwnerOperation.DESCRIPTOR_CLOSE -> nativeCleanup { pfd?.close() }
+            }
+        } == null
+
+    private fun quarantinedNativeStopResult(): NativeStopResult = NativeStopResult(
         error = nativeCleanupFailure.get()
             ?: firstFailure.cause
             ?: java.util.concurrent.TimeoutException("Recorder graph was quarantined"),
@@ -1394,6 +1392,133 @@ internal sealed interface NativeCleanupOutcome {
     data object Completed : NativeCleanupOutcome
     data object Revoked : NativeCleanupOutcome
     data class Failed(val cause: Throwable) : NativeCleanupOutcome
+}
+
+/**
+ * Complete production native-owner inventory for recorder stop. The split lists mirror the only
+ * ordering boundary: AudioRecord.stop must precede worker joins; every remaining owner releases
+ * only after both drains have returned and muxer.stop has finalized the container.
+ */
+internal enum class RecorderNativeOwnerOperation {
+    AUDIO_INPUT_STOP,
+    AUDIO_INPUT_RELEASE,
+    INPUT_SURFACE_RELEASE,
+    VIDEO_CODEC_STOP,
+    VIDEO_CODEC_RELEASE,
+    AUDIO_CODEC_STOP,
+    AUDIO_CODEC_RELEASE,
+    MUXER_RELEASE,
+    DESCRIPTOR_CLOSE,
+}
+
+internal val RECORDER_POST_DRAIN_PRE_MUXER_NATIVE_OWNERS = listOf(
+    RecorderNativeOwnerOperation.AUDIO_INPUT_RELEASE,
+)
+
+internal val RECORDER_POST_DRAIN_NATIVE_OWNERS = listOf(
+    RecorderNativeOwnerOperation.INPUT_SURFACE_RELEASE,
+    RecorderNativeOwnerOperation.VIDEO_CODEC_STOP,
+    RecorderNativeOwnerOperation.VIDEO_CODEC_RELEASE,
+    RecorderNativeOwnerOperation.AUDIO_CODEC_STOP,
+    RecorderNativeOwnerOperation.AUDIO_CODEC_RELEASE,
+    RecorderNativeOwnerOperation.MUXER_RELEASE,
+    RecorderNativeOwnerOperation.DESCRIPTOR_CLOSE,
+)
+
+/** Returns the first owner whose checked release failed; no later native phase is entered. */
+internal fun runRecorderNativeOwnerSequence(
+    owners: List<RecorderNativeOwnerOperation>,
+    release: (RecorderNativeOwnerOperation) -> Boolean,
+): RecorderNativeOwnerOperation? {
+    for (owner in owners) if (!release(owner)) return owner
+    return null
+}
+
+internal data class FrozenRecordingStorage<T>(
+    val outputUri: T?,
+    val muxerStarted: Boolean,
+    val wroteVideoSample: Boolean,
+    val failure: Throwable?,
+    val finalizedValidation: FinalizedRecordingValidation,
+)
+
+/** Provider effects kept injectable so the real frozen tail can be integration-tested on host. */
+internal data class RecordingStorageEffects<T>(
+    val validateVideoTrack: (T) -> Boolean,
+    val markComplete: (T) -> Boolean,
+    val publish: (T) -> Boolean,
+    val delete: (T) -> Unit,
+)
+
+internal fun <T> completeFrozenRecordingStorage(
+    frozen: FrozenRecordingStorage<T>,
+    effects: RecordingStorageEffects<T>,
+): VideoRecorder.StopResult {
+    var validation = frozen.finalizedValidation
+    var failure = frozen.failure
+    val outputUri = frozen.outputUri
+    // The tolerated empty-audio-track stop exception is not proof of a finalized container.
+    // This extractor/provider work deliberately happens only after every native owner is closed.
+    if (validation == FinalizedRecordingValidation.SKIPPED) {
+        validation = if (outputUri != null && effects.validateVideoTrack(outputUri)) {
+            FinalizedRecordingValidation.PASSED
+        } else {
+            FinalizedRecordingValidation.FAILED
+        }
+        if (validation == FinalizedRecordingValidation.FAILED && failure == null) {
+            failure = IllegalStateException("Finalized video track validation failed")
+        }
+    }
+
+    val complete = shouldPublishRecording(
+        muxerStarted = frozen.muxerStarted,
+        wroteVideoSample = frozen.wroteVideoSample,
+        hasFailure = failure != null,
+        hasUri = outputUri != null,
+        finalizedValidation = validation,
+    )
+    val saved = if (complete && outputUri != null) {
+        // COMPLETE precedes publish. A provider outage leaves a durable pending row for recovery.
+        effects.markComplete(outputUri)
+        effects.publish(outputUri)
+    } else {
+        if (outputUri != null) effects.delete(outputUri)
+        false
+    }
+    return VideoRecorder.StopResult(saved = saved, error = failure)
+}
+
+internal class RecordingStorageTail(
+    private val context: Context,
+    private val frozen: FrozenRecordingStorage<Uri>,
+) {
+    private var completed: VideoRecorder.StopResult? = null
+
+    @Synchronized
+    fun complete(): VideoRecorder.StopResult {
+        completed?.let { return it }
+        return completeFrozenRecordingStorage(
+            frozen,
+            RecordingStorageEffects(
+                validateVideoTrack = { MediaStoreWriter.hasReadableVideoTrack(context, it) },
+                markComplete = {
+                    val completion = MediaStoreWriter.markWriteComplete(context, it)
+                    completion.durable
+                },
+                publish = {
+                    MediaStoreWriter.publish(context, it).also { published ->
+                        if (!published && me.hletrd.telecampro.BuildConfig.DEBUG) {
+                            Log.w(
+                                "VideoRecorder",
+                                "publish() failed after retries; finalized file retained for recovery",
+                            )
+                        }
+                    }
+                },
+                delete = { MediaStoreWriter.delete(context, it) },
+            ),
+        ).also { completed = it }
+    }
 }
 
 /** Keeps native-call success separate from the admission bit that may revoke an entered return. */

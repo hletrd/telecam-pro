@@ -65,6 +65,11 @@ class CameraEngine(private val context: Context) {
     // Recorder finalization can block for seconds joining codec/audio drains. It must never sit
     // behind a burst's full-resolution still encodes on ioExecutor (or vice versa).
     private val recorderExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    // Extractor/MediaStore tails own no native recorder resources. Use independent workers so one
+    // stalled provider call cannot block REC admission, native finalization, or another clip's tail.
+    private val recordingStorageExecutor = java.util.concurrent.Executors.newCachedThreadPool { task ->
+        Thread(task, "recording-storage").apply { isDaemon = true }
+    }
     // Independent of GL/setup/recorder lanes: an accepted task on any of those lanes may itself be
     // the wedge we are timing out. This daemon owns only bounded teardown deadlines.
     private val recorderWatchdog = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { task ->
@@ -334,7 +339,6 @@ class CameraEngine(private val context: Context) {
         val recorder: VideoRecorder,
         val captureId: Int,
         val nativeFinalization: RecorderNativeFinalizationGate,
-        val taskCompleted: java.util.concurrent.CountDownLatch,
     )
 
     private data class OpticsTransaction(val generation: Long, val before: OpticsSnapshot)
@@ -4353,9 +4357,8 @@ class CameraEngine(private val context: Context) {
         rec: VideoRecorder,
         captureId: Int,
     ) {
-        val result = runCatching { rec.stop() }.getOrElse { failure ->
-            VideoRecorder.StopResult(
-                saved = false,
+        val result = runCatching { rec.stopNative() }.getOrElse { failure ->
+            VideoRecorder.NativeStopResult(
                 error = failure,
                 nativeGraphDisposition = NativeGraphDisposition.QUARANTINE_REQUIRED,
             )
@@ -4366,6 +4369,10 @@ class CameraEngine(private val context: Context) {
                 captureId = captureId,
                 failure = result.error ?: IllegalStateException("Recorder setup could not stop"),
             )
+        } else {
+            result.storageTail?.let { storageTail ->
+                dispatchRecordingStorageTask(Runnable { storageTail.complete() })
+            }
         }
         abortRecordingStart()
     }
@@ -4386,8 +4393,8 @@ class CameraEngine(private val context: Context) {
             activeRecordingCaptureId = 0 // stale-until-overwritten otherwise (ARCH-8)
             OwnedRecording(owned, ownedUri, ownedCaptureId, ownedGl)
         }
-        // ORDERED teardown: finishRecording (rec.stop() → codec release; joins the drain threads up
-        // to seconds, so it stays OFF the main thread on ioExecutor) dispatches from the completion
+        // ORDERED teardown: stopNative (codec release; joins the drain threads up to seconds, so it
+        // stays OFF the main thread on recorderExecutor) dispatches from the completion
         // callback, which runs on the GL thread only AFTER the encoder EGL surface is actually
         // cleared. The old fire-and-forget post had no happens-before edge with the independent
         // ioExecutor — a queued drawFrame could still makeCurrent() the encoder surface while the
@@ -4403,8 +4410,8 @@ class CameraEngine(private val context: Context) {
         ownedRecording.gl.setTransfer(transfer)
     }
 
-    // True from stop/pause dispatching the async rec.stop() until its AudioRecord is actually
-    // released: `recorder == null` alone says nothing about the mic, and the standby meter starting
+    // True from stop/pause dispatching async native finalization until AudioRecord is released:
+    // `recorder == null` alone says nothing about the mic, and the standby meter starting
     // in that window would violate the one-AudioRecord invariant (its init would fail, or worse,
     // steal the route from the finalizing clip).
     @Volatile private var recorderTeardownInFlight = false
@@ -4449,17 +4456,21 @@ class CameraEngine(private val context: Context) {
             recorder = rec,
             captureId = captureId,
             nativeFinalization = RecorderNativeFinalizationGate(),
-            taskCompleted = java.util.concurrent.CountDownLatch(1),
         )
         recorderFinalizationOwner = finalizationOwner
 
-        fun completeFinalizationTask() {
+        fun clearFinalizationOwner() {
             synchronized(recorderOwnershipLock) {
                 if (recorderFinalizationOwner === finalizationOwner) {
                     recorderFinalizationOwner = null
                 }
             }
-            finalizationOwner.taskCompleted.countDown()
+        }
+
+        fun clearClassifiedFinalizationOwner() {
+            if (finalizationOwner.nativeFinalization.current() != RecorderNativeFinalization.PENDING) {
+                clearFinalizationOwner()
+            }
         }
 
         fun dispatchTask(task: Runnable, fallbackName: String) {
@@ -4515,13 +4526,14 @@ class CameraEngine(private val context: Context) {
                                     )
                                 ) {
                                     enterUnsafeRecorderQuarantine(rec, captureId, timeout)
+                                    clearFinalizationOwner()
                                 }
                             },
                         )
                         if (finalizationDeadline.arm()) {
                             val task = Runnable {
                                 try {
-                                    finishRecording(
+                                    finishRecordingNative(
                                         rec,
                                         uri,
                                         captureId,
@@ -4533,19 +4545,27 @@ class CameraEngine(private val context: Context) {
                                                     UnsafeRecorderQuarantine.finishAdmission(
                                                         rec.processAdmissionToken,
                                                     )
+                                                    // Native/container ownership is fully gone.
+                                                    // Storage may now stall independently without
+                                                    // withholding same-Engine REC or microphone use.
+                                                    recorderTeardownInFlight = false
+                                                    standbyAudioController.finishRecording()
                                                 },
                                             )
                                         },
                                     )
                                 } finally {
-                                    completeFinalizationTask()
+                                    // A returned quarantine-required result can deliberately leave
+                                    // classification pending until its armed deadline. Preserve the
+                                    // owner so Engine.release can still claim it synchronously.
+                                    clearClassifiedFinalizationOwner()
                                 }
                             }
                             dispatchTask(task, "record-finalize-fallback")
                         } else {
                             // No task was submitted when the watchdog could not arm. Quarantine was
                             // classified synchronously by onTimeout, so task ownership is complete.
-                            completeFinalizationTask()
+                            clearClassifiedFinalizationOwner()
                         }
                     }
 
@@ -4562,7 +4582,7 @@ class CameraEngine(private val context: Context) {
                             )
                         }
                     } finally {
-                        completeFinalizationTask()
+                        clearFinalizationOwner()
                     }
                 }
             },
@@ -4701,61 +4721,73 @@ class CameraEngine(private val context: Context) {
         recorderQuarantined = UnsafeRecorderQuarantine.isActive(),
     )
 
-    private fun finishRecording(
+    private fun finishRecordingNative(
         rec: VideoRecorder,
         uri: android.net.Uri?,
         captureId: Int,
         acceptNativeRelease: () -> Boolean = { true },
-    ): VideoRecorder.StopResult {
-        var terminalResult: VideoRecorder.StopResult? = null
-        var resultOwned = false
+    ): VideoRecorder.NativeStopResult {
         var nativeReleaseOwned = false
-        try {
-            val result = runCatching {
-                rec.stop {
+        val result = runCatching {
+                rec.stopNative {
                     acceptNativeRelease().also { nativeReleaseOwned = it }
                 }
             }
                 .getOrElse {
-                    VideoRecorder.StopResult(
-                        saved = false,
+                    VideoRecorder.NativeStopResult(
                         error = it,
                         nativeGraphDisposition = NativeGraphDisposition.QUARANTINE_REQUIRED,
                     )
                 }
-            terminalResult = result
-            if (!nativeReleaseOwned) return result
-            resultOwned = true
-            if (result.nativeGraphDisposition == NativeGraphDisposition.QUARANTINE_REQUIRED) {
-                enterUnsafeRecorderQuarantine(
-                    rec = rec,
-                    captureId = captureId,
-                    failure = result.error
-                        ?: IllegalStateException("Recorder drains did not terminate"),
-                )
-            } else if (result.saved && uri != null) {
-                // Surface only a fully finalized, published clip to the review UI.
+        if (!nativeReleaseOwned) return result
+        if (result.nativeGraphDisposition == NativeGraphDisposition.QUARANTINE_REQUIRED) {
+            enterUnsafeRecorderQuarantine(
+                rec = rec,
+                captureId = captureId,
+                failure = result.error
+                    ?: IllegalStateException("Recorder drains did not terminate"),
+            )
+            return result
+        }
+        val storageTail = result.storageTail
+        if (storageTail == null) {
+            onStatus?.invoke(CameraStatusMessage.VIDEO_SAVE_FAILED.status())
+            return result
+        }
+        dispatchRecordingStorageTail(storageTail, uri, captureId)
+        return result
+    }
+
+    private fun dispatchRecordingStorageTail(
+        storageTail: me.hletrd.telecampro.video.RecordingStorageTail,
+        uri: android.net.Uri?,
+        captureId: Int,
+    ) {
+        val task = Runnable {
+            val result = runCatching { storageTail.complete() }
+                .getOrElse { VideoRecorder.StopResult(saved = false, error = it) }
+            if (result.saved && uri != null) {
+                // Capture identity stays frozen with this tail even if a newer REC is already live.
                 onMediaSaved?.invoke(uri, captureId)
                 onStatus?.invoke(CameraStatusMessage.VIDEO_SAVED.status())
             } else {
                 onStatus?.invoke(CameraStatusMessage.VIDEO_SAVE_FAILED.status())
             }
-            return result
-        } finally {
-            if (resultOwned &&
-                terminalResult?.nativeGraphDisposition != NativeGraphDisposition.QUARANTINE_REQUIRED
-            ) {
-                recorderTeardownInFlight = false
-                standbyAudioController.finishRecording()
-            }
-            if (resultOwned && me.hletrd.telecampro.BuildConfig.DEBUG) {
-                val result = terminalResult
+            if (me.hletrd.telecampro.BuildConfig.DEBUG) {
                 android.util.Log.i(
                     "CameraEngine",
-                    "RecordingFinalized: captureId=$captureId saved=${result?.saved == true} " +
-                        "error=${result?.error?.javaClass?.simpleName ?: if (result == null) "unknown" else "none"}",
+                    "RecordingStored: captureId=$captureId saved=${result.saved} " +
+                        "error=${result.error?.javaClass?.simpleName ?: "none"}",
                 )
             }
+        }
+        dispatchRecordingStorageTask(task)
+    }
+
+    private fun dispatchRecordingStorageTask(task: Runnable) {
+        if (runCatching { recordingStorageExecutor.execute(task) }.isFailure) {
+            runCatching { Thread(task, "recording-storage-fallback").apply { isDaemon = true }.start() }
+                .onFailure { task.run() }
         }
     }
 
@@ -4799,7 +4831,7 @@ class CameraEngine(private val context: Context) {
         // A backgrounded timelapse can't capture anyway (controller is nulled below, so every tick
         // no-ops) — stop it outright rather than silently resuming mid-sequence with a gap.
         stopTimelapse()
-        // Finalize an in-flight recording OFF the main thread: rec.stop() joins the drain threads (up
+        // Finalize an in-flight recording OFF the main thread: stopNative joins the drain threads (up
         // to a few seconds) and calling it inline on onStop risks an ANR. Clear the encoder EGL first
         // so GL stops drawing into the input surface before the codec releases it.
         val ownedRecording = synchronized(recorderOwnershipLock) {
@@ -5135,6 +5167,7 @@ class CameraEngine(private val context: Context) {
         ioExecutor.shutdown()
         mediaRecoveryExecutor.shutdown()
         recorderExecutor.shutdown()
+        recordingStorageExecutor.shutdown()
         recorderWatchdog.shutdown()
         timelapseScheduler.shutdown()
     }

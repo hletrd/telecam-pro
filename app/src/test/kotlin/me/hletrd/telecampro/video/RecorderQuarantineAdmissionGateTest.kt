@@ -71,24 +71,37 @@ class RecorderQuarantineAdmissionGateTest {
     }
 
     @Test
-    fun `every required recorder cleanup owner fails closed on an admitted exception`() {
-        listOf(
-            "input surface",
-            "video codec stop",
-            "video codec release",
-            "audio record stop",
-            "audio record release",
-            "audio codec stop",
-            "audio codec release",
-            "muxer release",
-            "descriptor close",
-        ).forEach { owner ->
-            val failure = IllegalStateException("$owner failed")
-            val outcome = nativeCleanupOutcome(
-                RecorderNativeOperationResult.Returned(Result.failure(failure), stillOpen = true),
-            )
-            assertTrue(owner, outcome is NativeCleanupOutcome.Failed)
-            assertTrue(owner, (outcome as NativeCleanupOutcome.Failed).cause === failure)
+    fun `every production native owner failure retains it and all later owners`() {
+        val productionOrder = listOf(RecorderNativeOwnerOperation.AUDIO_INPUT_STOP) +
+            RECORDER_POST_DRAIN_PRE_MUXER_NATIVE_OWNERS + RECORDER_POST_DRAIN_NATIVE_OWNERS
+        assertEquals(RecorderNativeOwnerOperation.entries, productionOrder)
+
+        productionOrder.forEachIndexed { failedIndex, failedOwner ->
+            val released = mutableListOf<RecorderNativeOwnerOperation>()
+            val attempted = mutableListOf<RecorderNativeOwnerOperation>()
+            val firstFailure = runRecorderNativeOwnerSequence(productionOrder) { owner ->
+                attempted += owner
+                if (owner == failedOwner) {
+                    // Models nativeCleanup's admitted throwing operation: it is unproved, so the
+                    // actual owner and every later owner must remain strongly retained.
+                    false
+                } else {
+                    released += owner
+                    true
+                }
+            }
+
+            assertEquals(failedOwner, firstFailure)
+            assertEquals(productionOrder.take(failedIndex + 1), attempted)
+            assertEquals(productionOrder.take(failedIndex), released)
+            assertEquals(productionOrder.drop(failedIndex), productionOrder - released.toSet())
+
+            val processAdmission = RecorderQuarantineAdmissionGate()
+            val token = checkNotNull(processAdmission.snapshot(Any()))
+            assertTrue(processAdmission.publish(token) { true })
+            assertTrue(processAdmission.close())
+            assertTrue(processAdmission.isQuarantined())
+            assertTrue(processAdmission.snapshot(Any()) == null)
         }
     }
 

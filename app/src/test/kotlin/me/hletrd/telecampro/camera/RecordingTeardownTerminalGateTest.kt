@@ -2,12 +2,19 @@ package me.hletrd.telecampro.camera
 
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import me.hletrd.telecampro.video.RecorderQuarantineAdmissionGate
+import me.hletrd.telecampro.video.FinalizedRecordingValidation
+import me.hletrd.telecampro.video.FrozenRecordingStorage
+import me.hletrd.telecampro.video.RecordingStorageEffects
+import me.hletrd.telecampro.video.VideoRecorder
+import me.hletrd.telecampro.video.completeFrozenRecordingStorage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -102,6 +109,115 @@ class RecordingTeardownTerminalGateTest {
         )
         assertNotNull(processAdmission.snapshot(Any()))
     }
+
+    @Test
+    fun `real post-native executor block admits and stores a second recording independently`() {
+        val nativeLane = Executors.newSingleThreadExecutor()
+        val storageLane = Executors.newCachedThreadPool()
+        val processAdmission = RecorderQuarantineAdmissionGate()
+        val owner = Any()
+        val firstToken = checkNotNull(processAdmission.snapshot(owner))
+        assertTrue(processAdmission.publish(firstToken) { true })
+        val firstNative = RecorderNativeFinalizationGate()
+        val firstPublishEntered = CountDownLatch(1)
+        val releaseFirstPublish = CountDownLatch(1)
+        val secondStored = CountDownLatch(1)
+        val firstStored = CountDownLatch(1)
+        val firstResult = AtomicReference<VideoRecorder.StopResult>()
+        val secondResult = AtomicReference<VideoRecorder.StopResult>()
+        val completed = ConcurrentLinkedQueue<String>()
+        val deleted = ConcurrentLinkedQueue<String>()
+
+        try {
+            nativeLane.execute {
+                assertTrue(
+                    completeRecorderNativeRelease(
+                        deadlineComplete = { true },
+                        classification = firstNative,
+                        releaseProcessAdmission = { processAdmission.finish(firstToken) },
+                    ),
+                )
+                storageLane.execute {
+                    firstResult.set(
+                        completeFrozenRecordingStorage(
+                            completeFrozen("first"),
+                            RecordingStorageEffects(
+                                validateVideoTrack = { true },
+                                markComplete = { completed += it; true },
+                                publish = {
+                                    firstPublishEntered.countDown()
+                                    releaseFirstPublish.await()
+                                    false // durable COMPLETE row stays pending for launch recovery
+                                },
+                                delete = { deleted += it },
+                            ),
+                        ),
+                    )
+                    firstStored.countDown()
+                }
+            }
+
+            assertTrue(firstPublishEntered.await(5, TimeUnit.SECONDS))
+            assertEquals(
+                RecorderNativeFinalization.RELEASED,
+                nativeFinalizationAtEngineRelease(firstNative, 0, TimeUnit.MILLISECONDS),
+            )
+
+            // The first provider call is genuinely blocked, yet strict native release returned the
+            // process lease and the same owner can acquire/publish the second REC immediately.
+            val secondToken = checkNotNull(processAdmission.snapshot(owner))
+            assertTrue(processAdmission.publish(secondToken) { true })
+            val secondNative = RecorderNativeFinalizationGate()
+            nativeLane.execute {
+                assertTrue(
+                    completeRecorderNativeRelease(
+                        deadlineComplete = { true },
+                        classification = secondNative,
+                        releaseProcessAdmission = { processAdmission.finish(secondToken) },
+                    ),
+                )
+                storageLane.execute {
+                    secondResult.set(
+                        completeFrozenRecordingStorage(
+                            completeFrozen("second"),
+                            RecordingStorageEffects(
+                                validateVideoTrack = { true },
+                                markComplete = { completed += it; true },
+                                publish = { true },
+                                delete = { deleted += it },
+                            ),
+                        ),
+                    )
+                    secondStored.countDown()
+                }
+            }
+
+            assertTrue(secondStored.await(5, TimeUnit.SECONDS))
+            assertTrue(secondResult.get().saved)
+            assertFalse(firstStored.await(25, TimeUnit.MILLISECONDS))
+            assertEquals(listOf("first", "second"), completed.toList())
+            assertTrue(deleted.isEmpty())
+
+            releaseFirstPublish.countDown()
+            assertTrue(firstStored.await(5, TimeUnit.SECONDS))
+            assertFalse(firstResult.get().saved)
+            assertEquals(null, firstResult.get().error)
+            assertEquals(RecorderNativeFinalization.RELEASED, secondNative.current())
+            assertNotNull(processAdmission.snapshot(owner))
+        } finally {
+            releaseFirstPublish.countDown()
+            nativeLane.shutdownNow()
+            storageLane.shutdownNow()
+        }
+    }
+
+    private fun completeFrozen(id: String) = FrozenRecordingStorage(
+        outputUri = id,
+        muxerStarted = true,
+        wroteVideoSample = true,
+        failure = null,
+        finalizedValidation = FinalizedRecordingValidation.NOT_REQUIRED,
+    )
 
     @Test
     fun `unresolved native graph is quarantined and late release cannot free admission`() {
