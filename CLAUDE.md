@@ -78,7 +78,7 @@ export PATH="$JAVA_HOME/bin:$PATH"
 # authoritative non-device host gate (Android + coverage + Python tools/harness/docs)
 python3 tools/verify_host.py
 
-# normal implementation gate
+# normal implementation gate; its Gradle APK is developer-only, never device evidence
 ./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
 
 # Play-release gate (requires clean committed source + local signing credentials)
@@ -86,11 +86,17 @@ python3 tools/verify_host.py --release
 # Direct Gradle release entry points fail closed: the tool exports and builds exact committed bytes.
 python3 tools/build_immutable_release.py :app:lintRelease :app:assembleRelease :app:bundleRelease
 
+# Device evidence must use the exact immutable debug APK printed by the wrapper.
+BUILD_RESULT="$(python3 tools/build_immutable_debug.py)"
+printf '%s\n' "$BUILD_RESULT"
+EVIDENCE_APK="${BUILD_RESULT##* apk=}"
+test -n "$EVIDENCE_APK" && test -f "$EVIDENCE_APK"
+
 # device is over wireless ADB — IP/port change between sessions, ask the user for the current one
 adb connect <device-ip>:<port>
 # debug installs as me.hletrd.telecampro.debug (applicationIdSuffix) — a SEPARATE app from the
 # release me.hletrd.telecampro, so runtime permissions must be granted once per package.
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r "$EVIDENCE_APK"
 adb shell am start -n me.hletrd.telecampro.debug/me.hletrd.telecampro.MainActivity
 
 # verify: no crash + a real preview. The device may be asleep/locked — wake first, and note that

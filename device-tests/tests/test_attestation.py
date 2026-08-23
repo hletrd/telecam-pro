@@ -39,6 +39,13 @@ def copy_harness_fixture(parent: Path) -> Path:
 
 
 class RunAttestationTest(unittest.TestCase):
+    def test_install_remediation_uses_the_exact_supplied_evidence_apk(self) -> None:
+        evidence_apk = Path("/immutable builds/cut-1/app-debug.apk")
+        self.assertEqual(
+            "adb install -r '/immutable builds/cut-1/app-debug.apk'",
+            runner.evidence_install_command(evidence_apk),
+        )
+
     def test_authorized_child_acquires_serial_lock_before_device_runner(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             directory = Path(temp_dir) / "run"
@@ -88,14 +95,19 @@ class RunAttestationTest(unittest.TestCase):
 
             apk_contract = SimpleNamespace(application_id=runner.APP_ID)
             packaged_source = SimpleNamespace(capture_subdir="TeleCamPro")
+            evidence_apk = Path("/immutable-debug/app-debug.apk")
             fake_snapshot = runner.ApkInspectionSnapshot(
-                runner.DEFAULT_APK,
-                runner.DEFAULT_APK,
+                evidence_apk,
+                evidence_apk,
                 "a" * 64,
                 SimpleNamespace(verify=lambda _phase: None),
             )
             with (
-                patch.object(sys, "argv", ["run.py", "--serial", "serial-a"]),
+                patch.object(
+                    sys,
+                    "argv",
+                    ["run.py", "--serial", "serial-a", "--apk", str(evidence_apk)],
+                ),
                 patch.object(runner, "sha256_file", return_value="a" * 64),
                 patch.object(
                     runner,
@@ -466,13 +478,12 @@ class RunAttestationTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "must not be a symlink: cases.py"):
                 runner._copy_harness_snapshot(source, root / "snapshot")
 
-    def test_outer_child_uses_checkout_paths_for_default_apk_reports_and_forwarded_argv(self) -> None:
+    def test_outer_child_requires_immutable_apk_and_uses_checkout_reports(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             source = copy_harness_fixture(root)
             controlled_tmp = root / "tmp"
             controlled_tmp.mkdir()
-            expected_apk = root / "app/build/outputs/apk/debug/app-debug.apk"
             env = {
                 **os.environ,
                 "TMPDIR": str(controlled_tmp),
@@ -481,7 +492,7 @@ class RunAttestationTest(unittest.TestCase):
                 "TELECAM_HARNESS_SOURCE_ROOT": "/caller-spoofed-harness-root",
             }
 
-            default_run = subprocess.run(
+            missing_apk = subprocess.run(
                 [sys.executable, str(source / "run.py"), "--serial", "no-device"],
                 cwd=root,
                 env=env,
@@ -489,9 +500,9 @@ class RunAttestationTest(unittest.TestCase):
                 text=True,
                 timeout=30,
             )
-            self.assertEqual(2, default_run.returncode)
-            output = default_run.stdout + default_run.stderr
-            self.assertIn(str(expected_apk), output)
+            self.assertEqual(2, missing_apk.returncode)
+            output = missing_apk.stdout + missing_apk.stderr
+            self.assertIn("the following arguments are required: --apk", output)
             self.assertNotIn("caller-spoofed-harness-root", output)
             self.assertNotIn("telecam-device-harness-", output)
 
@@ -501,6 +512,8 @@ class RunAttestationTest(unittest.TestCase):
                     str(source / "run.py"),
                     "--serial",
                     "no-device",
+                    "--apk",
+                    str(root / "app/build/immutable-debug/proven/apk/debug/app-debug.apk"),
                     "--definitely-forwarded-unknown-option",
                 ],
                 cwd=root,
@@ -512,7 +525,6 @@ class RunAttestationTest(unittest.TestCase):
             self.assertEqual(2, forwarded.returncode)
             self.assertIn("--definitely-forwarded-unknown-option", forwarded.stderr)
 
-            self.assertEqual(expected_apk, runner.default_apk_path(source))
             self.assertEqual(source / "reports", runner.reports_root_path(source))
             self.assertEqual([], list(controlled_tmp.glob("telecam-device-harness-*")))
 

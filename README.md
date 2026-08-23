@@ -106,6 +106,8 @@ best-effort basis.
 
 ## Build
 
+For local development only (these mutable Gradle outputs are not device-evidence artifacts):
+
 ```bash
 ./gradlew assembleDebug        # debug APK
 ./gradlew installDebug         # install to a connected device

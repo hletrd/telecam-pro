@@ -11,13 +11,17 @@ Two remain, ~4 minutes: **A3** needs the rear camera pointed at a lit room, **D1
 sound source. B1 closed the rotation work end to end; C1 confirmed the afocal correction against real
 converter glass.
 
-Install the debug build first (the release strips the diagnostic logs these rely on):
+Install the exact immutable debug build first (the release strips the diagnostic logs these rely
+on). The ordinary Gradle APK is developer-only and cannot support a field-evidence claim:
 
 ```bash
 export JAVA_HOME="/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home"
-./gradlew :app:assembleDebug
+BUILD_RESULT="$(python3 tools/build_immutable_debug.py)"
+printf '%s\n' "$BUILD_RESULT"
+EVIDENCE_APK="${BUILD_RESULT##* apk=}"
+test -n "$EVIDENCE_APK" && test -f "$EVIDENCE_APK"
 adb connect <phone-ip>:<port>
-adb install -r -t app/build/outputs/apk/debug/app-debug.apk
+adb install -r -t "$EVIDENCE_APK"
 ```
 
 ---

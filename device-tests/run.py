@@ -2,12 +2,13 @@
 """TeleCam Pro on-device functional test runner.
 
 Usage:
-  python3 device-tests/run.py --serial 127.0.0.1:5599 --tier smoke
-  python3 device-tests/run.py --serial 127.0.0.1:5599 --tier full --allow-settings
-  python3 device-tests/run.py --serial 127.0.0.1:5599 --tier all -k capture
+  python3 device-tests/run.py --apk "$EVIDENCE_APK" --serial 127.0.0.1:5599 --tier smoke
+  python3 device-tests/run.py --apk "$EVIDENCE_APK" --serial 127.0.0.1:5599 --tier full --allow-settings
+  python3 device-tests/run.py --apk "$EVIDENCE_APK" --serial 127.0.0.1:5599 --tier all -k capture
 
 Requires: adb on PATH with the PMA110 connected (wireless-debugging loopback proxy is
-fine). ffprobe is required for a green video result; structural fallback is non-green.
+fine), and EVIDENCE_APK set to the exact path printed by tools/build_immutable_debug.py.
+ffprobe is required for a green video result; structural fallback is non-green.
 Reports land in device-tests/reports/<UTC timestamp>-<run token>/ (gitignored).
 """
 
@@ -627,15 +628,15 @@ EXPECTED_API = 36
 REPO_ROOT = SOURCE_HARNESS_ROOT.parent
 
 
-def default_apk_path(source_harness_root: Path = SOURCE_HARNESS_ROOT) -> Path:
-    return source_harness_root.parent / "app/build/outputs/apk/debug/app-debug.apk"
-
-
 def reports_root_path(source_harness_root: Path = SOURCE_HARNESS_ROOT) -> Path:
     return source_harness_root / "reports"
 
 
-DEFAULT_APK = default_apk_path()
+def evidence_install_command(source_apk: Path) -> str:
+    """Copy-paste remediation bound to the exact immutable APK supplied for this run."""
+    return f"adb install -r {shlex.quote(str(source_apk))}"
+
+
 ATTESTATION_NAME = "run-attestation.json"
 ATTESTATION_SHA_NAME = "run-attestation.sha256"
 RESTORED_SETTINGS = ("font_scale", "accelerometer_rotation", "user_rotation")
@@ -1512,8 +1513,11 @@ def run_locked_device(
     installed = adb.shell(f"pm path {apk_contract.application_id} || true")
     installed_apk = base_apk_path(installed)
     if installed_apk is None:
-        print(f"{apk_contract.application_id} is not installed — deploy first "
-              "(adb install -r app/build/outputs/apk/debug/app-debug.apk)", file=sys.stderr)
+        print(
+            f"{apk_contract.application_id} is not installed — deploy the exact evidence APK first "
+            f"({evidence_install_command(source_apk)})",
+            file=sys.stderr,
+        )
         return 2
 
     try:
@@ -1790,8 +1794,12 @@ def _run_authorized_child_cli() -> int:
     ap.add_argument("--tier", action="append", choices=[*TIERS, "all"], default=None,
                     help="tier(s) to run; repeatable; default smoke")
     ap.add_argument("-k", dest="filter", default=None, help="substring filter on case names")
-    ap.add_argument("--apk", type=Path, default=DEFAULT_APK,
-                    help="exact host debug APK that must match the installed base.apk")
+    ap.add_argument(
+        "--apk",
+        type=Path,
+        required=True,
+        help="wrapper-emitted immutable debug APK that must match the installed base.apk",
+    )
     ap.add_argument("--allow-destructive", action="store_true",
                     help="allow cases that force-stop the app; requires explicit operator approval")
     ap.add_argument("--allow-settings", action="store_true",

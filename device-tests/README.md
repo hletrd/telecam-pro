@@ -14,8 +14,10 @@ cannot survive. Host-JVM unit tests remain in `app/src/test/` (Gradle).
 
 ```bash
 # Build/deploy the evidence-grade debug APK first. Use the exact APK path printed by the wrapper.
-python3 tools/build_immutable_debug.py
-EVIDENCE_APK=app/build/immutable-debug/<printed-root>/apk/debug/app-debug.apk
+BUILD_RESULT="$(python3 tools/build_immutable_debug.py)"
+printf '%s\n' "$BUILD_RESULT"
+EVIDENCE_APK="${BUILD_RESULT##* apk=}"
+test -n "$EVIDENCE_APK" && test -f "$EVIDENCE_APK"
 
 # device over wireless ADB (loopback proxy fine)
 python3 device-tests/run.py --apk "$EVIDENCE_APK" --serial 127.0.0.1:5599 --tier smoke
@@ -93,8 +95,8 @@ private digest-qualified snapshot. The outer process forks and transfers a non-s
 object capability plus the proof directly into `runpy`; child mode has no CLI/environment/pipe proof
 format a direct caller can mint. A direct snapshot invocation therefore performs a fresh outer copy
 instead of entering child execution, and a preset environment variable cannot skip the copy.
-Case registration and execution import only the copied bytes, while repository artifacts (the
-default APK and report root) resolve from the separately attested source checkout. The attestation
+Case registration and execution import only the copied bytes, while the supplied evidence APK and
+report root resolve from the separately attested source checkout. The attestation
 names and rechecks the snapshot manifest, and the parent removes the private tree when the child
 exits. A green attestation therefore names the exact immutable bytes that registered and executed
 its cases. Verify the source contracts with:
