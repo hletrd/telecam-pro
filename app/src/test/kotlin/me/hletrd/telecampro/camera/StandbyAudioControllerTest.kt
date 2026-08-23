@@ -52,6 +52,7 @@ class StandbyAudioControllerTest {
         runNativeAcquisition: ((() -> Unit) -> Boolean) = { block -> block(); true },
         retryScheduler: StandbyRetryScheduler? = null,
         processBusyRetryFallback: StandbyRetryScheduler? = null,
+        stopDispatcher: StandbyStopDispatcher = StandbyStopDispatcher { task -> task() },
     ): Fixture {
         val scheduled = ArrayDeque<() -> Unit>()
         val fallbackScheduled = ArrayDeque<() -> Unit>()
@@ -76,6 +77,7 @@ class StandbyAudioControllerTest {
                     fallbackScheduled.addLast(task)
                     true
                 },
+                stopDispatcher = stopDispatcher,
                 onAvailable = { available += Unit },
                 onUnavailable = unavailable::add,
                 reserveProcessAdmission = reserveProcessAdmission,
@@ -292,6 +294,150 @@ class StandbyAudioControllerTest {
             listOf("process-reserve", "start", "stop", "input-release", "process-release"),
             events,
         )
+    }
+
+    @Test
+    fun `REC handoff stops a blocked read off caller and releases the exact process owner`() {
+        val readEntered = CountDownLatch(1)
+        val unblockRead = CountDownLatch(1)
+        val workerFinished = CountDownLatch(1)
+        val processReleased = CountDownLatch(1)
+        val stopTasks = ArrayDeque<() -> Unit>()
+        val events = mutableListOf<String>()
+        val input = object : StandbyAudioInput {
+            override fun start() { synchronized(events) { events += "start" } }
+            override fun read(samples: ShortArray): Int {
+                readEntered.countDown()
+                assertTrue(unblockRead.await(2, TimeUnit.SECONDS))
+                return -1
+            }
+            override fun stop() {
+                synchronized(events) { events += "stop" }
+                unblockRead.countDown()
+            }
+            override fun release() { synchronized(events) { events += "input-release" } }
+        }
+        val fixture = fixture(
+            setup = StandbyAudioSetup { StandbyAudioSetupResult.Ready(input) },
+            recorderAbsent = { true },
+            threadLauncher = StandbyThreadLauncher { name, task ->
+                Thread(
+                    {
+                        try {
+                            task()
+                        } finally {
+                            workerFinished.countDown()
+                        }
+                    },
+                    name,
+                ).apply { isDaemon = true }.start()
+                true
+            },
+            stopDispatcher = StandbyStopDispatcher { task -> stopTasks.addLast(task) },
+            reserveProcessAdmission = {
+                synchronized(events) { events += "process-reserve" }
+                val releaseProcess: () -> Unit = {
+                    synchronized(events) { events += "process-release" }
+                    processReleased.countDown()
+                }
+                releaseProcess
+            },
+        )
+
+        fixture.controller.setEnabled(true)
+        assertTrue(readEntered.await(2, TimeUnit.SECONDS))
+
+        val claim = fixture.controller.beginRecording()
+        assertTrue(claim.admitted)
+        val release = checkNotNull(claim.release)
+        assertEquals(1, stopTasks.size)
+        assertFalse(release.await(20, TimeUnit.MILLISECONDS))
+        assertFalse(processReleased.await(20, TimeUnit.MILLISECONDS))
+
+        stopTasks.removeFirst().invoke()
+
+        assertTrue(release.await(2, TimeUnit.SECONDS))
+        assertTrue(workerFinished.await(2, TimeUnit.SECONDS))
+        assertTrue(processReleased.await(2, TimeUnit.SECONDS))
+        assertEquals(
+            listOf("process-reserve", "start", "stop", "input-release", "process-release"),
+            synchronized(events) { events.toList() },
+        )
+    }
+
+    @Test
+    fun `disable uses the same blocked-read stop owner without charging failure budget`() {
+        val readEntered = CountDownLatch(1)
+        val unblockRead = CountDownLatch(1)
+        val released = CountDownLatch(1)
+        val stopTasks = ArrayDeque<() -> Unit>()
+        val input = object : StandbyAudioInput {
+            val stops = AtomicInteger()
+            override fun start() = Unit
+            override fun read(samples: ShortArray): Int {
+                readEntered.countDown()
+                assertTrue(unblockRead.await(2, TimeUnit.SECONDS))
+                return -1
+            }
+            override fun stop() {
+                stops.incrementAndGet()
+                unblockRead.countDown()
+            }
+            override fun release() { released.countDown() }
+        }
+        val fixture = fixture(
+            setup = StandbyAudioSetup { StandbyAudioSetupResult.Ready(input) },
+            recorderAbsent = { true },
+            threadLauncher = StandbyThreadLauncher { name, task ->
+                Thread({ task() }, name).apply { isDaemon = true }.start()
+                true
+            },
+            stopDispatcher = StandbyStopDispatcher { task -> stopTasks.addLast(task) },
+        )
+
+        fixture.controller.setEnabled(true)
+        assertTrue(readEntered.await(2, TimeUnit.SECONDS))
+        fixture.controller.disable()
+        fixture.controller.disable()
+
+        assertEquals(1, stopTasks.size)
+        stopTasks.removeFirst().invoke()
+        assertTrue(released.await(2, TimeUnit.SECONDS))
+        assertEquals(1, input.stops.get())
+        assertTrue(fixture.unavailable.isEmpty())
+        assertTrue(fixture.scheduled.isEmpty())
+    }
+
+    @Test
+    fun `late stop task remains bound to its original input owner`() {
+        val stopTasks = ArrayDeque<() -> Unit>()
+        val stopped = mutableListOf<String>()
+        val first = Any()
+        val second = Any()
+        val dispatcher = StandbyStopDispatcher { task -> stopTasks.addLast(task) }
+        val firstOwner = StandbyInputTerminationOwner(
+            generationId = 1L,
+            stopDispatcher = dispatcher,
+            stop = { value: Any -> stopped += if (value === first) "first" else "wrong" },
+        )
+        val secondOwner = StandbyInputTerminationOwner(
+            generationId = 2L,
+            stopDispatcher = dispatcher,
+            stop = { value: Any -> stopped += if (value === second) "second" else "wrong" },
+        )
+        assertTrue(firstOwner.bind(first))
+        assertTrue(firstOwner.beginStart(first))
+        firstOwner.finishStart(first, succeeded = true)
+        firstOwner.requestStop()
+        assertTrue(secondOwner.bind(second))
+        assertTrue(secondOwner.beginStart(second))
+        secondOwner.finishStart(second, succeeded = true)
+
+        stopTasks.removeFirst().invoke()
+        firstOwner.finishAndRelease(first) {}
+        secondOwner.finishAndRelease(second) {}
+
+        assertEquals(listOf("first", "second"), stopped)
     }
 
     @Test

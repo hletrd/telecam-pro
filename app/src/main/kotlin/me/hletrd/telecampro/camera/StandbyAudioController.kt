@@ -19,7 +19,9 @@ import me.hletrd.telecampro.video.classifyAudioRead
 import me.hletrd.telecampro.video.resolveAudioChannelCount
 import me.hletrd.telecampro.video.standbyMeterShouldRecreate
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 internal enum class StandbyAudioFailureReason {
     INVALID_BUFFER,
@@ -66,6 +68,149 @@ internal fun interface StandbyThreadLauncher {
 internal fun interface StandbyRetryScheduler {
     /** Returns true only when [task] was accepted for delayed execution. */
     fun schedule(delayMs: Long, task: () -> Unit): Boolean
+}
+
+/** Dispatches a potentially blocking input-stop call away from lifecycle and REC callers. */
+internal fun interface StandbyStopDispatcher {
+    fun dispatch(task: () -> Unit)
+}
+
+/**
+ * Exact-generation owner for the live standby input's stop/release boundary.
+ *
+ * A blocking [StandbyAudioInput.read] cannot observe the intent bit that ended its generation.
+ * The controller therefore publishes this owner before start and lets disable/REC handoff request
+ * `stop()` from a separate thread. Stop is exactly-once; release remains worker-owned and waits for
+ * an already-dispatched stop to return, so it can never race the native stop call. Every action
+ * captures this owner and its input, rather than consulting the controller's replaceable slot.
+ */
+internal class StandbyInputTerminationOwner<T : Any>(
+    val generationId: Long,
+    private val stopDispatcher: StandbyStopDispatcher,
+    private val stop: (T) -> Unit,
+) {
+    private val lock = Any()
+    private val stopCompleted = CountDownLatch(1)
+    private var input: T? = null
+    private var starting = false
+    private var started = false
+    private var stopRequested = false
+    private var stopClaimed = false
+    private var finished = false
+
+    fun bind(value: T): Boolean = synchronized(lock) {
+        if (finished || input != null) return false
+        input = value
+        true
+    }
+
+    /** Linearizes start against an earlier disable/handoff. */
+    fun beginStart(value: T): Boolean = synchronized(lock) {
+        if (finished || input !== value || stopRequested) return false
+        starting = true
+        true
+    }
+
+    /** Publishes start completion, then wakes a stop request that arrived during native start. */
+    fun finishStart(value: T, succeeded: Boolean) {
+        val stopNow = synchronized(lock) {
+            if (input !== value || !starting) return
+            starting = false
+            started = succeeded
+            claimAsyncStopLocked()
+        }
+        stopNow?.let(::dispatchStop)
+    }
+
+    /** Non-blocking caller edge used from main/lifecycle and the serial REC lane. */
+    fun requestStop() {
+        val stopNow = synchronized(lock) {
+            stopRequested = true
+            claimAsyncStopLocked()
+        }
+        stopNow?.let(::dispatchStop)
+    }
+
+    /**
+     * Worker terminal edge. If no async stop owns the input, stop inline on the worker; otherwise
+     * wait off-main until that exact stop returns. Release follows stop and happens exactly once.
+     */
+    fun finishAndRelease(value: T, release: (T) -> Unit) {
+        val stopHere = synchronized(lock) {
+            if (finished || input !== value) return
+            if (!stopClaimed) {
+                stopClaimed = true
+                true
+            } else {
+                false
+            }
+        }
+        var interrupted = false
+        if (stopHere) {
+            stopAndSignal(value)
+        } else {
+            while (stopCompleted.count > 0L) {
+                val completed = try {
+                    stopCompleted.await(STOP_WAIT_SLICE_MS, TimeUnit.MILLISECONDS)
+                } catch (_: InterruptedException) {
+                    interrupted = true
+                    false
+                }
+                if (completed) break
+                // A dispatch failure relinquishes the claim. The worker then becomes the safe
+                // fallback owner; it never releases concurrently with an in-flight stop.
+                val claimFallback = synchronized(lock) {
+                    if (!stopClaimed && !finished && input === value) {
+                        stopClaimed = true
+                        true
+                    } else {
+                        false
+                    }
+                }
+                if (claimFallback) {
+                    stopAndSignal(value)
+                    break
+                }
+            }
+        }
+        runCatching { release(value) }
+        synchronized(lock) {
+            if (input === value) input = null
+            finished = true
+            started = false
+            starting = false
+        }
+        if (interrupted) Thread.currentThread().interrupt()
+    }
+
+    private fun claimAsyncStopLocked(): T? {
+        if (!stopRequested || !started || starting || stopClaimed || finished) return null
+        val value = input ?: return null
+        stopClaimed = true
+        return value
+    }
+
+    private fun dispatchStop(value: T) {
+        runCatching {
+            stopDispatcher.dispatch { stopAndSignal(value) }
+        }.onFailure {
+            synchronized(lock) {
+                if (!finished && input === value && stopCompleted.count > 0L) stopClaimed = false
+            }
+        }
+    }
+
+    private fun stopAndSignal(value: T) {
+        try {
+            runCatching { stop(value) }
+        } finally {
+            stopCompleted.countDown()
+        }
+    }
+
+    private companion object {
+        const val STOP_WAIT_SLICE_MS = 25L
+    }
 }
 
 /**
@@ -171,6 +316,9 @@ internal class StandbyAudioController(
     private val threadLauncher: StandbyThreadLauncher,
     private val retryScheduler: StandbyRetryScheduler,
     private val processBusyRetryFallback: StandbyRetryScheduler = threadBackedStandbyRetryScheduler(),
+    private val stopDispatcher: StandbyStopDispatcher = StandbyStopDispatcher { task ->
+        Thread(task, "StandbyAudioStop").apply { isDaemon = true }.start()
+    },
     private val onAvailable: () -> Unit,
     private val onUnavailable: (StandbyAudioUnavailable) -> Unit,
     private val reserveProcessAdmission: () -> (() -> Unit)? = { {} },
@@ -224,6 +372,7 @@ internal class StandbyAudioController(
     )
 
     private val ownership = StandbyMeterOwnership<CountDownLatch>()
+    private val liveInputTermination = AtomicReference<StandbyInputTerminationOwner<StandbyAudioInput>?>(null)
 
     // Consecutive AudioRecord generations that failed setup/start/launch or reached a terminal read
     // without one PCM read. Explicit user intent and a successful PCM read reset the shared budget.
@@ -231,7 +380,7 @@ internal class StandbyAudioController(
 
     fun setEnabled(enabled: Boolean) {
         if (!enabled) {
-            ownership.disable()
+            disable()
             return
         }
         // Explicit intent gets a fresh bounded recreation budget.
@@ -240,7 +389,9 @@ internal class StandbyAudioController(
     }
 
     fun beginRecording(): StandbyMeterOwnership.RecordingClaim<CountDownLatch> =
-        ownership.beginRecording()
+        ownership.beginRecording().also { claim ->
+            if (claim.admitted) liveInputTermination.get()?.requestStop()
+        }
 
     fun abortRecording() {
         ownership.abortRecording()
@@ -254,6 +405,7 @@ internal class StandbyAudioController(
 
     fun disable() {
         ownership.disable()
+        liveInputTermination.get()?.requestStop()
     }
 
     /** Starts only if the latest intent still wants metering; internal retries never re-enable it. */
@@ -274,6 +426,14 @@ internal class StandbyAudioController(
                 createRelease = createRelease,
             )
         } ?: return
+        val terminationOwner = StandbyInputTerminationOwner<StandbyAudioInput>(
+            generationId = owner.id,
+            stopDispatcher = stopDispatcher,
+            stop = StandbyAudioInput::stop,
+        )
+        check(liveInputTermination.compareAndSet(null, terminationOwner)) {
+            "standby input generation overlap"
+        }
         val meterTask: () -> Unit = meterTask@{
             var audioInput: StandbyAudioInput? = null
             var releaseProcessAdmission: (() -> Unit)? = null
@@ -301,12 +461,27 @@ internal class StandbyAudioController(
                         generationFailure = result.reason
                         return@meterTask
                     }
-                    is StandbyAudioSetupResult.Ready -> audioInput = result.input
+                    is StandbyAudioSetupResult.Ready -> {
+                        audioInput = result.input
+                        check(terminationOwner.bind(result.input)) {
+                            "standby input owner rejected its generation"
+                        }
+                    }
                 }
                 if (!ownership.ownsAndWants(owner) || !canStart()) return@meterTask
                 var startFailed = false
-                val startAdmitted = runNativeAcquisition {
-                    startFailed = runCatching { checkNotNull(audioInput).start() }.isFailure
+                val input = checkNotNull(audioInput)
+                if (!terminationOwner.beginStart(input)) return@meterTask
+                var startAdmitted = false
+                try {
+                    startAdmitted = runNativeAcquisition {
+                        startFailed = runCatching { input.start() }.isFailure
+                    }
+                } finally {
+                    terminationOwner.finishStart(
+                        value = input,
+                        succeeded = startAdmitted && !startFailed,
+                    )
                 }
                 if (!startAdmitted) return@meterTask
                 if (startFailed) {
@@ -353,10 +528,8 @@ internal class StandbyAudioController(
                 }
             } finally {
                 // Count the latch only after release on every path, including early returns.
-                audioInput?.let { input ->
-                    runCatching { input.stop() }
-                    runCatching { input.release() }
-                }
+                audioInput?.let { input -> terminationOwner.finishAndRelease(input, StandbyAudioInput::release) }
+                liveInputTermination.compareAndSet(terminationOwner, null)
                 runCatching { releaseProcessAdmission?.invoke() }
                 completeGeneration(owner, generationFailure, retryForProcessBusy = processBusy)
             }
@@ -365,6 +538,7 @@ internal class StandbyAudioController(
             threadLauncher.launch("StandbyAudioMeter", meterTask)
         }.getOrDefault(false)
         if (!launched) {
+            liveInputTermination.compareAndSet(terminationOwner, null)
             completeGeneration(owner, StandbyAudioFailureReason.THREAD_LAUNCH)
         }
     }
