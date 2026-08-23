@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "asset_set": "play-phone-screenshots",
+  "submission_ready": false,
+  "blocking_assets": [
+    "docs/assets/play/screenshots/02-pro-settings.png",
+    "docs/assets/play/screenshots/06-video-settings.png"
+  ],
+  "assets": {
+    "docs/assets/play/screenshots/01-main-viewfinder.png": "12842cd8fffbfe53a9d1ac6eaf0ebc2efbf96c54e27e0ede31518a62c5a8913b",
+    "docs/assets/play/screenshots/02-pro-settings.png": "567ed0d64481532478724a5b97a73d4027e774f1a37ba79c9aa0205a66898562",
+    "docs/assets/play/screenshots/03-focus-tools.png": "7df16eae82fee981540cae94df4f5eb15765cc7b2199300bd43c0cafdfbbd159",
+    "docs/assets/play/screenshots/04-video-controls.png": "744c88b9b230f3ff369569bcf2b661a8bdf5286e351fda55172c4153e8706a07",
+    "docs/assets/play/screenshots/05-lens-and-tele.png": "c53080f56607cc2c2c31f0e5842a5ead24e051ca29ff31ac4443382aaf8a59e4",
+    "docs/assets/play/screenshots/06-video-settings.png": "3b1761d73760f46efdbc19ad00ec9df66ff2da8caba58abc9cc5891af157675a"
+  },
+  "historical_capture": {
+    "asset_commit": "6bf23254185de43dfd18dcd6246df9beb1af527b",
+    "date": "2026-07-27",
+    "immutable_source_manifest_digest": null,
+    "note": "Mixed historical provenance; no immutable APK source-manifest digest was recorded."
+  },
+  "obsolete_visible_copy": {
+    "docs/assets/play/screenshots/02-pro-settings.png": [
+      "Shooting",
+      "JPEG Quality"
+    ],
+    "docs/assets/play/screenshots/06-video-settings.png": [
+      "Transfer",
+      "Applied to the SDR stream"
+    ]
+  },
+  "required_current_copy": {
+    "settings_tab_shoot": "Shoot",
+    "label_still_quality": "Still Quality",
+    "label_gamma": "Gamma",
+    "video_tone_mapped_source": "Applied to the camera’s already tone-mapped stream"
+  },
+  "required_recapture": {
+    "device_model": "PMA110",
+    "locale": "en-US",
+    "orientation": "portrait",
+    "source_owner": "immutable-debug-worktree-v1",
+    "source_manifest_schema": 2,
+    "immutable_source_manifest_digest": null,
+    "apk_sha256": null,
+    "crop_box": [
+      0,
+      168,
+      1440,
+      3048
+    ],
+    "pixel_size": [
+      1440,
+      2880
+    ]
+  }
+}

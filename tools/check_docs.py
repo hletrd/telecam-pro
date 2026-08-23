@@ -13,9 +13,12 @@ Run before touching docs/play-store-listing.md, PRIVACY.md, or privacy-policy/in
 
 from __future__ import annotations
 
+import hashlib
+import json
 import pathlib
 import re
 import sys
+import xml.etree.ElementTree as ET
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 FAILURES: list[str] = []
@@ -46,6 +49,97 @@ def fenced(text: str, heading: str) -> str:
 
 # ---- store copy: Play's hard limits, and the wrapping trap -------------------------------------
 listing = read("docs/play-store-listing.md")
+
+# The phone screenshot set is device evidence, not generic artwork. Its manifest pins the exact
+# checked-in bytes and the source copy those frames must show. A changed PNG or resource string must
+# invalidate the set until a PMA110 recapture records immutable APK/source-manifest provenance.
+screenshot_manifest_path = ROOT / "docs/assets/play/screenshots/asset-validity.json"
+screenshot_manifest = json.loads(screenshot_manifest_path.read_text(encoding="utf-8"))
+phone_screenshots = sorted(
+    path.relative_to(ROOT).as_posix()
+    for path in (ROOT / "docs/assets/play/screenshots").glob("*.png")
+)
+manifest_assets = screenshot_manifest.get("assets", {})
+check(
+    screenshot_manifest.get("schema_version") == 1
+    and sorted(manifest_assets) == phone_screenshots,
+    "phone screenshot manifest owns every checked-in phone PNG",
+)
+digest_mismatches = [
+    relative
+    for relative, expected in manifest_assets.items()
+    if hashlib.sha256((ROOT / relative).read_bytes()).hexdigest() != expected
+]
+check(
+    not digest_mismatches,
+    "phone screenshot bytes match the validity manifest",
+    str(digest_mismatches),
+)
+
+default_strings = {
+    element.attrib["name"]: "".join(element.itertext())
+    for element in ET.parse(ROOT / "app/src/main/res/values/strings.xml").getroot()
+    if element.tag == "string"
+}
+required_current_copy = screenshot_manifest.get("required_current_copy", {})
+copy_mismatches = {
+    key: (expected, default_strings.get(key))
+    for key, expected in required_current_copy.items()
+    if default_strings.get(key) != expected
+}
+check(not copy_mismatches, "phone screenshot recapture copy matches current resources", str(copy_mismatches))
+
+blocking_assets = screenshot_manifest.get("blocking_assets", [])
+required_recapture = screenshot_manifest.get("required_recapture", {})
+obsolete_visible_copy = screenshot_manifest.get("obsolete_visible_copy", {})
+asset_authorities = re.sub(
+    r"\s+",
+    " ",
+    listing + "\n" + read("docs/play-console-submit.md"),
+)
+ready = screenshot_manifest.get("submission_ready") is True
+provenance_ready = (
+    re.fullmatch(r"[0-9a-f]{64}", required_recapture.get("immutable_source_manifest_digest") or "")
+    and re.fullmatch(r"[0-9a-f]{64}", required_recapture.get("apk_sha256") or "")
+)
+stale_state_valid = (
+    not ready
+    and blocking_assets == [
+        "docs/assets/play/screenshots/02-pro-settings.png",
+        "docs/assets/play/screenshots/06-video-settings.png",
+    ]
+    and not provenance_ready
+    and obsolete_visible_copy == {
+        "docs/assets/play/screenshots/02-pro-settings.png": ["Shooting", "JPEG Quality"],
+        "docs/assets/play/screenshots/06-video-settings.png": [
+            "Transfer", "Applied to the SDR stream",
+        ],
+    }
+    and "NOT SUBMISSION-READY" in listing
+    and "NOT SUBMISSION-READY" in read("docs/play-console-submit.md")
+)
+ready_state_valid = (
+    ready
+    and not blocking_assets
+    and not obsolete_visible_copy
+    and bool(provenance_ready)
+    and "NOT SUBMISSION-READY" not in asset_authorities
+    and "SUBMISSION-READY" in asset_authorities
+)
+check(
+    (stale_state_valid or ready_state_valid)
+    and required_recapture.get("source_owner") == "immutable-debug-worktree-v1"
+    and required_recapture.get("source_manifest_schema") == 2,
+    "stale phone screenshots fail closed pending immutable PMA110 recapture",
+)
+check(
+    ready or all(
+        obsolete in asset_authorities
+        for values in obsolete_visible_copy.values()
+        for obsolete in values
+    ),
+    "stale phone screenshot semantics are explicit in both submission authorities",
+)
 
 short = fenced(listing, "## Short description")
 check(len(short) <= 80, "short description <= 80 chars", f"{len(short)}")
