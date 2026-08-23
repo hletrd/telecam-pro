@@ -285,6 +285,9 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
                 reports = snapshot / "app/build/reports"
                 reports.mkdir(parents=True)
                 (reports / "lint-results-release.txt").write_text("No issues found.\n", encoding="utf-8")
+                resources = reports / "resources_config_map_file/release/resources.cfg"
+                resources.parent.mkdir(parents=True)
+                resources.write_text("stable release resources\n", encoding="utf-8")
                 return subprocess.CompletedProcess(command, 0, "", "")
 
             release.build_immutable_release(root, [":app:lintRelease"], output, run=lint)
@@ -292,6 +295,10 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
             self.assertEqual(
                 output.joinpath("logs/lint-results-release.txt").read_text(),
                 "No issues found.\n",
+            )
+            self.assertEqual(
+                output.joinpath("logs/resources_config_map_file/release/resources.cfg").read_text(),
+                "stable release resources\n",
             )
 
     def test_unexpected_release_report_is_rejected(self) -> None:

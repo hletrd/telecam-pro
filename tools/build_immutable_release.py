@@ -33,6 +33,7 @@ RELEASE_OUTPUT_PREFIXES = (
     "sdk-dependencies/release/",
 )
 RELEASE_OUTPUT_FILES = frozenset({"logs/manifest-merger-release-report.txt"})
+RELEASE_REPORT_PREFIXES = ("resources_config_map_file/release/",)
 
 
 class _SealedPath(NamedTuple):
@@ -497,6 +498,7 @@ def build_immutable_release(
                             allow_file=lambda relative: (
                                 len(relative.parts) == 1 and
                                 relative.name.startswith("lint-results-release.")
+                                or relative.as_posix().startswith(RELEASE_REPORT_PREFIXES)
                             ),
                             label="immutable release report",
                         ),
