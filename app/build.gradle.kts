@@ -255,6 +255,9 @@ abstract class GenerateDebugSourceProvenanceTask : DefaultTask() {
     @get:Input
     abstract val sourceScopes: ListProperty<String>
 
+    @get:Input
+    abstract val sourceOwner: org.gradle.api.provider.Property<String>
+
     @get:OutputDirectory
     abstract val outputDirectory: DirectoryProperty
 
@@ -264,6 +267,10 @@ abstract class GenerateDebugSourceProvenanceTask : DefaultTask() {
         val outputRoot = outputDirectory.get().asFile
         val namespace = outputRoot.resolve("telecam-debug-provenance")
         val output = namespace.resolve("source.manifest")
+        val owner = sourceOwner.get()
+        if (owner !in setOf("immutable-debug-worktree-v1", "mutable-development-worktree")) {
+            throw GradleException("Unsupported debug source owner: $owner")
+        }
 
         fun gitBytes(vararg arguments: String): ByteArray {
             val command = listOf("git", *arguments)
@@ -353,7 +360,8 @@ abstract class GenerateDebugSourceProvenanceTask : DefaultTask() {
         namespace.mkdirs()
         output.writeText(
             buildString {
-                append("schema=1\n")
+                append("schema=2\n")
+                append("source_owner=$owner\n")
                 append("commit=$head\n")
                 append("dirty=$dirty\n")
                 append("content_sha256=$contentSha256\n")
@@ -433,10 +441,13 @@ val debugSourceScopes = listOf(
     "gradle/wrapper/gradle-wrapper.properties",
 )
 val debugSourceProvenanceDir = layout.buildDirectory.dir("generated/debug-source-provenance")
+val debugSourceOwner = providers.gradleProperty("immutableDebugSourceOwner")
+    .orElse("mutable-development-worktree")
 val generateDebugSourceProvenance =
     tasks.register<GenerateDebugSourceProvenanceTask>("generateDebugSourceProvenance") {
         repositoryDirectory.set(rootProject.layout.projectDirectory)
         sourceScopes.set(debugSourceScopes)
+        sourceOwner.set(debugSourceOwner)
         packagedSourceInputs.from(
             fileTree(rootProject.file("app/src/main")),
             fileTree(rootProject.file("app/src/debug")),
