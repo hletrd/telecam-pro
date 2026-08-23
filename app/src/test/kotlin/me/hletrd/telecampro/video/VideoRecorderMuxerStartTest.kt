@@ -19,6 +19,20 @@ import org.junit.Test
  */
 class VideoRecorderMuxerStartTest {
 
+    @Test
+    fun `startup wake deadline uses video deadline when audio is not pending`() {
+        assertEquals(
+            5_000L,
+            startupRendezvousWakeDeadlineNs(
+                videoDeadlineNs = 5_000L,
+                audioDeadlineNs = 3_000L,
+                videoTrackReady = false,
+                expectedTracks = 1,
+                audioTrackReady = false,
+            ),
+        )
+    }
+
     private fun ms(value: Long) = java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(value)
 
     @Test

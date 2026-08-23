@@ -29,6 +29,7 @@ class RecorderQuarantineAdmissionGateTest {
         worker.start()
         assertTrue(entered.await(5, TimeUnit.SECONDS))
         assertTrue(gate.close())
+        assertFalse(gate.isOpen())
         var laterPhase = false
         assertEquals(
             RecorderNativeOperationResult.Rejected,

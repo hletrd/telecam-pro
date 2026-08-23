@@ -92,4 +92,16 @@ class ExactlyOnceResourceOwnerTest {
         assertFalse(owner.abandon())
         assertEquals(0, releases)
     }
+
+    @Test
+    fun `conditional release retains refused owner and clears accepted owner`() {
+        val owner = ExactlyOnceResourceOwner<String>()
+        assertFalse(owner.releaseConditionally { true })
+        owner.install("surface")
+
+        assertFalse(owner.releaseConditionally { false })
+        assertEquals("surface", owner.get())
+        assertTrue(owner.releaseConditionally { it == "surface" })
+        assertNull(owner.get())
+    }
 }

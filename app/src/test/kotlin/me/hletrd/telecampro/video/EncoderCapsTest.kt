@@ -236,6 +236,74 @@ class EncoderCapsTest {
     }
 
     @Test
+    fun `acquire failure advances but acquire revocation stops immediately`() {
+        val first = EncoderSelection(
+            VideoCodec.HEVC, "first", MediaFormat.MIMETYPE_VIDEO_HEVC, true, false,
+        )
+        val second = first.copy(codecName = "second")
+        val accepted = firstConfiguredEncoderAttempt(
+            attempts = encoderConfigureAttempts(listOf(first, second), 1080, 1920),
+            acquire = { selection ->
+                if (selection.codecName == "first") error("create failed")
+                selection.codecName
+            },
+            configure = { _, _ -> },
+            releaseRejected = { true },
+        )
+        assertEquals("second", accepted.owner)
+
+        val revoked = runCatching {
+            firstConfiguredEncoderAttempt(
+                attempts = encoderConfigureAttempts(listOf(first, second), 1080, 1920),
+                acquire = { throw RecorderNativeOperationRevokedException() },
+                configure = { _, _ -> },
+                releaseRejected = { true },
+            )
+        }.exceptionOrNull()
+        assertTrue(revoked is RecorderNativeOperationRevokedException)
+    }
+
+    @Test
+    fun `configure revocation propagates without rejected-owner cleanup`() {
+        val selection = EncoderSelection(
+            VideoCodec.HEVC, "first", MediaFormat.MIMETYPE_VIDEO_HEVC, true, false,
+        )
+        var cleanupCalled = false
+
+        val failure = runCatching {
+            firstConfiguredEncoderAttempt(
+                attempts = encoderConfigureAttempts(listOf(selection), 1080, 1920),
+                acquire = { it.codecName },
+                configure = { _, _ -> throw RecorderNativeOperationRevokedException() },
+                releaseRejected = {
+                    cleanupCalled = true
+                    true
+                },
+            )
+        }.exceptionOrNull()
+
+        assertTrue(failure is RecorderNativeOperationRevokedException)
+        assertFalse(cleanupCalled)
+    }
+
+    @Test
+    fun `all ordinary acquisition failures preserve the terminal cause`() {
+        val selection = EncoderSelection(
+            VideoCodec.HEVC, "first", MediaFormat.MIMETYPE_VIDEO_HEVC, true, false,
+        )
+        val failure = runCatching {
+            firstConfiguredEncoderAttempt(
+                attempts = encoderConfigureAttempts(listOf(selection), 1080, 1920),
+                acquire = { error("create failed") },
+                configure = { _, _ -> },
+                releaseRejected = { true },
+            )
+        }.exceptionOrNull()
+
+        assertEquals("create failed", failure?.message)
+    }
+
+    @Test
     fun `AVC rejects every non-SDR transfer at the final recorder boundary`() {
         val avc = EncoderSelection(
             VideoCodec.AVC, "vendor.avc", MediaFormat.MIMETYPE_VIDEO_AVC, true, false,
