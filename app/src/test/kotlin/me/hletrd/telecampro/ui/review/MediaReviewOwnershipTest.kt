@@ -114,6 +114,48 @@ class MediaReviewOwnershipTest {
     }
 
     @Test
+    fun `fully poisoned setup lane returns the typed restart terminal`() {
+        val executor = Executors.newFixedThreadPool(2)
+        val dispatcher = executor.asCoroutineDispatcher()
+        val release = CountDownLatch(1)
+        try {
+            val started = CountDownLatch(2)
+            val lane = LatestReviewSetupLane<String, String>(
+                dispatcher = dispatcher,
+                workerCount = 2,
+                terminalTimeoutMs = 100,
+                work = {
+                    started.countDown()
+                    release.await()
+                    it
+                },
+                release = {},
+            )
+
+            runBlocking {
+                val first = async(start = CoroutineStart.UNDISPATCHED) {
+                    lane.run(Any(), "A") {}
+                }
+                val second = async(start = CoroutineStart.UNDISPATCHED) {
+                    lane.run(Any(), "B") {}
+                }
+                assertTrue(started.await(2, TimeUnit.SECONDS))
+
+                assertSame(
+                    LatestReviewSetupLane.Outcome.CAPACITY_EXHAUSTED,
+                    lane.run(Any(), "C") {},
+                )
+                assertSame(LatestReviewSetupLane.Outcome.RETIRED, first.await())
+                assertSame(LatestReviewSetupLane.Outcome.RETIRED, second.await())
+            }
+        } finally {
+            release.countDown()
+            dispatcher.close()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun `never-published review bitmap is recycled promptly`() {
         val bitmap = Bitmap.createBitmap(2, 2, Bitmap.Config.ARGB_8888)
         val owned = ReviewBitmap(bitmap)

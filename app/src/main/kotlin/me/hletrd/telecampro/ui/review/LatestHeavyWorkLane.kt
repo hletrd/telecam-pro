@@ -160,6 +160,13 @@ internal class ProgressiveLatestWorkLane<I, R : Any>(
                 completion.discard()
             }
         }
+
+        internal suspend fun terminalAfterTimeout(): Submission<Completion> =
+            if (retire()) {
+                Submission.CapacityExhausted
+            } else {
+                result.await()?.let { Submission.Completed(it) } ?: Submission.Retired
+            }
     }
 
     internal inner class Completion internal constructor(
@@ -210,10 +217,8 @@ internal class ProgressiveLatestWorkLane<I, R : Any>(
                 Submission.Completed(awaited)
             } else if (request.result.isCompleted) {
                 Submission.Retired
-            } else if (request.retire()) {
-                Submission.CapacityExhausted
             } else {
-                request.result.await()?.let { Submission.Completed(it) } ?: Submission.Retired
+                request.terminalAfterTimeout()
             }
         } catch (cancelled: CancellationException) {
             request.retire()

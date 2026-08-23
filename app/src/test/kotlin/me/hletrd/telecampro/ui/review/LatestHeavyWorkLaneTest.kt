@@ -61,6 +61,31 @@ class LatestHeavyWorkLaneTest {
     }
 
     @Test
+    fun `timeout terminal observes an already retired request without reclassifying it`() = runBlocking {
+        val executor = Executors.newFixedThreadPool(2)
+        val dispatcher = executor.asCoroutineDispatcher()
+        try {
+            val lane = ProgressiveLatestWorkLane<String, String>(
+                dispatcher = dispatcher,
+                workerCount = 2,
+                work = { it },
+                dispose = {},
+            )
+            val request = lane.Request(Any(), "retired")
+
+            request.retire()
+
+            assertEquals(
+                ProgressiveLatestWorkLane.Submission.Retired,
+                request.terminalAfterTimeout(),
+            )
+        } finally {
+            dispatcher.close()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
     fun `progressive lane enforces redundant blocking capacity`() {
         val executor = Executors.newFixedThreadPool(2)
         val dispatcher = executor.asCoroutineDispatcher()
