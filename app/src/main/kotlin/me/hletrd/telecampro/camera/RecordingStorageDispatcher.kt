@@ -14,14 +14,52 @@ internal enum class RecordingStorageDispatch {
 }
 
 /**
- * Finite owner for post-native recording storage work.
+ * Per-Engine admission facade for process-owned post-native recording storage work.
  *
  * Admission never blocks and rejection never runs the task on the submitting REC/native lane. A
  * rejected task deliberately leaves its already-finalized MediaStore row pending: launch recovery
  * is the durable overflow lane, so provider failure cannot turn into either unbounded threads or
- * deletion of valid clip bytes.
+ * deletion of valid clip bytes. Closing one facade rejects later work from that Engine without
+ * interrupting accepted work or shutting down the process-lifetime capacity owner.
  */
-internal class RecordingStorageDispatcher(
+internal class RecordingStorageDispatcher internal constructor(
+    private val capacityOwner: RecordingStorageCapacityOwner,
+) {
+    private val admissionLock = Any()
+    private var accepting = true
+
+    /** Production constructor: all Engine generations share the one process owner. */
+    constructor(workerCount: Int, backlogCapacity: Int) : this(
+        ProcessRecordingStorageOwner.capacity(
+            workerCount = workerCount,
+            backlogCapacity = backlogCapacity,
+        ),
+    )
+
+    /** Isolated capacity seam for deterministic unit tests. */
+    internal constructor(
+        workerCount: Int,
+        backlogCapacity: Int,
+        threadFactory: ThreadFactory,
+    ) : this(RecordingStorageCapacityOwner(workerCount, backlogCapacity, threadFactory))
+
+    fun dispatch(task: Runnable): RecordingStorageDispatch = synchronized(admissionLock) {
+        if (!accepting) RecordingStorageDispatch.SHUTDOWN else capacityOwner.dispatch(task)
+    }
+
+    fun shutdown() {
+        // The process owner deliberately stays alive. Accepted tails retain their exact Runnable
+        // (and capture/callback identity) and may finish without interruption after Engine release.
+        synchronized(admissionLock) { accepting = false }
+    }
+
+    internal fun activeTaskCount(): Int = capacityOwner.activeTaskCount()
+
+    internal fun queuedTaskCount(): Int = capacityOwner.queuedTaskCount()
+}
+
+/** The only worker/queue capacity behind one or more Engine admission facades. */
+internal class RecordingStorageCapacityOwner(
     workerCount: Int,
     backlogCapacity: Int,
     threadFactory: ThreadFactory = recordingStorageThreadFactory(),
@@ -46,13 +84,7 @@ internal class RecordingStorageDispatcher(
         executor.execute(task)
         RecordingStorageDispatch.ACCEPTED
     } catch (_: RejectedExecutionException) {
-        if (executor.isShutdown) RecordingStorageDispatch.SHUTDOWN else RecordingStorageDispatch.OVERFLOW
-    }
-
-    fun shutdown() {
-        // Accepted tails remain owned and may finish. shutdownNow() would interrupt provider calls
-        // and make their completion disposition ambiguous during ordinary Activity teardown.
-        executor.shutdown()
+        RecordingStorageDispatch.OVERFLOW
     }
 
     internal fun activeTaskCount(): Int = executor.activeCount
@@ -135,3 +167,21 @@ internal class RecordingStoragePresentationReducer<T> {
 
 internal const val RECORDING_STORAGE_WORKER_COUNT = 2
 internal const val RECORDING_STORAGE_BACKLOG_CAPACITY = 8
+
+/** Process-lifetime owner so Engine recreation cannot multiply blocked workers or queued tails. */
+internal object ProcessRecordingStorageOwner {
+    private val capacityOwner = RecordingStorageCapacityOwner(
+        workerCount = RECORDING_STORAGE_WORKER_COUNT,
+        backlogCapacity = RECORDING_STORAGE_BACKLOG_CAPACITY,
+    )
+
+    fun capacity(workerCount: Int, backlogCapacity: Int): RecordingStorageCapacityOwner {
+        require(workerCount == RECORDING_STORAGE_WORKER_COUNT) {
+            "Process recording-storage worker count must be $RECORDING_STORAGE_WORKER_COUNT"
+        }
+        require(backlogCapacity == RECORDING_STORAGE_BACKLOG_CAPACITY) {
+            "Process recording-storage backlog must be $RECORDING_STORAGE_BACKLOG_CAPACITY"
+        }
+        return capacityOwner
+    }
+}

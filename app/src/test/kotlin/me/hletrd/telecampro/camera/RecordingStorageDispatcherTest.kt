@@ -7,6 +7,7 @@ import java.util.concurrent.ThreadFactory
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import me.hletrd.telecampro.video.VideoRecorder
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -24,7 +25,9 @@ class RecordingStorageDispatcherTest {
             workerCount = 2,
             backlogCapacity = 2,
             threadFactory = ThreadFactory { task ->
-                Thread(task, "test-recording-storage-${createdThreads.incrementAndGet()}")
+                Thread(task, "test-recording-storage-${createdThreads.incrementAndGet()}").apply {
+                    isDaemon = true
+                }
             },
         )
         val recLane = Executors.newSingleThreadExecutor()
@@ -77,7 +80,7 @@ class RecordingStorageDispatcherTest {
         val releaseWorker = CountDownLatch(1)
         val workerEntered = CountDownLatch(1)
         val overflowRan = AtomicBoolean()
-        val dispatcher = RecordingStorageDispatcher(workerCount = 1, backlogCapacity = 1)
+        val dispatcher = isolatedDispatcher(workerCount = 1, backlogCapacity = 1)
 
         try {
             assertEquals(
@@ -99,7 +102,7 @@ class RecordingStorageDispatcherTest {
             // Mirrors next-launch MediaStore recovery claiming the retained pending row.
             releaseWorker.countDown()
             val recovered = CountDownLatch(1)
-            val recoveryOwner = RecordingStorageDispatcher(workerCount = 1, backlogCapacity = 1)
+            val recoveryOwner = isolatedDispatcher(workerCount = 1, backlogCapacity = 1)
             try {
                 assertEquals(
                     RecordingStorageDispatch.ACCEPTED,
@@ -122,7 +125,7 @@ class RecordingStorageDispatcherTest {
         val workerEntered = CountDownLatch(1)
         val finished = CountDownLatch(3)
         val order = CopyOnWriteArrayList<Int>()
-        val dispatcher = RecordingStorageDispatcher(workerCount = 1, backlogCapacity = 3)
+        val dispatcher = isolatedDispatcher(workerCount = 1, backlogCapacity = 3)
 
         try {
             assertEquals(
@@ -156,7 +159,7 @@ class RecordingStorageDispatcherTest {
     @Test
     fun `shutdown rejection never starts or inlines provider work`() {
         val ran = AtomicBoolean()
-        val dispatcher = RecordingStorageDispatcher(workerCount = 1, backlogCapacity = 1)
+        val dispatcher = isolatedDispatcher(workerCount = 1, backlogCapacity = 1)
         dispatcher.shutdown()
 
         assertEquals(
@@ -166,6 +169,89 @@ class RecordingStorageDispatcherTest {
         assertFalse(ran.get())
         assertEquals(0, dispatcher.activeTaskCount())
         assertEquals(0, dispatcher.queuedTaskCount())
+    }
+
+    @Test
+    fun `Engine recreation shares one process barrier and preserves accepted callback identity`() {
+        val releaseOldWorkers = CountDownLatch(1)
+        val oldWorkersEntered = CountDownLatch(RECORDING_STORAGE_WORKER_COUNT)
+        val oldTaskCount = RECORDING_STORAGE_WORKER_COUNT + RECORDING_STORAGE_BACKLOG_CAPACITY
+        val oldTasksFinished = CountDownLatch(oldTaskCount)
+        val replacementFinished = CountDownLatch(1)
+        val callbackOwners = CopyOnWriteArrayList<String>()
+        val active = AtomicInteger()
+        val maximumActive = AtomicInteger()
+        val firstFailure = AtomicReference<Throwable?>()
+        val oldEngine = RecordingStorageDispatcher(
+            workerCount = RECORDING_STORAGE_WORKER_COUNT,
+            backlogCapacity = RECORDING_STORAGE_BACKLOG_CAPACITY,
+        )
+        val replacementEngine = RecordingStorageDispatcher(
+            workerCount = RECORDING_STORAGE_WORKER_COUNT,
+            backlogCapacity = RECORDING_STORAGE_BACKLOG_CAPACITY,
+        )
+
+        fun oldTask(id: Int, blocked: Boolean) = Runnable {
+            val nowActive = active.incrementAndGet()
+            maximumActive.accumulateAndGet(nowActive, ::maxOf)
+            try {
+                if (blocked) {
+                    oldWorkersEntered.countDown()
+                    releaseOldWorkers.await()
+                }
+                firstFailure.compareAndSet(null, IllegalStateException("old-$id"))
+                callbackOwners += "old-engine-$id"
+            } finally {
+                active.decrementAndGet()
+                oldTasksFinished.countDown()
+            }
+        }
+
+        try {
+            repeat(RECORDING_STORAGE_WORKER_COUNT) { id ->
+                assertEquals(RecordingStorageDispatch.ACCEPTED, oldEngine.dispatch(oldTask(id, true)))
+            }
+            assertTrue(oldWorkersEntered.await(5, TimeUnit.SECONDS))
+            repeat(RECORDING_STORAGE_BACKLOG_CAPACITY) { offset ->
+                val id = RECORDING_STORAGE_WORKER_COUNT + offset
+                assertEquals(RecordingStorageDispatch.ACCEPTED, oldEngine.dispatch(oldTask(id, false)))
+            }
+
+            oldEngine.shutdown()
+            assertEquals(RecordingStorageDispatch.SHUTDOWN, oldEngine.dispatch(Runnable {}))
+            assertEquals(
+                RecordingStorageDispatch.OVERFLOW,
+                replacementEngine.dispatch(Runnable { callbackOwners += "overflow-ran" }),
+            )
+            assertEquals(RECORDING_STORAGE_WORKER_COUNT, replacementEngine.activeTaskCount())
+            assertEquals(RECORDING_STORAGE_BACKLOG_CAPACITY, replacementEngine.queuedTaskCount())
+
+            releaseOldWorkers.countDown()
+            assertTrue(oldTasksFinished.await(5, TimeUnit.SECONDS))
+            assertEquals(
+                RecordingStorageDispatch.ACCEPTED,
+                replacementEngine.dispatch(
+                    Runnable {
+                        callbackOwners += "replacement-engine"
+                        replacementFinished.countDown()
+                    },
+                ),
+            )
+            assertTrue(replacementFinished.await(5, TimeUnit.SECONDS))
+
+            assertEquals(RECORDING_STORAGE_WORKER_COUNT, maximumActive.get())
+            assertTrue(firstFailure.get()?.message in setOf("old-0", "old-1"))
+            assertEquals(
+                (0 until oldTaskCount).map { "old-engine-$it" }.toSet(),
+                callbackOwners.filter { it.startsWith("old-engine-") }.toSet(),
+            )
+            assertTrue("replacement-engine" in callbackOwners)
+            assertFalse("overflow-ran" in callbackOwners)
+        } finally {
+            releaseOldWorkers.countDown()
+            oldEngine.shutdown()
+            replacementEngine.shutdown()
+        }
     }
 
     @Test
@@ -309,5 +395,16 @@ class RecordingStorageDispatcherTest {
         captureId = captureId,
         outputUri = "clip-$captureId",
         disposition = disposition,
+    )
+
+    private fun isolatedDispatcher(
+        workerCount: Int,
+        backlogCapacity: Int,
+    ) = RecordingStorageDispatcher(
+        workerCount = workerCount,
+        backlogCapacity = backlogCapacity,
+        threadFactory = ThreadFactory { task ->
+            Thread(task, "isolated-recording-storage").apply { isDaemon = true }
+        },
     )
 }

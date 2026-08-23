@@ -63,7 +63,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `ZoomSubmitPlan.kt` | Pure HAL zoom-submit decision (throttle window + mid-gesture wide-aim clamp), extracted from `CameraEngine.setZoomRatio` and unit-tested. |
 | `RecordingAdmissionLatch.kt` | Monitor-owning REC stop-during-start latch (`tryBeginAdmission`/`requestStop`/`completeAdmission`), extracted from CameraEngine and race-tested. |
 | `RecordingPreNativeAllocation.kt` | Process-wide finite lane for pending-video MediaProvider allocation: two daemon workers plus four queued attempts, per-attempt first-wins retirement, and cancellation of queued work. Stop/pause/release/timeout free REC admission immediately; a late row is cleanup/recovery-owned and cannot enter native setup. |
-| `RecordingStorageDispatcher.kt` | Bounded post-native storage owner: exactly two daemon workers plus eight FIFO backlog slots. Admission is non-blocking; overflow or shutdown leaves the finalized pending row private for launch recovery instead of running provider work inline or spawning an unbounded thread. Accepted tails may finish during shutdown. |
+| `RecordingStorageDispatcher.kt` | Process-lifetime bounded post-native storage owner: exactly two daemon workers plus eight FIFO backlog slots shared by every Engine generation. Each Engine holds only a closeable admission facade, so overflow or facade shutdown leaves the finalized pending row private for launch recovery while already accepted, callback-identity-bearing tails finish without interruption. |
 | `RecordingTeardownCoordinator.kt` | Android-free terminal owner for encoder detach: arms independent recovery/hard deadlines before submission, admits recovery once, and selects exactly one strict finalization or quarantine while making rejection and late callbacks inert. |
 | `RetainedStillDeletionOwner.kt` | Engine-owned bounded deleted-capture tombstones for retained private HEIF/JPEG/DNG outputs. A matching late output takes MediaStore's durable DISCARD path instead of calling a cleared ViewModel or being adopted on relaunch. |
 | `AutoExposure.kt` | Pure, unit-tested app-side AE math: SHUTTER/ISO-priority drive functions and the photo-P program line (`driveProgram`), metered off the GL luma histogram. |
@@ -240,7 +240,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | **media-recovery executor** (single-thread) | CameraEngine | Launch-only pending-row scans, structural probes, and bounded provider retry/backoff. Its typed completion gates the latest-family query, so recovery can adopt the review item without ever delaying Camera2 startup. |
 | **recording-finalization executor** (single-thread) | CameraEngine | Serial REC admission plus checked recorder drain/muxer/native-owner finalization. Engine release waits only for the current native classification, never for extractor or provider work. |
 | **recording pre-native allocation** (process-wide two workers + four backlog slots) | CameraEngine / `ProcessRecordingPreNativeAllocator` | Pending MediaStore video-row insert/registration before native setup. Its deadline is armed before dispatch; Stop, pause, release, or timeout retire admission without interrupting the uncancellable Binder call. Late results can only enter bounded cleanup/recovery. |
-| **recording-storage dispatcher** (two workers + eight FIFO backlog slots) | CameraEngine | Frozen post-native extractor validation and MediaStore COMPLETE/publish/delete tails. Admission is non-blocking; overflow/shutdown leaves the finalized pending row private for launch recovery. A blocked provider call cannot occupy the REC/native lane, and the dispatcher bounds provider work process-wide. |
+| **recording-storage dispatcher** (process-wide two workers + eight FIFO backlog slots) | `ProcessRecordingStorageOwner`; CameraEngine owns one admission facade | Frozen post-native extractor validation and MediaStore COMPLETE/publish/delete tails. Admission is non-blocking; overflow/facade shutdown leaves the finalized pending row private for launch recovery. A blocked provider call cannot occupy the REC/native lane, and Engine recreation cannot multiply active workers or queued tails. |
 | **recording-teardown watchdog** (scheduled daemon) | CameraEngine | Independent detach-recovery and hard-quarantine deadlines; exactly one strict-finalize or quarantine terminal owner wins and late callbacks are inert. |
 | **timelapseScheduler** (scheduled) | CameraEngine | Interval-driven timelapse capture trigger every N seconds. |
 | **analysisExecutor** (one single-thread executor per GL generation) | GlPipeline | Histogram/waveform computation from that generation's isolated FBO/readback snapshot. Also runs the pure frame-detail (focus-confidence) metric over the SAME snapshot — a CPU rider, never a second readback, and deliberately WITHOUT the digital-gain display LUT its histogram siblings get, so an optics verdict cannot move with a brightness simulation. It therefore does not compute in modes where no readback runs (video-P, flash-metered P). Retirement invalidates callback authority without waiting indefinitely for old math. |
@@ -362,11 +362,14 @@ Accessed from GL + audio/video threads:
   classification releases the process REC lease, `recorderTeardownInFlight`, and microphone handoff
   immediately. The recorder then hands an immutable capture-specific storage continuation (URI,
   capture id at the Engine callback boundary, container verdict, sample proof, and failure) to a
-  bounded recording-storage dispatcher: exactly two daemon workers plus eight FIFO backlog slots.
+  process-lifetime bounded recording-storage owner: exactly two daemon workers plus eight FIFO
+  backlog slots shared across every Engine generation. Each Engine owns only an admission facade.
   Admission from the serial REC/native lane is non-blocking. Saturation never performs provider work
   inline and never creates a fallback thread; the finalized row stays pending for launch recovery and
-  the current capture receives a truthful delayed-save verdict. Shutdown rejects new tails to that
-  same recovery disposition while allowing already accepted tails to finish. An accepted tail
+  the current capture receives a truthful delayed-save verdict. Facade shutdown rejects new tails
+  from that Engine to the same recovery disposition while leaving the process owner alive; already
+  accepted tails retain their capture/callback identity and finish without interruption. A
+  replacement Engine uses the same worker and queue ceiling. An accepted tail
   validates the one tolerated muxer-stop corner, writes the durable COMPLETE marker before publish,
   fails closed without publish/delete when marker commits exhaust, retains a complete pending row
   when publication fails, and deletes only a structurally incomplete/failed row. The typed storage
