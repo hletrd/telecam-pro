@@ -17,6 +17,9 @@ import java.io.OutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
+import me.hletrd.telecampro.camera.MAX_RETAINED_SINGLE_PROCESSED_SNAPSHOTS
+import me.hletrd.telecampro.camera.RECORDING_STORAGE_BACKLOG_CAPACITY
+import me.hletrd.telecampro.camera.RECORDING_STORAGE_WORKER_COUNT
 
 /**
  * Thin wrapper around MediaStore for saving photos/videos into DCIM/<subDir> using the
@@ -51,14 +54,29 @@ object MediaStoreWriter {
     private const val COMPLETION_MARK_BACKOFF_MS = 25L
     internal const val MAX_DELETED_FAMILY_MARKERS = 64
     internal const val MAX_REJECTED_OUTPUTS = 32
+    /**
+     * Exact headroom for every output that can still reach rejection after the soft admission edge:
+     * two process-wide retained processed snapshots at three siblings each; one Camera2 RAW-only
+     * shot; two active + eight queued process recording-storage tails; and one active recorder not
+     * yet handed to that dispatcher. These upstream owners are all hard-bounded.
+     */
+    internal const val MAX_ALREADY_ADMITTED_REJECTED_OUTPUTS =
+        MAX_RETAINED_SINGLE_PROCESSED_SNAPSHOTS * 3 +
+            1 +
+            RECORDING_STORAGE_WORKER_COUNT + RECORDING_STORAGE_BACKLOG_CAPACITY +
+            1
     private val processJournalOwner = UUID.randomUUID().toString()
     private val familyJournalLock = Any()
 
     private data class RejectedOutput(val context: Context, val uri: Uri)
 
-    private val rejectedOutputOwner = BoundedRejectedOutputOwner<RejectedOutput>(MAX_REJECTED_OUTPUTS) {
-        discardPendingOutput(it.context, it.uri)
-    }
+    private val rejectedOutputOwner = BoundedRejectedOutputOwner<RejectedOutput>(
+        admissionLimit = MAX_REJECTED_OUTPUTS,
+        // Once admission closes, work already accepted by the bounded still/recording owners may
+        // still report siblings. Keep equal-sized exact headroom so those URIs are never forgotten.
+        ownershipLimit = MAX_REJECTED_OUTPUTS + MAX_ALREADY_ADMITTED_REJECTED_OUTPUTS,
+        discardEffect = { discardPendingOutput(it.context, it.uri) },
+    )
 
     /**
      * Reconstructs the newest published capture THIS APP saved under its own folder.
@@ -367,6 +385,60 @@ object MediaStoreWriter {
 
     internal fun markFamilyDeleted(context: Context, family: CaptureFamilyKey): Boolean =
         markFamilyDeletedResult(context, family) == FamilyDeletionMarkResult.DURABLE
+
+    /**
+     * Retires one durable family marker only after producer terminality and exact provider absence.
+     * The query is injectable so the durability/limit state machine is exhaustively host-testable.
+     */
+    internal fun retireFamilyDeletionMarker(
+        context: Context,
+        family: CaptureFamilyKey,
+        producersTerminal: Boolean,
+        exactFamilyAbsent: () -> Boolean?,
+    ): FamilyDeletionRetirementResult = synchronized(familyJournalLock) {
+        if (!producersTerminal) return@synchronized FamilyDeletionRetirementResult.PRODUCERS_ACTIVE
+        if (runCatching(exactFamilyAbsent).getOrNull() != true) {
+            return@synchronized FamilyDeletionRetirementResult.RETAINED
+        }
+        val preferences = context.getSharedPreferences(DELETED_FAMILY_JOURNAL, Context.MODE_PRIVATE)
+        val key = deletedFamilyJournalKey(family)
+        if (!preferences.contains(key)) return@synchronized FamilyDeletionRetirementResult.ALREADY_ABSENT
+        if (preferences.edit().remove(key).commit()) {
+            FamilyDeletionRetirementResult.RETIRED
+        } else {
+            FamilyDeletionRetirementResult.RETAINED
+        }
+    }
+
+    /** Exact Images/Video absence proof for a producer-terminal family. */
+    internal fun retireFamilyDeletionIfAbsent(
+        context: Context,
+        family: CaptureFamilyKey,
+        producersTerminal: Boolean,
+        subDirs: List<String> = CAPTURE_SUBDIRS,
+    ): FamilyDeletionRetirementResult = retireFamilyDeletionMarker(
+        context = context,
+        family = family,
+        producersTerminal = producersTerminal,
+        exactFamilyAbsent = {
+            val base = when (family.media) {
+                CaptureFamilyMedia.STILL -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                CaptureFamilyMedia.VIDEO -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            }
+            val query = deletedFamilyQuery(family, subDirs, context.packageName)
+            val queryArgs = Bundle().apply {
+                putString(ContentResolver.QUERY_ARG_SQL_SELECTION, query.selection)
+                putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, query.args)
+                putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
+            }
+            context.contentResolver.query(
+                base,
+                arrayOf(MediaStore.MediaColumns._ID),
+                queryArgs,
+                null,
+            )?.use { cursor -> !cursor.moveToFirst() }
+        },
+    )
 
     /** Fast shared-preference read used by still publication and launch restoration. */
     internal fun isFamilyDeleted(context: Context, family: CaptureFamilyKey): Boolean =
@@ -865,6 +937,13 @@ object MediaStoreWriter {
 
 internal enum class FamilyDeletionMarkResult { DURABLE, CAPACITY_EXHAUSTED, UNAVAILABLE }
 
+internal enum class FamilyDeletionRetirementResult {
+    RETIRED,
+    ALREADY_ABSENT,
+    PRODUCERS_ACTIVE,
+    RETAINED,
+}
+
 internal data class DeletedFamilyQuery(val selection: String, val args: Array<String>)
 
 internal data class DeletedFamilyBatch<K, V>(
@@ -901,14 +980,16 @@ internal fun deletedFamilyQuery(
 
 /** Finite process owner for discard attempts whose URI marker and provider delete both failed. */
 internal class BoundedRejectedOutputOwner<T>(
-    private val maxUnresolved: Int,
+    private val admissionLimit: Int,
+    private val ownershipLimit: Int = admissionLimit * 2,
     private val discardEffect: (T) -> PendingOutputDiscardResult,
 ) {
     private val lock = Any()
     private val unresolved = LinkedHashSet<T>()
 
     init {
-        require(maxUnresolved > 0)
+        require(admissionLimit > 0)
+        require(ownershipLimit >= admissionLimit)
     }
 
     fun discard(output: T): PendingOutputDiscardResult {
@@ -916,7 +997,12 @@ internal class BoundedRejectedOutputOwner<T>(
             .getOrDefault(PendingOutputDiscardResult.UNRESOLVED)
         synchronized(lock) {
             if (result == PendingOutputDiscardResult.UNRESOLVED) {
-                if (output in unresolved || unresolved.size < maxUnresolved) unresolved.add(output)
+                // Admission closes at the soft limit, while bounded headroom owns siblings/tails
+                // accepted before that edge. Never silently evict the exact identity at the edge.
+                check(output in unresolved || unresolved.size < ownershipLimit) {
+                    "already-admitted rejected-output ownership exhausted"
+                }
+                unresolved.add(output)
             } else {
                 unresolved.remove(output)
             }
@@ -930,7 +1016,7 @@ internal class BoundedRejectedOutputOwner<T>(
         return unresolvedCount()
     }
 
-    fun canAdmit(): Boolean = synchronized(lock) { unresolved.size < maxUnresolved }
+    fun canAdmit(): Boolean = synchronized(lock) { unresolved.size < admissionLimit }
 
     internal fun unresolvedCount(): Int = synchronized(lock) { unresolved.size }
 }

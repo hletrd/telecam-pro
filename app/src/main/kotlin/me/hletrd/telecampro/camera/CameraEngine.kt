@@ -3990,6 +3990,11 @@ class CameraEngine internal constructor(
             }
             if (durable) {
                 publications.forEach { output -> dispatchDeletedStillDiscard(output, checkNotNull(liveStillId)) }
+                if (liveStillId != null &&
+                    retainedStillDeletionOwner.deletedFamilyIfProducersTerminal(liveStillId) == intent.familyKey
+                ) {
+                    scheduleDeletedFamilyRetirement(intent.familyKey, liveStillId)
+                }
             }
             onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
             onComplete(
@@ -4006,6 +4011,34 @@ class CameraEngine internal constructor(
 
     internal fun stillOutputAdmissionAvailable(): Boolean =
         retainedStillDeletionOwner.canAdmitCapture() && MediaStoreWriter.rejectedOutputAdmissionAvailable()
+
+    /** Rechecks retirement after the UI/provider deletion tail; producer completion races safely. */
+    internal fun reconcileDeletedFamilyAfterProviderMutation(
+        family: CaptureFamilyKey,
+        liveStillCaptureId: Int?,
+    ) {
+        scheduleDeletedFamilyRetirement(family, liveStillCaptureId)
+    }
+
+    private fun scheduleDeletedFamilyRetirement(family: CaptureFamilyKey, liveStillCaptureId: Int?) {
+        val task = Runnable {
+            val producersTerminal = liveStillCaptureId == null ||
+                retainedStillDeletionOwner.deletedFamilyIfProducersTerminal(liveStillCaptureId) == family
+            val result = MediaStoreWriter.retireFamilyDeletionIfAbsent(
+                context,
+                family,
+                producersTerminal,
+            )
+            if (liveStillCaptureId != null &&
+                (result == me.hletrd.telecampro.storage.FamilyDeletionRetirementResult.RETIRED ||
+                    result == me.hletrd.telecampro.storage.FamilyDeletionRetirementResult.ALREADY_ABSENT)
+            ) {
+                retainedStillDeletionOwner.retireDeletedCapture(liveStillCaptureId, family)
+            }
+            onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
+        }
+        runCatching { ioExecutor.execute(task) }
+    }
 
     /**
      * Transfers a completed row to the Engine's delete owner without depending on UI callbacks.
@@ -4044,7 +4077,10 @@ class CameraEngine internal constructor(
             onStillCaptureAdmissionChanged?.invoke(stillOutputAdmissionAvailable())
         },
     )
-    private val singleProcessedSnapshotBudget = ProcessedSnapshotBudget()
+    // Process-wide: Engine recreation must not multiply full-resolution save work that was already
+    // admitted before rejected-output capacity closed. Accepted old-Engine tasks retain/release the
+    // same leases while the replacement Engine observes the remaining budget.
+    private val singleProcessedSnapshotBudget = ProcessProcessedSnapshotBudget.owner
 
     /**
      * Optics identity for one still CHAIN (single shot, all BURST/AEB frames, one timelapse tick),
@@ -4171,6 +4207,9 @@ class CameraEngine internal constructor(
                         "CaptureFamily: settled stem=$familyStem " +
                             "outputs=${expectedOutputExtensions.joinToString(",")}",
                     )
+                }
+                retainedStillDeletionOwner.markCaptureProducersTerminal(requestSpec.captureId)?.let { family ->
+                    scheduleDeletedFamilyRetirement(family, requestSpec.captureId)
                 }
                 onDone?.invoke()
             }

@@ -82,6 +82,56 @@ class DeletedFamilyJournalTest {
     }
 
     @Test
+    fun `more than 64 terminal absent families retire in one healthy process`() {
+        repeat(200) { index ->
+            val family = CaptureFamilyKey(
+                CaptureFamilyMedia.STILL,
+                1_700_010_000_000L + index,
+                index.toLong(),
+            )
+            assertEquals(
+                FamilyDeletionMarkResult.DURABLE,
+                MediaStoreWriter.markFamilyDeletedResult(context, family),
+            )
+            assertEquals(
+                FamilyDeletionRetirementResult.RETIRED,
+                MediaStoreWriter.retireFamilyDeletionMarker(
+                    context = context,
+                    family = family,
+                    producersTerminal = true,
+                    exactFamilyAbsent = { true },
+                ),
+            )
+        }
+
+        assertTrue(
+            context.getSharedPreferences("deleted_capture_family_journal", Context.MODE_PRIVATE)
+                .all
+                .isEmpty(),
+        )
+    }
+
+    @Test
+    fun `retirement retains marker until producers terminal and exact absence is authoritative`() {
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_020_000_000L, 20L)
+        assertTrue(MediaStoreWriter.markFamilyDeleted(context, family))
+
+        assertEquals(
+            FamilyDeletionRetirementResult.PRODUCERS_ACTIVE,
+            MediaStoreWriter.retireFamilyDeletionMarker(context, family, false) { true },
+        )
+        assertEquals(
+            FamilyDeletionRetirementResult.RETAINED,
+            MediaStoreWriter.retireFamilyDeletionMarker(context, family, true) { false },
+        )
+        assertEquals(
+            FamilyDeletionRetirementResult.RETAINED,
+            MediaStoreWriter.retireFamilyDeletionMarker(context, family, true) { null },
+        )
+        assertTrue(MediaStoreWriter.isFamilyDeleted(context, family))
+    }
+
+    @Test
     fun `deleted family query binds paths owner then every exact output name`() {
         val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_300_000L, 3L)
         val query = deletedFamilyQuery(family, listOf("TeleCamPro", "Legacy"), "me.test")

@@ -353,6 +353,25 @@ class RetainedStillDeletionOwnerTest {
     }
 
     @Test
+    fun `deleted family becomes retirement eligible only after every producer is terminal`() {
+        val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_777L, 777L)
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 4,
+            discard = { PendingOutputDiscardResult.DELETED },
+            persistDeletionIntent = { true },
+        )
+        owner.registerCaptureFamily(777, family)
+        owner.markCaptureDeleted(777)
+
+        assertEquals(null, owner.deletedFamilyIfProducersTerminal(777))
+        assertEquals(family, owner.markCaptureProducersTerminal(777))
+        assertEquals(family, owner.deletedFamilyIfProducersTerminal(777))
+        assertTrue(owner.retireDeletedCapture(777, family))
+        assertEquals(null, owner.deletedFamilyIfProducersTerminal(777))
+        assertTrue(owner.canAdmitCapture())
+    }
+
+    @Test
     fun `in-memory tombstone performs no persistence until ordered completion`() {
         var persistenceCalls = 0
         val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_777L, 77L)

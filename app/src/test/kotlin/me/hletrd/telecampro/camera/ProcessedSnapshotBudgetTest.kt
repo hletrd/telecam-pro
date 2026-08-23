@@ -41,6 +41,23 @@ class ProcessedSnapshotBudgetTest {
     }
 
     @Test
+    fun `replacement engines share the one process snapshot owner`() {
+        val oldEngineOwner = ProcessProcessedSnapshotBudget.owner
+        val replacementEngineOwner = ProcessProcessedSnapshotBudget.owner
+        val active = oldEngineOwner.tryAcquire()
+        val queued = replacementEngineOwner.tryAcquire()
+        try {
+            assertNotNull(active)
+            assertNotNull(queued)
+            assertNull(oldEngineOwner.tryAcquire())
+            assertNull(replacementEngineOwner.tryAcquire())
+        } finally {
+            active?.release()
+            queued?.release()
+        }
+    }
+
+    @Test
     fun `concurrent release returns one slot exactly once`() {
         val budget = ProcessedSnapshotBudget(capacity = 1)
         val lease = budget.tryAcquire()!!

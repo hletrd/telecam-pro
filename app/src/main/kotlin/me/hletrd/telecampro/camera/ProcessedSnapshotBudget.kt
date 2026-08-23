@@ -8,6 +8,11 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 internal const val MAX_RETAINED_SINGLE_PROCESSED_SNAPSHOTS = 2
 
+/** One process owner so Engine recreation cannot multiply already-admitted full-resolution saves. */
+internal object ProcessProcessedSnapshotBudget {
+    val owner = ProcessedSnapshotBudget()
+}
+
 /** Android-free, thread-safe admission budget for retained processed still snapshots. */
 internal class ProcessedSnapshotBudget(
     private val capacity: Int = MAX_RETAINED_SINGLE_PROCESSED_SNAPSHOTS,

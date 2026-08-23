@@ -47,6 +47,7 @@ internal class RetainedStillDeletionOwner<T>(
     private val tombstones = LinkedHashSet<Int>()
     private val familiesByCapture = LinkedHashMap<Int, CaptureFamilyKey>()
     private val durableDeletedCaptures = LinkedHashSet<Int>()
+    private val producerTerminalCaptures = LinkedHashSet<Int>()
     private val activePublications = LinkedHashMap<T, ActivePublication>()
     // An unresolved row stays strongly owned in-process and is retried on later owner activity and
     // Engine release. The map is hard-bounded; overflow remains protected by the durable family
@@ -107,6 +108,35 @@ internal class RetainedStillDeletionOwner<T>(
             deletionJournalUnavailable = true
         }
         trimTombstonesLocked(captureId)
+    }
+
+    /** Records that Camera2 plus every HEIF/JPEG/DNG save lane for this capture is terminal. */
+    fun markCaptureProducersTerminal(captureId: Int): CaptureFamilyKey? = synchronized(lock) {
+        if (captureId !in familiesByCapture) return@synchronized null
+        producerTerminalCaptures.add(captureId)
+        familiesByCapture[captureId].takeIf { captureId in durableDeletedCaptures }
+    }
+
+    /** Returns durable family identity only when no later output producer can still appear. */
+    fun deletedFamilyIfProducersTerminal(captureId: Int): CaptureFamilyKey? = synchronized(lock) {
+        familiesByCapture[captureId].takeIf {
+            captureId in durableDeletedCaptures && captureId in producerTerminalCaptures
+        }
+    }
+
+    /** Retires only an exact family whose durable marker was authoritatively removed. */
+    fun retireDeletedCapture(captureId: Int, family: CaptureFamilyKey): Boolean = synchronized(lock) {
+        if (familiesByCapture[captureId] != family || captureId !in producerTerminalCaptures) return false
+        // The caller reached this method only after an exact pending+published provider query proved
+        // family absence. Any retained URI/publication entry is therefore stale bookkeeping, not an
+        // unresolved row, and keeping it would leave capture admission falsely closed.
+        activePublications.entries.removeAll { it.value.captureId == captureId }
+        unresolvedDiscards.entries.removeAll { it.value == captureId }
+        tombstones.remove(captureId)
+        durableDeletedCaptures.remove(captureId)
+        producerTerminalCaptures.remove(captureId)
+        familiesByCapture.remove(captureId)
+        true
     }
 
     /**
@@ -256,6 +286,7 @@ internal class RetainedStillDeletionOwner<T>(
             ) {
                 familiesByCapture.remove(evictable)
                 durableDeletedCaptures.remove(evictable)
+                producerTerminalCaptures.remove(evictable)
             }
         }
     }
@@ -269,6 +300,7 @@ internal class RetainedStillDeletionOwner<T>(
             } ?: break
             familiesByCapture.remove(evictable)
             durableDeletedCaptures.remove(evictable)
+            producerTerminalCaptures.remove(evictable)
         }
     }
 

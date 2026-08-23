@@ -3348,6 +3348,12 @@ class CameraViewModel @JvmOverloads constructor(
                 !MediaStoreWriter.delete(getApplication(), output)
             }
             val restored = captureOutputs.restoreDeleteSurvivors(deletePlan, survivors)
+            deletePlan.familyKey?.let { family ->
+                engine.reconcileDeletedFamilyAfterProviderMutation(
+                    family = family,
+                    liveStillCaptureId = deletePlan.liveStillCaptureId,
+                )
+            }
             mainHandler.post {
                 if (restored != null) {
                     _state.update { current ->
@@ -3398,7 +3404,9 @@ class CameraViewModel @JvmOverloads constructor(
 
     private fun deleteLateCaptureOutput(uri: Uri) {
         ioExecutor.execute {
-            if (MediaStoreWriter.discardRejectedOutput(getApplication(), uri) ==
+            // This is not a newly rejected output: the durable whole-family marker already owns
+            // restart recovery, so it must not consume the process rejected-output headroom.
+            if (MediaStoreWriter.discardPendingOutput(getApplication(), uri) ==
                 me.hletrd.telecampro.storage.PendingOutputDiscardResult.UNRESOLVED
             ) {
                 mainHandler.post {
