@@ -1,6 +1,7 @@
 package me.hletrd.telecampro.camera
 
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -41,25 +42,46 @@ class PunchInResolvedTest {
  * on every flip back (user-reported 2026-07-28).
  */
 class RearReturnZoomTest {
+    private val pma110Optical = LensChoice.entries.toSet()
 
     @Test
-    fun photoRestoresTheFramingHeldBeforeTheFrontTrip() {
+    fun logicalPhotoRestoresTheUnifiedFramingHeldBeforeTheFrontTrip() {
         // Standing at 1x with the lens choice pinned to the 3x by earlier TELE use.
-        assertTrue(rearReturnZoom(videoMode = false, preFrontZoom = 1f, lensPreset = 3f) == 1f)
-        assertTrue(rearReturnZoom(videoMode = false, preFrontZoom = 5.5f, lensPreset = 3f) == 5.5f)
+        assertEquals(1f, rearReturnZoom(false, 1f, 3f, pma110Optical), 0f)
+        assertEquals(5.5f, rearReturnZoom(false, 5.5f, 3f, pma110Optical), 0f)
     }
 
     @Test
-    fun videoReturnsToLensLocalOneRegardlessOfTheSnapshot() {
-        // The video route pins a standalone lens, so a photo-scale ratio does not transfer.
-        assertTrue(rearReturnZoom(videoMode = true, preFrontZoom = 5.5f, lensPreset = 3f) == 1f)
+    fun videoAndPhotoDngConvertCanonicalFramingToTheSameStandaloneWireRatio() {
+        val videoStandalone = standaloneRouteWanted(true, false, true)
+        val photoDngStandalone = standaloneRouteWanted(false, true, true)
+        val fromVideo = unifiedZoomOf(LensChoice.TELE3X, 2f, videoStandalone, pma110Optical)
+        val fromPhotoDng = unifiedZoomOf(LensChoice.TELE3X, 2f, photoDngStandalone, pma110Optical)
+
+        // Video -> FRONT -> Photo+DNG: both endpoints are standalone, and unified 6x returns local 2x.
+        assertEquals(6f, fromVideo, 0f)
+        assertEquals(2f, rearReturnZoom(photoDngStandalone, fromVideo, 3f, pma110Optical), 1e-4f)
+        // Photo+DNG -> FRONT -> Video is the reverse transition and owns the same framing.
+        assertEquals(6f, fromPhotoDng, 0f)
+        assertEquals(2f, rearReturnZoom(videoStandalone, fromPhotoDng, 3f, pma110Optical), 1e-4f)
     }
 
     @Test
-    fun theLensPresetIsTheFallbackWhenNothingWasCaptured() {
+    fun fallbackPresetIsConvertedForTheTargetRoute() {
         // A recall or settings restore exits front atomically, without going through the flip.
-        assertTrue(rearReturnZoom(videoMode = false, preFrontZoom = Float.NaN, lensPreset = 3f) == 3f)
-        assertTrue(rearReturnZoom(videoMode = false, preFrontZoom = 0f, lensPreset = 3f) == 3f)
+        assertEquals(3f, rearReturnZoom(false, Float.NaN, 3f, pma110Optical), 0f)
+        assertEquals(1f, rearReturnZoom(true, Float.NaN, 3f, pma110Optical), 0f)
+    }
+
+    @Test
+    fun cropOnlyStandaloneRouteUsesItsPhysicalOneXBase() {
+        // On a one-camera tablet the selected 3x band is a crop of MAIN, so unified 3x returns as
+        // local 3x rather than being divided by the band or flattened to local 1x.
+        assertEquals(
+            3f,
+            rearReturnZoom(true, 3f, 3f, setOf(LensChoice.MAIN)),
+            1e-4f,
+        )
     }
 }
 

@@ -2604,12 +2604,9 @@ class CameraEngine internal constructor(
     @Volatile private var loupeCenterTexX = 0.5f
     @Volatile private var loupeCenterTexY = 0.5f
 
-    // The rear framing in force when FRONT was entered, restored on the way back. NaN when the
-    // trip did not go through the flip (a recall or settings restore exits front atomically).
-    private var preFrontRearZoom = Float.NaN
-
-    // Which zoom SCALE the snapshot above was taken in (video = lens-local, photo = unified).
-    private var preFrontRearZoomVideoMode = false
+    // Canonical main-relative rear framing in force when FRONT was entered. Storing one coordinate
+    // keeps a Photo/DNG or mode change while FRONT from reinterpreting a raw lens-local ratio.
+    private var preFrontRearUnifiedZoom = Float.NaN
 
     // DNG intent, mirrored from the ViewModel: decides whether photo takes the standalone route.
     @Volatile
@@ -3227,20 +3224,19 @@ class CameraEngine internal constructor(
         }
         val intentGeneration = facingIntentGeneration.incrementAndGet()
         val transaction = beginOpticsTransaction {
+            val sourceStandaloneRoute = teleconverterMode || standaloneRouteWanted(
+                videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone,
+            )
+            if (enabled) {
+                preFrontRearUnifiedZoom = unifiedZoomOf(
+                    lens = lensChoice,
+                    zoomRatio = controls.zoomRatio,
+                    standaloneRoute = sourceStandaloneRoute,
+                    optical = acceptedOpticalPresets,
+                )
+            }
             setActiveCameraRoute(targetRoute)
             if (targetRoute != CameraRoute.BACK) teleconverterMode = false
-            // Snapshot BEFORE the overwrite below, so leaving restores the framing the operator
-            // actually had rather than the lens PRESET (which is 3x for the rest of the session
-            // once TELE has been used, silently zooming them in on every front trip).
-            if (enabled) {
-                preFrontRearZoom = controls.zoomRatio
-                // The snapshot is an ABSOLUTE ratio in the ENTRY mode's zoom scale (photo =
-                // unified main-relative, video = lens-local). Tag it, so an exit in a DIFFERENT
-                // mode — the operator flipped Photo/Video while FRONT — falls back to the lens
-                // preset instead of applying a video-local number on the photo scale (review L2;
-                // the same absolute-number trap as ZoomGlideState.easeTarget across a remap).
-                preFrontRearZoomVideoMode = videoMode
-            }
             controls = controls.copy(
                 zoomRatio = if (enabled) {
                     1f
@@ -3248,9 +3244,12 @@ class CameraEngine internal constructor(
                     1f
                 } else {
                     rearReturnZoom(
-                        videoMode,
-                        if (preFrontRearZoomVideoMode == videoMode) preFrontRearZoom else Float.NaN,
-                        lensChoice.zoomPreset,
+                        targetStandaloneRoute = standaloneRouteWanted(
+                            videoMode, rawWanted, activeDeviceProfile().rawRequiresStandalone,
+                        ),
+                        preFrontUnifiedZoom = preFrontRearUnifiedZoom,
+                        lensPreset = lensChoice.zoomPreset,
+                        opticalPresets = acceptedOpticalPresets,
                     )
                 },
             )
@@ -7043,37 +7042,22 @@ internal fun resolveLensOpticsIntent(
     requestedTeleconverter: Boolean,
     restorePreTele: Boolean,
 ): ResolvedLensOpticsIntent {
-    if (requestedTeleconverter) {
-        val baseline = if (currentTeleconverter) {
-            currentPreTeleUnifiedZoom
-        } else if (standaloneRoute) {
-            currentLens.zoomPreset * currentControls.zoomRatio.coerceAtLeast(1f)
-        } else {
-            currentControls.zoomRatio
-        }
-        return ResolvedLensOpticsIntent(
-            lens = LensChoice.TELE3X,
-            teleconverter = true,
-            controls = currentControls.copy(zoomRatio = 1f),
-            preTeleUnifiedZoom = baseline,
-        )
-    }
-
-    val unified = currentPreTeleUnifiedZoom
-        .takeIf { restorePreTele && it.isFinite() && it > 0f }
-        ?: requestedLens.zoomPreset
-    val band = LensChoice.forZoom(unified)
+    val transition = resolveTeleZoomTransition(
+        nonTeleStandaloneRoute = standaloneRoute,
+        opticalPresets = opticalPresets,
+        currentLens = currentLens,
+        currentTeleconverter = currentTeleconverter,
+        currentZoomRatio = currentControls.zoomRatio,
+        currentPreTeleUnifiedZoom = currentPreTeleUnifiedZoom,
+        requestedLens = requestedLens,
+        requestedTeleconverter = requestedTeleconverter,
+        restorePreTele = restorePreTele,
+    )
     return ResolvedLensOpticsIntent(
-        lens = band,
-        teleconverter = false,
-        controls = currentControls.copy(
-            zoomRatio = if (standaloneRoute) {
-                (unified / opticalBaseFor(unified, opticalPresets).zoomPreset).coerceAtLeast(1f)
-            } else {
-                unified
-            },
-        ),
-        preTeleUnifiedZoom = Float.NaN,
+        lens = transition.lens,
+        teleconverter = transition.teleconverter,
+        controls = currentControls.copy(zoomRatio = transition.zoomRatio),
+        preTeleUnifiedZoom = transition.preTeleUnifiedZoom,
     )
 }
 

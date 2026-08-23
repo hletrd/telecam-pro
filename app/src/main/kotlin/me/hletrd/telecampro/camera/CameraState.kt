@@ -476,6 +476,66 @@ fun unifiedZoomOf(
 fun localZoomOf(unified: Float, optical: Set<LensChoice>): Float =
     (unified / opticalBaseFor(unified, optical).zoomPreset).coerceAtLeast(1f)
 
+/** Complete route-owned zoom result for one TELE on/off transition. */
+internal data class TeleZoomTransition(
+    val lens: LensChoice,
+    val teleconverter: Boolean,
+    val zoomRatio: Float,
+    val preTeleUnifiedZoom: Float,
+)
+
+/**
+ * Resolves TELE entry/exit in one coordinate system for both Engine and ViewModel.
+ *
+ * [nonTeleStandaloneRoute] describes the ordinary route on either side of TELE. Its wire ratio is
+ * lens-local for Video and for any Photo route that RAW moves to a standalone lens; otherwise it is
+ * already unified. The physical [opticalPresets], never the selected display band, own the divisor.
+ */
+internal fun resolveTeleZoomTransition(
+    nonTeleStandaloneRoute: Boolean,
+    opticalPresets: Set<LensChoice>,
+    currentLens: LensChoice,
+    currentTeleconverter: Boolean,
+    currentZoomRatio: Float,
+    currentPreTeleUnifiedZoom: Float,
+    requestedLens: LensChoice,
+    requestedTeleconverter: Boolean,
+    restorePreTele: Boolean,
+): TeleZoomTransition {
+    if (requestedTeleconverter) {
+        val baseline = if (currentTeleconverter) {
+            currentPreTeleUnifiedZoom
+        } else {
+            unifiedZoomOf(
+                lens = currentLens,
+                zoomRatio = currentZoomRatio,
+                standaloneRoute = nonTeleStandaloneRoute,
+                optical = opticalPresets,
+            )
+        }
+        return TeleZoomTransition(
+            lens = LensChoice.TELE3X,
+            teleconverter = true,
+            zoomRatio = 1f,
+            preTeleUnifiedZoom = baseline,
+        )
+    }
+
+    val unified = currentPreTeleUnifiedZoom
+        .takeIf { restorePreTele && it.isFinite() && it > 0f }
+        ?: requestedLens.zoomPreset
+    return TeleZoomTransition(
+        lens = LensChoice.forZoom(unified),
+        teleconverter = false,
+        zoomRatio = if (nonTeleStandaloneRoute) {
+            localZoomOf(unified, opticalPresets)
+        } else {
+            unified
+        },
+        preTeleUnifiedZoom = Float.NaN,
+    )
+}
+
 fun standaloneRouteWanted(
     videoMode: Boolean,
     rawWanted: Boolean,
@@ -540,16 +600,20 @@ val CameraUiState.unifiedZoom: Float
  * back silently zoomed them in (user-reported 2026-07-28). The pre-front snapshot exists on both
  * sides already; it was simply never consumed on the way back.
  *
- * VIDEO still returns to lens-local 1×: that route pins a standalone lens, so a ratio captured in
- * the photo route's unified main-relative scale does not mean the same thing there.
- *
- * [preFrontZoom] is NaN when nothing was captured (a recall or settings restore exited front
- * without going through the flip), and the preset is then the honest fallback.
+ * [preFrontUnifiedZoom] is canonical main-relative framing, so a mode/RAW change while FRONT does
+ * not invalidate it. [targetStandaloneRoute] and [opticalPresets] convert that framing exactly once
+ * into the returning route's wire coordinate. NaN means nothing was captured (a recall or settings
+ * restore exited front without going through the flip), and the preset is then the honest unified
+ * fallback.
  */
-fun rearReturnZoom(videoMode: Boolean, preFrontZoom: Float, lensPreset: Float): Float = when {
-    videoMode -> 1f
-    !preFrontZoom.isNaN() && preFrontZoom > 0f -> preFrontZoom
-    else -> lensPreset
+fun rearReturnZoom(
+    targetStandaloneRoute: Boolean,
+    preFrontUnifiedZoom: Float,
+    lensPreset: Float,
+    opticalPresets: Set<LensChoice>,
+): Float {
+    val unified = preFrontUnifiedZoom.takeIf { it.isFinite() && it > 0f } ?: lensPreset
+    return if (targetStandaloneRoute) localZoomOf(unified, opticalPresets) else unified
 }
 
 fun teleFinderResolved(

@@ -307,6 +307,96 @@ class ReconfigurationGenerationTest {
     }
 
     @Test
+    fun `photo DNG tele round trip keeps Engine and shared route policy at optical 3x`() {
+        val optical = LensChoice.entries.toSet()
+        val enter = resolveTeleZoomTransition(
+            nonTeleStandaloneRoute = true,
+            opticalPresets = optical,
+            currentLens = LensChoice.TELE3X,
+            currentTeleconverter = false,
+            currentZoomRatio = 1f,
+            currentPreTeleUnifiedZoom = Float.NaN,
+            requestedLens = LensChoice.TELE3X,
+            requestedTeleconverter = true,
+            restorePreTele = false,
+        )
+        val engineEnter = resolveLensOpticsIntent(
+            standaloneRoute = true,
+            opticalPresets = optical,
+            currentLens = LensChoice.TELE3X,
+            currentTeleconverter = false,
+            currentControls = ManualControls(zoomRatio = 1f),
+            currentPreTeleUnifiedZoom = Float.NaN,
+            requestedLens = LensChoice.TELE3X,
+            requestedTeleconverter = true,
+            restorePreTele = false,
+        )
+
+        assertEquals(3f, enter.preTeleUnifiedZoom, 0f)
+        assertEquals(enter.zoomRatio, engineEnter.controls.zoomRatio, 0f)
+        assertEquals(enter.preTeleUnifiedZoom, engineEnter.preTeleUnifiedZoom, 0f)
+
+        val exit = resolveTeleZoomTransition(
+            nonTeleStandaloneRoute = true,
+            opticalPresets = optical,
+            currentLens = enter.lens,
+            currentTeleconverter = true,
+            currentZoomRatio = enter.zoomRatio,
+            currentPreTeleUnifiedZoom = enter.preTeleUnifiedZoom,
+            requestedLens = LensChoice.TELE3X,
+            requestedTeleconverter = false,
+            restorePreTele = true,
+        )
+        val engineExit = resolveLensOpticsIntent(
+            standaloneRoute = true,
+            opticalPresets = optical,
+            currentLens = enter.lens,
+            currentTeleconverter = true,
+            currentControls = ManualControls(zoomRatio = enter.zoomRatio),
+            currentPreTeleUnifiedZoom = enter.preTeleUnifiedZoom,
+            requestedLens = LensChoice.TELE3X,
+            requestedTeleconverter = false,
+            restorePreTele = true,
+        )
+
+        assertEquals(LensChoice.TELE3X, exit.lens)
+        assertEquals(1f, exit.zoomRatio, 0f)
+        assertEquals(3f, unifiedZoomOf(exit.lens, exit.zoomRatio, true, optical), 0f)
+        assertEquals(exit.zoomRatio, engineExit.controls.zoomRatio, 0f)
+    }
+
+    @Test
+    fun `crop only video tele round trip never multiplies by the selected band`() {
+        val onlyMain = setOf(LensChoice.MAIN)
+        val enter = resolveTeleZoomTransition(
+            nonTeleStandaloneRoute = true,
+            opticalPresets = onlyMain,
+            currentLens = LensChoice.TELE3X,
+            currentTeleconverter = false,
+            currentZoomRatio = 3f,
+            currentPreTeleUnifiedZoom = Float.NaN,
+            requestedLens = LensChoice.TELE3X,
+            requestedTeleconverter = true,
+            restorePreTele = false,
+        )
+        assertEquals(3f, enter.preTeleUnifiedZoom, 0f)
+
+        val exit = resolveTeleZoomTransition(
+            nonTeleStandaloneRoute = true,
+            opticalPresets = onlyMain,
+            currentLens = enter.lens,
+            currentTeleconverter = true,
+            currentZoomRatio = enter.zoomRatio,
+            currentPreTeleUnifiedZoom = enter.preTeleUnifiedZoom,
+            requestedLens = LensChoice.TELE3X,
+            requestedTeleconverter = false,
+            restorePreTele = true,
+        )
+        assertEquals(3f, exit.zoomRatio, 0f)
+        assertEquals(3f, unifiedZoomOf(exit.lens, exit.zoomRatio, true, onlyMain), 0f)
+    }
+
+    @Test
     fun `tele exit without a restorable baseline lands the requested photo preset`() {
         // restorePreTele off (or a NaN baseline) falls to the requested lens preset; in PHOTO the
         // unified value IS the zoom ratio (the logical camera's main-relative scale).

@@ -62,6 +62,8 @@ import me.hletrd.telecampro.camera.PeakingColor
 import me.hletrd.telecampro.camera.PeakingLevel
 import me.hletrd.telecampro.camera.PhotoFormats
 import me.hletrd.telecampro.camera.opticalBaseFor
+import me.hletrd.telecampro.camera.localZoomOf
+import me.hletrd.telecampro.camera.resolveTeleZoomTransition
 import me.hletrd.telecampro.camera.unifiedZoomOf
 import me.hletrd.telecampro.camera.standaloneRouteWanted
 import me.hletrd.telecampro.camera.normalizedForEncoder
@@ -1472,8 +1474,12 @@ class CameraViewModel @JvmOverloads constructor(
         // REAR optics the next launch will actually restore. The live front-session values (TC
         // forced off, front-local 1×) silently overwrote the retained TELE/zoom setup captured at
         // front entry (cycle-6 debugger F6).
-        val substituteRear = s.facing == CameraFacing.FRONT && !preFrontRearZoom.isNaN()
-        val controls = if (substituteRear) s.controls.copy(zoomRatio = preFrontRearZoom) else s.controls
+        val substituteRear = s.facing == CameraFacing.FRONT && preFrontRearUnifiedZoom.isFinite()
+        val controls = if (substituteRear) {
+            s.controls.copy(zoomRatio = retainedRearZoomRatio(s, preFrontRearTeleconverter))
+        } else {
+            s.controls
+        }
         val extras = if (substituteRear) {
             currentExtras().copy(teleconverter = preFrontRearTeleconverter)
         } else {
@@ -2300,47 +2306,30 @@ class CameraViewModel @JvmOverloads constructor(
         // flip). OFF restores the EXACT pre-TELE framing — lens band + ratio in whatever mode is
         // active (mirrors the engine's unified-zoom snapshot; user-required round-trip fidelity).
         engine.setLens(me.hletrd.telecampro.camera.LensChoice.TELE3X, enabled, restorePreTele = !enabled)
-        // Captured inside the transform, ASSIGNED after it: MutableStateFlow.update retries on CAS
-        // contention, and a field write inside the lambda makes the second run read the first run's
-        // output (tracer T10 — idempotent today only by accident of the current math).
-        var capturedPreTele = Float.NaN
-        var enteredTele = false
+        var acceptedTransition: me.hletrd.telecampro.camera.TeleZoomTransition? = null
         _state.update {
-            if (enabled) {
-                // The pre-TELE snapshot is a UNIFIED value, so it must be converted from whatever
-                // scale the CURRENT route stores — video and DNG both store lens-local.
-                capturedPreTele = unifiedZoomOf(
-                    it.lens,
-                    it.controls.zoomRatio,
-                    standaloneRouteWanted(
-                        it.mode == CaptureMode.VIDEO, it.photoFormats.dngRaw, it.rawForcesStandalone,
-                    ),
-                    it.lensInventory.optical,
-                )
-                enteredTele = true
-                it.copy(
-                    teleconverterMode = true,
-                    lens = me.hletrd.telecampro.camera.LensChoice.TELE3X,
-                    controls = it.controls.copy(zoomRatio = 1f),
-                )
-            } else {
-                val unified = preTeleUnifiedZoom.takeIf { z -> !z.isNaN() }
-                    ?: me.hletrd.telecampro.camera.LensChoice.TELE3X.zoomPreset
-                val band = LensChoice.forZoom(unified)
-                it.copy(
-                    teleconverterMode = false,
-                    lens = band,
-                    controls = it.controls.copy(
-                        zoomRatio = if (it.mode == CaptureMode.VIDEO) {
-                            (unified / band.zoomPreset).coerceAtLeast(1f)
-                        } else {
-                            unified
-                        },
-                    ),
-                )
-            }
+            val transition = resolveTeleZoomTransition(
+                nonTeleStandaloneRoute = standaloneRouteWanted(
+                    it.mode == CaptureMode.VIDEO, it.photoFormats.dngRaw, it.rawForcesStandalone,
+                ),
+                opticalPresets = it.lensInventory.optical,
+                currentLens = it.lens,
+                currentTeleconverter = it.teleconverterMode,
+                currentZoomRatio = it.controls.zoomRatio,
+                currentPreTeleUnifiedZoom = preTeleUnifiedZoom,
+                requestedLens = LensChoice.TELE3X,
+                requestedTeleconverter = enabled,
+                restorePreTele = !enabled,
+            )
+            acceptedTransition = transition
+            it.copy(
+                teleconverterMode = transition.teleconverter,
+                lens = transition.lens,
+                controls = it.controls.copy(zoomRatio = transition.zoomRatio),
+            )
         }
-        if (enteredTele) preTeleUnifiedZoom = capturedPreTele
+        // Exit clears only after accepted Ready, preserving rollback ownership as before.
+        if (enabled) preTeleUnifiedZoom = checkNotNull(acceptedTransition).preTeleUnifiedZoom
         // The TC scale flip overwrote the coalesced base and invalidated any hardware-key glide /
         // throttled landing set in the pre-flip scale (same invariant as every optics-remap door).
         invalidateOpticsDerivedState()
@@ -2555,10 +2544,21 @@ class CameraViewModel @JvmOverloads constructor(
     // saveSettingsIfEnabled). NaN zoom = no snapshot; stale values while rear are simply unused
     // (substitution is gated on facing == FRONT) and re-entry overwrites them.
     private var preFrontRearTeleconverter = false
-    private var preFrontRearZoom = Float.NaN
+    private var preFrontRearUnifiedZoom = Float.NaN
 
-    // Which zoom SCALE preFrontRearZoom was captured in (video = lens-local, photo = unified).
-    private var preFrontRearVideoMode = false
+    /** Converts the canonical rear snapshot into the route a save/recall will actually restore. */
+    private fun retainedRearZoomRatio(state: CameraUiState, teleconverter: Boolean): Float {
+        val targetStandalone = teleconverter || standaloneRouteWanted(
+            state.mode == CaptureMode.VIDEO,
+            state.photoFormats.dngRaw,
+            state.rawForcesStandalone,
+        )
+        return if (targetStandalone) {
+            localZoomOf(preFrontRearUnifiedZoom, state.lensInventory.optical)
+        } else {
+            preFrontRearUnifiedZoom
+        }
+    }
 
     override fun onLens(choice: LensChoice) {
         if (rejectBackOnlyOpticsDoor()) return
@@ -2651,20 +2651,24 @@ class CameraViewModel @JvmOverloads constructor(
         drainPendingControls()
         val entering = _state.value.activeCameraRoute != CameraRoute.FRONT
         // Mirrors the engine transaction exactly (like onToggleTeleconverter mirrors setLens):
-        // entering forces TC off and front-local 1×; leaving lands on the retained rear band's
-        // mode home (unified preset in photo, lens-local 1× in video). Deliberately NO explicit
-        // settings save: facing is session-only, so a kill while FRONT restores the last REAR
-        // setup — the outcome the "fresh launch is BACK" rule wants. saveSettingsIfEnabled
-        // substitutes this snapshot while FRONT so an incidental save (background, control
-        // change) keeps that promise instead of persisting the front-session TC-off/1×.
+        // entering forces TC off and front-local 1×; leaving converts the canonical unified rear
+        // snapshot into the target route's wire coordinate. Deliberately NO explicit settings save:
+        // facing is session-only, so a kill while FRONT restores the last REAR setup — the outcome
+        // the "fresh launch is BACK" rule wants. saveSettingsIfEnabled substitutes this snapshot
+        // while FRONT so an incidental save keeps that promise instead of persisting front 1×.
         if (entering) {
-            preFrontRearTeleconverter = _state.value.teleconverterMode
-            preFrontRearZoom = _state.value.controls.zoomRatio
-            // The snapshot's zoom SCALE is the entry mode's; a mode flip while FRONT invalidates it
-            // for the live return zoom (falls back to the preset, mirroring the engine). The
-            // settings-save substitution keeps using it regardless: a clamped wrong-scale rear zoom
-            // on the next launch is strictly less wrong than persisting the front 1×/TC-off hybrid.
-            preFrontRearVideoMode = _state.value.mode == CaptureMode.VIDEO
+            val before = _state.value
+            preFrontRearTeleconverter = before.teleconverterMode
+            preFrontRearUnifiedZoom = unifiedZoomOf(
+                lens = before.lens,
+                zoomRatio = before.controls.zoomRatio,
+                standaloneRoute = before.teleconverterMode || standaloneRouteWanted(
+                    before.mode == CaptureMode.VIDEO,
+                    before.photoFormats.dngRaw,
+                    before.rawForcesStandalone,
+                ),
+                optical = before.lensInventory.optical,
+            )
         }
         engine.setFrontCamera(entering)
         _state.update {
@@ -2687,13 +2691,14 @@ class CameraViewModel @JvmOverloads constructor(
                         // every flip back (user-reported).
                         zoomRatio = if (it.cameraRoutes.back) {
                             rearReturnZoom(
-                                videoMode = it.mode == CaptureMode.VIDEO,
-                                preFrontZoom = if (preFrontRearVideoMode == (it.mode == CaptureMode.VIDEO)) {
-                                    preFrontRearZoom
-                                } else {
-                                    Float.NaN
-                                },
+                                targetStandaloneRoute = standaloneRouteWanted(
+                                    it.mode == CaptureMode.VIDEO,
+                                    it.photoFormats.dngRaw,
+                                    it.rawForcesStandalone,
+                                ),
+                                preFrontUnifiedZoom = preFrontRearUnifiedZoom,
                                 lensPreset = it.lens.zoomPreset,
+                                opticalPresets = it.lensInventory.optical,
                             )
                         } else {
                             1f
@@ -3208,21 +3213,13 @@ class CameraViewModel @JvmOverloads constructor(
         // preset with rear MAIN at 1× — the exact cycle-6 F6 defect class, fixed for the plain save
         // path but not here. The substituted view also feeds the name/summary so the label describes
         // what recall will actually restore.
-        val substituteRear = live.facing == CameraFacing.FRONT && !preFrontRearZoom.isNaN()
-        // The zoom HALF of the substitution additionally requires the snapshot's zoom SCALE to
-        // match the live mode (same tag as the return-zoom path): a Photo/Video flip while FRONT
-        // makes the number wrong-scale, and a preset stores it verbatim — TC substitution has no
-        // scale and stays unconditional.
-        val substituteZoom = substituteRear &&
-            preFrontRearVideoMode == (live.mode == CaptureMode.VIDEO)
+        val substituteRear = live.facing == CameraFacing.FRONT && preFrontRearUnifiedZoom.isFinite()
         val snapshot = if (substituteRear) {
             live.copy(
                 teleconverterMode = preFrontRearTeleconverter,
-                controls = if (substituteZoom) {
-                    live.controls.copy(zoomRatio = preFrontRearZoom)
-                } else {
-                    live.controls
-                },
+                controls = live.controls.copy(
+                    zoomRatio = retainedRearZoomRatio(live, preFrontRearTeleconverter),
+                ),
             )
         } else {
             live
