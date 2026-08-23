@@ -238,6 +238,115 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
             self.assertTrue(any("sidecar" in item for item in failures))
             self.assertTrue(any("HEAD" in item for item in failures))
 
+    def test_attestation_inputs_reject_path_swap_at_tool_boundary(self) -> None:
+        for target_name in ("attestation", "sidecar"):
+            with self.subTest(target=target_name), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                attestation, _, commit = self.fixture(root)
+                target = (
+                    attestation
+                    if target_name == "attestation"
+                    else attestation.with_name(attestation.name + ".sha256")
+                )
+                relative_target = target.relative_to(root)
+                snapshot = release.snapshot_regular_bytes
+                swapped = False
+
+                def capture(snapshot_root, relative):
+                    nonlocal swapped
+                    captured = snapshot(snapshot_root, relative)
+                    if not swapped and relative == relative_target:
+                        target.rename(target.with_name(target.name + ".retired"))
+                        target.write_bytes(b"B")
+                        swapped = True
+                    return captured
+
+                with patch.object(release, "snapshot_regular_bytes", side_effect=capture):
+                    failures = release.check_release_identity(
+                        root, attestation, run=self.runner(commit)
+                    )
+
+                self.assertTrue(swapped)
+                expected_label = (
+                    "attestation" if target_name == "attestation" else "attestation sidecar"
+                )
+                self.assertEqual(
+                    [f"{expected_label} source identity or digest changed during verification"],
+                    failures,
+                )
+
+    def test_attestation_inputs_reject_symlinks_before_tools(self) -> None:
+        for target_name in ("attestation", "sidecar"):
+            with self.subTest(target=target_name), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                attestation, _, commit = self.fixture(root)
+                target = (
+                    attestation
+                    if target_name == "attestation"
+                    else attestation.with_name(attestation.name + ".sha256")
+                )
+                outside = root / f"outside-{target.name}"
+                target.rename(outside)
+                target.symlink_to(outside)
+                tool_called = False
+                base = self.runner(commit)
+
+                def run(command, cwd):
+                    nonlocal tool_called
+                    tool_called = True
+                    return base(command, cwd)
+
+                failures = release.check_release_identity(root, attestation, run=run)
+
+                self.assertFalse(tool_called)
+                self.assertTrue(
+                    any("no-follow regular file" in failure for failure in failures),
+                    failures,
+                )
+
+    def test_attestation_inputs_reject_in_place_a_b_a_at_tool_boundary(self) -> None:
+        for target_name in ("attestation", "sidecar"):
+            with self.subTest(target=target_name), tempfile.TemporaryDirectory() as temp_dir:
+                root = Path(temp_dir)
+                attestation, _, commit = self.fixture(root)
+                target = (
+                    attestation
+                    if target_name == "attestation"
+                    else attestation.with_name(attestation.name + ".sha256")
+                )
+                relative_target = target.relative_to(root)
+                snapshot = release.snapshot_regular_bytes
+                mutated = False
+
+                def capture(snapshot_root, relative):
+                    nonlocal mutated
+                    captured = snapshot(snapshot_root, relative)
+                    if not mutated and relative == relative_target:
+                        original = target.read_bytes()
+                        original_mtime_ns = target.stat().st_mtime_ns
+                        target.write_bytes(b"B" * len(original))
+                        target.write_bytes(original)
+                        os.utime(
+                            target,
+                            ns=(original_mtime_ns + 1_000_000, original_mtime_ns + 1_000_000),
+                        )
+                        mutated = True
+                    return captured
+
+                with patch.object(release, "snapshot_regular_bytes", side_effect=capture):
+                    failures = release.check_release_identity(
+                        root, attestation, run=self.runner(commit)
+                    )
+
+                self.assertTrue(mutated)
+                expected_label = (
+                    "attestation" if target_name == "attestation" else "attestation sidecar"
+                )
+                self.assertEqual(
+                    [f"{expected_label} source identity or digest changed during verification"],
+                    failures,
+                )
+
     def test_pinned_upload_cert_makes_strict_verification_clean(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

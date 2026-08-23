@@ -139,7 +139,10 @@ def snapshot_regular_file(
                 os.close(output_fd)
         final_attributes = os.fstat(file_fd)
         identity_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
-        if any(getattr(attributes, field) != getattr(final_attributes, field) for field in identity_fields):
+        if any(
+            getattr(attributes, field) != getattr(final_attributes, field)
+            for field in identity_fields
+        ):
             raise OSError(f"artifact changed while its private snapshot was copied: {relative}")
         return RegularFileIdentity(
             device=attributes.st_dev,
@@ -167,7 +170,10 @@ def regular_file_identity(
                 digest.update(chunk)
         final_attributes = os.fstat(file_fd)
         identity_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
-        if any(getattr(attributes, field) != getattr(final_attributes, field) for field in identity_fields):
+        if any(
+            getattr(attributes, field) != getattr(final_attributes, field)
+            for field in identity_fields
+        ):
             raise OSError(f"artifact changed while it was revalidated: {relative}")
         return RegularFileIdentity(
             device=attributes.st_dev,
@@ -177,6 +183,40 @@ def regular_file_identity(
             modified_ns=attributes.st_mtime_ns,
             changed_ns=attributes.st_ctime_ns,
             sha256=digest.hexdigest(),
+        )
+    finally:
+        _close_descriptors(descriptors)
+
+
+def snapshot_regular_bytes(
+    root: pathlib.Path,
+    relative: pathlib.PurePath,
+) -> tuple[RegularFileIdentity, bytes]:
+    """Capture and hash one no-follow regular inode through the same open descriptor."""
+    file_fd, descriptors = _open_regular_beneath(root, relative)
+    digest = hashlib.sha256()
+    chunks: list[bytes] = []
+    try:
+        attributes = os.fstat(file_fd)
+        with os.fdopen(os.dup(file_fd), "rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+                chunks.append(chunk)
+        final_attributes = os.fstat(file_fd)
+        identity_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(attributes, field) != getattr(final_attributes, field) for field in identity_fields):
+            raise OSError(f"artifact changed while its bytes were captured: {relative}")
+        return (
+            RegularFileIdentity(
+                device=attributes.st_dev,
+                inode=attributes.st_ino,
+                mode=stat.S_IMODE(attributes.st_mode),
+                size=attributes.st_size,
+                modified_ns=attributes.st_mtime_ns,
+                changed_ns=attributes.st_ctime_ns,
+                sha256=digest.hexdigest(),
+            ),
+            b"".join(chunks),
         )
     finally:
         _close_descriptors(descriptors)
@@ -326,24 +366,42 @@ def check_release_identity(
     run: Callable[[Sequence[str], pathlib.Path], subprocess.CompletedProcess[str]] = default_run,
 ) -> list[str]:
     failures: list[str] = []
-    root = root.resolve()
-    attestation_path = attestation_path.resolve()
-    sidecar = attestation_path.with_name(attestation_path.name + ".sha256")
-    if not attestation_path.is_file():
-        return [f"attestation missing: {attestation_path}"]
-    if not sidecar.is_file():
-        return [f"attestation sidecar missing: {sidecar}"]
+    requested_root = pathlib.Path(os.path.abspath(root))
+    root = requested_root.resolve()
+    requested_attestation = pathlib.Path(os.path.abspath(attestation_path))
+    try:
+        relative_attestation = requested_attestation.relative_to(requested_root)
+    except ValueError:
+        try:
+            relative_attestation = requested_attestation.relative_to(root)
+        except ValueError:
+            return ["attestation and its sidecar must live under the repository root"]
+    relative_sidecar = relative_attestation.with_name(relative_attestation.name + ".sha256")
+    attestation_path = root / relative_attestation
 
-    expected_attestation_sha = parse_sidecar(
-        sidecar.read_text(encoding="utf-8"), attestation_path.name
-    )
-    actual_attestation_sha = sha256_file(attestation_path)
+    try:
+        attestation_identity, attestation_bytes = snapshot_regular_bytes(
+            root, relative_attestation
+        )
+    except OSError as error:
+        return [f"attestation is not a readable no-follow regular file: {error}"]
+    try:
+        sidecar_identity, sidecar_bytes = snapshot_regular_bytes(root, relative_sidecar)
+    except OSError as error:
+        return [f"attestation sidecar is not a readable no-follow regular file: {error}"]
+
+    try:
+        sidecar_text = sidecar_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        sidecar_text = ""
+    expected_attestation_sha = parse_sidecar(sidecar_text, attestation_path.name)
+    actual_attestation_sha = attestation_identity.sha256
     if expected_attestation_sha != actual_attestation_sha:
         failures.append("attestation SHA-256 sidecar does not match the JSON bytes")
 
     try:
-        document = json.loads(attestation_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as error:
+        document = json.loads(attestation_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
         return failures + [f"attestation JSON is unreadable: {error}"]
     if not isinstance(document, dict):
         return failures + ["attestation root must be an object"]
@@ -610,6 +668,17 @@ def check_release_identity(
         else:
             if final_evidence_identity != evidence_identity:
                 failures.append("release evidence identity or digest changed during verification")
+    for label, relative, identity in (
+        ("attestation", relative_attestation, attestation_identity),
+        ("attestation sidecar", relative_sidecar, sidecar_identity),
+    ):
+        try:
+            final_identity = regular_file_identity(root, relative)
+        except OSError as error:
+            failures.append(f"{label} changed or became unsafe during verification: {error}")
+        else:
+            if final_identity != identity:
+                failures.append(f"{label} source identity or digest changed during verification")
     artifact_temp.cleanup()
     return failures
 
