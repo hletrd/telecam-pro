@@ -31,7 +31,6 @@ import me.hletrd.telecampro.storage.MediaStoreWriter
 import me.hletrd.telecampro.storage.PendingOutputDiscardResult
 import me.hletrd.telecampro.storage.RecoveryReport
 import me.hletrd.telecampro.storage.RecoveryRetryDecision
-import me.hletrd.telecampro.storage.recoveryRetryDecision
 import me.hletrd.telecampro.video.NativeGraphDisposition
 import me.hletrd.telecampro.video.AudioRouteStatus
 import me.hletrd.telecampro.video.EncoderSelection
@@ -126,11 +125,13 @@ class CameraEngine internal constructor(
         discard = { uri -> MediaStoreWriter.discardPendingOutput(context, uri) },
         persistDeletionIntent = { family -> MediaStoreWriter.markFamilyDeleted(context, family) },
     )
-    // Launch MediaStore reconciliation may perform several provider scans/probes and bounded
-    // backoffs. Keep it independent from camera setup so recovery can never delay first preview.
-    private val mediaRecoveryExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { task ->
-        Thread(task, "media-recovery").apply { isDaemon = true }
+    // A deleted still whose normal I/O lane rejects during teardown gets one independent fallback;
+    // launch scans themselves are process-wide through ProcessLaunchMediaRecovery below.
+    private val retainedStillRecoveryExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { task ->
+        Thread(task, "retained-still-recovery").apply { isDaemon = true }
     }
+    private val launchRecoveryOwner = Any()
+    @Volatile private var launchRecoverySubscription: LaunchMediaRecoverySubscription? = null
     // Recorder finalization can block for seconds joining codec/audio drains. It must never sit
     // behind a burst's full-resolution still encodes on ioExecutor (or vice versa).
     private val recorderExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
@@ -4170,7 +4171,7 @@ class CameraEngine internal constructor(
         }
         val stillAccepted = runCatching { ioExecutor.execute(task) }.isSuccess
         if (stillAccepted) return
-        val recoveryAccepted = runCatching { mediaRecoveryExecutor.execute(task) }.isSuccess
+        val recoveryAccepted = runCatching { retainedStillRecoveryExecutor.execute(task) }.isSuccess
         if (!recoveryAccepted) task.run()
     }
 
@@ -6090,40 +6091,41 @@ class CameraEngine internal constructor(
      * Reconciles prior-process pending media: adopt COMPLETE/structurally proven rows, delete only
      * proven-incomplete rows, and retain indeterminate rows. Provider failures retry boundedly and
      * finish with one typed completion; Images and Video remain independently failure-isolated.
-     * The dedicated recovery lane keeps every provider probe/backoff off camera startup.
+     * The process-wide recovery lane keeps provider work off camera startup and prevents Engine
+     * replacement from multiplying a blocked Binder call.
      */
     internal fun cleanupOrphans(onComplete: (MediaRecoveryCompletion) -> Unit = {}) {
-        mediaRecoveryExecutor.execute {
-            var completedAttempts = 0
-            var cumulativeReport = RecoveryReport()
-            var latestReport = RecoveryReport()
-            var finalDecision = RecoveryRetryDecision.COMPLETE
-            do {
-                completedAttempts += 1
-                latestReport = MediaStoreWriter.cleanupOrphanedPending(context)
-                cumulativeReport = cumulativeReport.foldRecoveryAttempt(latestReport)
-                finalDecision = recoveryRetryDecision(
-                    report = latestReport,
-                    completedAttempts = completedAttempts,
-                    maxAttempts = MAX_MEDIA_RECOVERY_ATTEMPTS,
+        launchRecoverySubscription?.cancel()
+        val recoveryContext = context.applicationContext
+        launchRecoverySubscription = ProcessLaunchMediaRecovery.request(
+            owner = launchRecoveryOwner,
+            recover = {
+                executeLaunchMediaRecovery(
+                    maxFailureAttempts = MAX_MEDIA_RECOVERY_ATTEMPTS,
+                    backoff = { attempt ->
+                        runCatching { Thread.sleep(MEDIA_RECOVERY_RETRY_BACKOFF_MS * attempt) }
+                    },
+                    recoverBatch = { cursor ->
+                        MediaStoreWriter.cleanupOrphanedPendingBatch(recoveryContext, cursor)
+                    },
                 )
-                if (finalDecision == RecoveryRetryDecision.RETRY) {
-                    runCatching { Thread.sleep(MEDIA_RECOVERY_RETRY_BACKOFF_MS * completedAttempts) }
-                }
-            } while (finalDecision == RecoveryRetryDecision.RETRY)
-
+            },
+        ) { completion ->
+            val cumulativeReport = completion.report
+            val completedAttempts = completion.attempts
+            val finalDecision = completion.decision
             if (BuildConfig.DEBUG || finalDecision == RecoveryRetryDecision.EXHAUSTED) {
                 val summary = "attempts=$completedAttempts scanned=${cumulativeReport.scanned} " +
                     "adopted=${cumulativeReport.adopted} deleted=${cumulativeReport.deleted} " +
                     "retained=${cumulativeReport.retained} errors=${cumulativeReport.errors} " +
-                    "failures=${latestReport.failureClasses.sortedBy { it.name }.joinToString { it.name }}"
+                    "failures=${cumulativeReport.failureClasses.sortedBy { it.name }.joinToString { it.name }}"
                 if (finalDecision == RecoveryRetryDecision.EXHAUSTED) {
                     Log.w("MediaRecovery", "exhausted $summary")
                 } else {
                     Log.d("MediaRecovery", "complete $summary")
                 }
             }
-            onComplete(MediaRecoveryCompletion(cumulativeReport, completedAttempts, finalDecision))
+            onComplete(completion)
         }
     }
 
@@ -6225,6 +6227,8 @@ class CameraEngine internal constructor(
     /** Breaks the engine→ViewModel callback graph before asynchronous owner teardown begins. */
     fun detachCallbacks() {
         callbackSink.closeAndDrain()
+        launchRecoverySubscription?.cancel()
+        launchRecoverySubscription = null
     }
 
     internal fun attachedCallbackCount(): Int = callbackSink.callbackCount()
@@ -6317,10 +6321,12 @@ class CameraEngine internal constructor(
             routeAvailabilityRegistered = false
         }
         routeTopologyConvergence.close()
+        launchRecoverySubscription?.cancel()
+        launchRecoverySubscription = null
         activeRecordingTopologyLease.set(0L)
         setupExecutor.shutdown()
         ioExecutor.shutdown()
-        mediaRecoveryExecutor.shutdown()
+        retainedStillRecoveryExecutor.shutdown()
         recorderExecutor.shutdown()
         recordingStorageDispatcher.shutdown()
         recorderWatchdog.shutdown()

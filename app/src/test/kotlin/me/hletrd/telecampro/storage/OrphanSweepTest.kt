@@ -29,6 +29,30 @@ class OrphanSweepTest {
         assertEquals("DCIM/TeleCamPro/%", args[0])
         assertEquals("1700000000", args[1])
         assertEquals("me.hletrd.telecampro", args[2])
+        assertTrue(selection.contains("is_pending = 1"))
+    }
+
+    @Test
+    fun `page cursor advances each collection independently`() {
+        val start = OrphanRecoveryCursor()
+        val images = start.withAfterId(OrphanRecoveryCollection.IMAGES, 64L)
+        val both = images.withAfterId(OrphanRecoveryCollection.VIDEO, 31L)
+
+        assertEquals(0L, start.imagesAfterId)
+        assertEquals(0L, start.videoAfterId)
+        assertEquals(64L, both.afterId(OrphanRecoveryCollection.IMAGES))
+        assertEquals(31L, both.afterId(OrphanRecoveryCollection.VIDEO))
+    }
+
+    @Test
+    fun `page query binds monotonic id and one continuation row`() {
+        val (selection, args) = orphanSweepSelection(listOf("TeleCamPro"), "pkg", 123L)
+        val page = orphanSweepPage(selection, args, afterId = 88L, batchLimit = 64)
+
+        assertEquals(page.selection.count { it == '?' }, page.args.size)
+        assertTrue(page.selection.endsWith("_id > ?"))
+        assertEquals("88", page.args.last())
+        assertEquals(65, page.queryLimit)
     }
 
     @Test

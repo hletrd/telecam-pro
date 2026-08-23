@@ -43,6 +43,7 @@ object MediaStoreWriter {
     val CAPTURE_SUBDIRS = listOf(CAPTURE_SUBDIR)
 
     private const val MAX_RESTORE_ROWS_PER_COLLECTION = 64
+    internal const val MAX_ORPHAN_RECOVERY_ROWS_PER_COLLECTION = 64
     private const val MAX_FAMILY_ROWS = 8
     private const val PENDING_JOURNAL = "pending_media_journal"
     private const val PENDING_REGISTERED = "registered"
@@ -607,6 +608,26 @@ object MediaStoreWriter {
         context: Context,
         subDirs: List<String> = CAPTURE_SUBDIRS,
     ): RecoveryReport {
+        var cursor = OrphanRecoveryCursor()
+        var cumulative = RecoveryReport()
+        var hasMore: Boolean
+        do {
+            val batch = cleanupOrphanedPendingBatch(context, cursor, subDirs = subDirs)
+            cumulative = cumulative.foldRecoveryAttempt(batch.report)
+            if (batch.report.retryRequired) return cumulative
+            cursor = batch.nextCursor
+            hasMore = batch.hasMore
+        } while (hasMore)
+        return cumulative
+    }
+
+    internal fun cleanupOrphanedPendingBatch(
+        context: Context,
+        cursor: OrphanRecoveryCursor = OrphanRecoveryCursor(),
+        batchLimit: Int = MAX_ORPHAN_RECOVERY_ROWS_PER_COLLECTION,
+        subDirs: List<String> = CAPTURE_SUBDIRS,
+    ): OrphanRecoveryBatch {
+        require(batchLimit > 0)
         // Only sweep entries created BEFORE this process: the launch-time sweep runs on the setup
         // executor while an immediate first capture creates its own pending entry on ioExecutor —
         // without the age gate the sweep could delete that in-flight write (two-executor race on
@@ -625,16 +646,34 @@ object MediaStoreWriter {
         // the next bounded recovery attempt.
         retryRejectedOutputs()
         var report = cleanupDeletedFamilyJournal(context, subDirs).merge(cleanupDiscardJournal(context))
+        var nextCursor = cursor
+        var hasMore = false
         for (base in listOf(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
             MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
         )) {
+            val collection = if (base == MediaStore.Images.Media.EXTERNAL_CONTENT_URI) {
+                OrphanRecoveryCollection.IMAGES
+            } else {
+                OrphanRecoveryCollection.VIDEO
+            }
+            val afterId = cursor.afterId(collection)
+            if (afterId == OrphanRecoveryCursor.COLLECTION_COMPLETE) continue
+            var nextAfterId = afterId
+            var collectionHasMore = false
             val collectionResult = runCatching {
+                val page = orphanSweepPage(selection, args, afterId, batchLimit)
                 val queryArgs = Bundle().apply {
-                    putString(ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
-                    putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, args)
+                    putString(ContentResolver.QUERY_ARG_SQL_SELECTION, page.selection)
+                    putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, page.args)
                     // Pending items are hidden from ordinary queries even for the owner; opt in.
                     putInt(MediaStore.QUERY_ARG_MATCH_PENDING, MediaStore.MATCH_INCLUDE)
+                    putStringArray(
+                        ContentResolver.QUERY_ARG_SORT_COLUMNS,
+                        arrayOf(MediaStore.MediaColumns._ID),
+                    )
+                    putInt(ContentResolver.QUERY_ARG_SORT_DIRECTION, ContentResolver.QUERY_SORT_DIRECTION_ASCENDING)
+                    putInt(ContentResolver.QUERY_ARG_LIMIT, page.queryLimit)
                 }
                 val cursor = context.contentResolver.query(
                     base,
@@ -654,10 +693,18 @@ object MediaStoreWriter {
                     val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE)
                     val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
                     val nameCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+                    var processed = 0
                     while (cursor.moveToNext()) {
                         if (cursor.getInt(pendingCol) != 1) continue
+                        if (processed >= batchLimit) {
+                            collectionHasMore = true
+                            break
+                        }
+                        val rowId = cursor.getLong(idCol)
+                        nextAfterId = rowId
+                        processed += 1
                         report = report.record(RecoveryEvent.SCANNED)
-                        val uri = ContentUris.withAppendedId(base, cursor.getLong(idCol))
+                        val uri = ContentUris.withAppendedId(base, rowId)
                         val journalState = pendingJournalState(context, uri)
                         val familyDeleted = CaptureFamilyKey.parse(cursor.getString(nameCol))
                             ?.familyKey
@@ -698,9 +745,17 @@ object MediaStoreWriter {
                     }
                 }
             }
-            if (collectionResult.isFailure) report = report.record(RecoveryEvent.QUERY_FAILED)
+            if (collectionResult.isFailure) {
+                report = report.record(RecoveryEvent.QUERY_FAILED)
+            } else {
+                nextCursor = nextCursor.withAfterId(
+                    collection,
+                    if (collectionHasMore) nextAfterId else OrphanRecoveryCursor.COLLECTION_COMPLETE,
+                )
+                hasMore = hasMore || collectionHasMore
+            }
         }
-        return report
+        return OrphanRecoveryBatch(report, nextCursor, hasMore)
     }
 
     /**
@@ -1100,6 +1155,34 @@ internal fun markCompletionWithRetry(
 }
 
 internal enum class RecoveryFailureClass { QUERY, PROBE, PUBLISH, DELETE }
+
+/** Monotonic per-collection page cursor for one process-owned launch recovery. */
+internal enum class OrphanRecoveryCollection { IMAGES, VIDEO }
+
+internal data class OrphanRecoveryCursor(
+    val imagesAfterId: Long = 0L,
+    val videoAfterId: Long = 0L,
+) {
+    fun afterId(collection: OrphanRecoveryCollection): Long = when (collection) {
+        OrphanRecoveryCollection.IMAGES -> imagesAfterId
+        OrphanRecoveryCollection.VIDEO -> videoAfterId
+    }
+
+    fun withAfterId(collection: OrphanRecoveryCollection, value: Long): OrphanRecoveryCursor = when (collection) {
+        OrphanRecoveryCollection.IMAGES -> copy(imagesAfterId = value)
+        OrphanRecoveryCollection.VIDEO -> copy(videoAfterId = value)
+    }
+
+    companion object {
+        const val COLLECTION_COMPLETE = Long.MAX_VALUE
+    }
+}
+
+internal data class OrphanRecoveryBatch(
+    val report: RecoveryReport,
+    val nextCursor: OrphanRecoveryCursor,
+    val hasMore: Boolean,
+)
 
 internal data class RecoveryReport(
     val scanned: Int = 0,
@@ -1648,8 +1731,30 @@ internal fun orphanSweepSelection(
     val paths = subDirs.joinToString(" OR ") { "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?" }
     val selection =
         "($paths) AND ${MediaStore.MediaColumns.DATE_ADDED} < ? AND " +
-            "${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} = ?"
+            "${MediaStore.MediaColumns.OWNER_PACKAGE_NAME} = ? AND " +
+            "${MediaStore.MediaColumns.IS_PENDING} = 1"
     return selection to (
         subDirs.map { "DCIM/$it/%" } + listOf(cutoffEpochSecs.toString(), packageName)
         ).toTypedArray()
+}
+
+internal data class OrphanSweepPage(
+    val selection: String,
+    val args: Array<String>,
+    val queryLimit: Int,
+)
+
+/** One extra row proves continuation without processing beyond the page's hard bound. */
+internal fun orphanSweepPage(
+    selection: String,
+    args: Array<String>,
+    afterId: Long,
+    batchLimit: Int,
+): OrphanSweepPage {
+    require(batchLimit > 0)
+    return OrphanSweepPage(
+        selection = "$selection AND ${MediaStore.MediaColumns._ID} > ?",
+        args = args + afterId.toString(),
+        queryLimit = batchLimit + 1,
+    )
 }

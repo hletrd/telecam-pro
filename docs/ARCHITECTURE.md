@@ -67,6 +67,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | `RecordingPreNativeAllocation.kt` | Process-wide finite lane for pending-video MediaProvider allocation: two daemon workers plus four queued attempts, per-attempt first-wins retirement, and cancellation of queued work. Stop/pause/release/timeout free REC admission immediately; a late row is cleanup/recovery-owned and cannot enter native setup. |
 | `RecordingStorageDispatcher.kt` | Process-lifetime bounded post-native storage owner: exactly two daemon workers plus eight FIFO backlog slots shared by every Engine generation. Each Engine holds only a closeable admission facade, so overflow or facade shutdown leaves the finalized pending row private for launch recovery while already accepted, callback-identity-bearing tails finish without interruption. |
 | `RecordingTeardownCoordinator.kt` | Android-free terminal owner for encoder detach: arms independent recovery/hard deadlines before submission, admits recovery once, and selects exactly one strict finalization or quarantine while making rejection and late callbacks inert. |
+| `LaunchMediaRecoveryCoordinator.kt` | Process-wide single-flight launch recovery. Engine generations hold cancellable identity-keyed subscribers rather than workers; Images and Video advance independently through 64-row, `_ID`-ordered pending-only pages, while durable pending rows remain the process-restart continuation. |
 | `RetainedStillDeletionOwner.kt` | Engine-owned bounded deleted-capture tombstones for retained private HEIF/JPEG/DNG outputs. Only live still families enter this gate; video and restored families carry durable delete identity without claiming a late-still producer. The in-memory tombstone is synchronous, while family-journal durability runs on the ordered I/O lane. |
 | `AutoExposure.kt` | Pure, unit-tested app-side AE math: SHUTTER/ISO-priority drive functions and the photo-P program line (`driveProgram`), metered off the GL luma histogram. |
 | `VendorTagInspector.kt` | Debug-only Camera2 capability logger for device-specific request/session keys. |
@@ -239,7 +240,7 @@ Two critical consequences of the afocal converter drive the entire design:
 | **camera** HandlerThread | CameraController | Camera2 lifecycle and capture callbacks. Copies JPEG/YUV data before cache-only EXIF composition while the Image is live, and invokes the synchronous DNG byte write while the RAW Image is valid. |
 | **setupExecutor** (single-thread) | CameraEngine | Post-GL-input Camera2 route/capability preflight, lightweight physical-lens EXIF prefetch, and serialized generation-owned mode/lens/session reconfiguration. Debug diagnostics are queued behind the initial route/open work. |
 | **ioExecutor** (single-thread) | CameraEngine / StillCapturePipeline | Deferred processed-still decoding, crop/rotation, shared HEIF/JPEG EXIF composition, encoding, processed publication, and retrying DNG publication after the live-Image write is complete. |
-| **media-recovery executor** (single-thread) | CameraEngine | Launch-only pending-row scans, structural probes, and bounded provider retry/backoff. Its typed completion gates the latest-family query, so recovery can adopt the review item without ever delaying Camera2 startup. |
+| **media-recovery executor** (one process-wide daemon) | `ProcessLaunchMediaRecovery`; Engines own cancellable subscribers | Single-flight launch-only pending-row scans, structural probes, and bounded provider retry/backoff. Images and Video use independent 64-row monotonic pages; Engine recreation cannot multiply a blocked provider worker. Typed completion gates the latest-family query without delaying Camera2 startup. |
 | **recording-finalization executor** (single-thread) | CameraEngine | Serial accepted-session/process-token preflight, post-allocation mic/native setup, and checked recorder drain/muxer/native-owner finalization. It dispatches but never performs pending-row allocation; Engine release waits only for current native classification, never for pre/post-native provider work. |
 | **recording pre-native allocation** (process-wide two workers + four backlog slots) | CameraEngine / `ProcessRecordingPreNativeAllocator` | Pending MediaStore video-row insert/registration before native setup. Its deadline is armed before dispatch; Stop, pause, release, or timeout retire admission without interrupting the uncancellable Binder call. Late results can only enter bounded cleanup/recovery. |
 | **recording-storage dispatcher** (process-wide two workers + eight FIFO backlog slots) | `ProcessRecordingStorageOwner`; CameraEngine owns one admission facade | Frozen post-native extractor validation and MediaStore COMPLETE/publish/delete tails. Admission is non-blocking; overflow/facade shutdown leaves the finalized pending row private for launch recovery. A blocked provider call cannot occupy the REC/native lane, and Engine recreation cannot multiply active workers or queued tails. |
@@ -1057,10 +1058,12 @@ ISO-BMFF headers and requires `ftyp`, one bounded `meta`, a matching primary ite
 external references, unbounded boxes, and parser-limit cases remain pending; malformed/missing/
 out-of-range required metadata is invalid. A `COMPLETE` journal record always authorizes adoption; legacy or
 `REGISTERED` rows are adopted only when structurally valid, deleted only when definitively invalid,
-and otherwise retained with an explicit report. A dedicated recovery lane folds transition counts
-across attempts but lets only the last attempt own unresolved failure classes; its completion then
-queries the latest published family. Provider failures retry boundedly, preserving partial bytes
-privately without turning a transient publication failure into data loss.
+and otherwise retained with an explicit report. One process-wide recovery lane folds transition
+counts across attempts but lets only the last attempt own unresolved failure classes; Images and
+Video advance independently through bounded pending-only pages, and replacement Engines coalesce as
+subscribers rather than starting more workers. Its completion then queries the latest published
+family. Provider failures retry boundedly, preserving partial bytes privately without turning a
+transient publication failure into data loss.
 
 ---
 
