@@ -162,7 +162,11 @@ interface CameraActions {
      * on the next launch.
      */
     fun onAutoPunchIn(enabled: Boolean)
-    /** Same-stream Loupe Overview toggle (default OFF); resolved against TELE + Photo + 4:3 + loupe. */
+    /**
+     * Same-stream Loupe Overview toggle (default OFF). Visibility additionally needs an active
+     * punch-in plus either TELE or unified zoom >= 3x; Photo requires 4:3, while Video deliberately
+     * ignores the unrelated still aspect.
+     */
     fun onToggleTeleFinder(enabled: Boolean)
 
     // Drive

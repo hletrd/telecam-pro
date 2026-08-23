@@ -164,12 +164,12 @@ class GlPipeline(
     // Change gate for the finder-draw failure log; see its onFailure arm.
     private var lastFinderFailureSig: String? = null
     private var punchInY = 0.5f
-    // TELE finder PIP: the RESOLVED enable flag (user toggle && TELE && 4:3, resolved by
-    // CameraEngine.pushTeleFinder). The finder actually draws only when this is set AND the
-    // punch-in loupe is active (checked in drawFrame — the same gate axis as the Compose border's
-    // teleFinderVisible). It re-draws the FULL current camera frame — the widest field the single
-    // stream carries, NOT an unzoomed view — which is only wider than the main view while the
-    // loupe magnifies past it.
+    // Loupe Overview's RESOLVED enable flag: toggle plus (TELE or unified zoom >= 3x), with Photo
+    // additionally requiring 4:3 while Video ignores still aspect (CameraEngine.pushTeleFinder).
+    // The finder actually draws only when this is set AND the punch-in loupe is active (checked in
+    // drawFrame — the same gate axis as the Compose border's teleFinderVisible). It re-draws the
+    // FULL current camera frame — the widest field the single stream carries, NOT an unzoomed view
+    // — which is only wider than the main view while the loupe magnifies past it.
     private var teleFinder = false
 
     // Gyro EIS: provider returns [yaw, pitch, roll] shake radians; eisFocal scales to the effective
@@ -599,7 +599,7 @@ class GlPipeline(
      */
     fun setWindowRotation(degrees: Int) = post { windowRotationDeg = RotationMath.normalize(degrees) }
 
-    /** TELE finder PIP: with the resolved flag on and the punch-in loupe active, draw a small
+    /** Loupe Overview: with the resolved flag on and the punch-in loupe active, draw a small
      *  corner viewport re-drawing the FULL current camera frame (single-stream: the HAL zoom crop
      *  is baked in, so this is the widest available field, not an unzoomed one). Preview-only; the
      *  actual gating also requires the loupe ([punchIn], checked at draw). */
@@ -1049,7 +1049,7 @@ class GlPipeline(
                         )
                     },
                 )
-                // TELE finder PIP (opt-in, resolved by CameraEngine.pushTeleFinder): a corner
+                // Loupe Overview (opt-in, resolved by CameraEngine.pushTeleFinder): a corner
                 // viewport re-drawing the FULL current camera frame while the main view is
                 // magnified. Single-stream honesty: the HAL's zoom crop is baked into the texture,
                 // so this box is only wider than the main view while zoomComp/punch-in magnify past

@@ -348,7 +348,7 @@ enum class AudioInputPreference {
 // range is 13–60× on the kit optic, with magnetic snaps at 30× / 60×.
 const val TELE_MAX_DISPLAY_ZOOM = 60f
 
-// TELE finder PIP: an opt-in corner viewport re-drawing the FULL current camera frame while the
+// Loupe Overview: an opt-in corner viewport re-drawing the FULL current camera frame while the
 // main view is magnified. Single-stream honesty: the HAL's CONTROL_ZOOM_RATIO crop is baked into
 // the delivered frames, so the finder can only ever be as wide as the last HAL field — wider than
 // the main view while GL zoom compensation (mid-gesture) or punch-in magnifies past it, identical
@@ -1358,7 +1358,7 @@ data class CameraUiState(
     // The user's loupe TOGGLE. What the preview actually applies is [punchInActive] — the settings
     // switch shows this raw value so it does not appear to flip itself on a camera change.
     val punchIn: Boolean = false,
-    // TELE finder PIP Assist toggle (default OFF; see FINDER_* above for the honest contract).
+    // Loupe Overview Assist toggle (default OFF; see FINDER_* above for the honest contract).
     val teleFinder: Boolean = false,
     // Hi-res still INTENT (the user toggle). Accepted truth is photoSessionOutputs.hiRes only —
     // the session plan drops hi-res first on configure failure, and [hiResAdmitted] gates it to

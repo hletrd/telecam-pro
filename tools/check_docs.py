@@ -594,6 +594,11 @@ check(
 )
 camera_state = read("app/src/main/kotlin/me/hletrd/telecampro/camera/CameraState.kt")
 finder_tests = read("app/src/test/kotlin/me/hletrd/telecampro/camera/TeleFinderVisibilityTest.kt")
+camera_actions = read("app/src/main/kotlin/me/hletrd/telecampro/ui/CameraActions.kt")
+camera_engine = read("app/src/main/kotlin/me/hletrd/telecampro/camera/CameraEngine.kt")
+loupe_compose_test = read(
+    "app/src/test/kotlin/me/hletrd/telecampro/ui/controls/LoupeOverviewGateTest.kt"
+)
 check(
     "FINDER_MIN_ZOOM = 3f" in claude
     and "Video deliberately ignores the unrelated still-aspect setting" in claude
@@ -603,6 +608,22 @@ check(
     and "past the zoom floor the finder is offered without a converter" in finder_tests
     and "video shows the finder for ANY photo aspect" in finder_tests,
     "Loupe Overview authorities preserve video and converterless 3x admission",
+)
+obsolete_finder_contracts = (
+    "TELE + Photo + 4:3 + loupe",
+    "toggle && TELE && PHOTO && 4:3",
+    "overview only ever draws under Photo + 4:3 + Teleconverter",
+    "Mode is a finder-gate input (photo-only)",
+    "finder PIP is 4:3-only",
+)
+check(
+    not any(
+        obsolete in "\n".join((camera_actions, camera_engine, gl_pipeline, loupe_compose_test))
+        for obsolete in obsolete_finder_contracts
+    )
+    and "active loupe + (TELE or unified zoom >= 3x)" in loupe_compose_test
+    and "Video ignoring still aspect" in loupe_compose_test,
+    "Loupe source and Compose-test guidance rejects the superseded Photo/TELE-only gate",
 )
 
 # ---- coverage residual authority must stay machine-checked, not copied into prose --------------

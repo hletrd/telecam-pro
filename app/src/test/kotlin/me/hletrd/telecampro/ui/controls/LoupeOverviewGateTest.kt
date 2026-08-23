@@ -17,11 +17,11 @@ import org.robolectric.annotation.Config
 /**
  * Pins the Assist tab's Loupe Overview gate by RENDERING the sheet, not by re-reading the flag.
  *
- * The overview only ever draws under Photo + 4:3 + Teleconverter + an ACTIVE loupe, but its switch
- * used to be flippable in every state — so it could report "On" while provably drawing nothing, with
- * its parent switch sitting under a DIFFERENT section header ("Focus Aids") where the dependency is
- * invisible from here. A state-flag assertion would not have caught that: the defect was in what the
- * row let the user DO, so the test drives the real composable through the real semantics tree.
+ * This class owns only the settings-row dependency: the child switch is disabled unless its parent
+ * punch-in Loupe is enabled. It does not re-test the runtime route/visibility matrix, which is owned
+ * by `TeleFinderVisibilityTest`: active loupe + (TELE or unified zoom >= 3x), with Photo requiring
+ * 4:3 and Video ignoring still aspect. A state-flag assertion would not have caught the original row
+ * defect, so this test drives the real composable through the real semantics tree.
  *
  * These are the first Compose UI tests in the project. They are host tests (Robolectric) on purpose:
  * the whole gate is Compose-side, so it needs no camera, and pinning it here keeps it inside the

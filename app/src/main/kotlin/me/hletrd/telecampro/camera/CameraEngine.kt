@@ -1458,8 +1458,8 @@ class CameraEngine internal constructor(
             activeCameraRoute == CameraRoute.FRONT,
             activeDeviceProfile().frontStreamPreMirrored,
         )
-        // TELE finder PIP: re-resolve on every session (re)config and tele change, like rotation
-        // (the user toggle, TELE state, or aspect may all have changed since the last push).
+        // Loupe Overview: re-resolve on every session (re)config and optics change, like rotation.
+        // Toggle, TELE, unified zoom, mode, and Photo aspect may all have changed since the last push.
         pushTeleFinder()
         // App-side gyro EIS is disabled (unusable at 300 mm): the HAL video-stab modes own
         // stabilization, so GL EIS cannot double-warp. Push the resolved HAL mode to the live request.
@@ -2035,8 +2035,9 @@ class CameraEngine internal constructor(
             }
             null
         }
-        // Mode is a finder-gate input (photo-only): re-resolve synchronously so a photo→video flip
-        // can never leave the GL PIP drawing until the async reconfigure lands.
+        // Mode changes how the finder gate treats still aspect: Photo requires 4:3, while Video
+        // deliberately ignores it. Re-resolve synchronously so a mode flip cannot leave stale GL
+        // PIP truth until the async reconfigure lands.
         pushTeleFinder()
         transaction?.let { controller?.setPinAutoFps(enabled, it.generation) }
         controller?.updateControls(modeControls)
@@ -2955,7 +2956,8 @@ class CameraEngine internal constructor(
     fun setAspectRatio(a: AspectRatio) {
         val hiResBefore = resolvedHiResStill()
         aspectRatio = a
-        // The finder PIP is 4:3-only (see pushTeleFinder); keep its resolved flag in step.
+        // Still aspect is a finder input in Photo only; Video deliberately ignores it. Keep the
+        // resolved flag in step with a live Photo 4:3↔16:9 change.
         pushTeleFinder()
         // Hi-res is 4:3-only too, but unlike the finder flag it is SESSION state (the still reader
         // size fixes at configureStreams): a 4:3↔16:9 flip that changes the resolved admission
@@ -6150,13 +6152,12 @@ class CameraEngine internal constructor(
         )
     }
 
-    // TELE finder PIP: the user's persisted Assist toggle (default OFF). Only the RESOLVED flag —
-    // teleFinderResolved: toggle && TELE && PHOTO && 4:3 — is pushed to GL and stored in
-    // RendererAssists (so a fresh GL generation replays the resolved value via replayAll).
-    // Photo-only: it is a still-composition aid and 4:3 is the STILL aspect. 16:9 is excluded
-    // because the AspectMask pillarboxes would dim/misframe the corner box, and the finder
-    // deliberately shows the FULL delivered frame (see FINDER_* in CameraState for the honest
-    // single-stream contract).
+    // Loupe Overview: the user's persisted Assist toggle (default OFF). Only the RESOLVED flag is
+    // pushed to GL and stored in RendererAssists (so a fresh GL generation replays it): toggle plus
+    // either TELE or unified zoom >= FINDER_MIN_ZOOM. The active punch-in remains the draw-time axis.
+    // Photo additionally requires 4:3 because its 16:9 AspectMask would dim/misframe the corner box;
+    // Video deliberately ignores that unrelated still aspect. See FINDER_* in CameraState for the
+    // honest single-stream contract.
     fun setTeleFinder(enabled: Boolean) {
         rendererAssists.setTeleFinderIntent(enabled)
         pushTeleFinder()
