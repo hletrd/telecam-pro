@@ -124,12 +124,15 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   the SOURCE is the ISP's display-referred, already tone-mapped stream. Ten-bit video is a real
   10-bit *encode* of that stream, NOT recovered HDR and NOT scene-referred capture — see the next
   two bullets, which remain correct as written. Photo, and any video left on SDR, stay 8-bit.
-- **HLG is a display-referred SDR-to-HLG mapping, not recovered HDR.** `Shaders.kt` follows the
-  simplified ITU-R BT.2408-9 §5.1.3.4 order: BT.1886 2.4 decode, linear BT.709→BT.2020, explicit
-  inverse-OOTF/reference-white scaling (100% SDR → 75% HLG), then the BT.2100 HLG OETF. The ISP has
-  already tone-mapped the SDR Camera2 source, so clipped/rolled-off highlights cannot be recovered.
-  Host tests pin the CPU reference and shader order; playback appearance remains a real HDR-display
-  verification item and does not turn this into an end-to-end 10-bit claim.
+- **HLG is a display-referred mapping, not recovered HDR.** The input stage follows accepted session
+  truth: standard photo/SDR-video input takes the BT.1886 2.4 decode, while non-SDR video first takes
+  the inverse HLG decode/reference-white normalization from its HLG10 Camera2 stream. The common
+  display-light signal then maps through linear BT.709→BT.2020, the explicit reference-white/OOTF
+  scale, and the BT.2100 HLG OETF (`Shaders.kt`; CPU anchors host-tested). In both cases the ISP has
+  already tone-mapped the scene, so clipped/rolled-off highlights cannot be recovered. The release
+  EGL target remains 8-bit even though the non-SDR source and HEVC Main10 output are 10-bit-class
+  stages; playback appearance still needs a real HDR display and none of this is an end-to-end
+  10-bit or scene-referred claim.
 - **RAW only on the standalone camera — in BOTH failure modes (extended 2026-07-14).** RAW routed
   through physical sub-camera routing crashes configure (`DataSpace override not allowed for format
   0x20`), AND a still with the RAW target on the plain LOGICAL camera errors the whole camera device
@@ -179,8 +182,9 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   4080×3064. `StillSnapshot` repacks YUV_420_888→NV21 on the camera thread and JPEG-encodes lazily
   on the io thread; standalone cameras keep the proven HAL-JPEG path. A capture watchdog
   (`CAPTURE_WATCHDOG_FLOOR_MS` + the exposure-aware margin) fails any shot whose image never arrives so the shutter can never wedge.
-- **Pseudo-ZSL on the LOGICAL photo route: bright shots serve a buffered frame, dark shots
-  deliberately do NOT (2026-07-25).** That route's full-res YUV still reader also streams on the
+- **Pseudo-ZSL on the LOGICAL and FRONT photo routes: bright shots serve a buffered frame, dark shots
+  deliberately do NOT (LOGICAL device soak 2026-07-25; FRONT path added 2026-07-28).** The active
+  route's full-res YUV still reader also streams on the
   REPEATING request (`zslStreamingActive`), and a 3-deep ring pairs frames with their
   `TotalCaptureResult` by exact `SENSOR_TIMESTAMP`. S4a soak, device-measured: **29–31 fps lit /
   14–16 fps at the dark fluidity cap over 5-minute soaks, zero FrameGap stalls ≥200 ms, zero camera
@@ -193,8 +197,11 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   the preview from intent, so admission MUST fail and a full-quality real capture MUST run. **Do not
   "fix" the dark path by widening the tolerance** — that silently trades the user's exposure for
   latency. SINGLE drive only (`allowZsl = !singleShot` excludes the in-REC snapshot);
-  TELE/standalone/video/burst/AEB/front are untouched and keep the legacy blind-adopt path
-  byte-for-byte.
+  TELE/rear-standalone/video/burst/AEB are untouched and keep the legacy blind-adopt path
+  byte-for-byte. FRONT takes deep YUV on its full rung, degrades to shallow YUV, then returns to its
+  proven HAL-JPEG path before preview-only; PMA110's mandatory-YUV quirk remains LOGICAL-only. The
+  front route has capture-latency evidence, but its sustained idle/memory-pressure cost has no soak
+  evidence yet and remains a field check rather than an inferred success claim.
 - **Seamless zoom = the logical camera, PHOTO ONLY (2026-07-14).** Camera 0 (`logicalMultiCamera`,
   physIds 3/2/4/5) spans zoomRatio 0.6–20 with HAL-internal lens crossing — pinch never reopens.
   Lens picks are zoom presets; TELE pins standalone 4 (digital 1–10×) and OFF returns to logical at
@@ -665,10 +672,11 @@ reachable. In that case, proxy the current phone port to a temporary loopback po
   SoC advertise trademarked HDR formats and the platform muxer will accept them, so this is
   reachable — which is exactly why the rule is written down rather than left to judgement. Two
   independent reasons stand:
-  1. **Honesty.** The Camera2 source is the ISP's display-referred **8-bit SDR** stream. Any
-     HDR-branded container would assert more than the pipeline can deliver — the same rule that
-     already keeps HLG and the log profiles described as display-referred mappings rather than
-     recovered HDR.
+  1. **Honesty.** Camera2 supplies the ISP's display-referred, already tone-mapped rendition: 8-bit
+     standard input for photo/SDR video, or an HLG10 still-less input for non-SDR video. A
+     proprietary HDR-branded container would still assert latitude/format rights this pipeline
+     cannot back — the same rule that keeps HLG and the log profiles described as display-referred
+     mappings rather than recovered HDR.
   2. **Licensing.** Those formats are trademarked and their use is governed by agreements between
      the format owner and chip/device makers. A third-party app riding a device's implementation is
      a separate permission question that public documentation does not answer, and the owner's
@@ -1048,7 +1056,7 @@ CameraEngine ├─ CameraSelector2  pick tele (closest-to-70mm, standalone; pic
              │    └─ FocusDetail  pure curvature-ratio frame-detail metric (rides the readback)
              ├─ GyroEis          gravity roll + held-device orientation (GL shake warp disabled)
              ├─ AutoExposure     app-side S/ISO-priority AE loop (meters GL luma; pure+tested)
-             ├─ ZslAdmission     pure pseudo-ZSL serve/refuse predicate (logical photo route)
+             ├─ ZslAdmission     pure pseudo-ZSL serve/refuse predicate (logical/front photo routes)
              ├─ StartupTrace     buffered debug cold-start stopwatch (one line; quota-safe)
              ├─ focus/MacroProximity focus-confidence proofs + hold + OSD wording (pure+tested)
              ├─ capture/StillCapturePipeline (processed + RAW save orchestration)

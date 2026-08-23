@@ -10,7 +10,7 @@
 <a href="https://play.google.com/store/apps/details?id=me.hletrd.telecampro"><img src="https://img.shields.io/badge/Google%20Play-Download-414141?logo=googleplay&logoColor=white" alt="Get TeleCam Pro on Google Play" /></a>
 <img src="https://img.shields.io/badge/Android-13%2B%20(API%2033)-3DDC84?logo=android&logoColor=white" alt="Android 13 and newer" />
 <img src="https://img.shields.io/badge/Kotlin-2.4.10-7F52FF?logo=kotlin&logoColor=white" alt="Kotlin" />
-<img src="https://img.shields.io/badge/Jetpack%20Compose-2026.06-4285F4?logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
+<img src="https://img.shields.io/badge/Jetpack%20Compose-2026.08-4285F4?logo=jetpackcompose&logoColor=white" alt="Jetpack Compose" />
 <img src="https://img.shields.io/badge/Camera2-Pro%20manual-FF7043" alt="Camera2" />
 <img src="https://img.shields.io/badge/License-Apache%202.0-000000" alt="Apache License 2.0" />
 </p>
@@ -71,13 +71,17 @@ shooting needs.
 
 ## What this app does not claim
 
-The Camera2 stream it receives is the ISP's **display-referred 8-bit SDR** output.
+The input is always the ISP's **display-referred, already tone-mapped** rendition. Photo and SDR
+video use the standard 8-bit Camera2 session. Non-SDR video requests an HLG10 Camera2 session with
+the still readers removed, because this HAL crashes when HLG10 and the full-resolution still streams
+are combined.
 
-That has a consequence worth stating plainly: **the log and HLG profiles are curves baked onto that
-SDR signal, not scene-referred camera log.** They decode BT.1886, matrix to the target gamut, and
-apply the S-Log3 / LogC3 / HLG transfer function. They give you a flat image that drops into a
-log grading workflow — they do **not** recover highlights the ISP has already tone-mapped away, and
-they do not extend dynamic range. Neither HLG nor the log profiles are end-to-end 10-bit capture.
+That has a consequence worth stating plainly: **the log and HLG profiles are mappings of that
+tone-mapped rendition, not scene-referred camera log.** GL decodes the accepted source transfer,
+matrices to the target gamut, and applies the S-Log3 / LogC3 / HLG transfer function. The release GL
+render target remains 8-bit; HEVC then writes Main for SDR or Main10 for non-SDR output. Main10 is a
+real encoded-output fact, but it does **not** recover highlights the ISP has already removed, extend
+dynamic range, or make the pipeline end-to-end 10-bit.
 
 A genuinely scene-referred stream would need the vendor's authenticated camera SDK. The device's
 native log key is accepted by the HAL but changes nothing a third-party app can see — tested on
