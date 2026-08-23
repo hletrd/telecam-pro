@@ -11,6 +11,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -719,6 +720,8 @@ internal fun <T> DropdownRow(
     // from a facing change, both of which can land while the sheet is open.
     if (!enabled && expanded) expanded = false
     val accessibility = dropdownSettingSemantics(label, labelFor(selected))
+    val selectedDescription = stringResource(R.string.a11y_selected)
+    val notSelectedDescription = stringResource(R.string.a11y_not_selected)
     Box(modifier = modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
@@ -775,6 +778,11 @@ internal fun <T> DropdownRow(
             options.forEach { option ->
                 val isSelected = option == selected
                 DropdownMenuItem(
+                    modifier = Modifier.semantics {
+                        role = Role.RadioButton
+                        this.selected = isSelected
+                        stateDescription = if (isSelected) selectedDescription else notSelectedDescription
+                    },
                     text = {
                         Text(
                             labelFor(option),
