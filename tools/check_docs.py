@@ -321,6 +321,24 @@ check(
     "active release prose distinguishes source target from artifact candidate",
 )
 
+# The active external-action board once preserved its July GitHub About copy as if it were current,
+# including the now-false claim that DNG existed only in TELE. Historical investigation sections may
+# retain old route facts; this guard scopes the prohibition to the live owner-action section.
+owner_actions_match = re.search(
+    r"\*\*Owner actions outside this repo.*?:\*\*(.*?)\n## Residual Field Checks",
+    backlog,
+    re.S,
+)
+owner_actions = owner_actions_match.group(1) if owner_actions_match else ""
+check(
+    bool(owner_actions_match)
+    and "DNG only exists in TELE mode" not in owner_actions
+    and "Now: *\"Manual camera for the OPPO" not in owner_actions
+    and "DNG stills in tele mode” is **SUPERSEDED history**" in owner_actions
+    and "RAW/DNG on any lens advertising it" in owner_actions,
+    "active GitHub About record rejects the superseded TELE-only DNG claim",
+)
+
 # Direct Gradle release entry points intentionally fail closed: only the immutable-source wrapper
 # can compile/package release bytes. Historical evidence may retain its old commands/paths when the
 # containing heading explicitly says historical/superseded/archived. Active mentions of mutable
