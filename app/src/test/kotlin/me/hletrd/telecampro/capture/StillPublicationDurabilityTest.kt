@@ -242,4 +242,24 @@ class StillPublicationDurabilityTest {
         assertEquals(StillOutputPublication.DISCARDED_DELETED_CAPTURE, result)
         assertEquals(listOf("family-veto", "discard:late-jpeg-row"), events)
     }
+
+    @Test
+    fun `default family cleanup still fail-closes a deleted output`() {
+        val result = completeStillPublication(
+            kind = "JPEG",
+            output = "deleted-row",
+            captureId = 92,
+            markerDurable = true,
+            effects = StillPublicationEffects(
+                familyDeleted = { true },
+                publishOwned = { _, _ -> error("deleted family must not publish") },
+                finishPublished = { _, _ -> error("not published") },
+                emitSaved = { _, _ -> error("not saved") },
+                emitRetained = { _, _ -> error("not retained") },
+                emitStatus = {},
+            ),
+        )
+
+        assertEquals(StillOutputPublication.DISCARDED_DELETED_CAPTURE, result)
+    }
 }

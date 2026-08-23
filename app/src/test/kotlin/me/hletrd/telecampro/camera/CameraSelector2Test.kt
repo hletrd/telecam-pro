@@ -283,6 +283,13 @@ class CameraSelector2Test {
     }
 
     @Test
+    fun `topology stamp defaults to no identity epochs`() {
+        val stamp = CameraTopologyStamp(ids = setOf("back"))
+
+        assertEquals(emptyMap<String, Long>(), stamp.identityEpochs)
+    }
+
+    @Test
     fun `membership and identity changes identify every invalid cache owner`() {
         val before = CameraTopologyStamp(
             ids = setOf("back", "usb-a"),

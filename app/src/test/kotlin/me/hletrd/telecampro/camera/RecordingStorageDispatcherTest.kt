@@ -11,10 +11,27 @@ import java.util.concurrent.atomic.AtomicReference
 import me.hletrd.telecampro.video.VideoRecorder
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RecordingStorageDispatcherTest {
+    @Test
+    fun `process owner rejects capacity drift across Engine generations`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            ProcessRecordingStorageOwner.capacity(
+                workerCount = RECORDING_STORAGE_WORKER_COUNT + 1,
+                backlogCapacity = RECORDING_STORAGE_BACKLOG_CAPACITY,
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            ProcessRecordingStorageOwner.capacity(
+                workerCount = RECORDING_STORAGE_WORKER_COUNT,
+                backlogCapacity = RECORDING_STORAGE_BACKLOG_CAPACITY + 1,
+            )
+        }
+    }
+
     @Test
     fun `saturation keeps a strict worker and backlog bound without blocking REC lane`() {
         val releaseWorkers = CountDownLatch(1)

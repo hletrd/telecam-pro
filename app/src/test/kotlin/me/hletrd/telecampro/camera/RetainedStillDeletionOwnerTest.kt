@@ -299,6 +299,27 @@ class RetainedStillDeletionOwnerTest {
     }
 
     @Test
+    fun `unowned registered families evict oldest entry at the configured bound`() {
+        val persisted = mutableListOf<CaptureFamilyKey>()
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 2,
+            discard = { PendingOutputDiscardResult.DELETED },
+            persistDeletionIntent = { family -> persisted += family; true },
+        )
+        val first = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_001L, 1L)
+        val second = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_002L, 2L)
+        val third = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_003L, 3L)
+
+        owner.registerCaptureFamily(1, first)
+        owner.registerCaptureFamily(2, second)
+        owner.registerCaptureFamily(3, third)
+        owner.markCaptureDeleted(1)
+
+        assertTrue(persisted.isEmpty())
+        assertFalse(owner.canAdmitCapture())
+    }
+
+    @Test
     fun `release retry then late failure remains deleted for replacement recovery`() {
         val durableFamilies = linkedSetOf<CaptureFamilyKey>()
         val family = CaptureFamilyKey(CaptureFamilyMedia.STILL, 1_700_000_000_123L, 91L)
