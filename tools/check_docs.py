@@ -126,6 +126,13 @@ for perm in sorted(declared):
     for doc_label, doc in (("PRIVACY.md", privacy_md), ("privacy-policy/index.html", privacy_html)):
         check(any(n in doc for n in names), f"{doc_label} discloses {perm}")
 
+# Product scope is part of the public privacy contract too. The Markdown authority already covered
+# tablets while the published HTML silently narrowed itself back to phones, even though the app's
+# large-screen path and permissions apply to both device classes.
+privacy_scope = "Android phones and tablets"
+for doc_label, doc in (("PRIVACY.md", privacy_md), ("privacy-policy/index.html", privacy_html)):
+    check(privacy_scope in doc, f"{doc_label} covers Android phones and tablets")
+
 # ---- version facts must match the build, not a memory of it ------------------------------------
 gradle = read("app/build.gradle.kts")
 min_sdk = re.search(r"minSdk\s*=\s*(\d+)", gradle).group(1)
@@ -338,6 +345,23 @@ check(
 check(
     "python3 tools/verify_host.py" in claude,
     "CLAUDE documents the consolidated non-device host gate",
+)
+
+# The overview once shared renderer rotation state with the main draw. It now owns an explicit
+# per-draw window-only override, which intentionally leaves the same converter-fed stream raw and
+# inverted. Join executable code, current authority, rerunnable field criteria, and the preserved
+# historical backlog label so none can independently revive the old "structurally impossible" rule.
+gl_pipeline = read("app/src/main/kotlin/me/hletrd/telecampro/gl/GlPipeline.kt")
+field_checks = read("docs/FIELD_CHECKS.md")
+check(
+    "rotationOverrideDeg = RotationMath.windowPreviewRotationDegrees(windowRotationDeg)" in gl_pipeline
+    and "window-rotation term" in claude
+    and "raw, inverted field" in claude
+    and "one-call `rotationOverrideDeg`" in field_checks
+    and "raw, inverted field" in field_checks
+    and "SUPERSEDED — Loupe Overview" in backlog
+    and "predates the later per-draw" in backlog,
+    "Loupe Overview field criteria match the per-draw orientation authority",
 )
 
 # ---- coverage residual authority must stay machine-checked, not copied into prose --------------

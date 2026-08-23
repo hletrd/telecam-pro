@@ -463,12 +463,13 @@ class MainActivity : ComponentActivity() {
         return super.onKeyUp(keyCode, event)
     }
 
-    // The Find X9 Ultra camera-control button's capacitive gestures ride the `cs_press` sensor. As
-    // live-verified 2026-07-09, the slide reaches a focused third-party app as the STANDARD
-    // KEYCODE_ZOOM_IN/OUT (repeating ~20 Hz) — the OPPO codes 767/769/782 seen in one earlier
-    // session are config-dependent and kept only as aliases; the light press is currently NOT
-    // delivered at all (the KEYCODE_FOCUS/782 handlers stay armed if it ever arrives). Slides →
-    // stepped zoom via the eased target; press/half-press → the configurable HardwareKeyActions.
+    // The Find X9 Ultra camera-control button's capacitive gestures ride the `cs_press` sensor.
+    // Slides reach a focused third-party app as standard KEYCODE_ZOOM_IN/OUT (168/169, repeating
+    // ~20 Hz; live-verified 2026-07-09). A light press is device-measured as one non-repeating 767
+    // DOWN/UP pair and routes to the half-press action; KEYCODE_FOCUS/782 remain half-press-family
+    // siblings. The unmeasured 769 is only a speculative slide-out alias, while 781 is the separate
+    // measured quick button. Slides → eased stepped zoom; press/half-press/quick → their configurable
+    // HardwareKeyActions. The authoritative 767 measurement is documented beside its constant.
     // RestrictedApi: overriding ComponentActivity.dispatchKeyEvent trips AndroidX's library-group
     // restriction lint, but this override is the ONLY delivery point for the camera-control
     // button's key events (verified: removing the suppress yields 5 RestrictedApi errors and

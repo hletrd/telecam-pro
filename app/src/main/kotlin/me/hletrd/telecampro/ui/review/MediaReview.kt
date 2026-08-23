@@ -329,8 +329,10 @@ private data class ReviewMetadata(
 private suspend fun loadMetadata(context: Context, uri: Uri): ReviewMetadata? =
     withContext(Dispatchers.IO) {
         runCatching {
-            // Sony playback-style exposure info, when the file carries EXIF (our JPEGs are stamped
-            // at save; HEIFs currently are not — the line simply drops out then).
+            // Sony playback-style exposure info. Current HEIF and JPEG saves are both stamped from
+            // the same shot-owned EXIF snapshot, so exposure/lens metadata is expected to match.
+            // A missing line instead means legacy or malformed media, or that the provider/
+            // ExifInterface path could not expose the metadata; it is not expected HEIF behavior.
             val exifLine = runCatching {
                 context.contentResolver.openInputStream(uri)?.use { input ->
                     val exif = androidx.exifinterface.media.ExifInterface(input)
