@@ -612,6 +612,20 @@ media_store_writer = read(
 pending_discard_journal = read(
     "app/src/main/kotlin/me/hletrd/telecampro/storage/PendingDiscardJournal.kt",
 )
+check(
+    "withFamilyJournalAuthority" in media_store_writer
+    and "unrelated families remain free" in media_store_writer
+    and re.search(
+        r"val page = synchronized\(databaseLock\).*?\n\s*}\n"
+        r"\s*// Import completion.*?\n\s*runCatching \{ removeLegacyEntries\(page\.keys\.toSet\(\)\) }",
+        pending_discard_journal,
+        re.S,
+    )
+    is not None
+    and "reference-counted exact-family authority" in architecture
+    and "releases database ownership before best-effort" in architecture,
+    "architecture binds family and discard isolation to executable lock boundaries",
+)
 media_review = read("app/src/main/kotlin/me/hletrd/telecampro/ui/review/MediaReview.kt")
 review_lane = read(
     "app/src/main/kotlin/me/hletrd/telecampro/ui/review/LatestHeavyWorkLane.kt",
