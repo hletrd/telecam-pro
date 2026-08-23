@@ -17,6 +17,64 @@ import org.junit.Test
 class RecordingTeardownTerminalGateTest {
 
     @Test
+    fun `operation timeout makes late completion inert`() {
+        val scheduler = DeterministicScheduler()
+        val failures = mutableListOf<Throwable>()
+        val deadline = RecordingOperationDeadline(
+            scheduler = scheduler,
+            timeoutMs = 500L,
+            failure = { TimeoutException("native operation timed out") },
+            onTimeout = failures::add,
+        )
+
+        assertTrue(deadline.arm())
+        assertEquals(RecordingOperationState.ACTIVE, deadline.current())
+        scheduler.fire(0)
+
+        assertEquals(RecordingOperationState.TIMED_OUT, deadline.current())
+        assertEquals("native operation timed out", failures.single().message)
+        assertFalse(deadline.complete())
+    }
+
+    @Test
+    fun `operation completion cancels deadline and late timer is inert`() {
+        val scheduler = DeterministicScheduler()
+        var timeouts = 0
+        val deadline = RecordingOperationDeadline(
+            scheduler = scheduler,
+            timeoutMs = 500L,
+            failure = { TimeoutException() },
+            onTimeout = { timeouts++ },
+        )
+
+        assertTrue(deadline.arm())
+        assertFalse(deadline.arm())
+        assertTrue(deadline.complete())
+        scheduler.fireEvenIfCancelled(0)
+
+        assertEquals(RecordingOperationState.COMPLETED, deadline.current())
+        assertEquals(0, timeouts)
+        assertEquals(listOf(1, 1), scheduler.cancellationCounts())
+    }
+
+    @Test
+    fun `operation scheduler rejection fails closed before native work`() {
+        val scheduler = DeterministicScheduler(rejectCalls = setOf(1))
+        val failures = mutableListOf<Throwable>()
+        val deadline = RecordingOperationDeadline(
+            scheduler = scheduler,
+            timeoutMs = 500L,
+            failure = { IllegalStateException("operation watchdog unavailable") },
+            onTimeout = failures::add,
+        )
+
+        assertFalse(deadline.arm())
+        assertEquals(RecordingOperationState.TIMED_OUT, deadline.current())
+        assertEquals("operation watchdog unavailable", failures.single().message)
+        assertFalse(deadline.complete())
+    }
+
+    @Test
     fun `accepted detach that never calls back enters recovery then hard quarantine`() {
         val scheduler = DeterministicScheduler()
         val recoveryFailures = mutableListOf<Throwable>()

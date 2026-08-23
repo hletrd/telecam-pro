@@ -13,6 +13,73 @@ internal fun interface RecordingTeardownScheduler {
     fun schedule(delayMs: Long, action: () -> Unit): RecordingTeardownCancellation?
 }
 
+internal enum class RecordingOperationState { NEW, ACTIVE, COMPLETED, TIMED_OUT }
+
+/** One hard deadline for a native operation whose late completion must become inert. */
+internal class RecordingOperationDeadline(
+    private val scheduler: RecordingTeardownScheduler,
+    private val timeoutMs: Long,
+    private val failure: () -> Throwable,
+    private val onTimeout: (Throwable) -> Unit,
+) {
+    private val lock = Any()
+    private var state = RecordingOperationState.NEW
+    private var cancellation: RecordingTeardownCancellation? = null
+
+    init {
+        require(timeoutMs > 0L)
+    }
+
+    fun arm(): Boolean {
+        val scheduled = runCatching {
+            scheduler.schedule(timeoutMs) { timeout() }
+        }.getOrNull()
+        if (scheduled == null) {
+            val claimed = synchronized(lock) {
+                if (state != RecordingOperationState.NEW) false else {
+                    state = RecordingOperationState.TIMED_OUT
+                    true
+                }
+            }
+            if (claimed) onTimeout(failure())
+            return false
+        }
+        val installed = synchronized(lock) {
+            if (state != RecordingOperationState.NEW) false else {
+                state = RecordingOperationState.ACTIVE
+                cancellation = scheduled
+                true
+            }
+        }
+        if (!installed) scheduled.cancel()
+        return installed
+    }
+
+    /** True only for the operation-completion winner; false makes a post-timeout return inert. */
+    fun complete(): Boolean {
+        val toCancel = synchronized(lock) {
+            if (state != RecordingOperationState.ACTIVE) return false
+            state = RecordingOperationState.COMPLETED
+            cancellation.also { cancellation = null }
+        }
+        runCatching { toCancel?.cancel() }
+        return true
+    }
+
+    fun current(): RecordingOperationState = synchronized(lock) { state }
+
+    private fun timeout() {
+        val claimed = synchronized(lock) {
+            if (state != RecordingOperationState.ACTIVE) false else {
+                state = RecordingOperationState.TIMED_OUT
+                cancellation = null
+                true
+            }
+        }
+        if (claimed) onTimeout(failure())
+    }
+}
+
 /**
  * Owns the complete detach/recovery decision for one recorder graph.
  *

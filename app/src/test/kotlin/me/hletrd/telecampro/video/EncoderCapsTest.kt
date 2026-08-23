@@ -179,6 +179,35 @@ class EncoderCapsTest {
     }
 
     @Test
+    fun `smaller fallback attempt resolves its own scaled bitrate`() {
+        val selection = EncoderSelection(
+            VideoCodec.HEVC, "limited", MediaFormat.MIMETYPE_VIDEO_HEVC, true, false,
+        )
+        data class FakeOwner(val name: String)
+        val attemptedRates = mutableListOf<Triple<Int, Int, Int>>()
+
+        val accepted = firstConfiguredEncoderAttempt(
+            attempts = encoderConfigureAttempts(listOf(selection), 1080, 1920),
+            acquire = { FakeOwner(it.codecName) },
+            configure = { _, attempt ->
+                val rate = me.hletrd.telecampro.camera.videoBitRate(
+                    attempt.width,
+                    attempt.height,
+                    30.0,
+                    0.4f,
+                    VideoCodec.HEVC,
+                )
+                attemptedRates += Triple(attempt.width, attempt.height, rate)
+                if (attempt.width == 1080) error("full raster rejected")
+            },
+            releaseRejected = {},
+        )
+
+        assertTrue(accepted.attempt.width < 1080)
+        assertTrue(attemptedRates.last().third < attemptedRates.first().third)
+    }
+
+    @Test
     fun `AVC rejects every non-SDR transfer at the final recorder boundary`() {
         val avc = EncoderSelection(
             VideoCodec.AVC, "vendor.avc", MediaFormat.MIMETYPE_VIDEO_AVC, true, false,
@@ -186,6 +215,22 @@ class EncoderCapsTest {
         assertTrue(encoderSelectionAdmitsTransfer(avc, ColorTransfer.SDR))
         assertFalse(encoderSelectionAdmitsTransfer(avc, ColorTransfer.HLG))
         assertFalse(encoderSelectionAdmitsTransfer(avc, ColorTransfer.SLOG3))
+        val apv = avc.copy(
+            codec = VideoCodec.APV,
+            codecName = "vendor.apv",
+            mime = "video/apv",
+        )
+        assertFalse(encoderSelectionAdmitsTransfer(apv, ColorTransfer.SDR))
+    }
+
+    @Test(expected = IllegalStateException::class)
+    fun `empty configure attempt list fails closed`() {
+        firstConfiguredEncoderAttempt<Any>(
+            attempts = emptyList(),
+            acquire = { error("unreachable") },
+            configure = { _, _ -> error("unreachable") },
+            releaseRejected = {},
+        )
     }
 
     @Test

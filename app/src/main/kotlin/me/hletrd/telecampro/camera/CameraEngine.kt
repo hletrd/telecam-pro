@@ -927,12 +927,9 @@ class CameraEngine(private val context: Context) {
                     synchronized(this) { starting = false }
                     return@runIfOpen
                 }
-                // HLG10 10-bit preview + full-res JPEG/RAW crashes this HAL (configureStreams Broken
-                // pipe -32); the shipping session is therefore SDR and video only TAGS HLG/Log in
-                // the encoder. The debug-gated experiment asks for a real 10-bit chain instead, and
-                // pairs it with a session rung that drops BOTH still readers — see
-                // sessionAttemptPlan(tenBitVideoOnly). EglCore falls back to 8-bit on its own if the
-                // RGBA1010102 config is unavailable.
+                // Shipping non-SDR video requests an HLG10 Camera2 source and drops both still
+                // readers because HLG10 + full-res JPEG/RAW crashes this HAL. This separate debug
+                // flag asks only for an RGBA1010102 EGL target; release EGL remains 8-bit.
                 val tenBit = tenBitExperimentEnabled()
                 val ownedGl = glOwners.current()
                 glInputPending = true
@@ -1918,7 +1915,7 @@ class CameraEngine(private val context: Context) {
         )
     }
 
-    /** Gamma Display Assist: normal monitor image while recording O-Log (the file stays log). */
+    /** Gamma Display Assist bypasses S-Log3/LogC3 on preview only; the encoded file stays log. */
     fun setGammaAssist(enabled: Boolean) {
         rendererAssists.setGammaAssist(enabled)
     }
@@ -3907,21 +3904,31 @@ class CameraEngine(private val context: Context) {
             onResult(false)
             return
         }
+        val attemptCompleted = java.util.concurrent.atomic.AtomicBoolean(false)
+        val completeAttempt: (Boolean) -> Unit = { succeeded ->
+            if (attemptCompleted.compareAndSet(false, true)) {
+                val stopNow = recAdmission.completeAdmission(succeeded)
+                onResult(succeeded)
+                if (stopNow) stopRecording()
+            }
+        }
         val accepted = runCatching {
             recorderExecutor.execute {
-                val ok = runCatching { startRecordingBlocking(recordAudio) }.getOrDefault(false)
-                val stopNow = recAdmission.completeAdmission(ok)
-                onResult(ok)
-                if (stopNow) stopRecording()
+                val ok = runCatching {
+                    startRecordingBlocking(recordAudio, completeAttempt)
+                }.getOrDefault(false)
+                completeAttempt(ok)
             }
         }.isSuccess
         if (!accepted) {
-            recAdmission.completeAdmission(succeeded = false)
-            onResult(false)
+            completeAttempt(false)
         }
     }
 
-    private fun startRecordingBlocking(recordAudio: Boolean): Boolean {
+    private fun startRecordingBlocking(
+        recordAudio: Boolean,
+        completeAttempt: (Boolean) -> Unit,
+    ): Boolean {
         val acceptedSession = currentAcceptedRecordingSession()
         if (acceptedSession == null) {
             onStatus?.invoke(CameraStatusMessage.CAMERA_RECONFIGURING.status())
@@ -3971,6 +3978,7 @@ class CameraEngine(private val context: Context) {
                         audioClaim,
                         processAdmission,
                         encoderCandidates,
+                        completeAttempt,
                     )
                 } catch (t: Throwable) {
                     android.util.Log.w("CameraEngine", "REC admission threw; releasing mic claim", t)
@@ -3992,6 +4000,7 @@ class CameraEngine(private val context: Context) {
         audioClaim: StandbyMeterOwnership.RecordingClaim<java.util.concurrent.CountDownLatch>,
         processAdmission: me.hletrd.telecampro.video.UnsafeRecorderAdmissionToken,
         encoderCandidates: List<EncoderSelection>,
+        completeAttempt: (Boolean) -> Unit,
     ): Boolean {
         val meterReleased = audioClaim.release?.let {
             runCatching { it.await(400, java.util.concurrent.TimeUnit.MILLISECONDS) }.getOrDefault(false)
@@ -4056,6 +4065,27 @@ class CameraEngine(private val context: Context) {
             else -> ColorTransfer.SDR
         }
         val rec = VideoRecorder(context).also { it.processAdmissionToken = processAdmission }
+        val setupScheduler = RecordingTeardownScheduler { delayMs, action ->
+            runCatching {
+                recorderWatchdog.schedule(
+                    action,
+                    delayMs,
+                    java.util.concurrent.TimeUnit.MILLISECONDS,
+                )
+            }.getOrNull()?.let { future ->
+                RecordingTeardownCancellation { future.cancel(false) }
+            }
+        }
+        val setupDeadline = RecordingOperationDeadline(
+            scheduler = setupScheduler,
+            timeoutMs = RECORDER_SETUP_TIMEOUT_MS,
+            failure = { java.util.concurrent.TimeoutException("Recorder native setup timed out") },
+            onTimeout = { failure ->
+                enterUnsafeRecorderQuarantine(rec, recordingCaptureId, failure)
+                completeAttempt(false)
+            },
+        )
+        if (!setupDeadline.arm()) return false
         val earlyFailure = java.util.concurrent.atomic.AtomicReference<Throwable?>()
         val encoderAttachResult = java.util.concurrent.atomic.AtomicReference<Result<Unit>?>()
         val encoderAttachDelivered = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -4105,6 +4135,15 @@ class CameraEngine(private val context: Context) {
         )
         val encoderSize = Size(encW, encH)
         val requestedBitRate = bitRateFor(size, rate)
+        val attemptBitRate: (Int, Int) -> Int = { width, height ->
+            videoBitRate(
+                width,
+                height,
+                rate.encoderRate,
+                effectiveBpp(bitrateLevel, codec),
+                codec,
+            )
+        }
         if (!UnsafeRecorderQuarantine.isAdmissionCurrent(processAdmission)) {
             MediaStoreWriter.delete(context, uri)
             abortRecordingStart()
@@ -4112,9 +4151,9 @@ class CameraEngine(private val context: Context) {
             return false
         }
         var configuredSurface: Surface? = null
-        val nativeSetupAdmitted = UnsafeRecorderQuarantine.commitAdmission(processAdmission) {
+        val nativeSetupAdmitted = UnsafeRecorderQuarantine.runPendingNativeSetup(processAdmission) {
             configuredSurface = rec.start(
-                uri, encoderSize, rate.encoderRate, captureRate, requestedBitRate,
+                uri, encoderSize, rate.encoderRate, captureRate, attemptBitRate,
                 fileTransfer, encoderCandidates, recordAudio, audioGain, orientationHint,
                 frontFacing = facing == CameraFacing.FRONT,
                 audioScene, controls.zoomRatio, audioInputPreference,
@@ -4124,11 +4163,15 @@ class CameraEngine(private val context: Context) {
             )
         }
         if (!nativeSetupAdmitted) {
-            MediaStoreWriter.delete(context, uri)
-            abortRecordingStart()
-            onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
+            setupDeadline.complete()
+            if (!UnsafeRecorderQuarantine.isActive()) {
+                MediaStoreWriter.delete(context, uri)
+                abortRecordingStart()
+                onStatus?.invoke(CameraStatusMessage.UNSAFE_RECORDER_RESTART.status())
+            }
             return false
         }
+        if (!setupDeadline.complete()) return false
         val surface = configuredSurface
         if (surface == null) {
             // Encoder/muxer failed to configure; drop the pending MediaStore row we created so it
@@ -4279,7 +4322,7 @@ class CameraEngine(private val context: Context) {
                     "source=${size.width}x${size.height} " +
                     "encoder=${acceptedEncoderSize.width}x${acceptedEncoderSize.height}" +
                     (if (acceptedEncoderSize != encoderSize) " (asked ${encoderSize.width}x${encoderSize.height})" else "") +
-                    " bitrate=$requestedBitRate " +
+                    " bitrate=${rec.configuredBitRate ?: requestedBitRate} " +
                     "fps=${String.format(java.util.Locale.US, "%.9f", rate.encoderRate)} " +
                     "transfer=${fileTransfer.name} audio=$recordAudio",
             )
@@ -4430,19 +4473,43 @@ class CameraEngine(private val context: Context) {
             onTerminal = { terminal, failure ->
                 when (terminal) {
                     RecordingTeardownTerminal.FINALIZE -> {
-                        val task = Runnable {
-                            var releaseAdmission = false
-                            try {
-                                releaseAdmission = finishRecording(rec, uri, captureId)
-                                    .nativeGraphDisposition == NativeGraphDisposition.RELEASED
-                            } finally {
-                                if (releaseAdmission) {
-                                    UnsafeRecorderQuarantine.finishAdmission(rec.processAdmissionToken)
+                        val finalizationDeadline = RecordingOperationDeadline(
+                            scheduler = scheduler,
+                            timeoutMs = RECORDER_FINALIZATION_TIMEOUT_MS,
+                            failure = {
+                                java.util.concurrent.TimeoutException(
+                                    "Recorder native finalization timed out",
+                                )
+                            },
+                            onTimeout = { timeout ->
+                                try {
+                                    enterUnsafeRecorderQuarantine(rec, captureId, timeout)
+                                } finally {
+                                    completed.countDown()
                                 }
-                                completed.countDown()
+                            },
+                        )
+                        if (finalizationDeadline.arm()) {
+                            val task = Runnable {
+                                var releaseAdmission = false
+                                try {
+                                    releaseAdmission = finishRecording(
+                                        rec,
+                                        uri,
+                                        captureId,
+                                        acceptResult = finalizationDeadline::complete,
+                                    ).nativeGraphDisposition == NativeGraphDisposition.RELEASED &&
+                                        finalizationDeadline.current() ==
+                                        RecordingOperationState.COMPLETED
+                                } finally {
+                                    if (releaseAdmission) {
+                                        UnsafeRecorderQuarantine.finishAdmission(rec.processAdmissionToken)
+                                    }
+                                    completed.countDown()
+                                }
                             }
+                            dispatchTask(task, "record-finalize-fallback")
                         }
-                        dispatchTask(task, "record-finalize-fallback")
                     }
 
                     RecordingTeardownTerminal.QUARANTINE -> try {
@@ -4596,8 +4663,10 @@ class CameraEngine(private val context: Context) {
         rec: VideoRecorder,
         uri: android.net.Uri?,
         captureId: Int,
+        acceptResult: () -> Boolean = { true },
     ): VideoRecorder.StopResult {
         var terminalResult: VideoRecorder.StopResult? = null
+        var resultOwned = false
         try {
             val result = runCatching { rec.stop() }
                 .getOrElse {
@@ -4608,6 +4677,8 @@ class CameraEngine(private val context: Context) {
                     )
                 }
             terminalResult = result
+            if (!acceptResult()) return result
+            resultOwned = true
             if (result.nativeGraphDisposition == NativeGraphDisposition.QUARANTINE_REQUIRED) {
                 enterUnsafeRecorderQuarantine(
                     rec = rec,
@@ -4624,11 +4695,13 @@ class CameraEngine(private val context: Context) {
             }
             return result
         } finally {
-            if (terminalResult?.nativeGraphDisposition != NativeGraphDisposition.QUARANTINE_REQUIRED) {
+            if (resultOwned &&
+                terminalResult?.nativeGraphDisposition != NativeGraphDisposition.QUARANTINE_REQUIRED
+            ) {
                 recorderTeardownInFlight = false
                 standbyAudioController.finishRecording()
             }
-            if (me.hletrd.telecampro.BuildConfig.DEBUG) {
+            if (resultOwned && me.hletrd.telecampro.BuildConfig.DEBUG) {
                 val result = terminalResult
                 android.util.Log.i(
                     "CameraEngine",
@@ -4647,7 +4720,7 @@ class CameraEngine(private val context: Context) {
     ) {
         // Close process admission before recorder callbacks or AudioRecord.stop can re-enter app
         // work. A fresh Engine observes the same irreversible gate.
-        UnsafeRecorderQuarantine.retain(rec)
+        if (!UnsafeRecorderQuarantine.retain(rec)) return
         terminalAcquisitionGate.close()
         synchronized(this) {
             started = false
@@ -4921,9 +4994,8 @@ class CameraEngine(private val context: Context) {
     }
 
     /**
-     * DEBUG-only 10-bit experiment gate, sharing the native-log flag file so one switch drives the
-     * whole "replicate the stock log path" attempt (docs/BACKLOG.md). Release builds always read
-     * false, so the shipping SDR session is untouched.
+     * DEBUG-only RGBA1010102 EGL experiment gate. It does not arm native log or the shipping HLG10
+     * Camera2 session; release builds always use the stable 8-bit EGL target.
      */
     internal fun tenBitExperimentEnabled(): Boolean =
         BuildConfig.DEBUG &&
@@ -5226,6 +5298,8 @@ class CameraEngine(private val context: Context) {
         const val MAX_PREVIEW_RECOVERY_ATTEMPTS = 3
         const val PREVIEW_RECOVERY_DELAY_MS = 200L
         const val RECORDER_FINALIZE_RELEASE_TIMEOUT_MS = 7_000L
+        const val RECORDER_SETUP_TIMEOUT_MS = 8_000L
+        const val RECORDER_FINALIZATION_TIMEOUT_MS = 8_000L
         const val RECORDER_DETACH_TIMEOUT_MS = 2_000L
         const val RECORDER_QUARANTINE_TIMEOUT_MS = 4_500L
         const val MAX_MEDIA_RECOVERY_ATTEMPTS = 3

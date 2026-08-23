@@ -172,4 +172,80 @@ class RecorderQuarantineAdmissionGateTest {
         assertFalse(acquisitionAccepted.get())
         assertTrue(gate.awaitNativeAcquisitionsDrained(1, TimeUnit.SECONDS))
     }
+
+    @Test
+    fun `interrupted drain observation returns false and restores interrupt status`() {
+        val gate = RecorderQuarantineAdmissionGate()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val worker = Thread {
+            gate.runNativeIfSafe {
+                entered.countDown()
+                release.await()
+            }
+        }
+        val waiting = CountDownLatch(1)
+        val returned = AtomicBoolean(true)
+        val interrupted = AtomicBoolean(false)
+        val observer = Thread {
+            waiting.countDown()
+            returned.set(gate.awaitNativeAcquisitionsDrained(1, TimeUnit.MINUTES))
+            interrupted.set(Thread.currentThread().isInterrupted)
+        }
+
+        worker.start()
+        assertTrue(entered.await(5, TimeUnit.SECONDS))
+        observer.start()
+        assertTrue(waiting.await(5, TimeUnit.SECONDS))
+        observer.interrupt()
+        observer.join(5_000)
+
+        assertFalse(observer.isAlive)
+        assertFalse(returned.get())
+        assertTrue(interrupted.get())
+        release.countDown()
+        worker.join(5_000)
+    }
+
+    @Test
+    fun `pending native setup runs outside process lock and late return is revoked`() {
+        val gate = RecorderQuarantineAdmissionGate()
+        val token = checkNotNull(gate.snapshot(Any()))
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val accepted = AtomicBoolean(true)
+        val worker = Thread {
+            accepted.set(gate.runPendingNative(token) {
+                entered.countDown()
+                release.await()
+            })
+        }
+
+        worker.start()
+        assertTrue(entered.await(5, TimeUnit.SECONDS))
+        // close() must not wait for the native setup that motivated quarantine.
+        assertTrue(gate.close())
+        assertFalse(gate.isCurrent(token))
+        assertFalse(gate.publish(token) { true })
+        assertFalse(gate.awaitNativeAcquisitionsDrained(25, TimeUnit.MILLISECONDS))
+
+        release.countDown()
+        worker.join(5_000)
+        assertFalse(accepted.get())
+        assertTrue(gate.awaitNativeAcquisitionsDrained(1, TimeUnit.SECONDS))
+    }
+
+    @Test
+    fun `stale token cannot enter pending native setup`() {
+        val gate = RecorderQuarantineAdmissionGate()
+        val current = checkNotNull(gate.snapshot(Any()))
+        var entered = false
+
+        assertFalse(
+            gate.runPendingNative(UnsafeRecorderAdmissionToken(current.epoch + 1, Any())) {
+                entered = true
+            },
+        )
+        assertFalse(entered)
+    }
 }
