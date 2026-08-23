@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -40,15 +42,27 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
         (root / "keystore.properties").write_bytes(properties)
         (root / "release-key.jks").write_bytes(b"key-A")
 
+    def test_output_must_live_in_wrapper_only_immutable_namespace(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "fixture"
+            root.mkdir()
+            self.fixture(root)
+
+            with self.assertRaisesRegex(RuntimeError, "must be one unique child"):
+                release.build_immutable_release(
+                    root,
+                    [":app:bundleRelease"],
+                    Path(temp_dir) / "ordinary-output",
+                    run=lambda command, cwd: subprocess.CompletedProcess(command, 0, "", ""),
+                )
+
     def test_post_identity_worktree_mutation_cannot_reach_packaging(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "fixture"
             root.mkdir()
             tracked = self.fixture(root)
-            output = Path(temp_dir) / "immutable-output"
+            output = root / "app/build/immutable-release/test-output"
             observed: dict[str, str] = {}
-            expected_commit = release.git_value(root, "rev-parse", "HEAD")
-            expected_tree = release.git_value(root, "rev-parse", "HEAD^{tree}")
 
             def mutate_after_snapshot(live_root: Path, snapshot: Path) -> None:
                 self.assertEqual(snapshot.joinpath("app/src/main/tracked.txt").read_text(), "committed bytes\n")
@@ -58,23 +72,7 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
 
             def package(command: list[str], snapshot: Path) -> subprocess.CompletedProcess[str]:
                 observed["command"] = " ".join(command)
-                authority_path = next(
-                    Path(argument.split("=", 1)[1])
-                    for argument in command
-                    if argument.startswith("-PimmutableReleaseAuthorityPath=")
-                )
-                authority_nonce = next(
-                    argument.split("=", 1)[1]
-                    for argument in command
-                    if argument.startswith("-PimmutableReleaseAuthorityNonce=")
-                )
-                self.assertTrue(authority_path.is_file())
-                self.assertEqual(0o600, authority_path.stat().st_mode & 0o777)
-                self.assertEqual(64, len(authority_nonce))
-                authority = authority_path.read_text(encoding="ascii")
-                self.assertIn(f"nonce={authority_nonce}\n", authority)
-                self.assertIn(f"commit={expected_commit}\n", authority)
-                self.assertIn(f"tree={expected_tree}\n", authority)
+                self.assertFalse(any(argument.startswith("-PimmutableRelease") for argument in command))
                 artifact = snapshot / "app/build/outputs/bundle/release/app-release.aab"
                 artifact.parent.mkdir(parents=True)
                 artifact.write_bytes(snapshot.joinpath("app/src/main/tracked.txt").read_bytes())
@@ -100,17 +98,45 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
                 output.joinpath("logs/lint-results-release.html").read_text(),
                 "immutable lint report\n",
             )
-            self.assertIn(f"-PimmutableReleaseCommit={commit}", observed["command"])
-            self.assertIn(f"-PimmutableReleaseTree={tree}", observed["command"])
-            self.assertIn("-PimmutableReleaseAuthorityPath=", observed["command"])
-            self.assertIn("-PimmutableReleaseAuthorityNonce=", observed["command"])
+            self.assertNotIn("-PimmutableRelease", observed["command"])
+            evidence = json.loads(output.joinpath(release.RELEASE_EVIDENCE_NAME).read_text())
+            self.assertEqual(
+                {
+                    "boundary": "sealed-export-frozen-outputs-v1",
+                    "commit": commit,
+                    "schema": 1,
+                    "tree": tree,
+                },
+                {key: evidence[key] for key in ("boundary", "commit", "schema", "tree")},
+            )
+            self.assertEqual(
+                [
+                    "bundle/release/app-release.aab",
+                    "logs/lint-results-release.html",
+                ],
+                [entry["path"] for entry in evidence["outputs"]],
+            )
+            self.assertEqual(
+                {
+                    entry["path"]: entry["sha256"]
+                    for entry in evidence["outputs"]
+                },
+                {
+                    "bundle/release/app-release.aab": hashlib.sha256(
+                        b"committed bytes\n"
+                    ).hexdigest(),
+                    "logs/lint-results-release.html": hashlib.sha256(
+                        b"immutable lint report\n"
+                    ).hexdigest(),
+                },
+            )
 
     def test_snapshot_mutation_blocks_output_publication(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir) / "fixture"
             root.mkdir()
             self.fixture(root)
-            output = Path(temp_dir) / "immutable-output"
+            output = root / "app/build/immutable-release/test-output"
 
             def mutate_snapshot(_: Path, snapshot: Path) -> None:
                 target = snapshot.joinpath("app/src/main/tracked.txt")
@@ -140,7 +166,7 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
             root = Path(temp_dir) / "fixture"
             root.mkdir()
             self.fixture(root)
-            output = Path(temp_dir) / "immutable-output"
+            output = root / "app/build/immutable-release/test-output"
 
             def package(command: list[str], snapshot: Path) -> subprocess.CompletedProcess[str]:
                 source = snapshot / "app/src/main/tracked.txt"
@@ -177,7 +203,7 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
                     encoding="utf-8",
                 )
                 (root / "release-key.jks").write_bytes(b"key-A")
-                output = Path(temp_dir) / "immutable-output"
+                output = root / "app/build/immutable-release/test-output"
 
                 def package(command: list[str], snapshot: Path) -> subprocess.CompletedProcess[str]:
                     target = snapshot / relative
@@ -208,7 +234,7 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
             root.mkdir()
             self.fixture(root)
             (root / "local.properties").write_text("sdk.dir=/safe/sdk\n", encoding="utf-8")
-            output = Path(temp_dir) / "immutable-output"
+            output = root / "app/build/immutable-release/test-output"
 
             def package(command: list[str], snapshot: Path) -> subprocess.CompletedProcess[str]:
                 target = snapshot / "local.properties"
@@ -255,7 +281,7 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
             root.mkdir()
             self.fixture(root)
             self.signing_fixture(root, b"storeFile: release-key.jks\n")
-            output = Path(temp_dir) / "immutable-output"
+            output = root / "app/build/immutable-release/test-output"
             commands: list[list[str]] = []
 
             def package(command: list[str], snapshot: Path) -> subprocess.CompletedProcess[str]:
@@ -278,10 +304,7 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
                 )
 
             self.assertEqual(1, len(commands))
-            self.assertIn(
-                "-PimmutableReleaseStoreFile=release-key.jks",
-                commands[0],
-            )
+            self.assertFalse(any(argument.startswith("-PimmutableRelease") for argument in commands[0]))
             self.assertNotIn("/outside/ambient-key.jks", " ".join(commands[0]))
 
     def test_default_runner_clears_ambient_store_file_only(self) -> None:
@@ -319,7 +342,7 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
                     release.build_immutable_release(
                         root,
                         [":app:bundleRelease"],
-                        Path(temp_dir) / "output",
+                        root / "app/build/immutable-release/test-output",
                         run=lambda command, cwd: subprocess.CompletedProcess(command, 0, "", ""),
                     )
             self.assertNotIn("secret-A", str(raised.exception))
@@ -357,7 +380,7 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
                 release.build_immutable_release(
                     root,
                     [":app:bundleRelease"],
-                    Path(temp_dir) / "output",
+                    root / "app/build/immutable-release/test-output",
                     run=lambda command, cwd: subprocess.CompletedProcess(command, 0, "", ""),
                 )
 
@@ -367,7 +390,7 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
             root.mkdir()
             self.fixture(root)
             self.signing_fixture(root, b"storeFile=release-key.jks\n")
-            output = Path(temp_dir) / "immutable-output"
+            output = root / "app/build/immutable-release/test-output"
 
             def package(command: list[str], snapshot: Path) -> subprocess.CompletedProcess[str]:
                 target = snapshot / "release-key.jks"
@@ -398,7 +421,7 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
             root = Path(temp_dir) / "fixture"
             root.mkdir()
             self.fixture(root)
-            output = Path(temp_dir) / "immutable-output"
+            output = root / "app/build/immutable-release/test-output"
 
             def package(command: list[str], snapshot: Path) -> subprocess.CompletedProcess[str]:
                 apk = snapshot / "app/build/outputs/apk/release/app-release.apk"
@@ -429,7 +452,7 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
             root = Path(temp_dir) / "fixture"
             root.mkdir()
             self.fixture(root)
-            output = Path(temp_dir) / "immutable-output"
+            output = root / "app/build/immutable-release/test-output"
 
             def package(command: list[str], snapshot: Path) -> subprocess.CompletedProcess[str]:
                 apk = snapshot / "app/build/outputs/apk/release/app-release.apk"
@@ -463,7 +486,7 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
             root = Path(temp_dir) / "fixture"
             root.mkdir()
             self.fixture(root)
-            output = Path(temp_dir) / "immutable-output"
+            output = root / "app/build/immutable-release/test-output"
 
             def lint(command: list[str], snapshot: Path) -> subprocess.CompletedProcess[str]:
                 reports = snapshot / "app/build/reports"
@@ -490,7 +513,7 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
             root = Path(temp_dir) / "fixture"
             root.mkdir()
             self.fixture(root)
-            output = Path(temp_dir) / "immutable-output"
+            output = root / "app/build/immutable-release/test-output"
 
             def lint(command: list[str], snapshot: Path) -> subprocess.CompletedProcess[str]:
                 reports = snapshot / "app/build/reports"
@@ -526,7 +549,7 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
                     release.build_immutable_release(
                         root,
                         [":app:bundleRelease"],
-                        Path(temp_dir) / "output",
+                        root / "app/build/immutable-release/test-output",
                         run=lambda command, cwd: subprocess.CompletedProcess(command, 0, "", ""),
                     )
 
@@ -547,7 +570,7 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
                 release.build_immutable_release(
                     root,
                     [":app:bundleRelease"],
-                    Path(temp_dir) / "output",
+                    root / "app/build/immutable-release/test-output",
                     run=lambda command, cwd: subprocess.CompletedProcess(command, 0, "", ""),
                     after_snapshot=replace_with_fifo,
                 )
@@ -568,7 +591,7 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
                 release.build_immutable_release(
                     root,
                     [":app:bundleRelease"],
-                    Path(temp_dir) / "output",
+                    root / "app/build/immutable-release/test-output",
                     run=lambda command, cwd: subprocess.CompletedProcess(command, 0, "", ""),
                     after_snapshot=replace_parent,
                 )

@@ -132,13 +132,15 @@ checked against `gradle/verification-metadata.xml` in strict mode.
 ### Release builds
 
 `python3 tools/build_immutable_release.py :app:bundleRelease` produces the Play App Bundle from a
-private export of the clean committed source. Direct Gradle release entry points fail closed: public
-commit/tree/store-file properties do not authorize a build without the wrapper's private single-use
-invocation record, so a
-post-verification worktree edit cannot enter an artifact carrying the earlier commit provenance.
-The command prints a unique `app/build/immutable-release/<commit>-<nonce>` root; bundle, APK, and
-lint outputs are discovered under that root's `bundle/release/`, `apk/release/`, and `logs/`
-directories rather than the mutable `app/build/outputs` tree. Unsigned binary inspection likewise
+private export of the clean committed source. Direct Gradle release entry points are developer-only:
+their mutable `app/build/outputs` files and embedded clean-source identity are not immutable
+evidence. Legacy caller-supplied `immutableRelease*` properties are rejected, not authenticated;
+an unsigned same-user record cannot prove which process launched Gradle. The outer wrapper is the
+boundary: it seals the exported checkout and copied signing files, rechecks their identity after the
+build, freezes the complete allowlisted output set, and only then atomically publishes a unique
+`app/build/immutable-release/<commit>-<nonce>` root. That root includes
+`release-evidence.json` with the verified commit, tree, and output hashes; bundle, APK, and lint
+outputs live under its `bundle/release/`, `apk/release/`, and `logs/` directories. Unsigned binary inspection likewise
 uses `python3 tools/build_immutable_release.py :app:packageRelease` and the printed root's
 `apk/release/*-unsigned.apk`.
 Signing is driven by a gitignored `keystore.properties`. Its required `storeFile` is one normalized,
@@ -147,6 +149,12 @@ repository-relative regular file that the immutable wrapper copies and seals; an
 `TELECAMPRO_KEY_ALIAS`, `TELECAMPRO_STORE_PASSWORD`, and `TELECAMPRO_KEY_PASSWORD` — no keys live in
 git, and release bundling fails fast rather than emitting an unsigned artifact. Release builds are
 R8-minified.
+
+This boundary detects mutation during the wrapper invocation and prevents accidental reuse of a
+mutable Gradle path. It is not process authentication against a malicious process already running as
+the same OS user: that process can rewrite user-owned files after publication. Preserve the unique
+output root, compare its receipt hashes before promotion, and rely on the signed AAB plus the release
+attestation for durable artifact identity.
 
 ## Licence and trademarks
 

@@ -83,8 +83,10 @@ python3 tools/verify_host.py
 
 # Play-release gate (requires clean committed source + local signing credentials)
 python3 tools/verify_host.py --release
-# Direct Gradle release entry points fail closed: public provenance properties are not authorization;
-# the tool adds a private single-use invocation record and builds exact committed bytes.
+# Direct Gradle release outputs are developer-only; caller-authored immutableRelease* properties are
+# rejected rather than treated as authentication. Only this outer wrapper seals the exported inputs,
+# rechecks them after build, freezes allowlisted outputs, and publishes release-evidence.json plus the
+# verified commit/tree/output hashes in a unique immutable-release namespace.
 python3 tools/build_immutable_release.py :app:lintRelease :app:assembleRelease :app:bundleRelease
 
 # Device evidence must use the exact immutable debug APK printed by the wrapper.

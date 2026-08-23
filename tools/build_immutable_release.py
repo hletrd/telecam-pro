@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import hashlib
+import json
 import os
 import pathlib
 import re
@@ -37,9 +37,7 @@ RELEASE_OUTPUT_PREFIXES = (
 RELEASE_OUTPUT_FILES = frozenset({"logs/manifest-merger-release-report.txt"})
 RELEASE_REPORT_PREFIXES = ("resources_config_map_file/release/",)
 STORE_FILE_ENVIRONMENT = "TELECAMPRO_STORE_FILE"
-IMMUTABLE_STORE_FILE_PROPERTY = "immutableReleaseStoreFile"
-IMMUTABLE_AUTHORITY_PATH_PROPERTY = "immutableReleaseAuthorityPath"
-IMMUTABLE_AUTHORITY_NONCE_PROPERTY = "immutableReleaseAuthorityNonce"
+RELEASE_EVIDENCE_NAME = "release-evidence.json"
 
 
 class _SealedPath(NamedTuple):
@@ -56,7 +54,6 @@ class _SealedPath(NamedTuple):
 
 class ReleaseLocalInputs(NamedTuple):
     sealed_paths: tuple[str, ...]
-    store_file: str | None
 
 
 class ReleaseSnapshotSeal:
@@ -114,52 +111,11 @@ class ReleaseSnapshotSeal:
                 pass
 
 
-def _authority_text(value: str) -> str:
-    return base64.urlsafe_b64encode(value.encode("utf-8")).decode("ascii")
-
-
-def create_release_authority(
-    path: pathlib.Path,
-    snapshot: pathlib.Path,
-    commit: str,
-    tree: str,
-    store_file: str | None,
-) -> str:
-    """Create one private, single-invocation authorization record outside project inputs."""
-    nonce = secrets.token_hex(32)
-    store_digest = (
-        sha256_regular_beneath(snapshot, store_file)
-        if store_file is not None
-        else ""
-    )
-    payload = (
-        "schema=1\n"
-        f"nonce={nonce}\n"
-        f"root={_authority_text(str(snapshot.resolve()))}\n"
-        f"commit={commit}\n"
-        f"tree={tree}\n"
-        f"storeFile={_authority_text(store_file or '')}\n"
-        f"storeSha256={store_digest}\n"
-    ).encode("ascii")
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    try:
-        view = memoryview(payload)
-        written = 0
-        while written < len(view):
-            count = os.write(descriptor, view[written:])
-            if count <= 0:
-                raise RuntimeError("could not write immutable release authority")
-            written += count
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    return nonce
-
-
 def run_checked(command: Sequence[str], cwd: pathlib.Path) -> subprocess.CompletedProcess[str]:
     environment = dict(os.environ)
-    # The immutable wrapper owns the only effective file path. Password/key-alias environment
-    # values remain available, but an ambient store path can never point Gradle outside the seal.
+    # The wrapper copies keystore.properties and its repository-relative store into the sealed
+    # checkout. Password/key-alias values remain available, but an ambient path can never redirect
+    # Gradle outside that checkout.
     environment.pop(STORE_FILE_ENVIRONMENT, None)
     return subprocess.run(command, cwd=cwd, env=environment, text=True, check=True)
 
@@ -330,6 +286,34 @@ def write_regular_exclusive(path: pathlib.Path, payload: bytes, mode: int) -> No
             written += count
     finally:
         os.close(descriptor)
+
+
+def write_release_evidence(
+    staging: pathlib.Path,
+    commit: str,
+    tree: str,
+    frozen_sets: Sequence[tuple[FrozenOutputSet, pathlib.PurePosixPath]],
+) -> None:
+    """Describe only the outputs already frozen and reverified by this wrapper invocation."""
+    outputs: list[dict[str, object]] = []
+    for frozen, prefix in frozen_sets:
+        for entry in frozen.entries:
+            relative = prefix / entry.relative
+            outputs.append({
+                "path": relative.as_posix(),
+                "sha256": hashlib.sha256(entry.payload).hexdigest(),
+                "size": len(entry.payload),
+            })
+    outputs.sort(key=lambda item: str(item["path"]))
+    document = {
+        "schema": 1,
+        "boundary": "sealed-export-frozen-outputs-v1",
+        "commit": commit,
+        "tree": tree,
+        "outputs": outputs,
+    }
+    payload = (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    write_regular_exclusive(staging / RELEASE_EVIDENCE_NAME, payload, 0o444)
 
 
 def export_commit(root: pathlib.Path, destination: pathlib.Path, commit: str) -> dict[str, str]:
@@ -554,7 +538,7 @@ def copy_local_build_inputs(root: pathlib.Path, snapshot: pathlib.Path) -> Relea
         payload, mode = read_regular_beneath(root, store_file)
         write_regular_exclusive(snapshot / relative_store, payload, mode)
         copied.append(store_file)
-    return ReleaseLocalInputs(tuple(copied), store_file)
+    return ReleaseLocalInputs(tuple(copied))
 
 
 def verify_export(snapshot: pathlib.Path, expected: dict[str, str]) -> None:
@@ -602,6 +586,12 @@ def build_immutable_release(
 ) -> tuple[str, str]:
     root = root.resolve()
     output_root = output_root.resolve()
+    evidence_namespace = (root / "app/build/immutable-release").resolve()
+    if output_root == evidence_namespace or evidence_namespace not in output_root.parents:
+        raise RuntimeError(
+            "immutable release output must be one unique child of "
+            f"{evidence_namespace}"
+        )
     commit, tree = require_clean_commit(root)
     if os.path.lexists(output_root):
         raise RuntimeError(f"refusing to overwrite immutable release output: {output_root}")
@@ -614,26 +604,10 @@ def build_immutable_release(
         try:
             if after_snapshot is not None:
                 after_snapshot(root, snapshot)
-            authority_path = pathlib.Path(temp_dir) / "release-authority.properties"
-            authority_nonce = create_release_authority(
-                authority_path,
-                snapshot,
-                commit,
-                tree,
-                local_inputs.store_file,
-            )
-            command = [
-                "./gradlew",
-                *tasks,
-                f"-PimmutableReleaseCommit={commit}",
-                f"-PimmutableReleaseTree={tree}",
-                f"-P{IMMUTABLE_AUTHORITY_PATH_PROPERTY}={authority_path}",
-                f"-P{IMMUTABLE_AUTHORITY_NONCE_PROPERTY}={authority_nonce}",
-            ]
-            if local_inputs.store_file is not None:
-                command.append(
-                    f"-P{IMMUTABLE_STORE_FILE_PROPERTY}={local_inputs.store_file}"
-                )
+            # Gradle receives no wrapper-origin or immutable-evidence claim. It records only the
+            # clean checkout identity it can observe itself. The outer process is the evidence
+            # boundary: it owns this sealed export and publishes only after all checks below pass.
+            command = ["./gradlew", *tasks]
             run(command, snapshot)
             # Digest equality cannot detect A -> B -> A. The seal additionally proves the exact
             # input/ancestor identities and their unforgeable ctime transitions stayed unchanged.
@@ -684,6 +658,7 @@ def build_immutable_release(
                     for frozen, _ in frozen_sets:
                         frozen.verify()
                     seal.verify()
+                    write_release_evidence(staging, commit, tree, frozen_sets)
                     if os.path.lexists(output_root):
                         raise RuntimeError(
                             f"refusing to overwrite immutable release output: {output_root}"

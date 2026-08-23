@@ -46,17 +46,42 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
             )
             bundle.writestr(
                 release.PROVENANCE_MEMBER,
-                f"schema=1\ncommit={commit}\ntree={self.TREE}\n",
+                "schema=2\nevidence=external-wrapper-required\n" +
+                    f"commit={commit}\ntree={self.TREE}\n",
             )
             bundle.writestr("base/manifest/AndroidManifest.xml", b"fixture")
         digest = release.sha256_file(provisional)
         aab = root / f"releases/telecam-pro-1.0.2-{commit[:7]}-{digest[:12]}.aab"
         provisional.rename(aab)
+        evidence = (
+            root / "app/build/immutable-release" / f"{commit[:12]}-fixture" /
+            release.RELEASE_EVIDENCE_NAME
+        )
+        evidence.parent.mkdir(parents=True)
+        evidence.write_text(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "boundary": release.RELEASE_EVIDENCE_BOUNDARY,
+                    "commit": commit,
+                    "tree": self.TREE,
+                    "outputs": [
+                        {
+                            "path": "bundle/release/app-release.aab",
+                            "sha256": digest,
+                            "size": aab.stat().st_size,
+                        }
+                    ],
+                },
+                sort_keys=True,
+            ) + "\n",
+            encoding="utf-8",
+        )
         attestation = root / "release-attestation.json"
         attestation.write_text(
             json.dumps(
                 {
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "status": "upload-ready",
                     "git_commit": commit,
                     "version_code": 4,
@@ -64,6 +89,7 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
                     "aab_path": str(aab.relative_to(root)),
                     "aab_sha256": digest,
                     "signer_sha256": release.EXPECTED_UPLOAD_CERT_SHA256,
+                    "release_evidence_path": str(evidence.relative_to(root)),
                 },
                 sort_keys=True,
             )
@@ -84,6 +110,16 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
         aab.rename(renamed)
         document["aab_path"] = str(renamed.relative_to(attestation.parent))
         document["aab_sha256"] = digest
+        evidence = attestation.parent / document["release_evidence_path"]
+        receipt = json.loads(evidence.read_text(encoding="utf-8"))
+        receipt["outputs"] = [
+            {
+                "path": "bundle/release/app-release.aab",
+                "sha256": digest,
+                "size": renamed.stat().st_size,
+            }
+        ]
+        evidence.write_text(json.dumps(receipt, sort_keys=True) + "\n", encoding="utf-8")
         attestation.write_text(json.dumps(document, sort_keys=True) + "\n")
         attestation.with_name(attestation.name + ".sha256").write_text(
             f"{release.sha256_file(attestation)}  {attestation.name}\n"
@@ -171,6 +207,25 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
 
             self.assertTrue(any("mutable app/build/outputs" in item for item in failures))
             self.assertTrue(any("AAB SHA-256" in item for item in failures))
+
+    def test_copied_direct_gradle_output_without_wrapper_receipt_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            attestation, _, commit = self.fixture(root)
+            document = json.loads(attestation.read_text())
+            document["release_evidence_path"] = "releases/release-evidence.json"
+            attestation.write_text(json.dumps(document, sort_keys=True) + "\n")
+            attestation.with_name(attestation.name + ".sha256").write_text(
+                f"{release.sha256_file(attestation)}  {attestation.name}\n"
+            )
+
+            failures = release.check_release_identity(root, attestation, run=self.runner(commit))
+
+            self.assertTrue(
+                any("immutable-release child namespace" in item for item in failures),
+                failures,
+            )
+            self.assertTrue(any("release evidence is unreadable" in item for item in failures))
 
     def test_attestation_sidecar_and_head_are_both_authoritative(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -281,7 +336,8 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
             with zipfile.ZipFile(aab, "a") as bundle:
                 bundle.writestr(
                     release.PROVENANCE_MEMBER,
-                    f"schema=1\ncommit={commit}\ntree={'d' * 40}\n",
+                    "schema=2\nevidence=external-wrapper-required\n" +
+                        f"commit={commit}\ntree={'d' * 40}\n",
                 )
             self.refresh_attestation(attestation, aab)
 
@@ -308,7 +364,8 @@ class ReleaseArtifactIdentityTest(unittest.TestCase):
             with zipfile.ZipFile(aab, "a") as bundle:
                 bundle.writestr(
                     release.PROVENANCE_MEMBER,
-                    f"schema=1\ncommit={commit}\ntree={self.TREE}\n",
+                    "schema=2\nevidence=external-wrapper-required\n" +
+                        f"commit={commit}\ntree={self.TREE}\n",
                 )
             self.assertIsNone(release.packaged_source_provenance(aab))
 

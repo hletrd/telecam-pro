@@ -28,7 +28,9 @@ from typing import Callable, Sequence
 EXPECTED_UPLOAD_CERT_SHA256 = (
     "9dfdb903269238ef6de424052666b05814577b4b3bb43a5e3e3a05572660e584"
 )
-ATTESTATION_SCHEMA = 1
+ATTESTATION_SCHEMA = 2
+RELEASE_EVIDENCE_NAME = "release-evidence.json"
+RELEASE_EVIDENCE_BOUNDARY = "sealed-export-frozen-outputs-v1"
 PROVENANCE_NAMESPACE = "base/assets/telecam-release-provenance/"
 PROVENANCE_MEMBER = PROVENANCE_NAMESPACE + "source.properties"
 
@@ -229,7 +231,7 @@ def packaged_source_commits(aab_path: pathlib.Path) -> set[str]:
 
 
 def packaged_source_provenance(aab_path: pathlib.Path) -> tuple[str, str] | None:
-    """Read the release-task-generated commit/tree identity covered by the AAB signature."""
+    """Read neutral commit/tree identity; this asset is not immutable-build evidence by itself."""
     try:
         with zipfile.ZipFile(aab_path) as bundle:
             namespace_members = [
@@ -245,10 +247,14 @@ def packaged_source_provenance(aab_path: pathlib.Path) -> tuple[str, str] | None
             lines = bundle.read(info).decode("ascii").splitlines()
     except (KeyError, OSError, UnicodeDecodeError, zipfile.BadZipFile):
         return None
-    if len(lines) != 3 or lines[0] != "schema=1":
+    if (
+        len(lines) != 4
+        or lines[0] != "schema=2"
+        or lines[1] != "evidence=external-wrapper-required"
+    ):
         return None
-    commit_match = re.fullmatch(r"commit=([0-9a-f]{40})", lines[1])
-    tree_match = re.fullmatch(r"tree=([0-9a-f]{40})", lines[2])
+    commit_match = re.fullmatch(r"commit=([0-9a-f]{40})", lines[2])
+    tree_match = re.fullmatch(r"tree=([0-9a-f]{40})", lines[3])
     if commit_match is None or tree_match is None:
         return None
     return commit_match.group(1), tree_match.group(1)
@@ -351,6 +357,7 @@ def check_release_identity(
         "aab_path",
         "aab_sha256",
         "signer_sha256",
+        "release_evidence_path",
     }
     missing = sorted(required - document.keys())
     if missing:
@@ -398,6 +405,25 @@ def check_release_identity(
     if relative_aab is None:
         return failures
 
+    raw_evidence_path = pathlib.Path(str(document["release_evidence_path"]))
+    candidate_evidence = (
+        root / raw_evidence_path if not raw_evidence_path.is_absolute() else raw_evidence_path
+    )
+    evidence_path = pathlib.Path(os.path.abspath(candidate_evidence))
+    try:
+        relative_evidence = evidence_path.relative_to(root)
+    except ValueError:
+        failures.append("release evidence must live under the repository root")
+        relative_evidence = None
+    if relative_evidence is not None and (
+        len(relative_evidence.parts) != 5
+        or relative_evidence.parts[:3] != ("app", "build", "immutable-release")
+        or relative_evidence.name != RELEASE_EVIDENCE_NAME
+    ):
+        failures.append(
+            "release evidence must be the receipt in one immutable-release child namespace"
+        )
+
     artifact_temp = tempfile.TemporaryDirectory(prefix="telecam-release-artifact-")
     verified_aab_path = pathlib.Path(artifact_temp.name) / "verified.aab"
     try:
@@ -422,6 +448,51 @@ def check_release_identity(
     actual_aab_sha = source_identity.sha256
     if attested_aab_sha != actual_aab_sha:
         failures.append("AAB SHA-256 does not match attestation")
+
+    evidence: object | None = None
+    evidence_identity: RegularFileIdentity | None = None
+    if relative_evidence is not None:
+        verified_evidence_path = pathlib.Path(artifact_temp.name) / RELEASE_EVIDENCE_NAME
+        try:
+            evidence_identity = snapshot_regular_file(
+                root,
+                relative_evidence,
+                verified_evidence_path,
+            )
+            evidence = json.loads(verified_evidence_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            failures.append(f"release evidence is unreadable: {error}")
+            evidence = None
+        if not isinstance(evidence, dict):
+            failures.append("release evidence root must be an object")
+        else:
+            if (
+                evidence.get("schema") != 1
+                or evidence.get("boundary") != RELEASE_EVIDENCE_BOUNDARY
+                or evidence.get("commit") != attested_commit
+            ):
+                failures.append("release evidence identity does not match the attestation")
+            evidence_tree = evidence.get("tree")
+            if not isinstance(evidence_tree, str) or not re.fullmatch(
+                r"[0-9a-f]{40}", evidence_tree
+            ):
+                failures.append("release evidence tree is not canonical")
+            evidence_outputs = evidence.get("outputs")
+            matching_outputs = []
+            if isinstance(evidence_outputs, list):
+                matching_outputs = [
+                    entry
+                    for entry in evidence_outputs
+                    if isinstance(entry, dict)
+                    and isinstance(entry.get("path"), str)
+                    and re.fullmatch(r"bundle/release/[^/]+\.aab", entry["path"])
+                    and entry.get("sha256") == actual_aab_sha
+                    and entry.get("size") == source_identity.size
+                ]
+            if len(matching_outputs) != 1:
+                failures.append(
+                    "AAB is not the unique bundle output recorded by release evidence"
+                )
     if re.fullmatch(r"[0-9a-f]{40}", attested_commit):
         immutable_tokens = (attested_commit[:7], actual_aab_sha[:12])
         if any(token not in aab_path.name.casefold() for token in immutable_tokens):
@@ -447,6 +518,8 @@ def check_release_identity(
             failures.append(
                 "packaged clean-source commit/tree provenance does not match the attested commit"
             )
+        if isinstance(evidence, dict) and evidence.get("tree") != expected_tree:
+            failures.append("release evidence tree does not match the attested commit")
 
     signer = normalize_sha256(str(document["signer_sha256"]))
     if signer != EXPECTED_UPLOAD_CERT_SHA256:
@@ -529,6 +602,14 @@ def check_release_identity(
     else:
         if final_source_identity != source_identity:
             failures.append("AAB source identity or digest changed during verification")
+    if relative_evidence is not None and evidence_identity is not None:
+        try:
+            final_evidence_identity = regular_file_identity(root, relative_evidence)
+        except OSError as error:
+            failures.append(f"release evidence changed or became unsafe during verification: {error}")
+        else:
+            if final_evidence_identity != evidence_identity:
+                failures.append("release evidence identity or digest changed during verification")
     artifact_temp.cleanup()
     return failures
 

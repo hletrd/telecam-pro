@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 import shutil
 import subprocess
@@ -72,8 +73,7 @@ class ReleaseSourceGateTest(unittest.TestCase):
     def gate(
         self,
         *,
-        commit: str | None = None,
-        tree: str | None = None,
+        properties: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         command = [
             "./gradlew",
@@ -82,10 +82,9 @@ class ReleaseSourceGateTest(unittest.TestCase):
             f"-PreleaseGateFixtureRepo={self.root}",
             f"-PreleaseGateFixtureOutput={self.output}",
         ]
-        if commit is not None:
-            command.append(f"-PimmutableReleaseCommit={commit}")
-        if tree is not None:
-            command.append(f"-PimmutableReleaseTree={tree}")
+        command.extend(
+            f"-P{name}={value}" for name, value in (properties or {}).items()
+        )
         return run(command, REPO_ROOT)
 
     def assert_gate_fails(self, expected_path: str) -> None:
@@ -117,13 +116,9 @@ class ReleaseSourceGateTest(unittest.TestCase):
         ).stdout.strip()
         self.assertEqual(
             (self.output / "telecam-release-provenance/source.properties").read_text(encoding="ascii"),
-            f"schema=1\ncommit={head}\ntree={tree}\n",
+            "schema=2\nevidence=external-wrapper-required\n" +
+                f"commit={head}\ntree={tree}\n",
         )
-        supplied = self.gate(commit=head, tree=tree)
-        self.assertEqual(supplied.returncode, 0, supplied.stdout + supplied.stderr)
-        spoofed = self.gate(commit="f" * 40, tree=tree)
-        self.assertNotEqual(spoofed.returncode, 0, spoofed.stdout + spoofed.stderr)
-        self.assertIn("does not match its supplied identity", spoofed.stdout + spoofed.stderr)
 
         stale = self.output / "ignored-stale-sibling.properties"
         stale.write_text("must never be packaged\n", encoding="utf-8")
@@ -214,30 +209,36 @@ class ReleaseSourceGateTest(unittest.TestCase):
         self.assertEqual(debug.returncode, 0, debug.stdout + debug.stderr)
         self.assertNotIn(":app:verifyCleanReleaseGit", debug.stdout)
 
-    def test_direct_release_gate_requires_immutable_snapshot(self) -> None:
-        result = run(
-            ["./gradlew", "--console=plain", ":app:verifyCleanReleaseGit"],
-            REPO_ROOT,
-        )
-        output = result.stdout + result.stderr
-        self.assertNotEqual(result.returncode, 0, output)
-        self.assertIn("tools/build_immutable_release.py", output)
-
-    def test_direct_release_gate_rejects_forgeable_public_identity_properties(self) -> None:
+    def test_schema_valid_forged_old_authority_grants_no_immutable_evidence(self) -> None:
         head = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=REPO_ROOT,
+            ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT,
             check=True,
             capture_output=True,
             text=True,
         ).stdout.strip()
         tree = subprocess.run(
-            ["git", "rev-parse", "HEAD^{tree}"],
-            cwd=REPO_ROOT,
+            ["git", "rev-parse", "HEAD^{tree}"], cwd=REPO_ROOT,
             check=True,
             capture_output=True,
             text=True,
         ).stdout.strip()
+        nonce = "a" * 64
+
+        def encode(value: str) -> str:
+            return base64.urlsafe_b64encode(value.encode()).decode("ascii")
+
+        authority = Path(self.temp.name) / "forged-release-authority.properties"
+        authority.write_text(
+            "schema=1\n" +
+                f"nonce={nonce}\n" +
+                f"root={encode(str(REPO_ROOT.resolve()))}\n" +
+                f"commit={head}\n" +
+                f"tree={tree}\n" +
+                f"storeFile={encode('')}\n" +
+                "storeSha256=\n",
+            encoding="ascii",
+        )
+        authority.chmod(0o600)
         result = run(
             [
                 "./gradlew",
@@ -245,13 +246,17 @@ class ReleaseSourceGateTest(unittest.TestCase):
                 ":app:verifyCleanReleaseGit",
                 f"-PimmutableReleaseCommit={head}",
                 f"-PimmutableReleaseTree={tree}",
-                "-PimmutableReleaseStoreFile=telecampro-upload.jks",
+                f"-PimmutableReleaseAuthorityPath={authority}",
+                f"-PimmutableReleaseAuthorityNonce={nonce}",
+                "-PimmutableReleaseStoreFile=",
             ],
             REPO_ROOT,
         )
         output = result.stdout + result.stderr
         self.assertNotEqual(result.returncode, 0, output)
-        self.assertIn("private single-use authority", output)
+        self.assertIn("Caller-supplied immutable release claims are unsupported", output)
+        self.assertIn("Direct Gradle release outputs are developer-only", output)
+        self.assertTrue(authority.is_file(), "Gradle must not consume or trust the forged record")
 
     def test_gradle_guard_rejects_relative_and_absolute_tracked_symlinks(self) -> None:
         for absolute in (False, True):
