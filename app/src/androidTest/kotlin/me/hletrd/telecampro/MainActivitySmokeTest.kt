@@ -127,7 +127,7 @@ class MainActivitySmokeTest {
         fail(
             "camera not ready ($phase) within $CAMERA_READY_TIMEOUT_MS ms: " +
                 "cameraReady=${s.cameraReady} facing=${s.facing} mode=${s.mode} " +
-                "status=${s.statusMessage}",
+                "status=${s.status}",
         )
     }
 
