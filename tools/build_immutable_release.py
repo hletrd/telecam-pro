@@ -172,9 +172,17 @@ def build_immutable_release(
         verify_export(snapshot, expected)
 
         built_outputs = snapshot / "app/build/outputs"
+        lint_reports = sorted((snapshot / "app/build/reports").glob("lint-results-*"))
         if built_outputs.is_dir():
             output_root.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(built_outputs, output_root)
+        if lint_reports:
+            output_root.mkdir(parents=True, exist_ok=True)
+            logs = output_root / "logs"
+            logs.mkdir(exist_ok=True)
+            for report in lint_reports:
+                if report.is_file():
+                    shutil.copy2(report, logs / report.name)
     return commit, tree
 
 

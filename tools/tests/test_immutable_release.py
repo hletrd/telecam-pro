@@ -50,6 +50,9 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
                 artifact = snapshot / "app/build/outputs/bundle/release/app-release.aab"
                 artifact.parent.mkdir(parents=True)
                 artifact.write_bytes(snapshot.joinpath("app/src/main/tracked.txt").read_bytes())
+                lint = snapshot / "app/build/reports/lint-results-release.html"
+                lint.parent.mkdir(parents=True)
+                lint.write_text("immutable lint report\n", encoding="utf-8")
                 return subprocess.CompletedProcess(command, 0, "", "")
 
             commit, tree = release.build_immutable_release(
@@ -64,6 +67,10 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
             self.assertEqual(
                 output.joinpath("bundle/release/app-release.aab").read_text(),
                 "committed bytes\n",
+            )
+            self.assertEqual(
+                output.joinpath("logs/lint-results-release.html").read_text(),
+                "immutable lint report\n",
             )
             self.assertIn(f"-PimmutableReleaseCommit={commit}", observed["command"])
             self.assertIn(f"-PimmutableReleaseTree={tree}", observed["command"])
@@ -95,6 +102,28 @@ class ImmutableReleaseBuildTest(unittest.TestCase):
                     after_snapshot=mutate_snapshot,
                 )
             self.assertFalse(output.exists())
+
+    def test_lint_only_build_publishes_documented_logs_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir) / "fixture"
+            root.mkdir()
+            self.fixture(root)
+            output = Path(temp_dir) / "immutable-output"
+
+            def lint(command: list[str], snapshot: Path) -> subprocess.CompletedProcess[str]:
+                reports = snapshot / "app/build/reports"
+                reports.mkdir(parents=True)
+                (reports / "lint-results-release.txt").write_text("No issues found.\n", encoding="utf-8")
+                (reports / "unrelated.html").write_text("mutable report\n", encoding="utf-8")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            release.build_immutable_release(root, [":app:lintRelease"], output, run=lint)
+
+            self.assertEqual(
+                output.joinpath("logs/lint-results-release.txt").read_text(),
+                "No issues found.\n",
+            )
+            self.assertFalse(output.joinpath("logs/unrelated.html").exists())
 
 
 if __name__ == "__main__":
