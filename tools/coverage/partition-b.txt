@@ -68,6 +68,9 @@ me/hletrd/telecampro/storage/SettingsStore
 !me/hletrd/telecampro/video/VideoRecorder$StopResult
 me/hletrd/telecampro/video/VideoRecorder
 me/hletrd/telecampro/video/VideoRecorder$*
+# Concrete post-native tail constructs Android Context/Uri effects and calls MediaStoreWriter's
+# ContentResolver/MediaExtractor glue. Its frozen decision function remains in VideoRecorderKt (A).
+me/hletrd/telecampro/video/RecordingStorageTail
 # Top-level setup owner directly retains framework MediaCodec + Surface instances. Neither type can
 # be constructed or driven against android.jar's throwing host stubs; its generic attempt-order
 # state machine remains separately host-tested in VideoRecorderKt.

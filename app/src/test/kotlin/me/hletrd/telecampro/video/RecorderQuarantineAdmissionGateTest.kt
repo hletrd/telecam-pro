@@ -6,6 +6,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -104,6 +105,130 @@ class RecorderQuarantineAdmissionGateTest {
             assertTrue(processAdmission.snapshot(Any()) == null)
         }
     }
+
+    @Test
+    fun `all production native owners release through the terminal success return`() {
+        val productionOrder = listOf(RecorderNativeOwnerOperation.AUDIO_INPUT_STOP) +
+            RECORDER_POST_DRAIN_PRE_MUXER_NATIVE_OWNERS + RECORDER_POST_DRAIN_NATIVE_OWNERS
+        val released = mutableListOf<RecorderNativeOwnerOperation>()
+
+        assertEquals(
+            null,
+            runRecorderNativeOwnerSequence(productionOrder) { owner ->
+                released += owner
+                true
+            },
+        )
+        assertEquals(productionOrder, released)
+    }
+
+    @Test
+    fun `frozen storage validates then marks complete before successful publish`() {
+        val events = mutableListOf<String>()
+        val result = completeFrozenRecordingStorage(
+            frozenStorage("clip", validation = FinalizedRecordingValidation.SKIPPED),
+            RecordingStorageEffects(
+                validateVideoTrack = { events += "validate:$it"; true },
+                markComplete = { events += "complete:$it"; true },
+                publish = { events += "publish:$it"; true },
+                delete = { events += "delete:$it" },
+            ),
+        )
+
+        assertTrue(result.saved)
+        assertEquals(null, result.error)
+        assertEquals(listOf("validate:clip", "complete:clip", "publish:clip"), events)
+    }
+
+    @Test
+    fun `failed frozen validation deletes invalid row and reports a concrete failure`() {
+        val events = mutableListOf<String>()
+        val result = completeFrozenRecordingStorage(
+            frozenStorage("invalid", validation = FinalizedRecordingValidation.SKIPPED),
+            RecordingStorageEffects(
+                validateVideoTrack = { events += "validate:$it"; false },
+                markComplete = { events += "complete:$it"; true },
+                publish = { events += "publish:$it"; true },
+                delete = { events += "delete:$it" },
+            ),
+        )
+
+        assertFalse(result.saved)
+        assertEquals("Finalized video track validation failed", result.error?.message)
+        assertEquals(listOf("validate:invalid", "delete:invalid"), events)
+    }
+
+    @Test
+    fun `failed frozen validation preserves earlier video failure`() {
+        val original = IllegalStateException("codec failed")
+        val deleted = mutableListOf<String>()
+        val result = completeFrozenRecordingStorage(
+            frozenStorage(
+                "failed",
+                failure = original,
+                validation = FinalizedRecordingValidation.SKIPPED,
+            ),
+            RecordingStorageEffects(
+                validateVideoTrack = { false },
+                markComplete = { true },
+                publish = { true },
+                delete = { deleted += it },
+            ),
+        )
+
+        assertFalse(result.saved)
+        assertSame(original, result.error)
+        assertEquals(listOf("failed"), deleted)
+    }
+
+    @Test
+    fun `missing output skips validation and deletion while producing truthful failure`() {
+        var effectsCalled = false
+        val result = completeFrozenRecordingStorage(
+            frozenStorage<String>(null, validation = FinalizedRecordingValidation.SKIPPED),
+            RecordingStorageEffects(
+                validateVideoTrack = { effectsCalled = true; true },
+                markComplete = { effectsCalled = true; true },
+                publish = { effectsCalled = true; true },
+                delete = { effectsCalled = true },
+            ),
+        )
+
+        assertFalse(result.saved)
+        assertEquals("Finalized video track validation failed", result.error?.message)
+        assertFalse(effectsCalled)
+    }
+
+    @Test
+    fun `incomplete native verdict deletes its registered pending row`() {
+        val deleted = mutableListOf<String>()
+        val result = completeFrozenRecordingStorage(
+            frozenStorage("empty", muxerStarted = false),
+            RecordingStorageEffects(
+                validateVideoTrack = { true },
+                markComplete = { true },
+                publish = { true },
+                delete = { deleted += it },
+            ),
+        )
+
+        assertFalse(result.saved)
+        assertEquals(null, result.error)
+        assertEquals(listOf("empty"), deleted)
+    }
+
+    private fun <T> frozenStorage(
+        output: T?,
+        muxerStarted: Boolean = true,
+        failure: Throwable? = null,
+        validation: FinalizedRecordingValidation = FinalizedRecordingValidation.NOT_REQUIRED,
+    ) = FrozenRecordingStorage(
+        outputUri = output,
+        muxerStarted = muxerStarted,
+        wroteVideoSample = true,
+        failure = failure,
+        finalizedValidation = validation,
+    )
 
     private fun awaitQuarantine(gate: RecorderQuarantineAdmissionGate): Boolean {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
