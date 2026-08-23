@@ -33,17 +33,23 @@ python3 device-tests/run.py --serial 127.0.0.1:5599 --tier full --allow-partial
 Reports (markdown + JUnit XML + pulled evidence files) land in
 `device-tests/reports/<UTC timestamp>-<run token>/` (gitignored). The runner atomically reserves
 that directory, writes `run-identity.json`, and records the same run ID in the final attestation.
-Mutating harness ownership is process-locked per ADB serial before the first device probe; a second
-run against the same serial exits non-green with `run-failure.json`, while different serials remain
-independent. Exit code 0 requires at least one pass and no failures, 1 means fail/error,
+After a minimal read-only reachability probe, the runner derives a hashed canonical physical-device
+key from device-side identity (`ro.serialno`, then `ro.boot.serialno`) and acquires a nonblocking
+lock under the user's host-global cache. The runner fails closed if neither physical identity is
+available; a per-user Android ID is deliberately not accepted as a physical-device key. The lock is
+shared by every checkout and worktree: direct and loopback ADB aliases for one handset contend,
+while genuinely distinct devices remain independent. Lock refusal exits non-green with
+`run-failure.json`. Both the connection alias and hashed physical key are written to
+`run-identity.json` and the final attestation; raw device-side identity is never persisted. Exit
+code 0 requires at least one pass and no failures, 1 means fail/error,
 and 2 means preflight failure, no matching cases, all-skipped, missing approvals for any selected
 case, or a required verification reported as incomplete. `--allow-partial` is the only way to make
 an intentionally partial tier green; its report and attestation retain the skips and partial flag.
 
 **CLI report attestation contract:** every completed report directory also contains
 `run-attestation.json` and `run-attestation.sha256`. The JSON records the source identity proven from
-inside the APK, unique run ID, device identity, host and installed APK SHA-256 values, exact approval
-flags, captured
+inside the APK, unique run ID, connection alias + canonical physical-device key, host and installed
+APK SHA-256 values, exact approval flags, captured
 pre-run and verified post-run state, and a path-sorted list of SHA-256 hashes for report artifacts. A
 restoration failure or pre/post state mismatch makes the CLI result non-green rather than producing
 only a warning. The SHA-256 sidecar protects the attestation bytes against unnoticed alteration; it
@@ -65,10 +71,12 @@ digest embedded in the exercised APK; a bare `dirty: true` claim is never used a
 The harness reads production `MediaStoreWriter.CAPTURE_SUBDIR` mechanically and queries/pulls only
 `DCIM/TeleCamPro/`. A rename cannot silently leave device QA watching an obsolete directory.
 
-`device-tests/` remains ignored because historical evidence is several gigabytes. Reproducibility
-instead comes from each attestation's sorted SHA-256 manifest of every harness input outside
-`reports/`, `__pycache__/`, and `.pytest_cache/`; a one-byte source change changes the aggregate
-manifest identity. Verify the source contracts with:
+`device-tests/` remains ignored because historical evidence is several gigabytes. Before importing
+any executable harness module, `run.py` freezes a sorted SHA-256 manifest of every harness input
+outside `reports/`, `__pycache__/`, and `.pytest_cache/`. The exact manifest must still match
+immediately before case dispatch and after case execution/restoration. Any one-byte drift at either
+boundary makes the run non-green; a green attestation therefore names the bytes that registered and
+executed its cases, not merely a later filesystem snapshot. Verify the source contracts with:
 
 ```bash
 python3 -m unittest discover -s device-tests/tests -v

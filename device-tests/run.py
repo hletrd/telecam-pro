@@ -27,9 +27,41 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 
-sys.path.insert(0, str(Path(__file__).parent))
+
+HARNESS_ROOT = Path(__file__).resolve().parent
+_HARNESS_GENERATED_PARTS = {"reports", "__pycache__", ".pytest_cache"}
+
+
+def _bootstrap_harness_source_manifest(harness_root: Path) -> list[dict[str, object]]:
+    """Hash harness bytes before importing any executable harness module."""
+    entries: list[dict[str, object]] = []
+    for path in sorted(harness_root.rglob("*")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        relative = path.relative_to(harness_root)
+        if any(part in _HARNESS_GENERATED_PARTS for part in relative.parts):
+            continue
+        payload = path.read_bytes()
+        entries.append(
+            {
+                "path": relative.as_posix(),
+                "bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        )
+    if not entries:
+        raise RuntimeError(f"no harness sources found under {harness_root}")
+    return entries
+
+
+# This is intentionally evaluated before dtest/cases imports. A green run must verify these exact
+# bytes both immediately before case dispatch and after restoration, so imports cannot execute one
+# source revision while the attestation names another.
+IMPORTED_HARNESS_SOURCES = _bootstrap_harness_source_manifest(HARNESS_ROOT)
+
+sys.path.insert(0, str(HARNESS_ROOT))
 
 from dtest.adb import APP_ID, MAIN_ACTIVITY, Adb  # noqa: E402
 from dtest.contracts import (  # noqa: E402
@@ -53,6 +85,65 @@ ATTESTATION_NAME = "run-attestation.json"
 ATTESTATION_SHA_NAME = "run-attestation.sha256"
 RESTORED_SETTINGS = ("font_scale", "accelerometer_rotation", "user_rotation")
 REPORT_ALLOCATION_ATTEMPTS = 16
+
+
+@dataclass(frozen=True)
+class PhysicalDeviceIdentity:
+    canonical_key: str
+    source: str
+
+
+@dataclass(frozen=True)
+class HarnessExecutionIdentity:
+    source_manifest: tuple[tuple[str, int, str], ...]
+    source_manifest_sha256: str
+
+    def as_attestation(self) -> dict[str, object]:
+        return {
+            "source_manifest": [
+                {"path": path, "bytes": size, "sha256": sha256}
+                for path, size, sha256 in self.source_manifest
+            ],
+            "source_manifest_sha256": self.source_manifest_sha256,
+        }
+
+
+def harness_execution_identity(
+    harness_root: Path,
+    *,
+    manifest: Sequence[dict[str, object]] | None = None,
+) -> HarnessExecutionIdentity:
+    rows = list(manifest) if manifest is not None else harness_source_manifest(harness_root)
+    frozen = tuple(
+        (str(row["path"]), int(row["bytes"]), str(row["sha256"]))
+        for row in rows
+    )
+    canonical = [
+        {"path": path, "bytes": size, "sha256": sha256}
+        for path, size, sha256 in frozen
+    ]
+    return HarnessExecutionIdentity(frozen, source_manifest_sha256(canonical))
+
+
+IMPORTED_HARNESS_IDENTITY = harness_execution_identity(
+    HARNESS_ROOT,
+    manifest=IMPORTED_HARNESS_SOURCES,
+)
+
+
+def require_harness_identity_unchanged(
+    expected: HarnessExecutionIdentity,
+    harness_root: Path,
+    *,
+    phase: str,
+) -> None:
+    current = harness_execution_identity(harness_root)
+    if current != expected:
+        raise ContractError(
+            "device harness source drifted "
+            f"{phase}: imported={expected.source_manifest_sha256} "
+            f"current={current.source_manifest_sha256}"
+        )
 
 
 @dataclass(frozen=True)
@@ -104,25 +195,119 @@ class DeviceRunLockError(ContractError):
     pass
 
 
-class DeviceRunLock:
-    """Process lock for one adb serial. The stable lock inode is deliberately never unlinked."""
+class PhysicalDeviceIdentityError(ContractError):
+    pass
 
-    def __init__(self, handle, path: Path, serial: str, run_id: str):
+
+def host_global_device_lock_root() -> Path:
+    """One per-user host namespace shared by every checkout and worktree."""
+    return Path.home() / ".cache" / "telecampro-device-tests" / "locks"
+
+
+def _adb_read_text(
+    serial: str,
+    arguments: Sequence[str],
+    *,
+    run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> str:
+    try:
+        result = run_command(
+            ["adb", "-s", serial, *arguments],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise PhysicalDeviceIdentityError(
+            f"device {serial!r} identity probe timed out: {' '.join(arguments)}"
+        ) from error
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or f"exit {result.returncode}"
+        raise PhysicalDeviceIdentityError(
+            f"device {serial!r} identity probe failed: {detail}"
+        )
+    return result.stdout.strip()
+
+
+def canonical_physical_device_identity(values: dict[str, str]) -> PhysicalDeviceIdentity:
+    """Derive a non-secret attested key from the strongest stable device-side identity available."""
+    for source in ("ro.serialno", "ro.boot.serialno"):
+        raw = values.get(source, "").strip()
+        if not raw or raw.lower() in {"null", "unknown", "none"}:
+            continue
+        if any(character.isspace() or ord(character) < 0x20 for character in raw):
+            continue
+        # Both properties normally expose the same hardware serial. Keep one canonical namespace so
+        # a platform that hides only the framework alias cannot split one handset into two locks.
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        return PhysicalDeviceIdentity(
+            canonical_key=f"physical-serial-sha256:{digest}",
+            source=source,
+        )
+    raise PhysicalDeviceIdentityError(
+        "device exposed no stable physical identity (ro.serialno/ro.boot.serialno)"
+    )
+
+
+def probe_physical_device_identity(
+    serial: str,
+    *,
+    run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> PhysicalDeviceIdentity:
+    """Read-only reachability + identity probe; callers lock before any mutating ADB action."""
+    state = _adb_read_text(serial, ["get-state"], run_command=run_command)
+    if state != "device":
+        raise PhysicalDeviceIdentityError(
+            f"device {serial!r} not ready: state={state!r}; hint: adb connect {serial}"
+        )
+    for source, command in (
+        ("ro.serialno", ["shell", "getprop", "ro.serialno"]),
+        ("ro.boot.serialno", ["shell", "getprop", "ro.boot.serialno"]),
+    ):
+        raw = _adb_read_text(serial, command, run_command=run_command)
+        try:
+            return canonical_physical_device_identity({source: raw})
+        except PhysicalDeviceIdentityError:
+            continue
+    raise PhysicalDeviceIdentityError(
+        "device exposed no stable physical identity (ro.serialno/ro.boot.serialno)"
+    )
+
+
+class DeviceRunLock:
+    """Host-global process lock for one canonical physical device identity."""
+
+    def __init__(
+        self,
+        handle,
+        path: Path,
+        connection_alias: str,
+        physical_identity: PhysicalDeviceIdentity,
+        run_id: str,
+    ):
         self._handle = handle
         self.path = path
-        self.serial = serial
+        self.connection_alias = connection_alias
+        self.physical_identity = physical_identity
         self.run_id = run_id
         self._released = False
 
     @classmethod
-    def acquire(cls, reports_root: Path, serial: str, run_id: str) -> DeviceRunLock:
-        lock_root = reports_root / ".locks"
+    def acquire(
+        cls,
+        lock_root: Path,
+        connection_alias: str,
+        physical_identity: PhysicalDeviceIdentity,
+        run_id: str,
+    ) -> DeviceRunLock:
         try:
             lock_root.mkdir(parents=True, exist_ok=True)
         except OSError as error:
             raise DeviceRunLockError(f"could not create device lock directory: {error}") from error
-        serial_key = hashlib.sha256(serial.encode("utf-8")).hexdigest()
-        path = lock_root / f"{serial_key}.lock"
+        identity_key = hashlib.sha256(
+            physical_identity.canonical_key.encode("utf-8")
+        ).hexdigest()
+        path = lock_root / f"{identity_key}.lock"
         try:
             handle = path.open("a+", encoding="utf-8")
         except OSError as error:
@@ -133,7 +318,7 @@ class DeviceRunLock:
             if error.errno not in {errno.EACCES, errno.EAGAIN}:
                 handle.close()
                 raise DeviceRunLockError(
-                    f"could not acquire device {serial!r} lock {path}: {error}",
+                    f"could not acquire physical device lock {path}: {error}",
                 ) from error
             try:
                 handle.seek(0)
@@ -141,7 +326,7 @@ class DeviceRunLock:
             finally:
                 handle.close()
             raise DeviceRunLockError(
-                f"device {serial!r} is already owned by another harness run: {holder}",
+                "physical device is already owned by another harness run: " + holder,
             ) from error
 
         try:
@@ -151,7 +336,9 @@ class DeviceRunLock:
                 {
                     "pid": os.getpid(),
                     "run_id": run_id,
-                    "serial": serial,
+                    "connection_alias": connection_alias,
+                    "physical_device_key": physical_identity.canonical_key,
+                    "physical_identity_source": physical_identity.source,
                     "acquired_at_utc": utc_now(),
                 },
                 handle,
@@ -166,7 +353,7 @@ class DeviceRunLock:
             finally:
                 handle.close()
             raise DeviceRunLockError(f"could not record device lock ownership: {error}") from error
-        return cls(handle, path, serial, run_id)
+        return cls(handle, path, connection_alias, physical_identity, run_id)
 
     def release(self) -> None:
         if self._released:
@@ -175,7 +362,8 @@ class DeviceRunLock:
             fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
         except OSError as error:
             raise DeviceRunLockError(
-                f"could not release device {self.serial!r} lock for run {self.run_id}: {error}",
+                "could not release physical device lock for "
+                f"run {self.run_id} ({self.connection_alias!r}): {error}",
             ) from error
         finally:
             self._handle.close()
@@ -188,12 +376,23 @@ class DeviceRunLock:
         self.release()
 
 
-def write_run_identity(allocation: ReportAllocation, *, serial: str) -> None:
+def write_run_identity(
+    allocation: ReportAllocation,
+    *,
+    serial: str,
+    physical_identity: PhysicalDeviceIdentity | None = None,
+) -> None:
     """Record the allocated run before lock acquisition or any ADB interaction can fail."""
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "run_id": allocation.run_id,
-        "serial": serial,
+        "connection_alias": serial,
+        "physical_device_key": (
+            physical_identity.canonical_key if physical_identity is not None else None
+        ),
+        "physical_identity_source": (
+            physical_identity.source if physical_identity is not None else None
+        ),
         "allocated_at_utc": utc_now(),
     }
     try:
@@ -213,12 +412,19 @@ def write_run_failure(
     serial: str,
     phase: str,
     error: str,
+    physical_identity: PhysicalDeviceIdentity | None = None,
 ) -> None:
     """Persist a non-green preflight/ownership failure in the uniquely owned report directory."""
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "run_id": allocation.run_id,
-        "serial": serial,
+        "connection_alias": serial,
+        "physical_device_key": (
+            physical_identity.canonical_key if physical_identity is not None else None
+        ),
+        "physical_identity_source": (
+            physical_identity.source if physical_identity is not None else None
+        ),
         "phase": phase,
         "error": error,
         "recorded_at_utc": utc_now(),
@@ -384,13 +590,13 @@ def append_attestation_summary(
         "",
         "## Run attestation",
         "",
-        f"- restoration: **{status}**",
+        f"- evidence verification: **{status}**",
         f"- final CLI exit code: `{final_exit_code}`",
         f"- APK source identity: `{source_identity}`",
         f"- metadata: `{ATTESTATION_NAME}` (`{ATTESTATION_SHA_NAME}`)",
     ]
     if errors:
-        lines.append("- restoration errors: " + "; ".join(errors))
+        lines.append("- verification errors: " + "; ".join(errors))
     with report.open("a", encoding="utf-8") as output:
         output.write("\n".join(lines) + "\n")
 
@@ -414,28 +620,21 @@ def run_locked_device(
     apk_contract: ApkContract,
     packaged_source: DebugSourceIdentity,
     production_subdir: str,
-    harness_sources: list[dict[str, object]],
+    harness_identity: HarnessExecutionIdentity,
+    physical_identity: PhysicalDeviceIdentity,
     allocation: ReportAllocation,
 ) -> int:
-    """Run every ADB operation while the caller owns this serial's process lock."""
+    """Run every mutating ADB operation while owning the canonical physical-device lock."""
     report_dir = allocation.directory
-    # Preflight: device reachable and the debug app installed. The adb client can hang on a
-    # half-dead TCP transport, so even this first probe is deadline-bounded.
-    try:
-        probe = subprocess.run(
-            ["adb", "-s", args.serial, "get-state"],
-            capture_output=True,
-            text=True,
-            timeout=15,
+    # The endpoint could reconnect to another handset between the initial read-only probe and lock
+    # acquisition. Re-prove identity under the canonical lock before constructing the mutating Adb
+    # facade, and bind the exact imported harness bytes immediately before case dispatch below.
+    locked_identity = probe_physical_device_identity(args.serial)
+    if locked_identity != physical_identity:
+        raise PhysicalDeviceIdentityError(
+            "ADB endpoint changed physical identity before locked execution: "
+            f"expected={physical_identity.canonical_key} actual={locked_identity.canonical_key}"
         )
-    except subprocess.TimeoutExpired:
-        print(f"device {args.serial} probe timed out\nhint: adb connect {args.serial}",
-              file=sys.stderr)
-        return 2
-    if probe.returncode != 0 or probe.stdout.strip() != "device":
-        print(f"device {args.serial} not ready: {probe.stderr.strip() or probe.stdout.strip()}\n"
-              f"hint: adb connect {args.serial}", file=sys.stderr)
-        return 2
 
     media_relative_path = f"DCIM/{production_subdir}/"
     adb = Adb(
@@ -481,6 +680,11 @@ def run_locked_device(
         print(f"could not capture run identity/state: {error}", file=sys.stderr)
         return 2
 
+    require_harness_identity_unchanged(
+        harness_identity,
+        HARNESS_ROOT,
+        phase="before case dispatch",
+    )
     started_at = utc_now()
     case_exit_code = run(
         adb,
@@ -505,15 +709,33 @@ def run_locked_device(
     )
     if state_error is not None:
         restore_errors.append(state_error)
-    final_exit_code = attested_exit_code(case_exit_code, restore_errors)
+    verification_errors = list(restore_errors)
+    try:
+        require_harness_identity_unchanged(
+            harness_identity,
+            HARNESS_ROOT,
+            phase="after case execution",
+        )
+    except ContractError as error:
+        verification_errors.append(str(error))
+    try:
+        final_identity = probe_physical_device_identity(args.serial)
+        if final_identity != physical_identity:
+            verification_errors.append(
+                "ADB endpoint changed physical identity during execution: "
+                f"expected={physical_identity.canonical_key} actual={final_identity.canonical_key}"
+            )
+    except PhysicalDeviceIdentityError as error:
+        verification_errors.append(str(error))
+    final_exit_code = attested_exit_code(case_exit_code, verification_errors)
     append_attestation_summary(
         report_dir,
         final_exit_code=final_exit_code,
-        errors=restore_errors,
+        errors=verification_errors,
         source_identity=packaged_source.identity,
     )
     document: dict[str, object] = {
-        "schema_version": 3,
+        "schema_version": 4,
         "run_id": allocation.run_id,
         "started_at_utc": started_at,
         "completed_at_utc": utc_now(),
@@ -532,11 +754,19 @@ def run_locked_device(
         "source": packaged_source.as_attestation(),
         "workspace": workspace,
         "harness": {
-            "source_manifest": harness_sources,
-            "source_manifest_sha256": source_manifest_sha256(harness_sources),
+            **harness_identity.as_attestation(),
+            "identity_basis": "import-time bytes; exact equality required before and after cases",
+            "pre_run_verified": True,
+            "post_run_verified": not any(
+                error.startswith("device harness source drifted")
+                for error in verification_errors
+            ),
         },
         "device": {
             "serial": args.serial,
+            "connection_alias": args.serial,
+            "physical_device_key": physical_identity.canonical_key,
+            "physical_identity_source": physical_identity.source,
             "model": model,
             "api": int(api_text),
             "build_fingerprint": build_fingerprint,
@@ -555,11 +785,13 @@ def run_locked_device(
             "before": before_state,
             "after": after_state,
             "restoration_errors": restore_errors,
+            "verification_errors": verification_errors,
         },
         "result": {
             "case_exit_code": case_exit_code,
             "final_exit_code": final_exit_code,
             "restoration": "pass" if not restore_errors else "fail",
+            "evidence_verification": "pass" if not verification_errors else "fail",
         },
         "artifacts": artifact_manifest(report_dir),
     }
@@ -572,8 +804,8 @@ def run_locked_device(
     print(f"Attestation: {attestation}")
     print(f"Attestation SHA-256: {sidecar}")
     print(f"APK source identity: {packaged_source.identity}")
-    if restore_errors:
-        print("Restoration attestation failed: " + "; ".join(restore_errors), file=sys.stderr)
+    if verification_errors:
+        print("Evidence verification failed: " + "; ".join(verification_errors), file=sys.stderr)
     return final_exit_code
 
 
@@ -607,7 +839,11 @@ def main() -> int:
         if sha256_file(expected_apk) != expected_sha:
             raise ContractError("APK changed while its manifest contract was being inspected")
         production_subdir = production_capture_subdir(REPO_ROOT)
-        harness_sources = harness_source_manifest(Path(__file__).resolve().parent)
+        require_harness_identity_unchanged(
+            IMPORTED_HARNESS_IDENTITY,
+            HARNESS_ROOT,
+            phase="before device preflight",
+        )
     except (ContractError, OSError) as error:
         print(f"could not establish APK/harness contract: {error}", file=sys.stderr)
         return 2
@@ -626,7 +862,33 @@ def main() -> int:
         return 2
 
     try:
-        with DeviceRunLock.acquire(reports_root, args.serial, allocation.run_id):
+        physical_identity = probe_physical_device_identity(args.serial)
+        write_run_identity(
+            allocation,
+            serial=args.serial,
+            physical_identity=physical_identity,
+        )
+    except (PhysicalDeviceIdentityError, ContractError) as error:
+        write_run_failure(
+            allocation,
+            serial=args.serial,
+            phase="physical-device-identity",
+            error=str(error),
+        )
+        print(
+            f"device identity failed for run {allocation.run_id}: {error}\n"
+            f"failure report: {allocation.directory / 'run-failure.json'}",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        with DeviceRunLock.acquire(
+            host_global_device_lock_root(),
+            args.serial,
+            physical_identity,
+            allocation.run_id,
+        ):
             return run_locked_device(
                 args,
                 tiers,
@@ -635,7 +897,8 @@ def main() -> int:
                 apk_contract,
                 packaged_source,
                 production_subdir,
-                harness_sources,
+                IMPORTED_HARNESS_IDENTITY,
+                physical_identity,
                 allocation,
             )
     except DeviceRunLockError as error:
@@ -644,9 +907,24 @@ def main() -> int:
             serial=args.serial,
             phase="device-lock",
             error=str(error),
+            physical_identity=physical_identity,
         )
         print(
             f"device-test ownership failed for run {allocation.run_id}: {error}\n"
+            f"failure report: {allocation.directory / 'run-failure.json'}",
+            file=sys.stderr,
+        )
+        return 2
+    except (PhysicalDeviceIdentityError, ContractError) as error:
+        write_run_failure(
+            allocation,
+            serial=args.serial,
+            phase="locked-preflight",
+            error=str(error),
+            physical_identity=physical_identity,
+        )
+        print(
+            f"device-test preflight failed for run {allocation.run_id}: {error}\n"
             f"failure report: {allocation.directory / 'run-failure.json'}",
             file=sys.stderr,
         )
