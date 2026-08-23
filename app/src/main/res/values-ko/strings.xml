@@ -361,6 +361,14 @@
     <string name="value_magenta">마젠타</string>
     <string name="fn_short_stabilization">보정</string>
     <string name="fn_short_open_gate">게이트</string>
+    <string name="fn_short_auto_value">A%1$s</string>
+    <string name="fn_short_daylight">태양</string>
+    <string name="fn_short_tungsten">텅스텐</string>
+    <string name="fn_short_standard">표준</string>
+    <string name="fn_short_timelapse">TL</string>
+    <string name="fn_short_sound_focus">포커스</string>
+    <string name="fn_short_sound_stage">스테이지</string>
+    <string name="fn_short_focal_mm">%1$dmm</string>
     <string name="a11y_focus_distance">초점 거리</string>
     <string name="a11y_shutter_angle">셔터 각도</string>
     <string name="a11y_shutter_speed">셔터 속도</string>

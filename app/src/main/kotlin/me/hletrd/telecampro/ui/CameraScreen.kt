@@ -2231,13 +2231,11 @@ internal fun FnOverlay(
     val slots = remember(state.mode, state.activeFnSlots) {
         fnOverlaySlots(state.mode, state.activeFnSlots)
     }
-    // Every "held sideways" adaptation below keys on the glyph RESIDUAL, not on raw gravity. These
-    // reshapes exist because a portrait-LOCKED window could not follow the device; now that the
-    // window turns, a sideways phone already gets a rotated LAYOUT, and reshaping the tray for a
-    // sideways device on top of that would turn it twice. The residual is 0 exactly when the layout
-    // absorbed the turn, and non-zero only when it could not (the user's system rotation lock),
-    // which is the case these were written for. Rounding the animated float is safe: the value is
-    // normalized downstream, and a mid-tween anchor flip is invisible against the tween itself.
+    // Every "held sideways" adaptation below keys on the glyph RESIDUAL, not on raw gravity.
+    // Handsets remain portrait-locked, so their held 90/270 residual still docks the tray at the
+    // physical bottom edge. Only sw600dp+ windows may absorb the turn; there the residual is 0 and
+    // reshaping the already-rotated layout would turn it twice. Rounding the animated float is safe:
+    // the value is normalized downstream, and a mid-tween anchor flip is invisible against the tween.
     val glyphOrientation = glyphRotation.roundToInt()
     val trayAnchor = fnOverlayAnchor(glyphOrientation)
     val gridRows = remember(slots, glyphOrientation) {
@@ -2386,6 +2384,7 @@ internal fun FnOverlay(
                                             performQuickFn(slot, state, actions)
                                         }
                                     },
+                                    compactValue = fnOverlayCompactValue(slot, state),
                                     glyphRotation = glyphRotation,
                                     contentAxis = contentAxis,
                                     modifier = Modifier.weight(1f),
@@ -2406,6 +2405,7 @@ internal fun FnOverlayTile(
     enabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    compactValue: FnOverlayCompactValue? = null,
     glyphRotation: Float = 0f,
     contentAxis: FnTileContentAxis = FnTileContentAxis.PORTRAIT,
 ) {
@@ -2419,7 +2419,7 @@ internal fun FnOverlayTile(
         stringResource(R.string.fn_short_stabilization),
         stringResource(R.string.fn_short_open_gate),
     )
-    val visualValue = fnOverlayVisualValue(slot, value, heldLandscape)
+    val visualValue = fnOverlayVisualValue(compactValue, value, heldLandscape)
     val foregroundAlpha = if (enabled) 1f else 0.55f
     Box(
         modifier = modifier
@@ -2472,6 +2472,28 @@ internal fun FnOverlayTile(
                 FnOverlayTileValue(visualValue, foregroundAlpha)
             }
         }
+    }
+}
+
+/** Short visual values for held-landscape tiles; accessibility keeps [fullValue] unchanged. */
+@Composable
+internal fun fnOverlayVisualValue(
+    compactValue: FnOverlayCompactValue?,
+    fullValue: String,
+    heldLandscape: Boolean,
+): String {
+    if (!heldLandscape) return fullValue
+    return when (val compact = compactValue) {
+        is FnOverlayCompactValue.Auto -> stringResource(R.string.fn_short_auto_value, compact.value)
+        FnOverlayCompactValue.WhiteBalanceDaylight -> stringResource(R.string.fn_short_daylight)
+        FnOverlayCompactValue.WhiteBalanceTungsten -> stringResource(R.string.fn_short_tungsten)
+        FnOverlayCompactValue.Standard -> stringResource(R.string.fn_short_standard)
+        FnOverlayCompactValue.Timelapse -> stringResource(R.string.fn_short_timelapse)
+        FnOverlayCompactValue.SoundFocus -> stringResource(R.string.fn_short_sound_focus)
+        FnOverlayCompactValue.SoundStage -> stringResource(R.string.fn_short_sound_stage)
+        is FnOverlayCompactValue.TeleconverterFocal ->
+            stringResource(R.string.fn_short_focal_mm, compact.millimeters)
+        null -> fullValue
     }
 }
 

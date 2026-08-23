@@ -344,9 +344,9 @@ private fun DialChipRow(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // The glyph RESIDUAL, not raw gravity: the window now turns with the device, so a
-            // sideways phone already gets a rotated layout and this anchor is owed nothing. It still
-            // moves under the user's system rotation lock, where the window cannot follow.
+            // The glyph RESIDUAL, not raw gravity: handsets remain portrait-locked, so a held 90/270
+            // residual keeps this entry on the physical bottom edge. Only sw600dp+ windows may absorb
+            // the turn; there the already-rotated layout leaves this anchor at its raw start edge.
             val entryAnchor = fnEntryAnchor(glyphRotation.roundToInt())
             if (entryAnchor == FnEntryAnchor.START) {
                 CompactFnButton(onClick = onOpenFnMenu, glyphRotation = glyphRotation)

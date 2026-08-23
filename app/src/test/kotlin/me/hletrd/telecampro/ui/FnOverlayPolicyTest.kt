@@ -1,15 +1,20 @@
 package me.hletrd.telecampro.ui
 
+import me.hletrd.telecampro.camera.AudioScene
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
+import me.hletrd.telecampro.camera.DriveMode
+import me.hletrd.telecampro.camera.ExposureMode
 import me.hletrd.telecampro.camera.FnSlot
 import me.hletrd.telecampro.camera.FocusMode
+import me.hletrd.telecampro.camera.VideoStabMode
+import me.hletrd.telecampro.camera.WbMode
 import me.hletrd.telecampro.ui.controls.fnSlotLabel
-import me.hletrd.telecampro.ui.controls.fnSlotValue
 import me.hletrd.telecampro.ui.controls.focusDialStateDescription
 import me.hletrd.telecampro.ui.controls.focusModeLabel
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -155,23 +160,48 @@ class FnOverlayPolicyTest {
     }
 
     @Test
-    fun `held landscape abbreviations cover every special value table`() {
-        // WB presets with dedicated compact aliases; everything else passes through.
-        assertEquals("Day", fnOverlayVisualValue(FnSlot.WB, "Daylight", true))
-        assertEquals("Tung.", fnOverlayVisualValue(FnSlot.WB, "Tungsten", true))
-        assertEquals("Cloudy", fnOverlayVisualValue(FnSlot.WB, "Cloudy", true))
-        // Stabilization abbreviates only the long "Standard".
-        assertEquals("Active", fnOverlayVisualValue(FnSlot.STABILIZATION, "Active", true))
-        // Drive abbreviates only "Timelapse".
-        assertEquals("TL", fnOverlayVisualValue(FnSlot.DRIVE, "Timelapse", true))
-        assertEquals("Burst", fnOverlayVisualValue(FnSlot.DRIVE, "Burst", true))
-        // Audio scene: the three device scenes map to short strip copy; unknown values pass through.
-        assertEquals("Std", fnOverlayVisualValue(FnSlot.AUDIO_SCENE, "Standard", true))
-        assertEquals("Stage", fnOverlayVisualValue(FnSlot.AUDIO_SCENE, "Sound Stage", true))
-        assertEquals("Ext", fnOverlayVisualValue(FnSlot.AUDIO_SCENE, "Ext", true))
-        // Slots with no abbreviation table pass their value through untouched.
-        assertEquals("Thirds", fnOverlayVisualValue(FnSlot.GRID, "Thirds", true))
-        // An ordinary slot keeps the complete label even in the held tray.
+    fun `held landscape compact identities follow typed camera state`() {
+        assertEquals(
+            FnOverlayCompactValue.WhiteBalanceDaylight,
+            fnOverlayCompactValue(
+                FnSlot.WB,
+                CameraUiState(controls = CameraUiState().controls.copy(wbMode = WbMode.DAYLIGHT)),
+            ),
+        )
+        assertEquals(
+            FnOverlayCompactValue.WhiteBalanceTungsten,
+            fnOverlayCompactValue(
+                FnSlot.WB,
+                CameraUiState(controls = CameraUiState().controls.copy(wbMode = WbMode.INCANDESCENT)),
+            ),
+        )
+        assertEquals(
+            FnOverlayCompactValue.Standard,
+            fnOverlayCompactValue(FnSlot.STABILIZATION, CameraUiState(videoStabMode = VideoStabMode.STANDARD)),
+        )
+        assertEquals(
+            FnOverlayCompactValue.Timelapse,
+            fnOverlayCompactValue(FnSlot.DRIVE, CameraUiState(driveMode = DriveMode.TIMELAPSE)),
+        )
+        assertEquals(
+            FnOverlayCompactValue.SoundFocus,
+            fnOverlayCompactValue(FnSlot.AUDIO_SCENE, CameraUiState(audioScene = AudioScene.SOUND_FOCUS)),
+        )
+        assertEquals(
+            FnOverlayCompactValue.SoundStage,
+            fnOverlayCompactValue(FnSlot.AUDIO_SCENE, CameraUiState(audioScene = AudioScene.SOUND_STAGE)),
+        )
+        assertEquals(
+            FnOverlayCompactValue.Standard,
+            fnOverlayCompactValue(FnSlot.AUDIO_SCENE, CameraUiState(audioScene = AudioScene.STANDARD)),
+        )
+        assertEquals(
+            FnOverlayCompactValue.TeleconverterFocal(300),
+            fnOverlayCompactValue(FnSlot.TELECONVERTER, CameraUiState(teleconverterMode = true)),
+        )
+        assertNull(fnOverlayCompactValue(FnSlot.WB, CameraUiState()))
+        assertNull(fnOverlayCompactValue(FnSlot.GRID, CameraUiState()))
+        assertNull(fnOverlayCompactValue(FnSlot.TELECONVERTER, CameraUiState()))
         assertEquals("ISO", fnOverlayVisualLabel(FnSlot.ISO, true))
     }
 
@@ -186,24 +216,23 @@ class FnOverlayPolicyTest {
         assertEquals("Open Gate", fnOverlayVisualLabel(FnSlot.OPEN_GATE, false))
         assertEquals("Gate", fnOverlayVisualLabel(FnSlot.OPEN_GATE, true))
 
-        // Feed the strings fnSlotValue ACTUALLY emits, never hand-written ones: the previous
-        // literals ("A 12750" / "A 1/60") were the only inputs the old "A " prefixes matched, so
-        // the test passed while both branches were dead in production.
-        val autoIso = fnSlotValue(FnSlot.ISO, CameraUiState())
-        val autoShutter = fnSlotValue(FnSlot.SHUTTER, CameraUiState())
-        assertTrue("expected an Auto-prefixed ISO value, got $autoIso", autoIso.startsWith("Auto "))
-        assertTrue("expected an Auto-prefixed shutter value, got $autoShutter", autoShutter.startsWith("Auto "))
-        assertEquals(autoIso, fnOverlayVisualValue(FnSlot.ISO, autoIso, false))
-        assertEquals("A" + autoIso.removePrefix("Auto "), fnOverlayVisualValue(FnSlot.ISO, autoIso, true))
-        assertEquals(
-            "A" + autoShutter.removePrefix("Auto "),
-            fnOverlayVisualValue(FnSlot.SHUTTER, autoShutter, true),
+        val program = CameraUiState()
+        assertEquals(FnOverlayCompactValue.Auto("--"), fnOverlayCompactValue(FnSlot.ISO, program))
+        assertEquals(FnOverlayCompactValue.Auto("--"), fnOverlayCompactValue(FnSlot.SHUTTER, program))
+        val isoPriority = program.copy(
+            controls = program.controls.copy(
+                exposureMode = ExposureMode.ISO,
+                exposureTimeNs = 50_000_000L,
+            ),
         )
-        // A manual (non-auto) value has no marker to compact and passes through untouched.
-        assertEquals("1/250s", fnOverlayVisualValue(FnSlot.SHUTTER, "1/250s", true))
-        assertEquals("Std", fnOverlayVisualValue(FnSlot.STABILIZATION, "Standard", true))
-        assertEquals("Focus", fnOverlayVisualValue(FnSlot.AUDIO_SCENE, "Sound Focus", true))
-        assertEquals("300mm", fnOverlayVisualValue(FnSlot.TELECONVERTER, "300 mm", true))
+        assertEquals(
+            FnOverlayCompactValue.Auto("1/20s"),
+            fnOverlayCompactValue(FnSlot.SHUTTER, isoPriority),
+        )
+        // A manual value has no auto marker to compact.
+        val manual = program.copy(controls = program.controls.copy(exposureMode = ExposureMode.MANUAL))
+        assertNull(fnOverlayCompactValue(FnSlot.ISO, manual))
+        assertNull(fnOverlayCompactValue(FnSlot.SHUTTER, manual))
 
         // Stabilization is the longest production label. Since the tiles gained icons (2026-07-31)
         // it compresses in BOTH axes — the 14 dp glyph ate the width that let the full word fit a

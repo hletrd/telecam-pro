@@ -27,20 +27,27 @@ import androidx.compose.ui.platform.testTag
 import androidx.test.core.app.ApplicationProvider
 import java.lang.reflect.Proxy
 import java.util.Locale
+import me.hletrd.telecampro.R
 import me.hletrd.telecampro.camera.AfIndication
+import me.hletrd.telecampro.camera.AudioScene
 import me.hletrd.telecampro.camera.BitrateLevel
 import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
 import me.hletrd.telecampro.camera.ColorTransfer
+import me.hletrd.telecampro.camera.DriveMode
 import me.hletrd.telecampro.camera.ExposureMode
+import me.hletrd.telecampro.camera.FnSlot
 import me.hletrd.telecampro.camera.FocusMode
 import me.hletrd.telecampro.camera.MemoryPresetPresentation
 import me.hletrd.telecampro.camera.MemorySlot
 import me.hletrd.telecampro.camera.PhotoFormats
 import me.hletrd.telecampro.camera.ShutterMode
+import me.hletrd.telecampro.camera.VideoStabMode
 import me.hletrd.telecampro.camera.VideoFrameRate
+import me.hletrd.telecampro.camera.WbMode
 import me.hletrd.telecampro.ui.controls.ProSheet
 import me.hletrd.telecampro.ui.controls.ProSheetTab
+import me.hletrd.telecampro.ui.controls.fnSlotValue
 import me.hletrd.telecampro.ui.controls.focusDialStateDescription
 import me.hletrd.telecampro.ui.controls.PhotoFormatToggles
 import me.hletrd.telecampro.ui.controls.SpeedAngleToggle
@@ -63,9 +70,10 @@ class BilingualPresentationComposeTest {
 
     private val base: Context = ApplicationProvider.getApplicationContext()
 
-    private fun localizedContext(language: String): Context {
+    private fun localizedContext(language: String, fontScale: Float = 1f): Context {
         val configuration = Configuration(base.resources.configuration)
         configuration.setLocale(Locale.forLanguageTag(language))
+        configuration.fontScale = fontScale
         return base.createConfigurationContext(configuration)
     }
 
@@ -300,5 +308,65 @@ class BilingualPresentationComposeTest {
         assertDescription("media-only-ko", "42장 촬영 가능")
         assertDescription("malformed-ko", "배터리 42퍼센트")
         assertDescription("battery-only-ko", "배터리 42퍼센트")
+    }
+
+    @Test
+    fun `Korean held Fn uses compact visual resources and preserves full state at two-x font`() {
+        val ko = localizedContext("ko", fontScale = 2f)
+        val orientation = mutableStateOf(90f)
+        val photoState = CameraUiState(
+            controls = CameraUiState().controls.copy(wbMode = WbMode.DAYLIGHT),
+            driveMode = DriveMode.TIMELAPSE,
+            photoFnSlots = listOf(FnSlot.ISO, FnSlot.SHUTTER, FnSlot.WB, FnSlot.DRIVE),
+        )
+        val state = mutableStateOf(photoState)
+        compose.setContent {
+            CompositionLocalProvider(LocalContext provides ko) {
+                TeleCamProTheme {
+                    FnOverlay(
+                        state = state.value,
+                        actions = actions,
+                        onSelectManualDial = {},
+                        onDismiss = {},
+                        glyphRotation = orientation.value,
+                    )
+                }
+            }
+        }
+
+        assertEquals(2, compose.onAllNodesWithText("A--", useUnmergedTree = true).fetchSemanticsNodes().size)
+        compose.onNodeWithText("태양", useUnmergedTree = true).fetchSemanticsNode()
+        compose.onNodeWithText("TL", useUnmergedTree = true).fetchSemanticsNode()
+        compose.onNodeWithContentDescription(ko.getString(R.string.label_iso)).assert(
+            SemanticsMatcher.expectValue(
+                SemanticsProperties.StateDescription,
+                fnSlotValue(FnSlot.ISO, photoState, ko),
+            ),
+        )
+        compose.onNodeWithContentDescription(ko.getString(R.string.label_wb)).assert(
+            SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, ko.getString(R.string.value_daylight)),
+        )
+
+        orientation.value = 270f
+        compose.waitForIdle()
+        assertEquals(2, compose.onAllNodesWithText("A--", useUnmergedTree = true).fetchSemanticsNodes().size)
+        compose.onNodeWithText("태양", useUnmergedTree = true).fetchSemanticsNode()
+
+        val videoState = CameraUiState(
+            mode = CaptureMode.VIDEO,
+            videoStabMode = VideoStabMode.STANDARD,
+            audioScene = AudioScene.SOUND_STAGE,
+            videoFnSlots = listOf(FnSlot.STABILIZATION, FnSlot.AUDIO_SCENE),
+        )
+        state.value = videoState
+        compose.waitForIdle()
+        compose.onNodeWithText("표준", useUnmergedTree = true).fetchSemanticsNode()
+        compose.onNodeWithText("스테이지", useUnmergedTree = true).fetchSemanticsNode()
+        compose.onNodeWithContentDescription(ko.getString(R.string.label_directionality)).assert(
+            SemanticsMatcher.expectValue(
+                SemanticsProperties.StateDescription,
+                fnSlotValue(FnSlot.AUDIO_SCENE, videoState, ko),
+            ),
+        )
     }
 }

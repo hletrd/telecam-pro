@@ -378,6 +378,14 @@
     <string name="value_magenta">Magenta</string>
     <string name="fn_short_stabilization">Stab</string>
     <string name="fn_short_open_gate">Gate</string>
+    <string name="fn_short_auto_value">A%1$s</string>
+    <string name="fn_short_daylight">Day</string>
+    <string name="fn_short_tungsten">Tung.</string>
+    <string name="fn_short_standard">Std</string>
+    <string name="fn_short_timelapse">TL</string>
+    <string name="fn_short_sound_focus">Focus</string>
+    <string name="fn_short_sound_stage">Stage</string>
+    <string name="fn_short_focal_mm">%1$dmm</string>
     <string name="a11y_focus_distance">Focus distance</string>
     <string name="a11y_shutter_angle">Shutter angle</string>
     <string name="a11y_shutter_speed">Shutter speed</string>

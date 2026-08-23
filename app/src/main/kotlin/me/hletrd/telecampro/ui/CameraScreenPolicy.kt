@@ -5,8 +5,11 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.constrainHeight
 import androidx.compose.ui.unit.constrainWidth
 import me.hletrd.telecampro.camera.AspectRatio
+import me.hletrd.telecampro.camera.AudioScene
 import me.hletrd.telecampro.camera.AutoExposure
+import me.hletrd.telecampro.camera.CameraUiState
 import me.hletrd.telecampro.camera.CaptureMode
+import me.hletrd.telecampro.camera.DriveMode
 import me.hletrd.telecampro.camera.ExposureMode
 import me.hletrd.telecampro.camera.FlashMode
 import me.hletrd.telecampro.camera.FnSlot
@@ -14,7 +17,12 @@ import me.hletrd.telecampro.camera.GridType
 import me.hletrd.telecampro.camera.HardwareKeyAction
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.ShutterTimer
+import me.hletrd.telecampro.camera.VideoStabMode
+import me.hletrd.telecampro.camera.WbMode
+import me.hletrd.telecampro.ui.controls.autoIsoText
+import me.hletrd.telecampro.ui.controls.autoShutterText
 import me.hletrd.telecampro.ui.controls.fnSlotLabel
+import me.hletrd.telecampro.ui.controls.formatShutterSpeed
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.cos
@@ -39,12 +47,11 @@ import kotlin.math.sin
 /**
  * Whether the WINDOW, not gravity, is the trustworthy statement of which way is up.
  *
- * Since the activity stopped locking orientation, both are free to turn, and the glyph residual
- * (`deviceOrientation - windowRotation`) is the correct general model — including under the user's
- * system rotation lock, where the window deliberately stays put and the residual is the only thing
- * keeping labels upright. It has exactly one blind spot: a device lying FLAT. In-plane gravity
- * vanishes there, so `GyroEis` holds its last confident value while the platform independently holds
- * the window's, and two stale numbers subtract into a confident-looking lie.
+ * Handsets remain portrait-locked (`sw < 600`) and use the gravity/window residual elsewhere to keep
+ * readable glyphs upright. Large screens are the only windows allowed to follow the device. On those
+ * screens the window is the more trustworthy statement of which way is up: a device lying FLAT has
+ * no in-plane gravity, so `GyroEis` holds its last confident value while the platform independently
+ * holds the window's, and subtracting the two stale numbers would produce a confident-looking lie.
  *
  * A large screen is the form factor that lives flat — on a desk, in a stand, on a keyboard case —
  * and it is the one where that lie was actually seen (TB331FC: window at ROTATION_90, gravity never
@@ -497,30 +504,62 @@ internal fun fnOverlayVisualLabel(
     else -> fullLabel
 }
 
-/** Short visual values for held-landscape tiles; accessibility keeps the complete value. */
-internal fun fnOverlayVisualValue(slot: FnSlot, value: String, heldLandscape: Boolean): String {
-    if (!heldLandscape) return value
+/** Semantic identity of a value that needs shorter visual copy in the held-landscape Fn tray. */
+internal sealed interface FnOverlayCompactValue {
+    data class Auto(val value: String) : FnOverlayCompactValue
+    data object WhiteBalanceDaylight : FnOverlayCompactValue
+    data object WhiteBalanceTungsten : FnOverlayCompactValue
+    data object Standard : FnOverlayCompactValue
+    data object Timelapse : FnOverlayCompactValue
+    data object SoundFocus : FnOverlayCompactValue
+    data object SoundStage : FnOverlayCompactValue
+    data class TeleconverterFocal(val millimeters: Int) : FnOverlayCompactValue
+}
+
+/**
+ * Resolves compact copy before localization, from typed camera state rather than rendered words.
+ *
+ * Production first localizes [me.hletrd.telecampro.ui.controls.fnSlotValue]. Matching that result
+ * against English literals made every alias silently disappear in Korean (`자동`, `타임랩스`,
+ * `사운드 포커스`, ...), exactly in the 148 dp tray the aliases exist to protect. This function owns
+ * only semantic identity and any locale-neutral numeric payload; Compose resolves the actual EN/KO
+ * compact resource. Accessibility continues to expose the complete localized value.
+ */
+internal fun fnOverlayCompactValue(slot: FnSlot, state: CameraUiState): FnOverlayCompactValue? {
+    val controls = state.controls
     return when (slot) {
-        // fnSlotValue emits "Auto 1/60s" / "Auto 12750" — never "A 1/60". The old "A " prefixes
-        // matched nothing, so BOTH branches were no-ops in production and the two most-consulted
-        // readouts ellipsized in the 148 dp held tray. Keep the auto MARKER (whether the shutter is
-        // auto-driven is exactly what a photographer reads here) but spend one character on it.
-        FnSlot.SHUTTER, FnSlot.ISO -> value.replaceFirst("Auto ", "A")
-        FnSlot.WB -> when (value) {
-            "Daylight" -> "Day"
-            "Tungsten" -> "Tung."
-            else -> value
+        FnSlot.SHUTTER -> when {
+            controls.exposureMode == ExposureMode.PROGRAM ->
+                FnOverlayCompactValue.Auto(autoShutterText(state))
+            controls.autoShutterDriven ->
+                FnOverlayCompactValue.Auto(formatShutterSpeed(controls.exposureTimeNs))
+            else -> null
         }
-        FnSlot.STABILIZATION -> if (value == "Standard") "Std" else value
-        FnSlot.DRIVE -> if (value == "Timelapse") "TL" else value
-        FnSlot.AUDIO_SCENE -> when (value) {
-            "Standard" -> "Std"
-            "Sound Focus" -> "Focus"
-            "Sound Stage" -> "Stage"
-            else -> value
+        FnSlot.ISO -> when {
+            controls.exposureMode == ExposureMode.PROGRAM ->
+                FnOverlayCompactValue.Auto(autoIsoText(state))
+            controls.autoIsoDriven -> FnOverlayCompactValue.Auto(controls.iso.toString())
+            else -> null
         }
-        FnSlot.TELECONVERTER -> value.replace(" mm", "mm")
-        else -> value
+        FnSlot.WB -> when (controls.wbMode) {
+            WbMode.DAYLIGHT -> FnOverlayCompactValue.WhiteBalanceDaylight
+            WbMode.INCANDESCENT -> FnOverlayCompactValue.WhiteBalanceTungsten
+            else -> null
+        }
+        FnSlot.STABILIZATION ->
+            FnOverlayCompactValue.Standard.takeIf { state.videoStabMode == VideoStabMode.STANDARD }
+        FnSlot.DRIVE -> FnOverlayCompactValue.Timelapse.takeIf { state.driveMode == DriveMode.TIMELAPSE }
+        FnSlot.AUDIO_SCENE -> when (state.audioScene) {
+            AudioScene.STANDARD -> FnOverlayCompactValue.Standard
+            AudioScene.SOUND_FOCUS -> FnOverlayCompactValue.SoundFocus
+            AudioScene.SOUND_STAGE -> FnOverlayCompactValue.SoundStage
+        }
+        FnSlot.TELECONVERTER -> if (state.teleconverterMode) {
+            FnOverlayCompactValue.TeleconverterFocal(kotlin.math.round(state.teleconverterFocalMm).toInt())
+        } else {
+            null
+        }
+        else -> null
     }
 }
 
