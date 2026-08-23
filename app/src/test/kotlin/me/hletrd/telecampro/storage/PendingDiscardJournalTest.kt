@@ -100,7 +100,7 @@ class PendingDiscardJournalTest {
             context = context,
             databaseName = "discard-$suffix.db",
             legacyPreferences = preferences,
-            removeLegacyEntries = { false },
+            removeLegacyEntries = { error("injected cleanup interruption") },
         )
 
         assertEquals(listOf(uri), interrupted.page(afterKey = null, batchLimit = 8).keys)
@@ -133,7 +133,7 @@ class PendingDiscardJournalTest {
             legacyPreferences = preferences,
             removeLegacyEntries = { keys ->
                 cleanupSizes += keys.size
-                false
+                error("injected persistent cleanup failure")
             },
         )
 

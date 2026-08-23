@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import androidx.core.content.edit
 
 /** Ordered, cursorable ownership journal for exact MediaStore URIs that must be deleted. */
 internal class PendingDiscardJournal(
@@ -14,8 +15,8 @@ internal class PendingDiscardJournal(
         LEGACY_PREFERENCES_NAME,
         Context.MODE_PRIVATE,
     ),
-    private val removeLegacyEntries: (Set<String>) -> Boolean = { keys ->
-        legacyPreferences.edit().apply { keys.forEach(::remove) }.commit()
+    private val removeLegacyEntries: (Set<String>) -> Unit = { keys ->
+        legacyPreferences.edit(commit = true) { keys.forEach(::remove) }
     },
 ) {
     private val applicationContext = context.applicationContext
