@@ -94,5 +94,25 @@ class ReleaseBuildProvenanceTest(unittest.TestCase):
         self.assertIn("addGeneratedSourceDirectory", source)
 
 
+class ConsolidatedHostGateTest(unittest.TestCase):
+    def test_gate_runs_every_non_device_quality_suite(self) -> None:
+        source = (REPO_ROOT / "tools/verify_host.py").read_text(encoding="utf-8")
+        for required in (
+            ":app:assembleDebug",
+            ":app:testDebugUnitTest",
+            ":app:lintDebug",
+            ":app:verifyPartitionACoverage",
+            "tools/tests",
+            "tools/coverage/tests",
+            "device-tests/tests",
+            "tools/check_docs.py",
+            ":app:lintRelease",
+            ":app:assembleRelease",
+            ":app:bundleRelease",
+        ):
+            self.assertIn(required, source)
+        self.assertIn('"JAVA_HOME": str(home)', source)
+
+
 if __name__ == "__main__":
     unittest.main()
