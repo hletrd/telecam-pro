@@ -1,6 +1,11 @@
 package me.hletrd.telecampro.camera
 
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
+import me.hletrd.telecampro.storage.PendingOutputDiscardResult
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -8,13 +13,27 @@ class RetainedStillDeletionOwnerTest {
 
     @Test(expected = IllegalArgumentException::class)
     fun `tombstone capacity must be positive`() {
-        RetainedStillDeletionOwner<String>(maxTombstones = 0, discard = {})
+        RetainedStillDeletionOwner<String>(maxTombstones = 0, discard = {
+            PendingOutputDiscardResult.DELETED
+        })
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `discard retry count must be positive`() {
+        RetainedStillDeletionOwner<String>(
+            maxTombstones = 1,
+            maxDiscardAttempts = 0,
+            discard = { PendingOutputDiscardResult.DELETED },
+        )
     }
 
     @Test
     fun `deleted capture discards a retained still without a ViewModel continuation`() {
         val discarded = mutableListOf<String>()
-        val owner = RetainedStillDeletionOwner<String>(maxTombstones = 4, discard = discarded::add)
+        val owner = RetainedStillDeletionOwner<String>(maxTombstones = 4, discard = {
+            discarded += it
+            PendingOutputDiscardResult.DELETED
+        })
 
         // Models the lifecycle fault: UI deletion publishes ownership, then the UI callback graph is
         // gone before the already-accepted still tail reports its retained private row.
@@ -28,19 +47,50 @@ class RetainedStillDeletionOwnerTest {
     @Test
     fun `live capture remains pending for recovery`() {
         val discarded = mutableListOf<String>()
-        val owner = RetainedStillDeletionOwner<String>(maxTombstones = 4, discard = discarded::add)
+        val owner = RetainedStillDeletionOwner<String>(maxTombstones = 4, discard = {
+            discarded += it
+            PendingOutputDiscardResult.DELETED
+        })
 
         assertEquals(
             RetainedStillDisposition.RETAIN_FOR_RECOVERY,
             owner.handleRetained("content://image/live", captureId = 9),
         )
         assertTrue(discarded.isEmpty())
+        assertFalse(owner.ownRetainedForAsyncDiscard("content://image/live", captureId = 9))
+    }
+
+    @Test
+    fun `live publication success and failure retire their exact owner`() {
+        val owner = RetainedStillDeletionOwner<String>(maxTombstones = 2, discard = {
+            PendingOutputDiscardResult.DELETED
+        })
+
+        assertEquals(
+            DeletedStillPublication.LIVE_PUBLICATION_FAILED,
+            owner.publishIfLive("content://image/fail", captureId = 7) { false },
+        )
+        assertEquals(
+            DeletedStillPublication.LIVE_PUBLICATION_FAILED,
+            owner.publishIfLive("content://image/throw", captureId = 7) {
+                throw java.io.IOException("provider offline")
+            },
+        )
+        assertEquals(
+            DeletedStillPublication.LIVE_PUBLISHED,
+            owner.publishIfLive("content://image/success", captureId = 8) { true },
+        )
+        owner.finishPublished("content://image/success", captureId = 8)
+        assertTrue(owner.markCaptureDeleted(8).isEmpty())
     }
 
     @Test
     fun `deleted capture tombstones stay bounded and newest remain authoritative`() {
         val discarded = mutableListOf<Int>()
-        val owner = RetainedStillDeletionOwner<Int>(maxTombstones = 2, discard = discarded::add)
+        val owner = RetainedStillDeletionOwner<Int>(maxTombstones = 2, discard = {
+            discarded += it
+            PendingOutputDiscardResult.DELETED
+        })
         owner.markCaptureDeleted(1)
         owner.markCaptureDeleted(2)
         owner.markCaptureDeleted(2) // duplicate refreshes recency without growing the set
@@ -51,5 +101,137 @@ class RetainedStillDeletionOwnerTest {
         assertEquals(RetainedStillDisposition.DISCARD_DELETED_CAPTURE, owner.handleRetained(2, 2))
         assertEquals(RetainedStillDisposition.DISCARD_DELETED_CAPTURE, owner.handleRetained(3, 3))
         assertEquals(listOf(2, 3), discarded)
+    }
+
+    @Test
+    fun `delete racing publication is rechecked before a saved callback can win`() {
+        val publishEntered = CountDownLatch(1)
+        val releasePublish = CountDownLatch(1)
+        val discarded = mutableListOf<String>()
+        val owner = RetainedStillDeletionOwner<String>(maxTombstones = 4, discard = {
+            discarded += it
+            PendingOutputDiscardResult.DELETED
+        })
+        val result = AtomicReference<DeletedStillPublication>()
+        val publisher = Thread {
+            result.set(
+                owner.publishIfLive("content://image/dng", captureId = 31) {
+                    publishEntered.countDown()
+                    releasePublish.await()
+                    true
+                },
+            )
+        }
+
+        publisher.start()
+        assertTrue(publishEntered.await(5, TimeUnit.SECONDS))
+        // PUBLISHING rows are owned by the completion recheck, not deleted concurrently underneath
+        // the provider update.
+        assertTrue(owner.markCaptureDeleted(31).isEmpty())
+        releasePublish.countDown()
+        publisher.join(5_000)
+
+        assertFalse(publisher.isAlive)
+        assertEquals(DeletedStillPublication.DISCARD_DELETED_CAPTURE, result.get())
+        assertEquals(listOf("content://image/dng"), discarded)
+    }
+
+    @Test
+    fun `published callback window remains Engine-owned across ViewModel detach`() {
+        val discarded = mutableListOf<String>()
+        val owner = RetainedStillDeletionOwner<String>(maxTombstones = 4, discard = {
+            discarded += it
+            PendingOutputDiscardResult.RECOVERY_MARKED
+        })
+
+        assertEquals(
+            DeletedStillPublication.LIVE_PUBLISHED,
+            owner.publishIfLive("content://image/heif", captureId = 44) { true },
+        )
+        // Models delete + immediate ViewModel callback detachment before emitSaved can run.
+        assertEquals(listOf("content://image/heif"), owner.markCaptureDeleted(44))
+        assertEquals(
+            RetainedStillDisposition.DISCARD_DELETED_CAPTURE,
+            owner.discardDeleted("content://image/heif", 44),
+        )
+        owner.finishPublished("content://image/heif", 44)
+
+        assertEquals(listOf("content://image/heif"), discarded)
+        assertEquals(0, owner.unresolvedDiscardCount())
+    }
+
+    @Test
+    fun `false journal plus delete remains typed and retries boundedly`() {
+        var durable = false
+        var attempts = 0
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 4,
+            maxDiscardAttempts = 3,
+            discard = {
+                attempts++
+                if (durable) PendingOutputDiscardResult.RECOVERY_MARKED
+                else PendingOutputDiscardResult.UNRESOLVED
+            },
+        )
+        owner.markCaptureDeleted(55)
+
+        assertEquals(
+            RetainedStillDisposition.DISCARD_RETRY_PENDING,
+            owner.handleRetained("content://image/jpeg", 55),
+        )
+        assertEquals(3, attempts)
+        assertEquals(1, owner.unresolvedDiscardCount())
+
+        durable = true
+        assertEquals(0, owner.retryUnresolvedDiscards())
+        assertEquals(4, attempts)
+        assertEquals(0, owner.unresolvedDiscardCount())
+    }
+
+    @Test
+    fun `discard exceptions stay unresolved while active publication and tombstone stay owned`() {
+        var throws = true
+        val owner = RetainedStillDeletionOwner<String>(
+            maxTombstones = 1,
+            maxDiscardAttempts = 1,
+            discard = {
+                if (throws) throw java.io.IOException("storage offline")
+                PendingOutputDiscardResult.DELETED
+            },
+        )
+        assertEquals(
+            DeletedStillPublication.LIVE_PUBLISHED,
+            owner.publishIfLive("content://image/active", captureId = 70) { true },
+        )
+        assertEquals(listOf("content://image/active"), owner.markCaptureDeleted(70))
+        assertEquals(
+            RetainedStillDisposition.DISCARD_RETRY_PENDING,
+            owner.discardDeleted("content://image/active", 70),
+        )
+        // An active/unresolved capture retains its tombstone even when nominal capacity is full.
+        owner.markCaptureDeleted(71)
+        assertEquals(2, owner.tombstoneCount())
+
+        throws = false
+        assertEquals(0, owner.retryUnresolvedDiscards())
+        owner.finishPublished("content://image/active", 70)
+        owner.markCaptureDeleted(72)
+        assertEquals(1, owner.tombstoneCount())
+    }
+
+    @Test
+    fun `rejected DNG dispatch transfers ownership without provider IO on caller`() {
+        var discardCalls = 0
+        val owner = RetainedStillDeletionOwner<String>(maxTombstones = 4, discard = {
+            discardCalls++
+            PendingOutputDiscardResult.DELETED
+        })
+        owner.markCaptureDeleted(66)
+
+        assertTrue(owner.ownRetainedForAsyncDiscard("content://image/dng", 66))
+        assertEquals(0, discardCalls)
+        assertEquals(1, owner.unresolvedDiscardCount())
+        assertEquals(0, owner.retryUnresolvedDiscards())
+        assertEquals(1, discardCalls)
     }
 }

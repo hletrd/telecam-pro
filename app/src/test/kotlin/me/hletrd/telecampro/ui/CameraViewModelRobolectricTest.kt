@@ -11,11 +11,13 @@ import me.hletrd.telecampro.camera.CameraEngine
 import me.hletrd.telecampro.camera.CameraFacing
 import me.hletrd.telecampro.camera.CameraReadyPublication
 import me.hletrd.telecampro.camera.CaptureMode
+import me.hletrd.telecampro.camera.DeletedStillPublication
 import me.hletrd.telecampro.camera.ExposureMode
 import me.hletrd.telecampro.camera.GridType
 import me.hletrd.telecampro.camera.LensChoice
 import me.hletrd.telecampro.camera.ManualControls
 import me.hletrd.telecampro.camera.PhotoSessionOutputs
+import me.hletrd.telecampro.camera.RetainedStillDeletionOwner
 import me.hletrd.telecampro.camera.ShutterTimer
 import me.hletrd.telecampro.camera.TeleconverterProfile
 import me.hletrd.telecampro.camera.VideoCodec
@@ -166,6 +168,32 @@ class CameraViewModelRobolectricTest {
         callbacks.forEach { field ->
             assertNull("callback survived teardown: ${field.name}", field.get(e))
         }
+    }
+
+    @Test fun `deleted still publication remains Engine-owned after ViewModel detach`() {
+        val (v, e) = createViewModel()
+        val captureId = 909
+        val output = Uri.parse("content://media/external/images/media/909")
+        e.markCaptureDeleted(captureId)
+
+        clearViewModel(v)
+        vm = null // lifecycle edge has run; the UI callback graph is now absent
+        val ownerField = CameraEngine::class.java.getDeclaredField("retainedStillDeletionOwner")
+            .apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        val owner = ownerField.get(e) as RetainedStillDeletionOwner<Uri>
+        var providerPublishCalled = false
+
+        val result = owner.publishIfLive(output, captureId) {
+            providerPublishCalled = true
+            true
+        }
+
+        assertFalse("deleted output reached provider publication after detach", providerPublishCalled)
+        assertTrue(
+            result == DeletedStillPublication.DISCARD_DELETED_CAPTURE ||
+                result == DeletedStillPublication.DISCARD_RETRY_PENDING,
+        )
     }
 
     @Test fun `a persisted settings packet restores through the store during construction`() {

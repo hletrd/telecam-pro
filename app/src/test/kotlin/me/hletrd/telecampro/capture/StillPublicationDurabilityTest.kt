@@ -1,7 +1,8 @@
 package me.hletrd.telecampro.capture
 
 import me.hletrd.telecampro.camera.CameraStatusMessage
-import me.hletrd.telecampro.storage.CompletedOutputPublication
+import me.hletrd.telecampro.camera.DeletedStillPublication
+import me.hletrd.telecampro.camera.RetainedStillDisposition
 import me.hletrd.telecampro.storage.OrphanDisposition
 import me.hletrd.telecampro.storage.PendingJournalState
 import me.hletrd.telecampro.storage.PendingProbe
@@ -22,15 +23,25 @@ class StillPublicationDurabilityTest {
             captureId = 4,
             markerDurable = true,
             effects = StillPublicationEffects(
-                publish = { events += "publish:$it"; true },
+                publishOwned = { output, _ ->
+                    events += "publish:$output"
+                    DeletedStillPublication.LIVE_PUBLISHED
+                },
+                finishPublished = { output, id -> events += "finish:$output:$id" },
                 emitSaved = { output, id -> events += "saved:$output:$id" },
-                emitRetained = { _, _ -> events += "retained" },
+                emitRetained = { _, _ ->
+                    events += "retained"
+                    RetainedStillDisposition.RETAIN_FOR_RECOVERY
+                },
                 emitStatus = { events += "status" },
             ),
         )
 
-        assertEquals(CompletedOutputPublication.PUBLISHED, publication)
-        assertEquals(listOf("publish:heif-row", "saved:heif-row:4"), events)
+        assertEquals(StillOutputPublication.PUBLISHED, publication)
+        assertEquals(
+            listOf("publish:heif-row", "saved:heif-row:4", "finish:heif-row:4"),
+            events,
+        )
     }
 
     @Test
@@ -51,14 +62,21 @@ class StillPublicationDurabilityTest {
                 captureId = 17,
                 markerDurable = marker.durable,
                 effects = StillPublicationEffects(
-                    publish = { events += "publish"; true },
+                    publishOwned = { _, _ ->
+                        events += "publish"
+                        DeletedStillPublication.LIVE_PUBLISHED
+                    },
+                    finishPublished = { _, _ -> events += "finish" },
                     emitSaved = { _, _ -> events += "saved" },
-                    emitRetained = { output, id -> events += "retained:$output:$id" },
+                    emitRetained = { output, id ->
+                        events += "retained:$output:$id"
+                        RetainedStillDisposition.RETAIN_FOR_RECOVERY
+                    },
                     emitStatus = { events += "status:${it.message}" },
                 ),
             )
 
-            assertEquals(kind, CompletedOutputPublication.RETAINED_MARKER_UNAVAILABLE, publication)
+            assertEquals(kind, StillOutputPublication.RETAINED_MARKER_UNAVAILABLE, publication)
             assertEquals(
                 kind,
                 listOf(
@@ -91,14 +109,21 @@ class StillPublicationDurabilityTest {
             captureId = 9,
             markerDurable = true,
             effects = StillPublicationEffects(
-                publish = { events += "publish"; false },
+                publishOwned = { _, _ ->
+                    events += "publish"
+                    DeletedStillPublication.LIVE_PUBLICATION_FAILED
+                },
+                finishPublished = { _, _ -> events += "finish" },
                 emitSaved = { _, _ -> events += "saved" },
-                emitRetained = { _, _ -> events += "retained" },
+                emitRetained = { _, _ ->
+                    events += "retained"
+                    RetainedStillDisposition.RETAIN_FOR_RECOVERY
+                },
                 emitStatus = { events += "status:${it.message}" },
             ),
         )
 
-        assertEquals(CompletedOutputPublication.RETAINED_PUBLICATION_UNAVAILABLE, publication)
+        assertEquals(StillOutputPublication.RETAINED_PUBLICATION_UNAVAILABLE, publication)
         assertEquals(
             listOf(
                 "publish",
@@ -107,5 +132,79 @@ class StillPublicationDurabilityTest {
             ),
             events,
         )
+    }
+
+    @Test
+    fun `deleted output never emits saved even when provider publication would succeed`() {
+        val events = mutableListOf<String>()
+        val publication = completeStillPublication(
+            kind = "DNG",
+            output = "dng-row",
+            captureId = 77,
+            markerDurable = true,
+            effects = StillPublicationEffects(
+                publishOwned = { _, _ ->
+                    events += "owned-publish"
+                    DeletedStillPublication.DISCARD_DELETED_CAPTURE
+                },
+                finishPublished = { _, _ -> events += "finish" },
+                emitSaved = { _, _ -> events += "saved" },
+                emitRetained = { _, _ ->
+                    events += "retained"
+                    RetainedStillDisposition.RETAIN_FOR_RECOVERY
+                },
+                emitStatus = { events += "status" },
+            ),
+        )
+
+        assertEquals(StillOutputPublication.DISCARDED_DELETED_CAPTURE, publication)
+        assertEquals(listOf("owned-publish"), events)
+    }
+
+    @Test
+    fun `failed discard remains a nonterminal typed result`() {
+        val statuses = mutableListOf<CameraStatusMessage>()
+        val publication = completeStillPublication(
+            kind = "JPEG",
+            output = "jpeg-row",
+            captureId = 78,
+            markerDurable = true,
+            effects = StillPublicationEffects(
+                publishOwned = { _, _ -> DeletedStillPublication.DISCARD_RETRY_PENDING },
+                finishPublished = { _, _ -> error("not published") },
+                emitSaved = { _, _ -> error("not saved") },
+                emitRetained = { _, _ -> error("already owned") },
+                emitStatus = { statuses += it.message },
+            ),
+        )
+
+        assertEquals(StillOutputPublication.DISCARD_RETRY_PENDING, publication)
+        assertEquals(listOf(CameraStatusMessage.COULD_NOT_DELETE_FILE), statuses)
+    }
+
+    @Test
+    fun `marker failure still honors a tombstone acquired before retained routing`() {
+        val cases = listOf(
+            RetainedStillDisposition.DISCARD_DELETED_CAPTURE to
+                StillOutputPublication.DISCARDED_DELETED_CAPTURE,
+            RetainedStillDisposition.DISCARD_RETRY_PENDING to
+                StillOutputPublication.DISCARD_RETRY_PENDING,
+        )
+        cases.forEach { (retained, expected) ->
+            val result = completeStillPublication(
+                kind = "HEIF",
+                output = "heif-row",
+                captureId = 79,
+                markerDurable = false,
+                effects = StillPublicationEffects(
+                    publishOwned = { _, _ -> error("marker must gate publish") },
+                    finishPublished = { _, _ -> error("not published") },
+                    emitSaved = { _, _ -> error("not saved") },
+                    emitRetained = { _, _ -> retained },
+                    emitStatus = {},
+                ),
+            )
+            assertEquals(expected, result)
+        }
     }
 }
