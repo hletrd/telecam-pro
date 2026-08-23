@@ -87,7 +87,7 @@ class CameraEngine(private val context: Context) {
     // The encoder EGL surface must detach from the exact pipeline instance that attached it. A
     // replacement pipeline is deliberately unreachable from an old recorder teardown callback.
     @Volatile private var activeRecordingGl: GlPipeline? = null
-    @Volatile private var recorderFinalizationLatch: java.util.concurrent.CountDownLatch? = null
+    @Volatile private var recorderFinalizationOwner: RecorderFinalizationOwner? = null
     // URI (+ capture-sequence id) of the clip currently being recorded, so stop can surface it
     // (thumbnail/review) tagged like any other capture.
     @Volatile private var activeRecordingUri: android.net.Uri? = null
@@ -328,6 +328,12 @@ class CameraEngine(private val context: Context) {
         val uri: android.net.Uri?,
         val captureId: Int,
         val gl: GlPipeline,
+    )
+
+    private data class RecorderFinalizationOwner(
+        val recorder: VideoRecorder,
+        val captureId: Int,
+        val completed: java.util.concurrent.CountDownLatch,
     )
 
     private data class OpticsTransaction(val generation: Long, val before: OpticsSnapshot)
@@ -4432,7 +4438,17 @@ class CameraEngine(private val context: Context) {
     ) {
         recorderTeardownInFlight = true
         val completed = java.util.concurrent.CountDownLatch(1)
-        recorderFinalizationLatch = completed
+        val finalizationOwner = RecorderFinalizationOwner(rec, captureId, completed)
+        recorderFinalizationOwner = finalizationOwner
+
+        fun completeFinalizationOwner() {
+            synchronized(recorderOwnershipLock) {
+                if (recorderFinalizationOwner === finalizationOwner) {
+                    recorderFinalizationOwner = null
+                }
+            }
+            completed.countDown()
+        }
 
         fun dispatchTask(task: Runnable, fallbackName: String) {
             val accepted = runCatching { recorderExecutor.execute(task) }.isSuccess
@@ -4485,7 +4501,7 @@ class CameraEngine(private val context: Context) {
                                 try {
                                     enterUnsafeRecorderQuarantine(rec, captureId, timeout)
                                 } finally {
-                                    completed.countDown()
+                                    completeFinalizationOwner()
                                 }
                             },
                         )
@@ -4505,7 +4521,7 @@ class CameraEngine(private val context: Context) {
                                     if (releaseAdmission) {
                                         UnsafeRecorderQuarantine.finishAdmission(rec.processAdmissionToken)
                                     }
-                                    completed.countDown()
+                                    completeFinalizationOwner()
                                 }
                             }
                             dispatchTask(task, "record-finalize-fallback")
@@ -4520,7 +4536,7 @@ class CameraEngine(private val context: Context) {
                                 ?: IllegalStateException("Recording graph release was not proven"),
                         )
                     } finally {
-                        completed.countDown()
+                        completeFinalizationOwner()
                     }
                 }
             },
@@ -4667,8 +4683,13 @@ class CameraEngine(private val context: Context) {
     ): VideoRecorder.StopResult {
         var terminalResult: VideoRecorder.StopResult? = null
         var resultOwned = false
+        var nativeReleaseOwned = false
         try {
-            val result = runCatching { rec.stop() }
+            val result = runCatching {
+                rec.stop {
+                    acceptResult().also { nativeReleaseOwned = it }
+                }
+            }
                 .getOrElse {
                     VideoRecorder.StopResult(
                         saved = false,
@@ -4677,7 +4698,7 @@ class CameraEngine(private val context: Context) {
                     )
                 }
             terminalResult = result
-            if (!acceptResult()) return result
+            if (!nativeReleaseOwned) return result
             resultOwned = true
             if (result.nativeGraphDisposition == NativeGraphDisposition.QUARANTINE_REQUIRED) {
                 enterUnsafeRecorderQuarantine(
@@ -5056,8 +5077,24 @@ class CameraEngine(private val context: Context) {
         ownedRecording?.let {
             detachAndFinalizeRecording(it.gl, it.recorder, it.uri, it.captureId)
         }
-        recorderFinalizationLatch?.let {
-            runCatching { it.await(RECORDER_FINALIZE_RELEASE_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS) }
+        recorderFinalizationOwner?.let { finalizing ->
+            val completedInTime = runCatching {
+                finalizing.completed.await(
+                    RECORDER_FINALIZE_RELEASE_TIMEOUT_MS,
+                    java.util.concurrent.TimeUnit.MILLISECONDS,
+                )
+            }.getOrDefault(false)
+            if (!completedInTime) {
+                // release() is the old Engine's last authority boundary. It may not return and let a
+                // replacement graph start while this recorder is still neither released nor retained.
+                enterUnsafeRecorderQuarantine(
+                    finalizing.recorder,
+                    finalizing.captureId,
+                    java.util.concurrent.TimeoutException(
+                        "Engine release outlived recorder finalization classification",
+                    ),
+                )
+            }
         }
         gyro.stop()
         val ctrl = synchronized(this) {
@@ -5297,7 +5334,9 @@ class CameraEngine(private val context: Context) {
         const val CAMERA_RECOVERY_DELAY_MS = 1000L
         const val MAX_PREVIEW_RECOVERY_ATTEMPTS = 3
         const val PREVIEW_RECOVERY_DELAY_MS = 200L
-        const val RECORDER_FINALIZE_RELEASE_TIMEOUT_MS = 7_000L
+        // Covers the detach hard deadline plus native-finalization deadline. release() runs on the
+        // dedicated camera-engine-release thread, never main (CameraViewModel.onCleared).
+        const val RECORDER_FINALIZE_RELEASE_TIMEOUT_MS = 14_000L
         const val RECORDER_SETUP_TIMEOUT_MS = 8_000L
         const val RECORDER_FINALIZATION_TIMEOUT_MS = 8_000L
         const val RECORDER_DETACH_TIMEOUT_MS = 2_000L

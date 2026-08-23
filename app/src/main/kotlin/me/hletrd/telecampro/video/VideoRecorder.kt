@@ -79,6 +79,12 @@ class VideoRecorder(private val context: Context) {
     private var uri: Uri? = null
 
     private val inputSurfaceOwner = ExactlyOnceResourceOwner<Surface>()
+    /** Linearizes every recorder-owned native create/start/stop/release against quarantine. */
+    private val nativeOperations = RecorderNativeOperationGate()
+    /** Strong owners for attempts that quarantine may freeze before publication or cleanup. */
+    private val provisionalVideoOwners = Collections.synchronizedList(
+        mutableListOf<MediaCodecAttemptOwner>(),
+    )
 
     val inputSurface: Surface?
         get() = inputSurfaceOwner.get()
@@ -134,6 +140,24 @@ class VideoRecorder(private val context: Context) {
     private var audioChannelCount = ColorProfiles.AUDIO_CHANNELS
     private var onRoute: ((AudioRouteStatus) -> Unit)? = null
 
+    private fun <T> nativeOperation(block: () -> T): T = when (
+        val outcome = nativeOperations.run(block)
+    ) {
+        RecorderNativeOperationResult.Rejected -> throw RecorderNativeOperationRevokedException()
+        is RecorderNativeOperationResult.Returned -> {
+            if (!outcome.stillOpen) throw RecorderNativeOperationRevokedException()
+            outcome.result.getOrThrow()
+        }
+    }
+
+    /** True only when the cleanup call both entered and returned before quarantine closed. */
+    private fun nativeCleanup(block: () -> Unit): Boolean = when (
+        val outcome = nativeOperations.run(block)
+    ) {
+        RecorderNativeOperationResult.Rejected -> false
+        is RecorderNativeOperationResult.Returned -> outcome.stillOpen
+    }
+
     /**
      * Returns the encoder input Surface for the GL pipeline, or null on failure. [encoderRate] is the
      * true (possibly fractional, drop-frame) frame rate; [captureRate] > 0 marks a high-speed clip so
@@ -179,15 +203,28 @@ class VideoRecorder(private val context: Context) {
         this.onRoute = onRoute
         this.onLevel = onLevel
         this.onFailure = onFailure
-        val descriptor = MediaStoreWriter.openParcelFd(context, uri, "rw") ?: return null
-        pfd = descriptor
+        val descriptor = nativeOperation {
+            MediaStoreWriter.openParcelFd(context, uri, "rw")?.also { pfd = it }
+        } ?: return null
 
         val videoOk = runCatching {
-            muxer = MediaMuxer(descriptor.fileDescriptor, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            nativeOperation {
+                MediaMuxer(
+                    descriptor.fileDescriptor,
+                    MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4,
+                ).also { muxer = it }
+            }
             // GL already bakes the afocal 180° into the frames; this hint adds ONLY the physical device
             // orientation (0/90/180/270) captured at record start, so a landscape-held clip plays
             // upright. Must be set before start(). Sign is device-verify (see RotationMath helper doc).
-            runCatching { muxer?.setOrientationHint(RotationMath.videoOrientationHint(orientationHint, frontFacing)) }
+            if (!nativeCleanup {
+                    muxer?.setOrientationHint(
+                        RotationMath.videoOrientationHint(orientationHint, frontFacing),
+                    )
+                }
+            ) {
+                throw RecorderNativeOperationRevokedException()
+            }
 
             // Walk the same-aspect ladder: some encoders refuse the PORTRAIT buffer the cycle-4
             // framing contract asks for while accepting the identical pixel count in landscape (a
@@ -201,23 +238,30 @@ class VideoRecorder(private val context: Context) {
                     size.height,
                 ),
                 acquire = { selection ->
-                    MediaCodecAttemptOwner(MediaCodec.createByCodecName(selection.codecName))
+                    nativeOperation {
+                        MediaCodecAttemptOwner(
+                            MediaCodec.createByCodecName(selection.codecName),
+                        ).also(provisionalVideoOwners::add)
+                    }
                 },
                 configure = { owner, attempt ->
-                    val selection = attempt.selection
                     val attemptBitRate = bitRateForSize(attempt.width, attempt.height)
                     val vFmt = ColorProfiles.videoFormat(
                         codec, attempt.width, attempt.height,
                         encoderRate, captureRate, attemptBitRate, transfer,
                     )
-                    owner.codec.configure(vFmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-                    owner.surface = owner.codec.createInputSurface()
-                    owner.codec.start()
+                    nativeOperation {
+                        owner.codec.configure(vFmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                    }
+                    owner.surface = nativeOperation { owner.codec.createInputSurface() }
+                    nativeOperation { owner.codec.start() }
                 },
                 releaseRejected = { owner ->
-                    runCatching { owner.surface?.release() }
-                    runCatching { owner.codec.stop() }
-                    runCatching { owner.codec.release() }
+                    val surfaceReleased = nativeCleanup { owner.surface?.release() }
+                    val codecStopped = surfaceReleased && nativeCleanup { owner.codec.stop() }
+                    val codecReleased = codecStopped && nativeCleanup { owner.codec.release() }
+                    if (codecReleased) provisionalVideoOwners.remove(owner)
+                    codecReleased
                 },
             )
             videoCodec = accepted.owner.codec
@@ -225,6 +269,7 @@ class VideoRecorder(private val context: Context) {
             configuredEncoderSelection = accepted.attempt.selection
             configuredBitRate = bitRateForSize(accepted.attempt.width, accepted.attempt.height)
             inputSurfaceOwner.install(checkNotNull(accepted.owner.surface))
+            provisionalVideoOwners.remove(accepted.owner)
         }.isSuccess
 
         // Setup timeout/quarantine may win while a vendor configure/start call is blocked. Once
@@ -235,17 +280,14 @@ class VideoRecorder(private val context: Context) {
         if (!videoOk) {
             // Video encoder/muxer setup failed before the Surface could leave this recorder. Release
             // its exactly-once owner first, then tear down the codec that created the native window.
-            runCatching {
-                inputSurfaceOwner.releaseThen(
-                    releaser = Surface::release,
-                    afterRelease = {
-                        runCatching { videoCodec?.stop() }
-                        runCatching { videoCodec?.release() }
-                    },
-                )
+            val surfaceReleased = inputSurfaceOwner.releaseConditionally { surface ->
+                nativeCleanup { surface.release() }
             }
-            runCatching { muxer?.release() }
-            runCatching { pfd?.close() }
+            if (inputSurfaceOwner.get() != null && !surfaceReleased) return null
+            if (!nativeCleanup { videoCodec?.stop() }) return null
+            if (!nativeCleanup { videoCodec?.release() }) return null
+            if (!nativeCleanup { muxer?.release() }) return null
+            if (!nativeCleanup { pfd?.close() }) return null
             videoCodec = null
             muxer = null
             pfd = null
@@ -269,9 +311,10 @@ class VideoRecorder(private val context: Context) {
                 // Audio setup failed after video was already configured; degrade to video-only
                 // instead of aborting the whole recording.
                 onRoute?.invoke(AudioRouteStatus(audioInputPreference, AudioRouteAvailability.UNAVAILABLE))
-                runCatching { audioRecord?.release() }
-                runCatching { audioCodec?.stop() }
-                runCatching { audioCodec?.release() }
+                val recordReleased = nativeCleanup { audioRecord?.release() }
+                val codecStopped = recordReleased && nativeCleanup { audioCodec?.stop() }
+                val codecReleased = codecStopped && nativeCleanup { audioCodec?.release() }
+                if (!codecReleased) return null
                 audioRecord = null
                 audioCodec = null
                 expectedTracks = 1
@@ -282,17 +325,17 @@ class VideoRecorder(private val context: Context) {
         return inputSurface
     }
 
-    fun stop(): StopResult {
+    fun stop(nativeReleaseAccepted: () -> Boolean = { true }): StopResult {
         running = false
         muxerLock.withLock { muxerStateChanged.signalAll() }
         if (terminallyQuarantined.get()) return quarantinedStopResult()
         cancelVideoStartupDeadline()
         var finalizedValidation = FinalizedRecordingValidation.NOT_REQUIRED
-        runCatching { videoCodec?.signalEndOfInputStream() }
+        if (!nativeCleanup { videoCodec?.signalEndOfInputStream() }) return quarantinedStopResult()
 
         // AudioRecord.read() may still be blocked after running flips false. Stop the input before
         // joining so the worker can queue AAC EOS instead of timing out while waiting for PCM.
-        runCatching { audioRecord?.stop() }
+        if (!nativeCleanup { audioRecord?.stop() }) return quarantinedStopResult()
         if (terminallyQuarantined.get()) return quarantinedStopResult()
         videoThread?.join(3000)
         audioThread?.join(3000)
@@ -324,8 +367,7 @@ class VideoRecorder(private val context: Context) {
             // record.read() on this exact object (stop() above doesn't always unblock it on this
             // HAL), and release() under a live read races native AudioRecord state the same way
             // codec/muxer release would — so it is only released on the clean path.
-            runCatching { audioRecord?.release() }
-            if (terminallyQuarantined.get()) return quarantinedStopResult()
+            if (!nativeCleanup { audioRecord?.release() }) return quarantinedStopResult()
             muxerLock.withLock {
                 if (muxerStarted) {
                     // A muxer.stop() throw is normally VIDEO-terminal (moov not finalized → delete).
@@ -334,7 +376,14 @@ class VideoRecorder(private val context: Context) {
                     // the empty audio track while the video track is complete. Failing the clip
                     // there would delete a good take over a dead mic, the exact loss class the
                     // degrade path exists to prevent; attempt the publish gate instead.
-                    runCatching { muxer?.stop() }.onFailure { t ->
+                    val stopOutcome = nativeOperations.run { muxer?.stop() }
+                    if (stopOutcome is RecorderNativeOperationResult.Rejected ||
+                        stopOutcome is RecorderNativeOperationResult.Returned && !stopOutcome.stillOpen
+                    ) {
+                        return quarantinedStopResult()
+                    }
+                    check(stopOutcome is RecorderNativeOperationResult.Returned)
+                    stopOutcome.result.onFailure { t ->
                         if (muxerStopFailureIsTerminal(wroteVideoSample, audioDegradedMidRec, wroteAudioSample)) {
                             recordFailure(t)
                         } else if (me.hletrd.telecampro.BuildConfig.DEBUG) {
@@ -346,25 +395,23 @@ class VideoRecorder(private val context: Context) {
                     }
                 }
             }
-            if (terminallyQuarantined.get()) return quarantinedStopResult()
             // CameraEngine calls stop() only after GlPipeline's checked EGL detach callback. The
             // codec input Surface can therefore be released now, exactly once, before codec cleanup
             // and before videoCodec ownership is cleared below.
-            runCatching {
-                inputSurfaceOwner.releaseThen(
-                    releaser = Surface::release,
-                    afterRelease = {
-                        runCatching { videoCodec?.stop() }
-                        runCatching { videoCodec?.release() }
-                    },
-                )
+            val surfaceReleased = inputSurfaceOwner.releaseConditionally { surface ->
+                nativeCleanup { surface.release() }
             }
-            runCatching { audioCodec?.stop() }
-            runCatching { audioCodec?.release() }
-            runCatching { muxer?.release() }
-            runCatching { pfd?.close() }
-            if (terminallyQuarantined.get()) return quarantinedStopResult()
+            if (inputSurfaceOwner.get() != null && !surfaceReleased) return quarantinedStopResult()
+            if (!nativeCleanup { videoCodec?.stop() }) return quarantinedStopResult()
+            if (!nativeCleanup { videoCodec?.release() }) return quarantinedStopResult()
+            if (!nativeCleanup { audioCodec?.stop() }) return quarantinedStopResult()
+            if (!nativeCleanup { audioCodec?.release() }) return quarantinedStopResult()
+            if (!nativeCleanup { muxer?.release() }) return quarantinedStopResult()
+            if (!nativeCleanup { pfd?.close() }) return quarantinedStopResult()
         }
+        // The deadline protects only native graph ownership. MediaStore journal/publish work below
+        // can be slow without making a fully released codec/muxer graph unsafe.
+        if (!nativeReleaseAccepted()) return quarantinedStopResult()
         audioRecord = null
 
         val outputUri = uri
@@ -457,7 +504,10 @@ class VideoRecorder(private val context: Context) {
      * and retain this recorder process-long through [UnsafeRecorderQuarantine].
      */
     internal fun quarantineUnsafeNativeGraph(): Boolean {
-        if (!terminallyQuarantined.compareAndSet(false, true)) return false
+        // Close native admission first. This is the linearization point every setup/finalization
+        // action uses; a standalone AtomicBoolean check cannot close a later check-to-call window.
+        if (!nativeOperations.close()) return false
+        terminallyQuarantined.set(true)
         running = false
         cancelVideoStartupDeadline()
         onFailure = null
@@ -471,11 +521,9 @@ class VideoRecorder(private val context: Context) {
                 "unsafe-recorder-muxer-signal",
             ).apply { isDaemon = true }.start()
         }
-        val ownedAudio = audioRecord
-        val stopAudio = Runnable { runCatching { ownedAudio?.stop() } }
-        runCatching {
-            Thread(stopAudio, "unsafe-recorder-mic-stop").apply { isDaemon = true }.start()
-        }
+        // Do not call AudioRecord.stop here. An already-admitted finalizer may still be returning
+        // from another call on that exact owner; a concurrent stop/release pair is the native race
+        // quarantine exists to prevent. The retained graph is process-terminal by definition.
         return true
     }
 
@@ -537,17 +585,21 @@ class VideoRecorder(private val context: Context) {
         val preferredDevice = AudioInputInspector.preferredDevice(context, audioInputPreference)
         var channelCount = channelCountFor(preferredDevice)
         var channelMask = channelMaskFor(channelCount)
-        val minBuf = AudioRecord.getMinBufferSize(
-            ColorProfiles.AUDIO_SAMPLE_RATE, channelMask, AudioFormat.ENCODING_PCM_16BIT,
-        ).let { first ->
+        val minBuf = nativeOperation {
+            AudioRecord.getMinBufferSize(
+                ColorProfiles.AUDIO_SAMPLE_RATE, channelMask, AudioFormat.ENCODING_PCM_16BIT,
+            )
+        }.let { first ->
             if (first > 0 || channelCount == 1) first else {
                 channelCount = 1
                 channelMask = AudioFormat.CHANNEL_IN_MONO
-                AudioRecord.getMinBufferSize(
-                    ColorProfiles.AUDIO_SAMPLE_RATE,
-                    channelMask,
-                    AudioFormat.ENCODING_PCM_16BIT,
-                )
+                nativeOperation {
+                    AudioRecord.getMinBufferSize(
+                        ColorProfiles.AUDIO_SAMPLE_RATE,
+                        channelMask,
+                        AudioFormat.ENCODING_PCM_16BIT,
+                    )
+                }
             }
         }
         if (minBuf <= 0) {
@@ -561,13 +613,17 @@ class VideoRecorder(private val context: Context) {
             .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
             .build()
         val record = runCatching {
+            nativeOperation {
             @Suppress("MissingPermission")
-            AudioRecord.Builder()
-                .setAudioSource(MediaRecorder.AudioSource.CAMCORDER)
-                .setAudioFormat(audioFormat)
-                .setBufferSizeInBytes((minBuf * 2).coerceAtLeast(8192))
-                .build()
+                AudioRecord.Builder()
+                    .setAudioSource(MediaRecorder.AudioSource.CAMCORDER)
+                    .setAudioFormat(audioFormat)
+                    .setBufferSizeInBytes((minBuf * 2).coerceAtLeast(8192))
+                    .build()
+                    .also { audioRecord = it }
+            }
         }.getOrNull() ?: run {
+            if (!nativeOperations.isOpen()) throw RecorderNativeOperationRevokedException()
             expectedTracks = 1
             onRoute?.invoke(AudioRouteStatus(audioInputPreference, AudioRouteAvailability.UNAVAILABLE))
             return
@@ -576,27 +632,36 @@ class VideoRecorder(private val context: Context) {
         // STATE_UNINITIALIZED; calling startRecording() on it throws on the audio thread → crash.
         // Degrade to video-only instead.
         if (record.state != AudioRecord.STATE_INITIALIZED) {
-            runCatching { record.release() }
+            if (!nativeCleanup { record.release() }) throw RecorderNativeOperationRevokedException()
+            audioRecord = null
             expectedTracks = 1
             onRoute?.invoke(AudioRouteStatus(audioInputPreference, AudioRouteAvailability.UNAVAILABLE))
             return
         }
-        if (preferredDevice != null && !record.setPreferredDevice(preferredDevice)) {
+        if (preferredDevice != null && !nativeOperation { record.setPreferredDevice(preferredDevice) }) {
             if (me.hletrd.telecampro.BuildConfig.DEBUG) {
                 Log.w(TAG, "preferred audio input rejected: ${preferredDevice.productName}")
             }
         }
         audioChannelCount = channelCount
-        audioRecord = record
-        applyAudioScene(record)
+        nativeOperation { applyAudioScene(record) }
 
-        val codec = MediaCodec.createEncoderByType(ColorProfiles.MIME_AAC)
+        val codec = nativeOperation {
+            MediaCodec.createEncoderByType(ColorProfiles.MIME_AAC).also { audioCodec = it }
+        }
         // Field assignment BEFORE configure/start: if either throws, the caller's failure cleanup
         // releases audioCodec — a local-only codec would leak the HW encoder instance.
-        audioCodec = codec
-        codec.configure(ColorProfiles.aacFormat(audioChannelCount), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        codec.start()
+        nativeOperation {
+            codec.configure(
+                ColorProfiles.aacFormat(audioChannelCount),
+                null,
+                null,
+                MediaCodec.CONFIGURE_FLAG_ENCODE,
+            )
+        }
+        nativeOperation { codec.start() }
 
+        if (!nativeOperations.isOpen()) throw RecorderNativeOperationRevokedException()
         audioThread = thread(name = "audio-encode") {
             try {
                 runAudio(record, codec)
@@ -1228,6 +1293,16 @@ internal class ExactlyOnceResourceOwner<T : Any> {
         return true
     }
 
+    /** Keeps ownership when [releaser] was refused by terminal native-operation admission. */
+    fun releaseConditionally(releaser: (T) -> Boolean): Boolean {
+        val owned = synchronized(this) { value ?: return false }
+        if (!releaser(owned)) return false
+        synchronized(this) {
+            if (value === owned) value = null
+        }
+        return true
+    }
+
     /** Runs [afterRelease] even when no value exists or [releaser] throws, while preserving order. */
     fun releaseThen(releaser: (T) -> Unit, afterRelease: () -> Unit): Boolean =
         try {
@@ -1292,6 +1367,57 @@ internal data class ConfiguredEncoderAttempt<T>(
     val owner: T,
 )
 
+internal class RecorderNativeOperationRevokedException : IllegalStateException(
+    "recorder native-operation admission was revoked",
+)
+
+internal sealed interface RecorderNativeOperationResult<out T> {
+    data object Rejected : RecorderNativeOperationResult<Nothing>
+
+    data class Returned<T>(
+        val result: Result<T>,
+        /** False when quarantine closed admission while this already-entered call was returning. */
+        val stillOpen: Boolean,
+    ) : RecorderNativeOperationResult<T>
+}
+
+/**
+ * Recorder-local non-blocking close gate. A native call admitted before close may return because it
+ * cannot be un-called, but that return is revoked and cannot authorize the next cleanup/setup phase.
+ */
+internal class RecorderNativeOperationGate {
+    private val lock = ReentrantLock()
+    private var open = true
+    private var inFlight = 0
+
+    fun <T> run(block: () -> T): RecorderNativeOperationResult<T> {
+        val admitted = lock.withLock {
+            if (!open) false else {
+                inFlight++
+                true
+            }
+        }
+        if (!admitted) return RecorderNativeOperationResult.Rejected
+        val result = runCatching(block)
+        val stillOpen = lock.withLock {
+            inFlight--
+            check(inFlight >= 0) { "Recorder native-operation count underflow" }
+            open
+        }
+        return RecorderNativeOperationResult.Returned(result, stillOpen)
+    }
+
+    /** Irreversible and non-blocking; never waits for the call whose hang motivated quarantine. */
+    fun close(): Boolean = lock.withLock {
+        if (!open) false else {
+            open = false
+            true
+        }
+    }
+
+    fun isOpen(): Boolean = lock.withLock { open }
+}
+
 /**
  * Runs the real component/size attempt order with explicit rejected-owner cleanup. The generic
  * owner keeps the failure and release contract host-testable without mocking final MediaCodec APIs.
@@ -1300,18 +1426,30 @@ internal fun <T> firstConfiguredEncoderAttempt(
     attempts: List<EncoderConfigureAttempt>,
     acquire: (EncoderSelection) -> T,
     configure: (T, EncoderConfigureAttempt) -> Unit,
-    releaseRejected: (T) -> Unit,
+    /** False means quarantine owns [T]; iteration must stop without another native action. */
+    releaseRejected: (T) -> Boolean,
 ): ConfiguredEncoderAttempt<T> {
     var lastFailure: Throwable? = null
     for (attempt in attempts) {
-        val owner = runCatching { acquire(attempt.selection) }
-            .onFailure { lastFailure = it }
-            .getOrNull() ?: continue
-        val configured = runCatching { configure(owner, attempt) }
-            .onFailure { lastFailure = it }
-            .isSuccess
+        val owner = try {
+            acquire(attempt.selection)
+        } catch (revoked: RecorderNativeOperationRevokedException) {
+            throw revoked
+        } catch (failure: Throwable) {
+            lastFailure = failure
+            continue
+        }
+        val configured = try {
+            configure(owner, attempt)
+            true
+        } catch (revoked: RecorderNativeOperationRevokedException) {
+            throw revoked
+        } catch (failure: Throwable) {
+            lastFailure = failure
+            false
+        }
         if (configured) return ConfiguredEncoderAttempt(attempt, owner)
-        runCatching { releaseRejected(owner) }
+        if (!releaseRejected(owner)) throw RecorderNativeOperationRevokedException()
     }
     throw (lastFailure ?: IllegalStateException("no encoder size accepted"))
 }

@@ -165,7 +165,10 @@ class EncoderCapsTest {
                 visited += owner.name to (attempt.width to attempt.height)
                 if (owner.name == "limited") error("requested portrait size rejected")
             },
-            releaseRejected = { released += it.name },
+            releaseRejected = {
+                released += it.name
+                true
+            },
         )
 
         assertEquals("full", accepted.owner.name)
@@ -200,11 +203,36 @@ class EncoderCapsTest {
                 attemptedRates += Triple(attempt.width, attempt.height, rate)
                 if (attempt.width == 1080) error("full raster rejected")
             },
-            releaseRejected = {},
+            releaseRejected = { true },
         )
 
         assertTrue(accepted.attempt.width < 1080)
         assertTrue(attemptedRates.last().third < attemptedRates.first().third)
+    }
+
+    @Test
+    fun `revoked rejected-owner cleanup stops encoder fallback immediately`() {
+        val first = EncoderSelection(
+            VideoCodec.HEVC, "first", MediaFormat.MIMETYPE_VIDEO_HEVC, true, false,
+        )
+        val second = first.copy(codecName = "second")
+        val acquired = mutableListOf<String>()
+
+        runCatching {
+            firstConfiguredEncoderAttempt(
+                attempts = encoderConfigureAttempts(listOf(first, second), 1080, 1920),
+                acquire = { selection -> selection.codecName.also(acquired::add) },
+                configure = { _, _ -> error("late configure failure") },
+                // False models the native-operation gate closing before rejected-owner cleanup.
+                releaseRejected = { false },
+            )
+        }.onSuccess {
+            error("revoked fallback unexpectedly returned an accepted owner")
+        }.onFailure { failure ->
+            assertTrue(failure is RecorderNativeOperationRevokedException)
+        }
+
+        assertEquals(listOf("first"), acquired)
     }
 
     @Test
@@ -229,7 +257,7 @@ class EncoderCapsTest {
             attempts = emptyList(),
             acquire = { error("unreachable") },
             configure = { _, _ -> error("unreachable") },
-            releaseRejected = {},
+            releaseRejected = { true },
         )
     }
 

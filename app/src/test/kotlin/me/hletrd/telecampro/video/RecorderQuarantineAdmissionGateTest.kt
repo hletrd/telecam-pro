@@ -3,12 +3,46 @@ package me.hletrd.telecampro.video
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RecorderQuarantineAdmissionGateTest {
+
+    @Test
+    fun `recorder local close revokes an entered return and rejects every later phase`() {
+        val gate = RecorderNativeOperationGate()
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val returned = AtomicReference<RecorderNativeOperationResult<Unit>>()
+        val worker = Thread {
+            returned.set(
+                gate.run {
+                    entered.countDown()
+                    release.await()
+                },
+            )
+        }
+
+        worker.start()
+        assertTrue(entered.await(5, TimeUnit.SECONDS))
+        assertTrue(gate.close())
+        var laterPhase = false
+        assertEquals(
+            RecorderNativeOperationResult.Rejected,
+            gate.run { laterPhase = true },
+        )
+        assertFalse(laterPhase)
+
+        release.countDown()
+        worker.join(5_000)
+        val outcome = returned.get() as RecorderNativeOperationResult.Returned
+        assertFalse(outcome.stillOpen)
+        assertTrue(outcome.result.isSuccess)
+        assertFalse(gate.close())
+    }
 
     private fun awaitQuarantine(gate: RecorderQuarantineAdmissionGate): Boolean {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
