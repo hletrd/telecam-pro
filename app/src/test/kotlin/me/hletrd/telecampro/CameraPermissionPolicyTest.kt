@@ -191,11 +191,11 @@ class CameraPermissionPolicyTest {
         )
     }
 
-    /** Either broad permission subsumes user-selected, so the pair granted together is still FULL. */
+    /** Images and Video are granular: neither broad grant authorizes the other collection. */
     @Test
-    fun eitherBroadGrantIsFullEvenAlongsideUserSelected() {
+    fun oneBroadGrantRetainsItsCollectionIdentity() {
         assertEquals(
-            VisualMediaAccess.FULL,
+            VisualMediaAccess.IMAGES_ONLY,
             visualMediaAccessLevel(
                 imagesGranted = true,
                 videoGranted = false,
@@ -203,9 +203,21 @@ class CameraPermissionPolicyTest {
             ),
         )
         assertEquals(
-            VisualMediaAccess.FULL,
+            VisualMediaAccess.VIDEO_ONLY,
             visualMediaAccessLevel(
                 imagesGranted = false,
+                videoGranted = true,
+                userSelectedGranted = false,
+            ),
+        )
+    }
+
+    @Test
+    fun bothBroadGrantsAreFull() {
+        assertEquals(
+            VisualMediaAccess.FULL,
+            visualMediaAccessLevel(
+                imagesGranted = true,
                 videoGranted = true,
                 userSelectedGranted = false,
             ),
@@ -226,6 +238,54 @@ class CameraPermissionPolicyTest {
                 }
             }
         }
+    }
+
+    /** Every grant combination produces exactly the missing broad grants plus a missing API-34 grant. */
+    @Test
+    fun exactRequestSetCoversEveryGrantCombination() {
+        for (images in listOf(false, true)) {
+            for (video in listOf(false, true)) {
+                for (userSelected in listOf(false, true)) {
+                    val expected = buildList {
+                        if (!images) add(VisualMediaPermission.IMAGES)
+                        if (!video) add(VisualMediaPermission.VIDEO)
+                        if ((!images || !video) && !userSelected) {
+                            add(VisualMediaPermission.USER_SELECTED)
+                        }
+                    }
+                    assertEquals(
+                        "images=$images video=$video userSelected=$userSelected",
+                        expected,
+                        visualMediaPermissionsToRequest(
+                            imagesGranted = images,
+                            videoGranted = video,
+                            userSelectedGranted = userSelected,
+                            userSelectedPermissionAvailable = true,
+                        ),
+                    )
+                    assertEquals(
+                        "request decision images=$images video=$video userSelected=$userSelected",
+                        expected.isNotEmpty(),
+                        shouldRequestVisualMediaAccess(
+                            visualMediaAccessLevel(images, video, userSelected),
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun api33RequestNeverIncludesUserSelected() {
+        assertEquals(
+            listOf(VisualMediaPermission.VIDEO),
+            visualMediaPermissionsToRequest(
+                imagesGranted = true,
+                videoGranted = false,
+                userSelectedGranted = false,
+                userSelectedPermissionAvailable = false,
+            ),
+        )
     }
 
     // --- the empty-gallery re-request (Play review policy:H1) ----------------------------------

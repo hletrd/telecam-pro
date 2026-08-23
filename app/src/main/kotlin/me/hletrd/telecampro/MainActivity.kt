@@ -324,13 +324,22 @@ class MainActivity : ComponentActivity() {
                                 // there is nothing further to ask for).
                                 if (shouldRequestVisualMediaAccess(visualMediaAccess())) {
                                     vm.onCameraInputBlockedChange(true)
-                                    mediaAccessLauncher.launch(
-                                        arrayOf(
-                                            Manifest.permission.READ_MEDIA_IMAGES,
-                                            Manifest.permission.READ_MEDIA_VIDEO,
+                                    val permissions = visualMediaPermissionsToRequest(
+                                        imagesGranted = hasPermission(Manifest.permission.READ_MEDIA_IMAGES),
+                                        videoGranted = hasPermission(Manifest.permission.READ_MEDIA_VIDEO),
+                                        userSelectedGranted = hasPermission(
                                             READ_MEDIA_VISUAL_USER_SELECTED_PERMISSION,
                                         ),
-                                    )
+                                        userSelectedPermissionAvailable = android.os.Build.VERSION.SDK_INT >= 34,
+                                    ).map { permission ->
+                                        when (permission) {
+                                            VisualMediaPermission.IMAGES -> Manifest.permission.READ_MEDIA_IMAGES
+                                            VisualMediaPermission.VIDEO -> Manifest.permission.READ_MEDIA_VIDEO
+                                            VisualMediaPermission.USER_SELECTED ->
+                                                READ_MEDIA_VISUAL_USER_SELECTED_PERMISSION
+                                        }
+                                    }.toTypedArray()
+                                    mediaAccessLauncher.launch(permissions)
                                 } else {
                                     vm.onGalleryAccessRequested()
                                 }

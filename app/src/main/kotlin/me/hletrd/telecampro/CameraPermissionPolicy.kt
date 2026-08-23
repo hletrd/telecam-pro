@@ -137,17 +137,42 @@ internal fun hardwareShutterAudioDrop(
  * it is access to a set the USER chose, which is why it cannot be collapsed into [FULL]. See
  * [shouldRequestVisualMediaAccess] for the distinction that costs a bug when it is missing.
  */
-internal enum class VisualMediaAccess { NONE, PARTIAL, FULL }
+internal enum class VisualMediaAccess { NONE, PARTIAL, IMAGES_ONLY, VIDEO_ONLY, FULL }
 
-/** Resolves the grant triple to a level. FULL wins: either broad permission subsumes USER_SELECTED. */
+/** Platform permission identities kept Android-free so exact request policy is host-testable. */
+internal enum class VisualMediaPermission { IMAGES, VIDEO, USER_SELECTED }
+
+/** Resolves the grant triple without letting one granular broad grant stand in for the other. */
 internal fun visualMediaAccessLevel(
     imagesGranted: Boolean,
     videoGranted: Boolean,
     userSelectedGranted: Boolean,
 ): VisualMediaAccess = when {
-    imagesGranted || videoGranted -> VisualMediaAccess.FULL
+    imagesGranted && videoGranted -> VisualMediaAccess.FULL
+    imagesGranted -> VisualMediaAccess.IMAGES_ONLY
+    videoGranted -> VisualMediaAccess.VIDEO_ONLY
     userSelectedGranted -> VisualMediaAccess.PARTIAL
     else -> VisualMediaAccess.NONE
+}
+
+/**
+ * Exact permissions still worth asking for on an empty-gallery tap.
+ *
+ * Images and Video are independent Android 13+ grants. Android 14's selected-media permission joins
+ * the same request only while it too is missing; an existing partial grant is preserved while the
+ * request asks for whichever broad collection remains unavailable.
+ */
+internal fun visualMediaPermissionsToRequest(
+    imagesGranted: Boolean,
+    videoGranted: Boolean,
+    userSelectedGranted: Boolean,
+    userSelectedPermissionAvailable: Boolean,
+): List<VisualMediaPermission> = buildList {
+    if (!imagesGranted) add(VisualMediaPermission.IMAGES)
+    if (!videoGranted) add(VisualMediaPermission.VIDEO)
+    if ((!imagesGranted || !videoGranted) && userSelectedPermissionAvailable && !userSelectedGranted) {
+        add(VisualMediaPermission.USER_SELECTED)
+    }
 }
 
 /**
